@@ -1,9 +1,9 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { E2E_DEVNET, idFile, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
 
 /**
- * Pull requests, inline review and forks, live on a devnet (real spend, about
+ * Pull requests, forks and the browser merge engine, live on a devnet (real spend, about
  * 0.01 DASH per run):
  *
  *   E2E_PORT=4324 E2E_DEVNET=moutai E2E_WRITE=1 pnpm exec playwright test v2-pulls.spec.ts
@@ -11,8 +11,8 @@ import { E2E_DEVNET, idFile, runAxe, shot, signedIn, unlock, waitForRepoResolved
  * OWNER creates a repo; CONTRIB forks the read fixture `forge-v2-demo` (the fork browses
  * through the parent's packs) and opens a PR on it from the fork's `feature/greeting`, the
  * diff shown before submit; COLLAB (a writer of the fixture) comments inline and requests
- * changes; OWNER approves. The header shows the fold exactly. Nothing is merged: refs are never
- * pushed to the fixture.
+ * changes; OWNER approves. The header shows the fold exactly, and the merge button states come
+ * from the merge worker. Nothing is merged: refs are never pushed to the fixture.
  */
 
 const OWNER = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
@@ -128,7 +128,7 @@ test('c4. a signed-out visitor keeps the draft through the sign-in sheet', async
   await context.close()
 })
 
-test('c5. a writer comments inline and requests changes', async ({ browser }) => {
+test('c5. a writer comments inline and requests changes; merge is maintainers-only on main', async ({ browser }) => {
   test.skip(prNumber === 0, 'needs the PR from c3')
   const page = await signedIn(browser, 'COLLAB', demo('pull', `&number=${prNumber}`))
   await waitForRepoResolved(page)
@@ -139,12 +139,16 @@ test('c5. a writer comments inline and requests changes', async ({ browser }) =>
   await page.getByRole('button', { name: 'Add comment' }).click()
   await eventually(page, visible(page.getByTestId('inline-thread').getByText('Should this fall back to the user name?')))
 
+  // main is protected in the fixture: a writer cannot move it.
+  await expect(page.getByTestId('merge-button-state')).toHaveAttribute('data-state', 'protected', { timeout: 60_000 })
+  await expect(page.getByRole('button', { name: 'Protected branch — maintainers only' })).toBeDisabled()
+
   await page.getByRole('button', { name: /^request changes$/i }).click()
   await confirmWrite(page, /submit review/i)
   await eventually(page, visible(page.getByTestId('fold-changes')))
 })
 
-test('c6. the owner approves; the fold, split diff, palette and mobile layout', async ({ browser }) => {
+test('c6. the owner approves; the fold, the palette and the merge button states', async ({ browser }) => {
   test.skip(prNumber === 0, 'needs the PR from c3')
   const page = await signedIn(browser, 'OWNER', demo('pull', `&number=${prNumber}`))
   await waitForRepoResolved(page)
@@ -158,6 +162,11 @@ test('c6. the owner approves; the fold, split diff, palette and mobile layout', 
   await expect(page.getByTestId('fold-changes')).toContainText('Changes requested by')
   await shot(page, 'c-pr-fold')
 
+  // The worker decides: the fork's head descends from main, so this is a fast-forward.
+  await expect(page.getByTestId('merge-button-state')).toHaveAttribute('data-state', 'fast-forward', { timeout: 120_000 })
+  await expect(page.getByRole('button', { name: 'Merge (fast-forward)' })).toBeVisible()
+  await page.getByTestId('merge-panel').scrollIntoViewIfNeeded()
+  await shot(page, 'c-merge-fast-forward')
 
   // Side by side at desktop width, the inline thread under its line.
   await expect(page.locator('table[data-layout="split"]').first()).toBeVisible({ timeout: 60_000 })
@@ -172,11 +181,65 @@ test('c6. the owner approves; the fold, split diff, palette and mobile layout', 
   expect(await runAxe(page, 'PR page, blue/orange')).toEqual([])
   await page.getByRole('button', { name: 'Blue/orange' }).click()
 
-  // A phone: unified diff, nothing wider than the screen.
+  // A phone: unified diff, and the merge says to use a desktop browser.
   await page.setViewportSize({ width: 390, height: 844 })
+  await expect(page.getByTestId('merge-button-state')).toHaveAttribute('data-state', 'mobile')
+  await expect(page.getByRole('button', { name: 'Use a desktop browser for this step' })).toBeDisabled()
   await expect(page.locator('table[data-layout="unified"]').first()).toBeVisible()
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(1)
   await shot(page, 'c-pr-mobile')
 })
 
+/**
+ * The live browser merge. `lib/merge/merge-seed.live.test.ts` seeds an OWNER repo whose `main`
+ * and `feature` diverge, with PR #1; set E2E_C_MERGE_SEED to the JSON it wrote. OWNER merges
+ * with a merge commit, stores the pack on Platform after the priced question, and the PR folds
+ * as merged; the new tip browses with both sides' edits.
+ */
+const SEED = process.env['E2E_C_MERGE_SEED'] ?? ''
+
+test('c7. the owner merges a divergent PR in the browser (merge commit, Platform storage)', async ({ browser }) => {
+  test.skip(SEED === '' || !existsSync(SEED), 'set E2E_C_MERGE_SEED (lib/merge/merge-seed.live.test.ts)')
+  const seed = JSON.parse(readFileSync(SEED, 'utf8')) as { owner: string; name: string; number: number }
+  const pr = `/repo/pull/?owner=${seed.owner}&name=${seed.name}&number=${seed.number}`
+
+  const page = await signedIn(browser, 'OWNER', '/settings/')
+  await page.getByLabel('Merge commit name').fill('Forge E2E Owner')
+  await page.getByLabel('Merge commit email').fill('owner@e2e.forge.invalid')
+  await page.goto(pr, { waitUntil: 'domcontentloaded' })
+  await unlock(page)
+  await waitForRepoResolved(page)
+
+  await expect(page.getByTestId('merge-button-state')).toHaveAttribute('data-state', 'merge-commit', { timeout: 120_000 })
+  await page.getByTestId('merge-panel').scrollIntoViewIfNeeded()
+  await shot(page, 'c-merge-commit-button')
+  await page.getByRole('button', { name: 'Create merge commit and merge' }).click()
+
+  const ask = page.getByRole('dialog', { name: /Store the merge pack .* on Platform\?/ })
+  await expect(ask).toBeVisible({ timeout: 120_000 })
+  await expect(ask.getByTestId('cost-preview')).toContainText('DASH')
+  await shot(page, 'c-merge-platform-question')
+  await ask.getByRole('button', { name: /sign & store on platform/i }).click()
+
+  const steps = page.getByRole('list', { name: 'Merge steps' })
+  await expect(steps.locator('[data-step="event"]')).toHaveAttribute('data-state', 'done', { timeout: 300_000 })
+  for (const s of ['fetch', 'merge', 'pack', 'upload', 'manifest', 'index', 'ref']) {
+    await expect(steps.locator(`[data-step="${s}"]`)).toHaveAttribute('data-state', 'done')
+  }
+  await page.getByTestId('merge-panel').scrollIntoViewIfNeeded()
+  await shot(page, 'c-merge-steps-done')
+
+  // "Merged" only once the fold reads the merge event and the new tip back.
+  await eventually(page, visible(page.getByText('Merged', { exact: true }).first()))
+  await shot(page, 'c-merged')
+  for (const [path, text] of [
+    ['a.txt', 'alpha, on main'],
+    ['b.txt', 'beta, from the feature branch'],
+  ] as const) {
+    await page.goto(`/repo/blob/?owner=${seed.owner}&name=${seed.name}&path=${path}`, { waitUntil: 'domcontentloaded' })
+    await unlock(page)
+    await waitForRepoResolved(page)
+    await eventually(page, visible(page.getByText(text).first()))
+  }
+})

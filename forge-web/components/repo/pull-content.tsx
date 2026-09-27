@@ -6,9 +6,10 @@
  * timeline (comments, state events and review verdicts), a comment composer, and
  * mark-as-merged / close / reopen.
  *
- * **It cannot merge code** yet. "Mark as merged" appends a `merge` event carrying the PR head
- * oid; the fold accepts it only from a maintainer or writer, and only once the head has been a
- * tip of the base ref, so the control says whether the head is already on the base branch.
+ * The merge panel ({@link PullMerge}) merges code in the browser. "Mark as merged" only
+ * appends a `merge` event carrying the PR head oid; the fold accepts it only from a maintainer
+ * or writer, and only once the head has been a tip of the base ref, so the control says
+ * whether the head is already on the base branch.
  */
 
 import { useEffect, useState } from 'react'
@@ -37,6 +38,7 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { Approvals } from '@/components/repo/approvals'
 import { InlineCommentsProvider } from '@/components/repo/inline-comments'
+import { PullMerge } from '@/components/repo/pull-merge'
 import { inlineCommentIds } from '@/lib/view/inline-threads'
 import { useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { retryWhileMissing } from '@/lib/view/retry'
@@ -202,6 +204,16 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
         </div>
       </div>
 
+      <PullMerge
+        repo={home.repo}
+        home={home}
+        pull={pull}
+        canMerge={actions.canMarkMerged}
+        isMaintainer={holdings.data?.maintain === true}
+        checkout={checkoutCommand(home.repo, pull.number)}
+        onMerged={reload}
+      />
+
       <PullDiff
         pull={pull}
         home={home}
@@ -276,7 +288,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
             {actions.markCountsNow
               ? `The head commit is already on ${base}, so a merge mark counts as soon as it lands.`
-              : `A merge mark only counts once the head commit is on ${base}; push it there first.`}
+              : `A merge mark only counts once the head commit is on ${base}; merge it above, or push it there first.`}
           </p>
         ) : actions.mergeHint !== null ? (
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{actions.mergeHint}</p>
