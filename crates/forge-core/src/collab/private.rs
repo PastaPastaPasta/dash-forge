@@ -3,8 +3,8 @@
 //! instead of in plaintext properties.
 //!
 //! Both directions are pure over the property maps the public writer produces and a fetched
-//! document carries, so the CLI and the web app (`forge-web/lib/repo/private-writes.ts`, web
-//! PR #67) seal byte-for-byte alike (conformance case `private_collab_seal`):
+//! document carries, so the CLI and the web app's private writes (web PR #67) seal
+//! byte-for-byte alike (conformance case `private_collab_seal`):
 //!
 //! * [`seal_props`] moves every present sealed field (issue `title`/`body`; patch `title`,
 //!   `body`, `baseRefName`, `sourceRefName`; comment `body`/`path`; review `body`) into the
@@ -92,20 +92,20 @@ fn seal_props_inner(
             fields.title = take_text(&mut props, "title");
             fields.body = take_text(&mut props, "body");
             if kind == DocKind::Patch {
-                let base = take_text(&mut props, "baseRefName");
-                let source = take_text(&mut props, "sourceRefName");
-                header.base_ref_name_hash = base.as_deref().map(|b| keys.ref_name_hash(b));
-                header.source_ref_name_hash = source.as_deref().map(|s| keys.ref_name_hash(s));
-                props.remove("baseRefNameHash");
-                props.remove("sourceRefNameHash");
-                if let Some(h) = header.base_ref_name_hash {
-                    props.insert("baseRefNameHash".into(), FieldValue::bytes32(h));
+                fields.base_ref_name = take_text(&mut props, "baseRefName");
+                fields.source_ref_name = take_text(&mut props, "sourceRefName");
+                let hash = |name: &Option<String>| name.as_deref().map(|n| keys.ref_name_hash(n));
+                header.base_ref_name_hash = hash(&fields.base_ref_name);
+                header.source_ref_name_hash = hash(&fields.source_ref_name);
+                for (name, h) in [
+                    ("baseRefNameHash", header.base_ref_name_hash),
+                    ("sourceRefNameHash", header.source_ref_name_hash),
+                ] {
+                    match h {
+                        Some(h) => props.insert(name.into(), FieldValue::bytes32(h)),
+                        None => props.remove(name),
+                    };
                 }
-                if let Some(h) = header.source_ref_name_hash {
-                    props.insert("sourceRefNameHash".into(), FieldValue::bytes32(h));
-                }
-                fields.base_ref_name = base;
-                fields.source_ref_name = source;
             }
         }
         DocKind::Comment => {
@@ -124,14 +124,14 @@ fn seal_props_inner(
             )))
         }
     }
-    let enc = seal(&header, &fields).map_err(|e| sealing_error(kind, &e))?;
+    let enc = seal(&header, &fields).map_err(|e| sealing_error(kind, e))?;
     props.insert("epoch".into(), FieldValue::integer(u64::from(epoch)));
     props.insert("enc".into(), FieldValue::bytes(enc));
     Ok(props)
 }
 
 /// A seal failure as the user reads it.
-fn sealing_error(kind: DocKind, e: &PrivateError) -> Error {
+fn sealing_error(kind: DocKind, e: PrivateError) -> Error {
     match e {
         PrivateError::TooLarge(..) => {
             let what = match kind {
@@ -146,7 +146,7 @@ fn sealing_error(kind: DocKind, e: &PrivateError) -> Error {
                 text_cap(kind)
             ))
         }
-        other => other.clone().into(),
+        other => other.into(),
     }
 }
 

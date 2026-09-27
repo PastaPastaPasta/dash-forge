@@ -9,7 +9,10 @@ use tokio::runtime::Runtime;
 
 use forge_core::create::{create_repo as create_v2, default_journal_dir, CreateRepoOpts};
 use forge_core::keystore::BridgeIdentity;
-use forge_core::platform::{PlatformClient, QueryOrder};
+use forge_core::platform::{
+    decode_identifier, FetchedDocument, FieldValue, LoadedContract, PlatformClient, QueryFilter,
+    QueryOrder,
+};
 use forge_core::repo::{credits_to_dash, RepoService};
 use forge_core::resolve::resolve_named;
 
@@ -164,7 +167,7 @@ async fn dump_collab(owner: &str, repo: &str) -> Result<()> {
     let repo = resolve_named(&client, owner, repo).await?;
     let collab = client.fetch_contract(&repo.forge().collab).await?;
     let scope = repo.scope()?;
-    let print = |doc_type: &str, docs: &[forge_core::platform::FetchedDocument]| {
+    let print = |doc_type: &str, docs: &[FetchedDocument]| {
         for d in docs {
             let text: Vec<String> = ["title", "body", "path", "baseRefName", "sourceRefName"]
                 .iter()
@@ -210,20 +213,17 @@ async fn dump_collab(owner: &str, repo: &str) -> Result<()> {
 /// Every `doc_type` document whose `field` names `id` (the `target` / `patch` indexes).
 async fn by_target(
     client: &PlatformClient,
-    collab: &forge_core::platform::LoadedContract,
+    collab: &LoadedContract,
     doc_type: &str,
     field: &str,
     id: &str,
-) -> Result<Vec<forge_core::platform::FetchedDocument>> {
-    let id = forge_core::platform::decode_identifier(id)?;
+) -> Result<Vec<FetchedDocument>> {
+    let id = decode_identifier(id)?;
     Ok(client
         .query_all_documents(
             collab,
             doc_type,
-            &[forge_core::platform::QueryFilter::eq(
-                field,
-                forge_core::platform::FieldValue::identifier(id),
-            )],
+            &[QueryFilter::eq(field, FieldValue::identifier(id))],
             &[QueryOrder::asc(field), QueryOrder::asc("$createdAt")],
         )
         .await?)

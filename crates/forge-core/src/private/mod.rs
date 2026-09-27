@@ -253,7 +253,9 @@ impl Private {
         self.keys.get(&epoch)
     }
 
-    fn writer(&self) -> &EpochKeys {
+    /// The subkeys of the write epoch.
+    #[must_use]
+    pub fn write_keys(&self) -> &EpochKeys {
         self.keys
             .get(&self.write_epoch)
             .expect("the write epoch's keys are held by construction")
@@ -267,7 +269,7 @@ impl Private {
     ) -> std::result::Result<Vec<u8>, PrivateError> {
         let mut header = header.clone();
         header.epoch = self.write_epoch;
-        doc::seal(self.writer(), &header, fields)
+        doc::seal(self.write_keys(), &header, fields)
     }
 
     /// Open a sealed artifact after checking its length against the manifest's `size_bytes`.
@@ -297,7 +299,7 @@ impl RepoCodec for Private {
 
 impl PackCipher for Private {
     fn seal(&self, pack: Vec<u8>) -> Result<Vec<u8>> {
-        Ok(pack::seal(self.writer(), &pack)?)
+        Ok(pack::seal(self.write_keys(), &pack)?)
     }
     fn open(&self, sealed: Vec<u8>, size_bytes: u64) -> Result<Vec<u8>> {
         Ok(self.open_pack(&sealed, size_bytes)?)

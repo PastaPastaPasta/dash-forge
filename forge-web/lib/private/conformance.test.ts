@@ -233,10 +233,10 @@ async function collabSeal(inp: Obj): Promise<Json> {
     sourceRefNameHash: fields['sourceRefName'] !== undefined ? await refNameHash(keys, fields['sourceRefName']) : undefined,
   }
   if (docType === 'patch') {
-    delete out['baseRefNameHash']
-    delete out['sourceRefNameHash']
-    if (doc.baseRefNameHash !== undefined) out['baseRefNameHash'] = bytesToHex(doc.baseRefNameHash)
-    if (doc.sourceRefNameHash !== undefined) out['sourceRefNameHash'] = bytesToHex(doc.sourceRefNameHash)
+    for (const [k, h] of [['baseRefNameHash', doc.baseRefNameHash], ['sourceRefNameHash', doc.sourceRefNameHash]] as const) {
+      delete out[k]
+      if (h !== undefined) out[k] = bytesToHex(h)
+    }
   }
   try {
     const { enc } = await sealDocWithNonce(keys, doc, fields as DocFields, hex(inp, 'nonce'))

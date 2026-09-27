@@ -8,6 +8,7 @@ use serde_json::json;
 use crate::common::Session;
 use crate::context::Ctx;
 use crate::LabelCommand;
+use forge_core::rules::v2::Visibility;
 
 /// Dispatch a `label` subcommand.
 pub async fn run(ctx: &Ctx, cmd: &LabelCommand) -> Result<()> {
@@ -61,7 +62,7 @@ async fn define(
     let s = Session::open(ctx, repo).await?;
     let verb = if retired { "Retire" } else { "Define" };
     // docs/security/private-repos.md §7: label names and descriptions stay plaintext
-    let plaintext = if s.repo.visibility == forge_core::rules::v2::Visibility::Private {
+    let plaintext = if s.repo.visibility == Visibility::Private {
         "; note: label names and descriptions are not encrypted in this release"
     } else {
         ""

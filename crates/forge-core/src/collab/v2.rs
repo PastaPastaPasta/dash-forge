@@ -19,6 +19,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -940,7 +941,7 @@ impl<'a> Collab<'a> {
     }
 
     /// The keys of private `repo` as the signer holds them, loaded once per `Collab`.
-    pub async fn keyring(&self, repo: &RepoRef) -> Result<std::sync::Arc<Keyring>> {
+    pub async fn keyring(&self, repo: &RepoRef) -> Result<Arc<Keyring>> {
         let (identity, bridge) = self.signer.ok_or_else(|| {
             Error::Config(format!(
                 "{} is private: reading it needs your identity (its encryption key)",
@@ -973,11 +974,8 @@ impl<'a> Collab<'a> {
         }
         let kr = self.keyring(repo).await?;
         let w = kr.writer(repo)?;
-        let keys = w
-            .epoch_keys(w.write_epoch())
-            .expect("the write epoch's keys are held");
         let owner = platform::decode_identifier(&self.signer_id()?)?;
-        super::private::seal_props(keys, doc_kind(kind), owner, props)
+        super::private::seal_props(w.write_keys(), doc_kind(kind), owner, props)
     }
 
     /// A fetched document of `kind` as the public codecs read it: itself in a public repo,
@@ -988,7 +986,7 @@ impl<'a> Collab<'a> {
         kind: ContentKind,
         d: FetchedDocument,
     ) -> Result<Option<FetchedDocument>> {
-        if !well_formed(kind, &d, Self::visibility(repo)) {
+        if !well_formed(kind, &d, repo.visibility) {
             return Ok(None);
         }
         let keys = self.private_keys(repo).await?;
@@ -997,7 +995,7 @@ impl<'a> Collab<'a> {
 
     /// The reader's keys when `repo` is private (`None` for a public one). A reader with no key
     /// at all is told why (E306 / E307), rather than shown nothing with everything hidden.
-    async fn private_keys(&self, repo: &RepoRef) -> Result<Option<std::sync::Arc<Keyring>>> {
+    async fn private_keys(&self, repo: &RepoRef) -> Result<Option<Arc<Keyring>>> {
         if repo.visibility != Visibility::Private {
             return Ok(None);
         }
@@ -1031,7 +1029,7 @@ impl<'a> Collab<'a> {
         let total = docs.len();
         let out: Vec<FetchedDocument> = docs
             .into_iter()
-            .filter(|d| well_formed(kind, d, Self::visibility(repo)))
+            .filter(|d| well_formed(kind, d, repo.visibility))
             .filter_map(|d| open_with(keys.as_deref(), kind, d))
             .collect();
         let hidden = total - out.len();
@@ -1077,10 +1075,6 @@ impl<'a> Collab<'a> {
             FieldValue::identifier(platform::decode_identifier(repo.id())?),
         );
         Ok(props)
-    }
-
-    fn visibility(repo: &RepoRef) -> Visibility {
-        repo.visibility
     }
 
     /// Create one document of `repo` (its `repoId` added) in `contract`, as the signer.
@@ -1177,7 +1171,8 @@ impl<'a> Collab<'a> {
     }
 
     /// The newest `limit` well-formed issues or patches of `repo` (`$createdAt`
-    /// descending), and how many malformed ones were skipped on the way.
+    /// descending), and how many were hidden on the way (malformed, or not readable to this
+    /// reader).
     async fn newest(
         &self,
         repo: &RepoRef,
@@ -1355,20 +1350,20 @@ impl<'a> Collab<'a> {
         opened_at: u64,
     ) -> Result<rules::MergeBaseTips> {
         let core = self.core_contract(repo).await?;
+        let scope = repo.scope()?;
         if repo.visibility == Visibility::Private {
             let kr = self.keyring(repo).await?;
             return crate::refs::read_private_merge_base(
                 self.client,
                 &core,
-                &repo.scope()?,
+                &scope,
                 &kr,
                 base_ref_name,
                 opened_at,
             )
             .await;
         }
-        crate::refs::read_merge_base(self.client, &core, &repo.scope()?, base_ref_name, opened_at)
-            .await
+        crate::refs::read_merge_base(self.client, &core, &scope, base_ref_name, opened_at).await
     }
 
     /// A pull request's state (§3 fold; a merge counts once its oid has been a tip of a base

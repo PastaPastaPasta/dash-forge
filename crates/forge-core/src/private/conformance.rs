@@ -15,6 +15,7 @@ use super::keys::{sha256, EpochKey, EpochKeys};
 use super::pack::{self, PackHeader};
 use super::tlv::Fields;
 use super::{wrap, PrivateError};
+use crate::platform::FieldValue;
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -59,6 +60,10 @@ fn recode_ids(value: &Value, key: Option<&str>, f: &dyn Fn(&str) -> String) -> V
 }
 
 fn h32(s: &str) -> [u8; 32] {
+    hex::decode(s).unwrap().try_into().unwrap()
+}
+
+fn nonce12(s: &str) -> [u8; 12] {
     hex::decode(s).unwrap().try_into().unwrap()
 }
 
@@ -151,8 +156,7 @@ const COLLAB_BYTES: &[&str] = &[
     "enc",
 ];
 
-fn collab_field(name: &str, v: &Value) -> crate::platform::FieldValue {
-    use crate::platform::FieldValue;
+fn collab_field(name: &str, v: &Value) -> FieldValue {
     match v {
         Value::String(h) if COLLAB_BYTES.contains(&name) => {
             FieldValue::bytes(hex::decode(h).expect("hex"))
@@ -164,8 +168,7 @@ fn collab_field(name: &str, v: &Value) -> crate::platform::FieldValue {
     }
 }
 
-fn collab_json(v: &crate::platform::FieldValue) -> Value {
-    use crate::platform::FieldValue;
+fn collab_json(v: &FieldValue) -> Value {
     match v {
         FieldValue::Bytes(b) => json!(hex::encode(b)),
         FieldValue::Bytes32(b) | FieldValue::Identifier(b) => json!(hex::encode(b)),
@@ -398,7 +401,7 @@ fn run(v: &Vector) -> Value {
         "private_doc_seal" => {
             let i: DocSealIn = input(v);
             let keys = EpochKeys::derive(&h32(&i.repo_id), i.doc.epoch, &key(&i.key));
-            let nonce: [u8; 12] = hex::decode(&i.nonce).unwrap().try_into().unwrap();
+            let nonce = nonce12(&i.nonce);
             let anchor = i.anchor.unwrap_or(false);
             match doc::seal_with_nonce(&keys, &i.doc, &i.fields, anchor, nonce) {
                 Ok(enc) => {
@@ -416,19 +419,18 @@ fn run(v: &Vector) -> Value {
         "private_collab_seal" => {
             let i: CollabSealIn = input(v);
             let keys = EpochKeys::derive(&h32(&i.repo_id), i.epoch, &key(&i.key));
-            let kind = i.doc_type;
+            let nonce = nonce12(&i.nonce);
+            let owner = h32(&i.owner_id);
             let props = i
                 .props
-                .iter()
-                .map(|(k, val)| (k.clone(), collab_field(k, val)))
+                .into_iter()
+                .map(|(k, val)| {
+                    let f = collab_field(&k, &val);
+                    (k, f)
+                })
                 .collect();
-            let nonce: [u8; 12] = hex::decode(&i.nonce).unwrap().try_into().unwrap();
             match crate::collab::private::seal_props_with_nonce(
-                &keys,
-                kind,
-                h32(&i.owner_id),
-                props,
-                nonce,
+                &keys, i.doc_type, owner, props, nonce,
             ) {
                 Ok(sealed) => json!({
                     "props": sealed
