@@ -1376,6 +1376,7 @@ dependencies = [
  "forge-import",
  "hex",
  "qrcode",
+ "rand 0.8.8",
  "reqwest",
  "rpassword",
  "serde",

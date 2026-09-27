@@ -53,7 +53,7 @@ use dash_sdk::platform::fetch_current_no_parameters::FetchCurrent;
 use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 use dash_sdk::platform::transition::put_identity::PutIdentity;
 use dash_sdk::platform::types::identity::PublicKeyHash;
-use dash_sdk::platform::Fetch;
+use dash_sdk::platform::{Fetch, Identifier};
 use simple_signer::SingleKeySigner;
 use zeroize::Zeroizing;
 
@@ -64,8 +64,6 @@ use crate::network::Network;
 
 /// Duffs per DASH.
 pub const DUFFS_PER_DASH: u64 = 100_000_000;
-/// Credits per duff (1 DASH = 1e11 credits = 1e8 duffs).
-pub const CREDITS_PER_DUFF: u64 = 1_000;
 /// The L1 fee an asset lock pays, per input (duffs).
 const ASSET_LOCK_FEE_PER_INPUT: u64 = 1_000;
 /// The most inputs an asset lock may spend (Platform's `max_asset_lock_transaction_inputs`).
@@ -79,7 +77,7 @@ impl KeyRing {
         self.0
             .push(SingleKeySigner::from_private_key(PrivateKey::new(
                 *secret,
-                dashcore_network(network),
+                super::to_dashcore(network),
             )));
     }
 
@@ -150,36 +148,11 @@ pub const FIRST_LIMITED_KEY_ID: u32 = 5;
 // Keys and mnemonics
 // ---------------------------------------------------------------------------------------
 
-fn dashcore_network(network: &Network) -> DashcoreNetwork {
-    super::to_dashcore(network)
-}
-
 fn coin_type(network: &Network) -> u32 {
     if matches!(network, Network::Mainnet) {
         5
     } else {
         1
-    }
-}
-
-fn purpose_name(p: Purpose) -> &'static str {
-    match p {
-        Purpose::AUTHENTICATION => "AUTHENTICATION",
-        Purpose::ENCRYPTION => "ENCRYPTION",
-        Purpose::DECRYPTION => "DECRYPTION",
-        Purpose::TRANSFER => "TRANSFER",
-        Purpose::SYSTEM => "SYSTEM",
-        Purpose::VOTING => "VOTING",
-        Purpose::OWNER => "OWNER",
-    }
-}
-
-fn level_name(l: SecurityLevel) -> &'static str {
-    match l {
-        SecurityLevel::MASTER => "MASTER",
-        SecurityLevel::CRITICAL => "CRITICAL",
-        SecurityLevel::HIGH => "HIGH",
-        SecurityLevel::MEDIUM => "MEDIUM",
     }
 }
 
@@ -215,7 +188,7 @@ fn derive(mnemonic: &Secret, path: &str, network: &Network) -> Result<Derived> {
     let m = Mnemonic::from_phrase(mnemonic.expose())
         .map_err(|_| Error::Config("the recovery phrase is not valid".into()))?;
     let seed = Zeroizing::new(m.to_seed(""));
-    let net = dashcore_network(network);
+    let net = super::to_dashcore(network);
     let secp = Secp256k1::new();
     let master = ExtendedPrivKey::new_master(net, seed.as_ref())
         .map_err(|e| Error::Config(format!("deriving keys: {e}")))?;
@@ -242,11 +215,16 @@ fn asset_lock_path(network: &Network) -> String {
 }
 
 fn wif(secret: &SecretKey, network: &Network) -> Secret {
-    Secret::new(PrivateKey::new(*secret, dashcore_network(network)).to_wif())
+    Secret::new(PrivateKey::new(*secret, super::to_dashcore(network)).to_wif())
 }
 
 fn p2pkh_address(public: &PublicKey, network: &Network) -> String {
-    Address::p2pkh(public, dashcore_network(network)).to_string()
+    Address::p2pkh(public, super::to_dashcore(network)).to_string()
+}
+
+/// The public key of `secret`.
+fn public_of(secret: &SecretKey) -> PublicKey {
+    PublicKey::new(secret.public_key(&Secp256k1::new()))
 }
 
 /// A fresh random secp256k1 key (OS RNG).
@@ -323,8 +301,8 @@ impl NewIdentityKeys {
             id,
             name: (*name).to_string(),
             key_type: "ECDSA_SECP256K1".into(),
-            purpose: purpose_name(*p).into(),
-            security_level: level_name(*l).into(),
+            purpose: super::purpose_name(*p).into(),
+            security_level: super::level_name(*l).into(),
             private_key_wif: wif(&d.secret, &self.network),
             private_key_hex: Secret::new(hex::encode(d.secret.secret_bytes())),
             public_key_hex: hex::encode(d.public.to_bytes()),
@@ -380,7 +358,7 @@ impl FreshKey {
     }
 
     fn public(&self) -> PublicKey {
-        PublicKey::new(self.secret.public_key(&Secp256k1::new()))
+        public_of(&self.secret)
     }
 }
 
@@ -395,18 +373,34 @@ pub struct LimitedKeySpec {
     pub group: String,
 }
 
-fn limited_public_key(id: u32, key: &FreshKey, spec: &LimitedKeySpec) -> Result<IdentityPublicKey> {
-    let group = parse_id(&spec.group, "contract group id")?;
-    let v0 = IdentityPublicKeyV0 {
+fn key_v0(
+    id: u32,
+    purpose: Purpose,
+    level: SecurityLevel,
+    public: &PublicKey,
+    bounds: Option<ContractBounds>,
+) -> IdentityPublicKeyV0 {
+    IdentityPublicKeyV0 {
         id,
-        purpose: Purpose::AUTHENTICATION,
-        security_level: SecurityLevel::HIGH,
-        contract_bounds: Some(ContractBounds::ContractGroup { id: group }),
+        purpose,
+        security_level: level,
+        contract_bounds: bounds,
         key_type: KeyType::ECDSA_SECP256K1,
         read_only: false,
-        data: BinaryData::new(key.public().to_bytes()),
+        data: BinaryData::new(public.to_bytes()),
         disabled_at: None,
-    };
+    }
+}
+
+fn limited_public_key(id: u32, key: &FreshKey, spec: &LimitedKeySpec) -> Result<IdentityPublicKey> {
+    let group = parse_id(&spec.group, "contract group id")?;
+    let v0 = key_v0(
+        id,
+        Purpose::AUTHENTICATION,
+        SecurityLevel::HIGH,
+        &key.public(),
+        Some(ContractBounds::ContractGroup { id: group }),
+    );
     Ok(IdentityPublicKeyV1::from_v0_with_limits(
         v0,
         Some(spec.budget_credits),
@@ -421,17 +415,7 @@ fn plain_public_key(
     l: SecurityLevel,
     public: &PublicKey,
 ) -> IdentityPublicKey {
-    IdentityPublicKeyV0 {
-        id,
-        purpose: p,
-        security_level: l,
-        contract_bounds: None,
-        key_type: KeyType::ECDSA_SECP256K1,
-        read_only: false,
-        data: BinaryData::new(public.to_bytes()),
-        disabled_at: None,
-    }
-    .into()
+    key_v0(id, p, l, public, None).into()
 }
 
 // ---------------------------------------------------------------------------------------
@@ -496,14 +480,7 @@ pub struct SignedAssetLock {
 /// Build and sign a type-8 asset lock that spends `utxos` (all paid to the deposit key) into
 /// one credit output controlled by that same key.
 pub fn build_asset_lock(keys: &NewIdentityKeys, utxos: &[VerifiedUtxo]) -> Result<SignedAssetLock> {
-    build_asset_lock_with(&keys.asset_lock.secret, &keys.asset_lock.public, utxos)
-}
-
-fn build_asset_lock_with(
-    secret: &SecretKey,
-    public: &PublicKey,
-    utxos: &[VerifiedUtxo],
-) -> Result<SignedAssetLock> {
+    let (secret, public) = (&keys.asset_lock.secret, &keys.asset_lock.public);
     if utxos.is_empty() {
         return Err(Error::Config("no funds to lock".into()));
     }
@@ -620,12 +597,15 @@ fn to_sdk_proof(proof: &LockProof) -> Result<AssetLockProof> {
     })
 }
 
+fn identifier_of(proof: &AssetLockProof) -> Result<Identifier> {
+    proof
+        .create_identifier()
+        .map_err(|e| Error::Config(format!("identity id from the asset lock: {e}")))
+}
+
 /// The identity id an asset lock will create (base58).
 pub fn identity_id_for(proof: &LockProof) -> Result<String> {
-    Ok(to_sdk_proof(proof)?
-        .create_identifier()
-        .map_err(|e| Error::Config(format!("identity id from the asset lock: {e}")))?
-        .to_string(Encoding::Base58))
+    Ok(identifier_of(&to_sdk_proof(proof)?)?.to_string(Encoding::Base58))
 }
 
 // ---------------------------------------------------------------------------------------
@@ -730,7 +710,7 @@ impl PlatformClient {
     /// The identity that holds a key controlled by `wif` (found by the key's hash), if any.
     pub async fn identity_by_key(&self, wif: &str) -> Result<Option<LoadedIdentity>> {
         let secret = secret_from_wif(wif, self.network())?;
-        let public = PublicKey::new(secret.public_key(&Secp256k1::new()));
+        let public = public_of(&secret);
         let hash = PublicKeyHash(public.pubkey_hash().to_byte_array());
         retry_transient_read("fetch identity by key", || {
             Identity::fetch(self.sdk(), hash.clone())
@@ -742,18 +722,16 @@ impl PlatformClient {
 
     /// Register a new identity from a proven asset lock: the canonical key set plus a limited
     /// key (`limited`, id [`FIRST_LIMITED_KEY_ID`]) in the same IdentityCreate, so no second
-    /// signature is needed (ux-dx-spec §2.2). Returns the identity id.
+    /// signature is needed (ux-dx-spec §2.2).
     pub async fn create_identity(
         &self,
         keys: &NewIdentityKeys,
         proof: &LockProof,
         limited: &FreshKey,
         spec: &LimitedKeySpec,
-    ) -> Result<String> {
+    ) -> Result<()> {
         let sdk_proof = to_sdk_proof(proof)?;
-        let id = sdk_proof
-            .create_identifier()
-            .map_err(|e| Error::Config(format!("identity id from the asset lock: {e}")))?;
+        let id = identifier_of(&sdk_proof)?;
         let mut public_keys = BTreeMap::new();
         let mut signer = KeyRing::default();
         for (kid, p, l, _, d) in &keys.canonical {
@@ -767,7 +745,7 @@ impl PlatformClient {
         debug_assert!(public_keys.len() <= MAX_KEYS_IN_CREATION);
         let identity = Identity::new_with_id_and_keys(id, public_keys, self.sdk().version())
             .map_err(|e| sdk_err("building the identity", e))?;
-        let lock_key = PrivateKey::new(keys.asset_lock.secret, dashcore_network(self.network()));
+        let lock_key = PrivateKey::new(keys.asset_lock.secret, super::to_dashcore(self.network()));
         identity
             .put_to_platform_and_wait_for_response_with_private_key(
                 self.sdk(),
@@ -778,7 +756,7 @@ impl PlatformClient {
             )
             .await
             .map_err(|e| sdk_err("registering the identity", e))?;
-        Ok(id.to_string(Encoding::Base58))
+        Ok(())
     }
 
     /// One IdentityUpdate signed by the master key (`master_wif`): add `add` (fresh keys with
@@ -792,13 +770,9 @@ impl PlatformClient {
         disable: &[u32],
     ) -> Result<Vec<u32>> {
         let id = parse_id(identity_id, "identity id")?;
-        let mut identity =
-            retry_transient_read("fetch identity", || Identity::fetch(self.sdk(), id))
-                .await
-                .map_err(|e| sdk_err(&format!("fetching identity {identity_id}"), e))?
-                .ok_or(Error::NotFound)?;
+        let mut identity = self.fetch_identity(identity_id).await?.0;
         let master_secret = secret_from_wif(master_wif.expose(), self.network())?;
-        let master_public = PublicKey::new(master_secret.public_key(&Secp256k1::new())).to_bytes();
+        let master_public = public_of(&master_secret).to_bytes();
         let master = identity
             .public_keys()
             .values()
@@ -888,17 +862,13 @@ impl PlatformClient {
         // The trusted context provider verifies proofs only for contracts it was given:
         // fetching DPNS through `fetch_contract` registers it.
         self.fetch_contract(DPNS_CONTRACT_ID).await?;
-        let id = parse_id(&bridge.identity_id, "identity id")?;
-        let identity = retry_transient_read("fetch identity", || Identity::fetch(self.sdk(), id))
-            .await
-            .map_err(|e| sdk_err("fetching the identity", e))?
-            .ok_or(Error::NotFound)?;
+        let identity = self.fetch_identity(&bridge.identity_id).await?.0;
         let (on_chain, secret) = ["CRITICAL", "HIGH"]
             .iter()
             .filter_map(|lvl| bridge.auth_key(lvl))
             .find_map(|k| {
                 let s = secret_from_wif(k.private_key_wif.expose(), self.network()).ok()?;
-                let public = PublicKey::new(s.public_key(&Secp256k1::new())).to_bytes();
+                let public = public_of(&s).to_bytes();
                 identity
                     .public_keys()
                     .values()
@@ -967,6 +937,14 @@ impl LoadedIdentity {
             ContractBounds::ContractGroup { id } => Some(id.to_string(Encoding::Base58)),
             _ => None,
         }
+    }
+
+    /// The id of the live key `bridge` signs documents with, if this identity has it.
+    pub fn signing_key_id(&self, bridge: &BridgeIdentity, network: &Network) -> Option<u32> {
+        bridge
+            .doc_op_key()
+            .ok()
+            .and_then(|k| self.key_id_for(k.private_key_wif.expose(), network))
     }
 
     /// The id of the live key `wif` controls, if this identity has one.
@@ -1051,9 +1029,7 @@ pub fn dpns_normalize(label: &str) -> String {
 /// The public key (hex) a WIF controls, for display and matching.
 pub fn public_key_hex(wif: &str, network: &Network) -> Result<String> {
     let secret = secret_from_wif(wif, network)?;
-    Ok(hex::encode(
-        PublicKey::new(secret.public_key(&Secp256k1::new())).to_bytes(),
-    ))
+    Ok(hex::encode(public_of(&secret).to_bytes()))
 }
 
 #[cfg(test)]

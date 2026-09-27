@@ -79,10 +79,7 @@ impl Envelope {
 
 /// Whether `raw` is a sealed file (as opposed to plaintext JSON).
 pub fn is_sealed(raw: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(raw)
-        .ok()
-        .and_then(|v| v.get("dashForgeSealed").cloned())
-        .is_some()
+    serde_json::from_str::<serde_json::Value>(raw).is_ok_and(|v| v.get("dashForgeSealed").is_some())
 }
 
 fn derive_key(
@@ -101,13 +98,18 @@ fn derive_key(
     Ok(key)
 }
 
-/// Seal `plaintext` under `passphrase`, returning the file's JSON text.
-pub fn seal(plaintext: &[u8], passphrase: &str) -> Result<String> {
+fn check_len(passphrase: &str) -> Result<()> {
     if passphrase.chars().count() < MIN_PASSPHRASE_LEN {
         return Err(Error::Config(format!(
             "the passphrase must be at least {MIN_PASSPHRASE_LEN} characters"
         )));
     }
+    Ok(())
+}
+
+/// Seal `plaintext` under `passphrase`, returning the file's JSON text.
+pub fn seal(plaintext: &[u8], passphrase: &str) -> Result<String> {
+    check_len(passphrase)?;
     let mut salt = [0u8; 16];
     let mut nonce = [0u8; 24];
     rand::rngs::OsRng.fill_bytes(&mut salt);
@@ -194,11 +196,7 @@ pub fn passphrase(what: &str, confirm: bool) -> Result<Secret> {
     };
     let first = Zeroizing::new(prompt(&format!("Passphrase for {what}: "))?);
     if confirm {
-        if first.chars().count() < MIN_PASSPHRASE_LEN {
-            return Err(Error::Config(format!(
-                "the passphrase must be at least {MIN_PASSPHRASE_LEN} characters"
-            )));
-        }
+        check_len(&first)?;
         let second = Zeroizing::new(prompt("Repeat the passphrase: ")?);
         if *first != *second {
             return Err(Error::Config("the two passphrases differ".into()));

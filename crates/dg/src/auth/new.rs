@@ -36,7 +36,7 @@ use forge_core::platform::PlatformClient;
 use forge_core::user_error::{codes, UserError};
 
 use super::{
-    check_group, dash_amount, expiry_text, key_spec, read_mnemonic, register_limited_key, store,
+    check_group, dash_amount, expiry_text, key_spec, read_mnemonic, register_and_store, store,
     KeyLimitArgs, StorageArgs, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS,
 };
 use crate::context::Ctx;
@@ -185,21 +185,8 @@ fn backup_ceremony(ctx: &Ctx, words: &Secret, skip_check: bool) -> Result<()> {
             .fix("run it in a terminal, or pass --skip-backup-check (and --backup-file) for automation")
             .into());
     }
-    let mut positions = [0usize; 3];
-    let mut seed = [0u8; 3];
-    getrandom_fill(&mut seed);
-    let mut picked = std::collections::BTreeSet::new();
-    let mut i = 0;
-    let mut salt = 0u8;
-    while picked.len() < 3 {
-        let p = usize::from(seed[i % 3].wrapping_add(salt)) % list.len();
-        picked.insert(p);
-        i += 1;
-        salt = salt.wrapping_add(7);
-    }
-    for (slot, p) in positions.iter_mut().zip(picked) {
-        *slot = p;
-    }
+    let mut positions = rand::seq::index::sample(&mut rand::rngs::OsRng, list.len(), 3).into_vec();
+    positions.sort_unstable();
     eprintln!("Check your copy: type the words it asks for (hidden as you type).");
     for p in positions {
         for attempt in 0..3 {
@@ -221,25 +208,6 @@ fn backup_ceremony(ctx: &Ctx, words: &Secret, skip_check: bool) -> Result<()> {
         "  ✓ backup checked. Keep the 12 words offline; do everything else with limited keys."
     );
     Ok(())
-}
-
-fn getrandom_fill(buf: &mut [u8]) {
-    use std::io::Read as _;
-    // /dev/urandom on Unix; on other platforms fall back to the time (only picks quiz positions).
-    if std::fs::File::open("/dev/urandom")
-        .and_then(|mut f| f.read_exact(buf))
-        .is_err()
-    {
-        let t = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.subsec_nanos());
-        for (i, b) in buf.iter_mut().enumerate() {
-            #[allow(clippy::cast_possible_truncation)]
-            {
-                *b = (t >> (i * 8)) as u8;
-            }
-        }
-    }
 }
 
 /// Wait until the deposit address holds `min_duffs`, verifying every output from its raw
@@ -542,13 +510,7 @@ fn write_backup(
     pass: Option<&Secret>,
     first: bool,
 ) -> Result<()> {
-    let text = keys.to_bridge(identity_id).to_json_with_secrets();
-    let bytes = match pass {
-        Some(p) => zeroize::Zeroizing::new(
-            forge_core::sealed::seal(text.expose().as_bytes(), p.expose())?.into_bytes(),
-        ),
-        None => zeroize::Zeroizing::new(text.expose().as_bytes().to_vec()),
-    };
+    let bytes = super::sealed_or_clear(&keys.to_bridge(identity_id).to_json_with_secrets(), pass)?;
     if first {
         forge_core::keystore::create_private_file(path, &bytes)?;
     } else {
@@ -662,20 +624,15 @@ async fn register(
         let replace = identity
             .is_limited_key(FIRST_LIMITED_KEY_ID)
             .then_some(FIRST_LIMITED_KEY_ID);
-        let mut stored = None;
-        let (id, _) = register_limited_key(ctx, client, &master, spec, replace, &mut |t| {
-            stored = Some(store::store(&network, identity_id, t, insecure)?);
-            Ok(())
-        })
-        .await?;
-        return Ok((id, stored.context("the key was not stored")?));
+        return register_and_store(ctx, client, &master, spec, replace, insecure).await;
     }
     let limited = FreshKey::generate(ctx.network());
-    let dfk1 = Secret::new(format!(
-        "{}{network}:{identity_id}:{FIRST_LIMITED_KEY_ID}:{}",
-        forge_core::keystore::DFK1_PREFIX,
-        limited.wif().expose()
-    ));
+    let dfk1 = forge_core::keystore::dfk1(
+        &network,
+        identity_id,
+        FIRST_LIMITED_KEY_ID,
+        limited.wif().expose(),
+    );
     // Stored before the identity exists: an interruption never leaves a key nobody holds.
     let stored = store::store(&network, identity_id, &dfk1, insecure)?;
     say(ctx, "  registering the identity…");

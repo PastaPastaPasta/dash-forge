@@ -135,6 +135,13 @@ pub const DFK1_PREFIX: &str = "dfk1:";
 pub const INLINE_KEY_ON_ARGV: &str = "an inline dfk1: key on the command line is visible to \
     other local users (ps) and kept in shell history; set DASH_FORGE_KEY instead";
 
+/// The `dfk1:<network>:<identityId>:<keyId>:<wif>` value of one key.
+pub fn dfk1(network: &str, identity_id: &str, key_id: u32, wif: &str) -> Secret {
+    Secret::new(format!(
+        "{DFK1_PREFIX}{network}:{identity_id}:{key_id}:{wif}"
+    ))
+}
+
 /// Whether a `DASH_FORGE_KEY` / `--identity` value is an inline `dfk1:` key, not a path.
 pub fn is_inline_key(source: &Path) -> bool {
     source.to_str().is_some_and(|s| s.starts_with(DFK1_PREFIX))
@@ -384,13 +391,12 @@ impl BridgeIdentity {
     /// The `dfk1:` form of key `key_id` of this identity.
     pub fn to_dfk1(&self, key_id: u32) -> Option<Secret> {
         let k = self.identity_keys.iter().find(|k| k.id == key_id)?;
-        Some(Secret::new(format!(
-            "{DFK1_PREFIX}{}:{}:{}:{}",
-            self.network,
-            self.identity_id,
+        Some(dfk1(
+            &self.network,
+            &self.identity_id,
             k.id,
-            k.private_key_wif.expose()
-        )))
+            k.private_key_wif.expose(),
+        ))
     }
 
     /// Parse an inline limited key `dfk1:<network>:<identityId>:<keyId>:<wif>` into an

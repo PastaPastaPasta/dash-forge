@@ -7,8 +7,8 @@ use clap::Subcommand;
 use serde_json::json;
 
 use super::{
-    dash_amount, expiry_text, key_spec, master_identity, register_limited_key, KeyLimitArgs,
-    StorageArgs, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS, KEY_UPDATE_ESTIMATE_CREDITS,
+    dash_amount, expiry_text, key_spec, master_identity, KeyLimitArgs, StorageArgs,
+    CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS,
 };
 use crate::context::Ctx;
 use crate::fmt::credits_to_dash;
@@ -88,10 +88,7 @@ async fn list(ctx: &Ctx) -> Result<()> {
         .fetch_identity(&bridge.identity_id)
         .await
         .context("fetching the signing identity")?;
-    let mine = bridge
-        .doc_op_key()
-        .ok()
-        .and_then(|k| identity.key_id_for(k.private_key_wif.expose(), ctx.network()));
+    let mine = identity.signing_key_id(&bridge, ctx.network());
     let group = ctx.target.v2.as_ref().map(|f| f.group.clone());
     let mut rows = Vec::new();
     for k in identity.public_keys() {
@@ -166,7 +163,6 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
     let current = ctx.load_bridge()?;
     let client = ctx.connect().await?;
     let master = master_identity(ctx, args.master.as_deref(), &current.identity_id)?;
-    let price = crate::fmt::dash_usd_price();
     if args.encryption {
         // Every identity dg creates already has one (key #4, from the recovery words). Adding
         // another would register a key whose private half nothing keeps yet.
@@ -198,30 +194,17 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
         };
     }
     let spec = key_spec(ctx, &args.limits, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS)?;
-    if !ctx.json {
-        eprintln!(
-            "Adding a limited key to {}: {} DASH, only on Dash Forge, expires {}; {}",
-            master.identity_id,
-            dash_amount(credits_to_dash(spec.budget_credits)),
-            expiry_text(spec.expires_at_ms),
-            crate::fmt::cost_line(KEY_UPDATE_ESTIMATE_CREDITS, price)
-        );
-    }
+    super::explain_new_key(ctx, &master.identity_id, &spec, "for this computer");
     ctx.confirm_or_cancel("Add the key?")?;
-    let network = ctx.network_label();
-    let insecure = args.storage.insecure_plaintext;
-    let mut stored = None;
-    let (id, _) = register_limited_key(ctx, &client, &master, &spec, args.replace, &mut |t| {
-        stored = Some(super::store::store(
-            &network,
-            &master.identity_id,
-            t,
-            insecure,
-        )?);
-        Ok(())
-    })
+    let (id, stored) = super::register_and_store(
+        ctx,
+        &client,
+        &master,
+        &spec,
+        args.replace,
+        args.storage.insecure_plaintext,
+    )
     .await?;
-    let stored = stored.context("the key was not stored")?;
     super::store::set_default(ctx, &master.identity_id, &stored.source())?;
     ctx.emit(
         json!({
@@ -272,14 +255,7 @@ async fn disable(ctx: &Ctx, id: u32, master: Option<&std::path::Path>, force: bo
         "Disable key #{id} of {}? (one identity update)",
         current.identity_id
     ))?;
-    client
-        .update_identity_keys(
-            &current.identity_id,
-            &full.master_key().context("no master key")?.private_key_wif,
-            &[],
-            &[id],
-        )
-        .await?;
+    super::disable_key(&client, &full, id).await?;
     ctx.emit(json!({ "status": "disabled", "keyId": id }), || {
         println!("✓ key #{id} disabled; it can no longer sign");
     });

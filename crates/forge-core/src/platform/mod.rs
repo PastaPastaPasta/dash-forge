@@ -191,23 +191,8 @@ impl LoadedIdentity {
             .map(|k| IdentityKeyInfo {
                 id: k.id(),
                 // The names a bridge identity file uses, spelled out (not rs-dpp's Debug).
-                purpose: match k.purpose() {
-                    Purpose::AUTHENTICATION => "AUTHENTICATION",
-                    Purpose::ENCRYPTION => "ENCRYPTION",
-                    Purpose::DECRYPTION => "DECRYPTION",
-                    Purpose::TRANSFER => "TRANSFER",
-                    Purpose::SYSTEM => "SYSTEM",
-                    Purpose::VOTING => "VOTING",
-                    Purpose::OWNER => "OWNER",
-                }
-                .to_string(),
-                security_level: match k.security_level() {
-                    SecurityLevel::MASTER => "MASTER",
-                    SecurityLevel::CRITICAL => "CRITICAL",
-                    SecurityLevel::HIGH => "HIGH",
-                    SecurityLevel::MEDIUM => "MEDIUM",
-                }
-                .to_string(),
+                purpose: purpose_name(k.purpose()).to_string(),
+                security_level: level_name(k.security_level()).to_string(),
                 key_type: match k.key_type() {
                     KeyType::ECDSA_SECP256K1 => "ECDSA_SECP256K1",
                     KeyType::BLS12_381 => "BLS12_381",
@@ -238,6 +223,29 @@ impl LoadedIdentity {
             total_budget: k.total_budget(),
             expires_at: k.expires_at(),
         })
+    }
+}
+
+/// A key purpose as a bridge identity file spells it.
+pub(crate) fn purpose_name(p: Purpose) -> &'static str {
+    match p {
+        Purpose::AUTHENTICATION => "AUTHENTICATION",
+        Purpose::ENCRYPTION => "ENCRYPTION",
+        Purpose::DECRYPTION => "DECRYPTION",
+        Purpose::TRANSFER => "TRANSFER",
+        Purpose::SYSTEM => "SYSTEM",
+        Purpose::VOTING => "VOTING",
+        Purpose::OWNER => "OWNER",
+    }
+}
+
+/// A security level as a bridge identity file spells it.
+pub(crate) fn level_name(l: SecurityLevel) -> &'static str {
+    match l {
+        SecurityLevel::MASTER => "MASTER",
+        SecurityLevel::CRITICAL => "CRITICAL",
+        SecurityLevel::HIGH => "HIGH",
+        SecurityLevel::MEDIUM => "MEDIUM",
     }
 }
 

@@ -245,11 +245,7 @@ pub fn key_spec(
     default_budget: f64,
     default_days: u64,
 ) -> Result<LimitedKeySpec> {
-    let forge = ctx.target.v2.as_ref().ok_or_else(|| {
-        anyhow::Error::from(forge_core::Error::V2NotDeployed {
-            network: ctx.network_label(),
-        })
-    })?;
+    let forge = ctx.target.require_v2()?;
     let days = match &args.expires {
         Some(s) => parse_days(s)?,
         None => default_days,
@@ -266,16 +262,12 @@ pub fn key_spec(
 /// "only on Dash Forge" is true only while the group is just forge-core and forge-collab. (The
 /// group id comes from the bundled deployment file; this checks it against state.)
 pub async fn check_group(ctx: &Ctx, client: &PlatformClient, group: &str) -> Result<()> {
-    let forge = ctx
-        .target
-        .v2
-        .as_ref()
-        .context("forge-v2 is not deployed on this network")?;
+    let forge = ctx.target.require_v2()?;
     let members = client
         .contract_group_members(group)
         .await
         .context("checking the forge contract group on chain")?;
-    let mut have = members.contracts.clone();
+    let mut have = members.contracts;
     have.sort();
     let mut want = vec![forge.core.clone(), forge.collab.clone()];
     want.sort();
@@ -382,7 +374,7 @@ async fn identity_from_words(
 /// optionally disabling `replace`, and verify it on chain. `persist` receives the key (as a
 /// `dfk1:` source text) **before** anything is broadcast, so a failure to store it stops the
 /// command before a key nobody holds is registered; it is called again if the key lands under
-/// another id than predicted (a concurrent update).
+/// another id than predicted (a concurrent update). Returns the key's id.
 pub async fn register_limited_key(
     ctx: &Ctx,
     client: &PlatformClient,
@@ -390,7 +382,7 @@ pub async fn register_limited_key(
     spec: &LimitedKeySpec,
     replace: Option<u32>,
     persist: &mut dyn FnMut(&Secret) -> Result<()>,
-) -> Result<(u32, Secret)> {
+) -> Result<u32> {
     check_group(ctx, client, &spec.group).await?;
     let before = client.fetch_identity(&master.identity_id).await?;
     let disable: Vec<u32> = match replace {
@@ -404,15 +396,8 @@ pub async fn register_limited_key(
     };
     let fresh = FreshKey::generate(ctx.network());
     let wif = fresh.wif();
-    let dfk1_for = |id: u32| {
-        Secret::new(format!(
-            "{}{}:{}:{id}:{}",
-            keystore::DFK1_PREFIX,
-            ctx.network_label(),
-            master.identity_id,
-            wif.expose()
-        ))
-    };
+    let network = ctx.network_label();
+    let dfk1_for = |id| keystore::dfk1(&network, &master.identity_id, id, wif.expose());
     let predicted = before.next_key_id();
     persist(&dfk1_for(predicted)).context("storing the new key before registering it")?;
     let master_key = master.master_key().context("no master key")?;
@@ -426,12 +411,56 @@ pub async fn register_limited_key(
         .await
         .context("registering the limited key")?;
     let key_id = *ids.first().context("no key id")?;
-    let dfk1 = dfk1_for(key_id);
     if key_id != predicted {
-        persist(&dfk1)?;
+        persist(&dfk1_for(key_id))?;
     }
     verify_key(client, &master.identity_id, key_id, &wif, ctx, spec).await?;
-    Ok((key_id, dfk1))
+    Ok(key_id)
+}
+
+/// [`register_limited_key`], storing the key as this computer's (keychain, else a sealed
+/// file) before it is registered. Returns its id and where it was stored.
+pub async fn register_and_store(
+    ctx: &Ctx,
+    client: &PlatformClient,
+    master: &BridgeIdentity,
+    spec: &LimitedKeySpec,
+    replace: Option<u32>,
+    insecure_plaintext: bool,
+) -> Result<(u32, store::Stored)> {
+    let network = ctx.network_label();
+    let mut stored = None;
+    let id = register_limited_key(ctx, client, master, spec, replace, &mut |t| {
+        stored = Some(store::store(
+            &network,
+            &master.identity_id,
+            t,
+            insecure_plaintext,
+        )?);
+        Ok(())
+    })
+    .await?;
+    Ok((id, stored.context("the key was not stored")?))
+}
+
+/// Disable `key_id` on the identity, signed once by `master`'s MASTER key.
+pub async fn disable_key(
+    client: &PlatformClient,
+    master: &BridgeIdentity,
+    key_id: u32,
+) -> Result<()> {
+    client
+        .update_identity_keys(
+            &master.identity_id,
+            &master
+                .master_key()
+                .context("no master key")?
+                .private_key_wif,
+            &[],
+            &[key_id],
+        )
+        .await?;
+    Ok(())
 }
 
 /// Read a new key back from the chain (a node may be a block behind) and check it.
@@ -569,17 +598,9 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         let spec = key_spec(ctx, &args.limits, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS)?;
         explain_new_key(ctx, &master.identity_id, &spec, "for this computer");
         ctx.confirm_or_cancel("Register the key?")?;
-        let mut stored = None;
-        let (id, _) = register_limited_key(ctx, &client, &master, &spec, args.replace, &mut |t| {
-            stored = Some(store::store(&network, &master.identity_id, t, insecure)?);
-            Ok(())
-        })
-        .await?;
-        (
-            stored.context("the key was not stored")?,
-            Some(id),
-            Some(spec),
-        )
+        let (id, stored) =
+            register_and_store(ctx, &client, &master, &spec, args.replace, insecure).await?;
+        (stored, Some(id), Some(spec))
     };
     store::set_default(ctx, &master.identity_id, &stored.source())?;
     let balance = on_chain.balance();
@@ -664,10 +685,7 @@ async fn key_report(
     bridge: &BridgeIdentity,
     ctx: &Ctx,
 ) -> KeyReport {
-    let key_id = bridge
-        .doc_op_key()
-        .ok()
-        .and_then(|k| identity.key_id_for(k.private_key_wif.expose(), ctx.network()));
+    let key_id = identity.signing_key_id(bridge, ctx.network());
     let limits = key_id.and_then(|id| identity.key_limits(id));
     let remaining = match key_id {
         Some(id) if limits.is_some_and(|l| l.total_budget.is_some()) => client
@@ -850,34 +868,12 @@ async fn name_register(ctx: &Ctx, label: &str, master: Option<&std::path::Path>)
 // export / logout
 // ---------------------------------------------------------------------------------------
 
-/// How an export is protected: encrypted under a passphrase, or in the clear.
-enum ExportProtection {
-    Sealed(Secret),
-    Clear,
-}
-
-/// Write the export file (0600): sealed under the passphrase, or the text as is.
-fn write_export(
-    path: &std::path::Path,
-    text: &Secret,
-    protection: &ExportProtection,
-) -> Result<()> {
-    let bytes = match protection {
-        ExportProtection::Clear => zeroize::Zeroizing::new(text.expose().as_bytes().to_vec()),
-        ExportProtection::Sealed(pass) => zeroize::Zeroizing::new(
-            forge_core::sealed::seal(text.expose().as_bytes(), pass.expose())?.into_bytes(),
-        ),
-    };
-    keystore::create_private_file(path, &bytes)?;
-    Ok(())
-}
-
-/// The text an export holds in `format`: a `dfk1:` value, or a bridge-format JSON.
-fn export_text(text: Secret, format: &str) -> Result<Secret> {
-    if format == "bridge" && text.expose().starts_with(keystore::DFK1_PREFIX) {
-        return Ok(BridgeIdentity::from_dfk1(text.expose())?.to_json_with_secrets());
-    }
-    Ok(text)
+/// Seal `text` under `pass`, or keep it as is (`None`).
+fn sealed_or_clear(text: &Secret, pass: Option<&Secret>) -> Result<zeroize::Zeroizing<Vec<u8>>> {
+    Ok(zeroize::Zeroizing::new(match pass {
+        Some(p) => forge_core::sealed::seal(text.expose().as_bytes(), p.expose())?.into_bytes(),
+        None => text.expose().as_bytes().to_vec(),
+    }))
 }
 
 /// Where an export goes: `-o`, else a file under the config directory (not the current
@@ -923,7 +919,7 @@ async fn current_key_text(
     let client = ctx.connect().await?;
     let identity = client.fetch_identity(&current.identity_id).await?;
     let id = identity
-        .key_id_for(key.private_key_wif.expose(), ctx.network())
+        .signing_key_id(current, ctx.network())
         .filter(|id| identity.is_limited_key(*id))
         .ok_or_else(|| {
             crate::errors::usage(
@@ -954,10 +950,10 @@ async fn export(ctx: &Ctx, args: &ExportArgs) -> Result<()> {
     let current = ctx.load_bridge()?;
     let path = export_path(args, &current.identity_id, to_stdout)?;
     // Ask for the passphrase before anything is registered.
-    let protection = if args.reveal_secrets || to_stdout {
-        ExportProtection::Clear
+    let pass = if args.reveal_secrets || to_stdout {
+        None
     } else {
-        ExportProtection::Sealed(forge_core::sealed::passphrase(
+        Some(forge_core::sealed::passphrase(
             &format!("the export {}", path.display()),
             true,
         )?)
@@ -968,24 +964,29 @@ async fn export(ctx: &Ctx, args: &ExportArgs) -> Result<()> {
         let spec = key_spec(ctx, &args.limits, 0.5, 365)?;
         explain_new_key(ctx, &master.identity_id, &spec, "to export");
         ctx.confirm_or_cancel("Register the key?")?;
-        let format = args.format.clone();
-        let (id, _) = register_limited_key(ctx, &client, &master, &spec, None, &mut |t| {
-            write_export(&path, &export_text(t.clone(), &format)?, &protection)
+        let id = register_limited_key(ctx, &client, &master, &spec, None, &mut |t| {
+            // A bridge-format export of a lone limited key.
+            let text = if args.format == "bridge" {
+                BridgeIdentity::from_dfk1(t.expose())?.to_json_with_secrets()
+            } else {
+                t.clone()
+            };
+            keystore::create_private_file(&path, &sealed_or_clear(&text, pass.as_ref())?)
+                .map_err(Into::into)
         })
         .await?;
         (Some(id), master.identity_id)
     } else {
         let (text, key_id) = current_key_text(ctx, &current, &args.format).await?;
-        let text = export_text(text, &args.format)?;
         if to_stdout {
             // The value itself is the output; nothing else goes to stdout.
             println!("{}", text.expose());
             return Ok(());
         }
-        write_export(&path, &text, &protection)?;
+        keystore::create_private_file(&path, &sealed_or_clear(&text, pass.as_ref())?)?;
         (key_id, current.identity_id.clone())
     };
-    let encrypted = matches!(protection, ExportProtection::Sealed(_));
+    let encrypted = pass.is_some();
     ctx.emit(
         json!({
             "status": "exported",
@@ -1026,22 +1027,13 @@ async fn logout(ctx: &Ctx, disable: bool, master: Option<&std::path::Path>) -> R
     if disable {
         let client = ctx.connect().await?;
         let identity = client.fetch_identity(&bridge.identity_id).await?;
-        let key_id = bridge
-            .doc_op_key()
-            .ok()
-            .and_then(|k| identity.key_id_for(k.private_key_wif.expose(), ctx.network()))
+        let key_id = identity
+            .signing_key_id(&bridge, ctx.network())
             .filter(|id| identity.is_limited_key(*id))
             .context("the stored key is not a live Forge limited key; nothing to disable")?;
         let full = master_identity(ctx, master, &bridge.identity_id)?;
         ctx.confirm_or_cancel(&format!("Disable key #{key_id} on chain?"))?;
-        client
-            .update_identity_keys(
-                &bridge.identity_id,
-                &full.master_key().context("no master key")?.private_key_wif,
-                &[],
-                &[key_id],
-            )
-            .await?;
+        disable_key(&client, &full, key_id).await?;
         disabled = Some(key_id);
     }
     let source = ctx
