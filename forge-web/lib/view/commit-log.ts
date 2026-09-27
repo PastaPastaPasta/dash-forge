@@ -158,18 +158,76 @@ export async function diffTrees(
 /** A commit and its change set against its first parent (everything added for a root). */
 export interface CommitChanges extends TreeDiff {
   readonly commit: CommitObject
+  /** The full oid, when the URL named the commit by a short id. */
+  readonly oid: string
 }
 
 /**
  * Load a commit and diff it against its first parent — `git show --first-parent` semantics,
  * so a merge commit shows what it brought into the branch it was made on.
  */
-export async function loadCommitChanges(reader: ObjectReader, oid: string): Promise<CommitChanges> {
-  const commit = await readCommit(reader, oid)
+/** Why a commit id in a URL names no single commit. */
+export class CommitIdError extends Error {
+  constructor(
+    readonly kind: 'invalid' | 'not-found' | 'ambiguous',
+    readonly input: string,
+    /** For `ambiguous`: some of the commits the prefix matches. */
+    readonly candidates: readonly string[] = [],
+  ) {
+    super(
+      kind === 'invalid'
+        ? `"${input}" is not a commit id: use 4 to 40 hexadecimal characters`
+        : kind === 'not-found'
+          ? `No commit ${input} in this repo`
+          : `${input} is ambiguous: ${candidates.length >= AMBIGUOUS_SHOWN ? 'several' : candidates.length} objects start with it`,
+    )
+    this.name = 'CommitIdError'
+  }
+}
+
+const AMBIGUOUS_SHOWN = 5
+
+/** The slice of a reader short-id resolution needs (a {@link BrowseReader}). */
+export interface PrefixReader extends ObjectReader {
+  findByPrefix?(prefix: string, limit?: number): string[]
+}
+
+/**
+ * Resolve a commit id as git does: a full 40-hex oid as is, or an unambiguous prefix of at
+ * least 4 hex digits (odd lengths too — the 7-character form the UI shows) through the
+ * locator's sorted OID index. Only commits count: a prefix shared by one commit and one blob
+ * resolves to the commit, as `git show <prefix>^{commit}` does.
+ */
+export async function resolveCommitOid(reader: PrefixReader, input: string): Promise<string> {
+  const id = input.trim().toLowerCase()
+  if (!/^[0-9a-f]{4,40}$/.test(id)) throw new CommitIdError('invalid', input)
+  if (id.length === 40) return id
+  const matches = reader.findByPrefix?.(id, 16) ?? []
+  if (matches.length === 0) throw new CommitIdError('not-found', input)
+  if (matches.length === 1) return matches[0] as string
+  const commits: string[] = []
+  for (const oid of matches) {
+    const obj = await reader.readObject(oid).catch(() => null)
+    if (obj?.type === 'commit') commits.push(oid)
+  }
+  if (commits.length === 1) return commits[0] as string
+  throw new CommitIdError(commits.length === 0 ? 'not-found' : 'ambiguous', input, (commits.length > 0 ? commits : matches).slice(0, AMBIGUOUS_SHOWN))
+}
+
+export async function loadCommitChanges(reader: PrefixReader, id: string): Promise<CommitChanges> {
+  const oid = await resolveCommitOid(reader, id)
+  let commit: CommitObject
+  try {
+    commit = await readCommit(reader, oid)
+  } catch (e) {
+    // A well-formed full id the repo does not hold: say so, not "object not in locator".
+    if (reader.locate?.(oid) === null) throw new CommitIdError('not-found', id)
+    throw e
+  }
   const parent = commit.parents[0]
   const parentTree = parent ? (await readCommit(reader, parent)).tree : null
   const diff = await diffTrees({ base: reader, head: reader }, parentTree, commit.tree)
-  return { commit, ...diff }
+  return { commit, oid, ...diff }
 }
 
 /** The commit that last changed a directory entry, for the file list's lazy commit column. */

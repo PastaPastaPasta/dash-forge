@@ -15,7 +15,7 @@
  * shows "Diff unavailable" only when the objects genuinely are not reachable.
  */
 
-import { useEffect, useMemo, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { FileDiff, Files, HardDriveDownload } from 'lucide-react'
 
 import { readRepoById, repoKey, repoRefOf, type PullView, type RepoRef } from '@/lib/repo'
@@ -291,15 +291,23 @@ export function ComparisonDiff({
   }, [onSides, sides])
   const pull = { headOid: spec.headOid, imported: spec.imported, importedUrl: spec.importedUrl }
   const { baseTipOid, baseOidAtOpen } = spec
+  // The merge-base search can read tens of thousands of commits on a long-lived branch: it
+  // reports how far it got, and "Stop" ends it (D-040).
+  const [commitsRead, setCommitsRead] = useState(0)
+  const search = useRef<AbortController | null>(null)
+  useEffect(() => () => search.current?.abort(), [])
   const { data, loading, error, reload } = useAsync(
-    () =>
-      loadPullComparison(sides as DiffSides, {
-        baseTipOid,
-        baseOidAtOpen,
-        headOid: spec.headOid,
-        merged: spec.merged,
-        imported: spec.imported,
-      }),
+    () => {
+      search.current?.abort()
+      const controller = new AbortController()
+      search.current = controller
+      setCommitsRead(0)
+      return loadPullComparison(
+        sides as DiffSides,
+        { baseTipOid, baseOidAtOpen, headOid: spec.headOid, merged: spec.merged, imported: spec.imported },
+        { signal: controller.signal, onProgress: (n) => controller.signal.aborted || setCommitsRead(n) },
+      )
+    },
     [baseRepo.repoId, repoKey(baseRepo), sourceId, crossRepo, sidesKey, baseTipOid, baseOidAtOpen, spec.headOid, spec.merged, spec.imported],
     { enabled: waiting === null && sides !== null && spec.headOid !== '' },
   )
@@ -343,8 +351,19 @@ export function ComparisonDiff({
   if (loading && data === null) {
     return (
       <Frame>
-        <div className="rounded-lg border border-anvil-200 px-4 py-6 text-center dark:border-anvil-800">
-          <Spinner label="Comparing pull request" />
+        <div className="flex flex-wrap items-center justify-center gap-3 rounded-lg border border-anvil-200 px-4 py-6 text-center dark:border-anvil-800">
+          <Spinner
+            label={
+              commitsRead === 0
+                ? 'Comparing pull request'
+                : `Finding where this PR branched: ${commitsRead.toLocaleString('en-US')} commits read`
+            }
+          />
+          {commitsRead > 0 ? (
+            <Button size="sm" variant="ghost" onClick={() => search.current?.abort()}>
+              Stop
+            </Button>
+          ) : null}
         </div>
       </Frame>
     )
@@ -390,9 +409,14 @@ export function ComparisonDiff({
         </div>
       ))}
       {data.comparisonNote ? (
-        <p className="rounded-md border border-caution/30 bg-caution/5 px-3 py-2 text-dense text-anvil-600 dark:text-anvil-300">
-          {data.comparisonNote}
-        </p>
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-caution/30 bg-caution/5 px-3 py-2 text-dense text-anvil-600 dark:text-anvil-300">
+          <span>{data.comparisonNote}</span>
+          {data.searchStopped ? (
+            <Button size="sm" variant="ghost" onClick={reload}>
+              Search again
+            </Button>
+          ) : null}
+        </div>
       ) : null}
       {(() => {
         const diff = (

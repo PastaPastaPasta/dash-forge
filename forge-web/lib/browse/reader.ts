@@ -42,6 +42,67 @@ export interface PackSource {
   fetchRange(packRef: number, start: number, end: number, copy?: number): Promise<Uint8Array>
   /** How many copies pack `packRef` has (default 1). */
   copyCount?(packRef: number): number
+  /** Pack `packRef`'s size in bytes, when known (lets a reader read ahead without overrunning it). */
+  sizeOf?(packRef: number): number | undefined
+}
+
+/** Bytes per read-ahead block of {@link readAheadSource}. */
+export const READ_AHEAD_BLOCK = 256 * 1024
+/** Blocks a {@link readAheadSource} keeps (so at most 16 MiB). */
+const READ_AHEAD_BLOCKS = 64
+
+/**
+ * A {@link PackSource} that fetches aligned {@link READ_AHEAD_BLOCK}-byte blocks and serves
+ * every range inside one from memory — for walks that read many small neighbouring objects.
+ *
+ * A history walk is the case (D-040): `git pack-objects` writes a pack's commits first, newest
+ * first, in one contiguous run of ~100-900 bytes each, so a merge-base search over thousands of
+ * commits cost one ranged GET (or chunk query) per commit. Through this it costs one per block,
+ * a few hundred commits each. Ranges that span blocks, packs of unknown size, and blocks that
+ * fail to load go straight to `inner`, so nothing it could read before becomes unreadable.
+ * Every object read through it is still hash-checked by the reader.
+ */
+export function readAheadSource(inner: PackSource, block = READ_AHEAD_BLOCK, maxBlocks = READ_AHEAD_BLOCKS): PackSource {
+  const blocks = new Map<string, Promise<Uint8Array>>()
+  const blockOf = (packRef: number, index: number, size: number, copy: number | undefined): Promise<Uint8Array> => {
+    const key = `${packRef}:${copy ?? ''}:${index}`
+    const hit = blocks.get(key)
+    if (hit !== undefined) {
+      blocks.delete(key)
+      blocks.set(key, hit)
+      return hit
+    }
+    const start = index * block
+    const promise = inner.fetchRange(packRef, start, Math.min(size, start + block), copy)
+    promise.catch(() => {
+      if (blocks.get(key) === promise) blocks.delete(key)
+    })
+    blocks.set(key, promise)
+    for (const k of blocks.keys()) {
+      if (blocks.size <= maxBlocks) break
+      blocks.delete(k)
+    }
+    return promise
+  }
+  return {
+    async fetchRange(packRef, start, end, copy) {
+      const size = inner.sizeOf?.(packRef)
+      const index = Math.floor(start / block)
+      if (size === undefined || end > size || Math.floor((end - 1) / block) !== index) {
+        return inner.fetchRange(packRef, start, end, copy)
+      }
+      try {
+        const bytes = await blockOf(packRef, index, size, copy)
+        const from = start - index * block
+        if (from + (end - start) <= bytes.length) return bytes.subarray(from, from + (end - start))
+      } catch {
+        /* the exact range may still be readable */
+      }
+      return inner.fetchRange(packRef, start, end, copy)
+    },
+    ...(inner.copyCount ? { copyCount: (packRef: number) => inner.copyCount?.(packRef) ?? 1 } : {}),
+    ...(inner.sizeOf ? { sizeOf: (packRef: number) => inner.sizeOf?.(packRef) } : {}),
+  }
 }
 
 /** What happened to one reconstructed object's hash check. */
@@ -116,6 +177,23 @@ export class BrowseReader {
     private readonly packs: PackSource,
     private readonly opts: BrowseReaderOptions = {},
   ) {}
+
+  private historyReader: BrowseReader | null = null
+
+  /**
+   * A reader over the same locator that reads the packs through {@link readAheadSource}: for
+   * walks over many commits (merge-base search), which would otherwise pay one ranged read
+   * per commit. Kept for the reader's lifetime so repeated walks share its blocks.
+   */
+  forHistoryWalk(): BrowseReader {
+    this.historyReader ??= new BrowseReader(this.locator, readAheadSource(this.packs), this.opts)
+    return this.historyReader
+  }
+
+  /** OIDs starting with a hex `prefix` ({@link ObjectLocator.findByPrefix}). */
+  findByPrefix(prefix: string, limit?: number): string[] {
+    return this.locator.findByPrefix(prefix, limit)
+  }
 
   /** Look up a raw locator entry by OID hex (or null if absent). */
   locate(oidHex: string): LocatorEntry | null {

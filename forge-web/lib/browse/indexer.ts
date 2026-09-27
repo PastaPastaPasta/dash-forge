@@ -286,5 +286,6 @@ export function memoryPackSource(packs: readonly Uint8Array[]): PackSource {
       }
       return Promise.resolve(pack.subarray(start, end))
     },
+    sizeOf: (packRef) => packs[packRef]?.length,
   }
 }

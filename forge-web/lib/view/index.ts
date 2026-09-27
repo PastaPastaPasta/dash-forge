@@ -46,6 +46,8 @@ export {
 export {
   findMergeBase,
   loadPullComparison,
+  MergeBaseCancelledError,
+  type MergeBaseOptions,
   type PullComparison,
   type PullComparisonInput,
 } from './pull-diff'
@@ -138,8 +140,10 @@ export {
   type SelectedRef,
 } from './refs'
 export {
+  CommitIdError,
   diffTrees,
   loadCommitChanges,
+  resolveCommitOid,
   walkLog,
   type CommitChanges,
   type DiffSides,

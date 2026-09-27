@@ -19,6 +19,8 @@ import { commitSubject, parseCommit, parseTree, type CommitObject, type TreeEntr
 export interface ObjectReader {
   readObject(oidHex: string): Promise<GitObject>
   locate?(oidHex: string): LocatorEntry | null
+  /** The same objects read with block read-ahead, for walks over many commits ({@link BrowseReader.forHistoryWalk}). */
+  forHistoryWalk?(): ObjectReader
 }
 
 /** Read a commit object, failing clearly when the oid names something else. */

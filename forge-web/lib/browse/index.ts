@@ -42,6 +42,8 @@ export {
 } from './pack'
 export {
   BrowseReader,
+  READ_AHEAD_BLOCK,
+  readAheadSource,
   type BrowseReaderOptions,
   type ObjectVerdict,
   type PackSource,
