@@ -207,6 +207,49 @@ export async function idbBatch(store: StoreName, ops: readonly (readonly [string
   })
 }
 
+/**
+ * Read one key (and any `alsoRead` keys) and write a batch in ONE transaction: `decide` sees
+ * their current values and returns the puts and deletes to make (`value: undefined` deletes).
+ * No other writer can change those keys between the read and the writes (a check-then-write
+ * that cannot race).
+ */
+export async function idbUpdate<T>(
+  store: StoreName,
+  key: string,
+  decide: (current: T | undefined, also: readonly unknown[]) => readonly (readonly [string, unknown])[],
+  alsoRead: readonly string[] = [],
+): Promise<void> {
+  if (!hasIndexedDb()) {
+    const m = mem(store)
+    for (const [k, v] of decide(m.get(key) as T | undefined, alsoRead.map((a) => m.get(a)))) {
+      if (v === undefined) m.delete(k)
+      else m.set(k, structuredClone(v))
+    }
+    return
+  }
+  const db = await open()
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(store, 'readwrite')
+    const s = tx.objectStore(store)
+    const reqs = [key, ...alsoRead].map((k) => s.get(k))
+    // Requests in one transaction complete in order: the last one done means all are.
+    reqs[reqs.length - 1]!.onsuccess = () => {
+      try {
+        for (const [k, v] of decide(reqs[0]!.result as T | undefined, reqs.slice(1).map((r) => r.result as unknown))) {
+          if (v === undefined) s.delete(k)
+          else s.put(v, k)
+        }
+      } catch (e) {
+        tx.abort()
+        reject(e)
+      }
+    }
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error ?? new Error('IndexedDB transaction failed'))
+    tx.onabort = () => reject(tx.error ?? new Error('IndexedDB transaction aborted'))
+  })
+}
+
 /** Delete one value (no-op when absent). */
 export async function idbDelete(store: StoreName, key: string): Promise<void> {
   if (!hasIndexedDb()) {

@@ -96,7 +96,7 @@ interface AuthContextValue {
   ) => Promise<void>
   adoptLimitedKey: (identityId: string, key: LimitedKey, protection: Protection) => Promise<void>
   /** Store the keys a wallet granted (verified on chain) and open the session. */
-  adoptWalletKeys: (identityId: string, keys: readonly WalletKey[], protection: Protection) => Promise<void>
+  adoptWalletKeys: (identityId: string, keys: readonly WalletKey[], protection: Protection, options?: { readonly discardPendingRenewal?: boolean }) => Promise<void>
   /** Add a wallet grant for another Forge contract to the signed-in identity. */
   addWalletGrant: (identityId: string, key: WalletKey, requested: string) => Promise<void>
   /** Which Forge contracts the session's keys cover, and whether a held key is unlimited. */
