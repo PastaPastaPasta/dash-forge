@@ -109,6 +109,8 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Auth(A::Login) => ("login failed", None),
         Command::Auth(A::Status) => ("could not show auth status", None),
         Command::Auth(A::Balance) => ("could not read the balance", None),
+        Command::Auth(A::Keys(crate::AuthKeysCommand::List)) => ("could not list keys", None),
+        Command::Auth(A::Keys(crate::AuthKeysCommand::Add { .. })) => ("key not added", None),
         Command::Repo(Rp::Create(a)) => ("repository not created", a.name.as_ref()),
         Command::Init(a) => ("repository not published", a.name.as_ref()),
         Command::Repo(Rp::Clone { repo } | Rp::View { repo }) => {

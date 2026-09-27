@@ -116,6 +116,7 @@ const DAPI_RETRIES: usize = 6;
 
 pub use crate::network::{Network, NetworkTarget};
 
+pub mod identity_keys;
 pub mod wrap;
 
 /// The `dashcore` network the SDK and its context provider use for `network`.

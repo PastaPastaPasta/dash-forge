@@ -1,14 +1,20 @@
-//! `dg auth` — identity import, status, and balance.
+//! `dg auth` — identity import, status, balance, and the identity's keys.
 
 use anyhow::{Context, Result};
 use serde_json::json;
 
 use forge_core::keystore::BridgeIdentity;
+use forge_core::platform::identity_keys::{self, EncryptionSecret, ADD_KEY_ESTIMATE_CREDITS};
+use forge_core::platform::IdentityKeyInfo;
 
 use crate::config::{identities_dir, Config};
 use crate::context::Ctx;
-use crate::fmt::{balance_json, credits_to_dash};
-use crate::AuthCommand;
+use crate::fmt::{balance_json, cost_json, cost_line, credits_to_dash, dash_usd_price};
+use crate::{AuthCommand, AuthKeysCommand};
+
+/// What an encryption key exposes, shown before one is added (private-repos.md §5.2).
+pub const ENCRYPTION_KEY_BLAST_RADIUS: &str = "This key can read every private repo you're a \
+    member of, and every key you've handed out as a maintainer.";
 
 /// Dispatch an `auth` subcommand.
 pub async fn run(ctx: &Ctx, cmd: &AuthCommand) -> Result<()> {
@@ -16,6 +22,10 @@ pub async fn run(ctx: &Ctx, cmd: &AuthCommand) -> Result<()> {
         AuthCommand::Login => login(ctx).await,
         AuthCommand::Status => status(ctx),
         AuthCommand::Balance => balance(ctx).await,
+        AuthCommand::Keys(AuthKeysCommand::List) => keys_list(ctx).await,
+        AuthCommand::Keys(AuthKeysCommand::Add { force, .. }) => {
+            keys_add_encryption(ctx, *force).await
+        }
     }
 }
 
@@ -199,6 +209,317 @@ async fn balance(ctx: &Ctx) -> Result<()> {
             );
         }
     });
+    Ok(())
+}
+
+/// How a key's contract bound reads: the forge contract's name when it is one of them.
+fn bound_label(ctx: &Ctx, bound_to: Option<&str>) -> String {
+    let Some(id) = bound_to else {
+        return "-".into();
+    };
+    match &ctx.target.v2 {
+        Some(v2) if id == v2.core => format!("forge-core ({id})"),
+        Some(v2) if id == v2.collab => format!("forge-collab ({id})"),
+        _ => id.to_string(),
+    }
+}
+
+/// `dg auth keys list`: the identity's on-chain keys, and whether the identity file holds the
+/// private key of each. No secret is printed.
+async fn keys_list(ctx: &Ctx) -> Result<()> {
+    let (_client, bridge, identity) = ctx.connect_with_identity().await?;
+    let keys = identity.public_keys();
+    let rows: Vec<(&IdentityKeyInfo, bool)> = keys
+        .iter()
+        .map(|k| (k, identity_keys::file_holds_key(&bridge, k)))
+        .collect();
+    ctx.emit(
+        json!({
+            "identityId": bridge.identity_id,
+            "network": ctx.network_label(),
+            "keys": rows.iter().map(|(k, held)| json!({
+                "id": k.id,
+                "purpose": k.purpose,
+                "securityLevel": k.security_level,
+                "keyType": k.key_type,
+                "enabled": !k.disabled,
+                "boundTo": k.bound_to,
+                "publicKeyHex": hex::encode(&k.public_key),
+                "inIdentityFile": held,
+            })).collect::<Vec<_>>(),
+        }),
+        || {
+            println!("Identity: {}", bridge.identity_id);
+            println!(
+                "{:>3}  {:<14}  {:<8}  {:<15}  {:<8}  {:<7}  bound to",
+                "id", "purpose", "level", "type", "state", "in file"
+            );
+            for (k, held) in &rows {
+                println!(
+                    "{:>3}  {:<14}  {:<8}  {:<15}  {:<8}  {:<7}  {}",
+                    k.id,
+                    k.purpose,
+                    k.security_level,
+                    k.key_type,
+                    if k.disabled { "disabled" } else { "enabled" },
+                    if *held { "yes" } else { "no" },
+                    bound_label(ctx, k.bound_to.as_deref()),
+                );
+            }
+        },
+    );
+    Ok(())
+}
+
+/// The identity's usable encryption keys whose private key the identity file holds: enabled,
+/// `ECDSA_SECP256K1`, unbound or bound to the network's forge-core contract.
+fn held_usable_encryption_keys<'k>(
+    ctx: &Ctx,
+    bridge: &BridgeIdentity,
+    keys: &'k [IdentityKeyInfo],
+) -> Vec<&'k IdentityKeyInfo> {
+    // With no forge-v2 deployment only an unbound key qualifies.
+    let core = ctx.target.v2.as_ref().map_or("", |v2| v2.core.as_str());
+    keys.iter()
+        .filter(|k| k.is_usable_encryption_key(core) && identity_keys::file_holds_key(bridge, k))
+        .collect()
+}
+
+/// The key to add: the pending entry of an earlier run when it still has the next id (it is
+/// already in the file), else a key derived from the mnemonic, else a random one. A pending
+/// entry under another id (the identity changed since) is left in the file, unused: it was
+/// never on chain, so nothing depends on it.
+struct NewKey {
+    secret: EncryptionSecret,
+    derivation_path: String,
+    /// The file already holds the entry.
+    already_stored: bool,
+}
+
+impl NewKey {
+    fn derived(&self) -> bool {
+        !self.derivation_path.is_empty()
+    }
+}
+
+fn choose_new_key(
+    ctx: &Ctx,
+    bridge: &BridgeIdentity,
+    on_chain: &[IdentityKeyInfo],
+    key_id: u32,
+) -> Result<NewKey> {
+    let on_chain_ids: Vec<u32> = on_chain.iter().map(|k| k.id).collect();
+    let on_chain_public: Vec<String> = on_chain
+        .iter()
+        .map(|k| hex::encode(&k.public_key))
+        .collect();
+    if let Some(p) = bridge
+        .pending_encryption_key(&on_chain_ids, &on_chain_public)
+        .filter(|p| p.id == key_id)
+    {
+        let secret = EncryptionSecret::from_identity_key(p).with_context(|| {
+            format!(
+                "reading the pending encryption key {} of the identity file",
+                p.id
+            )
+        })?;
+        return Ok(NewKey {
+            secret,
+            derivation_path: p.derivation_path.trim().to_string(),
+            already_stored: true,
+        });
+    }
+    // Derive only when the file's recorded keys are the identity's own keys on chain, so the
+    // user's 12 words really do recreate the new key.
+    if identity_keys::recorded_keys_match(bridge, on_chain) {
+        if let (Some(secret), Some(path)) = (
+            identity_keys::derive_encryption_secret(bridge, key_id, ctx.network()),
+            identity_keys::identity_key_path(bridge, key_id),
+        ) {
+            return Ok(NewKey {
+                secret,
+                derivation_path: path,
+                already_stored: false,
+            });
+        }
+    }
+    Ok(NewKey {
+        secret: identity_keys::random_encryption_secret()?,
+        derivation_path: String::new(),
+        already_stored: false,
+    })
+}
+
+/// Tighten the directory of an identity file under dg's own config directory
+/// (`~/.config/dash-forge`) to 0700, as `dg auth login` does. A file elsewhere (a download, a
+/// project folder) keeps its directory's mode: that directory is the user's.
+fn tighten_config_dir(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::fs::canonicalize(path)
+            .ok()
+            .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
+        let config = crate::config::config_dir()
+            .ok()
+            .and_then(|c| std::fs::canonicalize(c).ok());
+        if let (Some(dir), Some(config)) = (dir, config) {
+            if dir.starts_with(&config) {
+                let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// E302 for a key source without a MASTER key (an inline limited key, a keys-only file).
+fn needs_master_key() -> anyhow::Error {
+    use forge_core::user_error::{codes, UserError};
+    UserError::new(
+        codes::KEY_CANNOT_SIGN,
+        "key not added: this key can't sign that",
+    )
+    .cause(
+        "adding a key is an identity update signed by the MASTER key, and the key source \
+             has none (an inline limited key, or a limited or keys-only identity file)",
+    )
+    .fix("pass the full identity file, the one with the MASTER key: `--identity <file>`")
+    .note("nothing was written or sent")
+    .into()
+}
+
+/// What `dg auth keys add --encryption` is about to do, its cost and the blast-radius warning.
+fn print_add_preview(
+    ctx: &Ctx,
+    identity_id: &str,
+    key_id: u32,
+    new_key: &NewKey,
+    path: &std::path::Path,
+    price: f64,
+) {
+    println!(
+        "Adding encryption key {key_id} to {identity_id} on {}",
+        ctx.network_label()
+    );
+    println!(
+        "  one identity update (signed by the MASTER key)  {}",
+        cost_line(ADD_KEY_ESTIMATE_CREDITS, price)
+    );
+    if new_key.derived() {
+        println!(
+            "  derived from your recovery phrase at {}",
+            new_key.derivation_path
+        );
+    } else {
+        println!(
+            "  a random key: your identity file will be its only copy. Back up {} after this; \
+             the 12 words alone cannot restore it.",
+            path.display()
+        );
+    }
+    println!("{ENCRYPTION_KEY_BLAST_RADIUS}");
+}
+
+/// `dg auth keys add --encryption`: add an `ENCRYPTION` key for private repositories.
+///
+/// Order: the key is written to the identity file first, then the identity update is sent, so
+/// a random key is never lost when the update lands but the process dies. A re-run reuses an
+/// `ENCRYPTION` entry of the file that is not on chain yet.
+async fn keys_add_encryption(ctx: &Ctx, force: bool) -> Result<()> {
+    let path = ctx.require_identity_path()?.clone();
+    let bridge = ctx.load_bridge()?;
+    if forge_core::keystore::is_inline_key(&path)
+        || identity_keys::require_master_key(&bridge).is_err()
+    {
+        return Err(needs_master_key());
+    }
+    let client = ctx.connect().await?;
+    let identity = client
+        .fetch_identity(&bridge.identity_id)
+        .await
+        .context("fetching the signing identity")?;
+    let on_chain = identity.public_keys();
+    let network = ctx.network_label();
+
+    let held = held_usable_encryption_keys(ctx, &bridge, &on_chain);
+    if let (Some(existing), false) = (held.iter().max_by_key(|k| k.id), force) {
+        ctx.emit(
+            json!({
+                "status": "exists",
+                "identityId": bridge.identity_id,
+                "network": network,
+                "keyId": existing.id,
+            }),
+            || {
+                println!(
+                    "Identity {} already has a usable encryption key (key {}), and the identity \
+                     file holds it. Nothing to do; pass --force to add another.",
+                    bridge.identity_id, existing.id
+                );
+            },
+        );
+        return Ok(());
+    }
+
+    let key_id = identity_keys::next_key_id(&identity);
+    let new_key = choose_new_key(ctx, &bridge, &on_chain, key_id)?;
+    let price = dash_usd_price();
+    if !ctx.json {
+        print_add_preview(ctx, &bridge.identity_id, key_id, &new_key, &path, price);
+    }
+    ctx.confirm_or_cancel("Add the key?")?;
+
+    if !new_key.already_stored {
+        let entry = identity_keys::encryption_key_entry(
+            &new_key.secret,
+            key_id,
+            ctx.network(),
+            &new_key.derivation_path,
+        );
+        forge_core::keystore::store_identity_key(&path, &entry)
+            .with_context(|| format!("writing the new key into {}", path.display()))?;
+        tighten_config_dir(&path);
+    }
+
+    let before = identity.balance();
+    let added = identity_keys::add_encryption_key(&client, &identity, &bridge, &new_key.secret)
+        .await
+        .context("adding the encryption key")?;
+    // Best effort: the measured cost from the balance difference (none when nothing was
+    // charged in this run, or the node read has not applied the fee yet).
+    let after = client.get_balance(&bridge.identity_id).await.ok();
+    let spent = after.map(|a| before.saturating_sub(a)).filter(|c| *c > 0);
+
+    ctx.emit(
+        json!({
+            "status": "added",
+            "identityId": bridge.identity_id,
+            "network": network,
+            "keyId": added,
+            "purpose": "ENCRYPTION",
+            "securityLevel": "MEDIUM",
+            "keyType": "ECDSA_SECP256K1",
+            "publicKeyHex": hex::encode(new_key.secret.public_key()),
+            "derived": new_key.derived(),
+            "derivationPath": (new_key.derived()).then_some(&new_key.derivation_path),
+            "identityFile": path.to_string_lossy(),
+            "backupRequired": !new_key.derived(),
+            "estimate": cost_json(ADD_KEY_ESTIMATE_CREDITS, price),
+            "cost": spent.map(|c| cost_json(c, price)),
+            "warning": ENCRYPTION_KEY_BLAST_RADIUS,
+        }),
+        || {
+            println!("Added encryption key {added}.");
+            if let Some(c) = spent {
+                println!("Cost: {}", cost_line(c, price));
+            }
+            println!("Stored its private key in {}.", path.display());
+            if !new_key.derived() {
+                println!("Back up this file now: it is the only copy of the key.");
+            }
+        },
+    );
     Ok(())
 }
 

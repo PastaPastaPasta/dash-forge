@@ -8,9 +8,10 @@ On Dash Forge, your account is a **Dash Platform identity**. No company holds it
 4. [Where keys live today](#where-keys-live-today)
 5. [Never paste a master key into a web page](#never-paste-a-master-key-into-a-web-page)
 6. [Rotating and disabling keys](#rotating-and-disabling-keys)
-7. [Limited keys and the web app](#limited-keys-and-the-web-app)
-8. [The browser vault and its limits](#the-browser-vault-and-its-limits)
-9. [Trust roots](#trust-roots)
+7. [Encryption key (private repositories)](#encryption-key-private-repositories)
+8. [Limited keys and the web app](#limited-keys-and-the-web-app)
+9. [The browser vault and its limits](#the-browser-vault-and-its-limits)
+10. [Trust roots](#trust-roots)
 
 ---
 
@@ -40,7 +41,7 @@ An identity file from the bridge has five keys, all ECDSA secp256k1:
 | 1 | AUTHENTICATION | HIGH | Signing documents: pushes, issues, comments, reviews, releases. |
 | 2 | AUTHENTICATION | CRITICAL | What HIGH does. Forge uses it only when the file has no HIGH key. |
 | 3 | TRANSFER | CRITICAL | Moving credits to another identity, or withdrawing them. |
-| 4 | ENCRYPTION | MEDIUM | Reserved for private repositories (coming soon). |
+| 4 | ENCRYPTION | MEDIUM | Private repositories: see [Encryption key](#encryption-key-private-repositories). |
 
 What each tool signs with:
 
@@ -119,7 +120,32 @@ When to rotate:
 
 If the **MASTER** key or the 12 words leak, rotating does not help: whoever has them can add keys and disable yours. The identity is lost. Move your credits out with the TRANSFER key to a new identity, and start over there with new repositories: push your clones to them. Repository ownership cannot be transferred, and the attacker now controls everything only the owner can do, such as adding and removing members.
 
-**Coming soon:** `dg auth keys list | add | disable`.
+`dg auth keys list` shows the identity's keys on chain: id, purpose, security level, type, enabled or disabled, the contract a key is bound to, and whether your identity file holds its private key. It prints no secrets.
+
+**Coming soon:** `dg auth keys disable`.
+
+---
+
+## Encryption key (private repositories)
+
+A private repository encrypts its content under a repository key, and each member gets that key wrapped (encrypted) to their identity's **ENCRYPTION** key. Without one, nobody can add you to a private repository and you cannot create one. Identities from the bridge carry key 4 for this; many other identities have none.
+
+Add one with:
+
+```sh
+dg auth keys add --encryption
+```
+
+- It is one identity update, signed by your **MASTER** key, so it needs your full identity file. A `dfk1:` limited key cannot do it.
+- It shows the estimate (under 0.0005 DASH) and asks before signing; `--yes` skips the question. It prints the new key's id, and the measured cost once the update lands.
+- If the identity already has a usable encryption key whose private key is in your identity file, it does nothing. `--force` adds another one. Every tool uses the highest-id usable one.
+- `dg auth keys list` shows the result.
+
+**What it can read.** This key can read every private repo you're a member of, and every key you've handed out as a maintainer. Keep it as carefully as your signing keys.
+
+**Backup.** `dg` writes the new key into your identity file before it sends anything. When the file has your 12 words and its keys follow the bridge's key paths, the key is derived from the words at the next key path (`m/9'/1'/5'/0'/0'/0'/<id>'` on testnet), so the words can recreate it. Otherwise `dg` draws a random key and says so: then the identity file is its **only** copy. Back the file up again after adding the key. If a run is interrupted, running the command again reuses the key already written to the file.
+
+**In the web app** this will be **Settings → Keys → Enable private repos**, with the web release of private repositories.
 
 ---
 
