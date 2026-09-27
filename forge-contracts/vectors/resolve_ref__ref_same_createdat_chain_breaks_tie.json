@@ -1,0 +1,51 @@
+{
+  "name": "ref_same_createdat_chain_breaks_tie",
+  "description": "Within one $createdAt the prevOid chain orders updates regardless of $id: B -> C chained off A -> B (force) wins although the force's $id sorts last.",
+  "case": "resolve_ref",
+  "input": {
+    "updates": [
+      {
+        "id": "id_A",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "auth",
+        "createdAt": 0
+      },
+      {
+        "id": "id_Z_force",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "A",
+        "newOid": "B",
+        "force": true,
+        "protected": false,
+        "author": "auth",
+        "createdAt": 0
+      },
+      {
+        "id": "id_M",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "B",
+        "newOid": "C",
+        "force": false,
+        "protected": false,
+        "author": "auth",
+        "createdAt": 0
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "H",
+    "ancestry": []
+  },
+  "expected": {
+    "state": "resolved",
+    "oid": "C",
+    "author": "auth",
+    "createdAt": 0
+  }
+}

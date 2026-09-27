@@ -247,22 +247,25 @@ pub async fn read_config_history(
         .collect())
 }
 
-/// The history of the ref named `ref_name` that a PR merge into it is verified against
-/// ([`crate::rules::merge_base_tips`]): its updates and the config timeline, folded so that a
-/// plain `refUpdate` on a protected ref (inert, §4) never counts as a base tip.
+/// The history of the ref named `ref_name` that a PR opened at `opened_at` (its `$createdAt`)
+/// is merged against ([`crate::rules::pr_base_tips`]): its updates and the config timeline,
+/// folded so that a plain `refUpdate` on a protected ref (inert, §4) never counts as a base
+/// tip, and a base that was no branch when the PR was opened has no tips.
 pub async fn read_merge_base(
     client: &PlatformClient,
     contract: &LoadedContract,
     scope: &DocScope,
     ref_name: &str,
+    opened_at: u64,
 ) -> Result<MergeBaseTips> {
     let hash = crate::backends::sha256(ref_name.as_bytes());
     let updates = read_ref_history(client, contract, scope, hash).await?;
     let configs = read_config_history(client, contract, scope).await?;
-    Ok(crate::rules::merge_base_tips(
+    Ok(crate::rules::pr_base_tips(
         &updates,
         &configs,
         &hex::encode(hash),
+        opened_at,
     ))
 }
 

@@ -1,0 +1,58 @@
+{
+  "name": "merge_into_base_present_at_open_counts",
+  "description": "The same merge into a base that existed when the PR was opened counts.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "merge",
+        "actor": "maint",
+        "value": null,
+        "oid": "HEAD1",
+        "createdAt": 310
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice",
+    "baseHistory": {
+      "updates": [
+        {
+          "id": "u1",
+          "refNameHash": "H",
+          "refName": "refs/heads/main",
+          "prevOid": "",
+          "newOid": "A",
+          "force": false,
+          "protected": false,
+          "author": "w",
+          "createdAt": 50
+        },
+        {
+          "id": "u2",
+          "refNameHash": "H",
+          "refName": "refs/heads/main",
+          "prevOid": "A",
+          "newOid": "HEAD1",
+          "force": false,
+          "protected": false,
+          "author": "w",
+          "createdAt": 300
+        }
+      ],
+      "configHistory": [],
+      "refNameHash": "H",
+      "openedAt": 100
+    }
+  },
+  "expected": {
+    "open": false,
+    "merged": true,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": []
+  }
+}

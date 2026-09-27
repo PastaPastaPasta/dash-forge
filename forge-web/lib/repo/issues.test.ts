@@ -25,11 +25,13 @@ describe('baseRefTips', () => {
   })
 
   it('never takes a deletion as the current tip', () => {
-    const tips = tipsOf([update('1', 10, A), update('2', 20, NULL)], 30)
+    // Opened before the base was deleted: its tips still count.
+    const tips = tipsOf([update('1', 10, A), update('2', 20, NULL)], 15)
     expect(tips.historical).toEqual([A])
     expect(tips.tip).toBe(A)
+    expect(tips.atOpen).toBe(A)
     // …but a ref deleted when the PR was opened had nothing to compare against.
-    expect(tips.atOpen).toBe('')
+    expect(tipsOf([update('1', 10, A), update('2', 20, NULL)], 30).atOpen).toBe('')
   })
 
   it('leaves atOpen undefined when the ref had no update before the PR', () => {
@@ -41,6 +43,17 @@ describe('baseRefTips', () => {
     const tips = tipsOf([update('b', 10, B), update('a', 10, A)], 10)
     expect(tips.tip).toBe(B)
     expect(tips.atOpen).toBe(B)
+  })
+
+  it('gives a base that was no branch when the PR was opened no tips, so no merge counts (D-501)', () => {
+    // Created after the PR: a merge tool pushed the PR head to a name that was never a branch.
+    expect(tipsOf([update('1', 50, A)], 10)).toEqual({ historical: [], tip: undefined, atOpen: undefined })
+    // Deleted when the PR was opened, recreated later.
+    expect(tipsOf([update('1', 10, A), update('2', 20, NULL), update('3', 40, B)], 30)).toEqual({
+      historical: [],
+      tip: undefined,
+      atOpen: '',
+    })
   })
 
   it('ignores a plain update on a protected base (inert), so a merge naming it cannot count', () => {

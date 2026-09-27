@@ -143,13 +143,34 @@ export function pullActions({ pull, viewer, holdings }: PullActionInputs): PullA
 }
 
 /**
+ * The base tip a browser merge may build on (D-501), or `''` when there is none, which
+ * {@link mergeRefProblem} refuses:
+ * - the base must be a branch now (`currentTip`, the resolved branch; never the PR's historical
+ *   tip): pushing to a deleted base would re-create it;
+ * - the PR's own base must have been a branch when the PR was opened: its `baseTipOid` is empty
+ *   otherwise (`prBaseTips`), and a merge event into it would never count.
+ * A retargeted PR merges into its new base, whose tip is all there is to check.
+ */
+export function mergeBaseTip(
+  pull: Pick<PullView, 'baseRefName' | 'baseTipOid'>,
+  baseRefName: string,
+  currentTip: string | null,
+): string {
+  const ownBase = baseRefName === pull.baseRefName
+  if (currentTip === null || (ownBase && pull.baseTipOid === '')) return ''
+  return currentTip
+}
+
+/**
  * Why a PR cannot be merged in the browser before anything is read: the base must be a plain
  * branch that exists (`refs/heads/<name>`, check-ref-format; parity with `dg`'s
  * `require_branch_ref`) and the head a full commit id. Null when both hold.
  */
 export function mergeRefProblem(baseRefName: string, baseTipOid: string, headOid: string): string | null {
   if (!isPlainBranchRef(baseRefName)) return `The PR's base "${baseRefName.slice(0, 80)}" is not a plain branch (refs/heads/<name>); it is not merged in the browser.`
-  if (!isOidHex(baseTipOid)) return 'The base branch does not exist (it has no tip); merge with `dg pr merge`.'
+  if (!isOidHex(baseTipOid)) {
+    return 'The base branch does not exist, or was not a branch when this PR was opened, so a merge into it would not count. Open a new PR against an existing branch.'
+  }
   if (!isOidHex(headOid)) return 'The PR names no valid head commit.'
   return null
 }

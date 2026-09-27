@@ -28,6 +28,7 @@ import {
   matchesProtected,
   mergeBaseTips,
   overlayTree,
+  prBaseTips,
   resolveRef,
   v2,
 } from './index'
@@ -37,6 +38,7 @@ import type {
   Event,
   FlatIndex,
   IsAncestor,
+  MergeBaseTips,
   RefUpdate,
   TreeDiff,
 } from './types'
@@ -64,11 +66,21 @@ interface MatchesProtectedInput {
   readonly patterns: readonly string[]
 }
 
-/** A PR base ref's raw history: the fold's base tip and predicate come from `mergeBaseTips`. */
+/**
+ * A PR base ref's raw history: the fold's base tip and predicate come from `mergeBaseTips`,
+ * or with `openedAt` (the PR's `$createdAt`) from `prBaseTips`.
+ */
 interface BaseHistory {
   readonly updates: readonly RefUpdate[]
   readonly configHistory?: readonly ConfigDoc[]
   readonly refNameHash: string
+  readonly openedAt?: number
+}
+
+function baseTipsOf(h: BaseHistory): MergeBaseTips {
+  return h.openedAt === undefined
+    ? mergeBaseTips(h.updates, h.configHistory ?? [], h.refNameHash)
+    : prBaseTips(h.updates, h.configHistory ?? [], h.refNameHash, h.openedAt)
 }
 
 /** The fold's base tip and merge predicate: from `baseHistory` when given, else as supplied. */
@@ -82,8 +94,8 @@ function foldBase(
   expect(inp.baseTip ?? null, `vector ${v.name}: baseHistory replaces baseTip`).toBeNull()
   expect(inp.ancestry ?? [], `vector ${v.name}: baseHistory replaces ancestry`).toEqual([])
   const h = inp.baseHistory
-  expect(Object.keys(h).filter((k) => !['updates', 'configHistory', 'refNameHash'].includes(k))).toEqual([])
-  const tips = mergeBaseTips(h.updates, h.configHistory ?? [], h.refNameHash)
+  expect(Object.keys(h).filter((k) => !['updates', 'configHistory', 'refNameHash', 'openedAt'].includes(k))).toEqual([])
+  const tips = baseTipsOf(h)
   return [tips.tip ?? undefined, (oid) => tips.historical.includes(oid)]
 }
 
@@ -325,10 +337,12 @@ function runCaseV2(v: Vector): void {
       expect(v2.isWellFormed(inp.doc, inp.visibility)).toEqual(v.expected)
       break
     }
-    case 'merge_base_tips': {
-      onlyKeys(v, ['updates', 'configHistory', 'refNameHash'])
+    case 'merge_base_tips':
+    case 'pr_base_tips': {
+      onlyKeys(v, ['updates', 'configHistory', 'refNameHash', 'openedAt'])
       const inp = v.input as BaseHistory
-      expect(mergeBaseTips(inp.updates, inp.configHistory ?? [], inp.refNameHash)).toEqual(v.expected)
+      expect(inp.openedAt !== undefined, `vector ${v.name}: openedAt is given exactly for pr_base_tips`).toBe(v.case === 'pr_base_tips')
+      expect(baseTipsOf(inp)).toEqual(v.expected)
       break
     }
     case 'ref_name_hashes': {

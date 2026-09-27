@@ -1,0 +1,78 @@
+{
+  "name": "ref_force_back_then_repush_same_tip",
+  "description": "The mirror history that destroyed a default branch: force A, fast-forward to B, force back to A (prevOid B), then A pushed twice more (force and plain, no prevOid). Resolves to A from the newest update.",
+  "case": "resolve_ref",
+  "input": {
+    "updates": [
+      {
+        "id": "u1",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "m",
+        "createdAt": 100
+      },
+      {
+        "id": "u2",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "A",
+        "newOid": "B",
+        "force": false,
+        "protected": false,
+        "author": "m",
+        "createdAt": 200
+      },
+      {
+        "id": "u3",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "B",
+        "newOid": "A",
+        "force": true,
+        "protected": false,
+        "author": "m",
+        "createdAt": 300
+      },
+      {
+        "id": "u4",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": true,
+        "protected": false,
+        "author": "m",
+        "createdAt": 400
+      },
+      {
+        "id": "u5",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "0",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "m",
+        "createdAt": 500
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "H",
+    "ancestry": [
+      [
+        "A",
+        "B"
+      ]
+    ]
+  },
+  "expected": {
+    "state": "resolved",
+    "oid": "A",
+    "author": "m",
+    "createdAt": 500
+  }
+}
