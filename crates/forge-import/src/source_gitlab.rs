@@ -422,6 +422,9 @@ fn comment(repo: &GitlabRepoRef, item: &Item, number: u32, url: &str, n: &GlNote
             path: Some(model::clip(path, 500, 1000)),
             line,
             side,
+            // As on the GitHub path: single-line anchors, no review batch.
+            start_line: None,
+            review_id: None,
         })
     });
     let (kind, text) = match &anchor {

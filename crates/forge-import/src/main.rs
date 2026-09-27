@@ -165,7 +165,7 @@ async fn main() -> ExitCode {
     // Runs unattended (the Mirror Action): a sealed key file needs DASH_FORGE_PASSPHRASE.
     forge_core::sealed::forbid_prompts();
     forge_core::logging::init_cli();
-    match run(Cli::parse()).await {
+    match Box::pin(run(Cli::parse())).await {
         Ok(code) => code,
         Err(e) => {
             eprintln!(
