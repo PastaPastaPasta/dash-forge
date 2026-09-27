@@ -384,6 +384,20 @@ describe('storeArtifact', () => {
     expect(new Headers(pub?.[1]?.headers).get('authorization')).toBeNull()
   })
 
+  it("never uploads a private repo's unsealed bytes; a sealed pack goes through", async () => {
+    const net = fakeNetwork()
+    vi.stubGlobal('fetch', net.fetchMock)
+    const priv = { ...REPO, visibility: 'private' as const }
+    const opts = { policy: policyFor(['r2-main'], 'one'), profiles: [S3], confirmPlatform: async () => false }
+    await expect(storeArtifact(SDK, AUTH, priv, bytes, opts)).rejects.toThrow(/unencrypted artifact for a private repo/)
+    expect(net.puts).toHaveLength(0)
+    const { EpochKeys, sealPack } = await import('../private')
+    const sealed = await sealPack(await EpochKeys.import(new Uint8Array(32).fill(7), 0, new Uint8Array(32).fill(9)), bytes)
+    const stored = await storeArtifact(SDK, AUTH, priv, sealed, opts)
+    expect(stored.packHash).toBe(await sha256Hex(sealed))
+    expect(net.puts).toHaveLength(1)
+  })
+
   it('uploads when the pre-upload HEAD is refused (AWS without s3:ListBucket)', async () => {
     const net = fakeNetwork({ headForbidden: true })
     vi.stubGlobal('fetch', net.fetchMock)
