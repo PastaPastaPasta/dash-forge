@@ -68,6 +68,11 @@ export interface StoredPrivateDoc extends PrivateDoc {
   readonly id?: PrivateId
   /** `$createdAtBlockHeight`; a document without it is malformed (§8.1 step 7). */
   readonly createdAtBlockHeight?: number
+  /**
+   * `$updatedAtBlockHeight` of a replaceable document (issue, patch, comment): an edit is judged
+   * by the late-content rule too (§8.2 "edits are judged too").
+   */
+  readonly updatedAtBlockHeight?: number
   readonly enc: Uint8Array
 }
 
@@ -356,6 +361,8 @@ export async function openContent(doc: StoredPrivateDoc, ctx: OpenContext): Prom
   const result = await openWithKey(doc, keys, isAnchor)
   if (result.status !== 'readable') return result
   if (!isHeight(doc.createdAtBlockHeight)) return MALFORMED
-  if (isLate(ctx.anchors, ctx.members, doc.epoch, doc.createdAtBlockHeight, doc.ownerId, ctx.burned)) return unreadable('late')
+  // An edit re-seals the text: it is as late as its last write (§8.2).
+  const height = isHeight(doc.updatedAtBlockHeight) ? Math.max(doc.createdAtBlockHeight, doc.updatedAtBlockHeight) : doc.createdAtBlockHeight
+  if (isLate(ctx.anchors, ctx.members, doc.epoch, height, doc.ownerId, ctx.burned)) return unreadable('late')
   return result
 }

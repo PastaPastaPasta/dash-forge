@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# Scenario 17: sealed issues, pull requests, comments and reviews in a private repository
+# (docs/security/private-repos.md §4, §8).
+#
+# Runs under two identities minted for this run (P_OWNER, P_MEMBER; no shared-identity nonce
+# races), plus the shared CONTRIB as a reader who never joins.
+#
+#   1. P_OWNER `dg repo create --private`, pushes main and a feature branch, adds P_MEMBER
+#   2. P_OWNER opens issue #1 and PR #1 (feature → main); P_MEMBER comments on the issue and
+#      approves the PR with a body
+#   3. the stored documents carry no plaintext title, body, branch name or path: every one
+#      has `epoch` + `enc`, and the PR's base hash is not sha256("refs/heads/main")
+#   4. P_MEMBER reads the issue (title, body, comment) and the PR (title, base, approval);
+#      CONTRIB (never a member) is refused (E307) and lists nothing readable
+#   5. P_OWNER merges the PR (1 approval counted from the sealed review)
+#
+# Needs the moutai funding key (MOUTAI_FUNDING, default the QA harness's) and
+# tools/mint-identity's node modules; skips without them.
+SCENARIO_NAME="17 private repository: sealed issues, PRs, comments and reviews"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
+harness_init
+
+: "${MOUTAI_FUNDING:=/Users/pasta/workspace/dash-forge-qa/secrets/moutai-funding.wif}"
+: "${MINT_DIR:=${E2E_REPO_ROOT}/tools/mint-identity}"
+[[ -r "$MOUTAI_FUNDING" ]] || skip_scenario "no moutai funding key ($MOUTAI_FUNDING)"
+[[ -d "$MINT_DIR/node_modules/@dashevo/evo-sdk" ]] || skip_scenario "tools/mint-identity has no node_modules (npm ci there)"
+
+LOG="${WORKROOT}/s17"
+IDS="${WORKROOT}/s17-ids"
+mkdir -p "$IDS" && chmod 700 "$IDS"
+json_field() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2], {"d": d}))' "$1" "$2" 2>/dev/null; }
+
+mint() { # mint <label>: a funded moutai identity with an ENCRYPTION key, for this run only
+  node "$MINT_DIR/mint.mjs" --network devnet --devnet-name moutai --funding fund-from-key \
+    --funding-key-file "$MOUTAI_FUNDING" --out "$IDS" --label "$1" --amount 0.2 >"$LOG-mint-$1.log" 2>&1
+}
+
+step "mint this run's identities"
+if mint P_OWNER && mint P_MEMBER; then
+  P_OWNER="$IDS/P_OWNER.identity.json"; P_MEMBER="$IDS/P_MEMBER.identity.json"
+  ID_P_OWNER="$(_idid "$P_OWNER")"; ID_P_MEMBER="$(_idid "$P_MEMBER")"
+  ok "minted P_OWNER ${ID_P_OWNER:0:10}… and P_MEMBER ${ID_P_MEMBER:0:10}…"
+else
+  tail -5 "$LOG"-mint-*.log >&2
+  skip_scenario "minting failed (funding or network)"
+fi
+
+NAME="e2e-sealed-${RUN_ID}"
+NAME="${NAME:0:63}"
+REPO="${ID_P_OWNER}/${NAME}"
+REMOTE="dash://${REPO}"
+SRC="${WORKROOT}/s17-src"
+
+step "P_OWNER creates a private repo, pushes main and feature, adds P_MEMBER"
+if ! _retry "$LOG-create.err" _dg_read "$P_OWNER" "$LOG-create.json" "$LOG-create.err" \
+    --yes --json repo create "$NAME" --private --storage platform; then
+  cat "$LOG-create.err" >&2
+  is_flake "$LOG-create.err" && skip_scenario "create failed on a transport flake"
+  bad "private create failed"; finish_scenario
+fi
+seed_tiny_repo "$SRC" main >/dev/null
+git -C "$SRC" checkout -q -b feature
+printf 'feature %s\n' "$RUN_ID" >"$SRC/feature.txt"
+git -C "$SRC" add -A && git -C "$SRC" commit -q -m "feature ${RUN_ID}"
+FEATURE="$(git -C "$SRC" rev-parse HEAD)"
+if git_dash_retry "$P_OWNER" "$LOG-push" -C "$SRC" push "$REMOTE" "refs/heads/main:refs/heads/main" "refs/heads/feature:refs/heads/feature" \
+   && dg_as "$P_OWNER" -y --json collab add "$REPO" "$ID_P_MEMBER" >"$LOG-add.json" 2>"$LOG-add.err"; then
+  ok "created, pushed main and feature @ ${FEATURE:0:12}, added P_MEMBER"
+else
+  cat "$LOG-push.err" "$LOG-add.err" >&2; bad "setup failed"; finish_scenario
+fi
+
+ISSUE_TITLE="sealed issue ${RUN_ID}"
+PR_TITLE="sealed pr ${RUN_ID}"
+step "P_OWNER opens an issue and a PR; P_MEMBER comments and approves"
+if dg_as "$P_OWNER" -y --json issue create "$REPO" --title "$ISSUE_TITLE" --body "secret body ${RUN_ID}" >"$LOG-issue.json" 2>"$LOG-issue.err" \
+   && dg_as "$P_OWNER" -y --json pr create "$REPO" --head feature --base main --title "$PR_TITLE" --body "pr body ${RUN_ID}" >"$LOG-pr.json" 2>"$LOG-pr.err"; then
+  ISSUE="$(json_field "$LOG-issue.json" 'd["number"]')"; PR="$(json_field "$LOG-pr.json" 'd["number"]')"
+  ok "opened issue #$ISSUE and PR #$PR"
+else
+  cat "$LOG-issue.err" "$LOG-issue.json" "$LOG-pr.err" "$LOG-pr.json" >&2; bad "opening failed"; finish_scenario
+fi
+if dg_as "$P_MEMBER" -y --json issue comment "$REPO" "$ISSUE" --body "member comment ${RUN_ID}" >"$LOG-com.json" 2>"$LOG-com.err" \
+   && dg_as "$P_MEMBER" -y --json pr review "$REPO" "$PR" --approve --body "looks right ${RUN_ID}" >"$LOG-rev.json" 2>"$LOG-rev.err"; then
+  ok "P_MEMBER commented and approved"
+else
+  cat "$LOG-com.err" "$LOG-com.json" "$LOG-rev.err" "$LOG-rev.json" >&2; bad "member writes failed"; finish_scenario
+fi
+
+step "the chain holds no plaintext: every document is sealed"
+if DASH_FORGE_KEY="$P_OWNER" RUST_LOG=error NO_COLOR=1 _tmo "${BIN_DIR}/git-remote-dash" --dump-collab "$ID_P_OWNER" "$NAME" >"$LOG-dump.txt" 2>"$LOG-dump.err"; then
+  rows="$(grep -c '^  id=' "$LOG-dump.txt")"
+  if [[ "$rows" -ge 4 ]] && ! grep -q "$RUN_ID" "$LOG-dump.txt" && ! grep -q 'plaintext=\[[^]]' "$LOG-dump.txt" \
+     && ! grep -q 'epoch=- \| enc=0 ' "$LOG-dump.txt"; then
+    ok "$rows documents, each with epoch + enc and no plaintext text"
+  else
+    cat "$LOG-dump.txt" >&2; bad "plaintext or unsealed collaboration documents on chain"
+  fi
+  SHA_MAIN="$(printf 'refs/heads/main' | shasum -a 256 | cut -d' ' -f1)"
+  grep -q "baseRefNameHash=${SHA_MAIN}" "$LOG-dump.txt" && bad "the PR's base hash is sha256(refName)" || ok "the PR's base hash is keyed, not sha256"
+else
+  cat "$LOG-dump.err" >&2; bad "dump failed"
+fi
+
+step "P_MEMBER reads everything; CONTRIB reads nothing"
+if dg_read_retry "$P_MEMBER" "$LOG-iv.json" "$LOG-iv.err" --json issue view "$REPO" "$ISSUE" \
+   && dg_read_retry "$P_MEMBER" "$LOG-pv.json" "$LOG-pv.err" --json pr view "$REPO" "$PR"; then
+  [[ "$(json_field "$LOG-iv.json" 'd["title"]')" == "$ISSUE_TITLE" && "$(json_field "$LOG-iv.json" 'd["comments"][0]["body"]')" == "member comment ${RUN_ID}" ]] \
+    && ok "issue #$ISSUE: title and comment decrypt" || { cat "$LOG-iv.json" >&2; bad "issue view"; }
+  [[ "$(json_field "$LOG-pv.json" 'd["title"]')" == "$PR_TITLE" && "$(json_field "$LOG-pv.json" 'd["baseRef"]')" == refs/heads/main \
+     && "$(json_field "$LOG-pv.json" 'len(d["approvedBy"])')" == 1 ]] \
+    && ok "PR #$PR: title, base branch and the sealed approval" || { cat "$LOG-pv.json" >&2; bad "pr view"; }
+else
+  cat "$LOG-iv.err" "$LOG-pv.err" >&2; bad "member reads failed"
+fi
+if dg_as "$ID_CONTRIB" --json issue list "$REPO" >"$LOG-cl.json" 2>"$LOG-cl.err"; then
+  cat "$LOG-cl.json" >&2; bad "a non-member listed a private repo's issues"
+elif grep -qE 'E307|E306' "$LOG-cl.json" "$LOG-cl.err"; then
+  ok "non-member refused ($(grep -ohE 'E30[67]' "$LOG-cl.json" "$LOG-cl.err" | head -1))"
+else
+  cat "$LOG-cl.json" "$LOG-cl.err" >&2
+  is_flake "$LOG-cl.err" && skip_scenario "non-member list failed on a flake"
+  bad "non-member list failed without E306/E307"
+fi
+
+step "P_OWNER merges the PR"
+if dg_as "$P_OWNER" -y --json pr merge "$REPO" "$PR" >"$LOG-merge.json" 2>"$LOG-merge.err" \
+   && [[ "$(json_field "$LOG-merge.json" 'd["merged"]')" == True ]]; then
+  ok "PR #$PR merged"
+else
+  cat "$LOG-merge.err" "$LOG-merge.json" >&2; bad "merge failed"
+fi
+
+finish_scenario

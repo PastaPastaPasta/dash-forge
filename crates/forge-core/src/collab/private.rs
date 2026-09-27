@@ -1,0 +1,256 @@
+//! Sealed collaboration documents (`docs/security/private-repos.md` §4, §8): an `issue`,
+//! `patch`, `comment` or `review` of a private repository carries its free text inside `enc`
+//! instead of in plaintext properties.
+//!
+//! Both directions are pure over the property maps the public writer produces and a fetched
+//! document carries, so the CLI and the web app (`forge-web/lib/repo/private-writes.ts`) seal
+//! byte-for-byte alike (conformance case `private_collab_seal`):
+//!
+//! * [`seal_props`] moves every present sealed field (issue `title`/`body`; patch `title`,
+//!   `body`, `baseRefName`, `sourceRefName`; comment `body`/`path`; review `body`) into the
+//!   TLV, re-keys a patch's ref-name hashes to `HMAC(K_ref,e, name)` (§4.5), and adds `epoch`
+//!   and `enc`. Everything else is copied unchanged.
+//! * [`open_doc`] is the inverse for a reader: the decrypted fields are put back where the
+//!   public codecs read them, so every fold and view downstream is unchanged.
+
+use std::collections::BTreeMap;
+
+use crate::error::{Error, Result};
+use crate::platform::{FetchedDocument, FieldValue};
+use crate::private::doc::DocHeader;
+use crate::private::{DocKind, EpochKeys, Fields, Opened, PrivateError};
+
+/// The per-type limit on the sealed text, in UTF-8 bytes: the `enc` cap (5120) minus the v0x01
+/// framing (29) minus 3 bytes per TLV record the type carries (§4.3 combined sizes).
+#[must_use]
+pub fn text_cap(kind: DocKind) -> usize {
+    let records = match kind {
+        DocKind::Issue | DocKind::Comment => 2,
+        DocKind::Patch => 4,
+        _ => 1,
+    };
+    kind.max_enc() - crate::private::doc::MIN_V1 - 3 * records
+}
+
+fn take_text(props: &mut BTreeMap<String, FieldValue>, name: &str) -> Option<String> {
+    match props.remove(name) {
+        Some(FieldValue::Text(s)) => Some(s),
+        _ => None,
+    }
+}
+
+fn id32(props: &BTreeMap<String, FieldValue>, name: &str) -> Option<[u8; 32]> {
+    props
+        .get(name)
+        .and_then(FieldValue::as_bytes)
+        .and_then(|b| <[u8; 32]>::try_from(b).ok())
+}
+
+/// Seal the properties of a new (or re-sealed) `kind` document owned by `owner`, under `keys`
+/// (the epoch the document is written under), with `nonce` (`None`: hedged random, the only
+/// choice outside the conformance vectors).
+pub fn seal_props(
+    keys: &EpochKeys,
+    kind: DocKind,
+    owner: [u8; 32],
+    mut props: BTreeMap<String, FieldValue>,
+    nonce: Option<[u8; 12]>,
+) -> Result<BTreeMap<String, FieldValue>> {
+    let epoch = keys.epoch();
+    let mut header = DocHeader::new(kind, owner, epoch);
+    let mut fields = Fields::default();
+    match kind {
+        DocKind::Issue | DocKind::Patch => {
+            header.number = props
+                .get("number")
+                .and_then(FieldValue::as_u64)
+                .and_then(|n| u32::try_from(n).ok());
+            fields.title = take_text(&mut props, "title");
+            fields.body = take_text(&mut props, "body");
+            if kind == DocKind::Patch {
+                let base = take_text(&mut props, "baseRefName");
+                let source = take_text(&mut props, "sourceRefName");
+                header.base_ref_name_hash = base.as_deref().map(|b| keys.ref_name_hash(b));
+                header.source_ref_name_hash = source.as_deref().map(|s| keys.ref_name_hash(s));
+                props.remove("baseRefNameHash");
+                props.remove("sourceRefNameHash");
+                if let Some(h) = header.base_ref_name_hash {
+                    props.insert("baseRefNameHash".into(), FieldValue::bytes32(h));
+                }
+                if let Some(h) = header.source_ref_name_hash {
+                    props.insert("sourceRefNameHash".into(), FieldValue::bytes32(h));
+                }
+                fields.base_ref_name = base;
+                fields.source_ref_name = source;
+            }
+        }
+        DocKind::Comment => {
+            header.target_id = id32(&props, "targetId");
+            fields.body = take_text(&mut props, "body");
+            fields.path = take_text(&mut props, "path");
+        }
+        DocKind::Review => {
+            header.patch_id = id32(&props, "patchId");
+            fields.body = take_text(&mut props, "body");
+        }
+        DocKind::RefUpdate | DocKind::ProtectedRefUpdate | DocKind::Config => {
+            return Err(Error::Config(format!(
+                "{} is not a collaboration document",
+                kind.type_name()
+            )))
+        }
+    }
+    let sealed = match nonce {
+        None => crate::private::doc::seal(keys, &header, &fields),
+        #[cfg(any(test, feature = "vectors"))]
+        Some(n) => crate::private::doc::seal_with_nonce(keys, &header, &fields, false, n),
+        #[cfg(not(any(test, feature = "vectors")))]
+        Some(_) => unreachable!("a chosen nonce is for the conformance vectors only"),
+    };
+    let enc = sealed.map_err(|e| sealing_error(kind, &e))?;
+    props.insert("epoch".into(), FieldValue::integer(u64::from(epoch)));
+    props.insert("enc".into(), FieldValue::bytes(enc));
+    Ok(props)
+}
+
+/// A seal failure as the user reads it.
+fn sealing_error(kind: DocKind, e: &PrivateError) -> Error {
+    match e {
+        PrivateError::TooLarge(..) => {
+            let what = match kind {
+                DocKind::Issue => "title + body",
+                DocKind::Patch => "title + body + branch names",
+                DocKind::Comment => "body + file path",
+                _ => "body",
+            };
+            Error::Config(format!(
+                "a private {}'s {what} is at most {} bytes (they are encrypted together)",
+                kind.type_name(),
+                text_cap(kind)
+            ))
+        }
+        other => other.clone().into(),
+    }
+}
+
+/// The fetched private `d` of `kind` as the public codecs read it: the decrypted fields put
+/// back in place (`None` when it does not open, with the reason in the second value).
+pub fn open_doc(
+    opened: Opened,
+    d: &FetchedDocument,
+) -> std::result::Result<FetchedDocument, Opened> {
+    let Opened::Readable(f) = opened else {
+        return Err(opened);
+    };
+    let mut out = d.clone();
+    let mut put = |name: &str, v: Option<String>| {
+        if let Some(v) = v {
+            out.fields.insert(name.into(), FieldValue::text(v));
+        }
+    };
+    put("title", f.title.clone());
+    put("body", f.body.clone());
+    put("baseRefName", f.base_ref_name.clone());
+    put("sourceRefName", f.source_ref_name.clone());
+    put("path", f.path.clone());
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::keyring::header_of;
+    use crate::private::doc::{open_content, AnchorRef, OpenContext};
+    use crate::private::EpochKey;
+    use crate::rules::v2::{ContentKind, Visibility};
+
+    const REPO: [u8; 32] = [0x11; 32];
+    const OWNER: [u8; 32] = [0x22; 32];
+
+    fn keys() -> EpochKeys {
+        EpochKeys::derive(&REPO, 0, &EpochKey::from_bytes([3; 32]))
+    }
+
+    fn ctx() -> OpenContext {
+        OpenContext {
+            keys: [(0, keys())].into(),
+            anchors: [(
+                0,
+                AnchorRef {
+                    id: [9; 32],
+                    height: 1,
+                },
+            )]
+            .into(),
+            ..OpenContext::default()
+        }
+    }
+
+    fn fetched(props: BTreeMap<String, FieldValue>) -> FetchedDocument {
+        FetchedDocument {
+            id: crate::platform::encode_identifier([0x5a; 32]),
+            owner_id: crate::platform::encode_identifier(OWNER),
+            created_at: Some(1),
+            created_at_block_height: Some(10),
+            updated_at_block_height: None,
+            fields: props,
+        }
+    }
+
+    #[test]
+    fn a_sealed_patch_carries_no_plaintext_and_opens_back_to_the_public_shape() {
+        let public: BTreeMap<String, FieldValue> = [
+            ("number".to_string(), FieldValue::integer(3)),
+            ("title".to_string(), FieldValue::text("Add the feature")),
+            ("body".to_string(), FieldValue::text("Closes #7.")),
+            (
+                "baseRefName".to_string(),
+                FieldValue::text("refs/heads/main"),
+            ),
+            (
+                "sourceRefName".to_string(),
+                FieldValue::text("refs/heads/feature"),
+            ),
+            ("sourceRepoId".to_string(), FieldValue::identifier(REPO)),
+            ("headOid".to_string(), FieldValue::bytes(vec![0xaa; 20])),
+            ("draft".to_string(), FieldValue::boolean(true)),
+        ]
+        .into();
+        let sealed = seal_props(&keys(), DocKind::Patch, OWNER, public.clone(), None).unwrap();
+        for f in ["title", "body", "baseRefName", "sourceRefName"] {
+            assert!(!sealed.contains_key(f), "{f} left in plaintext");
+        }
+        assert_eq!(
+            sealed.get("baseRefNameHash").and_then(FieldValue::as_bytes),
+            Some(keys().ref_name_hash("refs/heads/main").to_vec()),
+            "the base hash is keyed per epoch, never sha256"
+        );
+        let d = fetched(sealed);
+        assert!(crate::collab::v2::well_formed(
+            ContentKind::Patch,
+            &d,
+            Visibility::Private
+        ));
+        let header = header_of(DocKind::Patch, &d).unwrap();
+        let opened = open_content(&ctx(), &header, &d.field_bytes("enc").unwrap());
+        let back = open_doc(opened, &d).unwrap();
+        for f in ["title", "body", "baseRefName", "sourceRefName"] {
+            assert_eq!(back.fields.get(f), public.get(f), "{f}");
+        }
+        assert!(back.field_bool("draft"), "plaintext fields are untouched");
+    }
+
+    #[test]
+    fn text_over_the_per_type_cap_is_refused_with_the_number() {
+        let over = "x".repeat(text_cap(DocKind::Review) + 1);
+        let props: BTreeMap<String, FieldValue> = [
+            ("patchId".to_string(), FieldValue::identifier([4; 32])),
+            ("body".to_string(), FieldValue::text(over)),
+        ]
+        .into();
+        let err = seal_props(&keys(), DocKind::Review, OWNER, props, None).unwrap_err();
+        assert!(err.to_string().contains("5088"), "{err}");
+        assert_eq!(text_cap(DocKind::Patch), 5079);
+        assert_eq!(text_cap(DocKind::Issue), 5085);
+    }
+}

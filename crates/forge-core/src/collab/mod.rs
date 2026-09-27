@@ -5,6 +5,7 @@
 //! importer share: the release and label shapes, importer provenance ([`Imported`]), the
 //! stored numeric event kinds, and the text-length checks run before anything is signed.
 
+pub mod private;
 pub mod v2;
 
 use std::collections::BTreeMap;

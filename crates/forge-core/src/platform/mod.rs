@@ -893,6 +893,9 @@ pub struct FetchedDocument {
     /// (required on every private-repo type: anchors and the late-content rule order by it,
     /// `docs/security/private-repos.md` §13).
     pub created_at_block_height: Option<u64>,
+    /// `$updatedAtBlockHeight`, when the document type records it (replaceable issue, patch
+    /// and comment: the late-content rule judges edits too, §8.2).
+    pub updated_at_block_height: Option<u64>,
     /// Property name → value, in the SDK-free field representation.
     pub fields: BTreeMap<String, FieldValue>,
 }
@@ -903,6 +906,7 @@ impl FetchedDocument {
         let owner_id = doc.owner_id().to_string(Encoding::Base58);
         let created_at = doc.created_at();
         let created_at_block_height = doc.created_at_block_height();
+        let updated_at_block_height = doc.updated_at_block_height();
         let fields = doc
             .properties()
             .iter()
@@ -913,6 +917,7 @@ impl FetchedDocument {
             owner_id,
             created_at,
             created_at_block_height,
+            updated_at_block_height,
             fields,
         }
     }
@@ -2565,6 +2570,7 @@ mod tests {
             owner_id: "owner".to_string(),
             created_at: Some(i as u64),
             created_at_block_height: None,
+            updated_at_block_height: None,
             fields: BTreeMap::new(),
         }
     }

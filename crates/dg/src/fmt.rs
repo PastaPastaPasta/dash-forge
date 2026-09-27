@@ -107,6 +107,19 @@ pub fn balance_json(identity_id: &str, credits: u64, network: &str) -> Value {
     })
 }
 
+/// The line a list or view prints for documents it hid: malformed ones, and in a private
+/// repository also those this reader cannot open (another epoch, written late, not sealed for
+/// the repo; docs/security/private-repos.md §9 "Reading").
+pub fn hidden_note(repo: &forge_core::scope::RepoRef, hidden: usize) -> String {
+    if repo.visibility == forge_core::rules::v2::Visibility::Private {
+        format!(
+            "({hidden} document(s) hidden: malformed, written after a key rotation, or not readable with your keys; `dg repo keys status` explains)"
+        )
+    } else {
+        format!("({hidden} malformed document(s) hidden)")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

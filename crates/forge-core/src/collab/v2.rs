@@ -30,6 +30,7 @@ use super::{
 use crate::backends::sha256;
 use crate::create::replay_landed;
 use crate::error::{Error, Result};
+use crate::keyring::Keyring;
 use crate::keystore::BridgeIdentity;
 use crate::members::{self, MemberReader};
 use crate::network::ForgeIds;
@@ -37,6 +38,7 @@ use crate::platform::{
     self, BroadcastOutcome, FetchedDocument, FieldValue, LoadedContract, LoadedIdentity,
     PlatformClient, QueryFilter, QueryOrder, WriteEngine, WriteIntent,
 };
+use crate::private::DocKind;
 use crate::rules::v2::{
     allocate_number, count_approvals, fold_issue_state_v2, fold_pr_review_v2, fold_pr_state_v2,
     is_author_kind, is_well_formed, number_ceiling, Approvals, ContentDoc, ContentKind, Policy,
@@ -94,7 +96,27 @@ pub enum TargetKind {
     Patch,
 }
 
+/// The private-repository document kind of a content kind.
+fn doc_kind(kind: ContentKind) -> DocKind {
+    match kind {
+        ContentKind::Issue => DocKind::Issue,
+        ContentKind::Patch => DocKind::Patch,
+        ContentKind::Comment => DocKind::Comment,
+        ContentKind::Review => DocKind::Review,
+        ContentKind::RefUpdate => DocKind::RefUpdate,
+        ContentKind::Config => DocKind::Config,
+    }
+}
+
 impl TargetKind {
+    /// The private-repository document kind.
+    fn doc_kind(self) -> DocKind {
+        match self {
+            TargetKind::Issue => DocKind::Issue,
+            TargetKind::Patch => DocKind::Patch,
+        }
+    }
+
     /// The forge-collab document type.
     pub fn doc_type(self) -> &'static str {
         match self {
@@ -867,9 +889,15 @@ where
 // ===========================================================================
 
 /// forge-v2 collaboration reads and writes for one repository at a time.
+///
+/// On a private repository (`docs/security/private-repos.md` §4) the free text of issues,
+/// patches, comments and reviews is sealed on write and opened on read ([`super::private`]);
+/// documents this reader cannot open are counted as hidden, like malformed ones. The keys are
+/// resolved once per `Collab` (one command): every sealed write of the command uses them.
 pub struct Collab<'a> {
     client: &'a PlatformClient,
     signer: Option<(&'a LoadedIdentity, &'a BridgeIdentity)>,
+    keyring: crate::repo::KeyringCache,
 }
 
 impl<'a> Collab<'a> {
@@ -882,15 +910,106 @@ impl<'a> Collab<'a> {
         Self {
             client,
             signer: Some((identity, bridge)),
+            keyring: crate::repo::KeyringCache::default(),
         }
     }
 
-    /// Reads only.
+    /// Reads only. A private repository needs a signer (its keys are the signer's).
     pub fn reader(client: &'a PlatformClient) -> Self {
         Self {
             client,
             signer: None,
+            keyring: crate::repo::KeyringCache::default(),
         }
+    }
+
+    /// The keys of private `repo` as the signer holds them, loaded once per `Collab`.
+    pub async fn keyring(&self, repo: &RepoRef) -> Result<std::sync::Arc<Keyring>> {
+        let repo_id = repo.scope()?.repo_id;
+        let cached = self
+            .keyring
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .filter(|k| *k.repo_id() == repo_id);
+        if let Some(k) = cached {
+            return Ok(k);
+        }
+        let (identity, bridge) = self.signer.ok_or_else(|| {
+            Error::Config(format!(
+                "{} is private: reading it needs your identity (its encryption key)",
+                repo.display()
+            ))
+        })?;
+        let signer = crate::keyring::PrivateSigner {
+            client: self.client,
+            identity,
+            bridge,
+        };
+        let fresh = std::sync::Arc::new(signer.keyring(repo).await?);
+        *self
+            .keyring
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(std::sync::Arc::clone(&fresh));
+        Ok(fresh)
+    }
+
+    /// `props` of a new `kind` document, sealed when `repo` is private (under the write epoch
+    /// of the keys this command resolved), else unchanged.
+    pub async fn seal_if_private(
+        &self,
+        repo: &RepoRef,
+        kind: DocKind,
+        props: BTreeMap<String, FieldValue>,
+    ) -> Result<BTreeMap<String, FieldValue>> {
+        if repo.visibility != Visibility::Private {
+            return Ok(props);
+        }
+        let kr = self.keyring(repo).await?;
+        let w = kr.writer(repo)?;
+        let keys = w
+            .epoch_keys(w.write_epoch())
+            .expect("the write epoch's keys are held");
+        let owner = platform::decode_identifier(&self.signer_id()?)?;
+        super::private::seal_props(keys, kind, owner, props, None)
+    }
+
+    /// A fetched document of `kind` as the public codecs read it: itself in a public repo,
+    /// decrypted in a private one; `None` when it is not well-formed or does not open.
+    async fn readable(
+        &self,
+        repo: &RepoRef,
+        kind: ContentKind,
+        d: FetchedDocument,
+    ) -> Result<Option<FetchedDocument>> {
+        if !well_formed(kind, &d, Self::visibility(repo)) {
+            return Ok(None);
+        }
+        if repo.visibility != Visibility::Private {
+            return Ok(Some(d));
+        }
+        let kr = self.keyring(repo).await?;
+        let opened = kr.open(doc_kind(kind), &d);
+        Ok(super::private::open_doc(opened, &d).ok())
+    }
+
+    /// [`Self::readable`] over a list: the rows that read, and how many did not.
+    async fn readable_all(
+        &self,
+        repo: &RepoRef,
+        kind: ContentKind,
+        docs: Vec<FetchedDocument>,
+    ) -> Result<(Vec<FetchedDocument>, usize)> {
+        let total = docs.len();
+        let mut out = Vec::with_capacity(total);
+        for d in docs {
+            if let Some(d) = self.readable(repo, kind, d).await? {
+                out.push(d);
+            }
+        }
+        let hidden = total - out.len();
+        Ok((out, hidden))
     }
 
     /// The signer's identity id.
@@ -908,18 +1027,12 @@ impl<'a> Collab<'a> {
         doc_engine(self.client, identity, bridge)
     }
 
-    /// The forge-v2 contracts of `repo`, refusing private repos.
-    fn forge(repo: &RepoRef) -> Result<&ForgeIds> {
-        repo.require_public("issues, pull requests and releases")?;
-        Ok(repo.forge())
-    }
-
     async fn collab_contract(&self, repo: &RepoRef) -> Result<LoadedContract> {
-        self.client.fetch_contract(&Self::forge(repo)?.collab).await
+        self.client.fetch_contract(&repo.forge().collab).await
     }
 
     async fn core_contract(&self, repo: &RepoRef) -> Result<LoadedContract> {
-        self.client.fetch_contract(&Self::forge(repo)?.core).await
+        self.client.fetch_contract(&repo.forge().core).await
     }
 
     fn repo_filter(repo: &RepoRef) -> Result<QueryFilter> {
@@ -1021,21 +1134,25 @@ impl<'a> Collab<'a> {
         Ok(docs.into_iter().next())
     }
 
-    /// Issue `number` of `repo`, if it exists and is well-formed.
+    /// Issue `number` of `repo`, if it exists, is well-formed and (private) opens.
     pub async fn issue(&self, repo: &RepoRef, number: u32) -> Result<Option<Issue>> {
+        let Some(d) = self.target_doc(repo, TargetKind::Issue, number).await? else {
+            return Ok(None);
+        };
         Ok(self
-            .target_doc(repo, TargetKind::Issue, number)
+            .readable(repo, ContentKind::Issue, d)
             .await?
-            .filter(|d| well_formed(ContentKind::Issue, d, Self::visibility(repo)))
             .map(|d| issue_from_doc(&d)))
     }
 
-    /// Pull request `number` of `repo`, if it exists and is well-formed.
+    /// Pull request `number` of `repo`, if it exists, is well-formed and (private) opens.
     pub async fn patch(&self, repo: &RepoRef, number: u32) -> Result<Option<Patch>> {
+        let Some(d) = self.target_doc(repo, TargetKind::Patch, number).await? else {
+            return Ok(None);
+        };
         Ok(self
-            .target_doc(repo, TargetKind::Patch, number)
+            .readable(repo, ContentKind::Patch, d)
             .await?
-            .filter(|d| well_formed(ContentKind::Patch, d, Self::visibility(repo)))
             .map(|d| patch_from_doc(&d)))
     }
 
@@ -1068,14 +1185,10 @@ impl<'a> Collab<'a> {
                 None,
             )
             .await?;
-        let total = docs.len();
-        let more = total >= limit as usize;
-        let shown: Vec<FetchedDocument> = docs
-            .into_iter()
-            .filter(|d| well_formed(content, d, Self::visibility(repo)))
-            .collect();
+        let more = docs.len() >= limit as usize;
+        let (shown, hidden) = self.readable_all(repo, content, docs).await?;
         Ok(Listed {
-            hidden: total - shown.len(),
+            hidden,
             more,
             rows: shown,
         })
@@ -1159,28 +1272,34 @@ impl<'a> Collab<'a> {
         })
     }
 
-    /// Every well-formed comment on a target, oldest first.
+    /// Every well-formed (and, private, readable) comment on a target, oldest first.
     pub async fn comments(&self, repo: &RepoRef, target_id: &str) -> Result<Vec<Comment>> {
-        let collab = self.collab_contract(repo).await?;
-        Ok(self
-            .by_target(&collab, DOC_COMMENT, "targetId", target_id)
-            .await?
-            .iter()
-            .filter(|d| well_formed(ContentKind::Comment, d, Self::visibility(repo)))
-            .map(comment_from_doc)
-            .collect())
+        Ok(self.comments_counted(repo, target_id).await?.0)
     }
 
-    /// Every well-formed review on a patch, oldest first.
+    /// [`Self::comments`] and how many were hidden (malformed, or not readable to you).
+    pub async fn comments_counted(
+        &self,
+        repo: &RepoRef,
+        target_id: &str,
+    ) -> Result<(Vec<Comment>, usize)> {
+        let collab = self.collab_contract(repo).await?;
+        let docs = self
+            .by_target(&collab, DOC_COMMENT, "targetId", target_id)
+            .await?;
+        let (docs, hidden) = self.readable_all(repo, ContentKind::Comment, docs).await?;
+        Ok((docs.iter().map(comment_from_doc).collect(), hidden))
+    }
+
+    /// Every well-formed review on a patch, oldest first. In a private repo only reviews this
+    /// reader can open are returned, so an unreadable review is never counted (§8.1).
     pub async fn reviews(&self, repo: &RepoRef, patch_id: &str) -> Result<Vec<Review>> {
         let collab = self.collab_contract(repo).await?;
-        Ok(self
+        let docs = self
             .by_target(&collab, DOC_REVIEW, "patchId", patch_id)
-            .await?
-            .iter()
-            .filter(|d| well_formed(ContentKind::Review, d, Self::visibility(repo)))
-            .map(review_from_doc)
-            .collect())
+            .await?;
+        let (docs, _) = self.readable_all(repo, ContentKind::Review, docs).await?;
+        Ok(docs.iter().map(review_from_doc).collect())
     }
 
     // --- reads: folded state --------------------------------------------------------
@@ -1214,6 +1333,17 @@ impl<'a> Collab<'a> {
         base_ref_name: &str,
     ) -> Result<rules::MergeBaseTips> {
         let core = self.core_contract(repo).await?;
+        if repo.visibility == Visibility::Private {
+            let kr = self.keyring(repo).await?;
+            return crate::refs::read_private_merge_base(
+                self.client,
+                &core,
+                &repo.scope()?,
+                &kr,
+                base_ref_name,
+            )
+            .await;
+        }
         crate::refs::read_merge_base(self.client, &core, &repo.scope()?, base_ref_name).await
     }
 
@@ -1428,6 +1558,7 @@ impl<'a> Collab<'a> {
         props: BTreeMap<String, FieldValue>,
     ) -> Result<Numbered> {
         let collab = self.collab_contract(repo).await?;
+        let props = self.seal_if_private(repo, kind.doc_kind(), props).await?;
         let props = Self::with_repo(repo, props)?;
         match self
             .engine()?
@@ -1553,7 +1684,11 @@ impl<'a> Collab<'a> {
         let mut floor = 0u32;
         for attempt in 0..MAX_NUMBER_ATTEMPTS {
             let number = self.next_number(repo, kind).await?.max(floor);
-            let all = Self::with_repo(repo, props(number)?)?;
+            // sealed per number: the AD binds it (§4.4), so a renumbered retry re-seals
+            let sealed = self
+                .seal_if_private(repo, kind.doc_kind(), props(number)?)
+                .await?;
+            let all = Self::with_repo(repo, sealed)?;
             let res = engine
                 .create_journaled(&collab, kind.doc_type(), all, |p| {
                     CreateJournal {
@@ -1655,6 +1790,7 @@ impl<'a> Collab<'a> {
             }
         }
         insert_imported(&mut p, imported)?;
+        let p = self.seal_if_private(repo, DocKind::Comment, p).await?;
         self.write(repo, &collab, DOC_COMMENT, p).await
     }
 
@@ -1696,6 +1832,7 @@ impl<'a> Collab<'a> {
             );
         }
         insert_imported(&mut p, imported)?;
+        let p = self.seal_if_private(repo, DocKind::Review, p).await?;
         self.write(repo, &collab, DOC_REVIEW, p).await
     }
 
@@ -1831,6 +1968,8 @@ impl<'a> Collab<'a> {
 
     /// Publish (or supersede) a release. Maintainer-only at consensus.
     pub async fn create_release(&self, repo: &RepoRef, input: &ReleaseInput) -> Result<String> {
+        // release notes and assets are not encrypted in this release (§7, §12.5)
+        repo.require_public("releases")?;
         if input.tag_name.is_empty() || input.tag_name.len() > 63 {
             return Err(Error::Config("a release tag is 1-63 bytes".into()));
         }
@@ -2337,6 +2476,7 @@ mod tests {
             owner_id: "o".into(),
             created_at: Some(5),
             created_at_block_height: None,
+            updated_at_block_height: None,
             fields: p,
         };
         let issue = issue_from_doc(&doc);
@@ -2457,6 +2597,7 @@ mod tests {
             owner_id: "o".into(),
             created_at: Some(1),
             created_at_block_height: None,
+            updated_at_block_height: None,
             fields,
         };
         let ok = doc(issue_props(1, "t", "", None).unwrap());
@@ -2489,6 +2630,7 @@ mod tests {
             owner_id: "o".into(),
             created_at: Some(1),
             created_at_block_height: None,
+            updated_at_block_height: None,
             fields,
         };
         let honest = patch_props(1, &input, None).unwrap();

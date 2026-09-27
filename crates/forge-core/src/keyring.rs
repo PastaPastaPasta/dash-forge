@@ -840,6 +840,7 @@ pub fn header_of(kind: DocKind, d: &FetchedDocument) -> Option<DocHeader> {
     let mut h = DocHeader::new(kind, owner, epoch);
     h.id = platform::decode_identifier(&d.id).ok();
     h.created_at_block_height = d.created_at_block_height;
+    h.updated_at_block_height = d.updated_at_block_height;
     match kind {
         DocKind::Issue => h.number = u32::try_from(d.field_u64("number")?).ok(),
         DocKind::Patch => {
@@ -2139,6 +2140,7 @@ mod tests {
             owner_id: platform::encode_identifier([0x22; 32]),
             created_at: Some(10),
             created_at_block_height: Some(5),
+            updated_at_block_height: None,
             fields: kind_fields
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v))

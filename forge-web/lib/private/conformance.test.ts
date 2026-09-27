@@ -90,7 +90,11 @@ const SHAPES: Readonly<Record<string, Shape>> = {
   private_doc_open: object({
     repoId: LEAF,
     context: object({ keys: values(LEAF), anchors: values(leaves('id', 'height')), members: LEAF, burned: LEAF }),
-    doc: leaves(...DOC_KEYS, 'id', 'createdAtBlockHeight', 'enc'),
+    doc: leaves(...DOC_KEYS, 'id', 'createdAtBlockHeight', 'updatedAtBlockHeight', 'enc'),
+  }),
+  private_collab_seal: object({
+    ...leafFields('repoId', 'key', 'epoch', 'ownerId', 'docType', 'nonce'),
+    props: values(LEAF),
   }),
   private_pack_seal: SEAL_PACK,
   private_pack_open: object({ ...leafFields('repoId', 'sealed', 'sizeBytes'), keys: values(LEAF) }),
@@ -192,6 +196,54 @@ function toDoc(d: Obj): PrivateDoc {
     force: d['force'] === true,
     baseRefNameHash: optHex(d, 'baseRefNameHash'),
     sourceRefNameHash: optHex(d, 'sourceRefNameHash'),
+  }
+}
+
+/** The sealed fields of each collaboration type, in TLV order (§4.3). */
+const COLLAB_SEALED: Readonly<Record<string, readonly string[]>> = {
+  issue: ['title', 'body'],
+  patch: ['title', 'body', 'baseRefName', 'sourceRefName'],
+  comment: ['body', 'path'],
+  review: ['body'],
+}
+
+/**
+ * The reference transform of `private_collab_seal` (the CLI's `collab::private::seal_props`, the
+ * web's private-writes): the sealed fields leave the plaintext for `enc`, a patch's ref-name
+ * hashes become `HMAC(K_ref,e, name)`, and `epoch` + `enc` are added.
+ */
+async function collabSeal(inp: Obj): Promise<Json> {
+  const docType = str(inp, 'docType') as PrivateDocType
+  const epoch = num(inp, 'epoch')
+  const keys = await EpochKeys.import(hex(inp, 'repoId'), epoch, hex(inp, 'key'))
+  const props = obj(inp, 'props')
+  const sealed = COLLAB_SEALED[docType] as readonly string[]
+  const out: { [k: string]: Json } = {}
+  for (const [k, v] of Object.entries(props)) if (!sealed.includes(k)) out[k] = v
+  const fields: { [k: string]: string } = {}
+  for (const k of sealed) if (k in props) fields[k] = str(props, k)
+  const doc: PrivateDoc = {
+    type: docType,
+    ownerId: privateId(str(inp, 'ownerId')),
+    epoch,
+    number: 'number' in props ? num(props, 'number') : undefined,
+    targetId: optHex(props, 'targetId'),
+    patchId: optHex(props, 'patchId'),
+    baseRefNameHash: fields['baseRefName'] !== undefined ? await refNameHash(keys, fields['baseRefName']) : undefined,
+    sourceRefNameHash: fields['sourceRefName'] !== undefined ? await refNameHash(keys, fields['sourceRefName']) : undefined,
+  }
+  if (docType === 'patch') {
+    delete out['baseRefNameHash']
+    delete out['sourceRefNameHash']
+    if (doc.baseRefNameHash !== undefined) out['baseRefNameHash'] = bytesToHex(doc.baseRefNameHash)
+    if (doc.sourceRefNameHash !== undefined) out['sourceRefNameHash'] = bytesToHex(doc.sourceRefNameHash)
+  }
+  try {
+    const { enc } = await sealDocWithNonce(keys, doc, fields as DocFields, hex(inp, 'nonce'))
+    return { props: { ...out, epoch, enc: bytesToHex(enc) } }
+  } catch (e) {
+    if (e instanceof TooLargeError) return { error: 'tooLarge' }
+    throw e
   }
 }
 
@@ -355,6 +407,8 @@ async function run(v: Vector): Promise<Json> {
         throw e
       }
     }
+    case 'private_collab_seal':
+      return collabSeal(inp)
     case 'private_doc_open': {
       const repoId = hex(inp, 'repoId')
       const c = obj(inp, 'context')
@@ -376,6 +430,7 @@ async function run(v: Vector): Promise<Json> {
         ...toDoc(d),
         id: 'id' in d ? privateId(str(d, 'id')) : undefined,
         createdAtBlockHeight: 'createdAtBlockHeight' in d ? num(d, 'createdAtBlockHeight') : undefined,
+        updatedAtBlockHeight: 'updatedAtBlockHeight' in d ? num(d, 'updatedAtBlockHeight') : undefined,
         enc: hex(d, 'enc'),
       }
       return openJson(await openContent(doc, ctx))
@@ -592,7 +647,7 @@ describe('private-repository conformance vectors', () => {
   }
 
   it('ran every private vector file', () => {
-    expect(PRIVATE_FILES.length).toBeGreaterThanOrEqual(181)
+    expect(PRIVATE_FILES.length).toBeGreaterThanOrEqual(201)
     expect(ran).toBe(PRIVATE_FILES.length)
   })
 })

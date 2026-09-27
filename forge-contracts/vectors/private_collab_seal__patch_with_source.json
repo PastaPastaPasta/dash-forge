@@ -1,0 +1,40 @@
+{
+  "name": "patch_with_source",
+  "description": "a PR from a fork: title, body and both branch names are sealed; the hashes become HMAC(K_ref,0, name); sourceRepoId, headOid, patchManifestHash and draft stay plaintext.",
+  "case": "private_collab_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "docType": "patch",
+    "nonce": "000102030405060708090a0b",
+    "props": {
+      "number": 3,
+      "title": "Add the feature",
+      "body": "Closes #7.",
+      "baseRefName": "refs/heads/main",
+      "sourceRefName": "refs/heads/feature",
+      "sourceRepoId": "5555555555555555555555555555555555555555555555555555555555555555",
+      "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "patchManifestHash": "6666666666666666666666666666666666666666666666666666666666666666",
+      "draft": true,
+      "baseRefNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+      "sourceRefNameHash": "f04dcc3f1497431b1e17f448a1e0d0b7e6ef1f9ae3aa49de22cdc2d60290c3b5"
+    }
+  },
+  "expected": {
+    "props": {
+      "number": 3,
+      "sourceRepoId": "5555555555555555555555555555555555555555555555555555555555555555",
+      "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "patchManifestHash": "6666666666666666666666666666666666666666666666666666666666666666",
+      "draft": true,
+      "baseRefNameHash": "e729d18b929db396450159dfc6256e24302b94c9c3c9eb40643f5ae0be3fe579",
+      "sourceRefNameHash": "d84cb3ab7e73838aa281dc31df409a61ec404c3c5ba7c19eea8ba0f40d3261be",
+      "epoch": 0,
+      "enc": "01000102030405060708090a0b1f7020b3a756cc0d371934d5a54a897bcb787dc66fb163e82af3f17cbaaaebf5116f42eeb4320c7f6b203e992e07a07aa8b9d23f5ae3dd6ea4a2653ebfd2f7509c7874dcaab00424ed9f72865ab9475935bdd1494572"
+    }
+  }
+}

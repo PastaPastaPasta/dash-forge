@@ -69,6 +69,10 @@ pub struct DocHeader {
     /// `$createdAtBlockHeight` (the late-content rule).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at_block_height: Option<u64>,
+    /// `$updatedAtBlockHeight` of a replaceable document (issue, patch, comment): an edit is
+    /// judged by the late-content rule too (§8.2 "edits are judged too").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at_block_height: Option<u64>,
 }
 
 impl DocHeader {
@@ -90,6 +94,7 @@ impl DocHeader {
             source_ref_name_hash: None,
             id: None,
             created_at_block_height: None,
+            updated_at_block_height: None,
         }
     }
 
@@ -400,9 +405,13 @@ pub fn open_content(ctx: &OpenContext, header: &DocHeader, enc: &[u8]) -> Opened
         Opened::Readable(fields) => {
             // step 7; `$createdAtBlockHeight` is required by the schema (§13), and without it
             // the late rule cannot be judged
-            let Some(height) = header.created_at_block_height else {
+            let Some(created) = header.created_at_block_height else {
                 return Opened::Malformed;
             };
+            // an edit re-seals the text: it is as late as its last write (§8.2)
+            let height = header
+                .updated_at_block_height
+                .map_or(created, |u| u.max(created));
             if ctx.is_late(header.epoch, height, &header.owner_id) {
                 Opened::Unreadable(Unreadable::Late)
             } else {

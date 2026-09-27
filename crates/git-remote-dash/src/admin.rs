@@ -43,6 +43,10 @@ pub fn run(rt: &Runtime, args: &[String]) -> Result<()> {
                 _ => bail!("usage: git-remote-dash --dump-refs <owner> <repo>"),
             }
         }
+        Some("--dump-collab") => match (args.get(1), args.get(2)) {
+            (Some(o), Some(r)) => rt.block_on(dump_collab(o, r)),
+            _ => bail!("usage: git-remote-dash --dump-collab <owner> <repo>"),
+        },
         Some("--dump-pack-heads") => match (args.get(1), args.get(2)) {
             (Some(o), Some(r)) => rt.block_on(dump_pack_heads(o, r)),
             _ => bail!("usage: git-remote-dash --dump-pack-heads <owner> <repo>"),
@@ -146,6 +150,42 @@ async fn dump_refs(owner: &str, repo: &str) -> Result<()> {
                 d.created_at.unwrap_or_default(),
                 d.id,
                 d.owner_id,
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Dump the raw issue / patch / comment / review documents of a repo, as stored (diagnostic:
+/// in a private repo every free-text property is absent and `enc` carries it).
+async fn dump_collab(owner: &str, repo: &str) -> Result<()> {
+    let (client, _bridge) = connect().await?;
+    let repo = resolve_named(&client, owner, repo).await?;
+    let collab = client.fetch_contract(&repo.forge().collab).await?;
+    let scope = repo.scope()?;
+    for doc_type in ["issue", "patch", "comment", "review"] {
+        let docs = client
+            .query_all_documents(
+                &collab,
+                doc_type,
+                &scope.filters([]),
+                &[QueryOrder::asc("$createdAt")],
+            )
+            .await?;
+        println!("--- {doc_type}: {} docs ---", docs.len());
+        for d in &docs {
+            let text: Vec<String> = ["title", "body", "path", "baseRefName", "sourceRefName"]
+                .iter()
+                .filter_map(|f| d.field_str(f).map(|v| format!("{f}={v:?}")))
+                .collect();
+            println!(
+                "  id={} epoch={} enc={} baseRefNameHash={} plaintext=[{}]",
+                d.id,
+                d.field_u64("epoch")
+                    .map_or_else(|| "-".into(), |e| e.to_string()),
+                d.field_bytes("enc").map_or(0, |e| e.len()),
+                d.field_hex("baseRefNameHash").unwrap_or_default(),
+                text.join(" ")
             );
         }
     }

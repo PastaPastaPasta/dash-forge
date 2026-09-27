@@ -576,6 +576,7 @@ mod tests {
             // The scan must not depend on `$createdAt` being present.
             created_at: None,
             created_at_block_height: None,
+            updated_at_block_height: None,
             fields,
         }
     }
@@ -858,6 +859,7 @@ mod tests {
                 owner_id: "o".into(),
                 created_at: Some(1),
                 created_at_block_height: None,
+                updated_at_block_height: None,
                 fields,
             }
         };

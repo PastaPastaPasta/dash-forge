@@ -5,8 +5,6 @@
 use anyhow::Result;
 use serde_json::json;
 
-use forge_core::collab::v2::Collab;
-
 use crate::common::Session;
 use crate::context::Ctx;
 use crate::LabelCommand;
@@ -27,7 +25,7 @@ pub async fn run(ctx: &Ctx, cmd: &LabelCommand) -> Result<()> {
 
 async fn list(ctx: &Ctx, repo: &str, all: bool) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
-    let labels = Collab::reader(&s.client).labels(&s.repo).await?;
+    let labels = s.collab().labels(&s.repo).await?;
     let shown: Vec<_> = labels.iter().filter(|l| all || !l.retired).collect();
     ctx.emit(
         json!({
@@ -62,8 +60,14 @@ async fn define(
 ) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
     let verb = if retired { "Retire" } else { "Define" };
+    // docs/security/private-repos.md §7: label names and descriptions stay plaintext
+    let plaintext = if s.repo.visibility == forge_core::rules::v2::Visibility::Private {
+        "; note: label names and descriptions are not encrypted in this release"
+    } else {
+        ""
+    };
     ctx.confirm_or_cancel(&format!(
-        "{verb} label {name:?} in {}? (one small document; members only)",
+        "{verb} label {name:?} in {}? (one small document; members only{plaintext})",
         s.repo.display()
     ))?;
     let id = s

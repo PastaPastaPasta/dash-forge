@@ -230,6 +230,11 @@ async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
     let handle = resolve(&client, &identity, &repo_ref).await?;
 
     let svc = RepoService::new(&client, &identity, &bridge);
+    // A private repo this identity cannot read (no encryption key, not a member, …): say
+    // why, rather than show an empty repo (E306 / E307 and their fixes).
+    if handle.visibility == forge_core::rules::v2::Visibility::Private {
+        svc.keyring(&handle).await?.require_key(&handle)?;
+    }
     let default_branch = svc.read_default_branch(&handle).await.unwrap_or(None);
     let refs = svc.read_refs(&handle).await.unwrap_or_default();
     let manifests = svc.read_pack_manifests(&handle).await.unwrap_or_default();

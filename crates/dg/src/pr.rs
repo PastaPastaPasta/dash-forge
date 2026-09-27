@@ -287,7 +287,7 @@ async fn resolve_head(
 async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
     let handle = &s.repo;
-    let collab = Collab::reader(&s.client);
+    let collab = s.collab();
     let page = collab.list_patches(handle, limit).await?;
     let (hidden, more) = (page.hidden, page.more);
     let oracle = collab.member_oracle(handle).await?;
@@ -341,7 +341,7 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
                 );
             }
             if hidden > 0 {
-                println!("({hidden} malformed document(s) hidden)");
+                println!("{}", crate::fmt::hidden_note(handle, hidden));
             }
             if more {
                 println!(
@@ -400,7 +400,7 @@ fn comments_json(comments: &[forge_core::collab::v2::Comment]) -> Vec<serde_json
 async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
     let (client, handle) = (&s.client, &s.repo);
-    let collab = Collab::reader(client);
+    let collab = s.collab();
     let p = patch(&collab, handle, repo, number).await?;
     let v = collab.patch_view(handle, p).await?;
     let (approvals, reviews) = collab.approvals(handle, &v).await?;
@@ -1031,7 +1031,7 @@ struct Located {
 async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<Located> {
     let s = Session::open(ctx, repo).await?;
     let target = s.repo.id().to_string();
-    let collab = Collab::reader(&s.client);
+    let collab = s.collab();
     let p = patch(&collab, &s.repo, repo, number).await?;
     // The PR's current head: its newest headUpdate, else the head it was opened with.
     let view = collab.patch_view(&s.repo, p).await?;

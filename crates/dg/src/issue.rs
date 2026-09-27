@@ -8,7 +8,7 @@
 use anyhow::Result;
 use serde_json::json;
 
-use forge_core::collab::v2::{Collab, Target};
+use forge_core::collab::v2::Target;
 use forge_core::create::default_journal_dir;
 use forge_core::rules::{EventKind, IssueState};
 
@@ -52,7 +52,7 @@ fn labels_of(state: &IssueState) -> String {
 async fn list(ctx: &Ctx, repo: &str, state: StateArg, limit: u32) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
 
-    let collab = Collab::reader(&s.client);
+    let collab = s.collab();
     let page = collab.list_issues(&s.repo, limit).await?;
     let (hidden, more) = (page.hidden, page.more);
     // (number, title, author, state)
@@ -93,7 +93,7 @@ async fn list(ctx: &Ctx, repo: &str, state: StateArg, limit: u32) -> Result<()> 
                 println!("#{n:<4} {mark:<6} {}{}", safe(title), safe(&labels));
             }
             if hidden > 0 {
-                println!("({hidden} malformed document(s) hidden)");
+                println!("{}", crate::fmt::hidden_note(&s.repo, hidden));
             }
             if more {
                 println!("(the newest issues only; older ones exist: raise --limit, up to 100)");
@@ -106,15 +106,16 @@ async fn list(ctx: &Ctx, repo: &str, state: StateArg, limit: u32) -> Result<()> 
 async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
 
-    let collab = Collab::reader(&s.client);
+    let collab = s.collab();
     let view = collab
         .issue_view(&s.repo, number_arg(number)?)
         .await?
         .ok_or_else(|| not_found(repo, number))?;
     // [(author, body)]
-    let comments = collab
-        .comments(&s.repo, &view.issue.document_id)
-        .await?
+    let (comments, hidden) = collab
+        .comments_counted(&s.repo, &view.issue.document_id)
+        .await?;
+    let comments = comments
         .into_iter()
         .map(|c| (c.author, c.body))
         .collect::<Vec<_>>();
@@ -131,6 +132,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "documentId": id,
             "state": { "open": state.open, "labels": state.labels, "assignees": state.assignees },
             "comments": comments.iter().map(|(a, b)| json!({"author": a, "body": b})).collect::<Vec<_>>(),
+            "hiddenComments": hidden,
         }),
         || {
             let mark = if state.open { "open" } else { "closed" };
@@ -144,6 +146,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             }
             for (a, b) in &comments {
                 println!("\n— {a}:\n{}", safe(b));
+            }
+            if hidden > 0 {
+                println!("\n{}", crate::fmt::hidden_note(&s.repo, hidden));
             }
         },
     );
