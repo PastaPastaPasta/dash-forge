@@ -22,7 +22,9 @@ import { CREDITS_PER_DASH } from '../sdk/cost'
 import { authSdk, type WasmKey } from '../sdk/facade'
 import type { KeyLimits } from '../view/funds'
 import { retryWhileMissing } from '../view/retry'
-import { decodeWif } from './wif'
+import { controlsKey } from './wif'
+
+export { controlsKey }
 
 /** Browser key defaults (spec §2.1). */
 export const BROWSER_KEY_DEFAULTS = { budgetDash: 0.05, days: 90 } as const
@@ -184,22 +186,6 @@ async function withMasterSigner<T>(masterWif: string, fn: (signer: unknown) => P
   } finally {
     signer?.free()
     master?.free()
-  }
-}
-
-/**
- * Whether the private key `wif` controls the identity key `k` (false for a malformed WIF or a
- * key type that cannot be checked). The decoded private-key bytes are zeroed after.
- */
-export function controlsKey(k: Pick<WasmKey, 'validatePrivateKey'>, wif: string, network: Network): boolean {
-  let bytes: Uint8Array | null = null
-  try {
-    bytes = decodeWif(wif).privateKey
-    return k.validatePrivateKey(bytes, network)
-  } catch {
-    return false
-  } finally {
-    bytes?.fill(0)
   }
 }
 

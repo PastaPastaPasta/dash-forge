@@ -32,6 +32,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 
 import type { Network } from '../constants'
 import { base58Encode } from '../auth/base58'
+import { controlsKey } from '../auth/wif'
 import { previewCreate, previewDelete, type CostPreview } from './cost'
 import { base64ToBytes, bytesToBase64 } from './query'
 
@@ -111,21 +112,13 @@ export async function findSigningKey(
   network: Network,
   requiredLevel: number,
 ): Promise<{ publicKey: unknown; keyId: number; securityLevel: number } | null> {
-  const { PrivateKey } = await import('@dashevo/evo-sdk')
-  const pkBytes = PrivateKey.fromWIF(wif).toBytes()
   for (const key of identity.publicKeys) {
     if (key.purposeNumber !== PURPOSE_AUTHENTICATION) continue
     // A disabled or expired key would be refused at signature validation; skip it so a
     // stale session reports "no usable key" instead of an opaque consensus error.
     if (key.disabledAt !== undefined) continue
     if (key.expiresAt !== undefined && key.expiresAt <= BigInt(Date.now())) continue
-    let matches = false
-    try {
-      matches = key.validatePrivateKey(pkBytes, network)
-    } catch {
-      matches = false
-    }
-    if (!matches) continue
+    if (!controlsKey(key, wif, network)) continue
     // MASTER (0) is not usable for document ops; require CRITICAL/HIGH range that is at
     // least as privileged as the requirement.
     if (key.securityLevelNumber === SECURITY_LEVEL.MASTER) continue

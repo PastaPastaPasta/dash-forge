@@ -8,6 +8,7 @@
 
 import { base58CheckDecode, base58CheckEncode } from './base58'
 import type { Network } from '../constants'
+import type { WasmKey } from '../sdk/facade'
 
 /** Dash WIF version prefixes. */
 export const TESTNET_WIF_PREFIX = 0xef
@@ -133,4 +134,20 @@ export function normalizeToWif(input: string, network: Network): string {
   const parsed = parsePrivateKey(input)
   if (parsed.format === 'wif' && parsed.network === wifNetwork(network)) return input.trim()
   return encodeWif(parsed.privateKey, network, true)
+}
+
+/**
+ * Whether the private key `wif` controls the identity key `k` (false for a malformed WIF or a
+ * key type that cannot be checked). The decoded private-key bytes are zeroed after.
+ */
+export function controlsKey(k: Pick<WasmKey, 'validatePrivateKey'>, wif: string, network: Network): boolean {
+  let bytes: Uint8Array | null = null
+  try {
+    bytes = decodeWif(wif).privateKey
+    return k.validatePrivateKey(bytes, network)
+  } catch {
+    return false
+  } finally {
+    bytes?.fill(0)
+  }
 }

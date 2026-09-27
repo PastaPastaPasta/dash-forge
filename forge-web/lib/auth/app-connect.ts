@@ -345,6 +345,8 @@ export async function awaitWalletAnswer(
   const settleMs = p.settleMs ?? 3000
   /** Per answering identity: its answer, null (retry), or why it cannot be used. */
   const answered = new Map<string, WalletAnswer | UnusableWalletKey | null>()
+  /** Every identity whose response decrypted with this request's key. */
+  const responders = new Set<string>()
   /** When the current run of complete reads began (0 while the last read was incomplete). */
   let cleanSince = 0
   let firstAt = 0
@@ -359,6 +361,8 @@ export async function awaitWalletAnswer(
         if (prior !== undefined && prior !== null) continue
         const keys = await decrypt(req, r)
         if (keys === null) continue
+        // It decrypted: this identity saw the QR and answered, whatever its keys turn out to be.
+        responders.add(r.ownerId)
         let answer: WalletAnswer | UnusableWalletKey | null = null
         try {
           answer = await answerFor(sdk, r, keys, { network: p.network, forge: p.forge, contractId: req.contractId })
@@ -373,9 +377,10 @@ export async function awaitWalletAnswer(
         answered.set(r.ownerId, answer)
         if (answer !== null && firstAt === 0) firstAt = now()
       }
-      // Only decided answers count (usable or refused); one still waiting for a read does not.
+      // Every identity whose answer decrypted counts, decided or still waiting for a read: an
+      // attacker's quick answer must not win over the user's slow one.
+      if (responders.size > 1) throw new AmbiguousWalletLogin([...responders])
       const decided = [...answered.entries()].filter(([, a]) => a !== null)
-      if (decided.length > 1) throw new AmbiguousWalletLogin(decided.map(([id]) => id))
       const t = now()
       if (round.complete) {
         if (cleanSince === 0) cleanSince = t

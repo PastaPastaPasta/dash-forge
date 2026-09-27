@@ -599,9 +599,21 @@ export class AuthController {
    * stored private key controls ({@link heldToDisable}).
    */
   private heldKeys(identityId: string): (HeldKey | ExtraKey)[] {
-    const secret = unlockedSecret(this.network, identityId)
+    const secret = this.unlockedVaultSecret(identityId)
     if (!secret) return []
-    return [{ keyId: secret.keyId, wif: secret.wif }, ...(secret.extra ?? [])]
+    return [{ keyId: secret.keyId, wif: secret.wif }, ...(secret.extra ?? [])].filter((k) => k.keyId >= 0)
+  }
+
+  /**
+   * The unlocked secret of `identityId` when it is the VAULT's (a signed-in vault session), else
+   * null. A pasted raw key (tab-only, key id -1) is also held unlocked, but it is not the vault:
+   * it must never be stored, carried into a vault, or stand in for an unlocked vault.
+   */
+  private unlockedVaultSecret(identityId: string): VaultSecret | null {
+    const session = this.state.session
+    if (session?.identityId !== identityId || session.storage !== 'vault') return null
+    const secret = unlockedSecret(this.network, identityId)
+    return secret && secret.keyId >= 0 ? secret : null
   }
 
   /**
@@ -611,7 +623,7 @@ export class AuthController {
    * must be unlocked first, so every key it holds is disabled in the same update.
    */
   private async assertUnlockedIfWalletKeys(sdk: EvoSDK, identityId: string, storedKeyId: number): Promise<void> {
-    if (unlockedSecret(this.network, identityId)) return
+    if (this.unlockedVaultSecret(identityId)) return
     const identity = await authSdk(sdk).identities.fetch(identityId)
     const k = identity?.publicKeys.find((x) => x.keyId === storedKeyId)
     const liveOther = k !== undefined && k.disabledAt === undefined && !isForgeBrowserKey(k)

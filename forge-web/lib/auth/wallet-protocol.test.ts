@@ -424,6 +424,16 @@ describe('login poll against a simulated wallet', () => {
     await expect(awaitWalletAnswer(chain2.sdk, req2, { ...fast, identityId: ALICE })).rejects.toThrow(/outside Dash Forge/)
   })
 
+  it('counts an answer still waiting for its key read: a quick stranger does not win', async () => {
+    const chain = fakeChain()
+    const req = newLoginRequest('devnet', FORGE.core)
+    // ALICE answered, but her key is not visible on chain yet (App Connect registers first,
+    // a lagging node does not show it): undecided. MALLORY's key is there.
+    await chain.answer(req.uri, ALICE, { source: 'app-connect', register: false })
+    await chain.answer(req.uri, MALLORY, { source: 'app-connect', chainKey: new Uint8Array(32).fill(0x22) })
+    await expect(awaitWalletAnswer(chain.sdk, req, fast)).rejects.toBeInstanceOf(AmbiguousWalletLogin)
+  })
+
   it('reads a contractId the SDK renders base64 as well as base58', async () => {
     const chain = fakeChain()
     const req = newLoginRequest('devnet', FORGE.core)

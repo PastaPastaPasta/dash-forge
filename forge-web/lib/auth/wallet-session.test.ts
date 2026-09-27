@@ -236,6 +236,21 @@ describe('wallet session', () => {
     expect(chainCalls.revoke).toHaveLength(0)
   }, 30_000)
 
+  it('never carries a pasted raw key into the vault, and a raw session is not an unlocked vault', async () => {
+    const raw = wifOf(9)
+    keys.push(key(9, raw, null, { securityLevelNumber: 1 }))
+    await controller.loginWithRawKey(ID, raw)
+    await controller.adoptWalletKeys(ID, [coreKey()], PASS)
+    controller.logout()
+    await controller.unlock(ID, PASS)
+    const { unlockedSecret } = await import('./vault')
+    expect(unlockedSecret(NET, ID)?.extra ?? []).toEqual([])
+    // Locked wallet vault + a raw session for the same identity: renewal still refused.
+    controller.logout()
+    await controller.loginWithRawKey(ID, raw)
+    await expect(controller.importIdentity({ fileText: '{}' }, PASS)).rejects.toThrow(/Unlock first/)
+  }, 60_000)
+
   it('refuses to open a session on a key bound to another app', async () => {
     keys[1] = key(5, wifOf(5), { $type: 'singleContract', id: 'H8F9mP1BM55TE1ShsxPZHzhyinaMdY9bMmP85mkDhcJJ' })
     await expect(
