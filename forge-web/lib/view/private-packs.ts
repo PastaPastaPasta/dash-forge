@@ -39,13 +39,14 @@ export class SuspectPackError extends Error {
 }
 
 /** Throw unless the copy's standing lets it be read; record a suspect upload on the session. */
-function assertStanding(session: PrivateSession, copy: PackManifest, headerEpoch: number): void {
-  // Every copy names the same sealed bytes: the pack is read if ANY copy qualifies (a current
-  // member attesting the bytes makes them readable whoever else uploaded them; parity with
-  // forge-core `open_artifact_of`). A manifest with no block height cannot be judged (§8.1): it
-  // never qualifies.
+function assertStanding(session: PrivateSession, copy: PackManifest, headerEpoch: number, attesting: readonly PackManifest[]): void {
+  // A manifest with no block height cannot be judged (§8.1): it never qualifies. `attesting`:
+  // the manifests whose standing counts. For a WHOLE artifact whose sealed bytes were checked
+  // against `packHash`, every copy of that hash (they name those exact bytes): read if any
+  // qualifies, a current member attesting them (as forge-core's whole-artifact
+  // `open_artifact_of`). A ranged read cannot hash its bytes: only the copy it read from counts.
   let readable = false
-  for (const m of copy.copies ?? [copy]) {
+  for (const m of attesting) {
     if (m.createdAtBlockHeight === undefined || m.createdAtBlockHeight <= 0) continue
     let owner: Uint8Array
     try {
@@ -82,7 +83,7 @@ export async function readPrivateRange(
   const header = session.headerCache.get(copy.packHash.toLowerCase(), copy.documentId)
   if (header === undefined) throw new PackError('sealedPackCorrupt')
   try {
-    assertStanding(session, copy, header.epoch)
+    assertStanding(session, copy, header.epoch, [copy])
   } catch (e) {
     bytes.fill(0)
     throw e
@@ -94,12 +95,18 @@ export async function readPrivateRange(
  * The plaintext of a whole sealed copy: its sealed bytes must hash to `packHash` (§3.4, checked
  * here), then its standing, then every segment decrypts. `sealed` is not kept.
  */
-export async function openPrivateArtifact(session: PrivateSession, copy: PackManifest, sealed: Uint8Array): Promise<Uint8Array> {
+export async function openPrivateArtifact(
+  session: PrivateSession,
+  copy: PackManifest,
+  sealed: Uint8Array,
+  /** Every copy of this pack (all name the same `packHash`); defaults to `copy` alone. */
+  copies: readonly PackManifest[] = copy.copies ?? [copy],
+): Promise<Uint8Array> {
   if (session.closed) throw new Error('this private-repo session has ended; reload')
   if (sealed.length !== copy.sizeBytes || bytesToHex(sha256(sealed)) !== copy.packHash.toLowerCase()) {
     throw new PackError('sealedPackCorrupt')
   }
-  assertStanding(session, copy, parseHeader(sealed).epoch)
+  assertStanding(session, copy, parseHeader(sealed).epoch, copies)
   const parts: Uint8Array[] = []
   for await (const segment of openPackStream(sealed, copy.sizeBytes, session.ctx.keys)) parts.push(segment)
   return concatBytes(...parts)

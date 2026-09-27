@@ -27,6 +27,8 @@ const chain: Record<string, Doc[]> = {}
 const signed = new Map<string, Doc>()
 /** How many more writes of each type fail as "sent, not visible yet" after landing. */
 const unconfirm: Record<string, number> = {}
+/** How many more writes of each type fail before landing (a network error). */
+const failNext: Record<string, number> = {}
 /** Writes that land but stay invisible to reads (a lagging node). */
 const hidden = new Set<string>()
 let height = 1000
@@ -60,6 +62,10 @@ vi.mock('../sdk/write', async (orig) => {
   return {
     ...real,
     createDocumentIdempotent: async (_sdk: unknown, auth: { identityId: string }, p: { documentType: string; data: Doc; intent?: string }) => {
+      if ((failNext[p.documentType] ?? 0) > 0) {
+        failNext[p.documentType] = (failNext[p.documentType] ?? 0) - 1
+        throw new Error('network: request failed')
+      }
       const key = `${auth.identityId}:${p.documentType}:${p.intent ?? nextId()}`
       let doc = signed.get(key)
       if (doc === undefined) {
@@ -103,6 +109,9 @@ vi.mock('../sdk/write', async (orig) => {
 vi.mock('../sdk/facade', async (orig) => ({ ...(await orig<typeof import('../sdk/facade')>()), sleep: async () => undefined }))
 
 let members: Membership[] = []
+let revokeFails = false
+/** Identities with no encryption key (they cannot be wrapped). */
+const keyless = new Set<string>()
 /** What a lagging node answers for the member list (null: the truth). */
 let staleMembers: Membership[] | null = null
 /** One-off answers for the next member-list reads, in order (a node per read). */
@@ -122,6 +131,7 @@ vi.mock('./writes', async (orig) => {
   return {
     ...real,
     revokeMember: async (_s: unknown, _a: unknown, _r: unknown, memberId: string, role: string) => {
+      if (revokeFails) throw new Error('network: revoke failed')
       members = members.filter((m) => !(m.identity === memberId && m.role === role))
       return { deleted: true, actualCredits: 0 }
     },
@@ -144,7 +154,7 @@ const encKey = (keyId = 4): EncKeyLike => ({ keyId, purposeNumber: 1, keyTypeNum
 
 const sdk = {
   documents: { query: async (q: DocumentQuery) => query(q), count: async () => new Map() },
-  identities: { fetch: async () => ({ publicKeys: [encKey()], balance: 0n }) },
+  identities: { fetch: async (id: string) => ({ publicKeys: keyless.has(id) ? [] : [encKey()], balance: 0n }) },
 } as unknown as EvoSDK
 
 /** Fake wrap ops: a wrap "encrypts" the raw key as itself; anyone in the test can open it. */
@@ -203,8 +213,11 @@ beforeEach(async () => {
   signed.clear()
   hidden.clear()
   for (const k of Object.keys(unconfirm)) delete unconfirm[k]
+  for (const k of Object.keys(failNext)) delete failNext[k]
+  revokeFails = false
   staleMembers = null
   readQueue.length = 0
+  keyless.clear()
   members = [
     { identity: b58(ALICE), role: 'maintainer', createdAt: 1 },
     { identity: b58(BOB), role: 'writer', createdAt: 2 },
@@ -283,6 +296,66 @@ describe('keys never reach a removed member', () => {
     const wrapsBefore = (chain['repoKey'] ?? []).length
     await expect(rotateRepoKey(ctx, [], 'flip')).rejects.toThrow(/member list is still changing/)
     expect((chain['repoKey'] ?? []).length).toBe(wrapsBefore)
+  })
+})
+
+describe('review round 3', () => {
+  it('#3 a remaining member with no encryption key does not block a rotation their earlier wrap reached', async () => {
+    // BOB has no key now; an earlier run of a repair rotation wrapped epoch 1 to ALICE and BOB
+    // (BOB had a key then). A repair rotation (nobody excluded) resumes epoch 1: BOB is still a
+    // member, so his wrap there is no leak.
+    wrap(ALICE, ALICE, 1, new Uint8Array(32).fill(0x31))
+    wrap(ALICE, BOB, 1, new Uint8Array(32).fill(0x31))
+    keyless.add(b58(BOB))
+    await expect(rotateRepoKey(ctx, [], 'repair-bob')).resolves.toBe(1)
+  })
+
+  it('#4 a rotation that fails after the revoke runs the repair check on its own', async () => {
+    // The rotation's anchor write fails once; the removal then repairs by itself (a fresh
+    // rotation that excludes CAROL), so CAROL never keeps the current key.
+    failNext['config'] = 1
+    const steps: string[] = []
+    await removePrivateMember(ctx, b58(CAROL), 'writer', 'rm-auto', (s) => steps.push(s.kind)).catch(() => undefined)
+    const s = await aliceSession()
+    const cur = s.resolution.currentEpoch as number
+    expect(cur).toBeGreaterThanOrEqual(1)
+    expect((chain['repoKey'] ?? []).some((d) => d['epoch'] === cur && d['memberId'] === b58(CAROL))).toBe(false)
+  })
+
+  it('#5 a lost rotation reports lost, never anchored', async () => {
+    // Another maintainer anchors epoch 1 first (their config comes before ours by height).
+    members.push({ identity: b58(BOB), role: 'maintainer', createdAt: 5 })
+    const theirs = await EpochKeys.import(REPO, 1, new Uint8Array(32).fill(0x42))
+    await anchor(BOB, theirs, { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
+    hidden.add(String((chain['config'] ?? []).at(-1)?.['$id']))
+    const steps: string[] = []
+    const run = rotateRepoKey(ctx, [], 'race', (s) => {
+      steps.push(s.kind)
+      if (s.kind === 'waiting') hidden.clear()
+    })
+    await expect(run).rejects.toThrow(/first/)
+    expect(steps).toContain('lost')
+    expect(steps).not.toContain('anchored')
+  })
+
+  it('#7 a re-anchor this signer already posted is not paid for twice', async () => {
+    // BOB, a maintainer, anchored epoch 1 (ALICE was wrapped by BOB and by herself).
+    members.push({ identity: b58(BOB), role: 'maintainer', createdAt: 5 })
+    const k1raw = new Uint8Array(32).fill(0x71)
+    const k1 = await EpochKeys.import(REPO, 1, k1raw)
+    await anchor(BOB, k1, { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
+    wrap(BOB, ALICE, 1, k1raw)
+    wrap(ALICE, ALICE, 1, k1raw)
+    wrap(BOB, CAROL, 1, k1raw)
+    const e1 = (): number => (chain['config'] ?? []).filter((d) => d['epoch'] === 1).length
+    // First attempt re-anchors epoch 1 under ALICE, then fails at the revoke.
+    revokeFails = true
+    await expect(removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-a')).rejects.toThrow(/revoke failed/)
+    revokeFails = false
+    expect(e1()).toBe(2)
+    // The retry (a new confirm) sees ALICE's re-anchor with the same commitment: none posted.
+    await removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-b').catch(() => undefined)
+    expect(e1()).toBe(2)
   })
 })
 

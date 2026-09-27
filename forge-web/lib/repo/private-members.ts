@@ -240,6 +240,7 @@ export type RotationStep =
   | { readonly kind: 'waiting'; readonly what: string }
   | { readonly kind: 'wrapped'; readonly identity: string; readonly epoch: number }
   | { readonly kind: 'anchored'; readonly epoch: number }
+  | { readonly kind: 'lost'; readonly epoch: number }
   | { readonly kind: 'reanchored'; readonly epoch: number }
 
 /** A fresh session (§5.3: anchors are re-read before every write). */
@@ -526,10 +527,8 @@ export async function rotateRepoKey(
       // Their key is the repo's key now. If they rotated from a member list that still had the
       // removed member, that member holds it: the repair check (with this removal's drop) finds
       // and rotates that. A second loss in a row is reported rather than chased.
-      if (!afterLoss) {
-        await runRepair(c, `${intent}:after-lost`, onStep, drop, true)
-        onStep?.({ kind: 'anchored', epoch })
-      }
+      onStep?.({ kind: 'lost', epoch })
+      if (!afterLoss) await runRepair(c, `${intent}:after-lost`, onStep, drop, true)
       throw new PrivateMembersError(`another maintainer rotated to epoch ${epoch} first; their key is the repo's key, and the repair check ran after it.`, 'E310')
     }
     if (verdict === 'mismatch') {
@@ -602,7 +601,7 @@ async function rotateWith(
       }
       // Step 3: the anchor. First, a fresh read of every wrap this signer posted at this epoch: the
       // key goes on only if none of them reached an identity it must not (a removed member).
-      await assertNotLeaked(c, plan.epoch, plan.recipients.map((r) => r.identity))
+      await assertNotLeaked(c, plan.epoch, [...plan.recipients.map((r) => r.identity), ...plan.unreachable])
       const fields = { ...currentConfigFields(session), prevEpoch: plan.from, prevEpochKey: kn.raw }
       const enc = await sealDoc(next.keys, { type: 'config', ownerId: decodeIdentifier(c.auth.identityId), epoch: plan.epoch }, fields, { anchor: true })
       await postConfig(
@@ -686,6 +685,12 @@ export function removalEffect(members: readonly Membership[], memberId: string, 
   return role === 'maintainer' ? 'rotate-keep' : 'none'
 }
 
+/** A rotation error after the membership was deleted: the Remove button is gone by then. */
+function afterRevoke(e: unknown): Error {
+  const reason = e instanceof Error ? e.message : String(e)
+  return new PrivateMembersError(`the member was removed, but the key was not rotated yet (${reason}). Open Repair on the repo page to finish.`, 'E310')
+}
+
 /**
  * Remove a member's role (owner only) and rotate as {@link removalEffect} says (§5.5): delete the
  * membership, wait until the list no longer shows it, then {@link rotateRepoKey}, excluding them
@@ -706,8 +711,14 @@ export async function removePrivateMember(
       await reanchorEpochsOf(c, s, memberId, intent, onStep)
       return s.resolution.currentEpoch ?? undefined
     })
-    // The re-anchors must now be what each epoch falls back to once the role goes.
-    await withFreshSession(c, async (s) => assertAnchorsSurvive(s, memberId))
+    // The re-anchors must now be what each epoch falls back to once the role goes (a few reads:
+    // the re-anchors may not be visible on the first node).
+    for (let i = 0; ; i++) {
+      const changed = await withFreshSession(c, async (s) => anchorsWithout(s, memberId).changed)
+      if (changed.length === 0) break
+      if (i + 1 >= SURVIVE_POLLS) throw anchorsWouldChange(changed)
+      await sleep(POLL_MS)
+    }
   }
   await revokeMember(c.sdk, c.auth, c.repo, memberId, role)
   onStep?.({ kind: 'deleted' })
@@ -717,7 +728,20 @@ export async function removePrivateMember(
   if (effect === 'none') return null
   // A lagging node may still list the deleted role: every read from here on drops it.
   const drop = [{ identity: memberId, ...(effect === 'rotate-exclude' ? {} : { role }) }]
-  const epoch = await rotateRepoKey(c, effect === 'rotate-exclude' ? [memberId] : [], intent, onStep, drop, before)
+  let epoch: number | null = null
+  try {
+    epoch = await rotateRepoKey(c, effect === 'rotate-exclude' ? [memberId] : [], intent, onStep, drop, before)
+  } catch (e) {
+    // The membership is gone; the key must still move. The repair check (below) rotates when the
+    // removed member still holds the current key. If that fails too, the page's Repair finishes it.
+    onStep?.({ kind: 'waiting', what: 'the repair check after a failed rotation' })
+    try {
+      await runRepair(c, `${intent}:repair`, onStep, drop)
+    } catch {
+      throw afterRevoke(e)
+    }
+    return null
+  }
   // Once more, the repair check (§5.6): a concurrent rotation that lost, or one by a maintainer
   // who did not exclude this member, shows up here and is fixed now.
   await runRepair(c, `${intent}:repair`, onStep, drop)
@@ -754,15 +778,20 @@ export function anchorsWithout(session: PrivateSession, leaving: string): { chan
   return { changed: changed.sort((x, y) => x - y) }
 }
 
-/** Refuse a maintainer's removal whose epochs would lose their key (a re-anchor not visible, or another maintainer's config first). */
-function assertAnchorsSurvive(session: PrivateSession, leaving: string): void {
-  const { changed } = anchorsWithout(session, leaving)
-  if (changed.length > 0) {
-    throw new PrivateMembersError(
-      `removing this maintainer would change the key of epoch ${changed.join(', ')} (another config comes first, or the re-anchor is not visible yet); nothing was removed. Try again in a moment, or repair first.`,
-      'E310',
-    )
-  }
+/** How many reads before a maintainer's removal is refused because an epoch would change key. */
+const SURVIVE_POLLS = 4
+
+/** The refusal when a maintainer's removal would change an epoch's key (nothing was removed). */
+function anchorsWouldChange(changed: readonly number[]): PrivateMembersError {
+  return new PrivateMembersError(
+    `removing this maintainer would change the key of epoch ${changed.join(', ')} (another config comes first, or the re-anchor is not visible yet); nothing was removed. Try again in a moment.`,
+    'E310',
+  )
+}
+
+/** Whether a config's `enc` (v0x02) carries commitment `commit`. */
+function cfgCommitIs(enc: Uint8Array, commit: Uint8Array): boolean {
+  return enc.length >= 61 && enc[0] === 0x02 && bytesEqual(enc.subarray(1, 33), commit)
 }
 
 /** The epochs whose anchor `memberId` wrote (the ones that go when their maintainer role does). */
@@ -825,6 +854,12 @@ async function reanchorEpochsOf(
     const keys = session.resolution.keys.get(e) as EpochKeys
     const anchor = session.resolution.anchors.get(e)
     if (anchor === undefined) continue
+    // Already re-anchored by this signer (an earlier attempt): a config of ours at this epoch
+    // with the same commitment. Never pay for it twice.
+    if (session.configRows.some((cfg) => cfg.epoch === e && bytesEqual(cfg.owner, self) && anchor.commit !== null && cfgCommitIs(cfg.enc, anchor.commit))) {
+      onStep?.({ kind: 'reanchored', epoch: e })
+      continue
+    }
     // The anchor's own chain pair (an epoch-0 anchor has none).
     const opened = await openContent(
       { type: 'config', ownerId: anchor.owner, epoch: e, id: anchor.id, createdAtBlockHeight: anchor.height, enc: anchor.config.enc },
