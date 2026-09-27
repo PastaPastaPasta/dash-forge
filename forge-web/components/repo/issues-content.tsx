@@ -173,7 +173,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
               allowNone
               onChange={(assignee) => change({ assignee })}
             />
-            <label className="inline-flex items-center gap-1.5 text-dense text-anvil-600 dark:text-anvil-300">
+            <label className="inline-flex items-center gap-1.5 text-dense text-anvil-600 dark:text-anvil-300 coarse:min-h-11 coarse:min-w-11">
               <input
                 type="checkbox"
                 checked={query.mentions}
@@ -188,7 +188,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
               id="issue-sort"
               value={query.sort}
               onChange={(e) => change({ sort: e.target.value as IssueListQuery['sort'] })}
-              className="rounded-md border border-anvil-300 bg-white px-2 py-1 text-dense dark:border-anvil-700 dark:bg-anvil-950"
+              className="rounded-md border border-anvil-300 bg-white px-2 py-1 text-dense dark:border-anvil-700 dark:bg-anvil-950 coarse:h-11"
             >
               <option value="newest">Newest</option>
               <option value="oldest">Oldest</option>
@@ -221,11 +221,11 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                 )}
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <Link href={repoHref('/repo/issue', addr, { number: String(issue.number) })} className="text-dense font-medium text-anvil-900 hover:text-forge-700 dark:hover:text-forge-400 dark:text-anvil-50">
+                    <Link href={repoHref('/repo/issue', addr, { number: String(issue.number) })} className="hit-area text-dense font-medium text-anvil-900 hover:text-forge-700 dark:hover:text-forge-400 dark:text-anvil-50">
                       {issue.title || '(untitled)'}
                     </Link>
                     {issue.state.labels.map((l) => (
-                      <button key={l} type="button" onClick={() => change({ labels: query.labels.includes(l) ? query.labels : [...query.labels, l] })} aria-label={`Filter by label ${l}`}>
+                      <button key={l} type="button" onClick={() => change({ labels: query.labels.includes(l) ? query.labels : [...query.labels, l] })} aria-label={`Filter by label ${l}`} className="hit-area">
                         <LabelChip name={l} def={labelDefs.get(l)} />
                       </button>
                     ))}
@@ -310,7 +310,7 @@ function LabelFilter({ labels, selected, onChange }: { labels: readonly LabelDef
         aria-expanded={open}
         aria-haspopup="listbox"
         onClick={() => setOpen((o) => !o)}
-        className="rounded-md border border-anvil-300 px-2 py-1 text-dense dark:border-anvil-700"
+        className="rounded-md border border-anvil-300 px-2 py-1 text-dense dark:border-anvil-700 coarse:min-h-11 coarse:px-3"
       >
         Label{selected.length ? ` (${selected.length})` : ''}
       </button>
@@ -326,7 +326,7 @@ function LabelFilter({ labels, selected, onChange }: { labels: readonly LabelDef
                 role="option"
                 aria-selected={on}
                 onClick={() => onChange(on ? selected.filter((x) => x !== n) : [...selected, n])}
-                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-dense hover:bg-anvil-100 dark:hover:bg-anvil-850"
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-dense hover:bg-anvil-100 dark:hover:bg-anvil-850 coarse:min-h-11"
               >
                 <input type="checkbox" readOnly checked={on} tabIndex={-1} aria-hidden className="accent-forge-600" />
                 <LabelChip name={n} def={byName.get(n)} />
@@ -367,7 +367,7 @@ function PersonFilter({
           if (v === 'id') setId('')
           else onChange(v === '' ? null : v)
         }}
-        className="rounded-md border border-anvil-300 bg-white px-2 py-1 text-dense dark:border-anvil-700 dark:bg-anvil-950"
+        className="rounded-md border border-anvil-300 bg-white px-2 py-1 text-dense dark:border-anvil-700 dark:bg-anvil-950 coarse:h-11"
       >
         <option value="">anyone</option>
         <option value="me" disabled={!signedIn}>me</option>
