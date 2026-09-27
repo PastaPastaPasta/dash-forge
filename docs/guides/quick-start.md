@@ -127,7 +127,7 @@ dg doctor --fix     # free, local fixes only: file modes, and a cost guard for g
 
 `dg doctor --fix` sets `git config --global dash.costWarnThreshold 0.01` if you have no threshold yet, so that a push asks before spending more than 0.01 DASH. It never spends anything.
 
-Your identity id is the long base58 string, such as `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB`. You will use it in repository addresses. A DPNS username is optional: `dg auth name register <label>`. The web app resolves names (`forge.dashhq.org/alice/project`); `dash://` addresses and `dg` do not yet (**coming soon**).
+Your identity id is the long base58 string, such as `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB`. You will use it in repository addresses. A DPNS username is optional: `dg auth name register <label>`. Names work everywhere a repository address does: `forge.dashhq.org/alice/project`, `git clone dash://alice/project` and `dg … alice/project`.
 
 ---
 

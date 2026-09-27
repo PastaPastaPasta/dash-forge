@@ -27,7 +27,7 @@ You create an identity by locking some Dash in an *asset lock* transaction. The 
 
 Create one from the terminal with `dg auth new`, in the web app (**Sign in → Create a new identity**), or with the Dash bridge (<https://bridge.thepasta.org>). All three derive the same keys from the same 12 words, so an identity made in one opens in the others. The [quick start](quick-start.md#2-get-an-identity) walks through `dg auth new`.
 
-**Usernames.** Platform has a name service, DPNS. Register a username with `dg auth name register <label>` (it needs your identity file or the 12 words once) or in the bridge. Names of 3–19 characters made only of `a`–`z`, `0`, `1` and `-` are *contested*: they go to a masternode vote, and `dg` refuses them. The web app resolves usernames: `forge.dashhq.org/alice/project`, `@alice` in the header's jump box, and names on profiles and in the wallet sign-in confirmation. The CLI does not yet: `dash://alice/project` and `dg … alice/project` need the identity id in place of `alice`. **Coming soon:** DPNS names in `dash://` addresses and `dg`.
+**Usernames.** Platform has a name service, DPNS. Register a username with `dg auth name register <label>` (it needs your identity file or the 12 words once) or in the bridge. Names of 3–19 characters made only of `a`–`z`, `0`, `1` and `-` are *contested*: they go to a masternode vote, and `dg` refuses them. The web app resolves usernames: `forge.dashhq.org/alice/project`, `@alice` in the header's jump box, and names on profiles and in the wallet sign-in confirmation. So does the CLI: `git clone dash://alice/project` and `dg … alice/project` resolve `alice` (or `alice.dash`) through DPNS, proof-verified. The identity id still works everywhere.
 
 ---
 

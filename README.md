@@ -52,7 +52,7 @@ You need Rust and `protoc` 25 or newer to build ([BUILDING.md](docs/BUILDING.md)
 - **Check everything.** A Verification card on every repository page says what was proven and how, including a cross-check of the quorum keys against a second source.
 - **Wire up CI.** `dg webhook add` plus a relay you run yourself (`forge-relay`) turn on-chain activity into GitHub-shaped webhooks, with a durable retry queue.
 
-**Coming soon:** opening pull requests, inline review comments, forks and real merges in the browser; DPNS usernames in `dash://` addresses and `dg` (the web app already resolves them); prebuilt releases.
+**Coming soon:** opening pull requests, inline review comments, forks and real merges in the browser; prebuilt releases.
 
 ## Guides
 

@@ -40,10 +40,46 @@ pub fn repo_ref_from_doc(forge: &ForgeIds, doc: &FetchedDocument) -> Result<Repo
     })
 }
 
-/// Resolve `owner/name` (owner a base58 identity id).
+/// Whether `s` is plausibly a base58 identity id (a 32-byte id is 40-44 base58 characters,
+/// an alphabet without `0`, `O`, `I` and `l`), rather than a DPNS name. A DPNS label is at
+/// most 63 characters of `a-z0-9-` and may be as long, so an all-lowercase 40+ character
+/// string that also decodes as an id is ambiguous: the id reading wins, as in `dg`.
+pub fn looks_like_identity_id(s: &str) -> bool {
+    (40..=44).contains(&s.len())
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() && !matches!(c, '0' | 'O' | 'I' | 'l'))
+        && platform::decode_identifier(s).is_ok()
+}
+
+/// The identity id `owner` names: `owner` itself when it is a base58 identity id, else a
+/// DPNS name (`alice`, `alice.dash`) resolved to the identity its `domain` record points at
+/// (proof-verified; an unregistered name is a [`Error::NotFound`] naming it).
+pub async fn resolve_owner(client: &PlatformClient, owner: &str) -> Result<String> {
+    if looks_like_identity_id(owner) {
+        return Ok(owner.to_string());
+    }
+    let label = owner.strip_suffix(".dash").unwrap_or(owner);
+    if label.is_empty()
+        || !label
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return Err(Error::Config(format!(
+            "owner {owner:?} is neither a base58 identity id nor a DPNS name (a DPNS name is \
+             letters, digits and '-', optionally ending in .dash)"
+        )));
+    }
+    client
+        .resolve_dpns_name(label)
+        .await?
+        .ok_or_else(|| Error::Config(format!("no DPNS name {label}.dash is registered")))
+}
+
+/// Resolve `owner/name`; `owner` is a base58 identity id or a DPNS name ([`resolve_owner`]).
 pub async fn resolve_named(client: &PlatformClient, owner: &str, name: &str) -> Result<RepoRef> {
     let slug = repo_slug(name)?;
-    let owner_bytes = platform::decode_identifier(owner)?;
+    let owner = resolve_owner(client, owner).await?;
+    let owner_bytes = platform::decode_identifier(&owner)?;
     let forge = client.target().require_v2()?;
     find_named(client, forge, owner_bytes, &slug)
         .await?
@@ -166,7 +202,17 @@ pub struct RepoSummary {
 
 #[cfg(test)]
 mod tests {
-    use super::repo_slug;
+    use super::{looks_like_identity_id, repo_slug};
+
+    #[test]
+    fn identity_ids_and_dpns_names_are_told_apart() {
+        assert!(looks_like_identity_id(
+            "9cBMULwtQUMtxhBkgaTKb4tJtoczd8TEQ8gmiroDWf4F"
+        ));
+        for name in ["alice", "alice.dash", "pasta", "a-b-c", &"x".repeat(44)] {
+            assert!(!looks_like_identity_id(name), "{name:?} is a DPNS name");
+        }
+    }
 
     #[test]
     fn slugs_follow_the_contract_pattern() {
