@@ -35,6 +35,7 @@ import { Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { HiddenNote } from '@/components/repo/hidden-note'
+import { PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 
 type Pending =
   | { kind: 'state' }
@@ -79,12 +80,13 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const isAuthor = identity !== null && identity === issue.author
   const canToggle = identity !== null && (isAuthor || isMember)
+  const composeBlock = privateComposeBlock(home)
   const toggleHint =
     !canToggle && identity !== null && holdings.settled && holdings.data === null
       ? `Couldn't read this repo's ${ACL_NAME}, so close/reopen permission is unknown.`
       : null
   const target = { id: issue.id, number: issue.number }
-  const commentCost = previewCreate('comment', { body: comment.trim() })
+  const commentCost = composeCost(home.repo, 'comment', { body: comment.trim() })
   // A member's close is an `event`; the author who is not a member uses `authorEvent`.
   const stateCost = previewCreate(isMember ? 'event' : 'authorEvent')
 
@@ -206,14 +208,13 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       {/* Composer */}
       <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
         <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
-        {home.repo.visibility === 'private' ? (
-          <p className="text-dense text-anvil-500 dark:text-anvil-400" data-testid="private-compose-note">
-            Comments on private repos aren&apos;t supported yet.
-          </p>
+        {composeBlock !== null ? (
+          <PrivateComposeNote reason={composeBlock} />
         ) : (
         <>
         <label htmlFor="comment-body" className="sr-only">Comment</label>
         <Textarea id="comment-body" value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Leave a comment (markdown supported)…" />
+        <SealedLimit repo={home.repo} kind="comment" text={comment.trim()} />
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
           <CostPreview cost={commentCost} />
           <div className="flex items-center gap-2">
@@ -240,7 +241,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         </div>
         </>
         )}
-        {home.repo.visibility === 'private' && canToggle ? (
+        {composeBlock !== null && canToggle ? (
           <div className="mt-3 flex justify-end">
             <Button variant="outline" onClick={() => setPending({ kind: 'state' })} disabled={!signer || guard.disabledReason !== null}>
               {open ? 'Close issue' : 'Reopen issue'}

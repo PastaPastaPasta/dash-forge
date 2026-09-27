@@ -2,6 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   MAX_ASSET_BYTES,
+  PRIVATE_ASSETS_REFUSED,
+  publishRelease,
   assetFilesProblem,
   assetPlanProblem,
   plannedAsset,
@@ -120,5 +122,20 @@ describe('storeFile (release assets)', () => {
     const stored = await storeFile(bytes, { policy: policyFor(['r2', 'platform'], 'one'), profiles: [S3, PLATFORM], sha256Hex: hash })
     expect(stored).toMatchObject({ sha256: hash, sizeBytes: bytes.length, confirmed: ['r2'] })
     expect(stored.uris).toEqual([`https://pub.example/rel/packs/${hash}.pack`, `s3://b/rel/packs/${hash}.pack`])
+  })
+})
+
+describe('a private repo', () => {
+  it('refuses release assets before reading or uploading anything (they would be unencrypted)', async () => {
+    const touched = vi.fn()
+    const sdk = new Proxy({}, { get: () => touched }) as never
+    const auth = { identityId: 'x', network: 'devnet' as const, getSigningKeyWif: () => 'x' }
+    const repo = { forge: { core: 'C', collab: 'L', group: 'G' }, repoId: 'R', ownerId: 'x', name: 'r', visibility: 'private' as const }
+    const file = { name: 'a.bin', size: 3, arrayBuffer: vi.fn(async () => new ArrayBuffer(3)) }
+    const input = { tagName: 'v1', name: '', notes: '', files: [file], draft: 'd' }
+    await expect(publishRelease(sdk, auth, repo, input, { policy: null, profiles: [] })).rejects.toThrow(PRIVATE_ASSETS_REFUSED)
+    await expect(publishRelease(sdk, auth, repo, { ...input, files: [], stored: [{ name: 'a', sha256: '00', sizeBytes: 1, uris: ['https://x'] }] }, { policy: null, profiles: [] })).rejects.toThrow(PRIVATE_ASSETS_REFUSED)
+    expect(file.arrayBuffer).not.toHaveBeenCalled()
+    expect(touched).not.toHaveBeenCalled()
   })
 })

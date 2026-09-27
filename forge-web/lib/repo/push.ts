@@ -32,7 +32,9 @@ import {
   type WriteResult,
 } from '../sdk'
 import { DOC, type RepoRef } from './contract'
+import { privateWriter, sealForRepo, sealedIntent } from './private-writes'
 import { repoSource } from './source'
+import { assertNoPlaintext } from './writes'
 
 /** The fields of a `packManifest` (forge-core `PackManifestInput`). */
 export interface PackManifestInput {
@@ -270,10 +272,21 @@ export async function writeRefUpdate(
   input: RefUpdateInput,
   options: { readonly intent?: string; readonly protectedPatterns?: readonly string[] } = {},
 ): Promise<WriteResult & { readonly documentType: 'refUpdate' | 'protectedRefUpdate' }> {
-  const data = refUpdateData(input)
-  // The complete config timeline's newest well-formed config: the one the rules apply.
-  const patterns = options.protectedPatterns ?? (await readConfigBundle(sdk, repo)).config?.protectedPatterns ?? []
-  const documentType = refUpdateType(input.refName, patterns)
+  let data = refUpdateData(input)
+  let documentType: 'refUpdate' | 'protectedRefUpdate'
+  if (repo.visibility === 'private') {
+    // Sealed patterns: only a member reading the repo can route, on a fresh session's config.
+    if (repo.session === undefined) throw new Error("a private repo's protected branches are sealed: read it as a member before moving a ref")
+    const writer = await privateWriter(sdk, auth, repo)
+    documentType = refUpdateType(input.refName, options.protectedPatterns ?? writer.protectedPatterns)
+    data = await sealForRepo(sdk, auth, repo, documentType, data, writer)
+    options = { ...options, ...(options.intent !== undefined ? { intent: sealedIntent(options.intent, writer.keys) } : {}) }
+  } else {
+    // The complete config timeline's newest well-formed config: the one the rules apply.
+    const patterns = options.protectedPatterns ?? (await readConfigBundle(sdk, repo)).config?.protectedPatterns ?? []
+    documentType = refUpdateType(input.refName, patterns)
+  }
+  assertNoPlaintext(repo, documentType, data)
   try {
     const r = await createDocumentIdempotent(sdk, auth, {
       contractId: repo.forge.core,

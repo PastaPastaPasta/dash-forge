@@ -34,7 +34,7 @@ import type { Network } from '../constants'
 import { base58Encode } from '../auth/base58'
 import { controlsKey } from '../auth/wif'
 import { previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview } from './cost'
-import { base64ToBytes, bytesToBase64 } from './query'
+import { base64ToBytes, bytesToBase64, followSdkVersion } from './query'
 
 export type { CostPreview } from './cost'
 
@@ -651,6 +651,8 @@ function reportSpend(
  * taken is re-signed once with the next nonce.
  */
 export function createDocumentIdempotent(sdk: EvoSDK, auth: WriteAuth, params: CreateParams): Promise<WriteResult> {
+  // A write can be the page's first proved exchange: serialize with the version the SDK knows now.
+  followSdkVersion(sdk)
   return serialized(auth.identityId, () => createDocumentUnlocked(sdk, auth, params)).then((r) => {
     reportSpend(sdk, auth, r.spend)
     return r.result
@@ -922,6 +924,8 @@ interface DocumentsDeleteFacadeLike {
  * the chain each time (its max-merge then steps past nonces this module's creates used).
  */
 export function deleteDocumentIdempotent(sdk: EvoSDK, auth: WriteAuth, params: DeleteParams): Promise<DeleteResult> {
+  // A write can be the page's first proved exchange: serialize with the version the SDK knows now.
+  followSdkVersion(sdk)
   return serialized(auth.identityId, () => deleteDocumentUnlocked(sdk, auth, params)).then((r) => {
     if (r.spend) reportSpend(sdk, auth, r.spend)
     return r.result
@@ -1065,6 +1069,8 @@ export interface ReplaceParams {
  * change (40128), and every reference is re-validated.
  */
 export function replaceDocumentIdempotent(sdk: EvoSDK, auth: WriteAuth, params: ReplaceParams): Promise<ReplaceResult> {
+  // A write can be the page's first proved exchange: serialize with the version the SDK knows now.
+  followSdkVersion(sdk)
   return serialized(auth.identityId, () => replaceDocumentUnlocked(sdk, auth, params)).then((r) => {
     if (r.spend) reportSpend(sdk, auth, r.spend)
     return r.result

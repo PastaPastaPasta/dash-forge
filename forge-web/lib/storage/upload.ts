@@ -27,6 +27,7 @@ import { estimateChunkCredits } from '../sdk/cost'
 import { isRecordableUri } from '../net'
 import type { RepoRef } from '../repo/contract'
 import { manifestUrisProblem, putPlatformChunks } from '../repo/push'
+import { parseHeader, sealedLength } from '../private'
 import { addVerified, gatewayUrl, remotePin } from './ipfs'
 import { artifactKey, profileProblem, publishProblem, type StoragePolicy, type StorageProfile } from './profiles'
 import { getObject, getPublic, headObject, putObject, publicObjectUrl, s3Uri, type S3Settings } from './s3'
@@ -338,6 +339,11 @@ export async function storeArtifact(
   bytes: Uint8Array,
   opts: StoreOptions,
 ): Promise<StoredArtifact> {
+  // A private repo stores only sealed artifacts (`private-repos.md` §3): bytes that are not a
+  // sealed pack never leave the browser for its storage (`sealArtifact` seals them first).
+  if (repo.visibility === 'private' && !isSealedPack(bytes)) {
+    throw new Error("refusing to upload an unencrypted artifact for a private repo; seal it first (the upload path seals a private repo's packs)")
+  }
   const hashHex = await sha256Hex(bytes)
   const step = opts.onStep ?? (() => undefined)
   const confirmed: { target: string; uris: string[]; platform: boolean }[] = []
@@ -419,5 +425,19 @@ export async function storeArtifact(
     uris: fitManifestUris(orderUris(confirmed.map((c) => c.uris))),
     confirmed: confirmed.map((c) => c.target),
     failures,
+  }
+}
+
+/**
+ * Whether `bytes` are shaped like a sealed pack (`private-repos.md` §3.2): a valid `DFPK` header
+ * whose plaintext length gives exactly this sealed length. A guard against a caller that forgot
+ * to seal (plain git packs, files), not an authenticity check: that needs the key.
+ */
+function isSealedPack(bytes: Uint8Array): boolean {
+  try {
+    const h = parseHeader(bytes)
+    return sealedLength(h.plaintextLen, h.segLog2) === bytes.length
+  } catch {
+    return false
   }
 }

@@ -362,11 +362,10 @@ export async function openContent(doc: StoredPrivateDoc, ctx: OpenContext): Prom
   if (result.status !== 'readable') return result
   if (!isHeight(doc.createdAtBlockHeight)) return MALFORMED
   if (isLate(ctx.anchors, ctx.members, doc.epoch, doc.createdAtBlockHeight, doc.ownerId, ctx.burned)) return unreadable('late')
-  // An edit re-seals the text, so it is judged too (§8.2). A replace keeps only the new text:
-  // a document created in time but edited late says so, rather than vanish as plain "late".
-  const edited = doc.updatedAtBlockHeight
-  if (isHeight(edited) && edited > doc.createdAtBlockHeight && isLate(ctx.anchors, ctx.members, doc.epoch, edited, doc.ownerId, ctx.burned)) {
-    return unreadable('lateEdit')
+  // An edit re-seals the text: a late one (by a non-member, past the grace period) replaced the
+  // original, which is gone (§8.2 "edits are judged too").
+  if (isHeight(doc.updatedAtBlockHeight) && doc.updatedAtBlockHeight > doc.createdAtBlockHeight) {
+    if (isLate(ctx.anchors, ctx.members, doc.epoch, doc.updatedAtBlockHeight, doc.ownerId, ctx.burned)) return unreadable('lateEdit')
   }
   return result
 }

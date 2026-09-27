@@ -168,7 +168,7 @@ export function parseConfigRow(doc: PlainDocument): ConfigRow | null {
 
 
 /** The short branch name a config's `defaultBranch` holds (a leading `refs/heads/` is tolerated). */
-function shortBranch(name: string): string {
+export function shortBranch(name: string): string {
   return name.replace(/^refs\/heads\//, '')
 }
 

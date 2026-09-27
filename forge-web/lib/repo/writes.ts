@@ -22,7 +22,8 @@ import type { ForgeIds } from '../deployments'
 import { decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { isLegalRefName, type EventKind } from '../rules'
-import { allocateNumber, isAuthorKind, numberCeiling, normalizeRepoName as normalizeV2RepoName, type Role } from '../rules/v2'
+import { allocateNumber, isAuthorKind, numberCeiling, normalizeRepoName as normalizeV2RepoName, type Role, type Visibility } from '../rules/v2'
+import { fetchIdentityKeys, usableEncryptionKey, type EncryptionOps } from '../auth/encryption-key'
 import {
   ConsensusRefusal,
   DUPLICATE_UNIQUE_CODE,
@@ -40,6 +41,7 @@ import {
 import { DOC, num, str, type RepoRef } from './contract'
 import { invalidateMembers } from './members'
 import { refNameHash } from './push'
+import { privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter, type SealedKind } from './private-writes'
 import { invalidateRepoFeed } from './issues'
 import { repoSource } from './source'
 
@@ -148,9 +150,9 @@ export function assertNoPlaintext(repo: RepoRef, documentType: string, data: Rea
 const SEALED_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.comment, DOC.review])
 
 /**
- * Refuse a plaintext write of sealed content to a private repo. The sealed writers
- * (`lib/private` `sealDoc`) are wired by the private-repo web work; until then nothing here may
- * write an issue, PR, comment or review into a private repo.
+ * Refuse a replace of sealed content in a private repo (a replace would publish plaintext next
+ * to `enc`); private edits go through `sealEdit` (`private-writes.ts`), and {@link writeRepoDoc}
+ * seals creates.
  */
 export function refusePlaintextInPrivate(repo: RepoRef, documentType: string): void {
   if (repo.visibility === 'private' && SEALED_TYPES.has(documentType)) {
@@ -160,8 +162,9 @@ export function refusePlaintextInPrivate(repo: RepoRef, documentType: string): v
 
 /**
  * Create one repo-scoped document: the right contract, `repoId` set, then drop the caches
- * the write invalidates. Refuses plaintext content in a private repo
- * ({@link refusePlaintextInPrivate}).
+ * the write invalidates. In a private repo an issue, PR, comment or review is sealed first
+ * (`private-writes.ts`: its content into `enc` under the current epoch), and nothing leaves
+ * here with plaintext content ({@link assertNoPlaintext}).
  */
 export async function writeRepoDoc(
   sdk: EvoSDK,
@@ -170,8 +173,14 @@ export async function writeRepoDoc(
   documentType: string,
   data: Record<string, unknown>,
   intent?: string,
+  /** A private repo's writer for this action (resolved here when not given; see `privateWriter`). */
+  writer?: PrivateWriter,
 ): Promise<WriteResult> {
-  refusePlaintextInPrivate(repo, documentType)
+  if (repo.visibility === 'private' && SEALED_TYPES.has(documentType)) {
+    const w = writer ?? (await privateWriter(sdk, auth, repo))
+    data = await sealForRepo(sdk, auth, repo, documentType as SealedKind, data, w)
+    intent = sealedIntent(intent, w.keys)
+  }
   assertNoPlaintext(repo, documentType, data)
   try {
     return await createDocumentIdempotent(sdk, auth, {
@@ -359,6 +368,16 @@ async function createNumbered(
   onRetry?: (taken: number, next: number) => void,
 ): Promise<CreateIssueResult> {
   const noun = type === 'issue' ? 'issue' : 'PR'
+  // A private repo: refuse over-long text before allocating, and seal every renumbered retry
+  // under the one writer of this action (the AD binds each new number).
+  let writer: PrivateWriter | undefined
+  if (repo.visibility === 'private') {
+    const { used, limit } = sealedTextUse(type, fields)
+    if (limit !== null && used > limit) {
+      throw new PrivateWriteError(`the text is too long for a private repo: an encrypted ${type} holds at most ${limit} bytes of text (this one has ${used})`)
+    }
+    writer = await privateWriter(sdk, auth, repo)
+  }
   const next = (): Promise<number | null> => nextNumber(sdk, repo, type)
   let number = await next()
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -366,7 +385,7 @@ async function createNumbered(
     try {
       // Each number is its own write: a renumbered retry must not reuse the earlier bytes.
       const intent = intentBase ? `${intentBase}#${number}` : undefined
-      return { ...(await writeRepoDoc(sdk, auth, repo, DOC[type], { number, ...fields }, intent)), number }
+      return { ...(await writeRepoDoc(sdk, auth, repo, DOC[type], { number, ...fields }, intent, writer)), number }
     } catch (e) {
       if (e instanceof UnconfirmedWriteError) {
         // Not seen yet. If someone else holds the number, ours was refused: renumber.
@@ -771,10 +790,22 @@ export interface CreateRepoInput {
   readonly defaultBranch?: string
   /** The parent repo's id (`repo.forkOf`, immutable) when this is a fork. */
   readonly forkOf?: string
+  /** Set at creation only (immutable). A private repo needs the owner's encryption key. */
+  readonly visibility?: Visibility
 }
 
 /** The steps of a repo creation, in order. */
 export type CreateRepoStep = 'repo' | 'maintainer' | 'config'
+
+/**
+ * What a private create (`private-repos.md` §5.3) needs to write its epoch 0: the vault's
+ * encryption operations, and the writer of the key and anchor (`private-members.ts`
+ * `createEpochZero`, passed in so this module stays below the key-rotation code).
+ */
+export interface PrivateCreate {
+  readonly ops: EncryptionOps
+  readonly epochZero: (c: { sdk: EvoSDK; auth: WriteAuth; repo: RepoRef; network: Network; ops: EncryptionOps }, defaultBranch: string, intent: string) => Promise<boolean>
+}
 
 /** A repo creation's journal entry (IndexedDB), kept until all three documents exist. */
 export interface RepoCreationJournal {
@@ -802,6 +833,7 @@ export function checkRepoInput(input: CreateRepoInput): void {
     throw new Error(`The description is ${bytes(input.description)} bytes; the limit is ${REPO_LIMITS.description} (accented letters and emoji take more than one byte).`)
   }
   if (bytes(input.defaultBranch) > REPO_LIMITS.defaultBranch) throw new Error('The default branch name is too long.')
+  if (input.visibility === 'private' && input.forkOf !== undefined) throw new Error('a fork is public: a private repository cannot be a fork')
 }
 
 function journalKey(network: Network, ownerId: string, name: string): string {
@@ -841,17 +873,40 @@ export async function createRepo(
   forge: ForgeIds,
   input: CreateRepoInput,
   onStep?: (step: CreateRepoStep, state: 'start' | 'done') => void,
+  /** Required for a private repo (its epoch-0 key and anchor). */
+  privateCreate?: PrivateCreate,
 ): Promise<CreateRepoResult> {
   const name = normalizeRepoName(input.name)
   const ownerId = auth.identityId
   const key = journalKey(auth.network, ownerId, name)
   checkRepoInput(input)
+  const visibility: Visibility = input.visibility ?? 'public'
+  // Refused before anything is written: a private repo nobody can hold a key for, or whose
+  // epoch-0 key would be wrapped to a key this browser does not hold (§5.2: writers use the
+  // identity's highest usable encryption key). A resumed create is settled by its epoch-0
+  // step instead (it resumes with its own standing self-wrap, whatever key that went to).
+  const resumed = (await idbGet<RepoCreationJournal>('journal', key))?.repoId != null
+  if (visibility === 'private') {
+    if (privateCreate === undefined) throw new Error('cannot create a private repository: add your encryption key to this browser first (Settings → Keys)')
+  }
+  if (visibility === 'private' && !resumed && privateCreate !== undefined) {
+    const current = usableEncryptionKey((await fetchIdentityKeys(sdk, ownerId)) ?? [], forge.core)
+    if (current === null) throw new Error('cannot create a private repository: your identity has no encryption key')
+    if (current.keyId !== privateCreate.ops.keyId) {
+      throw new Error(
+        `cannot create a private repository: your identity's current encryption key is key ${current.keyId}, but this browser holds key ${privateCreate.ops.keyId}; add key ${current.keyId} here (Settings → Keys)`,
+      )
+    }
+  }
   // A resumed creation keeps the values it started with, so the repo and config documents
   // agree (the form may have been edited since; the page warns about that).
   const previous = await idbGet<RepoCreationJournal>('journal', key)
   // A fork and a plain repo of the same name are different creations: resuming one as the
   // other would write (or drop) `forkOf`, and a fork's packs and refs would land in a repo
   // that is not a fork of their parent. Refuse rather than guess.
+  if (previous && (previous.input.visibility ?? 'public') !== visibility) {
+    throw new Error(`an unfinished ${previous.input.visibility ?? 'public'} repository named ${name} is pending in this browser; finish or dismiss it on the New repository page first (visibility is immutable)`)
+  }
   if (previous && (previous.input.forkOf ?? null) !== (input.forkOf ?? null)) {
     throw new Error(
       previous.input.forkOf
@@ -884,14 +939,22 @@ export async function createRepo(
       ],
       limit: 1,
     })
+    // A repo of this name exists: resume only one of the same visibility (it is immutable; a
+    // document without one is not a repo this client made, so it is never adopted).
+    if (documents[0] !== undefined) {
+      const existing = documents[0]['visibility']
+      if (existing !== 'public' && existing !== 'private') throw new Error(`${name} already exists without a readable visibility; pick another name`)
+      if (existing !== visibility) throw new Error(`${name} already exists with the other visibility (visibility is immutable)`)
+    }
     return firstId(documents)
   }
   let repoId = await existingRepo()
   await step('repo', async () => {
     if (repoId !== null) return
-    const data: Record<string, unknown> = { name, visibility: 'public' }
+    const data: Record<string, unknown> = { name, visibility }
     if (input.description) data['description'] = input.description
-    if (input.defaultBranch) data['defaultBranch'] = input.defaultBranch
+    // A private repo's default branch lives only in its sealed config (§7).
+    if (input.defaultBranch && visibility === 'public') data['defaultBranch'] = input.defaultBranch
     if (input.forkOf) data['forkOf'] = decodeIdentifier(input.forkOf)
     try {
       const r = await createDocumentIdempotent(sdk, auth, { contractId: forge.core, documentType: DOC.repo, data, intent: `${key}:repo` })
@@ -906,7 +969,7 @@ export async function createRepo(
   journal.repoId = repoId
   await save()
   const R = decodeIdentifier(repoId)
-  const repo: RepoRef = { forge, repoId, ownerId, name, visibility: 'public' }
+  const repo: RepoRef = { forge, repoId, ownerId, name, visibility }
 
   // 2. the owner's maintainer document (unique per repo + member)
   await step('maintainer', async () => {
@@ -923,8 +986,14 @@ export async function createRepo(
     }
   })
 
-  // 3. the first config (append-only; one is enough)
+  // 3. the first config (append-only; one is enough). A private repo's is its epoch-0 anchor,
+  // after the owner's self-wrap of a fresh key (§5.3).
   await step('config', async () => {
+    if (visibility === 'private') {
+      const p = privateCreate as PrivateCreate
+      await p.epochZero({ sdk, auth, repo, network: auth.network, ops: p.ops }, input.defaultBranch ?? 'main', key)
+      return
+    }
     const { documents } = await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(DOC.config, { limit: 1 }))
     if (documents.length > 0) return
     await createDocumentIdempotent(sdk, auth, {
