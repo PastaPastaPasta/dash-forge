@@ -83,7 +83,9 @@ impl Config {
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
         let raw = toml::to_string_pretty(self).context("serializing config")?;
-        std::fs::write(&path, raw).with_context(|| format!("writing config {}", path.display()))?;
+        // Atomic replace: git-remote-dash reads the default key source from this file.
+        forge_core::keystore::write_private_file(&path, raw.as_bytes())
+            .with_context(|| format!("writing config {}", path.display()))?;
         Ok(())
     }
 }

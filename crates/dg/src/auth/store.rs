@@ -180,7 +180,8 @@ pub fn remove(network: &str, identity_id: &str, source: Option<&str>) -> Result<
 /// Record `source` as the default identity for the context's network (config.toml), with the
 /// network settings the next command needs to reconnect.
 pub fn set_default(ctx: &Ctx, identity_id: &str, source: &str) -> Result<()> {
-    let mut config = Config::load().unwrap_or_default();
+    // An unreadable config is reported, not silently replaced by a default one.
+    let mut config = Config::load()?;
     config.network = Some(ctx.network().kind().to_string());
     config.devnet_name = ctx.network().devnet_name().map(str::to_string);
     config.dapi_addresses = super::explicit_dapi_addresses(ctx.network());

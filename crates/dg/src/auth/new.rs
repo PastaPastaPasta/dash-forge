@@ -450,6 +450,7 @@ async fn start_or_resume(
     };
     let keys = NewIdentityKeys::from_mnemonic(&words, ctx.network())?;
     let address = keys.deposit_address();
+    let fresh = journal.is_none();
     let j = match journal {
         Some(j) if j.deposit_address != address => {
             return Err(UserError::new(
@@ -482,7 +483,8 @@ async fn start_or_resume(
             &keys,
             j.identity_id.as_deref().unwrap_or(""),
             backup_pass,
-            true,
+            // A fresh creation refuses an existing file; a resume replaces its own backup.
+            fresh,
         )?;
         say(
             ctx,

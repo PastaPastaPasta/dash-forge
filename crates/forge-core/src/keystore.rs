@@ -217,6 +217,7 @@ pub fn configured_default_source() -> Option<String> {
 /// followed) that is then renamed over `path`. A parent directory under the Forge config
 /// directory is created and kept 0700.
 pub fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let io = |e: std::io::Error| Error::Io(format!("writing {}: {e}", path.display()));
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).map_err(io)?;
@@ -238,18 +239,27 @@ pub fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
     let name = path
         .file_name()
         .ok_or_else(|| Error::Io(format!("{} names no file", path.display())))?;
+    // Unique per process, thread and call; create_new refuses any collision.
+    let mut nonce = [0u8; 8];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
     let tmp = dir.join(format!(
-        ".{}.{}.tmp",
+        ".{}.{}.{}.{}.tmp",
         name.to_string_lossy(),
-        std::process::id()
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        hex::encode(nonce)
     ));
-    let _ = std::fs::remove_file(&tmp);
     create_private_file(&tmp, bytes)?;
     // rename() replaces a symlink at `path` instead of writing through it.
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
         io(e)
     })?;
+    // Make the new directory entry durable too.
+    #[cfg(unix)]
+    if let Ok(d) = std::fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
     Ok(())
 }
 

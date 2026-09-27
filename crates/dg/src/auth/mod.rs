@@ -994,6 +994,7 @@ async fn export(ctx: &Ctx, args: &ExportArgs) -> Result<()> {
         let spec = key_spec(ctx, &args.limits, 0.5, 365)?;
         explain_new_key(ctx, &master.identity_id, &spec, "to export");
         ctx.confirm_or_cancel("Register the key?")?;
+        let mut written = false;
         let id = register_limited_key(ctx, &client, &master, &spec, None, &mut |t| {
             // A bridge-format export of a lone limited key.
             let text = if args.format == "bridge" {
@@ -1001,8 +1002,16 @@ async fn export(ctx: &Ctx, args: &ExportArgs) -> Result<()> {
             } else {
                 t.clone()
             };
-            keystore::create_private_file(&path, &sealed_or_clear(&text, pass.as_ref())?)
-                .map_err(Into::into)
+            let bytes = sealed_or_clear(&text, pass.as_ref())?;
+            // The first write creates the file (refusing anything already there); a second one
+            // (the key landed under another id) replaces what the first wrote.
+            if written {
+                keystore::write_private_file(&path, &bytes)?;
+            } else {
+                keystore::create_private_file(&path, &bytes)?;
+                written = true;
+            }
+            Ok(())
         })
         .await?;
         (Some(id), master.identity_id)

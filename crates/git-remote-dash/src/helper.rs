@@ -1275,7 +1275,8 @@ const NOTE_PRECHECK: &str = "checked before building or paying for anything: not
 fn no_identity(why: impl Into<String>) -> anyhow::Error {
     UserError::new(codes::NO_IDENTITY, "no identity configured")
         .cause(why)
-        .fix("export DASH_FORGE_KEY=<identity file> (the bridge identity export) in the shell you run git in")
+        .fix("`dg auth login <file>` (or `dg auth new`) records a default key that git uses too")
+        .fix("or export DASH_FORGE_KEY=<identity file | keychain:… | dfk1:…> in the shell you run git in")
         .into()
 }
 

@@ -157,8 +157,6 @@ dg auth name register <label>                   # a DPNS username
 
 `dg auth new` shows the 12 words once and asks you to type three of them back. It then shows the deposit address as a QR code and as text. Fund it from any Dash wallet (the faucet on devnets), and `dg` does the rest: the asset lock, its proof (InstantSend where the network offers one, else a chain lock), and one IdentityCreate that registers the standard keys plus this computer's limited key. The limited key is stored in the keychain *before* the identity exists, so an interruption never leaves a key nobody holds. An interrupted run resumes with `dg auth new --resume` (type the words again); the deposit address stays the same. For automation, `--skip-backup-check --backup-file <file>` writes the words and keys to a passphrase-sealed file instead of showing them.
 
-In the web app (**Sign in**):
-
 Ways to get one in the web app (**Sign in**):
 
 | Route | What happens |
@@ -195,5 +193,5 @@ What the vault does **not** protect against:
 ## Trust roots
 
 - **The contract group id** comes from `forge-contracts/deployments/<network>.json`, which is built into the app and `dg`. Before binding a key to the group, the app checks on chain that the group holds forge-core and forge-collab; `dg` checks that it holds exactly those two and nothing else. The group's owner (and any admins) can **add** contracts to it later, and every group-bound key can then sign for those contracts too. Binding a key to the group means trusting its owner. On devnet moutai that is the deployer `8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV`.
-- **The block explorer** (Insight, changeable in Settings, `dg auth new --explorer <url>`) is used only while creating an identity. Its amounts are not trusted: each deposit output is proven from its raw funding transaction, fetched and hashed against its txid, before the asset lock is signed. A lying explorer can delay you or hide funds, but it cannot redirect or burn them. The asset lock is broadcast through the explorer, because the SDK has no Core broadcast. If the explorer drops it, the signed bytes are kept and sent again.
+- **The block explorer** (Insight, changeable in Settings, `dg auth new --explorer <url>`) is used only while creating an identity. Its amounts are not trusted: each deposit output is proven from its raw funding transaction, fetched and hashed against its txid, before the asset lock is signed. A lying explorer can delay you or hide funds, but it cannot redirect or burn them. `dg` broadcasts the asset lock through DAPI first and uses the explorer as the fallback; the web app broadcasts through the explorer, because the JS SDK has no Core broadcast. If either drops it, the signed bytes are kept and sent again.
 - **The quorum keys** every proof is checked against come from `quorums.<network>.networks.dash.org`, as for every read.
