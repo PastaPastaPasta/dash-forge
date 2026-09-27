@@ -172,7 +172,7 @@ function ForkDialog({ parent, owner, onClose }: { parent: RepoRef; owner: string
           <p className="-mt-1 text-[12px] text-anvil-600 dark:text-anvil-400">You already have a repository named {parent.name}, so this suggests {normalized}.</p>
         ) : null}
         {check?.kind === 'taken' ? <p className="-mt-1 text-[12px] text-danger-700 dark:text-danger-400">You already have a repository named {normalized} that is not a fork of this one.</p> : null}
-        {check?.kind === 'resume' ? <p className="-mt-1 text-[12px] text-caution-700 dark:text-caution">An earlier fork under this name did not finish; this completes it without paying twice.</p> : null}
+        {check?.kind === 'resume' ? <p className="-mt-1 text-[12px] text-caution-700 dark:text-caution-400">An earlier fork under this name did not finish; this completes it without paying twice.</p> : null}
 
         {plan.error ? (
           <p className="text-dense text-danger-700 dark:text-danger-400">Couldn&apos;t read what to fork: {plan.error}</p>
@@ -187,7 +187,7 @@ function ForkDialog({ parent, owner, onClose }: { parent: RepoRef; owner: string
               {p.refs.length === 1 ? '' : 's'} (branches and tags) copied.
             </p>
             {p.unreferenceable.length > 0 ? (
-              <p className="text-[12px] text-caution-700 dark:text-caution">
+              <p className="text-[12px] text-caution-700 dark:text-caution-400">
                 {p.unreferenceable.length} pack{p.unreferenceable.length === 1 ? ' has' : 's have'} no copy a fork can point at, so branches will not be copied.
               </p>
             ) : null}
@@ -202,9 +202,9 @@ function ForkDialog({ parent, owner, onClose }: { parent: RepoRef; owner: string
               return (
                 <li key={step} className="flex items-center gap-2 text-dense" data-state={s?.state ?? 'todo'}>
                   {s?.state === 'done' ? (
-                    <Check className="h-4 w-4 text-verify" aria-hidden />
+                    <Check className="h-4 w-4 text-verify-700 dark:text-verify-400" aria-hidden />
                   ) : s?.state === 'running' ? (
-                    <Loader2 className="h-4 w-4 animate-spin text-anvil-400" aria-hidden />
+                    <Loader2 className="h-4 w-4 animate-spin text-anvil-500 dark:text-anvil-400" aria-hidden />
                   ) : (
                     <span className="h-4 w-4 rounded-full border border-anvil-300 dark:border-anvil-700" aria-hidden />
                   )}

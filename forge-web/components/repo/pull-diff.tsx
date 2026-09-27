@@ -105,7 +105,7 @@ function Frame({ children, action }: { children: ReactNode; action?: ReactNode }
     <section className="space-y-3" aria-labelledby="files-changed-heading">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <Files className="h-4 w-4 text-anvil-400" aria-hidden />
+          <Files className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
           <h2 id="files-changed-heading" className="text-prose font-semibold">Files changed</h2>
         </div>
         {action}
@@ -129,7 +129,7 @@ function Unavailable({
   return (
     <div className="rounded-lg border border-caution/30 bg-caution/5 px-4 py-5">
       <div className="flex items-center gap-2 text-dense font-medium text-anvil-900 dark:text-anvil-50">
-        <FileDiff className="h-4 w-4 text-caution" aria-hidden />
+        <FileDiff className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
         {title}
       </div>
       <p className="mt-1 break-words text-dense text-anvil-600 dark:text-anvil-300">{message}</p>

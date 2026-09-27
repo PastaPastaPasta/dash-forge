@@ -70,7 +70,7 @@ export function GatewaysField(): JSX.Element {
           <Plus className="h-4 w-4" aria-hidden /> Add
         </Button>
       </form>
-      <p id="gateway-hint" className={bad ? 'text-[12px] text-danger' : 'text-[12px] text-anvil-500 dark:text-anvil-400'}>
+      <p id="gateway-hint" className={bad ? 'text-[12px] text-danger-700 dark:text-danger-400' : 'text-[12px] text-anvil-500 dark:text-anvil-400'}>
         {bad
           ? 'That is not an https URL.'
           : 'Tried first for ipfs:// storage, before the public defaults. Saved in this browser only; bytes are still hash-checked.'}

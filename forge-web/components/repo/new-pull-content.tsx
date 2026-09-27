@@ -186,7 +186,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
             ))}
           </select>
         </Field>
-        <span className="pb-2 text-anvil-500" aria-hidden>
+        <span className="pb-2 text-anvil-500 dark:text-anvil-400" aria-hidden>
           ←
         </span>
         <Field label="Compare (your branch)" htmlFor="pr-head">
@@ -231,14 +231,14 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       </div>
 
       {noBase ? (
-        <p role="alert" className="text-dense text-caution-700 dark:text-caution">
+        <p role="alert" className="text-dense text-caution-700 dark:text-caution-400">
           {branches.length === 0
             ? `${repo.name} has no branches yet. Push a base branch before opening a pull request.`
             : `${short(base)} is not a branch of ${repo.name}. Pick an existing base branch: a merge into a branch created later never counts.`}
         </p>
       ) : null}
-      {sameBranch ? <p className="text-dense text-caution-700 dark:text-caution">Pick a branch other than the base to compare.</p> : null}
-      {nothing && !sameBranch ? <p className="text-dense text-caution-700 dark:text-caution">{short(base)} already points at this commit; there is nothing to merge.</p> : null}
+      {sameBranch ? <p className="text-dense text-caution-700 dark:text-caution-400">Pick a branch other than the base to compare.</p> : null}
+      {nothing && !sameBranch ? <p className="text-dense text-caution-700 dark:text-caution-400">{short(base)} already points at this commit; there is nothing to merge.</p> : null}
 
       <div className="space-y-3 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
         <Field label="Title" htmlFor="pr-title">
@@ -288,7 +288,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
             {identity ? 'Create pull request' : 'Sign in to create'}
           </Button>
         </div>
-        {note ? <p className="text-dense text-caution-700 dark:text-caution">{note}</p> : null}
+        {note ? <p className="text-dense text-caution-700 dark:text-caution-400">{note}</p> : null}
         {error ? (
           <p role="alert" className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">
             {error}

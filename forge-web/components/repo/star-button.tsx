@@ -49,7 +49,7 @@ export function StarButton({
   return (
     <span className="inline-flex items-center gap-2">
       {star.error ? (
-        <span role="alert" className="max-w-[16rem] truncate text-[12px] text-danger" title={star.error}>
+        <span role="alert" className="max-w-[16rem] truncate text-[12px] text-danger-700 dark:text-danger-400" title={star.error}>
           {star.error}
         </span>
       ) : null}

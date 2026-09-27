@@ -157,7 +157,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
                 aria-selected={mode === m}
                 type="button"
                 onClick={() => setMode(m)}
-                className={'rounded px-3 py-1.5 text-dense font-medium ' + (mode === m ? 'bg-forge-500/15 text-forge-600 dark:text-forge-400' : 'text-anvil-500')}
+                className={'rounded px-3 py-1.5 text-dense font-medium ' + (mode === m ? 'bg-forge-500/15 text-forge-800 dark:text-forge-400' : 'text-anvil-500 dark:text-anvil-400')}
               >
                 {label}
               </button>
@@ -206,9 +206,9 @@ export function EncryptionKeyPanel(): JSX.Element | null {
           ) : null}
         </div>
       ) : null}
-      {note ? <p className="mt-2 text-[12px] text-verify">{note}</p> : null}
+      {note ? <p className="mt-2 text-[12px] text-verify-700 dark:text-verify-400">{note}</p> : null}
       {error ? (
-        <p role="alert" className="mt-2 text-[12px] text-danger break-words">
+        <p role="alert" className="mt-2 text-[12px] text-danger-700 dark:text-danger-400 break-words">
           {error}
         </p>
       ) : null}

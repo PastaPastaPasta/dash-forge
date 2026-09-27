@@ -45,7 +45,7 @@ export function StorageUnreachableCard({
       className="rounded-lg border border-caution/40 bg-caution/5 p-5"
     >
       <div className="flex items-start gap-3">
-        <CloudOff className="mt-0.5 h-5 w-5 shrink-0 text-caution" aria-hidden />
+        <CloudOff className="mt-0.5 h-5 w-5 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
         <div className="min-w-0 flex-1">
           <h2 id="storage-unreachable-title" className="text-prose">
             Code unavailable right now

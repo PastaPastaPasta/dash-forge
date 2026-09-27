@@ -88,15 +88,15 @@ function RepoSettings({ home, repo }: { home: RepoHome; repo: RepoRef }): JSX.El
   }
   return (
     <div className="mx-auto max-w-2xl space-y-8">
-      <Section title="Storage backend" icon={<UserCog className="h-4 w-4 text-anvil-400" aria-hidden />}>
+      <Section title="Storage backend" icon={<UserCog className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
         <StorageBackend backend={home.backend} emptyText="Readers follow each pack manifest's own storage." />
       </Section>
 
-      <Section title="Your browser pushes" icon={<HardDrive className="h-4 w-4 text-anvil-400" aria-hidden />}>
+      <Section title="Your browser pushes" icon={<HardDrive className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
         <RepoStoragePolicy repoId={repo.repoId} />
       </Section>
 
-      <Section title="Members" icon={<ShieldPlus className="h-4 w-4 text-anvil-400" aria-hidden />}>
+      <Section title="Members" icon={<ShieldPlus className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
         {home.private?.access === 'member' ? (
           <PrivateMembers home={home} session={home.private.session} />
         ) : (
@@ -120,7 +120,7 @@ function RepoSettings({ home, repo }: { home: RepoHome; repo: RepoRef }): JSX.El
                   <Author identityId={m.identity} link={false} />
                   <RoleTag role={m.role === 'maintainer' ? 'MAINTAINER' : 'WRITER'} />
                   {m.identity === repo.ownerId ? (
-                    <span className="text-[12px] text-anvil-400">owner</span>
+                    <span className="text-[12px] text-anvil-500 dark:text-anvil-400">owner</span>
                   ) : isOwner && repo.visibility !== 'private' ? (
                     <Button
                       size="sm"
@@ -160,7 +160,7 @@ function RepoSettings({ home, repo }: { home: RepoHome; repo: RepoRef }): JSX.El
                     onClick={() => setRole(r)}
                     className={
                       'rounded px-3 py-1.5 text-dense font-medium ' +
-                      (role === r ? 'bg-forge-500/15 text-forge-600 dark:text-forge-400' : 'text-anvil-500')
+                      (role === r ? 'bg-forge-500/15 text-forge-800 dark:text-forge-400' : 'text-anvil-500 dark:text-anvil-400')
                     }
                   >
                     {r}
@@ -177,14 +177,14 @@ function RepoSettings({ home, repo }: { home: RepoHome; repo: RepoRef }): JSX.El
                 Add
               </Button>
             </div>
-            {idError ? <p className="mt-1 text-[12px] text-danger">{idError}</p> : null}
-            <p className="mt-2 text-[12px] text-anvil-400">
+            {idError ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">{idError}</p> : null}
+            <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
               Writers can push, open refs and act on issues and PRs; maintainers can also update
               protected branches, config and releases.
             </p>
           </div>
         ) : null}
-        <p className="mt-2 text-[12px] text-anvil-400">
+        <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
           Members are the repo&apos;s maintainer and writer documents. Consensus checks them on
           every push, ref update and state event; removing one revokes it.
           {!isOwner ? ' Only the owner can add or remove members.' : ''}
@@ -206,7 +206,7 @@ function RepoSettings({ home, repo }: { home: RepoHome; repo: RepoRef }): JSX.El
         )}
       </Section>
 
-      <Section title="Platform details" icon={<Fingerprint className="h-4 w-4 text-anvil-400" aria-hidden />}>
+      <Section title="Platform details" icon={<Fingerprint className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
         <dl className="divide-y divide-anvil-100 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800">
           <DetailRow label="Repo id">
             <Oid value={repo.repoId} chars={12} label="repo document id" />
@@ -224,7 +224,7 @@ function RepoSettings({ home, repo }: { home: RepoHome; repo: RepoRef }): JSX.El
             <NetworkBadge always />
           </DetailRow>
         </dl>
-        <p className="mt-2 text-[12px] text-anvil-400">
+        <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
           A forge-v2 repo is a <span className="font-mono">repo</span> document in the shared
           forge-core contract; everything else about it is keyed by the repo id. Click an id to
           copy it.
@@ -283,7 +283,7 @@ function DetailRow({ label, children }: { label: string; children: React.ReactNo
 
 function RoleTag({ role }: { role: string }): JSX.Element {
   return (
-    <span className="rounded bg-forge-500/15 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-forge-600 dark:text-forge-400">
+    <span className="rounded bg-forge-500/15 px-1.5 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-forge-800 dark:text-forge-400">
       {role}
     </span>
   )

@@ -33,7 +33,7 @@ module.exports = {
           200: '#e7e5e4',
           300: '#d6d3d1',
           400: '#a8a29e',
-          500: '#78716c',
+          500: '#6b6460', // muted text on light surfaces: 5.3:1 on anvil-100 (Tailwind's #78716c was 4.39:1)
           600: '#57534e',
           700: '#44403c',
           750: '#3a3835',
@@ -43,16 +43,20 @@ module.exports = {
           950: '#0f0d0c',
         },
         // Semantic colors are MEANINGFUL, never decorative. Do not repurpose.
+        // Text shades are checked on the plain surfaces AND on their own 10–15 % tints (a chip,
+        // a note box): lib/design/contrast.test.ts pins both.
         verify: {
           DEFAULT: '#16a34a', // proof/hash verified — icons, borders, tints
-          700: '#15803d', // solid fill behind white text (5.02:1; the base value is 3.3:1)
+          400: '#22c55e', // TEXT on dark surfaces and dark tints (≥ 5.4:1)
+          700: '#16713a', // TEXT on light surfaces and tints (≥ 4.7:1); solid fill behind white text
         },
         caution: {
-          DEFAULT: '#d97706', // degraded availability — icons, borders, tints; text on dark
-          700: '#b45309', // TEXT on light surfaces (5.02:1 on white; the base value is 3.19:1)
+          DEFAULT: '#d97706', // degraded availability — icons, borders, tints only (2.75:1 as light text)
+          400: '#f59e0b', // TEXT on dark surfaces and dark tints (≥ 5.7:1)
+          700: '#a14a08', // TEXT on light surfaces and tints (≥ 4.7:1; #b45309 was 3.95:1 on a tint)
         },
         danger: {
-          DEFAULT: '#dc2626', // force-push, delete, failed verification: icons, borders, tints, text on light
+          DEFAULT: '#dc2626', // force-push, delete, failed verification: icons, borders, tints
           400: '#f87171', // TEXT on dark surfaces (the base value is 4.01:1 on anvil-950)
           700: '#b91c1c', // TEXT on light surfaces (the base value is 4.4:1 on anvil-100)
         },

@@ -106,13 +106,13 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
               className="flex items-start gap-3 border-b border-anvil-100 px-4 py-3 last:border-b-0 hover:bg-anvil-50 dark:border-anvil-850 dark:hover:bg-anvil-900"
             >
               {issue.state.open ? (
-                <CircleDot className="mt-0.5 h-4 w-4 shrink-0 text-verify" aria-hidden />
+                <CircleDot className="mt-0.5 h-4 w-4 shrink-0 text-verify-700 dark:text-verify-400" aria-hidden />
               ) : (
                 <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-forge-500" aria-hidden />
               )}
               <div className="min-w-0 flex-1">
                 <span className="text-dense font-medium text-anvil-900 dark:text-anvil-50">{issue.title || '(untitled)'}</span>
-                <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-400">
+                <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
                   <span className="font-mono">#{issue.number}</span>
                   <span>opened {timeAgo(issue.createdAt)} by</span>
                   <Author identityId={issue.author} link={false} />
@@ -121,14 +121,14 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                       fold over a partial history as fact. */}
                   {!issue.stateComplete ? (
                     <span
-                      className="rounded-full bg-danger/10 px-2 py-0.5 text-[11px] text-danger"
+                      className="rounded-full bg-danger/10 px-2 py-0.5 text-[11px] text-danger-700 dark:text-danger-400"
                       title="This issue's event log could not be read completely, so its open/closed state is unverified."
                     >
                       state unverified
                     </span>
                   ) : null}
                   {issue.state.labels.map((l) => (
-                    <span key={l} className="rounded-full bg-forge-500/10 px-2 py-0.5 text-[11px] text-forge-600 dark:text-forge-400">{l}</span>
+                    <span key={l} className="rounded-full bg-forge-500/10 px-2 py-0.5 text-[11px] text-forge-800 dark:text-forge-400">{l}</span>
                   ))}
                 </div>
               </div>
@@ -240,9 +240,9 @@ function ComposeIssueDialog({
           <Textarea id="issue-body" value={body} onChange={(e) => setBody(e.target.value)} placeholder="What happened, and how to reproduce it." className="min-h-[140px]" />
         </Field>
         <CostPreview cost={cost} />
-        {note ? <p className="text-dense text-caution">{note}</p> : null}
+        {note ? <p className="text-dense text-caution-700 dark:text-caution-400">{note}</p> : null}
         {error ? (
-          <div className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger break-words">{error}</div>
+          <div className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">{error}</div>
         ) : null}
       </div>
     </Dialog>

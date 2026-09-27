@@ -172,7 +172,7 @@ function LatestRelease({ home, addr }: { home: RepoHome; addr: RepoAddress }): J
           className="-mx-1 block rounded px-1 py-1 hover:bg-anvil-50 dark:hover:bg-anvil-850"
         >
           <span className="flex items-center gap-1.5 font-medium text-anvil-800 dark:text-anvil-100">
-            <Tag className="h-3.5 w-3.5 text-anvil-400" aria-hidden />
+            <Tag className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
             <span className="font-mono">{latest.tagName}</span>
             {latest.name ? <span className="truncate font-normal">{latest.name}</span> : null}
           </span>
@@ -207,7 +207,7 @@ function Row({
     return (
       <Link
         href={href}
-        className="-mx-1 flex items-center justify-between rounded px-1 py-1 text-anvil-600 transition-colors hover:bg-anvil-50 hover:text-forge-600 dark:text-anvil-300 dark:hover:bg-anvil-850 dark:hover:text-forge-400"
+        className="-mx-1 flex items-center justify-between rounded px-1 py-1 text-anvil-600 transition-colors hover:bg-anvil-50 hover:text-forge-800 dark:text-anvil-300 dark:hover:bg-anvil-850 dark:hover:text-forge-400"
       >
         {body}
       </Link>

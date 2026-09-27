@@ -32,14 +32,14 @@ function UnavailablePacksNotice({ packs }: { packs: readonly UnavailablePack[] }
       role="status"
       className="mb-3 flex gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200"
     >
-      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution" aria-hidden />
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
       <div>
         <p>
           {n} {n === 1 ? 'pack' : 'packs'} could not be fetched from {n === 1 ? 'its' : 'their'} storage; some
           objects may be missing. Everything shown was still hash-checked.
         </p>
         {corrupt > 0 ? (
-          <p className="mt-1 font-medium text-danger">
+          <p className="mt-1 font-medium text-danger-700 dark:text-danger-400">
             {corrupt === 1 ? 'A mirror' : 'Mirrors'} served bad data for {corrupt}{' '}
             {corrupt === 1 ? 'pack' : 'packs'}: bytes that do not match the sha256 in the proof-checked
             manifest. They were refused.

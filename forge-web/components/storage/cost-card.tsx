@@ -7,6 +7,7 @@
 
 import { CREDITS_PER_DASH, estimateChunkCredits } from '@/lib/sdk/cost'
 import { dashToUsd, formatDash } from '@/lib/view/format'
+import { ScrollRegion } from '@/components/ui/scroll-region'
 
 const MIB = 1024 * 1024
 /** Manifest + ref update per push, measured on moutai (≈ 0.0003 DASH). */
@@ -26,7 +27,7 @@ export function CostCard(): JSX.Element {
       <h2 id="cost-card-title" className="mb-2 text-dense font-medium text-anvil-500 dark:text-anvil-400">
         What it costs
       </h2>
-      <div className="overflow-x-auto">
+      <ScrollRegion label="Cost table" className="overflow-x-auto">
         <table className="w-full min-w-[34rem] text-left text-[12px]">
           <thead className="text-anvil-500 dark:text-anvil-400">
             <tr>
@@ -47,7 +48,7 @@ export function CostCard(): JSX.Element {
             ))}
           </tbody>
         </table>
-      </div>
+      </ScrollRegion>
       <p className="mt-2 text-[11px] text-anvil-500 dark:text-anvil-400">
         Platform figures are estimates from measured fees; bucket prices are the providers’ list prices, rounded. USD is indicative.
       </p>

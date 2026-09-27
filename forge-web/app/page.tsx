@@ -37,7 +37,7 @@ export default function LandingPage(): JSX.Element {
       {/* Hero */}
       <section className="mx-auto max-w-3xl pb-4 pt-8 text-center sm:pt-14">
         <h1 className="text-3xl leading-tight tracking-tight sm:text-5xl">
-          A git forge with <span className="text-forge-500">no server to trust.</span>
+          A git forge with <span className="text-forge-700 dark:text-forge-500">no server to trust.</span>
         </h1>
         <p className="mx-auto mt-4 max-w-xl text-prose text-anvil-600 dark:text-anvil-300">
           Browse code, discuss issues and pull requests, and collaborate. Platform reads are

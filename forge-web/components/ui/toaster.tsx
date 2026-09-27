@@ -20,9 +20,9 @@ export function Toaster(): JSX.Element {
           )}
         >
           {t.tone === 'error' || t.tone === 'warn' ? (
-            <AlertTriangle className={cn('mt-0.5 h-4 w-4 shrink-0', t.tone === 'error' ? 'text-danger' : 'text-caution')} aria-hidden />
+            <AlertTriangle className={cn('mt-0.5 h-4 w-4 shrink-0', t.tone === 'error' ? 'text-danger-700 dark:text-danger-400' : 'text-caution-700 dark:text-caution-400')} aria-hidden />
           ) : (
-            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-verify" aria-hidden />
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-verify-700 dark:text-verify-400" aria-hidden />
           )}
           <div className="min-w-0 flex-1">
             <div className="text-anvil-900 dark:text-anvil-50">
@@ -36,7 +36,7 @@ export function Toaster(): JSX.Element {
             </div>
             {t.detail ? <div className="mt-0.5 break-words text-[12px] text-anvil-500 dark:text-anvil-400">{t.detail}</div> : null}
           </div>
-          <button onClick={() => dismiss(t.id)} aria-label="Dismiss" className="text-anvil-400 hover:text-anvil-700">
+          <button onClick={() => dismiss(t.id)} aria-label="Dismiss" className="text-anvil-500 dark:text-anvil-400 hover:text-anvil-700">
             <X className="h-3.5 w-3.5" aria-hidden />
           </button>
         </div>

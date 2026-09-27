@@ -182,7 +182,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     setStep('words')
   }
 
-  if (step === 'loading') return <Loader2 className="h-5 w-5 animate-spin text-anvil-400" aria-label="Loading" />
+  if (step === 'loading') return <Loader2 className="h-5 w-5 animate-spin text-anvil-500 dark:text-anvil-400" aria-label="Loading" />
 
   if (step === 'resume') {
     return (
@@ -204,7 +204,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         >
           Continue
         </Button>
-        {discardWarning ? <p className="text-dense text-caution">{discardWarning}</p> : null}
+        {discardWarning ? <p className="text-dense text-caution-700 dark:text-caution-400">{discardWarning}</p> : null}
         <Button variant="ghost" size="sm" disabled={running} onClick={discard}>
           {discardWarning ? 'Discard anyway' : 'Discard this creation'}
         </Button>
@@ -220,11 +220,11 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         <ol data-testid="mnemonic-words" className="grid grid-cols-3 gap-1.5 rounded-md border border-anvil-200 p-3 font-mono text-dense dark:border-anvil-800">
           {words.map((w, i) => (
             <li key={i}>
-              <span className="text-anvil-400">{i + 1}.</span> <span data-word={i}>{w}</span>
+              <span className="text-anvil-500 dark:text-anvil-400">{i + 1}.</span> <span data-word={i}>{w}</span>
             </li>
           ))}
         </ol>
-        <div className="flex gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-caution">
+        <div className="flex gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-caution-700 dark:text-caution-400">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
           <span>
             The 12 words are the identity. Lose them and nobody can recover it. Keep them offline; Forge only ever keeps a limited
@@ -279,7 +279,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         >
           Continue to funding
         </Button>
-        {problem ? <p className="text-[12px] text-anvil-500">{problem}</p> : null}
+        {problem ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{problem}</p> : null}
         <ErrorBox error={error} />
       </div>
     )
@@ -295,7 +295,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
       {address ? <Qr value={address} label={`Deposit address ${address}`} /> : null}
       {address ? <span data-testid="deposit-address" className="sr-only">{address}</span> : null}
       {faucet ? (
-        <a href={faucet} target="_blank" rel="noreferrer noopener" className="block text-center text-dense text-forge-600 underline dark:text-forge-400">
+        <a href={faucet} target="_blank" rel="noreferrer noopener" className="block text-center text-dense text-forge-700 underline dark:text-forge-400">
           Get test DASH from the {ACTIVE_NETWORK.key} faucet
         </a>
       ) : null}
@@ -303,7 +303,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         {running ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden /> : null}
         <span data-testid="create-stage">{stage ?? STAGE_TEXT['waiting-deposit']}</span>
         {seen > 0 ? (
-          <span className="inline-flex items-center gap-1 text-verify">
+          <span className="inline-flex items-center gap-1 text-verify-700 dark:text-verify-400">
             <Check className="h-3.5 w-3.5" aria-hidden /> {(seen / 1e8).toFixed(4)} DASH seen
           </span>
         ) : null}
