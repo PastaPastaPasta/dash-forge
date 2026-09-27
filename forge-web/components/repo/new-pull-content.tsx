@@ -6,7 +6,8 @@
  * of it (the `forkOf` index). The base defaults to the repo's default branch, the diff renders
  * before submit, the title comes from the head commit's subject, and the `patch` is numbered
  * by the repo's allocation rule, retrying past a number someone claims meanwhile. A signed-out
- * draft is kept in this tab (sessionStorage) while the sign-in sheet is open.
+ * draft is kept in this tab while the sign-in sheet is open (`lib/view/pr-draft.ts`; a private
+ * repo's in page memory only).
  */
 
 import { useEffect, useMemo, useState } from 'react'
@@ -15,6 +16,7 @@ import { GitBranch } from 'lucide-react'
 
 import { createPatch, findForks, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
 import { commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
+import { dropPrDraft, loadPrDraft, savePrDraft } from '@/lib/view/pr-draft'
 import { PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { writeErrorMessage } from '@/lib/view/write-errors'
 import { useAuth } from '@/contexts/auth-context'
@@ -40,29 +42,7 @@ interface HeadOption {
   readonly label: string
 }
 
-interface Draft {
-  readonly title: string
-  readonly body: string
-  readonly head: string
-  readonly base: string
-}
-
 const short = (refName: string): string => refName.replace(/^refs\/heads\//, '')
-
-function draftKey(repoId: string): string {
-  return `forge.pr-draft.${repoId}`
-}
-
-function loadDraft(repoId: string): Draft | null {
-  try {
-    const raw = window.sessionStorage.getItem(draftKey(repoId))
-    if (raw === null) return null
-    const d = JSON.parse(raw) as Partial<Draft>
-    return { title: String(d.title ?? ''), body: String(d.body ?? ''), head: String(d.head ?? ''), base: String(d.base ?? '') }
-  } catch {
-    return null
-  }
-}
 
 export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const repo = home.repo
@@ -74,7 +54,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
 
   const baseParam = useParam('base')
   const headParam = useParam('head')
-  const saved = useMemo(() => (typeof window === 'undefined' ? null : loadDraft(repo.repoId)), [repo.repoId])
+  const saved = useMemo(() => (typeof window === 'undefined' ? null : loadPrDraft(repo)), [repo])
   const [title, setTitle] = useState(saved?.title ?? '')
   const [titleTouched, setTitleTouched] = useState((saved?.title ?? '') !== '')
   const [body, setBody] = useState(saved?.body ?? '')
@@ -86,13 +66,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   const [note, setNote] = useState<string | null>(null)
 
   // Keep the draft for this tab (a sign-in in between must not lose it).
-  useEffect(() => {
-    try {
-      window.sessionStorage.setItem(draftKey(repo.repoId), JSON.stringify({ title, body, head: headKey, base }))
-    } catch {
-      /* private mode */
-    }
-  }, [repo.repoId, title, body, headKey, base])
+  useEffect(() => savePrDraft(repo, { title, body, head: headKey, base }), [repo, title, body, headKey, base])
 
   const branches = useMemo(() => home.branches.filter((b) => tipOidOf(b) !== null), [home.branches])
   const forks = useAsync(
@@ -154,7 +128,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       const created = await createPatch(sdk, signer, repo, { ...input, intent: draftIntent.intent }, (taken, next) =>
         setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
       )
-      window.sessionStorage.removeItem(draftKey(repo.repoId))
+      dropPrDraft(repo)
       router.push(repoHref('/repo/pull', addr, { number: String(created.number), created: '1' }))
     } catch (e) {
       setError(writeErrorMessage(e).message)
