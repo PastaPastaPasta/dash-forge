@@ -16,6 +16,7 @@ import { GitBranch } from 'lucide-react'
 import { createPatch, findForks, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
 import { previewCreate } from '@/lib/sdk'
 import { commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
+import { PrivateComposeNote, SealedLimit, privateComposeBlock } from '@/components/repo/private-compose'
 import { writeErrorMessage } from '@/lib/view/write-errors'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
@@ -101,7 +102,8 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       return Promise.all(mine.map(async (f) => ({ fork: f, refs: (await readRefs(sdk!, f)).filter((r) => r.refName.startsWith('refs/heads/')) })))
     },
     [ready, repo.repoId, identity ?? ''],
-    { enabled: ready && sdk !== null && identity !== null },
+    // A private repo has no forks (only public repos fork).
+    { enabled: ready && sdk !== null && identity !== null && repo.visibility === 'public' },
   )
 
   const options = useMemo<HeadOption[]>(() => {
@@ -139,7 +141,8 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       ? null
       : { title: title.trim(), body, baseRefName: base, sourceRepoId: head.repo.repoId, sourceRefName: head.refName, headOid: head.oid }
   const cost = previewCreate('patch', input ?? { title: title.trim(), body })
-  const blocked = input === null || title.trim() === '' || noBase || sameBranch || nothing
+  const composeBlock = privateComposeBlock(home)
+  const blocked = input === null || title.trim() === '' || noBase || sameBranch || nothing || composeBlock !== null
 
   const submit = async (): Promise<void> => {
     if (pending || blocked || input === null) return
@@ -275,7 +278,9 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
               {body.trim() ? <MarkdownView source={body} /> : <p className="italic text-anvil-600 dark:text-anvil-400">Nothing to preview.</p>}
             </div>
           ) : null}
+          <SealedLimit home={home} kind="patch" text={title.trim() + body + (input?.baseRefName ?? '') + (input?.sourceRefName ?? '')} />
         </div>
+        {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <CostPreview cost={cost} />
           <Button

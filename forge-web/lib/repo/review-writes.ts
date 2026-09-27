@@ -32,6 +32,7 @@ import {
 import { DOC, asIdentifierString, byteFieldToHex, num, str, type RepoRef } from './contract'
 import { invalidateRepoFeed, readReviews } from './issues'
 import { repoSource } from './source'
+import { admitAll, gateFor } from './private-content'
 import { EVENT_KIND_CODE, VERDICT_INT, contractFor, eventRoute, refusePlaintextInPrivate, writeRepoDoc, type VerdictInput, type WriteTarget } from './writes'
 
 export { EVENT_KIND_CODE, eventRoute }
@@ -303,13 +304,15 @@ export function chainReads(sdk: EvoSDK, repo: RepoRef, prId: string): SubmitRead
         createdAt: r.createdAt,
       })),
     comments: async () => {
-      const docs = await queryAllDocuments(
+      const raw = await queryAllDocuments(
         sdk,
         repoSource(repo).targetQuery(DOC.comment, {
           where: [['targetId', '==', prId]],
           orderBy: [['targetId', 'asc'], ['$createdAt', 'asc']],
         }),
       )
+      // A private repo's comments are compared decrypted (the gate opens them with the reader's keys).
+      const { docs } = await admitAll(gateFor(repo), 'comment', raw)
       return docs.map((d) => ({
         id: str(d, '$id'),
         owner: str(d, '$ownerId'),
@@ -398,7 +401,6 @@ export async function submitReviewDraft(
   reads: SubmitReads = chainReads(sdk, repo, draft.prId),
 ): Promise<SubmittedReview> {
   if (draft.identity !== auth.identityId) throw new Error('this pending review belongs to another identity')
-  refusePlaintextInPrivate(repo, DOC.review)
   let current: ReviewDraft = await reconcileReviewDraft(draft, reads)
   if (current.attemptedAt === undefined) current = { ...current, attemptedAt: Date.now() }
   // Saved before the first write, so a crash after it leaves a draft that reconciles.

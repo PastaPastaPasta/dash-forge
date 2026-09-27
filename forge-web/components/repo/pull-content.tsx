@@ -28,6 +28,7 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Author } from '@/components/author'
 import { Timeline } from '@/components/repo/timeline'
 import { PullDiff } from '@/components/repo/pull-diff'
+import { PrivateComposeNote, SealedLimit, privateComposeBlock } from '@/components/repo/private-compose'
 import { MarkdownView } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
@@ -107,8 +108,10 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
       : { label: pull.state.draft ? 'Draft' : 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: pull.state.draft ? 'bg-anvil-500' : 'bg-verify-700' }
 
   const commentCost = previewCreate('comment', { body: comment.trim() })
-  // A private repo's comments and reviews are sealed; this browser does not write them yet.
-  const isPrivate = home.repo.visibility === 'private'
+  // A private repo's comments and reviews are sealed on write; only a member holding the
+  // current key writes them (`private-compose.tsx`).
+  const composeBlock = privateComposeBlock(home)
+  const isPrivate = composeBlock !== null
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const target = { id: pull.id, number: pull.number }
 
@@ -240,12 +243,13 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
 
       <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
         <h3 className="mb-2 text-dense font-medium">Review</h3>
-        {isPrivate ? (
-          <p className="text-dense text-anvil-500 dark:text-anvil-400" data-testid="private-compose-note">
-            Comments and reviews on private repos aren&apos;t supported yet.
-          </p>
+        {composeBlock !== null ? (
+          <PrivateComposeNote reason={composeBlock} />
         ) : (
-          <Textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Leave a review comment…" />
+          <>
+            <Textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Leave a review comment…" />
+            <SealedLimit home={home} kind="comment" text={comment.trim()} />
+          </>
         )}
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
           {isPrivate ? <span /> : <CostPreview cost={commentCost} />}

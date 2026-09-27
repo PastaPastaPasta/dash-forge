@@ -53,6 +53,7 @@ import { invalidateMembers, readMemberships } from './members'
 import {
   isMaintainer,
   loadPrivateSessionUncached,
+  shortBranch,
   parseWrapDoc,
   sdkSessionSource,
   sessionUnwrapper,
@@ -757,6 +758,55 @@ async function skipBelow(session: PrivateSession, c: PrivateWriteContext, burned
     `key epoch ${burned} is burned and you hold no key of the epoch below it that the next epoch must skip to; a maintainer who holds it must rotate`,
     'E310',
   )
+}
+
+/**
+ * The last step of a private create (§5.3 epoch 0; parity: forge-core
+ * `keyring::create_private_state`): the owner's self-wrap of a fresh epoch-0 key, then the
+ * epoch-0 anchor `config` (`defaultBranch`, no protected patterns, backend in plaintext). A
+ * resumed create reuses its own standing epoch-0 self-wrap; one whose anchor already exists
+ * does nothing. Returns whether it wrote the anchor.
+ */
+export async function createEpochZero(c: PrivateWriteContext, defaultBranch: string, intent: string): Promise<boolean> {
+  return withFreshSession(c, async (read) => {
+    if (read.resolution.anchors.has(0)) return false
+    // The maintainer document was just written: a member-list read may not show it yet, so the
+    // owner's own keys are read directly.
+    const own = await fetchIdentityKeys(c.sdk, c.auth.identityId)
+    const session: PrivateSession = { ...read, memberKeys: new Map([...read.memberKeys, [c.auth.identityId, own]]) }
+    const selfKey = usableEncryptionKey(own ?? [], c.repo.forge.core)
+    if (selfKey === null) throw new PrivateMembersError('your identity has no usable encryption key', 'E306')
+    // Resume: our own epoch-0 self-wrap, if it landed, is the key; else a fresh one.
+    const pending = pendingSelfWrap(session, c.auth.identityId, 0)
+    if (pending !== null && pending.row.recipientKeyId !== c.ops.keyId) throw notHeldKey(0, pending.row.recipientKeyId)
+    let k0 =
+      pending !== null
+        ? await c.ops.unwrapRaw({ document: pending.raw, counterpartyKey: keyOf(session, c.auth.identityId, pending.senderKeyId), repoId: session.repoId, epoch: 0 })
+        : await freshKey(session.repoId, 0)
+    try {
+      if (pending === null) {
+        const outcome = await postWrap(c, session, k0.keys, k0.raw, c.auth.identityId, selfKey.keyId, intent)
+        if (outcome.kind === 'different') {
+          const standing = await readOwnWrap(c, session, 0, c.auth.identityId)
+          if (standing === null) throw unusableWrap({ kind: 'unreadable' }, c.auth.identityId, 0)
+          if (standing.recipientKeyId !== c.ops.keyId) {
+            standing.raw.fill(0)
+            throw notHeldKey(0, standing.recipientKeyId)
+          }
+          k0.raw.fill(0)
+          k0 = standing
+        } else if (outcome.kind === 'unreadable') {
+          throw unusableWrap(outcome, c.auth.identityId, 0)
+        }
+      }
+      const fields = { defaultBranch: shortBranch(defaultBranch), protectedPatterns: [] as string[] }
+      const enc = await sealDoc(k0.keys, { type: 'config', ownerId: decodeIdentifier(c.auth.identityId), epoch: 0 }, fields, { anchor: true })
+      await postConfig(c, { repoId: decodeIdentifier(c.repo.repoId), epoch: 0, enc, backend: { mode: 0 }, archived: false }, `${intent}:anchor:0:${keyTag(k0.keys)}`)
+      return true
+    } finally {
+      k0.raw.fill(0)
+    }
+  })
 }
 
 async function freshKey(repoId: Uint8Array, epoch: number): Promise<{ keys: EpochKeys; raw: Uint8Array }> {

@@ -8,6 +8,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { WriteAuth, WriteResult } from '../sdk'
 import type { RepoRef } from '../repo/contract'
+import { sealArtifact } from '../repo/private-writes'
 import { writePackManifest, type PackManifestInput } from '../repo/push'
 import { storeArtifact, type StoreOptions, type StoredArtifact } from './upload'
 
@@ -52,7 +53,9 @@ export async function storeAndRecordPack(
   meta: Pick<PackManifestInput, 'kind' | 'objectCount' | 'tips' | 'supersedes'>,
   opts: StoreOptions & { readonly intent?: string },
 ): Promise<RecordedPack> {
-  const stored = await storeArtifact(sdk, auth, repo, bytes, opts)
+  // A private repo stores the artifact sealed (`private-repos.md` §3); `packHash` and
+  // `sizeBytes` are then the sealed bytes', as every reader checks them.
+  const stored = await storeArtifact(sdk, auth, repo, await sealArtifact(sdk, auth, repo, bytes), opts)
   const { packHash, sizeBytes, chunkCount, storage, uris } = stored
   const manifest = await writePackManifest(sdk, auth, repo, { ...meta, packHash, sizeBytes, chunkCount, storage, uris }, opts.intent)
   return { stored, manifest }

@@ -22,7 +22,8 @@ import type { ForgeIds } from '../deployments'
 import { decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { isLegalRefName, type EventKind } from '../rules'
-import { allocateNumber, isAuthorKind, numberCeiling, normalizeRepoName as normalizeV2RepoName, type Role } from '../rules/v2'
+import { allocateNumber, isAuthorKind, numberCeiling, normalizeRepoName as normalizeV2RepoName, type Role, type Visibility } from '../rules/v2'
+import type { EncryptionOps } from '../auth/encryption-key'
 import {
   ConsensusRefusal,
   DUPLICATE_UNIQUE_CODE,
@@ -40,6 +41,7 @@ import {
 import { DOC, num, str, type RepoRef } from './contract'
 import { invalidateMembers } from './members'
 import { refNameHash } from './push'
+import { sealForRepo } from './private-writes'
 import { invalidateRepoFeed } from './issues'
 import { repoSource } from './source'
 
@@ -148,9 +150,8 @@ export function assertNoPlaintext(repo: RepoRef, documentType: string, data: Rea
 const SEALED_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.comment, DOC.review])
 
 /**
- * Refuse a plaintext write of sealed content to a private repo. The sealed writers
- * (`lib/private` `sealDoc`) are wired by the private-repo web work; until then nothing here may
- * write an issue, PR, comment or review into a private repo.
+ * Refuse a write of sealed content to a private repo that this path does not seal (a replace
+ * outside {@link sealEdit}'s writers). {@link writeRepoDoc} seals instead.
  */
 export function refusePlaintextInPrivate(repo: RepoRef, documentType: string): void {
   if (repo.visibility === 'private' && SEALED_TYPES.has(documentType)) {
@@ -160,8 +161,9 @@ export function refusePlaintextInPrivate(repo: RepoRef, documentType: string): v
 
 /**
  * Create one repo-scoped document: the right contract, `repoId` set, then drop the caches
- * the write invalidates. Refuses plaintext content in a private repo
- * ({@link refusePlaintextInPrivate}).
+ * the write invalidates. In a private repo an issue, PR, comment or review is sealed first
+ * (`private-writes.ts`: its content into `enc` under the current epoch), and nothing leaves
+ * here with plaintext content ({@link assertNoPlaintext}).
  */
 export async function writeRepoDoc(
   sdk: EvoSDK,
@@ -171,7 +173,9 @@ export async function writeRepoDoc(
   data: Record<string, unknown>,
   intent?: string,
 ): Promise<WriteResult> {
-  refusePlaintextInPrivate(repo, documentType)
+  if (repo.visibility === 'private' && SEALED_TYPES.has(documentType)) {
+    data = await sealForRepo(sdk, auth, repo, documentType as 'issue' | 'patch' | 'comment' | 'review', data)
+  }
   assertNoPlaintext(repo, documentType, data)
   try {
     return await createDocumentIdempotent(sdk, auth, {
@@ -771,10 +775,22 @@ export interface CreateRepoInput {
   readonly defaultBranch?: string
   /** The parent repo's id (`repo.forkOf`, immutable) when this is a fork. */
   readonly forkOf?: string
+  /** Set at creation only (immutable). A private repo needs the owner's encryption key. */
+  readonly visibility?: Visibility
 }
 
 /** The steps of a repo creation, in order. */
 export type CreateRepoStep = 'repo' | 'maintainer' | 'config'
+
+/**
+ * What a private create (`private-repos.md` §5.3) needs to write its epoch 0: the vault's
+ * encryption operations, and the writer of the key and anchor (`private-members.ts`
+ * `createEpochZero`, passed in so this module stays below the key-rotation code).
+ */
+export interface PrivateCreate {
+  readonly ops: EncryptionOps
+  readonly epochZero: (c: { sdk: EvoSDK; auth: WriteAuth; repo: RepoRef; network: Network; ops: EncryptionOps }, defaultBranch: string, intent: string) => Promise<boolean>
+}
 
 /** A repo creation's journal entry (IndexedDB), kept until all three documents exist. */
 export interface RepoCreationJournal {
@@ -841,17 +857,26 @@ export async function createRepo(
   forge: ForgeIds,
   input: CreateRepoInput,
   onStep?: (step: CreateRepoStep, state: 'start' | 'done') => void,
+  /** Required for a private repo (its epoch-0 key and anchor). */
+  privateCreate?: PrivateCreate,
 ): Promise<CreateRepoResult> {
   const name = normalizeRepoName(input.name)
   const ownerId = auth.identityId
   const key = journalKey(auth.network, ownerId, name)
   checkRepoInput(input)
+  // Refused before anything is written: a private repo nobody can hold a key for.
+  if ((input.visibility ?? 'public') === 'private' && privateCreate === undefined) {
+    throw new Error('cannot create a private repository: add your encryption key to this browser first (Settings → Keys)')
+  }
   // A resumed creation keeps the values it started with, so the repo and config documents
   // agree (the form may have been edited since; the page warns about that).
   const previous = await idbGet<RepoCreationJournal>('journal', key)
   // A fork and a plain repo of the same name are different creations: resuming one as the
   // other would write (or drop) `forkOf`, and a fork's packs and refs would land in a repo
   // that is not a fork of their parent. Refuse rather than guess.
+  if (previous && (previous.input.visibility ?? 'public') !== (input.visibility ?? 'public')) {
+    throw new Error(`an unfinished ${previous.input.visibility ?? 'public'} repository named ${name} is pending in this browser; finish or dismiss it on the New repository page first (visibility is immutable)`)
+  }
   if (previous && (previous.input.forkOf ?? null) !== (input.forkOf ?? null)) {
     throw new Error(
       previous.input.forkOf
@@ -886,12 +911,22 @@ export async function createRepo(
     })
     return firstId(documents)
   }
+  const visibility: Visibility = input.visibility ?? 'public'
   let repoId = await existingRepo()
+  if (repoId !== null) {
+    // A repo of this name exists: resume only one of the same visibility (it is immutable).
+    const { documents } = await queryDocumentsWithProof(sdk, { dataContractId: forge.core, documentTypeName: DOC.repo, where: [['$id', '==', repoId]], limit: 1 })
+    const existing = documents[0]?.['visibility']
+    if (existing !== undefined && existing !== visibility) {
+      throw new Error(`${name} already exists with the other visibility (visibility is immutable)`)
+    }
+  }
   await step('repo', async () => {
     if (repoId !== null) return
-    const data: Record<string, unknown> = { name, visibility: 'public' }
+    const data: Record<string, unknown> = { name, visibility }
     if (input.description) data['description'] = input.description
-    if (input.defaultBranch) data['defaultBranch'] = input.defaultBranch
+    // A private repo's default branch lives only in its sealed config (§7).
+    if (input.defaultBranch && visibility === 'public') data['defaultBranch'] = input.defaultBranch
     if (input.forkOf) data['forkOf'] = decodeIdentifier(input.forkOf)
     try {
       const r = await createDocumentIdempotent(sdk, auth, { contractId: forge.core, documentType: DOC.repo, data, intent: `${key}:repo` })
@@ -906,7 +941,7 @@ export async function createRepo(
   journal.repoId = repoId
   await save()
   const R = decodeIdentifier(repoId)
-  const repo: RepoRef = { forge, repoId, ownerId, name, visibility: 'public' }
+  const repo: RepoRef = { forge, repoId, ownerId, name, visibility }
 
   // 2. the owner's maintainer document (unique per repo + member)
   await step('maintainer', async () => {
@@ -923,8 +958,14 @@ export async function createRepo(
     }
   })
 
-  // 3. the first config (append-only; one is enough)
+  // 3. the first config (append-only; one is enough). A private repo's is its epoch-0 anchor,
+  // after the owner's self-wrap of a fresh key (§5.3).
   await step('config', async () => {
+    if (visibility === 'private') {
+      const p = privateCreate as PrivateCreate
+      await p.epochZero({ sdk, auth, repo, network: auth.network, ops: p.ops }, input.defaultBranch ?? 'main', key)
+      return
+    }
     const { documents } = await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(DOC.config, { limit: 1 }))
     if (documents.length > 0) return
     await createDocumentIdempotent(sdk, auth, {
