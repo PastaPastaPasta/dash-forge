@@ -113,6 +113,8 @@ export interface AuthState {
   readonly error: string | null
   /** Something the user should know after a sign-in step succeeded (null when nothing). */
   readonly notice?: string | null
+  /** The step a running sign-in is on ("Registering the key on Platform"), for the sheet. */
+  readonly step?: string | null
 }
 
 type Listener = (state: AuthState) => void
@@ -247,15 +249,20 @@ export class AuthController {
   }
 
   private async run<T>(fn: () => Promise<T>): Promise<T> {
-    this.setState({ isLoading: true, error: null })
+    this.setState({ isLoading: true, error: null, step: null })
     try {
       const v = await fn()
-      this.setState({ isLoading: false })
+      this.setState({ isLoading: false, step: null })
       return v
     } catch (e) {
-      this.setState({ isLoading: false, error: errorMessage(e) })
+      this.setState({ isLoading: false, error: errorMessage(e), step: null })
       throw e
     }
+  }
+
+  /** Name the step a running sign-in is on. */
+  private step(text: string): void {
+    this.setState({ step: text })
   }
 
   /**
@@ -400,13 +407,16 @@ export class AuthController {
         masterWif = (await deriveMasterKey(input.mnemonic, this.network)).wif
       }
       if (!masterWif) throw new Error('no master key found')
+      this.step("Checking this browser's stored keys")
       const previous = (await listVaults(this.network)).find((v) => v.identityId === identityId)
+      this.step('Connecting to Dash Platform')
       const sdk = await this.getSdk()
       // Renewing also disables the wallet keys this browser holds for the identity (a shipped
       // wallet's keys have no limits: replacing them is how they get limits). That needs them
       // unlocked: replacing a locked wallet-key vault would forget keys it cannot disable.
       if (previous) await this.assertUnlockedIfWalletKeys(sdk, identityId, previous.keyId)
       const held = this.heldKeys(identityId)
+      this.step('Registering the key on Platform')
       const key = await registerLimitedKey(sdk, {
         network: this.network,
         identityId,
@@ -418,8 +428,12 @@ export class AuthController {
         ...(request ? { request } : {}),
       })
       masterWif = null
+      this.step(protection.passkey ? 'Saving the key with your passkey' : 'Saving the key in this browser')
       const session = await this.adopt(identityId, key, protection)
-      if (material !== null) await this.enableEncryption(identityId, material)
+      if (material !== null) {
+        this.step('Enabling private repos')
+        await this.enableEncryption(identityId, material)
+      }
       return session
       } finally {
         if (material !== null && 'keys' in material) wipeMaterial(material)

@@ -22,10 +22,12 @@ import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
 import { Qr } from '@/components/ui/qr'
 import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protection-fields'
+import { StepFailed, Waiting } from '@/components/auth/step-status'
 import { faucetUrl } from '@/components/top-up-sheet'
 import { ACTIVE_NETWORK } from '@/lib/constants'
-import { ensureSdk } from '@/lib/sdk'
 import { isAbort } from '@/lib/sdk/facade'
+import { PHASE_TEXT, STEP_MS, connectPlatform, loadSdkLibrary, type ConnectPhase } from '@/lib/auth/connect'
+import { withTimeout } from '@/lib/timeout'
 import { coreEndpoints } from '@/lib/auth/asset-lock'
 import {
   clearCreationJournal,
@@ -71,57 +73,96 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   const [seen, setSeen] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
+  // Checking typed words before a run (the library may still be downloading).
+  const [preparing, setPreparing] = useState(false)
   const [resumeWords, setResumeWords] = useState('')
   // Cleared as soon as a run starts (start() empties it).
   const [discardWarning, setDiscardWarning] = useState<string | null>(null)
   const { fields, protection, problem } = useProtection()
   const words = mnemonic?.split(' ') ?? []
   const run = useRef<AbortController | null>(null)
+  // The first step: this device's unfinished creation (IndexedDB), else fresh words (the
+  // evo-sdk WASM). Each wait is bounded and named; a failure offers "Try again" (`attempt`).
+  const [loadingWhat, setLoadingWhat] = useState('Checking this browser for a creation in progress')
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
     let cancelled = false
+    setLoadError(null)
     void (async () => {
-      const j = await readCreationJournal(network)
-      if (cancelled) return
-      if (j) {
-        setJournal(j)
-        setAddress(j.depositAddress)
-        setStep('resume')
-        return
+      try {
+        setLoadingWhat('Checking this browser for a creation in progress')
+        const j = await withTimeout(readCreationJournal(network), STEP_MS, "Reading this browser's storage")
+        if (cancelled) return
+        if (j) {
+          setJournal(j)
+          setAddress(j.depositAddress)
+          setStep('resume')
+          return
+        }
+        await loadSdkLibrary(() => !cancelled && setLoadingWhat(PHASE_TEXT.downloading))
+        if (cancelled) return
+        setLoadingWhat('Generating your 12 words')
+        const m = await withTimeout(newMnemonic(), STEP_MS, 'Generating your 12 words')
+        if (cancelled) return
+        setMnemonic(m)
+        setPositions(quizPositions(12, 3))
+        setStep('words')
+      } catch (e) {
+        if (!cancelled) setLoadError(errorMessage(e))
       }
-      const m = await newMnemonic()
-      if (cancelled) return
-      setMnemonic(m)
-      setPositions(quizPositions(12, 3))
-      setStep('words')
     })()
     return () => {
       cancelled = true
+    }
+  }, [network, attempt])
+
+  // Unmount only: stop a running creation and drop the words.
+  useEffect(
+    () => () => {
       run.current?.abort()
       mnemonicRef.current = null
-    }
-  }, [network])
+    },
+    [],
+  )
 
   const quizOk = positions.length === 3 && positions.every((p, i) => (answers[i] ?? '').trim().toLowerCase() === words[p])
 
+  /** The deposit address of `m` once the words check out, or null with the error shown. */
+  const checkWords = async (m: string): Promise<string | null> => {
+    setPreparing(true)
+    try {
+      await loadSdkLibrary()
+      if (!(await withTimeout(isValidMnemonic(m), STEP_MS, 'Checking the words'))) {
+        setError('Those words are not a valid recovery phrase.')
+        return null
+      }
+      const deposit = await withTimeout(depositAddressOf(m, network), STEP_MS, 'Deriving the deposit address')
+      if (journal && journal.depositAddress !== deposit) {
+        setError('These words do not match the creation in progress on this device.')
+        return null
+      }
+      return deposit
+    } catch (e) {
+      setError(errorMessage(e))
+      return null
+    } finally {
+      setPreparing(false)
+    }
+  }
+
   const start = async (phrase: string): Promise<void> => {
-    if (!protection || running) return
+    if (!protection || running || preparing) return
     setError(null)
     const m = normalizeMnemonic(phrase)
-    if (!(await isValidMnemonic(m))) {
-      setError('Those words are not a valid recovery phrase.')
-      return
-    }
-    const deposit = await depositAddressOf(m, network)
-    if (journal && journal.depositAddress !== deposit) {
-      setError('These words do not match the creation in progress on this device.')
-      return
-    }
     const v2 = ACTIVE_NETWORK.v2
     if (!v2) {
       setError('forge-v2 is not deployed here.')
       return
     }
+    const deposit = await checkWords(m)
+    if (deposit === null) return
     const controllerRun = new AbortController()
     run.current = controllerRun
     setRunning(true)
@@ -129,7 +170,8 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     setStep('fund')
     setResumeWords('')
     try {
-      const sdk = await ensureSdk(network)
+      const sdk = await connectPlatform(network, (p: ConnectPhase) => setStage(`${PHASE_TEXT[p]}…`))
+      setStage(null)
       const { identityId, key } = await createIdentityFromMnemonic(sdk, {
         network,
         mnemonic: m,
@@ -159,34 +201,44 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
 
   const discard = async (): Promise<void> => {
     if (!journal) return
-    if (discardWarning === null) {
-      const held = await depositBalance(network, journal).catch(() => -1)
-      if (held !== 0) {
-        setDiscardWarning(
-          held > 0
-            ? `The deposit address still holds ${(held / 1e8).toFixed(4)} DASH. Discarding forgets this creation; only your 12 words can recover those funds. Discard anyway?`
-            : "Couldn't check the deposit address for funds. If you sent any, only your 12 words can recover them. Discard anyway?",
-        )
-        return
+    setError(null)
+    try {
+      if (discardWarning === null) {
+        const held = await withTimeout(depositBalance(network, journal), STEP_MS, 'Checking the deposit address').catch(() => -1)
+        if (held !== 0) {
+          setDiscardWarning(
+            held > 0
+              ? `The deposit address still holds ${(held / 1e8).toFixed(4)} DASH. Discarding forgets this creation; only your 12 words can recover those funds. Discard anyway?`
+              : "Couldn't check the deposit address for funds. If you sent any, only your 12 words can recover them. Discard anyway?",
+          )
+          return
+        }
       }
+      run.current?.abort()
+      await withTimeout(clearCreationJournal(network), STEP_MS, "Updating this browser's storage")
+      setJournal(null)
+      setDiscardWarning(null)
+      setResumeWords('')
+      // Fresh words come from the loading step (bounded, with "Try again").
+      setAnswers(['', '', ''])
+      setStep('loading')
+      setAttempt((a) => a + 1)
+    } catch (e) {
+      setError(errorMessage(e))
     }
-    run.current?.abort()
-    await clearCreationJournal(network)
-    setJournal(null)
-    setDiscardWarning(null)
-    setResumeWords('')
-    const m = await newMnemonic()
-    setMnemonic(m)
-    setPositions(quizPositions(12, 3))
-    setAnswers(['', '', ''])
-    setStep('words')
   }
 
-  if (step === 'loading') return <Loader2 className="h-5 w-5 animate-spin text-anvil-500 dark:text-anvil-400" aria-label="Loading" />
+  if (step === 'loading') {
+    return loadError ? (
+      <StepFailed error={loadError} onRetry={() => setAttempt((a) => a + 1)} />
+    ) : (
+      <Waiting label={loadingWhat} hint="The first sign-in downloads the Dash Platform library (about 8 MB); on a slow connection this takes a minute." />
+    )
+  }
 
   if (step === 'resume') {
     return (
-      <div className="space-y-3">
+      <div className="space-y-3" data-testid="create-resume">
         <p className="text-dense">
           An identity creation is in progress on this device (deposit address <span className="font-mono">{address}</span>). Type
           your 12 words to finish it.
@@ -198,8 +250,8 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         <Button
           variant="primary"
           className="w-full"
-          loading={running}
-          disabled={running || resumeWords.trim().split(/\s+/).length < 12 || protection === null}
+          loading={running || preparing}
+          disabled={running || preparing || resumeWords.trim().split(/\s+/).length < 12 || protection === null}
           onClick={() => start(resumeWords)}
         >
           Continue
@@ -273,8 +325,8 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         <Button
           variant="primary"
           className="w-full"
-          loading={running}
-          disabled={running || protection === null || mnemonic === null}
+          loading={running || preparing}
+          disabled={running || preparing || protection === null || mnemonic === null}
           onClick={() => mnemonic && start(mnemonic)}
         >
           Continue to funding
@@ -314,7 +366,18 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         transactions, so neither can take funds or keys. On {ACTIVE_NETWORK.key} the lock is proven once a block chain-locks it, which can take a few
         minutes.
       </p>
-      {error ? <ErrorBox error={`${error} — your deposit is recorded on this device; reopen this sheet and type your 12 words to resume.`} /> : null}
+      {error && !running ? (
+        <StepFailed
+          error={`${error} — anything you sent is recorded on this device: "Try again" resumes (or reopen this sheet later and type your 12 words).`}
+          onRetry={() => {
+            if (mnemonic) void start(mnemonic)
+            else {
+              setStep('loading')
+              setAttempt((a) => a + 1)
+            }
+          }}
+        />
+      ) : null}
     </div>
   )
 }
