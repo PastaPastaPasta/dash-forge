@@ -23,6 +23,10 @@ Dash Forge signs users in with the DashConnect key exchange (`Models/DashConnect
 
 (c) **Show the pairing code** on `ApproveConnectionSheet`.
 
+(d) **Do not re-add a revoked key.** `missingKeyRegistrationKeys` treats a disabled login key as missing and adds the very same key again: a key the user revoked (after a compromise, say) comes back with any stolen copy. Add a per-app, per-rotation salt to the derivation (`"dash:login-key:v2" ‖ contractId ‖ rotation`), bumped when the current key is found disabled.
+
+(e) **Sign the request context** in the response, with a key of the answering identity, so the app can authenticate who answered: [app-connect-responder-auth.md](app-connect-responder-auth.md).
+
 ## Acceptance
 
 - A Forge login with a group-id request completes: one AUTHENTICATION/HIGH key bound to the Forge group, with a budget and an expiry, and a response in `H8F9…`.

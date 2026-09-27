@@ -80,7 +80,7 @@ interface AuthContextValue {
   /** Store the keys a wallet granted (verified on chain) and open the session. */
   adoptWalletKeys: (identityId: string, keys: readonly WalletKey[], protection: Protection) => Promise<void>
   /** Add a wallet grant for another Forge contract to the signed-in identity. */
-  addWalletGrant: (identityId: string, key: WalletKey) => Promise<void>
+  addWalletGrant: (identityId: string, key: WalletKey, requested: string) => Promise<void>
   /** Which Forge contracts the session's keys cover, and whether a held key is unlimited. */
   readonly grants: AuthSession['grants'] | null
   readonly unlimitedKey: boolean
@@ -148,9 +148,7 @@ export function AuthProvider({
       importIdentity: withReload(controller.importIdentity.bind(controller)),
       adoptLimitedKey: withReload(controller.adoptLimitedKey.bind(controller)),
       adoptWalletKeys: withReload(controller.adoptWalletKeys.bind(controller)),
-      addWalletGrant: async (identityId: string, key: WalletKey): Promise<void> => {
-        await controller.addWalletGrant(identityId, key)
-      },
+      addWalletGrant: withReload(controller.addWalletGrant.bind(controller)),
       unlock: withReload(controller.unlock.bind(controller)),
       loginWithRawKey: withReload(controller.loginWithRawKey.bind(controller)),
       refreshBalance: () => controller.refreshBalance(),

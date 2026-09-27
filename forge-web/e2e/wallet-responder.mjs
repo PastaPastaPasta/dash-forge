@@ -13,7 +13,7 @@
 //
 // `chainKeyHex` stands in for the wallet's BLOCKCHAIN_IDENTITY chain key (fixed per test run).
 
-import { createHash, randomBytes, webcrypto } from 'node:crypto'
+import { randomBytes, webcrypto } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -193,5 +193,3 @@ export async function disableDerived({ identityFile, chainKeyHex, contractIds, d
   await sdk.identities.update({ identity, disablePublicKeys: ids, signer })
   return ids
 }
-
-export const _test = { createHash }

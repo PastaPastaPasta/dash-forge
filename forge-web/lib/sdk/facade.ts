@@ -21,6 +21,7 @@ export interface WasmKey {
 export interface WasmIdentity {
   readonly publicKeys: WasmKey[]
   readonly balance: bigint
+  readonly revision: bigint
   getPublicKeyById(keyId: number): unknown
 }
 
@@ -31,6 +32,8 @@ export interface AuthSdk {
     update(options: unknown): Promise<void>
     create(options: unknown): Promise<void>
     keysRemainingBudgets(id: string, keyIds: number[]): Promise<Map<number, bigint | null>>
+    /** The identity's last used nonce (the next transition takes nonce + 1). */
+    nonce(id: string): Promise<bigint | undefined>
     /**
      * `IdentityKeyLimitsUpdate` (protocol 14): the key as it now stands. `identity` is the
      * object `fetch` returned (the wasm Identity, narrowed here to {@link WasmIdentity}).

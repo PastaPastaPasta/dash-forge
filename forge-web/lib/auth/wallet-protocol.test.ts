@@ -20,11 +20,11 @@ import {
   newLoginRequest,
   type ResponseSource,
 } from './app-connect'
-import { buildKeyRegistration, isUnlimited, keyScope, loginKeys, scopeCovers } from './key-registration'
+import { buildKeyRegistration, isUnlimited, keyScope, loginKeys, scopeCovers, RevokedWalletKey } from './key-registration'
 import { heldToDisable } from './limited-key'
 import { authKeyFromLogin, encodeKeyRequest, encryptionKeyFromLogin, openEnvelope, pairingCode, protocolUri } from './wallet-protocol'
 import { deriveLoginKey, parseKeyRequest, parseStRequest, sealLoginKeys, DashConnectUriException } from './wallet-sim'
-import { decodeWif } from './wif'
+import { decodeWif, encodeWif } from './wif'
 
 const FORGE: ForgeIds = {
   core: 'GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL',
@@ -172,6 +172,8 @@ describe('which keys Forge signs with', () => {
     expect(scopeCovers(core, FORGE, FORGE.core)).toBe(true)
     expect(scopeCovers(core, FORGE, FORGE.collab)).toBe(false)
     expect(scopeCovers(core, FORGE, 'SomeOtherContract')).toBe(false)
+    // Even an unbounded key is only ever asked about Forge's two contracts.
+    expect(scopeCovers(keyScope(bound(null), FORGE)!, FORGE, 'SomeOtherContract')).toBe(false)
   })
 
   it('flags a key without a budget or an expiry as unlimited', () => {
@@ -180,18 +182,19 @@ describe('which keys Forge signs with', () => {
     expect(isUnlimited({ limits: { remaining: 1n, total: 1n, expiresAt: 1 } })).toBe(false)
   })
 
-  it('disables only keys the stored private key controls (a key id alone picks nothing)', () => {
-    const wif = 'W'
+  it('disables only live HIGH keys the stored private key controls (a key id alone picks nothing)', () => {
+    const wif = encodeWif(new Uint8Array(32).fill(3), 'devnet')
     const mk = (keyId: number, controls: boolean, extra: Partial<{ purposeNumber: number; securityLevelNumber: number; disabledAt: bigint }> = {}) => ({
       keyId,
       purposeNumber: 0,
       securityLevelNumber: 2,
       ...extra,
-      validatePrivateKey: () => controls,
+      validatePrivateKey: (b: Uint8Array) => controls && b.every((x) => x === 3),
     })
-    const keys = [mk(0, true, { securityLevelNumber: 0 }), mk(5, true), mk(6, false), mk(7, true, { disabledAt: 1n })]
-    const fromWif = () => new Uint8Array(32)
-    expect(heldToDisable(keys, [{ keyId: 0, wif }, { keyId: 5, wif }, { keyId: 6, wif }, { keyId: 7, wif }, { keyId: 99, wif }], 'devnet', fromWif)).toEqual([5])
+    const keys = [mk(0, true, { securityLevelNumber: 0 }), mk(1, true, { securityLevelNumber: 1 }), mk(5, true), mk(6, false), mk(7, true, { disabledAt: 1n })]
+    const held = [0, 1, 5, 6, 7, 99].map((keyId) => ({ keyId, wif }))
+    expect(heldToDisable(keys, held, 'devnet')).toEqual([5])
+    expect(heldToDisable(keys, [{ keyId: 5, wif: 'not a wif' }], 'devnet')).toEqual([])
   })
 })
 
@@ -331,16 +334,37 @@ describe('login poll against a simulated wallet', () => {
     await expect(awaitWalletAnswer(chain.sdk, expiring, fast)).rejects.toBeInstanceOf(RequestExpired)
   })
 
-  it('refuses a key bound to another app, a CRITICAL key, and a disabled key', async () => {
+  it('refuses a key bound to another app, a CRITICAL key, and a revoked (disabled) key', async () => {
     for (const register of [{ bounds: { $type: 'singleContract', id: APP_CONNECT_CONTRACT_ID } }, { securityLevelNumber: 1 }, { disabledAt: 1n }]) {
       const chain = fakeChain()
       const req = newLoginRequest('devnet', FORGE.core)
       await chain.answer(req.uri, ALICE, { source: 'legacy', register })
       const outcome = awaitWalletAnswer(chain.sdk, { ...req, expiresAt: Date.now() + 50 }, fast)
-      // A disabled key is not "registered": the flow would ask to register again, so it expires here.
-      if ('disabledAt' in register) await expect(outcome).resolves.toMatchObject({ kind: 'register' })
+      // A disabled key is never registered again: the wallet would bring back a revoked key.
+      if ('disabledAt' in register) await expect(outcome).rejects.toBeInstanceOf(RevokedWalletKey)
       else await expect(outcome).rejects.toThrow(/outside Dash Forge|HIGH/)
     }
+  })
+
+  it('does not settle on a round that could not read every source', async () => {
+    const chain = fakeChain()
+    const req = newLoginRequest('devnet', FORGE.core)
+    await chain.answer(req.uri, ALICE, { source: 'legacy' })
+    // The App Connect read fails every time: the legacy answer is there, but never accepted.
+    const query = chain.sdk.documents.query.bind(chain.sdk.documents)
+    ;(chain.sdk as unknown as { documents: { query: (q: { dataContractId: string }) => unknown } }).documents.query = (q) =>
+      q.dataContractId === APP_CONNECT_CONTRACT_ID ? Promise.reject(new Error('node refused')) : query(q as never)
+    const statuses: string[] = []
+    await expect(awaitWalletAnswer(chain.sdk, { ...req, expiresAt: Date.now() + 60 }, { ...fast, onStatus: (s) => statuses.push(s) })).rejects.toBeInstanceOf(RequestExpired)
+    expect(statuses).toContain('incomplete-read')
+  })
+
+  it('skips an unusable answerer but still counts it: a second answer is refused', async () => {
+    const chain = fakeChain()
+    const req = newLoginRequest('devnet', FORGE.core)
+    await chain.answer(req.uri, MALLORY, { source: 'app-connect', chainKey: new Uint8Array(32).fill(0x22), register: { securityLevelNumber: 1 } })
+    await chain.answer(req.uri, ALICE, { source: 'app-connect' })
+    await expect(awaitWalletAnswer(chain.sdk, req, fast)).rejects.toBeInstanceOf(AmbiguousWalletLogin)
   })
 
   it('refuses when two identities answer (someone else saw the QR)', async () => {

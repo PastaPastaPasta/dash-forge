@@ -28,7 +28,9 @@ Dash Forge (a git forge on Platform) signs users in with the DashConnect key exc
 
 (c) **Show the pairing code** on the approval sheet.
 
-(d) **Check `disabledAt`** when deciding whether the login keys are already registered.
+(d) **Check `disabledAt`** when deciding whether the login keys are already registered. **Do not derive the same key after a revoke**: add a per-app, per-rotation salt to the login-key derivation (`"dash:login-key:v2" ‖ contractId ‖ rotation`), and bump it when the app's key is found disabled. Today a key the user revoked is re-registered on the next approval, which revives any stolen copy.
+
+(e) **Sign the request context** in the response, with a key of the answering identity, so the app can authenticate who answered. On yappr's contract the first answer is the only one the app can see, so an observer of the QR who answers first can only be caught by the user comparing ids. Details: [app-connect-responder-auth.md](app-connect-responder-auth.md).
 
 ## Acceptance
 

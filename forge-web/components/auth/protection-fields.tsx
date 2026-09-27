@@ -69,6 +69,10 @@ export function useProtection(opts: { readonly preferPasskey?: boolean } = {}): 
   const protection: Protection | null =
     problem !== null ? null : { ...(passphraseSet ? { passphrase } : {}), ...(passkey ? { passkey } : {}) }
 
+  let passkeyVariant: 'subtle' | 'primary' | 'outline' = 'outline'
+  if (passkey) passkeyVariant = 'subtle'
+  else if (preferPasskey) passkeyVariant = 'primary'
+
   const fields = (
     <div className="space-y-3 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
       <p className="text-dense font-medium">Protect this browser&apos;s key</p>
@@ -79,7 +83,7 @@ export function useProtection(opts: { readonly preferPasskey?: boolean } = {}): 
       ) : null}
       {canPasskey ? (
         <div className="flex flex-wrap items-center gap-2">
-          <Button type="button" variant={passkey ? 'subtle' : preferPasskey ? 'primary' : 'outline'} size="sm" onClick={enroll} loading={enrolling} disabled={passkey !== null}>
+          <Button type="button" variant={passkeyVariant} size="sm" onClick={enroll} loading={enrolling} disabled={passkey !== null}>
             <Fingerprint className="h-3.5 w-3.5" aria-hidden /> {passkey ? 'Passkey added' : 'Use a passkey'}
           </Button>
           <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Recommended: Touch ID, Windows Hello or a security key.</span>

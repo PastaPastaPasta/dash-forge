@@ -14,14 +14,18 @@
  *     (request, identity), one or more login keys, registered before publishing.
  *
  * The app polls every source this network has, decrypts, derives the auth key(s), finds them
- * on the responder's identity and checks them ({@link verifyWalletKey}): live, AUTHENTICATION /
+ * on the responder's identity and checks them ({@link findWalletKey}): live, AUTHENTICATION /
  * HIGH, inside Forge's contracts, not expired or spent. Keys that are not registered yet (a
- * legacy first login) come back as a `register` answer for the UI to show QR #2.
+ * legacy first login) come back as a `register` answer for the UI to show QR #2; a key that
+ * was registered and then disabled is refused (the wallet would re-add the same key).
  *
  * Who answered is NOT proven by the response (`app-connect.md`, step 3): anyone who saw the QR
- * can answer from their own identity. So the flow shows the full identity id and DPNS name for
- * the user to confirm, and refuses when more than one identity answered. The pairing code is
- * shown for wallets that display one (the shipped ones do not yet: docs/upstream/).
+ * can answer from their own identity. On App Connect, two answers are visible and refused. On
+ * the legacy contract they are not: its unique index keeps the FIRST answer only, so someone
+ * who saw the QR and answers first is the one shown. The defence there is the confirmation
+ * step (full id, DPNS name, identity age, a mismatch with this device's stored identity, and
+ * "compare with your wallet"), and never settling on a round that could not read every source.
+ * The pairing code is shown for wallets that display one (the shipped ones do not yet).
  */
 
 import * as secp from '@noble/secp256k1'
@@ -30,9 +34,10 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { Network } from '../constants'
 import { DEPLOYMENTS, type ForgeIds } from '../deployments'
 import { authSdk, sleep } from '../sdk/facade'
+import { base64ToBytes, bytesToBase64 } from '../sdk/query'
 import { hash160 } from './asset-lock'
 import { base58Decode } from './base58'
-import { loginKeys, verifyWalletKey, UnusableWalletKey, type LoginKeys, type WalletKey } from './key-registration'
+import { findWalletKey, loginKeys, scopeCovers, UnusableWalletKey, type LoginKeys, type WalletKey } from './key-registration'
 import { encodeWif } from './wif'
 import { authKeyFromLogin, encodeKeyRequest, openEnvelope, pairingCode, protocolUri } from './wallet-protocol'
 
@@ -52,7 +57,7 @@ export interface ResponseSource {
  * The legacy key-exchange contract recorded for a deployment (`keyExchange.contractId` in
  * `forge-contracts/deployments/<key>.json`), or null.
  */
-export function legacyKeyExchangeId(deploymentKey: string): string | null {
+function legacyKeyExchangeId(deploymentKey: string): string | null {
   return DEPLOYMENTS[deploymentKey]?.keyExchange?.contractId || null
 }
 
@@ -113,13 +118,6 @@ export interface WalletResponse {
   readonly payload: Uint8Array
 }
 
-function b64(s: string): Uint8Array {
-  return Uint8Array.from(atob(s), (c) => c.charCodeAt(0))
-}
-function toB64(b: Uint8Array): string {
-  return btoa(String.fromCharCode(...b))
-}
-
 interface ResponseJson {
   $ownerId: string
   walletEphemeralPubKey: string
@@ -127,23 +125,31 @@ interface ResponseJson {
   contractId?: string
 }
 
-/** Every response to `req` from `sources`. A read that fails yields nothing this round. */
-export async function fetchResponses(sdk: EvoSDK, sources: readonly ResponseSource[], req: LoginRequest): Promise<WalletResponse[]> {
-  const hash = toB64(req.appEphemeralPubKeyHash)
-  const out: WalletResponse[] = []
+/**
+ * Every response to `req` from `sources`, and whether every source was read in full. A failed
+ * or cut-short read is never "no answers": the poll does not settle on a round that missed one.
+ */
+async function fetchResponses(sdk: EvoSDK, sources: readonly ResponseSource[], req: LoginRequest): Promise<{ responses: WalletResponse[]; complete: boolean }> {
+  const hash = bytesToBase64(req.appEphemeralPubKeyHash)
+  const responses: WalletResponse[] = []
+  let complete = true
   for (const source of sources) {
     const rows = source.kind === 'legacy' ? await legacyRows(sdk, source.contractId, req.contractId, hash) : await appConnectRows(sdk, hash)
+    if (rows === null) {
+      complete = false
+      continue
+    }
     for (const j of rows) {
       // The legacy query is by contract; re-check it so a node cannot hand us another app's.
       if (source.kind === 'legacy' && j.contractId !== req.contractId) continue
       try {
-        out.push({ source: source.kind, ownerId: j.$ownerId, walletEphemeralPub: b64(j.walletEphemeralPubKey), payload: b64(j.encryptedPayload) })
+        responses.push({ source: source.kind, ownerId: j.$ownerId, walletEphemeralPub: base64ToBytes(j.walletEphemeralPubKey), payload: base64ToBytes(j.encryptedPayload) })
       } catch {
         /* malformed row */
       }
     }
   }
-  return out
+  return { responses, complete }
 }
 
 async function query(sdk: EvoSDK, q: unknown): Promise<ResponseJson[] | null> {
@@ -155,23 +161,25 @@ async function query(sdk: EvoSDK, q: unknown): Promise<ResponseJson[] | null> {
   }
 }
 
-/** The legacy contract: a unique (contractId, appEphemeralPubKeyHash) index — at most one row. */
-async function legacyRows(sdk: EvoSDK, keyExchange: string, appContract: string, hash: string): Promise<ResponseJson[]> {
-  return (
-    (await query(sdk, {
-      dataContractId: keyExchange,
-      documentTypeName: 'loginKeyResponse',
-      where: [
-        ['contractId', '==', appContract],
-        ['appEphemeralPubKeyHash', '==', hash],
-      ],
-      limit: 2,
-    })) ?? []
-  )
+/**
+ * The legacy contract: a unique (contractId, appEphemeralPubKeyHash) index, so at most ONE row
+ * per request. The first identity to answer holds it: a second answerer cannot be seen here,
+ * which is why the confirmation step matters (docs/design/wallet-login.md). Null: read failed.
+ */
+async function legacyRows(sdk: EvoSDK, keyExchange: string, appContract: string, hash: string): Promise<ResponseJson[] | null> {
+  return query(sdk, {
+    dataContractId: keyExchange,
+    documentTypeName: 'loginKeyResponse',
+    where: [
+      ['contractId', '==', appContract],
+      ['appEphemeralPubKeyHash', '==', hash],
+    ],
+    limit: 1,
+  })
 }
 
-/** App Connect: one row per responding identity, paged by `$ownerId` (junk cannot hide ours). */
-async function appConnectRows(sdk: EvoSDK, hash: string): Promise<ResponseJson[]> {
+/** App Connect: one row per responding identity, paged by `$ownerId`. Null: a page failed. */
+async function appConnectRows(sdk: EvoSDK, hash: string): Promise<ResponseJson[] | null> {
   const out: ResponseJson[] = []
   let after: string | null = null
   for (let page = 0; page < 20; page++) {
@@ -185,12 +193,13 @@ async function appConnectRows(sdk: EvoSDK, hash: string): Promise<ResponseJson[]
       ],
       limit: 50,
     })
-    if (batch === null) break
+    if (batch === null) return null
     out.push(...batch)
-    if (batch.length < 50) break
+    if (batch.length < 50) return out
     after = batch[batch.length - 1]?.$ownerId ?? null
   }
-  return out
+  // A thousand answers to one request is junk flooding: do not call that a complete read.
+  return null
 }
 
 /** What a response amounts to once decrypted and checked against the chain. */
@@ -203,7 +212,7 @@ export type WalletAnswer =
 /** More than one identity answered the request: refuse (someone else saw the QR). */
 export class AmbiguousWalletLogin extends Error {
   constructor(readonly identityIds: readonly string[]) {
-    super(`More than one identity answered this sign-in request (${identityIds.join(', ')}). Someone else saw the QR code. Start again and keep it private.`)
+    super(`More than one identity answered this sign-in request (${identityIds.join(', ')}). Someone else saw the QR code. Start again and keep the QR code private.`)
     this.name = 'AmbiguousWalletLogin'
   }
 }
@@ -218,78 +227,73 @@ export class RequestExpired extends Error {
 
 /** Decrypt a response: its login keys, or null when it was not encrypted to this request. */
 async function decrypt(req: LoginRequest, r: WalletResponse): Promise<Uint8Array[] | null> {
+  let keys: Uint8Array[]
   try {
-    const keys = await openEnvelope(req.appEphemeralPriv, r.walletEphemeralPub, r.payload)
-    // The legacy contract carries exactly one key (its schema fixes the payload at 60 bytes).
-    return r.source === 'legacy' && keys.length !== 1 ? null : keys
+    keys = await openEnvelope(req.appEphemeralPriv, r.walletEphemeralPub, r.payload)
   } catch {
     return null
   }
-}
-
-/**
- * The ids of the live keys on `identityId` that `wif` controls. A disabled one does not count:
- * the wallet derives the same key for every login, so after a disable the only way back is to
- * register it again (QR #2; the iOS wallet re-adds a disabled login key).
- */
-async function keyIdsFor(sdk: EvoSDK, identityId: string, wif: string, network: Network): Promise<number[]> {
-  const { PrivateKey } = await import('@dashevo/evo-sdk')
-  const identity = await authSdk(sdk).identities.fetch(identityId)
-  const pk = PrivateKey.fromWIF(wif)
-  const bytes = pk.toBytes()
-  pk.free()
-  try {
-    return (identity?.publicKeys ?? [])
-      .filter((k) => {
-        if (k.disabledAt !== undefined) return false
-        try {
-          return k.validatePrivateKey(bytes, network)
-        } catch {
-          return false
-        }
-      })
-      .map((k) => k.keyId)
-  } finally {
-    bytes.fill(0)
+  // The legacy contract carries exactly one key (its schema fixes the payload at 60 bytes).
+  if (r.source === 'legacy' && keys.length !== 1) {
+    for (const k of keys) k.fill(0)
+    return null
   }
+  return keys
 }
 
 /**
  * Turn a decrypted response into an answer, or null when it cannot be used yet (an App Connect
  * key not visible on chain yet: the next poll retries). Throws {@link UnusableWalletKey} when
- * the key is there but Forge must not use it.
+ * the key is there but Forge must not use it ({@link RevokedWalletKey}: it was disabled). The
+ * login keys are zeroed whatever happens.
  */
 async function answerFor(sdk: EvoSDK, r: WalletResponse, loginKeysRaw: Uint8Array[], p: { network: Network; forge: ForgeIds; contractId: string }): Promise<WalletAnswer | null> {
   const found: WalletKey[] = []
   let unregistered: { keys: LoginKeys; wif: string } | null = null
-  for (const login of loginKeysRaw) {
-    const auth = authKeyFromLogin(login, r.ownerId)
-    const wif = encodeWif(auth, p.network)
-    auth.fill(0)
-    const ids = await keyIdsFor(sdk, r.ownerId, wif, p.network)
-    if (ids.length === 0) {
-      if (r.source === 'legacy') unregistered = { keys: loginKeys(login, r.ownerId), wif }
-      continue
+  try {
+    for (const login of loginKeysRaw) {
+      const auth = authKeyFromLogin(login, r.ownerId)
+      const wif = encodeWif(auth, p.network)
+      auth.fill(0)
+      const key = await findWalletKey(sdk, { identityId: r.ownerId, wif, forge: p.forge, network: p.network })
+      if (key) found.push(key)
+      else if (r.source === 'legacy') unregistered = { keys: loginKeys(login, r.ownerId), wif }
     }
-    found.push(await verifyWalletKey(sdk, { identityId: r.ownerId, keyId: ids[0] as number, wif, forge: p.forge, network: p.network }))
+  } catch (e) {
+    zeroLoginKeys(unregistered?.keys)
+    throw e
+  } finally {
+    for (const k of loginKeysRaw) k.fill(0)
   }
-  for (const k of loginKeysRaw) k.fill(0)
   if (found.length > 0) {
+    zeroLoginKeys(unregistered?.keys)
     // The key for the contract asked for first.
-    const covers = (k: WalletKey): boolean => (p.contractId === p.forge.core ? k.scope.core : k.scope.collab)
-    found.sort((a, b) => Number(covers(b)) - Number(covers(a)))
+    found.sort((a, b) => Number(scopeCovers(b.scope, p.forge, p.contractId)) - Number(scopeCovers(a.scope, p.forge, p.contractId)))
     return { kind: 'keys', identityId: r.ownerId, keys: found, source: r.source }
   }
   if (unregistered) return { kind: 'register', identityId: r.ownerId, ...unregistered, source: 'legacy' }
   return null
 }
 
+function zeroLoginKeys(k: LoginKeys | undefined): void {
+  k?.authPriv.fill(0)
+  k?.encPriv.fill(0)
+}
+
+/** Why the poll is waiting, for the UI. */
+export type PollStatus = 'waiting' | 'answered' | 'incomplete-read'
+
 /**
- * Poll every source until an identity's answer is usable, then wait one more interval for a
- * competing answer before returning it. Refuses when two identities answered. With
- * `identityId`, answers from any other identity are ignored (a second grant for a signed-in
- * identity). Rejects with {@link RequestExpired} at `req.expiresAt`, AbortError on `signal`,
- * {@link UnusableWalletKey} when the wallet's key cannot be used here.
+ * Poll every source until an identity's answer is usable, then keep polling for `settleMs` for
+ * a competing answer before returning it; only rounds that read every source in full count
+ * towards that window. Refuses when two identities answered (App Connect; the legacy contract
+ * holds one answer per request, so there a second answerer cannot be seen). With `identityId`,
+ * answers from any other identity are ignored (a second grant for a signed-in identity).
+ *
+ * An answerer whose key Forge must not use ({@link UnusableWalletKey}) is skipped but still
+ * counted towards "more than one answered"; if it is the only answer when the window closes,
+ * its reason is thrown. Rejects with {@link RequestExpired} at `req.expiresAt` and AbortError
+ * on `signal`. `onStatus` reports incomplete reads ("couldn't read all answer sources").
  */
 export async function awaitWalletAnswer(
   sdk: EvoSDK,
@@ -303,37 +307,58 @@ export async function awaitWalletAnswer(
     intervalMs?: number
     settleMs?: number
     now?: () => number
+    onStatus?: (status: PollStatus) => void
   },
 ): Promise<WalletAnswer> {
   const now = p.now ?? Date.now
-  const answered = new Map<string, WalletAnswer | null>()
+  const settleMs = p.settleMs ?? 3000
+  /** Per answering identity: its answer, null (retry), or why it cannot be used. */
+  const answered = new Map<string, WalletAnswer | UnusableWalletKey | null>()
+  /** When the current run of complete reads began (0 while the last read was incomplete). */
+  let cleanSince = 0
   let firstAt = 0
+  let result: WalletAnswer | null = null
   try {
     for (;;) {
       if (p.signal?.aborted) throw new DOMException('cancelled', 'AbortError')
-      for (const r of await fetchResponses(sdk, p.sources, req)) {
+      const round = await fetchResponses(sdk, p.sources, req)
+      for (const r of round.responses) {
         if (p.identityId !== undefined && r.ownerId !== p.identityId) continue
-        if (answered.get(r.ownerId)) continue
+        const prior = answered.get(r.ownerId)
+        if (prior !== undefined && prior !== null) continue
         const keys = await decrypt(req, r)
         if (keys === null) continue
-        let answer: WalletAnswer | null = null
+        let answer: WalletAnswer | UnusableWalletKey | null = null
         try {
           answer = await answerFor(sdk, r, keys, { network: p.network, forge: p.forge, contractId: req.contractId })
         } catch (e) {
-          if (e instanceof UnusableWalletKey) throw e
-          // A read failed: try this response again next round.
+          if (e instanceof UnusableWalletKey) answer = e
+          // Otherwise a read failed: try this response again next round.
         }
         answered.set(r.ownerId, answer)
-        if (answer && firstAt === 0) firstAt = now()
+        if (answer !== null && firstAt === 0) firstAt = now()
       }
       if (answered.size > 1) throw new AmbiguousWalletLogin([...answered.keys()])
-      const ready = [...answered.values()].find((a): a is WalletAnswer => a !== null)
-      if (ready && now() - firstAt >= (p.settleMs ?? 3000)) return ready
-      if (now() >= req.expiresAt) throw new RequestExpired()
+      const t = now()
+      if (round.complete) {
+        if (cleanSince === 0) cleanSince = t
+      } else {
+        cleanSince = 0
+      }
+      p.onStatus?.(!round.complete ? 'incomplete-read' : firstAt ? 'answered' : 'waiting')
+      const only = [...answered.values()][0]
+      if (only && cleanSince !== 0 && t - Math.max(firstAt, cleanSince) >= settleMs) {
+        if (only instanceof UnusableWalletKey) throw only
+        result = only
+        return only
+      }
+      if (t >= req.expiresAt) throw new RequestExpired()
       await sleep(p.intervalMs ?? 3000, p.signal)
     }
   } finally {
     disposeRequest(req)
+    // Registration keys of answers not handed back.
+    for (const a of answered.values()) if (a && !(a instanceof Error) && a !== result && a.kind === 'register') zeroLoginKeys(a.keys)
   }
 }
 
@@ -348,8 +373,13 @@ export async function awaitRegisteredKey(
 ): Promise<WalletKey> {
   for (;;) {
     if (p.signal?.aborted) throw new DOMException('cancelled', 'AbortError')
-    const ids = await keyIdsFor(sdk, p.identityId, p.wif, p.network).catch(() => [])
-    if (ids.length > 0) return verifyWalletKey(sdk, { identityId: p.identityId, keyId: ids[0] as number, wif: p.wif, forge: p.forge, network: p.network })
+    let key: WalletKey | null = null
+    try {
+      key = await findWalletKey(sdk, p)
+    } catch (e) {
+      if (e instanceof UnusableWalletKey) throw e
+    }
+    if (key) return key
     if (Date.now() >= p.until) throw new RequestExpired()
     await sleep(p.intervalMs ?? 3000, p.signal)
   }

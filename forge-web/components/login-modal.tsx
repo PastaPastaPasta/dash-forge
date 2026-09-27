@@ -68,14 +68,7 @@ export function LoginModal(): JSX.Element {
   }, [open, requested, hasVault])
 
   const back = view === 'choose' || view === 'unlock' || view === 'grant' ? null : () => setView('choose')
-  const description =
-    view === 'advanced'
-      ? 'A pasted key signs for this tab only, with whatever power it has.'
-      : view === 'wallet' || view === 'grant'
-        ? 'Your wallet grants this browser its own key for Dash Forge. Your wallet keys never leave the phone.'
-        : limitedKeys
-          ? `Forge signs with a limited key: at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for ${BROWSER_KEY_DEFAULTS.days} days.`
-          : `Dash Forge is not deployed on ${ACTIVE_NETWORK.key}, so there is nothing to sign in to here.`
+  const description = describeView(view, limitedKeys)
 
   return (
     <Dialog open={open} onClose={close} title={view === 'grant' ? 'Approve issues and pull requests' : 'Sign in to Dash Forge'} description={description} className="max-w-lg">
@@ -105,6 +98,14 @@ export function LoginModal(): JSX.Element {
       {view === 'advanced' ? <AdvancedView onDone={close} /> : null}
     </Dialog>
   )
+}
+
+/** The sheet's description line for a view. */
+function describeView(view: View, limitedKeys: boolean): string {
+  if (view === 'advanced') return 'A pasted key signs for this tab only, with whatever power it has.'
+  if (view === 'wallet' || view === 'grant') return 'Your wallet grants this browser its own key for Dash Forge. Your wallet keys never leave the phone.'
+  if (!limitedKeys) return `Dash Forge is not deployed on ${ACTIVE_NETWORK.key}, so there is nothing to sign in to here.`
+  return `Forge signs with a limited key: at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for ${BROWSER_KEY_DEFAULTS.days} days.`
 }
 
 function Tile({ icon: Icon, title, body, onClick, testId }: { icon: typeof Wallet; title: string; body: string; onClick: () => void; testId: string }): JSX.Element {

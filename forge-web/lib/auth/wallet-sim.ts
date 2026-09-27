@@ -44,7 +44,8 @@ function parseEnvelope(uri: string, scheme: string): { body: string; network: 'm
   }
   const v = params.get('v')
   if (v === undefined) throw new DashConnectUriException('missing v param')
-  if (Number.parseInt(v, 10) !== 1 || String(Number.parseInt(v, 10)) !== v) throw new DashConnectUriException(`unsupported version: ${v}`)
+  // Kotlin `v.toIntOrNull() != 1` (so "01" passes, "1x" does not); iOS requires exactly "1".
+  if (!/^[+-]?\d+$/.test(v) || Number(v) !== 1) throw new DashConnectUriException(`unsupported version: ${v}`)
   const n = params.get('n')
   if (n === undefined) throw new DashConnectUriException('missing n param')
   if (n !== 'm' && n !== 't' && n !== 'd') throw new DashConnectUriException(`unknown network: ${n}`)

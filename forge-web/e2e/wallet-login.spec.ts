@@ -1,4 +1,5 @@
 import { test, expect, devices, type Page } from '@playwright/test'
+import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -27,7 +28,7 @@ test.skip(!existsSync(idFile('RELAY')), 'devnet test identities not found')
 test.describe.configure({ mode: 'serial', timeout: 15 * 60_000 })
 
 const ROOT = resolve(__dirname, '../..')
-const CHAIN_KEY = Buffer.from(`forge wallet pw ${Date.now()}`.padEnd(32, '.').slice(0, 32)).toString('hex')
+const CHAIN_KEY = randomBytes(32).toString('hex')
 type Responder = typeof import('./wallet-responder.mjs')
 const responder = (): Promise<Responder> => import(pathToFileURL(join(__dirname, 'wallet-responder.mjs')).href)
 const DEPLOYMENT = (): Promise<{ default: { v2: { forgeCore: { contractId: string }; forgeCollab: { contractId: string } } } }> =>

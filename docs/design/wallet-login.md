@@ -38,19 +38,28 @@ A granted key is used only if it is: on the responder's identity, not disabled, 
 ### Unlimited keys (the shipped wallets' keys)
 
 Policy: **accept, warn, and push towards replacing the key.** A shipped wallet cannot produce anything else, and refusing its keys would mean no wallet login at all.
-- The session flags `unlimited` (no budget or no expiry) and `unbounded` (Android: no contract bounds, so the key can sign on any contract). The confirm step and Settings show a persistent warning: *"This wallet key has no spending limit or expiry: anyone who copies it from this browser can spend your balance on Forge [on any Platform app] until you disable it."*
+- The session flags `unlimited` (no budget or no expiry) and `unbounded` (Android: no contract bounds, so the key can sign on any contract). The confirm step and Settings show a persistent warning: *"This wallet key has no spending limit or expiry: anyone who copies it from this browser can spend your balance on Forge [on any Platform app]. Disabling it on chain stops it, but this wallet derives the same key every time: signing in with the wallet again would need a new wallet key."*
 - The vault defaults to a passkey for such keys (the primary button, with a caution against a passphrase alone). A passphrase is still accepted, because whether an authenticator supports PRF is only known after trying.
-- **Replace with a limited key** (Settings): the identity file or recovery phrase, once, registers the usual group-bound, budgeted, expiring key. The same master-key update disables every wallet key this browser holds, and only keys the stored private key proves it controls. "Add limits" in place is impossible on Platform: `IdentityKeyLimitsUpdate` cannot add a limit a key lacks. The wallets' own route to limits is the upstream issue below.
+- **Replace with a limited key** (Settings): the identity file or recovery phrase, once, registers the usual group-bound, budgeted, expiring key. The same master-key update disables every wallet key this browser holds, and only live HIGH keys the stored private key proves it controls. Replacing a stored wallet-key vault (or one holding wallet grants) needs it unlocked first, so those keys can be disabled; while locked, Forge refuses rather than forget keys that would stay live. "Add limits" in place is impossible on Platform: `IdentityKeyLimitsUpdate` cannot add a limit a key lacks. The wallets' own route to limits is the upstream issue below.
 - **Disable key on chain** (Settings): the same master-key update, without a replacement.
-- A disabled wallet key does not count as registered. The wallet derives the same key for every login, so the next login shows QR #2 again. iOS re-adds a disabled login key; Android thinks it is still present, and that login fails until a new chain key is used, which is an upstream bug note.
+- **A disable is not permanent for a wallet that derives the same key again.** The login key is `HKDF(chainKey, identity, "dash:login-key:v1" ‖ contractId)`, so the next login from the same wallet asks to register the *same* key, and any copy stolen before the disable would work again. Forge therefore refuses: if a disabled key on the identity matches the key the wallet derived, the sign-in stops with "your wallet would add a key you revoked". The user must sign in another way (Import) or rotate the wallet's identity key. The copy says "disabling stops it" but no longer promises it stays stopped. Upstream (d) asks for a per-app, per-rotation salt.
+- WIF strings (the vault's in-memory copy, the signing path) cannot be zeroed in JavaScript. Byte buffers are zeroed: ephemeral keys, login keys, the derived auth/encryption keys, the envelope AES key, and decoded private-key bytes.
 
 ### Who answered
 
-The response does not prove who answered: anyone who saw the QR can answer from their own identity. So Forge:
-- shows the full identity id and DPNS name, and requires "This is my identity";
-- refuses when more than one identity answered, and waits one poll after the first valid answer;
-- expires a request after 5 minutes, with a countdown;
-- shows the pairing code (Platform's `BrowserLoginKeyProtocol.pairingCode`) for wallets that display it. The shipped ones do not, so the code is advisory until upstream issue (c) lands.
+The response does not prove who answered: anyone who saw the QR can answer from their own identity.
+
+**On the legacy contract (what the shipped wallets use), Forge cannot detect a second answerer.** Its unique index `(contractId, appEphemeralPubKeyHash)` holds one answer per request: the first writer wins, and the real wallet's publish is then rejected as a duplicate. Someone who photographed the QR (or an app that caught the deep link) and answers first is the identity Forge shows. The refusal of "more than one identity" only works on App Connect, whose index includes `$ownerId`.
+
+Mitigations, all in the confirmation step and the poll:
+- the full identity id, its DPNS name and when that name was registered (Platform stores no identity creation time; the name's `$createdAt` is the proxy), and "Your wallet shows the identity it signed in with: check it matches, character for character" (the same on a phone);
+- a loud warning when the identity is not the one this device already holds a key for, when it has no DPNS name, or when its name is less than a day old;
+- the poll never settles on a round that could not read every source in full: a failed or cut-short read shows "Couldn't read all answer sources — retrying" and restarts the settle window, so a node cannot hide an answer by failing a read;
+- on App Connect, two answers are refused; an answer whose key Forge cannot use is skipped but still counted;
+- a request expires after 5 minutes, with a countdown; the QR must stay private (the pairing code is public, derived from the request's public key);
+- the pairing code (Platform's `BrowserLoginKeyProtocol.pairingCode`) is shown for wallets that display it; the shipped ones do not.
+
+The real fix is upstream (e): the wallet signs the request context (`hash160(appEphemeralPub)`, contract, network) with a key of the identity it answers for, so the app can authenticate the responder instead of asking the user.
 
 **Deep-link hijack.** On a phone the request is an `Open in Dash Wallet` link (`dash-key:` URI). Any installed app can register the scheme, and iOS's own notes say a custom scheme carries no authenticated caller. A hijacking app learns only the ephemeral public key and the contract id. It cannot decrypt a response meant for Forge, and anything it answers is caught by the checks above: a different identity, or keys Forge would not accept. What it *can* do is answer with its own identity, which the identity confirmation is there to catch. The link carries no secret.
 
@@ -91,4 +100,4 @@ Android emulator, testnet (once forge-v2 is on testnet): install a `_testNet3` b
 
 ## Upstream
 
-Drafts for dashpay/dash-wallet and dashpay/dashwallet-ios are in [`docs/upstream/`](../upstream/): (a) group-scoped grants, (b) publish to the PV14 App Connect system contract with limits, (c) show the pairing code, and fixes for dropped bounds and limits in `dash-st:` and for iOS refusing group bounds.
+Drafts for dashpay/dash-wallet and dashpay/dashwallet-ios are in [`docs/upstream/`](../upstream/): (a) group-scoped grants, (b) publish to the PV14 App Connect system contract with limits, (c) show the pairing code, (d) a per-app, per-rotation salt in the login-key derivation so a revoked key never comes back, and (e) a signature over the request context so the app can authenticate the responder ([app-connect-responder-auth.md](../upstream/app-connect-responder-auth.md), for the App Connect spec as well); plus fixes for dropped bounds and limits in `dash-st:` and for iOS refusing group bounds.

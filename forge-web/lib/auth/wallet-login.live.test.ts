@@ -18,6 +18,7 @@
  * Uses the RELAY fixture identity (unused by the other suites) and a chain key fixed per run.
  */
 
+import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -35,7 +36,7 @@ import { keyRegistrationUri, type WalletKey } from './key-registration'
 const DEVNET = NETWORKS.devnet.devnetName ?? ''
 const FILE = join(homedir(), '.config/dash-forge/test-identities', `devnet-${DEVNET}`, 'RELAY.identity.json')
 const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet' && existsSync(FILE)
-const CHAIN_KEY = Buffer.from(`forge wallet e2e ${Date.now()}`.padEnd(32, '.').slice(0, 32)).toString('hex')
+const CHAIN_KEY = randomBytes(32).toString('hex')
 
 type Responder = typeof import('../../e2e/wallet-responder.mjs')
 
@@ -62,8 +63,8 @@ describe.skipIf(!LIVE)('live wallet sign-in (scripted Dash Wallet, legacy key-ex
         const answer = await answering
         if (answer.kind === 'keys') return { identityId: answer.identityId, key: answer.keys[0]!, registered: false }
         const until = Date.now() + 5 * 60_000
-        const reg = await keyRegistrationUri(sdk, { identityId: answer.identityId, keys: answer.keys, contractId, network })
-        await wallet.register({ uri: reg.uri, identityFile: FILE, chainKeyHex: CHAIN_KEY, contractId, devnet: DEVNET })
+        const uri = await keyRegistrationUri(sdk, { identityId: answer.identityId, keys: answer.keys, contractId, network })
+        await wallet.register({ uri, identityFile: FILE, chainKeyHex: CHAIN_KEY, contractId, devnet: DEVNET })
         const key = await awaitRegisteredKey(sdk, { identityId: answer.identityId, wif: answer.wif, network, forge, until })
         return { identityId: answer.identityId, key, registered: true }
       }
@@ -94,7 +95,7 @@ describe.skipIf(!LIVE)('live wallet sign-in (scripted Dash Wallet, legacy key-ex
         // 2. The one-tap grant for forge-collab, then the star lands.
         const grant = await signIn(forge.collab, first.identityId)
         expect(grant.key.scope).toEqual({ core: false, collab: true, unbounded: false })
-        const after = await controller.addWalletGrant(first.identityId, grant.key)
+        const after = await controller.addWalletGrant(first.identityId, grant.key, forge.collab)
         expect(after.grants).toEqual({ core: true, collab: true })
         expect(await starRelation(sdk, controller.writeAuth!, first.identityId, starOf).add()).toBe(true)
 

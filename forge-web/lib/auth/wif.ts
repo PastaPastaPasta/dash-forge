@@ -24,13 +24,18 @@ export interface DecodedWif {
 export function decodeWif(wif: string): DecodedWif {
   const decoded = base58CheckDecode(wif)
   const prefix = decoded[0] as number
-  if (decoded.length === 34 && decoded[33] === 0x01) {
-    return { privateKey: decoded.slice(1, 33), compressed: true, prefix }
+  try {
+    if (decoded.length === 34 && decoded[33] === 0x01) {
+      return { privateKey: decoded.slice(1, 33), compressed: true, prefix }
+    }
+    if (decoded.length === 33) {
+      return { privateKey: decoded.slice(1, 33), compressed: false, prefix }
+    }
+    throw new Error('invalid WIF length')
+  } finally {
+    // The copy returned above is the caller's to zero; this intermediate buffer is ours.
+    decoded.fill(0)
   }
-  if (decoded.length === 33) {
-    return { privateKey: decoded.slice(1, 33), compressed: false, prefix }
-  }
-  throw new Error('invalid WIF length')
 }
 
 /** The network a WIF prefix belongs to, or null if it is not a known Dash prefix. */

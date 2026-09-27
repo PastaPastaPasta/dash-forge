@@ -34,14 +34,14 @@ import { base58Decode, base58Encode } from './base58'
 
 const enc = new TextEncoder()
 
-export const PROTOCOL_VERSION = 1
-export const MAX_LABEL_BYTES = 64
+const PROTOCOL_VERSION = 1
+const MAX_LABEL_BYTES = 64
 /** The shortest request (empty label): what both wallets check first. */
-export const MIN_REQUEST_BYTES = 1 + 33 + 32 + 1
+const MIN_REQUEST_BYTES = 1 + 33 + 32 + 1
 const ENVELOPE_BYTES = 12 + 16
 
 /** The `?n=` code (the DApp's `YAPPR_NETWORK_IDS`; `DashConnectNetwork` in the wallets). */
-export function networkCode(network: Network): 'm' | 't' | 'd' {
+function networkCode(network: Network): 'm' | 't' | 'd' {
   return network === 'mainnet' ? 'm' : network === 'testnet' ? 't' : 'd'
 }
 
@@ -73,8 +73,7 @@ export function protocolUri(scheme: 'dash-key' | 'dash-st', payload: Uint8Array,
  */
 export function pairingCode(appEphemeralPub: Uint8Array): string {
   const d = hash160(appEphemeralPub)
-  const n = (((d[0] as number) << 24) | ((d[1] as number) << 16) | ((d[2] as number) << 8) | (d[3] as number)) >>> 0
-  return String(n % 1_000_000).padStart(6, '0')
+  return String(new DataView(d.buffer, d.byteOffset, 4).getUint32(0) % 1_000_000).padStart(6, '0')
 }
 
 /** The AES-256-GCM key of a response: HKDF(ECDH x, "dash:key-exchange:v1"). */
@@ -97,8 +96,12 @@ export async function openEnvelope(appPriv: Uint8Array, walletEphemeralPub: Uint
     throw new Error('the wallet response is malformed')
   }
   const raw = envelopeKey(appPriv, walletEphemeralPub)
-  const key = await crypto.subtle.importKey('raw', new Uint8Array(raw), { name: 'AES-GCM' }, false, ['decrypt'])
-  raw.fill(0)
+  let key: CryptoKey
+  try {
+    key = await crypto.subtle.importKey('raw', raw as Uint8Array<ArrayBuffer>, { name: 'AES-GCM' }, false, ['decrypt'])
+  } finally {
+    raw.fill(0)
+  }
   const plain = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: payload.slice(0, 12) }, key, payload.slice(12)))
   const keys: Uint8Array[] = []
   for (let i = 0; i < plain.length; i += 32) keys.push(plain.slice(i, i + 32))

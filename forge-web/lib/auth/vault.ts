@@ -413,6 +413,11 @@ export async function writeStorageBlob(network: Network, identityId: string, val
  * Add (or replace, per contract) a wallet grant beside the unlocked key of (network, identity),
  * sealed at rest and live for this session. Needs the vault unlocked for that identity.
  */
+/** Whether wallet grants are sealed beside the record of (network, identity) (no secrets read). */
+export async function hasExtraKeys(network: Network, identityId: string): Promise<boolean> {
+  return (await idbGet<StorageBlob>('vault', extraBlobKey(network, identityId))) !== undefined
+}
+
 export async function addExtraKey(network: Network, identityId: string, extra: ExtraKey): Promise<void> {
   assertDedicatedOrigin()
   const k = unlockedStorageKey(network, identityId)

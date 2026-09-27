@@ -32,6 +32,7 @@ import type { ForgeIds } from '../deployments'
 import { authSdk, type WasmKey } from '../sdk/facade'
 import type { KeyLimits } from '../view/funds'
 import { hash160 } from './asset-lock'
+import { controlsKey, readRemainingBudget } from './limited-key'
 import { authKeyFromLogin, encryptionKeyFromLogin, protocolUri } from './wallet-protocol'
 
 // ---------------------------------------------------------------------------
@@ -62,11 +63,14 @@ export function keyScope(k: Pick<WasmKey, 'contractBounds'>, forge: ForgeIds): K
   return null
 }
 
-/** Whether a scope lets the key sign on `contractId`. Contracts other than Forge's: not ours to say. */
+/**
+ * Whether a scope lets the key sign on `contractId`. Only Forge's two contracts are ever asked
+ * about; anything else is refused, whatever the key's bounds.
+ */
 export function scopeCovers(scope: KeyScope, forge: ForgeIds, contractId: string): boolean {
   if (contractId === forge.core) return scope.core
   if (contractId === forge.collab) return scope.collab
-  return scope.unbounded
+  return false
 }
 
 /** A wallet-granted key Forge verified on chain. */
@@ -87,41 +91,58 @@ export class UnusableWalletKey extends Error {
 }
 
 /**
- * Check the key `keyId` of `identityId` is one Forge may sign with: live, AUTHENTICATION/HIGH
- * (never CRITICAL or MASTER: more than Forge needs), inside Forge's contracts, not expired, with
- * budget left when it has a budget, and controlled by `wif`.
+ * The wallet's key for Forge is on the identity but disabled, and the wallet derives the same
+ * key every time: registering it again would bring back a key that was revoked (and any copy
+ * of it). Refused; the user needs a new wallet chain key, or another sign-in method.
  */
-export async function verifyWalletKey(sdk: EvoSDK, p: { identityId: string; keyId: number; wif: string; forge: ForgeIds; network: Network }): Promise<WalletKey> {
+export class RevokedWalletKey extends UnusableWalletKey {
+  constructor(readonly keyId: number) {
+    super(
+      `Your wallet's key for Dash Forge (key ${keyId}) was disabled on this identity, and the wallet would add the very same key again, bringing back a key you revoked. ` +
+        'Sign in with your identity file or recovery phrase instead (Import), or rotate your wallet\'s identity key first.',
+    )
+    this.name = 'RevokedWalletKey'
+  }
+}
+
+/**
+ * Check a key Forge may sign with: live, AUTHENTICATION/HIGH (never CRITICAL or MASTER: more
+ * than Forge needs), inside Forge's contracts, not expired, and controlled by `wif`. Returns its
+ * scope; throws {@link UnusableWalletKey}. Synchronous: the budget is read separately.
+ */
+export function checkWalletKey(k: WasmKey, wif: string, forge: ForgeIds, network: Network): KeyScope {
+  if (k.disabledAt !== undefined) throw new RevokedWalletKey(k.keyId)
+  if (k.purposeNumber !== 0 || k.securityLevelNumber !== 2) throw new UnusableWalletKey(`key ${k.keyId} is not an AUTHENTICATION/HIGH key; Forge only signs with HIGH keys`)
+  const scope = keyScope(k, forge)
+  if (scope === null) throw new UnusableWalletKey(`key ${k.keyId} is bound to contracts outside Dash Forge`)
+  if (k.expiresAt !== undefined && Number(k.expiresAt) <= Date.now()) throw new UnusableWalletKey(`key ${k.keyId} has expired`)
+  if (!controlsKey(k, wif, network)) throw new UnusableWalletKey(`the granted private key does not control key ${k.keyId}`)
+  return scope
+}
+
+/**
+ * The key `wif` controls on `identityId`, checked ({@link checkWalletKey}) with its limits; null
+ * when no key matches (not registered yet). A match that is only a disabled key throws
+ * {@link RevokedWalletKey}.
+ */
+export async function findWalletKey(sdk: EvoSDK, p: { identityId: string; wif: string; forge: ForgeIds; network: Network }): Promise<WalletKey | null> {
   const identity = await authSdk(sdk).identities.fetch(p.identityId)
-  const k = identity?.publicKeys.find((x) => x.keyId === p.keyId)
-  if (!k) throw new UnusableWalletKey(`key ${p.keyId} is not on identity ${p.identityId}`)
-  if (k.disabledAt !== undefined) {
-    throw new UnusableWalletKey(`the wallet's key for Forge (key ${p.keyId}) is disabled on chain, and the wallet derives the same key again. Sign in another way.`)
-  }
-  if (k.purposeNumber !== 0 || k.securityLevelNumber !== 2) throw new UnusableWalletKey(`key ${p.keyId} is not an AUTHENTICATION/HIGH key; Forge only signs with HIGH keys`)
-  const scope = keyScope(k, p.forge)
-  if (scope === null) throw new UnusableWalletKey(`key ${p.keyId} is bound to contracts outside Dash Forge`)
-  if (k.expiresAt !== undefined && Number(k.expiresAt) <= Date.now()) throw new UnusableWalletKey(`key ${p.keyId} has expired`)
-  const { PrivateKey } = await import('@dashevo/evo-sdk')
-  const pk = PrivateKey.fromWIF(p.wif)
-  const bytes = pk.toBytes()
-  pk.free()
-  let controls = false
-  try {
-    controls = k.validatePrivateKey(bytes, p.network)
-  } catch {
-    controls = false
-  } finally {
-    bytes.fill(0)
-  }
-  if (!controls) throw new UnusableWalletKey(`the granted private key does not control key ${p.keyId}`)
+  const matches = (identity?.publicKeys ?? []).filter((k) => controlsKey(k, p.wif, p.network))
+  const k = matches.find((x) => x.disabledAt === undefined) ?? matches[0]
+  if (!k) return null
+  const scope = checkWalletKey(k, p.wif, p.forge, p.network)
   let limits: KeyLimits | null = null
   if (k.totalBudget !== undefined || k.expiresAt !== undefined) {
-    const remaining = k.totalBudget === undefined ? null : ((await authSdk(sdk).identities.keysRemainingBudgets(p.identityId, [p.keyId])).get(p.keyId) ?? null)
-    if (remaining !== null && remaining <= 0n) throw new UnusableWalletKey(`key ${p.keyId} has no budget left`)
+    const remaining = k.totalBudget === undefined ? null : await readRemainingBudget(sdk, p.identityId, k.keyId)
+    if (remaining !== null && remaining <= 0n) throw new UnusableWalletKey(`key ${k.keyId} has no budget left`)
     limits = { remaining, total: k.totalBudget ?? null, expiresAt: k.expiresAt === undefined ? null : Number(k.expiresAt) }
   }
-  return { keyId: p.keyId, wif: p.wif, scope, limits }
+  return { keyId: k.keyId, wif: p.wif, scope, limits }
+}
+
+/** A key without a budget or without an expiry. */
+export function hasNoLimits(k: Pick<WasmKey, 'totalBudget' | 'expiresAt'>): boolean {
+  return k.totalBudget === undefined || k.expiresAt === undefined
 }
 
 /** A key has no budget or no expiry: whoever copies it can spend until it is disabled. */
@@ -154,18 +175,20 @@ export function loginKeys(loginKey: Uint8Array, identityId: string): LoginKeys {
  * ENCRYPTION/MEDIUM, with its proof of possession), at the identity's next revision and nonce,
  * unsigned by the identity. Serialized without the StateTransition tag, as both wallets expect.
  */
-export async function keyRegistrationUri(
-  sdk: EvoSDK,
-  p: { identityId: string; keys: LoginKeys; contractId: string; network: Network },
-): Promise<{ uri: string; authKeyId: number; bytes: Uint8Array }> {
-  const evo = await import('@dashevo/evo-sdk')
-  const identity = await authSdk(sdk).identities.fetch(p.identityId)
-  if (!identity) throw new Error(`identity ${p.identityId} not found`)
-  const nonce = (await (sdk as unknown as { identities: { nonce(id: string): Promise<bigint | undefined> } }).identities.nonce(p.identityId)) ?? 0n
-  const revision = (identity as unknown as { revision: bigint }).revision
-  const authKeyId = Math.max(...identity.publicKeys.map((k) => k.keyId)) + 1
-  const bytes = buildKeyRegistration(evo, { identityId: p.identityId, revision: revision + 1n, nonce: nonce + 1n, authKeyId, keys: p.keys, contractId: p.contractId })
-  return { uri: protocolUri('dash-st', bytes, p.network), authKeyId, bytes }
+export async function keyRegistrationUri(sdk: EvoSDK, p: { identityId: string; keys: LoginKeys; contractId: string; network: Network }): Promise<string> {
+  try {
+    const evo = await import('@dashevo/evo-sdk')
+    const identity = await authSdk(sdk).identities.fetch(p.identityId)
+    if (!identity) throw new Error(`identity ${p.identityId} not found`)
+    const nonce = (await authSdk(sdk).identities.nonce(p.identityId)) ?? 0n
+    const authKeyId = Math.max(...identity.publicKeys.map((k) => k.keyId)) + 1
+    const bytes = buildKeyRegistration(evo, { identityId: p.identityId, revision: identity.revision + 1n, nonce: nonce + 1n, authKeyId, keys: p.keys, contractId: p.contractId })
+    return protocolUri('dash-st', bytes, p.network)
+  } finally {
+    // The private halves are needed only for the encryption key's proof of possession.
+    p.keys.authPriv.fill(0)
+    p.keys.encPriv.fill(0)
+  }
 }
 
 type Evo = typeof import('@dashevo/evo-sdk')
