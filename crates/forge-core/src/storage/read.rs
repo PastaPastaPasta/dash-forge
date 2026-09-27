@@ -15,9 +15,10 @@
 //! corrupt clone. Platform `chunk` documents are the caller's last resort — the reader
 //! never needs a Platform connection.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::backends::https::http_get_capped;
+use crate::backends::https::{http_get_capped, http_get_watched};
 use crate::backends::s3::key_has_bad_segment;
 use crate::backends::{sha256, ByteRange, S3Backend, Uri};
 use crate::error::{Error, Result};
@@ -42,6 +43,13 @@ pub fn transfer_deadline(size: Option<u64>) -> Duration {
     let scaled = Duration::from_secs(size.unwrap_or(0).div_ceil(MIN_TRANSFER_RATE));
     scaled.max(MIN_TRANSFER_DEADLINE)
 }
+
+/// How long a pack's external copies get, together, while none of them has sent a single
+/// byte of the pack. A gateway that cannot find a CID holds the request open and answers 504
+/// after about a minute (measured 2026-09-27), and every candidate after it would wait as
+/// long. Once any candidate's body is flowing this no longer applies: slow but healthy
+/// gateways stream, and keep their size-scaled [`transfer_deadline`].
+pub const FIRST_BYTE_BUDGET: Duration = Duration::from_secs(20);
 
 /// The time a caller with Platform chunks gives the external copies of a `size`-byte
 /// artifact before falling back to the chunks: no new candidate is STARTED after it (an
@@ -81,6 +89,9 @@ pub struct PackReader {
     s3_profiles: Vec<(String, String, S3Profile)>,
     /// Fixed per-candidate deadline override (tests); `None` = [`transfer_deadline`].
     candidate_timeout: Option<Duration>,
+    /// How long the copies of one artifact get while none has sent a byte
+    /// ([`FIRST_BYTE_BUDGET`]; shorter in tests).
+    first_byte_budget: Duration,
     /// Origins the user configured (read gateways, profiles' public URLs and gateways): a
     /// recorded URL on one of these is followed even when it is http or private.
     trusted_origins: Vec<String>,
@@ -127,6 +138,7 @@ impl PackReader {
             gateways,
             s3_profiles,
             candidate_timeout: None,
+            first_byte_budget: FIRST_BYTE_BUDGET,
             trusted_origins,
         }
     }
@@ -153,6 +165,14 @@ impl PackReader {
     #[must_use]
     pub fn with_candidate_timeout(mut self, t: Duration) -> Self {
         self.candidate_timeout = Some(t);
+        self
+    }
+
+    /// Override how long an artifact's copies get while none has sent a byte (default
+    /// [`FIRST_BYTE_BUDGET`]).
+    #[must_use]
+    pub fn with_first_byte_budget(mut self, t: Duration) -> Self {
+        self.first_byte_budget = t;
         self
     }
 
@@ -241,9 +261,22 @@ impl PackReader {
         range: Option<ByteRange>,
         max_bytes: Option<u64>,
     ) -> Result<Vec<u8>> {
+        self.fetch_watched(c, range, max_bytes, None).await
+    }
+
+    /// [`Self::fetch`], setting `flowing` once the candidate's body starts arriving.
+    async fn fetch_watched(
+        &self,
+        c: &Candidate,
+        range: Option<ByteRange>,
+        max_bytes: Option<u64>,
+        flowing: Option<&AtomicBool>,
+    ) -> Result<Vec<u8>> {
         let attempt = async {
             match c {
-                Candidate::Http(url) => http_get_capped(&self.client, url, range, max_bytes).await,
+                Candidate::Http(url) => {
+                    http_get_watched(&self.client, url, range, max_bytes, flowing).await
+                }
                 Candidate::S3 { profile, key } => {
                     let (_, _, p) = self
                         .s3_profiles
@@ -252,7 +285,9 @@ impl PackReader {
                         .ok_or(Error::NotFound)?;
                     // Resolve secrets now, only because this candidate is being tried.
                     let backend = S3Backend::with_client(p.to_config()?, S3Backend::client());
-                    backend.get_object_capped(key, range, max_bytes).await
+                    backend
+                        .get_object_watched(key, range, max_bytes, flowing)
+                        .await
                 }
             }
         };
@@ -275,9 +310,10 @@ impl PackReader {
         c: &Candidate,
         expected_sha256: &str,
         size: Option<u64>,
+        flowing: &AtomicBool,
     ) -> std::result::Result<Vec<u8>, (String, String)> {
         let bytes = self
-            .fetch(c, None, size)
+            .fetch_watched(c, None, size, Some(flowing))
             .await
             .map_err(|e| (c.label(), e.to_string()))?;
         if hex::encode(sha256(&bytes)).eq_ignore_ascii_case(expected_sha256) {
@@ -320,8 +356,18 @@ impl PackReader {
         // but healthy gateway keeps its own full deadline. The first verified copy wins (the
         // others are dropped = cancelled); every failure is kept so a tampering host is
         // named, not masked by a later 404.
+        //
+        // Until some candidate's body starts arriving, the copies together get
+        // `first_byte_budget` ([`FIRST_BYTE_BUDGET`]): gateways that cannot find a CID hold
+        // the request open for a minute each before they say so. Once bytes flow, every
+        // candidate keeps its own size-scaled deadline, so a slow but healthy stream is
+        // never cut off.
+        let flowing = AtomicBool::new(false);
+        let first_byte = tokio::time::sleep(self.first_byte_budget);
+        tokio::pin!(first_byte);
         let mut pending = candidates.iter();
         let mut race = FuturesUnordered::new();
+        let mut in_flight: Vec<String> = Vec::new();
         loop {
             while race.len() < RACE_WIDTH {
                 let Some(c) = pending.next() else { break };
@@ -331,12 +377,38 @@ impl PackReader {
                     pending = [].iter();
                     break;
                 }
-                race.push(self.fetch_one_verified(c, expected_sha256, size));
+                in_flight.push(c.label());
+                race.push(self.fetch_one_verified(c, expected_sha256, size, &flowing));
             }
-            let Some(res) = race.next().await else { break };
+            let res = if flowing.load(Ordering::Relaxed) {
+                race.next().await
+            } else {
+                tokio::select! {
+                    r = race.next() => r,
+                    () = &mut first_byte => {
+                        // A body may have started while this select was waiting.
+                        if flowing.load(Ordering::Relaxed) {
+                            continue;
+                        }
+                        let secs = self.first_byte_budget.as_secs();
+                        for label in &in_flight {
+                            reasons.push(format!("{label}: sent no data within {secs}s"));
+                        }
+                        let untried = pending.len();
+                        if untried > 0 {
+                            reasons.push(format!(
+                                "{untried} more not tried: no copy sent any data within {secs}s"
+                            ));
+                        }
+                        break;
+                    }
+                }
+            };
+            let Some(res) = res else { break };
             match res {
                 Ok(bytes) => return Ok(bytes),
                 Err((label, why)) => {
+                    in_flight.retain(|l| *l != label);
                     tracing::debug!(candidate = %label, reason = %why, "external copy unusable");
                     reasons.push(format!("{label}: {why}"));
                 }
@@ -972,6 +1044,98 @@ mod tests {
         // Two candidates: both started before the budget ran out, so nothing was skipped.
         let err = fetch(2).await;
         assert_eq!(err.matches("gave up after").count(), 0, "{err}");
+    }
+
+    /// A gateway that accepts, reads the request and never sends a byte: what a real one
+    /// does for a CID it cannot find, until it answers 504 a minute later.
+    fn silent_gateway() -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let _held: Vec<_> = listener.incoming().take(16).collect();
+            std::thread::sleep(std::time::Duration::from_secs(60));
+        });
+        format!("http://{addr}")
+    }
+
+    /// A host that sends the headers at once, then `body` one byte every `gap`.
+    fn trickle(body: Vec<u8>, gap: std::time::Duration) -> String {
+        use std::io::{BufRead as _, BufReader, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let body = body.clone();
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    loop {
+                        let mut h = String::new();
+                        if reader.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                            break;
+                        }
+                    }
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    for b in body {
+                        std::thread::sleep(gap);
+                        if stream
+                            .write_all(&[b])
+                            .and_then(|()| stream.flush())
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn copies_that_never_send_a_byte_give_up_at_the_first_byte_budget() {
+        // Three gateways that hold the request open without answering: before, each kept
+        // its slot for its whole deadline (a minute on real gateways).
+        let gws: Vec<String> = (0..3).map(|_| silent_gateway()).collect();
+        let uris: Vec<String> = gws.iter().map(|g| format!("{g}/x")).collect();
+        let r = PackReader::new(gws, &StorageProfiles::default())
+            .with_candidate_timeout(std::time::Duration::from_secs(30))
+            .with_first_byte_budget(std::time::Duration::from_millis(500));
+        let started = std::time::Instant::now();
+        let err = r
+            .fetch_verified(&uris, &"0".repeat(64), None, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "waited {:?}",
+            started.elapsed()
+        );
+        // Each copy still waiting is named, and the untried one is counted.
+        assert_eq!(err.matches(": sent no data within 0s").count(), 2, "{err}");
+        assert!(err.contains(&format!("{}: sent no data", uris[0])), "{err}");
+        assert!(err.contains("1 more not tried"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_slow_stream_that_has_started_is_not_cut_off_by_the_first_byte_budget() {
+        let good = b"slow but healthy".to_vec();
+        let hash = hex::encode(sha256(&good));
+        // 16 bytes at 100 ms each: ~1.6 s, well past the 300 ms first-byte budget.
+        let slow = trickle(good.clone(), std::time::Duration::from_millis(100));
+        let r = PackReader::new(vec![slow.clone()], &StorageProfiles::default())
+            .with_candidate_timeout(std::time::Duration::from_secs(20))
+            .with_first_byte_budget(std::time::Duration::from_millis(300));
+        let got = r
+            .fetch_verified(&[format!("{slow}/pack")], &hash, None, None)
+            .await
+            .unwrap();
+        assert_eq!(got, good);
     }
 
     #[tokio::test]

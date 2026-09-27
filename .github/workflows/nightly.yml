@@ -7,11 +7,13 @@ name: Devnet Nightly
 # The suites this drives:
 #   * forge-web/e2e/          — Playwright on a moutai build: v2 read paths, fallback browse,
 #                               zero-backend, a11y, against the forge-v2 read fixture
-#   * e2e/cli/run.sh          — 11 CLI scenarios on moutai: clone/push round-trip, non-ff,
-#                               ref delete, revoked-writer push, non-member push, third-party
-#                               verify, depth+filter, issue lifecycle, PR from a fork with a
-#                               real merge, release asset (SKIPs: no local S3 store on the runner),
-#                               star/unstar
+#   * e2e/cli/run.sh          — the CLI scenarios on moutai (e2e/README.md lists them):
+#                               clone/push round-trip, non-ff, ref delete, revoked-writer push,
+#                               non-member push, third-party verify, depth+filter, issue
+#                               lifecycle, PR from a fork with a real merge, release asset,
+#                               star/unstar, dg init, private repos, config and storage UX.
+#                               The storage fixture (infra/docker-compose.yml) runs on the
+#                               runner for the scenarios that store packs locally (11, 13, 20).
 #
 # They split by what they need:
 #   * The READ-ONLY browser specs need only a network path to moutai DAPI and the read
@@ -190,6 +192,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The local storage fixture (RustFS + kubo + nginx, infra/docker-compose.yml) the
+      # Rust workflow's `storage-it` step uses. Scenarios 11, 13 and 20 store packs on it;
+      # without it run.sh drops 11 and 13 and 20 SKIPs its dead-copy step. Started first so
+      # it comes up while the binaries build.
+      - name: Start the storage fixture
+        run: docker compose -f infra/docker-compose.yml up -d
+
       # Ubuntu's `protobuf-compiler` package is protoc 3.21.x, whose `libprotoc 3.21.12`
       # version string the tenderdash proto-compiler cannot parse ("invalid float literal") —
       # protobuf renumbered to `libprotoc <major>.<minor>` at v22. Install a pinned modern
@@ -225,6 +234,19 @@ jobs:
         timeout-minutes: 30
         run: cargo build --locked -p dg -p git-remote-dash
 
+      # The same readiness gate as `make storage-it`: the buckets, their policies and CORS
+      # exist only once s3-init has exited 0.
+      - name: Wait for the storage fixture
+        timeout-minutes: 3
+        run: |
+          rc=$(docker wait forge-e2e-s3-init)
+          [ "$rc" = 0 ] || { echo "s3-init failed (exit $rc)"; docker logs forge-e2e-s3-init; exit 1; }
+          for i in $(seq 1 60); do
+            curl -fsS -o /dev/null http://127.0.0.1:9000/health/ready && break
+            [ "$i" = 60 ] && { echo "RustFS not ready after 120 s"; exit 1; }
+            sleep 2
+          done
+
       # run.sh exits non-zero if any scenario FAILs, or if more than E2E_MAX_SKIPS scenarios
       # SKIP (a SKIP means a check flaked on every one of its retries). Every command is
       # bounded by E2E_TIMEOUT, every scenario by E2E_SCENARIO_TIMEOUT and the suite,
@@ -257,6 +279,10 @@ jobs:
             echo "::warning title=CLI e2e skipped ${skipped}::a scenario flaked on every retry; see the matrix"
           fi
           exit $rc
+
+      - name: Storage fixture logs
+        if: failure()
+        run: docker compose -f infra/docker-compose.yml logs --no-color --tail 200
 
       - uses: actions/upload-artifact@v6
         if: always()

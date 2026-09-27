@@ -124,6 +124,18 @@ pub(crate) async fn http_get_capped(
     range: Option<ByteRange>,
     max_bytes: Option<u64>,
 ) -> Result<Vec<u8>> {
+    http_get_watched(client, url, range, max_bytes, None).await
+}
+
+/// [`http_get_capped`] that sets `flowing` as soon as the first body byte arrives (a
+/// reader's signal that a copy is really streaming, not stuck waiting for a gateway).
+pub(crate) async fn http_get_watched(
+    client: &Client,
+    url: &str,
+    range: Option<ByteRange>,
+    max_bytes: Option<u64>,
+    flowing: Option<&std::sync::atomic::AtomicBool>,
+) -> Result<Vec<u8>> {
     let mut req = client.get(url);
     if let Some(r) = range {
         req = req.header(reqwest::header::RANGE, r.http_header_value());
@@ -149,15 +161,17 @@ pub(crate) async fn http_get_capped(
         return Err(Error::Io(format!("GET {url} failed with status {status}")));
     }
 
-    read_body_capped(resp, max_bytes, url).await
+    read_body_watched(resp, max_bytes, url, flowing).await
 }
 
 /// Read a response body, erroring as soon as it exceeds `max_bytes` (checked against
-/// `Content-Length` up front and against the running total while streaming).
-pub(crate) async fn read_body_capped(
+/// `Content-Length` up front and against the running total while streaming), and setting
+/// `flowing` when the first non-empty chunk arrives.
+pub(crate) async fn read_body_watched(
     mut resp: reqwest::Response,
     max_bytes: Option<u64>,
     what: &str,
+    flowing: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<Vec<u8>> {
     let too_big = |n: u64| match max_bytes {
         Some(m) if n > m => Err(Error::Io(format!(
@@ -174,6 +188,9 @@ pub(crate) async fn read_body_capped(
         .await
         .map_err(|e| transport_err("reading response body", &e))?
     {
+        if let Some(f) = flowing.filter(|_| !chunk.is_empty()) {
+            f.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         out.extend_from_slice(&chunk);
         too_big(out.len() as u64)?;
     }

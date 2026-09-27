@@ -19,7 +19,7 @@
 
 use reqwest::{Client, Method, StatusCode, Url};
 
-use super::https::{http_get_capped, http_probe, read_body_capped, transport_err, truncate_chars};
+use super::https::{http_get_capped, http_probe, read_body_watched, transport_err, truncate_chars};
 use super::sigv4::{self, AmzDate, RequestToSign, SigningKeys, EMPTY_PAYLOAD_SHA256};
 use super::{ByteRange, Caps, Health, PackBackend, PackMeta, Uri};
 use crate::error::{Error, Result};
@@ -495,6 +495,17 @@ impl S3Backend {
         range: Option<ByteRange>,
         max_bytes: Option<u64>,
     ) -> Result<Vec<u8>> {
+        self.get_object_watched(key, range, max_bytes, None).await
+    }
+
+    /// [`Self::get_object_capped`], setting `flowing` when the first body byte arrives.
+    pub(crate) async fn get_object_watched(
+        &self,
+        key: &str,
+        range: Option<ByteRange>,
+        max_bytes: Option<u64>,
+        flowing: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<Vec<u8>> {
         let extra: Vec<(String, String)> = range
             .map(|r| vec![("range".to_string(), r.http_header_value())])
             .unwrap_or_default();
@@ -520,7 +531,7 @@ impl S3Backend {
             Some(r) => Some(r.len()),
             None => max_bytes,
         };
-        read_body_capped(resp, cap, &format!("S3 GET {key}")).await
+        read_body_watched(resp, cap, &format!("S3 GET {key}"), flowing).await
     }
 
     /// `DELETE` `key` (signed). A missing key is success (S3 semantics).

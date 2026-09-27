@@ -200,7 +200,7 @@ Fix, in order:
 
 ## E503
 
-**Packs unreadable.** A clone or fetch needed a pack whose recorded copies all failed: storage down, object deleted, or a gateway that does not have the CID. The helper reads every other pack first and reports this only when the wanted history really is incomplete, so a dead copy of a pack nothing needs (a deleted branch, or one a repack superseded) does not fail the clone. The `cause:` line names each unreadable pack and why each of its copies failed. A host that refuses the connection gives up its place in the race at once, so it never waits on a slow gateway tried alongside it.
+**Packs unreadable.** A clone or fetch needed a pack whose recorded copies all failed: storage down, object deleted, or a gateway that does not have the CID. The helper reads every other pack first and reports this only when the wanted history really is incomplete, so a dead copy of a pack nothing needs (a deleted branch, or one a repack superseded) does not fail the clone. The `cause:` line names each unreadable pack and why each of its copies failed. A host that refuses the connection gives up its place in the race at once, so it never waits on a slow gateway tried alongside it. While no copy of a pack has sent a single byte, all of them together get 20 seconds: a gateway that cannot find a CID holds the request open for about a minute before it answers 504. Once any copy starts sending, the slow-but-healthy transfer keeps its full deadline.
 
 Fix: anyone whose clone still has the objects can restore the copies with `dg reseed <owner>/<repo> --from-local`, run inside that clone. If you know another IPFS gateway that has the pack, add it to `[read] ipfs_gateways` in `storage.toml` and try again.
 
@@ -245,6 +245,8 @@ Fix: ask the member who pushed it to push again (`git push` re-stores it under a
 **Written after the key was rotated.** The content is under a superseded key epoch and was written more than 240 blocks after the next epoch's anchor by someone who is no longer a member (the late-content rule). It is hidden, not deleted.
 
 Fix: none needed; if the writer is still meant to be a member, re-add them and have them write it again.
+
+A clone or fetch reports E510 as `clone incomplete: a ref points at content written after the key was rotated` when a branch you asked for needs objects that only such hidden packs hold. Restoring a copy would not help, because the rule hides that content from every reader. A maintainer can re-add the writer (`dg collab add`) and have them push that branch again, or move the ref back to history every member can read.
 
 ## E601
 
