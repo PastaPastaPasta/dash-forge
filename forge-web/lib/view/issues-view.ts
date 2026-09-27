@@ -28,7 +28,7 @@ import {
   type RepoRef,
   type ReviewView,
 } from '../repo'
-import { HiddenTally, gateFor, type HiddenCounts } from '../repo/private-content'
+import { HiddenTally, admitAll, gateFor, type HiddenCounts } from '../repo/private-content'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
 import { anchorOf, countApprovals, groupReviewComments, type Anchor, type Approvals, type Role } from '../rules/v2'
@@ -102,14 +102,8 @@ export async function readComments(
   // Private repo: only comments that open with the reader's keys, decrypted (§8), which also
   // covers well-formedness and a stranger's ciphertext; the rest are counted, never shown.
   if (repo.visibility === 'private') {
-    const gate = gateFor(repo)
-    const out: CommentView[] = []
-    for (const raw of documents) {
-      const a = await gate.admit('comment', raw)
-      if (a.ok) out.push(toCommentView(a.doc))
-      else tally.add(a.reason)
-    }
-    return out
+    const { docs } = await admitAll(gateFor(repo), 'comment', documents, tally)
+    return docs.map(toCommentView)
   }
   return documents.filter((d) => wellFormed(repo, 'comment', d)).map(toCommentView)
 }

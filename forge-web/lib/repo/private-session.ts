@@ -5,27 +5,26 @@
  * the content gate (`openContent` over the reader's keys), the pack header cache, the keys.
  *
  * Lifetime: one session per (network, repo, reader) is cached for the view session
- * ({@link SESSION_TTL_MS}); writers call {@link PrivateSession.refresh}-equivalent
- * {@link loadPrivateSessionFresh} before every write (§5.3: anchors are re-read before every
+ * (`SESSION_TTL_MS`); writers call {@link loadPrivateSessionFresh} before every write (§5.3: anchors are re-read before every
  * write). Every session closes when the vault locks or the encryption key changes: its gate
  * then admits nothing, its header cache is cleared, and listeners purge the decrypted browse
  * state built on it. No key and no decrypted string is persisted anywhere.
  */
 
-import type { EvoSDK } from '@dashevo/evo-sdk'
+import type { EvoSDK, IdentityPublicKey } from '@dashevo/evo-sdk'
 
-import { decodeIdentifier } from '../auth/base58'
-import type { IdentityPublicKey } from '@dashevo/evo-sdk'
-
+import { base58Encode, decodeIdentifier } from '../auth/base58'
 import type { EncKeyLike, EncryptionOps } from '../auth/encryption-key'
-import { isUsableEncryptionKey } from '../auth/encryption-key'
+import { fetchIdentityKeys, isUsableEncryptionKey } from '../auth/encryption-key'
 import { onEncryptionKeyChange } from '../auth/vault'
 import type { Network } from '../constants'
 import {
   IdSet,
   PackHeaderCache,
   bytesEqual,
-  encodePrivateId,
+  bytesToHex,
+  isU32,
+  randomBytes,
   openContextOf,
   resolveEpochs,
   type ConfigRow,
@@ -37,24 +36,21 @@ import {
 import { compareKey, type ConfigDoc, type RefUpdate } from '../rules'
 import type { Membership } from '../rules/v2'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
-import { authSdk } from '../sdk/facade'
 import { DOC, asIdentifierString, num, str, stringArray, type RepoRef } from './contract'
 import type { RepoConfig } from './config'
 import { readMemberships } from './members'
 import {
-  HiddenTally,
   admitAll,
   blockHeightOf,
   bytesField,
   idField,
   privateGate,
   type ContentGate,
-  type HiddenCounts,
 } from './private-content'
 import { repoSource } from './source'
 
 /** How long a session serves page views before it is read again. */
-export const SESSION_TTL_MS = 5 * 60_000
+const SESSION_TTL_MS = 5 * 60_000
 
 /** A `repoKey` document, parsed, with the raw document (the SDK needs it to decrypt). */
 export interface WrapDoc {
@@ -96,8 +92,6 @@ export interface PrivateSession {
   readonly configPlain: { readonly backend: unknown; readonly archived: boolean } | null
   /** The readable configs, for protected-ref routing. */
   readonly configHistory: readonly ConfigDoc[]
-  /** Configs the reader could not open. */
-  readonly configsHidden: HiddenCounts
   readonly anchors: ReadonlyMap<number, AnchorInfo>
   /** `repoKey` and `config` documents under an epoch no anchor recognises. */
   readonly unanchoredDocs: number
@@ -127,6 +121,11 @@ export interface SessionUnwrapper {
   unwrap(p: { document: PlainDocument; counterpartyKey: EncKeyLike; repoId: Uint8Array; epoch: number }): Promise<EpochKeys>
 }
 
+/** Whether `identity` (base58) is a current maintainer in `session`. */
+export function isMaintainer(session: PrivateSession, identity: string | null): boolean {
+  return identity !== null && session.members.some((m) => m.identity === identity && m.role === 'maintainer')
+}
+
 /** The reader side of the vault's {@link EncryptionOps}. */
 export function sessionUnwrapper(ops: EncryptionOps): SessionUnwrapper {
   return {
@@ -134,10 +133,6 @@ export function sessionUnwrapper(ops: EncryptionOps): SessionUnwrapper {
     unwrap: (p) =>
       ops.unwrap({ document: p.document, counterpartyKey: p.counterpartyKey as unknown as IdentityPublicKey, repoId: p.repoId, epoch: p.epoch }),
   }
-}
-
-function isU32(n: number): boolean {
-  return Number.isInteger(n) && n >= 0 && n <= 0xffff_ffff
 }
 
 /** Parse a `repoKey` document; null when a field the reader rule needs is missing. */
@@ -164,10 +159,9 @@ export function parseConfigRow(doc: PlainDocument): ConfigRow | null {
   return { id, owner, epoch: num(doc, 'epoch'), createdAtBlockHeight: height, enc: bytesField(doc, 'enc') ?? new Uint8Array(0) }
 }
 
-const b58 = (id: Uint8Array): string => encodePrivateId(id, 'base58')
 
 /** The short branch name a config's `defaultBranch` holds (a leading `refs/heads/` is tolerated). */
-export function shortBranch(name: string): string {
+function shortBranch(name: string): string {
   return name.replace(/^refs\/heads\//, '')
 }
 
@@ -218,7 +212,7 @@ export function closePrivateSessions(): void {
 onEncryptionKeyChange(closePrivateSessions)
 
 function randomId(): string {
-  return [...crypto.getRandomValues(new Uint8Array(12))].map((b) => b.toString(16).padStart(2, '0')).join('')
+  return bytesToHex(randomBytes(12))
 }
 
 /**
@@ -250,14 +244,14 @@ export async function loadPrivateSession(input: {
   const parsed = wrapDocs.map(parseWrapDoc).filter((w): w is NonNullable<typeof w> => w !== null)
   const wraps: WrapDoc[] = await Promise.all(
     parsed.map(async (w) => {
-      const memberB58 = b58(w.row.memberId)
+      const memberB58 = base58Encode(w.row.memberId)
       const recipient = keyOf(memberB58, w.row.recipientKeyId)
       const keyEnabled = recipient !== undefined && isUsableEncryptionKey(recipient, repo.forge.core)
       let keys: EpochKeys | undefined
       // Only the reader's own wraps from current maintainers are opened (§5.4 checks 1–2); the
       // anchor check (5) is resolveEpochs'.
       if (unwrapper !== null && bytesEqual(w.row.memberId, readerId) && maintainers.has(w.row.owner) && w.row.recipientKeyId === unwrapper.keyId) {
-        const sender = keyOf(b58(w.row.owner), w.senderKeyId)
+        const sender = keyOf(base58Encode(w.row.owner), w.senderKeyId)
         if (sender !== undefined) {
           keys = await unwrapper.unwrap({ document: w.raw, counterpartyKey: sender, repoId, epoch: w.row.epoch }).catch(() => undefined)
         }
@@ -278,8 +272,7 @@ export async function loadPrivateSession(input: {
   const gate = privateGate(repo, ctx)
 
   // The config timeline: every config that opens (§4.2 commitment first), as plaintext.
-  const tally = new HiddenTally()
-  const { docs: opened } = await admitAll(gate, 'config', configDocs, tally)
+  const { docs: opened } = await admitAll(gate, 'config', configDocs)
   const configHistory: ConfigDoc[] = opened.map((d) => ({
     id: str(d, '$id'),
     createdAt: num(d, '$createdAt'),
@@ -294,7 +287,7 @@ export async function loadPrivateSession(input: {
   const createdAtById = new Map(configDocs.map((d) => [asIdentifierString(d['$id']), num(d, '$createdAt')]))
   const anchors = new Map<number, AnchorInfo>()
   for (const [e, a] of resolution.anchors) {
-    anchors.set(e, { epoch: e, owner: b58(a.owner), createdAt: createdAtById.get(b58(a.id)) ?? 0, height: a.height })
+    anchors.set(e, { epoch: e, owner: base58Encode(a.owner), createdAt: createdAtById.get(base58Encode(a.id)) ?? 0, height: a.height })
   }
   const unanchored = new Set(resolution.unanchored)
   const unanchoredDocs = [...configRows, ...wraps.map((w) => w.row)].filter((r) => unanchored.has(r.epoch)).length
@@ -319,7 +312,6 @@ export async function loadPrivateSession(input: {
     config: newest === undefined ? null : toPrivateRepoConfig(newest),
     configPlain: newest === undefined ? null : { backend: newest['backend'] ?? { mode: 0 }, archived: newest['archived'] === true },
     configHistory,
-    configsHidden: tally.value,
     anchors,
     unanchoredDocs,
     memberKeys,
@@ -371,10 +363,7 @@ export function sdkSessionSource(sdk: EvoSDK, repo: RepoRef): SessionSource {
           ],
         }),
       ),
-    identityKeys: async (id) => {
-      const identity = await authSdk(sdk).identities.fetch(id)
-      return identity ? (identity.publicKeys as unknown as EncKeyLike[]) : null
-    },
+    identityKeys: (id) => fetchIdentityKeys(sdk, id),
   }
 }
 

@@ -41,7 +41,7 @@ import {
 } from './contract'
 import { readConfigHistory } from './config'
 import { publicRefKey, readRefUpdates } from './refs'
-import { HiddenTally, gateFor, type HiddenCounts } from './private-content'
+import { HiddenTally, admitAll, gateFor, type HiddenCounts } from './private-content'
 import { repoSource } from './source'
 import { base64ToHex, hexToBase64 } from '../sdk'
 
@@ -394,14 +394,8 @@ export async function readReviews(
   )
   // A private review whose `enc` does not open is left out entirely: its plaintext verdict is
   // never counted as an approval (`private-repos.md` §8.1).
-  const gate = gateFor(repo)
-  const documents: PlainDocument[] = []
-  for (const d of raw) {
-    const a = await gate.admit('review', d)
-    if (a.ok) documents.push(a.doc)
-    else tally.add(a.reason)
-  }
-  return documents.map((d) => {
+  const { docs } = await admitAll(gateFor(repo), 'review', raw, tally)
+  return docs.map((d) => {
     const { verdict, code } = verdictFromCode(num(d, 'verdict'))
     return {
       id: str(d, '$id'),
@@ -648,12 +642,9 @@ export async function readPull(
   const createdAt = num(patchDoc, '$createdAt')
   // A private patch indexes its base under an HMAC; once opened, its ref is keyed like every
   // decrypted ref, by `sha256(baseRefName)` (`refs.ts`).
-  const baseKeyHex =
-    repo.visibility === 'private'
-      ? str(patchDoc, 'baseRefName') === ''
-        ? ''
-        : publicRefKey(str(patchDoc, 'baseRefName'))
-      : byteFieldToHex(patchDoc, 'baseRefNameHash')
+  const baseName = str(patchDoc, 'baseRefName')
+  let baseKeyHex = byteFieldToHex(patchDoc, 'baseRefNameHash')
+  if (repo.visibility === 'private') baseKeyHex = baseName === '' ? '' : publicRefKey(baseName)
   const baseRefNameHashRaw = baseKeyHex === '' ? '' : hexToBase64(baseKeyHex)
   const baseHeadOidRaw = patchDoc['headOid']
 

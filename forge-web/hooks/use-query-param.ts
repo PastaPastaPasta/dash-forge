@@ -8,10 +8,16 @@
 
 import { useSearchParams } from 'next/navigation'
 
-/** Read a single query param (or a fallback). */
+import { openParam, sealParams } from '@/lib/view/private-nav'
+
+/**
+ * Read a single query param (or a fallback). A private repo's `path` / `ref` / `oid` travel as
+ * per-tab tokens (`lib/view/private-nav.ts`); they are resolved here.
+ */
 export function useParam(name: string, fallback = ''): string {
   const params = useSearchParams()
-  return params.get(name) ?? fallback
+  const raw = params.get(name)
+  return raw === null ? fallback : openParam(raw)
 }
 
 /**
@@ -49,6 +55,7 @@ export function repoHref(
 ): string {
   const q = new URLSearchParams({ owner: addr.owner, name: addr.name })
   if (addr.repoId) q.set('repo', addr.repoId)
-  for (const [k, v] of Object.entries(extra)) q.set(k, v)
+  // A private repo's decrypted names never go into a URL (`private-nav.ts`).
+  for (const [k, v] of Object.entries(sealParams(addr, extra))) q.set(k, v)
   return `${path}?${q.toString()}`
 }

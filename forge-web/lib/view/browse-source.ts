@@ -817,9 +817,7 @@ export async function loadArtifactBytesProgress(
   const session = repo.session
   const open = async (copy: PackManifest): Promise<Uint8Array> => {
     const bytes = await loadOneCopy(sdk, repo, copy, onProgress, cancel)
-    if (session === undefined) return bytes
-    const plain = await openPrivateArtifact(session, copy, bytes)
-    return plain
+    return session === undefined ? bytes : openPrivateArtifact(session, copy, bytes)
   }
   const verified = (copy: PackManifest, bytes: Uint8Array): boolean =>
     session !== undefined || bytesToHex(sha256(bytes)) === copy.packHash.toLowerCase()

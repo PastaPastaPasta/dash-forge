@@ -20,9 +20,9 @@
 import type { DataContract, Document, EvoSDK, IdentityPublicKey, PrivateKey as WasmPrivateKey } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
-import { unwrapKey, unwrapKeyRaw, sealWrap, type EpochKeys, type WrapFacade } from '../private'
-import { authSdk } from '../sdk/facade'
-import { deriveAt, deriveMasterKey, identityKeyPath, isValidMnemonic, normalizeMnemonic } from './hd'
+import { bytesToHex, unwrapKey, unwrapKeyRaw, sealWrap, type EpochKeys, type WrapFacade } from '../private'
+import { authSdk, sleep } from '../sdk/facade'
+import { deriveAt, deriveMasterKey, identityKeyPath, isValidMnemonic, normalizeMnemonic, wasmNetwork } from './hd'
 import { parsePrivateKey } from './wif'
 import { storeEncryptionKey, storedEncryptionKeyId, withEncryptionKey } from './vault'
 
@@ -65,26 +65,24 @@ export function noEncryptionKeyMessage(name: string): string {
 export const ENCRYPTION_KEY_BLAST_RADIUS =
   "This key can read every private repo you're a member of, and every key you've handed out as a maintainer."
 
-interface IdentityLike {
-  readonly publicKeys: readonly (EncKeyLike & IdentityPublicKey)[]
+/** An identity's public keys, or null when the identity does not exist. */
+export async function fetchIdentityKeys(sdk: EvoSDK, identityId: string): Promise<(EncKeyLike & IdentityPublicKey)[] | null> {
+  const identity = await authSdk(sdk).identities.fetch(identityId)
+  return identity ? (identity.publicKeys as unknown as (EncKeyLike & IdentityPublicKey)[]) : null
 }
 
-async function fetchIdentity(sdk: EvoSDK, identityId: string): Promise<IdentityLike> {
-  const identity = (await authSdk(sdk).identities.fetch(identityId)) as unknown as IdentityLike | undefined
-  if (!identity) throw new Error(`identity ${identityId} not found`)
-  return identity
-}
-
-function hexOf(bytes: Uint8Array): string {
-  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
+async function requireIdentityKeys(sdk: EvoSDK, identityId: string): Promise<(EncKeyLike & IdentityPublicKey)[]> {
+  const keys = await fetchIdentityKeys(sdk, identityId)
+  if (keys === null) throw new Error(`identity ${identityId} not found`)
+  return keys
 }
 
 /** The compressed public key (hex) of a 32-byte secp256k1 private key, through the SDK. */
 async function publicKeyHex(secret: Uint8Array, network: Network): Promise<string> {
   const { PrivateKey } = await import('@dashevo/evo-sdk')
-  const pk = PrivateKey.fromBytes(secret, network === 'mainnet' ? 'mainnet' : 'testnet')
+  const pk = PrivateKey.fromBytes(secret, wasmNetwork(network))
   try {
-    return hexOf(pk.getPublicKey().toBytes())
+    return bytesToHex(pk.getPublicKey().toBytes())
   } finally {
     pk.free()
   }
@@ -98,8 +96,7 @@ export async function adoptEncryptionKey(sdk: EvoSDK, network: Network, identity
   try {
     if (secret.length !== 32) throw new Error('an encryption private key is 32 bytes')
     const pub = await publicKeyHex(secret, network)
-    const identity = await fetchIdentity(sdk, identityId)
-    const match = identity.publicKeys.find(
+    const match = (await requireIdentityKeys(sdk, identityId)).find(
       (k) => k.purposeNumber === PURPOSE_ENCRYPTION && k.keyTypeNumber === KEY_TYPE_ECDSA_SECP256K1 && k.disabledAt === undefined && k.data.toLowerCase() === pub,
     )
     if (match === undefined) throw new Error("that key is not an enabled encryption key of this identity")
@@ -199,8 +196,7 @@ export async function importEncryptionKey(
   coreId: string,
   source: EncryptionMaterial | { readonly mnemonic: string; readonly identityIndex?: number },
 ): Promise<number | null> {
-  const identity = await fetchIdentity(sdk, identityId)
-  const candidates = identity.publicKeys
+  const candidates = (await requireIdentityKeys(sdk, identityId))
     .filter((k) => isUsableEncryptionKey(k, coreId))
     .sort((a, b) => b.keyId - a.keyId)
   if (candidates.length === 0) return null
@@ -251,7 +247,7 @@ export async function registerEncryptionKey(
   }
   const keyId = Math.max(...identity.publicKeys.map((k) => k.keyId)) + 1
   const secret = await deriveSecret(mnemonic, network, keyId, identityIndex)
-  const fresh = PrivateKey.fromBytes(secret, network === 'mainnet' ? 'mainnet' : 'testnet')
+  const fresh = PrivateKey.fromBytes(secret, wasmNetwork(network))
   const signer = new IdentitySigner()
   try {
     signer.addKey(master)
@@ -283,7 +279,7 @@ export async function registerEncryptionKey(
         return await adoptEncryptionKey(sdk, network, identityId, new Uint8Array(secret))
       } catch (e) {
         if (i >= 6) throw e
-        await new Promise((r) => setTimeout(r, 1500))
+        await sleep(1500)
       }
     }
   } finally {
@@ -301,7 +297,6 @@ function safeValidate(k: { validatePrivateKey(b: Uint8Array, n: string): boolean
 
 /** What a private-repo read or write may do with the vault's encryption key. */
 export interface EncryptionOps {
-  readonly identityId: string
   /** The key id of the stored encryption key on this identity. */
   readonly keyId: number
   /**
@@ -340,7 +335,7 @@ export async function encryptionOps(sdk: EvoSDK, network: Network, identityId: s
   const contract = (await authSdk(sdk).contracts.fetch(coreId)) as DataContract | undefined
   if (contract === undefined) throw new Error('forge-core could not be read')
   const version = (sdk as unknown as { version(): number }).version()
-  const net = network === 'mainnet' ? 'mainnet' : 'testnet'
+  const net = wasmNetwork(network)
   const withPrivate = <T>(use: (pk: WasmPrivateKey) => Promise<T>): Promise<T> =>
     withEncryptionKey(network, identityId, async (_keyId, secret) => {
       const pk = PrivateKey.fromBytes(secret, net)
@@ -359,7 +354,6 @@ export async function encryptionOps(sdk: EvoSDK, network: Network, identityId: s
     epoch: p.epoch,
   })
   return {
-    identityId,
     keyId,
     unwrap: (p) => withPrivate((pk) => unwrapKey(facade, params(p, pk))),
     unwrapRaw: (p) => withPrivate((pk) => unwrapKeyRaw(facade, params(p, pk))),

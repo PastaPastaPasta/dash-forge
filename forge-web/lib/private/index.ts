@@ -10,7 +10,7 @@
  * outside tests); `__unsafe*` symbols of `./doc` and `./pack` are likewise not re-exported.
  */
 
-export { bytesToHex, concat as concatBytes, constantTimeEqual, hexToBytes, type Bytes } from './bytes'
+export { bytesToHex, concat as concatBytes, constantTimeEqual, hexToBytes, isU32, randomBytes, type Bytes } from './bytes'
 export {
   IdSet,
   bytesEqual,

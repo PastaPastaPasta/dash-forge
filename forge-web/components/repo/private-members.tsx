@@ -27,7 +27,7 @@ import {
   addPrivateMember,
   hasUsableEncryptionKey,
   planRotation,
-  removeMemberCost,
+  rotationCost,
   removePrivateMember,
   type RotationPlan,
   type RotationStep,
@@ -44,7 +44,7 @@ import { Field, Input } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 
 /** The spec's removal warning, verbatim, with the member's name. */
-export function removeWarning(name: string): string {
+function removeWarning(name: string): string {
   return `Removing ${name} rotates the repo key. New pushes, issues and comments will be unreadable to ${name}. Everything ${name} could already read stays readable to ${name} — encryption can't take back what was shared.`
 }
 
@@ -221,7 +221,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         onClose={() => setRemoving(null)}
         title={`Remove ${removing?.role ?? 'member'}`}
         description={removing === null ? '' : removeWarning(shortId(removing.member))}
-        cost={removalPlan.plan === null ? null : removeMemberCost(removalPlan.plan)}
+        cost={removalPlan.plan === null ? null : rotationCost(removalPlan.plan)}
         confirmLabel="Sign & remove"
         onConfirm={async (intent) => {
           if (write.context === null || removing === null) throw new Error('unlock with your encryption key first')

@@ -19,7 +19,7 @@ import { decodeIdentifier } from '../auth/base58'
 import { openContent, type DocFields, type OpenContext, type PrivateDocType, type StoredPrivateDoc } from '../private'
 import type { ContentKind } from '../rules/v2'
 import { base64ToBytes, type PlainDocument } from '../sdk'
-import { asIdentifierString, num, str, wellFormed, type RepoRef } from './contract'
+import { asIdentifierString, num, wellFormed, type RepoRef } from './contract'
 
 /** Why a document is hidden. */
 export type HiddenReason = 'notEncrypted' | 'wrongKey' | 'late'
@@ -27,17 +27,13 @@ export type HiddenReason = 'notEncrypted' | 'wrongKey' | 'late'
 /** Hidden documents, by reason. */
 export type HiddenCounts = Readonly<Record<HiddenReason, number>>
 
-export const NO_HIDDEN: HiddenCounts = { notEncrypted: 0, wrongKey: 0, late: 0 }
+const NO_HIDDEN: HiddenCounts = { notEncrypted: 0, wrongKey: 0, late: 0 }
 
 /** The sentence each reason is shown with. */
 export const HIDDEN_REASON_TEXT: Readonly<Record<HiddenReason, string>> = {
   notEncrypted: 'not encrypted for this repo',
   wrongKey: 'wrong or missing key',
   late: 'written after the key was rotated',
-}
-
-export function addHidden(a: HiddenCounts, b: HiddenCounts): HiddenCounts {
-  return { notEncrypted: a.notEncrypted + b.notEncrypted, wrongKey: a.wrongKey + b.wrongKey, late: a.late + b.late }
 }
 
 export function totalHidden(h: HiddenCounts): number {
@@ -80,7 +76,7 @@ const KIND_OF: Readonly<Record<PrivateDocType, ContentKind>> = {
 }
 
 /** A public repo's gate: well-formed documents, as they are. */
-export function publicGate(repo: RepoRef): ContentGate {
+function publicGate(repo: RepoRef): ContentGate {
   return {
     visibility: repo.visibility,
     async admit(type, doc) {
@@ -143,7 +139,7 @@ export function blockHeightOf(doc: PlainDocument): number | undefined {
  * The {@link StoredPrivateDoc} of a raw document of `type`: its plaintext bind fields as bytes.
  * Null when a field the AD needs cannot be decoded (the caller treats that as malformed).
  */
-export function storedPrivateDoc(type: PrivateDocType, doc: PlainDocument): StoredPrivateDoc | null {
+function storedPrivateDoc(type: PrivateDocType, doc: PlainDocument): StoredPrivateDoc | null {
   const ownerId = idField(doc, '$ownerId')
   const id = idField(doc, '$id')
   const enc = bytesField(doc, 'enc')
@@ -233,11 +229,6 @@ export async function admitAll(
     else tally.add(a.reason)
   }
   return { docs: out, hidden: tally }
-}
-
-/** The `$id` of a raw row, for maps. */
-export function idOf(doc: PlainDocument): string {
-  return str(doc, '$id')
 }
 
 /** The gate a read of `repo` goes through: its session's for a member, else {@link defaultGate}. */

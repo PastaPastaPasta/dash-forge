@@ -688,14 +688,19 @@ function notifyEncryptionKeyChange(): void {
   for (const l of encListeners) l()
 }
 
+/** The tab-only session's encryption slot for (network, identity), or undefined. */
+function sessionEncFor(network: Network, identityId: string): { key: CryptoKey; blob: EncryptionBlob | null } | undefined {
+  // Not `unlockedSecret()`: that one auto-locks an expired session, which a read must not do.
+  return unlocked?.network === network && unlocked.secret.identityId === identityId ? unlocked.sessionEnc : undefined
+}
+
 /**
  * Whether an encryption key is stored for (network, identity), and its key id (public: it is
  * on the identity). Readable while locked; using it needs the vault unlocked.
  */
 export async function storedEncryptionKeyId(network: Network, identityId: string): Promise<number | null> {
-  if (unlocked?.network === network && unlocked.secret.identityId === identityId && unlocked.sessionEnc !== undefined) {
-    return unlocked.sessionEnc.blob?.keyId ?? null
-  }
+  const session = sessionEncFor(network, identityId)
+  if (session !== undefined) return session.blob?.keyId ?? null
   const blob = await idbGet<EncryptionBlob>('vault', encryptionBlobKey(network, identityId))
   return blob?.keyId ?? null
 }
@@ -720,9 +725,8 @@ export async function storeEncryptionKey(network: Network, identityId: string, k
 
 /** Delete the stored encryption key (it can be imported again from the identity file). */
 export async function removeEncryptionKey(network: Network, identityId: string): Promise<void> {
-  if (unlocked?.network === network && unlocked.secret.identityId === identityId && unlocked.sessionEnc !== undefined) {
-    unlocked.sessionEnc = { key: unlocked.sessionEnc.key, blob: null }
-  }
+  const session = sessionEncFor(network, identityId)
+  if (session !== undefined && unlocked !== null) unlocked.sessionEnc = { key: session.key, blob: null }
   await idbDelete('vault', encryptionBlobKey(network, identityId))
   notifyEncryptionKeyChange()
 }

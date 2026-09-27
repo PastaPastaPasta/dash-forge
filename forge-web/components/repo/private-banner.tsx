@@ -16,9 +16,10 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, KeyRound, ShieldAlert, Wrench } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { encodePrivateId, type EpochAlert } from '@/lib/private'
-import { planRepair, repairCost, runRepair } from '@/lib/repo/private-members'
-import type { PrivateSession } from '@/lib/repo/private-session'
+import { base58Encode } from '@/lib/auth/base58'
+import { bytesToHex, type EpochAlert } from '@/lib/private'
+import { planRepair, repairCost, runRepair, type RepairPlan } from '@/lib/repo/private-members'
+import { isMaintainer, type PrivateSession } from '@/lib/repo/private-session'
 import { useAuth } from '@/contexts/auth-context'
 import { usePrivateWrite } from '@/hooks/use-private-write'
 import { Author } from '@/components/author'
@@ -40,7 +41,7 @@ function Note({ tone, icon, children, testId }: { tone: 'caution' | 'danger' | '
   )
 }
 
-const who = (id: Uint8Array): JSX.Element => <Author identityId={encodePrivateId(id, 'base58')} link={false} />
+const who = (id: Uint8Array): JSX.Element => <Author identityId={base58Encode(id)} link={false} />
 
 /** One key alert, in the words of `private-repos.md` §9. */
 function AlertLine({ alert }: { alert: EpochAlert }): JSX.Element | null {
@@ -87,7 +88,7 @@ export function PrivateBanner({ home }: { home: RepoHome }): JSX.Element | null 
 function MemberAlerts({ home, session }: { home: RepoHome; session: PrivateSession }): JSX.Element | null {
   const { identity } = useAuth()
   const r = session.resolution
-  const isMaintainer = session.members.some((m) => m.identity === identity && m.role === 'maintainer')
+  const maintainer = isMaintainer(session, identity)
   const alerts = r.alerts.filter((a) => a.kind !== 'rotationRequired')
   const cannotReadCurrent = r.currentEpoch !== null && r.writeEpoch === null
   const repair = identity === null ? null : planRepair(session, identity, home.repo.forge.core)
@@ -96,7 +97,7 @@ function MemberAlerts({ home, session }: { home: RepoHome; session: PrivateSessi
     parts.push(
       <Note key="alerts" tone="danger" icon={<ShieldAlert className="h-4 w-4 text-danger" aria-hidden />} testId="private-alerts">
         {alerts.map((a) => (
-          <AlertLine key={`${a.kind}:${a.epoch}:${'author' in a ? encodePrivateId(a.author) : ''}`} alert={a} />
+          <AlertLine key={`${a.kind}:${a.epoch}:${'author' in a ? bytesToHex(a.author) : ''}`} alert={a} />
         ))}
       </Note>,
     )
@@ -109,29 +110,27 @@ function MemberAlerts({ home, session }: { home: RepoHome; session: PrivateSessi
       </Note>,
     )
   }
-  if (isMaintainer && session.unanchoredDocs > 0) {
+  if (maintainer && session.unanchoredDocs > 0) {
     parts.push(
       <Note key="unanchored" tone="info" icon={<AlertTriangle className="h-4 w-4 text-anvil-500" aria-hidden />}>
         {session.unanchoredDocs} documents under an unrecognised epoch.
       </Note>,
     )
   }
-  if (isMaintainer && session.suspectManifests.size > 0) {
+  if (maintainer && session.suspectManifests.size > 0) {
     parts.push(
       <Note key="suspect" tone="info" icon={<AlertTriangle className="h-4 w-4 text-anvil-500" aria-hidden />}>
         {session.suspectManifests.size} {session.suspectManifests.size === 1 ? 'pack was' : 'packs were'} uploaded under an old key.
       </Note>,
     )
   }
-  if (repair !== null && identity !== null) parts.push(<RepairNote key="repair" home={home} session={session} self={identity} />)
+  if (repair !== null && identity !== null) parts.push(<RepairNote key="repair" home={home} session={session} self={identity} plan={repair} />)
   return parts.length === 0 ? null : <>{parts}</>
 }
 
-function RepairNote({ home, session, self }: { home: RepoHome; session: PrivateSession; self: string }): JSX.Element | null {
-  const plan = planRepair(session, self, home.repo.forge.core)
+function RepairNote({ home, session, self, plan }: { home: RepoHome; session: PrivateSession; self: string; plan: RepairPlan }): JSX.Element {
   const write = usePrivateWrite(home.repo)
   const [open, setOpen] = useState(false)
-  if (plan === null) return null
   let cost = null
   try {
     cost = repairCost(session, plan, self, home.repo.forge.core)

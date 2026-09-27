@@ -42,7 +42,7 @@ export function RepoScaffold({
 }): JSX.Element {
   const { data, loading, error, settled, sdkError, ready, reload } = useRepoHome(addr)
   // A private repo is re-read through the viewer's decryption session (or shown as sealed).
-  const privateHome = usePrivateHome(data ?? null)
+  const privateHome = usePrivateHome(data ?? null, addr)
 
   if (!addr.owner || (!addr.name && !addr.repoId)) {
     return (

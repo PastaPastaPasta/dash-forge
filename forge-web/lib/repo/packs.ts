@@ -83,6 +83,7 @@ function parsePackedHashes(doc: PlainDocument, field: string, entryLen: number):
 }
 
 function toManifest(doc: PlainDocument): PackManifest {
+  const height = blockHeightOf(doc)
   const num = (f: string): number => (typeof doc[f] === 'number' ? (doc[f] as number) : 0)
   const packHashRaw = doc['packHash']
   let packHash = ''
@@ -106,7 +107,7 @@ function toManifest(doc: PlainDocument): PackManifest {
     createdAt: num('$createdAt'),
     documentId: str(doc, '$id'),
     uploader: str(doc, '$ownerId'),
-    ...(blockHeightOf(doc) !== undefined ? { createdAtBlockHeight: blockHeightOf(doc) } : {}),
+    ...(height !== undefined ? { createdAtBlockHeight: height } : {}),
   }
 }
 

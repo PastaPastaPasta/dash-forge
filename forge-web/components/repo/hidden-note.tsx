@@ -3,6 +3,7 @@
 import { useAuth } from '@/contexts/auth-context'
 import type { RepoHome } from '@/lib/view'
 import { HIDDEN_REASON_TEXT, totalHidden, type HiddenCounts, type HiddenReason } from '@/lib/repo/private-content'
+import { isMaintainer } from '@/lib/repo/private-session'
 
 /**
  * The line a list shows when it skipped documents: not well-formed for the repo (plaintext in
@@ -27,7 +28,7 @@ export function HiddenNote({
   const { identity } = useAuth()
   if (home?.repo.visibility === 'private') {
     const session = home.private?.access === 'member' ? home.private.session : null
-    const maintainer = session?.members.some((m) => m.identity === identity && m.role === 'maintainer') ?? false
+    const maintainer = session !== null && isMaintainer(session, identity)
     if (!maintainer || by === undefined || totalHidden(by) === 0) return null
     const parts = (Object.keys(HIDDEN_REASON_TEXT) as HiddenReason[])
       .filter((r) => by[r] > 0)

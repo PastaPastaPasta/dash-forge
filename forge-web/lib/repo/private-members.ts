@@ -18,26 +18,25 @@
 
 import type { EvoSDK, IdentityPublicKey } from '@dashevo/evo-sdk'
 
-import { decodeIdentifier } from '../auth/base58'
+import { base58Encode, decodeIdentifier } from '../auth/base58'
 import type { EncKeyLike, EncryptionOps } from '../auth/encryption-key'
-import { usableEncryptionKey } from '../auth/encryption-key'
+import { fetchIdentityKeys, usableEncryptionKey } from '../auth/encryption-key'
 import type { Network } from '../constants'
 import {
   EpochKeys,
   bytesEqual,
   compareBytes,
-  encodePrivateId,
   generateEpochKey,
   sealDoc,
 } from '../private'
 import type { Role } from '../rules/v2'
 import { ConsensusRefusal, DUPLICATE_UNIQUE_CODE, createDocumentIdempotent, previewCreate, sumPreviews, type CostPreview, type WriteAuth } from '../sdk'
+import { sleep } from '../sdk/facade'
 import { DOC, type RepoRef } from './contract'
 import { invalidateMembers, readMemberships } from './members'
-import { invalidatePrivateSession, loadPrivateSessionFresh, sessionUnwrapper, type PrivateSession, type WrapDoc } from './private-session'
+import { invalidatePrivateSession, isMaintainer, loadPrivateSessionFresh, sessionUnwrapper, type PrivateSession, type WrapDoc } from './private-session'
 import { grantMember, revokeMember } from './writes'
 
-const b58 = (id: Uint8Array): string => encodePrivateId(id, 'base58')
 
 /** A private-repo membership change that cannot go ahead, with the message to show. */
 export class PrivateMembersError extends Error {
@@ -91,7 +90,7 @@ export function planRotation(session: PrivateSession, self: string, exclude: rea
   if (r.writeEpoch !== n) {
     throw new PrivateMembersError(`you can't read the current key (epoch ${n}); ask another maintainer to rotate`, 'E306')
   }
-  if (!session.members.some((m) => m.identity === self && m.role === 'maintainer')) {
+  if (!isMaintainer(session, self)) {
     throw new PrivateMembersError('only a current maintainer can rotate the repo key')
   }
   const selfId = decodeIdentifier(self)
@@ -103,7 +102,7 @@ export function planRotation(session: PrivateSession, self: string, exclude: rea
   // self-wrap by self, unless one of self's wraps there went to an identity now excluded (the
   // key would then be known to someone it must not be).
   const mine = session.wraps.filter((w) => bytesEqual(w.row.owner, selfId) && w.row.epoch > n && !r.anchors.has(w.row.epoch))
-  const leaked = new Set(mine.filter((w) => !remaining.includes(b58(w.row.memberId))).map((w) => w.row.epoch))
+  const leaked = new Set(mine.filter((w) => !remaining.includes(base58Encode(w.row.memberId))).map((w) => w.row.epoch))
   const resumable = mine
     .filter((w) => bytesEqual(w.row.memberId, selfId) && !leaked.has(w.row.epoch))
     .sort((a, b) => a.row.epoch - b.row.epoch)
@@ -119,7 +118,7 @@ export function planRotation(session: PrivateSession, self: string, exclude: rea
     if (epoch > 0xffff_ffff) throw new PrivateMembersError('no key epoch number is left')
   }
 
-  const wrappedBySelf = new Set(mine.filter((w) => w.row.epoch === epoch).map((w) => b58(w.row.memberId)))
+  const wrappedBySelf = new Set(mine.filter((w) => w.row.epoch === epoch).map((w) => base58Encode(w.row.memberId)))
   const ordered = [self, ...remaining.filter((id) => id !== self).sort((a, b) => compareBytes(decodeIdentifier(a), decodeIdentifier(b)))]
   const recipients: RotationRecipient[] = []
   const unreachable: string[] = []
@@ -153,11 +152,6 @@ export function addMemberCost(role: Role): CostPreview {
   return sumPreviews([previewCreate(role), previewCreate('repoKey')])
 }
 
-/** The cost shown before removing a member: the rotation that follows (the delete refunds). */
-export function removeMemberCost(plan: RotationPlan): CostPreview {
-  return rotationCost(plan)
-}
-
 /** What a maintainer's client should do on this visit (§5.6), or null when nothing. */
 export interface RepairPlan {
   /** Wrapped identities that are not members: the key must rotate. */
@@ -171,11 +165,11 @@ export interface RepairPlan {
 /** The repair plan of `session` for `self` (pure); null when the check passes or self is not a maintainer. */
 export function planRepair(session: PrivateSession, self: string, coreId: string): RepairPlan | null {
   const repair = session.resolution.repair
-  if (repair === null || !session.members.some((m) => m.identity === self && m.role === 'maintainer')) return null
-  const rotate = repair.nonMembers.map(b58)
+  if (repair === null || !isMaintainer(session, self)) return null
+  const rotate = repair.nonMembers.map(base58Encode)
   const wrap: string[] = []
   const waiting: string[] = []
-  for (const m of repair.missingWraps.map(b58)) {
+  for (const m of repair.missingWraps.map(base58Encode)) {
     if (usableEncryptionKey(session.memberKeys.get(m) ?? [], coreId) === null) waiting.push(m)
     else wrap.push(m)
   }
@@ -203,7 +197,7 @@ export type RotationStep =
   | { readonly kind: 'anchored'; readonly epoch: number }
 
 /** A fresh session (§5.3: anchors are re-read before every write). */
-export function freshSession(c: PrivateWriteContext): Promise<PrivateSession> {
+function freshSession(c: PrivateWriteContext): Promise<PrivateSession> {
   invalidateMembers(c.repo, c.network)
   return loadPrivateSessionFresh(c.sdk, c.repo, c.network, c.auth.identityId, sessionUnwrapper(c.ops))
 }
@@ -235,13 +229,12 @@ async function rawEpochKey(session: PrivateSession, c: PrivateWriteContext, epoc
   for (const w of session.wraps) {
     if (w.row.epoch !== epoch || w.row.keys === undefined || !bytesEqual(w.row.memberId, self)) continue
     if (!bytesEqual(w.row.keys.commit, want.commit)) continue
-    const got = await c.ops.unwrapRaw({
+    return c.ops.unwrapRaw({
       document: w.raw,
-      counterpartyKey: keyOf(session, b58(w.row.owner), w.senderKeyId),
+      counterpartyKey: keyOf(session, base58Encode(w.row.owner), w.senderKeyId),
       repoId: session.repoId,
       epoch,
     })
-    return got
   }
   throw new PrivateMembersError(`no wrap of epoch ${epoch} to you was found`, 'E306')
 }
@@ -264,7 +257,6 @@ async function postWrap(c: PrivateWriteContext, session: PrivateSession, keys: E
 
 const POLL_ATTEMPTS = 10
 const POLL_MS = 2000
-const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
 
 /**
  * Rotate the repo key (§5.5 steps 1–4), excluding `exclude` explicitly. Returns the new epoch.
@@ -350,7 +342,7 @@ export async function rotateRepoKey(
  */
 export async function addPrivateMember(c: PrivateWriteContext, memberId: string, role: Role, intent: string): Promise<void> {
   const before = await freshSession(c)
-  const keys = before.memberKeys.get(memberId) ?? (await readIdentityKeys(c, memberId))
+  const keys = before.memberKeys.get(memberId) ?? (await fetchIdentityKeys(c.sdk, memberId))
   if (usableEncryptionKey(keys ?? [], c.repo.forge.core) === null) throw new PrivateMembersError(`${memberId.slice(0, 8)}… has no encryption key yet`, 'E305')
   await grantMember(c.sdk, c.auth, c.repo, memberId, role, `${intent}:member`)
   await waitForMembers(c, (ids) => ids.includes(memberId))
@@ -368,15 +360,10 @@ export async function addPrivateMember(c: PrivateWriteContext, memberId: string,
   invalidatePrivateSession(c.repo)
 }
 
-async function readIdentityKeys(c: PrivateWriteContext, id: string): Promise<readonly EncKeyLike[] | null> {
-  const identity = await (c.sdk as unknown as { identities: { fetch(id: string): Promise<{ publicKeys: EncKeyLike[] } | undefined> } }).identities.fetch(id)
-  return identity?.publicKeys ?? null
-}
-
 /** Whether `id` has a usable ENCRYPTION key (the Add button's check). */
 export async function hasUsableEncryptionKey(sdk: EvoSDK, coreId: string, id: string): Promise<boolean> {
-  const identity = await (sdk as unknown as { identities: { fetch(id: string): Promise<{ publicKeys: EncKeyLike[] } | undefined> } }).identities.fetch(id)
-  return identity !== undefined && usableEncryptionKey(identity.publicKeys, coreId) !== null
+  const keys = await fetchIdentityKeys(sdk, id)
+  return keys !== null && usableEncryptionKey(keys, coreId) !== null
 }
 
 /** Poll the membership (uncached) until `ok` holds for its identities. */
@@ -442,5 +429,5 @@ export async function runRepair(c: PrivateWriteContext, intent: string, onStep?:
 export function repairCost(session: PrivateSession, plan: RepairPlan, self: string, coreId: string): CostPreview {
   const wraps = plan.wrap.map(() => previewCreate('repoKey'))
   if (plan.rotate.length === 0) return sumPreviews(wraps)
-  return sumPreviews([rotationCost(planRotation(session, self, plan.rotate, coreId))])
+  return rotationCost(planRotation(session, self, plan.rotate, coreId))
 }

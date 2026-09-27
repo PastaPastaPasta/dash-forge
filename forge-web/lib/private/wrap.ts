@@ -139,9 +139,13 @@ export interface WrapOpenParams extends UnwrapParams {
  * {@link WrapError}: an SDK decrypt failure (a padding error) is `wrapUnreadable`.
  */
 export async function unwrapKey(facade: WrapFacade, params: UnwrapParams): Promise<EpochKeys> {
-  let plaintext: Uint8Array
+  return checkWrapPlaintext(params.repoId, params.epoch, await decryptWrap(facade, params))
+}
+
+/** The SDK decrypt of a wrap; any failure (a padding error) is `wrapUnreadable`. */
+async function decryptWrap(facade: WrapFacade, params: UnwrapParams): Promise<Uint8Array> {
   try {
-    plaintext = await facade.decrypt({
+    return await facade.decrypt({
       dataContract: params.dataContract,
       document: params.document,
       property: WRAP_PROPERTY,
@@ -151,7 +155,6 @@ export async function unwrapKey(facade: WrapFacade, params: UnwrapParams): Promi
   } catch {
     throw new WrapError('wrapUnreadable')
   }
-  return checkWrapPlaintext(params.repoId, params.epoch, plaintext)
 }
 
 /**
@@ -161,18 +164,7 @@ export async function unwrapKey(facade: WrapFacade, params: UnwrapParams): Promi
  * The caller wipes `raw` as soon as it is done with it.
  */
 export async function unwrapKeyRaw(facade: WrapFacade, params: UnwrapParams): Promise<{ keys: EpochKeys; raw: Bytes }> {
-  let plaintext: Uint8Array
-  try {
-    plaintext = await facade.decrypt({
-      dataContract: params.dataContract,
-      document: params.document,
-      property: WRAP_PROPERTY,
-      recipientPrivateKey: params.readerPrivateKey,
-      senderKey: params.counterpartyKey,
-    })
-  } catch {
-    throw new WrapError('wrapUnreadable')
-  }
+  const plaintext = await decryptWrap(facade, params)
   const raw = plaintext.length === WRAP_PLAINTEXT_LEN ? plaintext.slice(15, 47) : new Uint8Array(32)
   try {
     return { keys: await checkWrapPlaintext(params.repoId, params.epoch, plaintext), raw }

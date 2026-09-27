@@ -20,10 +20,11 @@ import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { encryptionOps } from '@/lib/auth/encryption-key'
-import { onEncryptionKeyChange } from '@/lib/auth/vault'
 import { readMembershipsCached, repoContractIds } from '@/lib/repo'
 import { loadPrivateSessionCached, onPrivateSessionsClosed, sessionUnwrapper } from '@/lib/repo/private-session'
 import { loadPrivateHome, type RepoHome } from '@/lib/view'
+import { forgetPrivateNav, sealRepoUrls } from '@/lib/view/private-nav'
+import type { RepoAddress } from '@/hooks/use-query-param'
 
 export interface PrivateHomeState {
   /** The home to render (the plain one until access is known). */
@@ -36,24 +37,19 @@ export interface PrivateHomeState {
 
 /** Decrypted homes of this tab, by (network, repo, viewer): warm navigations paint at once. */
 const warm = new Map<string, RepoHome>()
-onPrivateSessionsClosed(() => warm.clear())
+onPrivateSessionsClosed(() => {
+  warm.clear()
+  forgetPrivateNav()
+})
 
-export function usePrivateHome(home: RepoHome | null): PrivateHomeState | null {
+export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): PrivateHomeState | null {
   const repo = home?.repo ?? null
   const isPrivate = repo?.visibility === 'private'
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const { identity } = useAuth()
-  // Re-resolve when the encryption key is added or removed, or every session closed.
+  // Re-resolve once every session closed (the vault locked, or the encryption key changed).
   const [epoch, setEpoch] = useState(0)
-  useEffect(() => {
-    const bump = (): void => setEpoch((n) => n + 1)
-    const a = onEncryptionKeyChange(bump)
-    const b = onPrivateSessionsClosed(bump)
-    return () => {
-      a()
-      b()
-    }
-  }, [])
+  useEffect(() => onPrivateSessionsClosed(() => setEpoch((n) => n + 1)), [])
   const key = repo === null ? '' : `${network}:${repo.repoId}:${identity ?? ''}`
   const state = useAsync<RepoHome>(
     async () => {
@@ -65,10 +61,12 @@ export function usePrivateHome(home: RepoHome | null): PrivateHomeState | null {
       if (ops === null) return { ...base, private: { access: 'no-key' } }
       const session = await loadPrivateSessionCached(sdk!, base.repo, network, identity, sessionUnwrapper(ops))
       const decrypted = await loadPrivateHome(sdk!, base, session)
+      // From here on, this repo's links carry tokens instead of decrypted names.
+      sealRepoUrls(addr)
       warm.set(key, decrypted)
       return decrypted
     },
-    [key, ready, epoch, home === null ? '' : home.repo.repoId],
+    [key, ready, epoch],
     {
       enabled: isPrivate && ready && sdk !== null && home !== null,
       initial: () => {
