@@ -106,7 +106,8 @@ test('s1. an old tab blocking the storage upgrade: Create names it, then recover
 test('s2. the Platform library cannot download: a named error and a working "Try again"', async ({ browser }) => {
   const context = await browser.newContext()
   const page = await context.newPage()
-  const chunk = /\/_next\/static\/chunks\/evo-sdk\.[^/]*\.js/
+  // The SDK's JS chunk and its separately fetched wasm (lib/sdk/wasm-fetch.ts).
+  const chunk = /\/_next\/static\/(chunks\/evo-sdk\.[^/]*\.js|wasm\/[^/]*\.wasm)$/
   await page.route(chunk, (r) => r.abort())
   await page.goto('/', { waitUntil: 'domcontentloaded' })
 
