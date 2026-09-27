@@ -41,6 +41,7 @@ export {
   isLate,
   maxPlaintext,
   openContent,
+  openWithKey,
   sealDoc,
   type AnchorRef,
   type IdentitySet,

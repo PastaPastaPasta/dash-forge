@@ -33,6 +33,8 @@ import {
   removePrivateMember,
   type RotationPlan,
   type RotationStep,
+  keptEpoch,
+  vanishingEpochs,
 } from '@/lib/repo/private-members'
 import type { PrivateSession } from '@/lib/repo/private-session'
 import { useAuth } from '@/contexts/auth-context'
@@ -122,7 +124,9 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
     if (effect === 'none') return { plan: null, error: null }
     try {
       const exclude = effect === 'rotate-exclude' ? [removing.member] : []
-      return { plan: planRotation(session, identity, exclude, repo.forge.core, write.context.ops.keyId), error: null }
+      // A maintainer's removal chains from the epoch that stays current once their role goes.
+      const from = removing.role === 'maintainer' ? keptEpoch(session, removing.member) : session.resolution.currentEpoch
+      return { plan: planRotation(session, identity, exclude, repo.forge.core, write.context.ops.keyId, from), error: null }
     } catch (e) {
       return { plan: null, error: e instanceof Error ? e.message : String(e) }
     }
@@ -164,7 +168,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
                 size="sm"
                 variant="danger"
                 className="ml-auto"
-                disabled={guard.disabledReason !== null || locked || cannotRead}
+                disabled={guard.disabledReason !== null || locked || (cannotRead && !(m.role === 'maintainer' && vanishingEpochs(session, m.identity).length > 0))}
                 onClick={() => {
                   setSteps([])
                   setRemoving({ member: m.identity, role: m.role })
@@ -264,6 +268,12 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
           }
         }}
       />
+      {removing !== null && removing.role === 'maintainer' && vanishingEpochs(session, removing.member).length > 0 ? (
+        <p className="text-[12px] text-caution" data-testid="removal-vanishing">
+          Key epoch {vanishingEpochs(session, removing.member).join(', ')} was set by {shortId(removing.member)} and nobody else can read it: it goes
+          with their role, and anything written under it becomes unreadable.
+        </p>
+      ) : null}
       {removing !== null && removalPlan.error !== null ? <p className="text-[12px] text-danger">{removalPlan.error}</p> : null}
       {removing !== null && removalPlan.plan !== null && write.context !== null && removalPlan.plan.recipients[0]?.keyId !== write.context.ops.keyId ? (
         <p className="text-[12px] text-caution">

@@ -96,7 +96,8 @@ function MemberAlerts({ home, session }: { home: RepoHome; session: PrivateSessi
   const r = session.resolution
   const maintainer = isMaintainer(session, identity)
   const alerts = r.alerts.filter((a) => a.kind !== 'rotationRequired')
-  const cannotReadCurrent = r.currentEpoch !== null && r.writeEpoch === null
+  const closed = r.currentEpoch !== null && r.burned.has(r.currentEpoch)
+  const cannotReadCurrent = r.currentEpoch !== null && r.writeEpoch === null && !closed
   const repair = identity === null ? null : planRepair(session, identity, home.repo.forge.core)
   const parts: JSX.Element[] = []
   if (alerts.length > 0) {
@@ -113,6 +114,13 @@ function MemberAlerts({ home, session }: { home: RepoHome; session: PrivateSessi
       <Note key="current" tone="caution" icon={<KeyRound className="h-4 w-4 text-caution" aria-hidden />} testId="private-no-current">
         You don&apos;t have the current key (epoch {r.currentEpoch}) yet, so new content is hidden. A maintainer can repair
         it from this repo&apos;s page.
+      </Note>,
+    )
+  }
+  if (closed && !maintainer) {
+    parts.push(
+      <Note key="closed" tone="caution" icon={<KeyRound className="h-4 w-4 text-caution" aria-hidden />} testId="private-closed">
+        Key epoch {r.currentEpoch} is closed, so nothing new can be written until a maintainer rotates the key from this repo&apos;s page.
       </Note>,
     )
   }
@@ -143,9 +151,18 @@ function RepairNote({ home, session, self, plan }: { home: RepoHome; session: Pr
   } catch {
     cost = null
   }
-  const canAct = plan.rotate.length > 0 || plan.wrap.length > 0
+  const canAct = plan.rotate.length > 0 || plan.wrap.length > 0 || plan.burned
+  const current = session.resolution.currentEpoch
+  const closer = current === null ? undefined : session.anchors.get(current)?.owner
   return (
     <Note tone="caution" icon={<Wrench className="h-4 w-4 text-caution" aria-hidden />} testId="private-repair">
+      {plan.burned && closer !== undefined ? (
+        <p data-testid="private-closed">
+          key epoch {current} was closed by <Author identityId={closer} link={false} />
+          {closer === self ? '' : ' (its key reached someone it must not)'}: nothing can be written until the key rotates.
+          {closer === self ? null : ' If this keeps happening, the owner can remove that maintainer.'}
+        </p>
+      ) : null}
       {plan.rotate.map((id) => (
         <p key={id}>
           rotating the repo key: <Author identityId={id} link={false} /> still had the current key.
@@ -176,7 +193,7 @@ function RepairNote({ home, session, self, plan }: { home: RepoHome; session: Pr
         onClose={() => setOpen(false)}
         title="Repair the repo key"
         description={
-          plan.rotate.length > 0
+          plan.rotate.length > 0 || plan.burned
             ? 'Rotates the key: a new key for every remaining member (yours first), then the new key epoch.'
             : 'Hands the current key to the members who have none.'
         }
