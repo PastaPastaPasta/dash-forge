@@ -236,9 +236,24 @@ mod platform {
                 .and_then(|()| stdin.write_all(add.as_bytes()))
                 .map_err(|e| format!("writing to {SECURITY}: {e}"))?;
         }
-        child
-            .wait()
-            .map_err(|e| format!("waiting for {SECURITY}: {e}"))?;
+        // The delete can raise an access dialog (an item another program wrote): never wait
+        // on it forever.
+        let start = Instant::now();
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if start.elapsed() > super::READ_TIMEOUT => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "no answer to the macOS Keychain access dialog within {} s",
+                        super::READ_TIMEOUT.as_secs()
+                    ));
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                Err(e) => return Err(format!("waiting for {SECURITY}: {e}")),
+            }
+        }
         // `security -i` exits 0 even when a command inside it fails: read the item back.
         match get(service, account) {
             Ok(Some(v)) if *v == *secret => Ok(()),
@@ -275,7 +290,13 @@ mod platform {
 
     /// The raw value from `security … -g` output (stderr).
     pub(super) fn parse_g(stderr: &str) -> Option<zeroize::Zeroizing<Vec<u8>>> {
-        let line = stderr.lines().find_map(|l| l.strip_prefix("password: "))?;
+        let line = stderr
+            .lines()
+            .find_map(|l| l.strip_prefix("password:"))?
+            .trim_start_matches(' ');
+        if line.is_empty() {
+            return Some(zeroize::Zeroizing::new(Vec::new()));
+        }
         if let Some(rest) = line.strip_prefix("0x") {
             let hex_part = rest.split_whitespace().next().unwrap_or_default();
             return hex::decode(hex_part).ok().map(zeroize::Zeroizing::new);
@@ -351,9 +372,13 @@ mod platform {
     }
 
     pub(super) fn delete(service: &str, account: &str) -> Result<bool, String> {
-        match entry(service, account)?.delete_credential() {
+        // No credential store here (headless Linux, a container): there is nothing to delete.
+        let Ok(e) = entry(service, account) else {
+            return Ok(false);
+        };
+        match e.delete_credential() {
             Ok(()) => Ok(true),
-            Err(keyring::Error::NoEntry) => Ok(false),
+            Err(keyring::Error::NoEntry | keyring::Error::NoDefaultStore) => Ok(false),
             Err(e) => Err(e.to_string()),
         }
     }
@@ -404,6 +429,10 @@ mod tests {
         let b = parse_g("password: \"b64:eAl5\"\n").unwrap();
         assert_eq!(&*decode(&b).unwrap(), "x\ty");
         assert!(parse_g("nothing here").is_none());
+        assert!(
+            parse_g("password: \n").unwrap().is_empty(),
+            "an empty value"
+        );
     }
 
     #[cfg(target_os = "macos")]

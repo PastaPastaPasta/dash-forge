@@ -496,6 +496,16 @@ struct KeySlots<S, P> {
     promote: P,
 }
 
+/// A registered key that could not be moved over the key in use: say where it is kept.
+fn promote_failed(e: anyhow::Error, id: u32, pending_at: &store::Stored) -> anyhow::Error {
+    e.context(format!(
+        "key #{id} is registered on chain but could not be made this computer's key; it is kept \
+         in {} — run the same command again to finish, or sign in with it: `dg auth login {}`",
+        pending_at.describe(),
+        pending_at.source()
+    ))
+}
+
 /// Decide what happens to a staged key once the registration returned: promote it when it
 /// registered (or when the chain shows it landed despite an error); otherwise leave the key in
 /// use untouched and say where both are.
@@ -510,13 +520,17 @@ where
     P: Fn(&Secret) -> Result<store::Stored>,
 {
     match (result, staged) {
-        (Ok(id), Some((text, _))) => Ok((id, (slots.promote)(&text)?)),
+        (Ok(id), Some((text, pending_at))) => {
+            let main = (slots.promote)(&text).map_err(|e| promote_failed(e, id, &pending_at))?;
+            Ok((id, main))
+        }
         (Ok(_), None) => Err(anyhow::anyhow!("the new key was registered but not staged")),
         // Staging itself failed: nothing was broadcast.
         (Err(e), None) => Err(e),
         (Err(e), Some((_, pending_at))) => {
             if let Some((id, text)) = landed {
-                let main = (slots.promote)(&text)?;
+                let main =
+                    (slots.promote)(&text).map_err(|e| promote_failed(e, id, &pending_at))?;
                 eprintln!(
                     "note: the update reported an error ({e:#}), but key #{id} is on chain; using it"
                 );
@@ -682,13 +696,14 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     if full_key && !args.full_key && !ctx.json {
         eprintln!(
             "note: {} has no forge-v2 contract group, so there is no limited key to register; \
-             storing the identity as given (master key included)",
+             storing the identity as given (master key included) in a passphrase-sealed file \
+             (DASH_FORGE_PASSPHRASE when there is no terminal)",
             ctx.network_label()
         );
     }
     if full_key && insecure {
         return Err(crate::errors::usage(
-            "--full-key keeps the master key: it goes to the keychain or behind a passphrase, never unencrypted (drop --insecure-plaintext)",
+            "--full-key keeps the master key: it goes to a passphrase-sealed file, never unencrypted (drop --insecure-plaintext)",
         ));
     }
     let (stored, key_id, spec) = if full_key || master.master_key().is_none() {
@@ -906,6 +921,9 @@ async fn status(ctx: &Ctx) -> Result<()> {
             println!("Stored:   {where_}");
             if bridge.master_key().is_some() {
                 println!("          (holds the master key: `dg auth login <file>` would store only a limited key)");
+                if kind == "keychain" {
+                    println!("          warning: an older dg put this master key in the keychain, where any program running as you can read it; `dg auth login --full-key <file>` moves it to a sealed file");
+                }
             }
         },
     );
@@ -1186,12 +1204,14 @@ async fn logout(ctx: &Ctx, disable: bool, master: Option<&std::path::Path>) -> R
         .identity_path
         .as_ref()
         .map(|p| p.to_string_lossy().into_owned());
-    let removed = store::remove(&network, &identity_id, source.as_deref())?;
+    let removed = store::remove(&network, &identity_id, source.as_deref());
+    // The default goes either way: a half-removed key must not stay the one every command uses.
     if config.default_identity_id.as_deref() == Some(identity_id.as_str()) {
         config.default_identity = None;
         config.default_identity_id = None;
         config.save()?;
     }
+    let removed = removed?;
     ctx.emit(
         json!({ "status": "logged_out", "identityId": identity_id, "removed": removed, "disabledKeyId": disabled }),
         || {
@@ -1314,6 +1334,27 @@ mod tests {
         .unwrap_err();
         assert!(format!("{err:#}").contains("no passphrase"));
         assert_eq!(main.borrow().as_deref(), Some("dfk1:old"));
+
+        // Registered, but promoting fails: the error says where the key is kept.
+        let failing = KeySlots {
+            stage: |_: &Secret| anyhow::Ok(at("pending")),
+            promote: |_: &Secret| -> Result<store::Stored> {
+                Err(anyhow::anyhow!("keychain locked"))
+            },
+        };
+        let err = settle(
+            &failing,
+            Ok(8),
+            Some((Secret::new("k"), at("pending"))),
+            None,
+            "x",
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("key #8 is registered") && msg.contains("pending"),
+            "{msg}"
+        );
 
         // Success: promoted.
         let (id, _) = settle(&slots, Ok(7), Some((new, at("pending"))), None, "x").unwrap();
