@@ -285,15 +285,27 @@ fn b2_cors_rules(origin: &str) -> serde_json::Value {
     ])
 }
 
-fn pretty(v: &serde_json::Value) -> String {
-    serde_json::to_string_pretty(v).unwrap_or_default()
+/// A JSON array of rules, one key per line with its value inline (shorter to read and paste
+/// than a fully expanded document).
+fn rules_json(rules: &serde_json::Value, indent: &str) -> String {
+    let rule = |r: &serde_json::Value| {
+        let fields: Vec<String> = r
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(k, v)| format!("{indent}    {k:?}: {v}"))
+            .collect();
+        format!("{indent}  {{\n{}\n{indent}  }}", fields.join(",\n"))
+    };
+    let items: Vec<String> = rules.as_array().into_iter().flatten().map(rule).collect();
+    format!("[\n{}\n{indent}]", items.join(",\n"))
 }
 
 /// The exact CORS configuration to apply for `provider`, with how to apply it: a read rule
 /// for every origin and a write rule for the web app ([`s3_cors_rules`]).
 pub fn cors_fix(provider: Provider, bucket: &str) -> String {
     let rules = s3_cors_rules(PROBE_ORIGIN);
-    let document = pretty(&serde_json::json!({ "CORSRules": rules }));
+    let document = format!("{{\n  \"CORSRules\": {}\n}}", rules_json(&rules, "  "));
     let tail = "The first rule lets any browser read the (public) packs; the second lets the web \
                 app at "
         .to_string()
@@ -304,12 +316,12 @@ pub fn cors_fix(provider: Provider, bucket: &str) -> String {
             "Cloudflare dashboard → R2 → {bucket} → Settings → CORS Policy → Add CORS policy, paste:\n\
              {}\n{tail}\n\
              Also enable public access: Settings → Public access → R2.dev subdomain (or connect a custom domain).",
-            pretty(&rules)
+            rules_json(&rules, "")
         ),
         Provider::B2 => format!(
             "Save as cors.json and run `b2 bucket update --cors-rules \"$(cat cors.json)\" {bucket} allPublic` \
              (with a key that has writeBuckets):\n{}\n{tail}",
-            pretty(&b2_cors_rules(PROBE_ORIGIN))
+            rules_json(&b2_cors_rules(PROBE_ORIGIN), "")
         ),
         Provider::Aws => format!(
             "Save as cors.json and run `aws s3api put-bucket-cors --bucket {bucket} --cors-configuration file://cors.json`:\n\
