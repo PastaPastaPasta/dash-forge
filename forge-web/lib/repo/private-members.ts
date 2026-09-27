@@ -155,10 +155,7 @@ export function planRotation(
   if (epoch > 0xffff_ffff) throw new PrivateMembersError('no key epoch number is left')
   const resume = pendingSelfWrap(session, self, epoch)
   if (resume !== null && resume.row.recipientKeyId !== heldKeyId) {
-    throw new PrivateMembersError(
-      `your pending key wrap of epoch ${epoch} went to your key ${resume.row.recipientKeyId}, which this browser does not hold; add it here, or ask another maintainer to rotate`,
-      'E310',
-    )
+    throw notHeldKey(epoch, resume.row.recipientKeyId)
   }
   const mine = ownWraps(session, selfId, epoch)
   const wrappedBySelf = new Set(mine.map((w) => base58Encode(w.row.memberId)))
@@ -176,6 +173,14 @@ export function planRotation(
   }
   const burn = mustBurn(exclude.length > 0, resume !== null, mine, recipients, remaining)
   return { from: n, epoch, resume, burn, recipients, unreachable, excluded: [...excluded] }
+}
+
+/** A pending self-wrap of `epoch` to a key of ours this browser does not hold: it cannot be resumed here. */
+function notHeldKey(epoch: number, keyId: number): PrivateMembersError {
+  return new PrivateMembersError(
+    `your pending key wrap of epoch ${epoch} went to your key ${keyId}, which this browser does not hold; add it here, or ask another maintainer to rotate`,
+    'E310',
+  )
 }
 
 /** This signer's wraps at `epoch` in `session`. */
@@ -562,8 +567,15 @@ export async function rotateRepoKey(
   // removed member, that member holds it: the repair check (with this removal's drop) finds and
   // rotates that. A second loss in a row is reported rather than chased.
   onStep?.({ kind: 'lost', epoch })
-  if (!afterLoss) await runRepair(c, `${intent}:after-lost`, onStep, drop, true)
-  throw new PrivateMembersError(`another maintainer rotated to epoch ${epoch} first; their key is the repo's key, and the repair check ran after it.`, 'E310', 'lost')
+  let repair = 'the repair check ran after it'
+  if (!afterLoss) {
+    try {
+      await runRepair(c, `${intent}:after-lost`, onStep, drop, true)
+    } catch (e) {
+      repair = `the repair check after it failed (${e instanceof Error ? e.message : String(e)}); open Repair on the repo page`
+    }
+  }
+  throw new PrivateMembersError(`another maintainer rotated to epoch ${epoch} first; their key is the repo's key, and ${repair}.`, 'E310', 'lost')
 }
 
 /**
@@ -630,7 +642,12 @@ async function rotateWith(
   try {
     for (;;) {
       const epoch = from.epoch + 1
-      if (burned !== null) await assertMembersSettled(c, session, drop)
+      if (burned !== null) {
+        const closed = burned
+        await assertMembersSettled(c, session, drop).catch(() => {
+          throw new PrivateMembersError(`key epoch ${closed} was closed, but the member list is still changing on Platform; run Repair in a moment to finish.`, 'E310')
+        })
+      }
       // The key of `epoch`: this signer's pending self-wrap's (an earlier run's; the unique index
       // keeps it), else a fresh one; a self-wrap that stands unseen by this read is adopted.
       const pending = pendingSelfWrap(session, self.identity, epoch)
@@ -644,6 +661,10 @@ async function rotateWith(
         if (selfOutcome.kind === 'different') {
           const standing = await readOwnWrap(c, session, epoch, self.identity)
           if (standing === null) throw unusableWrap({ kind: 'unreadable' }, self.identity, epoch)
+          if (standing.recipientKeyId !== c.ops.keyId) {
+            standing.raw.fill(0)
+            throw notHeldKey(epoch, standing.recipientKeyId)
+          }
           next.raw.fill(0)
           next = standing
           adopted = true
@@ -869,7 +890,12 @@ export async function removePrivateMember(
     // is not the same anchor, is known now: refuse before paying for anything.
     if (role === 'maintainer') {
       const changed = await anchorsAfterReanchor(s, memberId, c.auth.identityId)
-      if (changed.length > 0) throw anchorsWouldChange(changed)
+      if (changed.length > 0) {
+        throw new PrivateMembersError(
+          `another maintainer's config for key epoch ${changed.join(', ')} comes first and does not match its anchor, so removing this maintainer would change that epoch's key; nothing was removed. It can't be removed from here until the other maintainer is removed first or the key is rotated past it.`,
+          'E310',
+        )
+      }
     }
   })
   let before: number | undefined

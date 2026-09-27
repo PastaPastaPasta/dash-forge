@@ -112,8 +112,12 @@ let members: Membership[] = []
 let revokeFails = false
 /** Identities with no encryption key (they cannot be wrapped). */
 const keyless = new Set<string>()
+/** Identities that still list an older encryption key 3 beside key 4. */
+const oldKey = new Set<string>()
 /** What a lagging node answers for the member list (null: the truth). */
 let staleMembers: Membership[] | null = null
+/** How many more member-list reads fail (a node that does not answer). */
+let membersFail = 0
 /** One-off answers for the next member-list reads, in order (a node per read). */
 const readQueue: Membership[][] = []
 
@@ -121,7 +125,13 @@ vi.mock('./members', async (orig) => {
   const real = await orig<typeof import('./members')>()
   return {
     ...real,
-    readMemberships: async () => readQueue.shift() ?? staleMembers ?? members,
+    readMemberships: async () => {
+      if (membersFail > 0) {
+        membersFail -= 1
+        throw new Error('network: member list read failed')
+      }
+      return readQueue.shift() ?? staleMembers ?? members
+    },
     invalidateMembers: () => undefined,
   }
 })
@@ -158,7 +168,7 @@ const encKey = (keyId = 4): EncKeyLike => ({ keyId, purposeNumber: 1, keyTypeNum
 
 const sdk = {
   documents: { query: async (q: DocumentQuery) => query(q), count: async () => new Map() },
-  identities: { fetch: async (id: string) => ({ publicKeys: keyless.has(id) ? [] : [encKey()], balance: 0n }) },
+  identities: { fetch: async (id: string) => ({ publicKeys: keyless.has(id) ? [] : oldKey.has(id) ? [encKey(3), encKey()] : [encKey()], balance: 0n }) },
 } as unknown as EvoSDK
 
 /** Fake wrap ops: a wrap "encrypts" the raw key as itself; anyone in the test can open it. */
@@ -226,7 +236,9 @@ beforeEach(async () => {
   revokeFails = false
   staleMembers = null
   readQueue.length = 0
+  membersFail = 0
   keyless.clear()
+  oldKey.clear()
   members = [
     { identity: b58(ALICE), role: 'maintainer', createdAt: 1 },
     { identity: b58(BOB), role: 'writer', createdAt: 2 },
@@ -606,7 +618,7 @@ describe('correctness review of the burn fixes', () => {
     await anchor(CAROL, k1, { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0), burned: true })
     const configs = (chain['config'] ?? []).length
     const wraps = (chain['repoKey'] ?? []).length
-    await expect(removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-bob')).rejects.toThrow(/would change/)
+    await expect(removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-bob')).rejects.toThrow(/comes first/)
     expect((chain['config'] ?? []).length).toBe(configs)
     expect((chain['repoKey'] ?? []).length).toBe(wraps)
   })
@@ -636,5 +648,28 @@ describe('correctness review of the burn fixes', () => {
     const a2 = s2.resolution.anchors.get(2)
     fake.resolution.anchors.set(3, { ...(a2 as NonNullable<typeof a2>), owner: BOB, height: (a2?.height ?? 0) - 1 })
     expect(anchorVerdict(fake, 2, a2?.commit as Uint8Array, b58(ALICE))).toEqual({ preempted: 3, by: b58(BOB) })
+  })
+
+  it('L-a an adopted self-wrap to a key this browser lacks is refused before anything else is paid', async () => {
+    // An earlier run's self-wrap to ALICE's old key 3 stands, hidden from every read.
+    oldKey.add(b58(ALICE))
+    hidden.add(wrap(ALICE, ALICE, 1, new Uint8Array(32).fill(0x5d), 3))
+    const configs = (chain['config'] ?? []).length
+    await expect(rotateRepoKey(ctx, [], 'repair-a')).rejects.toThrow(/does not hold/)
+    expect((chain['config'] ?? []).length).toBe(configs)
+    expect(e(1).filter((d) => d['memberId'] !== b58(ALICE))).toEqual([])
+  })
+
+  it('L-b a lost rotation is reported even when the repair after it fails', async () => {
+    maintainer(BOB)
+    const theirs = await EpochKeys.import(REPO, 1, new Uint8Array(32).fill(0x43))
+    await anchor(BOB, theirs, { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
+    hidden.add(String((chain['config'] ?? []).at(-1)?.['$id']))
+    const run = rotateRepoKey(ctx, [], 'race-b', (st) => {
+      if (st.kind === 'waiting') hidden.clear()
+      // The repair after the loss fails on its first member-list read.
+      if (st.kind === 'lost') membersFail = 1
+    })
+    await expect(run).rejects.toMatchObject({ outcome: 'lost' })
   })
 })
