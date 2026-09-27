@@ -76,7 +76,7 @@ export function SettingsNav(): JSX.Element {
   return (
     <nav aria-label="Settings sections" className="flex flex-wrap gap-1 border-b border-anvil-200 pb-2 text-dense dark:border-anvil-800">
       {SECTIONS.map(([id, label]) => (
-        <a key={id} href={`#${id}`} className="rounded px-2 py-1 text-anvil-600 hover:bg-anvil-100 hover:text-anvil-900 dark:text-anvil-300 dark:hover:bg-anvil-800">
+        <a key={id} href={`#${id}`} className="inline-flex items-center rounded px-2 py-1 text-anvil-600 hover:bg-anvil-100 coarse:min-h-11 coarse:px-3 hover:text-anvil-900 dark:text-anvil-300 dark:hover:bg-anvil-800">
           {label}
         </a>
       ))}
@@ -212,7 +212,7 @@ export function GeneralSettings({
             <div className="flex flex-wrap items-center gap-2">
               <select
                 id="default-branch"
-                className="rounded-md border border-anvil-300 bg-white px-2 py-1.5 font-mono text-dense dark:border-anvil-700 dark:bg-anvil-950"
+                className="rounded-md border border-anvil-300 bg-white px-2 py-1.5 font-mono text-dense coarse:min-h-11 coarse:text-base dark:border-anvil-700 dark:bg-anvil-950"
                 value={shownBranch}
                 disabled={!maintainer || cfg.sealed}
                 onChange={(e) => setBranch(e.target.value)}
@@ -517,7 +517,7 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
               onChange={(e) => set({ requiredApprovals: Math.max(0, Math.min(10, Number(e.target.value) || 0)) })}
             />
           </label>
-          <label className="flex items-center gap-2 text-dense">
+          <label className="flex items-center gap-2 text-dense coarse:min-h-11">
             <input type="checkbox" className="h-4 w-4 accent-forge-700" checked={(shown.approverRole ?? 0) === 1} onChange={(e) => set({ approverRole: e.target.checked ? 1 : 0 })} />
             Only maintainers&apos; approvals count
           </label>
@@ -525,7 +525,7 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
             <span className="text-anvil-700 dark:text-anvil-200">Allowed merge methods</span>
             <div className="mt-1 flex flex-wrap gap-3">
               {MERGE_METHODS.map((m) => (
-                <label key={m.key} className="flex items-center gap-1.5">
+                <label key={m.key} className="flex items-center gap-1.5 coarse:min-h-11 coarse:min-w-11">
                   <input
                     type="checkbox"
                     className="h-4 w-4 accent-forge-700"
@@ -542,7 +542,7 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
               ))}
             </div>
           </div>
-          <label className="flex items-center gap-2 text-dense">
+          <label className="flex items-center gap-2 text-dense coarse:min-h-11">
             <input type="checkbox" className="h-4 w-4 accent-forge-700" checked={shown.requireChecks === true} onChange={(e) => set({ requireChecks: e.target.checked })} />
             Require passing checks
           </label>

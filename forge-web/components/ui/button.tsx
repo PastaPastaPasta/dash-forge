@@ -30,10 +30,11 @@ const button = cva(
           'bg-anvil-100 text-anvil-800 hover:bg-anvil-200 dark:bg-anvil-800 dark:text-anvil-100 dark:hover:bg-anvil-750',
       },
       size: {
-        sm: 'h-7 px-2.5 text-dense',
-        md: 'h-9 px-3.5 text-dense',
-        lg: 'h-10 px-5 text-prose',
-        icon: 'h-8 w-8',
+        // `coarse:` (touch screens): at least 44×44 CSS px to tap; desktop keeps the dense sizes.
+        sm: 'h-7 px-2.5 text-dense coarse:h-auto coarse:min-h-11 coarse:min-w-11',
+        md: 'h-9 px-3.5 text-dense coarse:h-auto coarse:min-h-11 coarse:min-w-11',
+        lg: 'h-10 px-5 text-prose coarse:h-auto coarse:min-h-11 coarse:min-w-11',
+        icon: 'h-8 w-8 shrink-0 coarse:h-11 coarse:w-11',
       },
     },
     defaultVariants: { variant: 'outline', size: 'md' },

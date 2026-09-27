@@ -48,6 +48,46 @@ export function fundsState(balance: bigint, key: KeyLimits | null = null, now = 
   return { level: 'comfortable', reason: null, spendable }
 }
 
+/** The one fix a low or empty state needs (`ux-dx-spec.md` §4: top up / renew key). */
+export type FundsFix = 'top-up' | 'renew-key'
+
+/**
+ * What the low-balance banner says for a funds state, or null when there is nothing to say
+ * (comfortable). `key` names the state, so dismissing "low balance" does not also hide a later
+ * "key expired" (one dismissal per state per session).
+ */
+export function fundsNotice(state: FundsState): { readonly key: string; readonly message: string; readonly fix: FundsFix } | null {
+  if (state.level === 'comfortable') return null
+  const reason = state.reason ?? 'balance'
+  const empty = state.level === 'empty'
+  const key = `${state.level}:${reason}`
+  if (reason === 'balance') {
+    return {
+      key,
+      fix: 'top-up',
+      message: empty
+        ? 'Your balance is 0: writes are off until you top up. Reading still works.'
+        : 'Your balance is under 0.01 DASH, enough for only a few more writes. Top up to keep writing.',
+    }
+  }
+  if (reason === 'key-budget') {
+    return {
+      key,
+      fix: 'renew-key',
+      message: empty
+        ? "This browser's key has spent its budget: writes are off until you renew it. Reading still works."
+        : "This browser's key has less than 20 % of its budget left. Renew it (or top up its budget in Settings).",
+    }
+  }
+  return {
+    key,
+    fix: 'renew-key',
+    message: empty
+      ? "This browser's key has expired: writes are off until you renew it. Reading still works."
+      : "This browser's key expires within 7 days. Renew it to keep writing.",
+  }
+}
+
 /** Whether a write estimated at `credits` fits, and if not, which budget blocks it. */
 export function affordability(
   estimateCredits: number,

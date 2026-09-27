@@ -52,7 +52,7 @@ export function CloneBox({ home, addr, selected }: { home: RepoHome; addr: RepoA
           <CopyRow text={`git clone ${remote}`} />
           <p className="-mt-0.5 mb-1.5 text-[11px] text-anvil-500 dark:text-anvil-400">
             needs git-remote-dash ·{' '}
-            <button type="button" onClick={() => setInstalling(true)} className="underline hover:text-forge-800 dark:hover:text-forge-400">
+            <button type="button" onClick={() => setInstalling(true)} className="hit-area underline hover:text-forge-800 dark:hover:text-forge-400">
               install
             </button>
           </p>

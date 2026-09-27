@@ -75,7 +75,7 @@ export default function SettingsPage(): JSX.Element {
           <div className="mt-1 font-mono text-dense text-anvil-500 dark:text-anvil-400">
             {credits.toLocaleString()} credits · ≈ {dashToUsd(creditsToDash(credits))}
           </div>
-          <button type="button" onClick={() => openTopUp()} className="mt-3 inline-block text-dense text-forge-700 underline dark:text-forge-400">
+          <button type="button" onClick={() => openTopUp()} className="hit-area mt-3 inline-block text-dense text-forge-700 underline dark:text-forge-400">
             Top up →
           </button>
         </section>
@@ -90,7 +90,7 @@ export default function SettingsPage(): JSX.Element {
           <p className="text-dense text-anvil-600 dark:text-anvil-300">
             Your buckets and IPFS nodes for browser pushes, tested from this page, with their keys encrypted in this browser.
           </p>
-          <Link href="/settings/storage" className="mt-2 inline-block text-dense text-forge-700 underline dark:text-forge-400">
+          <Link href="/settings/storage" className="hit-area mt-2 inline-block text-dense text-forge-700 underline dark:text-forge-400">
             Storage settings →
           </Link>
         </section>
@@ -110,7 +110,7 @@ export default function SettingsPage(): JSX.Element {
         {gateways}
 
         <p className="text-center text-[12px] text-anvil-500 dark:text-anvil-400">
-          <Link href="/" className="hover:underline">Back to discovery</Link>
+          <Link href="/" className="hit-area hover:underline">Back to discovery</Link>
         </p>
       </div>
     </AppShell>

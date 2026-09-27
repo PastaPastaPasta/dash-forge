@@ -171,17 +171,19 @@ export function heldToDisable(keys: readonly WasmKey[], held: readonly HeldKey[]
 /**
  * Disable the keys this browser holds for the identity (wallet grants included), in one
  * master-key update. Only keys the stored private keys control are disabled
- * ({@link heldToDisable}); if none is still live, nothing is sent.
+ * ({@link heldToDisable}); if none is still live, nothing is sent. Resolves with whether an
+ * update was sent (the spend ledger records only those).
  */
 export async function disableHeldKeys(
   sdk: EvoSDK,
   params: { readonly network: Network; readonly identityId: string; readonly masterWif: string; readonly keys: readonly HeldKey[] },
-): Promise<void> {
+): Promise<boolean> {
   const identity = await authSdk(sdk).identities.fetch(params.identityId)
   if (!identity) throw new Error(`identity ${params.identityId} not found`)
   const ids = heldToDisable(identity.publicKeys, params.keys, params.network)
-  if (ids.length === 0) return
+  if (ids.length === 0) return false
   await withMasterSigner(params.masterWif, (signer) => authSdk(sdk).identities.update({ identity, disablePublicKeys: ids, signer }))
+  return true
 }
 
 /** Run `fn` with an IdentitySigner holding only the master key; both are freed after. */
@@ -422,17 +424,19 @@ export async function topUpLimitedKey(
 /**
  * Disable `keyId` on chain (an IdentityUpdate signed by the master key, used once and not
  * retained). Only a group-bound HIGH key — a Forge browser key — may be disabled this way.
+ * Resolves with whether an update was sent (false: the key was already disabled).
  */
 export async function revokeLimitedKey(
   sdk: EvoSDK,
   params: { readonly network: Network; readonly identityId: string; readonly masterWif: string; readonly keyId: number },
-): Promise<void> {
+): Promise<boolean> {
   const identity = await authSdk(sdk).identities.fetch(params.identityId)
   const k = identity?.publicKeys.find((x) => x.keyId === params.keyId)
   if (!identity || !k) throw new Error(`key ${params.keyId} is not on identity ${params.identityId}`)
-  if (k.disabledAt !== undefined) return
+  if (k.disabledAt !== undefined) return false
   if (!isForgeBrowserKey(k)) {
     throw new Error(`key ${params.keyId} is not a Forge browser key; refusing to disable it here`)
   }
   await withMasterSigner(params.masterWif, (signer) => authSdk(sdk).identities.update({ identity, disablePublicKeys: [params.keyId], signer }))
+  return true
 }

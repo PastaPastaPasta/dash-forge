@@ -206,7 +206,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
       </div>
 
       <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
-        <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
+        <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
           <Author identityId={pull.author} />
           <span className="text-anvil-500 dark:text-anvil-400">proposed {timeAgo(pull.createdAt)}</span>
         </div>

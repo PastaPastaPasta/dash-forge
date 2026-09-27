@@ -168,7 +168,7 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
       />
       {walletFirst ? null : walletTile}
       <div className="pt-2">
-        <button type="button" aria-expanded={advanced} onClick={() => setAdvanced((a) => !a)} className="text-[12px] text-anvil-500 dark:text-anvil-400 underline hover:text-anvil-800 dark:hover:text-anvil-100">
+        <button type="button" aria-expanded={advanced} onClick={() => setAdvanced((a) => !a)} className="hit-area text-[12px] text-anvil-500 dark:text-anvil-400 underline hover:text-anvil-800 dark:hover:text-anvil-100">
           Advanced
         </button>
         {advanced ? (

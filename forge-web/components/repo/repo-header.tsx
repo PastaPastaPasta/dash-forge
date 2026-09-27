@@ -8,6 +8,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Archive, Code2, GitFork, GitPullRequest, Lock, MessageSquare, Settings, Tag, Users } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { BackendBadge } from '@/components/ui/backend-badge'
@@ -79,7 +80,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
         <div className="flex items-center gap-2 text-prose">
           <Author identityId={home.repo.ownerId} link />
           <span className="text-anvil-300 dark:text-anvil-600" aria-hidden>/</span>
-          <Link href={repoHref('/repo', addr)} className="font-mono font-semibold text-anvil-900 hover:text-forge-800 dark:text-anvil-50 dark:hover:text-forge-400">
+          <Link href={repoHref('/repo', addr)} className="hit-area font-mono font-semibold text-anvil-900 hover:text-forge-800 dark:text-anvil-50 dark:hover:text-forge-400">
             {home.repo.name || addr.name}
           </Link>
           {home.repo.visibility === 'private' ? <PrivateChip home={home} /> : null}
@@ -104,8 +105,8 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
         </div>
       ) : null}
 
-      {/* Nav */}
-      <nav aria-label="Repository" className="mt-4 flex gap-1 overflow-x-auto border-b border-anvil-200 dark:border-anvil-800">
+      {/* Nav: on a phone the tabs scroll sideways, with a fade on the side that has more. */}
+      <TabStrip activeKey={pathname}>
         {tabs.map((tab) => {
           const active = tab.match.includes(pathname)
           const Icon = tab.icon
@@ -115,7 +116,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
               href={repoHref(tab.path, addr, tab.refAware && refParam ? { ref: refParam } : {})}
               aria-current={active ? 'page' : undefined}
               className={cn(
-                'inline-flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-dense transition-colors',
+                'inline-flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-dense transition-colors coarse:min-h-11',
                 active
                   ? 'border-forge-500 text-anvil-900 dark:text-anvil-50'
                   : 'border-transparent text-anvil-600 hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100',
@@ -131,7 +132,60 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
             </Link>
           )
         })}
+      </TabStrip>
+    </div>
+  )
+}
+
+/**
+ * The tab row. When it is wider than the screen it scrolls sideways: the active tab is
+ * scrolled into view, and an edge fade marks the side with more tabs (`data-more`).
+ */
+function TabStrip({ activeKey, children }: { activeKey: string; children: React.ReactNode }): JSX.Element {
+  const ref = useRef<HTMLElement>(null)
+  const [more, setMore] = useState<{ left: boolean; right: boolean }>({ left: false, right: false })
+  const measure = useCallback(() => {
+    const el = ref.current
+    if (!el) return
+    const left = el.scrollLeft > 1
+    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1
+    setMore((m) => (m.left === left && m.right === right ? m : { left, right }))
+  }, [])
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    // Keep the active tab inside the strip by scrolling the strip only (scrollIntoView would
+    // also scroll the page, e.g. jump to the tabs when Back restores a scrolled position).
+    const reveal = (): void => {
+      const active = el.querySelector<HTMLElement>('[aria-current="page"]')
+      if (active) {
+        const t = active.getBoundingClientRect()
+        const n = el.getBoundingClientRect()
+        if (t.left < n.left) el.scrollLeft += t.left - n.left
+        else if (t.right > n.right) el.scrollLeft += t.right - n.right
+      }
+      measure()
+    }
+    reveal()
+    // Again whenever the strip or a tab resizes (a count that loads later widens its tab).
+    const ro = new ResizeObserver(reveal)
+    ro.observe(el)
+    for (const tab of el.children) ro.observe(tab)
+    return () => ro.disconnect()
+  }, [activeKey, measure])
+  const fade = 'pointer-events-none absolute inset-y-0 w-8 from-anvil-50 to-transparent dark:from-anvil-950'
+  return (
+    <div className="relative mt-4" data-more={[more.left && 'left', more.right && 'right'].filter(Boolean).join(' ') || undefined}>
+      <nav
+        ref={ref}
+        aria-label="Repository"
+        onScroll={measure}
+        className="flex gap-1 overflow-x-auto overscroll-x-contain border-b border-anvil-200 [scrollbar-width:none] dark:border-anvil-800 [&::-webkit-scrollbar]:hidden"
+      >
+        {children}
       </nav>
+      {more.left ? <span aria-hidden className={cn(fade, 'left-0 bg-gradient-to-r')} /> : null}
+      {more.right ? <span aria-hidden className={cn(fade, 'right-0 bg-gradient-to-l')} /> : null}
     </div>
   )
 }

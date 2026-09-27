@@ -30,7 +30,8 @@ import { DEFAULT_NETWORK, NETWORKS } from '../constants'
 import { errorMessage } from '../utils'
 import { DEPLOYMENTS, groupTrust, type ForgeIds, type GroupTrust } from '../deployments'
 import { assertGroupHolds, type GroupCheck } from './group-trust'
-import { SECURITY_LEVEL, WriteAuthError, findSigningKey, readIdentityBalance, type WriteAuth } from '../sdk/write'
+import { SECURITY_LEVEL, WriteAuthError, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
+import { KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS } from '../sdk/cost'
 import { authSdk, type WasmIdentity } from '../sdk/facade'
 import type { KeyLimits } from '../view/funds'
 import { normalizeToWif } from './wif'
@@ -119,6 +120,33 @@ export interface AuthState {
 
 type Listener = (state: AuthState) => void
 
+/**
+ * A Forge action on the identity itself that the balance pays for (`ux-dx-spec.md` §4 rule 3:
+ * the spend ledger records it, so reconciliation does not count it as "unexplained"). Platform
+ * meters these (storage + processing, no flat fee); the cost is measured from the balance.
+ */
+export type KeySpendKind = 'key:register' | 'key:renew' | 'key:topup' | 'key:revoke' | 'key:encryption' | 'identity:create'
+
+/** The pre-sign estimate per kind (credits); 0 where none was ever measured. */
+export const KEY_SPEND_ESTIMATES: Readonly<Record<KeySpendKind, number>> = {
+  'key:register': KEY_REGISTER_CREDITS,
+  'key:renew': KEY_REGISTER_CREDITS,
+  'key:topup': KEY_LIMITS_UPDATE_CREDITS,
+  'key:revoke': 0,
+  'key:encryption': 0,
+  'identity:create': 0,
+}
+
+/**
+ * A charge to report: its kind, the key it concerns, and the balance right before it (for an
+ * identity creation, the asset lock's credit value: the fee comes out of the lock).
+ */
+export interface KeyCharge {
+  readonly kind: KeySpendKind
+  readonly keyId: number | null
+  readonly balanceBefore: bigint | null
+}
+
 /** Where a one-time master key comes from: an identity file, or the recovery phrase. */
 export type MasterInput = { fileText: string } | { mnemonic: string }
 
@@ -161,6 +189,73 @@ export class AuthController {
 
   getState(): AuthState {
     return this.state
+  }
+
+  private spendListener: ((event: SpendEvent) => void) | null = null
+
+  /** Told about every identity update this controller pays for (the spend ledger listens). */
+  setSpendListener(listener: ((event: SpendEvent) => void) | null): void {
+    this.spendListener = listener
+  }
+
+  /**
+   * Report a charge made outside {@link charged} (identity creation, whose fee comes out of the
+   * asset lock): the balance change from `balanceBefore`, measured as `write.ts` measures a
+   * document write (read until it moves; null when it did not in time).
+   */
+  reportCharge(identityId: string, charge: KeyCharge): void {
+    const before = charge.balanceBefore
+    if (!this.spendListener || before === null) return
+    void this.getSdk()
+      .then((sdk) => measureActual(sdk, identityId, before))
+      .then((actualCredits) => this.emitSpend(identityId, charge, actualCredits))
+      .catch(() => undefined)
+  }
+
+  /**
+   * Run a master-key identity update as this identity's only writer and record what it cost.
+   * The balance is read before the update and measured after it while the writer lock is
+   * still held, so a document write queued behind it cannot fold into this row (or this fee
+   * into its). An update that returns `false` sent nothing (a revoke of an already disabled
+   * key) and is not recorded; a failed one is recorded only if the balance moved (it landed,
+   * or paid a fee).
+   */
+  private async charged<T>(identityId: string, kind: KeySpendKind, keyIdOf: (result: T | null) => number | null, update: () => Promise<T>): Promise<T> {
+    const sdk = await this.getSdk()
+    return serialized(identityId, async () => {
+      const before = await readIdentityBalance(sdk, identityId).catch(() => null)
+      const listening = before !== null && this.spendListener !== null
+      let result: T
+      try {
+        result = await update()
+      } catch (e) {
+        // One read, no polling: most failures happen before anything is sent, and the error
+        // should not wait on a balance that will not move.
+        if (listening) {
+          const now = await readIdentityBalance(sdk, identityId).catch(() => null)
+          if (now !== null && now !== before) this.emitSpend(identityId, { kind, keyId: keyIdOf(null), balanceBefore: before }, Number(before! - now))
+        }
+        throw e
+      }
+      if (listening && result !== false) {
+        const actualCredits = await measureActual(sdk, identityId, before).catch(() => null)
+        this.emitSpend(identityId, { kind, keyId: keyIdOf(result), balanceBefore: before }, actualCredits)
+      }
+      return result
+    })
+  }
+
+  private emitSpend(identityId: string, { kind, keyId, balanceBefore }: KeyCharge, actualCredits: number | null): void {
+    this.spendListener?.({
+      identityId,
+      network: this.network,
+      kind,
+      repo: null,
+      documentId: keyId === null ? 'identity' : `key-${keyId}`,
+      estimateCredits: KEY_SPEND_ESTIMATES[kind],
+      actualCredits,
+      balanceBefore,
+    })
   }
 
   /** The UI showed the notice: clear it, so the next one (even the same text) shows too. */
@@ -417,17 +512,21 @@ export class AuthController {
       if (previous) await this.assertUnlockedIfWalletKeys(sdk, identityId, previous.keyId)
       const held = this.heldKeys(identityId)
       this.step('Registering the key on Platform')
-      const key = await registerLimitedKey(sdk, {
-        network: this.network,
-        identityId,
-        masterWif,
-        group: this.group(),
-        ...(previous ? { replaceKeyId: previous.keyId } : {}),
-        ...(held.length ? { disableHeld: held } : {}),
-        trust: this.groupTrust(),
-        ...(request ? { request } : {}),
-      })
-      masterWif = null
+      // The master key lives in this closure until the update is signed (a JS string cannot be
+      // wiped; nothing else keeps a reference to it).
+      const signWith = masterWif
+      const key = await this.charged(identityId, previous ? 'key:renew' : 'key:register', (k) => k?.keyId ?? null, () =>
+        registerLimitedKey(sdk, {
+          network: this.network,
+          identityId,
+          masterWif: signWith,
+          group: this.group(),
+          ...(previous ? { replaceKeyId: previous.keyId } : {}),
+          ...(held.length ? { disableHeld: held } : {}),
+          trust: this.groupTrust(),
+          ...(request ? { request } : {}),
+        }),
+      )
       this.step(protection.passkey ? 'Saving the key with your passkey' : 'Saving the key in this browser')
       const session = await this.adopt(identityId, key, protection)
       if (material !== null) {
@@ -466,6 +565,15 @@ export class AuthController {
     } catch (e) {
       this.setState({ notice: `Signed in, but private repos could not be enabled: ${errorMessage(e)}` })
     }
+  }
+
+  /**
+   * Run a paid identity update made elsewhere (Settings → Keys registering an encryption key)
+   * through the ledger: as this identity's only writer, with its cost measured and recorded.
+   * `update` resolves with whether it sent anything.
+   */
+  chargedUpdate(identityId: string, kind: KeySpendKind, update: () => Promise<boolean>): Promise<boolean> {
+    return this.charged(identityId, kind, () => null, update)
   }
 
   /** Refuse an identity file made for another network (a testnet key on a devnet build). */
@@ -626,15 +734,14 @@ export class AuthController {
       if (!stored) throw new Error('no key for this identity is stored here')
       const sdk = await this.getSdk()
       await this.assertUnlockedIfWalletKeys(sdk, identityId, stored.keyId)
-      let masterWif: string | null = await this.masterWifFor(identityId, input)
+      const masterWif = await this.masterWifFor(identityId, input)
       const held = this.heldKeys(identityId)
-      if (held.length > 1 || (held.length === 1 && this.state.session?.unlimited)) {
-        // Wallet keys (and any Forge key beside them): disable every key this browser holds.
-        await disableHeldKeys(sdk, { network: this.network, identityId, masterWif, keys: held })
-      } else {
-        await revokeLimitedKey(sdk, { network: this.network, identityId, masterWif, keyId: stored.keyId })
-      }
-      masterWif = null
+      await this.charged(identityId, 'key:revoke', () => stored.keyId, () =>
+        held.length > 1 || (held.length === 1 && this.state.session?.unlimited)
+          ? // Wallet keys (and any Forge key beside them): disable every key this browser holds.
+            disableHeldKeys(sdk, { network: this.network, identityId, masterWif, keys: held })
+          : revokeLimitedKey(sdk, { network: this.network, identityId, masterWif, keyId: stored.keyId }),
+      )
       await this.forget(identityId)
     })
   }
@@ -652,9 +759,11 @@ export class AuthController {
         throw new Error("only a stored Forge browser key can be topped up; sign in with your identity first")
       }
       const { identityId, keyId } = session
-      let masterWif: string | null = await this.masterWifFor(identityId, input)
-      const limits = await topUpLimitedKey(await this.getSdk(), { network: this.network, identityId, masterWif, keyId, request })
-      masterWif = null
+      const masterWif = await this.masterWifFor(identityId, input)
+      const sdk = await this.getSdk()
+      const limits = await this.charged(identityId, 'key:topup', () => keyId, () =>
+        topUpLimitedKey(sdk, { network: this.network, identityId, masterWif, keyId, request }),
+      )
       const current = this.state.session
       if (current?.identityId === identityId && current.keyId === keyId) this.setState({ session: { ...current, keyLimits: limits } })
       return limits

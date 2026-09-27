@@ -37,7 +37,7 @@ type Mode = 'file' | 'paste' | 'register'
 const REGISTER_COST = '~0.0005 DASH'
 
 export function EncryptionKeyPanel(): JSX.Element | null {
-  const { identity, storage } = useAuth()
+  const { identity, storage, controller } = useAuth()
   const { sdk, ready, network } = useSdk()
   const core = NETWORKS[network].v2?.core ?? null
   const [keyId, setKeyId] = useState<number | null | undefined>(undefined)
@@ -112,7 +112,16 @@ export function EncryptionKeyPanel(): JSX.Element | null {
   const register = (): void => {
     const mnemonic = phrase.current?.value ?? ''
     if (!window.confirm(`Register a new encryption key on your identity (${REGISTER_COST})? Your recovery phrase signs one identity update and is not stored. If your identity already has an encryption key, it is added here instead and nothing is registered.`)) return
-    void run(async () => (await registerEncryptionKey(sdk!, network, identity, core, { mnemonic })).keyId)
+    void run(async () => {
+      // A paid IdentityUpdate: recorded in the spend ledger like the other key updates.
+      let keyId = 0
+      await controller.chargedUpdate(identity, 'key:encryption', async () => {
+        const r = await registerEncryptionKey(sdk!, network, identity, core, { mnemonic })
+        keyId = r.keyId
+        return r.registered
+      })
+      return keyId
+    })
   }
 
   return (

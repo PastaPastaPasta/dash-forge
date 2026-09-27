@@ -73,6 +73,9 @@ export interface SpendSummary {
   readonly missed: number
 }
 
+/** The `byRepo` key of rows with no repo: identity actions (key register, top-up, …) and the like. */
+export const NO_REPO = '(no repo)'
+
 /** Summarize a ledger. A row with no measured actual counts at its estimate. */
 export function summarize(rows: readonly SpendRow[], now = Date.now()): SpendSummary {
   const month = new Date(now)
@@ -86,7 +89,7 @@ export function summarize(rows: readonly SpendRow[], now = Date.now()): SpendSum
     allTime += credits
     if (r.at >= monthStart) thisMonth += credits
     if (estimateMissed(r)) missed += 1
-    const key = r.repo ?? '(no repo)'
+    const key = r.repo ?? NO_REPO
     const e = byRepo.get(key) ?? { credits: 0, writes: 0 }
     byRepo.set(key, { credits: e.credits + credits, writes: e.writes + 1 })
   }
@@ -98,6 +101,33 @@ export function summarize(rows: readonly SpendRow[], now = Date.now()): SpendSum
       .map(([repo, v]) => ({ repo, ...v }))
       .sort((a, b) => b.credits - a.credits),
   }
+}
+
+/** Whether a row is Forge acting on the identity itself (keys, creation), not a repo write. */
+export function isIdentityAction(kind: string): boolean {
+  return kind.startsWith('key:') || kind.startsWith('identity:')
+}
+
+const KIND_LABELS: Readonly<Record<string, string>> = {
+  'key:register': 'Register this browser’s key',
+  'key:renew': 'Renew this browser’s key',
+  'key:topup': 'Top up key budget',
+  'key:revoke': 'Revoke key on chain',
+  'key:encryption': 'Register encryption key',
+  'identity:create': 'Create identity',
+}
+
+/**
+ * What a ledger row's kind reads as in Settings → Spend (the raw kind is `create:issue`,
+ * `key:topup`, …).
+ */
+export function spendKindLabel(kind: string): string {
+  const known = KIND_LABELS[kind]
+  if (known) return known
+  const [verb, type] = kind.split(':')
+  if (!type) return kind
+  const what = type.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()
+  return verb === 'create' ? what : `${verb} ${what}`
 }
 
 /**

@@ -20,7 +20,7 @@ export default function StorageSettingsPage(): JSX.Element {
       <div className="mx-auto max-w-4xl space-y-5">
         <div>
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-            <Link href="/settings" className="hover:underline">Settings</Link> / Storage
+            <Link href="/settings" className="hit-area hover:underline">Settings</Link> / Storage
           </p>
           <h1 className="mt-1 text-xl">Storage</h1>
           <p className="mt-1 max-w-2xl text-dense text-anvil-600 dark:text-anvil-300">

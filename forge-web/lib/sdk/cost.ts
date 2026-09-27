@@ -77,6 +77,18 @@ export const DELETE_CREDITS: Readonly<Record<string, number>> = {
  */
 export const KEY_LIMITS_UPDATE_CREDITS = 2_300_000
 
+/**
+ * An `IdentityUpdate` that adds this browser's limited key (a renewal also disables the old one
+ * in the same update), signed by the master key and paid from the identity balance. Platform
+ * meters it — storage + processing, no flat fee; the key's budget is a cap, not escrow — so the
+ * cost varies. Measured on moutai (2026-09-27): 27.2M–27.4M credits for a fresh identity's
+ * first budgeted key and for each later one (mobile QA pass, three registrations); 47.1M once on
+ * an older identity with more keys (QA B-COST sign-in). The ledger records the measured actual,
+ * so a miss shows in Settings → Spend. (Disabling alone, a revoke, has not been measured, so it
+ * gets no estimate.)
+ */
+export const KEY_REGISTER_CREDITS = 30_000_000
+
 /** A pre-sign cost preview for the confirm UI. */
 export interface CostPreview {
   /** Estimated credits; negative when the action refunds storage. */

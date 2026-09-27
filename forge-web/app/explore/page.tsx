@@ -97,7 +97,7 @@ export default function ExplorePage(): JSX.Element {
             </h1>
             <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">Read straight from {NETWORKS[network].key}, proof-checked. No server ranks or filters this.</p>
           </div>
-          <p role="note" className="flex items-center gap-2 rounded-md border border-anvil-200 px-3 py-1.5 text-dense text-anvil-600 dark:border-anvil-800 dark:text-anvil-300" data-testid="trending-note">
+          <p role="note" className="flex items-center gap-2 rounded-md border border-anvil-200 px-3 py-1.5 text-dense text-anvil-600 dark:border-anvil-800 dark:text-anvil-300" data-testid="trending-note" data-tap-exempt="prose">
             <Info className="h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
             <span>
               {TRENDING} (
@@ -193,7 +193,7 @@ export default function ExplorePage(): JSX.Element {
               {d.rows.map((r) => (
                 <li key={`${r.repo.id}:${r.tagName}`} className="flex flex-wrap items-center gap-2 px-4 py-2 text-dense">
                   <Package className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
-                  <Link href={repoHref('/repo/tags', { owner: r.repo.ownerId, name: r.repo.name, repoId: r.repo.id })} className="font-mono hover:underline">
+                  <Link href={repoHref('/repo/tags', { owner: r.repo.ownerId, name: r.repo.name, repoId: r.repo.id })} className="hit-area font-mono hover:underline">
                     {r.repo.name} {r.tagName}
                   </Link>
                   {r.name && r.name !== r.tagName ? <span className="text-anvil-600 dark:text-anvil-300">{r.name}</span> : null}
@@ -211,7 +211,7 @@ export default function ExplorePage(): JSX.Element {
 
 function NewRepoLink(): JSX.Element {
   return (
-    <Link href="/new" className="text-dense text-forge-700 underline dark:text-forge-300">
+    <Link href="/new" className="hit-area text-dense text-forge-700 underline dark:text-forge-300">
       Create a repository
     </Link>
   )

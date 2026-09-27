@@ -157,7 +157,7 @@ function FilterTab({ active, onClick, children }: { active: boolean; onClick: ()
     <button
       onClick={onClick}
       className={cn(
-        'inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-dense font-medium transition-colors',
+        'inline-flex items-center gap-1.5 whitespace-nowrap rounded px-3 py-1.5 text-dense font-medium transition-colors coarse:min-h-11 coarse:min-w-11 max-sm:px-2',
         active ? 'bg-anvil-100 text-anvil-900 dark:bg-anvil-800 dark:text-anvil-50' : 'text-anvil-500 hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100',
       )}
     >
