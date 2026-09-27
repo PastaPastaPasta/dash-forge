@@ -26,6 +26,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 
 import type { Network } from '../constants'
+import type { GroupTrust } from '../deployments'
 import { idbDelete, idbGet, idbPut } from '../idb'
 import { authSdk } from '../sdk/facade'
 import {
@@ -41,7 +42,8 @@ import {
   type LockProof,
 } from './asset-lock'
 import { CANONICAL_KEYS, assetLockKeyPath, deriveAt, deriveMasterKey, identityKeyPath, normalizeMnemonic } from './hd'
-import { assertGroupHolds, defaultLimits, registerLimitedKey, verifyLimitedKey, type LimitedKey, type LimitedKeyRequest } from './limited-key'
+import { assertGroupHolds } from './group-trust'
+import { defaultLimits, registerLimitedKey, verifyLimitedKey, type LimitedKey, type LimitedKeyRequest } from './limited-key'
 
 /** Minimum deposit (spec §2.2: 0.02 DASH; the asset-lock floor is 0.003). */
 export const MIN_DEPOSIT_DUFFS = 2_000_000
@@ -103,8 +105,8 @@ export async function createIdentityFromMnemonic(
     readonly network: Network
     readonly mnemonic: string
     readonly group: string
-    /** forge-core and forge-collab: the group must hold them on chain before a key binds to it. */
-    readonly contracts: readonly string[]
+    /** The group's pinned trust root: checked on chain before a key binds to it (`./group-trust`). */
+    readonly trust: GroupTrust
     readonly persistKey: (identityId: string, key: { keyId: number; wif: string }) => Promise<void>
     readonly minDepositDuffs?: number
     readonly limits?: LimitedKeyRequest
@@ -115,7 +117,7 @@ export async function createIdentityFromMnemonic(
   },
 ): Promise<{ identityId: string; key: LimitedKey }> {
   const { network, group } = params
-  await assertGroupHolds(sdk, group, params.contracts)
+  await assertGroupHolds(sdk, group, params.trust)
   const mnemonic = normalizeMnemonic(params.mnemonic)
   const ep = params.endpoints ?? coreEndpoints(network)
   const { AssetLockProof, OutPoint, Identity, IdentityPublicKey, IdentitySigner, PrivateKey, ContractBounds } = await import('@dashevo/evo-sdk')
@@ -179,7 +181,8 @@ export async function createIdentityFromMnemonic(
     const master = await deriveMasterKey(mnemonic, network)
     // The earlier run's key 5 may be live (its vault copy is locked or gone): disable it in
     // the same update, so no key nobody holds stays live.
-    const key = await registerLimitedKey(sdk, { network, identityId, masterWif: master.wif, group, request: limits, replaceKeyId: BROWSER_KEY_ID })
+    // The group was checked at the start of this run (assertGroupHolds above).
+    const key = await registerLimitedKey(sdk, { network, identityId, masterWif: master.wif, group, request: limits, replaceKeyId: BROWSER_KEY_ID, groupChecked: true })
     await params.persistKey(identityId, key)
     return { identityId, key }
   }

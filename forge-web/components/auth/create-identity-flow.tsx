@@ -21,7 +21,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
 import { Qr } from '@/components/ui/qr'
-import { ErrorBox, useProtection } from '@/components/auth/protection-fields'
+import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protection-fields'
 import { faucetUrl } from '@/components/top-up-sheet'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { ensureSdk } from '@/lib/sdk'
@@ -134,7 +134,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         network,
         mnemonic: m,
         group: v2.group,
-        contracts: [v2.core, v2.collab],
+        trust: controller.groupTrust(),
         minDepositDuffs: MIN_DEPOSIT_DUFFS,
         signal: controllerRun.signal,
         persistKey: (id, k) => controller.persistKey({ identityId: id, keyId: k.keyId, wif: k.wif }, protection),
@@ -269,6 +269,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     return (
       <div className="space-y-3">
         {fields}
+        <GroupNotice check={() => controller.checkGroup()} />
         <Button
           variant="primary"
           className="w-full"
