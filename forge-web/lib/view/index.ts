@@ -135,6 +135,7 @@ export {
   isDiverged,
   isLive,
   refParamFor,
+  selectedTip,
   selectRef,
   tipOidOf,
   type SelectedRef,
@@ -152,6 +153,16 @@ export {
   type TreeDiff,
 } from './commit-log'
 export { mapPooled } from './pool'
+export {
+  blobDisplay,
+  lineHash,
+  parseLineHash,
+  selectLine,
+  visibleRows,
+  VIRTUALIZE_LINES,
+  type BlobDisplay,
+  type LineRange,
+} from './blob-view'
 export {
   loadIssueThread,
   loadPullThread,
