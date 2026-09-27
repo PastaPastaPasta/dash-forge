@@ -26,7 +26,7 @@ use forge_core::rules::EventKind;
 use forge_core::scope::RepoRef as Repo;
 use forge_core::user_error::{codes, UserError};
 
-use super::{fetch_base_and_head, patch, push_argv, push_to, Steps};
+use super::{open_pr, push_argv, push_to, scratch_with_pr, Pr, Steps, REF_UPDATE_CREDITS};
 use crate::common::Session;
 use crate::context::Ctx;
 use crate::fmt::{cost_line, dash_usd_price, safe, short};
@@ -129,14 +129,14 @@ async fn head_route(s: &Session, view: &PatchView, action: &str) -> Result<State
     })
 }
 
-/// Where the source branch points now, or `None` when it is gone.
-async fn branch_tip(s: &Session, src: &SourceBranch) -> Result<Option<String>> {
+/// Where `ref_name` points in `repo` now, or `None` when it is gone.
+pub(crate) async fn branch_tip(s: &Session, repo: &Repo, ref_name: &str) -> Result<Option<String>> {
     let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
     Ok(svc
-        .read_refs(&src.repo)
+        .read_refs(repo)
         .await?
         .iter()
-        .find(|(n, _)| *n == src.ref_name)
+        .find(|(n, _)| n == ref_name)
         .and_then(|(_, st)| forge_core::rules::tip_of(st)))
 }
 
@@ -148,7 +148,7 @@ async fn require_branch_at_head(
     repo: &str,
     number: u64,
 ) -> Result<()> {
-    match branch_tip(s, src).await? {
+    match branch_tip(s, &src.repo, &src.ref_name).await? {
         Some(t) if t.eq_ignore_ascii_case(&view.head) => Ok(()),
         Some(t) => Err(UserError::new(
             codes::USAGE,
@@ -175,46 +175,62 @@ async fn require_branch_at_head(
 }
 
 /// Push `commit` to the source branch (fast-forward only) with the helper's PR auto-sync off,
-/// then post the `headUpdate`.
-async fn push_and_move_head(
+/// then post the `headUpdate`. A failure is reported with the steps that ran.
+async fn commit_push_move(
     ctx: &Ctx,
-    s: &Session,
-    view: &PatchView,
+    pr: &Pr,
     src: &SourceBranch,
     dir: &Path,
     commit: &str,
     steps: &mut Steps,
+    repo: &str,
 ) -> Result<String> {
-    let mut argv = vec!["-c".to_string(), "dash.prAutoSync=false".to_string()];
-    argv.extend(push_argv(ctx, &src.url, commit, &src.ref_name));
-    push_to(dir, &argv, &git::dash_env(ctx))
-        .with_context(|| format!("pushing to {} in {}", src.ref_name, src.repo_display))?;
-    steps.ok("push", format!("{} → {}", src.ref_name, short(commit)));
-    let oid = hex::decode(commit).context("commit oid")?;
-    let (_, id) = s
-        .collab()
-        .post_target_event(
-            &s.repo,
-            &view.patch.target(),
-            EventKind::HeadUpdate,
-            &EventPayload {
-                oid: Some(&oid),
-                ..EventPayload::default()
-            },
+    let moved = async {
+        let mut argv = vec!["-c".to_string(), "dash.prAutoSync=false".to_string()];
+        argv.extend(push_argv(ctx, &src.url, commit, &src.ref_name));
+        push_to(dir, &argv, &git::dash_env(ctx))
+            .with_context(|| format!("pushing to {} in {}", src.ref_name, src.repo_display))?;
+        steps.ok("push", format!("{} → {}", src.ref_name, short(commit)));
+        let oid = hex::decode(commit).context("commit oid")?;
+        let (_, id) =
+            pr.s.collab()
+                .post_target_event(
+                    &pr.s.repo,
+                    &pr.view.patch.target(),
+                    EventKind::HeadUpdate,
+                    &EventPayload {
+                        oid: Some(&oid),
+                        ..EventPayload::default()
+                    },
+                )
+                .await
+                .map_err(|e| {
+                    anyhow::Error::from(e).context(format!(
+                        "{} holds {}, but the PR head was not moved; run `dg pr sync` to move it",
+                        src.ref_name,
+                        short(commit)
+                    ))
+                })?;
+        steps.ok(
+            "head",
+            format!("PR head → {} ({})", short(commit), short(&id)),
+        );
+        Ok::<_, anyhow::Error>(id)
+    }
+    .await;
+    let number = u64::from(pr.view.patch.number);
+    moved.map_err(|e| {
+        crate::errors::reported(
+            super::merge_failure(&e, number, repo),
+            json!({ "status": "failed", "pr": number, "steps": steps.done }),
         )
-        .await
-        .map_err(|e| {
-            anyhow::Error::from(e).context(format!(
-                "{} holds {}, but the PR head was not moved; run `dg pr sync` to move it",
-                src.ref_name,
-                short(commit)
-            ))
-        })?;
-    steps.ok(
-        "head",
-        format!("PR head → {} ({})", short(commit), short(&id)),
-    );
-    Ok(id)
+    })
+}
+
+/// The estimate of a commit to the PR branch: the ref update, the head update (by `route`),
+/// and the pack's storage on top.
+fn branch_commit_estimate(route: StateRoute) -> u64 {
+    super::event_estimate(route, 0) + REF_UPDATE_CREDITS
 }
 
 // ---------------------------------------------------------------------------
@@ -379,32 +395,28 @@ pub async fn apply_suggestions(
             "name the comments whose suggestions to apply, or pass --all",
         ));
     }
-    let s = Session::open(ctx, repo).await?;
+    let pr = open_pr(ctx, repo, number).await?;
+    let (s, view) = (&pr.s, &pr.view);
     let collab = s.collab();
-    let p = patch(&collab, &s.repo, repo, number).await?;
-    let view = collab.patch_view(&s.repo, p).await?;
     if !view.state.open {
         return Err(crate::errors::usage(format!(
             "PR #{number} is {}; suggestions apply to open PRs",
-            super::state_label(&view)
+            super::state_label(view)
         )));
     }
-    let src = writable_source(&s, &view, number, "apply suggestions").await?;
+    let src = writable_source(s, view, number, "apply suggestions").await?;
     let route = head_route(
-        &s,
-        &view,
+        s,
+        view,
         &format!("apply suggestions to pull request #{number}"),
     )
     .await?;
-    require_branch_at_head(&s, &src, &view, repo, number).await?;
+    require_branch_at_head(s, &src, view, repo, number).await?;
     let comments = collab.comments(&s.repo, &view.patch.document_id).await?;
     let state = view.review_with_threads(&comments);
 
-    let env = git::dash_env(ctx);
-    let scratch = tempfile::tempdir().context("creating a scratch directory")?;
+    let scratch = scratch_with_pr(ctx, &s.repo, view)?;
     let dir = scratch.path();
-    git::git(dir, &["init", "-q", "--bare"], &[])?;
-    fetch_base_and_head(dir, &s.repo, &view, &env)?;
     let range = view
         .base_tip
         .as_deref()
@@ -478,7 +490,7 @@ pub async fn apply_suggestions(
         }
     }
     let price = dash_usd_price();
-    let est = super::event_estimate(route, 0) + 45_000_000;
+    let est = branch_commit_estimate(route);
     if !ctx.json {
         eprintln!(
             "Apply {} suggestion(s) to {} in {}:",
@@ -499,12 +511,8 @@ pub async fn apply_suggestions(
         cost_line(est, price)
     ))?;
 
-    let mut steps = Steps {
-        json: ctx.json,
-        done: Vec::new(),
-    };
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let author = git::merge_author(&cwd, &s.identity.id());
+    let mut steps = Steps::new(ctx.json);
+    let author = git::merge_author_here(&s.identity.id());
     let tree = git::tree_with(dir, &view.head, &edited)?;
     let commit = git::commit_tree(
         dir,
@@ -517,15 +525,7 @@ pub async fn apply_suggestions(
         "commit",
         format!("{} ({} file(s))", short(&commit), edited.len()),
     );
-    let event = push_and_move_head(ctx, &s, &view, &src, dir, &commit, &mut steps)
-        .await
-        .map_err(|e| {
-            crate::errors::reported(
-                super::merge_failure(&e, number, repo),
-                json!({ "status": "failed", "pr": number, "steps": steps.done }),
-            )
-        });
-    let event = event?;
+    let event = commit_push_move(ctx, &pr, &src, dir, &commit, &mut steps, repo).await?;
     ctx.emit(
         json!({
             "status": "applied",
@@ -555,23 +555,22 @@ pub async fn apply_suggestions(
 
 /// `dg pr update-branch`: merge the base into the PR branch.
 pub async fn update_branch(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
-    let collab = s.collab();
-    let p = patch(&collab, &s.repo, repo, number).await?;
-    let view = collab.patch_view(&s.repo, p).await?;
+    let pr = open_pr(ctx, repo, number).await?;
+    let (s, view) = (&pr.s, &pr.view);
     let Some(base) = view.base_tip.clone() else {
         return Err(crate::errors::usage(format!(
             "{} has no commits; there is nothing to merge in",
             view.patch.base_ref_name
         )));
     };
-    let src = writable_source(&s, &view, number, "update the PR branch").await?;
-    head_route(&s, &view, &format!("update pull request #{number}")).await?;
-    require_branch_at_head(&s, &src, &view, repo, number).await?;
-    let scratch = tempfile::tempdir().context("creating a scratch directory")?;
+    // The base is a refspec below (and the source branch a push destination): refuse a
+    // malformed one before anything else.
+    git::require_branch_ref(&view.patch.base_ref_name)?;
+    let src = writable_source(s, view, number, "update the PR branch").await?;
+    let route = head_route(s, view, &format!("update pull request #{number}")).await?;
+    require_branch_at_head(s, &src, view, repo, number).await?;
+    let scratch = scratch_with_pr(ctx, &s.repo, view)?;
     let dir = scratch.path();
-    git::git(dir, &["init", "-q", "--bare"], &[])?;
-    fetch_base_and_head(dir, &s.repo, &view, &git::dash_env(ctx))?;
     if git::is_ancestor(dir, &base, &view.head) {
         ctx.emit(
             json!({ "status": "up_to_date", "pr": number, "written": false, "headOid": view.head }),
@@ -601,17 +600,10 @@ pub async fn update_branch(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         short(&base),
         src.ref_name,
         src.repo_display,
-        cost_line(
-            super::estimate(super::Est::Event, 0) + 45_000_000,
-            dash_usd_price()
-        )
+        cost_line(branch_commit_estimate(route), dash_usd_price())
     ))?;
-    let mut steps = Steps {
-        json: ctx.json,
-        done: Vec::new(),
-    };
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let author = git::merge_author(&cwd, &s.identity.id());
+    let mut steps = Steps::new(ctx.json);
+    let author = git::merge_author_here(&s.identity.id());
     let short_base = view
         .patch
         .base_ref_name
@@ -624,14 +616,7 @@ pub async fn update_branch(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let message = format!("Merge branch '{short_base}' into {short_src}");
     let commit = git::commit_tree(dir, &tree, &[&view.head, &base], &message, &author)?;
     steps.ok("merge", format!("merge commit {}", short(&commit)));
-    let event = push_and_move_head(ctx, &s, &view, &src, dir, &commit, &mut steps)
-        .await
-        .map_err(|e| {
-            crate::errors::reported(
-                super::merge_failure(&e, number, repo),
-                json!({ "status": "failed", "pr": number, "steps": steps.done }),
-            )
-        })?;
+    let event = commit_push_move(ctx, &pr, &src, dir, &commit, &mut steps, repo).await?;
     ctx.emit(
         json!({
             "status": "updated",
@@ -683,9 +668,8 @@ pub async fn deletable_source(s: &Session, view: &PatchView, number: u64) -> Res
 
 /// Delete the source branch (a push of `:<ref>`).
 pub fn delete_source_branch(ctx: &Ctx, src: &SourceBranch) -> Result<()> {
-    let scratch = tempfile::tempdir().context("creating a scratch directory")?;
+    let scratch = super::scratch_repo()?;
     let dir = scratch.path();
-    git::git(dir, &["init", "-q", "--bare"], &[])?;
     let mut argv = vec!["-c".to_string(), "dash.prAutoSync=false".to_string()];
     if ctx.yes {
         argv.extend(["-c".into(), "dash.confirm=never".into()]);

@@ -159,6 +159,9 @@ pub enum Est {
     Replace,
 }
 
+/// A `refUpdate` (plus its small manifest share) a push to the PR branch pays, steady state.
+pub const REF_UPDATE_CREDITS: u64 = 45_000_000;
+
 /// Credits for one write of `kind` carrying `text_bytes` of text.
 pub fn estimate(kind: Est, text_bytes: usize) -> u64 {
     let base: u64 = match kind {
@@ -199,6 +202,21 @@ pub(crate) async fn patch(
         .ok_or_else(|| not_found(repo, number))
 }
 
+/// A PR read for a command that signs: the session and the PR's view.
+pub(crate) struct Pr {
+    pub(crate) s: Session,
+    pub(crate) view: PatchView,
+}
+
+/// Open a session on `repo` and read PR `number`'s view.
+pub(crate) async fn open_pr(ctx: &Ctx, repo: &str, number: u64) -> Result<Pr> {
+    let s = Session::open(ctx, repo).await?;
+    let collab = s.collab();
+    let p = patch(&collab, &s.repo, repo, number).await?;
+    let view = collab.patch_view(&s.repo, p).await?;
+    Ok(Pr { s, view })
+}
+
 pub(crate) fn state_label(v: &PatchView) -> &'static str {
     if v.state.merged {
         "merged"
@@ -213,6 +231,7 @@ pub(crate) fn state_label(v: &PatchView) -> &'static str {
 // create
 // ---------------------------------------------------------------------------
 
+#[allow(clippy::too_many_lines)]
 async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     let s = Session::open(ctx, &args.repo).await?;
     let handle = &s.repo;
@@ -628,7 +647,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
     let source = if v.patch.source_repo_id == handle.id() {
         handle.display()
     } else {
-        forge_core::resolve::resolve_id(&client, &v.patch.source_repo_id)
+        forge_core::resolve::resolve_id(client, &v.patch.source_repo_id)
             .await
             .map_or_else(|_| v.patch.source_repo_id.clone(), |r| r.display())
     };
@@ -858,6 +877,13 @@ pub(crate) struct Steps {
 }
 
 impl Steps {
+    pub(crate) fn new(json: bool) -> Self {
+        Self {
+            json,
+            done: Vec::new(),
+        }
+    }
+
     pub(crate) fn ok(&mut self, step: &str, detail: impl Into<String>) {
         let detail = detail.into();
         if !self.json {
@@ -875,6 +901,16 @@ enum Method {
     Merge,
     /// One new commit on the base with the merged tree.
     Squash,
+}
+
+impl Method {
+    /// `merge` / `squash` (`--json`'s `method`).
+    fn as_str(self) -> &'static str {
+        match self {
+            Method::Merge => "merge",
+            Method::Squash => "squash",
+        }
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -919,10 +955,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
     } else {
         None
     };
-    let mut steps = Steps {
-        json: ctx.json,
-        done: Vec::new(),
-    };
+    let mut steps = Steps::new(ctx.json);
     if !ctx.json {
         eprintln!(
             "Merging PR #{number} of {} into {}{}",
@@ -1012,7 +1045,7 @@ async fn merge(ctx: &Ctx, a: &crate::PrMergeArgs) -> Result<()> {
         json!({
             "status": if merged { "merged" } else { "merge_event_posted" },
             "pr": number,
-            "method": if method == Method::Squash { "squash" } else { "merge" },
+            "method": method.as_str(),
             "mergeOid": merge_oid,
             "eventId": event_id,
             "merged": merged,
@@ -1204,19 +1237,10 @@ fn push_merge(
     how: &MergeHow<'_>,
     steps: &mut Steps,
 ) -> Result<String> {
-    // The base ref and head are PR document fields anyone could have written; they become a
-    // refspec and a push destination below.
-    git::require_branch_ref(&view.patch.base_ref_name)?;
-    if !git::is_oid(&view.head) {
-        anyhow::bail!("the PR names a malformed head commit");
-    }
-    let env = git::dash_env(ctx);
-    let scratch = tempfile::tempdir().context("creating a scratch directory")?;
+    let scratch = scratch_with_pr(ctx, handle, view)?;
     let dir = scratch.path();
-    git::git(dir, &["init", "-q", "--bare"], &[])?;
     let base_ref = &view.patch.base_ref_name;
     let base_url = format!("dash://{}", handle.id());
-    fetch_base_and_head(dir, handle, view, &env)?;
     steps.ok(
         "fetch",
         format!(
@@ -1232,19 +1256,58 @@ fn push_merge(
 
     // Push to the base. The helper refuses a writer's push to a protected ref before paying
     // (E601 naming maintainer) and routes a maintainer's to `protectedRefUpdate`.
-    push_to(dir, &push_argv(ctx, &base_url, &target, base_ref), &env)?;
+    push_to(
+        dir,
+        &push_argv(ctx, &base_url, &target, base_ref),
+        &git::dash_env(ctx),
+    )?;
     steps.ok("push", format!("{base_ref} → {}", short(&target)));
     Ok(target)
 }
 
+/// Refuse a PR whose base ref or head could not safely reach git: the base must be a plain
+/// branch (it becomes a refspec and a push destination), the head a hex commit id. Both are
+/// document fields anyone could have written.
+pub(crate) fn require_git_safe(view: &PatchView) -> Result<()> {
+    git::require_branch_ref(&view.patch.base_ref_name)?;
+    if !git::is_oid(&view.head) {
+        anyhow::bail!(
+            "the PR names a malformed head commit {:?}",
+            safe(&view.head)
+        );
+    }
+    Ok(())
+}
+
+/// A throwaway bare repository (removed when dropped).
+pub(crate) fn scratch_repo() -> Result<tempfile::TempDir> {
+    let scratch = tempfile::tempdir().context("creating a scratch directory")?;
+    git::git(scratch.path(), &["init", "-q", "--bare"], &[])?;
+    Ok(scratch)
+}
+
+/// A scratch repository holding the PR's base branch and head ([`fetch_base_and_head`]).
+pub(crate) fn scratch_with_pr(
+    ctx: &Ctx,
+    handle: &Repo,
+    view: &PatchView,
+) -> Result<tempfile::TempDir> {
+    let scratch = scratch_repo()?;
+    fetch_base_and_head(scratch.path(), handle, view, &git::dash_env(ctx))?;
+    Ok(scratch)
+}
+
 /// Fetch the base branch (its whole history) and the PR head (from its source repository)
-/// into the bare repository `dir`.
+/// into the bare repository `dir`. The base ref and head are PR document fields anyone could
+/// have written, and become a refspec here (and a push destination later): both are checked
+/// first.
 pub(crate) fn fetch_base_and_head(
     dir: &Path,
     handle: &Repo,
     view: &PatchView,
     env: &[(String, String)],
 ) -> Result<()> {
+    require_git_safe(view)?;
     let base_ref = &view.patch.base_ref_name;
     let head = &view.head;
     if view.base_tip.is_some() {
@@ -1358,73 +1421,54 @@ fn build_merge(
         base_tip.is_some_and(|b| git::is_ancestor(dir, head, b)),
         base_tip.is_some_and(|b| git::is_ancestor(dir, b, head)),
     );
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let author = git::merge_author(&cwd, how.signer);
-    if let MergePlan::AlreadyMerged { .. } = plan {
-        steps.ok("merge", format!("already in {base_ref}; nothing to push"));
-        return Ok(None);
-    }
-    if how.method == Method::Squash {
-        // One commit on the base tip whose tree is the merged tree (the head's own tree when
-        // the base is behind it).
-        let tree = match &plan {
-            MergePlan::MergeCommit { base, head } => match git::merge_tree(dir, base, head)? {
-                Some(t) => t,
-                None => {
-                    return Err(conflict_error(
-                        dir,
-                        handle,
-                        view.patch.number,
-                        base_ref,
-                        base,
-                        head,
-                    ))
-                }
-            },
-            _ => git::git(dir, &["rev-parse", &format!("{head}^{{tree}}")], &[])?,
-        };
-        let message = match how.message {
-            Some(m) => m.to_string(),
-            None => squash_message(
-                &view.patch.title,
-                &view.patch.body,
-                view.patch.number,
-                &git::authors(dir, base_tip, head).unwrap_or_default(),
-                &author_line(&author),
-            ),
-        };
-        let parents: Vec<&str> = base_tip.into_iter().collect();
-        let c = git::commit_tree(dir, &tree, &parents, &message, &author)?;
-        steps.ok("merge", format!("squash commit {}", short(&c)));
-        return Ok(Some(c));
-    }
-    Ok(Some(match &plan {
-        MergePlan::AlreadyMerged { .. } => unreachable!("returned above"),
-        MergePlan::FastForward { oid } => {
-            steps.ok("merge", format!("fast-forward to {}", short(oid)));
-            oid.clone()
+    let conflict = |base: &str, head: &str| {
+        conflict_error(dir, handle, view.patch.number, base_ref, base, head)
+    };
+    let author = || git::merge_author_here(how.signer);
+    let (commit, detail) = match (&plan, how.method) {
+        (MergePlan::AlreadyMerged { .. }, _) => {
+            steps.ok("merge", format!("already in {base_ref}; nothing to push"));
+            return Ok(None);
         }
-        MergePlan::MergeCommit { base, head } => {
+        // Squash: one commit on the base tip whose tree is the merged tree (the head's own
+        // tree when the base is behind it).
+        (plan, Method::Squash) => {
+            let tree = match plan {
+                MergePlan::MergeCommit { base, head } => {
+                    git::merge_tree(dir, base, head)?.ok_or_else(|| conflict(base, head))?
+                }
+                _ => git::git(dir, &["rev-parse", &format!("{head}^{{tree}}")], &[])?,
+            };
+            let author = author();
+            let message = match how.message {
+                Some(m) => m.to_string(),
+                None => squash_message(
+                    &view.patch.title,
+                    &view.patch.body,
+                    view.patch.number,
+                    &git::authors(dir, base_tip, head).unwrap_or_default(),
+                    &author_line(&author),
+                ),
+            };
+            let parents: Vec<&str> = base_tip.into_iter().collect();
+            let c = git::commit_tree(dir, &tree, &parents, &message, &author)?;
+            (c, "squash commit")
+        }
+        (MergePlan::FastForward { oid }, Method::Merge) => (oid.clone(), "fast-forward to"),
+        (MergePlan::MergeCommit { base, head }, Method::Merge) => {
             let message = format!(
                 "Merge pull request #{} from {}\n\n{}",
                 view.patch.number,
                 view.patch.source_ref_name.as_deref().unwrap_or(head),
                 view.patch.title
             );
-            let Some(c) = git::merge_commit(dir, base, head, &message, &author)? else {
-                return Err(conflict_error(
-                    dir,
-                    handle,
-                    view.patch.number,
-                    base_ref,
-                    base,
-                    head,
-                ));
-            };
-            steps.ok("merge", format!("merge commit {}", short(&c)));
-            c
+            let c = git::merge_commit(dir, base, head, &message, &author())?
+                .ok_or_else(|| conflict(base, head))?;
+            (c, "merge commit")
         }
-    }))
+    };
+    steps.ok("merge", format!("{detail} {}", short(&commit)));
+    Ok(Some(commit))
 }
 
 /// `Name <email>` of a [`git::merge_author`] environment.
@@ -1641,6 +1685,83 @@ async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn view_with(base: &str, head: &str) -> PatchView {
+        let patch = Patch {
+            number: 1,
+            document_id: "d".into(),
+            repo_id: "r".into(),
+            author: "a".into(),
+            title: "t".into(),
+            body: String::new(),
+            base_ref_name: base.into(),
+            source_repo_id: "s".into(),
+            source_ref_name: Some("refs/heads/f".into()),
+            head_oid: head.into(),
+            patch_manifest_hash: None,
+            draft: false,
+            created_at: 0,
+            imported: None,
+        };
+        PatchView {
+            state: forge_core::rules::PrState::default(),
+            head: head.into(),
+            review: forge_core::rules::v2::fold_pr_review_v2(
+                &[],
+                &[],
+                "a",
+                head,
+                &std::collections::BTreeSet::new(),
+            ),
+            base_tip: Some("1".repeat(40)),
+            head_on_base: false,
+            base_tips: std::collections::BTreeSet::new(),
+            log: forge_core::collab::v2::TargetLog::default(),
+            patch,
+        }
+    }
+
+    /// `update-branch`, `suggestion apply`, `merge` and `commits` all fetch through
+    /// `fetch_base_and_head`: a malformed base or head is refused before any git runs.
+    #[test]
+    fn a_malformed_base_or_head_never_reaches_git() {
+        let ok = "2".repeat(40);
+        assert!(require_git_safe(&view_with("refs/heads/main", &ok)).is_ok());
+        for bad in [
+            "+refs/heads/x:refs/heads/main",
+            "refs/heads/*",
+            "refs/tags/v1",
+            "main",
+            "refs/heads/-x --upload-pack=evil",
+            "refs/heads/a\nb",
+        ] {
+            assert!(require_git_safe(&view_with(bad, &ok)).is_err(), "{bad:?}");
+            let dir = tempfile::tempdir().unwrap();
+            let err = fetch_base_and_head(dir.path(), &dummy_repo(), &view_with(bad, &ok), &[])
+                .unwrap_err();
+            assert!(
+                format!("{err:#}").contains("not a plain branch"),
+                "{bad:?}: {err:#}"
+            );
+        }
+        assert!(require_git_safe(&view_with("refs/heads/main", "HEAD~1")).is_err());
+    }
+
+    fn dummy_repo() -> Repo {
+        Repo {
+            forge: forge_core::network::ForgeIds {
+                core: "c".into(),
+                collab: "l".into(),
+                group: "g".into(),
+                superseded_in_group: Vec::new(),
+                group_owner: None,
+            },
+            repo_id: "r".into(),
+            owner_id: "o".into(),
+            name: "n".into(),
+            visibility: forge_core::rules::v2::Visibility::Public,
+        }
+    }
 
     #[test]
     fn a_squash_message_credits_every_other_author() {

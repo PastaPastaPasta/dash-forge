@@ -66,7 +66,9 @@ pub enum Outcome {
     },
 }
 
-/// The estimate shown on the sync line (an `authorEvent` with an `oid`, measured 71.9M).
+/// The estimate shown on the sync line (an `authorEvent` with an `oid`, measured 71.9M on
+/// moutai, review-parity §3.11). The same figure as `dg`'s `Est::AuthorEvent`; the helper
+/// does not link `dg`, so it is repeated here.
 const HEAD_UPDATE_CREDITS: u64 = 72_000_000;
 
 /// Move the PRs that follow the branches in `moved` (branches of `source`, the repo pushed
@@ -94,7 +96,7 @@ pub async fn sync_after_push(
             Err(e) => {
                 progress.note(&format!(
                     "could not look up pull requests from {}: {e}",
-                    short_ref(&m.ref_name)
+                    crate::progress::short_ref(&m.ref_name)
                 ));
                 continue;
             }
@@ -122,14 +124,14 @@ pub async fn sync_after_push(
                 out.push(hint("not the PR's author".into()));
                 continue;
             }
+            let Ok(oid) = hex::decode(&m.oid) else {
+                continue;
+            };
             progress.note(&format!(
                 "PR #{n} in {label} follows this branch: updating its head to {} (≈ {} DASH)",
                 &m.oid[..m.oid.len().min(12)],
                 forge_core::repo::credits_to_dash(HEAD_UPDATE_CREDITS)
             ));
-            let Ok(oid) = hex::decode(&m.oid) else {
-                continue;
-            };
             match collab
                 .post_target_event(
                     &repo,
@@ -157,8 +159,4 @@ pub async fn sync_after_push(
         }
     }
     out
-}
-
-fn short_ref(r: &str) -> &str {
-    r.strip_prefix("refs/heads/").unwrap_or(r)
 }

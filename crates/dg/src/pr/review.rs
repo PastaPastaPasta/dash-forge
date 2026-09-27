@@ -26,9 +26,9 @@ use serde_json::json;
 
 use forge_core::collab::v2::{comment_props, review_props, Collab, PatchView};
 use forge_core::collab::{CommentAnchor, Verdict};
-use forge_core::rules::v2::ContentKind;
 use forge_core::create::default_journal_dir;
 use forge_core::platform::WriteIntent;
+use forge_core::rules::v2::ContentKind;
 use forge_core::user_error::{codes, UserError};
 
 use super::inline::{read_body_file, InlineSpec};
@@ -80,7 +80,41 @@ pub struct ReviewDraft {
     pub review_id: Option<String>,
 }
 
+impl From<&InlineSpec> for DraftComment {
+    fn from(spec: &InlineSpec) -> Self {
+        Self {
+            spec: spec.clone(),
+            intent: None,
+            landed_id: None,
+        }
+    }
+}
+
 impl ReviewDraft {
+    /// An empty draft on `view`'s current head.
+    fn new(view: &PatchView) -> Self {
+        Self {
+            pr_id: view.patch.document_id.clone(),
+            pr_number: view.patch.number,
+            head_oid: view.head.clone(),
+            verdict: None,
+            summary: String::new(),
+            comments: Vec::new(),
+            review_intent: None,
+            review_id: None,
+        }
+    }
+
+    /// Add the command's summary (when given) and inline comments.
+    fn add_args(&mut self, a: &PrReviewArgs) -> Result<()> {
+        if a.inline.summary_given() {
+            self.summary = a.inline.summary_text()?;
+        }
+        self.comments
+            .extend(a.inline.comments.iter().map(DraftComment::from));
+        Ok(())
+    }
+
     /// A submit has begun (something may be on chain).
     pub fn attempted(&self) -> bool {
         self.review_intent.is_some()
@@ -137,8 +171,8 @@ fn io_core(e: std::io::Error) -> forge_core::Error {
     forge_core::Error::Io(format!("saving the pending review: {e}"))
 }
 
-/// The anchor a draft comment is written with.
-fn anchor_of(spec: &InlineSpec, head: &[u8], review_id: Option<&str>) -> CommentAnchor {
+/// The anchor an inline comment is written with.
+fn draft_anchor(spec: &InlineSpec, head: &[u8], review_id: Option<&str>) -> CommentAnchor {
     CommentAnchor {
         reply_to: None,
         commit_oid: Some(head.to_vec()),
@@ -277,33 +311,11 @@ fn pending(
     path: &Path,
     existing: Option<ReviewDraft>,
 ) -> Result<()> {
-    if existing.as_ref().is_some_and(ReviewDraft::attempted) {
-        return Err(refuse_attempted(
-            existing.as_ref().expect("checked"),
-            &a.repo,
-            a.number,
-        ));
+    if let Some(d) = existing.as_ref().filter(|d| d.attempted()) {
+        return Err(refuse_attempted(d, &a.repo, a.number));
     }
-    let mut draft = existing.unwrap_or_else(|| ReviewDraft {
-        pr_id: view.patch.document_id.clone(),
-        pr_number: view.patch.number,
-        head_oid: view.head.clone(),
-        verdict: None,
-        summary: String::new(),
-        comments: Vec::new(),
-        review_intent: None,
-        review_id: None,
-    });
-    if a.inline.summary.is_some() || a.inline.summary_file.is_some() {
-        draft.summary = a.inline.summary_text()?;
-    }
-    for spec in &a.inline.comments {
-        draft.comments.push(DraftComment {
-            spec: spec.clone(),
-            intent: None,
-            landed_id: None,
-        });
-    }
+    let mut draft = existing.unwrap_or_else(|| ReviewDraft::new(view));
+    draft.add_args(a)?;
     save_draft(path, &draft).with_context(|| format!("saving {}", path.display()))?;
     let moved = draft.head_oid != view.head;
     ctx.emit(
@@ -311,10 +323,11 @@ fn pending(
             "status": "pending",
             "pr": a.number,
             "added": a.inline.comments.len(),
-            "comments": draft.comments.iter().map(|c| json!({
-                "path": c.spec.path, "line": c.spec.line, "startLine": c.spec.start_line,
-                "side": c.spec.side, "location": c.spec.location(), "body": c.spec.body,
-            })).collect::<Vec<_>>(),
+            "comments": draft.comments.iter().map(|c| {
+                let mut j = spec_json(&c.spec);
+                j["body"] = json!(c.spec.body);
+                j
+            }).collect::<Vec<_>>(),
             "anchoredTo": draft.head_oid,
             "headMoved": moved,
             "draftFile": path.display().to_string(),
@@ -342,6 +355,17 @@ fn pending(
         },
     );
     Ok(())
+}
+
+/// An inline comment's anchor for `--json`: `path`, `line`, `startLine`, `side`, `location`.
+fn spec_json(spec: &InlineSpec) -> serde_json::Value {
+    json!({
+        "path": spec.path,
+        "line": spec.line,
+        "startLine": spec.start_line,
+        "side": spec.side,
+        "location": spec.location(),
+    })
 }
 
 fn first_line(s: &str) -> String {
@@ -374,7 +398,7 @@ fn submit_estimate(d: &ReviewDraft) -> u64 {
 /// A resumed submit given the same command again: the same verdict, summary and comments are
 /// a resume; anything else is refused.
 fn same_submit(d: &ReviewDraft, verdict: Option<VerdictArg>, a: &PrReviewArgs) -> Result<bool> {
-    let summary_given = a.inline.summary.is_some() || a.inline.summary_file.is_some();
+    let summary_given = a.inline.summary_given();
     if a.resume && verdict.is_none() && !summary_given && a.inline.comments.is_empty() {
         return Ok(true);
     }
@@ -409,47 +433,18 @@ async fn submit(
             }
             d
         }
-        Some(mut d) => {
+        // A pending draft (or none): this submit's verdict, summary and comments are added.
+        pending => {
             let v = verdict.ok_or_else(|| {
-                crate::errors::usage(
-                    "nothing to resume: pass --approve, --request-changes or --comment",
-                )
+                crate::errors::usage(format!(
+                    "PR #{} has no interrupted review to resume: pass --approve, --request-changes or --comment",
+                    a.number
+                ))
             })?;
+            let mut d = pending.unwrap_or_else(|| ReviewDraft::new(view));
             d.verdict = Some(v.code());
-            if a.inline.summary.is_some() || a.inline.summary_file.is_some() {
-                d.summary = a.inline.summary_text()?;
-            }
-            d.comments
-                .extend(a.inline.comments.iter().map(|spec| DraftComment {
-                    spec: spec.clone(),
-                    intent: None,
-                    landed_id: None,
-                }));
+            d.add_args(a)?;
             d
-        }
-        None => {
-            let v = verdict.ok_or_else(|| {
-                crate::errors::usage(format!("PR #{} has no review to resume", a.number))
-            })?;
-            ReviewDraft {
-                pr_id: view.patch.document_id.clone(),
-                pr_number: view.patch.number,
-                head_oid: view.head.clone(),
-                verdict: Some(v.code()),
-                summary: a.inline.summary_text()?,
-                comments: a
-                    .inline
-                    .comments
-                    .iter()
-                    .map(|spec| DraftComment {
-                        spec: spec.clone(),
-                        intent: None,
-                        landed_id: None,
-                    })
-                    .collect(),
-                review_intent: None,
-                review_id: None,
-            }
         }
     };
     let v = Verdict::from_code(draft.verdict.unwrap_or(3));
@@ -470,7 +465,7 @@ async fn submit(
         comment_props(
             &draft.pr_id,
             &c.spec.body,
-            Some(&anchor_of(&c.spec, &head, Some(&draft.pr_id))),
+            Some(&draft_anchor(&c.spec, &head, Some(&draft.pr_id))),
             None,
         )?;
     }
@@ -632,10 +627,16 @@ async fn write_all(
         )?;
         let saved = draft.review_intent.clone();
         let id = collab
-            .create_once(&s.repo, ContentKind::Review, props, saved.as_ref(), |intent| {
-                draft.review_intent = Some(intent.clone());
-                save_draft(path, draft).map_err(io_core)
-            })
+            .create_once(
+                &s.repo,
+                ContentKind::Review,
+                props,
+                saved.as_ref(),
+                |intent| {
+                    draft.review_intent = Some(intent.clone());
+                    save_draft(path, draft).map_err(io_core)
+                },
+            )
             .await?;
         draft.review_id = Some(id);
         save_draft(path, draft)?;
@@ -650,15 +651,21 @@ async fn write_all(
         let props = comment_props(
             &draft.pr_id,
             &spec.body,
-            Some(&anchor_of(&spec, head, Some(&review_id))),
+            Some(&draft_anchor(&spec, head, Some(&review_id))),
             None,
         )?;
         let saved = draft.comments[i].intent.clone();
         let id = collab
-            .create_once(&s.repo, ContentKind::Comment, props, saved.as_ref(), |intent| {
-                draft.comments[i].intent = Some(intent.clone());
-                save_draft(path, draft).map_err(io_core)
-            })
+            .create_once(
+                &s.repo,
+                ContentKind::Comment,
+                props,
+                saved.as_ref(),
+                |intent| {
+                    draft.comments[i].intent = Some(intent.clone());
+                    save_draft(path, draft).map_err(io_core)
+                },
+            )
             .await?;
         draft.comments[i].landed_id = Some(id);
         save_draft(path, draft)?;
@@ -667,6 +674,7 @@ async fn write_all(
 }
 
 /// `dg pr comment`.
+#[allow(clippy::too_many_lines)]
 pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
     let body = match (&a.body, &a.body_file) {
         (Some(b), _) => b.clone(),
@@ -674,24 +682,30 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
         (None, None) if a.suggest.is_some() => String::new(),
         (None, None) => return Err(crate::errors::usage("pass --body or --body-file")),
     };
-    let body = match &a.suggest {
-        Some(text) => {
-            if a.side == Some(super::inline::SideArg::Old) {
-                return Err(crate::errors::usage(
-                    "a suggestion replaces lines of the new side; drop --side old",
-                ));
-            }
-            super::inline::with_suggestion(&body, text)
+    // An inline comment is checked by the same rules as `dg pr review --file`; its body gains
+    // the suggestion block.
+    let (spec, body) = match &a.file {
+        Some(file) => {
+            let spec = InlineSpec::build(
+                file.clone(),
+                a.line,
+                a.start_line,
+                a.side,
+                body,
+                a.suggest.as_deref(),
+            )
+            .map_err(crate::errors::usage)?;
+            let body = spec.body.clone();
+            (Some(spec), body)
         }
-        None => body,
+        None if a.suggest.is_some() => {
+            return Err(crate::errors::usage("--suggest needs --file and --line"))
+        }
+        None if body.trim().is_empty() => {
+            return Err(crate::errors::usage("the comment needs a --body"))
+        }
+        None => (None, body),
     };
-    if let (Some(s), Some(l)) = (a.start_line, a.line) {
-        if s > l || s == 0 {
-            return Err(crate::errors::usage(format!(
-                "--start-line {s} must be between 1 and --line {l}"
-            )));
-        }
-    }
     let s = Session::open(ctx, &a.repo).await?;
     let collab = s.collab();
     let p = patch(&collab, &s.repo, &a.repo, a.number).await?;
@@ -715,22 +729,13 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
             }),
             "reply",
         )
-    } else if let Some(file) = &a.file {
-        let spec = InlineSpec {
-            path: file.clone(),
-            line: a.line,
-            start_line: a.start_line.filter(|s| Some(*s) != a.line),
-            side: a
-                .line
-                .map(|_| a.side.unwrap_or(super::inline::SideArg::New)),
-            body: body.clone(),
-        };
-        (Some(anchor_of(&spec, &head, None)), "inline")
+    } else if let Some(spec) = &spec {
+        (Some(draft_anchor(spec, &head, None)), "inline")
     } else {
         (None, "general")
     };
     let price = dash_usd_price();
-    let path_len = a.file.as_deref().map_or(0, str::len);
+    let path_len = spec.as_ref().map_or(0, |s| s.path.len());
     let est = estimate(Est::Comment, body.len() + path_len);
     ctx.confirm_or_cancel(&format!(
         "Post a {kind} comment on PR #{}? (one document, {})",
@@ -746,15 +751,7 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
             None,
         )
         .await?;
-    let location = a.file.as_ref().map(|f| {
-        super::inline::location(
-            f,
-            a.start_line,
-            a.line,
-            a.line
-                .map(|_| a.side.unwrap_or(super::inline::SideArg::New).code()),
-        )
-    });
+    let location = spec.as_ref().map(InlineSpec::location);
     ctx.emit(
         json!({
             "status": "commented",

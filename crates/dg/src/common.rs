@@ -46,11 +46,6 @@ impl RepoRef {
         })
     }
 
-    /// The effective owner: the parsed owner, or `default_owner` for a bare name.
-    pub fn owner_or<'a>(&'a self, default_owner: &'a str) -> &'a str {
-        self.owner.as_deref().unwrap_or(default_owner)
-    }
-
     /// The repo id, when the reference is a bare base58 id (a forge-v2 repo document id, as
     /// `dash://<id>` takes). Repo names are lowercase, so a base58 id — which mixes cases —
     /// can never be mistaken for one.
@@ -85,12 +80,27 @@ pub async fn resolve(
     identity: &LoadedIdentity,
     repo_ref: &RepoRef,
 ) -> Result<Repo> {
+    resolve_for(client, Some(&identity.id()), repo_ref).await
+}
+
+/// [`resolve`] for a command that may run without an identity: a bare `name` needs
+/// `default_owner` (the signer), else it is a usage error.
+pub async fn resolve_for(
+    client: &PlatformClient,
+    default_owner: Option<&str>,
+    repo_ref: &RepoRef,
+) -> Result<Repo> {
     if let Some(id) = repo_ref.repo_id() {
         return forge_core::resolve::resolve_id(client, id)
             .await
             .with_context(|| format!("resolving repo {id}"));
     }
-    let owner = repo_ref.owner_or(&identity.id()).to_string();
+    let owner = repo_ref
+        .owner
+        .as_deref()
+        .or(default_owner)
+        .ok_or_else(|| crate::errors::usage("name the repository as `<owner>/<name>`"))?
+        .to_string();
     // `with_context`, not a flattened message: the typed forge-core error must survive for
     // the error renderer (NotFound → E102, a network failure → E701).
     forge_core::resolve::resolve_named(client, &owner, &repo_ref.name)
@@ -179,7 +189,6 @@ mod tests {
         let r = RepoRef::parse("just-a-name").unwrap();
         assert!(r.owner.is_none());
         assert_eq!(r.name, "just-a-name");
-        assert_eq!(r.owner_or("owner-x"), "owner-x");
     }
 
     #[test]

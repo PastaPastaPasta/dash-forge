@@ -12,25 +12,11 @@ use forge_core::rules::EventKind;
 use forge_core::scope::RepoRef as Repo;
 use forge_core::user_error::{codes, UserError};
 
-use super::{estimate, event_estimate, patch, Est};
+use super::{estimate, event_estimate, open_pr, Est, Pr};
 use crate::common::Session;
 use crate::context::Ctx;
 use crate::fmt::{cost_line, dash_usd_price, route_text, safe, short};
 use crate::git;
-
-/// A PR read for a state command: the session and the PR's view.
-struct Pr {
-    s: Session,
-    view: PatchView,
-}
-
-async fn open_pr(ctx: &Ctx, repo: &str, number: u64) -> Result<Pr> {
-    let s = Session::open(ctx, repo).await?;
-    let collab = s.collab();
-    let p = patch(&collab, &s.repo, repo, number).await?;
-    let view = collab.patch_view(&s.repo, p).await?;
-    Ok(Pr { s, view })
-}
 
 /// The route an event of `kind` by the signer takes, or E601 before anything is signed.
 async fn route_for(
@@ -322,17 +308,12 @@ pub async fn resolve(
         pr.s.collab()
             .comments(&pr.s.repo, &pr.view.patch.document_id)
             .await?;
-    let by_id: std::collections::BTreeMap<&str, &forge_core::collab::v2::Comment> = comments
-        .iter()
-        .map(|c| (c.document_id.as_str(), c))
-        .collect();
-    let Some(c) = by_id.get(comment_id).copied() else {
+    let Some(root) = super::threads::root_id(&comments, comment_id) else {
         return Err(crate::errors::not_found(
             format!("comment {comment_id} is not on PR #{number}"),
             format!("`dg pr view {repo} {number} --comments` lists the threads and their ids"),
         ));
     };
-    let root = super::threads::root_of(c, &by_id).document_id.clone();
     let state = pr.view.review_with_threads(&comments);
     let is_resolved = state.resolved_threads.contains(&root);
     let word = if resolve { "resolved" } else { "unresolved" };
@@ -381,7 +362,7 @@ pub async fn resolve(
                 "✓ {word} the conversation {} {}",
                 short(&root),
                 route_text(route)
-            )
+            );
         },
     );
     Ok(())
@@ -640,18 +621,9 @@ pub async fn checks(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 
 /// `dg pr commits`: the commits in `base..head`, newest first, from a scratch clone.
 pub async fn commits(ctx: &Ctx, repo: &str, number: u64, limit: usize) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
-    let collab = forge_core::collab::v2::Collab::reader(&s.client);
-    let p = patch(&collab, &s.repo, repo, number).await?;
-    let view = collab.patch_view(&s.repo, p).await?;
-    git::require_branch_ref(&view.patch.base_ref_name)?;
-    if !git::is_oid(&view.head) {
-        anyhow::bail!("PR #{number} names a malformed head commit");
-    }
-    let scratch = tempfile::tempdir().context("creating a scratch directory")?;
+    let Pr { s, view } = open_pr(ctx, repo, number).await?;
+    let scratch = super::scratch_with_pr(ctx, &s.repo, &view)?;
     let dir = scratch.path();
-    git::git(dir, &["init", "-q", "--bare"], &[])?;
-    super::fetch_base_and_head(dir, &s.repo, &view, &git::dash_env(ctx))?;
     let range = match &view.base_tip {
         // The commits the PR adds: reachable from the head, not from the base.
         Some(b) => format!("{b}..{}", view.head),

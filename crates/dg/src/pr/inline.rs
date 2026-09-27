@@ -35,23 +35,6 @@ impl SideArg {
             SideArg::New => 1,
         }
     }
-
-    /// The side a stored code names.
-    pub fn from_code(code: u8) -> Self {
-        if code == 0 {
-            SideArg::Old
-        } else {
-            SideArg::New
-        }
-    }
-
-    /// `old` / `new`.
-    pub fn label(self) -> &'static str {
-        match self {
-            SideArg::Old => "old",
-            SideArg::New => "new",
-        }
-    }
 }
 
 /// One inline comment as given: a file, optionally a line or range on one side, a body,
@@ -72,6 +55,59 @@ pub struct InlineSpec {
 }
 
 impl InlineSpec {
+    /// Check and build one inline comment (the rules `dg pr review --file` and `dg pr comment
+    /// --file` share): a range needs a line and may not start after it, lines count from 1, a
+    /// side and a suggestion need a line, a suggestion is on the new side, and the text is
+    /// not empty. The side defaults to new; a one-line range is a line. Errors name `path`.
+    pub fn build(
+        path: String,
+        line: Option<u64>,
+        start: Option<u64>,
+        side: Option<SideArg>,
+        body: String,
+        suggest: Option<&str>,
+    ) -> Result<Self, String> {
+        let at = &path;
+        if path.is_empty() {
+            return Err("--file needs a path".into());
+        }
+        if line.is_none() && (start.is_some() || side.is_some() || suggest.is_some()) {
+            return Err(format!(
+                "--file {at}: --start-line, --side and --suggest need --line"
+            ));
+        }
+        if let (Some(s), Some(l)) = (start, line) {
+            if s > l {
+                return Err(format!("--file {at}: --start-line {s} is after --line {l}"));
+            }
+        }
+        if line == Some(0) || start == Some(0) {
+            return Err(format!("--file {at}: lines are numbered from 1"));
+        }
+        let side = line.map(|_| side.unwrap_or(SideArg::New));
+        if suggest.is_some() && side == Some(SideArg::Old) {
+            return Err(format!(
+                "--file {at}: a suggestion replaces lines of the new side; drop --side old"
+            ));
+        }
+        let body = match suggest {
+            Some(text) => with_suggestion(&body, text),
+            None => body,
+        };
+        if body.trim().is_empty() {
+            return Err(format!(
+                "--file {at}: the comment needs a --body (or --suggest)"
+            ));
+        }
+        Ok(InlineSpec {
+            start_line: start.filter(|s| Some(*s) != line),
+            path,
+            line,
+            side,
+            body,
+        })
+    }
+
     /// `src/a.rs:12`, `src/a.rs:3-5 (old)`, `src/a.rs` (file-level).
     pub fn location(&self) -> String {
         location(
@@ -114,9 +150,9 @@ impl InlineArgs {
         }
     }
 
-    /// Whether anything at all was given.
-    pub fn is_empty(&self) -> bool {
-        self.summary.is_none() && self.summary_file.is_none() && self.comments.is_empty()
+    /// Whether a summary was given (`--body` or `--body-file`).
+    pub fn summary_given(&self) -> bool {
+        self.summary.is_some() || self.summary_file.is_some()
     }
 }
 
@@ -177,46 +213,8 @@ pub fn group(tokens: Vec<Token>, summary_file: Option<PathBuf>) -> Result<Inline
         suggest: Option<String>,
     }
     fn close(o: Open) -> Result<InlineSpec, String> {
-        let at = &o.path;
-        if o.path.is_empty() {
-            return Err("--file needs a path".into());
-        }
-        if o.line.is_none() && (o.start.is_some() || o.side.is_some() || o.suggest.is_some()) {
-            return Err(format!(
-                "--file {at}: --start-line, --side and --suggest need --line"
-            ));
-        }
-        if let (Some(s), Some(l)) = (o.start, o.line) {
-            if s > l {
-                return Err(format!("--file {at}: --start-line {s} is after --line {l}"));
-            }
-        }
-        if o.line == Some(0) || o.start == Some(0) {
-            return Err(format!("--file {at}: lines are numbered from 1"));
-        }
-        let side = o.line.map(|_| o.side.unwrap_or(SideArg::New));
-        if o.suggest.is_some() && side == Some(SideArg::Old) {
-            return Err(format!(
-                "--file {at}: a suggestion replaces lines of the new side; drop --side old"
-            ));
-        }
         let body = o.body.unwrap_or_default();
-        let body = match &o.suggest {
-            Some(text) => with_suggestion(&body, text),
-            None => body,
-        };
-        if body.trim().is_empty() {
-            return Err(format!(
-                "--file {at}: the comment needs a --body (or --suggest)"
-            ));
-        }
-        Ok(InlineSpec {
-            path: o.path,
-            line: o.line,
-            start_line: o.start.filter(|s| Some(*s) != o.line),
-            side,
-            body,
-        })
+        InlineSpec::build(o.path, o.line, o.start, o.side, body, o.suggest.as_deref())
     }
 
     let mut out = InlineArgs {
@@ -285,8 +283,6 @@ fn flag_name(t: &Token) -> &'static str {
     }
 }
 
-const IDS: [&str; 6] = ["file", "line", "start_line", "side", "body", "suggest"];
-
 impl clap::Args for InlineArgs {
     fn augment_args(cmd: Command) -> Command {
         let many =
@@ -353,54 +349,25 @@ impl clap::Args for InlineArgs {
 
 impl clap::FromArgMatches for InlineArgs {
     fn from_arg_matches(m: &ArgMatches) -> Result<Self, clap::Error> {
-        let mut tokens: Vec<(usize, Token)> = Vec::new();
-        for id in IDS {
-            let Some(idx) = m.indices_of(id) else {
-                continue;
-            };
-            let idx: Vec<usize> = idx.collect();
-            match id {
-                "line" | "start_line" => {
-                    for (i, v) in idx
-                        .into_iter()
-                        .zip(m.get_many::<u64>(id).into_iter().flatten())
-                    {
-                        tokens.push((
-                            i,
-                            if id == "line" {
-                                Token::Line(*v)
-                            } else {
-                                Token::StartLine(*v)
-                            },
-                        ));
-                    }
-                }
-                "side" => {
-                    for (i, v) in idx
-                        .into_iter()
-                        .zip(m.get_many::<SideArg>(id).into_iter().flatten())
-                    {
-                        tokens.push((i, Token::Side(*v)));
-                    }
-                }
-                _ => {
-                    for (i, v) in idx
-                        .into_iter()
-                        .zip(m.get_many::<String>(id).into_iter().flatten())
-                    {
-                        let v = v.clone();
-                        tokens.push((
-                            i,
-                            match id {
-                                "file" => Token::File(v),
-                                "body" => Token::Body(v),
-                                _ => Token::Suggest(v),
-                            },
-                        ));
-                    }
-                }
-            }
+        /// Each value of flag `id`, with its position on the command line.
+        fn positioned<T: Clone + Send + Sync + 'static>(
+            m: &ArgMatches,
+            id: &str,
+            token: impl Fn(T) -> Token,
+        ) -> Vec<(usize, Token)> {
+            m.indices_of(id)
+                .into_iter()
+                .flatten()
+                .zip(m.get_many::<T>(id).into_iter().flatten())
+                .map(|(i, v)| (i, token(v.clone())))
+                .collect()
         }
+        let mut tokens = positioned::<String>(m, "file", Token::File);
+        tokens.extend(positioned::<u64>(m, "line", Token::Line));
+        tokens.extend(positioned::<u64>(m, "start_line", Token::StartLine));
+        tokens.extend(positioned::<SideArg>(m, "side", Token::Side));
+        tokens.extend(positioned::<String>(m, "body", Token::Body));
+        tokens.extend(positioned::<String>(m, "suggest", Token::Suggest));
         tokens.sort_by_key(|(i, _)| *i);
         let summary_file = m.get_one::<PathBuf>("body_file").cloned();
         group(tokens.into_iter().map(|(_, t)| t).collect(), summary_file)

@@ -96,6 +96,17 @@ pub fn root_of<'a>(c: &'a Comment, by_id: &BTreeMap<&str, &'a Comment>) -> &'a C
     cur
 }
 
+/// The id of the thread root of comment `id` among `comments`, or `None` when it is not one
+/// of them (what `dg pr resolve` names: any comment of a thread resolves the thread).
+pub fn root_id(comments: &[Comment], id: &str) -> Option<String> {
+    let by_id: BTreeMap<&str, &Comment> = comments
+        .iter()
+        .map(|c| (c.document_id.as_str(), c))
+        .collect();
+    let c = by_id.get(id)?;
+    Some(root_of(c, &by_id).document_id.clone())
+}
+
 /// Group `comments` (oldest first) into inline threads and general comments; `head` is the
 /// PR's current head, `resolved` the fold's resolved roots.
 pub fn threads(comments: &[Comment], head: &str, resolved: &[String]) -> Conversations {
@@ -104,8 +115,8 @@ pub fn threads(comments: &[Comment], head: &str, resolved: &[String]) -> Convers
         .map(|c| (c.document_id.as_str(), c))
         .collect();
     let resolved: BTreeSet<&str> = resolved.iter().map(String::as_str).collect();
-    let mut open: Vec<(String, Anchor, Vec<ThreadComment>)> = Vec::new();
-    let mut index: BTreeMap<String, usize> = BTreeMap::new();
+    // By root id; the final sort orders the threads, so the map's order does not matter.
+    let mut open: BTreeMap<String, (Anchor, Vec<ThreadComment>)> = BTreeMap::new();
     let mut general = Vec::new();
     for c in comments {
         let root = root_of(c, &by_id);
@@ -113,16 +124,15 @@ pub fn threads(comments: &[Comment], head: &str, resolved: &[String]) -> Convers
             general.push(ThreadComment::of(c));
             continue;
         };
-        let i = *index.entry(root.document_id.clone()).or_insert_with(|| {
-            open.push((root.document_id.clone(), anchor, Vec::new()));
-            open.len() - 1
-        });
-        open[i].2.push(ThreadComment::of(c));
+        open.entry(root.document_id.clone())
+            .or_insert_with(|| (anchor, Vec::new()))
+            .1
+            .push(ThreadComment::of(c));
     }
     let head = head.to_ascii_lowercase();
     let mut threads: Vec<Thread> = open
         .into_iter()
-        .map(|(id, anchor, mut comments)| {
+        .map(|(id, (anchor, mut comments))| {
             // The root first, whatever order replies arrived in.
             comments.sort_by_key(|c| (c.id != id, c.created_at));
             Thread {

@@ -327,6 +327,12 @@ pub fn merge_author(cwd: &Path, identity_id: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+/// [`merge_author`] for the repository the command runs in.
+pub fn merge_author_here(identity_id: &str) -> Vec<(String, String)> {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    merge_author(&cwd, identity_id)
+}
+
 /// The `-c dash.*` storage settings of the repository at `cwd`, so a push from a scratch
 /// repository stores packs where the user's own pushes would.
 pub fn storage_overrides(cwd: &Path) -> Vec<String> {

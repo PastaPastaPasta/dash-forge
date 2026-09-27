@@ -661,12 +661,7 @@ mod bounded_time {
     const MIB: usize = 1 << 20;
 
     /// Run `f` over `inputs` on a thread; fail on a hang (`deadline`) or a slow input.
-    fn expect_fast<T: Send + 'static>(
-        label: &str,
-        inputs: Vec<T>,
-        budget: Duration,
-        f: fn(&T),
-    ) {
+    fn expect_fast<T: Send + 'static>(label: &str, inputs: Vec<T>, budget: Duration, f: fn(&T)) {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut slowest = (Duration::ZERO, 0usize);
@@ -683,7 +678,10 @@ mod bounded_time {
         let (took, i) = rx
             .recv_timeout(Duration::from_secs(60))
             .unwrap_or_else(|_| panic!("{label}: batch did not finish in 60 s (hang)"));
-        assert!(took < budget, "{label}: input #{i} took {took:?} (budget {budget:?})");
+        assert!(
+            took < budget,
+            "{label}: input #{i} took {took:?} (budget {budget:?})"
+        );
     }
 
     /// `unit` repeated to `size` bytes (then `tail`).
@@ -694,7 +692,20 @@ mod bounded_time {
     /// A small deterministic PRNG (xorshift), so a failure reproduces.
     fn nasty(seed: u64, count: usize, max_len: usize) -> Vec<String> {
         const ALPHABET: [&str; 14] = [
-            "```", "~~~", "`", "~", "suggestion", " ", "\t", "\r", "\n", "\r\n", "x", "   ", "````", "\u{2028}",
+            "```",
+            "~~~",
+            "`",
+            "~",
+            "suggestion",
+            " ",
+            "\t",
+            "\r",
+            "\n",
+            "\r\n",
+            "x",
+            "   ",
+            "````",
+            "\u{2028}",
         ];
         let mut state = seed | 1;
         let mut next = move || {
@@ -721,6 +732,7 @@ mod bounded_time {
             .collect()
     }
 
+    #[allow(clippy::ptr_arg)] // the batch is `Vec<String>`
     fn parse(s: &String) {
         std::hint::black_box(parse_suggestions(s));
     }
@@ -742,7 +754,12 @@ mod bounded_time {
             "\r".repeat(KB20),
             "\r\n".repeat(KB20 / 2),
         ];
-        expect_fast("parse_suggestions", inputs, Duration::from_millis(250), parse);
+        expect_fast(
+            "parse_suggestions",
+            inputs,
+            Duration::from_millis(250),
+            parse,
+        );
     }
 
     #[test]
@@ -758,14 +775,27 @@ mod bounded_time {
     #[test]
     fn parse_suggestions_one_mib() {
         let mut inputs: Vec<String> = [
-            " ", "`", "~", "```\n", "```suggestion\n", "```suggestion\nx\n```\n", "\r", "\r\n", "\t",
+            " ",
+            "`",
+            "~",
+            "```\n",
+            "```suggestion\n",
+            "```suggestion\nx\n```\n",
+            "\r",
+            "\r\n",
+            "\t",
         ]
         .iter()
         .map(|u| fill(MIB, u, ""))
         .collect();
         inputs.push(format!("```x{}", fill(MIB - 4, " ", "y")));
         inputs.push(format!("```suggestion\n```{}", fill(MIB - 20, " ", "x")));
-        expect_fast("parse_suggestions 1 MiB", inputs, Duration::from_secs(3), parse);
+        expect_fast(
+            "parse_suggestions 1 MiB",
+            inputs,
+            Duration::from_secs(3),
+            parse,
+        );
     }
 
     #[test]
