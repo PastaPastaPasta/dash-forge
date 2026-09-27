@@ -1,0 +1,46 @@
+{
+  "name": "writer_promoted_to_maintainer_counts",
+  "description": "Policy maintainers-only: a reviewer who approved as a writer and is a maintainer now counts (current role).",
+  "case": "policy",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "writ",
+        "verdict": 1,
+        "commitOid": "H",
+        "createdAt": 100
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "maintainer",
+        "createdAt": 150
+      }
+    ],
+    "headOid": "H",
+    "policy": {
+      "requiredApprovals": 1,
+      "approverRole": 1,
+      "requireChecks": false,
+      "mergeMethods": 0
+    }
+  },
+  "expected": {
+    "met": true,
+    "have": 1,
+    "need": 1
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "name": "parse_indented_fence",
+  "description": "A fence opened with 2 spaces of indentation strips up to 2 leading spaces from each content line (CommonMark), and no more.",
+  "case": "suggestion",
+  "rules": "v2",
+  "input": {
+    "body": "  ```suggestion\n  a\n    b\n c\nd\n  ```"
+  },
+  "expected": [
+    {
+      "text": "a\n  b\nc\nd"
+    }
+  ]
+}

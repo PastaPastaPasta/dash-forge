@@ -1,0 +1,15 @@
+{
+  "name": "apply_empty_file_error",
+  "description": "An empty file has no line 1: out of range.",
+  "case": "suggestion",
+  "rules": "v2",
+  "input": {
+    "file": "",
+    "startLine": 1,
+    "endLine": 1,
+    "text": "x"
+  },
+  "expected": {
+    "error": "outOfRange"
+  }
+}

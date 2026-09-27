@@ -1,0 +1,15 @@
+{
+  "name": "apply_last_line_keeps_trailing_newline",
+  "description": "Replace the last line; the file's trailing newline stays.",
+  "case": "suggestion",
+  "rules": "v2",
+  "input": {
+    "file": "a\nb\n",
+    "startLine": 2,
+    "endLine": 2,
+    "text": "B"
+  },
+  "expected": {
+    "ok": "a\nB\n"
+  }
+}

@@ -238,6 +238,64 @@ Registered on moutai as forge-collab `BMfPmaEiMqDp64NDa4Am79VoRpZ9MPVNnCUy6i3Uiy
 - **Requested reviewers** are a fold (newest request/remove per identity), not countable; `addressee` finds them per identity.
 - **Composite (one merged proof)**: the PR page can be the `patch` (by `number`) as the page, with `comment`, `review`, `event`, `authorEvent` documents bound from its `$id` to `targetId` / `patchId` (each type has a `(targetId|patchId, $createdAt)` index), plus `counts` sub-queries for comments and reviews. A PR list page can add per-PR comment and review counts the same way (`kind: 'counts'`, bind `$id` → `targetId` / `patchId`), at most 100 bound values and 10 sub-queries (`MAX_BOUND_VALUES`, `MAX_SUB_QUERIES`). Per-target event pages have no count (nothing needs one).
 
+### 3.12 Rules and writers as implemented (PR 2)
+
+The functions of §5 exist in both ports with the signatures below; the vectors (`fold_pr_v2__*`, `fold_issue_v2__issue_author_draft_inert`, `fold_review_v2__*`, `approvals__dismiss*`, `policy__*`, `anchor__*`, `review_group__*`, `suggestion__*`, `linked_issues__*`) run in both harnesses.
+
+| Rust (`forge_core::rules::v2`, re-exported from `rules::review`) | TypeScript (`forge-web/lib/rules/v2`) |
+|---|---|
+| `fold_pr_state_v2(events, author_events, target_author, base_tip, is_ancestor, initial_draft) -> PrState` | `foldPrStateV2(events, authorEvents, targetAuthor, baseTip, isAncestor, initialDraft = false)` |
+| `fold_pr_review_v2(events, author_events, target_author, initial_head, &known_roots) -> PrReviewState { head, head_updates, requested_reviewers, resolved_threads, dismissed_reviews, milestone }` | `foldPrReviewV2(events, authorEvents, targetAuthor, initialHead, knownRoots: Set)` |
+| `count_approvals(reviews, oracle, head_oid, &dismissed: BTreeSet<review_id>) -> Approvals` | `countApprovals(reviews, oracle, headOid, dismissed = new Set())` |
+| `meets_policy(&approvals, oracle, &Policy) -> PolicyStatus { met, have, need }` | `meetsPolicy(approvals, oracle, policy)` |
+| `anchor_of(&AnchorFields) -> Option<Anchor { path, line, start_line, side, commit_oid }>` | `anchorOf(fields) -> Anchor \| null` |
+| `group_review_comments(review_id, reviewer, comment_count, comments) -> ReviewGroup { comments, landed, expected }` | `groupReviewComments(reviewId, reviewer, commentCount, comments)` |
+| `parse_suggestions(body) -> Vec<Suggestion { text }>`; `apply_suggestion(file, start, end, text) -> Result<String, SuggestionError::{BadRange, OutOfRange}>` | `parseSuggestions(body)`; `applySuggestion(...) -> { ok } \| { error: 'badRange' \| 'outOfRange' }` |
+| `linked_issues(text) -> Vec<u32>` | `linkedIssues(text) -> number[]` |
+| `is_author_kind(EventKind) -> bool` | `isAuthorKind(kind)` |
+
+`Event` gains `ref_id` / `refId`; `EventKind` gains the eight review kinds (`threadResolve`, `threadUnresolve`, `reviewRequest`, `reviewRequestRemove`, `reviewDismiss`, `headUpdate`, `milestoneSet`, `milestoneClear`).
+
+**Writers and readers.**
+
+- forge-core `collab::v2::Collab`:
+  - `post_target_event(repo, &Target, EventKind, &EventPayload { value, oid, ref_id }) -> (StateRoute, id)` routes through `kind_route` (member `event`, else the author's `authorEvent` for an author kind) and refuses missing payloads (`event_payload_props`).
+  - `review(repo, patch_id, verdict, commit_oid, body, comment_count: Option<u16>, imported)`.
+  - `comment(..)` with `CommentAnchor { start_line, review_id, .. }`.
+  - `set_policy(repo, &Policy)` and `policy(repo) -> Option<Policy>` (newest wins).
+  - `patches_from_branch(forge, source_repo_id, source_ref_name)` uses the `sourceRef` index.
+  - `patch_view` returns `PatchView { head, review, log, .. }`; `head` is the folded head, which `approvals`, `head_on_base`, `dg pr view/review/merge/checkout/diff` now use.
+  - `PatchView::review_with_threads(&comments)` adds thread resolution; `PatchView::dismissed()` lists the dismissed reviews.
+  - `approvals(repo, &PatchView)` takes the view, so dismissals and the folded head are applied.
+- forge-web `lib/repo/review-writes.ts`:
+  - Events: `postTargetEvent(sdk, auth, repo, { target, kind, author, isMember, payload: { value, oidHex, refId } })`, with `eventRoute` and `targetEventData`.
+  - Comments and reviews: `postComment(..., { targetId, body, replyTo, anchor: { path, line, startLine, side, commitOid }, reviewId })`, plus `commentData`, `anchorData` and `reviewData`.
+  - Pending review:
+    - `ReviewDraft` is stored in the IndexedDB journal under `review:<network>:<identity>:<prId>` (`saveReviewDraft` / `loadReviewDraft` / `discardReviewDraft`).
+    - `submitReviewDraft(sdk, auth, repo, draft, onProgress)` writes the review with `commentCount`, then each comment with `reviewId`. Each write's intent is `review:<draftId>:<step>`. The draft is saved after every landed document, so a retry resumes.
+  - `setPolicy(sdk, auth, repo, policy)`.
+  - Edits: `updateTarget(..., { type, id, title, body, expectedRevision })` and `updateComment(..., { id, body, dropReviewId, expectedRevision })`, both over `replaceDocumentIdempotent`.
+- forge-web `lib/sdk/write.ts` `replaceDocumentIdempotent(sdk, auth, { contractId, documentType, documentId, changes, expectedRevision })`:
+  - reads the stored document, refuses a non-owner before signing, and signs nothing when the changes already hold (idempotent by content);
+  - writes revision + 1 through the SDK's replace builder, and settles an unanswered wait by reading back.
+  - The cost preview is `previewReplace` (17M + 27.5k per changed byte).
+- forge-web `readPull` returns `headOid` (folded), `initialHeadOid` and `review: PrReviewState` (without thread roots), and seeds `draft` from the document. `readReviews` returns `commentCount`. `loadPullThread`'s approvals skip dismissed reviews. `toEvent` maps kinds 11–18 and `refId`.
+
+**Private repos.** These writers are plaintext. `writeRepoDoc` and `replace` refuse an issue, PR, comment or review in a private repo (`refusePlaintextInPrivate`), and so do a review submit and every edit. The sealed versions (`lib/private` `sealDoc`, forge-core `private::open_content`) are wired by private-repo PR 2 (CLI sealing) and web PR #51. A private PR edit re-seals under the patch's own epoch (private-repos.md §4.5).
+
+**forge-relay** follows the head too:
+- `TargetInfo::apply_head_update` applies an update only when it is newer by `($createdAt, $id)`, so reading the `event` and `authorEvent` streams one after the other still gives the fold's head.
+- The webhook's `head.sha` and the check-run watch use the current head.
+- A head move is a `pull_request` `synchronize`.
+
+**Timeline.** The web timeline has labels for the review kinds: "pushed new commits", "resolved a conversation", "requested a review from …", "dismissed a review: …", "set the milestone to …", and draft/ready.
+
+**Not in PR 2** (the web and CLI PRs):
+
+- The `readAnchor` → `anchorOf` swap in C1's `lib/repo/anchors.ts` and `inline-threads.ts`. Those files land with C1; `anchorOf` is ready for them.
+- The C1/C2 `createPatch` gaining `draft`.
+- `review-fold.ts` rows for requested and dismissed reviewers.
+
 ### 3.11 Measured costs (moutai, 2026-09-27, under the registered contract)
 
 Two figures matter: a **steady-state** write into index subtrees that already exist, and a **first write** that also creates them (a PR's first comment creates the comment subtree for that `targetId`, a repo's first issue the `repoId` subtrees). Measured on fresh repos:

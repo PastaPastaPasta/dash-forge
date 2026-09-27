@@ -124,6 +124,14 @@ pub(crate) fn event_kind_to_u64(kind: EventKind) -> u64 {
         EventKind::Retarget => 8,
         EventKind::Draft => 9,
         EventKind::Ready => 10,
+        EventKind::ThreadResolve => 11,
+        EventKind::ThreadUnresolve => 12,
+        EventKind::ReviewRequest => 13,
+        EventKind::ReviewRequestRemove => 14,
+        EventKind::ReviewDismiss => 15,
+        EventKind::HeadUpdate => 16,
+        EventKind::MilestoneSet => 17,
+        EventKind::MilestoneClear => 18,
     }
 }
 
@@ -140,6 +148,14 @@ pub(crate) fn u64_to_event_kind(kind: u64) -> Option<EventKind> {
         8 => EventKind::Retarget,
         9 => EventKind::Draft,
         10 => EventKind::Ready,
+        11 => EventKind::ThreadResolve,
+        12 => EventKind::ThreadUnresolve,
+        13 => EventKind::ReviewRequest,
+        14 => EventKind::ReviewRequestRemove,
+        15 => EventKind::ReviewDismiss,
+        16 => EventKind::HeadUpdate,
+        17 => EventKind::MilestoneSet,
+        18 => EventKind::MilestoneClear,
         _ => return None,
     })
 }
@@ -157,6 +173,11 @@ pub struct CommentAnchor {
     pub line: Option<u64>,
     /// Diff side (0/1).
     pub side: Option<u64>,
+    /// First line of a multi-line range (`line` is the last); needs `line`.
+    pub start_line: Option<u64>,
+    /// The `review` this comment belongs to (a pending review's batched comments). Consensus
+    /// requires the review to be the signer's and on the same PR.
+    pub review_id: Option<String>,
 }
 
 // ===========================================================================
@@ -329,12 +350,20 @@ mod tests {
             (EventKind::Retarget, 8),
             (EventKind::Draft, 9),
             (EventKind::Ready, 10),
+            (EventKind::ThreadResolve, 11),
+            (EventKind::ThreadUnresolve, 12),
+            (EventKind::ReviewRequest, 13),
+            (EventKind::ReviewRequestRemove, 14),
+            (EventKind::ReviewDismiss, 15),
+            (EventKind::HeadUpdate, 16),
+            (EventKind::MilestoneSet, 17),
+            (EventKind::MilestoneClear, 18),
         ] {
             assert_eq!(event_kind_to_u64(kind), n);
             assert_eq!(u64_to_event_kind(n), Some(kind));
         }
         assert_eq!(u64_to_event_kind(0), None);
-        assert_eq!(u64_to_event_kind(11), None);
+        assert_eq!(u64_to_event_kind(19), None);
     }
 
     #[test]

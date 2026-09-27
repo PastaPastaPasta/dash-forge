@@ -1,0 +1,15 @@
+{
+  "name": "apply_crlf",
+  "description": "A CRLF file keeps CRLF, including in the replacement.",
+  "case": "suggestion",
+  "rules": "v2",
+  "input": {
+    "file": "a\r\nb\r\nc\r\n",
+    "startLine": 2,
+    "endLine": 3,
+    "text": "X\nY"
+  },
+  "expected": {
+    "ok": "a\r\nX\r\nY\r\n"
+  }
+}

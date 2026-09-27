@@ -639,6 +639,7 @@ impl<'a> Sink<'a> {
                     source_ref_name: p.source_ref_name.clone(),
                     head_oid: p.head_oid.clone(),
                     patch_manifest_hash: None,
+                    draft: false,
                 };
                 let input = &input;
                 self.ledger
@@ -740,6 +741,7 @@ impl<'a> Sink<'a> {
                         &target.author,
                         Some(""),
                         |_, _| reachable,
+                        false,
                     )
                 };
                 let (recorded, strict) = (fold(true), fold(false));
@@ -908,6 +910,7 @@ impl<'a> Sink<'a> {
                                 Verdict::Comment,
                                 &r.commit_oid,
                                 &r.body,
+                                None,
                                 Some(&r.imported),
                             )
                             .await

@@ -1,0 +1,15 @@
+{
+  "name": "apply_bad_range_error",
+  "description": "A start line after the end line (or 0) is refused.",
+  "case": "suggestion",
+  "rules": "v2",
+  "input": {
+    "file": "a\nb\n",
+    "startLine": 2,
+    "endLine": 1,
+    "text": "x"
+  },
+  "expected": {
+    "error": "badRange"
+  }
+}

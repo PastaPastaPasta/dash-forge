@@ -1,0 +1,16 @@
+{
+  "name": "file_level",
+  "description": "A path with no line is a file-level anchor.",
+  "case": "anchor",
+  "rules": "v2",
+  "input": {
+    "path": "README.md"
+  },
+  "expected": {
+    "path": "README.md",
+    "line": null,
+    "startLine": null,
+    "side": null,
+    "commitOid": ""
+  }
+}

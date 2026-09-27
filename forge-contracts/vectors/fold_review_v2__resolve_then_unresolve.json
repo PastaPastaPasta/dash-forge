@@ -1,0 +1,45 @@
+{
+  "name": "resolve_then_unresolve",
+  "description": "A thread resolved by a member and then unresolved by the author is not resolved.",
+  "case": "fold_review",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "threadResolve",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 100,
+        "refId": "C1"
+      }
+    ],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "threadUnresolve",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 110,
+        "refId": "C1"
+      }
+    ],
+    "targetAuthor": "alice",
+    "initialHead": "H1",
+    "knownRoots": [
+      "C1"
+    ]
+  },
+  "expected": {
+    "head": "H1",
+    "headUpdates": [],
+    "requestedReviewers": [],
+    "resolvedThreads": [],
+    "dismissedReviews": [],
+    "milestone": null
+  }
+}

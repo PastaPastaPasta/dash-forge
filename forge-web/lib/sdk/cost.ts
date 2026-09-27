@@ -132,6 +132,19 @@ export function estimateChunkCredits(bytes: number): number {
   return chunks * (BASE_CREDITS['chunk'] ?? DEFAULT_BASE_CREDITS) + CREDITS_PER_TEXT_BYTE * bytes
 }
 
+/**
+ * What a replace (an edit) costs: the processing of a document write plus the storage of the
+ * changed text. Measured on moutai (2026-09-27): a patch title replaced with one of the same
+ * length 17.0M credits, a comment body grown by 10 bytes 3.9M. The estimate is the larger
+ * fixed part plus every changed byte, an upper bound.
+ */
+export const REPLACE_BASE_CREDITS = 17_000_000
+
+/** Preview for replacing a document's `changes`. */
+export function previewReplace(_documentType: string, changes: Readonly<Record<string, unknown>> = {}): CostPreview {
+  return previewCredits(REPLACE_BASE_CREDITS + CREDITS_PER_TEXT_BYTE * textBytes(changes))
+}
+
 /** Preview for deleting one document of `documentType` (usually a refund: negative credits). */
 export function previewDelete(documentType: string): CostPreview {
   return previewCredits(DELETE_CREDITS[documentType] ?? DEFAULT_DELETE_CREDITS)

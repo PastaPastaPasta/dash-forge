@@ -1,0 +1,14 @@
+{
+  "name": "parse_single",
+  "description": "One suggestion block.",
+  "case": "suggestion",
+  "rules": "v2",
+  "input": {
+    "body": "Use a default:\n\n```suggestion\n    let name = arg.unwrap_or(\"world\");\n```\n"
+  },
+  "expected": [
+    {
+      "text": "    let name = arg.unwrap_or(\"world\");"
+    }
+  ]
+}

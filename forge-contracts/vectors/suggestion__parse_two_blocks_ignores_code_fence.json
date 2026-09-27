@@ -1,0 +1,17 @@
+{
+  "name": "parse_two_blocks_ignores_code_fence",
+  "description": "Two suggestion blocks and a plain rust fence (not a suggestion); a suggestion fence inside a longer outer fence is not a suggestion.",
+  "case": "suggestion",
+  "rules": "v2",
+  "input": {
+    "body": "```suggestion\na\n```\n\n```rust\nlet x = 1;\n```\n\n````md\n```suggestion\nnot this\n```\n````\n\n~~~suggestion\nb\nc\n~~~"
+  },
+  "expected": [
+    {
+      "text": "a"
+    },
+    {
+      "text": "b\nc"
+    }
+  ]
+}

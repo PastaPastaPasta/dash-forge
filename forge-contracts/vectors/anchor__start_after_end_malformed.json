@@ -1,0 +1,13 @@
+{
+  "name": "start_after_end_malformed",
+  "description": "startLine after line is malformed: no anchor (shown as a general comment).",
+  "case": "anchor",
+  "rules": "v2",
+  "input": {
+    "path": "src/a.rs",
+    "startLine": 6,
+    "line": 5,
+    "side": 1
+  },
+  "expected": null
+}

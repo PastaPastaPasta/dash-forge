@@ -1,0 +1,19 @@
+{
+  "name": "line",
+  "description": "A single-line anchor on the new side: startLine defaults to line.",
+  "case": "anchor",
+  "rules": "v2",
+  "input": {
+    "path": "src/a.rs",
+    "line": 12,
+    "side": 1,
+    "commitOid": "abababababababababababababababababababab"
+  },
+  "expected": {
+    "path": "src/a.rs",
+    "line": 12,
+    "startLine": 12,
+    "side": 1,
+    "commitOid": "abababababababababababababababababababab"
+  }
+}

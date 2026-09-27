@@ -1,0 +1,10 @@
+{
+  "name": "none",
+  "description": "Mentions without a closing verb link nothing.",
+  "case": "linked_issues",
+  "rules": "v2",
+  "input": {
+    "text": "See #12 and PR #3."
+  },
+  "expected": []
+}

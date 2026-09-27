@@ -24,6 +24,9 @@ export {
   measureActual,
   pendingWriteKey,
   deleteDocumentIdempotent,
+  replaceDocumentIdempotent,
+  type ReplaceParams,
+  type ReplaceResult,
   findSigningKey,
   isAlreadyExistsError,
   readIdentityBalance,
@@ -39,6 +42,7 @@ export {
   previewCreate,
   previewCredits,
   previewDelete,
+  previewReplace,
   sumPreviews,
   type CostPreview,
 } from './cost'

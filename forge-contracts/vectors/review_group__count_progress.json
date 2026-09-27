@@ -1,0 +1,40 @@
+{
+  "name": "count_progress",
+  "description": "A review announced 5 comments and 3 have landed (a submit in flight or interrupted).",
+  "case": "review_group",
+  "rules": "v2",
+  "input": {
+    "reviewId": "R1",
+    "reviewer": "maint",
+    "commentCount": 5,
+    "comments": [
+      {
+        "id": "c1",
+        "owner": "maint",
+        "createdAt": 100,
+        "reviewId": "R1"
+      },
+      {
+        "id": "c3",
+        "owner": "maint",
+        "createdAt": 100,
+        "reviewId": "R1"
+      },
+      {
+        "id": "c2",
+        "owner": "maint",
+        "createdAt": 101,
+        "reviewId": "R1"
+      }
+    ]
+  },
+  "expected": {
+    "comments": [
+      "c1",
+      "c3",
+      "c2"
+    ],
+    "landed": 3,
+    "expected": 5
+  }
+}

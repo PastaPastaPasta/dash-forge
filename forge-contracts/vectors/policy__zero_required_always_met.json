@@ -1,0 +1,33 @@
+{
+  "name": "zero_required_always_met",
+  "description": "Policy: 0 approvals. Met with no reviews at all.",
+  "case": "policy",
+  "rules": "v2",
+  "input": {
+    "reviews": [],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "headOid": "H",
+    "policy": {
+      "requiredApprovals": 0,
+      "approverRole": 1,
+      "requireChecks": false,
+      "mergeMethods": 0
+    }
+  },
+  "expected": {
+    "met": true,
+    "have": 0,
+    "need": 0
+  }
+}

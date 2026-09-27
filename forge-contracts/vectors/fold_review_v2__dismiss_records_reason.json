@@ -1,0 +1,39 @@
+{
+  "name": "dismiss_records_reason",
+  "description": "A member dismisses review R1 with a reason: recorded with actor, reason and time.",
+  "case": "fold_review",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "reviewDismiss",
+        "actor": "maint",
+        "value": "stale after the rebase",
+        "oid": null,
+        "createdAt": 100,
+        "refId": "R1"
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice",
+    "initialHead": "H1",
+    "knownRoots": []
+  },
+  "expected": {
+    "head": "H1",
+    "headUpdates": [],
+    "requestedReviewers": [],
+    "resolvedThreads": [],
+    "dismissedReviews": [
+      {
+        "reviewId": "R1",
+        "actor": "maint",
+        "reason": "stale after the rebase",
+        "createdAt": 100
+      }
+    ],
+    "milestone": null
+  }
+}

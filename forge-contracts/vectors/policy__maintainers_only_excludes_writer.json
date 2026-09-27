@@ -1,0 +1,48 @@
+{
+  "name": "maintainers_only_excludes_writer",
+  "description": "Policy: 2 approvals, maintainers only. A maintainer and a writer approve: 1 of 2.",
+  "case": "policy",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "maint",
+        "verdict": 1,
+        "commitOid": "H",
+        "createdAt": 100
+      },
+      {
+        "id": "r2",
+        "reviewer": "writ",
+        "verdict": 1,
+        "commitOid": "H",
+        "createdAt": 110
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "headOid": "H",
+    "policy": {
+      "requiredApprovals": 2,
+      "approverRole": 1,
+      "requireChecks": false,
+      "mergeMethods": 0
+    }
+  },
+  "expected": {
+    "met": false,
+    "have": 1,
+    "need": 2
+  }
+}

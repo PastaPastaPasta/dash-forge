@@ -153,7 +153,7 @@ function runCaseBase(v: Vector): void {
  * as the Rust harness does, so a vector cannot carry a field (a retired `tokenRecords`, a misspelt
  * `supersedes`) that the rules silently ignore.
  */
-const EVENT_KEYS = ['id', 'targetId', 'kind', 'actor', 'value', 'oid', 'createdAt']
+const EVENT_KEYS = ['id', 'targetId', 'kind', 'actor', 'value', 'oid', 'refId', 'createdAt']
 const MEMBERSHIP_KEYS = ['identity', 'role', 'createdAt']
 const NESTED_KEYS: Readonly<Record<string, readonly string[]>> = {
   events: EVENT_KEYS,
@@ -162,6 +162,8 @@ const NESTED_KEYS: Readonly<Record<string, readonly string[]>> = {
   reviews: ['id', 'reviewer', 'verdict', 'commitOid', 'createdAt'],
   memberships: MEMBERSHIP_KEYS,
   queries: ['identity', 'at'],
+  policy: ['requiredApprovals', 'approverRole', 'requireChecks', 'mergeMethods'],
+  comments: ['id', 'owner', 'reviewId', 'createdAt'],
   doc: [
     'kind', 'title', 'body', 'refName', 'baseRefName', 'sourceRefName',
     'refNameHash', 'baseRefNameHash', 'sourceRefNameHash',
@@ -208,14 +210,15 @@ function runCaseV2(v: Vector): void {
       break
     }
     case 'fold_pr': {
-      onlyKeys(v, ['events', 'authorEvents', 'targetAuthor', 'baseTip', 'ancestry', 'baseHistory'])
+      onlyKeys(v, ['events', 'authorEvents', 'targetAuthor', 'baseTip', 'ancestry', 'baseHistory', 'initialDraft'])
       const inp = v.input as V2FoldInput & {
         readonly baseTip?: string | null
         readonly ancestry?: Pairs
         readonly baseHistory?: BaseHistory
+        readonly initialDraft?: boolean
       }
       const [baseTip, isAncestor] = foldBase(v, inp)
-      const got = v2.foldPrStateV2(inp.events ?? [], inp.authorEvents ?? [], inp.targetAuthor, baseTip, isAncestor)
+      const got = v2.foldPrStateV2(inp.events ?? [], inp.authorEvents ?? [], inp.targetAuthor, baseTip, isAncestor, inp.initialDraft ?? false)
       expect(got).toEqual(v.expected)
       break
     }
@@ -256,14 +259,64 @@ function runCaseV2(v: Vector): void {
       break
     }
     case 'approvals': {
-      onlyKeys(v, ['reviews', 'memberships', 'headOid'])
+      onlyKeys(v, ['reviews', 'memberships', 'headOid', 'dismissed'])
       const inp = v.input as {
         readonly reviews: readonly v2.Review[]
         readonly memberships: readonly v2.Membership[]
         readonly headOid: string
+        readonly dismissed?: readonly string[]
       }
       const oracle = new v2.RoleOracle(inp.memberships)
-      expect(v2.countApprovals(inp.reviews, oracle, inp.headOid)).toEqual(v.expected)
+      expect(v2.countApprovals(inp.reviews, oracle, inp.headOid, new Set(inp.dismissed ?? []))).toEqual(v.expected)
+      break
+    }
+    case 'fold_review': {
+      onlyKeys(v, ['events', 'authorEvents', 'targetAuthor', 'initialHead', 'knownRoots'])
+      const inp = v.input as V2FoldInput & { readonly initialHead: string; readonly knownRoots?: readonly string[] }
+      const got = v2.foldPrReviewV2(inp.events ?? [], inp.authorEvents ?? [], inp.targetAuthor, inp.initialHead, new Set(inp.knownRoots ?? []))
+      expect(got).toEqual(v.expected)
+      break
+    }
+    case 'policy': {
+      onlyKeys(v, ['reviews', 'memberships', 'headOid', 'dismissed', 'policy'])
+      const inp = v.input as {
+        readonly reviews: readonly v2.Review[]
+        readonly memberships: readonly v2.Membership[]
+        readonly headOid: string
+        readonly dismissed?: readonly string[]
+        readonly policy: v2.Policy
+      }
+      const oracle = new v2.RoleOracle(inp.memberships)
+      const approvals = v2.countApprovals(inp.reviews, oracle, inp.headOid, new Set(inp.dismissed ?? []))
+      expect(v2.meetsPolicy(approvals, oracle, inp.policy)).toEqual(v.expected)
+      break
+    }
+    case 'anchor': {
+      onlyKeys(v, ['path', 'line', 'startLine', 'side', 'commitOid'])
+      expect(v2.anchorOf(v.input as v2.AnchorFields)).toEqual(v.expected)
+      break
+    }
+    case 'review_group': {
+      onlyKeys(v, ['reviewId', 'reviewer', 'commentCount', 'comments'])
+      const inp = v.input as {
+        readonly reviewId: string
+        readonly reviewer: string
+        readonly commentCount?: number
+        readonly comments: readonly v2.ReviewComment[]
+      }
+      expect(v2.groupReviewComments(inp.reviewId, inp.reviewer, inp.commentCount, inp.comments)).toEqual(v.expected)
+      break
+    }
+    case 'suggestion': {
+      onlyKeys(v, ['body', 'file', 'startLine', 'endLine', 'text'])
+      const inp = v.input as { readonly body?: string; readonly file?: string; readonly startLine?: number; readonly endLine?: number; readonly text?: string }
+      if (inp.body !== undefined) expect(v2.parseSuggestions(inp.body)).toEqual(v.expected)
+      else expect(v2.applySuggestion(inp.file as string, inp.startLine as number, inp.endLine as number, inp.text ?? '')).toEqual(v.expected)
+      break
+    }
+    case 'linked_issues': {
+      onlyKeys(v, ['text'])
+      expect(v2.linkedIssues((v.input as { readonly text: string }).text)).toEqual(v.expected)
       break
     }
     case 'well_formed': {

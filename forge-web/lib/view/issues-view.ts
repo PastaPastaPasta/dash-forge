@@ -155,7 +155,8 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number)
     readReviews(sdk, repo, id),
   ])
   const pull = await readPull(sdk, repo, doc, log)
-  const approvals = await readApprovals(sdk, repo, reviews, pull.headOid)
+  const dismissed = new Set(pull.review.dismissedReviews.map((d) => d.reviewId))
+  const approvals = await readApprovals(sdk, repo, reviews, pull.headOid, dismissed)
   return { pull, timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews), approvals }
 }
 
@@ -165,6 +166,7 @@ async function readApprovals(
   repo: RepoRef,
   reviews: readonly ReviewView[],
   headOid: string,
+  dismissed: ReadonlySet<string>,
 ): Promise<PullApprovals | null> {
   try {
     const oracle = await readRoleOracle(sdk, repo)
@@ -178,6 +180,7 @@ async function readApprovals(
       })),
       oracle,
       headOid,
+      dismissed,
     )
     const reviewers = [...counted.approvers, ...counted.changesRequested]
     return { ...counted, roles: new Map(reviewers.map((who) => [who, oracle.currentRole(who)])) }

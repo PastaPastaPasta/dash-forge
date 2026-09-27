@@ -1,0 +1,17 @@
+{
+  "name": "parse_crlf_and_empty",
+  "description": "CRLF bodies are normalised; an empty suggestion (delete the lines) is kept.",
+  "case": "suggestion",
+  "rules": "v2",
+  "input": {
+    "body": "```suggestion\r\nx\r\n```\r\n```suggestion\r\n```\r\n"
+  },
+  "expected": [
+    {
+      "text": "x"
+    },
+    {
+      "text": ""
+    }
+  ]
+}

@@ -46,6 +46,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+pub mod review;
 pub mod v2;
 
 /// A git object id, hex-encoded (the JSON-friendly representation the vectors use).
@@ -665,7 +666,9 @@ fn neutralize_wildmatch(pattern: &str) -> String {
 // Event fold (issue / PR state)
 // ===========================================================================
 
-/// A collaboration `event` kind (§2.3 numeric kinds 1–10).
+/// A collaboration `event` kind (forge-v2.md §3, numeric kinds 1–18). Kinds 1–10 change the
+/// issue/PR state ([`apply_issue_event`], [`apply_pr_event`]); 11–18 are the review state
+/// ([`v2::fold_pr_review_v2`]) and do nothing to [`PrState`] / [`IssueState`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EventKind {
@@ -689,6 +692,22 @@ pub enum EventKind {
     Draft,
     /// 10 — PR marked ready for review.
     Ready,
+    /// 11 — a review thread resolved (`ref_id` = the thread's root comment).
+    ThreadResolve,
+    /// 12 — a review thread unresolved (`ref_id` = the root comment).
+    ThreadUnresolve,
+    /// 13 — a reviewer requested (`ref_id` = the reviewer's identity).
+    ReviewRequest,
+    /// 14 — a review request removed (`ref_id` = the reviewer's identity).
+    ReviewRequestRemove,
+    /// 15 — a review dismissed (`ref_id` = the review; `value` = the reason). Members only.
+    ReviewDismiss,
+    /// 16 — the PR head moved (`oid` = the new head).
+    HeadUpdate,
+    /// 17 — a milestone set (`value` = its name). Members only.
+    MilestoneSet,
+    /// 18 — the milestone cleared. Members only.
+    MilestoneClear,
 }
 
 /// A single `event` document (§2.3), flattened for the fold.
@@ -708,9 +727,13 @@ pub struct Event {
     /// Kind-dependent payload: label name, assignee id, or retarget base ref.
     #[serde(default)]
     pub value: Option<String>,
-    /// Merge commit oid (kind `Merge` only).
+    /// Merge commit oid (kind `Merge`) or new head (kind `HeadUpdate`).
     #[serde(default)]
     pub oid: Option<Oid>,
+    /// The document or identity a review kind refers to (`refId`, base58): a thread's root
+    /// comment (11, 12), a reviewer (13, 14), a review (15). Absent for the other kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ref_id: Option<String>,
     /// Consensus `$createdAt` (ms).
     pub created_at: u64,
 }
@@ -807,7 +830,8 @@ fn apply_issue_event(state: &mut IssueState, e: &Event) {
                 state.assignees.remove(v);
             }
         }
-        EventKind::Merge | EventKind::Retarget | EventKind::Draft | EventKind::Ready => {}
+        // PR-only kinds, and the review kinds (11–18, `v2::fold_pr_review_v2`).
+        _ => {}
     }
 }
 
@@ -857,6 +881,8 @@ fn apply_pr_event(state: &mut PrState, e: &Event) {
         }
         EventKind::Draft => state.draft = true,
         EventKind::Ready => state.draft = false,
+        // Review kinds (11–18) are folded by `v2::fold_pr_review_v2`.
+        _ => {}
     }
 }
 
@@ -1011,6 +1037,7 @@ mod tests {
             actor: actor.into(),
             value: None,
             oid: Some(oid.into()),
+            ref_id: None,
             created_at,
         }
     }
@@ -1028,14 +1055,19 @@ mod tests {
             ["M".to_string(), "T".to_string()].into_iter().collect();
 
         // Base has advanced to `T` (T != M). Monotonic predicate keeps the PR merged.
-        let good = v2::fold_pr_state_v2(&events, &[], "author1", Some("T"), |oid, _tip| {
-            historical.contains(oid)
-        });
+        let good = v2::fold_pr_state_v2(
+            &events,
+            &[],
+            "author1",
+            Some("T"),
+            |oid, _tip| historical.contains(oid),
+            false,
+        );
         assert!(good.merged, "merge stays merged after base advances");
         assert!(!good.open, "a merged PR is closed");
 
         // The buggy reflexive stand-in rejects the merge once base_tip != merge_oid.
-        let bad = v2::fold_pr_state_v2(&events, &[], "author1", Some("T"), |a, b| a == b);
+        let bad = v2::fold_pr_state_v2(&events, &[], "author1", Some("T"), |a, b| a == b, false);
         assert!(
             !bad.merged,
             "reflexive a==b wrongly un-merges once the base advances (the fixed bug)"
@@ -1054,6 +1086,7 @@ mod tests {
             actor: holder.into(),
             value: Some("refs/heads/dev".into()),
             oid: None,
+            ref_id: None,
             created_at: 5,
         };
         let illegal = Event {
@@ -1063,12 +1096,20 @@ mod tests {
             actor: holder.into(),
             value: Some("refs/heads/x\n0000 refs/heads/main".into()),
             oid: None,
+            ref_id: None,
             created_at: 10,
         };
-        let s1 = v2::fold_pr_state_v2(std::slice::from_ref(&legal), &[], "a", None, |_, _| false);
+        let s1 = v2::fold_pr_state_v2(
+            std::slice::from_ref(&legal),
+            &[],
+            "a",
+            None,
+            |_, _| false,
+            false,
+        );
         assert_eq!(s1.base_ref.as_deref(), Some("refs/heads/dev"));
         // The newer illegal retarget must NOT overwrite with the injection payload.
-        let s2 = v2::fold_pr_state_v2(&[legal, illegal], &[], "a", None, |_, _| false);
+        let s2 = v2::fold_pr_state_v2(&[legal, illegal], &[], "a", None, |_, _| false, false);
         assert_eq!(
             s2.base_ref.as_deref(),
             Some("refs/heads/dev"),
@@ -1259,6 +1300,9 @@ mod tests {
         ancestry: Ancestry,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_history: Option<BaseHistory>,
+        /// The patch's `draft` (absent: false).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        initial_draft: bool,
     }
 
     #[derive(Debug, Deserialize, Serialize)]
@@ -1297,6 +1341,66 @@ mod tests {
         reviews: Vec<v2::Review>,
         memberships: Vec<v2::Membership>,
         head_oid: String,
+        /// Review ids a `reviewDismiss` names (absent: none).
+        #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+        dismissed: std::collections::BTreeSet<String>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct FoldReviewInput {
+        #[serde(default)]
+        events: Vec<Event>,
+        #[serde(default)]
+        author_events: Vec<Event>,
+        target_author: String,
+        initial_head: String,
+        #[serde(default)]
+        known_roots: std::collections::BTreeSet<String>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct PolicyInput {
+        reviews: Vec<v2::Review>,
+        memberships: Vec<v2::Membership>,
+        head_oid: String,
+        #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+        dismissed: std::collections::BTreeSet<String>,
+        policy: v2::Policy,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ReviewGroupInput {
+        review_id: String,
+        reviewer: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        comment_count: Option<u32>,
+        comments: Vec<v2::ReviewComment>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct SuggestionInput {
+        /// `parse`: a comment body.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        body: Option<String>,
+        /// `apply`: the file and the range.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        start_line: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        end_line: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct TextInput {
+        text: String,
     }
 
     #[derive(Debug, Deserialize, Serialize)]
@@ -1399,6 +1503,73 @@ mod tests {
         }
     }
 
+    /// The review-parity cases (`docs/design/review-parity-spec.md` §5).
+    fn run_review_case(v: &Vector) {
+        let ctx = &v.name;
+        match v.case.as_str() {
+            "fold_review" => {
+                let inp: FoldReviewInput = input(v);
+                let got = v2::fold_pr_review_v2(
+                    &inp.events,
+                    &inp.author_events,
+                    &inp.target_author,
+                    &inp.initial_head,
+                    &inp.known_roots,
+                );
+                assert_eq!(got, expected::<v2::PrReviewState>(v), "vector `{ctx}`");
+            }
+            "policy" => {
+                let inp: PolicyInput = input(v);
+                let oracle = v2::RoleOracle::new(inp.memberships);
+                let approvals =
+                    v2::count_approvals(&inp.reviews, &oracle, &inp.head_oid, &inp.dismissed);
+                let got = v2::meets_policy(&approvals, &oracle, &inp.policy);
+                assert_eq!(got, expected::<v2::PolicyStatus>(v), "vector `{ctx}`");
+            }
+            "anchor" => {
+                let inp: v2::AnchorFields = input(v);
+                let got = v2::anchor_of(&inp);
+                assert_eq!(got, expected::<Option<v2::Anchor>>(v), "vector `{ctx}`");
+            }
+            "review_group" => {
+                let inp: ReviewGroupInput = input(v);
+                let got = v2::group_review_comments(
+                    &inp.review_id,
+                    &inp.reviewer,
+                    inp.comment_count,
+                    &inp.comments,
+                );
+                assert_eq!(got, expected::<v2::ReviewGroup>(v), "vector `{ctx}`");
+            }
+            "suggestion" => {
+                let inp: SuggestionInput = input(v);
+                let got = match (&inp.body, &inp.file) {
+                    (Some(body), None) => serde_json::json!(v2::parse_suggestions(body)),
+                    (None, Some(file)) => {
+                        let r = v2::apply_suggestion(
+                            file,
+                            inp.start_line.expect("startLine"),
+                            inp.end_line.expect("endLine"),
+                            inp.text.as_deref().unwrap_or(""),
+                        );
+                        match r {
+                            Ok(out) => serde_json::json!({ "ok": out }),
+                            Err(e) => serde_json::json!({ "error": e }),
+                        }
+                    }
+                    _ => panic!("vector `{ctx}`: suggestion takes body (parse) or file (apply)"),
+                };
+                assert_eq!(got, v.expected, "vector `{ctx}`");
+            }
+            "linked_issues" => {
+                let inp: TextInput = input(v);
+                let got = v2::linked_issues(&inp.text);
+                assert_eq!(got, expected::<Vec<u32>>(v), "vector `{ctx}`");
+            }
+            other => panic!("vector `{ctx}`: not a review case `{other}`"),
+        }
+    }
+
     fn run_case_v2(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
@@ -1422,6 +1593,7 @@ mod tests {
                     &inp.target_author,
                     base_tip.as_deref(),
                     |a, d| ancestry.is_ancestor(a, d),
+                    inp.initial_draft,
                 );
                 assert_eq!(got, expected::<PrState>(v), "vector `{ctx}`");
             }
@@ -1439,7 +1611,7 @@ mod tests {
             "approvals" => {
                 let inp: ApprovalsInput = input(v);
                 let oracle = v2::RoleOracle::new(inp.memberships);
-                let got = v2::count_approvals(&inp.reviews, &oracle, &inp.head_oid);
+                let got = v2::count_approvals(&inp.reviews, &oracle, &inp.head_oid, &inp.dismissed);
                 assert_eq!(got, expected::<v2::Approvals>(v), "vector `{ctx}`");
             }
             "well_formed" => {
@@ -1487,6 +1659,8 @@ mod tests {
                     .collect();
                 assert_eq!(serde_json::Value::from(got), v.expected, "vector `{ctx}`");
             }
+            "fold_review" | "policy" | "anchor" | "review_group" | "suggestion"
+            | "linked_issues" => run_review_case(v),
             other => panic!("vector `{ctx}`: unknown v2 case `{other}`"),
         }
     }

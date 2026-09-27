@@ -1,0 +1,14 @@
+{
+  "name": "non_ascii_adjacent",
+  "description": "A verb directly after a non-ASCII letter still starts a word (only ASCII letters, digits and _ are word characters, as in both ports); a non-ASCII letter directly after '#n' ends the number.",
+  "case": "linked_issues",
+  "rules": "v2",
+  "input": {
+    "text": "éfixes #1 fixes #2é résolu: fixes #3"
+  },
+  "expected": [
+    1,
+    2,
+    3
+  ]
+}

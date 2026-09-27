@@ -1,0 +1,15 @@
+{
+  "name": "apply_no_trailing_newline_kept",
+  "description": "A file without a trailing newline stays without one.",
+  "case": "suggestion",
+  "rules": "v2",
+  "input": {
+    "file": "a\nb",
+    "startLine": 1,
+    "endLine": 2,
+    "text": "x"
+  },
+  "expected": {
+    "ok": "x"
+  }
+}

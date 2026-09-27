@@ -24,7 +24,10 @@ import {
   sorted,
 } from './fold'
 import { compareKey, compareStrings, refNameHashMatches } from './oid'
+import { mergedLog } from './review'
 import type { Event, IsAncestor, IssueState, Oid, PrState } from './types'
+
+export * from './review'
 
 /** The versioned rules identifier for forge-v2 repositories. */
 export const FORGE_RULES_V2 = 'FORGE_RULES_V2' as const
@@ -81,22 +84,6 @@ export class RoleOracle {
 // Issue / PR fold
 // ---------------------------------------------------------------------------
 
-/** An `authorEvent` applies only if it is a close or reopen by the target's author. */
-function authorEventApplies(e: Event, targetAuthor: string): boolean {
-  return (e.kind === 'close' || e.kind === 'reopen') && e.actor === targetAuthor
-}
-
-/** Both document types, applicable ones only, in `(createdAt, id)` order (stable). */
-function mergedLog(
-  events: readonly Event[],
-  authorEvents: readonly Event[],
-  targetAuthor: string,
-): Event[] {
-  return [...events, ...authorEvents.filter((e) => authorEventApplies(e, targetAuthor))].sort(
-    compareKey,
-  )
-}
-
 /** Fold an issue's `event` and `authorEvent` documents into its {@link IssueState}. */
 export function foldIssueStateV2(
   events: readonly Event[],
@@ -108,15 +95,20 @@ export function foldIssueStateV2(
   return issueStateOf(s)
 }
 
-/** Fold a PR's `event` and `authorEvent` documents; a merge needs a reachable `oid`. */
+/**
+ * Fold a PR's `event` and `authorEvent` documents; a merge needs a reachable `oid`.
+ * `initialDraft` is the patch's `draft`; draft / ready events (members or the author)
+ * override it in order.
+ */
 export function foldPrStateV2(
   events: readonly Event[],
   authorEvents: readonly Event[],
   targetAuthor: string,
   baseTip: string | undefined,
   isAncestor: IsAncestor,
+  initialDraft = false,
 ): PrState {
-  const s = newPrAcc()
+  const s = newPrAcc(initialDraft)
   for (const e of mergedLog(events, authorEvents, targetAuthor)) {
     if (e.kind === 'merge' && !mergeReachable(e, baseTip, isAncestor)) continue
     applyPrEvent(s, e)
@@ -355,14 +347,16 @@ export interface Approvals {
 }
 
 /**
- * Count a PR's approvals, `forge-v2.md` §6: only reviews on `headOid` by a reviewer who was
- * a member at the review's `createdAt`; a reviewer's newest approve / request-changes review
- * by `(createdAt, id)` stands; comment and unknown verdicts are ignored.
+ * Count a PR's approvals, `forge-v2.md` §6: only reviews on `headOid` (the folded head) by a
+ * reviewer who was a member at the review's `createdAt`; a reviewer's newest approve /
+ * request-changes review by `(createdAt, id)` stands; comment and unknown verdicts, and
+ * reviews in `dismissed` (the ids a `reviewDismiss` names), are ignored.
  */
 export function countApprovals(
   reviews: readonly Review[],
   oracle: RoleOracle,
   headOid: string,
+  dismissed: ReadonlySet<string> = new Set(),
 ): Approvals {
   const approvers = new Set<string>()
   const changesRequested = new Set<string>()
@@ -370,6 +364,7 @@ export function countApprovals(
     .filter(
       (r) =>
         (r.verdict === 1 || r.verdict === 2) &&
+        !dismissed.has(r.id) &&
         r.commitOid === headOid &&
         oracle.memberAt(r.reviewer, r.createdAt),
     )

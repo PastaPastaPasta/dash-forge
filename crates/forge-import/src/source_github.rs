@@ -297,6 +297,8 @@ fn comment(src: &GithubRepoRef, number: u32, c: &GhComment) -> SrcComment {
             path: Some(model::clip(p, 500, 1000)),
             line: c.line,
             side: c.side.as_deref().map(|s| u64::from(s != "LEFT")),
+            start_line: None,
+            review_id: None,
         }),
     }
 }

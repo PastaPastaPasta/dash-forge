@@ -1,0 +1,522 @@
+/**
+ * Review-parity writes (`docs/design/review-parity-spec.md` §3, §4): the review event kinds
+ * (thread resolution, review requests and dismissals, head updates, draft/ready, milestones),
+ * a pending review submitted as one `review` plus its `reviewId` comments (resumable), a
+ * branch `policy`, and edits (title/body of an issue or PR, a comment's body) through
+ * {@link replaceDocumentIdempotent}. Parity: forge-core `collab::v2` (`post_target_event`,
+ * `review`, `comment`, `set_policy`).
+ *
+ * Consensus enforces every gate (forge-v2.md §2, §3): an `event` needs a maintainer or writer,
+ * an `authorEvent` needs the target's author and an author kind, a `policy` a maintainer, a
+ * `reviewId` comment the reviewer, an edit the document's owner. These helpers pick the route
+ * and refuse what would certainly be refused, before anything is signed.
+ */
+
+import type { EvoSDK } from '@dashevo/evo-sdk'
+import { hexToBytes } from '@noble/hashes/utils.js'
+
+import { decodeIdentifier } from '../auth/base58'
+import { idbDelete, idbGet, idbPut } from '../idb'
+import { isLegalRefName } from '../rules'
+import { anchorOf, groupReviewComments, isAuthorKind, type AnchorFields, type Policy } from '../rules/v2'
+import type { EventKind } from '../rules'
+import {
+  ConsensusRefusal,
+  GATE_REFUSED_CODE,
+  queryAllDocuments,
+  replaceDocumentIdempotent,
+  type ReplaceResult,
+  type WriteAuth,
+  type WriteResult,
+} from '../sdk'
+import { DOC, asIdentifierString, byteFieldToHex, num, str, type RepoRef } from './contract'
+import { invalidateRepoFeed, readReviews } from './issues'
+import { repoSource } from './source'
+import { EVENT_KIND_CODE, VERDICT_INT, contractFor, eventRoute, refusePlaintextInPrivate, writeRepoDoc, type VerdictInput, type WriteTarget } from './writes'
+
+export { EVENT_KIND_CODE, eventRoute }
+
+/** The payload of a state event (forge-v2.md §3). */
+export interface EventPayload {
+  /** A label, an assignee, a retarget base, a dismissal reason, a milestone. */
+  readonly value?: string
+  /** A merge commit or a new head, hex. */
+  readonly oidHex?: string
+  /** A thread root comment, a reviewer identity or a review, base58. */
+  readonly refId?: string
+}
+
+const REF_KINDS: ReadonlySet<EventKind> = new Set<EventKind>(['threadResolve', 'threadUnresolve', 'reviewRequest', 'reviewRequestRemove', 'reviewDismiss'])
+
+/**
+ * The document data of an event of `kind` on `target`, refusing a payload the kind needs but
+ * lacks (the folds would ignore such a document): 11–15 a `refId`, 16 a 20–32 byte oid, 17 a
+ * value. Parity: forge-core `event_payload_props`.
+ */
+export function targetEventData(target: WriteTarget, kind: EventKind, payload: EventPayload = {}): Record<string, unknown> {
+  if (REF_KINDS.has(kind) && !payload.refId) throw new Error(`a ${kind} event needs a refId`)
+  const oid = payload.oidHex ? hexToBytes(payload.oidHex) : null
+  // The folds read only 40- or 64-hex heads (SHA-1 or SHA-256): anything else would be inert.
+  if (kind === 'headUpdate' && oid?.length !== 20 && oid?.length !== 32) throw new Error('a head update needs a 20- or 32-byte commit oid')
+  if (kind === 'milestoneSet' && !payload.value) throw new Error('a milestone needs a name')
+  if (kind === 'retarget' && !(payload.value !== undefined && isLegalRefName(payload.value))) {
+    throw new Error(`illegal retarget base ref name ${JSON.stringify(payload.value ?? null)}`)
+  }
+  // The schema's bounds on `value`: 120 characters and 480 bytes (forge-core `check_text`).
+  if (payload.value !== undefined && ([...payload.value].length > 120 || new TextEncoder().encode(payload.value).length > 480)) {
+    throw new Error('an event value is at most 120 characters and 480 bytes')
+  }
+  const data: Record<string, unknown> = {
+    targetId: decodeIdentifier(target.id),
+    targetNumber: target.number,
+    kind: EVENT_KIND_CODE[kind],
+  }
+  if (payload.value) data['value'] = payload.value
+  if (oid !== null) data['oid'] = oid
+  if (payload.refId) data['refId'] = decodeIdentifier(payload.refId)
+  return data
+}
+
+/** Create one repo-scoped document, dropping the caches it invalidates. */
+const write = writeRepoDoc
+
+/**
+ * Post an event of any kind by whichever route the viewer holds ({@link eventRoute}). When the
+ * membership read was stale (a member event refused at the gate) and the viewer is the author
+ * of an author kind, it retries as an `authorEvent`.
+ */
+export async function postTargetEvent(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: { target: WriteTarget; kind: EventKind; author: string; isMember: boolean; payload?: EventPayload; intent?: string },
+): Promise<WriteResult & { readonly route: 'event' | 'authorEvent' }> {
+  const route = eventRoute({ viewer: auth.identityId, author: input.author, isMember: input.isMember, kind: input.kind })
+  if (route === null) {
+    throw new Error(isAuthorKind(input.kind) ? 'only the author or a maintainer or writer can do that' : 'only a maintainer or writer can do that')
+  }
+  const data = targetEventData(input.target, input.kind, input.payload)
+  if (route === 'authorEvent') return { ...(await write(sdk, auth, repo, DOC.authorEvent, data, input.intent)), route }
+  try {
+    return { ...(await write(sdk, auth, repo, DOC.event, data, input.intent)), route }
+  } catch (e) {
+    const gateRefused = e instanceof ConsensusRefusal && e.code === GATE_REFUSED_CODE
+    if (gateRefused && auth.identityId === input.author && isAuthorKind(input.kind)) {
+      const intent = input.intent ? `${input.intent}:author` : undefined
+      return { ...(await write(sdk, auth, repo, DOC.authorEvent, data, intent)), route: 'authorEvent' }
+    }
+    throw e
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Comments with anchors, reviews with comment counts
+// ---------------------------------------------------------------------------
+
+/** An inline comment's anchor to write (a file-level comment has only `path`). */
+export interface AnchorInput {
+  readonly path: string
+  readonly line?: number
+  readonly startLine?: number
+  /** 0 old, 1 new. */
+  readonly side?: 0 | 1
+  /** hex. */
+  readonly commitOid?: string
+}
+
+/** The anchor fields of a `comment`, refusing what `anchorOf` would read as malformed. */
+export function anchorData(a: AnchorInput): Record<string, unknown> {
+  if (a.path === '' || new TextEncoder().encode(a.path).length > 1000) throw new Error('an inline comment needs a path of at most 1000 bytes')
+  if (a.line === undefined && (a.side !== undefined || a.startLine !== undefined)) throw new Error('a side or start line needs a line')
+  if (a.line !== undefined && a.side === undefined) throw new Error('a line needs a side')
+  if (a.startLine !== undefined && a.line !== undefined && a.startLine > a.line) throw new Error('a range must start at or before its last line')
+  const data: Record<string, unknown> = { path: a.path }
+  if (a.line !== undefined) data['line'] = a.line
+  if (a.side !== undefined) data['side'] = a.side
+  if (a.startLine !== undefined && a.startLine !== a.line) data['startLine'] = a.startLine
+  if (a.commitOid) data['commitOid'] = hexToBytes(a.commitOid)
+  return data
+}
+
+/** A comment (general, inline, a reply, or a review's). */
+export interface CommentInput {
+  readonly targetId: string
+  readonly body: string
+  readonly replyTo?: string
+  readonly anchor?: AnchorInput
+  /** The review this comment belongs to (the signer's, on the same PR: consensus). */
+  readonly reviewId?: string
+  readonly intent?: string
+}
+
+/** The document data of a comment. */
+export function commentData(input: CommentInput): Record<string, unknown> {
+  if (input.body.trim() === '') throw new Error('a comment needs a body')
+  const data: Record<string, unknown> = { targetId: decodeIdentifier(input.targetId), body: input.body }
+  if (input.replyTo) data['replyTo'] = decodeIdentifier(input.replyTo)
+  if (input.anchor) Object.assign(data, anchorData(input.anchor))
+  if (input.reviewId) data['reviewId'] = decodeIdentifier(input.reviewId)
+  return data
+}
+
+/** Post one comment (a "single comment", review-parity R2). */
+export function postComment(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, input: CommentInput): Promise<WriteResult> {
+  return write(sdk, auth, repo, DOC.comment, commentData(input), input.intent)
+}
+
+/** A review verdict with the number of comments the submit will attach. */
+export interface ReviewInput {
+  readonly patchId: string
+  readonly verdict: VerdictInput
+  /** The PR's current (folded) head, hex. */
+  readonly commitOid: string
+  readonly body?: string
+  readonly commentCount?: number
+  readonly intent?: string
+}
+
+/** The document data of a review. */
+export function reviewData(input: ReviewInput): Record<string, unknown> {
+  const data: Record<string, unknown> = {
+    patchId: decodeIdentifier(input.patchId),
+    verdict: VERDICT_INT[input.verdict],
+    commitOid: hexToBytes(input.commitOid),
+  }
+  if (input.body) data['body'] = input.body
+  if (input.commentCount !== undefined) {
+    if (!Number.isInteger(input.commentCount) || input.commentCount < 0 || input.commentCount > 65535) throw new Error('a review holds 0-65535 comments')
+    data['commentCount'] = input.commentCount
+  }
+  return data
+}
+
+// ---------------------------------------------------------------------------
+// Pending review, submitted as one review + N comments (resumable)
+// ---------------------------------------------------------------------------
+
+/** One pending inline comment of a draft review. */
+export interface DraftComment {
+  /** Stable within the draft (the intent of its write). */
+  readonly localId: string
+  readonly anchor: AnchorInput
+  readonly body: string
+  /** Set once the comment landed. */
+  readonly landedId?: string
+}
+
+/**
+ * A pending review, kept in IndexedDB (`journal`) until it is submitted: nothing is on chain
+ * before the submit (review-parity spec §4.1). `reviewId` is set once the review document
+ * landed, `landedId` per comment once each comment did, so a failed submit resumes where it
+ * stopped with the same intents (the write engine re-broadcasts the same bytes).
+ */
+export interface ReviewDraft {
+  readonly draftId: string
+  readonly network: string
+  readonly identity: string
+  readonly repoId: string
+  readonly prId: string
+  /** The head the comments are anchored to, hex. */
+  readonly headOid: string
+  readonly verdict: VerdictInput
+  readonly summary: string
+  readonly comments: readonly DraftComment[]
+  readonly reviewId?: string
+  readonly startedAt: number
+  /**
+   * When the first submit attempt began (client ms), saved before anything is written. Only a
+   * draft with an attempt on record can have writes on chain that it does not know about, so
+   * only such a draft is reconciled ({@link reconcileReviewDraft}).
+   */
+  readonly attemptedAt?: number
+}
+
+/** The journal key of a draft: one per network, identity and PR. */
+export function reviewDraftKey(network: string, identity: string, prId: string): string {
+  return `review:${network}:${identity}:${prId}`
+}
+
+export function loadReviewDraft(network: string, identity: string, prId: string): Promise<ReviewDraft | undefined> {
+  return idbGet<ReviewDraft>('journal', reviewDraftKey(network, identity, prId))
+}
+
+export function saveReviewDraft(draft: ReviewDraft): Promise<void> {
+  return idbPut('journal', reviewDraftKey(draft.network, draft.identity, draft.prId), draft)
+}
+
+export function discardReviewDraft(network: string, identity: string, prId: string): Promise<void> {
+  return idbDelete('journal', reviewDraftKey(network, identity, prId))
+}
+
+/** Progress of a submit: `done` of `total` documents written. */
+export interface SubmitProgress {
+  readonly done: number
+  readonly total: number
+}
+
+/** The outcome of a finished submit. */
+export interface SubmittedReview {
+  readonly reviewId: string
+  readonly commentIds: readonly string[]
+}
+
+/** A review on the PR, as the reconcile step reads it. */
+export interface ChainReview {
+  readonly id: string
+  readonly reviewer: string
+  /** 1 approve, 2 request changes, 3 comment. */
+  readonly verdict: number
+  /** hex. */
+  readonly commitOid: string
+  readonly body: string
+  readonly commentCount: number | null
+  readonly createdAt: number
+}
+
+/** A comment on the PR, as the reconcile step reads it. */
+export interface ChainComment {
+  readonly id: string
+  readonly owner: string
+  readonly reviewId: string | null
+  readonly body: string
+  readonly anchor: AnchorFields
+  readonly createdAt: number
+}
+
+/** What a submit reads from chain to reconcile a resumed draft (injectable for tests). */
+export interface SubmitReads {
+  readonly reviews: () => Promise<readonly ChainReview[]>
+  readonly comments: () => Promise<readonly ChainComment[]>
+}
+
+/** The chain reads of {@link SubmitReads} for a PR, through the proof-checked readers. */
+export function chainReads(sdk: EvoSDK, repo: RepoRef, prId: string): SubmitReads {
+  return {
+    reviews: async () =>
+      (await readReviews(sdk, repo, prId)).map((r) => ({
+        id: r.id,
+        reviewer: r.reviewer,
+        verdict: r.verdictCode,
+        commitOid: r.commitOid,
+        body: r.body,
+        commentCount: r.commentCount,
+        createdAt: r.createdAt,
+      })),
+    comments: async () => {
+      const docs = await queryAllDocuments(
+        sdk,
+        repoSource(repo).targetQuery(DOC.comment, {
+          where: [['targetId', '==', prId]],
+          orderBy: [['targetId', 'asc'], ['$createdAt', 'asc']],
+        }),
+      )
+      return docs.map((d) => ({
+        id: str(d, '$id'),
+        owner: str(d, '$ownerId'),
+        reviewId: asIdentifierString(d['reviewId']) || null,
+        body: str(d, 'body'),
+        anchor: {
+          path: typeof d['path'] === 'string' ? d['path'] : null,
+          line: typeof d['line'] === 'number' ? d['line'] : null,
+          startLine: typeof d['startLine'] === 'number' ? d['startLine'] : null,
+          side: typeof d['side'] === 'number' ? d['side'] : null,
+          commitOid: byteFieldToHex(d, 'commitOid'),
+        },
+        createdAt: num(d, '$createdAt'),
+      }))
+    },
+  }
+}
+
+/** Whether a stored comment is the draft comment `c` (same anchor and body). */
+function sameComment(stored: ChainComment, c: DraftComment, headOid: string): boolean {
+  const a = anchorOf(stored.anchor)
+  const want = anchorOf({ ...c.anchor, commitOid: c.anchor.commitOid ?? headOid })
+  return a !== null && want !== null && stored.body === c.body && JSON.stringify(a) === JSON.stringify(want)
+}
+
+/** How far the client clock may be ahead of block time when matching a landed review. */
+const CLOCK_SKEW_MS = 10 * 60 * 1000
+
+/**
+ * Reconcile a resumed draft with the chain: a write that landed but whose save did not (a
+ * crash, a closed tab) must not be written again. Only a draft with an attempt on record
+ * (`attemptedAt`) is reconciled: before its first submit nothing of it can be on chain. The
+ * review is this identity's review on the PR with the draft's verdict, head, summary and
+ * `commentCount`, created no earlier than the attempt (less {@link CLOCK_SKEW_MS}: `attemptedAt`
+ * is the client's clock, `$createdAt` the block's), the earliest such when the draft has no
+ * `reviewId`; its landed comments are the review's group (`groupReviewComments`) matched to
+ * the draft by anchor and body.
+ */
+export async function reconcileReviewDraft(draft: ReviewDraft, reads: SubmitReads): Promise<ReviewDraft> {
+  if (draft.attemptedAt === undefined) return draft
+  const since = draft.attemptedAt - CLOCK_SKEW_MS
+  let reviewId = draft.reviewId
+  if (reviewId === undefined) {
+    const mine = (await reads.reviews())
+      .filter(
+        (r) =>
+          r.reviewer === draft.identity &&
+          r.verdict === VERDICT_INT[draft.verdict] &&
+          r.commitOid === draft.headOid &&
+          r.body === draft.summary &&
+          r.commentCount === draft.comments.length &&
+          r.createdAt >= since,
+      )
+      .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1))
+    reviewId = mine[0]?.id
+  }
+  if (reviewId === undefined) return draft
+  if (draft.comments.every((c) => c.landedId)) return { ...draft, reviewId }
+  const stored = await reads.comments()
+  const group = new Set(groupReviewComments(reviewId, draft.identity, draft.comments.length, stored).comments)
+  const claimed = new Set(draft.comments.flatMap((c) => (c.landedId ? [c.landedId] : [])))
+  const comments = draft.comments.map((c) => {
+    if (c.landedId) return c
+    const match = stored.find((s) => group.has(s.id) && !claimed.has(s.id) && sameComment(s, c, draft.headOid))
+    if (match === undefined) return c
+    claimed.add(match.id)
+    return { ...c, landedId: match.id }
+  })
+  return { ...draft, reviewId, comments }
+}
+
+/**
+ * Submit a pending review: the `review` first (its comments name it), with `commentCount` =
+ * the draft's comments, then each comment with `reviewId`, in draft order. The draft is saved
+ * after every landed document and removed at the end. A resumed draft is first reconciled with
+ * the chain ({@link reconcileReviewDraft}), so a write that landed without its save is adopted,
+ * never written twice. Throws the write's error; the caller reports "recorded with n of m
+ * comments" from the saved draft.
+ */
+export async function submitReviewDraft(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  draft: ReviewDraft,
+  onProgress?: (p: SubmitProgress) => void,
+  reads: SubmitReads = chainReads(sdk, repo, draft.prId),
+): Promise<SubmittedReview> {
+  if (draft.identity !== auth.identityId) throw new Error('this pending review belongs to another identity')
+  refusePlaintextInPrivate(repo, DOC.review)
+  let current: ReviewDraft = await reconcileReviewDraft(draft, reads)
+  if (current.attemptedAt === undefined) current = { ...current, attemptedAt: Date.now() }
+  // Saved before the first write, so a crash after it leaves a draft that reconciles.
+  if (current !== draft) await saveReviewDraft(current)
+  const total = 1 + draft.comments.length
+  const done = () => (current.reviewId ? 1 : 0) + current.comments.filter((c) => c.landedId).length
+  onProgress?.({ done: done(), total })
+  let reviewId = current.reviewId
+  if (reviewId === undefined) {
+    const r = await write(sdk, auth, repo, DOC.review, reviewData({
+      patchId: draft.prId,
+      verdict: draft.verdict,
+      commitOid: draft.headOid,
+      body: draft.summary,
+      commentCount: draft.comments.length,
+    }), `review:${draft.draftId}:review`)
+    reviewId = r.documentId
+    current = { ...current, reviewId }
+    await saveReviewDraft(current)
+    onProgress?.({ done: done(), total })
+  }
+  const ids: string[] = []
+  for (const [i, c] of current.comments.entries()) {
+    if (c.landedId) {
+      ids.push(c.landedId)
+      continue
+    }
+    const r = await write(sdk, auth, repo, DOC.comment, commentData({
+      targetId: draft.prId,
+      body: c.body,
+      anchor: { ...c.anchor, commitOid: c.anchor.commitOid ?? draft.headOid },
+      reviewId,
+    }), `review:${draft.draftId}:comment:${c.localId}`)
+    ids.push(r.documentId)
+    const comments = [...current.comments]
+    comments[i] = { ...c, landedId: r.documentId }
+    current = { ...current, comments }
+    await saveReviewDraft(current)
+    onProgress?.({ done: done(), total })
+  }
+  await discardReviewDraft(draft.network, draft.identity, draft.prId)
+  return { reviewId, commentIds: ids }
+}
+
+// ---------------------------------------------------------------------------
+// Policy and edits
+// ---------------------------------------------------------------------------
+
+/** Set the branch policy (maintainers only at consensus). */
+export function setPolicy(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, policy: Policy, intent?: string): Promise<WriteResult> {
+  if (!Number.isInteger(policy.requiredApprovals) || policy.requiredApprovals < 0 || policy.requiredApprovals > 10) throw new Error('a policy requires 0-10 approvals')
+  const role = policy.approverRole ?? 0
+  if (role !== 0 && role !== 1) throw new Error('approverRole is 0 (any member) or 1 (maintainers)')
+  return write(sdk, auth, repo, DOC.policy, {
+    requiredApprovals: policy.requiredApprovals,
+    approverRole: role,
+    requireChecks: policy.requireChecks ?? false,
+    mergeMethods: policy.mergeMethods ?? 0,
+  }, intent)
+}
+
+/** Replace one of the signer's documents of `repo`, dropping the caches the edit invalidates. */
+async function replace(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  documentType: string,
+  documentId: string,
+  changes: Record<string, unknown>,
+  expectedRevision: bigint | undefined,
+): Promise<ReplaceResult> {
+  // A replace merges plaintext over the stored document: in a private repo that would publish
+  // the edit next to the sealed `enc` and make the document malformed for members.
+  refusePlaintextInPrivate(repo, documentType)
+  try {
+    return await replaceDocumentIdempotent(sdk, auth, {
+      contractId: contractFor(repo, documentType),
+      documentType,
+      documentId,
+      changes,
+      repo: repo.repoId,
+      expectedRevision,
+    })
+  } finally {
+    invalidateRepoFeed(repo, { counts: false })
+  }
+}
+
+/** Edit an issue's or PR's title and/or body (its author only; `number` and the PR's head, refs and draft flag are immutable). */
+export function updateTarget(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: { type: 'issue' | 'patch'; id: string; title?: string; body?: string; expectedRevision?: bigint },
+): Promise<ReplaceResult> {
+  const changes: Record<string, unknown> = {}
+  if (input.title !== undefined) {
+    if (input.title.trim() === '') throw new Error('a title is required')
+    changes['title'] = input.title
+  }
+  if (input.body !== undefined) changes['body'] = input.body === '' ? undefined : input.body
+  if (Object.keys(changes).length === 0) throw new Error('nothing to change')
+  return replace(sdk, auth, repo, DOC[input.type], input.id, changes, input.expectedRevision)
+}
+
+/**
+ * Edit a comment's body (its author only; the anchor, thread and review are immutable). Pass
+ * `dropReviewId` when the comment's review was deleted: every replace re-validates
+ * `reviewId`, and removing it is the one change consensus allows on a dead reference.
+ */
+export function updateComment(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: { id: string; body: string; dropReviewId?: boolean; expectedRevision?: bigint },
+): Promise<ReplaceResult> {
+  if (input.body.trim() === '') throw new Error('a comment needs a body')
+  const changes: Record<string, unknown> = { body: input.body }
+  if (input.dropReviewId) changes['reviewId'] = undefined
+  return replace(sdk, auth, repo, DOC.comment, input.id, changes, input.expectedRevision)
+}
