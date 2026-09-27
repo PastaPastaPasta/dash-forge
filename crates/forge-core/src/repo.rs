@@ -802,25 +802,25 @@ impl<'a> RepoService<'a> {
         Ok(current_protected_patterns(&configs))
     }
 
-    /// The newest `config` document in `scope`, if any.
+    /// The config in force in `scope`: the newest **well-formed** `config` by
+    /// `($createdAt, $id)`, the same selection the ref rules (`current_protected_patterns`) and
+    /// forge-web's `readConfigBundle` make, so a settings write builds on the config readers
+    /// see. Reads the whole (append-only, small) timeline.
     async fn newest_config(
         &self,
         scope: &DocScope,
         contract: &LoadedContract,
     ) -> Result<Option<FetchedDocument>> {
-        Ok(self
+        let docs = self
             .client
-            .query_documents(
+            .query_all_documents(
                 contract,
                 DOC_CONFIG,
                 &scope.filters([]),
-                &[QueryOrder::desc("$createdAt")],
-                1,
-                None,
+                &[QueryOrder::asc("$createdAt")],
             )
-            .await?
-            .into_iter()
-            .next())
+            .await?;
+        Ok(newest_well_formed_config(docs))
     }
 
     /// The repo's current default branch from the newest `config` (e.g. `main`) — the
@@ -1887,8 +1887,10 @@ impl CurrentConfig {
     fn of_doc(d: &FetchedDocument) -> Self {
         let (backend_mode, backend_uris) = backend_parts(d.fields.get("backend"));
         Self {
+            // Stored short (`main`); a config some other writer stored in full form reads the same.
             default_branch: d
                 .field_str("defaultBranch")
+                .map(|b| short_branch_name(&b).to_string())
                 .filter(|b| !b.is_empty())
                 .unwrap_or_else(|| DEFAULT_BRANCH.into()),
             protected_patterns: scope::doc_text_list(d, "protectedPatterns"),
@@ -1950,6 +1952,13 @@ impl CurrentConfig {
         }
         FieldValue::Object(backend)
     }
+}
+
+/// The newest well-formed public `config` of `docs` by `($createdAt, $id)`.
+fn newest_well_formed_config(docs: Vec<FetchedDocument>) -> Option<FetchedDocument> {
+    docs.into_iter()
+        .filter(crate::refs::config_well_formed)
+        .max_by(|a, b| (a.created_at.unwrap_or(0), &a.id).cmp(&(b.created_at.unwrap_or(0), &b.id)))
 }
 
 /// `backend.mode` and `backend.uris` of a config's `backend` object.
@@ -2848,8 +2857,53 @@ mod tests {
 
     mod settings {
         use super::super::{
-            check_patterns, short_branch_name, ConfigChange, CurrentConfig, RepoEdit,
+            check_patterns, newest_well_formed_config, short_branch_name, ConfigChange,
+            CurrentConfig, RepoEdit,
         };
+        use crate::platform::{FetchedDocument, FieldValue};
+
+        fn config(id: &str, at: u64, fields: &[(&str, FieldValue)]) -> FetchedDocument {
+            FetchedDocument {
+                id: id.into(),
+                owner_id: "o".into(),
+                created_at: Some(at),
+                created_at_block_height: Some(1),
+                fields: fields
+                    .iter()
+                    .map(|(k, v)| ((*k).to_string(), v.clone()))
+                    .collect(),
+            }
+        }
+
+        #[test]
+        fn the_config_in_force_is_the_newest_well_formed_one_by_created_at_then_id() {
+            let main = || ("defaultBranch", FieldValue::text("main"));
+            let docs = vec![
+                config("a", 1, &[main()]),
+                config("c", 5, &[main(), ("archived", FieldValue::boolean(true))]),
+                config("b", 5, &[main()]),
+                // Newest, but malformed for a public repo (an `enc`): readers skip it.
+                config(
+                    "z",
+                    9,
+                    &[
+                        ("enc", FieldValue::bytes(vec![1; 40])),
+                        ("epoch", FieldValue::integer(0)),
+                    ],
+                ),
+            ];
+            let newest = newest_well_formed_config(docs).unwrap();
+            assert_eq!(newest.id, "c", "same $createdAt: the greater id wins");
+            let cfg = CurrentConfig::of_doc(&config(
+                "d",
+                1,
+                &[("defaultBranch", FieldValue::text("refs/heads/trunk"))],
+            ));
+            assert_eq!(
+                cfg.default_branch, "trunk",
+                "a full ref reads as the short name"
+            );
+        }
 
         #[test]
         fn a_change_carries_every_unset_field_over() {

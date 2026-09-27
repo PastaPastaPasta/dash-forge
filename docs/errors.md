@@ -276,9 +276,9 @@ Fix: if the message does not explain it, [open an issue](https://github.com/Past
 
 ## E606
 
-**Repository archived.** A maintainer marked the repository archived (`config.archived`, set with `dg repo archive` or Settings → Danger zone). Archiving is a client rule, not access control: consensus still admits a member's writes, so the tools refuse them instead. The push helper stops before building or paying for anything.
+**Repository archived.** A maintainer marked the repository archived (`config.archived`, set with `dg repo archive` or Settings → Danger zone). Archiving is a client rule, not access control: consensus still admits a member's writes, so the tools refuse them instead. That covers `dg` issue, PR, comment, review, merge and release writes, and the push helper, each before signing or paying for anything.
 
-Fix: ask a maintainer to unarchive it (`dg repo unarchive <owner>/<repo>`), or, if you are sure, push anyway with the push option `-o allow-archived`.
+Fix: ask a maintainer to unarchive it (`dg repo unarchive <owner>/<repo>`). If you are sure, write anyway with `dg --allow-archived …` or push with `-o allow-archived`.
 
 ## E701
 
@@ -321,3 +321,9 @@ Fix: pass `--yes` after checking the estimate (`dg cost estimate`).
 ## E803
 
 **Cancelled.** You answered no at the confirmation prompt (or the terminal closed). Nothing was written.
+
+## E804
+
+**Branch policy not met.** `dg pr merge` checked the repository's branch `policy` (`dg repo policy show`) and it is not satisfied: fewer counted approvals than it requires (from maintainers only, when it says so), or a merge method it does not allow, or the policy could not be read. The policy is a client rule every Forge client applies, not a consensus rule. Nothing was pushed and no merge event was posted.
+
+Fix: get the missing approvals (`dg pr review --approve` by a member), or use an allowed method. A maintainer can merge anyway with `--override-policy`.

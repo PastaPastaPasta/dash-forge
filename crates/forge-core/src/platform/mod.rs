@@ -1557,9 +1557,12 @@ impl<'a> WriteEngine<'a> {
     /// when the stored document already holds every change (nothing signed or paid).
     ///
     /// Signed once, at revision + 1 (Drive requires exactly that,
-    /// `batch/transformer/v0` "expected_revision = previous_revision + 1"); a spent nonce is
-    /// settled by re-reading, and a replace that another write beat is re-prepared from the
-    /// new stored revision. Consensus refuses a non-owner and any `immutable` property change.
+    /// `batch/transformer/v0` "expected_revision = previous_revision + 1"). A spent nonce is
+    /// settled by re-reading: done if the stored document holds the changes, else re-prepared
+    /// from the stored revision (up to three times). A replace refused for its revision (another
+    /// replace landed between the read and the broadcast) is returned as the Platform error, not
+    /// retried: the caller re-runs it against the new document. Consensus refuses a non-owner
+    /// and any `immutable` property change.
     pub async fn replace_document(
         &self,
         contract: &LoadedContract,
@@ -1585,7 +1588,7 @@ impl<'a> WriteEngine<'a> {
         let holds = |doc: &Document| {
             changes.iter().all(|(k, v)| {
                 let stored = doc.properties().get(k).and_then(FieldValue::from_value);
-                stored.as_ref() == v.as_ref()
+                same_field(stored.as_ref(), v.as_ref())
             })
         };
         for _ in 0..3 {
@@ -1674,6 +1677,28 @@ impl<'a> WriteEngine<'a> {
             .prepare_delete_with_values(contract, document_type, document_id, values, created_at)
             .await?;
         self.execute(&prepared).await
+    }
+}
+
+/// Whether a stored field equals a wanted one, by value rather than by wire form: an integer of
+/// any width (`Integer`/`Uint64`), bytes of any kind (`Bytes`/`Bytes32`/`Identifier`), and a
+/// string list read back as empty bytes all compare as what they hold. `None` is absent.
+fn same_field(stored: Option<&FieldValue>, wanted: Option<&FieldValue>) -> bool {
+    match (stored, wanted) {
+        (None, None) => true,
+        (Some(s), Some(w)) => {
+            if let (Some(a), Some(b)) = (s.as_u64(), w.as_u64()) {
+                return a == b;
+            }
+            if let (Some(a), Some(b)) = (s.as_bytes(), w.as_bytes()) {
+                return a == b;
+            }
+            if let (Some(a), Some(b)) = (s.as_text_list(), w.as_text_list()) {
+                return a == b;
+            }
+            s == w
+        }
+        _ => false,
     }
 }
 
@@ -2638,6 +2663,39 @@ mod tests {
     use crate::error::{Error, Result};
     use std::cell::RefCell;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn a_replace_holds_by_value_not_wire_form() {
+        use super::same_field;
+        let s = |v: FieldValue| Some(v);
+        // Integer widths, byte kinds, and an empty list that reads back as empty bytes.
+        assert!(same_field(
+            s(FieldValue::Uint64(3)).as_ref(),
+            s(FieldValue::Integer(3)).as_ref()
+        ));
+        assert!(same_field(
+            s(FieldValue::Bytes32([7; 32])).as_ref(),
+            s(FieldValue::Identifier([7; 32])).as_ref()
+        ));
+        assert!(same_field(
+            s(FieldValue::Bytes(vec![])).as_ref(),
+            s(FieldValue::text_list(Vec::<String>::new())).as_ref()
+        ));
+        assert!(same_field(
+            s(FieldValue::text_list(["a", "b"])).as_ref(),
+            s(FieldValue::text_list(["a", "b"])).as_ref()
+        ));
+        assert!(!same_field(
+            s(FieldValue::text_list(["a", "b"])).as_ref(),
+            s(FieldValue::text_list(["b", "a"])).as_ref()
+        ));
+        assert!(!same_field(
+            s(FieldValue::Integer(3)).as_ref(),
+            s(FieldValue::Integer(4)).as_ref()
+        ));
+        assert!(same_field(None, None));
+        assert!(!same_field(None, s(FieldValue::text("x")).as_ref()));
+    }
 
     fn fields(order: &[QueryOrder]) -> Vec<(String, bool)> {
         order

@@ -23,6 +23,7 @@ import {
   repoEditChanges,
   sameConfig,
   shortBranch,
+  staleProblem,
   topicsProblem,
   updateConfig,
 } from './settings'
@@ -47,11 +48,11 @@ describe('config changes', () => {
   it('that change nothing are recognised (nothing is signed)', () => {
     expect(sameConfig(NOW, applyConfigChange(NOW, {}))).toBe(true)
     expect(sameConfig(NOW, applyConfigChange(NOW, { defaultBranch: 'main' }))).toBe(true)
-    expect(sameConfig(NOW, applyConfigChange(NOW, { protectedPatterns: [] }))).toBe(false)
+    expect(sameConfig(NOW, applyConfigChange(NOW, { removePattern: 'refs/heads/main' }))).toBe(false)
   })
 
   it('write the config shape forge-core writes (no empty pattern list, backend kept)', () => {
-    expect(configData(applyConfigChange(NOW, { protectedPatterns: [] }))).toEqual({
+    expect(configData(applyConfigChange(NOW, { removePattern: 'refs/heads/main' }))).toEqual({
       defaultBranch: 'main',
       backend: { mode: 2, uris: ['https://b.example/'] },
       archived: false,
@@ -67,9 +68,38 @@ describe('config changes', () => {
     expect(sdk.documents.create).not.toHaveBeenCalled()
   })
 
+  it('apply to the config read at write time, keeping what changed elsewhere since the page loaded (H1)', async () => {
+    // The page loaded NOW; meanwhile another maintainer protected release/* and changed storage.
+    const fresh: RepoConfig = { ...NOW, protectedPatterns: ['refs/heads/main', 'refs/heads/release/*'], backendMode: 4 }
+    let written: Record<string, unknown> | null = null
+    const write = vi.fn(async (_s: unknown, _a: unknown, p: { data: Record<string, unknown> }) => {
+      written = p.data
+      return { documentId: 'x' }
+    })
+    await updateConfig({} as never, {} as never, { visibility: 'public', repoId: '11111111111111111111111111111111', forge: { core: 'c' } } as never, NOW, { archived: true }, undefined, async () => fresh, write as never)
+    expect(written).toMatchObject({ archived: true, protectedPatterns: ['refs/heads/main', 'refs/heads/release/*'], backend: { mode: 4 } })
+  })
+
+  it('refuse when the field being edited changed since the page loaded (H1)', async () => {
+    const fresh: RepoConfig = { ...NOW, protectedPatterns: ['refs/heads/main', 'refs/heads/release/*'] }
+    const write = vi.fn()
+    await expect(
+      updateConfig({} as never, {} as never, { visibility: 'public' } as never, NOW, { removePattern: 'refs/heads/main' }, undefined, async () => fresh, write as never),
+    ).rejects.toThrow(/changed since you opened this page/)
+    expect(write).not.toHaveBeenCalled()
+    expect(staleProblem(NOW, { ...NOW, defaultBranch: 'trunk' }, { defaultBranch: 'dev' })).not.toBeNull()
+    expect(staleProblem(NOW, { ...NOW, defaultBranch: 'trunk' }, { archived: true })).toBeNull()
+  })
+
+  it('add and remove one pattern as a delta', () => {
+    expect(applyConfigChange(NOW, { addPattern: 'refs/heads/dev' }).protectedPatterns).toEqual(['refs/heads/main', 'refs/heads/dev'])
+    expect(applyConfigChange(NOW, { addPattern: 'refs/heads/main' }).protectedPatterns).toEqual(['refs/heads/main'])
+    expect(applyConfigChange(NOW, { removePattern: 'refs/heads/main' }).protectedPatterns).toEqual([])
+  })
+
   it('return null without signing when nothing changes', async () => {
     const repo = { visibility: 'public' } as RepoRef
-    await expect(updateConfig({} as never, {} as never, repo, NOW, { defaultBranch: 'main' })).resolves.toBeNull()
+    await expect(updateConfig({} as never, {} as never, repo, NOW, { defaultBranch: 'main' }, undefined, async () => NOW)).resolves.toBeNull()
   })
 })
 

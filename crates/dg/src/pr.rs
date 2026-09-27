@@ -57,7 +57,18 @@ pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
             number,
             event_only,
             merge_oid,
-        } => Box::pin(merge(ctx, repo, *number, *event_only, merge_oid.as_deref())).await,
+            override_policy,
+        } => {
+            Box::pin(merge(
+                ctx,
+                repo,
+                *number,
+                *event_only,
+                merge_oid.as_deref(),
+                *override_policy,
+            ))
+            .await
+        }
         PrCommand::Close { repo, number } => set_open(ctx, repo, *number, true).await,
         PrCommand::Reopen { repo, number } => set_open(ctx, repo, *number, false).await,
         PrCommand::Diff { repo, number } => diff(ctx, repo, *number).await,
@@ -119,6 +130,8 @@ fn state_label(v: &PatchView) -> &'static str {
 
 async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
     let s = Session::open(ctx, &args.repo).await?;
+    s.refuse_if_archived(ctx, "pull request not created")
+        .await?;
     let handle = &s.repo;
     let forge = handle.forge();
     let cwd = std::env::current_dir().context("reading the current directory")?;
@@ -573,6 +586,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 
 async fn review(ctx: &Ctx, repo: &str, number: u64, verdict: VerdictArg, body: &str) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
+    s.refuse_if_archived(ctx, "review not posted").await?;
     let (handle, collab) = (&s.repo, s.collab());
     let p = patch(&collab, handle, repo, number).await?;
     // Review the PR's current head (the newest headUpdate), which is what approvals count on.
@@ -610,6 +624,7 @@ async fn review(ctx: &Ctx, repo: &str, number: u64, verdict: VerdictArg, body: &
 
 async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
+    s.refuse_if_archived(ctx, "state not changed").await?;
     let collab = s.collab();
     let p = patch(&collab, &s.repo, repo, number).await?;
     let verb = if close { "Close" } else { "Reopen" };
@@ -660,8 +675,10 @@ async fn merge(
     number: u64,
     event_only: bool,
     merge_oid: Option<&str>,
+    override_policy: bool,
 ) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
+    s.refuse_if_archived(ctx, "merge").await?;
     let (handle, collab) = (&s.repo, s.collab());
     let p = patch(&collab, handle, repo, number).await?;
     let view = collab.patch_view(handle, p).await?;
@@ -674,13 +691,11 @@ async fn merge(
     }
     refuse_retargeted(&view, number)?;
     refuse_missing_base(&view, number, event_only)?;
-    let merge_oid = if event_only {
-        Some(event_only_oid(&view, merge_oid, number)?)
-    } else {
-        None
-    };
-    let base = (!event_only).then_some(view.patch.base_ref_name.as_str());
-    require_merge_rights(&s, handle, number, base).await?;
+    let merge_oid = event_only
+        .then(|| event_only_oid(&view, merge_oid, number))
+        .transpose()?;
+    let policy =
+        require_merge_rights(&s, handle, &view, !event_only, None, override_policy).await?;
     let mut steps = Steps {
         json: ctx.json,
         done: Vec::new(),
@@ -705,7 +720,14 @@ async fn merge(
         steps.ok("plan", format!("event only, naming {}", short(&oid)));
         oid
     } else {
-        match push_merge(ctx, handle, &view, &s.identity.id(), &mut steps) {
+        match push_merge(
+            ctx,
+            handle,
+            &view,
+            &s.identity.id(),
+            policy.as_ref(),
+            &mut steps,
+        ) {
             Ok(oid) => oid,
             Err(e) => {
                 return Err(crate::errors::reported(
@@ -895,41 +917,97 @@ fn event_only_oid(view: &PatchView, given: Option<&str>, number: u64) -> Result<
 }
 
 /// The E-coded error for a failed merge step (conflicts are E105; the rest classify).
-/// E601 before any git work. Only members can merge (the merge event is member-gated at
-/// consensus); and when the merge pushes to `base`, a writer cannot move a protected one (only a
-/// maintainer's `protectedRefUpdate` can, and the helper would refuse the push after the merge
-/// was built). An unreadable role or config proceeds; the helper and consensus still refuse.
+/// The checks before any git work, all E601/E804 with nothing paid. Only members can merge
+/// (the merge event is member-gated at consensus). Unless a maintainer passes
+/// `override_policy`, the branch policy (a client rule every Forge client applies; consensus does
+/// not enforce it) must be met: its approvals, and `method` (a merge-method bit) when known; an
+/// unreadable policy fails closed for a writer. When the merge `pushes` to the base, a writer
+/// cannot move a protected one (only a maintainer's `protectedRefUpdate` can). Returns the policy
+/// in force (unless overridden), so the caller can check the method once the merge is planned.
 async fn require_merge_rights(
     s: &Session,
     handle: &Repo,
-    number: u64,
-    base: Option<&str>,
-) -> Result<()> {
-    s.collab()
+    view: &PatchView,
+    pushes: bool,
+    method: Option<u8>,
+    override_policy: bool,
+) -> Result<Option<forge_core::rules::review::Policy>> {
+    let number = u64::from(view.patch.number);
+    let collab = s.collab();
+    collab
         .require_role(
             handle,
             Role::Writer,
             &format!("merge pull request #{number}"),
         )
         .await?;
-    let Some(base) = base else {
-        return Ok(());
-    };
     if !forge_core::collab::v2::precheck_enabled() {
-        return Ok(());
+        return Ok(None);
     }
-    let Ok(role) = s.collab().signer_role(handle).await else {
-        return Ok(());
+    let maintainer = collab.signer_role(handle).await.ok().flatten() == Some(Role::Maintainer);
+    if override_policy && !maintainer {
+        return Err(UserError::new(
+            codes::NOT_A_WRITER,
+            format!(
+                "merge refused: only maintainers of {} can override the branch policy",
+                handle.display()
+            ),
+        )
+        .cause("--override-policy was given by a writer")
+        .fix("drop --override-policy, or ask a maintainer to merge")
+        .note("checked before fetching or paying for anything; no merge event was posted")
+        .into());
+    }
+    // The branch policy (a client rule): its approvals now; its method once the merge is planned.
+    // Unreadable policy or approvals fail closed for a writer.
+    let policy = if override_policy {
+        None
+    } else {
+        let read = async {
+            let Some(policy) = collab.policy(handle).await? else {
+                return Ok::<_, anyhow::Error>(None);
+            };
+            let oracle = collab.member_oracle(handle).await?;
+            let (approvals, _) = collab.approvals_with(handle, view, &oracle).await?;
+            Ok(Some((
+                policy.clone(),
+                forge_core::rules::review::meets_policy(&approvals, &oracle, &policy),
+            )))
+        };
+        match read.await {
+            Ok(Some((policy, status))) => {
+                if let Some(u) = policy_refusal(&policy, &status, method, &handle.display(), number)
+                {
+                    return Err(u.into());
+                }
+                Some(policy)
+            }
+            Err(e) if !maintainer => {
+                return Err(UserError::new(
+                    codes::POLICY_NOT_MET,
+                    format!(
+                        "merge refused: couldn't read the branch policy of {}",
+                        handle.display()
+                    ),
+                )
+                .cause(format!("{e:#}"))
+                .fix("retry; a maintainer can merge with `--override-policy`")
+                .into());
+            }
+            // No policy, or a maintainer (who may merge whatever it says) could not read it.
+            Ok(None) | Err(_) => None,
+        }
     };
-    if role == Some(Role::Maintainer) {
-        return Ok(());
+    if maintainer || !pushes {
+        return Ok(policy);
     }
+    let base = view.patch.base_ref_name.as_str();
     let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
     let Ok(patterns) = svc.protected_patterns(handle).await else {
-        return Ok(());
+        return Ok(policy);
     };
     if !forge_core::rules::matches_protected(base, &patterns) {
-        return Ok(());
+        return Ok(policy);
     }
     Err(UserError::new(
         codes::NOT_A_WRITER,
@@ -942,6 +1020,53 @@ async fn require_merge_rights(
     .fix("ask a maintainer to merge it (`dg pr merge` as a maintainer)")
     .note("checked before fetching or paying for anything; no merge event was posted")
     .into())
+}
+
+/// Merge-method bits of `policy.mergeMethods` (review-parity spec §3.6): 1 fast-forward,
+/// 2 merge commit, 4 squash, 8 rebase; 0 allows any.
+pub const METHOD_FF: u8 = 1;
+/// A merge commit.
+pub const METHOD_MERGE: u8 = 2;
+
+/// E804 when the branch policy is not met: too few counted approvals, or a merge method it does
+/// not allow (`method` is the bit the merge would use; `None` checks approvals only). The policy
+/// is a client rule every Forge client applies; consensus does not enforce it.
+fn policy_refusal(
+    policy: &forge_core::rules::review::Policy,
+    status: &forge_core::rules::review::PolicyStatus,
+    method: Option<u8>,
+    repo: &str,
+    number: u64,
+) -> Option<UserError> {
+    let method_ok =
+        method.is_none_or(|m| policy.merge_methods == 0 || policy.merge_methods & m != 0);
+    if status.met && method_ok {
+        return None;
+    }
+    let cause = if status.met {
+        "the branch policy does not allow this merge method".to_string()
+    } else {
+        format!(
+            "{} of {} required approval(s){}",
+            status.have,
+            status.need,
+            if policy.approver_role == 1 {
+                " from maintainers"
+            } else {
+                ""
+            }
+        )
+    };
+    Some(
+        UserError::new(
+            codes::POLICY_NOT_MET,
+            format!("merge refused: PR #{number} does not meet the branch policy of {repo}"),
+        )
+        .cause(cause)
+        .fix(format!("get the missing approvals (`dg pr review {repo} {number} --approve` by a member)"))
+        .fix("a maintainer can merge anyway with `--override-policy`")
+        .note("the policy is a client rule every Forge client applies; consensus does not enforce it. Nothing was pushed and no merge event was posted"),
+    )
 }
 
 fn merge_failure(e: &anyhow::Error, number: u64, repo: &str) -> UserError {
@@ -966,6 +1091,7 @@ fn push_merge(
     handle: &Repo,
     view: &PatchView,
     signer: &str,
+    policy: Option<&forge_core::rules::review::Policy>,
     steps: &mut Steps,
 ) -> Result<String> {
     // The base ref and head are PR document fields anyone could have written; they become a
@@ -1028,7 +1154,7 @@ fn push_merge(
         ),
     );
 
-    let Some(target) = build_merge(dir, handle, view, signer, steps)? else {
+    let Some(target) = build_merge(dir, handle, view, signer, policy, steps)? else {
         return Ok(base_tip.unwrap_or_default());
     };
 
@@ -1063,6 +1189,7 @@ fn build_merge(
     handle: &Repo,
     view: &PatchView,
     signer: &str,
+    policy: Option<&forge_core::rules::review::Policy>,
     steps: &mut Steps,
 ) -> Result<Option<String>> {
     let base_ref = &view.patch.base_ref_name;
@@ -1074,6 +1201,27 @@ fn build_merge(
         base_tip.is_some_and(|b| git::is_ancestor(dir, head, b)),
         base_tip.is_some_and(|b| git::is_ancestor(dir, b, head)),
     );
+    let method = match &plan {
+        MergePlan::AlreadyMerged { .. } => None,
+        MergePlan::FastForward { .. } => Some(METHOD_FF),
+        MergePlan::MergeCommit { .. } => Some(METHOD_MERGE),
+    };
+    if let (Some(policy), Some(m)) = (policy, method) {
+        let met = forge_core::rules::review::PolicyStatus {
+            met: true,
+            have: 0,
+            need: 0,
+        };
+        if let Some(u) = policy_refusal(
+            policy,
+            &met,
+            Some(m),
+            &handle.display(),
+            u64::from(view.patch.number),
+        ) {
+            return Err(u.into());
+        }
+    }
     Ok(Some(match &plan {
         MergePlan::AlreadyMerged { .. } => {
             steps.ok("merge", format!("already in {base_ref}; nothing to push"));
@@ -1296,6 +1444,73 @@ async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn policy(need: u32, maintainers: bool, methods: u8) -> forge_core::rules::review::Policy {
+        forge_core::rules::review::Policy {
+            required_approvals: need,
+            approver_role: u8::from(maintainers),
+            require_checks: false,
+            merge_methods: methods,
+        }
+    }
+
+    fn status(have: u32, need: u32) -> forge_core::rules::review::PolicyStatus {
+        forge_core::rules::review::PolicyStatus {
+            met: have >= need,
+            have,
+            need,
+        }
+    }
+
+    #[test]
+    fn an_unmet_policy_refuses_the_merge_with_e804() {
+        let u = policy_refusal(&policy(2, true, 0), &status(1, 2), None, "o/r", 7).unwrap();
+        assert_eq!((u.code, u.exit_code()), ("E804", 8));
+        let text = u.to_json().to_string();
+        assert!(
+            text.contains("1 of 2 required approval(s) from maintainers"),
+            "{text}"
+        );
+        assert!(text.contains("--override-policy"), "{text}");
+        assert!(text.contains("consensus does not enforce it"), "{text}");
+        assert!(policy_refusal(&policy(2, false, 0), &status(2, 2), None, "o/r", 7).is_none());
+    }
+
+    #[test]
+    fn a_disallowed_merge_method_refuses_with_e804() {
+        // squash only: a fast-forward and a merge commit are refused, 0 allows any.
+        let squash = policy(0, false, 4);
+        assert!(policy_refusal(&squash, &status(0, 0), Some(METHOD_FF), "o/r", 1).is_some());
+        assert!(policy_refusal(&squash, &status(0, 0), Some(METHOD_MERGE), "o/r", 1).is_some());
+        assert!(policy_refusal(&squash, &status(0, 0), Some(4), "o/r", 1).is_none());
+        assert!(policy_refusal(
+            &policy(0, false, 0),
+            &status(0, 0),
+            Some(METHOD_MERGE),
+            "o/r",
+            1
+        )
+        .is_none());
+        assert!(policy_refusal(
+            &policy(0, false, METHOD_FF),
+            &status(0, 0),
+            Some(METHOD_FF),
+            "o/r",
+            1
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn an_archived_repo_refuses_writes_with_e606() {
+        let u = crate::common::archived_refusal("o/r", "issue not created");
+        assert_eq!((u.code, u.exit_code()), ("E606", 6));
+        let text = u.to_json().to_string();
+        assert!(
+            text.contains("--allow-archived") && text.contains("dg repo unarchive o/r"),
+            "{text}"
+        );
+    }
 
     #[test]
     fn exactly_one_verdict() {

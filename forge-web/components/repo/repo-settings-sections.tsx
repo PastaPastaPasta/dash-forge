@@ -380,7 +380,7 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
                         cfg.ask({
                           title: `Unprotect ${p}`,
                           description: `Appends a config without ${p}. Writers can then update the branches it matched. Updates made while it was protected stay judged by the config in force at the time.`,
-                          change: { protectedPatterns: patterns.filter((x) => x !== p) },
+                          change: { removePattern: p },
                           confirmLabel: 'Sign & unprotect',
                         })
                       }
@@ -415,7 +415,7 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
                   cfg.ask({
                     title: `Protect ${candidate}`,
                     description: `Appends a config adding ${candidate}. From then on only maintainers can update ${preview.length > 0 ? preview.join(', ') : 'the branches it matches'}; a writer's push there is refused.`,
-                    change: { protectedPatterns: nextPatterns },
+                    change: { addPattern: candidate },
                     confirmLabel: 'Sign & protect',
                   })
                 }
@@ -430,7 +430,7 @@ export function BranchSettings({ home, maintainer, onSaved }: { home: RepoHome; 
                   <span className="font-mono">{candidate}</span>{' '}
                   {preview.length === 0 ? 'matches no current branch' : `protects ${preview.join(', ')}`}
                 </p>
-                <CostPreview cost={cfg.cost({ protectedPatterns: nextPatterns })} />
+                <CostPreview cost={cfg.cost({ addPattern: candidate })} />
               </div>
             ) : null}
             <p className="mt-2 flex gap-1.5 text-[12px] text-anvil-500 dark:text-anvil-400">

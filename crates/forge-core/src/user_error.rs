@@ -131,6 +131,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::COST_GUARD, "stopped by the cost guard"),
     (codes::CONFIRMATION_REQUIRED, "confirmation required"),
     (codes::CANCELLED, "cancelled at the confirmation prompt"),
+    (codes::POLICY_NOT_MET, "branch policy not met"),
 ];
 
 /// The stable codes. The first digit is the exit code.
@@ -228,6 +229,8 @@ pub mod codes {
     pub const CONFIRMATION_REQUIRED: &str = "E802";
     /// The user answered no at a confirmation prompt.
     pub const CANCELLED: &str = "E803";
+    /// The repository's branch `policy` (a client rule) is not met by this merge.
+    pub const POLICY_NOT_MET: &str = "E804";
 }
 
 /// An error a person can act on.

@@ -74,6 +74,11 @@ pub struct Cli {
     #[arg(long, global = true, value_name = "FILE")]
     pub identity: Option<PathBuf>,
 
+    /// Write to an archived repository anyway (issues, PRs, comments, reviews, merges,
+    /// releases). Archiving is a client rule; consensus still admits a member's writes.
+    #[arg(long, global = true)]
+    pub allow_archived: bool,
+
     #[command(subcommand)]
     pub command: Command,
 }
@@ -562,6 +567,10 @@ pub enum PrCommand {
         /// tip when the head is already in it).
         #[arg(long = "merge-oid", requires = "event_only")]
         merge_oid: Option<String>,
+        /// Merge although the branch policy is not met (maintainers only). The policy is a
+        /// client rule every Forge client applies; consensus does not enforce it.
+        #[arg(long = "override-policy")]
+        override_policy: bool,
     },
     /// Close a pull request without merging.
     Close {

@@ -63,8 +63,11 @@ export interface PullActionInputs {
   readonly holdings: Holdings | null | 'loading'
   /** `config.protectedPatterns` in force (empty or absent: nothing protected). */
   readonly protectedPatterns?: readonly string[]
-  /** How the PR's approvals stand against the branch policy; null or absent: no policy. */
-  readonly policy?: PolicyStatus | null
+  /**
+   * How the PR's approvals stand against the branch policy; null or absent: no policy;
+   * `'unknown'`: it could not be read, so a writer's merge is withheld (fail closed).
+   */
+  readonly policy?: PolicyStatus | null | 'unknown'
 }
 
 /** What a repo's ACL is read from, for "couldn't read …" messages. */
@@ -153,7 +156,8 @@ export function pullActions({ pull, viewer, holdings, protectedPatterns = [], po
   const actionable = pull.stateComplete && !merged
   const base = pull.baseRefName ?? ''
   const baseProtected = base !== '' && matchesProtected(base, protectedPatterns)
-  const policyUnmet = policy !== null && !policy.met
+  const policyUnknown = policy === 'unknown'
+  const policyUnmet = policyUnknown || (policy !== null && !policy.met)
 
   const eligible = actionable && open && viewer !== null && holder && pull.headOid !== ''
   // A writer can neither move a protected base nor override the policy.
@@ -171,7 +175,9 @@ export function pullActions({ pull, viewer, holdings, protectedPatterns = [], po
       mergeHint = "Only this repo's maintainers and writers can mark a PR as merged."
     } else if (baseProtected) {
       mergeHint = `${shortRef(base)} is a protected branch: only maintainers can merge into it.`
-    } else if (policy !== null && policyUnmet) {
+    } else if (policyUnknown) {
+      mergeHint = "Couldn't read the branch policy, so only a maintainer can merge for now."
+    } else if (policy !== null && typeof policy === 'object' && !policy.met) {
       mergeHint = `The branch policy needs ${policy.need} approval${policy.need === 1 ? '' : 's'} (${policy.have} so far). Only a maintainer can merge before then.`
     }
   }

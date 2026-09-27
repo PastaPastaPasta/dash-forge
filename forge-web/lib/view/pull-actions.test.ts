@@ -132,6 +132,14 @@ describe('pullActions — protected base and branch policy (D-503)', () => {
     expect(m.policyOverride).toBe(true)
   })
 
+  it('withholds a writer merge when the policy could not be read, and says so (M4: fail closed)', () => {
+    const w = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: 'unknown' })
+    expect(w.canMarkMerged).toBe(false)
+    expect(w.mergeHint).toMatch(/couldn't read the branch policy/i)
+    const m = pullActions({ pull: pull(), viewer: MAINTAINER, holdings: MAINTAIN, policy: 'unknown' })
+    expect(m.canMarkMerged).toBe(true)
+  })
+
   it('lets a writer merge once the policy is met on an unprotected base', () => {
     const a = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: { met: true, have: 2, need: 2 } })
     expect(a.canMarkMerged).toBe(true)

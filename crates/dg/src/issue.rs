@@ -157,6 +157,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 
 async fn create(ctx: &Ctx, repo: &str, title: &str, body: &str) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
+    s.refuse_if_archived(ctx, "issue not created").await?;
     ctx.confirm_or_cancel(&format!(
         "Open issue {title:?} in {}? (one small document, ~0.0001 DASH)",
         s.repo.display()
@@ -206,6 +207,7 @@ async fn target(s: &Session, repo: &str, number: u64) -> Result<Target> {
 
 async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
+    s.refuse_if_archived(ctx, "comment not posted").await?;
     let target = target(&s, repo, number).await?;
     ctx.confirm_or_cancel(&format!("Comment on issue #{number}? (one small document)"))?;
     let id = s
@@ -221,6 +223,7 @@ async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
 
 async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
+    s.refuse_if_archived(ctx, "state not changed").await?;
     let target = target(&s, repo, number).await?;
     let (verb, prompt) = if close {
         ("close", "Close")
@@ -272,6 +275,7 @@ async fn label(
         }
     };
     let s = Session::open(ctx, repo).await?;
+    s.refuse_if_archived(ctx, "label not changed").await?;
     let target = target(&s, repo, number).await?;
     // docs/security/private-repos.md §7: label names are event values, never encrypted
     let plaintext = if s.repo.visibility == forge_core::rules::v2::Visibility::Private {

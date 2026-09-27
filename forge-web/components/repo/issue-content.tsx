@@ -154,7 +154,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           {issue.state.labels.map((l) => (
             <span key={l} className="inline-flex items-center gap-1 rounded-full bg-forge-500/10 px-2 py-0.5 text-[11px] text-forge-800 dark:text-forge-400">
               {l}
-              {isMember ? (
+              {isMember && !archived ? (
                 <button
                   type="button"
                   aria-label={`Remove label ${l}`}
@@ -244,7 +244,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         )}
         {composeBlock !== null && canToggle ? (
           <div className="mt-3 flex justify-end">
-            <Button variant="outline" onClick={() => setPending({ kind: 'state' })} disabled={!signer || guard.disabledReason !== null}>
+            <Button variant="outline" onClick={() => setPending({ kind: 'state' })} disabled={!signer || guard.disabledReason !== null || archived}>
               {open ? 'Close issue' : 'Reopen issue'}
             </Button>
           </div>

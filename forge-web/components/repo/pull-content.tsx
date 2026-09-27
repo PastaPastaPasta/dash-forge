@@ -398,8 +398,8 @@ function BranchRules({
 }: {
   base: string
   baseProtected: boolean
-  policy: Policy | null
-  status: PolicyStatus | null
+  policy: Policy | null | 'unknown'
+  status: PolicyStatus | null | 'unknown'
 }): JSX.Element {
   const short = base.startsWith('refs/heads/') ? base.slice('refs/heads/'.length) : base
   return (
@@ -413,7 +413,12 @@ function BranchRules({
           </span>
         </p>
       ) : null}
-      {policy !== null && status !== null ? (
+      {policy === 'unknown' || status === 'unknown' ? (
+        <p className="mt-1 flex items-center gap-2" data-testid="policy-status">
+          <X className="h-4 w-4 text-caution" aria-hidden />
+          <span>Couldn&apos;t read the branch policy; only a maintainer can merge until it loads.</span>
+        </p>
+      ) : policy !== null && status !== null ? (
         <p className="mt-1 flex items-center gap-2" data-testid="policy-status">
           {status.met ? <Check className="h-4 w-4 text-verify" aria-hidden /> : <X className="h-4 w-4 text-danger" aria-hidden />}
           <span>

@@ -13,8 +13,10 @@
 #                                                     -> `ls-remote --symref` HEAD is trunk; a
 #      rerun writes nothing
 #   6. `dg repo policy set` by COLLAB                  -> E601; by OWNER -> `policy show` has it
-#   7. OWNER `dg repo archive`                         -> COLLAB's push refused (E606);
-#      `dg repo unarchive` clears it
+#      COLLAB's `dg pr merge` with the policy unmet     -> E804 (a client rule dg applies);
+#      COLLAB's `--override-policy` -> E601; OWNER's `--override-policy` merge lands
+#   7. OWNER `dg repo archive`                         -> COLLAB's push refused (E606), and
+#      `dg issue create` too; `dg repo unarchive` clears it
 #
 # A new repo per run (`e2e-settings-<run-id>`, about 0.02 DASH with its pushes): a protected
 # `main` on the shared `e2e-cli` repo would change what every other scenario tests.
@@ -141,6 +143,22 @@ done
 check "policy show: 2 approvals, maintainers only, ff+squash" test "$shown" -eq 0
 check "policy show says it is a client rule" grep -q 'nothing at consensus requires approvals' "$LOG-pshow.json"
 
+step "dg enforces the policy on merges (a client rule): E804 for the writer, --override-policy for the maintainer"
+FEATURE2="e2e/${RUN_ID}/feature2"
+printf 'second change %s\n' "$RUN_ID" >"$SRC/beta.txt"
+git -C "$SRC" add beta.txt && git -C "$SRC" commit -q -m "second change ${RUN_ID}"
+git_dash_retry "$ID_COLLAB" "$LOG-f2push" -C "$SRC" push "$REMOTE" "HEAD:refs/heads/${FEATURE2}" || fail_with "$LOG-f2push" "feature2 push"
+( cd "$SRC" && dg_write "$ID_COLLAB" "$LOG-pr2" pr create "$REPO" --base "$FEATURE" --head "$FEATURE2" --head-repo "$REPO" --title "policy e2e ${RUN_ID}" ) \
+  || fail_with "$LOG-pr2" "pr create (policy)"
+N2="$(jq_py "$LOG-pr2.json" 'd["number"]')"
+dg_write "$ID_COLLAB" "$LOG-pmerge" pr merge "$REPO" "$N2"
+check "writer's merge with 0 of 2 approvals is refused (E804)" refused_with E804 "$LOG-pmerge"
+check "the refusal says consensus does not enforce it" grep -q 'consensus does not enforce it' "$LOG-pmerge.json"
+dg_write "$ID_COLLAB" "$LOG-pover" pr merge "$REPO" "$N2" --override-policy
+check "a writer cannot override the policy (E601)" refused_with E601 "$LOG-pover"
+dg_write "$ID_OWNER" "$LOG-omerge2" pr merge "$REPO" "$N2" --override-policy || fail_with "$LOG-omerge2" "maintainer override merge"
+check "the maintainer's override merge lands" assert_eq "True" "$(jq_py "$LOG-omerge2.json" 'd["merged"]')"
+
 step "archive: the helper refuses a member's push (E606); unarchive clears it"
 dg_write "$ID_OWNER" "$LOG-arch" repo archive "$REPO" || fail_with "$LOG-arch" "archive"
 check "archived" assert_eq "archived" "$(jq_py "$LOG-arch.json" 'd["status"]')"
@@ -153,6 +171,8 @@ for _ in $(seq 1 6); do
 done
 check "COLLAB's push to the archived repo is refused with E606" test "$refused" -eq 0
 check "the refusal names the override" grep -q 'allow-archived' "$LOG-apush.err"
+dg_write "$ID_COLLAB" "$LOG-aissue" issue create "$REPO" --title "while archived ${RUN_ID}"
+check "dg issue create in an archived repo is refused (E606)" refused_with E606 "$LOG-aissue"
 dg_write "$ID_OWNER" "$LOG-unarch" repo unarchive "$REPO" || fail_with "$LOG-unarch" "unarchive"
 check "unarchived" assert_eq "unarchived" "$(jq_py "$LOG-unarch.json" 'd["status"]')"
 

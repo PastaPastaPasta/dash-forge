@@ -32,7 +32,7 @@ import {
   type WriteAuth,
   type WriteResult,
 } from '../sdk'
-import type { RepoConfig } from './config'
+import { readConfigBundle, type RepoConfig } from './config'
 import { DOC, num, type RepoRef } from './contract'
 import { repoSource } from './source'
 
@@ -48,10 +48,16 @@ export const MAX_TOPICS = 10
 /** `repo.description`: at most 500 characters and 1000 UTF-8 bytes. */
 export const DESCRIPTION_LIMITS = { chars: 500, bytes: 1000 } as const
 
-/** A change to a repo's config; unset fields carry over. */
+/**
+ * A change to a repo's config, as a delta: set the default branch, add or remove one protected
+ * pattern, set the archived flag. Every other field carries over from the config it is applied
+ * to, which {@link updateConfig} reads fresh at write time, so a change made elsewhere since the
+ * page loaded (another pattern, the storage backend) is kept, not overwritten.
+ */
 export interface ConfigChange {
   readonly defaultBranch?: string
-  readonly protectedPatterns?: readonly string[]
+  readonly addPattern?: string
+  readonly removePattern?: string
   readonly archived?: boolean
 }
 
@@ -98,12 +104,33 @@ export function patternsProblem(patterns: readonly string[]): string | null {
 
 /** `current` with `change` applied (the next config). */
 export function applyConfigChange(current: RepoConfig, change: ConfigChange): RepoConfig {
+  let patterns = [...current.protectedPatterns]
+  if (change.addPattern !== undefined && !patterns.includes(change.addPattern)) patterns.push(change.addPattern)
+  if (change.removePattern !== undefined) patterns = patterns.filter((p) => p !== change.removePattern)
   return {
     ...current,
     ...(change.defaultBranch !== undefined ? { defaultBranch: shortBranch(change.defaultBranch.trim()) } : {}),
-    ...(change.protectedPatterns !== undefined ? { protectedPatterns: [...change.protectedPatterns] } : {}),
+    protectedPatterns: patterns,
     ...(change.archived !== undefined ? { archived: change.archived } : {}),
   }
+}
+
+/** The refusal when a setting being edited changed elsewhere after the page loaded. */
+export const STALE_SETTINGS = 'These settings changed since you opened this page — reload and try again.'
+
+/**
+ * Why `change`, planned against `seen` (the config the page showed), must not be applied to
+ * `fresh` (the config in force now), or null: the field being edited moved since, so the user
+ * decided on a state that no longer holds.
+ */
+export function staleProblem(seen: RepoConfig, fresh: RepoConfig, change: ConfigChange): string | null {
+  const patternsMoved =
+    seen.protectedPatterns.length !== fresh.protectedPatterns.length || seen.protectedPatterns.some((p, i) => p !== fresh.protectedPatterns[i])
+  const moved =
+    (change.defaultBranch !== undefined && seen.defaultBranch !== fresh.defaultBranch) ||
+    (change.archived !== undefined && seen.archived !== fresh.archived) ||
+    ((change.addPattern !== undefined || change.removePattern !== undefined) && patternsMoved)
+  return moved ? STALE_SETTINGS : null
 }
 
 /** Whether two configs hold the same fields (a write of `b` over `a` would change nothing). */
@@ -232,32 +259,43 @@ export class SealedConfigError extends Error {
   }
 }
 
+/** The config in force now, read fresh (the complete timeline, the rule's newest). */
+async function readFreshConfig(sdk: EvoSDK, repo: RepoRef): Promise<RepoConfig | null> {
+  return (await readConfigBundle(sdk, repo)).config
+}
+
 /**
- * Append a config applying `change` over `current` (maintainers only at consensus). Returns
- * null, signing nothing, when `current` already holds the change. Refuses a private repo
- * ({@link SealedConfigError}): a plaintext config there would be public and malformed.
+ * Append a config applying `change` (maintainers only at consensus). The config in force is read
+ * fresh right before signing and the change applied to it, so everything else (patterns added
+ * elsewhere, the storage backend) carries over; if the field being edited moved since `seen`
+ * (what the page showed), it refuses with {@link STALE_SETTINGS}. Returns null, signing nothing,
+ * when the config already holds the change. Refuses a private repo ({@link SealedConfigError}):
+ * a plaintext config there would be public and malformed. `read` / `write` are injectable for tests.
  */
 export async function updateConfig(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  current: RepoConfig | null,
+  seen: RepoConfig | null,
   change: ConfigChange,
   intent?: string,
+  read: (sdk: EvoSDK, repo: RepoRef) => Promise<RepoConfig | null> = readFreshConfig,
+  write: typeof createDocumentIdempotent = createDocumentIdempotent,
 ): Promise<WriteResult | null> {
   if (repo.visibility === 'private') throw new SealedConfigError()
   if (change.defaultBranch !== undefined) {
     const problem = branchProblem(change.defaultBranch)
     if (problem) throw new Error(problem)
   }
-  if (change.protectedPatterns !== undefined) {
-    const problem = patternsProblem(change.protectedPatterns)
-    if (problem) throw new Error(problem)
-  }
-  const now = current ?? DEFAULT_CONFIG
+  const fresh = await read(sdk, repo)
+  const stale = staleProblem(seen ?? DEFAULT_CONFIG, fresh ?? DEFAULT_CONFIG, change)
+  if (stale) throw new Error(stale)
+  const now = fresh ?? DEFAULT_CONFIG
   const next = applyConfigChange(now, change)
-  if (current !== null && sameConfig(now, next)) return null
-  return createDocumentIdempotent(sdk, auth, {
+  const problem = patternsProblem(next.protectedPatterns)
+  if (problem) throw new Error(problem)
+  if (fresh !== null && sameConfig(now, next)) return null
+  return write(sdk, auth, {
     contractId: repo.forge.core,
     documentType: DOC.config,
     data: { repoId: decodeIdentifier(repo.repoId), ...configData(next) },

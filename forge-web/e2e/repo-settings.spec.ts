@@ -203,7 +203,7 @@ test('s6. archiving disables composers; unarchive restores them', async ({ brows
 
   const writer = await signedIn(browser, 'COLLAB', repoPath('issues'))
   await waitForRepoResolved(writer)
-  await expect(writer.getByText('The owner has marked this repo archived.')).toBeVisible({ timeout: 60_000 })
+  await expect(writer.getByText('A maintainer has marked this repo archived.')).toBeVisible({ timeout: 60_000 })
   await expect(writer.getByRole('button', { name: /new issue/i }).first()).toBeDisabled()
   await shot(writer, 'settings-07-archived-issues')
 

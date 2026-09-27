@@ -116,6 +116,7 @@ async fn upload_asset(
 
 async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
     let s = Session::open(ctx, &args.repo).await?;
+    s.refuse_if_archived(ctx, "release not created").await?;
     // Release notes and assets are not encrypted in this release: refuse before any asset
     // leaves the machine.
     s.repo.require_public("releases")?;

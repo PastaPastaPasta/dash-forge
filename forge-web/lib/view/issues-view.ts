@@ -181,9 +181,12 @@ export interface PullApprovals extends Approvals {
   readonly roles: ReadonlyMap<string, Role | null>
   /** Every reviewer's standing, counted or not, for the header (`summarizeReviews`). */
   readonly summary: ReviewSummary
-  /** The branch policy in force (null: none), and how these approvals stand against it. */
-  readonly policy: Policy | null
-  readonly policyStatus: PolicyStatus | null
+  /**
+   * The branch policy in force (null: none; `'unknown'`: it could not be read), and how these
+   * approvals stand against it.
+   */
+  readonly policy: Policy | null | 'unknown'
+  readonly policyStatus: PolicyStatus | null | 'unknown'
 }
 
 /** A full PR detail: the folded pull + its merged timeline. */
@@ -234,7 +237,12 @@ async function readApprovals(
   author: string,
 ): Promise<PullApprovals | null> {
   try {
-    const [oracle, policy] = await Promise.all([readRoleOracle(sdk, repo), readPolicy(sdk, repo)])
+    // A policy that cannot be read is "unknown" (the merge gate then fails closed), never a
+    // reason to drop the approvals the page can still show.
+    const [oracle, policy] = await Promise.all([
+      readRoleOracle(sdk, repo),
+      readPolicy(sdk, repo).catch((): 'unknown' => 'unknown'),
+    ])
     const input = reviews.map((r) => ({
       id: r.id,
       reviewer: r.reviewer,
@@ -249,7 +257,7 @@ async function readApprovals(
       roles: new Map(reviewers.map((who) => [who, oracle.currentRole(who)])),
       summary: summarizeReviews(input, oracle, headOid, author, dismissed),
       policy,
-      policyStatus: policy === null ? null : meetsPolicy(counted, oracle, policy),
+      policyStatus: policy === null || policy === 'unknown' ? policy : meetsPolicy(counted, oracle, policy),
     }
   } catch {
     return null

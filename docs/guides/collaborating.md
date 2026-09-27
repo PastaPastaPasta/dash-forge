@@ -54,8 +54,8 @@ What each one enforces:
 
 - **Protected branches** are enforced by Platform. A ref matching a pattern moves only through a maintainer-only document; a writer's push is refused ([`E601`](../errors.md#e601)), and a plain update of a protected ref is ignored by every reader. A bare name means `refs/heads/<name>`; `*` stays within one path segment and `**` crosses segments. Up to 8 patterns.
 - **The default branch** is what a clone checks out and what the web opens on.
-- **The branch policy** is a client rule. Forge clients disable a writer's merge until it is met, and a maintainer can override it. Nothing on Platform requires approvals.
-- **Archiving** is a client rule too. Forge clients disable issues, PRs and releases, and the push helper refuses pushes ([`E606`](../errors.md#e606)) unless you push with `-o allow-archived`. Platform still accepts a member's writes.
+- **The branch policy** is a client rule. Every Forge client applies it: the web disables a writer's merge until it is met, and `dg pr merge` refuses it ([`E804`](../errors.md#e804)). A maintainer can override it (`--override-policy`). Nothing on Platform requires approvals.
+- **Archiving** is a client rule too. Forge clients refuse writes to an archived repository: the web disables issues, PRs, merges and releases; `dg` refuses issue, PR, comment, review, merge and release writes; and the push helper refuses pushes. All of these use [`E606`](../errors.md#e606). Override with `dg --allow-archived …` or `git push -o allow-archived`. Platform still accepts a member's writes.
 
 The description and topics live on the repository document, which only its owner can edit. They are public even for a private repository. A private repository's other settings are encrypted: the CLI writes them sealed, and the web app does not write them yet.
 
