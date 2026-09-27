@@ -92,12 +92,15 @@ export function Timeline({
   items,
   links,
   renderComment,
+  eventText,
 }: {
   items: readonly TimelineItem[]
   /** Where `#n` / `@name` in bodies link (omit: plain text). Keep it referentially stable. */
   links?: MarkdownLinks
   /** A comment's additions: the author's Edit in the header, the inline editor as its body. */
   renderComment?: (item: Extract<TimelineItem, { kind: 'comment' }>) => CommentSlots
+  /** A page's own wording for an event (the PR page counts the commits a head update pushed), or null. */
+  eventText?: (e: Event) => string | null
 }): JSX.Element {
   return (
     <div className="space-y-3">
@@ -108,7 +111,15 @@ export function Timeline({
             <div key={`c-${item.comment.id}-${i}`} className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="timeline-comment">
               <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
                 <Author identityId={item.comment.author} />
-                <span className="text-anvil-500 dark:text-anvil-400">commented {timeAgo(item.comment.createdAt)}</span>
+                <span className="text-anvil-500 dark:text-anvil-400">
+                  commented{item.comment.anchor ? (
+                    <>
+                      {' '}
+                      on <span className="font-mono text-[12px]">{anchorLabel(item.comment.anchor)}</span>
+                    </>
+                  ) : null}{' '}
+                  {timeAgo(item.comment.createdAt)}
+                </span>
                 <EditedMarker createdAt={item.comment.createdAt} updatedAt={item.comment.updatedAt} />
                 {slot.header}
               </div>
@@ -160,9 +171,11 @@ export function Timeline({
             </div>
           )
         }
-        const phrase = eventPhrase(item.event)
+        const own = eventText?.(item.event) ?? null
+        const base = eventPhrase(item.event)
+        const phrase = own === null ? base : { ...base, text: own }
         return (
-          <div key={`e-${item.event.id}-${i}`} className="flex items-center gap-2 px-2 text-dense text-anvil-500 dark:text-anvil-400">
+          <div key={`e-${item.event.id}-${i}`} className="flex flex-wrap items-center gap-2 px-2 text-dense text-anvil-500 dark:text-anvil-400" data-testid="timeline-event" data-kind={item.event.kind}>
             <span className="flex h-6 w-6 items-center justify-center rounded-full bg-anvil-100 dark:bg-anvil-800">
               {phrase.icon}
             </span>

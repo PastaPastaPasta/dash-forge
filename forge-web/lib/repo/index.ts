@@ -123,6 +123,7 @@ export {
   readIssue,
   readPull,
   readReviews,
+  reviewViewOf,
   verdictFromCode,
   VERDICT_LABEL,
   type IssueView,

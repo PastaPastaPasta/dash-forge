@@ -30,6 +30,9 @@ describe('shortRepoPath → shim → canonical route', () => {
     [{ kind: 'issue', number: 42 }, '/alice/project/issues/42', '/repo/issue/?owner=alice&name=project&number=42'],
     [{ kind: 'pulls' }, '/alice/project/pulls', '/repo/pulls/?owner=alice&name=project'],
     [{ kind: 'pull', number: 7 }, '/alice/project/pull/7', '/repo/pull/?owner=alice&name=project&number=7'],
+    [{ kind: 'pull', number: 7, tab: 'files' }, '/alice/project/pull/7/files', '/repo/pull/?owner=alice&name=project&number=7&tab=files'],
+    [{ kind: 'pull', number: 7, tab: 'commits' }, '/alice/project/pull/7/commits', '/repo/pull/?owner=alice&name=project&number=7&tab=commits'],
+    [{ kind: 'pull', number: 7, tab: 'checks' }, '/alice/project/pull/7/checks', '/repo/pull/?owner=alice&name=project&number=7&tab=checks'],
     [{ kind: 'releases' }, '/alice/project/releases', '/repo/releases/?owner=alice&name=project'],
     [{ kind: 'release', tag: 'v1.2' }, '/alice/project/releases/v1.2', '/repo/release/?owner=alice&name=project&tag=v1.2'],
   ]
@@ -69,6 +72,8 @@ describe('the shim leaves everything else alone', () => {
     '/alice/project/issues/abc',
     '/alice/project/issues/0',
     '/alice/project/issues/4/extra',
+    '/alice/project/pull/7/other',
+    '/alice/project/pull/7/files/x',
     '/alice/project/tree',
     '/al%ZZce/project',
     '/alice/pro%2Fject',

@@ -6,7 +6,7 @@
  *
  *   /alice/project
  *   /alice/project/tree/<ref>/<path>     /alice/project/blob/<ref>/<path>
- *   /alice/project/issues[/<n>]          /alice/project/pulls, /alice/project/pull/<n>
+ *   /alice/project/issues[/<n>]          /alice/project/pulls, /alice/project/pull/<n>[/files|commits|checks]
  *   /alice/project/releases[/<tag>]      /alice/project/commits[/<ref>]
  *
  * A static host answers a short URL with `404.html`, whose inline {@link SHORT_URL_SHIM}
@@ -40,7 +40,8 @@ export type ShortTarget =
   | { readonly kind: 'tree' | 'blob'; readonly ref: string; readonly path?: string }
   | { readonly kind: 'commits'; readonly ref?: string }
   | { readonly kind: 'issues' | 'pulls' | 'releases' }
-  | { readonly kind: 'issue' | 'pull'; readonly number: number }
+  | { readonly kind: 'issue'; readonly number: number }
+  | { readonly kind: 'pull'; readonly number: number; readonly tab?: 'commits' | 'checks' | 'files' }
   | { readonly kind: 'release'; readonly tag: string }
 
 const seg = (s: string): string => encodeURIComponent(s)
@@ -71,7 +72,7 @@ export function shortRepoPath(repo: { readonly owner: string; readonly name: str
     case 'issue':
       return `${base}/issues/${target.number}`
     case 'pull':
-      return `${base}/pull/${target.number}`
+      return `${base}/pull/${target.number}${target.tab ? `/${target.tab}` : ''}`
     case 'release':
       return `${base}/releases/${seg(target.tag)}`
   }
@@ -120,6 +121,9 @@ export const SHORT_URL_EXPAND_SOURCE = `function (pathname, base, reserved) {
   if (rest.length === 0) return q('/repo/', []);
   if ((kind === 'tree' || kind === 'blob') && rest.length >= 2) {
     return q('/repo/' + kind + '/', ['ref', arg, 'path', tail.join('/')]);
+  }
+  if ((kind === 'pull' || kind === 'pulls') && number && tail.length === 1 && /^(files|commits|checks)$/.test(tail[0])) {
+    return q('/repo/pull/', ['number', number, 'tab', tail[0]]);
   }
   if (tail.length > 0) return null;
   if (kind === 'commits') return q('/repo/commits/', ['ref', arg]);

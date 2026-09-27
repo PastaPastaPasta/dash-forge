@@ -20,13 +20,14 @@ import {
   num,
   readLabels,
   readMembershipsCached,
+  newestPolicy,
   readPolicy,
   readPull,
+  reviewViewOf,
+  toPolicy,
   seedMemberships,
   toLog,
   updatedAtOf,
-  readReviews,
-  readRoleOracle,
   readTargetLog,
   repoSource,
   str,
@@ -43,10 +44,10 @@ import { compositeOf, docsAt, queryComposite, siblingOf } from '../sdk/composite
 import { prefetchDpnsNames } from './dpns'
 import type { Membership } from '../rules/v2'
 import { HiddenTally, admitAll, gateFor, type HiddenCounts } from '../repo/private-content'
-import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
+import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
-import { anchorOf, countApprovals, groupReviewComments, meetsPolicy, type Anchor, type Approvals, type Policy, type PolicyStatus, type Role } from '../rules/v2'
-import { summarizeReviews, type ReviewSummary } from './review-fold'
+import { anchorOf, countApprovals, foldPrReviewV2, groupReviewComments, meetsPolicy, RoleOracle, type Anchor, type Approvals, type Policy, type PolicyStatus, type PrReviewState, type Review, type Role } from '../rules/v2'
+import { reviewerRows, sinceYourReview, summarizeReviews, type ReviewerCardRow, type ReviewSummary, type SinceYourReview } from './review-fold'
 
 /** One comment on an issue/PR. */
 export interface CommentView {
@@ -147,26 +148,6 @@ export type TimelineItem =
       /** How many the review announced (`commentCount`, 0 when absent). */
       readonly expected: number
     }
-
-/** Find an issue or patch document by its `number` field, or null. */
-async function docByNumber(
-  sdk: EvoSDK,
-  repo: RepoRef,
-  type: 'issue' | 'patch',
-  number: number,
-): Promise<PlainDocument | null> {
-  const { documents } = await queryDocumentsWithProof(
-    sdk,
-    repoSource(repo).repoQuery(DOC[type], {
-      where: [['number', '==', number]],
-      limit: 1,
-    }),
-  )
-  const doc = documents[0]
-  if (doc === undefined) return null
-  const a = await gateFor(repo).admit(type, doc)
-  return a.ok ? a.doc : null
-}
 
 /** A full issue detail: the folded issue + its merged timeline. */
 export interface IssueThread {
@@ -289,11 +270,24 @@ export interface PullThread {
   readonly timeline: TimelineItem[]
   /** Every comment, for placing inline threads on the diff. */
   readonly comments: readonly CommentView[]
+  /** Every readable review, oldest first. */
+  readonly reviews: readonly ReviewView[]
+  /**
+   * The review fold with thread resolution (`foldPrReviewV2` over the PR's root comments):
+   * head updates, requested reviewers, resolved threads, dismissals.
+   */
+  readonly review: PrReviewState
   /**
    * The reviews that count on the current head (`countApprovals`). Null when the membership
    * could not be read.
    */
   readonly approvals: PullApprovals | null
+  /** The Reviewers card (requested reviewers and everyone who reviewed); empty when members are unknown. */
+  readonly reviewers: readonly ReviewerCardRow[]
+  /** The repo's current members (the reviewer and assignee pickers). */
+  readonly members: readonly Membership[]
+  /** The repo's label definitions (newest per name). */
+  readonly labels: readonly LabelDef[]
   /** Comments and reviews left out as unreadable, by reason (private repos). */
   readonly hidden: HiddenCounts
   /** Private repos: the PR's event values not readable here, and those not encrypted. */
@@ -301,63 +295,137 @@ export interface PullThread {
 }
 
 /**
- * Load a PR (folded state) + its timeline by number. Null if not found.
+ * Load a PR (folded state) + its timeline by number, in ONE composite read
+ * (`platform-parity-spec.md` §3.3, review-parity §3.10): the patch by `(repoId, number)`; its
+ * comments, events and author events (bound `$id → targetId`) and reviews (`$id → patchId`);
+ * the repo's labels, members and branch policies (siblings). A type past 100 rows continues
+ * with a complete paged read of that type only. The base ref's history is read by `readPull`.
+ * Null if not found.
  *
- * A PR's timeline includes its `review` documents, which nothing read until now — an
- * approve or a request-for-changes was a paid-for record the contributor could not see.
- * Reviews are keyed by `patchId`, so unlike comments and events they are a PR-only read.
+ * A PR's timeline includes its `review` documents: an approve or a request for changes is a
+ * paid-for record the contributor must see.
  */
-export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number): Promise<PullThread | null> {
-  const doc = await docByNumber(sdk, repo, 'patch', number)
-  if (!doc) return null
+export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number, network: Network = DEFAULT_NETWORK): Promise<PullThread | null> {
+  const source = repoSource(repo)
+  const page = source.repoQuery(DOC.patch, { where: [['number', '==', number]] })
+  const toTarget = { sourceProperty: '$id', field: 'targetId' }
+  const memberQuery = (type: string) => source.repoQuery(type, { orderBy: [['memberId', 'asc']] })
+  const res = await queryComposite(
+    sdk,
+    compositeOf(page, 1, [
+      { documentType: DOC.comment, bind: toTarget, limit: 100 },
+      { documentType: DOC.event, bind: toTarget, limit: 100 },
+      { documentType: DOC.authorEvent, bind: toTarget, limit: 100 },
+      { documentType: DOC.review, bind: { sourceProperty: '$id', field: 'patchId' }, limit: 100 },
+      siblingOf(source.repoQuery(DOC.label, { orderBy: [['name', 'asc'], ['$createdAt', 'asc']] })),
+      siblingOf(memberQuery(DOC.maintainer)),
+      siblingOf(memberQuery(DOC.writer)),
+      siblingOf(source.repoQuery(DOC.policy, { orderBy: [['$createdAt', 'asc']] })),
+    ]),
+  )
+  const raw = res.page[0]
+  if (raw === undefined) return null
+  const gate = gateFor(repo)
+  const admitted = await gate.admit('patch', raw)
+  if (!admitted.ok) return null
+  const doc = admitted.doc
   const id = str(doc, '$id')
-  const tally = new HiddenTally()
-  const [log, comments, reviews] = await Promise.all([
-    readTargetLog(sdk, repo, id),
-    readComments(sdk, repo, id, tally),
-    readReviews(sdk, repo, id, tally),
+  const docs = (i: number): PlainDocument[] => docsAt(res, i)
+  const complete = async (i: number, type: string, field: 'targetId' | 'patchId' = 'targetId'): Promise<PlainDocument[]> =>
+    docs(i).length < 100
+      ? docs(i)
+      : queryAllDocuments(sdk, source.targetQuery(type, { where: [[field, '==', id]], orderBy: [[field, 'asc'], ['$createdAt', 'asc']] }))
+  const byTime = (a: PlainDocument, b: PlainDocument) => num(a, '$createdAt') - num(b, '$createdAt')
+  const [commentDocs, eventDocs, authorEventDocs, reviewDocs] = await Promise.all([
+    complete(0, DOC.comment),
+    complete(1, DOC.event),
+    complete(2, DOC.authorEvent),
+    complete(3, DOC.review, 'patchId'),
   ])
-  const pull = await readPull(sdk, repo, doc, log)
-  const dismissed = new Set(pull.review.dismissedReviews.map((d) => d.reviewId))
-  const approvals = await readApprovals(sdk, repo, reviews, pull.headOid, dismissed, pull.author)
-  return { pull, timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews), comments, approvals, hidden: tally.value, eventValues: eventValues(log) }
+  // A private repo's member events are read through `readableEvents` (values opened, counted).
+  const log = await toLog(repo, [...eventDocs].sort(byTime), [...authorEventDocs].sort(byTime))
+
+  const memberships = membershipsFromDocs(docs(5).length < 100 ? docs(5) : null, docs(6).length < 100 ? docs(6) : null)
+  if (memberships !== null) seedMemberships(repo, network, memberships)
+  // Every name the page shows in one batched DPNS read (best effort: a pill falls back to its id).
+  const shownIds = [
+    str(doc, '$ownerId'),
+    ...commentDocs.map((c) => str(c, '$ownerId')),
+    ...reviewDocs.map((r) => str(r, '$ownerId')),
+    ...[...log.events, ...log.authorEvents].flatMap((e) => [e.actor, ...(e.kind === 'assign' || e.kind === 'unassign' ? [e.value ?? ''] : []), e.refId ?? '']),
+    ...(memberships ?? []).map((m) => m.identity),
+  ]
+  const [pull] = await Promise.all([
+    readPull(sdk, repo, doc, log),
+    prefetchDpnsNames(sdk, shownIds.filter((x) => x !== ''), network).catch(() => undefined),
+  ])
+
+  const tally = new HiddenTally()
+  const comments = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
+  const reviews = (await admitAll(gate, 'review', [...reviewDocs].sort(byTime), tally)).docs.map(reviewViewOf)
+  const roots = new Set(comments.filter((c) => c.replyTo === null).map((c) => c.id))
+  const review = foldPrReviewV2(log.events, log.authorEvents, pull.author, pull.initialHeadOid, roots)
+  const labels = docs(4).length < 100 ? newestLabels(docs(4)) : await readLabels(sdk, repo)
+  const policyDocs = docs(7).length < 100 ? docs(7) : null
+  const policy: Promise<Policy | null> =
+    policyDocs === null
+      ? readPolicy(sdk, repo)
+      : Promise.resolve(newestPolicy(policyDocs.map((d) => ({ createdAt: num(d, '$createdAt'), id: str(d, '$id'), policy: toPolicy(d) }))))
+  const members = memberships ?? (await readMembershipsCached(sdk, repo, network).catch(() => null))
+  const approvals = await readApprovals(members, policy, reviews, review, pull.author)
+  return {
+    pull,
+    timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews),
+    comments,
+    reviews,
+    review,
+    approvals: approvals?.approvals ?? null,
+    reviewers: approvals?.reviewers ?? [],
+    members: members ?? [],
+    labels,
+    hidden: tally.value,
+    eventValues: eventValues(log),
+  }
 }
 
-/** A PR's counted approvals, or null when the membership could not be read. */
+/** The review inputs of the approval fold. */
+function asReviews(reviews: readonly ReviewView[]): Review[] {
+  return reviews.map((r) => ({ id: r.id, reviewer: r.reviewer, verdict: r.verdictCode, commitOid: r.commitOid, createdAt: r.createdAt }))
+}
+
+/** A PR's counted approvals and Reviewers card, or null when the membership could not be read. */
 async function readApprovals(
-  sdk: EvoSDK,
-  repo: RepoRef,
+  members: readonly Membership[] | null,
+  policyRead: Promise<Policy | null>,
   reviews: readonly ReviewView[],
-  headOid: string,
-  dismissed: ReadonlySet<string>,
+  review: PrReviewState,
   author: string,
-): Promise<PullApprovals | null> {
-  try {
-    // A policy that cannot be read is "unknown" (the merge gate then fails closed), never a
-    // reason to drop the approvals the page can still show.
-    const [oracle, policy] = await Promise.all([
-      readRoleOracle(sdk, repo),
-      readPolicy(sdk, repo).catch((): 'unknown' => 'unknown'),
-    ])
-    const input = reviews.map((r) => ({
-      id: r.id,
-      reviewer: r.reviewer,
-      verdict: r.verdictCode,
-      commitOid: r.commitOid,
-      createdAt: r.createdAt,
-    }))
-    const counted = countApprovals(input, oracle, headOid, dismissed)
-    const reviewers = [...counted.approvers, ...counted.changesRequested]
-    return {
+): Promise<{ approvals: PullApprovals; reviewers: ReviewerCardRow[] } | null> {
+  if (members === null) return null
+  // A policy that cannot be read is "unknown" (the merge gate then fails closed), never a
+  // reason to drop the approvals the page can still show.
+  const policy = await policyRead.catch((): 'unknown' => 'unknown')
+  const oracle = new RoleOracle([...members])
+  const input = asReviews(reviews)
+  const headOid = review.head
+  const dismissed = new Set(review.dismissedReviews.map((d) => d.reviewId))
+  const counted = countApprovals(input, oracle, headOid, dismissed)
+  const counters = [...counted.approvers, ...counted.changesRequested]
+  return {
+    approvals: {
       ...counted,
-      roles: new Map(reviewers.map((who) => [who, oracle.currentRole(who)])),
+      roles: new Map(counters.map((who) => [who, oracle.currentRole(who)])),
       summary: summarizeReviews(input, oracle, headOid, author, dismissed),
       policy,
       policyStatus: policy === null || policy === 'unknown' ? policy : meetsPolicy(counted, oracle, policy),
-    }
-  } catch {
-    return null
+    },
+    reviewers: reviewerRows(input, review.requestedReviewers, review.dismissedReviews, counted, oracle, headOid),
   }
+}
+
+/** "New commits since your review" for `viewer` on a loaded PR. */
+export function pullSinceYourReview(thread: Pick<PullThread, 'reviews' | 'review'>, viewer: string | null): SinceYourReview | null {
+  return sinceYourReview(asReviews(thread.reviews), thread.review.head, thread.review.headUpdates, viewer)
 }
 
 /** Read comments + events for a target and merge them into one chronological timeline. */

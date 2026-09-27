@@ -64,6 +64,8 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
+  // "Create draft pull request" (review-parity P6): the PR opens as a draft, marked ready later.
+  const [asDraft, setAsDraft] = useState(false)
 
   // Keep the draft for this tab (a sign-in in between must not lose it).
   useEffect(() => savePrDraft(repo, { title, body, head: headKey, base }), [repo, title, body, headKey, base])
@@ -126,7 +128,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     setError(null)
     setNote(null)
     try {
-      const created = await createPatch(sdk, signer, repo, { ...input, intent: draftIntent.intent }, (taken, next) =>
+      const created = await createPatch(sdk, signer, repo, { ...input, ...(asDraft ? { draft: true } : {}), intent: draftIntent.intent }, (taken, next) =>
         setNote(`Someone claimed #${taken} a moment ago; retrying as #${next}.`),
       )
       dropPrDraft(repo)
@@ -265,15 +267,21 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <CostPreview cost={cost} />
-          <Button
-            variant="primary"
-            onClick={submit}
-            loading={pending}
-            disabled={blocked || guard.disabledReason !== null}
-            title={guard.disabledReason ?? undefined}
-          >
-            {identity ? 'Create pull request' : 'Sign in to create'}
-          </Button>
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-1.5 text-dense text-anvil-700 dark:text-anvil-200">
+              <input type="checkbox" className="h-4 w-4 accent-forge-700" checked={asDraft} onChange={(e) => setAsDraft(e.target.checked)} />
+              Open as a draft
+            </label>
+            <Button
+              variant="primary"
+              onClick={submit}
+              loading={pending}
+              disabled={blocked || guard.disabledReason !== null}
+              title={guard.disabledReason ?? undefined}
+            >
+              {identity ? (asDraft ? 'Create draft pull request' : 'Create pull request') : 'Sign in to create'}
+            </Button>
+          </div>
         </div>
         {note ? <p className="text-dense text-caution-700 dark:text-caution-400">{note}</p> : null}
         {error ? (

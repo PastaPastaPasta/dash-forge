@@ -49,8 +49,9 @@ test('the web shows the fold dg read', async ({ page }) => {
   // The folded head: the page names it by its first characters.
   await expect(page.getByTitle(fold.headOid).first()).toBeVisible()
 
-  // One "pushed new commits" per head update, as the fold counted.
-  await expect(page.getByText(/pushed new commits/)).toHaveCount(fold.headUpdates)
+  // One head-update line per head update, as the fold counted ("pushed n commits (a → b)" once
+  // the commits are read, "pushed new commits" / "force-pushed" / "moved the head" otherwise).
+  await expect(page.locator('[data-testid=timeline-event][data-kind=headUpdate]')).toHaveCount(fold.headUpdates)
 
   // Every review, with the commit it was on.
   for (const r of fold.reviews) await expect(page.getByTitle(r.commitOid).first()).toBeVisible()
@@ -59,6 +60,11 @@ test('the web shows the fold dg read', async ({ page }) => {
 
   // Threads: the web marks the ones not on the head as "on an older version"; resolved ones
   // appear in the timeline as "resolved a conversation".
+  const resolvedCount = fold.threads.filter((t) => t.resolved).length
+  await expect(page.getByText('resolved a conversation')).toHaveCount(resolvedCount)
+  if (fold.approvedBy.length > 0) await expect(page.getByTestId('fold-approved')).toBeVisible()
+  // The threads sit on the diff: Files changed.
+  await page.getByTestId('pr-tab-files').click()
   const outdated = fold.threads.filter((t) => t.outdated)
   const outdatedComments = outdated.reduce((n, t) => n + t.comments, 0)
   if (outdated.length > 0) {
@@ -69,10 +75,5 @@ test('the web shows the fold dg read', async ({ page }) => {
       await expect(page.getByTestId('outdated-comments')).toContainText(`${t.path} ${range} (${t.side === 1 ? 'new' : 'old'})`)
     }
   }
-  const resolved = fold.threads.filter((t) => t.resolved).length
-  await expect(page.getByText('resolved a conversation')).toHaveCount(resolved)
-
-  // The approval fold on the head.
-  if (fold.approvedBy.length > 0) await expect(page.getByTestId('fold-approved')).toBeVisible()
   await shot(page, 'review-round-trip-web')
 })

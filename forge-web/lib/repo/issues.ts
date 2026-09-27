@@ -43,7 +43,7 @@ import {
 } from './contract'
 import { readConfigHistory } from './config'
 import { publicRefKey, readRefUpdates } from './refs'
-import { HiddenTally, admitAll, gateFor, readableEvents, type HiddenCounts } from './private-content'
+import { HiddenTally, SEALED_EPOCH, admitAll, gateFor, readableEvents, type HiddenCounts } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
 import { base64ToHex, hexToBase64 } from '../sdk'
@@ -176,6 +176,12 @@ export interface PullView {
   readonly state: PrState
   /** See {@link IssueView.stateComplete}. */
   readonly stateComplete: boolean
+  /** The last edit's time (`$updatedAt`); equal to {@link createdAt} when never edited. */
+  readonly updatedAt: number
+  /** The document revision (an edit names it to refuse a concurrent one). */
+  readonly revision: number
+  /** A private PR's key epoch (`epoch`): an edit re-seals under it (private-repos.md §4.5). */
+  readonly epoch: number | null
 }
 
 /** A review verdict, as recorded on-chain. Parity with forge-core `Verdict`. */
@@ -495,19 +501,22 @@ export async function readReviews(
   // A private review whose `enc` does not open is left out entirely: its plaintext verdict is
   // never counted as an approval (`private-repos.md` §8.1).
   const { docs } = await admitAll(gateFor(repo), 'review', raw, tally)
-  return docs.map((d) => {
-    const { verdict, code } = verdictFromCode(num(d, 'verdict'))
-    return {
-      id: str(d, '$id'),
-      reviewer: str(d, '$ownerId'),
-      verdict,
-      verdictCode: code,
-      commitOid: byteFieldToHex(d, 'commitOid'),
-      body: str(d, 'body'),
-      commentCount: typeof d['commentCount'] === 'number' ? d['commentCount'] : null,
-      createdAt: num(d, '$createdAt'),
-    }
-  })
+  return docs.map(reviewViewOf)
+}
+
+/** An (admitted) `review` document as a {@link ReviewView}. */
+export function reviewViewOf(d: PlainDocument): ReviewView {
+  const { verdict, code } = verdictFromCode(num(d, 'verdict'))
+  return {
+    id: str(d, '$id'),
+    reviewer: str(d, '$ownerId'),
+    verdict,
+    verdictCode: code,
+    commitOid: byteFieldToHex(d, 'commitOid'),
+    body: str(d, 'body'),
+    commentCount: typeof d['commentCount'] === 'number' ? d['commentCount'] : null,
+    createdAt: num(d, '$createdAt'),
+  }
 }
 
 /**
@@ -784,6 +793,17 @@ export async function readPull(
     ...readImported(patchDoc),
     state,
     stateComplete: true,
+    ...editMeta(patchDoc),
+  }
+}
+
+/** A patch's edit bookkeeping: `$updatedAt`, `$revision` and (a private PR's) `epoch`. */
+function editMeta(doc: PlainDocument): { updatedAt: number; revision: number; epoch: number | null } {
+  const epoch = doc[SEALED_EPOCH]
+  return {
+    updatedAt: updatedAtOf(doc),
+    revision: revisionOf(doc),
+    epoch: typeof epoch === 'number' ? epoch : typeof epoch === 'bigint' ? Number(epoch) : null,
   }
 }
 
@@ -852,6 +872,7 @@ function incompletePullView(doc: PlainDocument): PullView {
     ...readImported(doc),
     state: { open: true, merged: false, draft: doc['draft'] === true, baseRef: null, labels: [], assignees: [] },
     stateComplete: false,
+    ...editMeta(doc),
   }
 }
 

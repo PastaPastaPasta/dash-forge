@@ -37,7 +37,7 @@ const ROUTES: [label: string, href: string, ready: (page: Page) => ReturnType<Pa
   ['tree', repoUrl('tree', '&path=src'), (page) => page.getByRole('link', { name: 'main.rs' }).first()],
   ['commits', repoUrl('commits'), (page) => page.getByRole('link', { name: 'Initial import' }).first()],
   ['issues', repoUrl('issues'), (page) => page.getByRole('link', { name: 'README should explain the event split' })],
-  ['pull', repoUrl('pull', '&number=3'), (page) => page.getByRole('heading', { name: /Files changed/ })],
+  ['pull', repoUrl('pull', '&number=3&tab=files'), (page) => page.getByRole('heading', { name: /Files changed/ })],
   ['explore', '/explore/', (page) => page.getByRole('heading', { name: 'Explore' })],
   ['repo settings', repoUrl('settings'), (page) => page.getByRole('navigation', { name: 'Settings sections' })],
 ]
@@ -167,7 +167,7 @@ test('Pixel 7: the PR diff is unified even with a saved split preference', async
     localStorage.setItem('forge.prefs.v1', JSON.stringify({ diffLayout: 'split', ignoreWhitespace: false, palette: 'standard' })),
   )
   const page = await context.newPage()
-  await page.goto(repoUrl('pull', '&number=3'), { waitUntil: 'domcontentloaded' })
+  await page.goto(repoUrl('pull', '&number=3&tab=files'), { waitUntil: 'domcontentloaded' })
   await expectLanded(page, page.locator('table[data-layout]').first(), 60_000)
   await expect(page.locator('table[data-layout="split"]')).toHaveCount(0)
   await expect(page.locator('table[data-layout="unified"]').first()).toBeVisible()
