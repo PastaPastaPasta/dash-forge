@@ -26,7 +26,8 @@ import { MissingGrantError } from '../lib/auth/controller'
 import type { WalletKey } from '../lib/auth/key-registration'
 import { useUiStore } from '../hooks/use-ui-store'
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '../lib/constants'
-import { ensureSdk, type SpendEvent, type WriteAuth } from '../lib/sdk'
+import { type SpendEvent, type WriteAuth } from '../lib/sdk'
+import { connectPlatform } from '../lib/auth/connect'
 import { recordSpend } from '../lib/spend'
 import { fundsState, type FundsState, type KeyLimits } from '../lib/view/funds'
 import { toast } from '../hooks/use-toasts'
@@ -62,6 +63,8 @@ interface AuthContextValue {
   /** The signing key's limits (a PV14 limited key), when it has any. */
   readonly keyLimits: KeyLimits | null
   readonly isLoading: boolean
+  /** The step a running sign-in is on, for the sheet (null when none). */
+  readonly step: string | null
   readonly error: string | null
   /** The key-free write signer for the WriteEngine, or null when logged out. */
   readonly signer: WriteAuth | null
@@ -113,7 +116,9 @@ export function AuthProvider({
   children: React.ReactNode
   network?: Network
 }): JSX.Element {
-  const controller = useMemo(() => new AuthController(() => ensureSdk(network), network), [network])
+  // Bounded: a hung download or connect fails the sign-in step with a named error, never a
+  // button that spins forever.
+  const controller = useMemo(() => new AuthController(() => connectPlatform(network), network), [network])
   const [state, setState] = useState(() => controller.getState())
 
   useEffect(() => controller.subscribe(setState), [controller])
@@ -214,6 +219,7 @@ export function AuthProvider({
       funds,
       keyLimits,
       isLoading: state.isLoading,
+      step: state.step ?? null,
       error: state.error,
       signer,
       storage: session?.storage ?? null,
@@ -226,7 +232,7 @@ export function AuthProvider({
       controller,
       ...actions,
     }),
-    [actions, controller, funds, keyLimits, reloadVaults, session, signer, state.error, state.isLoading, vaults],
+    [actions, controller, funds, keyLimits, reloadVaults, session, signer, state.error, state.isLoading, state.step, vaults],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

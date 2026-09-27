@@ -433,7 +433,7 @@ impl Helper {
         let mut refused = Vec::new();
         let kept;
         let specs = if !dry_run && !specs.is_empty() && !skip_write_precheck() {
-            (refused, kept) = precheck(conn, &svc, specs).await;
+            (refused, kept) = precheck(conn, &svc, specs, options).await;
             if kept.is_empty() {
                 return Ok(refused);
             }
@@ -1494,14 +1494,23 @@ fn skip_write_precheck() -> bool {
 }
 
 /// The advisory write pre-check (see [`write_access_denied`]): the refused refs' outcomes
-/// and the specs still to push. A non-member is refused everything; a writer only the
-/// protected refs.
+/// and the specs still to push. A non-member is refused everything; so is every push to an
+/// archived repo unless pushed with `-o allow-archived`; a writer is refused
+/// the protected refs.
 async fn precheck(
     conn: &Conn,
     svc: &RepoService<'_>,
     specs: &[PushSpec],
+    options: &OptionState,
 ) -> (Vec<PushOutcome>, Vec<PushSpec>) {
-    let Some(denied) = write_access_denied(conn, svc, specs).await else {
+    let access = write_access_denied(conn, svc, specs).await;
+    let everything = access.as_ref().is_some_and(|d| d.refs.is_empty());
+    let archived = if everything || options.has_push_option(ALLOW_ARCHIVED_PUSH_OPTION) {
+        None
+    } else {
+        archived_denied(conn, svc).await
+    };
+    let Some(denied) = archived.or(access) else {
         return (Vec::new(), specs.to_vec());
     };
     // The block says why and what to do; git's own `! [remote rejected]` lines (from the
@@ -1523,6 +1532,39 @@ async fn precheck(
 
 /// The note on a push the helper refused before doing anything.
 const NOTE_PRECHECK: &str = "checked before building or paying for anything: nothing was stored";
+
+/// The push option that overrides the archived refusal ([`archived_denied`]).
+pub const ALLOW_ARCHIVED_PUSH_OPTION: &str = "allow-archived";
+
+/// `Some(refusal)` when the repo's current config is `archived`. Archiving is a client rule
+/// (consensus still admits a member's writes, `forge-v2.md` §5), so the helper enforces it;
+/// an unreadable config proceeds, like the membership check.
+async fn archived_denied(conn: &Conn, svc: &RepoService<'_>) -> Option<Denied> {
+    let config = svc.current_config(&conn.repo).await.ok()?;
+    config
+        .archived
+        .then(|| archived_refusal(&conn.repo.display()))
+}
+
+/// The push refusal for an archived repo (E606).
+fn archived_refusal(repo: &str) -> Denied {
+    Denied {
+        error: UserError::new(
+            codes::ARCHIVED,
+            format!("push rejected: {repo} is archived"),
+        )
+        .cause("a maintainer marked the repository archived (read-only by agreement)")
+        .fix(format!(
+            "ask a maintainer to run `dg repo unarchive {repo}`"
+        ))
+        .fix(format!(
+            "or push anyway: `git push -o {ALLOW_ARCHIVED_PUSH_OPTION} …` (archiving is a client rule; consensus does not enforce it)"
+        ))
+        .note(NOTE_PRECHECK),
+        wire: "repository archived",
+        refs: Vec::new(),
+    }
+}
 
 /// A private repository needs the identity file's `ENCRYPTION` key (E306) and an accepted
 /// wrap to it (E307/E308/E309): checked when the helper connects, so a clone by a non-member
@@ -1736,8 +1778,8 @@ fn resolve_key_path(url: &DashUrl, owner_id: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        head_outcome, is_head, list_lines, oid_to_bytes, protected_denied, resolve_network,
-        write_denied, PushOutcome, PushSpec,
+        archived_refusal, head_outcome, is_head, list_lines, oid_to_bytes, protected_denied,
+        resolve_network, write_denied, PushOutcome, PushSpec,
     };
     use forge_core::network::NetworkSettings;
     use forge_core::rules::RefState;
@@ -1814,6 +1856,17 @@ mod tests {
         }
         let helper = built.expect("no identity is needed to start a read");
         assert!(helper.conn.is_none(), "nothing is loaded before a command");
+    }
+
+    #[test]
+    fn an_archived_repo_refuses_the_push_and_names_the_override() {
+        let d = archived_refusal("owner/repo");
+        assert_eq!((d.error.code, d.error.exit_code()), ("E606", 6));
+        assert!(d.refs.is_empty(), "an archived repo refuses every ref");
+        let text = d.error.to_json().to_string();
+        assert!(text.contains("dg repo unarchive owner/repo"), "{text}");
+        assert!(text.contains("-o allow-archived"), "{text}");
+        assert!(text.contains("checked before building"), "{text}");
     }
 
     #[test]

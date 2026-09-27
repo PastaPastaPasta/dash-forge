@@ -13,6 +13,7 @@
  */
 
 import type { Network } from '../constants'
+import { loadSdkLibrary } from './connect'
 
 export type KeyPurpose = 'AUTHENTICATION' | 'TRANSFER' | 'ENCRYPTION'
 export type KeyLevel = 'MASTER' | 'CRITICAL' | 'HIGH' | 'MEDIUM'
@@ -60,8 +61,9 @@ interface WalletFacade {
 }
 
 async function wallet(): Promise<WalletFacade> {
+  // Bounded: a download that hangs fails with a named error instead of waiting forever.
+  await loadSdkLibrary()
   const evo = await import('@dashevo/evo-sdk')
-  await evo.EvoSDK.getLatestVersionNumber()
   return (evo as unknown as { wallet: WalletFacade }).wallet
 }
 

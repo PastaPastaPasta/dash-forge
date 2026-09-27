@@ -30,7 +30,8 @@ export function RepoScaffold({
   sealedOk = false,
 }: {
   addr: RepoAddress
-  children: (home: RepoHome) => ReactNode
+  /** The page body; `reload` re-reads the repo home (after a write that changes it). */
+  children: (home: RepoHome, reload: () => void) => ReactNode
   rail?: boolean
   /** The `?ref=` selection of a ref-aware route — the rail's assay attests this ref's tip. */
   refParam?: string
@@ -162,11 +163,11 @@ export function RepoScaffold({
       <PrivateBanner home={home} />
       {rail ? (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_296px]">
-          <div className="min-w-0">{children(home)}</div>
+          <div className="min-w-0">{children(home, reload)}</div>
           <RepoRail home={home} addr={addr} selected={selected} />
         </div>
       ) : (
-        <div className="min-w-0">{children(home)}</div>
+        <div className="min-w-0">{children(home, reload)}</div>
       )}
     </AppShell>
   )

@@ -15,7 +15,19 @@ import {
   newIntent,
   isStaleDocumentIdError,
   pendingWriteKey,
+  sameValue,
 } from './write'
+
+describe('replace: does the stored document hold a change?', () => {
+  it('compares arrays element-wise, so a landed topics edit confirms and a retry pays nothing (M3)', () => {
+    expect(sameValue(['rust', 'cli'], ['rust', 'cli'])).toBe(true)
+    expect(sameValue(['rust', 'cli'], ['cli', 'rust'])).toBe(false)
+    expect(sameValue(['rust'], ['rust', 'cli'])).toBe(false)
+    expect(sameValue(undefined, ['rust'])).toBe(false)
+    expect(sameValue('rust', 'rust')).toBe(true)
+    expect(sameValue(null, undefined)).toBe(true)
+  })
+})
 import {
   CREDITS_PER_DASH,
   creditsToDash,

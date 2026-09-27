@@ -57,6 +57,20 @@ impl RepoRef {
     }
 }
 
+/// E606: `action` refused because `repo` is archived.
+pub fn archived_refusal(repo: &str, action: &str) -> UserError {
+    UserError::new(
+        codes::ARCHIVED,
+        format!("{action} refused: {repo} is archived"),
+    )
+    .cause("a maintainer marked the repository archived (read-only by agreement)")
+    .fix(format!(
+        "ask a maintainer to run `dg repo unarchive {repo}`"
+    ))
+    .fix("or pass --allow-archived (archiving is a client rule; consensus does not enforce it)")
+    .note("checked before anything was signed; nothing was written or paid")
+}
+
 /// E203 for an unusable `owner/name`.
 fn invalid_ref(input: &str, why: &str) -> anyhow::Error {
     UserError::new(
@@ -132,6 +146,33 @@ impl Session {
             identity,
             repo,
         })
+    }
+
+    /// [`Self::open`] for a write to the repository: refused with E606 when it is archived
+    /// ([`Self::refuse_if_archived`]; `action` names what was not done).
+    pub async fn open_for_write(
+        ctx: &crate::context::Ctx,
+        repo: &str,
+        action: &str,
+    ) -> Result<Self> {
+        let s = Self::open(ctx, repo).await?;
+        s.refuse_if_archived(ctx, action).await?;
+        Ok(s)
+    }
+
+    /// E606 before anything is signed when the repository is archived, unless
+    /// `--allow-archived`. Archiving is a client rule (`config.archived`): consensus still admits
+    /// a member's writes, so every Forge client refuses them instead. An unreadable config
+    /// proceeds (the check is advisory, like the role pre-checks).
+    pub async fn refuse_if_archived(&self, ctx: &crate::context::Ctx, action: &str) -> Result<()> {
+        if ctx.allow_archived {
+            return Ok(());
+        }
+        let svc = forge_core::repo::RepoService::new(&self.client, &self.identity, &self.bridge);
+        match svc.current_config(&self.repo).await {
+            Ok(c) if c.archived => Err(archived_refusal(&self.repo.display(), action).into()),
+            _ => Ok(()),
+        }
     }
 
     /// The forge-v2 collaboration service, signing as this session's identity.

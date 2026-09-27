@@ -235,7 +235,7 @@ pub async fn review(ctx: &Ctx, a: &PrReviewArgs) -> Result<()> {
     if matches!(mode, Mode::Submit(_)) {
         ctx.require_confirmable("`dg pr review`")?;
     }
-    let s = Session::open(ctx, &a.repo).await?;
+    let s = Session::open_for_write(ctx, &a.repo, "review not posted").await?;
     let collab = s.collab();
     let p = patch(&collab, &s.repo, &a.repo, a.number).await?;
     let view = collab.patch_view(&s.repo, p).await?;
@@ -713,7 +713,7 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
         }
         None => (None, body),
     };
-    let s = Session::open(ctx, &a.repo).await?;
+    let s = Session::open_for_write(ctx, &a.repo, "comment not posted").await?;
     let collab = s.collab();
     let p = patch(&collab, &s.repo, &a.repo, a.number).await?;
     let view = collab.patch_view(&s.repo, p).await?;

@@ -12,7 +12,7 @@ use forge_core::rules::EventKind;
 use forge_core::scope::RepoRef as Repo;
 use forge_core::user_error::{codes, UserError};
 
-use super::{estimate, event_estimate, open_pr, Est, Pr};
+use super::{estimate, event_estimate, open_pr, open_pr_read, Est, Pr};
 use crate::common::Session;
 use crate::context::Ctx;
 use crate::fmt::{cost_line, dash_usd_price, route_text, safe, short};
@@ -116,7 +116,7 @@ pub async fn edit(
     if title.is_none() && body.is_none() {
         return Err(crate::errors::usage("pass --title, --body or --body-file"));
     }
-    let pr = open_pr(ctx, repo, number).await?;
+    let pr = open_pr(ctx, repo, number, "pull request not edited").await?;
     let changed = title.map_or(0, str::len) + body.as_deref().map_or(0, str::len);
     let est = estimate(Est::Replace, changed);
     ctx.confirm_or_cancel(&format!(
@@ -179,7 +179,7 @@ async fn source_tip(s: &Session, view: &PatchView, number: u64) -> Result<(Repo,
 
 /// `dg pr sync`: post a `headUpdate` when the source branch (or `--head`) is not the PR head.
 pub async fn sync(ctx: &Ctx, repo: &str, number: u64, head: Option<&str>) -> Result<()> {
-    let pr = open_pr(ctx, repo, number).await?;
+    let pr = open_pr(ctx, repo, number, "pull request head not moved").await?;
     if !pr.view.state.open {
         return Err(UserError::new(
             codes::USAGE,
@@ -253,7 +253,7 @@ pub async fn sync(ctx: &Ctx, repo: &str, number: u64, head: Option<&str>) -> Res
 
 /// `dg pr ready` / `dg pr draft`.
 pub async fn set_draft(ctx: &Ctx, repo: &str, number: u64, draft: bool) -> Result<()> {
-    let pr = open_pr(ctx, repo, number).await?;
+    let pr = open_pr(ctx, repo, number, "pull request state not changed").await?;
     let (kind, word) = if draft {
         (EventKind::Draft, "a draft")
     } else {
@@ -303,7 +303,7 @@ pub async fn resolve(
     comment_id: &str,
     resolve: bool,
 ) -> Result<()> {
-    let pr = open_pr(ctx, repo, number).await?;
+    let pr = open_pr(ctx, repo, number, "conversation not changed").await?;
     let comments =
         pr.s.collab()
             .comments(&pr.s.repo, &pr.view.patch.document_id)
@@ -389,7 +389,7 @@ pub async fn request_review(
     reviewers: &[String],
     add: bool,
 ) -> Result<()> {
-    let pr = open_pr(ctx, repo, number).await?;
+    let pr = open_pr(ctx, repo, number, "review request not changed").await?;
     let collab = pr.s.collab();
     let reviews = collab
         .reviews(&pr.s.repo, &pr.view.patch.document_id)
@@ -485,7 +485,7 @@ pub async fn dismiss(
     review_id: &str,
     reason: &str,
 ) -> Result<()> {
-    let pr = open_pr(ctx, repo, number).await?;
+    let pr = open_pr(ctx, repo, number, "review not dismissed").await?;
     let reviews =
         pr.s.collab()
             .reviews(&pr.s.repo, &pr.view.patch.document_id)
@@ -550,7 +550,7 @@ pub async fn dismiss(
 
 /// `dg pr checks`: the newest run per check name on the PR head.
 pub async fn checks(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
-    let pr = open_pr(ctx, repo, number).await?;
+    let pr = open_pr_read(ctx, repo, number).await?;
     let runs = pr.s.collab().check_runs(&pr.s.repo, &pr.view.head).await?;
     let trusted: Vec<_> = runs.iter().filter(|r| r.trusted).collect();
     let count = |f: &dyn Fn(&&forge_core::collab::v2::CheckRun) -> bool| {
@@ -621,7 +621,7 @@ pub async fn checks(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 
 /// `dg pr commits`: the commits in `base..head`, newest first, from a scratch clone.
 pub async fn commits(ctx: &Ctx, repo: &str, number: u64, limit: usize) -> Result<()> {
-    let Pr { s, view } = open_pr(ctx, repo, number).await?;
+    let Pr { s, view } = open_pr_read(ctx, repo, number).await?;
     let scratch = super::scratch_with_pr(ctx, &s.repo, &view)?;
     let dir = scratch.path();
     let range = match &view.base_tip {

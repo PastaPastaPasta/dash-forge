@@ -12,7 +12,7 @@ import type { PullView } from '../repo'
 import { historicalTipsPredicate } from '../repo'
 import type { Event, Holdings } from '../rules'
 import { foldPrStateV2 } from '../rules/v2'
-import { mergeBaseTip, mergeButton, mergeRefProblem, pullActions, type PullActionInputs } from './pull-actions'
+import { mergeBaseTip, mergeButton, mergeRefProblem, policyOf, pullActions, type PullActionInputs } from './pull-actions'
 
 const AUTHOR = 'author'
 const WRITER = 'writer'
@@ -94,6 +94,64 @@ describe('pullActions — close / reopen', () => {
     expect(
       pullActions({ pull: pull({ state: { merged: true, open: false } }), viewer: WRITER, holdings: WRITE }).canCloseReopen,
     ).toBe(false)
+  })
+})
+
+describe('pullActions — protected base and branch policy (D-503)', () => {
+  const MAIN = 'refs/heads/main'
+  const protectedMain = { protectedPatterns: [MAIN] }
+
+  it('refuses a writer the merge into a protected base, and says why', () => {
+    const a = pullActions({ pull: pull({ baseRefName: MAIN }), viewer: WRITER, holdings: WRITE, ...protectedMain })
+    expect(a.canMarkMerged).toBe(false)
+    expect(a.baseProtected).toBe(true)
+    expect(a.mergeHint).toMatch(/main is a protected branch: only maintainers/)
+  })
+
+  it('offers a maintainer the merge into a protected base', () => {
+    const a = pullActions({ pull: pull({ baseRefName: MAIN }), viewer: MAINTAINER, holdings: MAINTAIN, ...protectedMain })
+    expect(a.canMarkMerged).toBe(true)
+    expect(a.policyOverride).toBe(false)
+  })
+
+  it('matches the base with the FORGE_RULES globs, not by name', () => {
+    const release = pull({ baseRefName: 'refs/heads/release/1.x' })
+    expect(pullActions({ pull: release, viewer: WRITER, holdings: WRITE, protectedPatterns: ['refs/heads/release/*'] }).canMarkMerged).toBe(false)
+    expect(pullActions({ pull: release, viewer: WRITER, holdings: WRITE, protectedPatterns: ['refs/heads/*'] }).canMarkMerged).toBe(true)
+    // A bare branch name is not a full-ref pattern and protects nothing.
+    expect(pullActions({ pull: pull({ baseRefName: MAIN }), viewer: WRITER, holdings: WRITE, protectedPatterns: ['main'] }).canMarkMerged).toBe(true)
+  })
+
+  it('disables a writer on an unmet policy and offers a maintainer the override', () => {
+    const unmet = { met: false, have: 0, need: 2 }
+    const w = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: unmet })
+    expect(w.canMarkMerged).toBe(false)
+    expect(w.mergeHint).toMatch(/needs 2 approvals \(0 so far\)/)
+    const m = pullActions({ pull: pull(), viewer: MAINTAINER, holdings: MAINTAIN, policy: unmet })
+    expect(m.canMarkMerged).toBe(true)
+    expect(m.policyOverride).toBe(true)
+  })
+
+  it('withholds a writer merge when the policy could not be read, and says so (M4: fail closed)', () => {
+    const w = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: 'unknown' })
+    expect(w.canMarkMerged).toBe(false)
+    expect(w.mergeHint).toMatch(/couldn't read the branch policy/i)
+    const m = pullActions({ pull: pull(), viewer: MAINTAINER, holdings: MAINTAIN, policy: 'unknown' })
+    expect(m.canMarkMerged).toBe(true)
+  })
+
+  it('treats unread approvals as an unknown policy (the approvals card could not load)', () => {
+    expect(policyOf(null)).toEqual({ policy: 'unknown', status: 'unknown' })
+    const loaded = { policy: null, policyStatus: null }
+    expect(policyOf(loaded)).toEqual({ policy: null, status: null })
+    const w = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: policyOf(null).status })
+    expect(w.canMarkMerged).toBe(false)
+  })
+
+  it('lets a writer merge once the policy is met on an unprotected base', () => {
+    const a = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: { met: true, have: 2, need: 2 } })
+    expect(a.canMarkMerged).toBe(true)
+    expect(a.policyOverride).toBe(false)
   })
 })
 

@@ -406,7 +406,7 @@ pub async fn apply_suggestions(
             "name the comments whose suggestions to apply, or pass --all",
         ));
     }
-    let pr = open_pr(ctx, repo, number).await?;
+    let pr = open_pr(ctx, repo, number, "suggestions not applied").await?;
     let (s, view) = (&pr.s, &pr.view);
     let collab = s.collab();
     if !view.state.open {
@@ -586,7 +586,7 @@ pub async fn apply_suggestions(
 
 /// `dg pr update-branch`: merge the base into the PR branch.
 pub async fn update_branch(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
-    let pr = open_pr(ctx, repo, number).await?;
+    let pr = open_pr(ctx, repo, number, "branch not updated").await?;
     let (s, view) = (&pr.s, &pr.view);
     if !view.state.open {
         return Err(crate::errors::usage(format!(

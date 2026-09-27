@@ -49,6 +49,7 @@ SCENARIOS=(
   "15-private-repo"
   "16-private-burn-repair"
   "17-ref-force-back-and-pr-base"
+  "18-repo-settings"
   "19-private-collab"
   "20-review-round-trip"
 )

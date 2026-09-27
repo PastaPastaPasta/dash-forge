@@ -121,6 +121,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::NOT_A_WRITER, "not a writer of this repository"),
     (codes::ALREADY_EXISTS, "already exists"),
     (codes::REJECTED, "rejected by Platform"),
+    (codes::ARCHIVED, "repository archived"),
     (codes::UNREACHABLE, "Dash Platform unreachable"),
     (
         codes::NOT_DEPLOYED,
@@ -131,6 +132,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::COST_GUARD, "stopped by the cost guard"),
     (codes::CONFIRMATION_REQUIRED, "confirmation required"),
     (codes::CANCELLED, "cancelled at the confirmation prompt"),
+    (codes::POLICY_NOT_MET, "branch policy not met"),
 ];
 
 /// The stable codes. The first digit is the exit code.
@@ -215,6 +217,8 @@ pub mod codes {
     /// Any other consensus rejection.
     pub const REJECTED: &str = "E604";
     // E605 (v1 repository is read only) is retired with forge-v1 and stays reserved.
+    /// The repository is archived (a client rule: the tools refuse writes unless overridden).
+    pub const ARCHIVED: &str = "E606";
     /// DAPI / the quorum service could not be reached.
     pub const UNREACHABLE: &str = "E701";
     /// The selected network has no Dash Forge deployment.
@@ -229,6 +233,8 @@ pub mod codes {
     pub const CONFIRMATION_REQUIRED: &str = "E802";
     /// The user answered no at a confirmation prompt.
     pub const CANCELLED: &str = "E803";
+    /// The repository's branch `policy` (a client rule) is not met by this merge.
+    pub const POLICY_NOT_MET: &str = "E804";
 }
 
 /// An error a person can act on.
