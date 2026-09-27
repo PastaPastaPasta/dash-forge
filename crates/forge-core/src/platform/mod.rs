@@ -119,6 +119,7 @@ pub use crate::network::{Network, NetworkTarget};
 pub mod identity_keys;
 pub mod wrap;
 
+pub mod core_chain;
 pub mod identity;
 
 /// The `dashcore` network the SDK and its context provider use for `network`.
