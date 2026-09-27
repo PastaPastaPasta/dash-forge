@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { collectPageErrors, repoUrl, shot, waitForRepoResolved } from './helpers'
+import { collectPageErrors, E2E_DEVNET, repoUrl, shot, waitForRepoResolved } from './helpers'
 
 /**
  * Code browsing on the showcase repos (preact, ripgrep, requests, dips) imported on moutai:
@@ -16,6 +16,8 @@ const PREACT = { owner: 'qrUbjpBNDWpFscytpp8w9Uw87DV7hSzH5CW7ux9ERCz', name: 'pr
 const MULTI_FILE_COMMIT = '8101ff821690817c7786739c317af215c62a0cff'
 
 test.describe('code browsing (showcase repos)', () => {
+  test.skip(E2E_DEVNET !== 'moutai', 'the showcase repos are imported on moutai')
+
   test('cb-1. a multi-file commit diff finishes loading every file (D-005)', async ({ page }) => {
     const errors = collectPageErrors(page)
     // Several fresh loads: the lost-patch race did not fire on every one.
@@ -28,6 +30,15 @@ test.describe('code browsing (showcase repos)', () => {
     }
     await shot(page, 'cb-01-commit-all-files')
     expect(errors.errors).toEqual([])
+  })
+
+  test('cb-1b. the preact PR #5269 diff finishes loading every file (D-005, the ledger case)', async ({ page }) => {
+    await page.goto(repoUrl('pull', '&number=5269', PREACT), { waitUntil: 'domcontentloaded' })
+    await waitForRepoResolved(page)
+    await expect(page.getByText(/9 files changed/)).toBeVisible({ timeout: 90_000 })
+    await expect(page.getByText('Reading file', { exact: true })).toHaveCount(0, { timeout: 30_000 })
+    await expect(page.getByText(/line counts cover/)).toHaveCount(0)
+    await shot(page, 'cb-01b-preact-pr-5269-diff')
   })
 
   test('cb-2. a commit URL with a 7-character id resolves by prefix (D-057)', async ({ page }) => {
