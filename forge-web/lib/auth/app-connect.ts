@@ -31,7 +31,7 @@ import type { Network } from '../constants'
 import { DEPLOYMENTS, type ForgeIds } from '../deployments'
 import { authSdk, sleep } from '../sdk/facade'
 import { hash160 } from './asset-lock'
-import { base58Decode, base58Encode } from './base58'
+import { base58Decode } from './base58'
 import { loginKeys, verifyWalletKey, UnusableWalletKey, type LoginKeys, type WalletKey } from './key-registration'
 import { encodeWif } from './wif'
 import { authKeyFromLogin, encodeKeyRequest, openEnvelope, pairingCode, protocolUri } from './wallet-protocol'
@@ -53,8 +53,7 @@ export interface ResponseSource {
  * `forge-contracts/deployments/<key>.json`), or null.
  */
 export function legacyKeyExchangeId(deploymentKey: string): string | null {
-  const file = DEPLOYMENTS[deploymentKey] as { keyExchange?: { contractId?: string | null } } | undefined
-  return file?.keyExchange?.contractId || null
+  return DEPLOYMENTS[deploymentKey]?.keyExchange?.contractId || null
 }
 
 /** The sources that exist on chain here (checked, so a missing contract hides nothing else). */
@@ -360,5 +359,3 @@ export async function awaitRegisteredKey(
 export async function walletLoginAvailable(sdk: EvoSDK, deploymentKey: string): Promise<boolean> {
   return (await responseSources(sdk, deploymentKey)).length > 0
 }
-
-export { base58Encode }

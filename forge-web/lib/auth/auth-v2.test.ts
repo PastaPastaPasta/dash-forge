@@ -5,8 +5,6 @@
  */
 
 import * as secp from '@noble/secp256k1'
-import { hkdf } from '@noble/hashes/hkdf.js'
-import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -24,7 +22,7 @@ import {
 } from './vault'
 import { buildAssetLock, buildPayment, hash160, txid, verifiedUtxos, type Utxo } from './asset-lock'
 import { masterMaterialFromFile } from './identity-file'
-import { base58CheckEncode, base58Decode, base58Encode } from './base58'
+import { base58CheckEncode } from './base58'
 import { encodeWif } from './wif'
 import { purgeLegacyKeystore } from './controller'
 
