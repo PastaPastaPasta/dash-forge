@@ -12,7 +12,7 @@ import type { PullView } from '../repo'
 import { historicalTipsPredicate } from '../repo'
 import type { Event, Holdings } from '../rules'
 import { foldPrStateV2 } from '../rules/v2'
-import { mergeBaseTip, mergeButton, mergeRefProblem, pullActions, type PullActionInputs } from './pull-actions'
+import { mergeBaseTip, mergeButton, mergeRefProblem, policyOf, pullActions, type PullActionInputs } from './pull-actions'
 
 const AUTHOR = 'author'
 const WRITER = 'writer'
@@ -138,6 +138,14 @@ describe('pullActions — protected base and branch policy (D-503)', () => {
     expect(w.mergeHint).toMatch(/couldn't read the branch policy/i)
     const m = pullActions({ pull: pull(), viewer: MAINTAINER, holdings: MAINTAIN, policy: 'unknown' })
     expect(m.canMarkMerged).toBe(true)
+  })
+
+  it('treats unread approvals as an unknown policy (the approvals card could not load)', () => {
+    expect(policyOf(null)).toEqual({ policy: 'unknown', status: 'unknown' })
+    const loaded = { policy: null, policyStatus: null }
+    expect(policyOf(loaded)).toEqual({ policy: null, status: null })
+    const w = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: policyOf(null).status })
+    expect(w.canMarkMerged).toBe(false)
   })
 
   it('lets a writer merge once the policy is met on an unprotected base', () => {

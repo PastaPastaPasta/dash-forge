@@ -23,7 +23,7 @@
  */
 
 import { isOidHex, isPlainBranchRef, matchesProtected, type Holdings } from '../rules'
-import type { PolicyStatus } from '../rules/v2'
+import type { Policy, PolicyStatus } from '../rules/v2'
 import type { PullView } from '../repo'
 
 /** What the viewer may do from the PR page, and why not when not. */
@@ -144,6 +144,17 @@ export function mergeButton(i: MergeButtonInputs): MergeButton {
  * (the CLI helper with E606).
  */
 export const ARCHIVED_REASON = 'This repo is archived: it is read-only until a maintainer unarchives it.'
+
+/**
+ * The branch policy and its status as the PR page should use them. `approvals` null means the
+ * approvals (and so the policy) could not be read: `'unknown'`, so a writer's merge is withheld
+ * and the rules card says so, never "no policy".
+ */
+export function policyOf(
+  approvals: { readonly policy: Policy | null | 'unknown'; readonly policyStatus: PolicyStatus | null | 'unknown' } | null,
+): { policy: Policy | null | 'unknown'; status: PolicyStatus | null | 'unknown' } {
+  return approvals === null ? { policy: 'unknown', status: 'unknown' } : { policy: approvals.policy, status: approvals.policyStatus }
+}
 
 /** Decide the PR controls for a viewer. Pure — the unit-tested core of the PR page gate. */
 export function pullActions({ pull, viewer, holdings, protectedPatterns = [], policy = null }: PullActionInputs): PullActions {

@@ -60,6 +60,7 @@ async fn define(
     retired: bool,
 ) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
+    s.refuse_if_archived(ctx, "label not changed").await?;
     let verb = if retired { "Retire" } else { "Define" };
     // docs/security/private-repos.md §7: label names and descriptions stay plaintext
     let plaintext = if s.repo.visibility == Visibility::Private {

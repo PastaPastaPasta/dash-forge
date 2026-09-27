@@ -15,7 +15,7 @@
 import { useEffect, useState } from 'react'
 import { Check, GitMerge, GitPullRequest, GitPullRequestClosed, ShieldCheck, X } from 'lucide-react'
 import type { RepoHome, PullThread } from '@/lib/view'
-import { ARCHIVED_REASON, loadPullThread, pullActions, timeAgo } from '@/lib/view'
+import { ARCHIVED_REASON, loadPullThread, policyOf, pullActions, timeAgo } from '@/lib/view'
 import { addEvent, createComment, createReview, readViewerPermissions, repoContractIds, repoKey, setTargetState, type VerdictInput } from '@/lib/repo'
 import type { Holdings } from '@/lib/rules'
 import type { Policy, PolicyStatus } from '@/lib/rules/v2'
@@ -94,13 +94,14 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   const conversation = timeline.filter((t) => t.kind !== 'comment' || !inlineIds.has(t.comment.id))
   const merged = pull.state.merged
   const open = pull.state.open
+  const rules = policyOf(data.approvals)
   const actions = pullActions({
     pull,
     viewer: identity,
     // Signed in but not yet read: withhold the controls without a "can't" message.
     holdings: identity !== null && !holdings.settled ? 'loading' : holdings.data,
     protectedPatterns: home.config?.protectedPatterns ?? [],
-    policy: data.approvals?.policyStatus ?? null,
+    policy: rules.status,
   })
   const archived = home.config?.archived === true
   const base = pull.baseRefName || 'the base branch'
@@ -224,12 +225,12 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
         onMerged={reload}
       />
 
-      {open && (actions.baseProtected || data.approvals?.policyStatus) ? (
+      {open && (actions.baseProtected || rules.status !== null) ? (
         <BranchRules
           base={pull.baseRefName}
           baseProtected={actions.baseProtected}
-          policy={data.approvals?.policy ?? null}
-          status={data.approvals?.policyStatus ?? null}
+          policy={rules.policy}
+          status={rules.status}
         />
       ) : null}
 

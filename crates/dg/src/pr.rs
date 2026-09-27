@@ -941,9 +941,6 @@ async fn require_merge_rights(
             &format!("merge pull request #{number}"),
         )
         .await?;
-    if !forge_core::collab::v2::precheck_enabled() {
-        return Ok(None);
-    }
     // `require_role` just read it; a failure here is transient, and guessing "writer" would
     // wrongly refuse a maintainer, so surface it.
     let maintainer = collab.signer_role(handle).await? == Some(Role::Maintainer);
@@ -1000,7 +997,9 @@ async fn require_merge_rights(
             Ok(None) | Err(_) => None,
         }
     };
-    if maintainer || !pushes {
+    // DASH_FORGE_SKIP_WRITE_PRECHECK skips only the consensus-backed protected-branch check (so
+    // consensus can be seen refusing it); the policy is a client rule nothing else enforces.
+    if maintainer || !pushes || !forge_core::collab::v2::precheck_enabled() {
         return Ok(policy);
     }
     let base = view.patch.base_ref_name.as_str();
@@ -1022,6 +1021,32 @@ async fn require_merge_rights(
     .fix("ask a maintainer to merge it (`dg pr merge` as a maintainer)")
     .note("checked before fetching or paying for anything; no merge event was posted")
     .into())
+}
+
+/// The `git` argv of a merge's push to the base: the storage overrides as `-c`, no second cost
+/// prompt under `--yes` (the helper has no terminal here and would refuse with E801), and the
+/// helper's `allow-archived` push option under `--allow-archived` (else it refuses with E606).
+fn merge_push_argv(
+    overrides: Vec<String>,
+    yes: bool,
+    allow_archived: bool,
+    remote: &str,
+    refspec: &str,
+) -> Vec<String> {
+    let mut argv: Vec<String> = Vec::new();
+    for kv in overrides {
+        argv.push("-c".into());
+        argv.push(kv);
+    }
+    if yes {
+        argv.extend(["-c".into(), "dash.confirm=never".into()]);
+    }
+    argv.extend(["push".into(), "-q".into()]);
+    if allow_archived {
+        argv.extend(["-o".into(), "allow-archived".into()]);
+    }
+    argv.extend([remote.to_string(), refspec.to_string()]);
+    argv
 }
 
 /// Merge-method bits of `policy.mergeMethods` (review-parity spec §3.6): 1 fast-forward,
@@ -1065,7 +1090,13 @@ fn policy_refusal(
             format!("merge refused: PR #{number} does not meet the branch policy of {repo}"),
         )
         .cause(cause)
-        .fix(format!("get the missing approvals (`dg pr review {repo} {number} --approve` by a member)"))
+        .fix(if status.met {
+            format!(
+                "choose an allowed merge method (`dg repo policy show {repo}` lists them)"
+            )
+        } else {
+            format!("get the missing approvals (`dg pr review {repo} {number} --approve` by a member)")
+        })
         .fix("a maintainer can merge anyway with `--override-policy`")
         .note("the policy is a client rule every Forge client applies; consensus does not enforce it. Nothing was pushed and no merge event was posted"),
     )
@@ -1163,22 +1194,13 @@ fn push_merge(
     // Push to the base. The helper refuses a writer's push to a protected ref before paying
     // (E601 naming maintainer) and routes a maintainer's to `protectedRefUpdate`.
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let mut argv: Vec<String> = Vec::new();
-    for kv in git::storage_overrides(&cwd) {
-        argv.push("-c".into());
-        argv.push(kv);
-    }
-    // `--yes` was the confirmation: the helper's cost guard must not ask again (it has no
-    // terminal here and would refuse with E801).
-    if ctx.yes {
-        argv.extend(["-c".into(), "dash.confirm=never".into()]);
-    }
-    argv.extend([
-        "push".into(),
-        "-q".into(),
-        base_url.clone(),
-        format!("{target}:{base_ref}"),
-    ]);
+    let argv = merge_push_argv(
+        git::storage_overrides(&cwd),
+        ctx.yes,
+        ctx.allow_archived,
+        &base_url,
+        &format!("{target}:{base_ref}"),
+    );
     push_to(dir, &argv, &env)?;
     steps.ok("push", format!("{base_ref} → {}", short(&target)));
     Ok(target)
@@ -1501,6 +1523,57 @@ mod tests {
             1
         )
         .is_none());
+    }
+
+    #[test]
+    fn the_e804_fix_follows_what_is_missing() {
+        let method = policy_refusal(
+            &policy(0, false, 4),
+            &status(0, 0),
+            Some(METHOD_FF),
+            "o/r",
+            1,
+        )
+        .unwrap();
+        let text = method.to_json().to_string();
+        assert!(
+            text.contains("choose an allowed merge method") && !text.contains("missing approvals"),
+            "{text}"
+        );
+        let approvals =
+            policy_refusal(&policy(1, false, 0), &status(0, 1), None, "o/r", 1).unwrap();
+        assert!(approvals
+            .to_json()
+            .to_string()
+            .contains("missing approvals"));
+    }
+
+    #[test]
+    fn a_merge_push_passes_allow_archived_through_to_the_helper() {
+        let argv = merge_push_argv(
+            vec!["dash.storage=platform".into()],
+            true,
+            true,
+            "dash://R",
+            "abc:refs/heads/main",
+        );
+        assert_eq!(
+            argv,
+            [
+                "-c",
+                "dash.storage=platform",
+                "-c",
+                "dash.confirm=never",
+                "push",
+                "-q",
+                "-o",
+                "allow-archived",
+                "dash://R",
+                "abc:refs/heads/main"
+            ]
+        );
+        let plain = merge_push_argv(Vec::new(), false, false, "dash://R", "abc:refs/heads/main");
+        assert_eq!(plain, ["push", "-q", "dash://R", "abc:refs/heads/main"]);
     }
 
     #[test]

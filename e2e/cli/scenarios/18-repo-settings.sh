@@ -173,6 +173,18 @@ check "COLLAB's push to the archived repo is refused with E606" test "$refused" 
 check "the refusal names the override" grep -q 'allow-archived' "$LOG-apush.err"
 dg_write "$ID_COLLAB" "$LOG-aissue" issue create "$REPO" --title "while archived ${RUN_ID}"
 check "dg issue create in an archived repo is refused (E606)" refused_with E606 "$LOG-aissue"
+dg_write "$ID_COLLAB" "$LOG-alabel" label create "$REPO" "archived-${RUN_ID:0:8}" --color "#aabbcc"
+check "dg label create in an archived repo is refused (E606)" refused_with E606 "$LOG-alabel"
+# --allow-archived reaches the helper: OWNER merges a PR (a real push) into the archived repo.
+FEATURE3="e2e/${RUN_ID}/feature3"
+printf 'third change %s\n' "$RUN_ID" >"$SRC/gamma.txt"
+git -C "$SRC" add gamma.txt && git -C "$SRC" commit -q -m "third change ${RUN_ID}"
+git_dash_retry "$ID_OWNER" "$LOG-f3push" -C "$SRC" push -o allow-archived "$REMOTE" "HEAD:refs/heads/${FEATURE3}" || fail_with "$LOG-f3push" "feature3 push (-o allow-archived)"
+( cd "$SRC" && dg_write "$ID_OWNER" "$LOG-pr3" --allow-archived pr create "$REPO" --base "$FEATURE2" --head "$FEATURE3" --head-repo "$REPO" --title "archived merge ${RUN_ID}" ) \
+  || fail_with "$LOG-pr3" "pr create (--allow-archived)"
+N3="$(jq_py "$LOG-pr3.json" 'd["number"]')"
+dg_write "$ID_OWNER" "$LOG-amerge" --allow-archived pr merge "$REPO" "$N3" --override-policy || fail_with "$LOG-amerge" "merge into an archived repo with --allow-archived"
+check "--allow-archived merges into an archived repo (the push carries -o allow-archived)" assert_eq "True" "$(jq_py "$LOG-amerge.json" 'd["merged"]')"
 dg_write "$ID_OWNER" "$LOG-unarch" repo unarchive "$REPO" || fail_with "$LOG-unarch" "unarchive"
 check "unarchived" assert_eq "unarchived" "$(jq_py "$LOG-unarch.json" 'd["status"]')"
 
