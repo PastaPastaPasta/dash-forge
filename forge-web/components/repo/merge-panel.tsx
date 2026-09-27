@@ -76,7 +76,7 @@ export function MergePanel({
   const { upload, dialog: uploadDialog, storageLabel, begin } = useMergeUpload(repo)
   const baseRefName = pull.state.baseRef ?? pull.baseRefName
   const baseProtected = matchesProtected(baseRefName, protectedPatterns)
-  const refProblem = mergeRefProblem(baseRefName, baseTipOid, pull.headOid)
+  const refProblem = mergeRefProblem(baseRefName, baseTipOid, pull.headOid, pull.baseRefName)
   // Merge reads prefer the head's repo and fall back to the base repo's own reader; they never
   // run until that base reader exists, so nothing about the base is taken from the fork.
   const readers = useMemo(() => mergeReaders(baseOnly, sides?.head ?? null), [sides, baseOnly])
@@ -160,7 +160,7 @@ export function MergePanel({
           sdk,
           auth: signer,
           repo,
-          pull: { id: pull.id, number: pull.number, baseRefName },
+          pull: { id: pull.id, number: pull.number, baseRefName, openedBaseRefName: pull.baseRefName },
           input,
           merge: (i, onPhase) => runMergeInWorker(reader, i, (p) => onPhase(p.phase)),
           upload,

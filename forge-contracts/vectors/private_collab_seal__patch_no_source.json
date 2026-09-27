@@ -1,0 +1,32 @@
+{
+  "name": "patch_no_source",
+  "description": "a PR with no source branch: no sourceRefNameHash at all.",
+  "case": "private_collab_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "docType": "patch",
+    "nonce": "000102030405060708090a0b",
+    "props": {
+      "number": 4,
+      "title": "Fix",
+      "baseRefName": "refs/heads/main",
+      "baseRefNameHash": "f921bd05e68b03740c450e565e0e6173e546193170b2dd404ddb6f153e9b5bf3",
+      "sourceRepoId": "1111111111111111111111111111111111111111111111111111111111111111",
+      "headOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  "expected": {
+    "props": {
+      "number": 4,
+      "baseRefNameHash": "e729d18b929db396450159dfc6256e24302b94c9c3c9eb40643f5ae0be3fe579",
+      "sourceRepoId": "1111111111111111111111111111111111111111111111111111111111111111",
+      "headOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "epoch": 0,
+      "enc": "01000102030405060708090a0b1f702cb4aa4ae879500e71d5b304956bd8790ce9089366e9ea5e53e8ee94c49bef2f97c128fb163b"
+    }
+  }
+}

@@ -7,12 +7,18 @@
  * "Finish creating <name>" on the next visit instead of leaving a half-made repo. On success
  * the repo's empty state shows the push commands (`ux-dx-spec.md` §5.5).
  *
+ * Visibility is chosen here only (immutable, `ux-dx-spec.md` §9 "Create"). A private repo needs
+ * the owner's encryption key in this browser; its confirmation states the four facts `dg repo
+ * create --private` prints, and its third step is the owner's epoch-0 key plus the sealed
+ * anchor config (`private-repos.md` §5.3): four documents.
+ *
  * On a network without forge-v2 the page shows "not deployed".
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Check, GitBranch, Hammer, Loader2, Lock } from 'lucide-react'
+import { Check, Globe, GitBranch, Hammer, Loader2, Lock } from 'lucide-react'
+import Link from 'next/link'
 import { AppShell } from '@/components/app-shell'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
@@ -33,23 +39,43 @@ import {
   pendingRepoCreations,
   type CreateRepoInput,
   type CreateRepoStep,
+  type PrivateCreate,
   type RepoCreationJournal,
 } from '@/lib/repo'
+import { createEpochZero } from '@/lib/repo/private-members'
+import { encryptionOps } from '@/lib/auth/encryption-key'
+import { onEncryptionKeyChange } from '@/lib/auth/vault'
+import { useAsync } from '@/hooks/use-async'
+import type { Visibility } from '@/lib/rules/v2'
 import { previewCreate, sumPreviews } from '@/lib/sdk'
 import { errorMessage } from '@/lib/utils'
 
-const STEPS: readonly { step: CreateRepoStep; label: string }[] = [
+const STEPS: readonly { step: CreateRepoStep; label: string; privateLabel?: string }[] = [
   { step: 'repo', label: 'Repository document' },
   { step: 'maintainer', label: 'You, as its first maintainer' },
-  { step: 'config', label: 'Initial config (default branch)' },
+  { step: 'config', label: 'Initial config (default branch)', privateLabel: 'Your repo key and the sealed config (default branch)' },
 ]
+
+/**
+ * What a private create states before it spends: the facts `dg repo create --private` prints
+ * (`crates/dg/src/publish.rs` `PRIVATE_FACTS`; `ux-dx-spec.md` §9 "Create"), verbatim.
+ */
+const PRIVATE_FACTS: readonly string[] = [
+  'private: code, ref names, issues, PRs, comments and reviews are encrypted to members',
+  'visible to everyone: that it exists, its name, owner, members, sizes and timing, commit ids, and release notes, labels and event values (not encrypted in this release)',
+  'members keep whatever they could already read, even after they are removed',
+  'no recovery: if every member loses their encryption key, the contents are gone',
+]
+
+/** The CLI's note when a private create has a description (`publish.rs`). */
+const PUBLIC_DESCRIPTION_NOTE = 'note: the description and display name are public; leave them empty to keep them private'
 
 type StepState = 'todo' | 'running' | 'done'
 const INITIAL_PROGRESS: Record<CreateRepoStep, StepState> = { repo: 'todo', maintainer: 'todo', config: 'todo' }
 
 export default function NewRepoPage(): JSX.Element {
   const router = useRouter()
-  const { sdk } = useSdk()
+  const { sdk, ready } = useSdk()
   const { identity, signer } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   const guard = useWriteGuard()
@@ -58,6 +84,28 @@ export default function NewRepoPage(): JSX.Element {
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
   const [defaultBranch, setDefaultBranch] = useState('main')
+  const [visibility, setVisibility] = useState<Visibility>('public')
+  const isPrivate = visibility === 'private'
+  // A private create wraps its key from the encryption key in this browser's vault.
+  const ops = useAsync(
+    () => encryptionOps(sdk!, DEFAULT_NETWORK, identity!, forge!.core),
+    [ready, identity ?? '', forge?.core ?? '', isPrivate],
+    { enabled: isPrivate && sdk !== null && identity !== null && forge !== null },
+  )
+  // Re-read when a key is added (Settings in another tab, or this one) or the tab regains focus.
+  const reloadOps = ops.reload
+  useEffect(() => {
+    if (!isPrivate) return
+    const off = onEncryptionKeyChange(reloadOps)
+    window.addEventListener('focus', reloadOps)
+    return () => {
+      off()
+      window.removeEventListener('focus', reloadOps)
+    }
+  }, [isPrivate, reloadOps])
+  // Only a settled answer of "no key" says so; a failed read says what failed.
+  const noKey = isPrivate && ops.settled && ops.error === null && ops.data === null
+  const privateBlocked = !isPrivate ? null : ops.error !== null ? `Couldn't read your encryption key: ${ops.error}` : noKey ? 'Add your encryption key to this browser first (Settings → Keys).' : ops.data == null ? 'Checking your encryption key…' : null
   const [confirm, setConfirm] = useState<CreateRepoInput | null>(null)
   const [progress, setProgress] = useState<Record<CreateRepoStep, StepState> | null>(null)
   const [pending, setPending] = useState<RepoCreationJournal[]>([])
@@ -91,13 +139,21 @@ export default function NewRepoPage(): JSX.Element {
     name: normalizeRepoName(name),
     ...(description.trim() ? { description: description.trim() } : {}),
     ...(defaultBranch.trim() && defaultBranch.trim() !== 'main' ? { defaultBranch: defaultBranch.trim() } : {}),
+    ...(isPrivate ? { visibility: 'private' as const } : {}),
   })
   const costOf = (i: CreateRepoInput) =>
-    sumPreviews([
-      previewCreate('repo', { ...i, visibility: 'public' }),
-      previewCreate('maintainer'),
-      previewCreate('config', { defaultBranch: i.defaultBranch ?? 'main' }),
-    ])
+    i.visibility === 'private'
+      ? sumPreviews([
+          previewCreate('repo', { name: i.name, visibility: 'private', ...(i.description ? { description: i.description } : {}) }),
+          previewCreate('maintainer'),
+          previewCreate('repoKey'),
+          previewCreate('config', { enc: new Uint8Array(80), epoch: 0, backend: { mode: 0 } }),
+        ])
+      : sumPreviews([
+          previewCreate('repo', { ...i, visibility: 'public' }),
+          previewCreate('maintainer'),
+          previewCreate('config', { defaultBranch: i.defaultBranch ?? 'main' }),
+        ])
   const cost = costOf(name.trim() && nameError === null ? input() : { name: 'x' })
 
   const create = async (i: CreateRepoInput): Promise<void> => {
@@ -105,8 +161,19 @@ export default function NewRepoPage(): JSX.Element {
     setProgress(INITIAL_PROGRESS)
     let result
     try {
-      result = await createRepo(sdk, signer, forge, i, (step, state) =>
-        setProgress((p) => ({ ...(p ?? INITIAL_PROGRESS), [step]: state === 'start' ? 'running' : 'done' })),
+      // Without an encryption key createRepo refuses a private create before writing anything.
+      let privateCreate: PrivateCreate | undefined
+      if (i.visibility === 'private') {
+        const o = await encryptionOps(sdk, DEFAULT_NETWORK, signer.identityId, forge.core)
+        if (o !== null) privateCreate = { ops: o, epochZero: createEpochZero }
+      }
+      result = await createRepo(
+        sdk,
+        signer,
+        forge,
+        i,
+        (step, state) => setProgress((p) => ({ ...(p ?? INITIAL_PROGRESS), [step]: state === 'start' ? 'running' : 'done' })),
+        privateCreate,
       )
     } catch (e) {
       setProgress(null)
@@ -147,7 +214,9 @@ export default function NewRepoPage(): JSX.Element {
           </span>
           <div>
             <h1 className="text-xl">Forge a new repo</h1>
-            <p className="text-dense text-anvil-500 dark:text-anvil-400">Three documents on {ACTIVE_NETWORK.key}, owned by your identity.</p>
+            <p className="text-dense text-anvil-500 dark:text-anvil-400">
+              {isPrivate ? 'Four' : 'Three'} documents on {ACTIVE_NETWORK.key}, owned by your identity.
+            </p>
           </div>
         </div>
 
@@ -182,6 +251,61 @@ export default function NewRepoPage(): JSX.Element {
             <Textarea id="repo-desc" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="What is this repo for?" className="min-h-[72px]" maxLength={500} />
           </Field>
 
+          <fieldset>
+            <legend className="mb-1 text-dense font-medium">Visibility</legend>
+            <div role="radiogroup" aria-label="Visibility" className="grid gap-2 sm:grid-cols-2">
+              {(
+                [
+                  ['public', Globe, 'Public', 'Anyone can read it.'],
+                  ['private', Lock, 'Private', 'Encrypted to its members. Set now; it cannot change later.'],
+                ] as const
+              ).map(([v, Icon, label, hint]) => (
+                <button
+                  key={v}
+                  type="button"
+                  role="radio"
+                  aria-checked={visibility === v}
+                  data-testid={`visibility-${v}`}
+                  onClick={() => setVisibility(v)}
+                  className={
+                    'flex items-start gap-2 rounded-md border p-3 text-left text-dense ' +
+                    (visibility === v ? 'border-forge-500 bg-forge-500/10' : 'border-anvil-200 dark:border-anvil-750')
+                  }
+                >
+                  <Icon className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500" aria-hidden />
+                  <span>
+                    <span className="font-medium">{label}</span>
+                    <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">{hint}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </fieldset>
+          {isPrivate ? (
+            <div className="rounded-md border border-anvil-200 p-3 text-[12px] text-anvil-600 dark:border-anvil-750 dark:text-anvil-300" data-testid="private-facts">
+              <ul className="list-disc space-y-0.5 pl-4">
+                {PRIVATE_FACTS.map((f) => (
+                  <li key={f}>{f}</li>
+                ))}
+              </ul>
+              {description.trim() ? <p className="mt-2 text-caution-700 dark:text-caution-400">{PUBLIC_DESCRIPTION_NOTE}</p> : null}
+              {ops.error !== null ? (
+                <p className="mt-2 text-danger-700 dark:text-danger-400" data-testid="private-key-error">
+                  Couldn&apos;t read your encryption key: {ops.error}
+                </p>
+              ) : null}
+              {noKey ? (
+                <p className="mt-2 text-caution-700 dark:text-caution-400" data-testid="private-no-key">
+                  cannot create a private repository: your identity has no encryption key in this browser. Add it in{' '}
+                  <Link href="/settings" className="text-forge-700 underline dark:text-forge-400">
+                    Settings → Keys → Enable private repos
+                  </Link>
+                  .
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+
           <Field label="Default branch" htmlFor="repo-branch">
             <div className="relative">
               <GitBranch className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-anvil-500 dark:text-anvil-400" aria-hidden />
@@ -202,7 +326,7 @@ export default function NewRepoPage(): JSX.Element {
 
           {progress ? (
             <ol aria-label="Creation steps" className="space-y-1 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
-              {STEPS.map(({ step, label }) => (
+              {STEPS.map(({ step, label, privateLabel }) => (
                 <li key={step} className="flex items-center gap-2 text-dense">
                   {progress[step] === 'done' ? (
                     <Check className="h-4 w-4 text-verify-700 dark:text-verify-400" aria-hidden />
@@ -211,7 +335,7 @@ export default function NewRepoPage(): JSX.Element {
                   ) : (
                     <span className="h-4 w-4 rounded-full border border-anvil-300 dark:border-anvil-700" aria-hidden />
                   )}
-                  {label}
+                  {isPrivate ? (privateLabel ?? label) : label}
                 </li>
               ))}
             </ol>
@@ -221,8 +345,8 @@ export default function NewRepoPage(): JSX.Element {
             variant="primary"
             size="lg"
             className="w-full"
-            disabled={name.trim() === '' || nameError !== null || guard.disabledReason !== null}
-            title={guard.disabledReason ?? undefined}
+            disabled={name.trim() === '' || nameError !== null || guard.disabledReason !== null || privateBlocked !== null}
+            title={guard.disabledReason ?? privateBlocked ?? undefined}
             onClick={() => {
               if (guard.check(cost.credits)) setConfirm(input())
             }}
@@ -236,7 +360,11 @@ export default function NewRepoPage(): JSX.Element {
         open={confirm !== null}
         onClose={() => setConfirm(null)}
         title={confirm ? `Create ${confirm.name}?` : 'Create repository?'}
-        description="Writes the repo document, makes you its first maintainer, and records its config. Repos cannot be deleted (archive instead), and the name is permanent."
+        description={
+          confirm?.visibility === 'private'
+            ? `Writes the repo document, makes you its first maintainer, and records your repo key and its sealed config. ${PRIVATE_FACTS.join('. ')}. Repos cannot be deleted (archive instead); the name and visibility are permanent.`
+            : 'Writes the repo document, makes you its first maintainer, and records its config. Repos cannot be deleted (archive instead), and the name is permanent.'
+        }
         cost={confirm ? costOf(confirm) : cost}
         confirmLabel="Sign & create"
         successNote="Created — opening your repo"

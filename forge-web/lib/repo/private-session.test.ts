@@ -294,9 +294,29 @@ describe('private reads through the gate', () => {
     const sdk = mockSdk({ issue: issues, event: [], authorEvent: [] })
     const list = await listIssues(sdk, repo, 50)
     expect(list.map((i) => i.title).sort()).toEqual(['in grace', 'readable'])
-    expect(list.hiddenBy).toEqual({ notEncrypted: 2, wrongKey: 0, late: 1 })
+    expect(list.hiddenBy).toEqual({ notEncrypted: 2, wrongKey: 0, late: 1, lateEdit: 0 })
     const body = list.find((i) => i.title === 'readable')?.body
     expect(body).toBe('hello')
+  })
+
+  it('a removed member’s edit after the grace period is judged late too (§8.2 "edits are judged too")', async () => {
+    const w = await world()
+    const k0 = w.keys.get(0) as EpochKeys
+    await rotate(w)
+    const s = await sessionFor(w, BOB)
+    const repo: RepoRef = { ...REPO_REF, session: s }
+    // CAROL (removed) wrote #6 in time, then replaced it long after the rotation; #7 was edited
+    // within the grace period.
+    const issues = [
+      await sealed('issue', k0, CAROL, { number: 6 }, { title: 'edited late' }, { number: 6, $updatedAtBlockHeight: 100 + GRACE_BLOCKS + 50 }, 90),
+      await sealed('issue', k0, CAROL, { number: 7 }, { title: 'edited in grace' }, { number: 7, $updatedAtBlockHeight: 100 + GRACE_BLOCKS }, 90),
+    ]
+    const list = await listIssues(mockSdk({ issue: issues, event: [], authorEvent: [] }), repo, 50)
+    expect(list.map((i) => i.title)).toEqual(['edited in grace'])
+    expect(list.hiddenBy).toEqual({ notEncrypted: 0, wrongKey: 0, late: 0, lateEdit: 1 })
+    // Maintainers read why (the CLI's bucket text is the same).
+    const { HIDDEN_REASON_TEXT } = await import('./private-content')
+    expect(HIDDEN_REASON_TEXT.lateEdit).toBe('edited after its author was removed; the original text is gone')
   })
 
   it('never counts an unreadable review as an approval', async () => {
@@ -580,6 +600,28 @@ describe('no plaintext reaches a private repo', () => {
     const lifted = { ...issue, $ownerId: b58(BOB), number: 2 }
     expect(await privateGate(REPO_REF, s.ctx).admit('issue', lifted)).toEqual({ ok: false, reason: 'notEncrypted' })
     expect(privateId(b58(BOB))).toEqual(BOB)
+  })
+
+  it('an imported document’s sealed provenance comes back as its `imported` object', async () => {
+    const w = await world()
+    const s = await sessionFor(w, ALICE)
+    const k0 = w.keys.get(0) as EpochKeys
+    const issue = await sealed(
+      'issue',
+      k0,
+      ALICE,
+      { number: 9 },
+      { title: 'from GitHub', importedAuthor: 'octocat', importedUrl: 'https://github.com/acme/secret/issues/9' },
+      { number: 9, imported: { createdAt: 1700000000 } },
+      20,
+    )
+    const a = await privateGate(REPO_REF, s.ctx).admit('issue', issue)
+    expect(a.ok).toBe(true)
+    if (a.ok) {
+      expect(a.doc['imported']).toEqual({ createdAt: 1700000000, author: 'octocat', url: 'https://github.com/acme/secret/issues/9' })
+      expect(a.doc['importedAuthor']).toBeUndefined()
+      expect(a.doc['importedUrl']).toBeUndefined()
+    }
   })
 
   it('an opened config never carries a raw key of another epoch into the plaintext view', async () => {

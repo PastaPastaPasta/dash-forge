@@ -28,6 +28,7 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Author } from '@/components/author'
 import { Timeline } from '@/components/repo/timeline'
 import { PullDiff } from '@/components/repo/pull-diff'
+import { PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { MarkdownView } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
@@ -106,9 +107,11 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
       ? { label: 'Closed', icon: <GitPullRequestClosed className="h-4 w-4" aria-hidden />, bg: 'bg-danger' }
       : { label: pull.state.draft ? 'Draft' : 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: pull.state.draft ? 'bg-anvil-500' : 'bg-verify-700' }
 
-  const commentCost = previewCreate('comment', { body: comment.trim() })
-  // A private repo's comments and reviews are sealed; this browser does not write them yet.
-  const isPrivate = home.repo.visibility === 'private'
+  const commentCost = composeCost(home.repo, 'comment', { body: comment.trim() })
+  // A private repo's comments and reviews are sealed on write; only a member holding the
+  // current key writes them (`private-compose.tsx`).
+  const composeBlock = privateComposeBlock(home)
+  const writeBlocked = composeBlock !== null
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const target = { id: pull.id, number: pull.number }
 
@@ -149,7 +152,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   }
   const pendingCost =
     pending !== null && typeof pending === 'object'
-      ? previewCreate('review', { body: pending.body })
+      ? composeCost(home.repo, 'review', { body: pending.body })
       : previewCreate(pending === 'merge' || isMember ? 'event' : 'authorEvent')
 
   return (
@@ -223,6 +226,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
         wrap={(comparison, diff) => (
           <InlineCommentsProvider
             repo={home.repo}
+            writeBlock={composeBlock}
             pullId={pull.id}
             headOid={pull.headOid}
             comments={data.comments}
@@ -240,15 +244,16 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
 
       <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
         <h3 className="mb-2 text-dense font-medium">Review</h3>
-        {isPrivate ? (
-          <p className="text-dense text-anvil-500 dark:text-anvil-400" data-testid="private-compose-note">
-            Comments and reviews on private repos aren&apos;t supported yet.
-          </p>
+        {composeBlock !== null ? (
+          <PrivateComposeNote reason={composeBlock} />
         ) : (
-          <Textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Leave a review comment…" />
+          <>
+            <Textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Leave a review comment…" />
+            <SealedLimit repo={home.repo} kind="comment" text={comment.trim()} />
+          </>
         )}
         <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-          {isPrivate ? <span /> : <CostPreview cost={commentCost} />}
+          {writeBlocked ? <span /> : <CostPreview cost={commentCost} />}
           <div className="flex flex-wrap items-center gap-2">
             {actions.canCloseReopen ? (
               <Button variant="outline" onClick={() => setPending(open ? 'close' : 'reopen')} disabled={!signer || guard.disabledReason !== null}>
@@ -260,7 +265,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
                 <GitMerge className="h-3.5 w-3.5" aria-hidden /> Mark as merged
               </Button>
             ) : null}
-            {isPrivate ? null : (
+            {writeBlocked ? null : (
               <Button
                 variant="primary"
                 onClick={postComment}
@@ -273,7 +278,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
             )}
           </div>
         </div>
-        {open && identity !== null && pull.headOid && !isPrivate ? (
+        {open && identity !== null && pull.headOid && !writeBlocked ? (
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-anvil-100 pt-3 dark:border-anvil-850">
             <span className="text-dense text-anvil-500 dark:text-anvil-400">
               Review head <span className="font-mono">{pull.headOid.slice(0, 9)}</span>:
@@ -285,7 +290,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
                 variant={v === 'approve' ? 'primary' : 'outline'}
                 disabled={guard.disabledReason !== null}
                 onClick={() => {
-                  if (guard.check(previewCreate('review', { body: comment.trim() }).credits, 'collab')) setPending({ review: v, body: comment.trim() })
+                  if (guard.check(composeCost(home.repo, 'review', { body: comment.trim() }).credits, 'collab')) setPending({ review: v, body: comment.trim() })
                 }}
               >
                 {VERDICT_TEXT[v]}

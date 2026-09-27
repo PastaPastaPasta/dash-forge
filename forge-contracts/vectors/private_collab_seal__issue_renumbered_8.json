@@ -1,0 +1,26 @@
+{
+  "name": "issue_renumbered_8",
+  "description": "the same issue claimed as #8 (a renumbered retry): the AD binds the number, so enc differs.",
+  "case": "private_collab_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "docType": "issue",
+    "nonce": "000102030405060708090a0b",
+    "props": {
+      "number": 8,
+      "title": "Rotate the signing key",
+      "body": "See the runbook."
+    }
+  },
+  "expected": {
+    "props": {
+      "number": 8,
+      "epoch": 0,
+      "enc": "01000102030405060708090a0b1f7039a0ac468d0d3a5c60dba50b8e67de7316a802d264e22094824ccaf8a0d1650855aba0344d75612e31c44c9d3b8203b71444b336918434d076d7"
+    }
+  }
+}

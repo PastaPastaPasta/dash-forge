@@ -98,6 +98,19 @@ export function setPlatformVersion(version: number): void {
   if (Number.isInteger(version) && version > 0) platformVersion = version
 }
 
+/**
+ * Follow the version the SDK learned from its latest proved response. The service seeds its
+ * contracts without a request, so the first page query, not the connect, is where evo-sdk
+ * learns the network's version.
+ */
+export function followSdkVersion(sdk: EvoSDK): void {
+  try {
+    setPlatformVersion(sdk.version())
+  } catch {
+    // Keep the pinned version if the SDK cannot report one.
+  }
+}
+
 interface DocumentLike {
   toJSON?: (platformVersion: number) => unknown
   toObject?: () => unknown
@@ -143,9 +156,39 @@ export interface ProofedDocuments {
   readonly proofMetadata: unknown
 }
 
+/**
+ * Called when a read names a document type its contract does not have: a seeded contract may
+ * be older than the network's. Resolves true when the contract was refreshed and the read may
+ * be retried once. Set by the SDK service.
+ */
+type StaleContractHandler = (contractId: string) => Promise<boolean>
+let staleContractHandler: StaleContractHandler | null = null
+
+/** Install (or clear) the handler for reads against a possibly stale seeded contract. */
+export function setStaleContractHandler(handler: StaleContractHandler | null): void {
+  staleContractHandler = handler
+}
+
+function isUnknownDocumentType(e: unknown): boolean {
+  let message = ''
+  try {
+    message = e instanceof Error ? e.message : String((e as { message?: unknown })?.message ?? e)
+  } catch {
+    return false
+  }
+  return /document type not found/i.test(message)
+}
+
 /** Raw query (no proof). Prefer {@link queryDocumentsWithProof} for trust-minimized reads. */
 export async function queryDocuments(sdk: EvoSDK, query: DocumentQuery): Promise<PlainDocument[]> {
-  const response = await documentsOf(sdk).query(query)
+  let response: Map<string, unknown>
+  try {
+    response = await documentsOf(sdk).query(query)
+  } catch (e) {
+    if (!isUnknownDocumentType(e) || !(await staleContractHandler?.(query.dataContractId))) throw e
+    response = await documentsOf(sdk).query(query)
+  }
+  followSdkVersion(sdk)
   return mapToDocuments(response)
 }
 
@@ -165,8 +208,7 @@ export async function queryDocumentsWithProof(
   sdk: EvoSDK,
   query: DocumentQuery,
 ): Promise<ProofedDocuments> {
-  const response = await documentsOf(sdk).query(query)
-  return { documents: mapToDocuments(response), proofMetadata: null }
+  return { documents: await queryDocuments(sdk, query), proofMetadata: null }
 }
 
 /**

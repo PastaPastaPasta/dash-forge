@@ -175,6 +175,7 @@ export {
   starRelation,
   stateEventRoute,
   type CreateRepoInput,
+  type PrivateCreate,
   type CreateRepoStep,
   type PatchInput,
   type Relation,

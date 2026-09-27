@@ -39,6 +39,8 @@ import { cn } from '@/lib/utils'
  */
 export interface InlineComments {
   render(path: string, side: 0 | 1, line: number): ReactNode | null
+  /** Whether this reader may start a comment (a private repo it cannot write to: no). */
+  readonly canComment: boolean
   start(path: string, side: 0 | 1, line: number): void
   /** Told which lines a file's patch shows (`lineKey`s), or null once it shows none. */
   report(path: string, keys: ReadonlySet<string> | null): void
@@ -386,7 +388,7 @@ function LineText({ line }: { line: TextDiffLine }): JSX.Element {
 function LineNumber({ path, side, line }: { path: string; side: 0 | 1; line: number | null }): JSX.Element {
   const inline = useContext(InlineCommentsContext)
   if (line === null) return <td className={GUTTER} />
-  if (inline === null) return <td className={GUTTER}>{line}</td>
+  if (inline === null || !inline.canComment) return <td className={GUTTER}>{line}</td>
   return (
     <td className={cn(GUTTER, 'p-0')}>
       <button

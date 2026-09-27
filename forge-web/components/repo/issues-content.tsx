@@ -31,7 +31,6 @@ import {
   type IssueListQuery,
 } from '@/lib/view/issue-query'
 import { createIssue, queryIssues, repoContractIds, repoKey, type IssueListPage, type IssueSelection, type LabelDef } from '@/lib/repo'
-import { previewCreate } from '@/lib/sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import { useIntent } from '@/hooks/use-intent'
@@ -50,6 +49,7 @@ import { HiddenNote } from '@/components/repo/hidden-note'
 import { AssigneeAvatars, LabelChip, MarkdownEditor } from '@/components/repo/issue-bits'
 import { IssueTemplatePicker } from '@/components/repo/issue-templates'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
+import { SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoHref } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
@@ -64,9 +64,9 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const params = useSearchParams()
   const generation = useRepoWriteGeneration(home.repo)
   const totals = useRepoTotals(home.repo)
-  // A private repo's issues are sealed; this browser does not write sealed issues yet, and
-  // never writes them in plaintext.
-  const canCompose = home.repo.visibility !== 'private'
+  // A private repo's issues are sealed on write (`lib/repo/private-writes.ts`); only a member
+  // holding the current key can open one, and non-members see no button (ux-dx-spec §9).
+  const canCompose = privateComposeBlock(home) === null
 
   // The list query lives in the URL: parse it on every render, write it with router.replace.
   const query = useMemo(() => parseIssueQuery(params), [params])
@@ -430,7 +430,7 @@ function ComposeIssueDialog({
   const [note, setNote] = useState<string | null>(null)
   const draft = useIntent()
 
-  const cost = previewCreate('issue', { title: title.trim(), body })
+  const cost = composeCost(repo, 'issue', { title: title.trim(), body })
   const bodyBytes = new TextEncoder().encode(body).length
 
   const pick = (t: IssueTemplate | null): void => {
@@ -497,6 +497,7 @@ function ComposeIssueDialog({
           placeholder="What happened, and how to reproduce it."
           links={{ issueHref: (n) => repoHref('/repo/issue', addr, { number: String(n) }) }}
         />
+        <SealedLimit repo={repo} kind="issue" text={title.trim() + body} />
         {bodyBytes > 5120 ? <p className="text-dense text-danger-700 dark:text-danger-400">The description is {bodyBytes} bytes; an issue holds 5,120.</p> : null}
         {template !== null && template.labels.length > 0 ? (
           <p className="text-[12px] text-anvil-500">

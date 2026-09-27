@@ -1,0 +1,84 @@
+{
+  "name": "ref_same_createdat_cycle_waits_on_upstream_cycle",
+  "description": "One block of five updates with two chain cycles: {a: A -> C, b: C -> A} and {d: D -> B, e: B -> D}; c (B -> A) builds on d, and a builds on both b and c. When nothing is free, the update placed is the smallest-$id one that waits on nothing outside its own cycle: b (its only predecessor, a, builds back on it), never a, which would come before c, its own predecessor. Order b, d, c, a, e: Diverged, e's D newest, then a's C.",
+  "case": "resolve_ref",
+  "input": {
+    "updates": [
+      {
+        "id": "a",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "A",
+        "newOid": "C",
+        "force": false,
+        "protected": false,
+        "author": "x",
+        "createdAt": 100
+      },
+      {
+        "id": "b",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "C",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "y",
+        "createdAt": 100
+      },
+      {
+        "id": "c",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "B",
+        "newOid": "A",
+        "force": false,
+        "protected": false,
+        "author": "z",
+        "createdAt": 100
+      },
+      {
+        "id": "d",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "D",
+        "newOid": "B",
+        "force": false,
+        "protected": false,
+        "author": "p",
+        "createdAt": 100
+      },
+      {
+        "id": "e",
+        "refNameHash": "H",
+        "refName": "refs/heads/main",
+        "prevOid": "B",
+        "newOid": "D",
+        "force": false,
+        "protected": false,
+        "author": "q",
+        "createdAt": 100
+      }
+    ],
+    "configHistory": [],
+    "refNameHash": "H",
+    "ancestry": []
+  },
+  "expected": {
+    "state": "diverged",
+    "heads": [
+      {
+        "id": "e",
+        "oid": "D",
+        "author": "q",
+        "createdAt": 100
+      },
+      {
+        "id": "a",
+        "oid": "C",
+        "author": "x",
+        "createdAt": 100
+      }
+    ]
+  }
+}

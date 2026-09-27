@@ -223,7 +223,7 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
                 );
             }
             if hidden > 0 {
-                println!("({hidden} malformed document(s) hidden)");
+                println!("{}", crate::fmt::hidden_note(&s.repo, hidden));
             }
         },
     );
@@ -233,15 +233,16 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
 async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
 
-    let collab = Collab::reader(&s.client);
+    let collab = s.collab();
     let view = collab
         .issue_view(&s.repo, number_arg(number)?)
         .await?
         .ok_or_else(|| not_found(repo, number))?;
     // [(author, body)]
-    let comments = collab
-        .comments(&s.repo, &view.issue.document_id)
-        .await?
+    let (comments, hidden) = collab
+        .comments_counted(&s.repo, &view.issue.document_id)
+        .await?;
+    let comments = comments
         .into_iter()
         .map(|c| (c.author, c.body))
         .collect::<Vec<_>>();
@@ -258,6 +259,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "documentId": id,
             "state": { "open": state.open, "labels": state.labels, "assignees": state.assignees },
             "comments": comments.iter().map(|(a, b)| json!({"author": a, "body": b})).collect::<Vec<_>>(),
+            "hiddenComments": hidden,
         }),
         || {
             let mark = if state.open { "open" } else { "closed" };
@@ -271,6 +273,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             }
             for (a, b) in &comments {
                 println!("\n— {a}:\n{}", safe(b));
+            }
+            if hidden > 0 {
+                println!("\n{}", crate::fmt::hidden_note(&s.repo, hidden));
             }
         },
     );
@@ -440,8 +445,14 @@ async fn label(ctx: &Ctx, repo: &str, number: u64, add: bool, names: &[String]) 
     };
     let s = Session::open(ctx, repo).await?;
     let target = target(&s, repo, number).await?;
+    // docs/security/private-repos.md §7: label names are event values, never encrypted
+    let plaintext = if s.repo.visibility == forge_core::rules::v2::Visibility::Private {
+        "; note: label names are not encrypted in this release"
+    } else {
+        ""
+    };
     ctx.confirm_or_cancel(&format!(
-        "{} label(s) {} on issue #{number}? (one small document each; members only)",
+        "{} label(s) {} on issue #{number}? (one small document each; members only{plaintext})",
         if add { "Add" } else { "Remove" },
         names.join(", ")
     ))?;

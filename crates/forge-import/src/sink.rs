@@ -16,11 +16,9 @@ use std::future::Future;
 
 use anyhow::{Context, Result};
 
-use forge_core::collab::v2::{
-    issue_from_doc, patch_from_doc, Collab, Numbered, PatchInput, Target, TargetKind,
-};
+use forge_core::collab::v2::{Collab, Numbered, PatchInput, Target, TargetKind};
 use forge_core::collab::{ReleaseInput, Verdict};
-use forge_core::platform::{FieldValue, PlatformClient, QueryFilter, QueryOrder};
+use forge_core::platform::PlatformClient;
 use forge_core::rules::v2::{fold_issue_state_v2, fold_pr_state_v2};
 use forge_core::rules::EventKind;
 use forge_core::scope::RepoRef;
@@ -494,35 +492,15 @@ impl<'a> Sink<'a> {
         }
         let mut index = Vec::new();
         if let Some(repo) = &self.repo {
-            let forge = repo.forge();
-            let client = self.ledger.client;
-            let collab = client.fetch_contract(&forge.collab).await?;
-            let repo_id =
-                FieldValue::identifier(forge_core::platform::decode_identifier(repo.id())?);
-            for kind in [TargetKind::Issue, TargetKind::Patch] {
-                let docs = client
-                    .query_all_documents(
-                        &collab,
-                        kind.doc_type(),
-                        &[QueryFilter::eq("repoId", repo_id.clone())],
-                        &[QueryOrder::asc("$createdAt")],
-                    )
-                    .await
-                    .with_context(|| format!("reading the destination's {}s", kind.noun()))?;
-                for d in &docs {
-                    let (target, imported) = match kind {
-                        TargetKind::Issue => {
-                            let i = issue_from_doc(d);
-                            (i.target(), i.imported)
-                        }
-                        TargetKind::Patch => {
-                            let p = patch_from_doc(d);
-                            (p.target(), p.imported)
-                        }
-                    };
-                    if let Some(i) = imported.filter(|i| !i.url.is_empty()) {
-                        index.push((i.url, target));
-                    }
+            // through Collab: a private destination's provenance is sealed (§7)
+            let targets = self
+                .collab
+                .imported_targets(repo)
+                .await
+                .context("reading the destination's issues and pull requests")?;
+            for (target, imported) in targets {
+                if let Some(i) = imported.filter(|i| !i.url.is_empty()) {
+                    index.push((i.url, target));
                 }
             }
         }

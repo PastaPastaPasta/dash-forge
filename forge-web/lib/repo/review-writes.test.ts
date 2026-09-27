@@ -25,6 +25,23 @@ vi.mock('../sdk', async (importOriginal) => {
       writes.push({ documentType: p.documentType, data: p.data, ...(p.intent ? { intent: p.intent } : {}) })
       return { documentId: D(writes.length), confirmed: true, cost: { credits: 0, dash: 0 }, actualCredits: null }
     }),
+    replaceDocumentIdempotent: vi.fn(async (_sdk: unknown, _auth: unknown, p: { documentType: string; changes: Record<string, unknown> }) => {
+      replaces.push({ documentType: p.documentType, changes: p.changes })
+      return { documentId: 'x', revision: 2n, cost: { credits: 0, dash: 0 }, actualCredits: null }
+    }),
+  }
+})
+
+const replaces: { documentType: string; changes: Record<string, unknown> }[] = []
+const sealed: unknown[][] = []
+vi.mock('./private-writes', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./private-writes')>()
+  return {
+    ...real,
+    sealEdit: vi.fn(async (...args: unknown[]) => {
+      sealed.push(args.slice(3))
+      return { enc: new Uint8Array([1, 2, 3]), epoch: 4 }
+    }),
   }
 })
 
@@ -155,10 +172,25 @@ describe('assignees and labels (F-1)', () => {
     await expect(setLabel(sdk, auth(ALICE), REPO, { target, label: ' ', add: true })).rejects.toThrow(/label name/)
   })
 
-  it('refuses a private repo edit of an issue before signing (sealed edits come with private-repos PR 4)', async () => {
+  it('re-seals a private edit (sealEdit) and replaces only enc/epoch; without the context it refuses', async () => {
     const PRIVATE: RepoRef = { ...REPO, visibility: 'private' }
+    replaces.length = 0
+    sealed.length = 0
     await expect(updateTarget(sdk, auth(ALICE), PRIVATE, { type: 'issue', id: PR, title: 'x' })).rejects.toThrow(/private repo/)
-    expect(writes).toHaveLength(0)
+    expect(replaces).toHaveLength(0)
+    await updateTarget(sdk, auth(ALICE), PRIVATE, {
+      type: 'issue',
+      id: PR,
+      title: 'new',
+      seal: { current: { title: 'old', body: 'b' }, bind: { number: 3 } },
+    })
+    expect(sealed[0]).toEqual(['issue', { number: 3 }, { title: 'old', body: 'b' }, { title: 'new' }, undefined])
+    expect(replaces[0]).toEqual({ documentType: 'issue', changes: { enc: new Uint8Array([1, 2, 3]), epoch: 4 } })
+    await updateComment(sdk, auth(ALICE), PRIVATE, { id: PR, body: 'edited', seal: { current: { body: 'was' }, bind: { targetId: PR } } })
+    expect(replaces[1]?.changes).not.toHaveProperty('body')
+    // A public edit is plaintext, as before.
+    await updateTarget(sdk, auth(ALICE), REPO, { type: 'issue', id: PR, title: 'pub' })
+    expect(replaces[2]?.changes).toEqual({ title: 'pub' })
   })
 })
 

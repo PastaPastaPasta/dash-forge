@@ -56,6 +56,7 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { AssigneeAvatars, EditedMarker, LabelChip, MarkdownEditor } from '@/components/repo/issue-bits'
 import { HiddenNote } from '@/components/repo/hidden-note'
+import { PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { cn } from '@/lib/utils'
 
 /** The write the confirm dialog is about to sign. */
@@ -116,13 +117,16 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const isAuthor = identity !== null && identity === issue.author
   const canToggle = identity !== null && (isAuthor || isMember)
+  // A private repo is written sealed (issues, comments and edits: `private-writes.ts`); only a
+  // member holding the current key can, so everyone else sees why not instead of a composer.
+  const composeBlock = privateComposeBlock(home)
   const isPrivate = home.repo.visibility === 'private'
   const toggleHint =
     !canToggle && identity !== null && holdings.settled && holdings.data === null
       ? `Couldn't read this repo's ${ACL_NAME}, so close/reopen permission is unknown.`
       : null
   const target = { id: issue.id, number: issue.number }
-  const commentCost = previewCreate('comment', { body: comment.trim() })
+  const commentCost = composeCost(home.repo, 'comment', { body: comment.trim() })
   // A member's close is an `event`; the author who is not a member uses `authorEvent`.
   const stateCost = previewCreate(isMember ? 'event' : 'authorEvent')
   const labelDefs = new Map(labels.map((l) => [l.name, l]))
@@ -164,12 +168,22 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         const changes: { title?: string; body?: string } = {}
         if (pending.title !== issue.title) changes.title = pending.title
         if (pending.body !== issue.body) changes.body = pending.body
-        await updateTarget(sdk, signer, home.repo, { type: 'issue', id: issue.id, ...changes, expectedRevision: BigInt(issue.revision) })
+        await updateTarget(sdk, signer, home.repo, {
+          type: 'issue',
+          id: issue.id,
+          ...changes,
+          expectedRevision: BigInt(issue.revision),
+          seal: { current: { title: issue.title, body: issue.body }, bind: { number: issue.number } },
+        })
         setEditing(null)
         break
       }
       case 'editComment':
-        await updateComment(sdk, signer, home.repo, { id: pending.id, body: pending.body })
+        await updateComment(sdk, signer, home.repo, {
+          id: pending.id,
+          body: pending.body,
+          seal: { current: { body: timelineComment(timeline, pending.id)?.body ?? '' }, bind: { targetId: issue.id } },
+        })
         setEditingComment(null)
         break
     }
@@ -230,8 +244,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                   variant="outline"
                   size="sm"
                   onClick={() => setEditing({ title: issue.title, body: issue.body })}
-                  disabled={isPrivate}
-                  title={isPrivate ? 'Editing is not supported in private repositories yet.' : undefined}
+                  disabled={composeBlock !== null}
+                  title={composeBlock ?? undefined}
                 >
                   <Pencil className="h-3.5 w-3.5" aria-hidden /> Edit
                 </Button>
@@ -281,7 +295,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 item,
                 viewer: identity,
                 editing: editingComment,
-                disabled: isPrivate || guard.disabledReason !== null,
+                disabled: composeBlock !== null || guard.disabledReason !== null,
                 onEdit: setEditingComment,
                 onSave: (id, body) => setPending({ kind: 'editComment', id, body }),
                 links,
@@ -295,12 +309,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         {/* Composer */}
         <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
           <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
-          {isPrivate ? (
-            <p className="mb-2 text-dense text-anvil-500 dark:text-anvil-400" data-testid="private-compose-note">
-              Comments on private repos aren&apos;t supported yet.
-            </p>
-          ) : null}
+          {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
           <MarkdownEditor id="comment-body" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
+          <SealedLimit repo={home.repo} kind="comment" text={comment.trim()} />
           <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
             <CostPreview cost={commentCost} />
             <div className="flex items-center gap-2">
@@ -318,7 +329,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 variant="primary"
                 onClick={postComment}
                 loading={posting}
-                disabled={isPrivate || comment.trim() === '' || bytes(comment) > BODY_MAX || guard.disabledReason !== null}
+                disabled={composeBlock !== null || comment.trim() === '' || bytes(comment) > BODY_MAX || guard.disabledReason !== null}
                 title={guard.disabledReason ?? undefined}
               >
                 {identity ? 'Comment' : 'Sign in to comment'}
@@ -618,4 +629,12 @@ function LabelPicker({
       ) : null}
     </div>
   )
+}
+
+/** A comment of the timeline by id (the text an edit re-seals from). */
+function timelineComment(items: readonly TimelineItem[], id: string): { body: string } | undefined {
+  for (const it of items) {
+    if (it.kind === 'comment' && it.comment.id === id) return it.comment
+  }
+  return undefined
 }

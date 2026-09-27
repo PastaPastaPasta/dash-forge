@@ -307,26 +307,42 @@ pub async fn read_private_merge_base(
     scope: &DocScope,
     keyring: &crate::keyring::Keyring,
     ref_name: &str,
+    opened_at: u64,
 ) -> Result<MergeBaseTips> {
-    let updates = read_private_updates(client, contract, scope, keyring)
-        .await?
-        .remove(ref_name)
-        .unwrap_or_default();
-    Ok(crate::rules::merge_base_tips(
-        &updates,
+    let updates = read_private_updates(client, contract, scope, keyring).await?;
+    Ok(private_merge_base(&updates, keyring, ref_name, opened_at))
+}
+
+/// [`read_private_merge_base`] over the decrypted updates already read ([`PrivateUpdates`]):
+/// a list of pull requests reads the reflog once, not once per row.
+#[must_use]
+pub fn private_merge_base(
+    updates: &PrivateUpdates,
+    keyring: &crate::keyring::Keyring,
+    ref_name: &str,
+    opened_at: u64,
+) -> MergeBaseTips {
+    let empty = Vec::new();
+    // the PR's base must have been a branch when it was opened (D-501), as in a public repo
+    crate::rules::pr_base_tips(
+        updates.get(ref_name).unwrap_or(&empty),
         &keyring.config().history,
         &hex::encode(crate::backends::sha256(ref_name.as_bytes())),
-    ))
+        opened_at,
+    )
 }
+
+/// Every readable ref update of a private repository by decrypted ref name.
+pub type PrivateUpdates = BTreeMap<String, Vec<RefUpdate>>;
 
 /// Every readable ref update of a private repository, grouped by its decrypted name and
 /// restated with the public key (`refNameHash = sha256(refName)`), so the public folds apply.
-async fn read_private_updates(
+pub async fn read_private_updates(
     client: &PlatformClient,
     contract: &LoadedContract,
     scope: &DocScope,
     keyring: &crate::keyring::Keyring,
-) -> Result<BTreeMap<String, Vec<RefUpdate>>> {
+) -> Result<PrivateUpdates> {
     use crate::private::{DocKind, Opened};
     let mut by_name: BTreeMap<String, Vec<RefUpdate>> = BTreeMap::new();
     for (doc_type, protected) in REF_UPDATE_TYPES {
@@ -579,6 +595,7 @@ mod tests {
             // The scan must not depend on `$createdAt` being present.
             created_at: None,
             created_at_block_height: None,
+            updated_at_block_height: None,
             fields,
         }
     }
@@ -861,6 +878,7 @@ mod tests {
                 owner_id: "o".into(),
                 created_at: Some(1),
                 created_at_block_height: None,
+                updated_at_block_height: None,
                 fields,
             }
         };

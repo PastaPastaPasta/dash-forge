@@ -1,0 +1,38 @@
+{
+  "name": "comment_inline_reply",
+  "description": "an inline reply inside a review: body and path are sealed; targetId (bound), replyTo, reviewId, commitOid, line, startLine and side stay plaintext.",
+  "case": "private_collab_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "docType": "comment",
+    "nonce": "000102030405060708090a0b",
+    "props": {
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "body": "nit: rename",
+      "path": "src/lib.rs",
+      "replyTo": "7777777777777777777777777777777777777777777777777777777777777777",
+      "reviewId": "8888888888888888888888888888888888888888888888888888888888888888",
+      "commitOid": "cccccccccccccccccccccccccccccccccccccccc",
+      "line": 12,
+      "startLine": 10,
+      "side": 1
+    }
+  },
+  "expected": {
+    "props": {
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "replyTo": "7777777777777777777777777777777777777777777777777777777777777777",
+      "reviewId": "8888888888888888888888888888888888888888888888888888888888888888",
+      "commitOid": "cccccccccccccccccccccccccccccccccccccccc",
+      "line": 12,
+      "startLine": 10,
+      "side": 1,
+      "epoch": 0,
+      "enc": "01000102030405060708090a0b1c70249caa46d6592d197ad2ad4ef70eb36e0da54a9e66e577e4f16f2a8e55d2c8ed09dc06cd085c7a26e3"
+    }
+  }
+}

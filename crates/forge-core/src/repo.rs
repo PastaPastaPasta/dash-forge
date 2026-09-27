@@ -387,6 +387,30 @@ pub struct RepoService<'a> {
 /// fetch) open with the keys its writes used.
 pub type KeyringCache = std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<Keyring>>>>;
 
+/// The keyring of `repo` held in `cache`, else `load`ed (lazily: only on a miss) and cached.
+/// One entry, keyed by repository: another repository's keyring is never returned.
+pub async fn cached_keyring<F>(
+    cache: &KeyringCache,
+    repo: &RepoRef,
+    load: impl FnOnce() -> F,
+) -> Result<std::sync::Arc<Keyring>>
+where
+    F: std::future::Future<Output = Result<Keyring>>,
+{
+    let repo_id = repo.scope()?.repo_id;
+    let lock = || {
+        cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    };
+    if let Some(k) = lock().as_ref().filter(|k| *k.repo_id() == repo_id) {
+        return Ok(std::sync::Arc::clone(k));
+    }
+    let fresh = std::sync::Arc::new(load().await?);
+    *lock() = Some(std::sync::Arc::clone(&fresh));
+    Ok(fresh)
+}
+
 impl<'a> RepoService<'a> {
     /// Bind the service to `client`, the signer `identity`, and its `bridge` key material.
     pub fn new(
@@ -462,13 +486,13 @@ impl<'a> RepoService<'a> {
     /// The keys of private `repo` as this identity holds them: loaded once per service (and
     /// per repository), refreshed by every write.
     pub async fn keyring(&self, repo: &RepoRef) -> Result<std::sync::Arc<Keyring>> {
-        let repo_id = repo.scope()?.repo_id;
-        if let Some(k) = self.cache().as_ref().filter(|k| *k.repo_id() == repo_id) {
-            return Ok(std::sync::Arc::clone(k));
-        }
-        let fresh = std::sync::Arc::new(self.signer()?.keyring(repo).await?);
-        *self.cache() = Some(std::sync::Arc::clone(&fresh));
-        Ok(fresh)
+        let signer = self.signer()?;
+        cached_keyring(
+            &self.keyring,
+            repo,
+            || async move { signer.keyring(repo).await },
+        )
+        .await
     }
 
     /// The seams to write private `repo` with, from a keyring read NOW (§5.3: re-read the

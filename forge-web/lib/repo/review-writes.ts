@@ -31,7 +31,11 @@ import {
 } from '../sdk'
 import { DOC, asIdentifierString, byteFieldToHex, num, str, type RepoRef } from './contract'
 import { invalidateRepoFeed, readReviews } from './issues'
+import { sealEdit } from './private-writes'
 import { repoSource } from './source'
+import { admitAll, gateFor } from './private-content'
+import { privateWriterWithSession, type PrivateWriter } from './private-writes'
+import type { PrivateSession } from './private-session'
 import { EVENT_KIND_CODE, VERDICT_INT, contractFor, eventRoute, refusePlaintextInPrivate, writeRepoDoc, type VerdictInput, type WriteTarget } from './writes'
 
 export { EVENT_KIND_CODE, eventRoute }
@@ -222,6 +226,11 @@ export interface DraftComment {
  */
 export interface ReviewDraft {
   readonly draftId: string
+  /**
+   * A private repo's draft: its summary and comments are the repo's plaintext, so it is kept in
+   * this page's memory only (never IndexedDB, which outlives a locked vault).
+   */
+  readonly private?: boolean
   readonly network: string
   readonly identity: string
   readonly repoId: string
@@ -246,16 +255,36 @@ export function reviewDraftKey(network: string, identity: string, prId: string):
   return `review:${network}:${identity}:${prId}`
 }
 
-export function loadReviewDraft(network: string, identity: string, prId: string): Promise<ReviewDraft | undefined> {
-  return idbGet<ReviewDraft>('journal', reviewDraftKey(network, identity, prId))
+/** Private repos' drafts: this page's memory only (see {@link ReviewDraft.private}). */
+const memoryDrafts = new Map<string, ReviewDraft>()
+
+export async function loadReviewDraft(network: string, identity: string, prId: string): Promise<ReviewDraft | undefined> {
+  const key = reviewDraftKey(network, identity, prId)
+  const memory = memoryDrafts.get(key)
+  if (memory !== undefined) return memory
+  const stored = await idbGet<ReviewDraft>('journal', key)
+  // A private draft never belongs in IndexedDB (one from an earlier build is dropped).
+  if (stored?.private === true) {
+    await idbDelete('journal', key)
+    return undefined
+  }
+  return stored
 }
 
-export function saveReviewDraft(draft: ReviewDraft): Promise<void> {
-  return idbPut('journal', reviewDraftKey(draft.network, draft.identity, draft.prId), draft)
+/** Keep a draft: in memory for a private repo (`repo`, or the draft's own flag), else IndexedDB. */
+export function saveReviewDraft(draft: ReviewDraft, repo?: RepoRef): Promise<void> {
+  const key = reviewDraftKey(draft.network, draft.identity, draft.prId)
+  if (draft.private === true || repo?.visibility === 'private') {
+    memoryDrafts.set(key, { ...draft, private: true })
+    return idbDelete('journal', key)
+  }
+  return idbPut('journal', key, draft)
 }
 
 export function discardReviewDraft(network: string, identity: string, prId: string): Promise<void> {
-  return idbDelete('journal', reviewDraftKey(network, identity, prId))
+  const key = reviewDraftKey(network, identity, prId)
+  memoryDrafts.delete(key)
+  return idbDelete('journal', key)
 }
 
 /** Progress of a submit: `done` of `total` documents written. */
@@ -313,13 +342,15 @@ export function chainReads(sdk: EvoSDK, repo: RepoRef, prId: string): SubmitRead
         createdAt: r.createdAt,
       })),
     comments: async () => {
-      const docs = await queryAllDocuments(
+      const raw = await queryAllDocuments(
         sdk,
         repoSource(repo).targetQuery(DOC.comment, {
           where: [['targetId', '==', prId]],
           orderBy: [['targetId', 'asc'], ['$createdAt', 'asc']],
         }),
       )
+      // A private repo's comments are compared decrypted (the gate opens them with the reader's keys).
+      const { docs } = await admitAll(gateFor(repo), 'comment', raw)
       return docs.map((d) => ({
         id: str(d, '$id'),
         owner: str(d, '$ownerId'),
@@ -405,11 +436,36 @@ export async function submitReviewDraft(
   repo: RepoRef,
   draft: ReviewDraft,
   onProgress?: (p: SubmitProgress) => void,
-  reads: SubmitReads = chainReads(sdk, repo, draft.prId),
+  reads?: SubmitReads,
 ): Promise<SubmittedReview> {
   if (draft.identity !== auth.identityId) throw new Error('this pending review belongs to another identity')
-  refusePlaintextInPrivate(repo, DOC.review)
-  let current: ReviewDraft = await reconcileReviewDraft(draft, reads)
+  // A private repo: the reconcile reads the draft's landed comments decrypted, which needs the
+  // reader's session (without it none would match and each would be posted again).
+  if (repo.visibility === 'private' && repo.session === undefined) throw new Error("a private repo's review is submitted by a member reading it with their key")
+  // One writer (one fresh key read) for the review and all its comments.
+  const fresh = repo.visibility === 'private' ? await privateWriterWithSession(sdk, auth, repo) : undefined
+  try {
+    return await submitWith(sdk, auth, repo, draft, fresh, onProgress, reads)
+  } finally {
+    fresh?.session.close()
+  }
+}
+
+async function submitWith(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  draft: ReviewDraft,
+  fresh: { writer: PrivateWriter; session: PrivateSession } | undefined,
+  onProgress?: (p: SubmitProgress) => void,
+  reads?: SubmitReads,
+): Promise<SubmittedReview> {
+  const writer = fresh?.writer
+  if (repo.visibility === 'private' && draft.private !== true) draft = { ...draft, private: true }
+  // The reconcile reads through the writer's fresh session: a comment an earlier attempt sealed
+  // under a newer epoch than the page's session knows still opens, and is not posted again.
+  const chain = reads ?? chainReads(sdk, fresh ? { ...repo, session: fresh.session } : repo, draft.prId)
+  let current: ReviewDraft = await reconcileReviewDraft(draft, chain)
   if (current.attemptedAt === undefined) current = { ...current, attemptedAt: Date.now() }
   // Saved before the first write, so a crash after it leaves a draft that reconciles.
   if (current !== draft) await saveReviewDraft(current)
@@ -424,7 +480,7 @@ export async function submitReviewDraft(
       commitOid: draft.headOid,
       body: draft.summary,
       commentCount: draft.comments.length,
-    }), `review:${draft.draftId}:review`)
+    }), `review:${draft.draftId}:review`, writer)
     reviewId = r.documentId
     current = { ...current, reviewId }
     await saveReviewDraft(current)
@@ -441,7 +497,7 @@ export async function submitReviewDraft(
       body: c.body,
       anchor: { ...c.anchor, commitOid: c.anchor.commitOid ?? draft.headOid },
       reviewId,
-    }), `review:${draft.draftId}:comment:${c.localId}`)
+    }), `review:${draft.draftId}:comment:${c.localId}`, writer)
     ids.push(r.documentId)
     const comments = [...current.comments]
     comments[i] = { ...c, landedId: r.documentId }
@@ -495,27 +551,44 @@ export async function setLabel(
   return write(sdk, auth, repo, DOC.event, data, input.intent)
 }
 
-/** Replace one of the signer's documents of `repo`, dropping the caches the edit invalidates. */
+/**
+ * What a private repo's edit needs to re-seal it (`sealEdit`, `private-writes.ts`): the
+ * decrypted content now (`current`, e.g. the issue's title and body as the page shows them),
+ * the plaintext bind fields the seal covers (`bind`: an issue's `number`, a comment's
+ * `targetId`), and for a PR its own epoch.
+ */
+export interface SealContext {
+  readonly current: Readonly<Record<string, unknown>>
+  readonly bind: Readonly<Record<string, unknown>>
+  readonly patchEpoch?: number
+}
+
+/**
+ * Replace one of the signer's documents of `repo`, dropping the caches the edit invalidates.
+ * In a private repo the content is re-sealed as a whole (`sealEdit`) and the replace sets only
+ * `enc` / `epoch`: a plaintext replace would publish the edit next to the sealed `enc`.
+ */
 async function replace(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  documentType: string,
+  documentType: 'issue' | 'patch' | 'comment',
   documentId: string,
   changes: Record<string, unknown>,
   expectedRevision: bigint | undefined,
+  seal: SealContext | undefined,
 ): Promise<ReplaceResult> {
-  // A replace merges plaintext over the stored document: in a private repo that would publish
-  // the edit next to the sealed `enc` and make the document malformed for members.
-  // TODO(private-repos web PR 4, feat/private-repos-web-writes): route a private repo's edit
-  // through its sealed-edit helper (`lib/repo/private-writes.ts`) instead of refusing it.
-  refusePlaintextInPrivate(repo, documentType)
+  let replaced = changes
+  if (repo.visibility === 'private') {
+    if (seal === undefined) refusePlaintextInPrivate(repo, documentType)
+    else replaced = await sealEdit(sdk, auth, repo, documentType, { ...seal.bind }, seal.current, changes, seal.patchEpoch)
+  }
   try {
     return await replaceDocumentIdempotent(sdk, auth, {
       contractId: contractFor(repo, documentType),
       documentType,
       documentId,
-      changes,
+      changes: replaced,
       repo: repo.repoId,
       expectedRevision,
     })
@@ -530,7 +603,7 @@ export function updateTarget(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { type: 'issue' | 'patch'; id: string; title?: string; body?: string; expectedRevision?: bigint },
+  input: { type: 'issue' | 'patch'; id: string; title?: string; body?: string; expectedRevision?: bigint; seal?: SealContext },
 ): Promise<ReplaceResult> {
   const changes: Record<string, unknown> = {}
   if (input.title !== undefined) {
@@ -539,7 +612,7 @@ export function updateTarget(
   }
   if (input.body !== undefined) changes['body'] = input.body === '' ? undefined : input.body
   if (Object.keys(changes).length === 0) throw new Error('nothing to change')
-  return replace(sdk, auth, repo, DOC[input.type], input.id, changes, input.expectedRevision)
+  return replace(sdk, auth, repo, input.type, input.id, changes, input.expectedRevision, input.seal)
 }
 
 /**
@@ -551,10 +624,10 @@ export function updateComment(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { id: string; body: string; dropReviewId?: boolean; expectedRevision?: bigint },
+  input: { id: string; body: string; dropReviewId?: boolean; expectedRevision?: bigint; seal?: SealContext },
 ): Promise<ReplaceResult> {
   if (input.body.trim() === '') throw new Error('a comment needs a body')
   const changes: Record<string, unknown> = { body: input.body }
   if (input.dropReviewId) changes['reviewId'] = undefined
-  return replace(sdk, auth, repo, DOC.comment, input.id, changes, input.expectedRevision)
+  return replace(sdk, auth, repo, 'comment', input.id, changes, input.expectedRevision, input.seal)
 }

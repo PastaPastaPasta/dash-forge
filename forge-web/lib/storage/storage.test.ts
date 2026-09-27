@@ -384,6 +384,54 @@ describe('storeArtifact', () => {
     expect(new Headers(pub?.[1]?.headers).get('authorization')).toBeNull()
   })
 
+  it("never uploads a private repo's unsealed bytes; a sealed pack goes through", async () => {
+    const net = fakeNetwork()
+    vi.stubGlobal('fetch', net.fetchMock)
+    const priv = { ...REPO, visibility: 'private' as const }
+    const opts = { policy: policyFor(['r2-main'], 'one'), profiles: [S3], confirmPlatform: async () => false }
+    await expect(storeArtifact(SDK, AUTH, priv, bytes, opts)).rejects.toThrow(/unencrypted artifact for a private repo/)
+    expect(net.puts).toHaveLength(0)
+    const { EpochKeys, sealPack } = await import('../private')
+    const sealed = await sealPack(await EpochKeys.import(new Uint8Array(32).fill(7), 0, new Uint8Array(32).fill(9)), bytes)
+    const stored = await storeArtifact(SDK, AUTH, priv, sealed, opts)
+    expect(stored.packHash).toBe(await sha256Hex(sealed))
+    expect(net.puts).toHaveLength(1)
+  })
+
+  it('a private-repo browser merge stores nothing: the runner refuses, and the real upload refuses its plaintext pack', async () => {
+    const net = fakeNetwork()
+    vi.stubGlobal('fetch', net.fetchMock)
+    const priv = { ...REPO, visibility: 'private' as const }
+    const opts = { policy: policyFor(['r2-main'], 'one'), profiles: [S3], confirmPlatform: async () => false }
+    const { runMergeSteps, newRun } = await import('../merge/runner')
+    const pack = new TextEncoder().encode('PACK merged plaintext')
+    // The merge's upload step, wired to the real storeArtifact as the merge panel wires it.
+    const upload = async (bytes: Uint8Array) => {
+      const s = await storeArtifact(SDK, AUTH, priv, bytes, opts)
+      return { storage: s.storage, chunkCount: s.chunkCount, uris: s.uris }
+    }
+    const base = 'aa'.repeat(20)
+    const head = 'bb'.repeat(20)
+    const deps = {
+      sdk: SDK,
+      auth: AUTH,
+      repo: priv,
+      pull: { id: 'P', number: 1, baseRefName: 'refs/heads/main', openedBaseRefName: 'refs/heads/main' },
+      input: { baseTip: base, headOid: head, prNumber: 1, sourceLabel: 'refs/heads/x', author: { name: 'n', email: 'e@x' }, headInBase: false },
+      merge: async () => ({ kind: 'merge' as const, newTip: 'cc'.repeat(20), pack, packHash: 'dd'.repeat(32), objectCount: 1 }),
+      upload,
+      publishIndex: null,
+      verifyPack: async () => [],
+      readBaseTip: async () => base,
+      intent: 'merge:P',
+    }
+    await expect(runMergeSteps(deps, newRun({ baseTip: base, headOid: head }), () => undefined)).rejects.toThrow(/dg pr merge/)
+    // The backstop, should anything call the upload step directly for a private repo.
+    await expect(upload(pack)).rejects.toThrow(/unencrypted artifact for a private repo/)
+    expect(net.puts).toHaveLength(0)
+    expect(net.fetchMock.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0)
+  })
+
   it('uploads when the pre-upload HEAD is refused (AWS without s3:ListBucket)', async () => {
     const net = fakeNetwork({ headForbidden: true })
     vi.stubGlobal('fetch', net.fetchMock)
