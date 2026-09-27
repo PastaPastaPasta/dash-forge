@@ -150,7 +150,7 @@ Work:
   - Accept a key bound to forge-core **or** to the group, whichever the wallet grants. Its contract bounds limit what it can sign: a forge-core-only key covers repos and pushes, so collab writes need a second grant or a group-bound key.
   - Use `platform-auth`'s `yappr-protocol` as the reference implementation, or depend on it directly.
 - [ ] **First-login key registration (`dash-st:`).** When the wallet has no suitable key yet, show the second QR carrying the unsigned IdentityUpdate that adds a limited key. This is yappr's `key-registration-flow`, adapted to Forge's group-bound limited key (budget and expiry).
-- [ ] **Mobile-browser UX.** On a phone, show an "Open in Dash Wallet" deep link instead of a QR. Show the pairing code on both screens and a countdown, then offer to protect the session with a passkey (as yappr does).
+- [ ] **Mobile-browser UX.** On a phone, show an "Open in Dash Wallet" deep link instead of a QR. Show a countdown, then offer to protect the session with a passkey (as yappr does).
 - [ ] **Wallet side (upstream, dashpay):** request group-scoped grants (the Forge contract group) and publish to the PV14 system contract on protocol 14 / mainnet. File issues and PRs against `dashpay/dash-wallet` and `dashpay/dashwallet-ios`, with a spec note agreed with the App Connect authors. Until they ship, Forge supports the legacy contract on testnet.
 - [ ] **Test on real devices.** A scripted e2e with a simulated wallet responder (both formats), plus a manual check with the Dash Wallet Android testnet build and the iOS simulator (`run-ios-simulator`), recorded as evidence.
 

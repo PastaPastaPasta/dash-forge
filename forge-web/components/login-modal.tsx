@@ -3,7 +3,8 @@
 /**
  * The sign-in sheet (`ux-dx-spec.md` §2.2). Three tiles plus an Advanced disclosure:
  *
- *   1. Use my Dash wallet — App Connect (shown only when the system contract exists here);
+ *   1. Use my Dash wallet — the DashConnect key exchange (shown only when a response contract
+ *      exists here; first only where Dash Wallet answers, i.e. testnet, else last);
  *   2. Create a new identity — mnemonic + backup quiz + deposit QR, registered with a limited
  *      key inside the IdentityCreate;
  *   3. Import an identity file (or mnemonic) — the master key signs one IdentityUpdate that
@@ -30,7 +31,7 @@ import { FORGET_CONFIRM } from '@/components/keys-panel'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { NotDeployedState } from '@/components/ui/network-badge'
 import { BROWSER_KEY_DEFAULTS, masterMaterialFromFile } from '@/lib/auth'
-import { walletLoginAvailable } from '@/lib/auth/app-connect'
+import { walletLoginAvailable, walletSignInSupported } from '@/lib/auth/app-connect'
 import { ensureSdk } from '@/lib/sdk'
 import { formatDate } from '@/lib/view/format'
 import { cn, errorMessage } from '@/lib/utils'
@@ -105,7 +106,11 @@ function describeView(view: View, limitedKeys: boolean): string {
   if (view === 'advanced') return 'A pasted key signs for this tab only, with whatever power it has.'
   if (view === 'wallet' || view === 'grant') return 'Your wallet grants this browser its own key for Dash Forge. Your wallet keys never leave the phone.'
   if (!limitedKeys) return `Dash Forge is not deployed on ${ACTIVE_NETWORK.key}, so there is nothing to sign in to here.`
-  return `Forge signs with a limited key: at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for ${BROWSER_KEY_DEFAULTS.days} days.`
+  const limits = `at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for ${BROWSER_KEY_DEFAULTS.days} days`
+  if (view === 'create' || view === 'import') return `Forge signs with a limited key: ${limits}.`
+  if (view === 'unlock') return 'Unlock the key this browser already holds.'
+  // The tile list: a wallet's key comes with no limits (docs/design/wallet-login.md).
+  return `A new or imported identity gives this browser a limited key: ${limits}.`
 }
 
 function Tile({ icon: Icon, title, body, onClick, testId }: { icon: typeof Wallet; title: string; body: string; onClick: () => void; testId: string }): JSX.Element {
@@ -131,11 +136,24 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
   const [advanced, setAdvanced] = useState(false)
   // No forge-v2 here means no contract group to bind a key to: nothing to sign in to.
   if (!limitedKeys) return <NotDeployedState />
+  // First only where Dash Wallet can answer (testnet); elsewhere last, saying why.
+  const walletFirst = walletSignInSupported(ACTIVE_NETWORK.network)
+  const walletTile = walletAvailable ? (
+    <Tile
+      testId="tile-wallet"
+      icon={Wallet}
+      title="Use my Dash wallet"
+      body={
+        walletFirst
+          ? 'DashPay (Dash Wallet) on your phone: scan a QR code (or tap a link on the phone) and approve.'
+          : `Not on ${ACTIVE_NETWORK.key} yet: Dash Wallet's DashConnect works on testnet. Here only an internal iOS build can answer.`
+      }
+      onClick={() => onPick('wallet')}
+    />
+  ) : null
   return (
     <div className="space-y-2">
-      {walletAvailable ? (
-        <Tile testId="tile-wallet" icon={Wallet} title="Use my Dash wallet" body="Dash Wallet on your phone: scan a QR code (or tap a link on the phone) and approve." onClick={() => onPick('wallet')} />
-      ) : null}
+      {walletFirst ? walletTile : null}
       <Tile testId="tile-create" icon={Plus} title="Create a new identity" body="12 words you write down, then fund it from any Dash wallet. ~0.0005 DASH per issue or push." onClick={() => onPick('create')} />
       <Tile
         testId="tile-import"
@@ -144,6 +162,7 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
         body="Your master key is used once, right now, to create a limited key for this browser. It is not stored."
         onClick={() => onPick('import')}
       />
+      {walletFirst ? null : walletTile}
       <div className="pt-2">
         <button type="button" aria-expanded={advanced} onClick={() => setAdvanced((a) => !a)} className="text-[12px] text-anvil-500 underline hover:text-anvil-800 dark:hover:text-anvil-100">
           Advanced

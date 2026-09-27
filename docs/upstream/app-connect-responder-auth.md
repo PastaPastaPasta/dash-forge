@@ -20,7 +20,7 @@ msg = "dash:login-response:v1" ‖ hash160(appEphemeralPub) ‖ contractId(32) �
 sig = sign(msg) with an AUTHENTICATION key of $ownerId (HIGH or CRITICAL), plus its key id
 ```
 
-The app verifies `sig` against that key on chain. That proves the answer came from someone holding a key of `$ownerId`, not merely from someone who saw the QR. Whoever saw the QR can still sign for *their own* identity, so this does not replace the confirmation step. It does make the pairing code meaningful when combined with (c) of the wallet drafts: the wallet shows the code before signing, and the app shows the identity the signature proves.
+The app verifies `sig` against that key on chain. That proves the answer came from someone holding a key of `$ownerId`, not merely from someone who saw the QR. Whoever saw the QR can still sign for *their own* identity, so this does not replace the confirmation step, but it does make the identity the app shows one that provably answered.
 
 - App Connect: add an optional `responderSignature` (65 bytes) and `responderKeyId` (u32) to `loginKeyResponse` (schema version 2), or put them inside the encrypted payload so they are not public.
 - Legacy contract: put them inside the encrypted payload (after the 32-byte login key). A new payload length tells apps it is present.
