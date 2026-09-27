@@ -121,7 +121,8 @@ export async function createIdentityFromMnemonic(
   const { AssetLockProof, OutPoint, Identity, IdentityPublicKey, IdentitySigner, PrivateKey, ContractBounds } = await import('@dashevo/evo-sdk')
 
   const lockKey = await deriveAt(mnemonic, assetLockKeyPath(network), network)
-  let journal: CreationJournal = (await readCreationJournal(network)) ?? {
+  const existing = await readCreationJournal(network)
+  let journal: CreationJournal = existing ?? {
     network,
     depositAddress: lockKey.address,
     identityId: null,
@@ -138,10 +139,10 @@ export async function createIdentityFromMnemonic(
 
   // 1-3: deposit → asset lock (saved before broadcast) → proof.
   if (journal.lockTxid === null || journal.lockRaw === null) {
-    // A fresh creation records the tip before the address is shown: nothing can pay it earlier.
-    // An older journal without one is left alone, so the watch rewinds past its start.
-    const fresh = Date.now() - journal.startedAt < 10 * 60 * 1000
-    if (journal.startHeight == null && fresh) await save({ startHeight: await currentHeight(ep) })
+    // A journal this call created records the Core tip (the flow shows the address first, so
+    // the watch starts a few blocks earlier). A resumed journal without one is left alone: its
+    // watch rewinds past `startedAt` instead of skipping a deposit mined meanwhile.
+    if (existing === undefined) await save({ startHeight: await currentHeight(ep) })
     params.onStage?.('waiting-deposit')
     const utxos = await waitForDeposit(ep, lockKey.address, params.minDepositDuffs ?? MIN_DEPOSIT_DUFFS, {
       signal: params.signal,

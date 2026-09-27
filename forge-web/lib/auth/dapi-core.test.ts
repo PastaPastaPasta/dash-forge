@@ -66,10 +66,15 @@ function network(opts: { feed?: Uint8Array[][]; txs?: Map<string, { raw: Uint8Ar
       // A merkle block (field 3) and an islock batch (field 2) must be skipped.
       chunks.unshift(frame(0, field(3, new Uint8Array(80))))
       chunks.push(frame(0, field(2, field(1, new Uint8Array(4)))))
+      const history = (req.get(4)?.[0] ?? 0) as number
       const stream = new ReadableStream<Uint8Array>({
         start(c) {
           for (const ch of chunks) c.enqueue(ch)
-          // Stays open like a live subscription; the reader cancels it.
+          // History mode (count > 0) ends with OK trailers; a live subscription stays open.
+          if (history > 0) {
+            c.enqueue(trailer(0))
+            c.close()
+          }
         },
       })
       return new Response(stream)
@@ -127,6 +132,8 @@ describe('DAPI Core client', () => {
     expect(bloomContains(f, new Uint8Array(20).fill(4))).toBe(false)
     expect(f.flags).toBe(1)
     expect(f.data.length).toBeLessThanOrEqual(36_000)
+    // Room for the outpoints BLOOM_UPDATE_ALL adds: 50 elements at 1e-4 is 119 bytes.
+    expect(bloomFilter([hash], 0.0001, 7, 50).data.length).toBe(119)
   })
 })
 
@@ -142,7 +149,7 @@ describe('identity creation with Insight down (HTTP 503)', () => {
     expect(seen.at(-1)).toBe(3_000_000)
     const sub = net.fetchImpl.mock.calls.find(([u]) => String(u).endsWith('subscribeToTransactionsWithProofs'))
     const req = decode(((sub?.[1] as RequestInit).body as Uint8Array).slice(5))
-    expect(req.get(3)?.[0]).toBe(88_850)
+    expect(req.get(3)?.[0]).toBe(88_850 - 6) // a few blocks of slack for node tips
 
     await broadcastTx(EP, '00', 'ab'.repeat(32))
     expect(net.broadcasts.length).toBe(1)
@@ -177,8 +184,19 @@ describe('where a deposit watch starts', () => {
     network({})
     const { watchFrom } = await import('./asset-lock')
     const core = new DapiCore(EP.dapi)
-    expect(await watchFrom(core, 88_000)).toBe(88_000)
+    expect(await watchFrom(core, 88_000)).toBe(88_000 - 6)
     // Started an hour ago: 24 blocks at 2.5 minutes, plus the 50-block margin, from tip 88_900.
     expect(await watchFrom(core, { startedAt: Date.now() - 3_600_000 })).toBe(88_900 - 24 - 50)
+    // Long ago: at most about a week.
+    expect(await watchFrom(core, { startedAt: 0 })).toBe(88_900 - 4032)
+  })
+
+  it('a DAPI-only zero is not "empty" (the mempool is not in its history); a payment is seen', async () => {
+    const { depositHeld } = await import('./asset-lock')
+    const d = deposit(4_000_000)
+    network({})
+    await expect(depositHeld(EP, d.address, 88_000)).rejects.toThrow(/could not check/)
+    network({ feed: [[d.raw]] })
+    expect(await depositHeld(EP, d.address, 88_000)).toBe(4_000_000)
   })
 })

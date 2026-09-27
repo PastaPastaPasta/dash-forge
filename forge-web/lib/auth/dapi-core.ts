@@ -150,9 +150,17 @@ export interface BloomFilter {
   readonly flags: number
 }
 
-/** A filter holding `elements`, sized like Dash Core's CBloomFilter for `fpRate`. */
-export function bloomFilter(elements: readonly Uint8Array[], fpRate = 0.0001, tweak = crypto.getRandomValues(new Uint32Array(1))[0] as number): BloomFilter {
-  const n = Math.max(1, elements.length)
+/**
+ * A filter holding `elements`, sized like Dash Core's CBloomFilter for `capacity` elements
+ * (default: just these) at `fpRate`.
+ */
+export function bloomFilter(
+  elements: readonly Uint8Array[],
+  fpRate = 0.0001,
+  tweak = crypto.getRandomValues(new Uint32Array(1))[0] as number,
+  capacity = elements.length,
+): BloomFilter {
+  const n = Math.max(1, capacity, elements.length)
   const size = Math.max(1, Math.min(Math.floor((-1 / (Math.LN2 * Math.LN2)) * n * Math.log(fpRate) / 8), 36_000))
   const hashFuncs = Math.max(1, Math.min(Math.floor(((size * 8) / n) * Math.LN2), 50))
   const data = new Uint8Array(size)

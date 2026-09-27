@@ -524,34 +524,56 @@ export type WatchStart = number | { readonly startedAt: number }
 
 /** Blocks added to a rewind from a start time (2.5-minute target spacing). */
 const REWIND_MARGIN_BLOCKS = 50
+/** The deepest rewind, about a week: a longer replay would not reach the live feed. */
+const MAX_REWIND_BLOCKS = 4032
+/** Blocks subtracted from a recorded height: nodes' tips differ by a block or two. */
+const START_HEIGHT_MARGIN = 6
 
 /** The block to replay from: the recorded height, else far enough back to cover `startedAt`. */
 export async function watchFrom(dapi: DapiCore, start: WatchStart): Promise<number> {
-  if (typeof start === 'number') return start
+  if (typeof start === 'number') return Math.max(1, start - START_HEIGHT_MARGIN)
   const elapsedBlocks = Math.ceil(Math.max(0, Date.now() - start.startedAt) / 150_000)
-  return Math.max(1, (await dapi.bestHeight()) - elapsedBlocks - REWIND_MARGIN_BLOCKS)
+  return Math.max(1, (await dapi.bestHeight()) - Math.min(elapsedBlocks + REWIND_MARGIN_BLOCKS, MAX_REWIND_BLOCKS))
 }
 
 /**
- * What `address` holds (duffs): DAPI's history from `from`, else the explorer.
- * Throws when neither can say.
+ * A filter for `address`. With BLOOM_UPDATE_ALL the node inserts each matched outpoint, so
+ * one sized for the address hash alone would saturate after a match or two and stream every
+ * transaction; room for 50 elements keeps it under 150 bytes.
  */
-export async function depositHeld(ep: CoreEndpoints, address: string, from: WatchStart): Promise<number> {
+function addressFilter(address: string): ReturnType<typeof bloomFilter> {
+  return bloomFilter([addressHash(address)], 0.0001, undefined, 50)
+}
+
+/**
+ * What `address` holds (duffs): the larger of DAPI's confirmed history from `from` and the
+ * explorer's view. Throws when neither can say — and when only DAPI answered zero, since its
+ * history leaves out the mempool and an unconfirmed payment would read as empty.
+ */
+export async function depositHeld(ep: CoreEndpoints, address: string, from: WatchStart, timeoutMs = 60_000): Promise<number> {
   const dapi = dapiOf(ep)
+  let viaDapi: number | null = null
   if (dapi) {
     try {
       const height = await watchFrom(dapi, from)
       const tracker = new DepositTracker(address)
       const count = (await dapi.bestHeight()) - height + 1
-      for await (const txs of dapi.watch(bloomFilter([addressHash(address)]), height, { count: Math.max(1, count) })) {
+      const signal = AbortSignal.timeout(timeoutMs)
+      for await (const txs of dapi.watch(addressFilter(address), height, { count: Math.max(1, count), signal })) {
         for (const raw of txs) tracker.ingest(raw)
       }
-      return tracker.total
+      viaDapi = tracker.total
     } catch {
-      // fall through to the explorer
+      // unknown through DAPI; the explorer may still say
     }
   }
-  return (await getUtxos(ep, address)).reduce((s, u) => s + u.satoshis, 0)
+  const viaExplorer = await getUtxos(ep, address).then(
+    (u) => u.reduce((s, x) => s + x.satoshis, 0),
+    () => null,
+  )
+  if (viaExplorer !== null) return Math.max(viaExplorer, viaDapi ?? 0)
+  if (viaDapi !== null && viaDapi > 0) return viaDapi
+  throw new Error('could not check the deposit address (the network nodes see no confirmed payment and the block explorer is unreachable)')
 }
 
 /** How long the DAPI feed may be silent before the explorer is asked as well. */
@@ -588,10 +610,12 @@ export async function waitForDeposit(
       opts.signal?.addEventListener('abort', stop, { once: true })
       try {
         const height = await watchFrom(dapi, opts.from ?? { startedAt: Date.now() })
-        const feed = dapi.watch(bloomFilter([addressHash(address)]), height, { signal: run.signal })
+        const feed = dapi.watch(addressFilter(address), height, { signal: run.signal })
         // One read in flight at a time: an idle timeout asks the explorer, then keeps waiting
         // on the same read (a second next() would queue behind it and drop its batch).
         let pending = feed.next()
+        // Returning (or failing) aborts the fetch under a read still in flight: observe it.
+        pending.catch(() => undefined)
         for (;;) {
           let timer: ReturnType<typeof setTimeout> | undefined
           const idle = new Promise<'idle'>((r) => {
@@ -609,6 +633,7 @@ export async function waitForDeposit(
           opts.onSeen?.(tracker.total)
           if (tracker.total >= minDuffs) return tracker.utxos
           pending = feed.next()
+          pending.catch(() => undefined)
         }
       } catch (e) {
         if (isAbort(e) && opts.signal?.aborted) throw e
