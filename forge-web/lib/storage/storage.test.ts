@@ -416,7 +416,7 @@ describe('storeArtifact', () => {
       sdk: SDK,
       auth: AUTH,
       repo: priv,
-      pull: { id: 'P', number: 1, baseRefName: 'refs/heads/main' },
+      pull: { id: 'P', number: 1, baseRefName: 'refs/heads/main', openedBaseRefName: 'refs/heads/main' },
       input: { baseTip: base, headOid: head, prNumber: 1, sourceLabel: 'refs/heads/x', author: { name: 'n', email: 'e@x' }, headInBase: false },
       merge: async () => ({ kind: 'merge' as const, newTip: 'cc'.repeat(20), pack, packHash: 'dd'.repeat(32), objectCount: 1 }),
       upload,

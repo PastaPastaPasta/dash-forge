@@ -832,10 +832,13 @@ fn refuse_retargeted(view: &PatchView, number: u64) -> Result<()> {
         ),
     )
     .cause(format!(
-        "it was opened against {}; `dg pr merge` merges only into that base",
+        "it was opened against {}, and a merge counts only into that base, so a merge into the new one would never show",
         view.patch.base_ref_name
     ))
-    .fix("merge it by hand into the new base, then `dg pr merge --event-only --merge-oid <commit>`")
+    .fix(format!(
+        "close PR #{number} and open a new one against {} (`dg pr create --base <branch>`)",
+        safe(retargeted)
+    ))
     .into())
 }
 

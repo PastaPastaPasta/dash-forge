@@ -325,9 +325,10 @@ fn builds_on(v: &RefUpdate, u: &RefUpdate) -> bool {
 /// Within a block this is Kahn's topological sort with the smallest `id` picked first: take
 /// the smallest-`id` unplaced update that builds on no other unplaced update of the block;
 /// when there is none, every unplaced update waits on a cycle, so take the smallest-`id` one
-/// that lies on a cycle ([`on_cycle`]) — never one merely downstream of it, which would then
-/// sort before its own predecessor. Deterministic, total, the same in every client (parity:
-/// forge-web `causalOrder`); O(n²) in the block size without cycles.
+/// that waits on nothing outside its own cycle ([`cycle_to_break`]). An update is never
+/// placed before one it builds on unless that one builds back on it. Deterministic, total, the
+/// same in every client (parity: forge-web `causalOrder`); O(n²) in the block size, O(n²) more
+/// per cycle broken.
 fn causal_order(mut updates: Vec<&RefUpdate>) -> Vec<&RefUpdate> {
     updates.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
     let mut out = Vec::with_capacity(updates.len());
@@ -344,8 +345,7 @@ fn causal_order(mut updates: Vec<&RefUpdate>) -> Vec<&RefUpdate> {
             let unplaced = || (0..len).filter(|&i| !placed[i]);
             let next = unplaced()
                 .find(|&i| waiting[i] == 0)
-                .or_else(|| unplaced().find(|&i| on_cycle(block, &placed, i)))
-                .expect("every unplaced update waits, so one lies on a cycle");
+                .unwrap_or_else(|| cycle_to_break(block, &placed));
             placed[next] = true;
             out.push(block[next]);
             for v in 0..len {
@@ -358,26 +358,67 @@ fn causal_order(mut updates: Vec<&RefUpdate>) -> Vec<&RefUpdate> {
     out
 }
 
-/// Whether unplaced update `start` of `block` lies on a cycle of [`builds_on`] among the
-/// unplaced updates: it builds, through unplaced updates, on itself.
-fn on_cycle(block: &[&RefUpdate], placed: &[bool], start: usize) -> bool {
-    let mut seen = vec![false; block.len()];
-    let mut stack = vec![start];
-    while let Some(v) = stack.pop() {
-        for u in 0..block.len() {
-            if placed[u] || !builds_on(block[v], block[u]) {
+/// The update of `block` to place when every unplaced one waits on another: the smallest-index
+/// (so smallest-`id`) unplaced update all of whose unplaced predecessors (the updates it
+/// [`builds_on`]) build back on it — they share its strongly connected component, so it waits
+/// on nothing outside its own cycle. One exists: the components form a DAG, and every member
+/// of one that waits on no other qualifies.
+///
+/// Components by Tarjan's algorithm, iterative (no recursion depth to exhaust on a hostile
+/// block): O(n²) in the block size. Parity: forge-web `cycleToBreak`.
+fn cycle_to_break(block: &[&RefUpdate], placed: &[bool]) -> usize {
+    const NONE: usize = usize::MAX;
+    let n = block.len();
+    let edge = |v: usize, u: usize| !placed[u] && builds_on(block[v], block[u]);
+    let (mut index, mut low, mut comp) = (vec![NONE; n], vec![0; n], vec![NONE; n]);
+    let mut on_stack = vec![false; n];
+    let (mut stack, mut next_index, mut comps) = (Vec::new(), 0, 0);
+    for root in (0..n).filter(|&r| !placed[r]) {
+        if index[root] != NONE {
+            continue;
+        }
+        // (node, next neighbour to look at)
+        let mut call: Vec<(usize, usize)> = vec![(root, 0)];
+        index[root] = next_index;
+        low[root] = next_index;
+        next_index += 1;
+        stack.push(root);
+        on_stack[root] = true;
+        while let Some(&(v, from)) = call.last() {
+            let next = (from..n).find(|&u| edge(v, u) && (index[u] == NONE || on_stack[u]));
+            if let Some(u) = next {
+                call.last_mut().expect("v is on the call stack").1 = u + 1;
+                if index[u] == NONE {
+                    index[u] = next_index;
+                    low[u] = next_index;
+                    next_index += 1;
+                    stack.push(u);
+                    on_stack[u] = true;
+                    call.push((u, 0));
+                } else {
+                    low[v] = low[v].min(index[u]);
+                }
                 continue;
             }
-            if u == start {
-                return true;
+            call.pop();
+            if let Some(&(parent, _)) = call.last() {
+                low[parent] = low[parent].min(low[v]);
             }
-            if !seen[u] {
-                seen[u] = true;
-                stack.push(u);
+            if low[v] == index[v] {
+                while let Some(w) = stack.pop() {
+                    on_stack[w] = false;
+                    comp[w] = comps;
+                    if w == v {
+                        break;
+                    }
+                }
+                comps += 1;
             }
         }
     }
-    false
+    (0..n)
+        .find(|&v| !placed[v] && (0..n).all(|u| !edge(v, u) || comp[u] == comp[v]))
+        .expect("a component the others do not wait on has every member's predecessors inside")
 }
 
 /// Whether a ref name is legal to advertise on the git wire protocol.
@@ -2018,5 +2059,76 @@ mod tests {
             }
         }
         assert!(checked > 80_000);
+    }
+
+    /// The causal order's invariant, exhaustively over one-block histories of five updates on
+    /// four tips: an update is placed before one it builds on only when that one builds back
+    /// on it, through updates placed no earlier than the first (they share a cycle).
+    #[test]
+    fn causal_order_places_no_update_before_its_predecessor() {
+        const OIDS: [&str; 4] = ["A", "B", "C", "D"];
+        let pairs: Vec<(usize, usize)> = (0..4)
+            .flat_map(|p| (0..4).map(move |q| (p, q)))
+            .filter(|(p, q)| p != q)
+            .collect();
+        let mut checked = 0u32;
+        let mut code = [0usize; 5];
+        'all: loop {
+            let ups: Vec<RefUpdate> = code
+                .iter()
+                .enumerate()
+                .map(|(i, &c)| RefUpdate {
+                    id: ["a", "b", "c", "d", "e"][i].into(),
+                    ref_name_hash: "H".into(),
+                    ref_name: "refs/heads/main".into(),
+                    prev_oid: OIDS[pairs[c].0].into(),
+                    new_oid: OIDS[pairs[c].1].into(),
+                    force: false,
+                    protected: false,
+                    author: "a".into(),
+                    created_at: 100,
+                })
+                .collect();
+            let order = super::causal_order(ups.iter().collect());
+            let reaches = |from: usize, to: usize, within: usize| -> bool {
+                // `from` builds on `to` through updates at positions >= `within`
+                let mut seen = vec![false; order.len()];
+                let mut todo = vec![from];
+                while let Some(x) = todo.pop() {
+                    for y in within..order.len() {
+                        if !seen[y] && super::builds_on(order[x], order[y]) {
+                            if y == to {
+                                return true;
+                            }
+                            seen[y] = true;
+                            todo.push(y);
+                        }
+                    }
+                }
+                false
+            };
+            for u in 0..order.len() {
+                for v in u + 1..order.len() {
+                    if super::builds_on(order[u], order[v]) {
+                        assert!(
+                            reaches(v, u, u),
+                            "{:?} placed before its predecessor {:?} in {ups:?}",
+                            order[u].id,
+                            order[v].id
+                        );
+                    }
+                }
+            }
+            checked += 1;
+            for d in &mut code {
+                *d += 1;
+                if *d < pairs.len() {
+                    continue 'all;
+                }
+                *d = 0;
+            }
+            break;
+        }
+        assert_eq!(checked, 12u32.pow(5));
     }
 }

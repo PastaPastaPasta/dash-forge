@@ -83,7 +83,11 @@ export interface MergeRunDeps {
   readonly sdk: EvoSDK
   readonly auth: WriteAuth
   readonly repo: RepoRef
-  readonly pull: Pick<PullView, 'id' | 'number' | 'baseRefName'>
+  /**
+   * `baseRefName`: the base the merge moves (the PR's current one); `openedBaseRefName`: the
+   * base it was opened against, which the fold checks the merge against.
+   */
+  readonly pull: Pick<PullView, 'id' | 'number' | 'baseRefName'> & { readonly openedBaseRefName: string }
   readonly input: MergeInput
   /** Runs the merge and builds the pack (the worker). */
   readonly merge: (input: MergeInput, onPhase: (phase: 'analyse' | 'merge' | 'pack') => void) => Promise<MergeResult>
@@ -186,7 +190,7 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
   }
   // The base ref and head come from the PR document, which its author wrote: refuse anything
   // but an existing plain branch and a full commit id before a byte is paid for.
-  const refProblem = mergeRefProblem(deps.pull.baseRefName, deps.input.baseTip, deps.input.headOid)
+  const refProblem = mergeRefProblem(deps.pull.baseRefName, deps.input.baseTip, deps.input.headOid, deps.pull.openedBaseRefName)
   if (refProblem !== null) throw new MergeStopped(refProblem)
   let run: MergeRun = from
   const mark = (step: MergeStepId, patch: Partial<MergeRun> = {}, state: 'done' | 'skipped' = 'done', detail?: string): void => {
