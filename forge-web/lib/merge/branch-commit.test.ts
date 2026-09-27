@@ -54,6 +54,8 @@ describe('suggestion planning (parity with dg)', () => {
     expect(unapplicable(comment('two', null, 1, 1, HEAD, '```suggestion\na\n```\n```suggestion\nb\n```'), HEAD)).toBe('This comment holds 2 suggestion blocks: apply it by hand.')
     expect(unapplicable(comment('old', null, 1, 1, '4'.repeat(40), '```suggestion\ny\n```'), HEAD)).toMatch(/^Outdated/)
     expect(unapplicable(comment('left', null, 1, 0, HEAD, '```suggestion\ny\n```'), HEAD)).toBe('This suggestion is on the old side of the diff.')
+    const fileLevel: SuggestionComment = { id: 'f', author: 'rev', body: '```suggestion\ny\n```', anchor: { path: 'src/a.rs', line: null, startLine: null, side: null, commitOid: HEAD } }
+    expect(unapplicable(fileLevel, HEAD)).toBe('This suggestion is on a whole file, not on lines: apply it by hand.')
   })
 
   it("writes dg's trailers byte for byte", () => {

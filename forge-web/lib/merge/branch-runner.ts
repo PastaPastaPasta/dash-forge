@@ -53,10 +53,11 @@ export interface BranchRunDeps {
   /** The source branch's tip now, read fresh just before moving it. */
   readonly readBranchTip: () => Promise<string | null>
   /**
-   * The oids the new commit needs beyond the PR head that neither the pack nor the source repo
-   * can produce (empty: complete). Checked before anything is uploaded; null skips the check.
+   * The oids the new commit needs beyond the PR head that neither the pack nor the source repo's
+   * OWN reader can produce (empty: complete). Checked before anything is uploaded; required, as
+   * a branch must never move to objects nobody can fetch.
    */
-  readonly verifyPack: ((pack: Uint8Array, commit: string, have: string) => Promise<readonly string[]>) | null
+  readonly verifyPack: (pack: Uint8Array, commit: string, have: string) => Promise<readonly string[]>
   readonly intent: string
 }
 
@@ -83,6 +84,40 @@ export class BranchStopped extends Error {}
 
 const reasonOf = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
+/** Unfinished runs by action key, each with the very commit it was building. */
+export type BranchRuns = Map<string, { readonly run: BranchRun; readonly built: BranchCommit }>
+
+/**
+ * Run the action `key`: resume its unfinished run with the commit that run built (a rebuild
+ * would differ: its timestamp), or build a new commit. A step failure keeps the run under `key`
+ * (Retry resumes it; running another action meanwhile does not drop it); success or a stop
+ * drops it. `deps` is given the commit to run.
+ */
+export async function runKeyedBranchCommit(
+  runs: BranchRuns,
+  key: string,
+  build: () => Promise<BranchCommit>,
+  deps: (built: BranchCommit) => BranchRunDeps,
+  onBuilt: (built: BranchCommit) => void,
+  onStep: (e: BranchStepEvent) => void,
+): Promise<BranchCommit> {
+  const resume = runs.get(key)
+  let built: BranchCommit | null = resume?.built ?? null
+  try {
+    if (built === null) {
+      built = await build()
+      onBuilt(built)
+    }
+    await runBranchCommit(deps(built), resume?.run ?? null, onStep)
+    runs.delete(key)
+    return built
+  } catch (e) {
+    if (e instanceof BranchStepError && built !== null) runs.set(key, { run: e.run, built })
+    else runs.delete(key)
+    throw e
+  }
+}
+
 /** Run (or resume) the chain. */
 export async function runBranchCommit(deps: BranchRunDeps, from: BranchRun | null, onStep: (e: BranchStepEvent) => void): Promise<BranchRun> {
   if (deps.source.visibility !== 'public' || deps.repo.visibility !== 'public') {
@@ -104,9 +139,15 @@ export async function runBranchCommit(deps: BranchRunDeps, from: BranchRun | nul
     }
   }
 
-  if (!run.done.includes('upload') && deps.verifyPack !== null) {
-    const verify = deps.verifyPack
-    const missing = await attempt('upload', () => verify(built.pack.bytes, built.commit, deps.pull.headOid))
+  if (!run.done.includes('upload')) {
+    let missing: readonly string[]
+    onStep({ step: 'upload', state: 'running' })
+    try {
+      missing = await deps.verifyPack(built.pack.bytes, built.commit, deps.pull.headOid)
+    } catch (e) {
+      // Too large to walk here, or a read failed: retrying would walk the same history again.
+      throw new BranchStopped(`The commit's pack could not be checked complete (${reasonOf(e)}); nothing was written. Use the CLI (\`dg pr suggestion apply\`, \`dg pr update-branch\`).`)
+    }
     if (missing.length > 0) {
       throw new BranchStopped(
         `The commit's pack would leave ${missing.length} object(s) unfetchable (${missing

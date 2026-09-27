@@ -21,7 +21,7 @@ import { parseSuggestions } from '@/lib/rules/v2'
 import { parseCommit } from '@/lib/view/git-objects'
 import type { CommentView } from '@/lib/view'
 import type { SuggestionActions } from '@/components/repo/inline-comments'
-import { BRANCH_STEPS, BranchStepError, BranchStopped, runBranchCommit, type BranchRun, type BranchStepId } from '@/lib/merge/branch-runner'
+import { BRANCH_STEPS, BranchStepError, BranchStopped, runKeyedBranchCommit, type BranchRuns, type BranchStepId } from '@/lib/merge/branch-runner'
 import { publishMergeIndex } from '@/lib/merge/locator'
 import { missingFromClosure } from '@/lib/merge/verify'
 import { mergeIdentityValid } from '@/lib/view/prefs'
@@ -99,8 +99,9 @@ export function useBranchCommit({
   const [label, setLabel] = useState<string | null>(null)
   const [steps, setSteps] = useState<Partial<Record<BranchStepId | 'build', StepState>>>({})
   const [details, setDetails] = useState<Partial<Record<BranchStepId | 'build', string>>>({})
-  // The unfinished run of one action: kept on a step failure, dropped once it finishes or stops.
-  const saved = useRef<{ key: string; run: BranchRun; built: BranchCommit } | null>(null)
+  // Unfinished runs by action key: kept on a step failure (another action run meanwhile does not
+  // drop one), dropped once that action finishes or stops.
+  const saved = useRef<BranchRuns>(new Map())
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState<string | null>(null)
@@ -108,64 +109,67 @@ export function useBranchCommit({
   const run = useCallback(
     async (key: string, what: string, build: () => Promise<BranchCommit>): Promise<void> => {
       if (!sdk || !signer || source === null || pull.sourceRefName === null || busy) return
+      if (verifyReader === null) {
+        setLabel(what)
+        setError("The source repo's objects are still loading; try again in a moment.")
+        return
+      }
       if (!guard.check(branchCommitCost(isMember).credits, 'core')) return
       setBusy(true)
       setError(null)
       setDone(null)
       setLabel(what)
       begin()
-      const resume = saved.current !== null && saved.current.key === key ? saved.current : null
-      let built: BranchCommit | null = resume?.built ?? null
+      const refName = pull.sourceRefName
+      if (!saved.current.has(key)) {
+        setSteps({ build: 'running' })
+        setDetails({})
+      }
       try {
-        if (built === null) {
-          saved.current = null
-          setSteps({ build: 'running' })
-          setDetails({})
-          built = await build()
-          setSteps({ build: 'done' })
-          setDetails({ build: `${built.commit.slice(0, 9)}${built.files.length ? ` · ${built.files.join(', ')}` : ''}` })
-        }
-        const commit = built
-        const intent = `branch:${source.repoId}:${pull.number}:${commit.commit}`
-        const finished = await runBranchCommit(
-          {
-            sdk,
-            auth: signer,
-            repo,
-            source,
-            pull: { id: pull.id, number: pull.number, author: pull.author, headOid: pull.headOid, sourceRefName: pull.sourceRefName },
-            isMember,
-            built,
-            upload,
-            publishIndex:
-              upload === null
-                ? null
-                : async (pack, packHash) => {
-                    const r = await publishMergeIndex(sdk, signer, source, pack, packHash, upload, `${intent}:index`)
-                    return r.kind === 'published' ? `fragment at packRef ${r.packRef}` : `skipped: ${r.reason}`
-                  },
-            readBranchTip: () => readBranchTip(sdk, source, pull.sourceRefName as string),
-            verifyPack: verifyReader === null ? null : (pack, tip, have) => missingFromClosure(pack, tip, have, verifyReader),
-            intent,
+        const commit = await runKeyedBranchCommit(
+          saved.current,
+          key,
+          build,
+          (built) => {
+            const intent = `branch:${source.repoId}:${pull.number}:${built.commit}`
+            return {
+              sdk,
+              auth: signer,
+              repo,
+              source,
+              pull: { id: pull.id, number: pull.number, author: pull.author, headOid: pull.headOid, sourceRefName: refName },
+              isMember,
+              built,
+              upload,
+              publishIndex:
+                upload === null
+                  ? null
+                  : async (pack, packHash) => {
+                      const r = await publishMergeIndex(sdk, signer, source, pack, packHash, upload, `${intent}:index`)
+                      return r.kind === 'published' ? `fragment at packRef ${r.packRef}` : `skipped: ${r.reason}`
+                    },
+              readBranchTip: () => readBranchTip(sdk, source, refName),
+              verifyPack: (pack, tip, have) => missingFromClosure(pack, tip, have, verifyReader),
+              intent,
+            }
           },
-          resume?.run ?? null,
+          (built) => {
+            setSteps({ build: 'done' })
+            setDetails({ build: `${built.commit.slice(0, 9)}${built.files.length ? ` · ${built.files.join(', ')}` : ''}` })
+          },
           (e) => {
             setSteps((s) => ({ ...s, [e.step]: e.state }))
             if (e.detail) setDetails((d) => ({ ...d, [e.step]: e.detail }))
           },
         )
-        void finished
-        saved.current = null
         setDone(commit.commit)
         onDone(commit.commit)
       } catch (e) {
-        if (e instanceof BranchStepError && built !== null) {
-          // What landed so far, with the very commit it belongs to: Retry resumes from here.
-          saved.current = { key, run: e.run, built }
+        if (e instanceof BranchStepError) {
+          // What landed so far is kept with the very commit it belongs to: Retry resumes it.
           setSteps((s) => ({ ...s, [e.step]: 'failed' }))
           setError(e.message)
         } else if (e instanceof BranchStopped || e instanceof SuggestionRefused) {
-          saved.current = null
           setSteps((s) => (s.build === 'running' ? { ...s, build: 'failed' } : s))
           setError(e.message)
         } else {
@@ -277,6 +281,16 @@ export async function buildUpdateBranch(reader: ObjectReader, pull: PullView, ba
   }
 }
 
+/** A comment as the suggestion planner reads it. */
+function asSuggestion(c: CommentView): SuggestionComment {
+  return {
+    id: c.id,
+    author: c.author,
+    body: c.body,
+    anchor: c.anchor === null ? {} : { path: c.anchor.path, line: c.anchor.line, startLine: c.anchor.startLine, side: c.anchor.side, commitOid: c.anchor.commitOid },
+  }
+}
+
 /** The cost line under a branch commit button. */
 export function BranchCommitCost({ isMember, storage }: { isMember: boolean; storage: string }): JSX.Element {
   return (
@@ -352,21 +366,7 @@ export function useSuggestions({
     [pull.headOid, paths.join('\n'), headReader === null],
     { enabled: headReader !== null && paths.length > 0 },
   )
-  const asSuggestion = (c: CommentView): SuggestionComment => ({
-    id: c.id,
-    author: c.author,
-    body: c.body,
-    anchor: c.anchor === null ? {} : { path: c.anchor.path, line: c.anchor.line, startLine: c.anchor.startLine, side: c.anchor.side, commitOid: c.anchor.commitOid },
-  })
-  const original = (c: CommentView): readonly string[] | null => {
-    const a = c.anchor
-    if (a === null || a.line === null || a.side !== 1 || a.commitOid.toLowerCase() !== pull.headOid.toLowerCase()) return null
-    const text = texts.data?.get(a.path)
-    if (typeof text !== 'string') return null
-    const lines = text.replace(/\r\n/g, '\n').split('\n')
-    const start = a.startLine ?? a.line
-    return start >= 1 && a.line <= lines.length ? lines.slice(start - 1, a.line) : null
-  }
+  const texts_ = texts.data
   const privateRepo = repo.visibility === 'private' || target?.visibility === 'private'
   const why = !signedIn
     ? 'Sign in to apply suggestions.'
@@ -381,29 +381,46 @@ export function useSuggestions({
           : who === null
             ? 'Set your commit name and email in Settings to apply suggestions.'
             : null
-  const canApply = signedIn && !privateRepo && pull.state.open && write.can && who !== null && headReader !== null && !runner.busy
-  const apply = (ids: readonly string[]): void => {
+  const canApply = signedIn && !privateRepo && pull.state.open && write.can && who !== null && headReader !== null && headOnly !== null && !runner.busy
+  // Apply reads the latest reader, identity and suggestions through a ref: the actions object
+  // below stays the same between renders unless what it shows changes (the diff's lines are
+  // re-rendered only then).
+  const applyRef = useRef<(ids: readonly string[]) => void>(() => undefined)
+  applyRef.current = (ids) => {
     if (headReader === null || who === null || sdk === null) return
     const chosen = suggestive.filter((c) => ids.includes(c.id)).map(asSuggestion)
     const key = `suggest:${pull.headOid}:${chosen.map((c) => c.id).sort().join(',')}`
     void runner.run(key, `Apply ${chosen.length} suggestion${chosen.length === 1 ? '' : 's'}`, () => buildSuggestionCommit(sdk, network, headReader, pull.headOid, chosen, who))
   }
-  const actions: SuggestionActions = {
-    canApply,
-    why,
-    original,
-    unapplicable: (c) => unapplicable(asSuggestion(c), pull.headOid),
-    applied,
-    batch,
-    onToggleBatch: (c) =>
-      setBatch((b) => {
-        const next = new Set(b)
-        if (next.has(c.id)) next.delete(c.id)
-        else next.add(c.id)
-        return next
-      }),
-    onApply: (c) => apply([c.id]),
-  }
+  const headOid = pull.headOid
+  const actions = useMemo<SuggestionActions>(
+    () => ({
+      canApply,
+      why,
+      original: (c) => {
+        const a = c.anchor
+        if (a === null || a.line === null || a.side !== 1 || a.commitOid.toLowerCase() !== headOid.toLowerCase()) return null
+        const text = texts_?.get(a.path)
+        if (typeof text !== 'string') return null
+        const lines = text.replace(/\r\n/g, '\n').split('\n')
+        const start = a.startLine ?? a.line
+        return start >= 1 && a.line <= lines.length ? lines.slice(start - 1, a.line) : null
+      },
+      unapplicable: (c) => unapplicable(asSuggestion(c), headOid),
+      applied,
+      batch,
+      onToggleBatch: (c) =>
+        setBatch((b) => {
+          const next = new Set(b)
+          if (next.has(c.id)) next.delete(c.id)
+          else next.add(c.id)
+          return next
+        }),
+      onApply: (c) => applyRef.current([c.id]),
+    }),
+    [canApply, why, headOid, texts_, applied, batch],
+  )
+  const apply = (ids: readonly string[]): void => applyRef.current(ids)
   const bar =
     batch.size === 0 ? null : (
       <div className="sticky bottom-3 z-20 flex flex-wrap items-center gap-3 rounded-lg border border-forge-500/50 bg-white px-4 py-2 shadow-lg dark:bg-anvil-950" data-testid="suggestion-batch">

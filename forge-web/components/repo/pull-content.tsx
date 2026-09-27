@@ -781,7 +781,7 @@ function PullPage({
                             size="sm"
                             variant="outline"
                             loading={suggest.runner.busy}
-                            disabled={headReader === null || guard.disabledReason !== null}
+                            disabled={headReader === null || comparison.headOnly === null || guard.disabledReason !== null}
                             onClick={() => {
                               const who = suggest.who
                               if (headReader !== null && who !== null) void suggest.runner.run(`update:${pull.headOid}:${baseTipOid}`, 'Update branch', () => buildUpdateBranch(headReader, pull, baseTipOid, who))

@@ -73,15 +73,17 @@ export function planSuggestion(c: SuggestionComment, head: string): PlannedSugge
  */
 export function unapplicable(c: SuggestionComment, head: string): string | null {
   const a = anchorOf(c.anchor)
-  if (a !== null && a.line !== null && a.side === 1 && a.commitOid.toLowerCase() === head.toLowerCase()) {
-    const n = parseSuggestions(c.body).length
-    if (n > 1) return `This comment holds ${n} suggestion blocks: apply it by hand.`
-  }
+  if (a === null) return 'This suggestion is not on a line of the diff.'
+  if (a.line === null || a.side === null) return 'This suggestion is on a whole file, not on lines: apply it by hand.'
+  if (a.side !== 1) return 'This suggestion is on the old side of the diff.'
+  if (a.commitOid.toLowerCase() !== head.toLowerCase()) return "Outdated: this suggestion is not on the current head's lines."
+  const n = parseSuggestions(c.body).length
+  if (n > 1) return `This comment holds ${n} suggestion blocks: apply it by hand.`
   try {
     planSuggestion(c, head)
     return null
-  } catch {
-    return a !== null && a.side === 0 ? 'This suggestion is on the old side of the diff.' : "Outdated: this suggestion is not on the current head's lines."
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e)
   }
 }
 
