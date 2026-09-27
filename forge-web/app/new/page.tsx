@@ -201,7 +201,9 @@ export default function NewRepoPage(): JSX.Element {
           </span>
           <div>
             <h1 className="text-xl">Forge a new repo</h1>
-            <p className="text-dense text-anvil-500 dark:text-anvil-400">Three documents on {ACTIVE_NETWORK.key}, owned by your identity.</p>
+            <p className="text-dense text-anvil-500 dark:text-anvil-400">
+              {isPrivate ? 'Four' : 'Three'} documents on {ACTIVE_NETWORK.key}, owned by your identity.
+            </p>
           </div>
         </div>
 
