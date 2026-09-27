@@ -96,6 +96,8 @@ export interface PrivateSession {
   readonly anchors: ReadonlyMap<number, AnchorInfo>
   /** Every epoch number on any config or wrap of the repo (new epochs go above all of them). */
   readonly seenEpochs: readonly number[]
+  /** Every `config` of the repo (anchor what-ifs: who would anchor an epoch without someone). */
+  readonly configRows: readonly ConfigRow[]
   /** `repoKey` and `config` documents under an epoch no anchor recognises. */
   readonly unanchoredDocs: number
   /** Public keys of the members, by base58 identity (null: the identity could not be read). */
@@ -363,6 +365,7 @@ export async function loadPrivateSession(input: {
     memberKeys,
     suspectManifests: new Set(),
     seenEpochs: [...new Set([...configRows, ...wraps.map((w) => w.row)].map((r) => r.epoch))],
+    configRows,
     loadedAt: Date.now(),
     close: () => undefined,
     get closed() {

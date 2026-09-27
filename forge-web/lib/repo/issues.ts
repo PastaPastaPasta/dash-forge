@@ -38,10 +38,12 @@ import {
   str,
   toEvent,
   type RepoRef,
+  repoKey,
 } from './contract'
 import { readConfigHistory } from './config'
 import { publicRefKey, readRefUpdates } from './refs'
 import { HiddenTally, admitAll, gateFor, type HiddenCounts } from './private-content'
+import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
 import { base64ToHex, hexToBase64 } from '../sdk'
 
@@ -253,7 +255,18 @@ const writes = new Map<string, number>()
 const listeners = new Set<() => void>()
 
 const feedKey = (repo: RepoRef): string => `${repo.forge.collab}:${repo.repoId}`
-const listKey = (repo: RepoRef, type: 'issue' | 'patch'): string => `${feedKey(repo)}:${type}`
+/**
+ * The key of a repo's cached pages: a private repo's hold decrypted titles and bodies, so they are
+ * keyed by the reader's session too (`repoKey`) and go with it (below).
+ */
+const pageKey = (repo: RepoRef): string => `${repo.forge.collab}:${repoKey(repo)}`
+const listKey = (repo: RepoRef, type: 'issue' | 'patch'): string => `${pageKey(repo)}:${type}`
+
+onPrivateSessionEnded((id) => {
+  for (const m of [feedCache, listCache, settledLists] as Map<string, unknown>[]) {
+    for (const k of [...m.keys()]) if (k.includes(`#${id}`)) m.delete(k)
+  }
+})
 
 function changed(repo: RepoRef, counters: readonly Map<string, number>[]): void {
   const key = feedKey(repo)
@@ -263,7 +276,7 @@ function changed(repo: RepoRef, counters: readonly Map<string, number>[]): void 
 
 /** {@link readRepoFeed} through a short per-repo cache (issues and pulls pages share it). */
 function readRepoFeedCached(sdk: EvoSDK, repo: RepoRef): Promise<Map<string, TargetLog> | null> {
-  return ttlCached(feedCache, feedKey(repo), () => readRepoFeed(sdk, repo))
+  return ttlCached(feedCache, pageKey(repo), () => readRepoFeed(sdk, repo))
 }
 
 /**
@@ -273,13 +286,13 @@ function readRepoFeedCached(sdk: EvoSDK, repo: RepoRef): Promise<Map<string, Tar
  * ({@link subscribeRepoLists}) are told, and the repo header refolds.
  */
 export function invalidateRepoFeed(repo: RepoRef, { counts = true }: { counts?: boolean } = {}): void {
-  feedCache.delete(feedKey(repo))
-  for (const type of ['issue', 'patch'] as const) listCache.delete(listKey(repo, type))
+  // Every session's pages of this repo (a write is visible to all of them).
+  const prefix = `${repo.forge.collab}:${repo.repoId}`
+  const ofRepo = (k: string): boolean => k === prefix || k.startsWith(`${prefix}:`) || k.startsWith(`${prefix}#`)
+  for (const k of [...feedCache.keys()]) if (ofRepo(k)) feedCache.delete(k)
+  for (const k of [...listCache.keys()]) if (ofRepo(k)) listCache.delete(k)
   if (!counts) return
-  for (const type of ['issue', 'patch'] as const) {
-    const settled = settledLists.get(listKey(repo, type))
-    if (settled !== undefined) settled.at = 0
-  }
+  for (const [k, settled] of settledLists) if (ofRepo(k)) settled.at = 0
   changed(repo, [writes, versions])
 }
 

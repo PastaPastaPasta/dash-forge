@@ -246,7 +246,7 @@ function NewReleaseDialog({
         {repo.visibility === 'private' ? (
           <p role="note" className="flex items-start gap-1.5 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px] text-anvil-700 dark:text-anvil-200" data-testid="release-plaintext-note">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-caution" aria-hidden />
-            Release notes and labels are not encrypted in this release: anyone can read the tag, title and notes, and attached files are uploaded unencrypted where anyone can download them.
+            Release notes and labels are not encrypted in this release: anyone can read the tag, title and notes. Assets can&apos;t be attached to a private repo&apos;s release, because they would be uploaded unencrypted.
           </p>
         ) : null}
         <Field label="Tag" htmlFor="release-tag" hint="The git tag this release is for, e.g. v1.2.0 (push the tag with git; publishing does not create it).">
@@ -264,6 +264,7 @@ function NewReleaseDialog({
         <Field label="Notes (optional)" htmlFor="release-notes" hint="Markdown supported.">
           <Textarea id="release-notes" value={notes} onChange={(e) => setNotes(e.target.value)} disabled={locked} />
         </Field>
+        {repo.visibility === 'private' ? null : (
         <div className="space-y-1.5">
           <label htmlFor="release-assets" className="flex items-center gap-1.5 text-dense font-medium text-anvil-700 dark:text-anvil-200">
             <FilePlus2 className="h-3.5 w-3.5" aria-hidden /> Assets (optional)
@@ -303,6 +304,7 @@ function NewReleaseDialog({
             </ul>
           ) : null}
         </div>
+        )}
         <CostPreview cost={cost} />
         <p id="release-problem" className="text-[12px] text-caution-700 dark:text-caution">
           {shownProblem ?? ''}

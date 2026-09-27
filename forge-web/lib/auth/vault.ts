@@ -603,7 +603,10 @@ export function onVaultLock(listener: () => void): () => void {
 }
 
 function setUnlocked(network: Network, secret: VaultSecret, blobKeys: BlobKeys | null = null): void {
+  // Another identity (or network) takes over: the previous one's private-repo sessions end.
+  const switched = unlocked !== null && (unlocked.network !== network || unlocked.secret.identityId !== secret.identityId)
   unlocked = { network, secret, at: Date.now(), blobKeys }
+  if (switched) notifyEncryptionKeyChange()
   if (lockTimer) clearTimeout(lockTimer)
   lockTimer = setTimeout(lockVault, AUTO_LOCK_MS)
 }

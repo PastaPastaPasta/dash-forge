@@ -40,17 +40,24 @@ export class SuspectPackError extends Error {
 
 /** Throw unless the copy's standing lets it be read; record a suspect upload on the session. */
 function assertStanding(session: PrivateSession, copy: PackManifest, headerEpoch: number): void {
-  let owner: Uint8Array
-  try {
-    owner = privateId(copy.uploader)
-  } catch {
-    throw new SuspectPackError(copy.packHash)
+  // Every copy names the same sealed bytes: the pack is read if ANY copy qualifies (a current
+  // member attesting the bytes makes them readable whoever else uploaded them; parity with
+  // forge-core `open_artifact_of`). A manifest with no block height cannot be judged (§8.1): it
+  // never qualifies.
+  let readable = false
+  for (const m of copy.copies ?? [copy]) {
+    if (m.createdAtBlockHeight === undefined || m.createdAtBlockHeight <= 0) continue
+    let owner: Uint8Array
+    try {
+      owner = privateId(m.uploader)
+    } catch {
+      continue
+    }
+    const standing = manifestStanding(session.resolution, headerEpoch, m.createdAtBlockHeight, owner)
+    if (standing.suspect) session.suspectManifests.add(m.documentId)
+    readable ||= standing.readable
   }
-  // A manifest with no block height cannot be placed: judged as if written last (never early).
-  const height = copy.createdAtBlockHeight ?? Number.MAX_SAFE_INTEGER
-  const standing = manifestStanding(session.resolution, headerEpoch, height, owner)
-  if (standing.suspect) session.suspectManifests.add(copy.documentId)
-  if (!standing.readable) throw new SuspectPackError(copy.packHash)
+  if (!readable) throw new SuspectPackError(copy.packHash)
 }
 
 /**

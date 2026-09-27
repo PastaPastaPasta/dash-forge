@@ -105,12 +105,14 @@ vi.mock('../sdk/facade', async (orig) => ({ ...(await orig<typeof import('../sdk
 let members: Membership[] = []
 /** What a lagging node answers for the member list (null: the truth). */
 let staleMembers: Membership[] | null = null
+/** One-off answers for the next member-list reads, in order (a node per read). */
+const readQueue: Membership[][] = []
 
 vi.mock('./members', async (orig) => {
   const real = await orig<typeof import('./members')>()
   return {
     ...real,
-    readMemberships: async () => staleMembers ?? members,
+    readMemberships: async () => readQueue.shift() ?? staleMembers ?? members,
     invalidateMembers: () => undefined,
   }
 })
@@ -202,6 +204,7 @@ beforeEach(async () => {
   hidden.clear()
   for (const k of Object.keys(unconfirm)) delete unconfirm[k]
   staleMembers = null
+  readQueue.length = 0
   members = [
     { identity: b58(ALICE), role: 'maintainer', createdAt: 1 },
     { identity: b58(BOB), role: 'writer', createdAt: 2 },
@@ -222,24 +225,64 @@ async function aliceSession() {
 }
 
 describe('rotation retries', () => {
-  it('a retry whose read lags its own self-wrap still anchors the key of that self-wrap', async () => {
+  it('a retry whose read lags its own self-wrap never anchors a key it cannot read', async () => {
     // Attempt 1: the self-wrap lands but reads do not show it yet, and the call errors out.
     unconfirm['repoKey'] = 1
     await expect(rotateRepoKey(ctx, [b58(CAROL)], 'intent-1')).rejects.toThrow()
     // Attempt 2 (a fresh confirm: a new intent). Its read still misses the self-wrap, so it
-    // draws another key; posting it hits the standing self-wrap, which must win.
-    await expect(rotateRepoKey(ctx, [b58(CAROL)], 'intent-2')).resolves.toBe(1)
+    // draws another key; posting it hits the standing self-wrap. It must not go on under either
+    // key from a read that missed its own wraps: it stops, and nothing else is written.
+    const wrapsBefore = (chain['repoKey'] ?? []).length
+    await expect(rotateRepoKey(ctx, [b58(CAROL)], 'intent-2')).rejects.toThrow(/already wrapped epoch 1/)
+    expect((chain['repoKey'] ?? []).length).toBe(wrapsBefore)
+    expect((chain['config'] ?? []).length).toBe(1)
+    // Attempt 3 reads everything (the refusal proved the row). A removal never resumes: a fresh
+    // epoch above the pending one, whose wraps (like epoch 1's) never reach CAROL.
+    await expect(rotateRepoKey(ctx, [b58(CAROL)], 'intent-3')).resolves.toBe(2)
     hidden.clear()
     const s = await aliceSession()
-    expect(s.resolution.currentEpoch).toBe(1)
+    expect(s.resolution.currentEpoch).toBe(2)
     // ALICE can read the epoch she anchored: her self-wrap and the anchor carry the same key.
-    expect(s.resolution.writeEpoch).toBe(1)
+    expect(s.resolution.writeEpoch).toBe(2)
     expect(s.resolution.alerts).toEqual([])
-    // BOB's wrap carries the anchored key too; CAROL got nothing for epoch 1.
+    // BOB's wrap carries the anchored key too; CAROL got nothing for epoch 1 or 2.
+    const e2 = (chain['repoKey'] ?? []).filter((d) => d['epoch'] === 2)
+    expect(new Set(e2.map((d) => d['wrapped'])).size).toBe(1)
+    expect((chain['repoKey'] ?? []).some((d) => (d['epoch'] as number) >= 1 && d['memberId'] === b58(CAROL))).toBe(false)
+  })
+})
+
+describe('keys never reach a removed member', () => {
+  it('an earlier run that wrapped a now-removed member is never anchored, even from a read that missed it', async () => {
+    // A crashed rotation to epoch 1 wrapped ALICE and CAROL, but reads miss both wraps.
+    const leakedKey = new Uint8Array(32).fill(0x55)
+    wrap(ALICE, ALICE, 1, leakedKey)
+    wrap(ALICE, CAROL, 1, leakedKey)
     const e1 = (chain['repoKey'] ?? []).filter((d) => d['epoch'] === 1)
-    const commits = new Set(e1.map((d) => d['wrapped']))
-    expect(commits.size).toBe(1)
-    expect(e1.some((d) => d['memberId'] === b58(CAROL))).toBe(false)
+    for (const d of e1) hidden.add(String(d['$id']))
+    // CAROL is removed; the rotation's read does not see epoch 1 at all.
+    members = members.filter((m) => m.identity !== b58(CAROL))
+    // The rotation's read misses epoch 1, picks it, and hits its own standing self-wrap: it stops.
+    await expect(rotateRepoKey(ctx, [b58(CAROL)], 'rm-1')).rejects.toThrow(/already wrapped epoch 1/)
+    // The next run sees that self-wrap but still misses CAROL's wrap. It removes someone, so it
+    // never resumes epoch 1: it takes a fresh one above it.
+    await expect(rotateRepoKey(ctx, [b58(CAROL)], 'rm-2')).resolves.toBe(2)
+    hidden.clear()
+    const s = await aliceSession()
+    expect(s.resolution.currentEpoch).toBe(2)
+    expect(s.resolution.anchors.has(1)).toBe(false)
+    expect((chain['repoKey'] ?? []).some((d) => d['epoch'] === 2 && d['memberId'] === b58(CAROL))).toBe(false)
+  })
+
+  it('no key goes out while the member list still changes between reads', async () => {
+    // Two nodes: the session's read comes from one that still lists CAROL, the re-read from one
+    // that does not. The settle check sees the difference and refuses before any wrap.
+    const lagging = [...members]
+    members = members.filter((m) => m.identity !== b58(CAROL))
+    readQueue.push(lagging)
+    const wrapsBefore = (chain['repoKey'] ?? []).length
+    await expect(rotateRepoKey(ctx, [], 'flip')).rejects.toThrow(/member list is still changing/)
+    expect((chain['repoKey'] ?? []).length).toBe(wrapsBefore)
   })
 })
 

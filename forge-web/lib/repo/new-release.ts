@@ -53,6 +53,9 @@ function fits(field: string, s: string, limit: { chars: number; bytes: number })
 }
 
 /** Why `tag` cannot name a release, or null (git's `check-ref-format` rules for a tag). */
+/** Why a private repo's release takes no assets (parity with `dg release`). */
+export const PRIVATE_ASSETS_REFUSED = 'release assets cannot be attached to a private repo: they would be uploaded unencrypted'
+
 export function tagProblem(tag: string): string | null {
   if (tag === '') return 'a tag is needed (e.g. v1.0.0)'
   const size = fits('a tag', tag, RELEASE_LIMITS.tagName)
@@ -213,6 +216,10 @@ export async function publishRelease(
   storage: { readonly policy: StoragePolicy | null; readonly profiles: readonly StorageProfile[] },
   onEvent?: (e: PublishEvent) => void,
 ): Promise<{ readonly release: WriteResult; readonly assets: readonly ReleaseAsset[] }> {
+  // A private repo's release assets would be uploaded unencrypted: refused, as `dg release` does.
+  if (repo.visibility === 'private' && (input.files.length > 0 || (input.stored?.length ?? 0) > 0)) {
+    throw new Error(PRIVATE_ASSETS_REFUSED)
+  }
   const problem =
     tagProblem(input.tagName) ??
     releaseTextProblem(input) ??

@@ -397,6 +397,11 @@ describe('sealed artifacts on the browse plane', () => {
     // A current member's upload under the old key is flagged but still read.
     const own = await manifest(sealedBytes, BOB, 150)
     await expect(openPrivateArtifact(s, own, sealedBytes)).resolves.toHaveLength(100)
+    // The late copy is readable once any copy of the same bytes qualifies (a member re-uploaded).
+    await expect(openPrivateArtifact(s, { ...late, copies: [late, own] }, sealedBytes)).resolves.toHaveLength(100)
+    // A copy with no block height never qualifies, whoever uploaded it.
+    const { createdAtBlockHeight: _h, ...noHeight } = own
+    await expect(openPrivateArtifact(s, noHeight, sealedBytes)).rejects.toThrow(/old key/)
   })
 })
 
@@ -419,11 +424,16 @@ describe('rotation and repair planning', () => {
     // A rotation to epoch 1 stopped after the self-wrap and BOB's wrap.
     w.wraps.push(wrapDoc(ALICE, ALICE, 1, 50), wrapDoc(ALICE, BOB, 1, 51))
     const s = await sessionFor(w, ALICE)
-    const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4)
+    // A repair rotation (nobody excluded) resumes it: its self-wrap is the journal.
+    const plan = planRotation(s, b58(ALICE), [], FORGE.core, 4)
     expect(plan.epoch).toBe(1)
     expect(plan.resume?.row.epoch).toBe(1)
     expect(plan.recipients.filter((r) => !r.done).map((r) => r.identity)).toEqual([])
     expect(plan.writes).toBe(1) // just the anchor
+    // A rotation that removes someone never resumes (a lagging read could hide a wrap to them).
+    const removing = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4)
+    expect(removing.resume).toBeNull()
+    expect(removing.epoch).toBe(2)
   })
 
   it('only resumes a self-wrap to the key this browser holds', async () => {
