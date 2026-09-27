@@ -91,17 +91,25 @@ async function freshSession(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef): Promis
  * the current epoch cannot be written under ({@link writeBlockReason}).
  */
 export async function privateWriter(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef): Promise<PrivateWriter> {
+  const { writer, session } = await privateWriterWithSession(sdk, auth, repo)
+  session.close()
+  return writer
+}
+
+/**
+ * {@link privateWriter}, keeping its fresh session open for reads the action compares against
+ * what it writes (a review submit's reconcile opens content under the epoch it seals with).
+ * The caller closes the session.
+ */
+export async function privateWriterWithSession(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef): Promise<{ writer: PrivateWriter; session: PrivateSession }> {
   const s = await freshSession(sdk, auth, repo)
-  try {
-    const r = s.resolution
-    const keys = r.writeEpoch === null ? undefined : r.keys.get(r.writeEpoch)
-    if (keys === undefined) {
-      throw new PrivateWriteError(writeBlockReason(r) as string, r.currentEpoch !== null && !r.keys.has(r.currentEpoch) ? 'E307' : 'E310')
-    }
-    return { keys, protectedPatterns: s.config?.protectedPatterns ?? [] }
-  } finally {
+  const r = s.resolution
+  const keys = r.writeEpoch === null ? undefined : r.keys.get(r.writeEpoch)
+  if (keys === undefined) {
     s.close()
+    throw new PrivateWriteError(writeBlockReason(r) as string, r.currentEpoch !== null && !r.keys.has(r.currentEpoch) ? 'E307' : 'E310')
   }
+  return { writer: { keys, protectedPatterns: s.config?.protectedPatterns ?? [] }, session: s }
 }
 
 /** The keys of the patch's own epoch `epoch` (a PR edit keeps its epoch, §4.5): readable, anchored, not burned. */

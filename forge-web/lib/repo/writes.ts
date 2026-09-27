@@ -883,9 +883,13 @@ export async function createRepo(
   const visibility: Visibility = input.visibility ?? 'public'
   // Refused before anything is written: a private repo nobody can hold a key for, or whose
   // epoch-0 key would be wrapped to a key this browser does not hold (§5.2: writers use the
-  // identity's highest usable encryption key).
+  // identity's highest usable encryption key). A resumed create is settled by its epoch-0
+  // step instead (it resumes with its own standing self-wrap, whatever key that went to).
+  const resumed = (await idbGet<RepoCreationJournal>('journal', key))?.repoId != null
   if (visibility === 'private') {
     if (privateCreate === undefined) throw new Error('cannot create a private repository: add your encryption key to this browser first (Settings → Keys)')
+  }
+  if (visibility === 'private' && !resumed && privateCreate !== undefined) {
     const current = usableEncryptionKey((await fetchIdentityKeys(sdk, ownerId)) ?? [], forge.core)
     if (current === null) throw new Error('cannot create a private repository: your identity has no encryption key')
     if (current.keyId !== privateCreate.ops.keyId) {

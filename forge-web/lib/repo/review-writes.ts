@@ -33,7 +33,8 @@ import { DOC, asIdentifierString, byteFieldToHex, num, str, type RepoRef } from 
 import { invalidateRepoFeed, readReviews } from './issues'
 import { repoSource } from './source'
 import { admitAll, gateFor } from './private-content'
-import { privateWriter } from './private-writes'
+import { privateWriterWithSession, type PrivateWriter } from './private-writes'
+import type { PrivateSession } from './private-session'
 import { EVENT_KIND_CODE, VERDICT_INT, contractFor, eventRoute, refusePlaintextInPrivate, writeRepoDoc, type VerdictInput, type WriteTarget } from './writes'
 
 export { EVENT_KIND_CODE, eventRoute }
@@ -248,14 +249,23 @@ const memoryDrafts = new Map<string, ReviewDraft>()
 
 export async function loadReviewDraft(network: string, identity: string, prId: string): Promise<ReviewDraft | undefined> {
   const key = reviewDraftKey(network, identity, prId)
-  return memoryDrafts.get(key) ?? idbGet<ReviewDraft>('journal', key)
+  const memory = memoryDrafts.get(key)
+  if (memory !== undefined) return memory
+  const stored = await idbGet<ReviewDraft>('journal', key)
+  // A private draft never belongs in IndexedDB (one from an earlier build is dropped).
+  if (stored?.private === true) {
+    await idbDelete('journal', key)
+    return undefined
+  }
+  return stored
 }
 
-export function saveReviewDraft(draft: ReviewDraft): Promise<void> {
+/** Keep a draft: in memory for a private repo (`repo`, or the draft's own flag), else IndexedDB. */
+export function saveReviewDraft(draft: ReviewDraft, repo?: RepoRef): Promise<void> {
   const key = reviewDraftKey(draft.network, draft.identity, draft.prId)
-  if (draft.private === true) {
-    memoryDrafts.set(key, draft)
-    return Promise.resolve()
+  if (draft.private === true || repo?.visibility === 'private') {
+    memoryDrafts.set(key, { ...draft, private: true })
+    return idbDelete('journal', key)
   }
   return idbPut('journal', key, draft)
 }
@@ -415,16 +425,36 @@ export async function submitReviewDraft(
   repo: RepoRef,
   draft: ReviewDraft,
   onProgress?: (p: SubmitProgress) => void,
-  reads: SubmitReads = chainReads(sdk, repo, draft.prId),
+  reads?: SubmitReads,
 ): Promise<SubmittedReview> {
   if (draft.identity !== auth.identityId) throw new Error('this pending review belongs to another identity')
   // A private repo: the reconcile reads the draft's landed comments decrypted, which needs the
   // reader's session (without it none would match and each would be posted again).
   if (repo.visibility === 'private' && repo.session === undefined) throw new Error("a private repo's review is submitted by a member reading it with their key")
   // One writer (one fresh key read) for the review and all its comments.
-  const writer = repo.visibility === 'private' ? await privateWriter(sdk, auth, repo) : undefined
+  const fresh = repo.visibility === 'private' ? await privateWriterWithSession(sdk, auth, repo) : undefined
+  try {
+    return await submitWith(sdk, auth, repo, draft, fresh, onProgress, reads)
+  } finally {
+    fresh?.session.close()
+  }
+}
+
+async function submitWith(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  draft: ReviewDraft,
+  fresh: { writer: PrivateWriter; session: PrivateSession } | undefined,
+  onProgress?: (p: SubmitProgress) => void,
+  reads?: SubmitReads,
+): Promise<SubmittedReview> {
+  const writer = fresh?.writer
   if (repo.visibility === 'private' && draft.private !== true) draft = { ...draft, private: true }
-  let current: ReviewDraft = await reconcileReviewDraft(draft, reads)
+  // The reconcile reads through the writer's fresh session: a comment an earlier attempt sealed
+  // under a newer epoch than the page's session knows still opens, and is not posted again.
+  const chain = reads ?? chainReads(sdk, fresh ? { ...repo, session: fresh.session } : repo, draft.prId)
+  let current: ReviewDraft = await reconcileReviewDraft(draft, chain)
   if (current.attemptedAt === undefined) current = { ...current, attemptedAt: Date.now() }
   // Saved before the first write, so a crash after it leaves a draft that reconciles.
   if (current !== draft) await saveReviewDraft(current)

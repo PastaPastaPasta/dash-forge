@@ -409,6 +409,24 @@ describe('private create, correctness review', () => {
     const s = await loadPrivateSession({ repo: ref, network: 'devnet', reader: b58(ALICE), source: sdkSessionSource(sdk, ref), unwrapper: sessionUnwrapper(ops) })
     expect(s.resolution.writeEpoch).toBe(0)
   })
+
+  it('a create resumed after the owner added a newer key finishes with the key its self-wrap went to', async () => {
+    await createRepo(sdk, auth, FORGE, { name: 'newer', visibility: 'private' }, undefined, {
+      ops,
+      epochZero: async () => {
+        throw new Error('tab closed')
+      },
+    }).catch(() => undefined)
+    const repoId = String(chain['repo']?.[0]?.['$id'])
+    wrap(ALICE, ALICE, 0, K0)
+    chain['repoKey']![chain['repoKey']!.length - 1]!['repoId'] = repoId
+    members = [{ identity: b58(ALICE), role: 'maintainer', createdAt: 1 }]
+    identityKeys = [encKey(), encKey(5)]
+    await createRepo(sdk, auth, FORGE, { name: 'newer', visibility: 'private' }, undefined, { ops, epochZero: createEpochZero })
+    const ref: RepoRef = { forge: FORGE, repoId, ownerId: b58(ALICE), name: 'newer', visibility: 'private' }
+    const s = await loadPrivateSession({ repo: ref, network: 'devnet', reader: b58(ALICE), source: sdkSessionSource(sdk, ref), unwrapper: sessionUnwrapper(ops) })
+    expect(s.resolution.writeEpoch).toBe(0)
+  })
 })
 
 describe('security review of the sealed writes', () => {
@@ -447,10 +465,33 @@ describe('security review of the sealed writes', () => {
     expect(chain['repo']).toBeUndefined()
   })
 
+  it('a review resumed after a rotation reconciles through a fresh session: landed comments are not re-posted', async () => {
+    const { submitReviewDraft } = await import('./review-writes')
+    await createPatch(sdk, auth, REPO_REF, { title: 'p', body: '', baseRefName: 'refs/heads/main', sourceRepoId: b58(REPO), sourceRefName: 'refs/heads/x', headOid: 'cd'.repeat(20) })
+    const prId = String(chain['patch']?.[0]?.['$id'])
+    const stale = await session()
+    // A rotation to epoch 1; the first attempt lands the review and one comment under it, then stops.
+    const k1 = await EpochKeys.import(REPO, 1, K1)
+    await anchor(ALICE, k1, { defaultBranch: 'main', protectedPatterns: ['refs/heads/main'], prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
+    wrap(ALICE, ALICE, 1, K1)
+    const draft = {
+      draftId: 'dr', network: 'devnet', identity: b58(ALICE), repoId: b58(REPO), prId, headOid: 'cd'.repeat(20), verdict: 'comment' as const, summary: 's', startedAt: 1,
+      comments: [{ localId: 'a', anchor: { path: 'f', line: 1, side: 1 as const }, body: 'one' }],
+    }
+    await submitReviewDraft(sdk, auth, { ...REPO_REF, session: stale }, draft)
+    expect(chain['comment']).toHaveLength(1)
+    // The draft was lost locally (a closed tab) but has an attempt on record: resubmitting with
+    // the page's stale (epoch-0) session must adopt what landed, not post it again.
+    await submitReviewDraft(sdk, auth, { ...REPO_REF, session: stale }, { ...draft, attemptedAt: 0 })
+    expect(chain['comment']).toHaveLength(1)
+    expect(chain['review']).toHaveLength(1)
+  })
+
   it('a private review draft is never written to this browser’s storage', async () => {
     const { saveReviewDraft, loadReviewDraft } = await import('./review-writes')
-    const draft = { draftId: 'd', network: 'devnet', identity: b58(ALICE), repoId: b58(REPO), prId: 'P', headOid: 'ab'.repeat(20), verdict: 'comment' as const, summary: 'secret summary', startedAt: 1, comments: [], private: true }
-    await saveReviewDraft(draft)
+    // No flag: the repo's visibility decides.
+    const draft = { draftId: 'd', network: 'devnet', identity: b58(ALICE), repoId: b58(REPO), prId: 'P', headOid: 'ab'.repeat(20), verdict: 'comment' as const, summary: 'secret summary', startedAt: 1, comments: [] }
+    await saveReviewDraft(draft, REPO_REF)
     const { idbEntries } = await import('../idb')
     expect(JSON.stringify(await idbEntries('journal'))).not.toContain('secret summary')
     expect((await loadReviewDraft('devnet', b58(ALICE), 'P'))?.summary).toBe('secret summary')

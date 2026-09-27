@@ -58,7 +58,10 @@ export async function storeAndRecordPack(
   const sealed = await sealArtifact(sdk, auth, repo, bytes)
   const stored = await storeArtifact(sdk, auth, repo, sealed, opts)
   const { packHash, sizeBytes, chunkCount, storage, uris } = stored
-  const manifest = await writePackManifest(sdk, auth, repo, { ...meta, packHash, sizeBytes, chunkCount, storage, uris }, opts.intent)
+  // The manifest's intent names the stored bytes: a retry that re-sealed (after a rotation) must
+  // record its own pack, never replay the record of the earlier seal.
+  const intent = opts.intent !== undefined && repo.visibility === 'private' ? `${opts.intent}:${packHash}` : opts.intent
+  const manifest = await writePackManifest(sdk, auth, repo, { ...meta, packHash, sizeBytes, chunkCount, storage, uris }, intent)
   // Recorded: the kept sealed bytes of a private upload are no longer needed for a resume.
   await forgetSealedArtifact(auth, repo, sealed)
   return { stored, manifest }

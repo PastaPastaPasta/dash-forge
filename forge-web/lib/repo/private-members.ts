@@ -755,15 +755,16 @@ export async function createEpochZero(c: PrivateWriteContext, defaultBranch: str
     const session: PrivateSession = { ...read, memberKeys: new Map([...read.memberKeys, [c.auth.identityId, own]]) }
     const selfKey = usableEncryptionKey(own ?? [], c.repo.forge.core)
     if (selfKey === null) throw new PrivateMembersError('your identity has no usable encryption key', 'E306')
-    // The self-wrap goes to the identity's newest encryption key (§5.2): it must be the one this
-    // browser holds, or the repo would be created unreadable to its own owner.
-    if (selfKey.keyId !== c.ops.keyId) {
-      throw new PrivateMembersError(`your identity's current encryption key is key ${selfKey.keyId}, but this browser holds key ${c.ops.keyId}; add key ${selfKey.keyId} here (Settings → Keys)`, 'E306')
-    }
-    // Resume: our own epoch-0 self-wrap, if it landed, is the key; else a fresh one.
+    // Resume: our own epoch-0 self-wrap, if it landed, is the key (to whatever key of ours it
+    // went, as long as this browser holds it); else a fresh one, wrapped to the identity's newest
+    // encryption key (§5.2), which must be the one this browser holds, or the repo would be
+    // created unreadable to its own owner.
     const pending = pendingSelfWrap(session, c.auth.identityId, 0)
     if (pending !== null && pending.row.recipientKeyId !== c.ops.keyId) throw notHeldKey(0, pending.row.recipientKeyId)
-    const k0 = await ownEpochKey(c, session, { identity: c.auth.identityId, keyId: selfKey.keyId }, 0, intent)
+    if (pending === null && selfKey.keyId !== c.ops.keyId) {
+      throw new PrivateMembersError(`your identity's current encryption key is key ${selfKey.keyId}, but this browser holds key ${c.ops.keyId}; add key ${selfKey.keyId} here (Settings → Keys)`, 'E306')
+    }
+    const k0 = await ownEpochKey(c, session, { identity: c.auth.identityId, keyId: pending?.row.recipientKeyId ?? selfKey.keyId }, 0, intent)
     try {
       const fields = { defaultBranch: shortBranch(defaultBranch), protectedPatterns: [] as string[] }
       const enc = await sealDoc(k0.keys, { type: 'config', ownerId: decodeIdentifier(c.auth.identityId), epoch: 0 }, fields, { anchor: true })
