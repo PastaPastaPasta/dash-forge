@@ -228,8 +228,10 @@ const DEFAULT_ADMISSION_FACTOR: Admission = { budget: 2, balance: 5 }
  * DASH, and a tag-only push to 0.00066. Earlier copy said ~0.0003, the manifest-plus-ref estimate
  * without the per-document base fees (ledger D-009/D-010).
  *
- * PLACEHOLDER: moutai moved to beta.5 on 2026-09-27, which changes fees. This keeps the beta.4
- * figure until the calibrated beta.5 per-push cost (P-6) replaces it here, the only place.
+ * On beta.5 (2026-09-27, the G7 quick-start walkthrough) a 3-object push to S3 storage was
+ * charged 0.0021 DASH, consistent with this figure.
+ *
+ * PLACEHOLDER until the calibrated beta.5 per-push cost (P-6) replaces it here, the only place.
  */
 export const BYO_PUSH_DASH = 0.003
 

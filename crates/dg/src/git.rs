@@ -41,12 +41,26 @@ pub fn dash_env(ctx: &Ctx) -> Vec<(String, String)> {
 /// Pin `dg`'s network in the repository at `root` (its own git config) unless its git config
 /// already resolves it. A `dash://` repository lives on one network, so its clone keeps
 /// using that network in a shell without `DASH_FORGE_NETWORK` and after `dg auth` saves
-/// another default. Returns what it set, as `key=value` (the DAPI list as its key only).
+/// another default. Only the repository's own (`--local`) config counts as pinned: a global
+/// `dash.network` (what the E702 and doctor fixes suggest) can change later. Returns what it
+/// set, as `key=value` (the DAPI list as its key only).
 pub fn pin_network(ctx: &Ctx, root: &Path) -> Result<Vec<String>> {
-    let set = |k: &str, v: &str| git(root, &["config", k, v], &[]).map(drop);
+    pin_network_with(ctx, root, &[])
+}
+
+/// [`pin_network`] with extra environment for every `git` it runs (tests: an isolated global
+/// config).
+fn pin_network_with(ctx: &Ctx, root: &Path, env: &[(String, String)]) -> Result<Vec<String>> {
+    let set = |k: &str, v: &str| git(root, &["config", "--local", k, v], env).map(drop);
     let want = ctx.network();
-    let git_config = || NetworkSettings::from_git_config(|k| config_get(root, k));
-    let pinned = || git_config().resolve().is_ok_and(|t| t.network == *want);
+    let local = || {
+        NetworkSettings::from_git_config(|k| {
+            git(root, &["config", "--local", "--get", k], env)
+                .ok()
+                .filter(|v| !v.is_empty())
+        })
+    };
+    let pinned = || local().resolve().is_ok_and(|t| t.network == *want);
     let mut out = Vec::new();
     if !pinned() {
         for (k, v) in want.selection(GIT_NETWORK_KEYS) {
@@ -70,7 +84,7 @@ pub fn pin_network(ctx: &Ctx, root: &Path) -> Result<Vec<String>> {
             }
         }
     }
-    let helper = NetworkSettings::from_env().overlay(git_config());
+    let helper = NetworkSettings::from_env().overlay(local());
     if !helper.resolve().is_ok_and(|t| t.network == *want) {
         tracing::warn!(
             "git may still resolve another network: DASH_FORGE_NETWORK and friends in the environment override git config"
@@ -446,19 +460,35 @@ mod tests {
     #[test]
     fn a_clone_is_pinned_to_dgs_network_once() {
         // L-21: `dg repo clone` (and `dg init`) record the network in the repository, so a
-        // later `git push` there needs neither DASH_FORGE_NETWORK nor dg's config.
+        // later `git push` there needs neither DASH_FORGE_NETWORK nor dg's config. A global
+        // dash.network (the E702 / doctor fix) must not count: it can change later.
         let dir = tempfile::tempdir().unwrap();
-        git(dir.path(), &["init", "-q"], &[]).unwrap();
+        let global = dir.path().join("global.gitconfig");
+        std::fs::write(
+            &global,
+            "[dash]\n\tnetwork = devnet\n\tdevnetName = moutai\n",
+        )
+        .unwrap();
+        let env = [
+            (
+                "GIT_CONFIG_GLOBAL".to_string(),
+                global.display().to_string(),
+            ),
+            ("GIT_CONFIG_NOSYSTEM".to_string(), "1".to_string()),
+        ];
+        let repo = dir.path().join("repo");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q"], &env).unwrap();
         let ctx = Ctx::scripted(true, true, false, None); // devnet moutai
-        let set = pin_network(&ctx, dir.path()).unwrap();
-        assert_eq!(set[..2], ["dash.network=devnet", "dash.devnetName=moutai"]);
-        let get = |k: &str| git(dir.path(), &["config", "--get", k], &[]).unwrap();
+        let set = pin_network_with(&ctx, &repo, &env).unwrap();
+        assert_eq!(set, ["dash.network=devnet", "dash.devnetName=moutai"]);
+        let get = |k: &str| git(&repo, &["config", "--local", "--get", k], &env).unwrap();
         assert_eq!(
             (get("dash.network"), get("dash.devnetName")),
             ("devnet".into(), "moutai".into())
         );
         assert!(
-            pin_network(&ctx, dir.path()).unwrap().is_empty(),
+            pin_network_with(&ctx, &repo, &env).unwrap().is_empty(),
             "already pinned"
         );
     }

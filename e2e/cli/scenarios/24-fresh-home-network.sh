@@ -60,9 +60,11 @@ new_home() { # new_home <dir>
 fresh() { # fresh <home dir> <cmd…>
   local h="$1"; shift
   ( export HOME="$h/home" XDG_CONFIG_HOME="$h/xdg" XDG_STATE_HOME="$h/state" \
-      GIT_CONFIG_GLOBAL="$h/gitconfig" GIT_CONFIG_NOSYSTEM=1 DASH_FORGE_NO_KEYCHAIN=1 \
-      DASH_FORGE_PASSPHRASE="e2e-${RUN_ID}-s23" NO_COLOR=1 RUST_LOG=error
-    unset DASH_FORGE_KEY DASH_FORGE_NETWORK DASH_FORGE_DEVNET_NAME DASH_FORGE_DAPI_ADDRESSES DASH_FORGE_QUORUM_URL
+      GIT_CONFIG_GLOBAL="$h/gitconfig" GIT_CONFIG_NOSYSTEM=1 NO_COLOR=1 RUST_LOG=error
+    # Nothing of the caller's Forge setup leaks in (network, key, storage config, …).
+    # shellcheck disable=SC2046
+    unset $(compgen -v DASH_FORGE_)
+    export DASH_FORGE_NO_KEYCHAIN=1 DASH_FORGE_PASSPHRASE="e2e-${RUN_ID}-s23"
     "$@" )
 }
 # `run <out> <err> <home> [dir] -- <cmd…>`: one attempt in <home> (and <dir>), its output
@@ -82,7 +84,7 @@ NAME="${NAME:0:63}"
 REMOTE="dash://${OWNER}/${NAME}"
 
 step "0. L-33: a fresh dg doctor warns, and exits 0"
-fresh "$H" _tmo "$DG" --json doctor >"$LOG-doctor0.json" 2>"$LOG-doctor0.err"
+run "$LOG-doctor0.json" "$LOG-doctor0.err" "$H" "$H/home" -- _tmo "$DG" --json doctor
 check "exits 0" assert_eq "0" "$?"
 ROW='[c for s in d["sections"] for c in s["checks"] if s["name"] == "network"][0]'
 check "network row: no network chosen yet" \
@@ -91,7 +93,8 @@ check "its fix is dg auth new on a deployed network" \
   assert_contains "$(jq_py "$LOG-doctor0.json" "${ROW}[\"fix\"]")" "dg auth new --network devnet --devnet-name"
 
 step "1. dg auth login records the network"
-if _retry "$LOG-login.err" run "$LOG-login.json" "$LOG-login.err" "$H" -- _tmo "$DG" --yes --json \
+# A write (it registers a key): run once, never retried.
+if run "$LOG-login.json" "$LOG-login.err" "$H" -- _tmo "$DG" --yes --json \
      --network devnet --devnet-name "$DEVNET" auth login "$FRESH" --budget 0.05 --expires 1d; then
   ok "signed in"
 else

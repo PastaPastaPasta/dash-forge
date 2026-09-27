@@ -162,6 +162,8 @@ impl Helper {
     /// content), so that is loaded and checked here.
     async fn ensure_conn(&mut self) -> Result<&Conn> {
         if self.conn.is_none() {
+            // No forge-v2 here: E702 now, not after connecting to a network with nothing on it.
+            self.target.require_v2()?;
             let client = PlatformClient::connect(self.target.clone())
                 .await
                 .with_context(|| {

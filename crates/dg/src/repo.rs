@@ -72,6 +72,14 @@ fn clone(ctx: &Ctx, repo: &str, dir: Option<&Path>) -> Result<()> {
     ctx.target.require_v2()?;
     let url = format!("dash://{owner}/{}", repo_ref.name);
     let dest = dir.unwrap_or_else(|| Path::new(clone_dir_name(&repo_ref.name)));
+    // git refuses a non-empty destination; say so here, where --json can show it.
+    if !clone_dest_usable(dest) {
+        return Err(crate::errors::usage(format!(
+            "{} already exists and is not an empty directory: pass another directory \
+             (`dg repo clone {repo} <dir>`)",
+            dest.display()
+        )));
+    }
     let (_report_dir, report) = Report::new()?;
     let mut cmd = Command::new("git");
     cmd.arg("clone")
@@ -80,19 +88,46 @@ fn clone(ctx: &Ctx, repo: &str, dir: Option<&Path>) -> Result<()> {
         .envs(crate::git::dash_env(ctx))
         .envs(report.env())
         .stdin(Stdio::null());
-    if ctx.json {
-        cmd.stdout(Stdio::null()).stderr(Stdio::null());
-    }
-    let status = cmd.status().context("running git clone")?;
+    // Under --json git's own words (`fatal: …`) are captured for the cause; otherwise they
+    // go to the terminal as with a plain `git clone`.
+    let (status, stderr) = if ctx.json {
+        let out = cmd
+            .stdout(Stdio::null())
+            .output()
+            .context("running git clone")?;
+        (
+            out.status,
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    } else {
+        (cmd.status().context("running git clone")?, String::new())
+    };
     if !status.success() {
-        let (code, cause) = Report::helper_error(&report.events(), ctx.json)
-            .unwrap_or((codes::UNEXPECTED, format!("git clone exited with {status}")));
+        let (code, cause) = Report::helper_error(&report.events(), ctx.json).unwrap_or_else(|| {
+            let git_said = last_fatal_line(&stderr)
+                .map_or_else(|| format!("git clone exited with {status}"), str::to_string);
+            (codes::UNEXPECTED, git_said)
+        });
         return Err(UserError::new(code, format!("could not clone {url}"))
             .cause(cause)
             .fix("fix what the clone reported, then run the same command again")
             .into());
     }
-    let pinned = crate::git::pin_network(ctx, dest)?;
+    let pinned = crate::git::pin_network(ctx, dest).map_err(|e| {
+        UserError::new(
+            codes::GIT_REPO,
+            format!(
+                "cloned into {}, but recording the network failed",
+                dest.display()
+            ),
+        )
+        .cause(format!("{e:#}"))
+        .fix(format!(
+            "in {}: `{}`",
+            dest.display(),
+            ctx.network().git_config_command("")
+        ))
+    })?;
     let (shown, network) = (dest.display(), ctx.network_label());
     ctx.emit(
         json!({
@@ -112,6 +147,22 @@ fn clone(ctx: &Ctx, repo: &str, dir: Option<&Path>) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// Whether `git clone` can use `dest`: it does not exist, or is an empty directory.
+fn clone_dest_usable(dest: &Path) -> bool {
+    match std::fs::read_dir(dest) {
+        Ok(mut entries) => entries.next().is_none(),
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    }
+}
+
+/// git's last `fatal: …` line in `stderr`, without the prefix.
+fn last_fatal_line(stderr: &str) -> Option<&str> {
+    stderr
+        .lines()
+        .rev()
+        .find_map(|l| l.trim().strip_prefix("fatal: "))
 }
 
 /// The directory `git clone` would make for a repository called `name` (its name without a
@@ -451,4 +502,29 @@ async fn backend_set(ctx: &Ctx, repo: &str, mode: u8, label: &str) -> Result<()>
         },
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_clone_destination_must_be_missing_or_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(clone_dest_usable(&dir.path().join("new")));
+        assert!(clone_dest_usable(dir.path()), "an empty directory");
+        std::fs::write(dir.path().join("f"), "x").unwrap();
+        assert!(!clone_dest_usable(dir.path()), "not empty");
+        assert!(!clone_dest_usable(&dir.path().join("f")), "a file");
+    }
+
+    #[test]
+    fn the_cause_is_gits_last_fatal_line() {
+        let err = "Cloning into 'p'...\nwarning: x\nfatal: could not create work tree dir 'p': Permission denied\n";
+        assert_eq!(
+            last_fatal_line(err),
+            Some("could not create work tree dir 'p': Permission denied")
+        );
+        assert_eq!(last_fatal_line("Cloning into 'p'...\n"), None);
+    }
 }
