@@ -467,8 +467,20 @@ impl Keyring {
     /// earlier configs (from a past maintainer role) would count again, and may come first.
     #[must_use]
     pub fn maintainer_would_move_anchors(&self, who: [u8; 32]) -> Option<u32> {
-        let after = self.resolution_if(who, true);
         let before = &self.resolution;
+        // A config of theirs above the current epoch is invisible now (above the contiguous
+        // run) but becomes the anchor as soon as an honest rotation fills the epochs below it.
+        if let Some(e) = self
+            .rows
+            .configs
+            .iter()
+            .filter(|c| c.owner == who && before.current_epoch.is_none_or(|n| c.epoch > n))
+            .map(|c| c.epoch)
+            .min()
+        {
+            return Some(e);
+        }
+        let after = self.resolution_if(who, true);
         if after.current_epoch != before.current_epoch {
             return Some(match (before.current_epoch, after.current_epoch) {
                 (Some(b), Some(a)) => b.min(a) + 1,
@@ -1359,7 +1371,10 @@ pub async fn rotate(
 /// Post `anchor` (the commit point), then wait for a proved read that lists the epoch's configs
 /// and return the owner of its anchor (`select_anchors` orders by `($createdAtBlockHeight, raw
 /// $id)` among current maintainers). A resumed run may post a second anchor with the same key;
-/// the first is still this signer's.
+/// the first is still this signer's. When our anchor made room for a current maintainer's
+/// **pre-posted** config of the next epoch (a lower block height than ours), that config is now
+/// the next epoch's anchor under a key nobody was handed through this rotation: refuse, naming
+/// its author.
 async fn anchor_and_confirm(
     signer: &PrivateSigner<'_>,
     w: &WriteCtx,
@@ -1375,6 +1390,29 @@ async fn anchor_and_confirm(
     for attempt in 0..ANCHOR_POLLS {
         let now = Keyring::load_with(&io, repo, &signer.identity.id(), &w.enc).await?;
         if let Some(a) = now.resolution.anchors.get(&anchor.epoch) {
+            let preempted = anchor
+                .epoch
+                .checked_add(1)
+                .and_then(|next| now.resolution.anchors.get(&next))
+                .filter(|n| a.owner == w.me && n.height < a.height);
+            if let Some(n) = preempted {
+                return Err(UserError::new(
+                    codes::ROTATION_PENDING,
+                    format!(
+                        "key epoch {} of {} was pre-empted by {}",
+                        anchor.epoch + 1,
+                        repo.display(),
+                        platform::encode_identifier(n.owner)
+                    ),
+                )
+                .cause(format!(
+                    "they posted a config for epoch {} before this rotation anchored epoch {}; it now counts as that epoch's anchor",
+                    anchor.epoch + 1,
+                    anchor.epoch
+                ))
+                .fix("ask them, or remove them as a maintainer and rotate; `dg repo keys status` shows the epochs")
+                .into());
+            }
             return Ok(a.owner);
         }
         if attempt + 1 < ANCHOR_POLLS {
@@ -1414,20 +1452,26 @@ pub struct Reanchor {
     /// Epochs re-anchored under the same key, chain link and burned flag.
     pub reanchored: Vec<u32>,
     /// Epochs that stop existing with the removal (§5.3 contiguity): the leaving maintainer
-    /// anchored the lowest of them, nobody else can read it, and nothing readable sits above
-    /// it. The next rotation takes the lowest number again.
+    /// anchored every one of them, no maintainer who stays wrote or received a wrap for them,
+    /// and nothing readable sits above them. The next rotation takes the lowest number again.
     pub dropped: Vec<u32>,
+    /// Members who stay and hold a wrap for a dropped epoch: content under it becomes
+    /// unreadable to them too.
+    pub losing: Vec<String>,
 }
 
 /// Which of `leaving`'s anchors a remover re-anchors, and the epochs that go (pure; §5.3):
 /// `Ok((reanchor, top))` where `top` is the current epoch once `leaving` is gone. `leaving`'s
-/// lowest unreadable epoch and everything above it are dropped, but only when nothing above it
-/// is readable. `Err(e)` when the removal needs a maintainer who can read epoch `e`: `leaving`
-/// anchored `e` below a readable epoch (dropping it would drop readable ones too), or `e` is the
-/// surviving current epoch and the remover cannot chain the removal's rotation from it
-/// (`None`: nothing would survive at all). Refused before anything is written.
+/// lowest unreadable epoch and everything above it are dropped, but only when `leaving`
+/// anchored all of them, nothing above it is readable to the remover, and no maintainer who
+/// stays wrote or received a wrap for any of them (`rows`: wrap rows are public, so this needs
+/// no keys; a remover whose own wrap lags must not drop an epoch another maintainer holds).
+/// `Err(e)` when the removal needs a maintainer who can read epoch `e`: dropping it is not
+/// allowed, or `e` is the surviving current epoch and the remover cannot chain the removal's
+/// rotation from it (`None`: nothing would survive at all). Refused before anything is written.
 fn reanchor_plan(
     res: &EpochResolution,
+    rows: &Rows,
     leaving: [u8; 32],
 ) -> std::result::Result<(Vec<u32>, Option<u32>), Option<u32>> {
     let Some(current) = res.current_epoch else {
@@ -1440,9 +1484,24 @@ fn reanchor_plan(
         .map(|(&e, _)| e)
         .collect();
     let lost = theirs.iter().copied().find(|e| !res.keys.contains_key(e));
+    let staying: BTreeSet<[u8; 32]> = rows
+        .members
+        .iter()
+        .filter(|m| m.role == Role::Maintainer && m.identity != leaving)
+        .map(|m| m.identity)
+        .collect();
+    let droppable = |u: u32| {
+        !res.keys.keys().any(|&r| r > u)
+            && (u..=current).all(|e| res.anchors.get(&e).is_some_and(|a| a.owner == leaving))
+            && !rows.wraps.iter().any(|w| {
+                w.epoch >= u
+                    && w.epoch <= current
+                    && (staying.contains(&w.owner) || staying.contains(&w.member_id))
+            })
+    };
     let top = match lost {
         None => current,
-        Some(u) if res.keys.keys().any(|&r| r > u) => return Err(Some(u)),
+        Some(u) if !droppable(u) => return Err(Some(u)),
         // nothing would be left to chain a rotation from
         Some(0) => return Err(None),
         Some(u) => u - 1,
@@ -1513,13 +1572,26 @@ pub async fn reanchor_before_removal(
     }
     let before = &w.kr.resolution;
     let (theirs, top) =
-        reanchor_plan(before, leaving).map_err(|e| unremovable(repo, leaving, e))?;
+        reanchor_plan(before, &w.kr.rows, leaving).map_err(|e| unremovable(repo, leaving, e))?;
     let Some(top) = top else {
         return Ok(Reanchor::default());
     };
+    let dropped: Vec<u32> = (top + 1..=before.current_epoch.unwrap_or(top)).collect();
+    let losing: BTreeSet<[u8; 32]> =
+        w.kr.rows
+            .wraps
+            .iter()
+            .filter(|x| dropped.contains(&x.epoch) && x.member_id != leaving)
+            .filter(|x| w.kr.rows.members.iter().any(|m| m.identity == x.member_id))
+            .map(|x| x.member_id)
+            .collect();
     let mut out = Reanchor {
         reanchored: Vec::new(),
-        dropped: (top + 1..=before.current_epoch.unwrap_or(top)).collect(),
+        dropped,
+        losing: losing
+            .into_iter()
+            .map(platform::encode_identifier)
+            .collect(),
     };
     let cfg = w.kr.config();
     for epoch in theirs {
@@ -1594,7 +1666,11 @@ fn unremovable(repo: &RepoRef, leaving: [u8; 32], epoch: Option<u32>) -> Error {
         codes::ROTATION_PENDING,
         format!("removing {who} from {} needs a maintainer who can read {what}", repo.display()),
     )
-    .cause("you cannot read it: either they anchored it and it would stop existing with every epoch above it, or it stays current and the removal's rotation must chain from it")
+    .cause("you cannot read it: either it would stop existing with every epoch above it while another maintainer, or an epoch above it, still holds it, or it stays current and the removal's rotation must chain from it")
+    .fix(format!(
+        "or ask a maintainer who holds it to run `dg repo keys repair {}` (it wraps the key to you), then try again",
+        repo.display()
+    ))
     .fix(format!(
         "ask a maintainer who holds that epoch to run `dg collab remove {} {who} --role maintainer`",
         repo.display()
@@ -1883,6 +1959,14 @@ mod tests {
             self
         }
 
+        fn rows(&self) -> Rows {
+            Rows {
+                members: self.members.clone(),
+                configs: self.configs.clone(),
+                wraps: self.wraps.clone(),
+            }
+        }
+
         fn keyring(&self, reader: [u8; 32]) -> Keyring {
             let resolution = resolve_epochs(
                 &self.repo_id,
@@ -1903,11 +1987,7 @@ mod tests {
                 wraps: Vec::new(),
                 ctx: resolution.open_context(&self.repo_id),
                 resolution,
-                rows: Rows {
-                    members: self.members.clone(),
-                    configs: self.configs.clone(),
-                    wraps: self.wraps.clone(),
-                },
+                rows: self.rows(),
                 config: PrivateConfig::default(),
                 unreadable_wraps: Vec::new(),
             }
@@ -1992,21 +2072,24 @@ mod tests {
         f.config(DAVE, 3, 13, Some(12), 40, false);
         let before = f.keyring(ALICE).resolution;
         assert_eq!(before.current_epoch, Some(3));
-        assert_eq!(reanchor_plan(&before, DAVE), Ok((vec![], Some(2))));
+        assert_eq!(
+            reanchor_plan(&before, &f.rows(), DAVE),
+            Ok((vec![], Some(2)))
+        );
         // an epoch 4 chaining from it makes it readable through the chain: re-anchored
         let mut g = three_epochs(&members);
         g.config(DAVE, 3, 13, Some(12), 40, false)
             .config(ALICE, 4, 14, Some(13), 50, false)
             .wrap(ALICE, ALICE, 4, 14);
         assert_eq!(
-            reanchor_plan(&g.keyring(ALICE).resolution, DAVE),
+            reanchor_plan(&g.keyring(ALICE).resolution, &g.rows(), DAVE),
             Ok((vec![3], Some(4)))
         );
         // unreadable (4's link to it is broken) with a readable epoch above: cannot be dropped
         f.config(ALICE, 4, 14, Some(0x55), 50, false)
             .wrap(ALICE, ALICE, 4, 14);
         let before = f.keyring(ALICE).resolution;
-        assert_eq!(reanchor_plan(&before, DAVE), Err(Some(3)));
+        assert_eq!(reanchor_plan(&before, &f.rows(), DAVE), Err(Some(3)));
         // carol anchored epoch 3 (unreadable to alice), dave epoch 4: 3 survives as current and
         // alice cannot rotate from it, so she cannot remove dave (refused before any write)
         let carol = [3; 32];
@@ -2018,7 +2101,7 @@ mod tests {
         h.config(carol, 3, 13, Some(12), 40, false)
             .config(DAVE, 4, 14, Some(13), 50, false);
         assert_eq!(
-            reanchor_plan(&h.keyring(ALICE).resolution, DAVE),
+            reanchor_plan(&h.keyring(ALICE).resolution, &h.rows(), DAVE),
             Err(Some(3))
         );
         // dave's readable anchors are re-anchored
@@ -2031,7 +2114,57 @@ mod tests {
             g
         };
         let before = f.keyring(ALICE).resolution;
-        assert_eq!(reanchor_plan(&before, DAVE), Ok((vec![1], Some(2))));
+        assert_eq!(
+            reanchor_plan(&before, &f.rows(), DAVE),
+            Ok((vec![1], Some(2)))
+        );
+    }
+
+    #[test]
+    fn an_epoch_a_staying_maintainer_holds_is_never_dropped() {
+        let carol = [3; 32];
+        let members = [
+            (ALICE, Role::Maintainer),
+            (DAVE, Role::Maintainer),
+            (carol, Role::Maintainer),
+        ];
+        // dave anchored epoch 3; alice's wrap for it lags, carol's does not
+        let mut f = three_epochs(&members);
+        f.config(DAVE, 3, 13, Some(12), 40, false);
+        f.wraps.push(WrapRow {
+            key: None,
+            ..f.wraps[0].clone()
+        });
+        let last = f.wraps.len() - 1;
+        f.wraps[last].epoch = 3;
+        f.wraps[last].owner = DAVE;
+        f.wraps[last].member_id = carol;
+        assert_eq!(
+            reanchor_plan(&f.keyring(ALICE).resolution, &f.rows(), DAVE),
+            Err(Some(3))
+        );
+        // a wrap for it only to a writer who stays: dropped, and they are named
+        f.wraps[last].member_id = BOB;
+        f.members.push(MemberRow {
+            identity: BOB,
+            role: Role::Writer,
+            created_at: 1,
+        });
+        assert_eq!(
+            reanchor_plan(&f.keyring(ALICE).resolution, &f.rows(), DAVE),
+            Ok((vec![], Some(2)))
+        );
+    }
+
+    #[test]
+    fn a_regranted_maintainers_preposted_future_config_refuses_the_grant() {
+        let members = [(ALICE, Role::Maintainer), (BOB, Role::Writer)];
+        let mut f = three_epochs(&members);
+        // dave, a past maintainer, pre-posted epoch 4: above the gap at 3, invisible today
+        f.config(DAVE, 4, 14, Some(13), 25, false);
+        let kr = f.keyring(ALICE);
+        assert_eq!(kr.resolution.current_epoch, Some(2));
+        assert_eq!(kr.maintainer_would_move_anchors(DAVE), Some(4));
     }
 
     #[test]

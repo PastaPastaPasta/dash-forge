@@ -150,10 +150,10 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
     let signer = crate::keys::signer(&s);
     // Removing a maintainer withdraws their anchors (§5.3): re-anchor their epochs under the
     // same keys first, or the repo would fall back to an older key.
-    let dropped = if private && role == forge_core::rules::v2::Role::Maintainer {
+    let (dropped, losing) = if private && role == forge_core::rules::v2::Role::Maintainer {
         reanchor(&signer, handle, member).await?
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
     let removed = MemberService::new(client, &s.identity, &s.bridge)
         .revoke(handle, member, role)
@@ -193,12 +193,16 @@ async fn remove(ctx: &Ctx, repo: &str, member: &str, role: RoleArg) -> Result<()
             "repo": handle.display(),
             "rotation": rotation.as_ref().map(crate::keys::rotation_json),
             "droppedEpochs": dropped,
+            "losingMembers": losing,
         }),
         || {
             if !dropped.is_empty() {
                 println!(
-                    "key epochs {dropped:?} were anchored by {member} and readable only by them: they stop existing (content under them stays unreadable)"
+                    "key epochs {dropped:?} were anchored by {member} and held by no other maintainer: they stop existing (content under them stays unreadable)"
                 );
+                for m in &losing {
+                    println!("  {m} held a key for them and loses that content too");
+                }
             }
             if let Some(r) = &rotation {
                 crate::keys::print_rotation(handle, r);
@@ -246,19 +250,20 @@ fn private_remove_prompt(
 }
 
 /// Re-anchor every epoch `member` anchored before their maintainer role goes, or refuse.
-/// Returns the epochs that stop existing with the removal (§5.3: `member` anchored them, only
-/// they can read them, and nothing readable sits above).
+/// Returns the epochs that stop existing with the removal (§5.3: `member` anchored them, no
+/// maintainer who stays holds them, and nothing readable sits above), and the members who stay
+/// and lose the content under them.
 async fn reanchor(
     signer: &PrivateSigner<'_>,
     handle: &forge_core::scope::RepoRef,
     member: &str,
-) -> Result<Vec<u32>> {
+) -> Result<(Vec<u32>, Vec<String>)> {
     let r = forge_core::keyring::reanchor_before_removal(signer, handle, member)
         .await
         .context(
             "re-anchoring the maintainer's key epochs before the removal (nothing was removed)",
         )?;
-    Ok(r.dropped)
+    Ok((r.dropped, r.losing))
 }
 
 /// The error of a removal whose rotation failed after the delete landed.
