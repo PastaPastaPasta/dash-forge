@@ -154,6 +154,14 @@ pub struct GitPusher {
     pub fallback: bool,
 }
 
+/// `bytes` as a private repository stores them: a header plus a tag per 16 KiB segment
+/// (`forge_core::private::pack`, `36 + n + 16·nSeg`). Public packs are `bytes` exactly.
+fn sealed_upper_bound(bytes: u64) -> u64 {
+    use forge_core::private::pack::{HEADER_LEN, WRITE_SEG_LOG2};
+    let segments = bytes.div_ceil(1 << WRITE_SEG_LOG2).max(1);
+    bytes + HEADER_LEN as u64 + 16 * segments
+}
+
 /// Turn the helper's dry-run price into the estimate charged to the budget. The helper
 /// prices documents by their bytes; forge-v2 index storage adds, per document it said it
 /// would write (measured on moutai): [`GIT_DOC_INDEX_OVERHEAD`] per document of a push
@@ -186,11 +194,13 @@ pub fn price_helper_estimate(mut r: PushReport, fallback: bool) -> PushReport {
     };
     r.est_credits = r.est_credits.saturating_add(overhead);
     if fallback && r.chunks == 0 && r.pack_bytes > 0 {
-        // Chunks of the pack and of its browse-index fragment.
+        // Chunks of the pack and of its browse-index fragment, each as a private repo would
+        // store it (sealed, a little larger), so the price holds for either kind.
         let locator = LOCATOR_HEADER + LOCATOR_ROW * r.objects;
-        r.est_credits = r
-            .est_credits
-            .saturating_add(chunked_credits(r.pack_bytes) + chunked_credits(locator));
+        r.est_credits = r.est_credits.saturating_add(
+            chunked_credits(sealed_upper_bound(r.pack_bytes))
+                + chunked_credits(sealed_upper_bound(locator)),
+        );
     }
     r
 }
@@ -358,7 +368,6 @@ pub fn estimate_fresh(git_dir: &Path, refs: &Refs, storage: PackStorage) -> Resu
         est_credits: est,
         // No helper price for a repo that does not exist yet; the estimate stands in.
         helper_credits: est,
-
         ..PushReport::default()
     })
 }
@@ -601,7 +610,9 @@ dash: some human line"#;
             let policy = storage_policy(d).unwrap();
             PackStorage::resolve(&policy, &profiles)
         };
+        // Every key the policy reads is set here, so a tester's global `dash.*` is ignored.
         git(d, &["config", "dash.storage", "bucket"]);
+        git(d, &["config", "dash.replicas", "1"]);
         git(d, &["config", "dash.platformFallback", "false"]);
         assert_eq!(storage().unwrap(), PackStorage::External { targets: 1 });
 

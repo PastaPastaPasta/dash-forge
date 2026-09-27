@@ -154,8 +154,9 @@ async fn run_inner<'a>(
         let storage = if policy.is_platform_only() {
             PackStorage::Platform
         } else {
-            PackStorage::resolve(&policy, &forge_core::storage::StorageProfiles::load()?)
-                .context("reading the storage policy")?
+            let profiles = forge_core::storage::StorageProfiles::load()
+                .context("reading the storage profiles")?;
+            PackStorage::resolve(&policy, &profiles).context("reading the storage policy")?
         };
         (storage, policy.platform_fallback)
     };

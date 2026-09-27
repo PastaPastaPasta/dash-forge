@@ -23,6 +23,7 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
 use forge_core::backends::PackMeta;
+use forge_core::cost::git_doc_sizes::URIS_PER_TARGET as URIS_JSON_PER_TARGET;
 use forge_core::keystore::BridgeIdentity;
 use forge_core::members::MemberReader;
 use forge_core::network::{NetworkSettings, NetworkTarget};
@@ -748,8 +749,6 @@ impl PushContext<'_> {
         self.progress.note(line);
     }
 }
-
-use forge_core::cost::git_doc_sizes::URIS_PER_TARGET as URIS_JSON_PER_TARGET;
 
 /// Build one self-contained pack for `want_tips` (excluding remote tips already local as
 /// thin-pack bases), store it according to the repo's storage policy, and record the

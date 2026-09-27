@@ -15,7 +15,6 @@ path = "src/main.rs"
 forge-core = { path = "../forge-core", features = ["cli-logging"] }
 anyhow.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["time"] }
 serde_json.workspace = true
 hex = "0.4"

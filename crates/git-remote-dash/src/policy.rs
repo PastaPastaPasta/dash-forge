@@ -19,6 +19,7 @@ use std::io::{BufRead as _, Write as _};
 
 use anyhow::{anyhow, bail, Result};
 use forge_core::cost::estimate;
+use forge_core::cost::git_doc_sizes::{MANIFEST_BASE_BYTES, REF_UPDATE_BYTES};
 use forge_core::repo::credits_to_dash;
 use forge_core::storage::policy::pick_scoped;
 use forge_core::storage::{ResolvedPolicy, StoragePolicy, StorageProfiles};
@@ -26,7 +27,6 @@ use forge_core::user_error::{codes, dash, UserError};
 
 use crate::git::LocalRepo;
 
-use forge_core::cost::git_doc_sizes::{MANIFEST_BASE_BYTES, REF_UPDATE_BYTES};
 /// Per-object row size of a browse-index fragment (36-byte rows + fanout overhead).
 const LOCATOR_ROW_BYTES: u64 = 36;
 /// Fixed browse-index header (256-entry u32 fanout + header).

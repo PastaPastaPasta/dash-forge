@@ -236,6 +236,25 @@ mod tests {
         }
     }
 
+    /// A debug event of our own (the forge-core nonce re-prepare, now at debug) shows only
+    /// when `RUST_LOG` asks for debug.
+    #[test]
+    fn debug_events_show_only_under_debug() {
+        let emit = |spec: Option<&str>| {
+            let buf = Buf::default();
+            let sub = tracing_subscriber::registry().with(layer(spec, buf.clone()));
+            tracing::subscriber::with_default(sub, || {
+                tracing::debug!(target: "forge_core::platform", "another write took the nonce");
+            });
+            let out = buf.0.lock().unwrap().clone();
+            String::from_utf8(out).unwrap()
+        };
+        assert!(emit(None).is_empty());
+        assert!(emit(Some("info")).is_empty());
+        assert!(emit(Some("debug")).contains("another write took the nonce"));
+        assert!(emit(Some("warn,forge_core=debug")).contains("another write took the nonce"));
+    }
+
     #[test]
     fn only_the_sdk_targets_are_matched() {
         assert!(is_recovered_sdk_noise(
