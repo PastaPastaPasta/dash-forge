@@ -48,7 +48,9 @@ Prebuilt binaries and a one-line `install.sh` will come with the first tagged re
 
 On a network with no forge-v2 deployment, `dg`, `git-remote-dash` and the web app stop with a "not deployed" error. The first version of Forge (forge-v1: one contract per repository, token access control) ran on testnet until 2026-09-26. It was removed with no backwards compatibility, so v1 repositories can no longer be read.
 
-Specified but not built yet, and marked **coming soon** in the guides: prebuilt releases, identity creation and limited-budget keys in `dg` (the web app has both), DPNS usernames, opening PRs and merging code from the browser, and private repositories.
+**Private repositories** are in: content encrypted to members' identity encryption keys, key rotation on member removal, and a stated list of what stays visible ([collaborating](docs/guides/collaborating.md#private-repositories), design [docs/security/private-repos.md](docs/security/private-repos.md)). `dg repo create --private`, private `git push`/`clone` and `dg collab` work today; sealed issues and PRs from `dg` and the web app's private views follow.
+
+Specified but not built yet, and marked **coming soon** in the guides: prebuilt releases, identity creation and limited-budget keys in `dg` (the web app has both), DPNS usernames, and opening PRs and merging code from the browser.
 
 ---
 

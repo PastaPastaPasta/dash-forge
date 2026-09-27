@@ -120,6 +120,12 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Repo(Rp::Star { repo }) => ("repository not starred", Some(repo)),
         Command::Repo(Rp::Unstar { repo }) => ("star not removed", Some(repo)),
         Command::Repo(Rp::List { .. }) => ("could not list repositories", None),
+        Command::Repo(Rp::Keys(crate::RepoKeysCommand::Status { repo })) => {
+            ("could not read the repository's keys", Some(repo))
+        }
+        Command::Repo(Rp::Keys(
+            crate::RepoKeysCommand::Repair { repo } | crate::RepoKeysCommand::Rotate { repo },
+        )) => ("keys not repaired", Some(repo)),
         Command::Repo(Rp::Backend(RepoBackendCommand::Set { repo, .. })) => {
             ("backend not changed", Some(repo))
         }

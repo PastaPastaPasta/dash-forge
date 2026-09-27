@@ -45,6 +45,7 @@ SCENARIOS=(
   "11-release-asset"
   "12-star-unstar"
   "13-init-push"
+  "14-private-repo"
 )
 
 # Optional subset filter (match by leading number or substring).

@@ -548,7 +548,10 @@ impl Keyring {
                 protected_patterns: fields.protected_patterns.clone(),
             });
             let key = (at, d.id.clone());
-            if newest.as_ref().is_none_or(|(t, id, _)| key > (*t, id.clone())) {
+            if newest
+                .as_ref()
+                .is_none_or(|(t, id, _)| key > (*t, id.clone()))
+            {
                 newest = Some((at, d.id.clone(), *fields));
             }
         }
@@ -595,14 +598,15 @@ impl ReadKeys {
 
     /// Open a whole sealed artifact whose manifest says `size_bytes` (§3.5).
     pub fn open_pack(&self, sealed: &[u8], size_bytes: u64) -> Result<Vec<u8>> {
-        crate::private::pack::open(sealed, size_bytes, |e| self.keys.get(&e)).map_err(sealed_error)
+        crate::private::pack::open(sealed, size_bytes, |e| self.keys.get(&e))
+            .map_err(|e| sealed_error(&e))
     }
 }
 
 /// A sealed-artifact failure as the user-facing class: a copy whose hash verified but whose
 /// contents do not open is E508 (every copy of that hash is the same bytes).
-pub fn sealed_error(e: PrivateError) -> Error {
-    match e {
+pub fn sealed_error(e: &PrivateError) -> Error {
+    match *e {
         PrivateError::NoKey(epoch) => UserError::new(
             codes::NOT_A_KEY_HOLDER,
             format!("a pack is sealed under key epoch {epoch}, which you hold no key for"),
@@ -610,10 +614,13 @@ pub fn sealed_error(e: PrivateError) -> Error {
         .fix("ask a maintainer to run `dg repo keys repair <owner>/<repo>`")
         .into(),
         PrivateError::SizeMismatch => Error::Integrity,
-        _ => UserError::new(codes::SEALED_PACK_CORRUPT, "a sealed pack failed its checks")
-            .cause(e.to_string())
-            .fix("ask the member who pushed it to push again")
-            .into(),
+        _ => UserError::new(
+            codes::SEALED_PACK_CORRUPT,
+            "a sealed pack failed its checks",
+        )
+        .cause(e.to_string())
+        .fix("ask the member who pushed it to push again")
+        .into(),
     }
 }
 
@@ -820,7 +827,7 @@ pub async fn create_private_state(
     signer: &PrivateSigner<'_>,
     repo: &RepoRef,
     default_branch: &str,
-    backend_mode: u8,
+    backend: FieldValue,
 ) -> Result<bool> {
     let scope = repo.scope()?;
     let core = signer.client.fetch_contract(&scope.contract_id).await?;
@@ -832,7 +839,10 @@ pub async fn create_private_state(
     let me = platform::decode_identifier(&signer.identity.id())?;
     let enc = signer.encryption_keys(repo);
     if enc.sender().is_none() {
-        return Err(no_encryption_key("your identity", "cannot create a private repository"));
+        return Err(no_encryption_key(
+            "your identity",
+            "cannot create a private repository",
+        ));
     }
     let kr = Keyring::load_with(&io, repo, &signer.identity.id(), &enc).await?;
     if kr.resolution.anchors.contains_key(&0) {
@@ -847,13 +857,12 @@ pub async fn create_private_state(
             let keys_of = BTreeMap::from([(me, signer.identity.public_keys())]);
             kr.unwrap_own(&core, w, &enc, &keys_of)
         });
-    let key = match resumed {
-        Some(k) => k,
-        None => {
-            let k = EpochKey::generate()?;
-            signer.post_wrap(&core, &scope, 0, &k, me).await?;
-            k
-        }
+    let key = if let Some(k) = resumed {
+        k
+    } else {
+        let k = EpochKey::generate()?;
+        signer.post_wrap(&core, &scope, 0, &k, me).await?;
+        k
     };
     signer
         .post_anchor(
@@ -865,7 +874,7 @@ pub async fn create_private_state(
                 prev: None,
                 default_branch: short_branch(default_branch),
                 protected_patterns: &[],
-                backend: backend_object(backend_mode),
+                backend,
                 archived: false,
             },
         )
@@ -899,7 +908,11 @@ pub async fn add_member_wrap(
 }
 
 /// Whether `member` has a usable `ENCRYPTION` key to wrap to (§5.5: add is refused without).
-pub async fn member_can_receive(client: &PlatformClient, repo: &RepoRef, member: &str) -> Result<bool> {
+pub async fn member_can_receive(
+    client: &PlatformClient,
+    repo: &RepoRef,
+    member: &str,
+) -> Result<bool> {
     let keys = client.fetch_identity(member).await?.public_keys();
     Ok(recipient_key(&keys, &repo.forge().core).is_some())
 }
@@ -947,65 +960,26 @@ pub async fn rotate(
             needs: "maintainer".into(),
         });
     }
-    let current = kr.writer(repo)?; // n must be readable to chain it
-    let n = current.write_epoch();
-    let k_n = kr.epoch_key(n).expect("the write epoch's key is held").clone();
-
-    // Resume or start: our own self-wrap for an unanchored epoch above n.
-    let keys_of = BTreeMap::from([(me, signer.identity.public_keys())]);
-    let pending = kr
-        .wraps
-        .iter()
-        .filter(|w| {
-            w.epoch > n
-                && w.member == me
-                && w.owner == me
-                && !kr.resolution.anchors.contains_key(&w.epoch)
-        })
-        .max_by_key(|w| (w.epoch, w.height))
-        .and_then(|w| kr.unwrap_own(&core, w, &enc, &keys_of).map(|k| (w.epoch, k)));
-    let (epoch, key) = match pending {
-        Some(p) => p,
-        None => {
-            let used: BTreeSet<u32> = kr
-                .wraps
-                .iter()
-                .filter(|w| w.owner == me)
-                .map(|w| w.epoch)
-                .chain(kr.resolution.anchors.keys().copied())
-                .collect();
-            let mut e = n.checked_add(1).ok_or_else(|| Error::Config("epoch overflow".into()))?;
-            while used.contains(&e) {
-                e = e.checked_add(1).ok_or_else(|| Error::Config("epoch overflow".into()))?;
-            }
-            (e, EpochKey::generate()?)
-        }
-    };
+    let n = kr.writer(repo)?.write_epoch(); // n must be readable to chain it
+    let k_n = kr
+        .epoch_key(n)
+        .expect("the write epoch's key is held")
+        .clone();
+    let (epoch, key) = next_epoch(&kr, &core, &enc, signer, me, n)?;
 
     // Step 2: wraps, self first, to every remaining member.
-    let excluded: BTreeSet<&str> = exclude.iter().map(String::as_str).collect();
-    let mut targets: Vec<String> = vec![me_b58.clone()];
-    for m in kr.members() {
-        if m.identity_id != me_b58
-            && !excluded.contains(m.identity_id.as_str())
-            && !targets.contains(&m.identity_id)
-        {
-            targets.push(m.identity_id.clone());
-        }
-    }
+    let targets = rotation_targets(&kr, &me_b58, exclude);
     let already: BTreeSet<[u8; 32]> = kr
         .wraps
         .iter()
         .filter(|w| w.epoch == epoch && w.owner == me)
         .map(|w| w.member)
         .collect();
-    let mut wrapped = Vec::with_capacity(targets.len());
     for t in &targets {
         let tb = platform::decode_identifier(t)?;
         if !already.contains(&tb) {
             signer.post_wrap(&core, &scope, epoch, &key, tb).await?;
         }
-        wrapped.push(t.clone());
     }
 
     // Step 3: the anchor (the commit point), with the current config's fields.
@@ -1035,7 +1009,7 @@ pub async fn rotate(
         if let Some(a) = now.resolution.anchors.get(&epoch) {
             return Ok(Rotation {
                 epoch,
-                wrapped,
+                wrapped: targets,
                 won: a.id == anchor_bytes,
             });
         }
@@ -1044,6 +1018,59 @@ pub async fn rotate(
         }
     }
     Err(Error::Timeout { retryable: true })
+}
+
+/// The epoch and key a rotation above `n` uses (§5.5 step 1 and the crash rule): the key of
+/// this signer's own self-wrap for an unanchored epoch above `n` (a rotation that died before
+/// its anchor), else a fresh key for the next epoch number with no wrap by this signer and no
+/// anchor.
+fn next_epoch(
+    kr: &Keyring,
+    core: &LoadedContract,
+    enc: &EncryptionKeys,
+    signer: &PrivateSigner<'_>,
+    me: [u8; 32],
+    n: u32,
+) -> Result<(u32, EpochKey)> {
+    let keys_of = BTreeMap::from([(me, signer.identity.public_keys())]);
+    let pending = kr
+        .wraps
+        .iter()
+        .filter(|w| {
+            w.epoch > n
+                && w.member == me
+                && w.owner == me
+                && !kr.resolution.anchors.contains_key(&w.epoch)
+        })
+        .max_by_key(|w| (w.epoch, w.height))
+        .and_then(|w| kr.unwrap_own(core, w, enc, &keys_of).map(|k| (w.epoch, k)));
+    if let Some(p) = pending {
+        return Ok(p);
+    }
+    let used: BTreeSet<u32> = kr
+        .wraps
+        .iter()
+        .filter(|w| w.owner == me)
+        .map(|w| w.epoch)
+        .chain(kr.resolution.anchors.keys().copied())
+        .collect();
+    let overflow = || Error::Config("key epoch overflow".into());
+    let mut e = n.checked_add(1).ok_or_else(overflow)?;
+    while used.contains(&e) {
+        e = e.checked_add(1).ok_or_else(overflow)?;
+    }
+    Ok((e, EpochKey::generate()?))
+}
+
+/// Who a rotation wraps to: this signer first, then every current member not in `exclude`.
+fn rotation_targets(kr: &Keyring, me: &str, exclude: &[String]) -> Vec<String> {
+    let mut targets: Vec<String> = vec![me.to_string()];
+    for m in kr.members() {
+        if !exclude.contains(&m.identity_id) && !targets.contains(&m.identity_id) {
+            targets.push(m.identity_id.clone());
+        }
+    }
+    targets
 }
 
 /// What [`repair`] did (§5.6).
@@ -1114,9 +1141,16 @@ mod tests {
         assert_eq!(h.ref_name_hash, Some([1; 32]));
         assert_eq!(h.new_oid.as_deref(), Some(&[0xaa; 20][..]));
         assert_eq!(h.prev_oid, None);
-        assert_eq!(h.force, Some(false), "force is always bound, false when absent");
+        assert_eq!(
+            h.force,
+            Some(false),
+            "force is always bound, false when absent"
+        );
         assert_eq!(h.created_at_block_height, Some(5));
-        assert!(header_of(DocKind::Issue, &d).is_none(), "an issue needs its number");
+        assert!(
+            header_of(DocKind::Issue, &d).is_none(),
+            "an issue needs its number"
+        );
     }
 
     #[test]
@@ -1148,7 +1182,10 @@ mod tests {
 
     #[test]
     fn hidden_buckets_follow_the_ux_spec() {
-        assert_eq!(hidden_bucket(&Opened::Malformed), Some("not encrypted for this repo"));
+        assert_eq!(
+            hidden_bucket(&Opened::Malformed),
+            Some("not encrypted for this repo")
+        );
         assert_eq!(
             hidden_bucket(&Opened::Unreadable(Unreadable::Late)),
             Some("written after the key was rotated")

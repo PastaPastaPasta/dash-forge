@@ -313,7 +313,7 @@ pub async fn read_private_refs(
             };
             let hash_hex = hex::encode(crate::backends::sha256(name.as_bytes()));
             let mut u = ref_update_from_doc(&d, &hash_hex, protected);
-            u.ref_name = name.clone();
+            u.ref_name.clone_from(&name);
             by_name.entry(name).or_default().push(u);
         }
     }

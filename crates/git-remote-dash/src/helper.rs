@@ -161,7 +161,9 @@ impl Helper {
                     .await
                     .with_context(|| format!("resolving repo {id}"))?,
             };
-            repo.require_readable()?;
+            if repo.visibility == forge_core::rules::v2::Visibility::Private {
+                require_private_key(&client, &identity, &bridge, &repo).await?;
+            }
             tracing::info!(
                 repo = %repo.id(),
                 owner = %repo.owner_id(),
@@ -276,7 +278,17 @@ impl Helper {
         let packs = group_by_hash(&git_packs);
         let fetched: Vec<Option<Vec<u8>>> = stream::iter(packs.iter().map(|(h, copies)| async move {
             let hash = hex::encode(h);
-            let got = svc.fetch_best_copy(repo, contract, copies, roles, reader).await;
+            let got = match svc.fetch_best_copy(repo, contract, copies, roles, reader).await {
+                // A private repository's copy verified by its (ciphertext) hash; open it.
+                Ok((sealed, m)) => {
+                    let got = PackMeta::for_bytes(&sealed).pack_hash;
+                    if !got.eq_ignore_ascii_case(&hash) {
+                        bail!("pack integrity check failed: expected {hash}, got {got}");
+                    }
+                    svc.open_artifact(repo, m, sealed).await.map(|b| (b, m))
+                }
+                Err(e) => Err(e),
+            };
             // A pack is required when a CURRENT MEMBER recorded it on Platform: on forge-v2
             // anyone who was a writer can post a manifest, so a stranger's chunkless
             // `storage = 0` copy must not turn an unreadable pack into a failed clone (git's
@@ -301,11 +313,6 @@ impl Helper {
                     return Ok(None);
                 }
             };
-            // Integrity: re-checked here, at the boundary that hands bytes to git.
-            let got = PackMeta::for_bytes(&bytes).pack_hash;
-            if !got.eq_ignore_ascii_case(&hash) {
-                bail!("pack integrity check failed: expected {hash}, got {got}");
-            }
             Ok(Some(bytes))
         }))
         .buffered(PACK_DOWNLOAD_WINDOW)
@@ -687,7 +694,11 @@ async fn upload_push_pack(
         return Ok(None);
     }
 
-    let job = PackJob::new(&pack.bytes, pack.parsed.object_count() as u64)?;
+    // A private repository stores the pack sealed under the current write epoch, resolved
+    // now (§5.3: anchors re-read before every write). Every artifact is sealed (§3); the
+    // browse index still indexes the plaintext pack (its offsets are plaintext offsets).
+    let stored = seal_for_push(ctx, &pack.bytes).await?;
+    let job = PackJob::new(&stored, pack.parsed.object_count() as u64)?;
     let resolved = &ctx.policy.resolved;
     tracing::info!(
         pack_hash = %job.meta.pack_hash,
@@ -762,6 +773,7 @@ async fn upload_push_pack(
     // chunks an interrupted Platform upload wrote; retire it only when this manifest
     // references those chunks. Otherwise keep it and say so — those chunks are paid for,
     // referenced by nothing, and reclaimable only while the journal names them.
+    let _ = std::fs::remove_file(sealed_cache_path(ctx, &pack.bytes));
     if replication.has_platform() {
         let _ = std::fs::remove_file(&jpath);
     } else if jpath.exists() {
@@ -774,6 +786,56 @@ async fn upload_push_pack(
     }
     publish_browse_index(ctx, &pack.parsed, job.pack_hash, &replication, &externals).await;
     Ok(Some(actual_estimate.total()))
+}
+
+/// The bytes a push stores for `plain`: itself in a public repository; in a private one the
+/// pack sealed under the write epoch resolved now.
+///
+/// Sealing draws a fresh file id, so the same pack sealed twice has two hashes, and an
+/// interrupted push could never resume its journaled chunks or find its recorded manifest.
+/// So the sealed bytes (ciphertext only) are kept at `.git/dash/sealed/<repo>-<sha256 of the
+/// plaintext>.pack` and reused while their header still names the current write epoch.
+async fn seal_for_push(ctx: &PushContext<'_>, plain: &[u8]) -> Result<Vec<u8>> {
+    let codec = ctx
+        .svc
+        .pack_codec(ctx.repo)
+        .await
+        .context("resolving the repository's key")?;
+    let forge_core::repo::PackCodec::Private(private) = &codec else {
+        return Ok(plain.to_vec());
+    };
+    let path = sealed_cache_path(ctx, plain);
+    if let Ok(cached) = std::fs::read(&path) {
+        let epoch = forge_core::private::PackHeader::parse(
+            cached
+                .get(..forge_core::private::pack::HEADER_LEN)
+                .unwrap_or_default(),
+            cached.len() as u64,
+        )
+        .map(|h| h.epoch());
+        if epoch == Ok(private.write_epoch()) {
+            return Ok(cached);
+        }
+    }
+    let sealed = codec.seal(plain.to_vec())?;
+    let tmp = path.with_extension("pack.tmp");
+    if std::fs::create_dir_all(path.parent().unwrap_or(ctx.git_dir))
+        .and_then(|()| std::fs::write(&tmp, &sealed))
+        .and_then(|()| std::fs::rename(&tmp, &path))
+        .is_err()
+    {
+        tracing::warn!("could not keep the sealed pack; an interrupted push would re-seal it");
+    }
+    Ok(sealed)
+}
+
+/// Where [`seal_for_push`] keeps the sealed bytes of `plain` for this repository.
+fn sealed_cache_path(ctx: &PushContext<'_>, plain: &[u8]) -> std::path::PathBuf {
+    ctx.git_dir.join("dash").join("sealed").join(format!(
+        "{}-{}.pack",
+        ctx.repo.id(),
+        hex::encode(forge_core::private::keys::sha256(plain))
+    ))
 }
 
 /// The pack being pushed, with the facts every storage step needs.
@@ -1267,6 +1329,50 @@ async fn precheck(
 
 /// The note on a push the helper refused before doing anything.
 const NOTE_PRECHECK: &str = "checked before building or paying for anything: nothing was stored";
+
+/// A private repository needs the identity file's `ENCRYPTION` key (E305) and an accepted
+/// wrap to it (E306/E307/E308): checked when the helper connects, so a clone by a non-member
+/// fails with the reason and the fix rather than an empty repository.
+async fn require_private_key(
+    client: &PlatformClient,
+    identity: &LoadedIdentity,
+    bridge: &BridgeIdentity,
+    repo: &RepoRef,
+) -> Result<()> {
+    let signer = forge_core::keyring::PrivateSigner {
+        client,
+        identity,
+        bridge,
+    };
+    let enc = signer.encryption_keys(repo);
+    if enc.is_empty() {
+        return Err(forge_core::keyring::no_encryption_key(
+            &identity.id(),
+            &format!("private repo {}", repo.display()),
+        )
+        .into());
+    }
+    let kr = signer.keyring(repo).await?;
+    kr.reader(repo)?;
+    // The repair check (§5.6) on every visit by a maintainer: git cannot prompt to spend, so
+    // the helper says what is wrong and the command that fixes it.
+    let maintainer = kr.reader_role() == Some(forge_core::rules::v2::Role::Maintainer);
+    if let (true, Some(r)) = (maintainer, kr.resolution().repair.as_ref()) {
+        if r.rotate || !r.missing_wraps.is_empty() {
+            eprintln!(
+                "dash: the key of {} needs a repair ({}); run `dg repo keys repair {}`",
+                repo.display(),
+                if r.rotate {
+                    "a non-member still holds the current key"
+                } else {
+                    "a member has no wrap for the current key"
+                },
+                repo.display()
+            );
+        }
+    }
+    Ok(())
+}
 
 /// E301 — no identity file to sign with.
 fn no_identity(why: impl Into<String>) -> anyhow::Error {

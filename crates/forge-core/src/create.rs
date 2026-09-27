@@ -252,15 +252,23 @@ fn repo_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
 /// The initial `config` document's properties (no protected patterns: an empty list is the
 /// same as none, and omitting it keeps the document small).
 fn config_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
-    let mut backend = BTreeMap::new();
-    backend.insert(
-        "mode".into(),
-        FieldValue::integer(u64::from(opts.backend_mode)),
-    );
     let mut p = BTreeMap::new();
     p.insert(
         "defaultBranch".into(),
         FieldValue::text(&opts.default_branch),
+    );
+    p.insert("backend".into(), backend_props(opts));
+    p.insert("archived".into(), FieldValue::boolean(false));
+    p
+}
+
+/// The initial `config.backend` object: the mode and the advertised read bases. Plaintext in
+/// a private repository too (§7: storage URIs are visible metadata).
+fn backend_props(opts: &CreateRepoOpts) -> FieldValue {
+    let mut backend = BTreeMap::new();
+    backend.insert(
+        "mode".into(),
+        FieldValue::integer(u64::from(opts.backend_mode)),
     );
     if !opts.backend_uris.is_empty() {
         backend.insert(
@@ -268,9 +276,7 @@ fn config_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
             FieldValue::text_list(opts.backend_uris.iter().cloned()),
         );
     }
-    p.insert("backend".into(), FieldValue::Object(backend));
-    p.insert("archived".into(), FieldValue::boolean(false));
-    p
+    FieldValue::Object(backend)
 }
 
 /// Re-broadcast a saved transition and decide whether its document exists. `false` means
@@ -322,16 +328,7 @@ pub async fn create_repo(
     })?;
     let opts = validated(opts)?;
     let owner = identity.id();
-    if opts.visibility == Visibility::Private
-        && crate::keyring::EncryptionKeys::held(bridge, &identity.public_keys(), &forge.core)
-            .sender()
-            .is_none()
-    {
-        return Err(crate::keyring::no_encryption_key(
-            "your identity",
-            "cannot create a private repository",
-        ));
-    }
+    require_encryption_key(&opts, identity, bridge, &forge.core)?;
     let owner_bytes = platform::decode_identifier(&owner)?;
     let core = client.fetch_contract(&forge.core).await?;
     let engine = WriteEngine::new(client, identity, bridge.doc_op_key()?)?;
@@ -365,12 +362,8 @@ pub async fn create_repo(
     // a public one (or the reverse) would write the wrong kind of config into it.
     if repo.visibility != opts.visibility {
         return Err(Error::Config(format!(
-            "{} already exists as a {} repository",
-            repo.display(),
-            match repo.visibility {
-                Visibility::Public => "public",
-                Visibility::Private => "private",
-            }
+            "{} already exists with the other visibility (visibility is immutable)",
+            repo.display()
         )));
     }
     let scope = repo.scope()?;
@@ -394,26 +387,7 @@ pub async fn create_repo(
 
     // 3. the initial config: for a private repo, epoch 0 (self-wrap, then the sealed anchor)
     if opts.visibility == Visibility::Private {
-        let signer = crate::keyring::PrivateSigner {
-            client,
-            identity,
-            bridge,
-        };
-        let wrote = crate::keyring::create_private_state(
-            &signer,
-            &repo,
-            &opts.default_branch,
-            opts.backend_mode,
-        )
-        .await?;
-        steps.push((
-            "repoKey + anchor config",
-            if wrote {
-                StepOutcome::Created
-            } else {
-                StepOutcome::Existed
-            },
-        ));
+        steps.push(private_epoch_zero(client, identity, bridge, &repo, &opts).await?);
         journal.finish();
         let balance_after = client.get_balance(&owner).await.unwrap_or(balance_before);
         return Ok(CreateRepoResult {
@@ -447,6 +421,52 @@ pub async fn create_repo(
         steps,
         cost_credits: balance_before.saturating_sub(balance_after),
     })
+}
+
+/// A private create needs an `ENCRYPTION` key the identity file holds (§9 "Create"): checked
+/// before anything is written.
+fn require_encryption_key(
+    opts: &CreateRepoOpts,
+    identity: &LoadedIdentity,
+    bridge: &BridgeIdentity,
+    core: &str,
+) -> Result<()> {
+    let held = crate::keyring::EncryptionKeys::held(bridge, &identity.public_keys(), core);
+    if opts.visibility == Visibility::Private && held.sender().is_none() {
+        return Err(crate::keyring::no_encryption_key(
+            "your identity",
+            "cannot create a private repository",
+        ));
+    }
+    Ok(())
+}
+
+/// Step 3 of a private create: the owner's self-wrap of a fresh epoch key, then the anchor.
+async fn private_epoch_zero(
+    client: &PlatformClient,
+    identity: &LoadedIdentity,
+    bridge: &BridgeIdentity,
+    repo: &RepoRef,
+    opts: &CreateRepoOpts,
+) -> Result<(&'static str, StepOutcome)> {
+    let signer = crate::keyring::PrivateSigner {
+        client,
+        identity,
+        bridge,
+    };
+    let wrote = crate::keyring::create_private_state(
+        &signer,
+        repo,
+        &opts.default_branch,
+        backend_props(opts),
+    )
+    .await?;
+    let outcome = if wrote {
+        StepOutcome::Created
+    } else {
+        StepOutcome::Existed
+    };
+    Ok(("repoKey + anchor config", outcome))
 }
 
 /// `opts` with the name normalized to its slug, or why it cannot be created.

@@ -39,6 +39,7 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
         RepoCommand::Backend(RepoBackendCommand::Set { repo, mode }) => {
             backend_set(ctx, repo, mode.mode(), mode.label()).await
         }
+        RepoCommand::Keys(cmd) => crate::keys::run(ctx, cmd).await,
     }
 }
 

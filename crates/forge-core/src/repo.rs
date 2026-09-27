@@ -23,19 +23,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::backends::{PackBackend, PackMeta, PlatformBackend, Uri};
 use crate::error::{Error, Result};
+use crate::keyring::{sealed_error, Keyring, PrivateSigner};
 use crate::keystore::BridgeIdentity;
 use crate::platform::{
-    self,
-    FetchedDocument, FieldValue, JournalStore, LoadedContract, LoadedIdentity, PlatformClient,
-    PushJournal, QueryFilter, QueryOrder, WriteEngine, WriteIntent,
+    self, FetchedDocument, FieldValue, JournalStore, LoadedContract, LoadedIdentity,
+    PlatformClient, PushJournal, QueryFilter, QueryOrder, WriteEngine, WriteIntent,
 };
-use crate::keyring::{sealed_error, Keyring, PrivateSigner};
 use crate::private::{DocHeader, DocKind, Fields, Private, PrivateError, RefNameHasher};
 use crate::rules::v2::{CopyKey, PackCopy, PackCopyRow, Role, V2Pack, Visibility};
-use crate::user_error::{codes, UserError};
 use crate::rules::{self, ConfigDoc, RefState};
 use crate::scope::{self, DocScope, RepoRef};
 use crate::storage::{PackReader, Replication, StorageTarget, UriBudget};
+use crate::user_error::{codes, UserError};
 
 // Document type names (the git data plane in forge-core).
 use crate::refs::DOC_CONFIG;
@@ -441,10 +440,10 @@ impl<'a> RepoService<'a> {
         let header = crate::private::PackHeader::parse(
             sealed
                 .get(..crate::private::pack::HEADER_LEN)
-                .ok_or_else(|| sealed_error(PrivateError::SealedPackCorrupt))?,
+                .ok_or_else(|| sealed_error(&PrivateError::SealedPackCorrupt))?,
             manifest.size_bytes,
         )
-        .map_err(sealed_error)?;
+        .map_err(|e| sealed_error(&e))?;
         let owner = platform::decode_identifier(&manifest.owner_id)?;
         let standing = kr.resolution().manifest_standing(
             header.epoch(),
@@ -516,7 +515,9 @@ impl<'a> RepoService<'a> {
         let (scope, contract) = self.writable(repo).await?;
         if repo.visibility == Visibility::Private {
             return self
-                .write_private_ref_update(repo, &scope, &contract, ref_name, new_oid, prev_oid, force)
+                .write_private_ref_update(
+                    repo, &scope, &contract, ref_name, new_oid, prev_oid, force,
+                )
                 .await;
         }
         let hasher = crate::private::Public;

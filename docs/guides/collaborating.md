@@ -46,6 +46,46 @@ A collaborator is a `writer` or `maintainer` document in Forge's shared forge-co
 
 ---
 
+## Private repositories
+
+A private repository's content is encrypted on your machine before it leaves it, to a key only its members hold. Platform nodes, storage providers and anyone else see ciphertext. The design is [docs/security/private-repos.md](../security/private-repos.md).
+
+```sh
+dg auth keys add --encryption                   # once per identity (see Identity and keys)
+dg repo create secret --private                 # or `dg init --private`
+git push dash://<you>/secret main               # packs are sealed, ref names encrypted
+dg collab add    <you>/secret <identity id>     # membership + the key, wrapped to them
+dg collab remove <you>/secret <identity id>     # delete + key rotation
+dg repo keys status <you>/secret                # epochs, who holds a key, pending repairs
+```
+
+**What is hidden and what is not.** The encryption covers the content. What the network needs to enforce access stays visible:
+
+| Encrypted (members only) | Visible to everyone |
+|---|---|
+| Code: every pack, index and browse artifact | That the repository exists; its name, owner, description, display name and topics |
+| Branch and tag names | Members and their roles; when each joined; key epochs and who rotated them |
+| Default branch and protected-branch patterns | When pushes, issues, PRs, comments and reviews happen, and who wrote each |
+| Issue and PR titles and bodies, comment and review text, an inline comment's file path | Commit ids (`newOid`, PR heads): anyone who already knows a commit id can confirm the repo contains it |
+| | Sizes: pack sizes, object counts, the approximate length of every encrypted field |
+| | **Not encrypted in this release:** release names, notes and assets; labels; label names and other event values; check runs; webhook URLs |
+
+Leave the description empty if the project's purpose is itself sensitive.
+
+**Every member needs an encryption key.** Private repositories wrap the key to each member's identity `ENCRYPTION` key. `dg collab add` checks the member has one and stops before writing anything if not ([`E305`](../errors.md#e305)); they add one with `dg auth keys add --encryption`, or Settings → Keys → **Enable private repos** in the web app.
+
+**Removing a member rotates the key.** New pushes, issues and comments will be unreadable to the removed member. Everything they could already read stays readable to them: encryption can't take back what was shared. The rotation is one key wrap per remaining member plus one anchor document, so `dg collab remove` shows the cost first. You are wrapped first, so an interruption never locks you out; running `dg repo keys repair` finishes an interrupted rotation (the key is recovered from your own wrap on chain, never from a local file).
+
+**Repairs.** A maintainer's `dg` and `git push` check the key on every visit: if a non-member still holds the current key (two maintainers removed members at the same time), or a member has no wrap to their current encryption key (they replaced it, or an add was interrupted), `dg repo keys repair` fixes it. The key is re-read before every write, so nothing is ever written under a key that was rotated away.
+
+**Cloning.** `git clone dash://<owner>/<repo>` works as for a public repository when your identity file holds your encryption key. A non-member gets [`E306`](../errors.md#e306); an identity without an encryption key gets [`E305`](../errors.md#e305).
+
+**No recovery.** If every member loses their encryption key (every copy of every identity file and mnemonic), the contents cannot be decrypted by anyone.
+
+Not supported for private repositories yet: forks (`dg repo fork`, refused with a clear error), and `dg issue`, `dg pr`, `dg release` and `dg label` on them (refused until their sealed forms land).
+
+---
+
 ## Issues
 
 Anyone with an identity and some credits can file an issue. Fees are the spam floor.
@@ -220,7 +260,7 @@ On forge.dashhq.org, signed in with a limited key ([Identity and keys](identity-
 | Browse code, commits, branches, tags and PR diffs | Open a PR |
 | File issues, comment, close and reopen | Merge code (see below) |
 | Review a PR: approve, request changes or comment | Inline review comments |
-| Create a repository, with a cost preview | Web editing, private repositories |
+| Create a repository, with a cost preview | Web editing |
 | Add and remove collaborators (owner) | |
 | Star repositories | |
 

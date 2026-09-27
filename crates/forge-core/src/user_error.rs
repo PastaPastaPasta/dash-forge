@@ -90,10 +90,19 @@ pub const CATALOGUE: &[(&str, &str)] = &[
         codes::IDENTITY_NOT_FOUND,
         "identity not found on this network",
     ),
-    (codes::NO_ENCRYPTION_KEY, "no encryption key for private repositories"),
-    (codes::NOT_A_KEY_HOLDER, "no key for this private repository"),
+    (
+        codes::NO_ENCRYPTION_KEY,
+        "no encryption key for private repositories",
+    ),
+    (
+        codes::NOT_A_KEY_HOLDER,
+        "no key for this private repository",
+    ),
     (codes::KEY_MISMATCH, "a maintainer gave you the wrong key"),
-    (codes::KEY_CHAIN_BROKEN, "the repository's key chain is broken"),
+    (
+        codes::KEY_CHAIN_BROKEN,
+        "the repository's key chain is broken",
+    ),
     (codes::ROTATION_PENDING, "key rotation or repair pending"),
     (codes::INSUFFICIENT_CREDITS, "not enough credits"),
     (codes::STORAGE_CONFIG, "storage not configured correctly"),

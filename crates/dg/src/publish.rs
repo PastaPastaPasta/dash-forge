@@ -37,6 +37,20 @@ use crate::storage_wizard::shell_word;
 use crate::{CreateOptions, InitArgs, RepoCreateArgs};
 
 /// `dg repo create`.
+/// The create estimate for a private repository: `repo`, `maintainer`, the owner's
+/// self-`repoKey` and the anchor `config` (four documents).
+const PRIVATE_CREATE_ESTIMATE_CREDITS: u64 = 260_000_000;
+
+/// The four facts a private create states before it spends (ux-dx-spec §9 "Create"), and
+/// what stays visible (`docs/security/private-repos.md` §7).
+const PRIVATE_FACTS: &[&str] = &[
+    "private: code, ref names, issues, PRs, comments and reviews are encrypted to members",
+    "visible to everyone: that it exists, its name, owner, members, sizes and timing,",
+    "  commit ids, and release notes, labels and event values (not encrypted in this release)",
+    "members keep whatever they could already read, even after they are removed",
+    "no recovery: if every member loses their encryption key, the contents are gone",
+];
+
 pub async fn create(ctx: &Ctx, args: &RepoCreateArgs) -> Result<()> {
     if !args.push && args.opts.remote.is_some() {
         return Err(crate::errors::usage(
@@ -105,6 +119,9 @@ impl Flow {
         flag("display-name", Some(&opts.display_name));
         flag("default-branch", opts.default_branch.as_deref());
         flag("remote", opts.remote.as_deref());
+        if opts.private {
+            words.push("--private".into());
+        }
         words.join(" ")
     }
 }
@@ -667,10 +684,23 @@ fn confirm_plan(
             plan.slug,
             ctx.network_label()
         );
-        println!(
-            "  repo + maintainer + config     {}",
-            cost_line(REPO_CREATE_ESTIMATE_CREDITS, price)
-        );
+        if opts.private {
+            println!(
+                "  repo + maintainer + key + anchor {}",
+                cost_line(PRIVATE_CREATE_ESTIMATE_CREDITS, price)
+            );
+            for line in PRIVATE_FACTS {
+                println!("  {line}");
+            }
+            if !opts.description.is_empty() || !opts.display_name.is_empty() {
+                println!("  note: the description and display name are public; leave them empty to keep them private");
+            }
+        } else {
+            println!(
+                "  repo + maintainer + config     {}",
+                cost_line(REPO_CREATE_ESTIMATE_CREDITS, price)
+            );
+        }
         println!("  {}", packs_line(&plan.storage.policy, plan.size));
         if plan.storage.source != Source::Flag {
             println!("  (storage: {})", plan.storage.source.label());
@@ -698,6 +728,11 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
         default_branch: plan.default_branch.clone(),
         backend_mode: plan.storage.policy.advertised_mode(),
         backend_uris: plan.storage.uris(),
+        visibility: if opts.private {
+            forge_core::rules::v2::Visibility::Private
+        } else {
+            forge_core::rules::v2::Visibility::Public
+        },
         ..CreateRepoOpts::public(plan.slug.clone())
     };
     let result = create_repo(
@@ -726,6 +761,7 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
         "webUrl": url,
         "storage": plan.storage.json(),
         "network": ctx.network_label(),
+        "visibility": if opts.private { "private" } else { "public" },
         "steps": steps,
         "cost": cost_json(result.cost_credits, price),
         "push": Value::Null,
@@ -1219,6 +1255,7 @@ mod tests {
             display_name: String::new(),
             default_branch: Some("trunk".into()),
             remote: Some("forge".into()),
+            private: true,
         };
         for flow in [Flow::Create, Flow::CreatePush, Flow::Init] {
             let line = flow.equivalent("proj", "r2,platform", &opts);
@@ -1235,6 +1272,7 @@ mod tests {
             assert_eq!(got.description, "my project", "{line}");
             assert_eq!(got.default_branch.as_deref(), Some("trunk"), "{line}");
             assert_eq!(got.remote(), "forge", "{line}");
+            assert!(got.private, "{line}");
             assert_eq!(pushes, flow.pushes(), "{line}");
         }
     }
