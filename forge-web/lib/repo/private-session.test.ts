@@ -24,7 +24,7 @@ import {
   WrapError,
 } from '../private'
 import type { Membership } from '../rules/v2'
-import { bytesToBase64, type DocumentQuery } from '../sdk'
+import { bytesToBase64, previewCreate, type DocumentQuery } from '../sdk'
 import { openPrivateArtifact, readPrivateRange } from '../view/private-packs'
 import { readConfigBundle } from './config'
 import { readAllRefUpdates, readRefs } from './refs'
@@ -450,6 +450,11 @@ describe('rotation and repair planning', () => {
     const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4)
     expect(plan.epoch).toBe(1)
     expect(plan.burn).toBe(true)
+    // The cost counts what the burn writes: the burned key to BOB (ALICE already has hers), the
+    // burned anchor, then ALICE and BOB at epoch 2 and its anchor.
+    const wrap = previewCreate('repoKey').credits
+    const config = previewCreate('config').credits
+    expect(rotationCost(plan).credits).toBe(3 * wrap + 2 * config)
   })
 
   it('epochs are contiguous: the new one is n + 1, whatever higher numbers others posted', async () => {

@@ -219,8 +219,10 @@ function mustBurn(
 
 /** The cost shown before a rotation: its wraps plus the anchor (§5.5: members + 1). */
 export function rotationCost(plan: RotationPlan): CostPreview {
-  // A burn: the burned anchor, then every remaining member wrapped at the next epoch, then its anchor.
-  const wraps = plan.burn ? plan.recipients.length : plan.recipients.filter((x) => !x.done).length
+  // A burn: the burned key to every remaining member without one (so anyone can finish it), the
+  // burned anchor, then every remaining member wrapped at the next epoch, then its anchor.
+  const missing = plan.recipients.filter((x) => !x.done).length
+  const wraps = plan.burn ? missing + plan.recipients.length : missing
   return sumPreviews([...Array.from({ length: wraps }, () => previewCreate('repoKey')), previewCreate('config'), ...(plan.burn ? [previewCreate('config')] : [])])
 }
 
@@ -639,9 +641,10 @@ async function rotateWith(
   // `from`: the epoch this step chains from and its key (the caller's copy is wiped here).
   // `skip`: when `from` is burned, the nearest non-burned epoch below it and its key.
   let from = { epoch: plan.from, raw: (await rawEpochKey(session, c, plan.from)).raw }
-  let skip = session.resolution.burned.has(plan.from) ? await skipBelow(session, c, plan.from) : null
+  let skip: { epoch: number; raw: Uint8Array } | null = null
   let burned: number | null = null
   try {
+    if (session.resolution.burned.has(plan.from)) skip = await skipBelow(session, c, plan.from)
     for (;;) {
       const epoch = from.epoch + 1
       if (burned !== null) {
@@ -682,12 +685,14 @@ async function rotateWith(
           (removing && (pending !== null || adopted)) ||
           mustBurn(false, false, mine, plan.recipients, allowed) ||
           (await straysAt(c, epoch, allowed)).length > 0
+        // Every recipient this run already wrapped or found standing at `epoch`: never posted twice.
+        const tried = new Set(mine.map((w) => base58Encode(w.row.memberId)))
         if (!leak) {
-          const done = new Set(mine.map((w) => base58Encode(w.row.memberId)))
           for (const r of plan.recipients.slice(1)) {
-            const outcome = done.has(r.identity)
+            const outcome = tried.has(r.identity)
               ? await standingOutcome(c, session, next.keys, r.identity, r.keyId)
               : await postWrap(c, session, next.keys, next.raw, r.identity, r.keyId, intent)
+            tried.add(r.identity)
             if (outcome.kind !== 'same') {
               leak = true
               break
@@ -703,9 +708,8 @@ async function rotateWith(
           // the burn with Repair, chaining from it), then anchor `epoch` chain-only with it; the
           // next epoch chains from it once this anchor is the epoch's (else another maintainer's
           // stands: build nothing on ours). A wrap that stands and cannot be replaced is skipped.
-          const done = new Set(ownWraps(session, selfId, epoch).map((w) => base58Encode(w.row.memberId)))
           for (const r of plan.recipients.slice(1)) {
-            if (done.has(r.identity)) continue
+            if (tried.has(r.identity)) continue
             if ((await postWrap(c, session, next.keys, next.raw, r.identity, r.keyId, intent)).kind === 'same') {
               onStep?.({ kind: 'wrapped', identity: r.identity, epoch })
             }
@@ -1123,7 +1127,7 @@ export function vanishing(session: PrivateSession, leaving: string): { epochs: n
     if (!epochs.includes(w.row.epoch)) continue
     const owner = base58Encode(w.row.owner)
     const member = base58Encode(w.row.memberId)
-    if (staying.has(member) && !maintainers.has(member)) losing.add(member)
+    if (staying.has(member)) losing.add(member)
     // A maintainer who stays and wrote or received a wrap there holds it. The leaving
     // maintainer's own wraps stop counting with the role (§5.4 (2); parity: `reanchor_plan`).
     if (owner === leaving) continue
