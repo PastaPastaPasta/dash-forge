@@ -233,7 +233,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     return loadError ? (
       <StepFailed error={loadError} onRetry={() => setAttempt((a) => a + 1)} />
     ) : (
-      <Waiting label={loadingWhat} hint="The first sign-in downloads the Dash Platform library (about 8 MB); on a slow connection this takes a minute." />
+      <Waiting label={loadingWhat} />
     )
   }
 

@@ -571,28 +571,23 @@ function crossTab<T>(identityId: string, run: () => Promise<T>, signal: AbortSig
  */
 export function serialized<T>(identityId: string, run: () => Promise<T>, waitMs = WRITER_WAIT_MS): Promise<T> {
   const waiting = new AbortController()
-  let started = false
   let timer: ReturnType<typeof setTimeout> | undefined
+  // Rejects only while still waiting: getting the turn clears the timer.
   const turn = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      if (started) return
       waiting.abort()
       reject(new WriterBusyError())
     }, waitMs)
   })
-  turn.catch(() => undefined)
   const guarded = (): Promise<T> => {
     // Gave up while queued in this tab: pass the turn on without writing.
     if (waiting.signal.aborted) return Promise.reject(new WriterBusyError())
-    started = true
     clearTimeout(timer)
     return run()
   }
+  // The chain's tail never rejects (see `tail` below).
   const prev = writeLocks.get(identityId) ?? Promise.resolve()
-  const next = prev.then(
-    () => crossTab(identityId, guarded, waiting.signal),
-    () => crossTab(identityId, guarded, waiting.signal),
-  )
+  const next = prev.then(() => crossTab(identityId, guarded, waiting.signal))
   const tail = next.catch(() => undefined)
   writeLocks.set(identityId, tail)
   void tail.then(() => {
