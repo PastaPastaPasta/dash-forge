@@ -213,9 +213,22 @@ struct V2Record {
     forge_collab: Option<ContractRecord>,
     #[serde(default)]
     contract_group_id: Option<String>,
+    #[serde(default)]
+    forge_core_superseded: Vec<SupersededRecord>,
+    #[serde(default)]
+    forge_collab_superseded: Vec<SupersededRecord>,
     /// The devnet `deploy-v2.mjs` registered on, with the DAPI addresses it used.
     #[serde(default)]
     devnet: Option<V2Devnet>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SupersededRecord {
+    #[serde(default)]
+    contract_id: Option<String>,
+    #[serde(default)]
+    contract_group_id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -254,10 +267,19 @@ impl V2Record {
     /// Every forge-v2 id, or `None` unless both contracts are registered and the group is
     /// recorded — a half-finished deploy is not a usable deployment.
     fn ids(&self) -> Option<ForgeIds> {
+        let group = self.contract_group_id.clone().filter(|s| !s.is_empty())?;
+        let superseded_in_group = self
+            .forge_core_superseded
+            .iter()
+            .chain(&self.forge_collab_superseded)
+            .filter(|r| r.contract_group_id.as_deref() == Some(group.as_str()))
+            .filter_map(|r| r.contract_id.clone())
+            .collect();
         Some(ForgeIds {
             core: self.forge_core.as_ref()?.registered_id()?,
             collab: self.forge_collab.as_ref()?.registered_id()?,
-            group: self.contract_group_id.clone().filter(|s| !s.is_empty())?,
+            group,
+            superseded_in_group,
         })
     }
 }
@@ -272,6 +294,10 @@ pub struct ForgeIds {
     pub collab: String,
     /// The contract group both contracts belong to.
     pub group: String,
+    /// Earlier forge-core / forge-collab contracts `deploy-v2.mjs` superseded but left in the
+    /// same group (a group cannot drop a member). A group-bound key can sign for them too;
+    /// they are Forge's own, so the group check accepts them.
+    pub superseded_in_group: Vec<String>,
 }
 
 /// What an embedded deployment file records for one network.
@@ -532,6 +558,19 @@ mod tests {
             core: on_disk("/v2/forgeCore/contractId"),
             collab: on_disk("/v2/forgeCollab/contractId"),
             group: on_disk("/v2/contractGroupId"),
+            superseded_in_group: v["v2"]["forgeCoreSuperseded"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .chain(
+                    v["v2"]["forgeCollabSuperseded"]
+                        .as_array()
+                        .into_iter()
+                        .flatten(),
+                )
+                .filter(|r| r["contractGroupId"] == v["v2"]["contractGroupId"])
+                .filter_map(|r| r["contractId"].as_str().map(str::to_string))
+                .collect(),
         }
     }
 
@@ -628,7 +667,8 @@ mod tests {
             Some(ForgeIds {
                 core: "C".into(),
                 collab: "L".into(),
-                group: "G".into()
+                group: "G".into(),
+                superseded_in_group: vec![]
             })
         );
         // In flight, missing a contract, or missing the group: no ids.

@@ -27,7 +27,9 @@ pub struct Config {
     /// Comma-separated devnet DAPI addresses. Overridden by `--dapi-addresses`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dapi_addresses: Option<String>,
-    /// Absolute path to the default identity file. Overridden by `--identity` / `DASH_FORGE_KEY`.
+    /// The default key source: an identity file path, or `keychain:dash-forge/<network>/<id>`
+    /// (written by `dg auth new` / `dg auth login`). Overridden by `--identity` /
+    /// `DASH_FORGE_KEY`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_identity: Option<String>,
     /// Base58 id of the default identity (for display in `auth status`).
@@ -35,22 +37,15 @@ pub struct Config {
     pub default_identity_id: Option<String>,
 }
 
-/// The `~/.config/dash-forge` directory (honoring `$HOME`).
+/// The config directory: `$XDG_CONFIG_HOME/dash-forge`, else `~/.config/dash-forge`.
 pub fn config_dir() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .context("HOME is not set; cannot locate ~/.config/dash-forge")?;
-    Ok(home.join(".config/dash-forge"))
+    forge_core::keystore::forge_config_dir()
+        .context("neither XDG_CONFIG_HOME nor HOME is set; cannot locate the dash-forge config")
 }
 
 /// The `config.toml` path.
 pub fn config_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("config.toml"))
-}
-
-/// The per-network identity import directory (`identities/<network>/`).
-pub fn identities_dir(network: &str) -> Result<PathBuf> {
-    Ok(config_dir()?.join("identities").join(network))
 }
 
 impl Config {
@@ -88,7 +83,9 @@ impl Config {
                 .with_context(|| format!("creating {}", parent.display()))?;
         }
         let raw = toml::to_string_pretty(self).context("serializing config")?;
-        std::fs::write(&path, raw).with_context(|| format!("writing config {}", path.display()))?;
+        // Atomic replace: git-remote-dash reads the default key source from this file.
+        forge_core::keystore::write_private_file(&path, raw.as_bytes())
+            .with_context(|| format!("writing config {}", path.display()))?;
         Ok(())
     }
 }

@@ -15,8 +15,8 @@ use forge_core::user_error::{self, codes, ErrorContext, UserError};
 use serde_json::Value;
 
 use crate::{
-    AuthCommand, CollabCommand, Command, CostCommand, IssueCommand, LabelCommand, PrCommand,
-    ReleaseCommand, RepoBackendCommand, RepoCommand, StorageCommand,
+    CollabCommand, Command, CostCommand, IssueCommand, LabelCommand, PrCommand, ReleaseCommand,
+    RepoBackendCommand, RepoCommand, StorageCommand,
 };
 
 /// A failure with a result of its own: `body` is the command's `--json` object (printed
@@ -98,7 +98,6 @@ pub fn print_json(v: &Value) {
 
 /// What the command was for: the headline lead ("issue not created") and the repo.
 pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
-    use AuthCommand as A;
     use CollabCommand as C;
     use IssueCommand as I;
     use PrCommand as P;
@@ -106,9 +105,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
     use RepoCommand as Rp;
     use StorageCommand as S;
     let (goal, repo): (&'static str, Option<&String>) = match cmd {
-        Command::Auth(A::Login) => ("login failed", None),
-        Command::Auth(A::Status) => ("could not show auth status", None),
-        Command::Auth(A::Balance) => ("could not read the balance", None),
+        Command::Auth(a) => (a.context(), None),
         Command::Repo(Rp::Create(a)) => ("repository not created", a.name.as_ref()),
         Command::Init(a) => ("repository not published", a.name.as_ref()),
         Command::Repo(Rp::Clone { repo } | Rp::View { repo }) => {

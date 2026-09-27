@@ -105,21 +105,21 @@ Fix: run `git init` first (or `cd` into the repository), or pass `--remote <name
 
 ## E301
 
-**No identity configured.** The command needs to sign, and no identity file was found.
+**No identity configured.** The command needs to sign, and no identity or key was found.
 
-Fix: `dg auth login --identity <file>` records a default identity (use the bridge identity export). Alternatively, pass `--identity <file>` for one command, or set `DASH_FORGE_KEY=<file>` (this is also how `git-remote-dash` finds the key; its fallback is `~/.config/dash-forge/identities/<owner>.identity.json`).
+Fix: `dg auth new` creates an identity and stores a limited key for this computer; `dg auth login <file>` (or `dg auth login --mnemonic`) signs in with an existing one. For a single command pass `--identity <file>`, or set `DASH_FORGE_KEY` to a file, a `keychain:dash-forge/<network>/<id>` entry, or a `dfk1:` key (this is also how `git-remote-dash` finds the key; without it the helper uses the default `dg auth` recorded, then `~/.config/dash-forge/identities/<owner>.identity.json`).
 
 ## E302
 
-**This key can't sign that.** The identity file has no key at the security level the operation needs. Document writes (every `dg` and `git push` write) need a HIGH or CRITICAL AUTHENTICATION key.
+**This key can't sign that.** The key in use cannot sign this kind of operation. Document writes (every `dg` and `git push` write) need a HIGH or CRITICAL AUTHENTICATION key. Registering or disabling keys needs the MASTER key, and a DPNS name needs an unbound CRITICAL or HIGH key: a Forge limited key is bound to the forge contracts and cannot sign either.
 
-Fix: use the identity export that includes that key.
+Fix: pass the identity file with `--master <file>`, or type the recovery words when asked. The master key is used for that one signature and not stored.
 
 ## E303
 
-**Identity file unreadable.** The identity file is missing, unreadable or not a bridge-format identity export.
+**Identity unreadable.** The identity file or stored key is missing, unreadable, not a bridge-format identity export or `dfk1:` key, or a sealed key file could not be opened (wrong passphrase).
 
-Fix: check the path (`dg auth status` shows which file is in use), or export the identity again from the bridge.
+Fix: `dg auth status` shows which key source is in use. Sign in again with `dg auth login <file>` or `dg auth login --mnemonic`. For a sealed file, set `DASH_FORGE_PASSPHRASE` or type the passphrase when asked.
 
 ## E304
 
@@ -127,11 +127,23 @@ Fix: check the path (`dg auth status` shows which file is in use), or export the
 
 Fix: select the network the identity was created on: `--network testnet|mainnet`, or `--network devnet --devnet-name <name>`.
 
+## E305
+
+**This key expired or was disabled.** The limited key signing for you is past its expiry or has been disabled on chain. Limited keys are disposable: nothing is lost.
+
+Fix: register a fresh one with your master key (used once): `dg auth login <identity file>` or `dg auth login --mnemonic`. `dg auth keys list` shows which keys are live.
+
 ## E401
 
 **Not enough credits.** The identity's balance cannot pay for the write. The `cause:` line starts with `insufficient credits:` and shows the amount needed and the current balance in DASH.
 
 Fix: top up the identity from any Dash wallet at <https://bridge.thepasta.org>. `dg auth balance` shows the balance. Reading, cloning and browsing are free and still work.
+
+## E402
+
+**This key's budget is used up.** The limited key signing for you has spent its whole budget (the identity's balance is untouched). Budgets bound what a leaked key could spend.
+
+Fix: register a fresh limited key (uses the master key once): `dg auth login <identity file>` or `dg auth login --mnemonic`, with a larger `--budget` if you need one.
 
 ## E501
 

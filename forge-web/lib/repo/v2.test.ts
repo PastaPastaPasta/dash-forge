@@ -11,18 +11,28 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { base58Decode } from '../auth/base58'
 import type { ForgeIds } from '../deployments'
 import { bytesToBase64, hexToBase64, type DocumentQuery } from '../sdk'
 import { loadIssueThread, loadPullThread } from '../view/issues-view'
 import {
+  foldOpenCounts,
+  foldsForCount,
   holdingsOfRole,
   invalidateMembers,
   invalidateRepoFeed,
+  LIST_PAGE,
   listIssues,
+  listIssuesCached,
   listPulls,
+  openCountFor,
+  openCountOf,
+  openCounts,
+  readTargetCounts,
+  repoWriteGeneration,
+  subscribeRepoLists,
   readConfigBundle,
   readRefs,
   readViewerPermissions,
@@ -472,5 +482,159 @@ describe('issue numbering (allocate_number over the live index)', () => {
     const { nextNumber } = await import('./writes')
     // count 4 → ceiling 108; 108, 109, 110 are taken, 111 is free.
     expect(await nextNumber(mockSdk(issues(1, 108, 109, 110)), DEMO, 'issue')).toBe(111)
+  })
+})
+
+describe('open counts for the Issues / Pull requests tabs', () => {
+  type Row = { state: { open: boolean }; stateComplete: boolean }
+  const list = (rows: Row[], complete = true, hidden = 0): Row[] & { complete: boolean; hidden: number } =>
+    Object.assign(rows, { complete, hidden })
+  const open = (): Row => ({ state: { open: true }, stateComplete: true })
+  const closed = (): Row => ({ state: { open: false }, stateComplete: true })
+
+  it('counts only open rows: one closed issue is 0, two open and one closed is 2', () => {
+    expect(openCountOf(list([closed()]))).toBe(0)
+    expect(openCountOf(list([open(), closed(), open()]))).toBe(2)
+  })
+
+  it('proves no count from a list that stopped early or has an unverified row', () => {
+    expect(openCountOf(list([open()], false))).toBeNull()
+    expect(openCountOf(list([open(), { state: { open: true }, stateComplete: false }]))).toBeNull()
+    expect(openCountOf(null)).toBeNull()
+  })
+
+  it('folds only below the bound, and never shows a total in place of an open count', () => {
+    expect(foldsForCount(1)).toBe(true)
+    expect(foldsForCount(LIST_PAGE - 1)).toBe(true)
+    expect(foldsForCount(LIST_PAGE)).toBe(false)
+    expect(foldsForCount(0)).toBe(false) // nothing to fold: the count is 0
+    expect(foldsForCount(null)).toBe(false)
+    // Above the bound with no list read: no number, not the 150.
+    expect(openCountFor(150, undefined)).toBeNull()
+    expect(openCountFor(null, undefined)).toBeNull()
+    expect(openCountFor(0, undefined)).toBe(0)
+    // A list that accounts for the whole total (shown + hidden): its open count.
+    expect(openCountFor(3, list([open(), closed()], true, 1))).toBe(1)
+  })
+
+  it('shows no number from a list folded against an older total', () => {
+    // Folded when there were 2 issues; a third has landed since.
+    expect(openCountFor(3, list([open(), closed()]))).toBeNull()
+    expect(openCountFor(2, list([open(), closed()]))).toBe(1)
+  })
+
+  it('folds a small repo: the closed issues and the merged PR are not counted', async () => {
+    invalidateRepoFeed(DEMO)
+    const sdk = mockSdk(fixture())
+    const totals = await readTargetCounts(sdk, FORGE, REPO)
+    expect(totals).toEqual({ issues: 4, pulls: 1 }) // every document, the malformed #4 included
+    expect(openCounts(DEMO, totals)).toEqual({ issues: null, pulls: null }) // nothing folded yet
+    await foldOpenCounts(sdk, DEMO, totals)
+    // #1 open; #2 closed by its author, #3 by a writer. PR #1 merged.
+    expect(openCounts(DEMO, totals)).toEqual({ issues: 1, pulls: 0 })
+    // The list page reads the same cached list: no second read.
+    const seen: DocumentQuery[] = []
+    const again = await listIssuesCached(mockSdk(fixture(), seen), DEMO)
+    expect(again.filter((i) => i.state.open)).toHaveLength(1)
+    expect(seen).toEqual([])
+    invalidateRepoFeed(DEMO)
+  })
+
+  it('reads nothing for a badge above the bound, and shows no total in its place', async () => {
+    invalidateRepoFeed(DEMO)
+    const seen: DocumentQuery[] = []
+    const sdk = mockSdk(fixture(), seen)
+    const big = { issues: 150, pulls: 0 }
+    await foldOpenCounts(sdk, DEMO, big)
+    expect(seen).toEqual([])
+    expect(openCounts(DEMO, big)).toEqual({ issues: null, pulls: 0 })
+    // The Issues page read one page of 4 (3 shown + 1 hidden): it does not prove 150's count.
+    await listIssuesCached(sdk, DEMO)
+    expect(openCounts(DEMO, big)).toEqual({ issues: null, pulls: 0 })
+    invalidateRepoFeed(DEMO)
+  })
+
+  it('refolds a settled list once it is older than a minute', async () => {
+    invalidateRepoFeed(DEMO)
+    const totals = { issues: 4, pulls: 1 }
+    const first: DocumentQuery[] = []
+    await foldOpenCounts(mockSdk(fixture(), first), DEMO, totals)
+    expect(first.length).toBeGreaterThan(0)
+    const fresh: DocumentQuery[] = []
+    await foldOpenCounts(mockSdk(fixture(), fresh), DEMO, totals)
+    expect(fresh).toEqual([]) // fresh: no re-read
+    const now = Date.now()
+    const later = vi.spyOn(Date, 'now').mockReturnValue(now + 61_000)
+    try {
+      const stale: DocumentQuery[] = []
+      await foldOpenCounts(mockSdk(fixture(), stale), DEMO, totals)
+      expect(stale.some((q) => q.documentTypeName === 'issue')).toBe(true)
+    } finally {
+      later.mockRestore()
+    }
+    invalidateRepoFeed(DEMO)
+  })
+
+  it('reads each base ref’s history once per PR list, however many PRs target it', async () => {
+    invalidateRepoFeed(DEMO)
+    const store = fixture()
+    const main = store.COLLAB!.patch![0]!
+    store.COLLAB!.patch!.push({ ...main, $id: 'patch2', number: 2 }, { ...main, $id: 'patch3', number: 3 })
+    const seen: DocumentQuery[] = []
+    const pulls = await listPulls(mockSdk(store, seen), DEMO)
+    expect(pulls).toHaveLength(3)
+    const refReads = seen.filter((q) => q.documentTypeName === 'protectedRefUpdate')
+    expect(refReads).toHaveLength(1)
+    invalidateRepoFeed(DEMO)
+  })
+
+  it('marks a list cut at its limit incomplete, so it proves no count', async () => {
+    invalidateRepoFeed(DEMO)
+    const all = await listIssues(mockSdk(fixture()), DEMO)
+    expect(all.complete).toBe(true)
+    const cut = await listIssues(mockSdk(fixture()), DEMO, 2)
+    expect(cut).toHaveLength(2)
+    expect(cut.complete).toBe(false)
+    expect(openCountOf(cut)).toBeNull()
+    invalidateRepoFeed(DEMO)
+  })
+
+  it('a write drops the counted lists and tells the header, which refolds', async () => {
+    invalidateRepoFeed(DEMO)
+    const store = fixture()
+    const sdk = mockSdk(store)
+    const totals = { issues: 4, pulls: 1 }
+    await foldOpenCounts(sdk, DEMO, totals)
+    expect(openCounts(DEMO, totals).issues).toBe(1)
+    let told = 0
+    const unsubscribe = subscribeRepoLists(() => told++)
+    const generation = repoWriteGeneration(DEMO)
+    // A maintainer closes #1 (the write path calls invalidateRepoFeed).
+    store.COLLAB!.event!.push(doc({ $ownerId: MAINT, repoId: REPO, targetId: 'issue1', targetNumber: 1, kind: 1 }))
+    invalidateRepoFeed(DEMO)
+    expect(told).toBe(1)
+    expect(repoWriteGeneration(DEMO)).toBe(generation + 1)
+    // The badge keeps its number (no flicker) until the refold lands.
+    expect(openCounts(DEMO, totals).issues).toBe(1)
+    await foldOpenCounts(sdk, DEMO, totals)
+    expect(openCounts(DEMO, totals).issues).toBe(0)
+    expect(told).toBeGreaterThan(1) // the refold settling re-renders the header too
+    unsubscribe()
+    invalidateRepoFeed(DEMO)
+  })
+
+  it('a new issue shows no number until the refold, never the old list against the new total', async () => {
+    invalidateRepoFeed(DEMO)
+    await foldOpenCounts(mockSdk(fixture()), DEMO, { issues: 4, pulls: 1 })
+    expect(openCounts(DEMO, { issues: 5, pulls: 1 }).issues).toBeNull()
+    invalidateRepoFeed(DEMO)
+  })
+
+  it('bumps the count generation only for writes that can change a count', () => {
+    const generation = repoWriteGeneration(DEMO)
+    invalidateRepoFeed(DEMO, { counts: false }) // a comment, review or release
+    expect(repoWriteGeneration(DEMO)).toBe(generation)
+    invalidateRepoFeed(DEMO)
+    expect(repoWriteGeneration(DEMO)).toBe(generation + 1)
   })
 })

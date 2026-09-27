@@ -118,8 +118,10 @@ pub use crate::network::{Network, NetworkTarget};
 
 pub mod wrap;
 
+pub mod identity;
+
 /// The `dashcore` network the SDK and its context provider use for `network`.
-fn to_dashcore(network: &Network) -> DashcoreNetwork {
+pub(crate) fn to_dashcore(network: &Network) -> DashcoreNetwork {
     match network {
         Network::Testnet => DashcoreNetwork::Testnet,
         Network::Mainnet => DashcoreNetwork::Mainnet,
@@ -167,7 +169,7 @@ impl std::fmt::Debug for LoadedContract {
 /// Wraps the SDK's `Identity` so the SDK type never appears in a `forge-core` public
 /// signature. Obtain one from [`PlatformClient::fetch_identity`].
 #[derive(Clone)]
-pub struct LoadedIdentity(Identity);
+pub struct LoadedIdentity(pub(crate) Identity);
 
 impl LoadedIdentity {
     /// The identity's base58 id.
@@ -189,23 +191,8 @@ impl LoadedIdentity {
             .map(|k| IdentityKeyInfo {
                 id: k.id(),
                 // The names a bridge identity file uses, spelled out (not rs-dpp's Debug).
-                purpose: match k.purpose() {
-                    Purpose::AUTHENTICATION => "AUTHENTICATION",
-                    Purpose::ENCRYPTION => "ENCRYPTION",
-                    Purpose::DECRYPTION => "DECRYPTION",
-                    Purpose::TRANSFER => "TRANSFER",
-                    Purpose::SYSTEM => "SYSTEM",
-                    Purpose::VOTING => "VOTING",
-                    Purpose::OWNER => "OWNER",
-                }
-                .to_string(),
-                security_level: match k.security_level() {
-                    SecurityLevel::MASTER => "MASTER",
-                    SecurityLevel::CRITICAL => "CRITICAL",
-                    SecurityLevel::HIGH => "HIGH",
-                    SecurityLevel::MEDIUM => "MEDIUM",
-                }
-                .to_string(),
+                purpose: purpose_name(k.purpose()).to_string(),
+                security_level: level_name(k.security_level()).to_string(),
                 key_type: match k.key_type() {
                     KeyType::ECDSA_SECP256K1 => "ECDSA_SECP256K1",
                     KeyType::BLS12_381 => "BLS12_381",
@@ -236,6 +223,29 @@ impl LoadedIdentity {
             total_budget: k.total_budget(),
             expires_at: k.expires_at(),
         })
+    }
+}
+
+/// A key purpose as a bridge identity file spells it.
+pub(crate) fn purpose_name(p: Purpose) -> &'static str {
+    match p {
+        Purpose::AUTHENTICATION => "AUTHENTICATION",
+        Purpose::ENCRYPTION => "ENCRYPTION",
+        Purpose::DECRYPTION => "DECRYPTION",
+        Purpose::TRANSFER => "TRANSFER",
+        Purpose::SYSTEM => "SYSTEM",
+        Purpose::VOTING => "VOTING",
+        Purpose::OWNER => "OWNER",
+    }
+}
+
+/// A security level as a bridge identity file spells it.
+pub(crate) fn level_name(l: SecurityLevel) -> &'static str {
+    match l {
+        SecurityLevel::MASTER => "MASTER",
+        SecurityLevel::CRITICAL => "CRITICAL",
+        SecurityLevel::HIGH => "HIGH",
+        SecurityLevel::MEDIUM => "MEDIUM",
     }
 }
 
@@ -1793,7 +1803,7 @@ fn parse_address_list(addresses: &[String]) -> Result<AddressList> {
 }
 
 /// Parse a base58 Platform id, mapping failures to a config error.
-fn parse_id(s: &str, what: &str) -> Result<Identifier> {
+pub(crate) fn parse_id(s: &str, what: &str) -> Result<Identifier> {
     Identifier::from_string(s, Encoding::Base58)
         .map_err(|e| Error::Config(format!("invalid {what} (expected base58): {e}")))
 }
@@ -1991,6 +2001,30 @@ fn minimal_uint(n: u64) -> Value {
 /// and (b) is a usable ECDSA_SECP256K1 authentication key at HIGH or CRITICAL — the
 /// levels document create/delete accept (spike S0.7).
 fn select_matching_key(identity: &Identity, signer: &SingleKeySigner) -> Result<IdentityPublicKey> {
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+    // The signer's key is on the identity but can no longer sign: say so (E305), rather than
+    // "no usable key", which sends people looking for a different file.
+    if let Some(k) = identity
+        .public_keys()
+        .values()
+        .find(|k| signer.can_sign_with(k))
+    {
+        if k.is_disabled() {
+            return Err(Error::Platform(format!(
+                "Identity public key {} is disabled and can no longer sign",
+                k.id()
+            )));
+        }
+        if let Some(exp) = k.expires_at().filter(|e| *e <= now_ms) {
+            return Err(Error::Platform(format!(
+                "Identity public key {} expired at {exp} ms and can no longer sign",
+                k.id()
+            )));
+        }
+    }
     for public_key in identity.public_keys().values() {
         if public_key.is_disabled() || !signer.can_sign_with(public_key) {
             continue;
@@ -2279,7 +2313,7 @@ fn duration_ms(d: std::time::Duration) -> u64 {
 // The error is the SDK's own (large) type, passed straight through from the SDK calls this
 // wraps; every caller maps it to a crate error on the next line.
 #[allow(clippy::result_large_err)]
-async fn retry_transient_read<T, F, Fut>(
+pub(crate) async fn retry_transient_read<T, F, Fut>(
     label: &str,
     op: F,
 ) -> std::result::Result<T, dash_sdk::Error>

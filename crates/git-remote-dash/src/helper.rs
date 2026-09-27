@@ -130,7 +130,10 @@ impl Helper {
     /// Establish (once) the Platform connection and resolve the repo.
     async fn ensure_conn(&mut self) -> Result<&Conn> {
         if self.conn.is_none() {
-            if std::env::var_os("DASH_FORGE_KEY").is_none() && !self.key_path.exists() {
+            if std::env::var_os("DASH_FORGE_KEY").is_none()
+                && forge_core::keystore::is_file_source(&self.key_path)
+                && !self.key_path.exists()
+            {
                 return Err(no_identity(format!(
                     "DASH_FORGE_KEY is not set and {} does not exist",
                     self.key_path.display()
@@ -1272,7 +1275,8 @@ const NOTE_PRECHECK: &str = "checked before building or paying for anything: not
 fn no_identity(why: impl Into<String>) -> anyhow::Error {
     UserError::new(codes::NO_IDENTITY, "no identity configured")
         .cause(why)
-        .fix("export DASH_FORGE_KEY=<identity file> (the bridge identity export) in the shell you run git in")
+        .fix("`dg auth login <file>` (or `dg auth new`) records a default key that git uses too")
+        .fix("or export DASH_FORGE_KEY=<identity file | keychain:… | dfk1:…> in the shell you run git in")
         .into()
 }
 
@@ -1367,12 +1371,16 @@ fn write_denied(repo: &str, me: &str) -> Denied {
     }
 }
 
-/// Resolve the identity key file: `DASH_FORGE_KEY` if set, else
+/// Resolve the identity key source: `DASH_FORGE_KEY` if set, else the default `dg` recorded
+/// in `~/.config/dash-forge/config.toml`, else
 /// `~/.config/dash-forge/identities/<owner>.identity.json`.
 fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("DASH_FORGE_KEY") {
         return Ok(PathBuf::from(p));
     }
+    // Then a per-owner file (below) when one exists, else the identity `dg auth new` /
+    // `dg auth login` recorded as the default (a keychain entry or a key file), so a plain
+    // `git push` signs as `dg` does.
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| no_identity("neither DASH_FORGE_KEY nor HOME is set"))?;
@@ -1382,14 +1390,23 @@ fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
     let owner = match url {
         DashUrl::Named { owner, .. } => owner.clone(),
         DashUrl::Id { .. } => {
-            return Err(no_identity(
-                "an id-addressed dash:// URL has no owner to pick a default key for",
-            ))
+            return forge_core::keystore::configured_default_source()
+                .map(PathBuf::from)
+                .ok_or_else(|| {
+                    no_identity(
+                        "an id-addressed dash:// URL has no owner to pick a default key for",
+                    )
+                })
         }
     };
-    Ok(home
-        .join(".config/dash-forge/identities")
-        .join(format!("{owner}.identity.json")))
+    let per_owner = forge_core::keystore::forge_config_dir()
+        .unwrap_or_else(|| home.join(".config/dash-forge"))
+        .join("identities")
+        .join(format!("{owner}.identity.json"));
+    if per_owner.exists() {
+        return Ok(per_owner);
+    }
+    Ok(forge_core::keystore::configured_default_source().map_or(per_owner, PathBuf::from))
 }
 
 #[cfg(test)]
