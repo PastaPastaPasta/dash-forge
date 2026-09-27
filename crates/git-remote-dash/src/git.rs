@@ -131,10 +131,15 @@ fn objects_missing(oids: &[String], repo: Option<&Path>, partial: bool) -> bool 
     let Ok(out) = child.wait_with_output() else {
         return false;
     };
-    // `fatal: missing blob object …`, `fatal: bad tree object …`, `fatal: bad object …`.
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    !out.status.success()
-        && (stderr.contains("missing ") || stderr.contains("bad ") && stderr.contains("object"))
+    !out.status.success() && names_missing_object(&String::from_utf8_lossy(&out.stderr))
+}
+
+/// Whether git's error text says an object is absent from the store:
+/// `fatal: missing blob object …`, `fatal: bad tree object …`, `fatal: bad object …`
+/// (rev-list and pack-objects word it the same way).
+pub fn names_missing_object(git_error: &str) -> bool {
+    git_error.contains("missing ") && git_error.contains("object")
+        || git_error.contains("bad ") && git_error.contains("object")
 }
 
 /// Run a git command whose exit *status* is the answer (0 → true, non-zero → false),
@@ -306,7 +311,7 @@ impl Drop for ScratchRepo {
 
 #[cfg(test)]
 mod tests {
-    use super::{objects_missing, run_git, ScratchRepo};
+    use super::{names_missing_object, objects_missing, run_git, ScratchRepo};
     use std::path::Path;
 
     /// Write `body` into `repo` as a loose object of `kind`, without git's checks.
@@ -405,6 +410,23 @@ mod tests {
         let scratch = ScratchRepo::init().unwrap();
         scratch.index_pack(&second).unwrap();
         scratch.index_pack(&first).unwrap();
+    }
+
+    #[test]
+    fn a_filtered_repack_missing_a_tree_names_a_missing_object() {
+        // What a set-aside pack does to a partial clone: the filtered walk cannot find a tree.
+        let scratch = ScratchRepo::init().unwrap();
+        let d = scratch.dir.clone();
+        let tree = put(&d, "tree", &entry("100644", "a", &put(&d, "blob", b"1\n")));
+        let commit = put(&d, "commit", commit_text(&tree, None, 1).as_bytes());
+        std::fs::remove_file(d.join("objects").join(&tree[..2]).join(&tree[2..])).unwrap();
+        let err = scratch
+            .pack_filtered(&[commit], Some("blob:none"))
+            .unwrap_err();
+        assert!(names_missing_object(&format!("{err:#}")), "{err:#}");
+        assert!(!names_missing_object(
+            "fatal: unable to create temporary file"
+        ));
     }
 
     fn git(dir: &std::path::Path, args: &[&str]) -> String {

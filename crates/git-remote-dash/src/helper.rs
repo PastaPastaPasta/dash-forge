@@ -43,7 +43,7 @@ use forge_core::user_error::{codes, dash, UserError, NOTE_PLATFORM_CHUNKS_JOURNA
 
 use futures::stream::{self, StreamExt, TryStreamExt};
 
-use crate::git::{LocalRepo, ScratchRepo};
+use crate::git::{names_missing_object, LocalRepo, ScratchRepo};
 use crate::options::OptionState;
 use crate::policy::{self, PushPolicy};
 use crate::progress::{self, Charge, PlanFacts, PlatformWrites, Progress};
@@ -307,8 +307,8 @@ impl Helper {
                     match svc.open_artifact_of(repo, copies, m.size_bytes, sealed).await {
                         Ok(b) => Ok((b, m)),
                         Err(forge_core::Error::User(u)) if u.code == codes::LATE_CONTENT => {
-                            tracing::warn!(pack = %hash, "{u}; skipping it");
-                            return Ok(Got::Hidden);
+                            tracing::info!(pack = %hash, "{u}; continuing without it");
+                            return Ok(Got::Hidden(*u));
                         }
                         Err(e) => {
                             return Err(anyhow::Error::from(e)
@@ -645,8 +645,9 @@ enum Got {
     Bytes(Vec<u8>),
     /// No copy could be read.
     Unreadable(Unreadable),
-    /// Hidden by the late-content rule (E510): never part of the history.
-    Hidden,
+    /// Hidden by the late-content rule (E510), with the reason. Normally no ref needs it; if
+    /// one does, the fetch fails with [`hidden_packs_needed`].
+    Hidden(UserError),
 }
 
 /// A pack none of whose external copies could be read.
@@ -656,10 +657,11 @@ struct Unreadable {
 }
 
 /// Index a fetch's downloaded packs into the local odb (for a `--filter` partial clone:
-/// through a scratch repo that applies the filter, then as a promisor pack). When some packs
-/// were unreadable and the wanted history is incomplete without them, fail with E503
-/// ([`packs_unreadable`]) before git's own connectivity check says only "did not send all
-/// necessary objects".
+/// through a scratch repo that applies the filter, then as a promisor pack). When packs were
+/// set aside and the wanted history is incomplete without them, fail before git's own
+/// connectivity check says only "did not send all necessary objects": E503
+/// ([`packs_unreadable`]) when any was unreadable, else E510 ([`hidden_packs_needed`]) when
+/// only packs the late-content rule hides are missing.
 fn index_fetched(
     fetched: Vec<Got>,
     want_oids: &[String],
@@ -669,14 +671,32 @@ fn index_fetched(
 ) -> Result<()> {
     let mut downloaded = Vec::new();
     let mut unreadable = Vec::new();
+    let mut hidden = Vec::new();
     for got in fetched {
         match got {
             Got::Bytes(b) => downloaded.push(b),
             Got::Unreadable(u) => unreadable.push(u),
-            Got::Hidden => {}
+            Got::Hidden(u) => hidden.push(u),
         }
     }
-    let incomplete = || packs_unreadable(repo, options.cloning, &unreadable, total).into();
+    let set_aside = !unreadable.is_empty() || !hidden.is_empty();
+    // A gap with unreadable packs is E503 (restoring a copy may fix it); with only hidden
+    // ones it is E510: the history needs content the late-content rule withholds.
+    let incomplete = || -> anyhow::Error {
+        if unreadable.is_empty() {
+            return hidden_packs_needed(repo, options.cloning, &hidden).into();
+        }
+        let e503 = packs_unreadable(repo, options.cloning, &unreadable, total);
+        match hidden.len() {
+            0 => e503.into(),
+            n => e503
+                .note(format!(
+                    "{n} more {} hidden by the late-content rule (E510); restoring copies will not bring those back",
+                    if n == 1 { "pack is" } else { "packs are" }
+                ))
+                .into(),
+        }
+    };
     if let Some(filter) = options.filter.as_deref() {
         let scratch = ScratchRepo::init()?;
         for bytes in &downloaded {
@@ -685,10 +705,9 @@ fn index_fetched(
         if want_oids.is_empty() {
             return Ok(());
         }
-        // The walk fails on a commit or tree an unreadable pack held.
         let filtered = match scratch.pack_filtered(want_oids, Some(filter)) {
             Ok(f) => f,
-            Err(e) if !unreadable.is_empty() => {
+            Err(e) if blames_set_aside_packs(set_aside, &e) => {
                 tracing::debug!(error = %e, "filtered repack failed");
                 return Err(incomplete());
             }
@@ -703,10 +722,58 @@ fn index_fetched(
         let sha = LocalRepo::index_pack(bytes)?;
         tracing::info!(pack = %sha, "indexed pack into local odb");
     }
-    if !unreadable.is_empty() && !want_oids.is_empty() && LocalRepo::history_has_gaps(want_oids) {
+    if set_aside && !want_oids.is_empty() && LocalRepo::history_has_gaps(want_oids) {
         return Err(incomplete());
     }
     Ok(())
+}
+
+/// Whether a failed filtered repack is explained by the packs this fetch set aside: only when
+/// some were (`set_aside`) and git says the walk hit a missing object. Any other failure
+/// keeps its own error rather than being reported as E503/E510.
+fn blames_set_aside_packs(set_aside: bool, e: &anyhow::Error) -> bool {
+    set_aside && names_missing_object(&format!("{e:#}"))
+}
+
+/// E510: the wanted history needs objects only packs hidden by the late-content rule hold
+/// (a removed member's upload under an old key, or a pack sealed under an earlier use of an
+/// epoch number). No copy would help: the rule withholds them from every reader.
+fn hidden_packs_needed(repo: &str, cloning: bool, hidden: &[UserError]) -> UserError {
+    let what = if cloning { "clone" } else { "fetch" };
+    let n = hidden.len();
+    // `message: cause`, as UserError displays itself.
+    let first = hidden.first().map_or_else(String::new, ToString::to_string);
+    let cause = match n {
+        0 | 1 => first,
+        2 => format!("{first}; and 1 more such pack"),
+        n => format!("{first}; and {} more such packs", n - 1),
+    };
+    // Two kinds (private-repos.md §8.2, §8.1 step 7). A removed member's late upload opens
+    // again as soon as its uploader is a current member (the member exception). A pack
+    // sealed under an earlier use of an epoch number opens for nobody: its key is gone.
+    let earlier_use = hidden
+        .iter()
+        .all(|u| u.message.contains("earlier use of key epoch"));
+    let err = UserError::new(
+        codes::LATE_CONTENT,
+        format!(
+            "{what} incomplete: {n} {} hidden by the late-content rule",
+            if n == 1 { "pack" } else { "packs" }
+        ),
+    )
+    .cause(cause);
+    let err = if earlier_use {
+        err.fix("a member whose clone has these commits can push the branch again: it is stored under the current key")
+    } else {
+        err.fix(format!(
+            "a maintainer can re-add the uploader (`dg collab add {repo} <identity id> --role writer`): a current member's uploads are readable again"
+        ))
+        .fix("or a member whose clone has these commits can push the branch again")
+    };
+    err.fix(format!(
+        "or a maintainer can move the ref back to history every member can read; `dg repo keys status {repo}` shows the epochs"
+    ))
+    .note("the content is hidden from every reader, not deleted; no other copy would open it")
 }
 
 /// E503: the wanted history needs objects from `unreadable` packs (of `total`), which a clone
@@ -733,14 +800,17 @@ fn packs_unreadable(
     if unreadable.len() > SHOWN {
         cause.push(format!("and {} more", unreadable.len() - SHOWN));
     }
+    // The catalogue's wording (docs/design/ux-dx-spec.md §7.3 example 6): "clone
+    // incomplete: 2 packs unreadable". The pack total goes in the cause.
+    let n = unreadable.len();
     UserError::new(
         codes::PACKS_UNREADABLE,
         format!(
-            "{what} incomplete: {} of {total} pack(s) unreadable",
-            unreadable.len()
+            "{what} incomplete: {n} {} unreadable",
+            if n == 1 { "pack" } else { "packs" }
         ),
     )
-    .cause(cause.join("; "))
+    .cause(format!("{n} of the repository's {total} packs: {}", cause.join("; ")))
     .fix(format!(
         "ask a member who has the objects to run `dg reseed {repo} --from-local` inside their clone"
     ))
@@ -1893,10 +1963,12 @@ fn resolve_key_path(url: &DashUrl, owner_id: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        archived_refusal, head_outcome, is_head, list_lines, oid_to_bytes, packs_unreadable,
-        protected_denied, resolve_network, write_denied, PushOutcome, PushSpec, Unreadable,
+        archived_refusal, blames_set_aside_packs, head_outcome, hidden_packs_needed, is_head,
+        list_lines, oid_to_bytes, packs_unreadable, protected_denied, resolve_network,
+        write_denied, PushOutcome, PushSpec, Unreadable,
     };
     use forge_core::network::NetworkSettings;
+    use forge_core::user_error::{codes, UserError};
 
     #[test]
     fn unreadable_packs_the_history_needs_are_e503_with_the_reseed_fix() {
@@ -1911,10 +1983,13 @@ mod tests {
         let u = packs_unreadable("OWNER/repo", true, &[gone("a"), gone("b")], 6);
         assert_eq!(u.code, "E503");
         assert_eq!(u.exit_code(), 5);
-        assert_eq!(u.message, "clone incomplete: 2 of 6 pack(s) unreadable");
+        // The catalogue's wording (ux-dx-spec §7.3 example 6).
+        assert_eq!(u.message, "clone incomplete: 2 packs unreadable");
         let cause = u.cause.clone().unwrap();
         assert!(
-            cause.starts_with("pack aaaaaaaaaaaa…: no external copy verified"),
+            cause.starts_with(
+                "2 of the repository's 6 packs: pack aaaaaaaaaaaa…: no external copy verified"
+            ),
             "{cause}"
         );
         assert!(
@@ -1937,12 +2012,72 @@ mod tests {
         assert!(u.fix[1].contains("[read] ipfs_gateways"), "{:?}", u.fix);
         let many: Vec<_> = ["a", "b", "c", "d", "e"].iter().map(|h| gone(h)).collect();
         let u = packs_unreadable("OWNER/repo", false, &many, 5);
-        assert!(
-            u.message.starts_with("fetch incomplete: 5 of 5"),
-            "{}",
-            u.message
-        );
+        assert_eq!(u.message, "fetch incomplete: 5 packs unreadable");
         assert!(u.cause.unwrap().ends_with("; and 2 more"));
+        let u = packs_unreadable("OWNER/repo", true, &many[..1], 5);
+        assert_eq!(u.message, "clone incomplete: 1 pack unreadable");
+    }
+
+    #[test]
+    fn a_filtered_repack_failure_is_blamed_on_set_aside_packs_only_when_an_object_is_missing() {
+        let missing = anyhow::anyhow!(
+            "git pack-objects failed: fatal: bad tree object 08585692ce06452da6f82ae66b90d98b55536fca"
+        );
+        let other = anyhow::anyhow!(
+            "git pack-objects failed: fatal: unable to create temporary file: No space left on device"
+        );
+        assert!(blames_set_aside_packs(true, &missing));
+        // L4: an unrelated git failure keeps its own error, even with packs set aside.
+        assert!(!blames_set_aside_packs(true, &other));
+        // Nothing set aside: never blamed on packs.
+        assert!(!blames_set_aside_packs(false, &missing));
+    }
+
+    #[test]
+    fn a_needed_pack_hidden_by_the_late_content_rule_is_e510_with_a_fix() {
+        let late = UserError::new(
+            codes::LATE_CONTENT,
+            "pack 0123456789ab was uploaded under an old key after the key was rotated",
+        )
+        .cause("its sealed header names epoch 1 and its uploader Xyz is no longer a member");
+        let u = hidden_packs_needed("OWNER/repo", true, &[late.clone(), late]);
+        assert_eq!(u.code, "E510");
+        assert_eq!(u.exit_code(), 5);
+        assert_eq!(
+            u.message,
+            "clone incomplete: 2 packs hidden by the late-content rule"
+        );
+        let cause = u.cause.clone().unwrap();
+        assert!(cause.contains("uploaded under an old key"), "{cause}");
+        assert!(cause.contains("no longer a member"), "{cause}");
+        assert!(cause.ends_with("; and 1 more such pack"), "{cause}");
+        // A removed uploader's pack opens again once they are a member (§8.2).
+        assert!(u.fix[0].contains("dg collab add OWNER/repo"), "{:?}", u.fix);
+        assert!(
+            u.fix
+                .last()
+                .unwrap()
+                .contains("dg repo keys status OWNER/repo"),
+            "{:?}",
+            u.fix
+        );
+
+        // Sealed under an earlier use of an epoch number: nobody can open it again.
+        let earlier = UserError::new(
+            codes::LATE_CONTENT,
+            "pack 0123456789ab was sealed under an earlier use of key epoch 2",
+        );
+        let u = hidden_packs_needed("OWNER/repo", false, &[earlier]);
+        assert_eq!(
+            u.message,
+            "fetch incomplete: 1 pack hidden by the late-content rule"
+        );
+        assert!(
+            !u.fix.iter().any(|f| f.contains("collab add")),
+            "{:?}",
+            u.fix
+        );
+        assert!(u.fix[0].contains("push the branch again"), "{:?}", u.fix);
     }
     use forge_core::rules::RefState;
 

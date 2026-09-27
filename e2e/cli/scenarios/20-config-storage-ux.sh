@@ -210,7 +210,7 @@ if [[ $rc -ne 0 ]] && ! grep -q "E503" "$LOG-clone-dead.err" && is_flake "$LOG-c
 fi
 check "clone fails" test "$rc" -ne 0
 check "with E503" assert_file_contains "$LOG-clone-dead.err" "[E503]"
-check "headline: clone incomplete" assert_file_contains "$LOG-clone-dead.err" "clone incomplete: 1 of 1 pack(s) unreadable"
+check "headline: clone incomplete" assert_file_contains "$LOG-clone-dead.err" "clone incomplete: 1 pack unreadable"
 check "cause names the dead copies" assert_file_contains "$LOG-clone-dead.err" "no external copy verified"
 check "fix: reseed" assert_file_contains "$LOG-clone-dead.err" "dg reseed ${UX_OWNER}/${NAME} --from-local"
 check "fix: ipfs_gateways" assert_file_contains "$LOG-clone-dead.err" "[read] ipfs_gateways"
