@@ -163,7 +163,14 @@ fn collab_field(name: &str, v: &Value) -> FieldValue {
         }
         Value::String(t) => FieldValue::text(t.clone()),
         Value::Bool(b) => FieldValue::boolean(*b),
+        // `imported.createdAt` is a full-width integer, as `Imported::to_field` writes it
+        Value::Number(n) if name == "createdAt" => FieldValue::uint64(n.as_u64().expect("u64")),
         Value::Number(n) => FieldValue::integer(n.as_u64().expect("u64")),
+        Value::Object(m) => FieldValue::Object(
+            m.iter()
+                .map(|(k, v)| (k.clone(), collab_field(k, v)))
+                .collect(),
+        ),
         other => panic!("unexpected collab property {name}: {other}"),
     }
 }
@@ -175,7 +182,10 @@ fn collab_json(v: &FieldValue) -> Value {
         FieldValue::Text(t) => json!(t),
         FieldValue::Bool(b) => json!(b),
         FieldValue::Integer(n) | FieldValue::Uint64(n) => json!(n),
-        other => panic!("unexpected sealed property {other:?}"),
+        FieldValue::Object(m) => {
+            Value::Object(m.iter().map(|(k, v)| (k.clone(), collab_json(v))).collect())
+        }
+        other @ FieldValue::List(_) => panic!("unexpected sealed property {other:?}"),
     }
 }
 
@@ -438,7 +448,9 @@ fn run(v: &Vector) -> Value {
                         .map(|(k, val)| (k.clone(), collab_json(val)))
                         .collect::<serde_json::Map<_, _>>(),
                 }),
-                Err(e) if e.to_string().contains("at most") => json!({ "error": "tooLarge" }),
+                Err(e) if crate::collab::private::is_too_large(&e) => {
+                    json!({ "error": "tooLarge" })
+                }
                 Err(e) => panic!("vector `{}`: {e}", v.name),
             }
         }
@@ -732,6 +744,6 @@ fn private_conformance_vectors() {
         assert_eq!(got, v.expected, "vector `{}` ({})", v.name, v.case);
         ran += 1;
     }
-    assert!(ran >= 201, "ran {ran} private vectors, expected 201+");
+    assert!(ran >= 205, "ran {ran} private vectors, expected 205+");
     println!("private conformance: {ran} vectors green");
 }

@@ -1,6 +1,6 @@
 {
-  "name": "issue_edited_after_rotation_late",
-  "description": "an issue created under epoch 0 before the epoch-1 anchor (height 1000) and edited at 1000 + 241 by a removed member is Unreadable(LateEdit): an edit is judged by $updatedAtBlockHeight (§8.2 edits are judged too), and the reason says the document existed in time but was rewritten late (a replace keeps only the new text).",
+  "name": "issue_created_late_and_edited_is_late",
+  "description": "an issue both created and edited after the grace period by a removed member is plain Unreadable(Late).",
   "case": "private_doc_open",
   "rules": "v2",
   "input": {
@@ -27,13 +27,13 @@
       "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
       "epoch": 0,
       "number": 7,
-      "updatedAtBlockHeight": 1241,
+      "updatedAtBlockHeight": 5000,
       "enc": "01000102030405060708090a0b1f7039a0ac468d0d3a5c60dba50b8e67de7316a802d264e22094824ccaf8a0d1650855aba0344d75612e31c48cdfc7b2d5d8c2c6a98c23a1320093aa",
-      "createdAtBlockHeight": 500
+      "createdAtBlockHeight": 1241
     }
   },
   "expected": {
     "status": "unreadable",
-    "reason": "lateEdit"
+    "reason": "late"
   }
 }

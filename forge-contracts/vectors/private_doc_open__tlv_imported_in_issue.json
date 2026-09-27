@@ -1,6 +1,6 @@
 {
-  "name": "tlv_reserved_tag",
-  "description": "reserved tag 15 is malformed.",
+  "name": "tlv_imported_in_issue",
+  "description": "tags 13 and 14 (imported.author, imported.url) open in an issue.",
   "case": "private_doc_open",
   "rules": "v2",
   "input": {
@@ -22,11 +22,17 @@
       "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
       "epoch": 0,
       "number": 7,
-      "enc": "01000102030405060708090a0b1f7039a0ac468d0d3a5c60dba50b8e67de7316a802d264e22094824ccaf8a0d1650855aba0344d75612e31c40e6ac06bd312a9df21a63514aab3ca49781bc0bb",
+      "enc": "01000102030405060708090a0b1f7039a0ac468d0d3a5c60dba50b8e67de7316a802d264e22094824ccaf8a0d1650855aba0344d75612e31c40c6ac67ca5c8bd4e49f2b51da3a2742babd2e219d67e69ddb0a0267ac21dc73369ca448fa5663ea35f3449a8a005b7311846770cbe48ee41a2079bd1d6b0fb4aecaf39d7d3",
       "createdAtBlockHeight": 50
     }
   },
   "expected": {
-    "status": "malformed"
+    "status": "readable",
+    "fields": {
+      "title": "Rotate the signing key",
+      "body": "See the runbook.",
+      "importedAuthor": "octocat",
+      "importedUrl": "https://github.com/acme/secret/issues/12"
+    }
   }
 }

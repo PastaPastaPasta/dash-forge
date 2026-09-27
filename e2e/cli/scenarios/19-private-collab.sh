@@ -32,7 +32,9 @@ json_field() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); prin
 
 mint() { # mint <label>: a funded moutai identity with an ENCRYPTION key, for this run only
   # One mint at a time across every agent sharing the funding key (its UTXOs), as `qa mint` does.
-  local lock=(); command -v lockf >/dev/null && lock=(lockf -t 1200 "${E2E_MINT_LOCK:-/tmp/qa-mint.lock}")
+  local lock=() lf="${E2E_MINT_LOCK:-/tmp/qa-mint.lock}"
+  if command -v lockf >/dev/null; then lock=(lockf -t 1200 "$lf")      # macOS
+  elif command -v flock >/dev/null; then lock=(flock -w 1200 "$lf"); fi  # Linux
   "${lock[@]}" node "$MINT_DIR/mint.mjs" --network devnet --devnet-name moutai --funding fund-from-key \
     --funding-key-file "$MOUTAI_FUNDING" --out "$IDS" --label "$1" --amount 0.2 >"$LOG-mint-$1.log" 2>&1
 }
@@ -105,7 +107,14 @@ if DASH_FORGE_KEY="$P_OWNER" RUST_LOG=error NO_COLOR=1 _tmo "${BIN_DIR}/git-remo
     cat "$LOG-dump.txt" >&2; bad "plaintext or unsealed collaboration documents on chain"
   fi
   SHA_MAIN="$(printf 'refs/heads/main' | shasum -a 256 | cut -d' ' -f1)"
-  grep -q "baseRefNameHash=${SHA_MAIN}" "$LOG-dump.txt" && bad "the PR's base hash is sha256(refName)" || ok "the PR's base hash is keyed, not sha256"
+  BASE_HASH="$(grep '^  type=patch ' "$LOG-dump.txt" | grep -oE 'baseRefNameHash=[0-9a-f]{64}' | head -1 | cut -d= -f2)"
+  if [[ -z "$BASE_HASH" ]]; then
+    bad "the PR carries no baseRefNameHash"
+  elif [[ "$BASE_HASH" == "$SHA_MAIN" ]]; then
+    bad "the PR's base hash is sha256(refName)"
+  else
+    ok "the PR's base hash is keyed, not sha256"
+  fi
 else
   cat "$LOG-dump.err" >&2; bad "dump failed"
 fi

@@ -7,9 +7,10 @@
 //! byte-for-byte alike (conformance case `private_collab_seal`):
 //!
 //! * [`seal_props`] moves every present sealed field (issue `title`/`body`; patch `title`,
-//!   `body`, `baseRefName`, `sourceRefName`; comment `body`/`path`; review `body`) into the
-//!   TLV, re-keys a patch's ref-name hashes to `HMAC(K_ref,e, name)` (§4.5), and adds `epoch`
-//!   and `enc`. Everything else is copied unchanged.
+//!   `body`, `baseRefName`, `sourceRefName`; comment `body`/`path`; review `body`; and on any
+//!   of them an importer's `imported.author` / `imported.url`) into the TLV, re-keys a patch's
+//!   ref-name hashes to `HMAC(K_ref,e, name)` (§4.5), and adds `epoch` and `enc`. Everything
+//!   else is copied unchanged (`imported.createdAt` stays, alone in its object).
 //! * [`open_doc`] is the inverse for a reader: the decrypted fields are put back where the
 //!   public codecs read them, so every fold and view downstream is unchanged.
 
@@ -36,6 +37,19 @@ fn take_text(props: &mut BTreeMap<String, FieldValue>, name: &str) -> Option<Str
     match props.remove(name) {
         Some(FieldValue::Text(s)) => Some(s),
         _ => None,
+    }
+}
+
+/// Take `imported.author` and `imported.url` out of the `imported` object (its `createdAt`
+/// stays plaintext).
+fn take_imported(props: &mut BTreeMap<String, FieldValue>, fields: &mut Fields) {
+    if let Some(FieldValue::Object(m)) = props.get_mut("imported") {
+        let mut take = |name: &str| match m.remove(name) {
+            Some(FieldValue::Text(s)) => Some(s),
+            _ => None,
+        };
+        fields.imported_author = take("author");
+        fields.imported_url = take("url");
     }
 }
 
@@ -124,10 +138,19 @@ fn seal_props_inner(
             )))
         }
     }
+    take_imported(&mut props, &mut fields);
     let enc = seal(&header, &fields).map_err(|e| sealing_error(kind, e))?;
     props.insert("epoch".into(), FieldValue::integer(u64::from(epoch)));
     props.insert("enc".into(), FieldValue::bytes(enc));
     Ok(props)
+}
+
+const TOO_LARGE_MARK: &str = "(they are encrypted together)";
+
+/// Whether a [`seal_props`] error is "the text is over the per-type cap" (§4.3).
+#[must_use]
+pub fn is_too_large(e: &Error) -> bool {
+    matches!(e, Error::User(u) if u.code == crate::user_error::codes::USAGE && u.message.contains(TOO_LARGE_MARK))
 }
 
 /// A seal failure as the user reads it.
@@ -140,11 +163,16 @@ fn sealing_error(kind: DocKind, e: PrivateError) -> Error {
                 DocKind::Comment => "body + file path",
                 _ => "body",
             };
-            Error::Config(format!(
-                "a private {}'s {what} is at most {} bytes (they are encrypted together)",
-                kind.type_name(),
-                text_cap(kind)
-            ))
+            crate::user_error::UserError::new(
+                crate::user_error::codes::USAGE,
+                format!(
+                    "a private {}'s {what} is at most {} bytes {TOO_LARGE_MARK}",
+                    kind.type_name(),
+                    text_cap(kind)
+                ),
+            )
+            .fix("shorten it, or split it into several")
+            .into()
         }
         other => other.into(),
     }
@@ -163,8 +191,17 @@ pub fn open_doc(opened: Opened, mut d: FetchedDocument) -> Option<FetchedDocumen
         base_ref_name,
         source_ref_name,
         path,
+        imported_author,
+        imported_url,
         ..
     } = *f;
+    if let Some(FieldValue::Object(m)) = d.fields.get_mut("imported") {
+        for (name, v) in [("author", imported_author), ("url", imported_url)] {
+            if let Some(v) = v {
+                m.insert(name.into(), FieldValue::text(v));
+            }
+        }
+    }
     for (name, v) in [
         ("title", title),
         ("body", body),
@@ -261,6 +298,38 @@ mod tests {
             assert_eq!(back.fields.get(f), public.get(f), "{f}");
         }
         assert!(back.field_bool("draft"), "plaintext fields are untouched");
+    }
+
+    #[test]
+    fn imported_provenance_is_sealed_and_restored() {
+        let imported = FieldValue::Object(
+            [
+                ("author".to_string(), FieldValue::text("octocat")),
+                ("createdAt".to_string(), FieldValue::uint64(1_700_000_000)),
+                (
+                    "url".to_string(),
+                    FieldValue::text("https://github.com/acme/secret/issues/12"),
+                ),
+            ]
+            .into(),
+        );
+        let public: BTreeMap<String, FieldValue> = [
+            ("number".to_string(), FieldValue::integer(12)),
+            ("title".to_string(), FieldValue::text("Imported")),
+            ("imported".to_string(), imported.clone()),
+        ]
+        .into();
+        let sealed = seal_props(&keys(), DocKind::Issue, OWNER, public).unwrap();
+        // the source org, repo and people never reach the chain in plaintext
+        let Some(FieldValue::Object(left)) = sealed.get("imported") else {
+            panic!("imported kept")
+        };
+        assert_eq!(left.keys().collect::<Vec<_>>(), ["createdAt"]);
+        let d = fetched(sealed);
+        let header = header_of(DocKind::Issue, &d).unwrap();
+        let opened = open_content(&ctx(), &header, &d.field_bytes("enc").unwrap());
+        let back = open_doc(opened, d).unwrap();
+        assert_eq!(back.fields.get("imported"), Some(&imported));
     }
 
     #[test]

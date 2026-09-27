@@ -624,7 +624,10 @@ def doc_open_vectors():
     strict = [
         ("tlv_title_twice", "tag 1 twice is malformed.", T + T + B, MALFORMED),
         ("tlv_out_of_order", "tags out of order (2 then 1) are malformed.", B + T, MALFORMED),
-        ("tlv_reserved_tag", "reserved tag 13 is malformed.", T + B + rec(13, b"x"), MALFORMED),
+        ("tlv_reserved_tag", "reserved tag 15 is malformed.", T + B + rec(15, b"x"), MALFORMED),
+        ("tlv_imported_in_issue", "tags 13 and 14 (imported.author, imported.url) open in an issue.",
+         T + B + rec(13, b"octocat") + rec(14, b"https://github.com/acme/secret/issues/12"),
+         readable(dict(ISSUE_FIELDS, importedAuthor="octocat", importedUrl="https://github.com/acme/secret/issues/12"))),
         ("tlv_burned_in_issue", "tag 11 (burned) is a config field: in an issue it is malformed.",
          T + B + rec(11, b"\x01"), MALFORMED),
         ("tlv_tag_zero", "tag 0 is not a field of any kind.", rec(0, b"x") + T + B, MALFORMED),
@@ -686,8 +689,12 @@ def doc_open_vectors():
       readable(ISSUE_FIELDS), height=1001)
     v("issue_edited_after_rotation_late",
       "an issue created under epoch 0 before the epoch-1 anchor (height 1000) and edited at 1000 + 241 by a removed "
-      "member is Unreadable(Late): an edit is judged by $updatedAtBlockHeight (§8.2 edits are judged too).",
-      dict(ISSUE, updatedAtBlockHeight=1000 + GRACE_BLOCKS + 1), K0, ISSUE_TLV, CTX01, unreadable("late"), height=500)
+      "member is Unreadable(LateEdit): an edit is judged by $updatedAtBlockHeight (§8.2 edits are judged too), and "
+      "the reason says the document existed in time but was rewritten late (a replace keeps only the new text).",
+      dict(ISSUE, updatedAtBlockHeight=1000 + GRACE_BLOCKS + 1), K0, ISSUE_TLV, CTX01, unreadable("lateEdit"), height=500)
+    v("issue_created_late_and_edited_is_late",
+      "an issue both created and edited after the grace period by a removed member is plain Unreadable(Late).",
+      dict(ISSUE, updatedAtBlockHeight=5000), K0, ISSUE_TLV, CTX01, unreadable("late"), height=1000 + GRACE_BLOCKS + 1)
     v("issue_edited_within_grace_shown", "the same edit at 1000 + 240 is shown.",
       dict(ISSUE, updatedAtBlockHeight=1000 + GRACE_BLOCKS), K0, ISSUE_TLV, CTX01, readable(ISSUE_FIELDS), height=500)
     v("issue_edited_by_member_shown", "an edit after the grace period by a current member is shown.",
@@ -1212,7 +1219,8 @@ def epoch_vectors():
 
 SEALED = {"issue": ("title", "body"), "patch": ("title", "body", "baseRefName", "sourceRefName"),
           "comment": ("body", "path"), "review": ("body",)}
-TLV_TAG = {"title": 1, "body": 2, "baseRefName": 4, "sourceRefName": 5, "path": 10}
+TLV_TAG = {"title": 1, "body": 2, "baseRefName": 4, "sourceRefName": 5, "path": 10, "importedAuthor": 13,
+           "importedUrl": 14}
 BIND_OF = {"issue": "number", "patch": "number", "comment": "targetId", "review": "patchId"}
 # the plaintext text cap per type: enc 5120 - v0x01 framing 29 - 3 bytes per TLV record
 TEXT_CAP = {"issue": 5120 - 29 - 6, "patch": 5120 - 29 - 12, "comment": 5120 - 29 - 6, "review": 5120 - 29 - 3}
@@ -1222,6 +1230,12 @@ def seal_collab(doc_type, props, K=K0, epoch=0, owner=ownerId, nonce=NONCE):
     """The sealed properties of a `doc_type` document whose public properties are `props`."""
     out = {k: v for k, v in props.items() if k not in SEALED[doc_type]}
     fields = [(TLV_TAG[f], props[f].encode()) for f in SEALED[doc_type] if f in props]
+    if "imported" in props:
+        imp = dict(props["imported"])
+        for f, tag in (("author", "importedAuthor"), ("url", "importedUrl")):
+            if f in imp:
+                fields.append((TLV_TAG[tag], imp.pop(f).encode()))
+        out["imported"] = imp
     pt = tlv(*sorted(fields))
     if len(pt) > 5120 - 29:
         return None
@@ -1271,12 +1285,19 @@ def collab_seal_vectors():
       "plaintext.", "review", dict(patchId="44" * 32, verdict=1, commitOid="dd" * 20, body="Ship it.", commentCount=2))
     v("review_empty", "a review without a body seals an empty TLV (a 29-byte enc).", "review",
       dict(patchId="44" * 32, verdict=3, commitOid="dd" * 20))
+    v("issue_imported",
+      "an imported issue: imported.author and imported.url are sealed (TLV 13, 14; they name the source org, repo "
+      "and people); imported.createdAt stays plaintext, alone in its object.", "issue",
+      dict(number=12, title="Imported", body="from GitHub",
+           imported=dict(author="octocat", createdAt=1700000000, url="https://github.com/acme/secret/issues/12")))
+    v("comment_imported_author_only", "an imported comment whose source gave only an author.", "comment",
+      dict(targetId="33" * 32, body="+1", imported=dict(author="hubot", createdAt=1700000001)))
     for t, base in (("issue", dict(number=10, title="t")), ("comment", dict(targetId="33" * 32, body="b")),
                     ("review", dict(patchId="44" * 32, verdict=2, commitOid="dd" * 20)),
                     ("patch", dict(number=11, title="t", baseRefName="refs/heads/main", sourceRefName="refs/heads/f",
                                    sourceRepoId=H(repoId), headOid="ee" * 20, **patch_hashes))):
         used = sum(len(base[f]) for f in SEALED[t] if f in base)
-        fill = "body" if t != "review" or True else "body"
+        fill = "body"
         for extra, tag in ((0, "at_cap"), (1, "over_cap")):
             props = dict(base)
             props[fill] = props.get(fill, "") + "x" * (TEXT_CAP[t] - used + extra)

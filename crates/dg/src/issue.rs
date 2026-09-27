@@ -273,8 +273,14 @@ async fn label(
     };
     let s = Session::open(ctx, repo).await?;
     let target = target(&s, repo, number).await?;
+    // docs/security/private-repos.md §7: label names are event values, never encrypted
+    let plaintext = if s.repo.visibility == forge_core::rules::v2::Visibility::Private {
+        "; note: label names are not encrypted in this release"
+    } else {
+        ""
+    };
     ctx.confirm_or_cancel(&format!(
-        "Label issue #{number} ({value})? (one small document; members only)"
+        "Label issue #{number} ({value})? (one small document; members only{plaintext})"
     ))?;
     let id = s
         .collab()

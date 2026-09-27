@@ -109,6 +109,23 @@ fn doc_kind(kind: ContentKind) -> DocKind {
     }
 }
 
+/// The PR's approvals on its current head (§6) over `reviews` already read: member reviews
+/// only, dismissed reviews skipped.
+#[must_use]
+pub fn approvals_over(reviews: &[Review], view: &PatchView, oracle: &RoleOracle) -> Approvals {
+    let rule: Vec<RuleReview> = reviews
+        .iter()
+        .map(|r| RuleReview {
+            id: r.document_id.clone(),
+            reviewer: r.reviewer.clone(),
+            verdict: r.verdict.code(),
+            commit_oid: r.commit_oid.clone(),
+            created_at: r.created_at,
+        })
+        .collect();
+    count_approvals(&rule, oracle, &view.head, &view.dismissed())
+}
+
 /// A well-formed document as the public codecs read it: itself when `keys` is `None` (a public
 /// repo), else decrypted, or `None` when it does not open.
 fn open_with(
@@ -915,6 +932,9 @@ pub struct Collab<'a> {
     client: &'a PlatformClient,
     signer: Option<(&'a LoadedIdentity, &'a BridgeIdentity)>,
     keyring: crate::repo::KeyringCache,
+    /// A private repo's decrypted ref updates, read once per `Collab` (a PR list folds every
+    /// row's base against them), keyed by repository id.
+    private_updates: std::sync::Mutex<Option<([u8; 32], Arc<crate::refs::PrivateUpdates>)>>,
 }
 
 impl<'a> Collab<'a> {
@@ -928,6 +948,7 @@ impl<'a> Collab<'a> {
             client,
             signer: Some((identity, bridge)),
             keyring: crate::repo::KeyringCache::default(),
+            private_updates: std::sync::Mutex::default(),
         }
     }
 
@@ -937,22 +958,37 @@ impl<'a> Collab<'a> {
             client,
             signer: None,
             keyring: crate::repo::KeyringCache::default(),
+            private_updates: std::sync::Mutex::default(),
         }
     }
 
     /// The keys of private `repo` as the signer holds them, loaded once per `Collab`.
     pub async fn keyring(&self, repo: &RepoRef) -> Result<Arc<Keyring>> {
         let (identity, bridge) = self.signer.ok_or_else(|| {
-            Error::Config(format!(
-                "{} is private: reading it needs your identity (its encryption key)",
-                repo.display()
-            ))
+            let e = crate::user_error::UserError::new(
+                crate::user_error::codes::NO_IDENTITY,
+                format!(
+                    "{} is private: reading it needs your identity",
+                    repo.display()
+                ),
+            )
+            .cause("its issues, pull requests and comments are encrypted to members' keys")
+            .fix("`dg auth login <file>` (or export DASH_FORGE_KEY=<identity file>)");
+            Error::from(e)
         })?;
         let signer = crate::keyring::PrivateSigner {
             client: self.client,
             identity,
             bridge,
         };
+        // a key source with no ENCRYPTION key at all (a limited `dg auth login` key): say so
+        // (E306) rather than "no maintainer wrapped the key to you" (E307)
+        if signer.encryption_keys(repo).is_empty() {
+            return Err(crate::keyring::no_encryption_key(
+                &identity.id(),
+                &format!("private repo {}", repo.display()),
+            ));
+        }
         crate::repo::cached_keyring(
             &self.keyring,
             repo,
@@ -961,8 +997,19 @@ impl<'a> Collab<'a> {
         .await
     }
 
+    /// The keys of private `repo` read NOW, replacing the cached ones: a writer re-reads the
+    /// anchors before every write (§5.3), so nothing is sealed under an epoch a rotation
+    /// superseded while the command waited (a prompt, a long import). Reads keep the cache.
+    async fn fresh_keyring(&self, repo: &RepoRef) -> Result<Arc<Keyring>> {
+        *self
+            .keyring
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        self.keyring(repo).await
+    }
+
     /// `props` of a new `kind` document, sealed when `repo` is private (under the write epoch
-    /// of the keys this command resolved), else unchanged.
+    /// of keys resolved just now, §5.3), else unchanged.
     pub async fn seal_if_private(
         &self,
         repo: &RepoRef,
@@ -972,25 +1019,10 @@ impl<'a> Collab<'a> {
         if repo.visibility != Visibility::Private {
             return Ok(props);
         }
-        let kr = self.keyring(repo).await?;
+        let kr = self.fresh_keyring(repo).await?;
         let w = kr.writer(repo)?;
         let owner = platform::decode_identifier(&self.signer_id()?)?;
         super::private::seal_props(w.write_keys(), doc_kind(kind), owner, props)
-    }
-
-    /// A fetched document of `kind` as the public codecs read it: itself in a public repo,
-    /// decrypted in a private one; `None` when it is not well-formed or does not open.
-    async fn readable(
-        &self,
-        repo: &RepoRef,
-        kind: ContentKind,
-        d: FetchedDocument,
-    ) -> Result<Option<FetchedDocument>> {
-        if !well_formed(kind, &d, repo.visibility) {
-            return Ok(None);
-        }
-        let keys = self.private_keys(repo).await?;
-        Ok(open_with(keys.as_deref(), kind, d))
     }
 
     /// The reader's keys when `repo` is private (`None` for a public one). A reader with no key
@@ -1004,20 +1036,47 @@ impl<'a> Collab<'a> {
         Ok(Some(kr))
     }
 
-    /// An issue or patch by number, readable (see [`Self::readable`]).
+    /// An issue or patch by number as the public codecs read it (decrypted in a private repo).
+    /// One that exists but does not open for this reader is an error saying so, not "not
+    /// found".
     async fn readable_target(
         &self,
         repo: &RepoRef,
         kind: TargetKind,
         number: u32,
     ) -> Result<Option<FetchedDocument>> {
-        match self.target_doc(repo, kind, number).await? {
-            Some(d) => self.readable(repo, kind.content_kind(), d).await,
-            None => Ok(None),
+        let Some(d) = self.target_doc(repo, kind, number).await? else {
+            return Ok(None);
+        };
+        if !well_formed(kind.content_kind(), &d, repo.visibility) {
+            return Ok(None);
+        }
+        let Some(kr) = self.private_keys(repo).await? else {
+            return Ok(Some(d));
+        };
+        let opened = kr.open(doc_kind(kind.content_kind()), &d);
+        let bucket = crate::keyring::hidden_bucket(&opened);
+        match super::private::open_doc(opened, d) {
+            Some(d) => Ok(Some(d)),
+            None => Err(crate::user_error::UserError::new(
+                crate::user_error::codes::NOT_A_KEY_HOLDER,
+                format!(
+                    "{} #{number} of {} cannot be read",
+                    kind.noun(),
+                    repo.display()
+                ),
+            )
+            .cause(bucket.unwrap_or("not readable with your keys").to_string())
+            .fix(format!(
+                "`dg repo keys status {}` explains the keys you hold",
+                repo.display()
+            ))
+            .into()),
         }
     }
 
-    /// [`Self::readable`] over a list: the rows that read, and how many did not.
+    /// A page of documents as the public codecs read them (decrypted in a private repo): the
+    /// rows that read, and how many did not (malformed, or not readable to this reader).
     async fn readable_all(
         &self,
         repo: &RepoRef,
@@ -1209,6 +1268,40 @@ impl<'a> Collab<'a> {
         })
     }
 
+    /// Every readable issue and pull request of `repo` (complete, oldest first), as flattened
+    /// targets with their importer provenance: in a private repo `imported.author` / `.url`
+    /// are sealed, so this is the only way an importer finds what it already mirrored.
+    pub async fn imported_targets(
+        &self,
+        repo: &RepoRef,
+    ) -> Result<Vec<(Target, Option<Imported>)>> {
+        let collab = self.collab_contract(repo).await?;
+        let mut out = Vec::new();
+        for kind in [TargetKind::Issue, TargetKind::Patch] {
+            let docs = self
+                .client
+                .query_all_documents(
+                    &collab,
+                    kind.doc_type(),
+                    &[Self::repo_filter(repo)?],
+                    &[QueryOrder::asc("$createdAt")],
+                )
+                .await?;
+            let (docs, _) = self.readable_all(repo, kind.content_kind(), docs).await?;
+            out.extend(docs.iter().map(|d| match kind {
+                TargetKind::Issue => {
+                    let i = issue_from_doc(d);
+                    (i.target(), i.imported)
+                }
+                TargetKind::Patch => {
+                    let p = patch_from_doc(d);
+                    (p.target(), p.imported)
+                }
+            }));
+        }
+        Ok(out)
+    }
+
     /// The newest `limit` issues (0 = one page of 100), newest first.
     pub async fn list_issues(&self, repo: &RepoRef, limit: u32) -> Result<Listed<Issue>> {
         Ok(self
@@ -1227,6 +1320,9 @@ impl<'a> Collab<'a> {
 
     /// The pull requests whose objects live in `source_repo_id` (the `source` index), any
     /// target repo — what a fork's owner opened upstream.
+    ///
+    /// Public source repositories only: a private repo's patches are sealed and indexed by a
+    /// keyed hash, so they are left out (a private repo cannot be forked, `require_public`).
     pub async fn patches_from_source(
         &self,
         forge: &ForgeIds,
@@ -1245,7 +1341,11 @@ impl<'a> Collab<'a> {
                 &[QueryOrder::asc("sourceRepoId")],
             )
             .await?;
-        Ok(docs.iter().map(patch_from_doc).collect())
+        Ok(docs
+            .iter()
+            .filter(|d| well_formed(ContentKind::Patch, d, Visibility::Public))
+            .map(patch_from_doc)
+            .collect())
     }
 
     // --- reads: logs ---------------------------------------------------------------
@@ -1309,12 +1409,21 @@ impl<'a> Collab<'a> {
     /// Every well-formed review on a patch, oldest first. In a private repo only reviews this
     /// reader can open are returned, so an unreadable review is never counted (§8.1).
     pub async fn reviews(&self, repo: &RepoRef, patch_id: &str) -> Result<Vec<Review>> {
+        Ok(self.reviews_counted(repo, patch_id).await?.0)
+    }
+
+    /// [`Self::reviews`] and how many were hidden (malformed, or not readable to you).
+    pub async fn reviews_counted(
+        &self,
+        repo: &RepoRef,
+        patch_id: &str,
+    ) -> Result<(Vec<Review>, usize)> {
         let collab = self.collab_contract(repo).await?;
         let docs = self
             .by_target(&collab, DOC_REVIEW, "patchId", patch_id)
             .await?;
-        let (docs, _) = self.readable_all(repo, ContentKind::Review, docs).await?;
-        Ok(docs.iter().map(review_from_doc).collect())
+        let (docs, hidden) = self.readable_all(repo, ContentKind::Review, docs).await?;
+        Ok((docs.iter().map(review_from_doc).collect(), hidden))
     }
 
     // --- reads: folded state --------------------------------------------------------
@@ -1353,15 +1462,32 @@ impl<'a> Collab<'a> {
         let scope = repo.scope()?;
         if repo.visibility == Visibility::Private {
             let kr = self.keyring(repo).await?;
-            return crate::refs::read_private_merge_base(
-                self.client,
-                &core,
-                &scope,
+            let cached = self
+                .private_updates
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+                .filter(|(id, _)| *id == scope.repo_id)
+                .map(|(_, u)| u);
+            let updates = if let Some(u) = cached {
+                u
+            } else {
+                let u = Arc::new(
+                    crate::refs::read_private_updates(self.client, &core, &scope, &kr).await?,
+                );
+                *self
+                    .private_updates
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                    Some((scope.repo_id, Arc::clone(&u)));
+                u
+            };
+            return Ok(crate::refs::private_merge_base(
+                &updates,
                 &kr,
                 base_ref_name,
                 opened_at,
-            )
-            .await;
+            ));
         }
         crate::refs::read_merge_base(self.client, &core, &scope, base_ref_name, opened_at).await
     }
@@ -1429,20 +1555,7 @@ impl<'a> Collab<'a> {
         oracle: &RoleOracle,
     ) -> Result<(Approvals, Vec<Review>)> {
         let reviews = self.reviews(repo, &view.patch.document_id).await?;
-        let rule: Vec<RuleReview> = reviews
-            .iter()
-            .map(|r| RuleReview {
-                id: r.document_id.clone(),
-                reviewer: r.reviewer.clone(),
-                verdict: r.verdict.code(),
-                commit_oid: r.commit_oid.clone(),
-                created_at: r.created_at,
-            })
-            .collect();
-        Ok((
-            count_approvals(&rule, oracle, &view.head, &view.dismissed()),
-            reviews,
-        ))
+        Ok((approvals_over(&reviews, view, oracle), reviews))
     }
 
     /// The branch policy in force: the newest `policy` of `repo` by `($createdAt, $id)`
@@ -1466,6 +1579,9 @@ impl<'a> Collab<'a> {
 
     /// The open-or-closed PRs whose head branch is `source_ref_name` in `source_repo_id` (the
     /// `sourceRef` index): what a push to that branch may have to move with a `headUpdate`.
+    ///
+    /// Public source repositories only (the index key is `sha256(name)`; a private repo's is a
+    /// keyed hash, and its patches are sealed): private ones never match.
     pub async fn patches_from_branch(
         &self,
         forge: &ForgeIds,
@@ -1498,6 +1614,7 @@ impl<'a> Collab<'a> {
         // matched the hash, so compare the name too.
         Ok(docs
             .iter()
+            .filter(|d| well_formed(ContentKind::Patch, d, Visibility::Public))
             .map(patch_from_doc)
             .filter(|p| p.source_ref_name.as_deref() == Some(source_ref_name))
             .collect())
@@ -1680,6 +1797,11 @@ impl<'a> Collab<'a> {
         let me = self.signer_id()?;
         let collab = self.collab_contract(repo).await?;
         let engine = self.engine()?;
+        // A private repo's title and body must not be guessable from a local file name: the
+        // fingerprint is keyed with a per-install secret there.
+        let key = (repo.visibility == Visibility::Private)
+            .then(|| journal_secret(journal_dir))
+            .transpose()?;
         let path = create_journal_path(
             journal_dir,
             &self.client.target().network.key(),
@@ -1687,6 +1809,7 @@ impl<'a> Collab<'a> {
             kind,
             &me,
             fingerprint,
+            key.as_ref(),
         );
         if let Some(saved) = CreateJournal::load(&path, &collab.id()) {
             if replay_landed(&engine, &collab, kind.doc_type(), &saved.intent).await? {
@@ -2305,6 +2428,22 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// This install's secret for keying private journal names (created once, 0600).
+fn journal_secret(dir: &Path) -> Result<[u8; 32]> {
+    let path = dir.join(".name-key");
+    if let Ok(b) = std::fs::read(&path) {
+        if let Ok(k) = <[u8; 32]>::try_from(b.as_slice()) {
+            return Ok(k);
+        }
+    }
+    let mut k = [0u8; 32];
+    getrandom::getrandom(&mut k).map_err(|e| Error::Config(format!("randomness: {e}")))?;
+    std::fs::create_dir_all(dir)
+        .map_err(|e| Error::Config(format!("creating {}: {e}", dir.display())))?;
+    crate::keystore::write_private_file(&path, &k)?;
+    Ok(k)
+}
+
 /// The journal of one pending create: per network, repo, kind, signer and content, so the
 /// same command re-run resumes it and a different one does not.
 fn create_journal_path(
@@ -2314,8 +2453,17 @@ fn create_journal_path(
     kind: TargetKind,
     signer: &str,
     fingerprint: &str,
+    key: Option<&[u8; 32]>,
 ) -> PathBuf {
-    let digest = hex::encode(sha256(fingerprint.as_bytes()));
+    let digest = match key {
+        None => hex::encode(sha256(fingerprint.as_bytes())),
+        Some(k) => {
+            use hmac::{Hmac, Mac as _};
+            let mut mac = Hmac::<sha2::Sha256>::new_from_slice(k).expect("any key length");
+            mac.update(fingerprint.as_bytes());
+            hex::encode(mac.finalize().into_bytes())
+        }
+    };
     dir.join(format!(
         "{}-{network}-{repo_id}-{signer}-{}.json",
         kind.doc_type(),
@@ -2595,23 +2743,45 @@ mod tests {
     #[test]
     fn journals_are_keyed_by_content() {
         let d = Path::new("/j");
-        let a = create_journal_path(d, "n", "R", TargetKind::Issue, "me", "t\0b");
+        let a = create_journal_path(d, "n", "R", TargetKind::Issue, "me", "t\0b", None);
         assert_eq!(
             a,
-            create_journal_path(d, "n", "R", TargetKind::Issue, "me", "t\0b")
+            create_journal_path(d, "n", "R", TargetKind::Issue, "me", "t\0b", None)
         );
         assert_ne!(
             a,
-            create_journal_path(d, "n", "R", TargetKind::Issue, "me", "t\0c")
+            create_journal_path(d, "n", "R", TargetKind::Issue, "me", "t\0c", None)
         );
         assert_ne!(
             a,
-            create_journal_path(d, "n", "R", TargetKind::Patch, "me", "t\0b")
+            create_journal_path(d, "n", "R", TargetKind::Patch, "me", "t\0b", None)
         );
         assert_ne!(
             a,
-            create_journal_path(d, "n", "R", TargetKind::Issue, "you", "t\0b")
+            create_journal_path(d, "n", "R", TargetKind::Issue, "you", "t\0b", None)
         );
+    }
+
+    #[test]
+    fn a_private_journal_name_does_not_reveal_its_title() {
+        let d = Path::new("/j");
+        let public = create_journal_path(d, "n", "R", TargetKind::Issue, "me", "secret\0b", None);
+        let keyed = |k: u8| {
+            create_journal_path(
+                d,
+                "n",
+                "R",
+                TargetKind::Issue,
+                "me",
+                "secret\0b",
+                Some(&[k; 32]),
+            )
+        };
+        // a dictionary of sha256(title) no longer matches the file name
+        assert_ne!(public, keyed(1));
+        // stable for one install's key (a re-run resumes), different across installs
+        assert_eq!(keyed(1), keyed(1));
+        assert_ne!(keyed(1), keyed(2));
     }
 
     #[test]

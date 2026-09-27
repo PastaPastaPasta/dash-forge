@@ -20,7 +20,9 @@ const PREV_EPOCH_KEY: u8 = 9;
 const PATH: u8 = 10;
 const BURNED: u8 = 11;
 const SKIP_EPOCH_KEY: u8 = 12;
-/// Tags 13..=63 are reserved (malformed); 64..=255 are extensions (skipped).
+const IMPORTED_AUTHOR: u8 = 13;
+const IMPORTED_URL: u8 = 14;
+/// Tags 15..=63 are reserved (malformed); 64..=255 are extensions (skipped).
 const FIRST_EXTENSION: u8 = 64;
 const MAX_PATTERNS: usize = 8;
 
@@ -77,6 +79,14 @@ pub struct Fields {
         with = "super::keys::opt_key_serde"
     )]
     pub skip_epoch_key: Option<EpochKey>,
+    /// Tag 13 (issue, patch, comment, review): an imported document's original author handle
+    /// (`imported.author`), sealed in a private repo (§7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_author: Option<String>,
+    /// Tag 14 (issue, patch, comment, review): an imported document's source URL
+    /// (`imported.url`), sealed in a private repo (§7).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_url: Option<String>,
 }
 
 /// Decrypted content is private: `Debug` shows only which fields are present and their byte
@@ -97,6 +107,8 @@ impl std::fmt::Debug for Fields {
             .field("path_len", &len(&self.path))
             .field("burned", &self.burned)
             .field("skip_epoch_key", &self.skip_epoch_key)
+            .field("imported_author_len", &len(&self.imported_author))
+            .field("imported_url_len", &len(&self.imported_url))
             .finish()
     }
 }
@@ -145,6 +157,16 @@ fn cap(tag: u8) -> Cap {
             chars: 500,
             bytes: 1000,
         },
+        IMPORTED_AUTHOR => Cap::Text {
+            min: 1,
+            chars: 120,
+            bytes: 480,
+        },
+        IMPORTED_URL => Cap::Text {
+            min: 1,
+            chars: 300,
+            bytes: 300,
+        },
         _ => unreachable!("cap of a tag no kind lists"),
     }
 }
@@ -152,11 +174,12 @@ fn cap(tag: u8) -> Cap {
 /// The tags a kind may carry. `anchor_with_prev` is whether a config is for an epoch `e ≥ 1`
 /// (only such a config carries tags 8, 9, 11 and 12).
 fn allowed(kind: DocKind, tag: u8, anchor_with_prev: bool) -> bool {
+    let imported = matches!(tag, IMPORTED_AUTHOR | IMPORTED_URL);
     match kind {
-        DocKind::Issue => matches!(tag, TITLE | BODY),
-        DocKind::Patch => matches!(tag, TITLE | BODY | BASE_REF_NAME | SOURCE_REF_NAME),
-        DocKind::Comment => matches!(tag, BODY | PATH),
-        DocKind::Review => tag == BODY,
+        DocKind::Issue => matches!(tag, TITLE | BODY) || imported,
+        DocKind::Patch => matches!(tag, TITLE | BODY | BASE_REF_NAME | SOURCE_REF_NAME) || imported,
+        DocKind::Comment => matches!(tag, BODY | PATH) || imported,
+        DocKind::Review => tag == BODY || imported,
         DocKind::RefUpdate | DocKind::ProtectedRefUpdate => tag == REF_NAME,
         DocKind::Config => {
             matches!(tag, DEFAULT_BRANCH | PROTECTED_PATTERN)
@@ -196,7 +219,7 @@ pub fn parse(pt: &[u8], kind: DocKind, anchor_with_prev: bool) -> Option<Fields>
             continue; // forward compatibility: skipped, never interpreted
         }
         if !allowed(kind, tag, anchor_with_prev) {
-            return None; // reserved 13..=63, tag 0, or not a field of this kind
+            return None; // reserved 15..=63, tag 0, or not a field of this kind
         }
         if tag == PROTECTED_PATTERN {
             patterns += 1;
@@ -236,6 +259,8 @@ pub fn parse(pt: &[u8], kind: DocKind, anchor_with_prev: bool) -> Option<Fields>
                     DEFAULT_BRANCH => f.default_branch = Some(s),
                     PROTECTED_PATTERN => f.protected_patterns.push(s),
                     PATH => f.path = Some(s),
+                    IMPORTED_AUTHOR => f.imported_author = Some(s),
+                    IMPORTED_URL => f.imported_url = Some(s),
                     _ => unreachable!(),
                 }
             }
@@ -302,6 +327,12 @@ pub fn encode(f: &Fields) -> Zeroizing<Vec<u8>> {
     }
     if let Some(k) = &f.skip_epoch_key {
         rec(SKIP_EPOCH_KEY, k.expose());
+    }
+    if let Some(a) = &f.imported_author {
+        rec(IMPORTED_AUTHOR, a.as_bytes());
+    }
+    if let Some(u) = &f.imported_url {
+        rec(IMPORTED_URL, u.as_bytes());
     }
     out
 }

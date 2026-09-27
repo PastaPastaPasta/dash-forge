@@ -185,13 +185,7 @@ async fn run_inner<'a>(
     let code_estimate = push_estimates.first().map_or(0, |p| p.est_credits);
     let heads_estimate = push_estimates.get(1).map_or(0, |p| p.est_credits);
     let git_estimate = code_estimate + heads_estimate;
-    let dry = dest::dry_collab(
-        client,
-        dest.existing.clone(),
-        signer_id.clone(),
-        &collab_src,
-    )
-    .await?;
+    let dry = dest::dry_collab(client, dest.existing.clone(), signer, &collab_src).await?;
     let collab_estimate = dry.budget.spent();
     let create_credits = if create { REPO_CREATE_CREDITS } else { 0 };
     let estimate = create_credits + git_estimate + collab_estimate;

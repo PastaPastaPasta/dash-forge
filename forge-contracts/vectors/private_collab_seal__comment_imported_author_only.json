@@ -1,0 +1,32 @@
+{
+  "name": "comment_imported_author_only",
+  "description": "an imported comment whose source gave only an author.",
+  "case": "private_collab_seal",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "epoch": 0,
+    "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+    "docType": "comment",
+    "nonce": "000102030405060708090a0b",
+    "props": {
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "body": "+1",
+      "imported": {
+        "author": "hubot",
+        "createdAt": 1700000001
+      }
+    }
+  },
+  "expected": {
+    "props": {
+      "targetId": "3333333333333333333333333333333333333333333333333333333333333333",
+      "imported": {
+        "createdAt": 1700000001
+      },
+      "epoch": 0,
+      "enc": "01000102030405060708090a0b1c702dd9f23fec7c370976dcb4d84fa2a4112b474e5059bfc25b441be9"
+    }
+  }
+}
