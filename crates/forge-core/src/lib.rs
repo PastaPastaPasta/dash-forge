@@ -43,6 +43,7 @@ pub mod funding;
 pub mod keychain;
 pub mod keyring;
 pub mod keystore;
+pub mod logging;
 pub mod members;
 pub mod network;
 pub mod pack;

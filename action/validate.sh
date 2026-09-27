@@ -58,6 +58,10 @@ bool dry-run "${INPUT_DRY_RUN:-}"
 bool install "${INPUT_INSTALL:-}"
 bool state-cache "${INPUT_STATE_CACHE:-}"
 bool fail-on-partial "${INPUT_FAIL_ON_PARTIAL:-false}"
+bool s3-virtual-hosted "${INPUT_S3_VIRTUAL_HOSTED:-false}"
+if [ "${INPUT_S3_VIRTUAL_HOSTED:-false}" = true ] && [ "${INPUT_STORAGE_KIND:-}" != s3 ]; then
+    fail s3-virtual-hosted "applies only to storage-kind s3"
+fi
 if [ "${INPUT_INSTALL:-}" = true ]; then
     match version "${INPUT_VERSION:-}" '^v?[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$' \
         "must be a release version like 0.1.0"

@@ -160,7 +160,9 @@ async fn run_inner<'a>(
             // The helper prices a push into an existing repo (storage policy included).
             git_pusher(dest.url(), refs).estimate()
         } else {
-            // A new repo (or no identity to ask the helper with): price the whole pack.
+            // A new repo (or no identity to ask the helper with): build the pack and price
+            // what the storage policy writes on chain (all of it on Platform, or only the
+            // manifests and refs when your own storage holds the pack).
             crate::gitsync::estimate_fresh(&work, refs)
         };
         push_estimates.push(match (refs, est) {

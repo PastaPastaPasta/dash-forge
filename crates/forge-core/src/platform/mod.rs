@@ -1452,7 +1452,9 @@ impl<'a> WriteEngine<'a> {
                     if ours {
                         return Ok(prepared);
                     }
-                    tracing::warn!(
+                    // Expected when one identity writes in parallel, and recovered here; a
+                    // write that cannot recover fails with `Error::Nonce` below.
+                    tracing::debug!(
                         document_type,
                         "another write by this identity took the nonce; re-preparing"
                     );
@@ -1529,7 +1531,7 @@ impl<'a> WriteEngine<'a> {
                     {
                         return Ok(());
                     }
-                    tracing::warn!(
+                    tracing::debug!(
                         document_type,
                         "another write by this identity took the nonce; re-preparing the delete"
                     );

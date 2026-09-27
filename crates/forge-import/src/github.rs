@@ -71,12 +71,37 @@ pub struct RepoMeta {
     pub description: Option<String>,
 }
 
-/// A GitHub user.
-#[derive(Debug, Clone, Deserialize, Default)]
+/// The login GitHub shows for a deleted account.
+pub const GHOST: &str = "ghost";
+
+/// A GitHub user. A deleted account comes back as `"user": null` (or without a login) and
+/// reads as [`GHOST`], the name GitHub itself shows for it.
+#[derive(Debug, Clone)]
 pub struct GhUser {
-    /// Login.
-    #[serde(default)]
+    /// Login ([`GHOST`] for a deleted account).
     pub login: String,
+}
+
+impl Default for GhUser {
+    fn default() -> Self {
+        Self {
+            login: GHOST.to_string(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for GhUser {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            #[serde(default)]
+            login: Option<String>,
+        }
+        let login = Option::<Raw>::deserialize(d)?
+            .and_then(|r| r.login)
+            .filter(|l| !l.trim().is_empty());
+        Ok(login.map_or_else(Self::default, |login| Self { login }))
+    }
 }
 
 /// A GitHub label.
@@ -289,49 +314,127 @@ pub struct GhReview {
     pub submitted_at: Option<String>,
 }
 
-/// The GitHub client: every method shells `gh`.
+/// How the client reaches the GitHub REST API: `gh` in production, recorded responses in
+/// tests.
+pub trait GhApi {
+    /// One request's JSON body (`path` is relative to the API root).
+    fn json(&self, path: &str) -> Result<Vec<u8>>;
+    /// Every element of a paginated array listing, one JSON document each, across all
+    /// pages.
+    fn list(&self, path: &str) -> Result<Vec<String>>;
+}
+
+/// The `gh` CLI (`gh api`), which owns auth, pagination and retries.
+pub struct GhCli;
+
+impl GhApi for GhCli {
+    fn json(&self, path: &str) -> Result<Vec<u8>> {
+        api_json(path)
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<String>> {
+        api_list_lines(path)
+    }
+}
+
+/// The GitHub client.
 pub struct GithubClient {
     repo: GithubRepoRef,
+    api: Box<dyn GhApi>,
 }
 
 impl GithubClient {
-    /// Bind to a source repo.
+    /// Bind to a source repo, reading through `gh`.
     pub fn new(repo: GithubRepoRef) -> Self {
-        Self { repo }
+        Self::with_api(repo, Box::new(GhCli))
+    }
+
+    /// Bind to a source repo, reading through `api`.
+    pub fn with_api(repo: GithubRepoRef, api: Box<dyn GhApi>) -> Self {
+        Self { repo, api }
     }
 
     fn path(&self, rest: &str) -> String {
         format!("repos/{}/{rest}", self.repo.slug())
     }
 
+    fn get<T: for<'de> Deserialize<'de>>(&self, path: &str, what: &str) -> Result<T> {
+        serde_json::from_slice(&self.api.json(path)?).with_context(|| format!("parsing {what}"))
+    }
+
+    fn list<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<Vec<T>> {
+        self.api
+            .list(path)?
+            .iter()
+            .map(|l| {
+                serde_json::from_str(l).with_context(|| format!("parsing an element of {path}"))
+            })
+            .collect()
+    }
+
     /// Repository metadata (also proves the repo exists and `gh` works).
     pub fn repo_meta(&self) -> Result<RepoMeta> {
-        let out = api_json(&format!("repos/{}", self.repo.slug()))?;
-        serde_json::from_slice(&out).context("parsing repository metadata")
+        self.get(
+            &format!("repos/{}", self.repo.slug()),
+            "repository metadata",
+        )
     }
 
     /// Issues and PRs updated since `since` (ISO 8601), or all of them.
     pub fn issues(&self, since: Option<&str>) -> Result<Vec<GhIssue>> {
-        api_list(&self.path(&with_since(
+        self.list(&self.path(&with_since(
             "issues?state=all&per_page=100&sort=updated&direction=asc",
             since,
         )))
     }
 
+    /// The first issues and PRs by number (oldest created first, which is number order),
+    /// updated since `since`, page by page until `keep` has accepted `want` of them. Returns
+    /// the accepted items and whether the listing had more accepted ones after those: a
+    /// `--limit` run reads a handful of pages, not a large repository's whole history.
+    pub fn first_issues(
+        &self,
+        since: Option<&str>,
+        want: usize,
+        keep: impl Fn(&GhIssue) -> bool,
+    ) -> Result<(Vec<GhIssue>, bool)> {
+        let path = self.path(&with_since(
+            "issues?state=all&per_page=100&sort=created&direction=asc",
+            since,
+        ));
+        let mut out = Vec::new();
+        for page in 1.. {
+            let batch: Vec<GhIssue> =
+                self.get(&format!("{path}&page={page}"), "the issue listing")?;
+            let last_page = batch.len() < 100;
+            for i in batch.into_iter().filter(|i| keep(i)) {
+                if out.len() == want {
+                    return Ok((out, true));
+                }
+                out.push(i);
+            }
+            if last_page {
+                break;
+            }
+        }
+        Ok((out, false))
+    }
+
     /// The numbers of every open PR (their heads are what the mirror pushes).
     pub fn open_pulls(&self) -> Result<Vec<u64>> {
-        Ok(
-            api_list::<GhPull>(&self.path("pulls?state=open&per_page=100"))?
-                .into_iter()
-                .map(|p| p.number)
-                .collect(),
-        )
+        Ok(self
+            .list::<GhPull>(&self.path("pulls?state=open&per_page=100"))?
+            .into_iter()
+            .map(|p| p.number)
+            .collect())
     }
 
     /// One PR's detail.
     pub fn pull(&self, number: u64) -> Result<GhPull> {
-        let out = api_json(&self.path(&format!("pulls/{number}")))?;
-        serde_json::from_slice(&out).with_context(|| format!("parsing PR #{number}"))
+        self.get(
+            &self.path(&format!("pulls/{number}")),
+            &format!("PR #{number}"),
+        )
     }
 
     /// Every pull request's detail (head, base, merge, draft) from the paginated listing,
@@ -340,14 +443,13 @@ impl GithubClient {
     pub fn pulls(&self, since: Option<&str>) -> Result<std::collections::BTreeMap<u64, GhPull>> {
         let path = self.path("pulls?state=all&sort=updated&direction=desc&per_page=100");
         let all: Vec<GhPull> = match since {
-            None => api_list(&path)?,
+            None => self.list(&path)?,
             Some(since) => {
                 let mut out = Vec::new();
                 let mut page = 1;
                 loop {
                     let batch: Vec<GhPull> =
-                        serde_json::from_slice(&api_json(&format!("{path}&page={page}"))?)
-                            .context("parsing the pull request listing")?;
+                        self.get(&format!("{path}&page={page}"), "the pull request listing")?;
                     let done = batch.len() < 100
                         || batch.last().is_some_and(|p| p.updated_at.as_str() < since);
                     out.extend(batch.into_iter().filter(|p| p.updated_at.as_str() >= since));
@@ -364,33 +466,49 @@ impl GithubClient {
 
     /// Every label.
     pub fn labels(&self) -> Result<Vec<GhLabel>> {
-        api_list(&self.path("labels?per_page=100"))
+        self.list(&self.path("labels?per_page=100"))
     }
 
     /// Every release.
     pub fn releases(&self) -> Result<Vec<GhRelease>> {
-        api_list(&self.path("releases?per_page=100"))
+        self.list(&self.path("releases?per_page=100"))
     }
 
-    /// Conversation comments on issues and PRs, updated since `since`.
+    /// Conversation comments on every issue and PR, updated since `since`.
     pub fn issue_comments(&self, since: Option<&str>) -> Result<Vec<GhComment>> {
-        api_list(&self.path(&with_since(
+        self.list(&self.path(&with_since(
             "issues/comments?per_page=100&sort=created&direction=asc",
             since,
         )))
     }
 
-    /// PR review (line) comments, updated since `since`.
+    /// Every PR's review (line) comments, updated since `since`.
     pub fn review_comments(&self, since: Option<&str>) -> Result<Vec<GhComment>> {
-        api_list(&self.path(&with_since(
+        self.list(&self.path(&with_since(
             "pulls/comments?per_page=100&sort=created&direction=asc",
+            since,
+        )))
+    }
+
+    /// One issue's or PR's conversation comments, updated since `since`.
+    pub fn comments_on(&self, number: u64, since: Option<&str>) -> Result<Vec<GhComment>> {
+        self.list(&self.path(&with_since(
+            &format!("issues/{number}/comments?per_page=100"),
+            since,
+        )))
+    }
+
+    /// One PR's review (line) comments, updated since `since`.
+    pub fn review_comments_on(&self, number: u64, since: Option<&str>) -> Result<Vec<GhComment>> {
+        self.list(&self.path(&with_since(
+            &format!("pulls/{number}/comments?per_page=100"),
             since,
         )))
     }
 
     /// One PR's reviews.
     pub fn reviews(&self, number: u64) -> Result<Vec<GhReview>> {
-        api_list(&self.path(&format!("pulls/{number}/reviews?per_page=100")))
+        self.list(&self.path(&format!("pulls/{number}/reviews?per_page=100")))
     }
 
     /// Mirror-clone (or update) the source into the bare repo at `dir`: branches, tags and
@@ -578,17 +696,18 @@ fn api_json(path: &str) -> Result<Vec<u8>> {
     Ok(gh_output_with_retry(&["api", path], &format!("`gh api {path}`"))?.stdout)
 }
 
-fn api_list<T: for<'de> Deserialize<'de>>(path: &str) -> Result<Vec<T>> {
+fn api_list_lines(path: &str) -> Result<Vec<String>> {
     let out = gh_output_with_retry(
         &["api", path, "--paginate", "--jq", ".[]"],
         &format!("`gh api {path}`"),
     )?;
     let text = String::from_utf8(out.stdout).context("gh api output was not UTF-8")?;
-    text.lines()
+    Ok(text
+        .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
-        .map(|l| serde_json::from_str(l).with_context(|| format!("parsing an element of {path}")))
-        .collect()
+        .map(str::to_string)
+        .collect())
 }
 
 /// ISO 8601 UTC (`YYYY-MM-DDTHH:MM:SSZ`) to unix seconds; `0` when unparseable (provenance
@@ -685,6 +804,46 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(r.number(), Some(7));
+    }
+
+    /// F-7: `octocat/Hello-World` has review comments by deleted accounts (`"user": null`,
+    /// recorded in testdata/). They used to abort the whole import; as on GitHub itself,
+    /// they are attributed to `@ghost`.
+    #[test]
+    fn a_deleted_author_is_the_ghost() {
+        let raw = include_str!("../testdata/github/hello-world-ghost-review-comment.json");
+        let c: GhComment = serde_json::from_str(raw).unwrap();
+        assert_eq!(c.user.login, GHOST);
+        assert_eq!(c.number(), Some(351));
+        for doc in [
+            r#"{"number":1,"user":null}"#,
+            r#"{"number":1}"#,
+            r#"{"number":1,"user":{"login":null}}"#,
+            r#"{"number":1,"user":{"login":""}}"#,
+        ] {
+            let i: GhIssue = serde_json::from_str(doc).unwrap();
+            assert_eq!(i.user.login, GHOST, "{doc}");
+        }
+        let r: GhReview = serde_json::from_str(r#"{"id":1,"user":null}"#).unwrap();
+        assert_eq!(r.user.login, GHOST);
+        let alive: GhIssue = serde_json::from_str(r#"{"user":{"login":"bob"}}"#).unwrap();
+        assert_eq!(alive.user.login, "bob");
+    }
+
+    /// F-7 against a whole recorded listing: set `FORGE_IMPORT_GH_NDJSON` to a file of
+    /// `gh api repos/octocat/Hello-World/pulls/comments --paginate --jq '.[]'` output.
+    #[test]
+    #[ignore = "needs a recorded listing (FORGE_IMPORT_GH_NDJSON)"]
+    fn a_recorded_listing_parses() {
+        let path = std::env::var("FORGE_IMPORT_GH_NDJSON").unwrap();
+        let text = std::fs::read_to_string(path).unwrap();
+        let all: Vec<GhComment> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let ghosts = all.iter().filter(|c| c.user.login == GHOST).count();
+        eprintln!("{} comments, {ghosts} by @ghost", all.len());
+        assert!(ghosts > 0);
     }
 
     #[test]

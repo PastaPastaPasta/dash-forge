@@ -159,13 +159,7 @@ fn finish(summary: &Summary, json: Option<&PathBuf>) -> ExitCode {
 async fn main() -> ExitCode {
     // Runs unattended (the Mirror Action): a sealed key file needs DASH_FORGE_PASSPHRASE.
     forge_core::sealed::forbid_prompts();
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .init();
+    forge_core::logging::init_cli();
     match run(Cli::parse()).await {
         Ok(code) => code,
         Err(e) => {

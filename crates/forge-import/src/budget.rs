@@ -21,6 +21,12 @@ const DOC_SYSTEM_OVERHEAD: u64 = 180;
 /// the helper's byte price plus 68M per document it reports is 1.5–5% over.
 pub const GIT_DOC_INDEX_OVERHEAD: u64 = 68_000_000;
 
+/// The same overhead for a push that stores its pack on your own storage (no Platform
+/// chunks): only manifests and ref updates are written, and they pay more beyond the
+/// helper's byte price than a chunk does. Measured on moutai 2026-09-27 at 75–79M per
+/// document (two BYO imports, see `tests::estimates_cover_a_recorded_run`).
+pub const GIT_DOC_INDEX_OVERHEAD_EXTERNAL: u64 = 82_000_000;
+
 /// The kinds of forge-collab document the importer writes. Each pays a different index and
 /// count-tree cost beyond its bytes: a document type with more indexes (an issue or PR:
 /// number, state, author, updated) pays more than a label.
@@ -63,6 +69,11 @@ impl CollabDoc {
 /// The estimated credits of one forge-v2 git-data document of `bytes` bytes.
 pub fn git_doc_credits(bytes: u64) -> u64 {
     forge_core::cost::estimate(bytes).total() + GIT_DOC_INDEX_OVERHEAD
+}
+
+/// [`git_doc_credits`] for a push whose pack goes to your own storage.
+pub fn git_doc_credits_external(bytes: u64) -> u64 {
+    forge_core::cost::estimate(bytes).total() + GIT_DOC_INDEX_OVERHEAD_EXTERNAL
 }
 
 /// Per-`chunk` document overhead on top of its payload bytes.

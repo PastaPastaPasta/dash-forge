@@ -218,9 +218,9 @@ impl Helper {
         Ok(self.conn.as_ref().expect("conn populated"))
     }
 
-    /// The `list` / `list for-push` response lines: `<oid> <refname>` per resolved ref and
-    /// an `@refs/heads/<default> HEAD` symref.
-    pub async fn list(&mut self) -> Result<Vec<String>> {
+    /// The `list` / `list for-push` response lines: `<oid> <refname>` per resolved ref and,
+    /// for a fetch, an `@refs/heads/<default> HEAD` symref.
+    pub async fn list(&mut self, for_push: bool) -> Result<Vec<String>> {
         let conn = self.ensure_conn().await?;
         let svc = conn.service();
         let refs = svc.read_refs(&conn.repo).await?;
@@ -228,34 +228,7 @@ impl Helper {
             .read_default_branch(&conn.repo)
             .await?
             .unwrap_or_else(|| "main".to_string());
-
-        let mut lines = Vec::new();
-        let mut names: Vec<String> = Vec::new();
-        for (name, state) in &refs {
-            // Emission guard (defense-in-depth with rules::is_update_valid): never advertise
-            // a ref name carrying control chars/whitespace — it could inject a spoofed
-            // advertisement line into git's parse of this output (S0.9 wire protocol).
-            if !forge_core::rules::is_legal_ref_name(name) {
-                tracing::warn!(ref_name = %name.escape_debug(), "skipping illegal ref name in list");
-                continue;
-            }
-            if let Some(oid) = tip_oid(state) {
-                lines.push(format!("{oid} {name}"));
-                names.push(name.clone());
-            }
-        }
-
-        // Emit the HEAD symref when the default branch exists (a fresh/empty repo has no
-        // head yet — git handles the absence).
-        let default_ref = format!("refs/heads/{default_branch}");
-        if names.iter().any(|n| n == &default_ref) {
-            lines.push(format!("@{default_ref} HEAD"));
-        } else if let Some(first_head) = names.iter().find(|n| n.starts_with("refs/heads/")) {
-            // No default branch present but some head is — point HEAD at it so clone can
-            // check something out rather than warning about a dangling HEAD.
-            lines.push(format!("@{first_head} HEAD"));
-        }
-        Ok(lines)
+        Ok(list_lines(&refs, &default_branch, for_push))
     }
 
     /// Serve a `fetch` batch: download the packs covering the wanted objects and index them
@@ -404,6 +377,23 @@ impl Helper {
     /// `packManifest`, then a `refUpdate` per ref, and finally re-read refs to surface a
     /// lost concurrent race as a late non-fast-forward.
     pub async fn push(
+        &mut self,
+        specs: &[PushSpec],
+        options: &OptionState,
+    ) -> Result<Vec<PushOutcome>> {
+        // `HEAD` is derived from the default branch, never stored: a push to it (a delete
+        // from `git push --mirror`, or `HEAD:HEAD`) writes nothing and is never charged.
+        let (head, refs): (Vec<PushSpec>, Vec<PushSpec>) =
+            specs.iter().cloned().partition(|s| is_head(&s.dst));
+        let mut outcomes: Vec<PushOutcome> = head.into_iter().map(head_outcome).collect();
+        if !refs.is_empty() {
+            outcomes.extend(self.push_refs(&refs, options).await?);
+        }
+        Ok(outcomes)
+    }
+
+    /// [`Self::push`] of real refs (no `HEAD`).
+    async fn push_refs(
         &mut self,
         specs: &[PushSpec],
         options: &OptionState,
@@ -614,6 +604,65 @@ fn remote_tip(refs: &[(String, RefState)], name: &str) -> Option<String> {
     refs.iter()
         .find(|(n, _)| n == name)
         .and_then(|(_, s)| tip_oid(s))
+}
+
+/// The `list` answer for `refs`: `<oid> <refname>` per resolved ref, then (for a fetch
+/// only) the `HEAD` symref at the default branch.
+///
+/// `HEAD` is not a ref of the repository: the helper derives it from the default branch
+/// on every read, and no `refUpdate` can move it. So a `list for-push` does not advertise
+/// it. Otherwise `git push --mirror`, finding a remote `HEAD` with no local ref of that
+/// name, asks to delete it on every run, and each of those deletes was a paid write that
+/// changed nothing.
+fn list_lines(refs: &[(String, RefState)], default_branch: &str, for_push: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut names: Vec<&str> = Vec::new();
+    for (name, state) in refs {
+        // Emission guard (defense-in-depth with rules::is_update_valid): never advertise
+        // a ref name carrying control chars/whitespace — it could inject a spoofed
+        // advertisement line into git's parse of this output (S0.9 wire protocol).
+        if !forge_core::rules::is_legal_ref_name(name) {
+            tracing::warn!(ref_name = %name.escape_debug(), "skipping illegal ref name in list");
+            continue;
+        }
+        if let Some(oid) = tip_oid(state) {
+            lines.push(format!("{oid} {name}"));
+            names.push(name);
+        }
+    }
+    if for_push {
+        return lines;
+    }
+    // Emit the HEAD symref when the default branch exists (a fresh/empty repo has no head
+    // yet — git handles the absence).
+    let default_ref = format!("refs/heads/{default_branch}");
+    if names.contains(&default_ref.as_str()) {
+        lines.push(format!("@{default_ref} HEAD"));
+    } else if let Some(first_head) = names.iter().find(|n| n.starts_with("refs/heads/")) {
+        // No default branch present but some head is — point HEAD at it so clone can
+        // check something out rather than warning about a dangling HEAD.
+        lines.push(format!("@{first_head} HEAD"));
+    }
+    lines
+}
+
+/// Whether `dst` is the symbolic `HEAD`, which a push never writes (see [`list_lines`]).
+fn is_head(dst: &str) -> bool {
+    dst == "HEAD"
+}
+
+/// The answer to a push to `HEAD`, which writes nothing: a delete (what `git push --mirror`
+/// sends for a `HEAD` it saw advertised) is `ok`, since `HEAD` is not a stored ref; any
+/// update is refused, since only the repository's default branch moves it.
+fn head_outcome(spec: PushSpec) -> PushOutcome {
+    if spec.src.is_empty() {
+        PushOutcome::Ok(spec.dst)
+    } else {
+        PushOutcome::Error(
+            spec.dst,
+            "HEAD follows the default branch and is not pushed".to_string(),
+        )
+    }
 }
 
 /// A push refspec resolved to its intended write, with any pre-write rejection.
@@ -1620,8 +1669,52 @@ fn resolve_key_path(url: &DashUrl, owner_id: &str) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{oid_to_bytes, protected_denied, resolve_network, write_denied, PushOutcome};
+    use super::{
+        head_outcome, is_head, list_lines, oid_to_bytes, protected_denied, resolve_network,
+        write_denied, PushOutcome, PushSpec,
+    };
     use forge_core::network::NetworkSettings;
+    use forge_core::rules::RefState;
+
+    fn resolved(oid: &str) -> RefState {
+        RefState::Resolved {
+            oid: oid.to_string(),
+            author: "A".into(),
+            created_at: 0,
+        }
+    }
+
+    /// F-11: `git push --mirror` saw the `HEAD` symref in `list for-push`, had no local
+    /// ref of that name, and deleted it on every run, a paid write that changed nothing.
+    /// A push listing leaves `HEAD` out; a fetch listing still has it (clone checks it out).
+    #[test]
+    fn head_is_advertised_to_fetches_only() {
+        let refs = vec![
+            ("refs/heads/main".to_string(), resolved(&"a".repeat(40))),
+            ("refs/tags/v1".to_string(), resolved(&"b".repeat(40))),
+        ];
+        let fetch = list_lines(&refs, "main", false);
+        assert_eq!(fetch.last().unwrap(), "@refs/heads/main HEAD");
+        let push = list_lines(&refs, "main", true);
+        assert_eq!(push.len(), 2);
+        assert!(push.iter().all(|l| !l.ends_with(" HEAD")), "{push:?}");
+    }
+
+    /// A push to `HEAD` (an older client's `--mirror` delete, or `HEAD:HEAD`) is answered
+    /// without a write: a delete is a no-op `ok`, an update is refused.
+    #[test]
+    fn a_push_to_head_writes_nothing() {
+        assert!(is_head("HEAD") && !is_head("refs/heads/HEAD"));
+        let spec = |src: &str| PushSpec {
+            force: false,
+            src: src.into(),
+            dst: "HEAD".into(),
+        };
+        assert_eq!(head_outcome(spec("")).wire(), "ok HEAD");
+        assert!(head_outcome(spec("refs/heads/main"))
+            .wire()
+            .starts_with("error HEAD "));
+    }
 
     /// Serializes tests that change process environment variables.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

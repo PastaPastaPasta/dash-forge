@@ -51,6 +51,10 @@ You need:
 dg storage use r2-main --global
 ```
 
+The estimate follows the same policy. With your own storage, the git part costs only the manifests and ref updates on Platform (about 0.004 DASH for a push of two or three refs, measured on devnet moutai), not the pack's bytes, so a `--max-spend` sized for that is not refused. A policy that includes `platform`, or sets `dash.platformFallback`, is priced as Platform storage, because the pack may land there.
+
+**Log output.** The importer prints its own warnings. The Platform SDK's reports of a failure forge-core recovers from (a write whose nonce another write by the same identity took, a transport retry) are not printed. A failure still ends the run with an error. To see every retry, set `RUST_LOG=debug`.
+
 **Always start with a dry run.** It reads everything, compares it with what the destination already holds, and prints what it would write and what that would cost. It writes nothing:
 
 ```sh
@@ -74,7 +78,7 @@ Useful flags (see `forge-import --help`):
 | `--max-spend <DASH>` | A hard cap. The importer refuses to start when the estimate exceeds it, and checks it again **before every write** against what the run has actually spent (the measured balance drop, not just the estimate), so it stops before the write that would cross it. The estimate is calibrated to stay an upper bound. |
 | `--state <file>` | Incremental state: the next run asks GitHub only for issues, PRs and comments updated since this run started. |
 | `--dry-run` | Price only. |
-| `--limit <n>` | At most `n` issues and PRs, for a cheap trial. |
+| `--limit <n>` | At most `n` issues and PRs (the oldest), for a cheap trial. Only those items and their comments are read, so a trial on a repository with thousands of issues takes a few requests. |
 | `--yes` | No confirmation prompt, for CI. |
 | `--summary-json <file>` | Write the run summary (counts, spend, key budget) as JSON. `forge-import` only. |
 | `--work-dir <dir>` | Keep the bare git mirror between runs instead of a temporary directory. `forge-import` only. |
@@ -218,6 +222,8 @@ cd /srv/mirror/project \
 ```
 
 The fetch copies GitHub's branches into a private `refs/mirror/heads/` namespace, so git's own `origin/HEAD` pointer never reaches the mirror, and `--prune-tags` makes tag deletions on GitHub reach it too. `dash.confirm=never` tells the cost guard not to wait for a terminal; the push still prints its estimate and its actual charge. A plain push has no per-run cap, so keep that identity's balance small.
+
+**Use explicit refspecs, not `git push --mirror`.** `--mirror` pushes every ref the local repository holds. A clone made with `git clone --mirror` holds GitHub's `refs/pull/*`, and each of those would become a paid ref update on the mirror. Push `refs/heads/*` and `refs/tags/*` as above. `HEAD` needs no push: the helper derives it from the repository's default branch and does not offer it to a push, and a push that names `HEAD` anyway writes nothing.
 
 ---
 

@@ -12,6 +12,8 @@ thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
+# The CLIs' shared stderr logger (`logging`), which hides the SDK's recovered-error noise.
+tracing-subscriber.workspace = true
 
 # pack pipeline (git object/pack handling, hashing, compression)
 sha2 = "0.10"

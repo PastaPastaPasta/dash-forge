@@ -26,7 +26,10 @@ use serde_json::Value;
 
 use forge_core::network::NetworkTarget;
 
-use crate::budget::{chunked_credits, git_doc_credits, GIT_DOC_INDEX_OVERHEAD, REF_UPDATE_BYTES};
+use crate::budget::{
+    chunked_credits, git_doc_credits, git_doc_credits_external, GIT_DOC_INDEX_OVERHEAD,
+    GIT_DOC_INDEX_OVERHEAD_EXTERNAL, REF_UPDATE_BYTES,
+};
 
 /// What one push sends.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +82,9 @@ pub struct PushReport {
     /// Documents the helper said it writes (chunks + manifests + ref updates), when it
     /// reported them.
     pub docs: u64,
+    /// Of [`Self::docs`], the Platform `chunk` documents (0: the pack goes to your own
+    /// storage, and only manifests and ref updates are written on chain).
+    pub chunks: u64,
 }
 
 impl PushReport {
@@ -103,6 +109,7 @@ pub fn parse_push(stdout: &str, stderr: &str) -> PushReport {
                 r.pack_bytes += num("bytes");
             }
             Some("platform") => {
+                r.chunks += num("chunks");
                 r.docs += num("chunks") + num("manifests") + num("refUpdates");
                 r.est_credits += num("estCredits");
                 r.helper_credits += num("estCredits");
@@ -211,12 +218,61 @@ fn local_tips(git_dir: &Path, patterns: &[String]) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Where the helper will store a push's pack, as far as its price goes: decided by the
+/// same git config the helper reads (`dash.storage`, `dash.platformFallback`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackStorage {
+    /// Platform `chunk` documents hold the pack (and its browse index): the default, and
+    /// also the price of a policy that lists `platform` or may fall back to it.
+    Platform,
+    /// Only your own storage holds it: the chain gets the manifests and ref updates.
+    External {
+        /// External targets the manifests name (each adds its URIs to them).
+        targets: u64,
+    },
+}
+
+impl PackStorage {
+    /// The policy the helper will apply to a push from `git_dir`. An unknown profile or a
+    /// bad value is an error here, as it would be for the push.
+    pub fn from_git_config(git_dir: &Path) -> Result<Self> {
+        use forge_core::storage::policy::{git_config_scoped_with, run_git_config};
+        use forge_core::storage::{StoragePolicy, StorageProfiles};
+        let get = |key: &str| {
+            git_config_scoped_with(key, |args| {
+                let mut all = vec!["-C", git_dir.to_str().unwrap_or(".")];
+                all.extend_from_slice(args);
+                run_git_config(&all)
+            })
+            .map(|(_, v)| v)
+        };
+        let policy = StoragePolicy::from_git_values(
+            get("dash.storage").as_deref(),
+            get("dash.replicas").as_deref(),
+            get("dash.platformFallback").as_deref(),
+        )?;
+        if policy.is_platform_only() {
+            return Ok(Self::Platform);
+        }
+        let resolved = policy.resolve(&StorageProfiles::load()?)?;
+        Ok(if resolved.platform || resolved.platform_fallback {
+            // A fallback may store the pack on Platform: price that, so the estimate stays
+            // an upper bound.
+            Self::Platform
+        } else {
+            Self::External {
+                targets: resolved.external.len() as u64,
+            }
+        })
+    }
+}
+
 /// Price the first push into a repository that does not exist yet (so the helper cannot
-/// be asked): build the pack locally and price it as Platform chunks, plus a manifest and
-/// browse-index fragment, plus a ref update per ref. The PR heads' pack leaves out what the
-/// branches and tags already carry (it is pushed after them). An upper bound when the
-/// storage policy puts the pack on your own storage instead.
+/// be asked): build the pack locally and price what the storage policy the helper will
+/// apply (the git config of `git_dir`) writes on chain. The PR heads' pack leaves out what
+/// the branches and tags already carry (it is pushed after them).
 pub fn estimate_fresh(git_dir: &Path, refs: &Refs) -> Result<PushReport> {
+    let storage = PackStorage::from_git_config(git_dir).context("reading the storage policy")?;
     let tips = local_tips(git_dir, &refs.local_patterns())?;
     let refs_n = tips.len() as u64;
     if tips.is_empty() {
@@ -233,12 +289,7 @@ pub fn estimate_fresh(git_dir: &Path, refs: &Refs) -> Result<PushReport> {
     let pack =
         forge_core::pack::build_pack(git_dir, &unique, &bases).context("sizing the first push")?;
     let bytes = pack.bytes.len() as u64;
-    let objects = pack.parsed.object_count() as u64;
-    let locator = LOCATOR_HEADER + LOCATOR_ROW * objects;
-    let est = chunked_credits(bytes)
-        + chunked_credits(locator)
-        + 2 * git_doc_credits(MANIFEST_BYTES)
-        + refs_n * git_doc_credits(REF_UPDATE_BYTES);
+    let est = fresh_push_credits(bytes, pack.parsed.object_count() as u64, refs_n, storage);
     Ok(PushReport {
         refs: refs_n,
         packs: 1,
@@ -247,13 +298,38 @@ pub fn estimate_fresh(git_dir: &Path, refs: &Refs) -> Result<PushReport> {
         // No helper price for a repo that does not exist yet; the estimate stands in.
         helper_credits: est,
         docs: 0,
+        chunks: 0,
     })
+}
+
+/// What a push of one `bytes`-byte pack of `objects` objects and `refs` ref updates writes
+/// on chain, credits: with Platform storage, the pack and its browse index as chunks plus
+/// their two manifests and the refs; with your own storage, only the manifests (carrying
+/// each target's URIs) and the refs.
+pub fn fresh_push_credits(bytes: u64, objects: u64, refs: u64, storage: PackStorage) -> u64 {
+    match storage {
+        PackStorage::Platform => {
+            let locator = LOCATOR_HEADER + LOCATOR_ROW * objects;
+            chunked_credits(bytes)
+                + chunked_credits(locator)
+                + 2 * git_doc_credits(MANIFEST_BYTES)
+                + refs * git_doc_credits(REF_UPDATE_BYTES)
+        }
+        PackStorage::External { targets } => {
+            2 * git_doc_credits_external(MANIFEST_BASE_BYTES + URIS_PER_TARGET * targets)
+                + refs * git_doc_credits_external(REF_UPDATE_BYTES)
+        }
+    }
 }
 
 /// Manifest size and browse-index geometry, as the helper prices them.
 const MANIFEST_BYTES: u64 = 400;
 const LOCATOR_HEADER: u64 = 1_100;
 const LOCATOR_ROW: u64 = 36;
+/// A manifest before its URIs, and what each external target adds (the helper's figures,
+/// `policy::MANIFEST_BASE_BYTES` and `URIS_JSON_PER_TARGET` in git-remote-dash).
+const MANIFEST_BASE_BYTES: u64 = 220;
+const URIS_PER_TARGET: u64 = 180;
 
 impl GitPusher {
     /// Price the push: the helper builds the pack and estimates, storing nothing. The
@@ -263,10 +339,18 @@ impl GitPusher {
         // The helper prices documents by their bytes; forge-v2 index storage adds about
         // GIT_DOC_INDEX_OVERHEAD per document (measured). Add it for the documents the helper
         // said it would write: two manifests per pack, a chunk per ~14.7 KB, a ref update per ref.
+        // A push that writes no chunks (its pack goes to your own storage, or it only moves
+        // refs) writes manifests and refs alone, which pay the larger
+        // GIT_DOC_INDEX_OVERHEAD_EXTERNAL.
         let payload = forge_core::pack::DOC_PAYLOAD_MAX as u64;
         let guessed = r.refs + r.packs * (2 + r.pack_bytes.div_ceil(payload.max(1)));
         let docs = if r.docs > 0 { r.docs } else { guessed };
-        r.est_credits = r.est_credits.saturating_add(docs * GIT_DOC_INDEX_OVERHEAD);
+        let per_doc = if r.chunks == 0 {
+            GIT_DOC_INDEX_OVERHEAD_EXTERNAL
+        } else {
+            GIT_DOC_INDEX_OVERHEAD
+        };
+        r.est_credits = r.est_credits.saturating_add(docs * per_doc);
         Ok(r)
     }
 
@@ -371,6 +455,7 @@ dash: some human line"#;
                 est_credits: 1234,
                 helper_credits: 1234,
                 docs: 5,
+                chunks: 1,
             }
         );
     }
@@ -432,6 +517,95 @@ dash: some human line"#;
         // PR 1 closed: its head leaves the local namespace, so `--prune` deletes it.
         sync_pull_heads(d, &[2]).unwrap();
         assert_eq!(heads(), "refs/mirror/pull/2/head");
+    }
+
+    /// A repository with ~200 KiB of incompressible history, like the one in F-9.
+    fn repo_with_history(d: &Path) {
+        git(d, &["init", "-q", "-b", "main"]);
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        let noise: Vec<u8> = (0..200 * 1024)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x.to_le_bytes()[0]
+            })
+            .collect();
+        std::fs::write(d.join("blob.bin"), noise).unwrap();
+        git(d, &["add", "."]);
+        git(d, &["commit", "-q", "-m", "a"]);
+        git(d, &["tag", "v1"]);
+    }
+
+    /// F-9: with the pack going to your own bucket, the first push into a new repository
+    /// was priced as if Platform chunks held it (~3x the real cost), so `--max-spend`
+    /// refused imports it could afford. It is priced by the policy the helper will apply.
+    #[test]
+    fn a_fresh_push_is_priced_by_the_storage_policy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let d = tmp.path();
+        repo_with_history(d);
+        let profiles = d.join("storage.toml");
+        std::fs::write(
+            &profiles,
+            "[profiles.bucket]\nkind = \"s3\"\nendpoint = \"https://s3.example.com\"\n\
+             bucket = \"b\"\npublic_url = \"https://pub.example.com\"\n",
+        )
+        .unwrap();
+        // The storage config env is read by every test in this process; only this test
+        // sets it, to a profile that no other test names.
+        std::env::set_var(forge_core::storage::profiles::STORAGE_CONFIG_ENV, &profiles);
+
+        let platform = estimate_fresh(d, &Refs::Code).unwrap();
+        git(d, &["config", "dash.storage", "bucket"]);
+        let byo = estimate_fresh(d, &Refs::Code).unwrap();
+        assert_eq!(
+            (byo.refs, byo.pack_bytes),
+            (platform.refs, platform.pack_bytes)
+        );
+        assert!(
+            byo.est_credits * 10 < platform.est_credits,
+            "own storage {} vs Platform {}",
+            byo.est_credits,
+            platform.est_credits
+        );
+        // Manifests and refs only.
+        assert_eq!(
+            byo.est_credits,
+            fresh_push_credits(0, 0, 2, PackStorage::External { targets: 1 })
+        );
+        // A fallback to Platform keeps the Platform price (an upper bound).
+        git(d, &["config", "dash.platformFallback", "true"]);
+        assert_eq!(
+            estimate_fresh(d, &Refs::Code).unwrap().est_credits,
+            platform.est_credits
+        );
+        // An unknown profile fails here, as the push would.
+        git(d, &["config", "dash.storage", "nope"]);
+        assert!(estimate_fresh(d, &Refs::Code).is_err());
+    }
+
+    /// Two traced first pushes to your own storage (RustFS) on moutai, 2026-09-27: refs,
+    /// the helper's price and document count, and the measured balance drop. Both the fresh
+    /// estimate and the helper-priced one must be upper bounds within 15%. Before F-9 the
+    /// fresh estimate was 0.079824 DASH for the first (paid 0.003477).
+    #[test]
+    fn own_storage_estimates_cover_recorded_pushes() {
+        const RUNS: &[(u64, u64, u64, u64)] = &[
+            // refs, helper credits, docs, paid (backports-validation-script, dash-faucet)
+            (2, 32_966_400, 4, 347_730_120),
+            (3, 38_466_800, 5, 414_490_700),
+        ];
+        for &(refs, helper, docs, paid) in RUNS {
+            let fresh = fresh_push_credits(0, 0, refs, PackStorage::External { targets: 1 });
+            let priced = helper + docs * GIT_DOC_INDEX_OVERHEAD_EXTERNAL;
+            for (what, est) in [("fresh", fresh), ("helper", priced)] {
+                assert!(
+                    est >= paid && est <= paid + paid * 15 / 100,
+                    "{what}: estimate {est} vs paid {paid}"
+                );
+            }
+        }
     }
 
     #[test]

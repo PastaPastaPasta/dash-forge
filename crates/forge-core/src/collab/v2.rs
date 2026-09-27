@@ -1676,7 +1676,7 @@ impl<'a> Collab<'a> {
                     if self.own_star(&collab, repo).await?.is_none() {
                         return Ok(true);
                     }
-                    tracing::warn!("another write took the unstar's nonce; re-preparing");
+                    tracing::debug!("another write took the unstar's nonce; re-preparing");
                 }
                 Ok(_) => return Ok(true),
                 // Already gone (another process unstarred it first).
