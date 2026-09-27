@@ -12,9 +12,10 @@ import { useRouter } from 'next/navigation'
 import { CircleDot, CheckCircle2, MessageSquarePlus } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { IssueView, Listed } from '@/lib/repo'
-import { createIssue, listIssues, repoContractIds, repoKey } from '@/lib/repo'
+import { createIssue, listIssuesCached, repoContractIds, repoKey } from '@/lib/repo'
 import { previewCreate } from '@/lib/sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
+import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import { useIntent } from '@/hooks/use-intent'
 import { writeErrorMessage } from '@/lib/view/write-errors'
 import { timeAgo } from '@/lib/view'
@@ -39,10 +40,13 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const [filter, setFilter] = useState<Filter>('open')
   const [composing, setComposing] = useState(false)
   const router = useRouter()
+  const generation = useRepoWriteGeneration(home.repo)
 
   const { data, loading, error, reload } = useAsync<Listed<IssueView>>(
-    () => listIssues(sdk!, home.repo, 100),
-    [ready, repoKey(home.repo)],
+    // Through the session cache the header's open count reads, and re-read after each
+    // count-changing write the header refolds on, so the two agree.
+    () => listIssuesCached(sdk!, home.repo),
+    [ready, repoKey(home.repo), generation],
     { enabled: ready && sdk !== null },
   )
 

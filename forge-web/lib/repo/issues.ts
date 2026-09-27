@@ -56,8 +56,10 @@ function titleOf(doc: PlainDocument): string {
 /**
  * A list page: the rows, and how many newer documents were skipped as not well-formed (or,
  * in a private repo, as a stranger's ciphertext) — shown as "N hidden", never silently.
+ * `complete` is true when the read reached the end of the list, so the rows are every
+ * shown document of the repo, not just its newest page (an open count needs that).
  */
-export type Listed<T> = T[] & { readonly hidden: number }
+export type Listed<T> = T[] & { readonly hidden: number; readonly complete: boolean }
 
 /** An issue with its folded state. */
 export interface IssueView {
@@ -202,26 +204,88 @@ const EMPTY_LOG: TargetLog = { events: [], authorEvents: [] }
  * target log instead, so its cost is O(page), not O(repo activity).
  */
 const FEED_MAX_PAGES = 5
-/** How long a repo feed serves list pages (issues and pulls share it). */
+/** How long a repo feed, and the lists folded from it, serve later reads. */
 const FEED_TTL_MS = 30_000
-const feedCache = new Map<string, { at: number; promise: Promise<Map<string, TargetLog> | null> }>()
+
+type Cache<T> = Map<string, { at: number; promise: Promise<T> }>
+
+/** One in-flight or settled read per key for {@link FEED_TTL_MS}, dropped when it rejects. */
+function ttlCached<T>(cache: Cache<T>, key: string, load: () => Promise<T>): Promise<T> {
+  const hit = cache.get(key)
+  if (hit !== undefined && Date.now() - hit.at < FEED_TTL_MS) return hit.promise
+  const entry = { at: Date.now(), promise: load() }
+  cache.set(key, entry)
+  entry.promise.catch(() => {
+    if (cache.get(key) === entry) cache.delete(key)
+  })
+  return entry.promise
+}
+
+const feedCache: Cache<Map<string, TargetLog> | null> = new Map()
+/** The in-flight or fresh issue / PR list page per repo and type (the list pages and the header share it). */
+const listCache: Cache<Listed<IssueView> | Listed<PullView>> = new Map()
+/**
+ * The newest list page that settled, per repo and type, and when (`at`; 0 once a write made
+ * it stale). The header's open counts show it while a refold replaces it, so a write never
+ * blanks the badge; {@link foldOpenCounts} refolds it once it is older than
+ * {@link SETTLED_TTL_MS}, stale, or disagrees with the repo's total.
+ */
+const settledLists = new Map<string, { at: number; list: Listed<IssueView> | Listed<PullView> }>()
+/** How long the header trusts a settled list before it refolds it. */
+const SETTLED_TTL_MS = 60_000
+/** Per repo: bumped when its list pages change (a read settles, or a write drops them). */
+const versions = new Map<string, number>()
+/** Per repo: bumped when a write that can change an open count drops its caches. */
+const writes = new Map<string, number>()
+const listeners = new Set<() => void>()
+
+const feedKey = (repo: RepoRef): string => `${repo.forge.collab}:${repo.repoId}`
+const listKey = (repo: RepoRef, type: 'issue' | 'patch'): string => `${feedKey(repo)}:${type}`
+
+function changed(repo: RepoRef, counters: readonly Map<string, number>[]): void {
+  const key = feedKey(repo)
+  for (const counter of counters) counter.set(key, (counter.get(key) ?? 0) + 1)
+  for (const listener of listeners) listener()
+}
 
 /** {@link readRepoFeed} through a short per-repo cache (issues and pulls pages share it). */
 function readRepoFeedCached(sdk: EvoSDK, repo: RepoRef): Promise<Map<string, TargetLog> | null> {
-  const key = `${repo.forge.collab}:${repo.repoId}`
-  const hit = feedCache.get(key)
-  if (hit !== undefined && Date.now() - hit.at < FEED_TTL_MS) return hit.promise
-  const promise = readRepoFeed(sdk, repo)
-  feedCache.set(key, { at: Date.now(), promise })
-  promise.catch(() => {
-    if (feedCache.get(key)?.promise === promise) feedCache.delete(key)
-  })
-  return promise
+  return ttlCached(feedCache, feedKey(repo), () => readRepoFeed(sdk, repo))
 }
 
-/** Drop a repo's cached feed (tests; and after a write lands). */
-export function invalidateRepoFeed(repo: RepoRef): void {
-  feedCache.delete(`${repo.forge.collab}:${repo.repoId}`)
+/**
+ * Drop a repo's cached feed and list pages (tests; and after a write lands). With `counts`
+ * (the default) the write can change an open count — an issue, patch, event, authorEvent or
+ * membership write — so the settled lists go stale and the subscribers
+ * ({@link subscribeRepoLists}) are told, and the repo header refolds.
+ */
+export function invalidateRepoFeed(repo: RepoRef, { counts = true }: { counts?: boolean } = {}): void {
+  feedCache.delete(feedKey(repo))
+  for (const type of ['issue', 'patch'] as const) listCache.delete(listKey(repo, type))
+  if (!counts) return
+  for (const type of ['issue', 'patch'] as const) {
+    const settled = settledLists.get(listKey(repo, type))
+    if (settled !== undefined) settled.at = 0
+  }
+  changed(repo, [writes, versions])
+}
+
+/** How often `repo`'s list pages changed this session: what a view derived from them re-renders on. */
+export function repoListVersion(repo: RepoRef): number {
+  return versions.get(feedKey(repo)) ?? 0
+}
+
+/** How many writes to `repo` dropped its caches this session: a cache key for reads a write changes. */
+export function repoWriteGeneration(repo: RepoRef): number {
+  return writes.get(feedKey(repo)) ?? 0
+}
+
+/** Be told whenever any repo's list pages change; returns the unsubscribe. */
+export function subscribeRepoLists(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => {
+    listeners.delete(listener)
+  }
 }
 
 function toEvents(documents: readonly PlainDocument[]): Event[] {
@@ -366,7 +430,7 @@ async function newestTargets(
   repo: RepoRef,
   type: 'issue' | 'patch',
   limit: number,
-): Promise<{ documents: PlainDocument[]; hidden: number }> {
+): Promise<{ documents: PlainDocument[]; hidden: number; complete: boolean }> {
   const oracle = repo.visibility === 'private' ? await readRoleOracle(sdk, repo) : null
   const shown = (d: PlainDocument): boolean => {
     if (!wellFormed(repo, type, d)) return false
@@ -376,6 +440,7 @@ async function newestTargets(
   const out: PlainDocument[] = []
   const seen = new Set<string>()
   let hidden = 0
+  let complete = false
   let before: number | null = null
   for (let page = 0; page < LIST_MAX_PAGES && out.length < limit; page++) {
     const { documents } = await queryDocumentsWithProof(
@@ -387,21 +452,28 @@ async function newestTargets(
         limit,
       }),
     )
+    let cut = false
     for (const d of documents) {
-      if (out.length >= limit) break
+      if (out.length >= limit) {
+        cut = true
+        break
+      }
       const id = str(d, '$id')
       if (seen.has(id)) continue
       seen.add(id)
       if (shown(d)) out.push(d)
       else hidden++
     }
-    // A short page is the end of the list.
-    if (documents.length < limit) break
+    // A short page is the end of the list: complete, unless the page was cut to fit `limit`.
+    if (documents.length < limit) {
+      complete = !cut
+      break
+    }
     const oldest = documents[documents.length - 1]?.['$createdAt']
     if (typeof oldest !== 'number' || oldest === before) break
     before = oldest
   }
-  return { documents: out, hidden }
+  return { documents: out, hidden, complete }
 }
 
 /**
@@ -440,7 +512,7 @@ export async function listIssues(
   repo: RepoRef,
   limit = 50,
 ): Promise<Listed<IssueView>> {
-  const { documents, hidden } = await newestTargets(sdk, repo, 'issue', limit)
+  const { documents, hidden, complete } = await newestTargets(sdk, repo, 'issue', limit)
   const rows = await foldRows(
     sdk,
     repo,
@@ -448,7 +520,7 @@ export async function listIssues(
     (doc, log) => readIssue(sdk, repo, doc, log),
     incompleteIssueView,
   )
-  return Object.assign(rows, { hidden })
+  return Object.assign(rows, { hidden, complete })
 }
 
 /** An issue row whose event log could not be read completely: identity only, no folded state. */
@@ -533,8 +605,9 @@ export function baseRefTips(
 
 /**
  * Read one PR (patch) and fold its state, using the historical-tips merge predicate over the
- * base ref's VALID history. `configHistory` yields the repo's config timeline (read here when
- * not given; a list shares one read across its rows).
+ * base ref's VALID history. `configHistory` yields the repo's config timeline and
+ * `refUpdates` a base ref's update history (each read here when not given; a list shares one
+ * read of each across its rows).
  */
 export async function readPull(
   sdk: EvoSDK,
@@ -542,6 +615,7 @@ export async function readPull(
   patchDoc: PlainDocument,
   log?: TargetLog,
   configHistory?: () => Promise<readonly ConfigDoc[]>,
+  refUpdates?: (refNameHashB64: string) => Promise<RefUpdate[]>,
 ): Promise<PullView> {
   const id = str(patchDoc, '$id')
   const author = str(patchDoc, '$ownerId')
@@ -554,7 +628,7 @@ export async function readPull(
   let tips: BaseRefTips = { historical: [], tip: undefined, atOpen: undefined }
   if (typeof baseRefNameHashRaw === 'string' && baseRefNameHashRaw.length > 0) {
     const [updates, configs] = await Promise.all([
-      readRefUpdates(sdk, repo, baseRefNameHashRaw),
+      refUpdates ? refUpdates(baseRefNameHashRaw) : readRefUpdates(sdk, repo, baseRefNameHashRaw),
       configHistory ? configHistory() : readConfigHistory(sdk, repo),
     ])
     tips = baseRefTips(updates, configs, byteFieldToHex(patchDoc, 'baseRefNameHash'), createdAt)
@@ -599,18 +673,29 @@ export async function listPulls(
   repo: RepoRef,
   limit = 50,
 ): Promise<Listed<PullView>> {
-  const { documents, hidden } = await newestTargets(sdk, repo, 'patch', limit)
+  const { documents, hidden, complete } = await newestTargets(sdk, repo, 'patch', limit)
   // One config read for the whole page, made by the first row that has a base ref.
   let configs: Promise<readonly ConfigDoc[]> | undefined
   const configHistory = () => (configs ??= readConfigHistory(sdk, repo))
+  // One update-history read per base ref for the whole page: most PRs target the same few
+  // refs (usually just main), so this is O(base refs), not O(PRs).
+  const updates = new Map<string, Promise<RefUpdate[]>>()
+  const refUpdates = (hash: string): Promise<RefUpdate[]> => {
+    let read = updates.get(hash)
+    if (read === undefined) {
+      read = readRefUpdates(sdk, repo, hash)
+      updates.set(hash, read)
+    }
+    return read
+  }
   const rows = await foldRows(
     sdk,
     repo,
     documents,
-    (doc, log) => readPull(sdk, repo, doc, log, configHistory),
+    (doc, log) => readPull(sdk, repo, doc, log, configHistory, refUpdates),
     incompletePullView,
   )
-  return Object.assign(rows, { hidden })
+  return Object.assign(rows, { hidden, complete })
 }
 
 /** A PR row whose event log could not be read completely: identity only, no folded state. */
@@ -645,4 +730,130 @@ function incompletePullView(doc: PlainDocument): PullView {
     state: { open: true, merged: false, draft: false, baseRef: null, labels: [], assignees: [] },
     stateComplete: false,
   }
+}
+
+/**
+ * How many rows a list page reads (the issues and pulls pages). The header's open counts come
+ * from the same read, through the same cache, so the tab and the list never disagree.
+ */
+export const LIST_PAGE = 100
+
+/** Read a list page through the session cache, recording it as the newest settled one. */
+function listCached<T extends Listed<IssueView> | Listed<PullView>>(
+  repo: RepoRef,
+  type: 'issue' | 'patch',
+  load: () => Promise<T>,
+): Promise<T> {
+  const key = listKey(repo, type)
+  const hit = listCache.get(key)
+  if (hit !== undefined && Date.now() - hit.at < FEED_TTL_MS) return hit.promise as Promise<T>
+  const promise = ttlCached(listCache, key, load) as Promise<T>
+  promise.then(
+    (list) => {
+      // Only a read that is still current records (a write may have dropped it meanwhile).
+      if (listCache.get(key)?.promise !== promise) return
+      settledLists.set(key, { at: Date.now(), list })
+      changed(repo, [versions])
+    },
+    () => undefined,
+  )
+  return promise
+}
+
+/** {@link listIssues} of one {@link LIST_PAGE}, cached per repo (see {@link invalidateRepoFeed}). */
+export function listIssuesCached(sdk: EvoSDK, repo: RepoRef): Promise<Listed<IssueView>> {
+  return listCached(repo, 'issue', () => listIssues(sdk, repo, LIST_PAGE))
+}
+
+/** {@link listPulls} of one {@link LIST_PAGE}, cached like {@link listIssuesCached}. */
+export function listPullsCached(sdk: EvoSDK, repo: RepoRef): Promise<Listed<PullView>> {
+  return listCached(repo, 'patch', () => listPulls(sdk, repo, LIST_PAGE))
+}
+
+/** A folded list, as far as counting needs it. */
+type CountedList = readonly { readonly state: { readonly open: boolean }; readonly stateComplete: boolean }[] & {
+  readonly complete: boolean
+  readonly hidden: number
+}
+
+/**
+ * The open count a folded list proves, or null when it proves none: the list stopped before
+ * the repo's oldest document, or some row's state is a fold over a partial event log (the
+ * list marks that row unverified). A merged or closed PR, like a closed issue, is not open.
+ */
+export function openCountOf(list: CountedList | null | undefined): number | null {
+  if (list == null || !list.complete || list.some((row) => !row.stateComplete)) return null
+  return list.filter((row) => row.state.open).length
+}
+
+/** A repo's issue and PR totals (every document ever created, open or closed): the countable indexes. */
+export interface TargetTotals {
+  readonly issues: number | null
+  readonly pulls: number | null
+}
+
+/**
+ * Whether the header folds a list itself to count what is open, given the type's total.
+ *
+ * Open is not a document field (it is the fold of `event` + `authorEvent`), so no index can
+ * count it; only a list holding every row can. Below {@link LIST_PAGE} documents one list page
+ * is the whole repo, so the header reads it — the very read and cache entry the list page
+ * makes, so visiting both costs one read. At or above it, folding the repo's whole history for
+ * a badge on every page is too dear: the header only uses a list the list page already read,
+ * which proves a count only if it reached the end ({@link openCountOf}), and otherwise shows
+ * no number. It never shows the total instead: a total beside "Issues" reads as the open
+ * count, which is the bug this replaced.
+ */
+export function foldsForCount(total: number | null): boolean {
+  return total !== null && total > 0 && total < LIST_PAGE
+}
+
+/**
+ * Whether a complete list accounts for exactly `total` documents (shown + hidden). A list
+ * folded before a newer issue or PR landed does not, so its open count is out of date.
+ */
+function matchesTotal(total: number | null, list: CountedList): boolean {
+  return total !== null && list.length + list.hidden === total
+}
+
+/**
+ * The open count to show for one type: its list's while that list is complete and accounts
+ * for the current total, else 0 when the total says there are none, else no number.
+ */
+export function openCountFor(total: number | null, list: CountedList | null | undefined): number | null {
+  if (total === 0) return 0
+  if (list == null || !matchesTotal(total, list)) return null
+  return openCountOf(list)
+}
+
+/**
+ * The Issues and Pull requests tab counts — the OPEN ones, as GitHub's tabs show — from the
+ * newest settled list pages; null for a count not (yet) proven. {@link foldOpenCounts} fills
+ * them.
+ */
+export function openCounts(repo: RepoRef, totals: TargetTotals | null): TargetTotals {
+  if (totals === null) return { issues: null, pulls: null }
+  return {
+    issues: openCountFor(totals.issues, settledLists.get(listKey(repo, 'issue'))?.list),
+    pulls: openCountFor(totals.pulls, settledLists.get(listKey(repo, 'patch'))?.list),
+  }
+}
+
+/**
+ * Read the list pages {@link openCounts} needs: a small repo's types ({@link foldsForCount})
+ * with no settled list, or one that a write made stale, that is older than
+ * {@link SETTLED_TTL_MS}, or that does not account for the current total. A fresh list is not
+ * re-read, so the header costs about one fold per repo per minute, plus one after each write
+ * that can change a count. A failure leaves the count unshown.
+ */
+export async function foldOpenCounts(sdk: EvoSDK, repo: RepoRef, totals: TargetTotals): Promise<void> {
+  const wants = (type: 'issue' | 'patch', total: number | null): boolean => {
+    if (!foldsForCount(total)) return false
+    const settled = settledLists.get(listKey(repo, type))
+    return settled === undefined || Date.now() - settled.at >= SETTLED_TTL_MS || !matchesTotal(total, settled.list)
+  }
+  await Promise.all([
+    wants('issue', totals.issues) ? listIssuesCached(sdk, repo).catch(() => null) : null,
+    wants('patch', totals.pulls) ? listPullsCached(sdk, repo).catch(() => null) : null,
+  ])
 }
