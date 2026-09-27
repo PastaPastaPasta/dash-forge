@@ -5,8 +5,9 @@
  * keyed hashes. Every seal reads the anchors fresh (§5.3: a writer never seals under an epoch
  * it last saw minutes ago), so a rotation that just happened is honoured.
  *
- * The plaintext writers (`writes.ts`, `review-writes.ts`, `push.ts`) call {@link sealForRepo}
- * for a private repo; nothing in the UI seals on its own.
+ * Callers: `writeRepoDoc` (`writes.ts`; `review-writes.ts` goes through it), `writeRefUpdate`
+ * (`push.ts`), and `storeAndRecordPack` via {@link sealArtifact} (`storage/index.ts`); edits of
+ * issues, PRs and comments go through {@link sealEdit}. Nothing in the UI seals on its own.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -14,7 +15,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { decodeIdentifier } from '../auth/base58'
 import { encryptionOps } from '../auth/encryption-key'
 import { idbGet, idbPut } from '../idb'
-import { EpochKeys, TooLargeError, openPack, refNameHash, sealDoc, sealPack, type DocFields, type PrivateDoc, type PrivateDocType } from '../private'
+import { EpochKeys, TooLargeError, type EpochResolution, openPack, refNameHash, sealDoc, sealPack, type DocFields, type PrivateDoc, type PrivateDocType } from '../private'
 import type { WriteAuth } from '../sdk'
 import type { RepoRef } from './contract'
 import { loadPrivateSessionUncached, sessionUnwrapper } from './private-session'
@@ -28,6 +29,17 @@ const SEALED_FIELDS: Readonly<Record<PrivateDocType, readonly (keyof DocFields)[
   refUpdate: ['refName'],
   protectedRefUpdate: ['refName'],
   config: ['defaultBranch', 'protectedPatterns'],
+}
+
+/**
+ * Why nothing can be written under `r`'s current epoch (§5.3, §5.6), or null when the write
+ * epoch is set: a burned epoch, the current key held by a non-member, or a key this reader lacks.
+ */
+export function writeBlockReason(r: EpochResolution): string | null {
+  if (r.writeEpoch !== null) return null
+  if (r.currentEpoch !== null && r.burned.has(r.currentEpoch)) return `Key epoch ${r.currentEpoch} is closed; nothing can be written until a maintainer rotates the key (Repair).`
+  if (r.repair !== null && r.repair.nonMembers.length > 0) return 'The current key reached someone who is no longer a member; nothing can be written until a maintainer runs Repair.'
+  return "You don't have this repo's current key yet, so you can't write to it; a maintainer can repair it."
 }
 
 /** Why a private write cannot go ahead (shown as is). */
@@ -55,13 +67,8 @@ async function writeKeys(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, epoch?: nu
     const r = s.resolution
     const e = epoch ?? r.writeEpoch
     if (e === null || e === undefined) {
-      if (r.currentEpoch !== null && r.burned.has(r.currentEpoch)) {
-        throw new PrivateWriteError(`key epoch ${r.currentEpoch} is closed; a maintainer must run Repair before anything new is written`)
-      }
-      if (r.repair !== null && r.repair.nonMembers.length > 0) {
-        throw new PrivateWriteError('the current key reached someone who is no longer a member; a maintainer must run Repair (it rotates the key) before anything new is written')
-      }
-      throw new PrivateWriteError("you can't read this repo's current key, so you can't write to it yet; ask a maintainer to run Repair", 'E307')
+      const reason = writeBlockReason(r) as string
+      throw new PrivateWriteError(reason, r.currentEpoch !== null && !r.keys.has(r.currentEpoch) ? 'E307' : 'E310')
     }
     const keys = r.keys.get(e)
     if (keys === undefined) throw new PrivateWriteError(`you can't read key epoch ${e} of this repo`, 'E307')

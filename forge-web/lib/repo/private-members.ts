@@ -654,36 +654,15 @@ async function rotateWith(
           throw new PrivateMembersError(`key epoch ${closed} was closed, but the member list is still changing on Platform; run Repair in a moment to finish.`, 'E310')
         })
       }
-      // The key of `epoch`: this signer's pending self-wrap's (an earlier run's; the unique index
-      // keeps it), else a fresh one; a self-wrap that stands unseen by this read is adopted.
-      const pending = pendingSelfWrap(session, self.identity, epoch)
-      let next =
-        pending !== null
-          ? await c.ops.unwrapRaw({ document: pending.raw, counterpartyKey: keyOf(session, self.identity, pending.senderKeyId), repoId: session.repoId, epoch })
-          : await freshKey(session.repoId, epoch)
+      let next = await ownEpochKey(c, session, self, epoch, intent)
       try {
-        let adopted = false
-        const selfOutcome = pending !== null ? { kind: 'same' as const } : await postWrap(c, session, next.keys, next.raw, self.identity, self.keyId, intent)
-        if (selfOutcome.kind === 'different') {
-          const standing = await readOwnWrap(c, session, epoch, self.identity)
-          if (standing === null) throw unusableWrap({ kind: 'unreadable' }, self.identity, epoch)
-          if (standing.recipientKeyId !== c.ops.keyId) {
-            standing.raw.fill(0)
-            throw notHeldKey(epoch, standing.recipientKeyId)
-          }
-          next.raw.fill(0)
-          next = standing
-          adopted = true
-        } else if (selfOutcome.kind === 'unreadable') {
-          throw unusableWrap(selfOutcome, self.identity, epoch)
-        }
         onStep?.({ kind: 'wrapped', identity: self.identity, epoch })
         // An earlier run's key may already sit with someone who must not have it: a removal never
         // trusts a read that may lag that run's wrap; any run burns on a stray it can see, or on
         // a standing wrap it cannot replace.
         const mine = ownWraps(session, selfId, epoch)
         let leak =
-          (removing && (pending !== null || adopted)) ||
+          (removing && next.resumed) ||
           mustBurn(false, false, mine, plan.recipients, allowed) ||
           (await straysAt(c, epoch, allowed)).length > 0
         // Every recipient this run already wrapped or found standing at `epoch`: never posted twice.
@@ -723,7 +702,7 @@ async function rotateWith(
           if (skip === null) skip = from
           else from.raw.fill(0)
           from = { epoch, raw: next.raw }
-          next = { keys: next.keys, raw: new Uint8Array(0) }
+          next = { keys: next.keys, raw: new Uint8Array(0), resumed: false }
           continue
         }
         if ((await straysAt(c, epoch, allowed)).length > 0) {
@@ -779,26 +758,8 @@ export async function createEpochZero(c: PrivateWriteContext, defaultBranch: str
     // Resume: our own epoch-0 self-wrap, if it landed, is the key; else a fresh one.
     const pending = pendingSelfWrap(session, c.auth.identityId, 0)
     if (pending !== null && pending.row.recipientKeyId !== c.ops.keyId) throw notHeldKey(0, pending.row.recipientKeyId)
-    let k0 =
-      pending !== null
-        ? await c.ops.unwrapRaw({ document: pending.raw, counterpartyKey: keyOf(session, c.auth.identityId, pending.senderKeyId), repoId: session.repoId, epoch: 0 })
-        : await freshKey(session.repoId, 0)
+    const k0 = await ownEpochKey(c, session, { identity: c.auth.identityId, keyId: selfKey.keyId }, 0, intent)
     try {
-      if (pending === null) {
-        const outcome = await postWrap(c, session, k0.keys, k0.raw, c.auth.identityId, selfKey.keyId, intent)
-        if (outcome.kind === 'different') {
-          const standing = await readOwnWrap(c, session, 0, c.auth.identityId)
-          if (standing === null) throw unusableWrap({ kind: 'unreadable' }, c.auth.identityId, 0)
-          if (standing.recipientKeyId !== c.ops.keyId) {
-            standing.raw.fill(0)
-            throw notHeldKey(0, standing.recipientKeyId)
-          }
-          k0.raw.fill(0)
-          k0 = standing
-        } else if (outcome.kind === 'unreadable') {
-          throw unusableWrap(outcome, c.auth.identityId, 0)
-        }
-      }
       const fields = { defaultBranch: shortBranch(defaultBranch), protectedPatterns: [] as string[] }
       const enc = await sealDoc(k0.keys, { type: 'config', ownerId: decodeIdentifier(c.auth.identityId), epoch: 0 }, fields, { anchor: true })
       await postConfig(c, { repoId: decodeIdentifier(c.repo.repoId), epoch: 0, enc, backend: { mode: 0 }, archived: false }, `${intent}:anchor:0:${keyTag(k0.keys)}`)
@@ -807,6 +768,43 @@ export async function createEpochZero(c: PrivateWriteContext, defaultBranch: str
       k0.raw.fill(0)
     }
   })
+}
+
+/**
+ * The key of `epoch` for this signer (`self`: its identity and the key id its self-wrap goes to):
+ * its pending self-wrap's (an earlier run's; the unique index keeps it), else a fresh one, posted
+ * as its self-wrap; a self-wrap that stands unseen by this read is adopted, if it is to the key
+ * this browser holds. `resumed`: the key is an earlier run's. The caller wipes `raw`.
+ */
+async function ownEpochKey(
+  c: PrivateWriteContext,
+  session: PrivateSession,
+  self: { readonly identity: string; readonly keyId: number },
+  epoch: number,
+  intent: string,
+): Promise<{ keys: EpochKeys; raw: Uint8Array; resumed: boolean }> {
+  const pending = pendingSelfWrap(session, self.identity, epoch)
+  if (pending !== null) {
+    const k = await c.ops.unwrapRaw({ document: pending.raw, counterpartyKey: keyOf(session, self.identity, pending.senderKeyId), repoId: session.repoId, epoch })
+    return { ...k, resumed: true }
+  }
+  const fresh = await freshKey(session.repoId, epoch)
+  try {
+    const outcome = await postWrap(c, session, fresh.keys, fresh.raw, self.identity, self.keyId, intent)
+    if (outcome.kind === 'same') return { ...fresh, resumed: false }
+    if (outcome.kind === 'unreadable') throw unusableWrap(outcome, self.identity, epoch)
+    const standing = await readOwnWrap(c, session, epoch, self.identity)
+    if (standing === null) throw unusableWrap({ kind: 'unreadable' }, self.identity, epoch)
+    if (standing.recipientKeyId !== c.ops.keyId) {
+      standing.raw.fill(0)
+      throw notHeldKey(epoch, standing.recipientKeyId)
+    }
+    fresh.raw.fill(0)
+    return { keys: standing.keys, raw: standing.raw, resumed: true }
+  } catch (e) {
+    fresh.raw.fill(0)
+    throw e
+  }
 }
 
 async function freshKey(repoId: Uint8Array, epoch: number): Promise<{ keys: EpochKeys; raw: Uint8Array }> {

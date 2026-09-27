@@ -150,8 +150,9 @@ export function assertNoPlaintext(repo: RepoRef, documentType: string, data: Rea
 const SEALED_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.comment, DOC.review])
 
 /**
- * Refuse a write of sealed content to a private repo that this path does not seal (a replace
- * outside {@link sealEdit}'s writers). {@link writeRepoDoc} seals instead.
+ * Refuse a replace of sealed content in a private repo (a replace would publish plaintext next
+ * to `enc`); private edits go through `sealEdit` (`private-writes.ts`), and {@link writeRepoDoc}
+ * seals creates.
  */
 export function refusePlaintextInPrivate(repo: RepoRef, documentType: string): void {
   if (repo.visibility === 'private' && SEALED_TYPES.has(documentType)) {
@@ -864,8 +865,9 @@ export async function createRepo(
   const ownerId = auth.identityId
   const key = journalKey(auth.network, ownerId, name)
   checkRepoInput(input)
+  const visibility: Visibility = input.visibility ?? 'public'
   // Refused before anything is written: a private repo nobody can hold a key for.
-  if ((input.visibility ?? 'public') === 'private' && privateCreate === undefined) {
+  if (visibility === 'private' && privateCreate === undefined) {
     throw new Error('cannot create a private repository: add your encryption key to this browser first (Settings → Keys)')
   }
   // A resumed creation keeps the values it started with, so the repo and config documents
@@ -874,7 +876,7 @@ export async function createRepo(
   // A fork and a plain repo of the same name are different creations: resuming one as the
   // other would write (or drop) `forkOf`, and a fork's packs and refs would land in a repo
   // that is not a fork of their parent. Refuse rather than guess.
-  if (previous && (previous.input.visibility ?? 'public') !== (input.visibility ?? 'public')) {
+  if (previous && (previous.input.visibility ?? 'public') !== visibility) {
     throw new Error(`an unfinished ${previous.input.visibility ?? 'public'} repository named ${name} is pending in this browser; finish or dismiss it on the New repository page first (visibility is immutable)`)
   }
   if (previous && (previous.input.forkOf ?? null) !== (input.forkOf ?? null)) {
@@ -909,18 +911,14 @@ export async function createRepo(
       ],
       limit: 1,
     })
-    return firstId(documents)
-  }
-  const visibility: Visibility = input.visibility ?? 'public'
-  let repoId = await existingRepo()
-  if (repoId !== null) {
     // A repo of this name exists: resume only one of the same visibility (it is immutable).
-    const { documents } = await queryDocumentsWithProof(sdk, { dataContractId: forge.core, documentTypeName: DOC.repo, where: [['$id', '==', repoId]], limit: 1 })
     const existing = documents[0]?.['visibility']
     if (existing !== undefined && existing !== visibility) {
       throw new Error(`${name} already exists with the other visibility (visibility is immutable)`)
     }
+    return firstId(documents)
   }
+  let repoId = await existingRepo()
   await step('repo', async () => {
     if (repoId !== null) return
     const data: Record<string, unknown> = { name, visibility }

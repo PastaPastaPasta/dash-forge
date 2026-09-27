@@ -8,22 +8,15 @@
  */
 
 import type { RepoHome } from '@/lib/view'
-import { SEALED_TEXT_LIMIT } from '@/lib/repo/private-writes'
+import { SEALED_TEXT_LIMIT, writeBlockReason } from '@/lib/repo/private-writes'
 
 /** For a public repo: always null. For a private one: null when sealed writes can go ahead, else why not. */
 export function privateComposeBlock(home: RepoHome): string | null {
   if (home.repo.visibility !== 'private') return null
   const access = home.private
-  if (access === undefined || access.access !== 'member') {
-    return access?.access === 'no-key'
-      ? 'Add your encryption key to this browser (Settings → Keys) to write to this private repo.'
-      : 'Only members can write to a private repo.'
-  }
-  const r = access.session.resolution
-  if (r.writeEpoch !== null) return null
-  if (r.currentEpoch !== null && r.burned.has(r.currentEpoch)) return `Key epoch ${r.currentEpoch} is closed; nothing can be written until a maintainer rotates the key.`
-  if (r.repair !== null && r.repair.nonMembers.length > 0) return 'The current key reached someone who is no longer a member; nothing can be written until a maintainer runs Repair.'
-  return "You don't have the current key yet, so you can't write here; a maintainer can repair it."
+  if (access?.access === 'no-key') return 'Add your encryption key to this browser (Settings → Keys) to write to this private repo.'
+  if (access?.access !== 'member') return 'Only members can write to a private repo.'
+  return writeBlockReason(access.session.resolution)
 }
 
 /** The note shown in place of a composer on a private repo that cannot be written to. */

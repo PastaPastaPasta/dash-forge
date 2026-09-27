@@ -39,6 +39,7 @@ import {
   pendingRepoCreations,
   type CreateRepoInput,
   type CreateRepoStep,
+  type PrivateCreate,
   type RepoCreationJournal,
 } from '@/lib/repo'
 import { createEpochZero } from '@/lib/repo/private-members'
@@ -146,14 +147,12 @@ export default function NewRepoPage(): JSX.Element {
     setProgress(INITIAL_PROGRESS)
     let result
     try {
-      const privateCreate =
-        i.visibility === 'private'
-          ? await (async () => {
-              const o = await encryptionOps(sdk, DEFAULT_NETWORK, signer.identityId, forge.core)
-              if (o === null) throw new Error('cannot create a private repository: add your encryption key to this browser first (Settings → Keys)')
-              return { ops: o, epochZero: createEpochZero }
-            })()
-          : undefined
+      // Without an encryption key createRepo refuses a private create before writing anything.
+      let privateCreate: PrivateCreate | undefined
+      if (i.visibility === 'private') {
+        const o = await encryptionOps(sdk, DEFAULT_NETWORK, signer.identityId, forge.core)
+        if (o !== null) privateCreate = { ops: o, epochZero: createEpochZero }
+      }
       result = await createRepo(
         sdk,
         signer,
@@ -308,7 +307,7 @@ export default function NewRepoPage(): JSX.Element {
 
           {progress ? (
             <ol aria-label="Creation steps" className="space-y-1 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
-              {STEPS.map(({ step, label }) => (
+              {STEPS.map(({ step, label, privateLabel }) => (
                 <li key={step} className="flex items-center gap-2 text-dense">
                   {progress[step] === 'done' ? (
                     <Check className="h-4 w-4 text-verify-700 dark:text-verify-400" aria-hidden />
@@ -317,7 +316,7 @@ export default function NewRepoPage(): JSX.Element {
                   ) : (
                     <span className="h-4 w-4 rounded-full border border-anvil-300 dark:border-anvil-700" aria-hidden />
                   )}
-                  {isPrivate ? (STEPS.find((x) => x.step === step)?.privateLabel ?? label) : label}
+                  {isPrivate ? (privateLabel ?? label) : label}
                 </li>
               ))}
             </ol>
