@@ -888,7 +888,7 @@ export async function removePrivateMember(
       const mine = epochsAnchoredBy(s, memberId)
       if (mine.length > 0) {
         throw new PrivateMembersError(
-          `you can't remove your own maintainer role while you anchor key epoch ${mine.join(', ')}: your anchors stop counting with the role, and nobody would re-anchor them first. Keep the role; nothing was removed.`,
+          `you can't remove your own maintainer role while you anchor key ${mine.length === 1 ? 'epoch' : 'epochs'} ${mine.join(', ')}: your anchors stop counting with the role and nobody can re-anchor them first. Keep the role; nothing was removed.`,
           'E310',
         )
       }
