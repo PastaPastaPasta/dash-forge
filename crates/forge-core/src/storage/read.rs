@@ -44,11 +44,12 @@ pub fn transfer_deadline(size: Option<u64>) -> Duration {
     scaled.max(MIN_TRANSFER_DEADLINE)
 }
 
-/// How long a pack's external copies get, together, while none of them has sent a single
-/// byte of the pack. A gateway that cannot find a CID holds the request open and answers 504
-/// after about a minute (measured 2026-09-27), and every candidate after it would wait as
-/// long. Once any candidate's body is flowing this no longer applies: slow but healthy
-/// gateways stream, and keep their size-scaled [`transfer_deadline`].
+/// How long the copies racing for a pack get while none of them has sent a single byte. A
+/// gateway that cannot find a CID holds the request open and answers 504 after about a
+/// minute (measured 2026-09-27). When the budget runs out the silent copies are dropped and
+/// the next ones get a fresh budget, so every copy is still tried. Once any candidate's body
+/// is flowing this no longer applies: slow but healthy gateways stream, and keep their
+/// size-scaled [`transfer_deadline`].
 pub const FIRST_BYTE_BUDGET: Duration = Duration::from_secs(20);
 
 /// The time a caller with Platform chunks gives the external copies of a `size`-byte
@@ -349,11 +350,12 @@ impl PackReader {
         // others are dropped = cancelled); every failure is kept so a tampering host is
         // named, not masked by a later 404.
         //
-        // Until some candidate's body starts arriving, the copies together get
+        // Until some candidate's body starts arriving, the copies in flight get
         // `first_byte_budget` ([`FIRST_BYTE_BUDGET`]): gateways that cannot find a CID hold
-        // the request open for a minute each before they say so. Once bytes flow, every
-        // candidate keeps its own size-scaled deadline, so a slow but healthy stream is
-        // never cut off.
+        // the request open for a minute each before they say so. If none sends a byte in
+        // time they are dropped and the next ones start with a fresh budget; the read fails
+        // only when no copy is left. Once bytes flow, every candidate keeps its own
+        // size-scaled deadline, so a slow but healthy stream is never cut off.
         //
         // "Flowing" is per candidate: a copy that sent some bytes and then failed (a reset,
         // a wrong hash, an HTML error page) leaves the race, and if no other copy in flight
@@ -400,17 +402,18 @@ impl PackReader {
                     if any_flowing(&in_flight) {
                         continue;
                     }
-                    let secs = self.first_byte_budget.as_secs();
-                    for (_, label) in &in_flight {
-                        reasons.push(format!("{label}: sent no data within {secs}s"));
+                    // The copies in flight stayed silent: drop them (cancelling their
+                    // requests) and give the next ones a fresh budget. Only when none are left
+                    // does the read fail, so a copy that could serve the pack is always tried.
+                    let waited = self.first_byte_budget;
+                    for (_, label) in in_flight.drain(..) {
+                        reasons.push(format!("{label}: sent no data within {waited:?}"));
                     }
-                    let untried = pending.len();
-                    if untried > 0 {
-                        reasons.push(format!(
-                            "{untried} more not tried: no copy sent any data within {secs}s"
-                        ));
-                    }
-                    break;
+                    race = FuturesUnordered::new();
+                    first_byte
+                        .as_mut()
+                        .reset(tokio::time::Instant::now() + self.first_byte_budget);
+                    continue;
                 }
             };
             let Some((done, res)) = res else { break };
@@ -1112,7 +1115,8 @@ mod tests {
     #[tokio::test]
     async fn copies_that_never_send_a_byte_give_up_at_the_first_byte_budget() {
         // Three gateways that hold the request open without answering: before, each kept
-        // its slot for its whole deadline (a minute on real gateways).
+        // its slot for its whole deadline (a minute on real gateways). Now each pair gets
+        // one first-byte budget: the first two, then the third, then the read fails.
         let gws: Vec<String> = (0..3).map(|_| silent_gateway()).collect();
         let uris: Vec<String> = gws.iter().map(|g| format!("{g}/x")).collect();
         let r = PackReader::new(gws, &StorageProfiles::default())
@@ -1124,15 +1128,21 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
+        let took = started.elapsed();
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(5),
-            "waited {:?}",
-            started.elapsed()
+            took >= std::time::Duration::from_millis(1000)
+                && took < std::time::Duration::from_secs(5),
+            "two budgets (a pair, then the last one): {took:?}"
         );
-        // Each copy still waiting is named, and the untried one is counted.
-        assert_eq!(err.matches(": sent no data within 0s").count(), 2, "{err}");
-        assert!(err.contains(&format!("{}: sent no data", uris[0])), "{err}");
-        assert!(err.contains("1 more not tried"), "{err}");
+        // Every copy was tried and is named.
+        assert_eq!(
+            err.matches(": sent no data within 500ms").count(),
+            3,
+            "{err}"
+        );
+        for u in &uris {
+            assert!(err.contains(&format!("{u}: sent no data")), "{err}");
+        }
     }
 
     /// A host that sends the headers and one body byte, then closes the connection.
@@ -1157,6 +1167,32 @@ mod tests {
             }
         });
         format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn a_silent_pair_gives_way_to_the_next_copies_which_still_serve_the_pack() {
+        // Two gateways that never answer, then one that has the pack: the silent pair is
+        // dropped after the first-byte budget and the third is tried with a fresh one. A
+        // clone that can succeed must not fail because the first two were slow to say no.
+        let good = b"the pack a third gateway has".to_vec();
+        let hash = hex::encode(sha256(&good));
+        let silent: Vec<String> = (0..2).map(|_| silent_gateway()).collect();
+        let serving = serve(vec![("/x", good.clone())]);
+        let mut gws = silent;
+        gws.push(serving);
+        let uris: Vec<String> = gws.iter().map(|g| format!("{g}/x")).collect();
+        let r = PackReader::new(gws, &StorageProfiles::default())
+            .with_candidate_timeout(std::time::Duration::from_secs(30))
+            .with_first_byte_budget(std::time::Duration::from_millis(500));
+        let started = std::time::Instant::now();
+        let got = r.fetch_verified(&uris, &hash, None, None).await.unwrap();
+        assert_eq!(got, good);
+        let took = started.elapsed();
+        assert!(
+            took >= std::time::Duration::from_millis(500)
+                && took < std::time::Duration::from_secs(5),
+            "about one first-byte budget, then the transfer: {took:?}"
+        );
     }
 
     #[tokio::test]

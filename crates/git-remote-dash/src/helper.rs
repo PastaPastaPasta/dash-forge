@@ -43,7 +43,7 @@ use forge_core::user_error::{codes, dash, UserError, NOTE_PLATFORM_CHUNKS_JOURNA
 
 use futures::stream::{self, StreamExt, TryStreamExt};
 
-use crate::git::{LocalRepo, ScratchRepo};
+use crate::git::{names_missing_object, LocalRepo, ScratchRepo};
 use crate::options::OptionState;
 use crate::policy::{self, PushPolicy};
 use crate::progress::{self, Charge, PlanFacts, PlatformWrites, Progress};
@@ -638,10 +638,9 @@ fn index_fetched(
         if want_oids.is_empty() {
             return Ok(());
         }
-        // The walk fails on a commit or tree an unreadable pack held.
         let filtered = match scratch.pack_filtered(want_oids, Some(filter)) {
             Ok(f) => f,
-            Err(e) if set_aside => {
+            Err(e) if blames_set_aside_packs(set_aside, &e) => {
                 tracing::debug!(error = %e, "filtered repack failed");
                 return Err(incomplete());
             }
@@ -660,6 +659,13 @@ fn index_fetched(
         return Err(incomplete());
     }
     Ok(())
+}
+
+/// Whether a failed filtered repack is explained by the packs this fetch set aside: only when
+/// some were (`set_aside`) and git says the walk hit a missing object. Any other failure
+/// keeps its own error rather than being reported as E503/E510.
+fn blames_set_aside_packs(set_aside: bool, e: &anyhow::Error) -> bool {
+    set_aside && names_missing_object(&format!("{e:#}"))
 }
 
 /// E510: the wanted history needs objects only packs hidden by the late-content rule hold
@@ -1890,9 +1896,9 @@ fn resolve_key_path(url: &DashUrl, owner_id: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        archived_refusal, head_outcome, hidden_packs_needed, is_head, list_lines, oid_to_bytes,
-        packs_unreadable, protected_denied, resolve_network, write_denied, PushOutcome, PushSpec,
-        Unreadable,
+        archived_refusal, blames_set_aside_packs, head_outcome, hidden_packs_needed, is_head,
+        list_lines, oid_to_bytes, packs_unreadable, protected_denied, resolve_network,
+        write_denied, PushOutcome, PushSpec, Unreadable,
     };
     use forge_core::network::NetworkSettings;
     use forge_core::user_error::{codes, UserError};
@@ -1943,6 +1949,21 @@ mod tests {
         assert!(u.cause.unwrap().ends_with("; and 2 more"));
         let u = packs_unreadable("OWNER/repo", true, &many[..1], 5);
         assert_eq!(u.message, "clone incomplete: 1 pack unreadable");
+    }
+
+    #[test]
+    fn a_filtered_repack_failure_is_blamed_on_set_aside_packs_only_when_an_object_is_missing() {
+        let missing = anyhow::anyhow!(
+            "git pack-objects failed: fatal: bad tree object 08585692ce06452da6f82ae66b90d98b55536fca"
+        );
+        let other = anyhow::anyhow!(
+            "git pack-objects failed: fatal: unable to create temporary file: No space left on device"
+        );
+        assert!(blames_set_aside_packs(true, &missing));
+        // L4: an unrelated git failure keeps its own error, even with packs set aside.
+        assert!(!blames_set_aside_packs(true, &other));
+        // Nothing set aside: never blamed on packs.
+        assert!(!blames_set_aside_packs(false, &missing));
     }
 
     #[test]
