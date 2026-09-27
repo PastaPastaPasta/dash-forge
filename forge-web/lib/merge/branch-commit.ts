@@ -67,13 +67,21 @@ export function planSuggestion(c: SuggestionComment, head: string): PlannedSugge
   return { commentId: c.id, reviewer: c.author, path: a.path, start: a.startLine ?? a.line, end: a.line, text: (s[0] as { text: string }).text }
 }
 
-/** Whether a comment's suggestion can be applied on `head` (for "Apply" buttons). */
-export function applicable(c: SuggestionComment, head: string): boolean {
+/**
+ * Why a comment's suggestion cannot be applied on `head`, in the words the "Apply" button's place
+ * shows, or null when it can be.
+ */
+export function unapplicable(c: SuggestionComment, head: string): string | null {
+  const a = anchorOf(c.anchor)
+  if (a !== null && a.line !== null && a.side === 1 && a.commitOid.toLowerCase() === head.toLowerCase()) {
+    const n = parseSuggestions(c.body).length
+    if (n > 1) return `This comment holds ${n} suggestion blocks: apply it by hand.`
+  }
   try {
     planSuggestion(c, head)
-    return true
+    return null
   } catch {
-    return false
+    return a !== null && a.side === 0 ? 'This suggestion is on the old side of the diff.' : "Outdated: this suggestion is not on the current head's lines."
   }
 }
 
@@ -152,7 +160,8 @@ export async function readTextFile(reader: ObjectReader, root: string, path: str
       if (blob.type !== 'blob') return null
       const bytes = blob.bytes
       for (let j = 0; j < Math.min(bytes.length, 8192); j++) if (bytes[j] === 0) return null
-      return new TextDecoder('utf-8', { fatal: true }).decode(bytes)
+      // ignoreBOM: a byte order mark stays part of the text, so the rewritten file keeps it (dg keeps the raw bytes).
+      return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes)
     }
   }
   return null

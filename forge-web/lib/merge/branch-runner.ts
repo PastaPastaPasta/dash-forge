@@ -52,6 +52,11 @@ export interface BranchRunDeps {
   readonly publishIndex: ((pack: Uint8Array, packHash: string) => Promise<string>) | null
   /** The source branch's tip now, read fresh just before moving it. */
   readonly readBranchTip: () => Promise<string | null>
+  /**
+   * The oids the new commit needs beyond the PR head that neither the pack nor the source repo
+   * can produce (empty: complete). Checked before anything is uploaded; null skips the check.
+   */
+  readonly verifyPack: ((pack: Uint8Array, commit: string, have: string) => Promise<readonly string[]>) | null
   readonly intent: string
 }
 
@@ -99,6 +104,18 @@ export async function runBranchCommit(deps: BranchRunDeps, from: BranchRun | nul
     }
   }
 
+  if (!run.done.includes('upload') && deps.verifyPack !== null) {
+    const verify = deps.verifyPack
+    const missing = await attempt('upload', () => verify(built.pack.bytes, built.commit, deps.pull.headOid))
+    if (missing.length > 0) {
+      throw new BranchStopped(
+        `The commit's pack would leave ${missing.length} object(s) unfetchable (${missing
+          .slice(0, 3)
+          .map((o) => o.slice(0, 9))
+          .join(', ')}); nothing was written. Use the CLI (\`dg pr suggestion apply\`, \`dg pr update-branch\`).`,
+      )
+    }
+  }
   if (!run.done.includes('upload')) {
     const upload = deps.upload
     const stored = await attempt('upload', async () => {

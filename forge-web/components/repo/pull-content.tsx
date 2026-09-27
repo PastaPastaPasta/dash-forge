@@ -345,8 +345,10 @@ function PullPage({
     pull,
     comments: thread.comments,
     headReader,
+    headOnly: comparison.headOnly,
     applied,
     isMember,
+    isAuthor,
     signedIn: identity !== null && guard.disabledReason === null && !archived,
     onCommitted: (c) => refresh((t) => t.pull.headOid === c),
   })
@@ -782,7 +784,7 @@ function PullPage({
                             disabled={headReader === null || guard.disabledReason !== null}
                             onClick={() => {
                               const who = suggest.who
-                              if (headReader !== null && who !== null) void suggest.runner.run('Update branch', () => buildUpdateBranch(headReader, pull, baseTipOid, who))
+                              if (headReader !== null && who !== null) void suggest.runner.run(`update:${pull.headOid}:${baseTipOid}`, 'Update branch', () => buildUpdateBranch(headReader, pull, baseTipOid, who))
                             }}
                           >
                             Update branch
@@ -791,7 +793,7 @@ function PullPage({
                       ) : suggest.write.can && suggest.who === null ? (
                         <IdentityNote />
                       ) : (
-                        <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{repo.visibility === 'private' ? 'Use `dg pr update-branch` for a private repo.' : 'Only writers of the source repo can update it.'}</span>
+                        <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{repo.visibility === 'private' ? 'Use `dg pr update-branch` for a private repo.' : 'Only the PR author or a maintainer, with write access to the source branch, can update it.'}</span>
                       )}
                     </section>
                   ) : null}

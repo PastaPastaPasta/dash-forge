@@ -60,7 +60,8 @@ export interface SuggestionActions {
   /** The file lines a comment's suggestion would replace (the head's text), or null when unknown. */
   readonly original: (c: CommentView) => readonly string[] | null
   /** Whether `c`'s suggestion applies on the head (one block, the new side, this head). */
-  readonly applicable: (c: CommentView) => boolean
+  /** Why the comment's suggestion cannot be applied on the head, or null when it can. */
+  readonly unapplicable: (c: CommentView) => string | null
   /** Comment id → the commit that applied it. */
   readonly applied: ReadonlyMap<string, string>
   readonly batch: ReadonlySet<string>
@@ -446,7 +447,7 @@ function SuggestedBody({ comment: c, suggestions }: { comment: CommentView; sugg
   const ctx = useMemo(() => (has ? { original } : null), [has, original])
   if (!has || !suggestions) return <MarkdownView source={c.body} suggestion={ctx} />
   const applied = suggestions.applied.get(c.id)
-  const ok = suggestions.applicable(c)
+  const refused = suggestions.unapplicable(c)
   const inBatch = suggestions.batch.has(c.id)
   return (
     <>
@@ -456,8 +457,8 @@ function SuggestedBody({ comment: c, suggestions }: { comment: CommentView; sugg
           <span className="inline-flex items-center gap-1 text-verify-700 dark:text-verify-400" data-testid="suggestion-applied">
             <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> Applied in <Oid value={applied} chars={7} copyable={false} />
           </span>
-        ) : !ok ? (
-          <span className="text-anvil-500 dark:text-anvil-400">Outdated: this suggestion is not on the current head&apos;s lines.</span>
+        ) : refused !== null ? (
+          <span className="text-anvil-500 dark:text-anvil-400">{refused}</span>
         ) : suggestions.canApply ? (
           <>
             <Button size="sm" variant="primary" onClick={() => suggestions.onApply(c)}>

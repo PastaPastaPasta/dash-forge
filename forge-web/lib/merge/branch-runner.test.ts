@@ -51,6 +51,7 @@ function deps(extra: Partial<BranchRunDeps> = {}): BranchRunDeps {
       return 'packRef 1'
     },
     readBranchTip: async () => tip,
+    verifyPack: null,
     intent: 'suggest:x',
     ...extra,
   }
@@ -91,6 +92,20 @@ describe('a commit to the PR branch', () => {
     const run = await runBranchCommit(deps(), saved, () => undefined)
     expect(calls).toEqual([`event:BASE:headUpdate:${NEW}:author`])
     expect(run.done).toContain('head')
+  })
+
+  it('checks the pack against the PR head before anything is paid, and stops on a gap', async () => {
+    const seen: string[] = []
+    const verifyPack = async (_p: Uint8Array, commit: string, have: string): Promise<string[]> => {
+      seen.push(`${commit}<-${have}`)
+      return ['ee'.repeat(20)]
+    }
+    await expect(runBranchCommit(deps({ verifyPack }), null, () => undefined)).rejects.toThrow(/1 object\(s\) unfetchable \(eeeeeeeee\); nothing was written/)
+    expect(seen).toEqual([`${NEW}<-${HEAD}`])
+    expect(calls).toEqual([])
+    // A complete pack goes on; a resumed run past the upload does not check again.
+    const ok = await runBranchCommit(deps({ verifyPack: async () => [] }), null, () => undefined)
+    expect(ok.done).toEqual(['upload', 'manifest', 'index', 'ref', 'head'])
   })
 
   it('refuses private repos before anything is paid', async () => {

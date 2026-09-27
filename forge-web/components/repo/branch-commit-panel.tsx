@@ -8,7 +8,7 @@
  * private repo's pack must be sealed, which the browser does not do yet.
  */
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { Check, GitCommit, Loader2, Minus, X } from 'lucide-react'
 
@@ -16,13 +16,14 @@ import { holdingsOfRole, readConfigBundle, readRoleOracle, repoKey, type PullVie
 import { readBranchTip } from '@/lib/repo/source-branch'
 import { matchesProtected } from '@/lib/rules'
 import { previewCreate, sumPreviews } from '@/lib/sdk'
-import { applicable, applySuggestionCommit, planSuggestion, readTextFile, SuggestionRefused, updateBranchCommit, type BranchCommit, type SuggestionComment } from '@/lib/merge/branch-commit'
+import { unapplicable, applySuggestionCommit, planSuggestion, readTextFile, SuggestionRefused, updateBranchCommit, type BranchCommit, type SuggestionComment } from '@/lib/merge/branch-commit'
 import { parseSuggestions } from '@/lib/rules/v2'
 import { parseCommit } from '@/lib/view/git-objects'
 import type { CommentView } from '@/lib/view'
 import type { SuggestionActions } from '@/components/repo/inline-comments'
 import { BRANCH_STEPS, BranchStepError, BranchStopped, runBranchCommit, type BranchRun, type BranchStepId } from '@/lib/merge/branch-runner'
 import { publishMergeIndex } from '@/lib/merge/locator'
+import { missingFromClosure } from '@/lib/merge/verify'
 import { mergeIdentityValid } from '@/lib/view/prefs'
 import { resolveDpnsNames } from '@/lib/view'
 import type { ObjectReader } from '@/lib/view'
@@ -69,15 +70,23 @@ export function useBranchCommit({
   source,
   pull,
   isMember,
+  verifyReader,
   onDone,
 }: {
   repo: RepoRef
   source: RepoRef | null
   pull: PullView
   isMember: boolean
+  /** The source repo's OWN reader: the pack plus it must hold the new commit's closure. */
+  verifyReader: ObjectReader | null
   onDone: (commit: string) => void
 }): {
-  run: (label: string, build: () => Promise<BranchCommit>) => Promise<void>
+  /**
+   * Run `build`'s commit. `key` names the action and its inputs (which suggestions, which base
+   * tip, on which head): a retry of the same key resumes the commit that was built, never a
+   * rebuilt one (its timestamp would differ), and a different key never resumes it.
+   */
+  run: (key: string, label: string, build: () => Promise<BranchCommit>) => Promise<void>
   busy: boolean
   view: JSX.Element | null
   uploadDialog: JSX.Element | null
@@ -90,13 +99,14 @@ export function useBranchCommit({
   const [label, setLabel] = useState<string | null>(null)
   const [steps, setSteps] = useState<Partial<Record<BranchStepId | 'build', StepState>>>({})
   const [details, setDetails] = useState<Partial<Record<BranchStepId | 'build', string>>>({})
-  const [saved, setSaved] = useState<{ run: BranchRun; built: BranchCommit } | null>(null)
+  // The unfinished run of one action: kept on a step failure, dropped once it finishes or stops.
+  const saved = useRef<{ key: string; run: BranchRun; built: BranchCommit } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState<string | null>(null)
 
   const run = useCallback(
-    async (what: string, build: () => Promise<BranchCommit>): Promise<void> => {
+    async (key: string, what: string, build: () => Promise<BranchCommit>): Promise<void> => {
       if (!sdk || !signer || source === null || pull.sourceRefName === null || busy) return
       if (!guard.check(branchCommitCost(isMember).credits, 'core')) return
       setBusy(true)
@@ -104,16 +114,19 @@ export function useBranchCommit({
       setDone(null)
       setLabel(what)
       begin()
+      const resume = saved.current !== null && saved.current.key === key ? saved.current : null
+      let built: BranchCommit | null = resume?.built ?? null
       try {
-        let built = saved?.built
-        if (built === undefined || saved?.run.done.includes('head')) {
+        if (built === null) {
+          saved.current = null
           setSteps({ build: 'running' })
           setDetails({})
           built = await build()
           setSteps({ build: 'done' })
           setDetails({ build: `${built.commit.slice(0, 9)}${built.files.length ? ` · ${built.files.join(', ')}` : ''}` })
         }
-        const intent = `branch:${source.repoId}:${pull.number}:${built.commit}`
+        const commit = built
+        const intent = `branch:${source.repoId}:${pull.number}:${commit.commit}`
         const finished = await runBranchCommit(
           {
             sdk,
@@ -132,23 +145,27 @@ export function useBranchCommit({
                     return r.kind === 'published' ? `fragment at packRef ${r.packRef}` : `skipped: ${r.reason}`
                   },
             readBranchTip: () => readBranchTip(sdk, source, pull.sourceRefName as string),
+            verifyPack: verifyReader === null ? null : (pack, tip, have) => missingFromClosure(pack, tip, have, verifyReader),
             intent,
           },
-          saved?.built.commit === built.commit ? saved.run : null,
+          resume?.run ?? null,
           (e) => {
             setSteps((s) => ({ ...s, [e.step]: e.state }))
             if (e.detail) setDetails((d) => ({ ...d, [e.step]: e.detail }))
           },
         )
-        setSaved({ run: finished, built })
-        setDone(built.commit)
-        onDone(built.commit)
+        void finished
+        saved.current = null
+        setDone(commit.commit)
+        onDone(commit.commit)
       } catch (e) {
-        if (e instanceof BranchStepError) {
-          setSaved((s) => (s === null ? null : { ...s, run: e.run }))
+        if (e instanceof BranchStepError && built !== null) {
+          // What landed so far, with the very commit it belongs to: Retry resumes from here.
+          saved.current = { key, run: e.run, built }
           setSteps((s) => ({ ...s, [e.step]: 'failed' }))
           setError(e.message)
         } else if (e instanceof BranchStopped || e instanceof SuggestionRefused) {
+          saved.current = null
           setSteps((s) => (s.build === 'running' ? { ...s, build: 'failed' } : s))
           setError(e.message)
         } else {
@@ -159,7 +176,7 @@ export function useBranchCommit({
         setBusy(false)
       }
     },
-    [sdk, signer, source, pull, busy, guard, isMember, begin, saved, repo, upload, onDone],
+    [sdk, signer, source, pull, busy, guard, isMember, begin, repo, upload, onDone, verifyReader],
   )
 
   const view =
@@ -281,8 +298,10 @@ export function useSuggestions({
   pull,
   comments,
   headReader,
+  headOnly,
   applied,
   isMember,
+  isAuthor,
   signedIn,
   onCommitted,
 }: {
@@ -291,23 +310,32 @@ export function useSuggestions({
   pull: PullView
   comments: readonly CommentView[]
   headReader: ObjectReader | null
+  /** The source repo's own reader (proves a branch commit's pack complete). */
+  headOnly: ObjectReader | null
   applied: ReadonlyMap<string, string>
   isMember: boolean
+  isAuthor: boolean
   signedIn: boolean
   onCommitted: (commit: string) => void
 }): {
   actions: SuggestionActions
   bar: JSX.Element | null
   runner: ReturnType<typeof useBranchCommit>
+  /**
+   * The viewer can move the PR's branch AND its head: write access to the source branch, and
+   * the PR's author or a base-repo member (the head update's route; dg's `head_route`).
+   */
   write: { can: boolean; known: boolean }
   who: { name: string; email: string } | null
 } {
   const { sdk, network } = useSdk()
   const [batch, setBatch] = useState<ReadonlySet<string>>(new Set())
   const who = useCommitIdentity()
-  const write = useSourceWrite(pull.state.open ? source ?? (pull.sourceId === repo.repoId ? repo : null) : null, pull.sourceRefName)
+  const branchWrite = useSourceWrite(pull.state.open ? source ?? (pull.sourceId === repo.repoId ? repo : null) : null, pull.sourceRefName)
+  const headRoute = isAuthor || isMember
+  const write = { can: branchWrite.can && headRoute, known: branchWrite.known }
   const target = source ?? (pull.sourceId === repo.repoId ? repo : null)
-  const runner = useBranchCommit({ repo, source: target, pull, isMember, onDone: (c) => {
+  const runner = useBranchCommit({ repo, source: target, pull, isMember, verifyReader: headOnly, onDone: (c) => {
     setBatch(new Set())
     onCommitted(c)
   } })
@@ -347,7 +375,9 @@ export function useSuggestions({
       : !pull.state.open
         ? null
         : write.known && !write.can
-          ? `Only the PR author (or writers of ${target?.name ?? 'the source repo'}) can apply this. Copy the suggestion instead.`
+          ? branchWrite.can
+            ? 'Only the PR author or a maintainer or writer of this repo can move the PR head. Copy the suggestion instead.'
+            : `Only the PR author (or writers of ${target?.name ?? 'the source repo'}) can apply this. Copy the suggestion instead.`
           : who === null
             ? 'Set your commit name and email in Settings to apply suggestions.'
             : null
@@ -355,13 +385,14 @@ export function useSuggestions({
   const apply = (ids: readonly string[]): void => {
     if (headReader === null || who === null || sdk === null) return
     const chosen = suggestive.filter((c) => ids.includes(c.id)).map(asSuggestion)
-    void runner.run(`Apply ${chosen.length} suggestion${chosen.length === 1 ? '' : 's'}`, () => buildSuggestionCommit(sdk, network, headReader, pull.headOid, chosen, who))
+    const key = `suggest:${pull.headOid}:${chosen.map((c) => c.id).sort().join(',')}`
+    void runner.run(key, `Apply ${chosen.length} suggestion${chosen.length === 1 ? '' : 's'}`, () => buildSuggestionCommit(sdk, network, headReader, pull.headOid, chosen, who))
   }
   const actions: SuggestionActions = {
     canApply,
     why,
     original,
-    applicable: (c) => applicable(asSuggestion(c), pull.headOid),
+    unapplicable: (c) => unapplicable(asSuggestion(c), pull.headOid),
     applied,
     batch,
     onToggleBatch: (c) =>

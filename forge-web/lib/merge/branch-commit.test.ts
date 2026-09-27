@@ -10,7 +10,7 @@ import { BrowseReader, gitOidHex, ObjectLocator, type GitObject } from '../brows
 import { indexPacks, memoryPackSource, serializeLocator } from '../browse/indexer'
 import { Store } from '../view/diff-fixtures'
 import { parseCommit } from '../view/git-objects'
-import { applyAll, applySuggestionCommit, planSuggestion, readTextFile, suggestionMessage, SuggestionRefused, updateBranchCommit, type SuggestionComment } from './branch-commit'
+import { applyAll, applySuggestionCommit, planSuggestion, readTextFile, suggestionMessage, SuggestionRefused, unapplicable, updateBranchCommit, type SuggestionComment } from './branch-commit'
 import { gitAcceptsHistory, HAVE_GIT } from './git-oracle'
 
 const HEAD = '3'.repeat(40)
@@ -49,6 +49,13 @@ describe('suggestion planning (parity with dg)', () => {
     expect(() => applyAll([past], new Map([['src/a.rs', 'one\n']]))).toThrow(SuggestionRefused)
   })
 
+  it('says in the UI why a suggestion has no Apply button', () => {
+    expect(unapplicable(comment('ok', null, 1, 1, HEAD, '```suggestion\ny\n```'), HEAD)).toBeNull()
+    expect(unapplicable(comment('two', null, 1, 1, HEAD, '```suggestion\na\n```\n```suggestion\nb\n```'), HEAD)).toBe('This comment holds 2 suggestion blocks: apply it by hand.')
+    expect(unapplicable(comment('old', null, 1, 1, '4'.repeat(40), '```suggestion\ny\n```'), HEAD)).toMatch(/^Outdated/)
+    expect(unapplicable(comment('left', null, 1, 0, HEAD, '```suggestion\ny\n```'), HEAD)).toBe('This suggestion is on the old side of the diff.')
+  })
+
   it("writes dg's trailers byte for byte", () => {
     const plans = [{ commentId: 'C1d', reviewer: 'Rev1', path: 'a', start: 1, end: 1, text: '' }]
     const m = suggestionMessage(plans, new Map([['Rev1', 'alice.dash']]))
@@ -79,6 +86,16 @@ describe('the suggestion commit', () => {
     expect(await readTextFile(r, commit.tree, 'src/b.rs')).toBe('b\n')
     if (HAVE_GIT) expect(gitAcceptsHistory(store, out.commit)).toEqual({ fsck: true, log: true, clone: true })
   }, 60_000)
+
+  it('keeps a UTF-8 byte order mark, as dg keeps the raw bytes', async () => {
+    const s = new Store()
+    const head = s.commit(s.files({ 'src/a.rs': '﻿one\ntwo\n' }), [], 'head')
+    const plan = planSuggestion({ id: 'C', author: 'R', body: '```suggestion\nTWO\n```', anchor: { path: 'src/a.rs', line: 2, startLine: null, side: 1, commitOid: head } }, head)
+    const out = await applySuggestionCommit(s.reader(), head, [plan], ME, new Map())
+    const blob = (await packed(out.pack.bytes)).find((o) => o.type === 'blob') as GitObject
+    expect([...blob.bytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf])
+    expect(new TextDecoder('utf-8', { ignoreBOM: true }).decode(blob.bytes)).toBe('﻿one\nTWO\n')
+  })
 
   it('refuses a file that is not in the head', async () => {
     const s = new Store()
