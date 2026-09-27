@@ -306,11 +306,10 @@ fn rules_json(rules: &serde_json::Value, indent: &str) -> String {
 pub fn cors_fix(provider: Provider, bucket: &str) -> String {
     let rules = s3_cors_rules(PROBE_ORIGIN);
     let document = format!("{{\n  \"CORSRules\": {}\n}}", rules_json(&rules, "  "));
-    let tail = "The first rule lets any browser read the (public) packs; the second lets the web \
-                app at "
-        .to_string()
-        + PROBE_ORIGIN
-        + " push, merge and upload with your key.";
+    let tail = format!(
+        "The first rule lets any browser read the (public) packs; the second lets the web app \
+         at {PROBE_ORIGIN} push, merge and upload with your key."
+    );
     match provider {
         Provider::R2 => format!(
             "Cloudflare dashboard → R2 → {bucket} → Settings → CORS Policy → Add CORS policy, paste:\n\

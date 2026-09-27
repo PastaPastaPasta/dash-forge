@@ -976,10 +976,9 @@ async fn check_pack_copies(ctx: &Ctx) -> Vec<Check> {
         Ok(Some(e)) if e.count.thin.is_empty() => vec![Check::ok(
             NAME,
             format!(
-                "every live pack of {} has at least {} cop{}",
+                "every live pack of {} has at least {}",
                 e.repo,
-                e.required,
-                if e.required == 1 { "y" } else { "ies" }
+                e.required_copies()
             ),
         )],
         Ok(Some(e)) => vec![Check::warn(

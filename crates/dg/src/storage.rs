@@ -19,14 +19,16 @@ use serde_json::json;
 use forge_core::backends::{Health, IpfsBackend, PackBackend, PackMeta, S3Backend, Uri};
 use forge_core::storage::copies::{count_copies, CopyCount};
 use forge_core::storage::cors::{cors_fix, kubo_cors_fix, probe_cors, provider_of};
-use forge_core::storage::policy::{git_config_scoped, pick_scoped};
+use forge_core::storage::policy::{git_config_scoped, parse_git_bool, pick_scoped};
 use forge_core::storage::profiles::{
     valid_profile_name, KeyId, KuboProfile, PinningProfile, PlatformProfile, S3Profile,
 };
-use forge_core::storage::publish::profile_problems;
-use forge_core::storage::ResolvedPolicy;
+use forge_core::storage::publish::{
+    profile_problems, refuse_unpublishable, ALLOW_PRIVATE_URI_GIT_KEY,
+};
 use forge_core::storage::{
-    PackReader, Profile, SecretRef, StoragePolicy, StorageProfiles, PLATFORM_PROFILE,
+    PackReader, Profile, ResolvedPolicy, SecretRef, StoragePolicy, StorageProfiles,
+    PLATFORM_PROFILE,
 };
 
 use crate::common::{resolve, RepoRef};
@@ -272,13 +274,11 @@ pub(crate) fn check_publishable<'a>(
     allowed: bool,
     lead: &str,
 ) -> Result<()> {
-    let key = forge_core::storage::publish::ALLOW_PRIVATE_URI_GIT_KEY;
-    let from_git = git_config_scoped(key)
-        .map(|(_, v)| forge_core::storage::policy::parse_git_bool(key, &v))
+    let from_git = git_config_scoped(ALLOW_PRIVATE_URI_GIT_KEY)
+        .map(|(_, v)| parse_git_bool(ALLOW_PRIVATE_URI_GIT_KEY, &v))
         .transpose()?
         .unwrap_or(false);
-    forge_core::storage::publish::refuse_unpublishable(targets, allowed || from_git, lead)
-        .map_err(Into::into)
+    refuse_unpublishable(targets, allowed || from_git, lead).map_err(Into::into)
 }
 
 /// A one-line, secret-free description of a profile.
@@ -382,39 +382,34 @@ pub(crate) struct Report {
 }
 
 impl Report {
-    fn record(&mut self, name: &'static str, ok: bool, detail: String) {
+    fn record(&mut self, name: &'static str, ok: bool, warn: bool, detail: String) {
         if self.live {
-            let mark = if ok { " OK " } else { "FAIL" };
+            let mark = match (ok, warn) {
+                (false, _) => "FAIL",
+                (true, true) => "WARN",
+                (true, false) => " OK ",
+            };
             println!("  [{mark}] {name:<14} {detail}");
         }
         self.steps.push(Step {
             name,
             ok,
-            warn: false,
+            warn,
             detail,
         });
     }
 
     /// A problem that does not fail the test (it counts as ok).
     fn warn(&mut self, name: &'static str, detail: impl Into<String>) {
-        let detail = detail.into();
-        if self.live {
-            println!("  [WARN] {name:<14} {detail}");
-        }
-        self.steps.push(Step {
-            name,
-            ok: true,
-            warn: true,
-            detail,
-        });
+        self.record(name, true, true, detail.into());
     }
 
     fn pass(&mut self, name: &'static str, detail: impl Into<String>) {
-        self.record(name, true, detail.into());
+        self.record(name, true, false, detail.into());
     }
 
     fn fail(&mut self, name: &'static str, detail: impl Into<String>) {
-        self.record(name, false, detail.into());
+        self.record(name, false, false, detail.into());
     }
 
     /// Record `res` as step `name`; `Some(value)` on success.
@@ -799,15 +794,20 @@ pub(crate) struct ExistingCopies {
 }
 
 impl ExistingCopies {
+    /// The copies the policy asks for, in words (`1 copy`, `2 copies`).
+    pub fn required_copies(&self) -> String {
+        let noun = if self.required == 1 { "copy" } else { "copies" };
+        format!("{} {noun}", self.required)
+    }
+
     /// One line: how many live packs have fewer copies than the policy asks for.
     pub fn summary(&self) -> String {
         format!(
-            "{} of {} live pack(s) of {} have fewer than {} cop{} ({} byte(s))",
+            "{} of {} live pack(s) of {} have fewer than {} ({} byte(s))",
             self.count.thin.len(),
             self.count.live,
             self.repo,
-            self.required,
-            if self.required == 1 { "y" } else { "ies" },
+            self.required_copies(),
             self.count.thin.iter().map(|t| t.size_bytes).sum::<u64>()
         )
     }

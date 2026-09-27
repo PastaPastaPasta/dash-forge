@@ -58,10 +58,11 @@ fn copies_of(manifests: &[&PackManifestInfo]) -> usize {
         } else if let Some(rest) = u.strip_prefix("s3://") {
             // The same object's public URL ends in its key; count the object once.
             let key = rest.split_once('/').map_or("", |(_, k)| k);
+            let suffix = format!("/{key}");
             let public = !key.is_empty()
                 && uris
                     .iter()
-                    .any(|o| o.starts_with("http") && o.ends_with(&format!("/{key}")));
+                    .any(|o| o.starts_with("http") && o.ends_with(&suffix));
             if public {
                 continue;
             }
