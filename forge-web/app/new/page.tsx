@@ -288,14 +288,14 @@ export default function NewRepoPage(): JSX.Element {
                   <li key={f}>{f}</li>
                 ))}
               </ul>
-              {description.trim() ? <p className="mt-2 text-caution">{PUBLIC_DESCRIPTION_NOTE}</p> : null}
+              {description.trim() ? <p className="mt-2 text-caution-700 dark:text-caution-400">{PUBLIC_DESCRIPTION_NOTE}</p> : null}
               {ops.error !== null ? (
-                <p className="mt-2 text-danger" data-testid="private-key-error">
+                <p className="mt-2 text-danger-700 dark:text-danger-400" data-testid="private-key-error">
                   Couldn&apos;t read your encryption key: {ops.error}
                 </p>
               ) : null}
               {noKey ? (
-                <p className="mt-2 text-caution" data-testid="private-no-key">
+                <p className="mt-2 text-caution-700 dark:text-caution-400" data-testid="private-no-key">
                   cannot create a private repository: your identity has no encryption key in this browser. Add it in{' '}
                   <Link href="/settings" className="text-forge-700 underline dark:text-forge-400">
                     Settings → Keys → Enable private repos

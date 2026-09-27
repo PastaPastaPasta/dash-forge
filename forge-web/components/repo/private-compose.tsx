@@ -56,7 +56,7 @@ export function SealedLimit({ repo, kind, text }: { repo: RepoRef; kind: SealedK
   const used = new TextEncoder().encode(text).length
   const limit = SEALED_TEXT_LIMIT[kind]
   return (
-    <p className={`mt-1 text-[11px] ${used > limit ? 'text-danger' : 'text-anvil-500 dark:text-anvil-400'}`} data-testid="sealed-limit">
+    <p className={`mt-1 text-[11px] ${used > limit ? 'text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400'}`} data-testid="sealed-limit">
       {kind === 'patch' ? 'Title, text and branch names' : kind === 'issue' ? 'Title and text' : kind === 'comment' ? 'Text and file path' : 'Text'} {used} / {limit} bytes
       (encrypted to this repo&apos;s members).
     </p>
