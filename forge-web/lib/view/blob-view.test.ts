@@ -81,8 +81,8 @@ describe('blobDisplay (D-055)', () => {
   it('asks before rendering text over 1 MB, and renders it once asked', () => {
     const big = new Uint8Array(RENDER_CONFIRM_BYTES + 1).fill(0x61)
     expect(blobDisplay('po/bg.po', big, 'a'.repeat(big.length), false)).toEqual({ kind: 'confirm-large' })
-    expect(blobDisplay('po/bg.po', big, 'a'.repeat(big.length), true)).toEqual({ kind: 'text' })
-    expect(blobDisplay('small.txt', text('hi'), 'hi', false)).toEqual({ kind: 'text' })
+    expect(blobDisplay('po/bg.po', big, 'a'.repeat(big.length), true)).toMatchObject({ kind: 'text' })
+    expect(blobDisplay('small.txt', text('hi'), 'hi', false)).toEqual({ kind: 'text', text: 'hi' })
   })
 
   it('previews images first and leaves other binary files to Raw', () => {

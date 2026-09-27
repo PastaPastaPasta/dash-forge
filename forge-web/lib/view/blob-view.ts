@@ -44,7 +44,7 @@ function rasterMatches(mime: string, bytes: Uint8Array): boolean {
  * external resource, unlike inline SVG or an `<object>`.
  */
 export function imagePreviewType(filename: string, bytes: Uint8Array): string | null {
-  if (bytes.length === 0 || bytes.length > IMAGE_PREVIEW_MAX_BYTES) return null
+  if (bytes.length > IMAGE_PREVIEW_MAX_BYTES) return null
   const dot = filename.lastIndexOf('.')
   const mime = dot === -1 ? undefined : IMAGE_TYPES[filename.slice(dot + 1).toLowerCase()]
   if (mime === undefined) return null
@@ -112,14 +112,15 @@ export const RENDER_CONFIRM_BYTES = 1024 * 1024
  * How a blob is shown: an image preview, a text table, a "view raw / render anyway" prompt for
  * text over {@link RENDER_CONFIRM_BYTES} (until `renderLarge`), or the binary placeholder.
  */
-export function blobDisplay(
-  filename: string,
-  bytes: Uint8Array,
-  text: string | null,
-  renderLarge: boolean,
-): { kind: 'image'; type: string } | { kind: 'text' } | { kind: 'confirm-large' } | { kind: 'binary' } {
+export type BlobDisplay =
+  | { readonly kind: 'image'; readonly type: string }
+  | { readonly kind: 'text'; readonly text: string }
+  | { readonly kind: 'confirm-large' }
+  | { readonly kind: 'binary' }
+
+export function blobDisplay(filename: string, bytes: Uint8Array, text: string | null, renderLarge: boolean): BlobDisplay {
   const type = imagePreviewType(filename, bytes)
   if (type !== null) return { kind: 'image', type }
   if (text === null) return { kind: 'binary' }
-  return bytes.length > RENDER_CONFIRM_BYTES && !renderLarge ? { kind: 'confirm-large' } : { kind: 'text' }
+  return bytes.length > RENDER_CONFIRM_BYTES && !renderLarge ? { kind: 'confirm-large' } : { kind: 'text', text }
 }

@@ -134,8 +134,8 @@ export {
   findBranch,
   isDiverged,
   isLive,
-  pinnedCommit,
   refParamFor,
+  selectBrowseRef,
   selectRef,
   tipOidOf,
   type SelectedRef,
@@ -155,13 +155,12 @@ export {
 export { mapPooled } from './pool'
 export {
   blobDisplay,
-  imagePreviewType,
   lineHash,
   parseLineHash,
   selectLine,
   visibleRows,
-  RENDER_CONFIRM_BYTES,
   VIRTUALIZE_LINES,
+  type BlobDisplay,
   type LineRange,
 } from './blob-view'
 export {

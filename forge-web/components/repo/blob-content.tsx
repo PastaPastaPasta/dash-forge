@@ -11,28 +11,27 @@
  * over 1 MB asks before rendering at all (D-054, D-055).
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Check, Download, FileText, Link2 } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
 import {
+  blobDisplay,
   commitRootTree,
   decodeTextBlob,
   findEntry,
+  formatBytes,
   highlightBlob,
-  readBlob,
-  readTree,
-  blobDisplay,
   lineHash,
   parseLineHash,
-  pinnedCommit,
+  readBlob,
+  readTree,
+  selectBrowseRef,
   selectLine,
-  selectRef,
-  tipOidOf,
   treeAtPath,
-  formatBytes,
   visibleRows,
   VIRTUALIZE_LINES,
+  type BlobDisplay,
   type HighlightedBlob,
   type LineRange,
 } from '@/lib/view'
@@ -77,14 +76,10 @@ export function BlobContent({
   path: string
   refParam?: string
 }): JSX.Element {
-  const found = selectRef(home.branches, home.tags, home.defaultBranch, refParam)
-  // A permalink pins a commit by id (`?ref=<40 hex>`) when no branch or tag has that name.
-  const pinned = found.ref ? null : pinnedCommit(refParam)
-  const selected = pinned ? { ...found, name: pinned.slice(0, 7) } : found
-  if (refParam && !selected.ref && !pinned) {
+  const { selected, tipOid } = selectBrowseRef(home.branches, home.tags, home.defaultBranch, refParam)
+  if (refParam && !selected.ref && !tipOid) {
     return <RefNotFoundState addr={addr} refParam={refParam} defaultBranch={home.defaultBranch} />
   }
-  const tipOid = pinned ?? tipOidOf(selected.ref)
   // An enumerated ref with no tip was deleted; only a ref with no entry at all is "empty".
   if (!tipOid && selected.ref) {
     return <RefDeletedState addr={addr} name={selected.name} defaultBranch={home.defaultBranch} />
@@ -121,8 +116,8 @@ function BlobBody({
   const [renderLarge, setRenderLarge] = useState(false)
 
   const display = data ? blobDisplay(name, data.bytes, data.text, renderLarge) : null
-  const downloadHref = useObjectUrl(data?.bytes ?? null, 'application/octet-stream')
-  const imageHref = useObjectUrl(display?.kind === 'image' && data ? data.bytes : null, display?.kind === 'image' ? display.type : '')
+  const downloadHref = useObjectUrl(data?.bytes, 'application/octet-stream')
+  const imageHref = useObjectUrl(data?.bytes, display?.kind === 'image' ? display.type : null)
 
   if (loading) return <LoadingBlock label="Reconstructing blob" />
   // A missing path is deterministic (common right after a ref switch) — no point retrying.
@@ -130,13 +125,10 @@ function BlobBody({
     return <EmptyState icon={FileText} title="File not found on this ref" body={`${path} does not exist here. Pick another branch or tag, or browse the tree.`} />
   }
   if (error) return <ErrorState message={error} onRetry={reload} />
-  if (!data) return <LoadingBlock />
+  if (!data || !display) return <LoadingBlock />
 
-  const permalink = (range: LineRange | null): string => {
-    const href = repoHref('/repo/blob', addr, { path, ref: tipOid })
-    const origin = typeof window === 'undefined' ? '' : window.location.origin
-    return `${origin}${BASE_PATH}${href}${range ? `#${lineHash(range)}` : ''}`
-  }
+  const origin = typeof window === 'undefined' ? '' : window.location.origin
+  const permalink = `${origin}${BASE_PATH}${repoHref('/repo/blob', addr, { path, ref: tipOid })}`
 
   return (
     <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
@@ -159,16 +151,50 @@ function BlobBody({
           ) : null}
         </div>
       </div>
+      <BlobView
+        display={display}
+        size={data.bytes.length}
+        name={name}
+        imageHref={imageHref}
+        downloadHref={downloadHref}
+        permalink={permalink}
+        onRenderLarge={() => setRenderLarge(true)}
+      />
+    </div>
+  )
+}
 
-      {display?.kind === 'image' && imageHref !== null ? (
+function BlobView({
+  display,
+  size,
+  name,
+  imageHref,
+  downloadHref,
+  permalink,
+  onRenderLarge,
+}: {
+  display: BlobDisplay
+  size: number
+  name: string
+  imageHref: string | null
+  downloadHref: string | null
+  permalink: string
+  onRenderLarge: () => void
+}): JSX.Element {
+  switch (display.kind) {
+    case 'image':
+      if (imageHref === null) return <LoadingBlock />
+      return (
         <div className="flex justify-center bg-anvil-50 p-6 dark:bg-anvil-900/60">
           {/* An <img> of a blob: URL: an SVG shown this way runs no script and loads nothing. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={imageHref} alt={name} className="max-h-[70vh] max-w-full object-contain" data-testid="blob-image" />
         </div>
-      ) : display?.kind === 'confirm-large' ? (
+      )
+    case 'confirm-large':
+      return (
         <div className="flex flex-col items-center gap-3 px-4 py-8 text-center text-dense text-anvil-500 dark:text-anvil-400">
-          <p>This file is {formatBytes(data.bytes.length)}. Rendering it in the page is slow, so it is not shown by default.</p>
+          <p>This file is {formatBytes(size)}. Rendering it in the page is slow, so it is not shown by default.</p>
           <div className="flex gap-2">
             {downloadHref ? (
               <a
@@ -180,41 +206,46 @@ function BlobBody({
                 View raw
               </a>
             ) : null}
-            <Button size="sm" onClick={() => setRenderLarge(true)}>
+            <Button size="sm" onClick={onRenderLarge}>
               Render anyway
             </Button>
           </div>
         </div>
-      ) : display?.kind === 'text' && data.text !== null ? (
-        <TextLines text={data.text} name={name} permalink={permalink} />
-      ) : (
+      )
+    case 'text':
+      return <TextLines text={display.text} name={name} permalink={permalink} />
+    case 'binary':
+      return (
         <div className="px-4 py-8 text-center text-dense text-anvil-500 dark:text-anvil-400">
-          Binary file ({formatBytes(data.bytes.length)}) — use Raw to download.
+          Binary file ({formatBytes(size)}) — use Raw to download.
         </div>
-      )}
-    </div>
-  )
+      )
+  }
 }
 
-/** A `blob:` URL for `bytes` while they are shown, revoked when they change or unmount. */
-function useObjectUrl(bytes: Uint8Array | null, type: string): string | null {
-  const url = useMemo(() => {
-    if (bytes === null) return null
-    const copy = new Uint8Array(bytes.byteLength)
-    copy.set(bytes)
-    return URL.createObjectURL(new Blob([copy], { type }))
+/**
+ * A `blob:` URL of `bytes` typed `type` (null: none), revoked when either changes or on
+ * unmount. Created in the effect, not a memo, so StrictMode's effect replay cannot revoke a
+ * URL that is still rendered.
+ */
+function useObjectUrl(bytes: Uint8Array | undefined, type: string | null): string | null {
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    if (bytes === undefined || type === null) {
+      setUrl(null)
+      return
+    }
+    const next = URL.createObjectURL(new Blob([bytes.slice()], { type }))
+    setUrl(next)
+    return () => URL.revokeObjectURL(next)
   }, [bytes, type])
-  useEffect(
-    () => () => {
-      if (url !== null) URL.revokeObjectURL(url)
-    },
-    [url],
-  )
   return url
 }
 
 /** Row height of the line table (13px text, leading-5). Windowing positions rows by it. */
 const ROW_PX = 20
+
+const CODE_CELL = 'whitespace-pre px-4 align-top text-anvil-800 dark:text-anvil-200'
 
 /** The selected `#L` range, kept in step with the URL fragment. */
 function useLineSelection(lineCount: number): [LineRange | null, (range: LineRange) => void] {
@@ -225,26 +256,19 @@ function useLineSelection(lineCount: number): [LineRange | null, (range: LineRan
     window.addEventListener('hashchange', read)
     return () => window.removeEventListener('hashchange', read)
   }, [lineCount])
-  const select = useCallback((next: LineRange) => {
+  const select = (next: LineRange): void => {
     setRange(next)
     // replaceState: selecting lines should not stack history entries or jump the page.
     window.history.replaceState(window.history.state, '', `${window.location.pathname}${window.location.search}#${lineHash(next)}`)
-  }, [])
+  }
   return [range, select]
 }
 
-function TextLines({
-  text,
-  name,
-  permalink,
-}: {
-  text: string
-  name: string
-  permalink: (range: LineRange | null) => string
-}): JSX.Element {
+function TextLines({ text, name, permalink }: { text: string; name: string; permalink: string }): JSX.Element {
   const lines = useMemo(() => text.split('\n'), [text])
   const [range, select] = useLineSelection(lines.length)
   const [copied, setCopied] = useState(false)
+  const href = range ? `${permalink}#${lineHash(range)}` : permalink
 
   // Lazy syntax highlighting: highlight.js loads in its own async chunk after the text is on
   // screen, then swaps in per-line highlighted HTML. highlightBlob caps the size it takes on.
@@ -264,12 +288,10 @@ function TextLines({
   // Long files render only the rows near the viewport (D-055: a 1 MB file was 81k DOM nodes).
   const virtual = lines.length > VIRTUALIZE_LINES
   const tableRef = useRef<HTMLTableElement>(null)
-  const [win, setWin] = useState({ from: 0, to: virtual ? Math.min(lines.length, 200) : lines.length })
+  const [win, setWin] = useState({ from: 0, to: 200 })
+  const { from, to } = virtual ? win : { from: 0, to: lines.length }
   useLayoutEffect(() => {
-    if (!virtual) {
-      setWin({ from: 0, to: lines.length })
-      return
-    }
+    if (!virtual) return
     let frame = 0
     const update = (): void => {
       frame = 0
@@ -302,7 +324,7 @@ function TextLines({
 
   const copyPermalink = async (): Promise<void> => {
     try {
-      await navigator.clipboard.writeText(permalink(range))
+      await navigator.clipboard.writeText(href)
       setCopied(true)
       setTimeout(() => setCopied(false), 1200)
     } catch {
@@ -311,7 +333,7 @@ function TextLines({
   }
 
   const rows: JSX.Element[] = []
-  for (let i = win.from; i < win.to; i++) {
+  for (let i = from; i < to; i++) {
     const n = i + 1
     const on = range !== null && n >= range.start && n <= range.end
     rows.push(
@@ -334,13 +356,10 @@ function TextLines({
           </a>
         </td>
         {hlLines ? (
-          <td
-            className="whitespace-pre px-4 align-top text-anvil-800 dark:text-anvil-200"
-            // highlight.js escapes all text and emits only class-bearing spans.
-            dangerouslySetInnerHTML={{ __html: hlLines[i] || ' ' }}
-          />
+          // highlight.js escapes all text and emits only class-bearing spans.
+          <td className={CODE_CELL} dangerouslySetInnerHTML={{ __html: hlLines[i] || ' ' }} />
         ) : (
-          <td className="whitespace-pre px-4 align-top text-anvil-800 dark:text-anvil-200">{lines[i] || ' '}</td>
+          <td className={CODE_CELL}>{lines[i] || ' '}</td>
         )}
       </tr>,
     )
@@ -354,7 +373,7 @@ function TextLines({
           type="button"
           onClick={copyPermalink}
           data-testid="copy-permalink"
-          data-href={permalink(range)}
+          data-href={href}
           className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-anvil-100 dark:hover:bg-anvil-800"
           title="Copy a link to this file at this commit"
         >
@@ -365,9 +384,9 @@ function TextLines({
       <ScrollRegion label={`Contents of ${name}`} className="overflow-x-auto">
         <table ref={tableRef} className="hljs w-full border-collapse bg-transparent font-mono text-[13px] leading-5" data-lines={lines.length}>
           <tbody>
-            {win.from > 0 ? <tr aria-hidden style={{ height: win.from * ROW_PX }} /> : null}
+            {from > 0 ? <tr aria-hidden style={{ height: from * ROW_PX }} /> : null}
             {rows}
-            {win.to < lines.length ? <tr aria-hidden style={{ height: (lines.length - win.to) * ROW_PX }} /> : null}
+            {to < lines.length ? <tr aria-hidden style={{ height: (lines.length - to) * ROW_PX }} /> : null}
           </tbody>
         </table>
       </ScrollRegion>

@@ -29,15 +29,6 @@ export function isLive(ref: ResolvedRef): boolean {
   return tipOidOf(ref) !== null
 }
 
-/**
- * A `?ref=` that names a commit by its full id (a permalink), lowercased, or null. Only used
- * when no branch or tag has that name; the commit is then read by id and hash-checked like
- * any other object, so a permalink can only show what the repo actually holds.
- */
-export function pinnedCommit(refParam: string): string | null {
-  return /^[0-9a-f]{40}$/i.test(refParam) ? refParam.toLowerCase() : null
-}
-
 /** Find a branch ref by short name (`main`) within a resolved ref list. */
 export function findBranch(
   branches: readonly ResolvedRef[],
@@ -86,4 +77,25 @@ export function selectRef(
 export function refParamFor(shortName: string, isTag: boolean, defaultBranch: string): string {
   if (isTag) return `tags/${shortName}`
   return shortName === defaultBranch ? '' : shortName
+}
+
+/**
+ * The ref a tree or blob view reads, and its tip: {@link selectRef}, or a commit pinned by its
+ * full id (`?ref=<40 hex>`, a permalink) when no branch or tag has that name. A pinned commit
+ * is read by id and hash-checked like any other object, so a permalink can only show what the
+ * repo holds. `tipOid` is null for a deleted ref (`selected.ref` set) and for no ref at all.
+ */
+export function selectBrowseRef(
+  branches: readonly ResolvedRef[],
+  tags: readonly ResolvedRef[],
+  defaultBranch: string,
+  refParam: string,
+): { readonly selected: SelectedRef; readonly tipOid: string | null } {
+  const found = selectRef(branches, tags, defaultBranch, refParam)
+  if (found.ref) return { selected: found, tipOid: tipOidOf(found.ref) }
+  if (/^[0-9a-f]{40}$/i.test(refParam)) {
+    const oid = refParam.toLowerCase()
+    return { selected: { ...found, name: oid.slice(0, 7) }, tipOid: oid }
+  }
+  return { selected: found, tipOid: null }
 }

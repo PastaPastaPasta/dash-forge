@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ResolvedRef } from '../repo'
-import { isLive, refParamFor, selectRef } from './refs'
+import { isLive, refParamFor, selectBrowseRef, selectRef } from './refs'
 
 function ref(refName: string, oid = 'a'.repeat(40)): ResolvedRef {
   return { refName, refNameHash: 'x', state: { state: 'resolved', oid, author: 'id', createdAt: 1 } }
@@ -82,5 +82,27 @@ describe('refParamFor', () => {
       expect(s.isTag).toBe(isTag)
       expect(s.ref).toBeDefined()
     }
+  })
+})
+
+describe('selectBrowseRef (permalinks, D-054)', () => {
+  const commit = 'AbCdEf0123456789abcdef0123456789ABCDEF01'
+  it('reads a full commit id no ref claims as a pinned commit', () => {
+    const { selected, tipOid } = selectBrowseRef(branches, tags, 'main', commit)
+    expect(tipOid).toBe(commit.toLowerCase())
+    expect(selected.ref).toBeUndefined()
+    expect(selected.name).toBe('abcdef0')
+  })
+
+  it('prefers a branch that has the name, and resolves the default branch', () => {
+    const named = [...branches, ref(`refs/heads/${commit}`, '9'.repeat(40))]
+    expect(selectBrowseRef(named, tags, 'main', commit).tipOid).toBe('9'.repeat(40))
+    expect(selectBrowseRef(branches, tags, 'main', '').tipOid).toBe('1'.repeat(40))
+  })
+
+  it('leaves an unknown short name unresolved', () => {
+    const { selected, tipOid } = selectBrowseRef(branches, tags, 'main', 'abcdef0')
+    expect(selected.ref).toBeUndefined()
+    expect(tipOid).toBeNull()
   })
 })
