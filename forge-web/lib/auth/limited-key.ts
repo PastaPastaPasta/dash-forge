@@ -22,6 +22,7 @@ import { CREDITS_PER_DASH } from '../sdk/cost'
 import { authSdk, type WasmKey } from '../sdk/facade'
 import type { KeyLimits } from '../view/funds'
 import { retryWhileMissing } from '../view/retry'
+import { decodeWif } from './wif'
 
 /** Browser key defaults (spec §2.1). */
 export const BROWSER_KEY_DEFAULTS = { budgetDash: 0.05, days: 90 } as const
@@ -66,6 +67,11 @@ export async function registerLimitedKey(
     readonly group: string
     readonly request?: LimitedKeyRequest
     readonly replaceKeyId?: number
+    /**
+     * Wallet-granted keys this browser holds (with their private keys), disabled in the same
+     * update: each is disabled only if the stored private key controls it.
+     */
+    readonly disableHeld?: readonly HeldKey[]
     /** The contracts the group must hold (forge-core, forge-collab), checked on chain first. */
     readonly contracts?: readonly string[]
   },
@@ -106,7 +112,7 @@ export async function registerLimitedKey(
       expiresAt: BigInt(request.expiresAt),
     })
     const old = identity.publicKeys.find((k) => k.keyId === params.replaceKeyId)
-    const disable = old && old.disabledAt === undefined && isForgeBrowserKey(old) ? [old.keyId] : []
+    const disable = [...new Set([...(old && old.disabledAt === undefined && isForgeBrowserKey(old) ? [old.keyId] : []), ...heldToDisable(identity.publicKeys, params.disableHeld ?? [], params.network)])]
     try {
       await authSdk(sdk).identities.update({ identity, addPublicKeys: [key], ...(disable.length ? { disablePublicKeys: disable } : {}), signer })
     } catch (e) {
@@ -124,6 +130,64 @@ export async function registerLimitedKey(
   fresh.free()
   const limits = await verifyLimitedKey(sdk, params.identityId, keyId, params.group, params.network, wif, request)
   return { keyId, wif, limits }
+}
+
+/** A key this browser holds: its id and the private key that proves it is this browser's. */
+export interface HeldKey {
+  readonly keyId: number
+  readonly wif: string
+}
+
+/**
+ * The ids of `held` keys that are live AUTHENTICATION (non-MASTER) keys of the identity AND
+ * controlled by the private key this browser stored for them. The proof matters: a master-key
+ * update may disable any key, so a key id alone (from a tampered record, say) must never pick
+ * what gets disabled.
+ */
+export function heldToDisable(keys: readonly WasmKey[], held: readonly HeldKey[], network: Network, fromWif: (wif: string) => Uint8Array = wifToBytes): number[] {
+  const out: number[] = []
+  for (const h of held) {
+    const k = keys.find((x) => x.keyId === h.keyId)
+    if (!k || k.disabledAt !== undefined || k.purposeNumber !== 0 || k.securityLevelNumber === 0) continue
+    const bytes = fromWif(h.wif)
+    try {
+      if (safeValidate(k, bytes, network)) out.push(k.keyId)
+    } finally {
+      bytes.fill(0)
+    }
+  }
+  return out
+}
+
+function wifToBytes(wif: string): Uint8Array {
+  return decodeWif(wif).privateKey
+}
+
+/**
+ * Disable the keys this browser holds for the identity (wallet grants included), in one
+ * master-key update. Only keys the stored private keys control are disabled
+ * ({@link heldToDisable}); if none is still live, nothing is sent.
+ */
+export async function disableHeldKeys(
+  sdk: EvoSDK,
+  params: { readonly network: Network; readonly identityId: string; readonly masterWif: string; readonly keys: readonly HeldKey[] },
+): Promise<void> {
+  const { IdentitySigner, PrivateKey } = await import('@dashevo/evo-sdk')
+  const identity = await authSdk(sdk).identities.fetch(params.identityId)
+  if (!identity) throw new Error(`identity ${params.identityId} not found`)
+  const ids = heldToDisable(identity.publicKeys, params.keys, params.network)
+  if (ids.length === 0) return
+  let master: ReturnType<typeof PrivateKey.fromWIF> | null = null
+  let signer: InstanceType<typeof IdentitySigner> | null = null
+  try {
+    master = PrivateKey.fromWIF(params.masterWif)
+    signer = new IdentitySigner()
+    signer.addKey(master)
+    await authSdk(sdk).identities.update({ identity, disablePublicKeys: ids, signer })
+  } finally {
+    signer?.free()
+    master?.free()
+  }
 }
 
 function safeValidate(k: WasmKey, bytes: Uint8Array, network: Network): boolean {

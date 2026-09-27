@@ -14,7 +14,11 @@ import { Button } from '@/components/ui/button'
 import { Field, Input } from '@/components/ui/input'
 import { errorMessage } from '@/lib/utils'
 
-export function useProtection(): {
+/**
+ * `requirePasskey`: the key has no budget or expiry (a shipped wallet's key), so where this
+ * browser can make a PRF passkey, a passphrase alone is refused (it may still be the backup).
+ */
+export function useProtection(opts: { readonly requirePasskey?: boolean } = {}): {
   readonly fields: JSX.Element
   /** The protection, or null with `problem` set when not ready. */
   readonly protection: Protection | null
@@ -36,14 +40,18 @@ export function useProtection(): {
   const [enrolling, setEnrolling] = useState(false)
   const [passkeyError, setPasskeyError] = useState<string | null>(null)
   const canPasskey = passkeysAvailable()
+  const [noPrf, setNoPrf] = useState(false)
+  const passkeyRequired = opts.requirePasskey === true && canPasskey && !noPrf
 
   const enroll = async (): Promise<void> => {
     setEnrolling(true)
     setPasskeyError(null)
     try {
       const p = await enrollPasskey(`Dash Forge (${new Date().toISOString().slice(0, 10)})`)
-      if (p === null) setPasskeyError("This passkey can't protect keys here (no PRF support). Use a passphrase.")
-      else {
+      if (p === null) {
+        setPasskeyError("This passkey can't protect keys here (no PRF support). Use a passphrase.")
+        setNoPrf(true)
+      } else {
         passkeyRef.current = p
         setHasPasskey(true)
       }
@@ -59,6 +67,7 @@ export function useProtection(): {
   if (passphraseSet && passphrase.length < MIN_PASSPHRASE) problem = `Use at least ${MIN_PASSPHRASE} characters.`
   else if (passphraseSet && passphrase !== confirm) problem = 'The passphrases do not match.'
   else if (!passphraseSet && !passkey) problem = 'Protect the key with a passkey or a passphrase.'
+  else if (passkeyRequired && !passkey) problem = 'This key has no spending limit: protect it with a passkey (a passphrase can be the backup).'
 
   const protection: Protection | null =
     problem !== null ? null : { ...(passphraseSet ? { passphrase } : {}), ...(passkey ? { passkey } : {}) }
@@ -66,6 +75,7 @@ export function useProtection(): {
   const fields = (
     <div className="space-y-3 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
       <p className="text-dense font-medium">Protect this browser&apos;s key</p>
+      {passkeyRequired ? <p className="text-[12px] text-caution">This key has no spending limit, so a passkey is required here.</p> : null}
       {canPasskey ? (
         <div className="flex flex-wrap items-center gap-2">
           <Button type="button" variant={passkey ? 'subtle' : 'outline'} size="sm" onClick={enroll} loading={enrolling} disabled={passkey !== null}>

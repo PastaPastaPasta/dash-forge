@@ -482,8 +482,12 @@ export interface SpendEvent {
 export interface WriteAuth {
   readonly identityId: string
   readonly network: Network
-  /** Return the acting identity's signing-key WIF, or throw {@link WriteAuthError}. */
-  getSigningKeyWif(): string
+  /**
+   * Return the acting identity's signing-key WIF for a write to `contractId`, or throw
+   * {@link WriteAuthError}. (A session can hold one key per contract: a shipped wallet grants a
+   * key bound to one contract.)
+   */
+  getSigningKeyWif(contractId?: string): string
   /** Told about every write that was charged (the local spend ledger listens here). */
   readonly onSpend?: (event: SpendEvent) => void
 }
@@ -689,7 +693,7 @@ async function createDocumentUnlocked(
       ? (await params.probe().catch(() => null)) === false
       : await definitelyAbsent(sdk, contractId, documentType, documentId)
 
-  const wif = auth.getSigningKeyWif()
+  const wif = auth.getSigningKeyWif(contractId)
   const ownerId = auth.identityId
   const cacheKey = pendingWriteKey(ownerId, contractId, documentType, params.intent ?? newIntent())
   const identity = await facades(sdk).identities.fetch(ownerId)
@@ -957,7 +961,7 @@ async function deleteDocumentUnlocked(
     return { result: { deleted: true, actualCredits: 0 }, spend: null }
   }
 
-  const wif = auth.getSigningKeyWif()
+  const wif = auth.getSigningKeyWif(contractId)
   const ownerId = auth.identityId
   const identity = await facades(sdk).identities.fetch(ownerId)
   if (!identity) throw new WriteAuthError(`identity ${ownerId} not found on ${auth.network}`)

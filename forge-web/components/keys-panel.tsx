@@ -9,7 +9,8 @@
  */
 
 import { useRef, useState } from 'react'
-import { BatteryCharging, Lock, LogOut, RefreshCw, ShieldOff } from 'lucide-react'
+import { BatteryCharging, Lock, LogOut, RefreshCw, ShieldOff, Wallet } from 'lucide-react'
+import { UnlimitedKeyWarning } from '@/components/auth/wallet-connect-flow'
 import { errorMessage } from '@/lib/utils'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
@@ -24,7 +25,7 @@ export const FORGET_CONFIRM =
   "Delete this browser's key from this device? This does not revoke it: the key stays valid on chain until it expires (use \"Revoke on chain\" for that). You will need your identity file, recovery phrase or wallet to sign in again here."
 
 export function KeysPanel(): JSX.Element {
-  const { identity, keyLimits, storage, funds, logout, forget, revokeStored, isLoading } = useAuth()
+  const { identity, keyLimits, storage, funds, logout, forget, revokeStored, isLoading, grants, unlimitedKey, unboundedKey } = useAuth()
   const revokeRef = useRef<HTMLInputElement>(null)
   const [revokeError, setRevokeError] = useState<string | null>(null)
   const revoke = async (file: File): Promise<void> => {
@@ -65,6 +66,23 @@ export function KeysPanel(): JSX.Element {
       ) : (
         <p className="text-anvil-500 dark:text-anvil-400">This key has no budget or expiry.</p>
       )}
+      {storage === 'vault' && unlimitedKey ? (
+        <div className="space-y-2">
+          <UnlimitedKeyWarning unbounded={unboundedKey} />
+          <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+            Platform cannot add limits to a key that was registered without them. Replace it with a limited key (your identity file or recovery phrase,
+            once: the wallet keys this browser holds are disabled in the same update), or disable it on chain.
+          </p>
+        </div>
+      ) : null}
+      {storage === 'vault' && grants && !grants.collab ? (
+        <div className="flex flex-wrap items-center gap-2 rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800" data-testid="grant-collab">
+          <span>This sign-in covers repositories and pushes. Issues, pull requests and stars need one more wallet approval.</span>
+          <Button variant="outline" size="sm" onClick={() => openLogin('grant')}>
+            <Wallet className="h-3.5 w-3.5" aria-hidden /> Approve in wallet
+          </Button>
+        </div>
+      ) : null}
       {low ? (
         <p className="text-caution">This browser&apos;s key is nearly used up. Top it up or renew it (uses your master key once).</p>
       ) : null}
@@ -74,8 +92,8 @@ export function KeysPanel(): JSX.Element {
             <BatteryCharging className="h-3.5 w-3.5" aria-hidden /> Top up key budget
           </Button>
         ) : null}
-        <Button variant="outline" size="sm" onClick={() => openLogin('import')}>
-          <RefreshCw className="h-3.5 w-3.5" aria-hidden /> Renew key
+        <Button variant={unlimitedKey ? 'primary' : 'outline'} size="sm" onClick={() => openLogin('import')}>
+          <RefreshCw className="h-3.5 w-3.5" aria-hidden /> {unlimitedKey ? 'Replace with a limited key' : 'Renew key'}
         </Button>
         <Button variant="outline" size="sm" onClick={() => logout()}>
           <Lock className="h-3.5 w-3.5" aria-hidden /> Lock
@@ -92,7 +110,7 @@ export function KeysPanel(): JSX.Element {
         {storage === 'vault' ? (
           <>
             <Button variant="danger" size="sm" loading={isLoading} onClick={() => revokeRef.current?.click()}>
-              <ShieldOff className="h-3.5 w-3.5" aria-hidden /> Revoke on chain
+              <ShieldOff className="h-3.5 w-3.5" aria-hidden /> {unlimitedKey ? 'Disable key on chain' : 'Revoke on chain'}
             </Button>
             <input
               ref={revokeRef}

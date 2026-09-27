@@ -68,6 +68,19 @@ export interface VaultSecret {
   readonly keyId: number
   /** The limited key's private key, WIF. */
   readonly wif: string
+  /**
+   * More keys of the same identity, each for one contract: a shipped Dash wallet grants a key
+   * bound to ONE contract, so a forge-core key and a later forge-collab key are two grants.
+   * Absent for a group-bound key (it covers both contracts).
+   */
+  readonly extra?: readonly ExtraKey[]
+}
+
+/** A wallet-granted key for one contract, held beside the main key. */
+export interface ExtraKey {
+  readonly contractId: string
+  readonly keyId: number
+  readonly wif: string
 }
 
 /** A key-wrapping slot: the data key encrypted under one unlock method. */
@@ -121,6 +134,11 @@ function storageBlobKey(network: Network, identityId: string): string {
   return `vault-storage:${network}:${identityId}`
 }
 
+/** The extra wallet grants ({@link ExtraKey}), sealed like the storage settings. */
+function extraBlobKey(network: Network, identityId: string): string {
+  return `vault-extra:${network}:${identityId}`
+}
+
 /** The sealed storage-credentials blob. */
 interface StorageBlob {
   readonly iv: Uint8Array
@@ -137,22 +155,22 @@ async function deriveStorageKey(dataKey: Uint8Array, network: Network, identityI
   }
 }
 
-async function sealBlob(key: CryptoKey, network: Network, identityId: string, value: unknown): Promise<StorageBlob> {
+async function sealBlob(key: CryptoKey, network: Network, identityId: string, value: unknown, slot = 'storage'): Promise<StorageBlob> {
   const iv = random(12)
   const plain = enc.encode(JSON.stringify(value))
   try {
-    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: buf(iv), additionalData: buf(aad(network, identityId, 'storage')) }, key, buf(plain))
+    const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: buf(iv), additionalData: buf(aad(network, identityId, slot)) }, key, buf(plain))
     return { iv, ciphertext: new Uint8Array(ct) }
   } finally {
     plain.fill(0)
   }
 }
 
-async function openBlob(key: CryptoKey, network: Network, identityId: string, blob: StorageBlob): Promise<unknown> {
+async function openBlob(key: CryptoKey, network: Network, identityId: string, blob: StorageBlob, slot = 'storage'): Promise<unknown> {
   let plain: Uint8Array
   try {
     plain = new Uint8Array(
-      await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf(blob.iv), additionalData: buf(aad(network, identityId, 'storage')) }, key, buf(blob.ciphertext)),
+      await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf(blob.iv), additionalData: buf(aad(network, identityId, slot)) }, key, buf(blob.ciphertext)),
     )
   } catch {
     throw new VaultLockedError('the stored storage settings do not open with this key')
@@ -317,8 +335,10 @@ export async function storeInVault(network: Network, secret: VaultSecret, protec
   const carried = hadBlob ? await readStorageBlob(network, identityId).catch(() => null) : null
   const dataKey = random(32)
   let storageKey: CryptoKey
+  // The extra grants live in their own blob, so a later grant can be added without the data key.
+  const { extra, ...main } = secret
   try {
-    const body = await seal(dataKey, enc.encode(JSON.stringify(secret)), aad(network, identityId, 'body'))
+    const body = await seal(dataKey, enc.encode(JSON.stringify(main)), aad(network, identityId, 'body'))
     const slots: Slot[] = []
     if (protection.passkey) {
       const kek = prfKey(protection.passkey.output, network, identityId)
@@ -345,11 +365,13 @@ export async function storeInVault(network: Network, secret: VaultSecret, protec
     }
     storageKey = await deriveStorageKey(dataKey, network, identityId)
     const blob = carried !== null ? await sealBlob(storageKey, network, identityId, carried) : undefined
-    // One transaction: a crash between the two writes must not leave settings sealed under a
+    const extraBlob = extra?.length ? await sealBlob(storageKey, network, identityId, extra, 'extra') : undefined
+    // One transaction: a crash between the writes must not leave settings sealed under a
     // data key no record holds any more.
     await idbBatch('vault', [
       [key(network, identityId), record],
       [storageBlobKey(network, identityId), blob],
+      [extraBlobKey(network, identityId), extraBlob],
     ])
   } finally {
     dataKey.fill(0)
@@ -387,6 +409,31 @@ export async function writeStorageBlob(network: Network, identityId: string, val
   await idbPut('vault', storageBlobKey(network, identityId), await sealBlob(k, network, identityId, value))
 }
 
+/**
+ * Add (or replace, per contract) a wallet grant beside the unlocked key of (network, identity),
+ * sealed at rest and live for this session. Needs the vault unlocked for that identity.
+ */
+export async function addExtraKey(network: Network, identityId: string, extra: ExtraKey): Promise<void> {
+  assertDedicatedOrigin()
+  const k = unlockedStorageKey(network, identityId)
+  const current = unlocked
+  if (k === null || current === null) throw new VaultLockedError('unlock this browser\'s key first')
+  const next = [...(current.secret.extra ?? []).filter((e) => e.contractId !== extra.contractId), extra]
+  await idbPut('vault', extraBlobKey(network, identityId), await sealBlob(k, network, identityId, next, 'extra'))
+  unlocked = { ...current, secret: { ...current.secret, extra: next } }
+}
+
+/** The extra grants sealed for a record, or none when absent or unreadable. */
+async function readExtraKeys(network: Network, identityId: string, storageKey: CryptoKey): Promise<ExtraKey[]> {
+  const blob = await idbGet<StorageBlob>('vault', extraBlobKey(network, identityId))
+  if (blob === undefined) return []
+  const value = await openBlob(storageKey, network, identityId, blob, 'extra').catch(() => null)
+  if (!Array.isArray(value)) return []
+  return value.filter(
+    (e): e is ExtraKey => typeof e === 'object' && e !== null && typeof e.contractId === 'string' && typeof e.keyId === 'number' && typeof e.wif === 'string',
+  )
+}
+
 function unlockedStorageKey(network: Network, identityId: string): CryptoKey | null {
   if (unlockedSecret(network, identityId) === null) return null
   return unlocked?.storageKey ?? null
@@ -407,10 +454,13 @@ async function unwrapWith(network: Network, record: VaultRecord, kek: Uint8Array
   const dataKey = await open(kek, slot.iv, slot.wrapped, aad(network, record.identityId, slot.kind))
   try {
     const body = await open(dataKey, record.iv, record.ciphertext, aad(network, record.identityId, 'body'))
-    const secret = JSON.parse(new TextDecoder().decode(body)) as VaultSecret
+    const parsed = JSON.parse(new TextDecoder().decode(body)) as VaultSecret
     body.fill(0)
-    if (secret.identityId !== record.identityId) throw new VaultLockedError('vault record does not match its identity')
-    return { secret, storageKey: await deriveStorageKey(dataKey, network, record.identityId) }
+    if (parsed.identityId !== record.identityId) throw new VaultLockedError('vault record does not match its identity')
+    const storageKey = await deriveStorageKey(dataKey, network, record.identityId)
+    const extra = await readExtraKeys(network, record.identityId, storageKey)
+    const secret: VaultSecret = { identityId: parsed.identityId, keyId: parsed.keyId, wif: parsed.wif, ...(extra.length ? { extra } : {}) }
+    return { secret, storageKey }
   } finally {
     dataKey.fill(0)
     kek.fill(0)
@@ -452,6 +502,7 @@ export async function forgetVault(network: Network, identityId: string): Promise
   lockVault()
   await idbDelete('vault', key(network, identityId))
   await idbDelete('vault', storageBlobKey(network, identityId))
+  await idbDelete('vault', extraBlobKey(network, identityId))
   clearSignedWrites()
 }
 

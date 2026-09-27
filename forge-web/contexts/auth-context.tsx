@@ -22,6 +22,9 @@ import {
   type TopUpRequest,
   type VaultInfo,
 } from '../lib/auth'
+import { MissingGrantError } from '../lib/auth/controller'
+import type { WalletKey } from '../lib/auth/key-registration'
+import { useUiStore } from '../hooks/use-ui-store'
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '../lib/constants'
 import { ensureSdk, type SpendEvent, type WriteAuth } from '../lib/sdk'
 import { recordSpend } from '../lib/spend'
@@ -74,6 +77,14 @@ interface AuthContextValue {
     request?: LimitedKeyRequest,
   ) => Promise<void>
   adoptLimitedKey: (identityId: string, key: LimitedKey, protection: Protection) => Promise<void>
+  /** Store the keys a wallet granted (verified on chain) and open the session. */
+  adoptWalletKeys: (identityId: string, keys: readonly WalletKey[], protection: Protection) => Promise<void>
+  /** Add a wallet grant for another Forge contract to the signed-in identity. */
+  addWalletGrant: (identityId: string, key: WalletKey) => Promise<void>
+  /** Which Forge contracts the session's keys cover, and whether a held key is unlimited. */
+  readonly grants: AuthSession['grants'] | null
+  readonly unlimitedKey: boolean
+  readonly unboundedKey: boolean
   unlock: (identityId: string, method: { passphrase: string } | 'passkey') => Promise<void>
   /** Advanced: a pasted key, for this tab only. */
   loginWithRawKey: (identityId: string, privateKey: string) => Promise<void>
@@ -136,6 +147,10 @@ export function AuthProvider({
     () => ({
       importIdentity: withReload(controller.importIdentity.bind(controller)),
       adoptLimitedKey: withReload(controller.adoptLimitedKey.bind(controller)),
+      adoptWalletKeys: withReload(controller.adoptWalletKeys.bind(controller)),
+      addWalletGrant: async (identityId: string, key: WalletKey): Promise<void> => {
+        await controller.addWalletGrant(identityId, key)
+      },
       unlock: withReload(controller.unlock.bind(controller)),
       loginWithRawKey: withReload(controller.loginWithRawKey.bind(controller)),
       refreshBalance: () => controller.refreshBalance(),
@@ -165,7 +180,21 @@ export function AuthProvider({
   const sessionIdentity = session?.identityId ?? null
   const signer = useMemo<WriteAuth | null>(() => {
     const auth = sessionIdentity !== null ? controller.writeAuth : null
-    return auth ? { ...auth, onSpend } : null
+    if (!auth) return null
+    return {
+      ...auth,
+      onSpend,
+      // A write to a contract no held key covers (a wallet granted forge-core only): open the
+      // one-tap wallet grant for it; the write itself fails with the reason, and can be retried.
+      getSigningKeyWif: (contractId?: string): string => {
+        try {
+          return auth.getSigningKeyWif(contractId)
+        } catch (e) {
+          if (e instanceof MissingGrantError) useUiStore.getState().openLogin('grant')
+          throw e
+        }
+      },
+    }
   }, [controller, sessionIdentity, onSpend])
   const keyLimits = session?.keyLimits ?? null
   const funds = useMemo(
@@ -183,6 +212,9 @@ export function AuthProvider({
       error: state.error,
       signer,
       storage: session?.storage ?? null,
+      grants: session?.grants ?? null,
+      unlimitedKey: session?.unlimited === true,
+      unboundedKey: session?.unbounded === true,
       limitedKeys: controller.supportsLimitedKeys(),
       vaults,
       reloadVaults,

@@ -1,77 +1,149 @@
 'use client'
 
 /**
- * "Use my Dash wallet" (`ux-dx-spec.md` §2.2 tile 1): shows the App Connect request as a QR
- * and a deep link, waits for the wallet's `loginKeyResponse`, verifies the granted key on chain
- * (live, HIGH, bound to the dash-forge group, budgeted, expiring), then — after the user
- * confirms the full identity id (and DPNS name) is theirs — stores it in the vault.
+ * "Use my Dash wallet" (`ux-dx-spec.md` §2.2 tile 1; docs/design/wallet-login.md).
  *
- * The response does not prove who answered: anyone who saw the QR could answer from their own
- * identity. So the user confirms the identity, and more than one valid answer is refused.
- * The granted key is held in a ref, never React state, and dropped when the sheet closes.
+ * 1. Request: a `dash-key:` QR (and, on a phone, an "Open in Dash Wallet" link) asking for a key
+ *    bound to one Forge contract, with a countdown and the pairing code.
+ * 2. Key registration, first time only: a legacy wallet answers with a key that is not on its
+ *    identity yet, so a second QR/link (`dash-st:`) asks it to register the key.
+ * 3. Confirm: the full identity id (and DPNS name) the wallet answered for. The response does not
+ *    prove who answered (anyone who saw the QR could), so the user confirms it, and more than one
+ *    answer is refused. A key without a budget or expiry is flagged, and needs a passkey here.
+ *
+ * `mode="grant"` asks the signed-in identity's wallet for a key on another contract (a shipped
+ * wallet grants one contract per approval) and adds it to the session: no confirmation step,
+ * since only answers from the signed-in identity are read.
+ *
+ * Granted keys are held in refs, never React state, and dropped when the sheet closes.
  */
 
-import { useEffect, useRef, useState } from 'react'
-import { Loader2 } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { AlertTriangle, Loader2, RefreshCw, Smartphone } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
 import { Qr } from '@/components/ui/qr'
 import { ErrorBox, useProtection } from '@/components/auth/protection-fields'
 import { ACTIVE_NETWORK } from '@/lib/constants'
-import { BROWSER_KEY_DEFAULTS, type LimitedKey } from '@/lib/auth'
-import { awaitWalletLogin, newRequest } from '@/lib/auth/app-connect'
+import {
+  AmbiguousWalletLogin,
+  RequestExpired,
+  awaitRegisteredKey,
+  awaitWalletAnswer,
+  newLoginRequest,
+  responseSources,
+  type LoginRequest,
+  type WalletAnswer,
+} from '@/lib/auth/app-connect'
+import { isUnlimited, keyRegistrationUri, type WalletKey } from '@/lib/auth/key-registration'
 import { ensureSdk } from '@/lib/sdk'
 import { isAbort } from '@/lib/sdk/facade'
 import { resolveDpnsName } from '@/lib/view/dpns'
 import { errorMessage } from '@/lib/utils'
 
-export function WalletConnectFlow({ onDone }: { onDone: () => void }): JSX.Element {
-  const { adoptLimitedKey, isLoading } = useAuth()
-  const [uri, setUri] = useState<string | null>(null)
-  const [pairing, setPairing] = useState('')
-  const [slow, setSlow] = useState(false)
-  const [who, setWho] = useState<{ identityId: string; name: string | null } | null>(null)
-  const [confirmed, setConfirmed] = useState(false)
+type Step =
+  | { readonly kind: 'request'; readonly uri: string; readonly pairing: string; readonly expiresAt: number }
+  | { readonly kind: 'register'; readonly uri: string; readonly expiresAt: number }
+  | { readonly kind: 'confirm'; readonly identityId: string; readonly name: string | null; readonly unlimited: boolean; readonly unbounded: boolean }
+  | { readonly kind: 'expired' }
+  | { readonly kind: 'done' }
+
+/** A phone or tablet browser: the wallet is on this device, so a link beats a QR. */
+function onMobile(): boolean {
+  if (typeof navigator === 'undefined') return false
+  const uaData = (navigator as Navigator & { userAgentData?: { mobile?: boolean } }).userAgentData
+  return uaData?.mobile ?? /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent)
+}
+
+export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDone: () => void; mode?: 'login' | 'grant'; contractId?: string }): JSX.Element {
+  const { adoptWalletKeys, addWalletGrant, identity, isLoading } = useAuth()
+  const forge = ACTIVE_NETWORK.v2
+  const target = contractId ?? forge?.core ?? ''
+  const [step, setStep] = useState<Step | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const grant = useRef<LimitedKey | null>(null)
-  const { fields, protection, problem } = useProtection()
+  const [attempt, setAttempt] = useState(0)
+  const [confirmed, setConfirmed] = useState(false)
+  const grant = useRef<{ identityId: string; keys: readonly WalletKey[] } | null>(null)
+  const mobile = onMobile()
+  const unlimited = step?.kind === 'confirm' && step.unlimited
+  const { fields, protection, problem } = useProtection({ requirePasskey: unlimited })
 
   useEffect(() => {
     const controller = new AbortController()
-    const timer = setTimeout(() => setSlow(true), 3 * 60 * 1000)
+    const signal = controller.signal
+    setError(null)
+    setConfirmed(false)
     void (async () => {
       try {
-        const v2 = ACTIVE_NETWORK.v2
-        if (!v2) throw new Error('forge-v2 is not deployed here')
-        const req = newRequest(ACTIVE_NETWORK.network, v2.group)
-        setUri(req.uri)
-        setPairing(req.pairingCode)
+        if (!forge) throw new Error('Dash Forge is not deployed here')
         const sdk = await ensureSdk(ACTIVE_NETWORK.network)
-        const login = await awaitWalletLogin(sdk, req, { network: ACTIVE_NETWORK.network, group: v2.group, signal: controller.signal })
-        grant.current = { keyId: login.keyId, wif: login.wif, limits: login.limits }
-        const name = await resolveDpnsName(sdk, login.identityId, ACTIVE_NETWORK.network).catch(() => null)
-        setWho({ identityId: login.identityId, name: name ?? null })
+        const sources = await responseSources(sdk, ACTIVE_NETWORK.key)
+        if (sources.length === 0) throw new Error(`No wallet login contract is available on ${ACTIVE_NETWORK.key}.`)
+        const req: LoginRequest = newLoginRequest(ACTIVE_NETWORK.network, target)
+        setStep({ kind: 'request', uri: req.uri, pairing: req.pairingCode, expiresAt: req.expiresAt })
+        const answer: WalletAnswer = await awaitWalletAnswer(sdk, req, {
+          network: ACTIVE_NETWORK.network,
+          forge,
+          sources,
+          signal,
+          ...(mode === 'grant' && identity ? { identityId: identity } : {}),
+        })
+        let keys: readonly WalletKey[]
+        if (answer.kind === 'register') {
+          // First login from this wallet: QR #2 registers the key, then wait for it on chain.
+          const until = Date.now() + 5 * 60 * 1000
+          const reg = await keyRegistrationUri(sdk, { identityId: answer.identityId, keys: answer.keys, contractId: target, network: ACTIVE_NETWORK.network })
+          answer.keys.authPriv.fill(0)
+          answer.keys.encPriv.fill(0)
+          setStep({ kind: 'register', uri: reg.uri, expiresAt: until })
+          keys = [await awaitRegisteredKey(sdk, { identityId: answer.identityId, wif: answer.wif, network: ACTIVE_NETWORK.network, forge, until, signal })]
+        } else {
+          keys = answer.keys
+        }
+        if (signal.aborted) return
+        if (mode === 'grant') {
+          const key = keys[0]
+          if (!key) throw new Error('the wallet granted no key')
+          await addWalletGrant(answer.identityId, key)
+          setStep({ kind: 'done' })
+          onDone()
+          return
+        }
+        grant.current = { identityId: answer.identityId, keys }
+        const name = await resolveDpnsName(sdk, answer.identityId, ACTIVE_NETWORK.network).catch(() => null)
+        setStep({
+          kind: 'confirm',
+          identityId: answer.identityId,
+          name: name ?? null,
+          unlimited: keys.some(isUnlimited),
+          unbounded: keys.some((k) => k.scope.unbounded),
+        })
       } catch (e) {
-        if (!isAbort(e)) setError(errorMessage(e))
+        if (isAbort(e)) return
+        if (e instanceof RequestExpired) setStep({ kind: 'expired' })
+        else setError(e instanceof AmbiguousWalletLogin ? e.message : errorMessage(e))
       }
     })()
     return () => {
       controller.abort()
-      clearTimeout(timer)
       grant.current = null
     }
-  }, [])
+    // `attempt` restarts the whole request (a new ephemeral key and QR).
+  }, [attempt, forge, target, mode, identity, addWalletGrant, onDone])
 
-  if (who) {
+  const restart = useCallback(() => setAttempt((a) => a + 1), [])
+
+  if (step?.kind === 'confirm') {
     return (
-      <div className="space-y-3">
-        <p className="text-dense">A wallet granted a key, verified on Platform, for this identity:</p>
+      <div className="space-y-3" data-testid="wallet-confirm">
+        <p className="text-dense">A wallet granted a key, checked on Platform, for this identity:</p>
         <div className="rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800">
-          {who.name ? <div className="text-dense font-medium">{who.name}</div> : null}
+          {step.name ? <div className="text-dense font-medium">{step.name}</div> : null}
           <div data-testid="granted-identity" className="break-all font-mono text-dense">
-            {who.identityId}
+            {step.identityId}
           </div>
         </div>
+        {step.unlimited ? <UnlimitedKeyWarning unbounded={step.unbounded} /> : null}
         <label className="flex items-start gap-2 text-dense">
           <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} className="mt-1" />
           <span>This is my identity. (If it is not, someone else answered the QR code: close this and start again.)</span>
@@ -83,10 +155,10 @@ export function WalletConnectFlow({ onDone }: { onDone: () => void }): JSX.Eleme
           loading={isLoading}
           disabled={!confirmed || protection === null || isLoading}
           onClick={async () => {
-            const key = grant.current
-            if (!protection || !key) return
+            const g = grant.current
+            if (!protection || !g) return
             try {
-              await adoptLimitedKey(who.identityId, key, protection)
+              await adoptWalletKeys(g.identityId, g.keys, protection)
               grant.current = null
               onDone()
             } catch (e) {
@@ -102,22 +174,105 @@ export function WalletConnectFlow({ onDone }: { onDone: () => void }): JSX.Eleme
     )
   }
 
+  if (step?.kind === 'expired') {
+    return (
+      <div className="space-y-3">
+        <p className="text-dense">The request expired before a wallet answered.</p>
+        <Button variant="primary" className="w-full" onClick={restart}>
+          <RefreshCw className="h-4 w-4" aria-hidden /> New request
+        </Button>
+      </div>
+    )
+  }
+
+  const uri = step?.kind === 'request' || step?.kind === 'register' ? step.uri : null
+  const isRegister = step?.kind === 'register'
   return (
-    <div className="space-y-3">
-      {uri ? <Qr value={uri} label="Wallet login request" size={200} /> : <Loader2 className="mx-auto h-5 w-5 animate-spin text-anvil-400" aria-hidden />}
+    <div className="space-y-3" data-testid={isRegister ? 'wallet-register' : 'wallet-request'}>
+      {mode === 'grant' && !isRegister ? (
+        <p className="text-dense">Approve issues, pull requests, reviews and stars for this identity in your wallet: one more approval.</p>
+      ) : null}
+      {isRegister ? (
+        <p className="text-dense">
+          <span className="font-medium">One more step, first time only.</span> Your wallet approved, and now it has to add Forge&apos;s key to your identity.{' '}
+          {mobile ? 'Open it in the wallet again.' : 'Scan this second code with the wallet.'}
+        </p>
+      ) : null}
       {uri ? (
+        mobile ? (
+          <a
+            href={uri}
+            data-testid="wallet-deep-link"
+            className="flex w-full items-center justify-center gap-2 rounded-md bg-forge-700 px-4 py-3 text-dense font-medium text-white hover:bg-forge-800"
+          >
+            <Smartphone className="h-4 w-4" aria-hidden /> {isRegister ? 'Add the key in Dash Wallet' : 'Open in Dash Wallet'}
+          </a>
+        ) : (
+          <Qr value={uri} label={isRegister ? 'Wallet key registration request' : 'Wallet login request'} size={200} />
+        )
+      ) : error ? null : (
+        <Loader2 className="mx-auto h-5 w-5 animate-spin text-anvil-400" aria-hidden />
+      )}
+      {uri && mobile ? (
+        <details className="text-[12px] text-anvil-500">
+          <summary className="cursor-pointer">Wallet on another device? Show the QR code</summary>
+          <div className="pt-2">
+            <Qr value={uri} label="Wallet request" size={180} />
+          </div>
+        </details>
+      ) : null}
+      {uri && !mobile ? (
         <a href={uri} className="block text-center text-dense text-forge-600 underline dark:text-forge-400">
-          Open in a wallet on this device
+          The wallet is on this device? Open it here
         </a>
       ) : null}
-      <p className="text-dense">
-        Approve in your wallet. Forge gets a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only here, for{' '}
-        {BROWSER_KEY_DEFAULTS.days} days. Check the wallet shows code <span className="font-mono font-semibold">{pairing}</span>. Keep
-        this QR code private: anyone who scans it can answer it.
-      </p>
-      {slow ? <p className="text-dense text-caution">No response yet. Keep this tab open, or choose another method.</p> : null}
-      <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Needs a wallet with Platform login (App Connect).</p>
+      {step?.kind === 'request' ? (
+        <p className="text-dense">
+          If your wallet shows a pairing code, it must be <span data-testid="pairing-code" className="font-mono font-semibold">{step.pairing}</span>. Keep this
+          code private: anyone who scans it can answer it.
+        </p>
+      ) : null}
+      {step?.kind === 'request' || step?.kind === 'register' ? <Countdown until={step.expiresAt} /> : null}
+      {mode === 'login' && step?.kind === 'request' ? (
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
+          Works with Dash Wallet for Android and iOS (Settings → Connections) on {ACTIVE_NETWORK.key}. The wallet grants Forge its own key for repositories
+          and pushes; issues and pull requests take one more approval, the first time you use them.
+        </p>
+      ) : null}
       <ErrorBox error={error} />
+      {error ? (
+        <Button variant="outline" className="w-full" onClick={restart}>
+          <RefreshCw className="h-4 w-4" aria-hidden /> Try again
+        </Button>
+      ) : null}
     </div>
+  )
+}
+
+/** "This key has no spending limit" (a shipped wallet's key): what it means, what to do. */
+export function UnlimitedKeyWarning({ unbounded }: { unbounded: boolean }): JSX.Element {
+  return (
+    <div role="note" data-testid="unlimited-key-warning" className="flex gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense">
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution" aria-hidden />
+      <span>
+        This wallet key has no spending limit or expiry: anyone who copies it from this browser can spend your balance
+        {unbounded ? ', on any Platform app, not only Forge' : ' on Forge'}, until you disable it. Protect it with a passkey, and replace it with a limited key
+        (Settings → Keys) or disable it when you are done.
+      </span>
+    </div>
+  )
+}
+
+function Countdown({ until }: { until: number }): JSX.Element {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [])
+  const left = Math.max(0, Math.round((until - now) / 1000))
+  return (
+    <p className="text-center font-mono text-[12px] text-anvil-500" aria-live="off" data-testid="request-countdown">
+      Expires in {Math.floor(left / 60)}:{String(left % 60).padStart(2, '0')}
+    </p>
   )
 }
