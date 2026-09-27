@@ -19,6 +19,7 @@ export function PullMerge({
   isMaintainer,
   checkout,
   onMerged,
+  extras = {},
 }: {
   repo: RepoRef
   home: RepoHome
@@ -27,10 +28,19 @@ export function PullMerge({
   isMaintainer: boolean
   checkout: string
   onMerged: () => void
+  /** Review-parity additions: allowed methods, squash authors, delete the branch after merging. */
+  extras?: MergeExtras
 }): JSX.Element | null {
   // Only a maintainer or writer resolves the readers the merge needs.
   if (!canMerge) return null
-  return <MergeReaders repo={repo} home={home} pull={pull} isMaintainer={isMaintainer} checkout={checkout} onMerged={onMerged} />
+  return <MergeReaders repo={repo} home={home} pull={pull} isMaintainer={isMaintainer} checkout={checkout} onMerged={onMerged} extras={extras} />
+}
+
+/** What the PR page adds to the merge panel. */
+export interface MergeExtras {
+  readonly allowedMethods?: number
+  readonly squashAuthors?: readonly string[] | null
+  readonly deleteBranch?: { readonly label: string; readonly run: () => Promise<void> } | null
 }
 
 function MergeReaders({
@@ -40,6 +50,7 @@ function MergeReaders({
   isMaintainer,
   checkout,
   onMerged,
+  extras,
 }: {
   repo: RepoRef
   home: RepoHome
@@ -47,6 +58,7 @@ function MergeReaders({
   isMaintainer: boolean
   checkout: string
   onMerged: () => void
+  extras: MergeExtras
 }): JSX.Element | null {
   const { sides, baseOnly, sidesKey } = useComparisonSides(repo, pull.sourceId)
   // Build only on the base as it stands now, and only on a base the PR could merge into (D-501);
@@ -66,6 +78,9 @@ function MergeReaders({
       isMaintainer={isMaintainer}
       checkout={checkout}
       onMerged={onMerged}
+      {...(extras.allowedMethods !== undefined ? { allowedMethods: extras.allowedMethods } : {})}
+      {...(extras.squashAuthors !== undefined ? { squashAuthors: extras.squashAuthors } : {})}
+      {...(extras.deleteBranch !== undefined ? { deleteBranch: extras.deleteBranch } : {})}
     />
   )
 }

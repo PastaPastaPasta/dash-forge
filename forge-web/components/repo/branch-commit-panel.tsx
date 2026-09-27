@@ -114,7 +114,7 @@ export function useBranchCommit({
         setError("The source repo's objects are still loading; try again in a moment.")
         return
       }
-      if (!guard.check(branchCommitCost(isMember).credits, 'core')) return
+      if (!guard.check(branchCommitCost(isMember), 'core')) return
       setBusy(true)
       setError(null)
       setDone(null)

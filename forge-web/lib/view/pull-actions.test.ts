@@ -153,6 +153,16 @@ describe('pullActions — protected base and branch policy (D-503)', () => {
     expect(a.canMarkMerged).toBe(true)
     expect(a.policyOverride).toBe(false)
   })
+
+  it('withholds a writer merge while required checks are not passing; a maintainer overrides', () => {
+    const met = { met: true, have: 1, need: 1 }
+    const w = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: met, checksBlocking: true })
+    expect(w.canMarkMerged).toBe(false)
+    expect(w.mergeHint).toMatch(/requires passing checks/)
+    const m = pullActions({ pull: pull(), viewer: MAINTAINER, holdings: MAINTAIN, policy: met, checksBlocking: true })
+    expect(m.canMarkMerged).toBe(true)
+    expect(m.policyOverride).toBe(true)
+  })
 })
 
 describe('pullActions agrees with the fold', () => {

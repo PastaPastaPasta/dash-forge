@@ -61,8 +61,10 @@ export interface MergeRun {
   /** The base tip and PR head this run merged (the ref update's `prevOid` is this tip). */
   readonly baseTip: string
   readonly headOid: string
+  /** The squash message this run built with (absent: a merge): a different one is a new run. */
+  readonly squash?: string
   readonly done: readonly MergeStepId[]
-  readonly result?: Extract<MergeResult, { kind: 'fast-forward' | 'merge' }>
+  readonly result?: Extract<MergeResult, { kind: 'fast-forward' | 'merge' | 'squash' }>
   readonly stored?: StoredPack
   readonly manifestId?: string
   readonly refDocumentId?: string
@@ -70,13 +72,13 @@ export interface MergeRun {
 }
 
 /** A fresh run for `input`. */
-export function newRun(input: Pick<MergeInput, 'baseTip' | 'headOid'>): MergeRun {
-  return { baseTip: input.baseTip, headOid: input.headOid, done: [] }
+export function newRun(input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash'>): MergeRun {
+  return { baseTip: input.baseTip, headOid: input.headOid, ...(input.squash ? { squash: input.squash.message } : {}), done: [] }
 }
 
-/** `run` when it is for `input`'s base tip and head, else a fresh run. */
-export function runFor(run: MergeRun | null, input: Pick<MergeInput, 'baseTip' | 'headOid'>): MergeRun {
-  return run !== null && run.baseTip === input.baseTip && run.headOid === input.headOid ? run : newRun(input)
+/** `run` when it is for `input`'s base tip, head and method, else a fresh run. */
+export function runFor(run: MergeRun | null, input: Pick<MergeInput, 'baseTip' | 'headOid' | 'squash'>): MergeRun {
+  return run !== null && run.baseTip === input.baseTip && run.headOid === input.headOid && run.squash === input.squash?.message ? run : newRun(input)
 }
 
 export interface MergeRunDeps {
@@ -185,7 +187,7 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
   // A private repo's pack must be encrypted, which the browser merge does not do: refused
   // here too, not only by the panel, so no caller can store a plaintext pack for one.
   if (deps.repo.visibility !== 'public') throw new MergeStopped('Private repositories are merged with `dg pr merge` for now.')
-  if (from.baseTip !== deps.input.baseTip || from.headOid !== deps.input.headOid) {
+  if (from.baseTip !== deps.input.baseTip || from.headOid !== deps.input.headOid || from.squash !== deps.input.squash?.message) {
     throw new MergeStopped('the base branch or the PR head changed since this merge started; merge again')
   }
   // The base ref and head come from the PR document, which its author wrote: refuse anything

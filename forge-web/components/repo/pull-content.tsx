@@ -56,6 +56,9 @@ import {
   eventFirsts,
   reviewFirsts,
   deleteComment,
+  readConfigBundle,
+  MERGE_METHODS,
+  writeRefUpdate,
   defineLabel,
   postTargetEvent,
   readViewerPermissions,
@@ -66,10 +69,11 @@ import {
   setTargetState,
   updateComment,
   updateTarget,
+  type RepoRef,
   type VerdictInput,
 } from '@/lib/repo'
 import { checksPhrase, newestCheckRuns, readCheckRunDocs, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
-import { headSync, readBranchState } from '@/lib/repo/source-branch'
+import { headSync, readBranchState, readBranchTip } from '@/lib/repo/source-branch'
 import type { EventKind, Holdings, RefState } from '@/lib/rules'
 import { linkedIssues, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview as Cost } from '@/lib/sdk'
@@ -241,6 +245,21 @@ function PullPage({
   const open = pull.state.open
   const merged = pull.state.merged
   const target = { id: pull.id, number: pull.number }
+  /**
+   * Delete the PR's source branch in its repo (M7): a ref update to the null oid from its tip.
+   * Refused, as `dg pr merge --delete-branch` refuses, for the base branch itself and for the
+   * source repo's default branch.
+   */
+  const deleteSourceBranch = async (src: RepoRef, refName: string): Promise<void> => {
+    if (!sdk || !signer) throw new Error('sign in to continue')
+    if (src.repoId === repo.repoId && refName === pull.baseRefName) throw new Error("the PR's source branch is its base branch; not deleted")
+    const bundle = await readConfigBundle(sdk, src)
+    const dflt = bundle.config?.defaultBranch
+    if (dflt !== undefined && dflt !== '' && (refName === dflt || refName === `refs/heads/${dflt}`)) throw new Error(`${refName.replace(/^refs\/heads\//, '')} is the default branch of ${src.name}; not deleted`)
+    const tip = await readBranchTip(sdk, src, refName)
+    if (tip === null) return
+    await writeRefUpdate(sdk, signer, src, { refName, newOid: '0'.repeat(tip.length), prevOid: tip }, { intent: `delete-branch:${src.repoId}:${refName}:${tip}` })
+  }
 
   // ---- the comparison (Files changed, the tab counts, the commit list) -----------------------
   const spec = pullSpec(pull, home)
@@ -294,12 +313,16 @@ function PullPage({
 
   // ---- controls ---------------------------------------------------------------------------------
   const rules = policyOf(thread.approvals)
+  const policyNow = rules.policy === 'unknown' ? null : rules.policy
+  // `requireChecks`: every trusted run on the head passed, and at least one reported.
+  const checksBlocking = policyNow?.requireChecks === true && (checkSummary === null || checkSummary.total === 0 || checkSummary.passed < checkSummary.total)
   const actions = pullActions({
     pull,
     viewer: identity,
     holdings: identity !== null && !holdings.settled ? 'loading' : holdings.data,
     protectedPatterns: home.config?.protectedPatterns ?? [],
     policy: rules.status,
+    checksBlocking,
   })
   const base = pull.baseRefName || 'the base branch'
   const canAuthorOrMember = identity !== null && (isAuthor || isMember) && !archived
@@ -356,7 +379,7 @@ function PullPage({
   // Stable across renders (the diff's lines re-render only when these change): the handlers
   // read the latest cost and guard through a ref.
   const resolveCheck = useRef<() => boolean>(() => true)
-  resolveCheck.current = () => guard.check(eventCost.credits, 'collab')
+  resolveCheck.current = () => guard.check(eventCost, 'collab')
   const resolvedKey = review.resolvedThreads.join(',')
   const threadActions = useMemo<ThreadActions>(
     () => ({
@@ -811,9 +834,20 @@ function PullPage({
                       // browse context are out of date too (L-09).
                       reloadHome?.()
                     }}
+                    extras={{
+                      allowedMethods: policyNow?.mergeMethods ?? 0,
+                      squashAuthors: commits.data === null ? null : commitAuthors(commits.data.commits),
+                      deleteBranch: (() => {
+                        const src = sourceRef ?? (crossRepo ? null : repo)
+                        if (!suggest.write.can || pull.sourceRefName === null || src === null || src.visibility !== 'public') return null
+                        if (src.repoId === repo.repoId && pull.sourceRefName === pull.baseRefName) return null
+                        const name = pull.sourceRefName
+                        return { label: `${crossRepo ? `${src.name}:` : ''}${name.replace(/^refs\/heads\//, '')}`, run: () => deleteSourceBranch(src, name) }
+                      })(),
+                    }}
                   />
                   {open && (actions.baseProtected || rules.status !== null) ? (
-                    <BranchRules base={pull.baseRefName} baseProtected={actions.baseProtected} policy={rules.policy} status={rules.status} />
+                    <BranchRules base={pull.baseRefName} baseProtected={actions.baseProtected} policy={rules.policy} status={rules.status} checksBlocking={checksBlocking} />
                   ) : null}
                 </>
               )}
@@ -1311,11 +1345,13 @@ function BranchRules({
   baseProtected,
   policy,
   status,
+  checksBlocking,
 }: {
   base: string
   baseProtected: boolean
   policy: Policy | null | 'unknown'
   status: PolicyStatus | null | 'unknown'
+  checksBlocking: boolean
 }): JSX.Element {
   const short = base.startsWith('refs/heads/') ? base.slice('refs/heads/'.length) : base
   return (
@@ -1343,7 +1379,32 @@ function BranchRules({
           </span>
         </p>
       ) : null}
+      {policy !== null && policy !== 'unknown' && policy.requireChecks ? (
+        <p className="mt-1 flex items-center gap-2" data-testid="policy-checks">
+          {checksBlocking ? <X className="h-4 w-4 text-danger" aria-hidden /> : <Check className="h-4 w-4 text-verify" aria-hidden />}
+          <span>{checksBlocking ? 'Required checks are not all passing on the head' : 'Required checks pass'}</span>
+        </p>
+      ) : null}
+      {policy !== null && policy !== 'unknown' && (policy.mergeMethods ?? 0) !== 0 ? (
+        <p className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="policy-methods">
+          Allowed merge methods: {MERGE_METHODS.filter((m) => ((policy.mergeMethods ?? 0) & m.bit) !== 0).map((m) => m.label).join(', ')}
+        </p>
+      ) : null}
       {policy !== null ? <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-400">Policy is a client rule; a maintainer can override it. Nothing at consensus requires approvals.</p> : null}
     </section>
   )
+}
+
+/** `Name <email>` of each commit's author, oldest first, each once (the squash's Co-authored-by, as `dg`'s `git::authors`). */
+function commitAuthors(commits: readonly { readonly commit: { readonly author: { readonly name: string; readonly email: string } } }[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const c of [...commits].reverse()) {
+    const a = `${c.commit.author.name} <${c.commit.author.email}>`
+    if (!seen.has(a)) {
+      seen.add(a)
+      out.push(a)
+    }
+  }
+  return out
 }

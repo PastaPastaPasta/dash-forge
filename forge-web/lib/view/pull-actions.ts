@@ -68,6 +68,12 @@ export interface PullActionInputs {
    * `'unknown'`: it could not be read, so a writer's merge is withheld (fail closed).
    */
   readonly policy?: PolicyStatus | null | 'unknown'
+  /**
+   * The branch policy requires passing checks (`requireChecks`) and the head's trusted check runs
+   * are not all passing (none, pending or failing). A client rule like the approvals: a writer's
+   * merge is withheld, a maintainer may override.
+   */
+  readonly checksBlocking?: boolean
 }
 
 /** What a repo's ACL is read from, for "couldn't read …" messages. */
@@ -157,7 +163,7 @@ export function policyOf(
 }
 
 /** Decide the PR controls for a viewer. Pure — the unit-tested core of the PR page gate. */
-export function pullActions({ pull, viewer, holdings, protectedPatterns = [], policy = null }: PullActionInputs): PullActions {
+export function pullActions({ pull, viewer, holdings, protectedPatterns = [], policy = null, checksBlocking = false }: PullActionInputs): PullActions {
   const known = holdings !== null && holdings !== 'loading'
   const maintainer = known && holdings.maintain
   const holder = known && (holdings.write || holdings.maintain)
@@ -168,7 +174,7 @@ export function pullActions({ pull, viewer, holdings, protectedPatterns = [], po
   const base = pull.baseRefName ?? ''
   const baseProtected = base !== '' && matchesProtected(base, protectedPatterns)
   const policyUnknown = policy === 'unknown'
-  const policyUnmet = policyUnknown || (policy !== null && !policy.met)
+  const policyUnmet = policyUnknown || (policy !== null && !policy.met) || checksBlocking
 
   const eligible = actionable && open && viewer !== null && holder && pull.headOid !== ''
   // A writer can neither move a protected base nor override the policy.
@@ -190,6 +196,8 @@ export function pullActions({ pull, viewer, holdings, protectedPatterns = [], po
       mergeHint = "Couldn't read the branch policy, so only a maintainer can merge for now."
     } else if (policy !== null && typeof policy === 'object' && !policy.met) {
       mergeHint = `The branch policy needs ${policy.need} approval${policy.need === 1 ? '' : 's'} (${policy.have} so far). Only a maintainer can merge before then.`
+    } else if (checksBlocking) {
+      mergeHint = 'The branch policy requires passing checks on the head. Only a maintainer can merge before then.'
     }
   }
 

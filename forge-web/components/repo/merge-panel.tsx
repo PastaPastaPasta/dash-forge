@@ -12,6 +12,11 @@
  * desktop browser for this step". The click runs the step list (fetch → merge → build and
  * verify the pack → upload → packManifest → browse index → ref update → merge event), and a
  * failure names what already exists and offers to resume.
+ *
+ * Review parity (M1, M2, M3, M7, F7): a method choice (the plan's merge, or Squash and merge with
+ * an editable message, as `dg pr merge --squash` writes it), limited to what the branch policy's
+ * `mergeMethods` allows; the conflicting paths when the check finds overlaps; and "Delete the
+ * branch after merging" when the merger can write to the PR's source repo.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -22,7 +27,7 @@ import { readConfigHistory, refNameHash, resolveRefByHash, type PullView, type R
 import { isLegalRefName, matchesProtected } from '@/lib/rules'
 import { bytesToBase64, previewCreate, sumPreviews } from '@/lib/sdk'
 import { mergeReaders, missingFromClosure } from '@/lib/merge/verify'
-import type { MergeCheck, MergeInput } from '@/lib/merge/engine'
+import { squashMessage, type MergeCheck, type MergeInput } from '@/lib/merge/engine'
 import { checkMergeInWorker, runMergeInWorker } from '@/lib/merge/client'
 import { MERGE_STEPS, MergeStepError, retryLabel, runFor, runMergeSteps, type MergeRun, type MergeStepId } from '@/lib/merge/runner'
 import { mergeButton, mergeRefProblem } from '@/lib/view/pull-actions'
@@ -39,7 +44,10 @@ import { Button } from '@/components/ui/button'
 import { CopyRow } from '@/components/ui/copy-row'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { Oid } from '@/components/ui/oid'
+import { Textarea } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex } from '@noble/hashes/utils.js'
 
 type StepState = 'todo' | 'running' | 'done' | 'skipped' | 'failed'
 
@@ -55,6 +63,9 @@ export function MergePanel({
   isMaintainer,
   checkout,
   onMerged,
+  allowedMethods = 0,
+  squashAuthors = null,
+  deleteBranch = null,
 }: {
   repo: RepoRef
   pull: PullView
@@ -68,6 +79,12 @@ export function MergePanel({
   isMaintainer: boolean
   checkout: string
   onMerged: () => void
+  /** The policy's `mergeMethods` bitmask (1 ff, 2 merge commit, 4 squash; 0 any). */
+  allowedMethods?: number
+  /** `Name <email>` of the PR's commit authors, oldest first (the squash's Co-authored-by), or null while unknown. */
+  squashAuthors?: readonly string[] | null
+  /** Delete the PR's source branch after merging (the merger can write there), or null. */
+  deleteBranch?: { readonly label: string; readonly run: () => Promise<void> } | null
 }): JSX.Element | null {
   const { sdk } = useSdk()
   const { signer } = useAuth()
@@ -84,6 +101,13 @@ export function MergePanel({
   const reader = readers?.merge ?? null
   const sameRepo = pull.sourceId === '' || pull.sourceId === repo.repoId
 
+  const policyAllows = (bit: number): boolean => allowedMethods === 0 || (allowedMethods & bit) !== 0
+  const [method, setMethod] = useState<'merge' | 'squash'>(() => (policyAllows(1) || policyAllows(2) ? 'merge' : 'squash'))
+  const committer = `${prefs.mergeName.trim()} <${prefs.mergeEmail.trim()}>`
+  const defaultSquash = squashMessage(pull.title, pull.body, pull.number, squashAuthors ?? [], committer)
+  const [squashText, setSquashText] = useState<string | null>(null)
+  const squashMsg = squashText ?? defaultSquash
+  const [alsoDelete, setAlsoDelete] = useState(true)
   const input = useMemo<MergeInput>(
     () => ({
       baseTip: baseTipOid,
@@ -94,13 +118,15 @@ export function MergePanel({
       title: pull.title,
       author: { name: prefs.mergeName.trim(), email: prefs.mergeEmail.trim() },
       headInBase: sameRepo,
+      ...(method === 'squash' ? { squash: { message: squashMsg } } : {}),
     }),
-    [baseTipOid, pull.headOid, pull.number, pull.sourceRefName, pull.title, prefs.mergeName, prefs.mergeEmail, sameRepo],
+    [baseTipOid, pull.headOid, pull.number, pull.sourceRefName, pull.title, prefs.mergeName, prefs.mergeEmail, sameRepo, method, squashMsg],
   )
 
   // The worker's verdict. Each check owns its worker and aborts it when superseded or
   // unmounted, so a stale check never keeps reading objects.
   const [check, setCheck] = useState<MergeCheck | { error: string } | null>(null)
+  const [conflictPaths, setConflictPaths] = useState<readonly string[]>([])
   const checkable = canMerge && repo.visibility === 'public' && refProblem === null && reader !== null && wide
   // The check reads the latest input without re-running when only the merger's name changes.
   const inputRef = useRef(input)
@@ -112,7 +138,9 @@ export function MergePanel({
     // The check needs a name for the trial merge commit; the real one is written on click.
     checkMergeInWorker(reader, { ...inputRef.current, author: { name: 'check', email: 'check@forge' } }, abort.signal).then(
       (c) => {
-        if (!abort.signal.aborted) setCheck(c)
+        if (abort.signal.aborted) return
+        setCheck(c.check)
+        setConflictPaths(c.conflictPaths)
       },
       (e: unknown) => {
         if (!abort.signal.aborted) setCheck({ error: e instanceof Error ? e.message : String(e) })
@@ -141,11 +169,16 @@ export function MergePanel({
   const [stopped, setStopped] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [newTip, setNewTip] = useState<string | null>(null)
+  const [deleted, setDeleted] = useState<string | null>(null)
 
   // Upload estimate unknown until the pack exists; the documents are known.
   const cost = sumPreviews([previewCreate('packManifest'), previewCreate(baseProtected ? 'protectedRefUpdate' : 'refUpdate'), previewCreate('event')])
   // Only a merge commit is authored; a fast-forward writes no commit.
-  const identityOk = button.kind !== 'merge-commit' || mergeIdentityValid(prefs)
+  const identityOk = (button.kind !== 'merge-commit' && method !== 'squash') || mergeIdentityValid(prefs)
+  // The plan's own method bit (ff 1, merge commit 2), or squash (4): what the policy is checked against.
+  const planBit = button.kind === 'fast-forward' ? 1 : button.kind === 'merge-commit' ? 2 : 0
+  const methodAllowed = method === 'squash' ? policyAllows(4) : planBit === 0 || policyAllows(planBit)
+  const mergeable = button.kind === 'fast-forward' || button.kind === 'merge-commit'
 
   const start = useCallback(async () => {
     if (!sdk || !signer || reader === null || baseOnly === null || busy || refProblem !== null) return
@@ -156,7 +189,7 @@ export function MergePanel({
     setFailure(null)
     setStopped(null)
     begin()
-    const intent = `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}`
+    const intent = `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}${input.squash ? `:squash:${bytesToHex(sha256(new TextEncoder().encode(input.squash.message))).slice(0, 16)}` : ''}`
     try {
       const done = await runMergeSteps(
         {
@@ -188,6 +221,14 @@ export function MergePanel({
       setRun(done)
       setNewTip(done.result?.newTip ?? null)
       onMerged()
+      if (deleteBranch !== null && alsoDelete) {
+        try {
+          await deleteBranch.run()
+          setDeleted('done')
+        } catch (e) {
+          setDeleted(e instanceof Error ? e.message : String(e))
+        }
+      }
     } catch (e) {
       if (e instanceof MergeStepError) {
         setRun(e.run)
@@ -199,7 +240,7 @@ export function MergePanel({
     } finally {
       setBusy(false)
     }
-  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock])
+  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, deleteBranch, alsoDelete])
 
   if (button.kind === 'hidden') return null
   const started = Object.keys(steps).length > 0
@@ -222,10 +263,29 @@ export function MergePanel({
             <Button disabled>
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> Checking the merge…
             </Button>
-          ) : button.kind === 'fast-forward' || button.kind === 'merge-commit' ? (
-            <Button variant="primary" onClick={start} loading={busy} disabled={!identityOk || busy || newTip !== null || guard.disabledReason !== null}>
-              {failure ? retryLabel(failure.step) : button.label}
-            </Button>
+          ) : mergeable ? (
+            <>
+              <label className="sr-only" htmlFor="merge-method">
+                Merge method
+              </label>
+              <select
+                id="merge-method"
+                value={method}
+                onChange={(e) => setMethod(e.target.value as 'merge' | 'squash')}
+                disabled={busy || newTip !== null}
+                className="h-9 rounded-md border border-anvil-300 bg-white px-2 text-dense text-anvil-900 coarse:h-11 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100"
+              >
+                <option value="merge" disabled={!policyAllows(planBit)}>
+                  {button.label}
+                </option>
+                <option value="squash" disabled={!policyAllows(4)}>
+                  Squash and merge
+                </option>
+              </select>
+              <Button variant="primary" onClick={start} loading={busy} disabled={!identityOk || !methodAllowed || busy || newTip !== null || guard.disabledReason !== null}>
+                {failure ? retryLabel(failure.step) : method === 'squash' ? 'Squash and merge' : button.label}
+              </Button>
+            </>
           ) : button.kind === 'unavailable' ? (
             <span className="text-dense text-anvil-600 dark:text-anvil-400">{button.reason}</span>
           ) : (
@@ -237,10 +297,35 @@ export function MergePanel({
       {button.kind === 'conflicts' ? (
         <div className="mt-3">
           <p className="mb-1.5 text-[12px] text-anvil-600 dark:text-anvil-400">Both sides changed the same files or folders. Check the PR out, merge it with the CLI, and push:</p>
+          {conflictPaths.length > 0 ? (
+            <ul className="mb-2 list-disc pl-5 font-mono text-[12px] text-anvil-700 dark:text-anvil-200" aria-label="Conflicting paths" data-testid="conflict-paths">
+              {conflictPaths.slice(0, 20).map((p) => (
+                <li key={p}>{p}</li>
+              ))}
+              {conflictPaths.length > 20 ? <li>… and {conflictPaths.length - 20} more</li> : null}
+            </ul>
+          ) : null}
           <CopyRow text={button.checkout} />
         </div>
       ) : null}
-      {(button.kind === 'fast-forward' || button.kind === 'merge-commit') && !identityOk ? (
+      {mergeable && !methodAllowed ? (
+        <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400">The branch policy does not allow this merge method; pick another.</p>
+      ) : null}
+      {mergeable && method === 'squash' && newTip === null ? (
+        <div className="mt-3">
+          <label htmlFor="squash-message" className="mb-1 block text-[12px] font-medium text-anvil-700 dark:text-anvil-200">
+            Commit message
+          </label>
+          <Textarea id="squash-message" value={squashMsg} onChange={(e) => setSquashText(e.target.value)} className="min-h-[96px] font-mono text-[12px]" />
+        </div>
+      ) : null}
+      {mergeable && deleteBranch !== null && newTip === null ? (
+        <label className="mt-2 flex items-center gap-2 text-dense">
+          <input type="checkbox" className="h-4 w-4 accent-forge-700" checked={alsoDelete} onChange={(e) => setAlsoDelete(e.target.checked)} />
+          Delete {deleteBranch.label} after merging
+        </label>
+      ) : null}
+      {mergeable && !identityOk ? (
         <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400">
           A browser merge commit is authored with your name and email. Set them in{' '}
           <Link href="/settings/" className="underline">
@@ -249,12 +334,12 @@ export function MergePanel({
           first.
         </p>
       ) : null}
-      {(button.kind === 'fast-forward' || button.kind === 'merge-commit') && storageNeedsUnlock ? (
+      {mergeable && storageNeedsUnlock ? (
         <div className="mt-3">
           <UnlockMore title="Unlock to merge with your storage settings" testId="merge-storage-unlock" />
         </div>
       ) : null}
-      {button.kind === 'fast-forward' || button.kind === 'merge-commit' ? (
+      {mergeable ? (
         <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
           <CostPreview cost={cost} />
           <span>
@@ -290,6 +375,15 @@ export function MergePanel({
       {newTip ? (
         <p className="mt-2 text-dense text-anvil-700 dark:text-anvil-200">
           Base branch moved to <Oid value={newTip} chars={9} />. The PR shows as merged once the fold sees the merge event.
+        </p>
+      ) : null}
+      {deleted === 'done' && deleteBranch !== null ? (
+        <p className="mt-1 text-dense text-anvil-700 dark:text-anvil-200" data-testid="branch-deleted">
+          Deleted {deleteBranch.label}.
+        </p>
+      ) : deleted !== null ? (
+        <p role="alert" className="mt-1 text-dense text-caution-700 dark:text-caution-400">
+          The merge stands; deleting the branch failed: {deleted}
         </p>
       ) : null}
       {uploadDialog}
