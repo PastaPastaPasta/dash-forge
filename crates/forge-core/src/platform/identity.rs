@@ -626,10 +626,34 @@ impl PlatformClient {
         Ok(metadata.core_chain_locked_height)
     }
 
-    /// Everything contract group `group` holds, proof-verified: whole contracts (base58), and
-    /// how many document-type and token members it has. A limited key bound to the group can
-    /// sign for exactly these, so `dg auth` refuses a group holding anything beyond the forge
-    /// contracts.
+    /// Contract group `group`'s owner and admins, proof-verified (`getContractGroupInfo`), or
+    /// `None` when no group has the id. Only they can add members, so they are the trust root
+    /// of every key bound to the group.
+    pub async fn contract_group_info(&self, group: &str) -> Result<Option<GroupOwnership>> {
+        use dash_sdk::platform::contract_groups::ContractGroupInfo;
+        let id = parse_id(group, "contract group id")?;
+        let info = retry_transient_read("fetch contract group info", || {
+            ContractGroupInfo::fetch(self.sdk(), id)
+        })
+        .await
+        .map_err(|e| sdk_err(&format!("reading contract group {group}"), e))?;
+        Ok(info.map(|info| {
+            let owner = info.owner();
+            GroupOwnership {
+                owner: owner.owner_id().to_string(Encoding::Base58),
+                admins: owner
+                    .admin_ids()
+                    .into_iter()
+                    .flatten()
+                    .map(|a| a.to_string(Encoding::Base58))
+                    .collect(),
+            }
+        }))
+    }
+
+    /// Everything contract group `group` holds, proof-verified: whole contracts, and the
+    /// document-type and token members with the contract each belongs to (base58). A limited
+    /// key bound to the group can sign for exactly these, so `dg auth` checks each one.
     pub async fn contract_group_members(&self, group: &str) -> Result<GroupMembers> {
         use dash_sdk::platform::contract_groups::{
             ContractGroupMembersPage, ContractGroupMembersPageQuery,
@@ -663,11 +687,17 @@ impl PlatformClient {
                         v.len()
                     }
                     ContractGroupMembersPage::DocumentTypes(v) => {
-                        out.document_types += v.len();
+                        out.document_types.extend(
+                            v.iter()
+                                .map(|(c, name)| (c.to_string(Encoding::Base58), name.clone())),
+                        );
                         v.len()
                     }
                     ContractGroupMembersPage::Tokens(v) => {
-                        out.tokens += v.len();
+                        out.tokens.extend(
+                            v.iter()
+                                .map(|(c, position)| (c.to_string(Encoding::Base58), *position)),
+                        );
                         v.len()
                     }
                 };
@@ -1018,10 +1048,19 @@ impl LoadedIdentity {
 pub struct GroupMembers {
     /// Whole contracts, base58.
     pub contracts: Vec<String>,
-    /// Number of individual document-type members.
-    pub document_types: usize,
-    /// Number of token members.
-    pub tokens: usize,
+    /// Individual document-type members: (contract, document type name).
+    pub document_types: Vec<(String, String)>,
+    /// Token members: (contract, token position).
+    pub tokens: Vec<(String, u16)>,
+}
+
+/// Who may add members to a contract group ([`PlatformClient::contract_group_info`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupOwnership {
+    /// The identity that registered the group and owns it (base58).
+    pub owner: String,
+    /// Identities that may add members besides the owner (base58); empty for a single owner.
+    pub admins: Vec<String>,
 }
 
 /// What a key added by [`PlatformClient::update_identity_keys`] is.

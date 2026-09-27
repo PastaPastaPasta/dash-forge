@@ -199,6 +199,8 @@ struct DeploymentFile {
 struct ContractRecord {
     #[serde(default)]
     contract_id: Option<String>,
+    #[serde(default)]
+    owner_id: Option<String>,
     /// `registered` once confirmed; `broadcasting` while a deploy is in flight.
     #[serde(default)]
     status: Option<String>,
@@ -217,6 +219,9 @@ struct V2Record {
     forge_core_superseded: Vec<SupersededRecord>,
     #[serde(default)]
     forge_collab_superseded: Vec<SupersededRecord>,
+    /// The group `deploy-v2.mjs` verified on chain: its id and owner (the deployer).
+    #[serde(default)]
+    contract_group: Option<GroupRecord>,
     /// The devnet `deploy-v2.mjs` registered on, with the DAPI addresses it used.
     #[serde(default)]
     devnet: Option<V2Devnet>,
@@ -229,6 +234,15 @@ struct SupersededRecord {
     contract_id: Option<String>,
     #[serde(default)]
     contract_group_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GroupRecord {
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    owner: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -275,11 +289,22 @@ impl V2Record {
             .filter(|r| r.contract_group_id.as_deref() == Some(group.as_str()))
             .filter_map(|r| r.contract_id.clone())
             .collect();
+        // The group's owner: the verified `contractGroup` record for this group, else the
+        // owner of forge-core, whose create transition registered the group.
+        let recorded = self
+            .contract_group
+            .as_ref()
+            .filter(|g| g.id.as_deref() == Some(group.as_str()));
+        let group_owner = recorded
+            .and_then(|g| g.owner.clone())
+            .or_else(|| self.forge_core.as_ref().and_then(|c| c.owner_id.clone()))
+            .filter(|s| !s.is_empty());
         Some(ForgeIds {
             core: self.forge_core.as_ref()?.registered_id()?,
             collab: self.forge_collab.as_ref()?.registered_id()?,
             group,
             superseded_in_group,
+            group_owner,
         })
     }
 }
@@ -298,6 +323,11 @@ pub struct ForgeIds {
     /// same group (a group cannot drop a member). A group-bound key can sign for them too;
     /// they are Forge's own, so the group check accepts them.
     pub superseded_in_group: Vec<String>,
+    /// The identity that owns the group: the Forge deployer. The trust root a group-bound key
+    /// depends on (`docs/contracts/forge-v2.md` §group trust). `None` when the file records
+    /// neither the group's owner nor forge-core's.
+    /// The group must also have no admins (`deploy-v2.mjs` registers none).
+    pub group_owner: Option<String>,
 }
 
 /// What an embedded deployment file records for one network.
@@ -571,6 +601,7 @@ mod tests {
                 .filter(|r| r["contractGroupId"] == v["v2"]["contractGroupId"])
                 .filter_map(|r| r["contractId"].as_str().map(str::to_string))
                 .collect(),
+            group_owner: Some(on_disk("/v2/contractGroup/owner")),
         }
     }
 
@@ -668,7 +699,8 @@ mod tests {
                 core: "C".into(),
                 collab: "L".into(),
                 group: "G".into(),
-                superseded_in_group: vec![]
+                superseded_in_group: vec![],
+                group_owner: None,
             })
         );
         // In flight, missing a contract, or missing the group: no ids.
@@ -681,6 +713,40 @@ mod tests {
         );
         assert_eq!(parse(&full.replace(r#","contractGroupId":"G""#, "")), None);
         assert_eq!(parse("{}"), None);
+    }
+
+    #[test]
+    fn the_group_owner_is_the_verified_record_for_this_group_else_forge_cores_owner() {
+        let owner = |json: &str| {
+            serde_json::from_str::<DeploymentFile>(json)
+                .unwrap()
+                .v2
+                .and_then(|r| r.ids())
+                .unwrap()
+                .group_owner
+        };
+        let base = r#"{"v2":{"forgeCore":{"contractId":"C","ownerId":"CORE_OWNER","status":"registered"},
+            "forgeCollab":{"contractId":"L","status":"registered"},"contractGroupId":"G"GROUP}}"#;
+        // The verified record for this group wins.
+        assert_eq!(
+            owner(&base.replace("GROUP", r#","contractGroup":{"id":"G","owner":"REC"}"#)),
+            Some("REC".into())
+        );
+        // A record for another (superseded) group is ignored: forge-core's owner registered G.
+        assert_eq!(
+            owner(&base.replace("GROUP", r#","contractGroup":{"id":"OLD","owner":"REC"}"#)),
+            Some("CORE_OWNER".into())
+        );
+        // No record: forge-core's owner. Neither: none, and the group check refuses.
+        assert_eq!(owner(&base.replace("GROUP", "")), Some("CORE_OWNER".into()));
+        assert_eq!(
+            owner(
+                &base
+                    .replace("GROUP", "")
+                    .replace(r#""ownerId":"CORE_OWNER","#, "")
+            ),
+            None
+        );
     }
 
     #[test]
