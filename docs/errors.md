@@ -91,6 +91,8 @@ Fix: use the owner's identity id, e.g. `dg repo view 8hJmcHWTsdvkHyCrk4UgjbyugDA
 
 Fix: correct the value (`git config --show-origin --get-regexp '^dash\.'` shows where each git setting comes from). `dg doctor` checks the rest.
 
+`refusing to bind a key to the forge contract group` is also E204: the contract group on chain failed the trust check made before a limited key is bound to it ([forge-v2 § Contract group trust](contracts/forge-v2.md#contract-group-trust)). Its owner differs from the one `dg` pins, or it has admins. Or a member contract has another owner (proof-verified), or the group lacks forge-core and forge-collab. Do not bind a key to it. With `--strict-group` (or `DASH_FORGE_STRICT_GROUP=1`), any member `dg` does not know causes it too: update `dg`, or drop strict mode to accept members the Forge deployer owns.
+
 ## E205
 
 **Unsupported git operation.** `dash://` cannot serve shallow clones (`--depth`, `--shallow-since`, `--shallow-exclude`). It fails instead of quietly making a full clone.

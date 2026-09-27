@@ -161,7 +161,7 @@ dg auth keys add --encryption
 A limited key is an identity key with four restrictions:
 
 - AUTHENTICATION purpose, HIGH security level;
-- bound to the `dash-forge` **contract group**: it can sign batches on forge-core and forge-collab only. Identity updates, credit transfers and writes to any other contract are refused at consensus;
+- bound to the `dash-forge` **contract group**: it can sign batches on the group's members only. These are forge-core, forge-collab, and any later Forge contract the Forge deployer adds to the group. Identity updates, credit transfers and writes to any other contract are refused at consensus;
 - a **budget**: the most its transitions can ever take from your identity;
 - an **expiry**.
 
@@ -171,7 +171,15 @@ A limited key is an identity key with four restrictions:
 | CLI (`dg auth new` / `login` / `keys add`) | 0.25 DASH | 180 days |
 | CI runner (`dg auth export --new-key`, Mirror Action) | 0.5 DASH | 365 days |
 
-All are editable at creation (`--budget`, `--expires`). Before binding a key, `dg` checks on chain that the contract group holds forge-core and forge-collab and nothing but Forge's own contracts ([trust roots](#trust-roots)).
+All are editable at creation (`--budget`, `--expires`).
+
+**What else the key can sign for.** Only the group's owner can add members to the group. That owner is the Forge deployer, and nobody else can take the role: the owner and admins are fixed when the group is created. Before binding a key, `dg` and the web app check on chain, with proofs, that:
+
+- the group's owner is the deployer recorded in the app, and the group has no admins;
+- the group holds forge-core and forge-collab;
+- every other member belongs to a contract the deployer owns.
+
+If any check fails, they refuse. A member the app does not know yet, such as a newer Forge contract revision, is accepted and listed before you confirm the key: `dg` adds a `note:` line to its explanation, and the web app shows it on the key-creation screen. A member contract the app cannot read is accepted too, because only the pinned owner could have added it, and the note says so. With `dg` only, pass `--strict-group` (or set `DASH_FORGE_STRICT_GROUP=1`, for CI) to refuse anything beyond the contracts your `dg` knows. See [trust roots](#trust-roots) and [forge-v2 § Contract group trust](../contracts/forge-v2.md#contract-group-trust).
 
 From the terminal:
 
@@ -246,7 +254,7 @@ What the vault does **not** protect against:
 
 ## Trust roots
 
-- **The contract group id** comes from `forge-contracts/deployments/<network>.json`, which is built into the app and `dg`. Before binding a key to the group, the app checks on chain that the group holds forge-core and forge-collab; `dg` checks that it holds those two and nothing but Forge's own contracts (earlier versions `forge-contracts/deployments/<network>.json` lists as superseded in the same group). Both checks happen when a key is bound: **the group's owner is a trust root**. The group's owner (and any admins) can **add** contracts to it later, and every group-bound key can then sign for those contracts too. Binding a key to the group means trusting its owner. On devnet moutai that is the deployer `8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV`.
+- **The contract group id** comes from `forge-contracts/deployments/<network>.json`, which is built into the app and `dg`. So is **the group's owner**, which the same file pins. The owner (and any admins, of which Forge's group has none) is the only identity that can **add** contracts to the group. Every group-bound key can then sign for those contracts too, including keys registered earlier. Binding a key to the group therefore means trusting its owner. On devnet moutai that is the deployer `8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV`. Before binding a key, the app and `dg` check on chain, with proofs, that the group's owner is the pinned one and that it has no admins. They also cross-check that every member belongs to a contract that owner owns. Members they do not know are listed, not refused. `dg --strict-group` refuses them ([forge-v2 § Contract group trust](../contracts/forge-v2.md#contract-group-trust)). The owner cannot change, so this pin holds for the life of the group.
 - **Watching the deposit** goes through DAPI, the Dash network's own evonodes: a bloom-filtered `subscribeToTransactionsWithProofs` feed of the deposit address from the block the creation started at, `broadcastTransaction` for the asset lock and `getTransaction` for its height. The block explorer (Insight, changeable in Settings, `dg auth new --explorer <url>`) is only a fallback, asked when DAPI cannot answer or the feed is idle. Neither is trusted with amounts: each deposit output is read from a raw transaction whose txid is computed locally (an explorer's is fetched and hashed against the txid it named) before the asset lock is signed. A lying node or explorer can delay you or hide funds, but it cannot redirect or burn them. If a broadcast is dropped, the signed bytes are kept and sent again.
 - **The quorum keys** every proof is checked against come from `quorums.<network>.networks.dash.org`, as for every read. The web app compares them with a second source on each repository page ([Verify Forge](verify-forge.md#the-web-app-cross-checks-the-keys-with-a-second-source)).
 - **The code doing the checking**: the web app you loaded, or the `dg` you built. If you do not trust forge.dashhq.org, [serve the app yourself](verify-forge.md#run-your-own-copy-of-the-web-app).

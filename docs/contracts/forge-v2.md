@@ -297,6 +297,25 @@ cargo +1.98.1 run -q --locked --manifest-path tools/contract-validate/Cargo.toml
 
 What the offline validator cannot check, and registration will: that forge-core exists in state when forge-collab registers (the validator uses the in-memory contract), the deployer's identity and balance, and the contract-group state rules (the group is new; the signer owns the group a membership names).
 
+### Contract group trust
+
+A limited key is bound to the `dash-forge` contract group, and a group-bound key can sign documents for **every member** of the group, including members added after the key was registered. Binding a key therefore trusts whoever can add members. On protocol 14 that is only the group's owner or one of its admins:
+
+- A member joins in the create transition of its own contract (`contract_group_memberships`). drive-abci (`data_contract_create/state/v1`) accepts the join only when the signer is the group's owner or an admin (`ContractGroupOwner::may_add_members`). A contract cannot enrol another contract, and no other transition adds members.
+- The owner and admins are fixed when the group is registered. No transition changes them, and memberships are creation-only.
+
+So `dg` and the web app pin the **trust root**, not the member list. Before offering to bind a key to the group (before the confirmation prompt), each one checks, with every read proof-verified:
+
+1. **Owner pin.** `getContractGroupInfo` returns the owner recorded in the bundled `deployments/<network>.json` (`v2.contractGroup.owner` when its `id` is the current group, else forge-core's `ownerId`), and **no admins** (`deploy-v2.mjs` registers none). A different owner, any admin, or a missing group is refused. With this pin, consensus alone guarantees that every member was created by the Forge deployer.
+2. **The current pair.** forge-core and forge-collab are whole-contract members. This is checked before any member contract is read.
+3. **Member owners, as a cross-check.** Every other member (a whole contract, a document type or a token) should belong to a contract whose `$ownerId` is the pinned owner. The client reads each unknown member contract, up to 64 of them, and refuses on a proof-verified owner mismatch.
+4. **Unknown members are shown, not refused.** A member the client does not know passes and is listed before the key is confirmed. Examples are a newer forge-collab revision or a trending-index contract. `dg` prints a `note:` line (part of the key explanation, or right after the group check in `dg auth new`), and reports `unknownGroupMembers` in `--json` output. The web app shows the note on the key-creation screen. The note reads "newer Forge contract revision(s)", or "additional group member(s)" when a member is a document type or token of a contract the client already knows. Earlier contracts the deployment lists as superseded in the same group count as known.
+5. **Strict mode (`dg` only).** `dg auth … --strict-group`, or `DASH_FORGE_STRICT_GROUP=1` for CI, accepts only the known set: the current pair and its superseded predecessors. Anything else is refused, and no member contract is read. The web app has no strict mode.
+
+**Trade-off: a member the client cannot read is accepted.** A member contract that cannot be fetched or decoded (for example, a contract format newer than the installed binary) is accepted. The note names it ("could not read contract X; accepted because the group owner is pinned"), and `--json` lists it under `uncheckedGroupMembers`. The same applies to unknown members past the cap of 64. Rule 1 is what bounds a key: only the pinned owner can add members, and consensus enforces that, so rule 3 adds no security that rule 1 lacks. Refusing on a read failure would turn every future contract format into an outage for every installed client, which is the failure this design removes. Only a proof-verified owner that differs from the pin is refused.
+
+Registering a new Forge contract into the group (`deploy-v2.mjs --only collab --force-new`) therefore breaks no installed client. Only a change of owner or admins does, and that would need a new group, and so a new deployment file.
+
 ## 9. Rules that changed from the brief
 
 - **The author path is a lookup on a second unique index.** A permanent lookup needs a unique index that includes the writer. `issue` and `patch` therefore carry `author($ownerId, repoId, number)` next to `number(repoId, number)`, and `authorEvent` (and `event`, for the target agreement) carries `targetNumber` so the lookup key can be assembled. The id reference `targetId` is tied to it with `{"targetId": "$id"}`.
