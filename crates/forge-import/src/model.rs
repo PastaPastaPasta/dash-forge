@@ -98,6 +98,9 @@ pub struct SrcRelease {
     pub notes: String,
     /// Assets referenced by URL and sha256 (never re-uploaded).
     pub assets: Vec<ReleaseAsset>,
+    /// Assets of the source release left out: the rest do not fit the 4096 bytes a release
+    /// lists (the run warns).
+    pub dropped: usize,
 }
 
 /// Everything one run mirrors (beyond git data).
@@ -264,15 +267,33 @@ pub fn release(
     notes: Option<&str>,
     mut assets: Vec<ReleaseAsset>,
 ) -> SrcRelease {
-    while !assets.is_empty() && serde_json::to_string(&assets).map_or(0, |s| s.len()) > 4096 {
-        assets.pop();
-    }
+    // Sized as recorded: with the 64-hex hash the importer fills in for an asset the source
+    // gives none (D-517), so the list never outgrows the field once hashed.
+    let sized = assets
+        .iter()
+        .map(|a| ReleaseAsset {
+            sha256: "0".repeat(64),
+            ..a.clone()
+        })
+        .collect();
+    let fit = fit_assets(sized).len();
+    let dropped = assets.len() - fit;
+    assets.truncate(fit);
     SrcRelease {
         tag_name: tag_name.to_string(),
         name: clip(name.unwrap_or(tag_name), 120, 480),
         notes: clip(notes.unwrap_or(""), 5120, 5120),
         assets,
+        dropped,
     }
+}
+
+/// The longest prefix of `assets` whose JSON fits a release's 4096-byte `assets` field.
+pub fn fit_assets(mut assets: Vec<ReleaseAsset>) -> Vec<ReleaseAsset> {
+    while !assets.is_empty() && serde_json::to_string(&assets).map_or(0, |s| s.len()) > 4096 {
+        assets.pop();
+    }
+    assets
 }
 
 /// `YYYY-MM-DD` of unix seconds, for headers.

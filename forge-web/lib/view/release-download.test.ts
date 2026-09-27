@@ -5,7 +5,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { describe, expect, it } from 'vitest'
 
 import type { ReleaseAssetView } from '../repo'
-import { checkDownloadedFile, directDownloadUrls, downloadVerifiedAsset } from './release-download'
+import { browserReadable, checkDownloadedFile, directDownloadUrls, downloadVerifiedAsset } from './release-download'
 
 const bytes = new TextEncoder().encode('ripgrep-15.0.0-x86_64-apple-darwin.tar.gz')
 const asset: ReleaseAssetView = {
@@ -25,7 +25,33 @@ describe('release asset fallback (D-056)', () => {
 
   it('reports a CORS-blocked fetch as a download failure, not a hash mismatch', async () => {
     const blocked: typeof fetch = () => Promise.reject(new TypeError('Failed to fetch'))
-    await expect(downloadVerifiedAsset(asset, undefined, { fetch: blocked, gateways: [] })).rejects.toThrow(/could not be downloaded/)
+    await expect(downloadVerifiedAsset(asset, undefined, { fetch: blocked, gateways: ['https://gw.example'] })).rejects.toThrow(/could not be downloaded/)
+  })
+
+  // L-13: a host known to refuse cross-origin reads is never tried in the page at all; the
+  // view makes the direct download the main action instead.
+  it('does not try a host that refuses cross-origin reads', async () => {
+    const tried: string[] = []
+    const record: typeof fetch = (input) => {
+      tried.push(String(input))
+      return Promise.reject(new TypeError('Failed to fetch'))
+    }
+    await expect(downloadVerifiedAsset(asset, undefined, { fetch: record, gateways: [] })).rejects.toThrow(/no place a browser can download/)
+    expect(tried).toEqual([])
+    expect(browserReadable(asset, [])).toBe(false)
+    expect(browserReadable(asset, ['https://gw.example'])).toBe(true)
+  })
+
+  // The view's three reachable states: a page-readable copy (verified in the browser), only a
+  // no-CORS host (a direct link), or no browser-fetchable copy at all (a loopback bucket).
+  it('tells the three kinds of copy apart', () => {
+    const with_ = (uris: string[]): ReleaseAssetView => ({ ...asset, uris })
+    const loopback = with_(['http://127.0.0.1:9000/forge-byo/a.pack', 's3://forge-byo/a.pack'])
+    expect([browserReadable(loopback, []), directDownloadUrls(loopback, [])]).toEqual([false, []])
+    const gh = with_(['https://github.com/o/r/releases/download/v1/a'])
+    expect([browserReadable(gh, []), directDownloadUrls(gh, []).length]).toEqual([false, 1])
+    const own = with_(['https://pub.example/a'])
+    expect(browserReadable(own, [])).toBe(true)
   })
 
   it('checks a file downloaded by hand against the published hash and size', async () => {

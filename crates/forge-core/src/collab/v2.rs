@@ -252,7 +252,26 @@ pub struct Patch {
     pub imported: Option<Imported>,
 }
 
+/// The base a PR's merge is folded against: `baseRefName` as of the patch's `$createdAt`
+/// ([`Collab::base_ref_tips`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrBase {
+    /// The base ref (`refs/heads/main`).
+    pub ref_name: String,
+    /// When the PR was opened (ms).
+    pub opened_at: u64,
+}
+
 impl Patch {
+    /// The base this PR's merge is folded against.
+    #[must_use]
+    pub fn base(&self) -> PrBase {
+        PrBase {
+            ref_name: self.base_ref_name.clone(),
+            opened_at: self.created_at,
+        }
+    }
+
     /// This PR as an event / comment target.
     pub fn target(&self) -> Target {
         Target {
@@ -1745,11 +1764,13 @@ impl<'a> Collab<'a> {
 
     /// Every readable issue and pull request of `repo` (complete, oldest first), as flattened
     /// targets with their importer provenance: in a private repo `imported.author` / `.url`
-    /// are sealed, so this is the only way an importer finds what it already mirrored.
+    /// are sealed, so this is the only way an importer finds what it already mirrored. A pull
+    /// request also carries the base its merge is folded against (`baseRefName`, and its
+    /// `$createdAt`: see [`Self::base_ref_tips`]).
     pub async fn imported_targets(
         &self,
         repo: &RepoRef,
-    ) -> Result<Vec<(Target, Option<Imported>)>> {
+    ) -> Result<Vec<(Target, Option<Imported>, Option<PrBase>)>> {
         let collab = self.collab_contract(repo).await?;
         let mut out = Vec::new();
         for kind in [TargetKind::Issue, TargetKind::Patch] {
@@ -1766,11 +1787,12 @@ impl<'a> Collab<'a> {
             out.extend(docs.iter().map(|d| match kind {
                 TargetKind::Issue => {
                     let i = issue_from_doc(d);
-                    (i.target(), i.imported)
+                    (i.target(), i.imported, None)
                 }
                 TargetKind::Patch => {
                     let p = patch_from_doc(d);
-                    (p.target(), p.imported)
+                    let base = p.base();
+                    (p.target(), p.imported, Some(base))
                 }
             }));
         }
@@ -3409,7 +3431,121 @@ fn is_hex_color(c: &str) -> bool {
     c.len() == 7 && c.starts_with('#') && c[1..].bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Split release revisions into the newest per tag (newest first) and the rest.
+/// A tag's version: its numeric dot-separated parts from the first digit on, and the
+/// pre-release suffix after them (`v24.0.0-rc.1` → `[24, 0, 0]`, `rc.1`). `None` when the tag
+/// holds no number. Parity: forge-web `tagVersion`.
+pub fn tag_version(tag: &str) -> Option<(Vec<u64>, String)> {
+    // The version is the `digits(.digits)*` run starting at the tag's first digit (`jq-1.7.1`
+    // → `1.7.1`); whatever follows it is the pre-release suffix.
+    let start = tag.find(|c: char| c.is_ascii_digit())?;
+    let rest = &tag[start..];
+    let mut end = 0;
+    let bytes = rest.as_bytes();
+    while end < bytes.len()
+        && (bytes[end].is_ascii_digit()
+            || (bytes[end] == b'.' && bytes.get(end + 1).is_some_and(u8::is_ascii_digit)))
+    {
+        end += 1;
+    }
+    let parts = rest[..end]
+        .split('.')
+        .map(|p| p.parse::<u64>().unwrap_or(u64::MAX))
+        .collect();
+    let suffix = &rest[end..];
+    let suffix = suffix.split('+').next().unwrap_or_default();
+    let pre = suffix
+        .strip_prefix(['-', '.'])
+        .unwrap_or(suffix)
+        .to_string();
+    Some((parts, pre))
+}
+
+/// Whether `tag` names a pre-release (`-rc.1`, `-beta`, …).
+pub fn is_prerelease(tag: &str) -> bool {
+    tag_version(tag).is_some_and(|(_, pre)| !pre.is_empty())
+}
+
+/// The releases' order (L-14): tags with a version, highest first (a release above its
+/// pre-releases); then the rest, newest first. A mirror writes a repo's whole release history
+/// in one run, so `$createdAt` says when a release was mirrored, not published. Parity:
+/// forge-web `releaseOrder`.
+pub fn release_order(a: &Release, b: &Release) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let newest = || newest_first(a, b);
+    match (tag_version(&a.tag_name), tag_version(&b.tag_name)) {
+        (Some((pa, ra)), Some((pb, rb))) => {
+            let len = pa.len().max(pb.len());
+            let at = |p: &[u64], i: usize| p.get(i).copied().unwrap_or(0);
+            (0..len)
+                .map(|i| at(&pb, i).cmp(&at(&pa, i)))
+                .find(|o| o.is_ne())
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| match (ra.is_empty(), rb.is_empty()) {
+                    (true, true) => Ordering::Equal,
+                    (true, false) => Ordering::Less,
+                    (false, true) => Ordering::Greater,
+                    (false, false) => natural(&rb, &ra),
+                })
+                .then_with(newest)
+        }
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => newest(),
+    }
+}
+
+/// One run of a pre-release suffix: a number, or lower-cased text (separators dropped).
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Run {
+    /// Digits, compared as a number; a number sorts before text (`1` < `beta`).
+    Num(u64),
+    /// Letters and anything else but `.`/`-`/`_`, compared lower-cased (`RC` = `rc`).
+    Text(String),
+}
+
+/// `a` vs `b` by their runs ([`Run`]), so `rc.10` > `rc.9`, `rc.1` = `rc1`, `RC1` = `rc1`.
+/// Parity: forge-web `naturalRuns`.
+fn natural(a: &str, b: &str) -> std::cmp::Ordering {
+    let runs = |s: &str| {
+        let mut out = Vec::new();
+        let mut rest = s;
+        while let Some(c) = rest.chars().next() {
+            let digit = c.is_ascii_digit();
+            let n = rest
+                .find(|x: char| x.is_ascii_digit() != digit || matches!(x, '.' | '-' | '_'))
+                .unwrap_or(rest.len());
+            if n == 0 {
+                rest = &rest[c.len_utf8()..]; // a separator
+                continue;
+            }
+            out.push(if digit {
+                Run::Num(rest[..n].parse().unwrap_or(u64::MAX))
+            } else {
+                Run::Text(rest[..n].to_lowercase())
+            });
+            rest = &rest[n..];
+        }
+        out
+    };
+    runs(a).cmp(&runs(b))
+}
+
+/// The repo's latest release, as GitHub picks it: the first in [`release_order`] that is
+/// neither a pre-release nor yanked (else the first not yanked).
+pub fn latest_release(current: &[Release]) -> Option<&Release> {
+    current
+        .iter()
+        .find(|r| !r.yanked && !is_prerelease(&r.tag_name))
+        .or_else(|| current.iter().find(|r| !r.yanked))
+}
+
+/// `a` vs `b`, newest revision first (`$createdAt`, then `$id`).
+fn newest_first(a: &Release, b: &Release) -> std::cmp::Ordering {
+    (b.created_at, &b.document_id).cmp(&(a.created_at, &a.document_id))
+}
+
+/// Split release revisions into the newest per tag (in [`release_order`]) and the rest
+/// (newest first).
 fn newest_per_tag(all: Vec<Release>) -> (Vec<Release>, Vec<Release>) {
     let mut by_tag: BTreeMap<String, Vec<Release>> = BTreeMap::new();
     for r in all {
@@ -3418,12 +3554,13 @@ fn newest_per_tag(all: Vec<Release>) -> (Vec<Release>, Vec<Release>) {
     let mut current = Vec::new();
     let mut previous = Vec::new();
     for (_, mut revs) in by_tag {
-        revs.sort_by(|a, b| (b.created_at, &b.document_id).cmp(&(a.created_at, &a.document_id)));
+        revs.sort_by(newest_first);
         let mut it = revs.into_iter();
         current.extend(it.next());
         previous.extend(it);
     }
-    current.sort_by(|a, b| (b.created_at, &b.document_id).cmp(&(a.created_at, &a.document_id)));
+    current.sort_by(release_order);
+    previous.sort_by(newest_first);
     (current, previous)
 }
 
@@ -4037,10 +4174,91 @@ mod tests {
             cur.iter()
                 .map(|r| r.document_id.as_str())
                 .collect::<Vec<_>>(),
-            ["b", "c"]
+            ["c", "b"],
+            "v2 before v1, by version"
         );
         assert_eq!(prev.len(), 1);
         assert_eq!(prev[0].document_id, "a");
+    }
+
+    /// L-14: the rail's "Latest release" was the OLDEST (an import writes newest-first, so
+    /// the oldest release had the newest `$createdAt`). Version order, and the latest is the
+    /// highest non-prerelease, as on GitHub.
+    #[test]
+    fn releases_are_ordered_by_version_and_the_latest_skips_prereleases() {
+        let rel = |tag: &str, at: u64| Release {
+            document_id: tag.into(),
+            tag_name: tag.into(),
+            name: String::new(),
+            notes: String::new(),
+            yanked: false,
+            assets: Vec::new(),
+            publisher: "m".into(),
+            created_at: at,
+        };
+        // Written in GitHub's listing order: newest release first (lowest $createdAt).
+        let (cur, _) = newest_per_tag(vec![
+            rel("v24.0.0-rc.1", 1),
+            rel("v23.1.2", 2),
+            rel("v23.1.10", 3),
+            rel("v24.0.0-rc.10", 4),
+            rel("v0.9.13.15", 5),
+            rel("nightly", 6),
+            rel("jq-1.7.1", 7),
+        ]);
+        let order: Vec<&str> = cur.iter().map(|r| r.tag_name.as_str()).collect();
+        assert_eq!(
+            order,
+            [
+                "v24.0.0-rc.10",
+                "v24.0.0-rc.1",
+                "v23.1.10",
+                "v23.1.2",
+                "jq-1.7.1",
+                "v0.9.13.15",
+                "nightly"
+            ]
+        );
+        assert_eq!(
+            latest_release(&cur).map(|r| r.tag_name.as_str()),
+            Some("v23.1.10")
+        );
+        assert!(
+            is_prerelease("v24.0.0-rc.1") && !is_prerelease("15.2.0") && !is_prerelease("v1+build")
+        );
+        // Only pre-releases: the highest of them.
+        assert_eq!(
+            latest_release(&cur[..2]).map(|r| r.tag_name.as_str()),
+            Some("v24.0.0-rc.10")
+        );
+        // Pre-release suffixes: a number before text, separators and case ignored. The same
+        // fixture as forge-web's releases.test.ts.
+        let (pre, _) = newest_per_tag(
+            [
+                "1.0.0-beta",
+                "1.0.0-1",
+                "1.0.0-rc.2",
+                "1.0.0-RC1",
+                "1.0.0-rc10",
+                "1.0.0-alpha",
+            ]
+            .iter()
+            .enumerate()
+            .map(|(i, t)| rel(t, i as u64))
+            .collect(),
+        );
+        let order: Vec<&str> = pre.iter().map(|r| r.tag_name.as_str()).collect();
+        assert_eq!(
+            order,
+            [
+                "1.0.0-rc10",
+                "1.0.0-rc.2",
+                "1.0.0-RC1",
+                "1.0.0-beta",
+                "1.0.0-alpha",
+                "1.0.0-1"
+            ]
+        );
     }
 
     #[test]

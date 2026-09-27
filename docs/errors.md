@@ -226,6 +226,8 @@ Fix: anyone whose clone still has the objects can restore the copies with `dg re
 
 Fix: run the command again; other copies are tried. `dg storage status <owner>/<repo>` shows which copies verify.
 
+`dg release download` also stops with E504, before downloading anything, when the release asset records **no SHA-256** (releases mirrored by a `forge-import` older than the D-517 fix recorded `""` for assets their source gave no digest for). There is nothing to check the bytes against, and nothing is downloaded unverified. Fix: a maintainer re-runs the import with a current `forge-import`, which hashes each such asset and republishes the release, or publishes it again with the file (`dg release create <repo> --tag <tag> --asset <file>`).
+
 ## E505
 
 **Storage credentials unavailable.** A profile's secret reference does not resolve: the `env:` variable is unset in the environment that git or `dg` runs in, or the `keychain:` entry does not exist.

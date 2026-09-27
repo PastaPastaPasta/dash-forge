@@ -4,8 +4,8 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { describe, expect, it } from 'vitest'
 
-import { AssetHashMismatchError, downloadVerifiedAsset } from '../view/release-download'
-import { newestPerTag, parseReleaseAssets, type ReleaseView } from './releases'
+import { AssetHashMismatchError, browserReadable, downloadVerifiedAsset } from '../view/release-download'
+import { UNVERIFIABLE_ASSET, assetVerifiable, isPrerelease, latestRelease, newestPerTag, parseReleaseAssets, type ReleaseView } from './releases'
 
 const H = 'ab'.repeat(32)
 
@@ -24,6 +24,14 @@ describe('parseReleaseAssets', () => {
       { name: 'cli.tar.gz', sha256: H, size: 20, uris: ['https://b.example/c', 'ipfs://bafy'] },
       { name: 'old.tar.gz', sha256: H, size: 30, uris: ['https://c.example/o'] },
     ])
+  })
+
+  it('lists an asset with an empty sha256 as unverifiable, not as unreadable (D-517)', () => {
+    const { assets, bad } = parseReleaseAssets(JSON.stringify([{ name: 'fd', sha256: '', sizeBytes: 1203280, uris: ['https://github.com/sharkdp/fd/releases/download/v0.1.0/fd'] }]))
+    expect(bad).toBe(0)
+    expect(assets[0]?.sha256).toBe('')
+    expect(assetVerifiable(assets[0]!)).toBe(false)
+    expect(assetVerifiable({ sha256: H })).toBe(true)
   })
 
   it('counts unreadable entries instead of guessing', () => {
@@ -47,8 +55,37 @@ describe('newestPerTag', () => {
   })
   it('keeps the newest revision per tag and lists the rest as previous', () => {
     const { current, previous } = newestPerTag([rel('v1', 1, 'a'), rel('v1', 3, 'b'), rel('v2', 2, 'c'), rel('v1', 3, 'd')])
-    expect(current.map((r) => r.id)).toEqual(['d', 'c'])
+    expect(current.map((r) => r.id)).toEqual(['c', 'd'])
     expect(previous.map((r) => r.id)).toEqual(['b', 'a'])
+  })
+
+  // L-14: an import writes the source's newest-first listing, so the OLDEST release had the
+  // newest $createdAt and the rail showed it as "Latest". Same fixture as forge-core's test.
+  it('orders by version and picks the latest non-prerelease', () => {
+    const tags = ['v24.0.0-rc.1', 'v23.1.2', 'v23.1.10', 'v24.0.0-rc.10', 'v0.9.13.15', 'nightly', 'jq-1.7.1']
+    const list = newestPerTag(tags.map((t, i) => rel(t, i + 1, t)))
+    expect(list.current.map((r) => r.tagName)).toEqual(['v24.0.0-rc.10', 'v24.0.0-rc.1', 'v23.1.10', 'v23.1.2', 'jq-1.7.1', 'v0.9.13.15', 'nightly'])
+    expect(latestRelease(list)?.tagName).toBe('v23.1.10')
+    expect(latestRelease({ current: list.current.slice(0, 2), previous: [] })?.tagName).toBe('v24.0.0-rc.10')
+    expect(latestRelease({ current: [], previous: [] })).toBeUndefined()
+    expect([isPrerelease('v24.0.0-rc.1'), isPrerelease('15.2.0'), isPrerelease('v1+build')]).toEqual([true, false, false])
+  })
+
+  it('orders pre-release suffixes as forge-core does', () => {
+    const tags = ['1.0.0-beta', '1.0.0-1', '1.0.0-rc.2', '1.0.0-RC1', '1.0.0-rc10', '1.0.0-alpha']
+    const list = newestPerTag(tags.map((t, i) => rel(t, i, t)))
+    expect(list.current.map((r) => r.tagName)).toEqual(['1.0.0-rc10', '1.0.0-rc.2', '1.0.0-RC1', '1.0.0-beta', '1.0.0-alpha', '1.0.0-1'])
+  })
+
+  it('reads a recorded size of 0 as unknown (GitLab links)', () => {
+    const { assets } = parseReleaseAssets(JSON.stringify([{ name: 'a', sha256: H, sizeBytes: 0, uris: ['https://x.example/a'] }]))
+    expect(assets[0]?.size).toBeNull()
+  })
+
+  it('ripgrep: 15.2.0 is latest, not 0.0.2', () => {
+    const list = newestPerTag(['15.2.0', '14.1.1', '0.10.0', '0.0.2'].map((t, i) => rel(t, i + 1, t)))
+    expect(latestRelease(list)?.tagName).toBe('15.2.0')
+    expect(list.current.map((r) => r.tagName)).toEqual(['15.2.0', '14.1.1', '0.10.0', '0.0.2'])
   })
 })
 
@@ -80,6 +117,37 @@ describe('downloadVerifiedAsset', () => {
     )
     await expect(run).rejects.toBeInstanceOf(AssetHashMismatchError)
     await expect(run).rejects.toThrow(/evil\.example/)
+  })
+
+  // L-13: the source host sends no CORS header, so the page can only link to the file.
+  it('knows which hosts a page can read', () => {
+    const a = (uris: string[]) => ({ name: 'a', sha256: good, size: null, uris })
+    expect(browserReadable(a(['https://github.com/o/r/releases/download/v1/a']))).toBe(false)
+    expect(browserReadable(a(['https://gitlab.com/g/p/-/releases/v1/downloads/a']))).toBe(false)
+    expect(browserReadable(a(['https://pub.example/rel/a']))).toBe(true)
+    expect(browserReadable(a(['https://github.com/o/r/releases/download/v1/a', 'https://pub.example/rel/a']))).toBe(true)
+    expect(browserReadable(a(['ipfs://bafy']), ['https://gw.example'])).toBe(true)
+  })
+
+  it('skips a host a page cannot read and uses a readable copy', async () => {
+    const got = await downloadVerifiedAsset(
+      { name: 'a', sha256: good, size: null, uris: ['https://github.com/o/r/releases/download/v1/a', 'https://pub.example/a'] },
+      undefined,
+      { fetch: serve({ 'https://pub.example/a': body }) },
+    )
+    expect(got.length).toBe(body.length)
+  })
+
+  it('never fetches an asset with no recorded hash (D-517)', async () => {
+    const fetched: string[] = []
+    const run = downloadVerifiedAsset({ name: 'fd', sha256: '', size: null, uris: ['https://a.example/x'] }, undefined, {
+      fetch: ((input: RequestInfo | URL) => {
+        fetched.push(String(input))
+        return Promise.resolve(new Response(body.slice()))
+      }) as typeof fetch,
+    })
+    await expect(run).rejects.toThrow(UNVERIFIABLE_ASSET)
+    expect(fetched).toEqual([])
   })
 
   it('falls through to another place after a mismatch', async () => {

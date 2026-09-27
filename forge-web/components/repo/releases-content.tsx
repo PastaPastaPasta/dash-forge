@@ -19,6 +19,7 @@ import { formatBytes, timeAgo } from '@/lib/view'
 import type { ReleaseAssetView, ReleaseView } from '@/lib/repo'
 import {
   AssetHashMismatchError,
+  browserReadable,
   checkDownloadedFile,
   directDownloadUrls,
   downloadVerifiedAsset,
@@ -26,6 +27,7 @@ import {
   type DownloadProgress,
 } from '@/lib/view/release-download'
 import { urlHost } from '@/lib/view/format'
+import { UNVERIFIABLE_ASSET, assetVerifiable } from '@/lib/repo/releases'
 import { useReleases } from '@/hooks/use-repo-chrome'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
@@ -236,44 +238,114 @@ function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
     }
   }
   const bad = state.kind === 'mismatch'
+  // How this page can offer the asset. `unverifiable`: no recorded hash (D-517), never handed
+  // out. `browser`: the page reads it and verifies as it downloads. `origin`: only a host that
+  // sends no CORS header has it (GitHub and GitLab release downloads, L-13), so the page links to
+  // it and the hash check is a step on the downloaded file. `none`: no copy this browser may
+  // fetch at all (a private address, plain http, an IPFS CID with no gateway).
+  const access: 'unverifiable' | 'browser' | 'origin' | 'none' = !assetVerifiable(asset)
+    ? 'unverifiable'
+    : browserReadable(asset)
+      ? 'browser'
+      : directDownloadUrls(asset).length > 0
+        ? 'origin'
+        : 'none'
   return (
     <li
       data-testid="release-asset"
-      data-state={state.kind}
+      data-state={access === 'browser' ? state.kind : access}
       className={cn('flex flex-wrap items-center gap-2 px-3 py-2 text-dense', bad && 'bg-danger/5')}
     >
       <FileArchive className={cn('h-4 w-4 shrink-0', bad ? 'text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400')} aria-hidden />
       <span className="min-w-0 flex-1 truncate font-mono">{asset.name}</span>
       {asset.size !== null ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{formatBytes(asset.size)}</span> : null}
-      <span className="font-mono text-[11px] text-anvil-500 dark:text-anvil-400" title={`SHA-256 ${asset.sha256}`}>
-        sha256 {asset.sha256.slice(0, 10)}…
-      </span>
-      <Button size="sm" onClick={() => void run()} disabled={state.kind === 'working' || bad} aria-label={`Download ${asset.name}`}>
-        {state.kind === 'working' ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : <Download className="h-3.5 w-3.5" aria-hidden />}
-        Download
-      </Button>
-      <p role="status" className="basis-full text-[12px]">
-        {state.kind === 'working' ? (
-          <span className="text-anvil-500 dark:text-anvil-400">
-            Checking SHA-256 as it downloads
-            {state.progress ? ` · ${formatBytes(state.progress.bytes)}${state.progress.total ? ` of ${formatBytes(state.progress.total)}` : ''}` : ''}
+      {access === 'unverifiable' ? (
+        <span className="text-[11px] font-medium text-caution-700 dark:text-caution-400">no sha256 recorded</span>
+      ) : (
+        <span className="font-mono text-[11px] text-anvil-500 dark:text-anvil-400" title={`SHA-256 ${asset.sha256}`}>
+          sha256 {asset.sha256.slice(0, 10)}…
+        </span>
+      )}
+      {access === 'browser' ? (
+        <Button size="sm" onClick={() => void run()} disabled={state.kind === 'working' || bad} aria-label={`Download ${asset.name}`}>
+          {state.kind === 'working' ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : <Download className="h-3.5 w-3.5" aria-hidden />}
+          Download
+        </Button>
+      ) : access === 'origin' ? (
+        <OriginLinks asset={asset} primary />
+      ) : null}
+      {access === 'browser' ? (
+        <p role="status" className="basis-full text-[12px]">
+          {state.kind === 'working' ? (
+            <span className="text-anvil-500 dark:text-anvil-400">
+              Checking SHA-256 as it downloads
+              {state.progress ? ` · ${formatBytes(state.progress.bytes)}${state.progress.total ? ` of ${formatBytes(state.progress.total)}` : ''}` : ''}
+            </span>
+          ) : state.kind === 'saved' ? (
+            <span className="inline-flex items-center gap-1 text-verify-700 dark:text-verify-400">
+              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> Verified: the SHA-256 matched, saved.
+            </span>
+          ) : state.kind === 'mismatch' ? (
+            <span className="inline-flex items-center gap-1 font-medium text-danger-700 dark:text-danger-400">
+              <XCircle className="h-3.5 w-3.5" aria-hidden /> Failed: {state.message}. Not saved.
+            </span>
+          ) : state.kind === 'error' ? (
+            <span className="inline-flex items-center gap-1 text-caution-700 dark:text-caution-400">
+              <AlertTriangle className="h-3.5 w-3.5" aria-hidden /> Couldn&apos;t download in the browser: {state.message}
+            </span>
+          ) : null}
+        </p>
+      ) : access === 'none' ? (
+        <p role="status" className="basis-full text-[12px] text-caution-700 dark:text-caution-400">
+          <span className="inline-flex items-start gap-1">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+            <span>
+              No copy of this asset is at an address a browser may download from (a public https URL, or an IPFS CID with a gateway). Use{' '}
+              <span className="font-mono">dg release download</span> with a storage profile for its host.
+            </span>
           </span>
-        ) : state.kind === 'saved' ? (
-          <span className="inline-flex items-center gap-1 text-verify-700 dark:text-verify-400">
-            <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> Verified: the SHA-256 matched, saved.
+        </p>
+      ) : access === 'unverifiable' ? (
+        <p role="status" className="basis-full text-[12px] text-caution-700 dark:text-caution-400">
+          <span className="inline-flex items-start gap-1">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden /> {UNVERIFIABLE_ASSET}
           </span>
-        ) : state.kind === 'mismatch' ? (
-          <span className="inline-flex items-center gap-1 font-medium text-danger-700 dark:text-danger-400">
-            <XCircle className="h-3.5 w-3.5" aria-hidden /> Failed: {state.message}. Not saved.
-          </span>
-        ) : state.kind === 'error' ? (
-          <span className="inline-flex items-center gap-1 text-caution-700 dark:text-caution-400">
-            <AlertTriangle className="h-3.5 w-3.5" aria-hidden /> Couldn&apos;t download in the browser: {state.message}
-          </span>
-        ) : null}
-      </p>
-      {state.kind === 'error' ? <DirectDownload asset={asset} /> : null}
+        </p>
+      ) : (
+        <p role="status" className="basis-full text-[12px] text-anvil-500 dark:text-anvil-400">
+          {urlHost(directDownloadUrls(asset)[0] ?? '')} doesn&apos;t let pages read its files, so the download comes straight from it and is not checked yet.
+        </p>
+      )}
+      {access === 'origin' ? <DirectDownload asset={asset} linksShown /> : null}
+      {access === 'browser' && state.kind === 'error' ? <DirectDownload asset={asset} /> : null}
     </li>
+  )
+}
+
+/** Links that download an asset straight from where it is stored (the browser saves it). */
+function OriginLinks({ asset, primary = false }: { asset: ReleaseAssetView; primary?: boolean }): JSX.Element {
+  return (
+    <>
+      {directDownloadUrls(asset).map((u) =>
+        primary ? (
+          <a
+            key={u}
+            href={u}
+            target="_blank"
+            rel="noopener noreferrer"
+            referrerPolicy="no-referrer"
+            aria-label={`Download ${asset.name} from ${urlHost(u)}`}
+            className="inline-flex items-center gap-1 rounded-md border border-anvil-300 px-2.5 py-1 text-dense font-medium text-anvil-800 hover:bg-anvil-100 dark:border-anvil-700 dark:text-anvil-100 dark:hover:bg-anvil-800"
+          >
+            <Download className="h-3.5 w-3.5" aria-hidden /> Download from {urlHost(u)}
+          </a>
+        ) : (
+          <a key={u} href={u} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className="font-mono text-forge-700 underline dark:text-forge-400">
+            {urlHost(u)}
+          </a>
+        ),
+      )}
+    </>
   )
 }
 
@@ -283,7 +355,7 @@ function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
  * it. The browser downloads it from the origin directly, and the person can then check the
  * downloaded file against the published SHA-256 here, locally.
  */
-function DirectDownload({ asset }: { asset: ReleaseAssetView }): JSX.Element | null {
+function DirectDownload({ asset, linksShown = false }: { asset: ReleaseAssetView; linksShown?: boolean }): JSX.Element | null {
   const urls = directDownloadUrls(asset)
   const [check, setCheck] = useState<{ ok: boolean; sha256: string; sizeMatches: boolean } | 'checking' | 'unreadable' | null>(null)
   const latest = useRef(0)
@@ -301,14 +373,12 @@ function DirectDownload({ asset }: { asset: ReleaseAssetView }): JSX.Element | n
   }
   return (
     <div className="basis-full space-y-1 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="direct-download">
-      <p className="flex flex-wrap items-center gap-x-2">
-        Download from the origin instead:
-        {urls.map((u) => (
-          <a key={u} href={u} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className="font-mono text-forge-700 underline dark:text-forge-400">
-            {urlHost(u)}
-          </a>
-        ))}
-      </p>
+      {linksShown ? null : (
+        <p className="flex flex-wrap items-center gap-x-2">
+          Download from the origin instead:
+          <OriginLinks asset={asset} />
+        </p>
+      )}
       <label className="inline-flex cursor-pointer items-center gap-1.5">
         <span className="underline">Check a downloaded file</span>
         <span>against the published SHA-256 (read in this tab, not uploaded)</span>

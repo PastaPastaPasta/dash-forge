@@ -55,9 +55,12 @@ export {
   readPublicRepoFacts,
 } from './social'
 export {
+  isPrerelease,
+  latestRelease,
   newestPerTag,
   parseReleaseAssets,
   readReleases,
+  releaseOrder,
   type ReleaseAssetView,
   type ReleaseList,
   type ReleaseView,
