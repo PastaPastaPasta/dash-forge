@@ -339,17 +339,8 @@ pub enum RepoBackendCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum IssueCommand {
-    /// List issues.
-    List {
-        /// The repository (`owner/name`).
-        repo: String,
-        /// State filter.
-        #[arg(long, value_enum, default_value = "open")]
-        state: StateArg,
-        /// Max results (0 = server default).
-        #[arg(long, default_value_t = 0)]
-        limit: u32,
-    },
+    /// List issues (every issue is read and folded; filters apply to the whole repo).
+    List(Box<IssueListArgs>),
     /// View an issue.
     View {
         /// The repository (`owner/name`).
@@ -408,12 +399,16 @@ pub enum IssueCommand {
         /// The issue number.
         number: u64,
     },
-    /// Add or remove a label on an issue.
+    /// Add or remove labels on an issue: `dg issue label <repo> <n> add bug docs`, or the
+    /// older `--add bug` / `--remove bug`.
     Label {
         /// The repository (`owner/name`).
         repo: String,
         /// The issue number.
         number: u64,
+        /// `add` or `remove`, followed by the label names.
+        #[arg(value_name = "add|remove LABEL...")]
+        words: Vec<String>,
         /// Label to add.
         #[arg(long)]
         add: Option<String>,
@@ -421,6 +416,54 @@ pub enum IssueCommand {
         #[arg(long)]
         remove: Option<String>,
     },
+    /// Assign identities (ids or DPNS names; `me` for yourself) to an issue. Members only.
+    Assign {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The issue number.
+        number: u64,
+        /// Who to assign.
+        #[arg(required = true)]
+        who: Vec<String>,
+    },
+    /// Remove assignees from an issue. Members only.
+    Unassign {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The issue number.
+        number: u64,
+        /// Who to unassign.
+        #[arg(required = true)]
+        who: Vec<String>,
+    },
+}
+
+/// `dg issue list` arguments.
+#[derive(Debug, clap::Args)]
+pub struct IssueListArgs {
+    /// The repository (`owner/name`).
+    pub repo: String,
+    /// State filter.
+    #[arg(long, value_enum, default_value = "open")]
+    pub state: StateArg,
+    /// Only issues with this label (repeatable: every one must match).
+    #[arg(long = "label", value_name = "NAME")]
+    pub labels: Vec<String>,
+    /// Only issues by this author (identity id, DPNS name, or `me`).
+    #[arg(long)]
+    pub author: Option<String>,
+    /// Only issues assigned to this identity (id, DPNS name, `me`), or `none`.
+    #[arg(long)]
+    pub assignee: Option<String>,
+    /// Only issues whose title contains every word (`#12` matches the number).
+    #[arg(long)]
+    pub search: Option<String>,
+    /// Rows per page (default 30, at most 100).
+    #[arg(long, default_value_t = 30)]
+    pub limit: u32,
+    /// Page number, 1-based.
+    #[arg(long, default_value_t = 1)]
+    pub page: u32,
 }
 
 #[derive(Debug, Subcommand)]
@@ -611,6 +654,14 @@ pub enum LabelCommand {
     },
     /// Retire a label (a newer definition marked retired).
     Retire {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The label name.
+        name: String,
+    },
+    /// Delete a label: retire it, then delete your own definition documents of it (a label
+    /// defined by another member stays, retired). Issues keep the label events.
+    Delete {
         /// The repository (`owner/name`).
         repo: String,
         /// The label name.

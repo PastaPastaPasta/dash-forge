@@ -1,4 +1,4 @@
-//! `dg issue` — issue tracking (list/view/create/comment/close/reopen/label).
+//! `dg issue` — issue tracking (list/view/create/edit/comment/close/reopen/label/assign).
 //!
 //! forge-v2 repositories go through [`forge_core::collab::v2::Collab`]: issues are numbered
 //! by the `forge-v2.md` §6 rule, a create is journaled so a re-run resumes it, and close /
@@ -8,19 +8,19 @@
 use anyhow::Result;
 use serde_json::json;
 
-use forge_core::collab::v2::{Collab, Target};
+use forge_core::collab::v2::{Collab, IssueView, Target};
 use forge_core::create::default_journal_dir;
 use forge_core::rules::{EventKind, IssueState};
 
 use crate::common::{number_arg, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, dash_usd_price, route_text, safe};
-use crate::{IssueCommand, StateArg};
+use crate::{IssueCommand, IssueListArgs};
 
 /// Dispatch an `issue` subcommand.
 pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
     match cmd {
-        IssueCommand::List { repo, state, limit } => list(ctx, repo, *state, *limit).await,
+        IssueCommand::List(args) => list(ctx, args).await,
         IssueCommand::View { repo, number } => view(ctx, repo, *number).await,
         IssueCommand::Create { repo, title, body } => create(ctx, repo, title, body).await,
         IssueCommand::Edit {
@@ -43,9 +43,40 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
         IssueCommand::Label {
             repo,
             number,
+            words,
             add,
             remove,
-        } => label(ctx, repo, *number, add.as_deref(), remove.as_deref()).await,
+        } => {
+            let (adding, names) = label_args(words, add.as_deref(), remove.as_deref())?;
+            label(ctx, repo, *number, adding, &names).await
+        }
+        IssueCommand::Assign { repo, number, who } => assign(ctx, repo, *number, who, true).await,
+        IssueCommand::Unassign { repo, number, who } => {
+            assign(ctx, repo, *number, who, false).await
+        }
+    }
+}
+
+/// `add bug docs` / `remove bug`, or the older `--add bug` / `--remove bug`: exactly one form.
+fn label_args(
+    words: &[String],
+    add: Option<&str>,
+    remove: Option<&str>,
+) -> Result<(bool, Vec<String>)> {
+    let usage = || {
+        crate::errors::usage(
+            "use `dg issue label <repo> <n> add|remove <label>...` (or exactly one of --add / --remove)",
+        )
+    };
+    match (words.split_first(), add, remove) {
+        (None, Some(l), None) => Ok((true, vec![l.to_string()])),
+        (None, None, Some(l)) => Ok((false, vec![l.to_string()])),
+        (Some((verb, names)), None, None) if !names.is_empty() => match verb.as_str() {
+            "add" => Ok((true, names.to_vec())),
+            "remove" | "rm" => Ok((false, names.to_vec())),
+            _ => Err(usage()),
+        },
+        _ => Err(usage()),
     }
 }
 
@@ -63,20 +94,85 @@ fn labels_of(state: &IssueState) -> String {
     state.labels.iter().cloned().collect::<Vec<_>>().join(", ")
 }
 
-async fn list(ctx: &Ctx, repo: &str, state: StateArg, limit: u32) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
-
-    let collab = Collab::reader(&s.client);
-    let page = collab.list_issues(&s.repo, limit).await?;
-    let (hidden, more) = (page.hidden, page.more);
-    // (number, title, author, state)
-    let mut rows: Vec<Row> = Vec::new();
-    for issue in page.rows {
-        let st = collab.issue_state(&s.repo, &issue).await?;
-        if state.matches(st.open) {
-            rows.push((u64::from(issue.number), issue.title, issue.author, st));
-        }
+/// `me`, a DPNS name or an identity id, as a base58 identity id.
+async fn identity_arg(s: &Session, who: &str) -> Result<String> {
+    if who == "me" || who == "@me" {
+        return Ok(s.identity.id());
     }
+    Ok(forge_core::resolve::resolve_owner(&s.client, who.trim_start_matches('@')).await?)
+}
+
+/// Whether `title` (or `#number`) holds every word of `search`, case-insensitively.
+fn title_matches(search: &str, number: u32, title: &str) -> bool {
+    let title = title.to_lowercase();
+    search
+        .split_whitespace()
+        .all(|w| match w.strip_prefix('#') {
+            Some(n) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => {
+                n.parse() == Ok(number)
+            }
+            _ => title.contains(&w.to_lowercase()),
+        })
+}
+
+/// Whether a folded issue passes `dg issue list`'s filters (`assignee`: `Some(None)` = nobody).
+fn issue_matches(
+    args: &IssueListArgs,
+    author: Option<&str>,
+    assignee: Option<&Option<String>>,
+    v: &IssueView,
+) -> bool {
+    args.state.matches(v.state.open)
+        && args.labels.iter().all(|l| v.state.labels.contains(l))
+        && author.is_none_or(|a| v.issue.author == a)
+        && match assignee {
+            None => true,
+            Some(None) => v.state.assignees.is_empty(),
+            Some(Some(a)) => v.state.assignees.contains(a),
+        }
+        && args
+            .search
+            .as_deref()
+            .is_none_or(|q| title_matches(q, v.issue.number, &v.issue.title))
+}
+
+async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
+    if args.limit == 0 || args.limit > 100 {
+        return Err(crate::errors::usage("--limit is 1-100"));
+    }
+    if args.page == 0 {
+        return Err(crate::errors::usage("--page starts at 1"));
+    }
+    let s = Session::open(ctx, &args.repo).await?;
+    let author = match &args.author {
+        Some(a) => Some(identity_arg(&s, a).await?),
+        None => None,
+    };
+    let assignee = match args.assignee.as_deref() {
+        Some("none") => Some(None),
+        Some(a) => Some(Some(identity_arg(&s, a).await?)),
+        None => None,
+    };
+    // Every issue and the whole feed, folded once: the filters see the whole repo, not the
+    // newest page (SR-04), and there is no per-row read.
+    let (all, hidden) = Collab::reader(&s.client).issues_with_state(&s.repo).await?;
+    let matching: Vec<Row> = all
+        .into_iter()
+        .filter(|v| issue_matches(args, author.as_deref(), assignee.as_ref(), v))
+        .map(|v| {
+            (
+                u64::from(v.issue.number),
+                v.issue.title,
+                v.issue.author,
+                v.state,
+            )
+        })
+        .collect();
+    let total = matching.len();
+    let per = args.limit as usize;
+    let pages = total.div_ceil(per).max(1);
+    let start = (args.page as usize - 1) * per;
+    let rows: Vec<&Row> = matching.iter().skip(start).take(per).collect();
 
     let json_rows: Vec<_> = rows
         .iter()
@@ -92,7 +188,15 @@ async fn list(ctx: &Ctx, repo: &str, state: StateArg, limit: u32) -> Result<()> 
         })
         .collect();
     ctx.emit(
-        json!({ "count": rows.len(), "issues": json_rows, "hidden": hidden, "truncated": more }),
+        json!({
+            "count": rows.len(),
+            "total": total,
+            "page": args.page,
+            "pages": pages,
+            "issues": json_rows,
+            "hidden": hidden,
+            "truncated": args.page as usize * per < total,
+        }),
         || {
             if rows.is_empty() {
                 println!("no issues");
@@ -104,13 +208,22 @@ async fn list(ctx: &Ctx, repo: &str, state: StateArg, limit: u32) -> Result<()> 
                 } else {
                     format!("  [{}]", labels_of(st))
                 };
-                println!("#{n:<4} {mark:<6} {}{}", safe(title), safe(&labels));
+                let who = if st.assignees.is_empty() {
+                    String::new()
+                } else {
+                    format!("  ({} assigned)", st.assignees.len())
+                };
+                println!("#{n:<4} {mark:<6} {}{}{who}", safe(title), safe(&labels));
+            }
+            if pages > 1 {
+                println!(
+                    "(page {} of {pages}, {total} matching; --page {} for more)",
+                    args.page,
+                    args.page + 1
+                );
             }
             if hidden > 0 {
                 println!("({hidden} malformed document(s) hidden)");
-            }
-            if more {
-                println!("(the newest issues only; older ones exist: raise --limit, up to 100)");
             }
         },
     );
@@ -319,43 +432,108 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
     Ok(())
 }
 
-async fn label(
-    ctx: &Ctx,
-    repo: &str,
-    number: u64,
-    add: Option<&str>,
-    remove: Option<&str>,
-) -> Result<()> {
-    let (kind, value) = match (add, remove) {
-        (Some(l), None) => (EventKind::LabelAdd, l),
-        (None, Some(l)) => (EventKind::LabelRemove, l),
-        _ => {
-            return Err(crate::errors::usage(
-                "pass exactly one of --add <label> or --remove <label>",
-            ))
-        }
+async fn label(ctx: &Ctx, repo: &str, number: u64, add: bool, names: &[String]) -> Result<()> {
+    let kind = if add {
+        EventKind::LabelAdd
+    } else {
+        EventKind::LabelRemove
     };
     let s = Session::open(ctx, repo).await?;
     let target = target(&s, repo, number).await?;
     ctx.confirm_or_cancel(&format!(
-        "Label issue #{number} ({value})? (one small document; members only)"
+        "{} label(s) {} on issue #{number}? (one small document each; members only)",
+        if add { "Add" } else { "Remove" },
+        names.join(", ")
     ))?;
-    let id = s
-        .collab()
-        .post_event(&s.repo, &target, kind, Some(value), None)
-        .await?;
+    let collab = s.collab();
+    let mut ids = Vec::new();
+    for name in names {
+        ids.push(
+            collab
+                .post_event(&s.repo, &target, kind, Some(name), None)
+                .await?,
+        );
+    }
     ctx.emit(
         json!({
             "status": "labeled",
             "issue": number,
-            "label": value,
-            "action": if add.is_some() { "add" } else { "remove" },
-            "eventId": id,
+            "label": names.first(),
+            "labels": names,
+            "action": if add { "add" } else { "remove" },
+            "eventId": ids.first(),
+            "eventIds": ids,
         }),
         || {
-            let verb = if add.is_some() { "added" } else { "removed" };
-            println!("✓ {verb} label {value} on issue #{number}");
+            let verb = if add { "added" } else { "removed" };
+            println!(
+                "✓ {verb} label {} on issue #{number}",
+                safe(&names.join(", "))
+            );
         },
     );
     Ok(())
+}
+
+async fn assign(ctx: &Ctx, repo: &str, number: u64, who: &[String], add: bool) -> Result<()> {
+    let s = Session::open(ctx, repo).await?;
+    let target = target(&s, repo, number).await?;
+    let mut ids = Vec::new();
+    for w in who {
+        ids.push(identity_arg(&s, w).await?);
+    }
+    ctx.confirm_or_cancel(&format!(
+        "{} {} on issue #{number}? (one small document each; members only)",
+        if add { "Assign" } else { "Unassign" },
+        ids.join(", ")
+    ))?;
+    let collab = s.collab();
+    let mut events = Vec::new();
+    for id in &ids {
+        events.push(collab.set_assignee(&s.repo, &target, id, add).await?);
+    }
+    ctx.emit(
+        json!({
+            "status": if add { "assigned" } else { "unassigned" },
+            "issue": number,
+            "assignees": ids,
+            "eventIds": events,
+        }),
+        || {
+            let verb = if add { "assigned" } else { "unassigned" };
+            println!("✓ {verb} {} on issue #{number}", ids.join(", "));
+        },
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{label_args, title_matches};
+
+    #[test]
+    fn label_takes_add_remove_words_or_the_old_flags() {
+        let w = |v: &[&str]| v.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(
+            label_args(&w(&["add", "bug", "docs"]), None, None).unwrap(),
+            (true, w(&["bug", "docs"]))
+        );
+        assert_eq!(
+            label_args(&w(&["remove", "bug"]), None, None).unwrap(),
+            (false, w(&["bug"]))
+        );
+        assert_eq!(label_args(&[], Some("x"), None).unwrap(), (true, w(&["x"])));
+        assert!(label_args(&w(&["add"]), None, None).is_err());
+        assert!(label_args(&w(&["tag", "x"]), None, None).is_err());
+        assert!(label_args(&w(&["add", "x"]), Some("y"), None).is_err());
+        assert!(label_args(&[], Some("x"), Some("y")).is_err());
+    }
+
+    #[test]
+    fn search_needs_every_word_and_reads_hash_numbers() {
+        assert!(title_matches("crash CONFIG", 3, "Crash on empty config"));
+        assert!(!title_matches("crash network", 3, "Crash on empty config"));
+        assert!(title_matches("#3", 3, "anything"));
+        assert!(!title_matches("#3", 30, "anything"));
+    }
 }

@@ -22,7 +22,43 @@ pub async fn run(ctx: &Ctx, cmd: &LabelCommand) -> Result<()> {
             description,
         } => define(ctx, repo, name, color, description, false).await,
         LabelCommand::Retire { repo, name } => define(ctx, repo, name, "", "", true).await,
+        LabelCommand::Delete { repo, name } => delete(ctx, repo, name).await,
     }
+}
+
+/// Delete label `name` (forge-core `Collab::delete_label`): the signer's definition documents
+/// are deleted; when another member also defined it, a retirement is written first so readers
+/// stop offering it. Labels already applied to issues stay in their history.
+async fn delete(ctx: &Ctx, repo: &str, name: &str) -> Result<()> {
+    let s = Session::open(ctx, repo).await?;
+    ctx.confirm_or_cancel(&format!(
+        "Delete label {name:?} from {}? (deletes your definitions of it; retires it if others defined it too)",
+        s.repo.display()
+    ))?;
+    let (retired, deleted) = s.collab().delete_label(&s.repo, name).await?;
+    if !retired && deleted == 0 {
+        return Err(crate::errors::not_found(
+            format!("no label {name:?} in {}", s.repo.display()),
+            format!("`dg label list {repo}` lists its labels"),
+        ));
+    }
+    ctx.emit(
+        json!({
+            "status": "deleted",
+            "name": name,
+            "retired": retired,
+            "deletedDocuments": deleted,
+        }),
+        || {
+            let note = if retired {
+                " and retired it (another member's definition remains)"
+            } else {
+                ""
+            };
+            println!("✓ deleted label {name}: {deleted} definition document(s) removed{note}");
+        },
+    );
+    Ok(())
 }
 
 async fn list(ctx: &Ctx, repo: &str, all: bool) -> Result<()> {
