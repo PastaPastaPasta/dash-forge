@@ -5,6 +5,9 @@
  * of the edit rather than the size of the file: a one-line change to a 20 000-line file is as
  * cheap as one to a 20-line file. Work and trace memory are both bounded; past the bound the
  * diff is declined (`null`) and the caller says so instead of freezing the tab.
+ *
+ * Loaded by plain Node (type stripping) in `render-fuzz.test.ts`: keep imports relative and
+ * the syntax erasable (no enums, namespaces or `@/` aliases).
  */
 
 export interface TextDiffLine {

@@ -15,6 +15,9 @@
  *   `[abc]` / `[a-z]` / `[!abc]` character classes
  *   `\x` escapes `x` to a literal
  *   every other char, incl. `{`, `}`, `,`, leading `!`, is a literal
+ *
+ * Loaded by plain Node (type stripping) in `render-fuzz.test.ts`: keep imports relative and
+ * the syntax erasable (no enums, namespaces or `@/` aliases).
  */
 
 /** Whether `refName` matches ANY protected glob in `patterns`. */
@@ -51,10 +54,23 @@ const SLASH = '/'
  * pre-neutralized so `{`/`}`/leading-`!` never reach here as metacharacters.
  */
 export function wildmatch(pattern: string, text: string): boolean {
-  return dowild(pattern, 0, text, 0)
+  // dowild is pure in (pi, ti), so memoizing it turns the star backtracking — exponential
+  // in the number of `*` (`*a*a*a*a*a*a*a*b` against 40 `a`s took seconds) — into at most
+  // |pattern|·|text| distinct calls. 0 = unknown, 1 = false, 2 = true.
+  const memo = new Uint8Array((pattern.length + 1) * (text.length + 1))
+  return dowild(pattern, 0, text, 0, memo)
 }
 
-function dowild(p: string, pi: number, t: string, ti: number): boolean {
+function dowild(p: string, pi: number, t: string, ti: number, memo: Uint8Array): boolean {
+  const key = pi * (t.length + 1) + ti
+  const known = memo[key]
+  if (known !== 0) return known === 2
+  const result = dowildUncached(p, pi, t, ti, memo)
+  memo[key] = result ? 2 : 1
+  return result
+}
+
+function dowildUncached(p: string, pi: number, t: string, ti: number, memo: Uint8Array): boolean {
   let i = pi
   let j = ti
   while (i < p.length) {
@@ -108,13 +124,13 @@ function dowild(p: string, pi: number, t: string, ti: number): boolean {
 
       // git quick-out: a globstar immediately followed by `/` may match zero segments.
       if (globstar && i < p.length && p[i] === SLASH) {
-        if (dowild(p, i + 1, t, j)) return true
+        if (dowild(p, i + 1, t, j, memo)) return true
       }
 
       // Backtrack: let the star consume 0..N text chars, trying the rest at each stop.
       let k = j
       for (;;) {
-        if (dowild(p, i, t, k)) return true
+        if (dowild(p, i, t, k, memo)) return true
         if (k >= t.length) return false
         if (!matchSlash && t[k] === SLASH) return false
         k += 1
