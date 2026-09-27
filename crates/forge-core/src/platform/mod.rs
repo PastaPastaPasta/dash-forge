@@ -27,9 +27,10 @@
 //!   durable idempotent-retry intent that lets an interrupted push re-broadcast the same
 //!   signed bytes without re-paying (`.git/dash/journal/<packHash>.json`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::num::NonZeroUsize;
-use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
@@ -150,6 +151,12 @@ impl LoadedContract {
     /// The contract owner's base58 identity id.
     pub fn owner_id(&self) -> String {
         self.0.owner_id().to_string(Encoding::Base58)
+    }
+
+    /// The contract's version (1 at registration, +1 per in-place update). Caches of the
+    /// contract's documents are keyed by it.
+    pub fn version(&self) -> u32 {
+        self.0.version()
     }
 
     /// Whether the contract declares a document type named `name`. Used to feature-detect
@@ -312,12 +319,40 @@ impl std::fmt::Debug for LoadedIdentity {
 pub struct PlatformClient {
     sdk: Sdk,
     target: NetworkTarget,
+    /// Contracts fetched (or read from the disk cache) in this process, by base58 id: a
+    /// contract is fetched at most once per process (it was re-fetched by nearly every read,
+    /// the dominant cost of `dg pr list`, D-500).
+    contracts: Mutex<HashMap<String, LoadedContract>>,
+    /// Set once the network refused a composite query: [`Self::query_batch`] then reads one
+    /// by one for the rest of the process.
+    no_composite: AtomicBool,
+    /// The append-only history copies ([`crate::history`]).
+    history: crate::history::HistoryStore,
     /// A handle to the same context provider the SDK holds (it is `Clone` over shared
     /// inner state). The trusted provider only serves user data contracts from its
     /// known-contracts cache — it has no SDK-refetch path — so every contract we fetch
     /// must be registered here or the proof verifier rejects writes against it with
     /// "unknown contract".
     context_provider: TrustedHttpContextProvider,
+}
+
+/// A contract as the disk cache keeps it: the serialized contract (hex) with the protocol
+/// version it was serialized at, its contract version, and when that version was last
+/// confirmed on chain.
+#[derive(Serialize, Deserialize)]
+struct CachedContract {
+    version: u32,
+    protocol_version: u32,
+    checked_at_ms: u64,
+    contract: String,
+}
+
+impl CachedContract {
+    fn write(&self, path: &std::path::Path) {
+        if let Ok(json) = serde_json::to_vec(self) {
+            crate::cache::write(path, &json);
+        }
+    }
 }
 
 impl std::fmt::Debug for PlatformClient {
@@ -396,6 +431,9 @@ impl PlatformClient {
         Ok(Self {
             sdk,
             target,
+            contracts: Mutex::default(),
+            no_composite: AtomicBool::new(std::env::var_os("DASH_FORGE_NO_COMPOSITE").is_some()),
+            history: crate::history::HistoryStore::default(),
             context_provider,
         })
     }
@@ -409,6 +447,12 @@ impl PlatformClient {
     /// The network this client targets.
     pub fn network(&self) -> &Network {
         &self.target.network
+    }
+
+    /// The append-only history copies this client reads through ([`crate::history`]).
+    /// `git-remote-dash` points them at the repository's `.git/dash/history`.
+    pub fn history(&self) -> &crate::history::HistoryStore {
+        &self.history
     }
 
     /// The resolved network + forge-v2 contracts this client was connected with.
@@ -466,18 +510,114 @@ impl PlatformClient {
         &self.sdk
     }
 
-    /// Fetch a data contract by base58 id.
+    /// A data contract by base58 id: from this process's memo, else the disk cache
+    /// ([`crate::cache`], re-validated against the on-chain version at most once per
+    /// [`crate::cache::CONTRACT_RECHECK`] with one proved `getDataContractsLatestVersions`),
+    /// else a proved `getDataContract`.
     pub async fn fetch_contract(&self, contract_id: &str) -> Result<LoadedContract> {
+        if let Some(c) = self.memo().get(contract_id) {
+            return Ok(c.clone());
+        }
         let id = parse_id(contract_id, "contract id")?;
-        let contract =
-            retry_transient_read("fetch contract", || DataContract::fetch(&self.sdk, id))
-                .await
-                .map_err(|e| Error::Platform(format!("fetching contract {contract_id}: {e}")))?
-                .ok_or(Error::NotFound)?;
-        // Register with the context provider so proof verification of subsequent
-        // writes against this contract can resolve it (see field docs).
+        let contract = if let Some(c) = self.cached_contract(contract_id, id).await {
+            c
+        } else {
+            let contract =
+                retry_transient_read("fetch contract", || DataContract::fetch(&self.sdk, id))
+                    .await
+                    .map_err(|e| Error::Platform(format!("fetching contract {contract_id}: {e}")))?
+                    .ok_or(Error::NotFound)?;
+            self.store_contract(contract_id, &contract);
+            contract
+        };
+        Ok(self.remember(contract_id.to_string(), contract))
+    }
+
+    /// Register a proof-verified contract with the context provider (so proof verification
+    /// of later writes against it can resolve it, see field docs) and this process's memo.
+    fn remember(&self, contract_id: String, contract: DataContract) -> LoadedContract {
         self.context_provider.add_known_contract(contract.clone());
-        Ok(LoadedContract(Arc::new(contract)))
+        let loaded = LoadedContract(Arc::new(contract));
+        self.memo().insert(contract_id, loaded.clone());
+        loaded
+    }
+
+    fn memo(&self) -> std::sync::MutexGuard<'_, HashMap<String, LoadedContract>> {
+        crate::history::lock(&self.contracts)
+    }
+
+    /// Where the disk cache keeps contract `contract_id` of this network.
+    fn contract_cache_path(&self, contract_id: &str) -> Option<std::path::PathBuf> {
+        crate::cache::dir().map(|d| {
+            d.join("contracts")
+                .join(crate::cache::component(&self.target.network.key()))
+                .join(format!("{}.json", crate::cache::component(contract_id)))
+        })
+    }
+
+    /// The disk-cached contract, when present, decodable and still current. A copy checked
+    /// within [`crate::cache::CONTRACT_RECHECK`] is used as is; an older one costs one proved
+    /// version read and is dropped when the network holds another version.
+    async fn cached_contract(&self, contract_id: &str, id: Identifier) -> Option<DataContract> {
+        use dash_sdk::dpp::serialization::PlatformDeserializableWithPotentialValidationFromVersionedStructureUntrusted as _;
+        let path = self.contract_cache_path(contract_id)?;
+        let entry: CachedContract = serde_json::from_slice(&crate::cache::read(&path)?).ok()?;
+        let version = dash_sdk::dpp::version::PlatformVersion::get(entry.protocol_version).ok()?;
+        let bytes = hex::decode(&entry.contract).ok()?;
+        let contract =
+            DataContract::versioned_deserialize_untrusted(&bytes, false, version).ok()?;
+        if contract.id() != id || contract.version() != entry.version {
+            return None;
+        }
+        // A check time in the future (a clock that moved back) is not trusted as fresh.
+        let now = crate::cache::now_ms();
+        let fresh = entry.checked_at_ms <= now
+            && u128::from(now - entry.checked_at_ms) < crate::cache::CONTRACT_RECHECK.as_millis();
+        if fresh {
+            return Some(contract);
+        }
+        match self.latest_contract_version(id).await {
+            Ok(Some(v)) if v == entry.version => {
+                CachedContract {
+                    checked_at_ms: crate::cache::now_ms(),
+                    ..entry
+                }
+                .write(&path);
+                Some(contract)
+            }
+            _ => None,
+        }
+    }
+
+    /// The current on-chain version of contract `id` (proved; on protocol 14 from its
+    /// version item, a few hundred bytes rather than the contract).
+    async fn latest_contract_version(&self, id: Identifier) -> Result<Option<u32>> {
+        use dash_sdk::platform::data_contracts_latest_versions::DataContractLatestVersion;
+        let versions = retry_transient_read("contract versions", || {
+            DataContractLatestVersion::fetch_many(&self.sdk, vec![id])
+        })
+        .await
+        .map_err(|e| Error::Platform(format!("reading the contract version: {e}")))?;
+        Ok(versions.version_of(&id))
+    }
+
+    /// Keep a proof-verified contract in the disk cache.
+    fn store_contract(&self, contract_id: &str, contract: &DataContract) {
+        use dash_sdk::dpp::serialization::PlatformSerializableWithPlatformVersion as _;
+        let Some(path) = self.contract_cache_path(contract_id) else {
+            return;
+        };
+        let version = self.sdk.version();
+        let Ok(bytes) = contract.serialize_to_bytes_with_platform_version(version) else {
+            return;
+        };
+        CachedContract {
+            version: contract.version(),
+            protocol_version: version.protocol_version,
+            checked_at_ms: crate::cache::now_ms(),
+            contract: hex::encode(bytes),
+        }
+        .write(&path);
     }
 
     /// Fetch an identity by base58 id.
@@ -615,17 +755,10 @@ impl PlatformClient {
             .map_err(|e| Error::Platform(format!("building document query: {e}")))?;
 
         for f in filters {
-            query = query.with_where(WhereClause {
-                field: f.field.clone(),
-                operator: f.op.to_operator(),
-                value: f.value.clone().into_query_value(),
-            });
+            query = query.with_where(f.to_where_clause());
         }
         for o in order {
-            query = query.with_order_by(OrderClause {
-                field: o.field.clone(),
-                ascending: o.ascending,
-            });
+            query = query.with_order_by(o.to_order_clause());
         }
         // `limit` is REQUIRED to be a real bound. It used to be optional, with 0 meaning
         // "leave it unset" — but unset does not mean unlimited: Drive fills an absent limit
@@ -715,6 +848,207 @@ impl PlatformClient {
         Ok(documents)
     }
 
+    /// Fetch several contracts in ONE proved `getDataContracts` request (those not already
+    /// held by this process or the disk cache), registering each like
+    /// [`Self::fetch_contract`]. A contract the network does not have is skipped; the next
+    /// [`Self::fetch_contract`] of it reports that.
+    pub async fn prefetch_contracts(&self, contract_ids: &[&str]) -> Result<()> {
+        let mut missing = Vec::new();
+        for &id in contract_ids {
+            if self.memo().contains_key(id) {
+                continue;
+            }
+            let parsed = parse_id(id, "contract id")?;
+            match self.cached_contract(id, parsed).await {
+                Some(c) => {
+                    self.remember(id.to_string(), c);
+                }
+                None => missing.push(parsed),
+            }
+        }
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let fetched = retry_transient_read("fetch contracts", || {
+            DataContract::fetch_many(&self.sdk, missing.clone())
+        })
+        .await
+        .map_err(|e| Error::Platform(format!("fetching contracts: {e}")))?;
+        for (id, contract) in fetched {
+            let Some(contract) = contract else { continue };
+            let id = id.to_string(Encoding::Base58);
+            self.store_contract(&id, &contract);
+            self.remember(id, contract);
+        }
+        Ok(())
+    }
+
+    /// Run several one-page reads in as few round trips as possible: the first read is the
+    /// page of a protocol-14 composite `getDocuments` and the others ride along as its
+    /// sub-queries (independent siblings, or lookups bound to an earlier read's documents),
+    /// all proved under ONE merged proof (`GetDocumentsRequestV1.sub_queries`,
+    /// `dash-platform-queries` `composite_document_query`). At most
+    /// [`MAX_BATCH_READS`] reads go in one request; more are split.
+    ///
+    /// Every read must carry an explicit `limit` (≤ 100) and no cursor: a composite page takes
+    /// none, so page with a range clause (`$createdAt >= t`). A read's results are exactly
+    /// what the same read alone returns. When the network refuses the composite shape the
+    /// reads are sent one by one; when it has no composite surface at all (before protocol
+    /// 14), later batches of this client go that way too.
+    pub async fn query_batch(&self, reads: &[BatchRead<'_>]) -> Result<Vec<Vec<FetchedDocument>>> {
+        for (i, read) in reads.iter().enumerate() {
+            if let Some(b) = &read.bind {
+                if i >= MAX_BATCH_READS || b.source >= i {
+                    return Err(Error::Config(format!(
+                        "batched read {i} binds to read {}: a binding names an earlier read of \
+                         the first {MAX_BATCH_READS}",
+                        b.source
+                    )));
+                }
+            }
+        }
+        let mut out = Vec::with_capacity(reads.len());
+        for group in reads.chunks(MAX_BATCH_READS) {
+            out.extend(self.query_group(group).await?);
+        }
+        Ok(out)
+    }
+
+    /// One composite request for `reads` (≤ [`MAX_BATCH_READS`], bindings group-local).
+    async fn query_group(&self, reads: &[BatchRead<'_>]) -> Result<Vec<Vec<FetchedDocument>>> {
+        use std::sync::atomic::Ordering as AtomicOrdering;
+        let composite_ok = reads.len() > 1 && !self.no_composite.load(AtomicOrdering::Relaxed);
+        if composite_ok {
+            match self.query_composite(reads).await {
+                Ok(r) => return Ok(r),
+                Err(Error::CompositeRefused {
+                    unsupported,
+                    reason,
+                }) => {
+                    // A network without the composite surface stops trying; a shape refused
+                    // for its own reasons only falls back this once. Transient and rate-limit
+                    // failures are not refusals: they propagate (after the read's own
+                    // retries) rather than turning one request into several.
+                    tracing::info!(%reason, "composite query refused; reading one by one");
+                    if unsupported {
+                        self.no_composite.store(true, AtomicOrdering::Relaxed);
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        let mut out: Vec<Vec<FetchedDocument>> = Vec::with_capacity(reads.len());
+        for read in reads {
+            let mut filters = read.filters.clone();
+            if let Some(bind) = &read.bind {
+                // The composite derives `field IN <source's values>`; alone, that is an `in`
+                // clause built from the source's results (≤ 100 values, Drive's `in` cap).
+                let values: Vec<FieldValue> = out
+                    .get(bind.source)
+                    .map(|docs| {
+                        let mut seen = BTreeSet::new();
+                        docs.iter()
+                            .filter_map(|d| bind_value(d, &bind.source_property))
+                            .filter(|v| seen.insert(*v))
+                            .map(FieldValue::Identifier)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if values.is_empty() {
+                    out.push(Vec::new());
+                    continue;
+                }
+                filters.push(QueryFilter::in_list(bind.field.clone(), values));
+            }
+            // Drive treats `in` as a range, which needs an order on its field; a composite
+            // lookup left unordered gets one from the page, a plain query must name it.
+            let mut order = read.order.clone();
+            if let Some(bind) = &read.bind {
+                if !order.iter().any(|o| o.field == bind.field) {
+                    order.insert(0, QueryOrder::asc(bind.field.clone()));
+                }
+            }
+            out.push(
+                self.query_page(
+                    read.contract,
+                    read.document_type,
+                    &filters,
+                    &order,
+                    read.limit,
+                    None,
+                )
+                .await?,
+            );
+        }
+        Ok(out)
+    }
+
+    /// `reads` as one composite request: the first is the page, the rest its sub-queries.
+    async fn query_composite(&self, reads: &[BatchRead<'_>]) -> Result<Vec<Vec<FetchedDocument>>> {
+        use dash_sdk::platform::{CompositeBindingSource, CompositeSubQuery};
+        use drive_proof_verifier::CompositeDocuments;
+        let (page, rest) = reads
+            .split_first()
+            .ok_or_else(|| Error::Config("an empty batch".into()))?;
+        let mut query = Self::document_query(page)?;
+        for read in rest {
+            let mut sub =
+                CompositeSubQuery::documents(Arc::clone(&read.contract.0), read.document_type)
+                    .map_err(|e| Error::Platform(format!("building a sub-query: {e}")))?
+                    .with_limit(read.limit);
+            for f in &read.filters {
+                sub = sub.with_where(f.to_where_clause());
+            }
+            for o in &read.order {
+                sub = sub.with_order_by(o.to_order_clause());
+            }
+            if let Some(b) = &read.bind {
+                let source = match b.source {
+                    0 => CompositeBindingSource::Page,
+                    // Sub-query indices exclude the page.
+                    n => CompositeBindingSource::SubQuery(n - 1),
+                };
+                sub = sub.bound_to(source, b.source_property.clone(), b.field.clone());
+            }
+            query = query.with_sub_query(sub);
+        }
+        let result = retry_transient_read("composite query", || {
+            CompositeDocuments::fetch(&self.sdk, query.clone())
+        })
+        .await
+        .map_err(|e| composite_refusal(&e))?
+        .ok_or_else(|| Error::Platform("composite query returned nothing".into()))?;
+        if result.sub_results.len() != rest.len() {
+            return Err(Error::Platform(format!(
+                "composite query answered {} of {} sub-queries",
+                result.sub_results.len(),
+                rest.len()
+            )));
+        }
+        let convert = |docs: &[Document]| docs.iter().map(FetchedDocument::from_document).collect();
+        Ok(std::iter::once(convert(&result.page_documents))
+            .chain(result.sub_results.iter().map(|s| convert(s.documents())))
+            .collect())
+    }
+
+    /// The plain `DocumentQuery` of one read (no cursor).
+    fn document_query(read: &BatchRead<'_>) -> Result<DocumentQuery> {
+        if read.limit == 0 || read.limit > PAGE_SIZE {
+            return Err(Error::Config(format!(
+                "a batched read needs a limit of 1 to {PAGE_SIZE}"
+            )));
+        }
+        let mut query = DocumentQuery::new(Arc::clone(&read.contract.0), read.document_type)
+            .map_err(|e| Error::Platform(format!("building document query: {e}")))?;
+        for f in &read.filters {
+            query = query.with_where(f.to_where_clause());
+        }
+        for o in &read.order {
+            query = query.with_order_by(o.to_order_clause());
+        }
+        Ok(query.with_limit(read.limit))
+    }
+
     /// An O(1) provable count of `document_type` documents in `contract` matching
     /// `filters`, via the count-tree `getDocuments`+`select count(*)` aggregate (the
     /// mechanism behind star / issue / PR totals, data-contracts §3). The `filters`
@@ -729,11 +1063,7 @@ impl PlatformClient {
         let mut query = DocumentQuery::new(Arc::clone(&contract.0), document_type)
             .map_err(|e| Error::Platform(format!("building count query: {e}")))?;
         for f in filters {
-            query = query.with_where(WhereClause {
-                field: f.field.clone(),
-                operator: f.op.to_operator(),
-                value: f.value.clone().into_query_value(),
-            });
+            query = query.with_where(f.to_where_clause());
         }
         query = query.with_select(SelectProjection::count_star());
         let count = retry_transient_read("count documents", || {
@@ -782,6 +1112,8 @@ pub enum QueryOp {
     Lte,
     /// `field startsWith value` (string prefix search).
     StartsWith,
+    /// `field in [values]` (the value is a [`FieldValue::List`], at most 100 items).
+    In,
 }
 
 impl QueryOp {
@@ -793,6 +1125,71 @@ impl QueryOp {
             QueryOp::Lt => WhereOperator::LessThan,
             QueryOp::Lte => WhereOperator::LessThanOrEquals,
             QueryOp::StartsWith => WhereOperator::StartsWith,
+            QueryOp::In => WhereOperator::In,
+        }
+    }
+}
+
+/// The most reads [`PlatformClient::query_batch`] sends in one request: the page plus
+/// Drive's `MAX_SUB_QUERIES` (10).
+pub const MAX_BATCH_READS: usize = 11;
+
+/// One read of a [`PlatformClient::query_batch`]: a single page (explicit `limit`, no cursor).
+#[derive(Debug, Clone)]
+pub struct BatchRead<'c> {
+    /// The contract.
+    pub contract: &'c LoadedContract,
+    /// The document type.
+    pub document_type: &'c str,
+    /// Fixed where-clauses.
+    pub filters: Vec<QueryFilter>,
+    /// Order.
+    pub order: Vec<QueryOrder>,
+    /// Row cap, 1–100.
+    pub limit: u32,
+    /// Derive `field IN <values>` from an earlier read's documents.
+    pub bind: Option<BatchBind>,
+}
+
+/// A [`BatchRead`]'s derived clause: `field IN` the `source_property` values (identifiers:
+/// `$id`, `$ownerId` or an identifier property) of read `source`'s documents.
+#[derive(Debug, Clone)]
+pub struct BatchBind {
+    /// The index of an earlier read of the same batch group.
+    pub source: usize,
+    /// The source documents' property.
+    pub source_property: String,
+    /// The bound field of this read.
+    pub field: String,
+}
+
+/// The identifier `property` of `d` a binding reads (`$id`, `$ownerId` or an identifier
+/// field), as raw bytes.
+fn bind_value(d: &FetchedDocument, property: &str) -> Option<[u8; 32]> {
+    match property {
+        "$id" => decode_identifier(&d.id).ok(),
+        "$ownerId" => decode_identifier(&d.owner_id).ok(),
+        other => d.field_bytes32(other),
+    }
+}
+
+impl QueryFilter {
+    /// The SDK where-clause.
+    fn to_where_clause(&self) -> WhereClause {
+        WhereClause {
+            field: self.field.clone(),
+            operator: self.op.to_operator(),
+            value: self.value.clone().into_query_value(),
+        }
+    }
+}
+
+impl QueryOrder {
+    /// The SDK order clause.
+    fn to_order_clause(&self) -> OrderClause {
+        OrderClause {
+            field: self.field.clone(),
+            ascending: self.ascending,
         }
     }
 }
@@ -842,6 +1239,24 @@ impl QueryFilter {
         }
     }
 
+    /// A `field >= value` filter.
+    pub fn gte(field: impl Into<String>, value: QueryValue) -> Self {
+        Self {
+            field: field.into(),
+            op: QueryOp::Gte,
+            value,
+        }
+    }
+
+    /// A `field in [values]` filter (at most 100 values).
+    pub fn in_list(field: impl Into<String>, values: Vec<QueryValue>) -> Self {
+        Self {
+            field: field.into(),
+            op: QueryOp::In,
+            value: FieldValue::List(values),
+        }
+    }
+
     /// A `field <= value` filter.
     pub fn lte(field: impl Into<String>, value: QueryValue) -> Self {
         Self {
@@ -883,7 +1298,10 @@ impl QueryOrder {
 /// An SDK-free view of a fetched document: its base58 ids, consensus `$createdAt` and
 /// its properties as [`FieldValue`]s. Built by [`PlatformClient::query_documents`]; the
 /// SDK `Document` / `Value` types never cross this boundary (style guide §B).
-#[derive(Debug, Clone)]
+///
+/// Serializable so the append-only history cache ([`crate::history`]) can keep rows exactly as
+/// Platform returned them (ciphertext included, for a private repository).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FetchedDocument {
     /// Base58 document `$id`.
     pub id: String,
@@ -900,6 +1318,9 @@ pub struct FetchedDocument {
     pub updated_at_block_height: Option<u64>,
     /// Property name → value, in the SDK-free field representation.
     pub fields: BTreeMap<String, FieldValue>,
+    /// `$revision` of a mutable document (what a guarded replace compares, see
+    /// [`DocumentEngine::replace_document_guarded`]); `None` when the type records none.
+    pub revision: Option<u64>,
 }
 
 impl FetchedDocument {
@@ -921,6 +1342,7 @@ impl FetchedDocument {
             created_at_block_height,
             updated_at_block_height,
             fields,
+            revision: doc.revision(),
         }
     }
 
@@ -1290,12 +1712,27 @@ impl<'a> WriteEngine<'a> {
                 .map_err(|e| Error::Platform(format!("deserializing signed transition: {e}")))?;
         let sdk = self.client.sdk();
         let document_type = prepared.document_type.as_str();
+        // One rate-limit wait budget for the whole write, across its re-broadcasts.
+        let waits = std::sync::atomic::AtomicU32::new(0);
         drive_write(
             || async {
-                state_transition
-                    .broadcast(sdk, None)
-                    .await
-                    .map_err(|e| classify_write_error(&e, document_type))
+                // A rate-limit refusal is waited out here (the same signed bytes go again after
+                // `ratelimit-reset`), rather than spending one of the loop's re-broadcasts on
+                // a 2 s backoff the gateway will refuse again (D-902).
+                loop {
+                    crate::budget::acquire().await;
+                    let Err(e) = state_transition.broadcast(sdk, None).await else {
+                        return Ok(());
+                    };
+                    let used = waits.load(std::sync::atomic::Ordering::Relaxed);
+                    match rate_limit_reset(&e) {
+                        Some(reset) if used < crate::budget::MAX_RATE_LIMIT_WAITS => {
+                            waits.store(used + 1, std::sync::atomic::Ordering::Relaxed);
+                            crate::budget::wait_out_rate_limit("broadcast", reset).await;
+                        }
+                        _ => return Err(classify_write_error(&e, document_type)),
+                    }
+                }
             },
             // The affected-state wait, not the strict one. rs-sdk 4.2's strict wait fails any
             // outcome whose proof only authenticates the resulting state, and that is every
@@ -1442,6 +1879,53 @@ impl<'a> WriteEngine<'a> {
         F: Fn() -> Fut,
         Fut: std::future::Future<Output = Result<bool>>,
     {
+        // Calibration (`DASH_FORGE_COST_TRACE=1`, off otherwise: two balance reads per write):
+        // each create's measured balance drop, by type and serialized size, logged at info on
+        // `forge_core::cost`. Only meaningful for sequential writes by an identity nothing else
+        // is spending. An explicit switch, not the log level: `tracing::enabled!` also holds
+        // when any other target is traced, and these reads must never ride along unasked.
+        let traced = std::env::var_os("DASH_FORGE_COST_TRACE").is_some_and(|v| v == "1");
+        let owner = self.owner_id.to_string(Encoding::Base58);
+        let before = if traced {
+            self.client.get_balance(&owner).await.ok()
+        } else {
+            None
+        };
+        let landed = self
+            .create_attempts(contract, document_type, properties, &mut persist, probe)
+            .await?;
+        if let Some(before) = before {
+            let mut after = self.client.get_balance(&owner).await.ok();
+            for _ in 0..8 {
+                if after.is_some_and(|a| a != before) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                after = self.client.get_balance(&owner).await.ok();
+            }
+            tracing::info!(
+                target: "forge_core::cost",
+                document_type,
+                bytes = landed.signed().bytes.len(),
+                measured = after.map_or(0, |a| before.saturating_sub(a)),
+                "write cost"
+            );
+        }
+        Ok(landed)
+    }
+
+    async fn create_attempts<F, Fut>(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        properties: BTreeMap<String, FieldValue>,
+        persist: &mut impl FnMut(&PreparedWrite) -> Result<()>,
+        probe: Option<F>,
+    ) -> Result<PreparedWrite>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = Result<bool>>,
+    {
         // Two retries: a stale protocol version (nothing landed) and a nonce another write by
         // this identity took first (ours can then never land). Each re-prepares with a fresh
         // nonce and entropy, persisting the replacement before it is broadcast.
@@ -1570,6 +2054,22 @@ impl<'a> WriteEngine<'a> {
         document_id: &str,
         changes: &BTreeMap<String, Option<FieldValue>>,
     ) -> Result<bool> {
+        self.replace_document_guarded(contract, document_type, document_id, changes, None)
+            .await
+    }
+
+    /// [`Self::replace_document`], refused (E607, nothing signed) when the stored document is
+    /// no longer at `expected_revision`, the revision the caller read and built `changes`
+    /// from: another edit landed since, and replacing it would silently drop that edit. A
+    /// private edit needs this: it re-seals the whole content it read.
+    pub async fn replace_document_guarded(
+        &self,
+        contract: &LoadedContract,
+        document_type: &str,
+        document_id: &str,
+        changes: &BTreeMap<String, Option<FieldValue>>,
+        expected_revision: Option<u64>,
+    ) -> Result<bool> {
         let doc_id = parse_id(document_id, "document id")?;
         let data_contract = &contract.0;
         let doc_type_ref = data_contract
@@ -1591,6 +2091,7 @@ impl<'a> WriteEngine<'a> {
                 same_field(stored.as_ref(), v.as_ref())
             })
         };
+        let mut broadcast = false;
         for _ in 0..3 {
             let Some(mut doc) = fetch().await? else {
                 return Err(Error::NotFound);
@@ -1601,8 +2102,16 @@ impl<'a> WriteEngine<'a> {
                 )));
             }
             if holds(&doc) {
-                return Ok(false);
+                // ours landed (after a spent nonce), or it already read that way
+                return Ok(broadcast);
             }
+            check_revision(
+                document_type,
+                document_id,
+                expected_revision,
+                doc.revision(),
+                broadcast,
+            )?;
             let next = doc
                 .revision()
                 .unwrap_or(INITIAL_REVISION)
@@ -1642,6 +2151,7 @@ impl<'a> WriteEngine<'a> {
                 op: WriteOp::Replace,
                 signed: SignedTransition::from_state_transition(&state_transition, nonce)?,
             };
+            broadcast = true;
             match self.execute(&prepared).await? {
                 BroadcastOutcome::NonceConsumed => {
                     // Ours landed (its answer lost), or another write took the nonce: the
@@ -1677,6 +2187,35 @@ impl<'a> WriteEngine<'a> {
             .prepare_delete_with_values(contract, document_type, document_id, values, created_at)
             .await?;
         self.execute(&prepared).await
+    }
+}
+
+/// Refuse a replace built from `expected` when the stored document is at `stored` (another
+/// edit landed in between): E607. `None` expected: no guard. `broadcast`: an earlier attempt of
+/// this replace was broadcast and its nonce spent, so whether it landed is not known here.
+fn check_revision(
+    document_type: &str,
+    document_id: &str,
+    expected: Option<u64>,
+    stored: Option<u64>,
+    broadcast: bool,
+) -> Result<()> {
+    match expected {
+        Some(e) if stored != Some(e) => Err(crate::user_error::UserError::new(
+            crate::user_error::codes::EDIT_CONFLICT,
+            if broadcast {
+                format!("this {document_type} changed while your edit was being sent; it now holds another edit")
+            } else {
+                format!("this {document_type} changed since you read it; nothing was written")
+            },
+        )
+        .cause(format!(
+            "{document_type} {document_id} is at revision {}, the edit was made against revision {e}",
+            stored.map_or_else(|| "?".into(), |s| s.to_string())
+        ))
+        .fix("read it again and redo the edit on the current text")
+        .into()),
+        _ => Ok(()),
     }
 }
 
@@ -1745,7 +2284,7 @@ const CONFIRM_DELAY: std::time::Duration = std::time::Duration::from_millis(1500
 ///
 /// It is also the SDK-free carrier a [`FetchedDocument`] hands back — [`FieldValue::from_value`]
 /// maps a fetched `platform_value::Value` into this closed set so no SDK type leaks out.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum FieldValue {
     /// A variable-length `byteArray` field.
     Bytes(Vec<u8>),
@@ -2465,21 +3004,92 @@ fn duration_ms(d: std::time::Duration) -> u64 {
 #[allow(clippy::result_large_err)]
 pub(crate) async fn retry_transient_read<T, F, Fut>(
     label: &str,
-    op: F,
+    mut op: F,
 ) -> std::result::Result<T, dash_sdk::Error>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = std::result::Result<T, dash_sdk::Error>>,
 {
-    retry_with_backoff(label, RETRY_BACKOFF_BASE, is_transient_node_error, op).await
+    retry_with_backoff(
+        label,
+        RETRY_BACKOFF_BASE,
+        is_transient_node_error,
+        rate_limit_reset,
+        || {
+            let fut = op();
+            async move {
+                crate::budget::acquire().await;
+                fut.await
+            }
+        },
+    )
+    .await
+}
+
+/// A composite query's failure: [`Error::CompositeRefused`] when the node answered it with a
+/// refusal of the request itself (an invalid argument: a shape Drive rejects; unimplemented or
+/// an unsupported query version: a network without the composite surface), the plain platform
+/// error otherwise (a transient node failure the retries did not cure, a rate limit).
+fn composite_refusal(e: &dash_sdk::Error) -> Error {
+    use dapi_grpc::tonic::Code;
+    use dash_sdk::dapi_client::transport::TransportError;
+    use dash_sdk::dapi_client::DapiClientError;
+    let code = match e {
+        dash_sdk::Error::DapiClientError(DapiClientError::Transport(TransportError::Grpc(s))) => {
+            Some(s.code())
+        }
+        _ => None,
+    };
+    let text = e.to_string();
+    let unsupported = code == Some(Code::Unimplemented)
+        || text.contains("UnsupportedQueryVersion")
+        || text.contains("unsupported query version");
+    if unsupported || code == Some(Code::InvalidArgument) {
+        Error::CompositeRefused {
+            unsupported,
+            reason: text,
+        }
+    } else {
+        Error::Platform(format!("composite query: {text}"))
+    }
+}
+
+/// How long the gateway asked us to wait: `Some(ratelimit-reset)` when `e` is a DAPI
+/// rate-limit refusal (gRPC `ResourceExhausted`), wherever the SDK wrapped it (directly, or
+/// as the last error behind "no available addresses to retry" once it had banned every node
+/// it tried). A `ResourceExhausted` without the header is not a rate limit (drive-abci's
+/// busy check-tx answer): `None`, and the caller's ordinary backoff applies.
+fn rate_limit_reset(e: &dash_sdk::Error) -> Option<std::time::Duration> {
+    use dash_sdk::dapi_client::transport::TransportError;
+    use dash_sdk::dapi_client::DapiClientError;
+    // Only a refusal carrying the gateway's `ratelimit-reset`: drive-abci also answers
+    // ResourceExhausted (without the header) when check-tx capacity is briefly busy, which the
+    // ordinary short backoff handles.
+    fn of_transport(t: &TransportError) -> Option<std::time::Duration> {
+        t.rate_limit_ban_duration()
+    }
+    match e {
+        dash_sdk::Error::DapiClientError(DapiClientError::Transport(t)) => of_transport(t),
+        dash_sdk::Error::DapiClientError(DapiClientError::NoAvailableAddressesToRetry(t)) => {
+            of_transport(t)
+        }
+        dash_sdk::Error::NoAvailableAddressesToRetry(inner) => rate_limit_reset(inner),
+        _ => None,
+    }
 }
 
 /// The loop behind [`retry_transient_read`], generic over the error and the delay so the
 /// attempt count and backoff are testable without a network or a real clock.
+///
+/// A rate-limit refusal (`rate_limited` returns the reset the gateway asked for) is not a
+/// failed attempt: the loop waits out the reset (plus jitter) and asks again, up to
+/// [`crate::budget::MAX_RATE_LIMIT_WAITS`] times, and says so on stderr once per wait
+/// (D-902: a rate limit used to ban every node and fail the command).
 async fn retry_with_backoff<T, E, F, Fut>(
     label: &str,
     base: std::time::Duration,
     transient: impl Fn(&E) -> bool,
+    rate_limited: impl Fn(&E) -> Option<std::time::Duration>,
     mut op: F,
 ) -> std::result::Result<T, E>
 where
@@ -2488,23 +3098,33 @@ where
     Fut: std::future::Future<Output = std::result::Result<T, E>>,
 {
     let mut attempt: u32 = 1;
+    let mut waits: u32 = 0;
     loop {
-        match op().await {
+        let e = match op().await {
             Ok(v) => return Ok(v),
-            Err(e) if attempt < MAX_READ_ATTEMPTS && transient(&e) => {
-                let delay = backoff_delay(base, attempt);
-                tracing::warn!(
-                    op = label,
-                    attempt,
-                    delay_ms = duration_ms(delay),
-                    error = %e,
-                    "transient Platform read failure; backing off and retrying on a fresh node rotation"
-                );
-                tokio::time::sleep(delay).await;
-                attempt += 1;
+            Err(e) => e,
+        };
+        match rate_limited(&e) {
+            Some(reset) if waits < crate::budget::MAX_RATE_LIMIT_WAITS => {
+                waits += 1;
+                crate::budget::wait_out_rate_limit(label, reset).await;
+                continue;
             }
-            Err(e) => return Err(e),
+            _ => {}
         }
+        if attempt >= MAX_READ_ATTEMPTS || !transient(&e) {
+            return Err(e);
+        }
+        let delay = backoff_delay(base, attempt);
+        tracing::warn!(
+            op = label,
+            attempt,
+            delay_ms = duration_ms(delay),
+            error = %e,
+            "transient Platform read failure; backing off and retrying on a fresh node rotation"
+        );
+        tokio::time::sleep(delay).await;
+        attempt += 1;
     }
 }
 
@@ -2665,6 +3285,28 @@ mod tests {
     use std::collections::BTreeMap;
 
     #[test]
+    fn a_replace_against_a_newer_revision_is_refused() {
+        use super::check_revision;
+        assert!(
+            check_revision("comment", "c1", None, Some(3), false).is_ok(),
+            "no guard"
+        );
+        assert!(check_revision("comment", "c1", Some(3), Some(3), false).is_ok());
+        let err = check_revision("comment", "c1", Some(2), Some(3), false).unwrap_err();
+        let Error::User(u) = &err else {
+            panic!("{err:?}")
+        };
+        assert_eq!(u.code, crate::user_error::codes::EDIT_CONFLICT);
+        assert!(u.message.contains("nothing was written"), "{}", u.message);
+        // after a broadcast whose nonce was spent, it cannot claim nothing was written
+        let err = check_revision("comment", "c1", Some(2), Some(3), true).unwrap_err();
+        let Error::User(u) = &err else {
+            panic!("{err:?}")
+        };
+        assert!(!u.message.contains("nothing was written"), "{}", u.message);
+    }
+
+    #[test]
     fn a_replace_holds_by_value_not_wire_form() {
         use super::same_field;
         let s = |v: FieldValue| Some(v);
@@ -2740,6 +3382,7 @@ mod tests {
             created_at_block_height: None,
             updated_at_block_height: None,
             fields: BTreeMap::new(),
+            revision: None,
         }
     }
 
@@ -3001,6 +3644,7 @@ mod tests {
             "test",
             std::time::Duration::ZERO,
             |e: &&str| e.starts_with("transient"),
+            |_: &&str| None,
             || {
                 *attempts.borrow_mut() += 1;
                 std::future::ready(calls.borrow_mut().next().expect("script exhausted"))
@@ -3033,6 +3677,85 @@ mod tests {
         let (out, n) = run_script(vec![Err("malformed query"), Ok(1)]).await;
         assert_eq!(out, Err("malformed query"));
         assert_eq!(n, 1);
+    }
+
+    /// D-902: a `ResourceExhausted` carrying `ratelimit-reset` is read as "wait N s" wherever
+    /// the SDK wrapped it (directly, or behind "no available addresses" after it banned every
+    /// node), and nothing else is.
+    #[test]
+    fn a_rate_limit_refusal_is_read_with_its_reset() {
+        use dash_sdk::dapi_client::transport::TransportError;
+        use dash_sdk::dapi_client::DapiClientError;
+        let limited = |reset: Option<&str>| {
+            let mut s = dapi_grpc::tonic::Status::resource_exhausted("429");
+            if let Some(r) = reset {
+                s.metadata_mut().insert(
+                    "ratelimit-reset",
+                    dapi_grpc::tonic::metadata::MetadataValue::try_from(r).unwrap(),
+                );
+            }
+            TransportError::Grpc(s)
+        };
+        let direct =
+            dash_sdk::Error::DapiClientError(DapiClientError::Transport(limited(Some("23"))));
+        assert_eq!(
+            super::rate_limit_reset(&direct),
+            Some(std::time::Duration::from_secs(23))
+        );
+        let banned_all = dash_sdk::Error::DapiClientError(
+            DapiClientError::NoAvailableAddressesToRetry(Box::new(limited(Some("41")))),
+        );
+        assert_eq!(
+            super::rate_limit_reset(&banned_all),
+            Some(std::time::Duration::from_secs(41))
+        );
+        let no_header = dash_sdk::Error::DapiClientError(DapiClientError::Transport(limited(None)));
+        assert_eq!(
+            super::rate_limit_reset(&no_header),
+            None,
+            "a busy node, not a rate limit"
+        );
+        let down = dash_sdk::Error::DapiClientError(DapiClientError::Transport(
+            TransportError::Grpc(dapi_grpc::tonic::Status::unavailable("x")),
+        ));
+        assert_eq!(super::rate_limit_reset(&down), None);
+    }
+
+    /// A rate-limited read waits out the reset and then succeeds, without spending one of its
+    /// transient-failure attempts (the whole read fails only after five refusals in a row).
+    #[tokio::test(start_paused = true)]
+    async fn a_rate_limited_read_waits_for_the_reset_and_succeeds() {
+        let calls = RefCell::new(vec![Err("limited"), Err("limited"), Ok(5)].into_iter());
+        let started = tokio::time::Instant::now();
+        let out = retry_with_backoff(
+            "test",
+            std::time::Duration::ZERO,
+            |_: &&str| false,
+            |e: &&str| (*e == "limited").then(|| std::time::Duration::from_secs(30)),
+            || std::future::ready(calls.borrow_mut().next().expect("script exhausted")),
+        )
+        .await;
+        assert_eq!(out, Ok(5));
+        assert!(
+            started.elapsed() >= std::time::Duration::from_secs(60),
+            "waited {:?}",
+            started.elapsed()
+        );
+        // Five refusals in a row are an error, not an endless wait.
+        let refusals = RefCell::new(0u32);
+        let out: std::result::Result<u32, &str> = retry_with_backoff(
+            "test",
+            std::time::Duration::ZERO,
+            |_: &&str| false,
+            |_: &&str| Some(std::time::Duration::from_secs(1)),
+            || {
+                *refusals.borrow_mut() += 1;
+                std::future::ready(Err("limited"))
+            },
+        )
+        .await;
+        assert_eq!(out, Err("limited"));
+        assert_eq!(*refusals.borrow(), crate::budget::MAX_RATE_LIMIT_WAITS + 1);
     }
 
     #[test]

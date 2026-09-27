@@ -29,7 +29,7 @@ use crate::keyring::{sealed_error, Keyring, PrivateSigner};
 use crate::keystore::BridgeIdentity;
 use crate::platform::{
     self, FetchedDocument, FieldValue, JournalStore, LoadedContract, LoadedIdentity,
-    PlatformClient, PushJournal, QueryFilter, QueryOrder, WriteEngine, WriteIntent,
+    PlatformClient, PushJournal, WriteEngine, WriteIntent,
 };
 use crate::private::{DocHeader, DocKind, Fields, Private, PrivateError, RefNameHasher};
 use crate::rules::v2::{CopyKey, PackCopy, PackCopyRow, Role, V2Pack, Visibility};
@@ -670,6 +670,7 @@ impl<'a> RepoService<'a> {
         let hasher = crate::private::Public;
         let ref_name_hash = hasher.hash(0, ref_name)?; // public: the epoch is unused
 
+        // The config in force now: this write is routed by it.
         let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
         let protected = rules::matches_protected(ref_name, &current_protected_patterns(&configs));
         let doc_type = if protected {
@@ -745,19 +746,12 @@ impl<'a> RepoService<'a> {
 
     /// Enumerate every ref and its resolved [`RefState`].
     ///
-    /// Every ref's history comes from [`crate::refs::read_all_ref_updates`] — a keyset scan
-    /// over the `refState` index (scoped to the repo: `(repoId, refNameHash, $createdAt)` on
-    /// forge-v2), ⌈updates/100⌉ queries per type plus one per ref that fills a page by itself,
-    /// with a `prevOid` completeness check — and each ref's combined update history + the
-    /// repo's `config` history is folded by [`crate::rules::resolve_ref`].
-    ///
-    /// Two earlier readers failed in opposite ways. The S0.8 skip-scan (one `limit 1` query
-    /// per ref per type, then one history read per ref) cost about four sequential
-    /// round-trips per ref ever pushed, deleted ones included: over a minute per `git`
-    /// command on the nightly repo. Paging the `refState` index with a `startAfter` cursor
-    /// was fast but silently lost rows on protocol 13 (see the `refs` module docs). Paging
-    /// the whole `reflog` index was correct but read every update of every ref on every
-    /// command, so it is kept only as the fallback the completeness check falls to.
+    /// Every ref's history, and the repo's `config` history, come from
+    /// [`crate::refs::read_git_state`]: the append-only `reflog` read through the delta cache
+    /// ([`crate::history`]), so a repository's history is paged once and every later read
+    /// costs one request for what landed since (see the `refs` module docs for why this
+    /// replaced the `refState` keyset scan). Each ref's updates are folded with the config
+    /// history by [`crate::rules::resolve_ref`].
     ///
     /// The ancestry predicate is reflexive-only here (no read-side commit graph):
     /// fast-forward supersession via `prevOid` still resolves, but descend-detection is
@@ -769,8 +763,15 @@ impl<'a> RepoService<'a> {
             kr.require_key(repo)?; // no key at all: say so, rather than list nothing
             return crate::refs::read_private_refs(self.client, &contract, &scope, &kr).await;
         }
-        let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
-        let by_hash = crate::refs::read_all_ref_updates(self.client, &contract, &scope).await?;
+        let state = crate::refs::read_git_state(
+            self.client,
+            &contract,
+            &scope,
+            crate::history::Freshness::Now,
+        )
+        .await?;
+        let configs = state.config_history();
+        let by_hash = state.ref_histories();
 
         let mut out = Vec::with_capacity(by_hash.len());
         for (hash, updates) in &by_hash {
@@ -805,22 +806,17 @@ impl<'a> RepoService<'a> {
     /// The config in force in `scope`: the newest **well-formed** `config` by
     /// `($createdAt, $id)`, the same selection the ref rules (`current_protected_patterns`) and
     /// forge-web's `readConfigBundle` make, so a settings write builds on the config readers
-    /// see. Reads the whole (append-only, small) timeline.
+    /// see. Read through the delta cache: [`Freshness::Now`](crate::history::Freshness::Now)
+    /// for anything that writes from it (a settings write must build on the newest config),
+    /// `Synced` for a read that follows a `list` in the same process.
     async fn newest_config(
         &self,
         scope: &DocScope,
         contract: &LoadedContract,
+        freshness: crate::history::Freshness,
     ) -> Result<Option<FetchedDocument>> {
-        let docs = self
-            .client
-            .query_all_documents(
-                contract,
-                DOC_CONFIG,
-                &scope.filters([]),
-                &[QueryOrder::asc("$createdAt")],
-            )
-            .await?;
-        Ok(newest_well_formed_config(docs))
+        let state = crate::refs::read_git_state(self.client, contract, scope, freshness).await?;
+        Ok(newest_well_formed_config(state.configs))
     }
 
     /// The repo's current default branch from the newest `config` (e.g. `main`) — the
@@ -831,7 +827,7 @@ impl<'a> RepoService<'a> {
         }
         let (scope, contract) = self.readable(repo).await?;
         Ok(self
-            .newest_config(&scope, &contract)
+            .newest_config(&scope, &contract, crate::history::Freshness::Synced)
             .await?
             .and_then(|d| d.field_str("defaultBranch")))
     }
@@ -865,7 +861,7 @@ impl<'a> RepoService<'a> {
         }
         let (scope, contract) = self.readable(repo).await?;
         Ok(self
-            .newest_config(&scope, &contract)
+            .newest_config(&scope, &contract, crate::history::Freshness::Now)
             .await?
             .as_ref()
             .map_or_else(CurrentConfig::default, CurrentConfig::of_doc))
@@ -917,7 +913,7 @@ impl<'a> RepoService<'a> {
                 .map(Some);
         }
         let now = self
-            .newest_config(&scope, &contract)
+            .newest_config(&scope, &contract, crate::history::Freshness::Now)
             .await?
             .as_ref()
             .map_or_else(CurrentConfig::default, CurrentConfig::of_doc);
@@ -1019,18 +1015,19 @@ impl<'a> RepoService<'a> {
     /// pack. Drop the oldest manifests — which is what a capped newest-first read does once
     /// a repo passes one page — and the initial import pack, holding the root objects and
     /// the delta bases everything else is built against, falls out of the set.
+    ///
+    /// `packManifest` is append-only, so this reads through the delta cache
+    /// ([`crate::history`]): a repository's manifests are paged once, then each read costs one
+    /// request for what landed since.
     pub async fn read_pack_manifests(&self, repo: &RepoRef) -> Result<Vec<PackManifestInfo>> {
         let (scope, contract) = self.readable(repo).await?;
-        let docs = self
-            .client
-            .query_all_documents(
-                &contract,
-                DOC_PACK_MANIFEST,
-                &scope.filters([]),
-                &[QueryOrder::desc("$createdAt")],
-            )
-            .await?;
-        docs.iter().map(manifest_info).collect()
+        let spec = crate::history::HistorySpec::new(&contract, DOC_PACK_MANIFEST, &scope);
+        let docs = crate::history::sync(self.client, &[spec], crate::history::Freshness::Now)
+            .await?
+            .pop()
+            .unwrap_or_default();
+        // Newest first, `($createdAt, $id)` descending.
+        docs.iter().rev().map(manifest_info).collect()
     }
 
     /// Every manifest of `pack_hash` (each uploader may hold a copy).
@@ -1039,17 +1036,14 @@ impl<'a> RepoService<'a> {
         repo: &RepoRef,
         pack_hash: [u8; 32],
     ) -> Result<Vec<PackManifestInfo>> {
-        let (scope, contract) = self.readable(repo).await?;
-        let docs = self
-            .client
-            .query_all_documents(
-                &contract,
-                DOC_PACK_MANIFEST,
-                &scope.filters([QueryFilter::eq("packHash", FieldValue::bytes32(pack_hash))]),
-                &[],
-            )
-            .await?;
-        docs.iter().map(manifest_info).collect()
+        // From the (delta-cached) manifest list: one request for what landed since, where a
+        // `byHash` query would be one more round trip every push.
+        Ok(self
+            .read_pack_manifests(repo)
+            .await?
+            .into_iter()
+            .filter(|m| m.pack_hash == pack_hash)
+            .collect())
     }
 
     /// Store pack `bytes` as pipelined `chunk` documents, returning the `platform://…`
@@ -1166,7 +1160,10 @@ impl<'a> RepoService<'a> {
     ) -> PackReader {
         let mut backend = Vec::new();
         if let Ok((scope, contract)) = self.readable(repo).await {
-            if let Ok(Some(config)) = self.newest_config(&scope, &contract).await {
+            if let Ok(Some(config)) = self
+                .newest_config(&scope, &contract, crate::history::Freshness::Synced)
+                .await
+            {
                 backend = scope::backend_uris(&config);
             }
         }
@@ -1833,9 +1830,11 @@ pub async fn read_valid_tips(
     repo.require_public("verifying tips without keys")?;
     let scope = repo.scope()?;
     let contract = client.fetch_contract(&scope.contract_id).await?;
-    let configs = crate::refs::read_config_history(client, &contract, &scope).await?;
-    let hash = crate::backends::sha256(ref_name.as_bytes());
-    let updates = crate::refs::read_ref_history(client, &contract, &scope, hash).await?;
+    let state =
+        crate::refs::read_git_state(client, &contract, &scope, crate::history::Freshness::Now)
+            .await?;
+    let configs = state.config_history();
+    let updates = state.ref_history(crate::backends::sha256(ref_name.as_bytes()));
     Ok(updates
         .iter()
         .filter(|u| rules::is_update_valid(u, &configs))
@@ -2870,6 +2869,7 @@ mod tests {
                 created_at: Some(at),
                 created_at_block_height: Some(1),
                 updated_at_block_height: None,
+                revision: None,
                 fields: fields
                     .iter()
                     .map(|(k, v)| ((*k).to_string(), v.clone()))

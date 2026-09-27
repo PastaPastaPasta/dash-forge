@@ -53,12 +53,23 @@ export interface LimitedKey {
   readonly limits: KeyLimits
 }
 
+/** A limited key prepared for registration: the key id it will take and its private key. */
+export interface PreparedKey {
+  readonly keyId: number
+  readonly wif: string
+}
+
 /**
- * Register a limited key on `identityId`, signed once by `masterWif`. Generates the new key
- * in the WASM (not retained beyond the returned WIF), registers it, verifies on chain that it
- * landed with the group bound, the requested budget and expiry, and returns it. The group is
+ * Register a limited key on `identityId`, signed once by `masterWif`, verify on chain that it
+ * landed with the group bound, the requested budget and expiry, and return it. The group is
  * first checked on chain against its pinned owner (`./group-trust`): pass `trust`, or
  * `groupChecked: true` when the caller has just run that check itself.
+ *
+ * `persist` (D-016): called with the new key's id and private key BEFORE anything changes on
+ * chain. It must store the key durably (and read it back); if it throws, nothing is sent: no
+ * fee, and the old key keeps working. Only then is the identity update signed. Without it the
+ * key exists only in memory until this returns, so a caller that stores it afterwards and fails
+ * would leave the old key disabled and the new one held by nobody.
  *
  * `replaceKeyId`: a renewal disables this browser's previous limited key in the same update,
  * so renewing never leaves a live key nobody holds. Only a live group-bound HIGH key is
@@ -78,6 +89,8 @@ export async function registerLimitedKey(
      * update: each is disabled only if the stored private key controls it.
      */
     readonly disableHeld?: readonly HeldKey[]
+    /** Store the prepared key durably before the chain changes (see above). */
+    readonly persist?: (key: PreparedKey) => Promise<void>
   } & (
     | {
         /** The group's pinned trust root (`groupTrust`), checked on chain first. */
@@ -110,6 +123,16 @@ export async function registerLimitedKey(
 
   const fresh = PrivateKey.fromBytes(crypto.getRandomValues(new Uint8Array(32)), params.network === 'mainnet' ? 'mainnet' : 'testnet')
   const keyId = Math.max(...identity.publicKeys.map((k) => k.keyId)) + 1
+  const wif = fresh.toWIF()
+  if (params.persist) {
+    try {
+      await params.persist({ keyId, wif })
+    } catch (e) {
+      fresh.free()
+      master.free()
+      throw e
+    }
+  }
   const signer = new IdentitySigner()
   try {
     signer.addKey(master)
@@ -139,9 +162,8 @@ export async function registerLimitedKey(
   } finally {
     signer.free()
     master.free()
+    fresh.free()
   }
-  const wif = fresh.toWIF()
-  fresh.free()
   const limits = await verifyLimitedKey(sdk, params.identityId, keyId, params.group, params.network, wif, request)
   return { keyId, wif, limits }
 }

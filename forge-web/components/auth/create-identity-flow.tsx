@@ -206,9 +206,10 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         trust: controller.groupTrust(),
         minDepositDuffs: MIN_DEPOSIT_DUFFS,
         signal: controllerRun.signal,
-        persistKey: async (id, k) => {
-          await controller.persistKey({ identityId: id, keyId: k.keyId, wif: k.wif }, protection)
-          storedKey.current = { identityId: id, keyId: k.keyId, wif: k.wif }
+        persistKey: async (id, k, o) => {
+          await controller.persistKey({ identityId: id, keyId: k.keyId, wif: k.wif }, protection, o)
+          // A staged key (a renewal in flight) is not the key this browser holds yet.
+          if (!o?.staged) storedKey.current = { identityId: id, keyId: k.keyId, wif: k.wif }
         },
         heldKey: async (id) => (storedKey.current?.identityId === id ? storedKey.current : null),
         onStage: (s, detail) => setStage(detail ?? STAGE_TEXT[s]),

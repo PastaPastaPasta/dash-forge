@@ -722,6 +722,94 @@ fn secret(h: &str) -> crate::platform::wrap::WrapSecret {
     crate::platform::wrap::WrapSecret::from_bytes(&h32(h)).unwrap()
 }
 
+/// A CLI edit re-seals through the same transform as a create (`collab::private::reseal_edit`,
+/// the web's `sealEdit`): every `private_collab_seal` vector's sealed document, opened and
+/// re-sealed with its own text under the vector's nonce, gives back the vector's `enc` byte for
+/// byte. So an edit writes exactly what a create of the edited text would.
+#[test]
+fn a_reseal_edit_is_the_create_transform() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../forge-contracts/vectors");
+    let mut checked = 0usize;
+    for entry in std::fs::read_dir(&dir).expect("read vectors dir") {
+        let path = entry.unwrap().path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !name.starts_with("private_collab_seal__") {
+            continue;
+        }
+        let v: Vector = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        let Some(expected) = v.expected.get("props") else {
+            continue; // tooLarge: nothing sealed
+        };
+        let i: CollabSealIn = input(&v);
+        if i.doc_type == super::DocKind::Event {
+            continue; // events are never edited
+        }
+        let repo_id = h32(&i.repo_id);
+        let keys = EpochKeys::derive(&repo_id, i.epoch, &key(&i.key));
+        let owner = h32(&i.owner_id);
+        // the stored document as the chain holds it: the vector's expected (sealed) props
+        let stored: BTreeMap<String, FieldValue> = expected
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(k, val)| (k.clone(), collab_field(k, val)))
+            .collect();
+        let d = crate::platform::FetchedDocument {
+            id: crate::platform::encode_identifier([0x5a; 32]),
+            owner_id: crate::platform::encode_identifier(owner),
+            created_at: Some(1),
+            created_at_block_height: Some(10),
+            updated_at_block_height: None,
+            fields: stored,
+            revision: Some(1),
+        };
+        let header = crate::keyring::header_of(i.doc_type, &d).unwrap();
+        let ctx = OpenContext {
+            keys: [(i.epoch, keys.clone())].into(),
+            anchors: [(
+                i.epoch,
+                AnchorRef {
+                    id: [9; 32],
+                    height: 1,
+                },
+            )]
+            .into(),
+            ..OpenContext::default()
+        };
+        let opened = crate::collab::private::open_doc(
+            crate::private::doc::open_content(&ctx, &header, &d.field_bytes("enc").unwrap()),
+            d,
+        )
+        .unwrap_or_else(|| panic!("vector `{}` does not open", v.name));
+        // the edit sets the text it already has: the re-seal must be the create's bytes
+        let changes: BTreeMap<String, Option<String>> = ["title", "body", "path"]
+            .into_iter()
+            .filter_map(|f| opened.field_str(f).map(|t| (f.to_string(), Some(t))))
+            .collect();
+        let sealed = crate::collab::private::reseal_edit_with_nonce(
+            &keys,
+            i.doc_type,
+            owner,
+            &opened,
+            &changes,
+            nonce12(&i.nonce),
+        )
+        .unwrap();
+        let enc = sealed["enc"]
+            .as_ref()
+            .and_then(FieldValue::as_bytes)
+            .unwrap();
+        assert_eq!(
+            hex::encode(enc),
+            expected["enc"].as_str().unwrap(),
+            "vector `{}`",
+            v.name
+        );
+        checked += 1;
+    }
+    assert!(checked >= 15, "re-sealed {checked} vectors");
+}
+
 #[test]
 fn private_conformance_vectors() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../forge-contracts/vectors");

@@ -119,8 +119,20 @@ pub async fn edit(
     let pr = open_pr(ctx, repo, number, "pull request not edited").await?;
     let changed = title.map_or(0, str::len) + body.as_deref().map_or(0, str::len);
     let est = estimate(Est::Replace, changed);
+    // a private PR is re-sealed under the epoch it was opened with (private-repos.md §4.5)
+    let old_epoch = match pr
+        .s
+        .collab()
+        .pr_edit_epochs(&pr.s.repo, &pr.view.patch.document_id)
+        .await?
+    {
+        Some((pr_epoch, now)) => format!(
+            "; note: this PR is sealed under key epoch {pr_epoch} (the repo is at {now}), so the edited text stays readable to anyone who held epoch {pr_epoch}'s key, including members removed since, and if you stop being a member the edit can make the PR unreadable to everyone (private-repos.md §4.5)"
+        ),
+        None => String::new(),
+    };
     ctx.confirm_or_cancel(&format!(
-        "Edit PR #{number}? (one document replace, {})",
+        "Edit PR #{number}? (one document replace, {}{old_epoch})",
         cost_line(est, dash_usd_price())
     ))?;
     let landed =

@@ -126,6 +126,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::ALREADY_EXISTS, "already exists"),
     (codes::REJECTED, "rejected by Platform"),
     (codes::ARCHIVED, "repository archived"),
+    (codes::EDIT_CONFLICT, "edited by someone else meanwhile"),
     (codes::UNREACHABLE, "Dash Platform unreachable"),
     (
         codes::NOT_DEPLOYED,
@@ -226,6 +227,8 @@ pub mod codes {
     // E605 (v1 repository is read only) is retired with forge-v1 and stays reserved.
     /// The repository is archived (a client rule: the tools refuse writes unless overridden).
     pub const ARCHIVED: &str = "E606";
+    /// An edit made against a revision another edit has since replaced (nothing written).
+    pub const EDIT_CONFLICT: &str = "E607";
     /// DAPI / the quorum service could not be reached.
     pub const UNREACHABLE: &str = "E701";
     /// The selected network has no Dash Forge deployment.

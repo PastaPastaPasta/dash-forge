@@ -124,6 +124,7 @@ dg issue view   <owner>/<repo> 12
 dg issue create <owner>/<repo> --title "Crash on empty input" --body "Steps: …"
 dg issue edit   <owner>/<repo> 12 --title "Crash on empty config" [--body … | --body-file notes.md]
 dg issue comment <owner>/<repo> 12 --body "Fixed in 8f3e2a1"
+dg issue edit-comment <owner>/<repo> <comment id> --body "Fixed in 8f3e2a1 (and 91c0d4e)"
 dg issue close  <owner>/<repo> 12
 dg issue reopen <owner>/<repo> 12
 dg issue label  <owner>/<repo> 12 add bug docs     # or: remove bug (the older --add/--remove still work)
@@ -132,7 +133,7 @@ dg issue assign <owner>/<repo> 12 me alice         # or: unassign; ids or DPNS n
 
 **Who can change state.** The issue's author can close and reopen it (an `authorEvent`). Writers and maintainers can close, reopen, label and assign any issue (an `event`). `dg` picks the right one for you. Consensus refuses both from anyone else, and `dg` says so before anything is signed ([`E601`](../errors.md#e601)).
 
-**Edits.** Only the author can edit an issue's title or body: an edit replaces their document, so consensus admits it from them alone, members included. The earlier text stays readable on Platform, and the web shows "edited". Re-running an edit that already landed writes nothing.
+**Edits.** Only the author can edit an issue's title or body, or a comment's body (`dg issue edit-comment` takes the comment's id from `dg issue view --json` or `dg pr view --comments --json`, and works for PR comments too): an edit replaces their document, so consensus admits it from them alone, members included. The earlier text stays readable on Platform to anyone who could read it, and the web shows "edited". Re-running an edit that already landed writes nothing. In a private repository the whole text is re-sealed (a PR's under the key epoch it was opened with, the others under the current one) and nothing is written in plaintext. An edit made against text someone else replaced in the meantime is refused before signing ([`E607`](../errors.md#e607)).
 
 **Assignees** are events naming the identity twice: as the value the state fold reads, and as the event's `refId`, so "assigned to me" is one indexed query (Explore and `--assignee me`).
 

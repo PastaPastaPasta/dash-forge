@@ -45,6 +45,7 @@ import type { GroupTrust } from '../deployments'
 import { idbDelete, idbGet, idbPut } from '../idb'
 import { authSdk, isAbort, sleep } from '../sdk/facade'
 import { evoSdkService, isStaleConnectionError } from '../sdk/service'
+import { serialized } from '../sdk/write'
 import { errorMessage } from '../utils'
 import {
   broadcastTx,
@@ -296,7 +297,11 @@ export async function createIdentityFromMnemonic(
     readonly group: string
     /** The group's pinned trust root: checked on chain before a key binds to it (`./group-trust`). */
     readonly trust: GroupTrust
-    readonly persistKey: (identityId: string, key: { keyId: number; wif: string }) => Promise<void>
+    /**
+     * Store the key durably. `staged`: it is about to replace a key on chain (D-016): keep it
+     * beside the current record until a second call (without `staged`) commits it.
+     */
+    readonly persistKey: (identityId: string, key: { keyId: number; wif: string }, options?: { readonly staged?: boolean }) => Promise<void>
     readonly minDepositDuffs?: number
     readonly limits?: LimitedKeyRequest
     readonly endpoints?: CoreEndpoints
@@ -392,7 +397,22 @@ export async function createIdentityFromMnemonic(
     // The earlier run's key 5 may be live (its vault copy is locked or gone): disable it in
     // the same update, so no key nobody holds stays live.
     // The group was checked at the start of this run (assertGroupHolds above).
-    const key = await registerLimitedKey(sdk, { network, identityId, masterWif: master.wif, group, request: limits, replaceKeyId: BROWSER_KEY_ID, groupChecked: true })
+    // As this identity's only writer, like every other key update (and so the SDK connection
+    // is not swapped under the update's nonce). The new key is stored before the update that
+    // registers it and disables the old one (D-016): a browser that cannot keep it changes
+    // nothing on chain.
+    const key = await serialized(identityId, () =>
+      registerLimitedKey(sdk, {
+        network,
+        identityId,
+        masterWif: master.wif,
+        group,
+        request: limits,
+        replaceKeyId: BROWSER_KEY_ID,
+        groupChecked: true,
+        persist: (k) => params.persistKey(identityId, k, { staged: true }),
+      }),
+    )
     params.onCharge?.(identityId, { kind: 'key:renew', keyId: key.keyId, balanceBefore })
     await params.persistKey(identityId, key)
     return { identityId, key }

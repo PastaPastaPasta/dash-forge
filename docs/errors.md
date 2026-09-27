@@ -304,6 +304,12 @@ Fix: if the message does not explain it, [open an issue](https://github.com/Past
 
 Fix: ask a maintainer to unarchive it (`dg repo unarchive <owner>/<repo>`). If you are sure, write anyway with `dg --allow-archived …` or push with `-o allow-archived`.
 
+## E607
+
+**Edited meanwhile.** The issue, PR or comment you are editing was replaced again after `dg` read it, so your edit was made against text that is no longer there. `dg` refuses the replace before signing: writing it would silently drop the other edit. In a private repository this matters most, because an edit re-seals the whole text it read.
+
+Fix: read it again (`dg issue view`, `dg pr view --comments`) and redo the edit on the current text.
+
 ## E701
 
 **Dash Platform unreachable.** No DAPI node answered, or the quorum service could not be reached. Nodes that fail are skipped for about a minute, so an immediate retry often reaches the same dead nodes.

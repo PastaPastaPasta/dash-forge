@@ -620,6 +620,7 @@ mod tests {
             created_at: Some(1000),
             created_at_block_height: None,
             updated_at_block_height: None,
+            revision: None,
             fields: fields
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v))
@@ -939,6 +940,7 @@ mod tests {
             created_at: Some(t),
             created_at_block_height: None,
             updated_at_block_height: None,
+            revision: None,
             fields: BTreeMap::new(),
         }
     }

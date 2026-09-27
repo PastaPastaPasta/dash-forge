@@ -48,6 +48,7 @@ use crate::rules::v2::{
 };
 use crate::rules::{self, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
+use crate::user_error::{codes, UserError};
 
 /// forge-collab document types.
 pub const DOC_ISSUE: &str = "issue";
@@ -664,6 +665,87 @@ pub fn policy_from_doc(d: &FetchedDocument) -> Policy {
     }
 }
 
+/// What every edit checks on the stored document before any key or signing work, and its
+/// revision: it belongs to `repo` (its `repoId`), so the repo's visibility, not the caller's
+/// argument, decides whether the edit is sealed (an id of a private repo's comment named with a
+/// public repo must never take the plaintext path); `signer` wrote it (consensus admits a
+/// replace from the owner only); and it has a `$revision` for the guard.
+fn edit_check(
+    repo: &RepoRef,
+    doc_type: &str,
+    stored: &FetchedDocument,
+    signer: &str,
+) -> Result<u64> {
+    let own = stored
+        .field_bytes32("repoId")
+        .is_some_and(|r| platform::encode_identifier(r) == repo.id());
+    if !own {
+        return Err(UserError::new(
+            codes::INVALID_REPO_REF,
+            format!("{doc_type} {} is not in {}", stored.id, repo.display()),
+        )
+        .fix("name the repository the document belongs to; nothing was written")
+        .into());
+    }
+    if stored.owner_id != signer {
+        return Err(Error::NotPermitted {
+            action: format!("edit this {doc_type}"),
+            reason: "you are not its author; consensus admits an edit from the author only".into(),
+            needs: "owner".into(),
+        });
+    }
+    stored.revision.ok_or_else(|| {
+        Error::Platform(format!(
+            "{doc_type} {} came back without a $revision; it cannot be edited safely",
+            stored.id
+        ))
+    })
+}
+
+/// A private replace's changes plus the removal of any plaintext text an older client left next
+/// to `enc` on an issue or PR (its mutable `title` / `body`; a comment's `body` likewise), so
+/// the re-sealed text is the only text the document carries.
+fn clear_plaintext(
+    kind: DocKind,
+    stored: &FetchedDocument,
+    mut sealed: BTreeMap<String, Option<FieldValue>>,
+) -> BTreeMap<String, Option<FieldValue>> {
+    let mutable: &[&str] = match kind {
+        DocKind::Issue | DocKind::Patch => &["title", "body"],
+        DocKind::Comment => &["body"],
+        _ => &[],
+    };
+    for f in mutable {
+        if stored.fields.contains_key(*f) {
+            sealed.insert((*f).to_string(), None);
+        }
+    }
+    sealed
+}
+
+/// The keys a PR edit re-seals under: the PR's own `epoch` (its ref-name hashes are keyed by it,
+/// §4.5), which must be held and not `burned`.
+fn patch_epoch_keys<'k>(
+    burned: &BTreeSet<u32>,
+    writer: &'k crate::private::Private,
+    epoch: u32,
+) -> Result<&'k crate::private::EpochKeys> {
+    if burned.contains(&epoch) {
+        return Err(UserError::new(
+            codes::ROTATION_PENDING,
+            format!("this PR was opened under key epoch {epoch}, which is closed; it can no longer be edited"),
+        )
+        .into());
+    }
+    writer.epoch_keys(epoch).ok_or_else(|| {
+        UserError::new(
+            codes::NOT_A_KEY_HOLDER,
+            format!("you do not hold key epoch {epoch}, the epoch this PR is sealed under"),
+        )
+        .into()
+    })
+}
+
 /// An issue's state from its log (§3 fold).
 fn fold_issue(log: &TargetLog, issue: &Issue) -> IssueState {
     fold_issue_state_v2(&log.events, &log.author_events, &issue.author)
@@ -1109,6 +1191,150 @@ where
             return Ok(run);
         }
     }
+}
+
+/// A PR's view folded from its log and its base ref's tips (pure; [`Collab::patch_view`] and
+/// [`Collab::list_patch_views`] read the inputs).
+fn view_of(patch: Patch, log: TargetLog, base: rules::MergeBaseTips) -> PatchView {
+    let state = fold_pr_state_v2(
+        &log.events,
+        &log.author_events,
+        &patch.author,
+        base.tip.as_deref(),
+        |oid, _| base.contains(oid),
+        patch.draft,
+    );
+    let review = fold_pr_review_v2(
+        &log.events,
+        &log.author_events,
+        &patch.author,
+        &patch.head_oid,
+        &BTreeSet::new(),
+    );
+    let head = review.head.clone();
+    let head_on_base = base.contains(&head);
+    PatchView {
+        patch,
+        state,
+        head,
+        review,
+        base_tip: base.current,
+        head_on_base,
+        base_tips: base.historical.into_iter().collect(),
+        log,
+    }
+}
+
+/// The row cap of `dg pr list`'s review lookup and member siblings (Drive's page maximum).
+const LOOKUP_CAP: u32 = 100;
+/// [`LOOKUP_CAP`] as a length.
+const LOOKUP_CAP_LEN: usize = LOOKUP_CAP as usize;
+
+/// A list's page size: `limit`, capped at [`DEFAULT_PAGE`], which 0 also means.
+fn page_limit(limit: u32) -> u32 {
+    if limit == 0 {
+        DEFAULT_PAGE
+    } else {
+        limit.min(DEFAULT_PAGE)
+    }
+}
+
+/// The order of a plain `patchId in [..]` review read (an `in` is a range to Drive and needs
+/// one). The composite lookup is left unordered: Drive walks it in the page's direction and
+/// refuses an explicit ordering of it ("a documents sub-query's outer ordering must match the
+/// page's direction", measured on moutai). [`reviews_to_reread`] does not depend on either.
+fn review_lookup_order() -> Vec<QueryOrder> {
+    vec![QueryOrder::asc("patchId"), QueryOrder::asc("$createdAt")]
+}
+
+/// `dg pr list`'s one composite read: the PR page, the page's reviews (bound to its `$id`s),
+/// and the repo's maintainers and writers.
+fn pr_list_reads<'c>(
+    collab: &'c LoadedContract,
+    core: &'c LoadedContract,
+    scope: &crate::scope::DocScope,
+    limit: u32,
+) -> [crate::platform::BatchRead<'c>; 4] {
+    use crate::platform::{BatchBind, BatchRead};
+    let member = |role: Role| BatchRead {
+        contract: core,
+        document_type: members::doc_type(role),
+        filters: scope.filters([]),
+        order: vec![QueryOrder::desc("memberId")],
+        limit: LOOKUP_CAP,
+        bind: None,
+    };
+    [
+        BatchRead {
+            contract: collab,
+            document_type: DOC_PATCH,
+            filters: scope.filters([]),
+            order: vec![QueryOrder::desc("$createdAt")],
+            limit,
+            bind: None,
+        },
+        BatchRead {
+            contract: collab,
+            document_type: DOC_REVIEW,
+            filters: Vec::new(),
+            order: Vec::new(),
+            limit: LOOKUP_CAP,
+            bind: Some(BatchBind {
+                source: 0,
+                source_property: "$id".into(),
+                field: "patchId".into(),
+            }),
+        },
+        member(Role::Maintainer),
+        member(Role::Writer),
+    ]
+}
+
+/// After a review read of `wanted` PRs that returned `rows` capped at [`LOOKUP_CAP`]: the PRs
+/// whose reviews are known complete, and those that must be read again. Independent of the
+/// walk's direction: a short read is complete for every PR; a full one is complete only for
+/// the PRs it returned rows of, except the one its last row belongs to (the read may have
+/// stopped inside it). Every other wanted PR, returned or not, is read again.
+fn reviews_to_reread(rows: &[FetchedDocument], wanted: &[[u8; 32]]) -> Vec<[u8; 32]> {
+    if rows.len() < LOOKUP_CAP_LEN {
+        return Vec::new();
+    }
+    let cut = rows.last().and_then(|d| d.field_bytes32("patchId"));
+    let complete: BTreeSet<[u8; 32]> = rows
+        .iter()
+        .filter_map(|d| d.field_bytes32("patchId"))
+        .filter(|p| Some(*p) != cut)
+        .collect();
+    wanted
+        .iter()
+        .filter(|id| !complete.contains(*id))
+        .copied()
+        .collect()
+}
+
+/// Rows grouped by the identifier in their `field` (base58), each group in read order.
+fn per_target(rows: Vec<FetchedDocument>, field: &str) -> BTreeMap<String, Vec<FetchedDocument>> {
+    let mut by: BTreeMap<String, Vec<FetchedDocument>> = BTreeMap::new();
+    for d in rows {
+        if let Some(t) = d.field_bytes32(field) {
+            by.entry(platform::encode_identifier(t))
+                .or_default()
+                .push(d);
+        }
+    }
+    by
+}
+
+/// The membership oracle over complete `maintainer` and `writer` document lists.
+fn oracle_of(maintainers: &[FetchedDocument], writers: &[FetchedDocument]) -> RoleOracle {
+    let of = |docs: &[FetchedDocument], role| {
+        docs.iter()
+            .filter_map(move |d| members::Member::from_doc(d, role))
+            .collect::<Vec<_>>()
+    };
+    let mut all = of(maintainers, Role::Maintainer);
+    all.extend(of(writers, Role::Writer));
+    members::oracle(&all)
 }
 
 // ===========================================================================
@@ -1559,12 +1785,49 @@ impl<'a> Collab<'a> {
             .map(|d| issue_from_doc(&d)))
     }
 
+    /// The repository's event feed (`event`, `authorEvent`) as history specs, in
+    /// [`Self::feed_logs`] order. Both types are immutable and non-deletable, so the feed is
+    /// read through the delta cache ([`crate::history`]): after the first read each call costs
+    /// one request for what landed since.
+    fn feed_specs<'c>(
+        collab: &'c LoadedContract,
+        scope: &crate::scope::DocScope,
+    ) -> [crate::history::HistorySpec<'c>; 2] {
+        [
+            crate::history::HistorySpec::new(collab, DOC_EVENT, scope),
+            crate::history::HistorySpec::new(collab, DOC_AUTHOR_EVENT, scope),
+        ]
+    }
+
+    /// The repo feed's rows (as Platform holds them; a private repo's member event values are
+    /// opened here, never stored opened) folded into one log per target.
+    async fn feed_logs(
+        &self,
+        repo: &RepoRef,
+        events: Vec<FetchedDocument>,
+        author_events: Vec<FetchedDocument>,
+    ) -> Result<BTreeMap<String, TargetLog>> {
+        // A private repo's member events: their sealed values opened (§8.1).
+        let (events, _, _) = self.readable_events(repo, events).await?;
+        let mut logs: BTreeMap<String, TargetLog> = BTreeMap::new();
+        for e in events.iter().filter_map(event_from_doc) {
+            logs.entry(e.target_id.clone()).or_default().events.push(e);
+        }
+        for e in author_events.iter().filter_map(event_from_doc) {
+            logs.entry(e.target_id.clone())
+                .or_default()
+                .author_events
+                .push(e);
+        }
+        Ok(logs)
+    }
+
     /// Every well-formed issue of `repo` (newest first) with its folded state, and how many
     /// were skipped as malformed: one keyset walk of the `created` index (`$createdAt <=` the
-    /// oldest row read, 100 per page, deduped by id) and ONE complete read of the repo feed
-    /// (`event` / `authorEvent` by `(repoId, $createdAt)`), folded per issue. Requests: about
-    /// `⌈issues/100⌉ + ⌈events/100⌉ + ⌈authorEvents/100⌉`, where the old list paid 2 per row.
-    /// P-5 may cache the feed beneath this (it is append-only).
+    /// oldest row read, 100 per page, deduped by id) and ONE read of the repo feed (`event` /
+    /// `authorEvent` by `(repoId, $createdAt)`) through the delta cache, folded per issue.
+    /// Requests: about `⌈issues/100⌉` plus the feed's new rows, where the old list paid 2 per
+    /// row.
     pub async fn issues_with_state(&self, repo: &RepoRef) -> Result<(Vec<IssueView>, usize)> {
         let collab = self.collab_contract(repo).await?;
         let mut docs: Vec<FetchedDocument> = Vec::new();
@@ -1601,32 +1864,15 @@ impl<'a> Collab<'a> {
             }
             before = oldest;
         }
-        let feed = |doc_type: &'static str| {
-            let collab = &collab;
-            async move {
-                self.client
-                    .query_all_documents(
-                        collab,
-                        doc_type,
-                        &[Self::repo_filter(repo)?],
-                        &[QueryOrder::asc("$createdAt")],
-                    )
-                    .await
-            }
-        };
-        let (events, author_events) = (feed(DOC_EVENT).await?, feed(DOC_AUTHOR_EVENT).await?);
-        // A private repo's member events: their sealed values opened (§8.1).
-        let (events, _, _) = self.readable_events(repo, events).await?;
-        let mut logs: BTreeMap<String, TargetLog> = BTreeMap::new();
-        for e in events.iter().filter_map(event_from_doc) {
-            logs.entry(e.target_id.clone()).or_default().events.push(e);
-        }
-        for e in author_events.iter().filter_map(event_from_doc) {
-            logs.entry(e.target_id.clone())
-                .or_default()
-                .author_events
-                .push(e);
-        }
+        let [events, author_events] = crate::history::take(
+            crate::history::sync(
+                self.client,
+                &Self::feed_specs(&collab, &repo.scope()?),
+                crate::history::Freshness::Now,
+            )
+            .await?,
+        );
+        let logs = self.feed_logs(repo, events, author_events).await?;
         // Malformed rows, and in a private repo rows this reader cannot open, are hidden.
         let (readable, hidden) = self.readable_all(repo, ContentKind::Issue, docs).await?;
         let shown: Vec<IssueView> = readable
@@ -1828,7 +2074,15 @@ impl<'a> Collab<'a> {
                 opened_at,
             ));
         }
-        crate::refs::read_merge_base(self.client, &core, &scope, base_ref_name, opened_at).await
+        crate::refs::read_merge_base(
+            self.client,
+            &core,
+            &scope,
+            base_ref_name,
+            opened_at,
+            crate::history::Freshness::Now,
+        )
+        .await
     }
 
     /// A pull request's state (§3 fold; a merge counts once its oid has been a tip of a base
@@ -1839,33 +2093,158 @@ impl<'a> Collab<'a> {
         let base = self
             .base_ref_tips(repo, &patch.base_ref_name, patch.created_at)
             .await?;
-        let state = fold_pr_state_v2(
-            &log.events,
-            &log.author_events,
-            &patch.author,
-            base.tip.as_deref(),
-            |oid, _| base.contains(oid),
-            patch.draft,
+        Ok(view_of(patch, log, base))
+    }
+
+    /// The newest `limit` pull requests (≤ 100) with their state, head and approvals, in a
+    /// fixed number of requests whatever the count (`dg pr list`; D-500: it was about 9 per
+    /// PR).
+    ///
+    /// Two requests in the usual case (`platform-parity-spec.md` §3.3):
+    /// - ONE composite read: the PR page, every PR's `review`s as a lookup bound to the page's
+    ///   `$id`s (reviews can be deleted, so they are read live), and the repo's `maintainer`
+    ///   and `writer` documents as siblings;
+    /// - ONE delta read ([`crate::history`]) of everything append-only the folds need: the
+    ///   repo's event feed (`event`, `authorEvent`) and its ref history (`refUpdate`,
+    ///   `protectedRefUpdate`, `config`), so every PR's state and base tips fold from it.
+    ///
+    /// A review lookup or a member sibling that fills its 100-row cap may be cut short, so
+    /// what it covers is re-read completely rather than folded from a partial list. A private
+    /// repo's rows are opened here (patches, reviews, event values, ref names), never stored
+    /// opened.
+    pub async fn list_patch_views(
+        &self,
+        repo: &RepoRef,
+        limit: u32,
+    ) -> Result<Listed<(PatchView, Approvals)>> {
+        let forge = repo.forge();
+        self.client
+            .prefetch_contracts(&[&forge.collab, &forge.core])
+            .await?;
+        let collab = self.collab_contract(repo).await?;
+        let core = self.core_contract(repo).await?;
+        let scope = repo.scope()?;
+        let limit = page_limit(limit);
+        let reads = pr_list_reads(&collab, &core, &scope, limit);
+        let [feed_a, feed_b] = Self::feed_specs(&collab, &scope);
+        let [refs_a, refs_b, refs_c] = crate::refs::GitState::specs(&core, &scope);
+        let history = [feed_a, feed_b, refs_a, refs_b, refs_c];
+        let (batch, synced) = futures::join!(
+            self.client.query_batch(&reads),
+            crate::history::sync(self.client, &history, crate::history::Freshness::Now)
         );
-        let review = fold_pr_review_v2(
-            &log.events,
-            &log.author_events,
-            &patch.author,
-            &patch.head_oid,
-            &BTreeSet::new(),
-        );
-        let head = review.head.clone();
-        let head_on_base = base.contains(&head);
-        Ok(PatchView {
-            patch,
-            state,
-            head,
-            review,
-            base_tip: base.current,
-            head_on_base,
-            base_tips: base.historical.into_iter().collect(),
-            log,
-        })
+        let [page, reviews, maintainers, writers] = crate::history::take(batch?);
+        let [events, author_events, ref_updates, protected_ref_updates, configs] =
+            crate::history::take(synced?);
+        let state = crate::refs::GitState::from_rows([ref_updates, protected_ref_updates, configs]);
+
+        let more = page.len() >= limit as usize;
+        let page_ids: Vec<[u8; 32]> = page
+            .iter()
+            .filter_map(|d| platform::decode_identifier(&d.id).ok())
+            .collect();
+        let (patches, hidden) = self.readable_all(repo, ContentKind::Patch, page).await?;
+        // Membership siblings are capped at 100 per role: a full one is read completely.
+        let oracle = if maintainers.len() >= LOOKUP_CAP_LEN || writers.len() >= LOOKUP_CAP_LEN {
+            self.member_oracle(repo).await?
+        } else {
+            oracle_of(&maintainers, &writers)
+        };
+        let mut logs = self.feed_logs(repo, events, author_events).await?;
+        let reviews = self.complete_reviews(&collab, reviews, &page_ids).await?;
+        let (reviews, _) = self
+            .readable_all(repo, ContentKind::Review, reviews)
+            .await?;
+        let mut reviews = per_target(reviews, "patchId");
+        // The base branch of every row folds against one read of the ref history.
+        let base_of: Box<dyn Fn(&Patch) -> rules::MergeBaseTips + Send + Sync> =
+            if repo.visibility == Visibility::Private {
+                let kr = self.keyring(repo).await?;
+                let updates = crate::refs::private_updates_of(&state, &kr);
+                Box::new(move |p: &Patch| {
+                    crate::refs::private_merge_base(&updates, &kr, &p.base_ref_name, p.created_at)
+                })
+            } else {
+                let configs = state.config_history();
+                Box::new(move |p: &Patch| {
+                    crate::refs::merge_base_of(&state, &configs, &p.base_ref_name, p.created_at)
+                })
+            };
+
+        let mut rows = Vec::with_capacity(patches.len());
+        for patch in patches.iter().map(patch_from_doc) {
+            let id = &patch.document_id;
+            let log = logs.remove(id).unwrap_or_default();
+            let mut docs = reviews.remove(id).unwrap_or_default();
+            docs.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+            let patch_reviews: Vec<Review> = docs.iter().map(review_from_doc).collect();
+            let base = base_of(&patch);
+            let view = view_of(patch, log, base);
+            let approvals = approvals_over(&patch_reviews, &view, &oracle);
+            rows.push((view, approvals));
+        }
+        Ok(Listed { rows, hidden, more })
+    }
+
+    /// Complete the review lookup of [`Self::list_patch_views`] ([`reviews_to_reread`]): the
+    /// PRs a full lookup may have cut short are read again with `patchId in [..]`, a page at
+    /// a time, until a short page proves the rest complete. One request per 100 reviews,
+    /// never one per PR. A PR that fills a whole page by itself is read on its own.
+    async fn complete_reviews(
+        &self,
+        collab: &LoadedContract,
+        first: Vec<FetchedDocument>,
+        page_ids: &[[u8; 32]],
+    ) -> Result<Vec<FetchedDocument>> {
+        let mut out = Vec::new();
+        let mut rows = first;
+        let mut wanted = page_ids.to_vec();
+        loop {
+            let reread = reviews_to_reread(&rows, &wanted);
+            // A full page of one PR's reviews settles nothing: that PR is read on its own.
+            let first = rows.first().and_then(|d| d.field_bytes32("patchId"));
+            let last = rows.last().and_then(|d| d.field_bytes32("patchId"));
+            let alone = (!reread.is_empty() && first == last)
+                .then_some(last)
+                .flatten();
+            out.extend(rows.into_iter().filter(|d| {
+                d.field_bytes32("patchId")
+                    .is_some_and(|p| !reread.contains(&p))
+            }));
+            wanted = reread;
+            if let Some(whole) = alone {
+                wanted.retain(|id| *id != whole);
+                out.extend(
+                    self.by_target(
+                        collab,
+                        DOC_REVIEW,
+                        "patchId",
+                        &platform::encode_identifier(whole),
+                    )
+                    .await?,
+                );
+            }
+            if wanted.is_empty() {
+                return Ok(out);
+            }
+            rows = self
+                .client
+                .query_documents(
+                    collab,
+                    DOC_REVIEW,
+                    &[QueryFilter::in_list(
+                        "patchId",
+                        wanted
+                            .iter()
+                            .map(|id| FieldValue::identifier(*id))
+                            .collect(),
+                    )],
+                    &review_lookup_order(),
+                    LOOKUP_CAP,
+                    None,
+                )
+                .await?;
+        }
     }
 
     /// The PR's approvals on its current head (§6): member reviews only, dismissed reviews
@@ -2302,9 +2681,8 @@ impl<'a> Collab<'a> {
     /// Edit an issue's or PR's title and/or body, as its author (consensus admits a replace only
     /// from the owner; `number`, and a PR's refs and head, are immutable or untouched). An empty
     /// `body` removes it. Returns whether an edit landed (`false`: it already read that way,
-    /// nothing was signed). Refused for a private repo: a plaintext replace would publish the
-    /// content next to its sealed `enc`; the CLI has no sealed edit yet (the web re-seals with
-    /// `sealEdit`).
+    /// nothing was signed). In a private repo the content is re-sealed as a whole and the
+    /// replace sets only `enc` / `epoch` ([`Self::private_edit`]).
     pub async fn update_target(
         &self,
         repo: &RepoRef,
@@ -2333,19 +2711,51 @@ impl<'a> Collab<'a> {
                 "nothing to change: pass a new title or body".into(),
             ));
         }
-        repo.require_public("editing from the CLI")?;
         self.require_author(
             &target.author,
             &format!("edit {} #{}", target.kind.noun(), target.number),
         )?;
         let collab = self.collab_contract(repo).await?;
-        self.engine()?
-            .replace_document(&collab, target.kind.doc_type(), &target.id, &changes)
+        let kind = match target.kind {
+            TargetKind::Issue => DocKind::Issue,
+            TargetKind::Patch => DocKind::Patch,
+        };
+        self.replace_content(repo, &collab, kind, &target.id, changes)
             .await
     }
 
+    /// A private PR's key epoch and the repo's current write epoch, when the PR's is older: an
+    /// edit re-seals under the PR's own epoch (§4.5), so the edited text stays readable to
+    /// anyone who held that epoch's key, including members removed since. `None` for a public
+    /// repo or a PR under the write epoch.
+    pub async fn pr_edit_epochs(
+        &self,
+        repo: &RepoRef,
+        patch_id: &str,
+    ) -> Result<Option<(u32, u32)>> {
+        if repo.visibility != Visibility::Private {
+            return Ok(None);
+        }
+        let collab = self.collab_contract(repo).await?;
+        let Some(stored) = self
+            .client
+            .fetch_document(&collab, DOC_PATCH, patch_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let pr_epoch = stored
+            .field_u64("epoch")
+            .and_then(|e| u32::try_from(e).ok());
+        let write = self.keyring(repo).await?.resolution().write_epoch;
+        Ok(match (pr_epoch, write) {
+            (Some(p), Some(w)) if p < w => Some((p, w)),
+            _ => None,
+        })
+    }
+
     /// Edit one of the signer's comments (the body only: the anchor, thread and review are
-    /// immutable). Refused for a private repo, like [`Self::update_target`].
+    /// immutable), re-sealed in a private repo like [`Self::update_target`].
     pub async fn update_comment(
         &self,
         repo: &RepoRef,
@@ -2356,13 +2766,106 @@ impl<'a> Collab<'a> {
             return Err(Error::Config("a comment needs a body".into()));
         }
         check_text("comment body", body, 5120, 5120)?;
-        // A plaintext replace would publish the body next to the sealed `enc`.
-        repo.require_public("editing from the CLI")?;
         let collab = self.collab_contract(repo).await?;
         let changes = BTreeMap::from([("body".to_string(), Some(FieldValue::text(body)))]);
-        self.engine()?
-            .replace_document(&collab, DOC_COMMENT, comment_id, &changes)
+        self.replace_content(repo, &collab, DocKind::Comment, comment_id, changes)
             .await
+    }
+
+    /// Replace the text of the signer's `kind` document `id` of `repo`. The stored document is
+    /// read first ([`edit_check`]: it is `repo`'s and the signer's). Public: the plaintext
+    /// `changes`. Private: [`Self::private_edit`]'s `enc` / `epoch`, guarded by the revision
+    /// read here.
+    async fn replace_content(
+        &self,
+        repo: &RepoRef,
+        collab: &LoadedContract,
+        kind: DocKind,
+        id: &str,
+        changes: BTreeMap<String, Option<FieldValue>>,
+    ) -> Result<bool> {
+        let doc_type = kind.type_name();
+        let stored = self
+            .client
+            .fetch_document(collab, doc_type, id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        let revision = edit_check(repo, doc_type, &stored, &self.signer_id()?)?;
+        let changes = if repo.visibility == Visibility::Private {
+            self.private_edit(repo, kind, &stored, &changes).await?
+        } else {
+            changes
+        };
+        self.engine()?
+            .replace_document_guarded(collab, doc_type, id, &changes, Some(revision))
+            .await
+    }
+
+    /// The changes a private edit of the signer's `kind` document `stored` writes
+    /// (docs/security/private-repos.md §4.5, §5.3; the web's `sealEdit`): it is opened with keys
+    /// resolved now and its content re-sealed as a whole with `changes` applied
+    /// ([`private::reseal_edit`], the `private_collab_seal` transform), an issue or comment
+    /// under the current write epoch, a PR under its own epoch (its ref-name hashes are keyed by
+    /// it), which must still be held and not burned. Only `enc` / `epoch` are set, and any
+    /// plaintext text an older client left is cleared ([`clear_plaintext`]). Unchanged text
+    /// keeps the stored `enc`, so nothing is written.
+    async fn private_edit(
+        &self,
+        repo: &RepoRef,
+        kind: DocKind,
+        stored: &FetchedDocument,
+        changes: &BTreeMap<String, Option<FieldValue>>,
+    ) -> Result<BTreeMap<String, Option<FieldValue>>> {
+        let doc_type = kind.type_name();
+        let kr = self.fresh_keyring(repo).await?;
+        let opened = private::open_doc(kr.open(kind, stored), stored.clone()).ok_or_else(|| {
+            Error::from(
+                UserError::new(
+                    codes::NOT_A_KEY_HOLDER,
+                    format!(
+                        "this {doc_type} cannot be read with your keys, so it cannot be edited"
+                    ),
+                )
+                .fix(format!(
+                    "`dg repo keys status {}` explains the keys you hold",
+                    repo.display()
+                )),
+            )
+        })?;
+        // an empty value is no value, on either side
+        let text: BTreeMap<String, Option<String>> = changes
+            .iter()
+            .map(|(k, v)| {
+                let v = v
+                    .as_ref()
+                    .and_then(FieldValue::as_str)
+                    .filter(|s| !s.is_empty());
+                (k.clone(), v.map(str::to_owned))
+            })
+            .collect();
+        if text
+            .iter()
+            .all(|(k, v)| opened.field_str(k).filter(|s| !s.is_empty()) == *v)
+        {
+            // already reads that way: the stored enc/epoch, which the replace sees as held
+            return Ok(["enc", "epoch"]
+                .into_iter()
+                .map(|k| (k.to_string(), stored.fields.get(k).cloned()))
+                .collect());
+        }
+        let writer = kr.writer(repo)?;
+        let keys = if kind == DocKind::Patch {
+            let epoch = stored
+                .field_u64("epoch")
+                .and_then(|e| u32::try_from(e).ok())
+                .ok_or(Error::NotFound)?;
+            patch_epoch_keys(&kr.resolution().burned, &writer, epoch)?
+        } else {
+            writer.write_keys()
+        };
+        let owner = platform::decode_identifier(&self.signer_id()?)?;
+        let sealed = private::reseal_edit(keys, kind, owner, &opened, &text)?;
+        Ok(clear_plaintext(kind, stored, sealed))
     }
 
     /// Refuse, before anything is signed, an edit of a document the signer does not own.
@@ -3030,6 +3533,191 @@ fn create_journal_path(
 mod tests {
     use super::*;
 
+    const ME: &str = "GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL";
+    const OTHER_REPO: &str = "9sGUjxras61DAe457iUfbJcKTfVT7qVj16PJ3xstqMKr";
+
+    fn repo_ref(visibility: Visibility) -> RepoRef {
+        RepoRef {
+            forge: ForgeIds {
+                core: "CORE".into(),
+                collab: "COLLAB".into(),
+                group: "GROUP".into(),
+                superseded_in_group: vec![],
+                group_owner: None,
+            },
+            repo_id: ME.into(),
+            owner_id: ME.into(),
+            name: "proj".into(),
+            visibility,
+        }
+    }
+
+    fn stored(repo_id: &str, owner: &str, revision: Option<u64>) -> FetchedDocument {
+        FetchedDocument {
+            id: ME.into(),
+            owner_id: owner.into(),
+            created_at: Some(1),
+            created_at_block_height: Some(10),
+            updated_at_block_height: None,
+            fields: [(
+                "repoId".to_string(),
+                FieldValue::identifier(platform::decode_identifier(repo_id).unwrap()),
+            )]
+            .into(),
+            revision,
+        }
+    }
+
+    #[test]
+    fn an_edit_is_refused_for_a_document_of_another_repo() {
+        // HIGH: an id from a private repo edited "through" a public one must not take the
+        // plaintext path; the document's own repo decides.
+        let err = edit_check(
+            &repo_ref(Visibility::Public),
+            "comment",
+            &stored(OTHER_REPO, ME, Some(2)),
+            ME,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not in"), "{err}");
+        assert_eq!(
+            edit_check(
+                &repo_ref(Visibility::Public),
+                "comment",
+                &stored(ME, ME, Some(2)),
+                ME
+            )
+            .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn an_edit_by_a_non_author_is_refused_before_any_key_work() {
+        let err = edit_check(
+            &repo_ref(Visibility::Private),
+            "comment",
+            &stored(ME, OTHER_REPO, Some(2)),
+            ME,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::NotPermitted { needs, .. } if needs == "owner"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn an_edit_of_a_document_without_a_revision_says_so() {
+        let err = edit_check(
+            &repo_ref(Visibility::Private),
+            "comment",
+            &stored(ME, ME, None),
+            ME,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::Platform(m) if m.contains("revision")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_private_replace_clears_legacy_plaintext_next_to_enc() {
+        let mut d = stored(ME, ME, Some(1));
+        d.fields.insert("title".into(), FieldValue::text("legacy"));
+        d.fields.insert("body".into(), FieldValue::text("legacy"));
+        let sealed: BTreeMap<String, Option<FieldValue>> = [
+            ("enc".to_string(), Some(FieldValue::bytes(vec![1; 40]))),
+            ("epoch".to_string(), Some(FieldValue::integer(0))),
+        ]
+        .into();
+        let c = clear_plaintext(DocKind::Issue, &d, sealed.clone());
+        assert_eq!(c.get("title"), Some(&None));
+        assert_eq!(c.get("body"), Some(&None));
+        // nothing stored in plaintext: nothing to clear
+        assert_eq!(
+            clear_plaintext(DocKind::Issue, &stored(ME, ME, Some(1)), sealed.clone()),
+            sealed
+        );
+    }
+
+    #[test]
+    fn a_pr_edit_uses_the_pr_epoch_keys_only_while_held_and_not_burned() {
+        use crate::private::{EpochKey, EpochResolution, Private};
+        let res = EpochResolution {
+            write_epoch: Some(2),
+            keys: [
+                (1, EpochKey::from_bytes([1; 32])),
+                (2, EpochKey::from_bytes([2; 32])),
+            ]
+            .into(),
+            ..EpochResolution::default()
+        };
+        let w = Private::from_resolution(&[0x11; 32], &res).unwrap();
+        assert_eq!(
+            patch_epoch_keys(&BTreeSet::new(), &w, 1).unwrap().epoch(),
+            1
+        );
+        let burned = patch_epoch_keys(&[1].into(), &w, 1).unwrap_err();
+        assert!(
+            matches!(&burned, Error::User(u) if u.code == codes::ROTATION_PENDING),
+            "{burned:?}"
+        );
+        let unheld = patch_epoch_keys(&BTreeSet::new(), &w, 0).unwrap_err();
+        assert!(
+            matches!(&unheld, Error::User(u) if u.code == codes::NOT_A_KEY_HOLDER),
+            "{unheld:?}"
+        );
+    }
+
+    /// A `review` row of PR `patch` (its id byte repeated).
+    fn review_row(patch: u8, n: u32) -> FetchedDocument {
+        let mut fields = BTreeMap::new();
+        fields.insert("patchId".into(), FieldValue::Identifier([patch; 32]));
+        FetchedDocument {
+            id: format!("r{patch:03}-{n:04}"),
+            owner_id: "o".into(),
+            created_at: Some(u64::from(n)),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields,
+        }
+    }
+
+    /// Reviews for `patches` (in walk order), `per` each, cut at the lookup cap.
+    fn walk(patches: &[u8], per: u32) -> Vec<FetchedDocument> {
+        patches
+            .iter()
+            .flat_map(|p| (0..per).map(move |n| review_row(*p, n)))
+            .take(LOOKUP_CAP_LEN)
+            .collect()
+    }
+
+    /// Review finding: Drive walks the lookup in the PAGE's direction (descending here), so
+    /// a full page holds the HIGHEST patch ids and every lower one is unread. The re-read
+    /// set must not depend on the direction.
+    #[test]
+    fn a_full_review_lookup_rereads_every_pr_it_did_not_finish_either_direction() {
+        let wanted: Vec<[u8; 32]> = (1..=6).map(|p| [p; 32]).collect();
+        // Descending: 6, 5, 4 fill the page (40 each → 4 is cut at 20).
+        let desc = walk(&[6, 5, 4, 3, 2, 1], 40);
+        let reread = reviews_to_reread(&desc, &wanted);
+        let expect: Vec<[u8; 32]> = [1, 2, 3, 4].iter().map(|p| [*p; 32]).collect();
+        let mut got = reread.clone();
+        got.sort_unstable();
+        assert_eq!(got, expect, "the cut PR and every unread one");
+        // Ascending: 1, 2 whole, 3 cut.
+        let asc = walk(&[1, 2, 3, 4, 5, 6], 40);
+        let mut got = reviews_to_reread(&asc, &wanted);
+        got.sort_unstable();
+        let expect: Vec<[u8; 32]> = [3, 4, 5, 6].iter().map(|p| [*p; 32]).collect();
+        assert_eq!(got, expect);
+        // A short page settles everything.
+        assert!(reviews_to_reread(&walk(&[1, 2], 10), &wanted).is_empty());
+    }
+
     fn target(author: &str) -> Target {
         Target {
             kind: TargetKind::Issue,
@@ -3263,6 +3951,7 @@ mod tests {
             created_at: Some(5),
             created_at_block_height: None,
             updated_at_block_height: None,
+            revision: None,
             fields: p,
         };
         let issue = issue_from_doc(&doc);
@@ -3406,6 +4095,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            revision: None,
             fields,
         };
         let ok = doc(issue_props(1, "t", "", None).unwrap());
@@ -3439,6 +4129,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            revision: None,
             fields,
         };
         let honest = patch_props(1, &input, None).unwrap();

@@ -48,7 +48,9 @@ export function DownloadProgressBar({ status }: { status: Extract<SdkStatus, { p
         aria-valuetext={bytes}
         className="h-1.5 w-full overflow-hidden rounded-full bg-anvil-200 dark:bg-anvil-800"
       >
-        <div className="h-full bg-forge-500 transition-[width] duration-300" style={{ width: `${pct ?? 5}%` }} />
+        {/* The fill is a non-text graphic (WCAG 1.4.11, 3:1 against the track and the page):
+            forge-700 on light, forge-500 on dark; lib/design/contrast.test.ts pins both. */}
+        <div className="h-full bg-forge-700 transition-[width] duration-300 dark:bg-forge-500" style={{ width: `${pct ?? 5}%` }} />
       </div>
       <p className="text-dense tabular-nums text-anvil-500 dark:text-anvil-400">
         {bytes}
@@ -73,6 +75,10 @@ function useCountdown(at: number | null): number | null {
 /**
  * Platform could not be reached. Never claims the page is verified: with `cached`, it says the
  * content below is from earlier in this session and is not being re-checked right now.
+ *
+ * The alert (`role="alert"`, announced when it appears even though it mounts filled) holds
+ * only the state sentence, so a screen reader hears the outage once, not the countdown every
+ * second; the countdown sits outside it.
  */
 export function UnreachableBanner({
   status,
@@ -88,18 +94,21 @@ export function UnreachableBanner({
   const sheetOpen = useUiStore((s) => s.loginOpen)
   return (
     <div
-      role="alert"
       data-testid="platform-unreachable"
       className="mb-4 rounded-lg border border-caution/40 bg-caution/10 px-4 py-3"
     >
       <div className="flex flex-wrap items-start gap-3">
         <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
         <div className="min-w-0 flex-1">
-          <p className="text-prose font-medium text-anvil-900 dark:text-anvil-50">Can&apos;t reach Dash Platform right now</p>
-          <p className="mt-0.5 text-dense text-anvil-700 dark:text-anvil-200">
-            {cached
-              ? 'Showing what this tab already read and checked. It is not being re-checked until the connection comes back.'
-              : 'Nothing can be read or checked until the connection comes back.'}{' '}
+          <div role="alert">
+            <p className="text-prose font-medium text-anvil-900 dark:text-anvil-50">Can&apos;t reach Dash Platform right now</p>
+            <p className="mt-0.5 text-dense text-anvil-700 dark:text-anvil-200">
+              {cached
+                ? 'Showing what this tab already read and checked. It is not being re-checked until the connection comes back.'
+                : 'Nothing can be read or checked until the connection comes back.'}
+            </p>
+          </div>
+          <p className="text-dense text-anvil-700 dark:text-anvil-200" data-testid="platform-retry-countdown">
             {seconds !== null ? `Trying again in ${seconds} s.` : 'This page will try again when it is visible.'}
           </p>
           <details className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">

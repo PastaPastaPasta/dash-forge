@@ -25,6 +25,16 @@
  *   - before a write whose SDK call never refreshes the keys itself (L-06, {@link EvoSdkService.ensureFresh}).
  * A connect that fails is retried with backoff (D-058). Every connection is trusted: a
  * failure never falls back to unverified reads.
+ *
+ * What a new connection takes over from the one it replaces:
+ *   - the protocol version: wasm-sdk already seeds each new SDK at the version the last one
+ *     learned (`protocol_version_store`, mainnet/testnet; a devnet's floor is current), and the
+ *     handle's `version()` never reports lower than a version a connection proved;
+ *   - which bundled contract snapshots turned out outdated: those are fetched, not seeded
+ *     again. It preloads only the contracts pages used recently, not every id ever named.
+ * A refreshed connection is installed only while no write is running and the last one ended
+ * {@link WRITE_SETTLE_MS} ago: rs-sdk keeps nonces per `Sdk` instance, and a fresh cache asking
+ * a node a block behind would sign a nonce this tab already used.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -34,6 +44,7 @@ import { dapiBudget, installDapiFetchGate } from './budget'
 import { loadContractSnapshots } from './contract-seed'
 import { followSdkVersion, setStaleContractHandler } from './query'
 import { compileWasm, onWasmProgress, type DownloadProgress } from './wasm-fetch'
+import { setWriteHold } from './write'
 
 /** How often the seeded contracts are checked against the network (spec §3.4: once per hour). */
 const SEED_CHECK_MS = 60 * 60 * 1000
@@ -74,6 +85,15 @@ export interface Connection {
   readonly seeded: Map<string, number>
 }
 
+/** What a new connection takes over from the one it replaces. */
+export interface Carry {
+  /**
+   * Bundled contract snapshots found outdated on an earlier connection: fetched, not seeded,
+   * so a refresh does not bring the old version back.
+   */
+  readonly outdated: ReadonlySet<string>
+}
+
 /** Reconnect this often while the tab is visible, well inside a quorum's lifetime (D-024). */
 export const REFRESH_MS = 5 * 60_000
 /** A write that needs fresh quorum keys ({@link EvoSdkService.ensureFresh}) reuses a connection this young. */
@@ -84,10 +104,12 @@ export const RECOVER_GAP_MS = 15_000
 export const RECOVER_MAX_WAIT_MS = 15_000
 /** Waits before retrying a failed connect (the last one repeats). */
 export const CONNECT_BACKOFF_MS: readonly number[] = [5_000, 15_000, 30_000, 60_000, 120_000]
-/** A page mount after a failed connect starts a new attempt at most this often. */
-export const MIN_ATTEMPT_GAP_MS = 3_000
 /** A connect (quorum prefetch + contract warm-up) that takes longer than this is abandoned. */
 export const CONNECT_TIMEOUT_MS = 60_000
+/** After a write ends, how long a connection swap still waits (every node has seen it by then). */
+export const WRITE_SETTLE_MS = 15_000
+/** Download progress reaches the UI at most this often. */
+export const PROGRESS_INTERVAL_MS = 250
 
 /** The connection's state, for the loading and unreachable UI. */
 export type SdkStatus =
@@ -105,15 +127,42 @@ export function isStaleConnectionError(e: unknown): boolean {
 }
 
 /**
- * Facade methods that only read, so running one again on a new connection is harmless. Every
- * other method (broadcasts, creates, waits) runs once, on the current connection.
+ * A read failed because Platform could not be reached (a stale connection, a transport error,
+ * a timeout, a node that is down or rate-limited), not because of what it asked or what came
+ * back. A proof or decode failure is not one of these: it must surface, never be papered over
+ * with content read earlier.
  */
-const RETRYABLE_READS = new Set([
-  'query', 'get', 'count', 'composite', 'chained', 'fetch', 'fetchUnproved', 'getMany', 'getLatestVersions',
-  'balance', 'balances', 'nonce', 'contractNonce', 'keysRemainingBudgets', 'getKeys', 'status',
-  'current', 'info', 'members', 'currentQuorumsInfo', 'resolveName', 'username', 'usernames',
-  'sum', 'average', 'ranked', 'having', 'history', 'pathElements',
-])
+export function isUnreachableError(e: unknown): boolean {
+  if (isStaleConnectionError(e)) return true
+  return /failed to fetch|fetch failed|networkerror|network error|load failed|timed out|timeout|deadline exceeded|\bunavailable\b|resourceexhausted|resource exhausted|transport error|connection (?:refused|reset)|HTTP 5\d\d|could not reach platform|can't reach platform/i.test(
+    messageOf(e),
+  )
+}
+
+/**
+ * Facade methods that only read, keyed `facade.method`, so running one again on a new
+ * connection is harmless. Every other method (broadcasts, creates, replaces, deletes, waits,
+ * identity updates) runs once, on the current connection. The `*WithProof` variants are the
+ * same reads returning their proof metadata as well.
+ */
+const READS: Readonly<Record<string, readonly string[]>> = {
+  addresses: ['get', 'getMany'],
+  documents: ['query', 'get', 'count', 'composite', 'chained', 'history', 'sum', 'average', 'ranked', 'having'],
+  identities: [
+    'fetch', 'fetchUnproved', 'getKeys', 'nonce', 'contractNonce', 'keysRemainingBudgets', 'balance', 'balances',
+    'balanceAndRevision', 'byPublicKeyHash', 'byNonUniquePublicKeyHash', 'contractKeys', 'tokenBalances',
+  ],
+  contracts: ['fetch', 'getHistory', 'getMany', 'getByRange', 'getLatestVersions'],
+  dpns: ['resolveName', 'username', 'usernames', 'getUsernameByName'],
+  epoch: ['current', 'epochsInfo', 'finalizedInfos'],
+  system: ['status', 'currentQuorumsInfo', 'totalCreditsInPlatform', 'pathElements'],
+  contractGroups: ['info', 'members', 'forContract'],
+  group: ['info', 'infos', 'members'],
+}
+
+export const RETRYABLE_READS: ReadonlySet<string> = new Set(
+  Object.entries(READS).flatMap(([facade, methods]) => methods.flatMap((m) => [`${facade}.${m}`, `${facade}.${m}WithProof`])),
+)
 
 /** The EvoSDK facades (evo-sdk 4.2 `sdk.d.ts`). */
 const FACADE_NAMES = new Set([
@@ -122,7 +171,7 @@ const FACADE_NAMES = new Set([
   'moderationCharters',
 ])
 
-type Connector = (config: EvoSdkConfig) => Promise<Connection>
+type Connector = (config: EvoSdkConfig, carry: Carry, signal: AbortSignal) => Promise<Connection>
 
 export interface Clock {
   now(): number
@@ -151,6 +200,29 @@ function visible(): boolean {
   return typeof document === 'undefined' || document.visibilityState === 'visible'
 }
 
+/** The protocol version `sdk` has learned, or undefined. */
+function versionOf(sdk: EvoSDK): number | undefined {
+  try {
+    const v = sdk.version()
+    return Number.isInteger(v) && v > 0 ? v : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Free a connection's wasm SDK. Only for a connection no call is using: wasm-bindgen's explicit
+ * `free()` takes ownership and traps if an async call still borrows the object (the service
+ * frees a retired connection once its last call returned, {@link EvoSdkService.retire}).
+ */
+function dispose(connection: Connection): void {
+  try {
+    ;(connection.sdk.wasm as unknown as { free?: () => void }).free?.()
+  } catch {
+    // Not connected, or already freed: nothing to release.
+  }
+}
+
 type AnyFn = (...args: unknown[]) => unknown
 type Facades = Record<string, Record<string, AnyFn>>
 
@@ -159,18 +231,45 @@ export class EvoSdkService {
   /** When {@link current} went live: its quorum keys are this old. */
   private installedAt = -Infinity
   private generationNo = 0
+  /** Bumped by a network switch and by `cleanup()`: an attempt started under another epoch is dropped. */
+  private epoch = 0
+  private network: Network | null = null
+  private contractIds: string[] = []
+  private timeoutMs: number | undefined
   private initPromise: Promise<void> | null = null
-  private config: EvoSdkConfig | null = null
   private status: SdkStatus = { phase: 'idle' }
   private readonly listeners = new Set<() => void>()
   private refreshing: Promise<boolean> | null = null
+  private recovering: Promise<boolean> | null = null
   private lastRecoverAt = -Infinity
   private refreshTimer: unknown = null
   private refreshDue = false
   private retryTimer: unknown = null
   private failures = 0
-  private lastAttemptAt = -Infinity
   private recoveries = 0
+  /** The highest protocol version any connection learned (never lowered by a new one). */
+  private learnedVersion: number | undefined
+  /** Contracts read through the handle: id → last use (a refresh preloads the recent ones). */
+  private readonly usedContracts = new Map<string, number>()
+  /** Bundled snapshots found outdated: later connections fetch these instead of seeding them. */
+  private readonly outdated = new Set<string>()
+  private runningWrites = 0
+  private lastWriteEnd = -Infinity
+  private writeWaiters: (() => void)[] = []
+  /**
+   * A read failed on the live connection: swap as soon as the new one is ready, even under a
+   * write. A connection that can no longer read holds no nonce state worth keeping, and a
+   * write whose own read is waiting on the recovery would otherwise never end.
+   */
+  private swapUrgent = false
+  private progressAt = -Infinity
+  private progressTimer: unknown = null
+  private latest: DownloadProgress = { loaded: 0, total: 0 }
+  private readonly aborts = new Set<AbortController>()
+  /** Calls running through the handle, per connection. */
+  private readonly inFlight = new Map<Connection, number>()
+  /** Replaced connections waiting for their last call before they are freed. */
+  private readonly retired = new Set<Connection>()
   private readonly handle: EvoSDK
 
   constructor(
@@ -178,12 +277,7 @@ export class EvoSdkService {
     private readonly clock: Clock = realClock,
   ) {
     this.handle = this.makeHandle()
-    onWasmProgress((progress) => {
-      const phase = this.status.phase
-      if (phase === 'idle' || phase === 'downloading' || phase === 'connecting') {
-        this.setStatus({ phase: 'downloading', progress })
-      }
-    })
+    onWasmProgress((progress) => this.onProgress(progress))
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', () => {
         if (!visible()) return
@@ -209,7 +303,7 @@ export class EvoSdkService {
     return this.isReady
   }
 
-  /** Increments whenever a new connection goes live (the quorum cross-check follows it). */
+  /** Increments whenever a new connection goes live. */
   get generation(): number {
     return this.generationNo
   }
@@ -234,31 +328,31 @@ export class EvoSdkService {
     }
   }
 
+  /** The config the next connect uses (the ids every mount asked for, in order). */
+  private get config(): EvoSdkConfig | null {
+    if (this.network === null) return null
+    return { network: this.network, contractIds: [...this.contractIds], ...(this.timeoutMs !== undefined ? { timeoutMs: this.timeoutMs } : {}) }
+  }
+
   /**
-   * Connect (idempotent). Re-initializes only if the network changed; if new contract ids
-   * appear for the same network they are preloaded without tearing down the connection.
+   * Connect (idempotent). Re-initializes only if the network changed; new contract ids for
+   * the same network are added to the config (never replacing it) and preloaded on the live
+   * connection without tearing it down.
    */
   async initialize(config: EvoSdkConfig): Promise<void> {
-    if (this.current && this.config && this.config.network === config.network) {
-      const missing = config.contractIds.filter((id) => !this.config?.contractIds.includes(id))
-      if (missing.length > 0) {
-        this.config = { ...this.config, contractIds: [...this.config.contractIds, ...missing] }
-        await preload(this.current.sdk, missing)
-      }
+    if (this.network !== null && this.network !== config.network) this.cleanup()
+    this.network = config.network
+    if (this.timeoutMs === undefined) this.timeoutMs = config.timeoutMs
+    const missing = config.contractIds.filter((id) => !this.contractIds.includes(id))
+    this.contractIds.push(...missing)
+    if (this.current !== null) {
+      if (missing.length > 0) await this.track(this.current, (sdk) => preload(sdk, missing))
       return
     }
-    if (this.initPromise) {
-      await this.initPromise
-      if (this.config?.network === config.network) return this.initialize(config)
-    }
-    if (this.config && this.config.network !== config.network) {
-      this.cleanup()
-    }
-    const known = this.config?.contractIds ?? []
-    this.config = { ...config, contractIds: [...new Set([...known, ...config.contractIds])] }
-    // Every page mount lands here: after a failure, start a new attempt at most every
-    // MIN_ATTEMPT_GAP_MS, else report the last failure (the backoff retries on its own).
-    if (this.status.phase === 'error' && this.clock.now() - this.lastAttemptAt < MIN_ATTEMPT_GAP_MS) {
+    // Every page mount lands here. During an outage it waits for the scheduled retry
+    // (`retryAt`) rather than starting another attempt; only "Try again" skips the wait.
+    if (this.status.phase === 'error') {
+      if (this.initPromise) return this.initPromise
       throw new Error(this.status.message)
     }
     await this.connectFirst()
@@ -269,17 +363,20 @@ export class EvoSdkService {
     if (this.initPromise) return this.initPromise
     const config = this.config
     if (config === null) return Promise.reject(new Error('cannot connect before initialize()'))
+    const epoch = this.epoch
     this.clearRetry()
-    this.lastAttemptAt = this.clock.now()
     if (this.status.phase !== 'downloading') this.setStatus({ phase: 'connecting' })
-    const run = this.connector(config).then(
+    const run = this.attempt(config).then(
       (connection) => {
-        if (this.config !== config) return
+        if (this.epoch !== epoch) {
+          dispose(connection)
+          return
+        }
         this.install(connection)
         this.scheduleRefresh()
       },
       (e: unknown) => {
-        if (this.config === config) this.fail(e)
+        if (this.epoch === epoch) this.fail(e)
         throw e
       },
     )
@@ -289,6 +386,29 @@ export class EvoSdkService {
     }
     run.then(clear, clear)
     return run
+  }
+
+  /** Build a connection for `config` with what the current one can hand over; abortable by cleanup. */
+  private attempt(base: EvoSdkConfig): Promise<Connection> {
+    const config = { ...base, contractIds: this.preloadIds() }
+    const controller = new AbortController()
+    this.aborts.add(controller)
+    const run = this.connector(config, { outdated: this.outdated }, controller.signal)
+    void run.then(
+      () => this.aborts.delete(controller),
+      () => this.aborts.delete(controller),
+    )
+    return run
+  }
+
+  /**
+   * The contract ids a connection preloads: all of them for the first connect; for a refresh
+   * only those pages read in the last two refresh periods (the rest load on first use).
+   */
+  private preloadIds(): string[] {
+    if (this.current === null) return [...this.contractIds]
+    const cutoff = this.clock.now() - 2 * REFRESH_MS
+    return [...this.usedContracts].filter(([, at]) => at >= cutoff).map(([id]) => id)
   }
 
   /** Platform is unreachable: report it and schedule the next attempt. */
@@ -301,7 +421,15 @@ export class EvoSdkService {
   /** Try a failed connect again now (the "Try again" button). */
   retryNow(): void {
     if (this.status.phase !== 'error') return
-    void this.connectFirst().catch(() => undefined)
+    this.retryConnect()
+    // The live connection cannot read; nothing a write holds on it is worth waiting for.
+    this.urgeSwap()
+  }
+
+  /** Retry a failed connect: the first connect if there is none, else a refresh. */
+  private retryConnect(): void {
+    if (this.current === null) void this.connectFirst().catch(() => undefined)
+    else void this.refresh()
   }
 
   private scheduleRetry(): void {
@@ -316,7 +444,7 @@ export class EvoSdkService {
     this.setStatus({ ...this.status, retryAt: this.clock.now() + wait })
     this.retryTimer = this.clock.setTimeout(() => {
       this.retryTimer = null
-      void this.connectFirst().catch(() => undefined)
+      this.retryConnect()
     }, wait)
   }
 
@@ -335,46 +463,73 @@ export class EvoSdkService {
   }
 
   private install(connection: Connection): void {
-    const first = this.current === null
+    const previous = this.current
+    if (previous !== null) this.learn(previous.sdk)
     this.current = connection
     this.installedAt = this.clock.now()
     this.generationNo++
+    // Observable without React (the e2e suite waits for a swap to go live on it).
+    if (typeof document !== 'undefined' && document.documentElement) {
+      document.documentElement.dataset['sdkGeneration'] = String(this.generationNo)
+    }
     if (this.failures > 0) {
       // Back from an outage (a scheduled retry, "Try again", or a refresh that got through).
       this.failures = 0
       this.clearRetry()
       this.recoveries++
     }
-    followSdkVersion(connection.sdk)
+    // The normalizer follows the handle, which never reports below a version already proved.
+    followSdkVersion(this.handle)
     // Bound to this connection: a later one installs its own.
-    setStaleContractHandler((id) => refreshSeeded(connection, id))
-    // Off the critical path: are the seeded contracts still the network's current versions?
-    if (first && this.config) void revalidateSeeded(connection, NETWORKS[this.config.network].key)
+    const replaced = (id: string): void => {
+      this.outdated.add(id)
+    }
+    // Counted like any call, so a swap does not free the connection under them.
+    setStaleContractHandler((id) => this.track(connection, () => refreshSeeded(connection, id, replaced)))
+    // Off the critical path, on every connection (at most once an hour while the versions
+    // match): are the seeded contracts still the network's current versions?
+    if (this.network !== null) {
+      const key = NETWORKS[this.network].key
+      void this.track(connection, () => revalidateSeeded(connection, key, replaced))
+    }
     this.setStatus({ phase: 'ready' })
+    if (previous !== null) this.retire(previous)
   }
 
   /**
    * Build a new connection (a fresh quorum-key prefetch) and swap it in once it is connected
-   * and warm. Concurrent calls share one attempt. On failure the current connection stays;
-   * resolves to whether a new one went live.
+   * and warm, and no write needs the old one. Concurrent calls share one attempt. On failure
+   * the current connection stays; resolves to whether a new one went live.
    */
   refresh(): Promise<boolean> {
     if (this.refreshing) return this.refreshing
     const config = this.config
     if (config === null || this.current === null) return Promise.resolve(false)
+    const epoch = this.epoch
     this.refreshDue = false
-    const run = this.connector(config).then(
-      (connection) => {
-        if (this.config !== config || this.current === null) return false
+    const run = this.attempt(config).then(
+      async (connection) => {
+        // A write can hold the swap back; a connection that waited a whole refresh period
+        // has keys as old as the one it would replace, so build a fresh one instead.
+        if (!(await this.writesSettled(REFRESH_MS)) || this.epoch !== epoch || this.current === null) {
+          dispose(connection)
+          return false
+        }
         this.install(connection)
         return true
       },
-      () => false,
+      (e: unknown) => {
+        // A retry during an outage that failed again: report it and back off further.
+        if (this.epoch === epoch && this.status.phase === 'error') this.fail(e)
+        return false
+      },
     )
     this.refreshing = run
     void run.then(() => {
+      if (this.refreshing !== run) return
       this.refreshing = null
-      if (this.config === config && this.current !== null) this.scheduleRefresh()
+      this.swapUrgent = false
+      if (this.epoch === epoch && this.current !== null) this.scheduleRefresh()
     })
     return run
   }
@@ -399,41 +554,112 @@ export class EvoSdkService {
   }
 
   /**
+   * Run `write` as a write the connection must not be swapped under (the SDK's per-instance
+   * nonce cache, see the module comment). A refresh that completes meanwhile waits.
+   */
+  async holdForWrite<T>(write: () => Promise<T>): Promise<T> {
+    this.runningWrites++
+    try {
+      return await write()
+    } finally {
+      this.runningWrites--
+      this.lastWriteEnd = this.clock.now()
+      if (this.runningWrites === 0) this.wakeWriteWaiters()
+    }
+  }
+
+  /**
+   * True once no write runs and the last ended {@link WRITE_SETTLE_MS} ago, or at once when a
+   * recovery or "Try again" needs the swap ({@link swapUrgent}); false if that takes longer
+   * than `maxWaitMs`.
+   */
+  private async writesSettled(maxWaitMs: number): Promise<boolean> {
+    const deadline = this.clock.now() + maxWaitMs
+    for (;;) {
+      if (this.swapUrgent) return true
+      const now = this.clock.now()
+      if (now >= deadline) return false
+      const settle = this.runningWrites > 0 ? Infinity : this.lastWriteEnd + WRITE_SETTLE_MS - now
+      if (settle <= 0) return true
+      await new Promise<void>((r) => {
+        this.writeWaiters.push(r)
+        this.clock.setTimeout(r, Math.min(settle, deadline - now))
+      })
+    }
+  }
+
+  /**
+   * A swap is needed now (a failing connection, or the user asked): the refresh in flight
+   * stops waiting on writes. No-op without one, so the flag never outlives its refresh.
+   */
+  private urgeSwap(): void {
+    if (this.refreshing === null) return
+    this.swapUrgent = true
+    this.wakeWriteWaiters()
+  }
+
+  private wakeWriteWaiters(): void {
+    const waiters = this.writeWaiters
+    this.writeWaiters = []
+    waiters.forEach((w) => w())
+  }
+
+  /**
    * Run a read; if it failed because its connection went stale (rotated quorum keys, no usable
    * node), reconnect once and run it again on the new connection. A read whose connection was
    * already replaced just runs again; a new reconnect starts at most every
-   * {@link RECOVER_GAP_MS}.
+   * {@link RECOVER_GAP_MS}, and reads failing meanwhile share it.
    */
   async withRecovery<T>(read: (sdk: EvoSDK) => Promise<T>): Promise<T> {
     const used = this.live()
     try {
-      return await read(used.sdk)
+      return await this.track(used, read)
     } catch (e) {
       if (!isStaleConnectionError(e)) throw e
-      if (this.current === used && !(await this.recover(e))) throw e
+      if (this.current === used && !(await this.recover(e, used))) throw e
       const now = this.current
       if (now === null || now === used) throw e
-      return read(now.sdk)
+      return this.track(now, read)
     }
   }
 
-  private async recover(cause: unknown): Promise<boolean> {
-    if (this.refreshing !== null) return this.refreshing
-    if (this.clock.now() - this.lastRecoverAt < RECOVER_GAP_MS) return false
+  /** One recovery (the rate-limit wait and the reconnect) that every failing read shares. */
+  private recover(cause: unknown, used: Connection): Promise<boolean> {
+    if (this.recovering !== null) return this.recovering
+    if (this.refreshing !== null) {
+      // A routine refresh waiting on a write: this connection is failing, swap when ready.
+      this.urgeSwap()
+      return this.refreshing
+    }
+    // During an outage the retry timer owns reconnects: reads failing meanwhile neither
+    // reconnect nor push the next retry back.
+    if (this.status.phase === 'error') return Promise.resolve(false)
+    if (this.clock.now() - this.lastRecoverAt < RECOVER_GAP_MS) return Promise.resolve(false)
     this.lastRecoverAt = this.clock.now()
-    // Rate-limited nodes (budget.ts): reconnecting at once would go straight back to them.
-    if (/no available addresses/i.test(messageOf(cause))) {
-      const wait = Math.min(dapiBudget.retryAfterMs(), RECOVER_MAX_WAIT_MS)
-      if (wait > 0) await new Promise((r) => this.clock.setTimeout(() => r(undefined), wait))
-    }
-    const renewed = await this.refresh()
-    if (!renewed && this.current !== null && this.status.phase === 'ready') {
-      // The connection can no longer read and a new one cannot be built: Platform is
-      // unreachable. Pages drop to their cached content under the unreachable banner, and
-      // the connect is retried with backoff.
-      this.fail(cause)
-    }
-    return renewed
+    const run = (async (): Promise<boolean> => {
+      // Rate-limited nodes (budget.ts): reconnecting at once would go straight back to them.
+      if (/no available addresses/i.test(messageOf(cause))) {
+        const wait = Math.min(dapiBudget.retryAfterMs(), RECOVER_MAX_WAIT_MS)
+        if (wait > 0) await new Promise((r) => this.clock.setTimeout(() => r(undefined), wait))
+      }
+      // Replaced while waiting (a routine refresh went live): the read just runs again.
+      if (this.current !== used) return this.current !== null
+      const refreshing = this.refresh()
+      this.urgeSwap()
+      const renewed = await refreshing
+      if (!renewed && this.current !== null && this.status.phase === 'ready') {
+        // The connection can no longer read and a new one cannot be built: Platform is
+        // unreachable. Pages drop to their cached content under the unreachable banner, and
+        // the connect is retried with backoff.
+        this.fail(cause)
+      }
+      return renewed
+    })()
+    this.recovering = run
+    void run.then(() => {
+      if (this.recovering === run) this.recovering = null
+    })
+    return run
   }
 
   /** The connected SDK (a handle that follows reconnects). Throws if not yet initialized. */
@@ -447,18 +673,60 @@ export class EvoSdkService {
     return this.current
   }
 
-  /** Drop the connection and reset state. */
+  /** Drop the connection and reset state; attempts still running are aborted and dropped. */
   cleanup(): void {
+    this.epoch++
+    this.aborts.forEach((a) => a.abort())
+    this.aborts.clear()
+    if (this.current !== null) this.retire(this.current)
     this.current = null
     setStaleContractHandler(null)
-    this.config = null
+    this.network = null
+    this.contractIds = []
+    this.timeoutMs = undefined
     this.initPromise = null
     this.refreshing = null
+    this.swapUrgent = false
+    this.recovering = null
     this.failures = 0
+    this.usedContracts.clear()
+    this.outdated.clear()
+    this.learnedVersion = undefined
     this.clearRetry()
     if (this.refreshTimer !== null) this.clock.clearTimeout(this.refreshTimer)
     this.refreshTimer = null
     this.setStatus({ phase: 'idle' })
+  }
+
+  /**
+   * The SDK download reports progress. Only a connect waiting on it shows it (a wallet-only
+   * wasm load does not move the service), at most every {@link PROGRESS_INTERVAL_MS}; once
+   * every byte is in, the connect shows "Connecting…".
+   */
+  private onProgress(progress: DownloadProgress): void {
+    if (!this.showsProgress()) return
+    const done = progress.total > 0 && progress.loaded >= progress.total
+    if (done) {
+      if (this.progressTimer !== null) this.clock.clearTimeout(this.progressTimer)
+      this.progressTimer = null
+      this.setStatus({ phase: 'connecting' })
+      return
+    }
+    const now = this.clock.now()
+    const show = (): void => {
+      this.progressTimer = null
+      this.progressAt = this.clock.now()
+      if (this.showsProgress()) this.setStatus({ phase: 'downloading', progress: this.latest })
+    }
+    this.latest = progress
+    if (now - this.progressAt >= PROGRESS_INTERVAL_MS) show()
+    else if (this.progressTimer === null) this.progressTimer = this.clock.setTimeout(show, this.progressAt + PROGRESS_INTERVAL_MS - now)
+  }
+
+  /** Only a connect that is waiting on the download shows its progress. */
+  private showsProgress(): boolean {
+    const p = this.status.phase
+    return (p === 'connecting' || p === 'downloading') && this.initPromise !== null
   }
 
   private setStatus(status: SdkStatus): void {
@@ -468,6 +736,52 @@ export class EvoSdkService {
 
   private notify(): void {
     this.listeners.forEach((l) => l())
+  }
+
+  /** Free `connection` now if no call is running on it, else when the last one returns. */
+  private retire(connection: Connection): void {
+    if ((this.inFlight.get(connection) ?? 0) === 0) dispose(connection)
+    else this.retired.add(connection)
+  }
+
+  /** Run `call` on `connection`, counted so a retired connection is freed only once idle. */
+  private track<T>(connection: Connection, call: (sdk: EvoSDK) => T): T {
+    this.inFlight.set(connection, (this.inFlight.get(connection) ?? 0) + 1)
+    const done = (): void => {
+      const left = (this.inFlight.get(connection) ?? 1) - 1
+      if (left > 0) {
+        this.inFlight.set(connection, left)
+        return
+      }
+      this.inFlight.delete(connection)
+      if (this.retired.delete(connection)) dispose(connection)
+    }
+    let result: T
+    try {
+      result = call(connection.sdk)
+    } catch (e) {
+      done()
+      throw e
+    }
+    if (result instanceof Promise) {
+      void result.then(done, done)
+    } else done()
+    return result
+  }
+
+  /** Remember the highest protocol version `sdk` has proved (a new connection may report its floor). */
+  private learn(sdk: EvoSDK): number | undefined {
+    const v = versionOf(sdk)
+    if (v !== undefined && (this.learnedVersion === undefined || v > this.learnedVersion)) this.learnedVersion = v
+    return this.learnedVersion
+  }
+
+  /** Note the contract a read names (a refresh preloads the recently used ones). */
+  private noteContract(args: unknown[]): void {
+    const first = args[0] as { dataContractId?: unknown; contractId?: unknown } | string | undefined
+    let id: unknown = first
+    if (typeof first !== 'string') id = typeof first?.dataContractId === 'string' ? first.dataContractId : first?.contractId
+    if (typeof id === 'string') this.usedContracts.set(id, this.clock.now())
   }
 
   /**
@@ -486,8 +800,11 @@ export class EvoSdkService {
               const value = (this.live().sdk as unknown as Facades)[name]?.[method as string]
               if (typeof value !== 'function' || typeof method !== 'string') return value
               const call = (sdk: EvoSDK, args: unknown[]): unknown => (sdk as unknown as Facades)[name]![method]!(...args)
-              if (!RETRYABLE_READS.has(method)) return (...args: unknown[]) => call(this.live().sdk, args)
-              return (...args: unknown[]) => this.withRecovery((sdk) => call(sdk, args) as Promise<unknown>)
+              if (!RETRYABLE_READS.has(`${name}.${method}`)) return (...args: unknown[]) => this.track(this.live(), (sdk) => call(sdk, args))
+              return (...args: unknown[]) => {
+                if (name === 'documents' || name === 'contracts') this.noteContract(args)
+                return this.withRecovery((sdk) => call(sdk, args) as Promise<unknown>)
+              }
             },
           },
         )
@@ -500,9 +817,14 @@ export class EvoSdkService {
         // Never look like a thenable (the handle is returned from async functions).
         if (prop === 'then' || this.current === null) return undefined
         if (typeof prop === 'string' && FACADE_NAMES.has(prop)) return facade(prop)
-        const sdk = this.current.sdk as unknown as Record<PropertyKey, unknown>
+        // Never lower than a version a connection proved: a write derives its document id at
+        // this version, and Drive refuses an id derived at an older one.
+        if (prop === 'version') return () => this.learn(this.live().sdk) ?? this.live().sdk.version()
+        const connection = this.current
+        const sdk = connection.sdk as unknown as Record<PropertyKey, unknown>
         const value = sdk[prop]
-        return typeof value === 'function' ? (value as AnyFn).bind(sdk) : value
+        if (typeof value !== 'function') return value
+        return (...args: unknown[]) => this.track(connection, () => (value as AnyFn).apply(sdk, args))
       },
     })
   }
@@ -522,13 +844,14 @@ async function preload(sdk: EvoSDK, contractIds: readonly string[]): Promise<voi
 
 /**
  * Add the deployment's contract snapshots (`contract-seed.ts`) to the SDK's contract cache,
- * so no page spends a `getDataContract` request on them. A snapshot that fails to decode is
- * skipped: {@link preload} then fetches that contract as before.
+ * so no page spends a `getDataContract` request on them. `outdated` snapshots (an earlier
+ * connection found the network had moved on) and any that fail to decode are skipped:
+ * {@link preload} fetches those.
  */
-async function seed(sdk: EvoSDK, deploymentKey: string): Promise<Map<string, number>> {
+async function seed(sdk: EvoSDK, deploymentKey: string, outdated: ReadonlySet<string>): Promise<Map<string, number>> {
   const seeded = new Map<string, number>()
   const snapshots = await loadContractSnapshots(deploymentKey).catch(() => ({}))
-  const entries = Object.entries(snapshots)
+  const entries = Object.entries(snapshots).filter(([id]) => !outdated.has(id))
   if (entries.length === 0) return seeded
   const { DataContract } = await import('@dashevo/evo-sdk')
   for (const [id, snapshot] of entries) {
@@ -549,7 +872,7 @@ async function seed(sdk: EvoSDK, deploymentKey: string): Promise<Map<string, num
  * `$contractVersion`; this catches the update before any such document is read. Runs at
  * most once per {@link SEED_CHECK_MS} per profile while the versions keep matching.
  */
-async function revalidateSeeded(connection: Connection, deploymentKey: string): Promise<void> {
+async function revalidateSeeded(connection: Connection, deploymentKey: string, replaced: (id: string) => void): Promise<void> {
   const { sdk, seeded } = connection
   if (seeded.size === 0) return
   const versions = JSON.stringify([...seeded].sort())
@@ -561,7 +884,7 @@ async function revalidateSeeded(connection: Connection, deploymentKey: string): 
       const now = latest.get(id)?.version
       if (now !== undefined && now !== version) {
         current = false
-        await refreshSeeded(connection, id)
+        await refreshSeeded(connection, id, replaced)
       }
     }
     if (current) recordSeedCheck(deploymentKey, versions)
@@ -575,9 +898,10 @@ async function revalidateSeeded(connection: Connection, deploymentKey: string): 
  * was seeded and was refetched (the caller may retry its read once). Used when the versions
  * differ, and when a read names a document type the seeded contract does not have.
  */
-async function refreshSeeded(connection: Connection, id: string): Promise<boolean> {
+async function refreshSeeded(connection: Connection, id: string, replaced: (id: string) => void): Promise<boolean> {
   const { sdk, seeded } = connection
   if (!seeded.delete(id)) return false
+  replaced(id)
   try {
     const { Identifier } = await import('@dashevo/evo-sdk')
     sdk.wasm.removeCachedContract(Identifier.fromBase58(id))
@@ -587,32 +911,55 @@ async function refreshSeeded(connection: Connection, id: string): Promise<boolea
   }
 }
 
-function withTimeout<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+/** Reject with `what` timed out after `ms`, aborting `controller` so the work stops spending requests. */
+export function withTimeout<T>(work: Promise<T>, ms: number, what: string, controller: AbortController): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`${what} timed out after ${Math.round(ms / 1000)} s`)), ms)
+    timer = setTimeout(() => {
+      controller.abort()
+      reject(new Error(`${what} timed out after ${Math.round(ms / 1000)} s`))
+    }, ms)
   })
   return Promise.race([work, timeout]).finally(() => clearTimeout(timer))
 }
 
 /** Build, connect and warm a trusted connection for `config`. */
-async function connectTrusted(config: EvoSdkConfig): Promise<Connection> {
+async function connectTrusted(config: EvoSdkConfig, carry: Carry, signal: AbortSignal): Promise<Connection> {
   // Every DAPI request this page makes goes through the shared request budget (`budget.ts`).
   installDapiFetchGate(NETWORKS[config.network].dapiAddresses)
-  // Start the wasm download (a separate asset with its own stall timer, wasm-fetch.ts) next to
-  // the SDK's JS chunk rather than after it. Both load on first data need, never in the
-  // first-paint bundle.
-  const wasm = compileWasm()
-  wasm.catch(() => undefined)
+  // In a browser, start the wasm download (a separate asset with its own stall timer,
+  // wasm-fetch.ts) next to the SDK's JS chunk rather than after it. Both load on first data
+  // need, never in the first-paint bundle. Elsewhere (Node, the live tests) the SDK's own
+  // loader brings its wasm.
+  if (typeof window !== 'undefined') compileWasm().catch(() => undefined)
   const evo = await import('@dashevo/evo-sdk')
-  await wasm
+  // In the browser build this is `wasm-shim.ts` (the prefetched module); in Node, evo-sdk's own.
   await evo.ensureInitialized()
   // A slow link may take minutes over the download; the connect itself gets a deadline, so a
-  // hung quorum service fails (and is retried) instead of spinning forever.
-  return withTimeout(connectAndWarm(evo.EvoSDK, config), CONNECT_TIMEOUT_MS, 'Connecting to Platform')
+  // hung quorum service fails (and is retried) instead of spinning forever. The deadline and
+  // a cleanup both abort it, so an abandoned connect stops spending DAPI requests.
+  const controller = new AbortController()
+  if (signal.aborted) controller.abort()
+  else signal.addEventListener('abort', () => controller.abort(), { once: true })
+  const work = connectAndWarm(evo.EvoSDK, config, carry, controller.signal)
+  // A connect that finishes after its deadline fired (or after a cleanup) has no taker.
+  void work.then((c) => controller.signal.aborted && dispose(c), () => undefined)
+  return withTimeout(work, CONNECT_TIMEOUT_MS, 'Connecting to Platform', controller)
 }
 
-async function connectAndWarm(EvoSDKClass: typeof import('@dashevo/evo-sdk').EvoSDK, config: EvoSdkConfig): Promise<Connection> {
+/** Throw if the connect was abandoned during the last step, freeing the SDK it built. */
+function step(signal: AbortSignal, sdk: EvoSDK | null): void {
+  if (!signal.aborted) return
+  if (sdk !== null) dispose({ sdk, seeded: new Map() })
+  throw new Error('the connect was abandoned')
+}
+
+async function connectAndWarm(
+  EvoSDKClass: typeof import('@dashevo/evo-sdk').EvoSDK,
+  config: EvoSdkConfig,
+  carry: Carry,
+  signal: AbortSignal,
+): Promise<Connection> {
   // `banFailedAddress: false`: a failed attempt only drops the node from the SDK's sticky
   // rotation and the next attempt goes to another node (rs-dapi-client
   // `update_address_ban_status`); nothing is banned, so a burst of refusals can no longer
@@ -620,6 +967,10 @@ async function connectAndWarm(EvoSDKClass: typeof import('@dashevo/evo-sdk').Evo
   // longer keeps a node that is really down out for minutes. The gate does that instead, for
   // `DOWN_MS`, from network errors, HTTP 5xx and gRPC `Unavailable`. It also turns off the
   // SDK's DPNS-registration owner failover, which this app does not use (it registers no names).
+  //
+  // No `version` option: evo-sdk passes it to `withVersion`, which PINS the version and turns
+  // auto-detect off (rs-sdk `SdkBuilder::with_version`). wasm-sdk seeds the learned version on
+  // its own (`protocol_version_store`), and the service's handle never reports lower.
   const options = { settings: { timeoutMs: config.timeoutMs ?? 8000, banFailedAddress: false } }
   let sdk: EvoSDK
   if (config.network === 'devnet') {
@@ -642,15 +993,20 @@ async function connectAndWarm(EvoSDKClass: typeof import('@dashevo/evo-sdk').Evo
     sdk = config.network === 'mainnet' ? EvoSDKClass.mainnetTrusted(options) : EvoSDKClass.testnetTrusted(options)
   }
   await sdk.connect()
-  // Seed the bundled contract snapshots, then preload what is still missing, BEFORE the
-  // connection goes live so callers never see an unwarmed SDK.
-  const seeded = await seed(sdk, NETWORKS[config.network].key)
+  step(signal, sdk)
+  // Seed the bundled contracts, then preload what is still missing, BEFORE the connection goes
+  // live so callers never see an unwarmed SDK.
+  const seeded = await seed(sdk, NETWORKS[config.network].key, carry.outdated)
+  step(signal, sdk)
   await preload(sdk, config.contractIds.filter((id) => !seeded.has(id)))
+  step(signal, sdk)
   return { sdk, seeded }
 }
 
 /** The process-wide evo-sdk service singleton. */
 export const evoSdkService = new EvoSdkService()
+// Every serialized write (documents, identity key updates) holds the connection.
+setWriteHold((write) => evoSdkService.holdForWrite(write))
 
 /**
  * The connected SDK for `network`, connecting first if needed (the DPNS and forge-v2
