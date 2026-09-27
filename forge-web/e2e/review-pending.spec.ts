@@ -276,5 +276,4 @@ test('p7. a single comment posts at once; axe clean on the Files tab', async ({ 
   await page.getByRole('button', { name: 'Add single comment' }).click()
   await expect(page.getByTestId('thread').filter({ hasText: 'A single comment.' })).toBeVisible({ timeout: 180_000 })
   expect(await runAxe(page, 'PR files with threads')).toEqual([])
-  await unlock(page).catch(() => undefined)
 })
