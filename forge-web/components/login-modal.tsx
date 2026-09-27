@@ -269,7 +269,7 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
         <Lock className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
         This browser holds a key for{' '}
         {vaults.length > 1 ? (
-          <select aria-label="Identity" value={pick} onChange={(e) => setPick(Number(e.target.value))} className="rounded border border-anvil-300 bg-transparent px-1 font-mono dark:border-anvil-700">
+          <select aria-label="Identity" value={pick} onChange={(e) => setPick(Number(e.target.value))} className="rounded border border-anvil-300 bg-transparent px-1 font-mono coarse:h-11 coarse:text-base dark:border-anvil-700">
             {vaults.map((x, i) => (
               <option key={x.identityId} value={i}>
                 {x.identityId.slice(0, 10)}…
