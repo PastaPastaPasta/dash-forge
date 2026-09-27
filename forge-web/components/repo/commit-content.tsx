@@ -51,7 +51,7 @@ function Body({ reader, oid, addr }: { reader: BrowseReader; oid: string; addr: 
             <ul className="space-y-1 text-left font-mono text-dense">
               {cause.candidates.map((c) => (
                 <li key={c}>
-                  <Link href={repoHref('/repo/commit', addr, { oid: c })} className="hover:text-forge-600">
+                  <Link href={repoHref('/repo/commit', addr, { oid: c })} className="hover:text-forge-800 dark:hover:text-forge-400">
                     {c}
                   </Link>
                 </li>
