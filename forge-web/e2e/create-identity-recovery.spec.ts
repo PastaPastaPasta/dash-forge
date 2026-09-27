@@ -127,10 +127,20 @@ function stageNow(page: Page): Promise<string | null> {
   return page.evaluate(() => document.querySelector('[data-testid="create-stage"]')?.textContent ?? null).catch(() => null)
 }
 
+/** The identity as Platform shows it, read from Node (retried: a shared devnet node may refuse once). */
 async function identityOnChain(identityId: string): Promise<{ keyIds: number[] } | null> {
-  const sdk = await nodeSdk()
-  const identity = await sdk.identities.fetch(identityId)
-  return identity ? { keyIds: (identity.publicKeys as { keyId: number }[]).map((k) => k.keyId) } : null
+  let last: unknown
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const sdk = await nodeSdk()
+      const identity = await sdk.identities.fetch(identityId)
+      return identity ? { keyIds: (identity.publicKeys as { keyId: number }[]).map((k) => k.keyId) } : null
+    } catch (e) {
+      last = e
+      await new Promise((r) => setTimeout(r, 5_000))
+    }
+  }
+  throw new Error(`reading ${identityId} from Node failed: ${String((last as { message?: unknown })?.message ?? last)}`)
 }
 
 async function createdIdentity(page: Page): Promise<string> {
@@ -165,6 +175,10 @@ test('cr-1. the create lands but its proof names a quorum the SDK lacks: the flo
   })
   const address = await openDeposit(page)
   await shot(page, 'cr-1-01-deposit')
+  // A real user takes a while to fund; an InstantSend lock can finish the create in seconds.
+  // Let the connection outlive the freshness window (FRESH_WRITE_MS, 30 s) so the create renews
+  // it, and that renewal is what gets the emptied lists.
+  await page.waitForTimeout(35_000)
   await fund(address)
   await expect(page.getByTestId('funds-pill')).toBeVisible({ timeout: 25 * 60_000 })
   // The create's answer could not be verified, and the flow checked instead of failing.
