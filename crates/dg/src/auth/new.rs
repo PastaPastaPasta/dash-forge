@@ -48,8 +48,6 @@ use crate::fmt::credits_to_dash;
 const DEPOSIT_WAIT: Duration = Duration::from_mins(30);
 /// How long to wait for the asset lock to become provable.
 const PROOF_WAIT: Duration = Duration::from_mins(20);
-/// A journal started this recently was created by this run (the address is not shown yet).
-const FRESH_JOURNAL_MS: u64 = 10 * 60 * 1000;
 /// How long to try for an InstantSend lock before falling back to a chain lock.
 const ISLOCK_WAIT: Duration = Duration::from_secs(90);
 
@@ -363,7 +361,8 @@ async fn discard(ctx: &Ctx, args: &NewArgs, j: &Journal) -> Result<()> {
         ctx.network(),
         args.explorer.as_deref(),
     ));
-    // Neither DAPI nor the explorer answering is "unknown", not "empty": ask.
+    // Neither source answering is "unknown", not "empty": ask. DAPI's history also misses an
+    // unconfirmed payment, so a zero is only trusted when the explorer agrees.
     let held = match ctx.connect().await {
         Ok(client) => match funding::watch_start(&client, j.start_height, j.started_at).await {
             Ok(from) => {
@@ -384,9 +383,28 @@ async fn discard(ctx: &Ctx, args: &NewArgs, j: &Journal) -> Result<()> {
     Ok(())
 }
 
+/// Start and save a journal. The Core tip is read before the address is ever shown: nothing
+/// can pay it earlier, so the deposit watch replays from there (less a margin for node lag).
+async fn new_journal(client: &PlatformClient, network: String, address: String) -> Result<Journal> {
+    let start_height = client
+        .best_height()
+        .await
+        .context("reading the Core chain height")?;
+    let j = Journal {
+        network,
+        deposit_address: address,
+        started_at: super::now_ms(),
+        start_height: Some(start_height),
+        ..Journal::default()
+    };
+    save_journal(&j)?;
+    Ok(j)
+}
+
 /// Load, discard or start the journal and get the words; returns the keys and the journal.
 async fn start_or_resume(
     ctx: &Ctx,
+    client: &PlatformClient,
     args: &NewArgs,
     backup_pass: Option<&Secret>,
 ) -> Result<(NewIdentityKeys, Journal)> {
@@ -456,14 +474,7 @@ async fn start_or_resume(
             if let Some(path) = &args.backup.backup_file {
                 write_backup(path, &keys, "", backup_pass, true)?;
             }
-            let j = Journal {
-                network,
-                deposit_address: address,
-                started_at: super::now_ms(),
-                ..Journal::default()
-            };
-            save_journal(&j)?;
-            j
+            new_journal(client, network, address).await?
         }
     };
     if let Some(path) = &args.backup.backup_file {
@@ -566,18 +577,6 @@ async fn fund_and_lock(
 ) -> Result<(SignedAssetLock, LockProof)> {
     let endpoints = CoreEndpoints::for_network(ctx.network(), args.explorer.as_deref());
     let insight = Insight::new(&endpoints);
-    // A fresh creation records the tip before the address is shown: nothing can pay it earlier.
-    // An older journal without a height is left alone, so `watch_start` rewinds past its start.
-    let fresh = super::now_ms().saturating_sub(j.started_at) < FRESH_JOURNAL_MS;
-    if j.start_height.is_none() && j.lock_txid.is_none() && fresh {
-        j.start_height = Some(
-            client
-                .best_height()
-                .await
-                .context("reading the Core chain height")?,
-        );
-        save_journal(j)?;
-    }
     let lock = if let (Some(txid), Some(raw)) = (&j.lock_txid, &j.lock_raw) {
         SignedAssetLock {
             raw: hex::decode(raw).context("the journal's asset lock is not hex")?,
@@ -700,7 +699,7 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
     check_group(ctx, &client, &spec.group).await?;
 
     let backup_pass = backup_passphrase(args)?;
-    let (keys, mut j) = start_or_resume(ctx, args, backup_pass.as_ref()).await?;
+    let (keys, mut j) = start_or_resume(ctx, &client, args, backup_pass.as_ref()).await?;
     let (lock, proof) = fund_and_lock(ctx, &client, args, &keys, &mut j).await?;
     let identity_id = identity_id_for(&proof)?;
     j.identity_id = Some(identity_id.clone());

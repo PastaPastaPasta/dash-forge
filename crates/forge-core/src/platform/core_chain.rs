@@ -29,6 +29,10 @@ use crate::funding::{CoreChain, CoreTxFeed, CoreTxStatus};
 /// The bloom filter's false-positive rate. A false positive only costs bandwidth: every
 /// delivered transaction is checked against the address's script.
 const BLOOM_FP_RATE: f64 = 0.0001;
+/// Elements the filter is sized for. With `BLOOM_UPDATE_ALL` the node inserts each matched
+/// outpoint, so a filter sized for the one address hash would saturate after a match or two
+/// and stream every transaction. Fifty keeps it under 150 bytes.
+const BLOOM_CAPACITY: u32 = 50;
 /// BIP37 `nFlags`: add every matched output to the filter.
 const BLOOM_UPDATE_ALL: u32 = 1;
 
@@ -63,8 +67,13 @@ pub(crate) fn address_bloom_filter(address: &str) -> Result<ProtoBloomFilter> {
         .p2pkh_public_key_hash_bytes()
         .ok_or_else(|| Error::Config(format!("{address} is not a P2PKH address")))?
         .to_vec();
-    let mut filter = BloomFilter::new(1, BLOOM_FP_RATE, rand::random(), BloomFlags::All)
-        .map_err(|e| Error::Config(format!("bloom filter: {e}")))?;
+    let mut filter = BloomFilter::new(
+        BLOOM_CAPACITY,
+        BLOOM_FP_RATE,
+        rand::random(),
+        BloomFlags::All,
+    )
+    .map_err(|e| Error::Config(format!("bloom filter: {e}")))?;
     filter.insert(&hash);
     Ok(ProtoBloomFilter {
         v_data: filter.to_bytes(),
@@ -74,14 +83,22 @@ pub(crate) fn address_bloom_filter(address: &str) -> Result<ProtoBloomFilter> {
     })
 }
 
-struct DapiFeed(Streaming<TransactionsWithProofsResponse>);
+struct DapiFeed {
+    stream: Streaming<TransactionsWithProofsResponse>,
+    /// Merkle blocks delivered so far: one per block replayed from the start height.
+    blocks: u32,
+}
 
 #[async_trait]
 impl CoreTxFeed for DapiFeed {
+    fn blocks_seen(&self) -> u32 {
+        self.blocks
+    }
+
     async fn next_transactions(&mut self) -> Result<Option<Vec<Vec<u8>>>> {
         loop {
             let msg = self
-                .0
+                .stream
                 .message()
                 .await
                 .map_err(|e| dapi_err("reading the transaction feed", e))?;
@@ -89,8 +106,10 @@ impl CoreTxFeed for DapiFeed {
                 return Ok(None);
             };
             // Merkle blocks and InstantSend locks carry no outputs; the raw transactions do.
-            if let Some(Responses::RawTransactions(raw)) = responses {
-                return Ok(Some(raw.transactions));
+            match responses {
+                Some(Responses::RawTransactions(raw)) => return Ok(Some(raw.transactions)),
+                Some(Responses::RawMerkleBlock(_)) => self.blocks = self.blocks.saturating_add(1),
+                _ => {}
             }
         }
     }
@@ -166,7 +185,7 @@ impl CoreChain for PlatformClient {
             .await
             .into_inner()
             .map_err(|e| dapi_err(&format!("watching {address}"), e))?;
-        Ok(Box::new(DapiFeed(stream)))
+        Ok(Box::new(DapiFeed { stream, blocks: 0 }))
     }
 }
 

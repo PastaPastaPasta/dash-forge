@@ -41,6 +41,10 @@ pub struct CoreTxStatus {
 pub trait CoreTxFeed: Send {
     /// The next batch of matched raw transactions; `None` once the node ends the stream.
     async fn next_transactions(&mut self) -> Result<Option<Vec<Vec<u8>>>>;
+    /// How many blocks the feed has replayed so far (a reconnect resumes after them).
+    fn blocks_seen(&self) -> u32 {
+        0
+    }
 }
 
 /// The DAPI Core calls funding needs (implemented by [`crate::platform::PlatformClient`]).
@@ -214,6 +218,11 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(5);
 /// Blocks to rewind a deposit watch whose start height was not recorded (older journals):
 /// the blocks since the creation started (2.5-minute target spacing), plus a margin.
 const REWIND_MARGIN_BLOCKS: u32 = 50;
+/// The deepest rewind: about a week of blocks. Replaying further would not reach the live
+/// feed before DAPI's five-minute stream deadline.
+const MAX_REWIND_BLOCKS: u32 = 4_032;
+/// Blocks subtracted from a recorded start height: nodes' tips differ by a block or two.
+pub const START_HEIGHT_MARGIN: u32 = 6;
 
 /// Where to start watching a deposit address: the recorded height, else far enough back to
 /// cover every block since `started_at_ms`.
@@ -223,7 +232,7 @@ pub async fn watch_start(
     started_at_ms: u64,
 ) -> Result<u32> {
     if let Some(h) = recorded {
-        return Ok(h);
+        return Ok(h.saturating_sub(START_HEIGHT_MARGIN).max(1));
     }
     let best = chain.best_height().await?;
     let now_ms = std::time::SystemTime::now()
@@ -232,7 +241,8 @@ pub async fn watch_start(
     let elapsed_blocks = now_ms.saturating_sub(started_at_ms) / 150_000;
     let back = u32::try_from(elapsed_blocks)
         .unwrap_or(u32::MAX)
-        .saturating_add(REWIND_MARGIN_BLOCKS);
+        .saturating_add(REWIND_MARGIN_BLOCKS)
+        .min(MAX_REWIND_BLOCKS);
     Ok(best.saturating_sub(back).max(1))
 }
 
@@ -270,6 +280,10 @@ pub async fn wait_for_deposit(
     let deadline = tokio::time::Instant::now() + timeout;
     let mut tracker = DepositTracker::new(address)?;
     let mut last_seen = 0;
+    // Where the next (re)connection replays from: past the blocks a feed already delivered,
+    // less a margin (the tracker ignores repeats), so a long replay still reaches the tip.
+    let mut from_height = from_height;
+    let mut next_from = from_height;
     let mut report = |total: u64, on_seen: &mut (dyn FnMut(u64) + Send)| {
         if total != last_seen {
             last_seen = total;
@@ -292,7 +306,15 @@ pub async fn wait_for_deposit(
                 if left.is_zero() {
                     return Ok(None);
                 }
-                match tokio::time::timeout(left.min(FEED_IDLE), feed.next_transactions()).await {
+                let next =
+                    tokio::time::timeout(left.min(FEED_IDLE), feed.next_transactions()).await;
+                // The next connection replays from past what this one delivered.
+                next_from = next_from.max(
+                    from_height
+                        .saturating_add(feed.blocks_seen())
+                        .saturating_sub(START_HEIGHT_MARGIN),
+                );
+                match next {
                     Ok(Ok(Some(txs))) => {
                         for raw in &txs {
                             tracker.ingest(raw);
@@ -329,12 +351,14 @@ pub async fn wait_for_deposit(
             RECONNECT_DELAY.min(deadline.saturating_duration_since(tokio::time::Instant::now())),
         )
         .await;
+        from_height = next_from;
     }
     Ok(None)
 }
 
-/// What `address` holds (duffs), from the DAPI feed's history since `from_height`, else the
-/// explorer; `None` when neither can say.
+/// What `address` holds (duffs): the larger of DAPI's confirmed history since `from_height` and
+/// the explorer's view. `None` when neither answers, and also when only DAPI answered zero:
+/// its history leaves out the mempool, so an unconfirmed payment would read as empty.
 pub async fn deposit_balance(
     chain: &dyn CoreChain,
     explorer: Option<&Insight>,
@@ -351,16 +375,22 @@ pub async fn deposit_balance(
         }
         Ok::<_, Error>(tracker.total())
     };
-    match via_dapi.await {
-        Ok(t) => return Some(t),
-        Err(e) => tracing::warn!("reading {address} through DAPI failed: {e}"),
-    }
-    match explorer {
+    let dapi = via_dapi
+        .await
+        .inspect_err(|e| tracing::warn!("reading {address} through DAPI failed: {e}"))
+        .ok();
+    let explorer = match explorer {
         Some(insight) => explorer_deposit(insight, address)
             .await
             .ok()
             .map(|u| total(&u)),
         None => None,
+    };
+    match (dapi, explorer) {
+        (Some(d), Some(e)) => Some(d.max(e)),
+        (Some(d), None) if d > 0 => Some(d),
+        (None, Some(e)) => Some(e),
+        _ => None,
     }
 }
 
@@ -625,16 +655,29 @@ mod tests {
         .await
         .unwrap();
         assert!(found.is_none());
+        // DAPI's history says zero, but it leaves out the mempool and the explorer is down:
+        // unknown, so a discard still asks.
+        assert_eq!(deposit_balance(&dapi, Some(&insight), ADDR, 1).await, None);
+        let pay = payment(ADDR, 7_000);
+        dapi.feed.lock().unwrap().push(vec![serialize(&pay)]);
         assert_eq!(
             deposit_balance(&dapi, Some(&insight), ADDR, 1).await,
-            Some(0)
+            Some(7_000)
         );
     }
 
     #[tokio::test]
     async fn the_watch_starts_at_the_recorded_height_else_rewinds_past_the_start() {
         let dapi = FakeDapi::default();
-        assert_eq!(watch_start(&dapi, Some(88_000), 0).await.unwrap(), 88_000);
+        assert_eq!(
+            watch_start(&dapi, Some(88_000), 0).await.unwrap(),
+            88_000 - START_HEIGHT_MARGIN
+        );
+        // A journal from long ago rewinds at most about a week.
+        assert_eq!(
+            watch_start(&dapi, None, 0).await.unwrap(),
+            88_900 - MAX_REWIND_BLOCKS
+        );
         let now_ms = u64::try_from(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
