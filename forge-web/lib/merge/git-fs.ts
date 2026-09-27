@@ -61,13 +61,11 @@ function unwrap(raw: Uint8Array): GitObject {
   return { type, bytes: raw.slice(nul + 1) }
 }
 
-/** The file system, plus the objects the merge wrote (decoded) and a reader over both. */
+/** The file system, and a reader over what the merge wrote and `source`. */
 export interface MergeFs {
   /** Pass as isomorphic-git's `fs`. */
   readonly client: { readonly promises: Record<string, (...args: never[]) => Promise<unknown>> }
-  /** Objects written during the merge, by oid. */
-  readonly written: ReadonlyMap<string, GitObject>
-  /** Reads written objects first, then `source`. */
+  /** Reads objects the merge wrote first, then `source`. */
   readonly reader: ObjectReader
 }
 
@@ -148,5 +146,5 @@ export function createMergeFs(source: ObjectReader): MergeFs {
       return w ? Promise.resolve(w) : source.readObject(oid)
     },
   }
-  return { client: { promises } as unknown as MergeFs['client'], written, reader }
+  return { client: { promises } as unknown as MergeFs['client'], reader }
 }

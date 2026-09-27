@@ -13,14 +13,36 @@
  * Pure apart from its object reads, so it runs the same in a Web Worker and in tests.
  */
 
-import { hexToBytes } from '@noble/hashes/utils.js'
+import diff3Merge from 'diff3'
 
-import type { GitObject } from '../browse'
 import { findMergeBase } from '../view/pull-diff'
 import type { ObjectReader } from '../view/tree-nav'
 import { createMergeFs } from './git-fs'
 import { newCommits, objectsToPack } from './objects'
 import { writePack } from './pack-writer'
+
+/**
+ * The line merge for files both sides changed: isomorphic-git's diff3, but refusing (as a
+ * conflict) any file that is binary or not valid UTF-8 on any side. isomorphic-git hands the
+ * driver the three versions decoded as UTF-8, so a NUL byte survives as U+0000 and an invalid
+ * sequence becomes U+FFFD; merging those as text would commit a corrupted blob and call it
+ * clean. Such files are merged with the CLI.
+ */
+export function textOnlyMergeDriver({ branches, contents }: { branches: readonly string[]; contents: readonly string[] }): { cleanMerge: boolean; mergedText: string } {
+  if (contents.some((c) => c.includes('\u0000') || c.includes('\ufffd'))) return { cleanMerge: false, mergedText: '' }
+  const lines = (text: string): string[] => text.match(/^.*(\r?\n|$)/gm) ?? []
+  const [base = '', ours = '', theirs = ''] = contents
+  let mergedText = ''
+  let cleanMerge = true
+  for (const block of diff3Merge(lines(ours), lines(base), lines(theirs))) {
+    if (block.ok) mergedText += block.ok.join('')
+    else {
+      cleanMerge = false
+      mergedText += `<<<<<<< ${branches[1] ?? 'ours'}\n${block.conflict.a.join('')}=======\n${block.conflict.b.join('')}>>>>>>> ${branches[2] ?? 'theirs'}\n`
+    }
+  }
+  return { cleanMerge, mergedText }
+}
 
 /** Who the merge commit is by (the merger's Settings name and email). */
 export interface MergeIdentity {
@@ -28,7 +50,7 @@ export interface MergeIdentity {
   readonly email: string
   /** Seconds since the epoch; defaults to now. */
   readonly timestamp?: number
-  /** Minutes, git's sign convention (`new Date().getTimezoneOffset()`); defaults to 0. */
+  /** Minutes, as `Date.getTimezoneOffset()` (isomorphic-git's convention); defaults to local. */
   readonly timezoneOffset?: number
 }
 
@@ -103,7 +125,7 @@ export async function planMerge(reader: ObjectReader, input: Pick<MergeInput, 'b
 export async function threeWayMerge(
   reader: ObjectReader,
   input: MergeInput,
-): Promise<{ kind: 'merge'; oid: string; written: ReadonlyMap<string, GitObject>; reader: ObjectReader } | { kind: 'conflict'; paths: readonly string[] }> {
+): Promise<{ kind: 'merge'; oid: string; reader: ObjectReader } | { kind: 'conflict'; paths: readonly string[] }> {
   const git = await import('isomorphic-git')
   const fs = createMergeFs(reader)
   const gitdir = '/.git'
@@ -124,7 +146,7 @@ export async function threeWayMerge(
     name: input.author.name,
     email: input.author.email,
     timestamp: input.author.timestamp ?? Math.floor(Date.now() / 1000),
-    timezoneOffset: input.author.timezoneOffset ?? 0,
+    timezoneOffset: input.author.timezoneOffset ?? new Date().getTimezoneOffset(),
   }
   try {
     const r = await git.merge({
@@ -138,9 +160,10 @@ export async function threeWayMerge(
       message: mergeMessage(input.prNumber, input.sourceLabel, input.title),
       author: who,
       committer: who,
+      mergeDriver: textOnlyMergeDriver,
     })
     if (r.oid === undefined) throw new Error('the merge produced no commit')
-    return { kind: 'merge', oid: r.oid, written: fs.written, reader: fs.reader }
+    return { kind: 'merge', oid: r.oid, reader: fs.reader }
   } catch (e) {
     const err = e as ConflictData
     if (err.code === 'MergeConflictError') return { kind: 'conflict', paths: [...(err.data?.filepaths ?? [])] }
@@ -183,11 +206,4 @@ export async function runMerge(reader: ObjectReader, input: MergeInput, onProgre
   const built = writePack(objects)
   onProgress?.('pack', `${built.objectCount} objects`)
   return { kind: plan.kind, newTip: tip, pack: built.bytes, packHash: built.packHash, objectCount: built.objectCount }
-}
-
-/** An oid as the 20 bytes a ref update carries (validation helper for callers). */
-export function oidBytes(hex: string): Uint8Array {
-  const b = hexToBytes(hex)
-  if (b.length !== 20) throw new Error('expected a 20-byte oid')
-  return b
 }

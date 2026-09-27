@@ -27,8 +27,27 @@ export function PullMerge({
   checkout: string
   onMerged: () => void
 }): JSX.Element | null {
-  const { sides, sidesKey } = useComparisonSides(repo, pull.sourceId)
+  // Only a maintainer or writer resolves the readers the merge needs.
   if (!canMerge) return null
+  return <MergeReaders repo={repo} home={home} pull={pull} isMaintainer={isMaintainer} checkout={checkout} onMerged={onMerged} />
+}
+
+function MergeReaders({
+  repo,
+  home,
+  pull,
+  isMaintainer,
+  checkout,
+  onMerged,
+}: {
+  repo: RepoRef
+  home: RepoHome
+  pull: PullView
+  isMaintainer: boolean
+  checkout: string
+  onMerged: () => void
+}): JSX.Element | null {
+  const { sides, sidesKey } = useComparisonSides(repo, pull.sourceId)
   return (
     <MergePanel
       repo={repo}
@@ -37,7 +56,7 @@ export function PullMerge({
       sidesKey={sidesKey}
       baseTipOid={pullBase(pull, home).baseTipOid}
       protectedPatterns={home.config?.protectedPatterns ?? []}
-      canMerge={canMerge}
+      canMerge
       isMaintainer={isMaintainer}
       checkout={checkout}
       onMerged={onMerged}

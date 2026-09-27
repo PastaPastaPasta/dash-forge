@@ -18,13 +18,22 @@ function withWorker<T>(
   signal?: AbortSignal,
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('cancelled'))
+      return
+    }
     const worker = new Worker(new URL('./merge.worker.ts', import.meta.url))
     const send = (m: ToWorker): void => worker.postMessage(m)
-    const stop = (): void => worker.terminate()
-    signal?.addEventListener('abort', () => {
+    const onAbort = (): void => {
       stop()
       reject(new Error('cancelled'))
-    })
+    }
+    // Settling in any way ends the worker and drops the abort listener.
+    const stop = (): void => {
+      worker.terminate()
+      signal?.removeEventListener('abort', onAbort)
+    }
+    signal?.addEventListener('abort', onAbort)
     worker.onerror = (e) => {
       stop()
       reject(new Error(e.message || 'the merge worker failed'))
@@ -32,6 +41,7 @@ function withWorker<T>(
     worker.onmessage = (e: MessageEvent<FromWorker>) => {
       const m = e.data
       if (m.type === 'read') {
+        if (signal?.aborted) return
         reader.readObject(m.oid).then(
           (object) => send({ type: 'object', req: m.req, object }),
           (err: unknown) => send({ type: 'object', req: m.req, error: err instanceof Error ? err.message : String(err) }),

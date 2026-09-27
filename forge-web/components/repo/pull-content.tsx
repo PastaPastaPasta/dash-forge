@@ -6,10 +6,10 @@
  * timeline (comments, state events and review verdicts), a comment composer, and
  * mark-as-merged / close / reopen.
  *
- * On forge-v2 the merge panel ({@link PullMerge}) merges code in the browser. "Mark as merged"
- * only appends a `merge` event carrying the PR head oid; the fold accepts it only from a
- * maintainer or writer, and only once the head has been a tip of the base ref, so the control
- * says whether the head is already on the base branch.
+ * The merge panel ({@link PullMerge}) merges code in the browser. "Mark as merged" only
+ * appends a `merge` event carrying the PR head oid; the fold accepts it only from a maintainer
+ * or writer, and only once the head has been a tip of the base ref, so the control says
+ * whether the head is already on the base branch.
  */
 
 import { useEffect, useState } from 'react'
@@ -210,7 +210,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
         pull={pull}
         canMerge={actions.canMarkMerged}
         isMaintainer={holdings.data?.maintain === true}
-        checkout={`dg pr checkout ${addr.owner}/${addr.name} ${pull.number}`}
+        checkout={checkoutCommand(home.repo, pull.number)}
         onMerged={reload}
       />
 

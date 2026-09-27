@@ -51,8 +51,14 @@ export interface StoredPack {
  */
 export type UploadPack = (bytes: Uint8Array, info: { readonly packHash: string; readonly objectCount: number }) => Promise<StoredPack>
 
-/** What has been done so far. Keep it across retries. */
+/**
+ * What has been done so far. Keep it across retries — for the same base tip and head only
+ * ({@link runFor}): a run built on another tip must never be resumed.
+ */
 export interface MergeRun {
+  /** The base tip and PR head this run merged (the ref update's `prevOid` is this tip). */
+  readonly baseTip: string
+  readonly headOid: string
   readonly done: readonly MergeStepId[]
   readonly result?: Extract<MergeResult, { kind: 'fast-forward' | 'merge' }>
   readonly stored?: StoredPack
@@ -61,14 +67,21 @@ export interface MergeRun {
   readonly eventId?: string
 }
 
-export const EMPTY_RUN: MergeRun = { done: [] }
+/** A fresh run for `input`. */
+export function newRun(input: Pick<MergeInput, 'baseTip' | 'headOid'>): MergeRun {
+  return { baseTip: input.baseTip, headOid: input.headOid, done: [] }
+}
+
+/** `run` when it is for `input`'s base tip and head, else a fresh run. */
+export function runFor(run: MergeRun | null, input: Pick<MergeInput, 'baseTip' | 'headOid'>): MergeRun {
+  return run !== null && run.baseTip === input.baseTip && run.headOid === input.headOid ? run : newRun(input)
+}
 
 export interface MergeRunDeps {
   readonly sdk: EvoSDK
   readonly auth: WriteAuth
   readonly repo: RepoRef
   readonly pull: Pick<PullView, 'id' | 'number' | 'baseRefName'>
-  readonly protectedPatterns: readonly string[]
   readonly input: MergeInput
   /** Runs the merge and builds the pack (the worker). */
   readonly merge: (input: MergeInput, onPhase: (phase: 'analyse' | 'merge' | 'pack') => void) => Promise<MergeResult>
@@ -78,6 +91,13 @@ export interface MergeRunDeps {
    * list (published at packRef n, or why it was skipped). Best effort: a throw is reported.
    */
   readonly publishIndex: ((pack: Uint8Array, packHash: string) => Promise<string>) | null
+  /**
+   * The oids reachable from `tip` that are in neither `pack` nor the base repo (empty when the
+   * pack is complete). Checked before the upload; a non-empty answer stops the merge.
+   */
+  readonly verifyPack: (pack: Uint8Array, tip: string) => Promise<readonly string[]>
+  /** The base branch's current tip, read fresh (`''` when it has none), just before moving it. */
+  readonly readBaseTip: () => Promise<string>
   /** The intent prefix for this merge's writes (one per PR head), so retries re-use them. */
   readonly intent: string
 }
@@ -156,6 +176,9 @@ function reasonOf(e: unknown): string {
  * {@link MergeStepError} (carrying the run so far) or a {@link MergeStopped}.
  */
 export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: (e: StepEvent) => void): Promise<MergeRun> {
+  if (from.baseTip !== deps.input.baseTip || from.headOid !== deps.input.headOid) {
+    throw new MergeStopped('the base branch or the PR head changed since this merge started; merge again')
+  }
   let run: MergeRun = from
   const mark = (step: MergeStepId, patch: Partial<MergeRun> = {}, state: 'done' | 'skipped' = 'done', detail?: string): void => {
     run = { ...run, ...patch, done: [...run.done, step] }
@@ -172,21 +195,35 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
   }
 
   if (run.result === undefined) {
-    // fetch, merge and pack run together in the worker; its phases mark the steps.
-    const result = await attempt('fetch', () =>
-      deps.merge(deps.input, (phase) => {
-        if (phase === 'merge' || phase === 'pack') {
+    // fetch, merge and pack run together in the worker; its phases mark the steps, and a
+    // failure is reported against the phase it happened in.
+    let phase: MergeStepId = 'fetch'
+    onStep({ step: 'fetch', state: 'running' })
+    let result: MergeResult
+    try {
+      result = await deps.merge(deps.input, (p) => {
+        if (p === 'merge' || p === 'pack') {
           if (!run.done.includes('fetch')) mark('fetch')
-          if (phase === 'pack' && !run.done.includes('merge')) mark('merge')
-          onStep({ step: phase, state: 'running' })
+          if (p === 'pack' && !run.done.includes('merge')) mark('merge')
+          phase = p
+          onStep({ step: p, state: 'running' })
         }
-      }),
-    )
+      })
+    } catch (e) {
+      throw new MergeStepError(phase, reasonOf(e), run)
+    }
     if (result.kind === 'conflict') throw new MergeStopped(`the merge has conflicts${result.paths.length ? ` in ${result.paths.join(', ')}` : ''}`)
     if (result.kind === 'up-to-date') throw new MergeStopped('the base branch already contains this head')
     if (result.kind === 'unrelated') throw new MergeStopped('the head and the base branch share no history')
     for (const s of ['fetch', 'merge'] as const) if (!run.done.includes(s)) mark(s)
-    mark('pack', { result }, 'done', `${result.objectCount} objects · ${result.pack.length} bytes`)
+    const built = result
+    // The hard safety net: the pack plus the base repo must hold the new tip's whole closure,
+    // or the branch would move to objects nobody can fetch. Checked before anything is paid for.
+    const missing = await attempt('pack', () => deps.verifyPack(built.pack, built.newTip))
+    if (missing.length > 0) {
+      throw new MergeStopped(`the merge pack would leave ${missing.length} object(s) unfetchable (${missing.slice(0, 3).map((o) => o.slice(0, 9)).join(', ')}); nothing was written. Merge with \`dg pr merge\``)
+    }
+    mark('pack', { result: built }, 'done', `${built.objectCount} objects · ${built.pack.length} bytes · complete`)
   }
   const result = run.result as NonNullable<MergeRun['result']>
   const empty = result.objectCount === 0
@@ -237,13 +274,21 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
   }
 
   if (!run.done.includes('ref')) {
+    // The merge was built on `run.baseTip`: if the branch has moved since, moving it now would
+    // drop the commits pushed in between.
+    const tipNow = await attempt('ref', () => deps.readBaseTip())
+    if (tipNow !== run.baseTip) {
+      throw new MergeStopped(`the base branch moved to ${tipNow.slice(0, 9) || '(deleted)'} since this merge was built; the pack stays stored and unused. Merge again`)
+    }
     const w = await attempt('ref', () =>
       writeRefUpdate(
         deps.sdk,
         deps.auth,
         deps.repo,
-        { refName: deps.pull.baseRefName, newOid: result.newTip, ...(deps.input.baseTip ? { prevOid: deps.input.baseTip } : {}) },
-        { intent: `${deps.intent}:ref`, protectedPatterns: deps.protectedPatterns },
+        { refName: deps.pull.baseRefName, newOid: result.newTip, ...(run.baseTip ? { prevOid: run.baseTip } : {}) },
+        // The protected patterns are read fresh: a stale list could route a protected ref as an
+        // inert plain refUpdate.
+        { intent: `${deps.intent}:ref` },
       ),
     )
     mark('ref', { refDocumentId: w.documentId }, 'done', w.documentType)

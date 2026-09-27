@@ -7,36 +7,28 @@
  * `Merge (fast-forward)`, `Create merge commit and merge`, or a disabled
  * `Can't merge in the browser — conflicts` with the `dg pr checkout` line. A writer on a
  * protected base branch sees `Protected branch — maintainers only`; a narrow screen, "Use a
- * desktop browser for this step". The click runs the step list (fetch → merge → build pack →
- * upload → packManifest → ref update → merge event), and a failure names what already exists
- * and offers to resume.
+ * desktop browser for this step". The click runs the step list (fetch → merge → build and
+ * verify the pack → upload → packManifest → browse index → ref update → merge event), and a
+ * failure names what already exists and offers to resume.
  */
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { Check, GitMerge, Loader2, Minus, X } from 'lucide-react'
 
-import type { PullView, RepoRef } from '@/lib/repo'
-import { matchesProtected } from '@/lib/rules'
-import { previewCreate, sumPreviews } from '@/lib/sdk'
-import type { MergeInput } from '@/lib/merge/engine'
+import { readConfigHistory, refNameHash, resolveRefByHash, type PullView, type RepoRef } from '@/lib/repo'
+import { isLegalRefName, matchesProtected } from '@/lib/rules'
+import { bytesToBase64, previewCreate, sumPreviews } from '@/lib/sdk'
+import { missingFromClosure } from '@/lib/merge/verify'
+import type { MergeCheck, MergeInput } from '@/lib/merge/engine'
 import { checkMergeInWorker, runMergeInWorker } from '@/lib/merge/client'
-import {
-  EMPTY_RUN,
-  MERGE_STEPS,
-  MergeStepError,
-  retryLabel,
-  runMergeSteps,
-  type MergeRun,
-  type MergeStepId,
-} from '@/lib/merge/runner'
+import { MERGE_STEPS, MergeStepError, retryLabel, runFor, runMergeSteps, type MergeRun, type MergeStepId } from '@/lib/merge/runner'
 import { mergeButton } from '@/lib/view/pull-actions'
 import { publishMergeIndex } from '@/lib/merge/locator'
 import { useMergeUpload } from '@/components/repo/merge-upload'
 import { mergeIdentityValid } from '@/lib/view/prefs'
-import type { DiffSides } from '@/lib/view'
+import { tipOidOf, type DiffSides } from '@/lib/view'
 import { preferring } from '@/lib/view/pull-diff'
-import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { useMinWidth, usePrefs } from '@/hooks/use-prefs'
 import { useAuth } from '@/contexts/auth-context'
@@ -88,7 +80,8 @@ export function MergePanel({
       baseTip: baseTipOid,
       headOid: pull.headOid,
       prNumber: pull.number,
-      sourceLabel: pull.sourceRefName ?? pull.headOid,
+      // The PR author wrote `sourceRefName`: only a legal ref name goes into the message.
+      sourceLabel: pull.sourceRefName !== null && isLegalRefName(pull.sourceRefName) ? pull.sourceRefName : pull.headOid,
       title: pull.title,
       author: { name: prefs.mergeName.trim(), email: prefs.mergeEmail.trim() },
       headInBase: sameRepo,
@@ -96,24 +89,35 @@ export function MergePanel({
     [baseTipOid, pull.headOid, pull.number, pull.sourceRefName, pull.title, prefs.mergeName, prefs.mergeEmail, sameRepo],
   )
 
-  const check = useAsync(
+  // The worker's verdict. Each check owns its worker and aborts it when superseded or
+  // unmounted, so a stale check never keeps reading objects.
+  const [check, setCheck] = useState<MergeCheck | { error: string } | null>(null)
+  const checkable = canMerge && reader !== null && pull.headOid !== '' && wide
+  // The check reads the latest input without re-running when only the merger's name changes.
+  const inputRef = useRef(input)
+  inputRef.current = input
+  useEffect(() => {
+    if (!checkable || reader === null) return
+    const abort = new AbortController()
+    setCheck(null)
     // The check needs a name for the trial merge commit; the real one is written on click.
-    () => checkMergeInWorker(reader!, { ...input, author: { name: 'check', email: 'check@forge' } }),
-    [sidesKey, baseTipOid, pull.headOid],
-    { enabled: canMerge && reader !== null && pull.headOid !== '' && wide },
-  )
-  const button = mergeButton({
-    canMerge,
-    isMaintainer,
-    baseProtected,
-    narrow: !wide,
-    check: check.error ? { error: check.error } : check.data,
-    checkout,
-  })
+    checkMergeInWorker(reader, { ...inputRef.current, author: { name: 'check', email: 'check@forge' } }, abort.signal).then(
+      (c) => {
+        if (!abort.signal.aborted) setCheck(c)
+      },
+      (e: unknown) => {
+        if (!abort.signal.aborted) setCheck({ error: e instanceof Error ? e.message : String(e) })
+      },
+    )
+    return () => abort.abort()
+  }, [checkable, reader, sidesKey, baseTipOid, pull.headOid])
+  const button = mergeButton({ canMerge, isMaintainer, baseProtected, narrow: !wide, check, checkout })
 
   const [steps, setSteps] = useState<Partial<Record<MergeStepId, StepState>>>({})
   const [details, setDetails] = useState<Partial<Record<MergeStepId, string>>>({})
-  const [run, setRun] = useState<MergeRun>(EMPTY_RUN)
+  // Kept across retries of the same base tip and head only (`runFor` drops a stale one).
+  const [savedRun, setRun] = useState<MergeRun | null>(null)
+  const run = runFor(savedRun, input)
   const [failure, setFailure] = useState<{ step: MergeStepId; message: string } | null>(null)
   const [stopped, setStopped] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -121,7 +125,8 @@ export function MergePanel({
 
   // Upload estimate unknown until the pack exists; the documents are known.
   const cost = sumPreviews([previewCreate('packManifest'), previewCreate(baseProtected ? 'protectedRefUpdate' : 'refUpdate'), previewCreate('event')])
-  const identityOk = mergeIdentityValid(prefs)
+  // Only a merge commit is authored; a fast-forward writes no commit.
+  const identityOk = button.kind !== 'merge-commit' || mergeIdentityValid(prefs)
 
   const start = useCallback(async () => {
     if (!sdk || !signer || reader === null || busy) return
@@ -138,13 +143,18 @@ export function MergePanel({
           auth: signer,
           repo,
           pull: { id: pull.id, number: pull.number, baseRefName },
-          protectedPatterns,
           input,
           merge: (i, onPhase) => runMergeInWorker(reader, i, (p) => onPhase(p.phase)),
           upload,
           publishIndex: upload === null ? null : async (pack, packHash) => {
             const r = await publishMergeIndex(sdk, signer, repo, pack, packHash, upload, `${intent}:index`)
             return r.kind === 'published' ? `fragment at packRef ${r.packRef}` : `skipped: ${r.reason}`
+          },
+          verifyPack: (pack, tip) => missingFromClosure(pack, tip, sides?.base ?? reader),
+          readBaseTip: async () => {
+            // The same rule the page's tip came from (resolveRef, then the provisional tip).
+            const ref = await resolveRefByHash(sdk, repo, bytesToBase64(refNameHash(baseRefName)), await readConfigHistory(sdk, repo))
+            return tipOidOf(ref ?? undefined) ?? ''
           },
           intent,
         },
@@ -168,7 +178,7 @@ export function MergePanel({
     } finally {
       setBusy(false)
     }
-  }, [sdk, signer, reader, busy, guard, cost.credits, repo, pull.id, pull.number, pull.headOid, baseRefName, protectedPatterns, input, run, baseTipOid, onMerged, upload, begin])
+  }, [sdk, signer, reader, sides, busy, guard, cost.credits, repo, pull.id, pull.number, pull.headOid, baseRefName, input, run, baseTipOid, onMerged, upload, begin])
 
   if (button.kind === 'hidden') return null
   const started = Object.keys(steps).length > 0
@@ -210,7 +220,7 @@ export function MergePanel({
         </div>
       ) : null}
       {(button.kind === 'fast-forward' || button.kind === 'merge-commit') && !identityOk ? (
-        <p className="mt-2 text-[12px] text-caution">
+        <p className="mt-2 text-[12px] text-caution-700 dark:text-caution">
           A browser merge commit is authored with your name and email. Set them in{' '}
           <Link href="/settings" className="underline">
             Settings
@@ -242,13 +252,13 @@ export function MergePanel({
         </ol>
       ) : null}
       {failure ? (
-        <p role="alert" className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger">
+        <p role="alert" className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400">
           {failure.message}
         </p>
       ) : null}
       {stopped ? (
         <p role="alert" className="mt-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200">
-          Merge stopped: {stopped}. Nothing was written.
+          Merge stopped: {stopped}
         </p>
       ) : null}
       {newTip ? (

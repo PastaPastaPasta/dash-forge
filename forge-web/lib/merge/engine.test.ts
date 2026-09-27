@@ -4,7 +4,7 @@ import { gitOidHex, ObjectLocator, BrowseReader } from '../browse'
 import { indexPacks, memoryPackSource, serializeLocator } from '../browse/indexer'
 import { Store } from '../view/diff-fixtures'
 import { parseCommit, parseTree } from '../view/git-objects'
-import { mergeMessage, planMerge, runMerge, type MergeInput } from './engine'
+import { mergeMessage, planMerge, runMerge, textOnlyMergeDriver, type MergeInput } from './engine'
 import { newCommits } from './objects'
 import { writePack } from './pack-writer'
 
@@ -138,6 +138,80 @@ describe('merge engine', () => {
     await expect(runMerge(baseOnly, input(base, head))).rejects.toThrow()
     const out = await runMerge(s.reader(), input(base, head))
     expect(out.kind).toBe('fast-forward')
+  })
+})
+
+describe('merge driver refuses what it cannot merge as text', () => {
+  it('merges text cleanly and marks overlapping edits as conflicts', () => {
+    expect(textOnlyMergeDriver({ branches: ['base', 'ours', 'theirs'], contents: ['a\nb\nc\n', 'A\nb\nc\n', 'a\nb\nC\n'] })).toEqual({ cleanMerge: true, mergedText: 'A\nb\nC\n' })
+    expect(textOnlyMergeDriver({ branches: ['base', 'ours', 'theirs'], contents: ['a\n', 'x\n', 'y\n'] }).cleanMerge).toBe(false)
+  })
+
+  it('refuses NUL bytes and invalid UTF-8 on any side', () => {
+    for (const bad of ['a\u0000\n', 'caf�\n']) {
+      expect(textOnlyMergeDriver({ branches: ['b', 'o', 't'], contents: [bad, 'a\n', 'b\n'] }).cleanMerge).toBe(false)
+      expect(textOnlyMergeDriver({ branches: ['b', 'o', 't'], contents: ['a\n', bad, 'b\n'] }).cleanMerge).toBe(false)
+      expect(textOnlyMergeDriver({ branches: ['b', 'o', 't'], contents: ['a\n', 'b\n', bad] }).cleanMerge).toBe(false)
+    }
+  })
+
+  it('a binary file both sides changed is a conflict, not a corrupted clean merge', async () => {
+    const s = new Store()
+    const bin = (tail: number[]): Uint8Array => new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 0xff, 0xfe, ...tail])
+    const root = s.commit(s.tree([{ name: 'img.png', oid: s.blob(bin([1])) }, { name: 't.txt', oid: s.blob('t\n') }]))
+    const base = s.commit(s.tree([{ name: 'img.png', oid: s.blob(bin([1, 2])) }, { name: 't.txt', oid: s.blob('t\n') }]), [root])
+    const head = s.commit(s.tree([{ name: 'img.png', oid: s.blob(bin([1, 3])) }, { name: 't.txt', oid: s.blob('t\n') }]), [root])
+    expect(await runMerge(s.reader(), input(base, head))).toEqual({ kind: 'conflict', paths: ['img.png'] })
+  })
+})
+
+describe('pack completeness (review regressions)', () => {
+  /** Every object reachable from `tip` that `had` lacks must be in the pack. */
+  async function assertComplete(s: Store, tip: string, had: ReadonlySet<string>, pack: Uint8Array): Promise<void> {
+    const packed = new Set((await indexPacks([pack])).map((o) => o.oidHex))
+    const missing: string[] = []
+    const seen = new Set<string>()
+    const walk = (oid: string): void => {
+      if (seen.has(oid)) return
+      seen.add(oid)
+      if (!had.has(oid) && !packed.has(oid)) missing.push(oid)
+      const obj = s.objects.get(oid)
+      if (obj === undefined) throw new Error(`fixture lacks ${oid}`)
+      if (obj.type === 'commit') {
+        const c = parseCommit(obj.bytes)
+        walk(c.tree)
+        c.parents.forEach(walk)
+      } else if (obj.type === 'tree') {
+        for (const e of parseTree(obj.bytes)) walk(e.oid)
+      }
+    }
+    walk(tip)
+    expect(missing).toEqual([])
+  }
+
+  it('a revert inside the PR still packs the reverted-to blob', async () => {
+    const s = new Store()
+    const base = s.commit(s.files({ 'README.md': 'r\n' }))
+    const had = s.snapshot()
+    const n1 = s.commit(s.files({ 'README.md': 'r\n', 'a/x': 'x\n', 'a/y': 'Y1\n' }), [base])
+    const n2 = s.commit(s.files({ 'README.md': 'r\n', 'a/x': 'x\n', 'a/y': 'Y2\n' }), [n1])
+    const n3 = s.commit(s.files({ 'README.md': 'r\n', 'a/x': 'x\n', 'a/y': 'Y1\n' }), [n2])
+    const out = await runMerge(s.reader(), input(base, n3))
+    if (out.kind !== 'fast-forward') throw new Error(`expected a fast-forward, got ${out.kind}`)
+    await assertComplete(s, n3, had, out.pack)
+  })
+
+  it('subtrees swapped across a merge, sharing a blob, are packed whole', async () => {
+    const s = new Store()
+    const base = s.commit(s.files({ 'p/f': 'shared\n', 'q/g': 'g\n' }))
+    const had = s.snapshot()
+    const left = s.commit(s.files({ 'p/f': 'shared\n', 'q/g': 'g\n', 'q/h': 'new\n' }), [base])
+    const right = s.commit(s.files({ 'p/f': 'shared\n', 'p/h': 'new\n', 'q/g': 'g\n' }), [base])
+    const m = s.commit(s.files({ 'p/f': 'shared\n', 'p/h': 'new\n', 'q/g': 'g\n', 'q/h': 'new\n' }), [left, right])
+    const swapped = s.commit(s.files({ 'p/g': 'g\n', 'p/h': 'new\n', 'q/f': 'shared\n', 'q/h': 'new\n' }), [m])
+    const out = await runMerge(s.reader(), input(base, swapped))
+    if (out.kind !== 'fast-forward') throw new Error(`expected a fast-forward, got ${out.kind}`)
+    await assertComplete(s, swapped, had, out.pack)
   })
 })
 

@@ -101,9 +101,15 @@ export async function objectsToPack(reader: ObjectReader, commits: readonly stri
     out.push(obj)
     return obj
   }
-  // `parents` are the same-path tree oids of every parent (absent ones left out).
+  // `parents` are the same-path tree oids of every parent (absent ones left out). A tree seen
+  // before is still walked again under different parents: what its children may skip depends
+  // on the parents it is compared with, so only an identical (tree, parents) pair is a repeat.
+  const walked = new Set<string>()
   const walkTree = async (oid: string, parents: readonly string[]): Promise<void> => {
-    if (parents.includes(oid) || taken.has(oid)) return
+    if (parents.includes(oid)) return
+    const key = `${oid}:${[...parents].sort().join(',')}`
+    if (walked.has(key)) return
+    walked.add(key)
     await take(oid)
     const entries = await readTreeEntries(reader, oid)
     const parentEntries = await Promise.all(parents.map((p) => readTreeEntries(reader, p)))

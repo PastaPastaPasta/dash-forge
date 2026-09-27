@@ -17,15 +17,15 @@ importers:
       '@noble/secp256k1':
         specifier: ^3.2.0
         version: 3.2.0
-      buffer:
-        specifier: ^6.0.3
-        version: 6.0.3
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      diff3:
+        specifier: 0.0.3
+        version: 0.0.3
       fflate:
         specifier: ^0.8.3
         version: 0.8.3
