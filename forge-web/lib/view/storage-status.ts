@@ -106,19 +106,29 @@ export function gatewaysIn(uris: readonly string[]): string[] {
  */
 export const MAX_REPO_GATEWAYS = 3
 
-/** Per repo (`repoKey`): the gateways its trusted records name, in first-seen order. */
-const repoGatewayMap = new Map<string, string[]>()
+/** Where a repo's own gateways were read from. */
+export type RepoGatewaySource = 'config' | 'manifests'
+
+/** Per repo (`repoKey`): the latest gateways each trusted source names. */
+const repoGatewayMap = new Map<string, Record<RepoGatewaySource, string[]>>()
 
 /**
- * Remember the gateways `uris` name for repo `key`. Callers pass only trusted records: the
- * repo config's `backend.uris` (maintainer-written) and the uris of manifests uploaded by a
- * CURRENT member — a past writer or a stranger must not put a stalling gateway ahead of
- * every pack. At most {@link MAX_REPO_GATEWAYS}.
+ * Record the gateways `uris` name for repo `key` from `source`, replacing that source's
+ * previous snapshot (so a gateway no longer recorded is dropped). Callers pass only trusted
+ * records: `config` is the repo config's `backend.uris` (maintainer-written), `manifests` the
+ * uris of manifests uploaded by a CURRENT member — a past writer or a stranger must not put
+ * a stalling gateway ahead of every pack.
  */
-export function noteRepoGateways(key: string, uris: readonly string[]): void {
-  const known = repoGatewayMap.get(key) ?? []
-  const merged = [...new Set([...known, ...gatewaysIn(uris)])].slice(0, MAX_REPO_GATEWAYS)
-  if (merged.length > 0) repoGatewayMap.set(key, merged)
+export function noteRepoGateways(key: string, source: RepoGatewaySource, uris: readonly string[]): void {
+  const sources = repoGatewayMap.get(key) ?? { config: [], manifests: [] }
+  repoGatewayMap.set(key, { ...sources, [source]: gatewaysIn(uris) })
+}
+
+/** A repo's own gateways: the config's first, then the members' manifests', capped. */
+function repoGateways(key: string): string[] {
+  const s = repoGatewayMap.get(key)
+  if (s === undefined) return []
+  return [...new Set([...s.config, ...s.manifests])].slice(0, MAX_REPO_GATEWAYS)
 }
 
 /**
@@ -127,7 +137,7 @@ export function noteRepoGateways(key: string, uris: readonly string[]): void {
  * then the shared defaults.
  */
 export function readGatewaysFor(key: string): string[] {
-  return [...new Set([...(repoGatewayMap.get(key) ?? []), ...readGateways()])]
+  return [...new Set([...repoGateways(key), ...readGateways()])]
 }
 
 /** Test hook: forget every repo's recorded gateways. */

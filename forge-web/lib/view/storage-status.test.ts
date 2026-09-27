@@ -34,13 +34,27 @@ describe('a repo\'s own gateways', () => {
         'https://ok.example/ipfs/bafy',
       ]),
     ).toEqual(['https://gw.example', 'https://ok.example'])
-    noteRepoGateways('r', Array.from({ length: 6 }, (_, i) => `https://g${i}.example/ipfs/`))
+    noteRepoGateways('r', 'manifests', Array.from({ length: 6 }, (_, i) => `https://g${i}.example/ipfs/`))
     expect(readGatewaysFor('r').slice(0, MAX_REPO_GATEWAYS + 1)).toEqual([
       'https://g0.example',
       'https://g1.example',
       'https://g2.example',
       expect.not.stringMatching(/g3\.example/),
     ])
+  })
+})
+
+describe('repo gateway sources', () => {
+  it('puts the config first whatever order the sources arrive in, and replaces stale snapshots', () => {
+    noteRepoGateways('r', 'manifests', ['https://m1.example/ipfs/a', 'https://m2.example/ipfs/b', 'https://m3.example/ipfs/c'])
+    noteRepoGateways('r', 'config', ['https://cfg.example/ipfs/'])
+    expect(readGatewaysFor('r').slice(0, 3)).toEqual(['https://cfg.example', 'https://m1.example', 'https://m2.example'])
+    // A newer manifest snapshot without m1 drops it; an empty config snapshot drops cfg.
+    noteRepoGateways('r', 'manifests', ['https://m2.example/ipfs/b'])
+    noteRepoGateways('r', 'config', [])
+    expect(readGatewaysFor('r')[0]).toBe('https://m2.example')
+    expect(readGatewaysFor('r')).not.toContain('https://m1.example')
+    expect(readGatewaysFor('r')).not.toContain('https://cfg.example')
   })
 })
 

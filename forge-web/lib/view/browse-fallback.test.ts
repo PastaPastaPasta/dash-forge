@@ -270,7 +270,7 @@ describe('startFallback with external-storage packs', () => {
     // (the repo home notes it), so only that preference can put it ahead of the defaults.
     const external = manifestFor(ext.pack, 1, { storage: 1, chunkCount: 0, uris: ['ipfs://bafkreimine'] })
     const repo = testRepo('fallback-own-gw')
-    noteRepoGateways(repo.repoId, ['https://mine.example/ipfs/'])
+    noteRepoGateways(repo.repoId, 'config', ['https://mine.example/ipfs/'])
     overrideDefaultGateways(['https://slow.example'])
     const calls = stubFetch({
       'https://mine.example/ipfs/bafkqaaa': () => new Uint8Array(),

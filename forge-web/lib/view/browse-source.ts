@@ -1066,6 +1066,7 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   // first. A past writer's or a stranger's manifest cannot steer every read.
   noteRepoGateways(
     repoKey(repo),
+    'manifests',
     manifests.filter((m) => m.ownerRole !== null && m.ownerRole !== undefined).flatMap((m) => m.uris),
   )
   const livePacks = locatorPackSpace(manifests)

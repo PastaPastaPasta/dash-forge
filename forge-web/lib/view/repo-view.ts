@@ -91,7 +91,7 @@ export async function loadRepoHome(
   ])
   // The public gateway the owner advertises (`config.backend.uris`, `https://<gw>/ipfs/`)
   // reaches the node holding this repo's IPFS content: every read of it tries that first.
-  noteRepoGateways(repoKey(repo), config?.backendUris ?? [])
+  noteRepoGateways(repoKey(repo), 'config', config?.backendUris ?? [])
 
   return {
     repo,
