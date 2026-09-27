@@ -4,8 +4,10 @@
  * MergePanel — the browser merge (`ux-dx-spec.md` §5.7), for a PR's maintainers and writers.
  *
  * The button says what it will do, decided in the merge worker before anything is offered:
- * `Merge (fast-forward)`, `Create merge commit and merge`, or a disabled
- * `Can't merge in the browser — conflicts` with the `dg pr checkout` line. A writer on a
+ * `Merge (fast-forward)`, `Create merge commit and merge` (only when the two sides changed
+ * disjoint paths; file contents are never merged in the browser), or a disabled
+ * `Conflicts or overlapping changes — merge with \`dg pr merge\`` with the `dg pr checkout`
+ * line. A writer on a
  * protected base branch sees `Protected branch — maintainers only`; a narrow screen, "Use a
  * desktop browser for this step". The click runs the step list (fetch → merge → build and
  * verify the pack → upload → packManifest → browse index → ref update → merge event), and a
@@ -231,7 +233,7 @@ export function MergePanel({
 
       {button.kind === 'conflicts' ? (
         <div className="mt-3">
-          <p className="mb-1.5 text-[12px] text-anvil-600 dark:text-anvil-400">Resolve it locally, push the result, and the PR merges:</p>
+          <p className="mb-1.5 text-[12px] text-anvil-600 dark:text-anvil-400">Both sides changed the same files or folders. Check the PR out, merge it with the CLI, and push:</p>
           <CopyRow text={button.checkout} />
         </div>
       ) : null}

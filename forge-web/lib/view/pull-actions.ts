@@ -55,7 +55,7 @@ export type MergeButton =
   | { readonly kind: 'checking' }
   | { readonly kind: 'fast-forward'; readonly label: 'Merge (fast-forward)' }
   | { readonly kind: 'merge-commit'; readonly label: 'Create merge commit and merge' }
-  | { readonly kind: 'conflicts'; readonly label: "Can't merge in the browser — conflicts"; readonly checkout: string }
+  | { readonly kind: 'conflicts'; readonly label: 'Conflicts or overlapping changes — merge with `dg pr merge`'; readonly checkout: string }
   | { readonly kind: 'protected'; readonly label: 'Protected branch — maintainers only' }
   | { readonly kind: 'mobile'; readonly label: 'Use a desktop browser for this step' }
   | { readonly kind: 'unavailable'; readonly reason: string }
@@ -74,7 +74,7 @@ export interface MergeButtonInputs {
   readonly baseProtected: boolean
   readonly narrow: boolean
   /** The worker's verdict, or null while it runs; an error string when it could not decide. */
-  readonly check: 'fast-forward' | 'merge' | 'conflict' | 'malformed' | 'up-to-date' | 'unrelated' | { readonly error: string } | null
+  readonly check: 'fast-forward' | 'merge' | 'conflict' | 'malformed' | 'too-large' | 'up-to-date' | 'unrelated' | { readonly error: string } | null
   /** `dg pr checkout <repo> <n>` for the conflicts row. */
   readonly checkout: string
 }
@@ -95,9 +95,15 @@ export function mergeButton(i: MergeButtonInputs): MergeButton {
     case 'merge':
       return { kind: 'merge-commit', label: 'Create merge commit and merge' }
     case 'conflict':
-      return { kind: 'conflicts', label: "Can't merge in the browser — conflicts", checkout: i.checkout }
+      // The browser merges only disjoint changes; anything both sides touched is the CLI's.
+      return { kind: 'conflicts', label: 'Conflicts or overlapping changes — merge with `dg pr merge`', checkout: i.checkout }
     case 'malformed':
-      return { kind: 'unavailable', reason: 'This history holds a commit or tree git would reject or read differently; merge it with `dg pr merge` after checking it.' }
+      return {
+        kind: 'unavailable',
+        reason: 'This history holds a commit or tree git would reject or read differently, or changes a .gitmodules or .gitattributes file; merge it with `dg pr merge` after checking it.',
+      }
+    case 'too-large':
+      return { kind: 'unavailable', reason: 'This merge is too large to build in the browser; merge it with `dg pr merge`.' }
     case 'up-to-date':
       return { kind: 'unavailable', reason: 'The base branch already contains this head; record the merge with "Mark as merged".' }
     case 'unrelated':

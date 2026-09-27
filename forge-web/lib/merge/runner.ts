@@ -218,8 +218,10 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
     } catch (e) {
       throw new MergeStepError(phase, reasonOf(e), run)
     }
-    if (result.kind === 'conflict') throw new MergeStopped(`the merge has conflicts${result.paths.length ? ` in ${result.paths.join(', ')}` : ''}`)
-    if (result.kind === 'malformed') throw new MergeStopped(`${result.reason}; git would read this history differently, so it is not merged in the browser`)
+    if (result.kind === 'conflict') {
+      throw new MergeStopped(`both sides changed the same paths${result.paths.length ? ` (${result.paths.slice(0, 5).join(', ')})` : ''}; merge with \`dg pr merge\``)
+    }
+    if (result.kind === 'malformed' || result.kind === 'too-large') throw new MergeStopped(`${result.reason}; it is not merged in the browser`)
     if (result.kind === 'up-to-date') throw new MergeStopped('the base branch already contains this head')
     if (result.kind === 'unrelated') throw new MergeStopped('the head and the base branch share no history')
     for (const s of ['fetch', 'merge'] as const) if (!run.done.includes(s)) mark(s)

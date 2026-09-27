@@ -142,7 +142,7 @@ describe('merge step runner', () => {
   it('stops, without retry, on conflicts', async () => {
     await expect(
       runMergeSteps(deps({ merge: async () => ({ kind: 'conflict', paths: ['a.txt'] }) }), newRun({ baseTip: BASE, headOid: HEAD }), () => undefined),
-    ).rejects.toBeInstanceOf(MergeStopped)
+    ).rejects.toThrow(/both sides changed the same paths \(a\.txt\); merge with `dg pr merge`/)
   })
 
   it('never builds on a stale run: a changed base tip or head starts over, and a moved branch stops before the ref', async () => {
@@ -178,7 +178,7 @@ describe('merge step runner', () => {
     const d = deps({
       merge: async (_i, onPhase) => {
         onPhase('merge')
-        throw new Error('isomorphic-git blew up')
+        throw new Error('the worker blew up')
       },
     })
     await expect(runMergeSteps(d, newRun({ baseTip: BASE, headOid: HEAD }), () => undefined)).rejects.toMatchObject({ step: 'merge' })

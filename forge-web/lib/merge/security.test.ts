@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 import { gitOidHex, MODE_GITLINK, MODE_TREE } from '../browse'
 import { indexPacks } from '../browse/indexer'
 import { Store } from '../view/diff-fixtures'
-import { checkMerge, mergeMessage, runMerge, textOnlyMergeDriver, TEXT_MERGE_MAX_CHARS, type MergeInput } from './engine'
+import { checkMerge, mergeMessage, runMerge, type MergeInput } from './engine'
 import { missingFromClosure } from './verify'
 
 const ME = { name: 'M', email: 'm@x', timestamp: 1_700_000_000, timezoneOffset: 0 }
@@ -118,20 +118,29 @@ describe('M3: the pack walk decides by what objects are, and by mode and oid tog
 })
 
 describe('M2: a small history cannot make the merge check run away', () => {
-  it('a tree DAG (2^k paths over k objects) hits the read budget', async () => {
+  it('a tree DAG (2^k paths over k objects) is walked once per tree, well within the budget', async () => {
     const s = new Store()
     const root = s.commit(s.files({ 'a.txt': 'a\n' }))
     const base = s.commit(s.files({ 'a.txt': 'b\n' }), [root])
     let t = s.tree([{ name: 'f', oid: s.blob('x\n') }])
     for (let i = 0; i < 20; i++) t = s.tree([{ name: 'l', oid: t, mode: MODE_TREE }, { name: 'r', oid: t, mode: MODE_TREE }])
     const head = s.commit(s.tree([{ name: 'a.txt', oid: s.blob('a\n') }, { name: 'bomb', oid: t, mode: MODE_TREE }]), [root])
-    await expect(checkMerge(s.reader(), input(base, head), 2_000)).rejects.toThrow(/reads more than 2000 objects/)
+    expect(await checkMerge(s.reader(), input(base, head), 2_000)).toBe('merge')
   }, 30_000)
 
-  it('files over the text limit are conflicts, not merged in the tab', () => {
-    const big = 'x\n'.repeat(TEXT_MERGE_MAX_CHARS / 2 + 1)
-    expect(textOnlyMergeDriver({ branches: ['b', 'o', 't'], contents: [big, `${big}a\n`, `b\n${big}`] }).cleanMerge).toBe(false)
-  })
+  it('a DAG whose trees recur at many depths hits the walk limit, as a refusal', async () => {
+    const s = new Store()
+    const root = s.commit(s.files({ 'a.txt': 'a\n' }))
+    const base = s.commit(s.files({ 'a.txt': 'b\n' }), [root])
+    // t_i = { a: t_(i-1), b: t_(i-2) }: t_k sits at every depth from (n-k)/2 to n-k, about
+    // n^2/4 (tree, depth) visits over n distinct trees.
+    const n = 1000
+    const ts = [s.tree([{ name: 'f', oid: s.blob('x\n') }]), s.tree([{ name: 'g', oid: s.blob('y\n') }])]
+    for (let i = 2; i < n; i++) ts.push(s.tree([{ name: 'a', oid: ts[i - 1] as string, mode: MODE_TREE }, { name: 'b', oid: ts[i - 2] as string, mode: MODE_TREE }]))
+    const head = s.commit(s.tree([{ name: 'a.txt', oid: s.blob('a\n') }, { name: 'bomb', oid: ts[n - 1] as string, mode: MODE_TREE }]), [root])
+    // A refusal, like a conflict — never an error the page shows as "couldn't check".
+    expect(await checkMerge(s.reader(), input(base, head), 2_000)).toBe('too-large')
+  }, 30_000)
 })
 
 describe('L1: the PR title cannot forge lines in the merge commit', () => {

@@ -9,7 +9,7 @@
  * the syntax erasable (no enums, namespaces or `@/` aliases).
  */
 
-import { bytesToHex } from '@noble/hashes/utils.js'
+import { bytesToHex, concatBytes, hexToBytes } from '@noble/hashes/utils.js'
 
 /** One entry in a parsed git tree. */
 export interface TreeEntry {
@@ -31,7 +31,8 @@ export function parseTree(bytes: Uint8Array): TreeEntry[] {
     // name up to NUL
     let nul = sp + 1
     while (nul < bytes.length && bytes[nul] !== 0x00) nul += 1
-    const name = new TextDecoder('utf-8', { fatal: false }).decode(bytes.subarray(sp + 1, nul))
+    // `ignoreBOM`: a name starting with U+FEFF keeps it (a decoder would drop it, and rename the entry).
+    const name = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(bytes.subarray(sp + 1, nul))
     const oid = bytesToHex(bytes.subarray(nul + 1, nul + 21))
     entries.push({ mode, name, oid })
     i = nul + 21
@@ -112,12 +113,16 @@ export class MalformedObjectError extends Error {
 const OID_HEX = /^[0-9a-f]{40}$/
 /** `name <email> <date> <tz>`, as fsck_ident: no `<`/`>` stray, no zero-padded date. */
 const IDENT = /^[^<>\n]* <[^<>\n]*> (0|[1-9]\d*) [+-]\d{4}$/
+/** The latest date git reads (`date_overflows`: a timestamp must fit a signed 64-bit time_t). */
+const MAX_GIT_DATE = 2n ** 63n - 1n
 
 /**
- * Refuse a commit `git fsck` would refuse, or one git and this client could read differently:
- * exactly one `tree` (first), then only contiguous `parent` lines, then `author`, then
- * `committer`, each well-formed, every oid 40 lowercase hex; later headers (encoding, gpgsig
- * and its continuation lines, mergetag) may not repeat any of those four.
+ * Refuse a commit `git fsck --strict` would refuse, or one git and this client could read
+ * differently: no NUL byte anywhere (`nulInCommit`); exactly one `tree` (first), then only
+ * contiguous `parent` lines, then `author`, then `committer`, each well-formed with a date git
+ * can hold, every oid 40 lowercase hex; later headers (encoding, gpgsig and its continuation
+ * lines, mergetag) may not repeat any of those four. Stricter than git in places (a single
+ * space before the date, a blank line after the header), never looser.
  */
 export function checkCommit(oid: string, bytes: Uint8Array): void {
   const bad = (why: string): never => {
@@ -126,9 +131,9 @@ export function checkCommit(oid: string, bytes: Uint8Array): void {
   // Judge the raw bytes as git does: a decoder would drop a leading BOM or hide a NUL.
   const TREE = [0x74, 0x72, 0x65, 0x65, 0x20]
   if (!TREE.every((b, i) => bytes[i] === b)) bad('the object must start with "tree "')
+  if (bytes.includes(0x00)) bad('a NUL byte in the commit')
   let sep = -1
   for (let i = 0; i + 1 < bytes.length; i++) {
-    if (bytes[i] === 0x00) bad('a NUL byte in the header')
     if (bytes[i] === 0x0a && bytes[i + 1] === 0x0a) {
       sep = i
       break
@@ -147,10 +152,13 @@ export function checkCommit(oid: string, bytes: Uint8Array): void {
   const tree = take('tree')
   if (tree === null || !OID_HEX.test(tree)) bad('the first header line must be "tree <oid>"')
   for (let p = take('parent'); p !== null; p = take('parent')) if (!OID_HEX.test(p)) bad('bad parent oid')
-  const author = take('author')
-  if (author === null || !IDENT.test(author)) bad('"author" must follow the parents, well-formed')
-  const committer = take('committer')
-  if (committer === null || !IDENT.test(committer)) bad('"committer" must follow the author, well-formed')
+  const identOk = (ident: string | null): boolean => {
+    if (ident === null || !IDENT.test(ident)) return false
+    const date = ident.split(' ').at(-2) as string
+    return BigInt(date) <= MAX_GIT_DATE
+  }
+  if (!identOk(take('author'))) bad('"author" must follow the parents, well-formed, with a date git can hold')
+  if (!identOk(take('committer'))) bad('"committer" must follow the author, well-formed, with a date git can hold')
   for (; i < lines.length; i++) {
     const line = lines[i] as string
     if (line.startsWith(' ')) continue // a continuation of a multi-line header (gpgsig)
@@ -160,30 +168,128 @@ export function checkCommit(oid: string, bytes: Uint8Array): void {
   }
 }
 
-/** Characters HFS+ ignores in names (as `is_hfs_dotgit`). */
-const HFS_IGNORABLE = /[‌-‏‪-‮⁪-⁯﻿]/g
+/** Code points HFS+ ignores in names (git's `next_hfs_char`). */
+const HFS_IGNORABLE: ReadonlySet<number> = new Set([
+  0x200c, 0x200d, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x206a, 0x206b, 0x206c, 0x206d, 0x206e, 0x206f, 0xfeff,
+])
 
-/** A name with what HFS+ ignores removed, and as NTFS resolves it (lowercase, no stream, no trailing dots or spaces). */
-function foldedName(name: string): { readonly hfs: string; readonly ntfs: string } {
-  const hfs = name.replace(HFS_IGNORABLE, '')
-  const ntfs = (hfs.split(':')[0] as string).toLowerCase().replace(/[. ]+$/, '')
-  return { hfs, ntfs }
+/** The code points of `name` (valid UTF-8) HFS+ does not ignore. */
+function hfsChars(name: string): number[] {
+  return [...name].map((c) => c.codePointAt(0) as number).filter((c) => !HFS_IGNORABLE.has(c))
 }
 
-/** `.`, `..`, or a name some filesystem reads as the repository directory (`.git.`, `GIT~1`, `.g‌it`). */
-function isDotGitLike(name: string): boolean {
-  const { hfs, ntfs } = foldedName(name)
-  return hfs === '.' || hfs === '..' || ntfs === '.git' || /^\.?git~[1-9]$/.test(ntfs)
+/** git's `is_hfs_dot_generic`: `.` + `needle` (ASCII, any case) once HFS+-ignored code points are dropped. */
+function isHfsDot(name: string, needle: string): boolean {
+  const cs = hfsChars(name)
+  if (cs.length !== needle.length + 1 || cs[0] !== 0x2e) return false
+  for (let i = 0; i < needle.length; i++) {
+    const c = cs[i + 1] as number
+    if (c > 127 || String.fromCharCode(c).toLowerCase() !== needle[i]) return false
+  }
+  return true
 }
 
-/** The submodule file, or a name some filesystem reads as it (`GITMOD~1`). */
-function isDotGitModulesLike(name: string): boolean {
-  const { ntfs } = foldedName(name)
-  return ntfs === '.gitmodules' || /^gitmod~[1-9]$/.test(ntfs)
+/** A byte of a C string: 0 past the end. */
+const at = (b: Uint8Array, i: number): number => b[i] ?? 0
+/** ASCII `tolower` (bytes over 0x7f unchanged, as in the C locale). */
+const lower = (c: number): number => (c >= 0x41 && c <= 0x5a ? c + 32 : c)
+/** `strncasecmp(b + from, s, n) == 0` for ASCII `s`. */
+function ncaseEq(b: Uint8Array, from: number, s: string, n: number): boolean {
+  for (let i = 0; i < n; i++) {
+    const c = at(b, from + i)
+    if (lower(c) !== s.charCodeAt(i)) return false
+    if (c === 0) return false
+  }
+  return true
+}
+
+/** git's `only_spaces_and_periods` tail: from `i`, only spaces and periods to the end or a `:`. */
+function onlySpacesAndPeriods(b: Uint8Array, i: number): boolean {
+  for (;;) {
+    const c = at(b, i++)
+    if (c === 0 || c === 0x3a) return true
+    if (c !== 0x20 && c !== 0x2e) return false
+  }
+}
+
+/** git's `is_ntfs_dotgit`: `.git` or `git~1`, then spaces and periods, up to the end, a separator or `:`. */
+function isNtfsDotGit(b: Uint8Array): boolean {
+  let i: number
+  if (at(b, 0) === 0x2e) {
+    if (!ncaseEq(b, 1, 'git', 3)) return false
+    i = 4
+  } else if (lower(at(b, 0)) === 0x67) {
+    if (!ncaseEq(b, 1, 'it', 2) || at(b, 3) !== 0x7e || at(b, 4) !== 0x31) return false
+    i = 5
+  } else return false
+  for (;;) {
+    const c = at(b, i++)
+    if (c === 0 || c === 0x2f || c === 0x5c || c === 0x3a) return true
+    if (c !== 0x2e && c !== 0x20) return false
+  }
+}
+
+/**
+ * git's `is_ntfs_dot_generic`: `.<name>`, its regular 8.3 short name (`<first 6>~1`…`~4`), or
+ * its fall-back short name (`<prefix>~<digits>`, where `prefix` is git's hash-derived one, e.g.
+ * `gi7eba` for `.gitmodules`), each followed only by spaces and periods up to the end or a `:`.
+ */
+function isNtfsDot(b: Uint8Array, dotName: string, shortPrefix: string): boolean {
+  if (at(b, 0) === 0x2e && ncaseEq(b, 1, dotName, dotName.length)) return onlySpacesAndPeriods(b, dotName.length + 1)
+  if (ncaseEq(b, 0, dotName, 6) && at(b, 6) === 0x7e && at(b, 7) >= 0x31 && at(b, 7) <= 0x34) return onlySpacesAndPeriods(b, 8)
+  let sawTilde = false
+  let i = 0
+  for (; i < 8; i++) {
+    const c = at(b, i)
+    if (c === 0) return false
+    if (sawTilde) {
+      if (c < 0x30 || c > 0x39) return false
+    } else if (c === 0x7e) {
+      i += 1
+      if (at(b, i) < 0x31 || at(b, i) > 0x39) return false
+      sawTilde = true
+    } else if (i >= 6) return false
+    else if (c & 0x80) return false
+    else if (lower(c) !== shortPrefix.charCodeAt(i)) return false
+  }
+  return onlySpacesAndPeriods(b, i)
+}
+
+/**
+ * Which of git's special files a tree-entry name is to some filesystem (fsck's
+ * `is_hfs_dot*`/`is_ntfs_dot*`, in any directory), or null. `raw` is the name's bytes, `name`
+ * the same decoded (valid UTF-8).
+ */
+export function specialFileName(name: string, raw: Uint8Array = new TextEncoder().encode(name)): 'gitmodules' | 'gitattributes' | null {
+  if (isHfsDot(name, 'gitmodules') || isNtfsDot(raw, 'gitmodules', 'gi7eba')) return 'gitmodules'
+  if (isHfsDot(name, 'gitattributes') || isNtfsDot(raw, 'gitattributes', 'gi7d29')) return 'gitattributes'
+  return null
+}
+
+/** `.gitignore` or `.mailmap` under a name a filesystem reads as one (fsck reports them as symlinks). */
+function isIgnoreOrMailmap(name: string, raw: Uint8Array): boolean {
+  return isHfsDot(name, 'gitignore') || isNtfsDot(raw, 'gitignore', 'gi250a') || isHfsDot(name, 'mailmap') || isNtfsDot(raw, 'mailmap', 'maba30')
+}
+
+/** `.`, `..` (also once HFS+-ignored code points are dropped), or a name git reads as the repository directory. */
+function isDotGitLike(name: string, raw: Uint8Array): boolean {
+  const folded = String.fromCodePoint(...hfsChars(name))
+  return folded === '.' || folded === '..' || isHfsDot(name, 'git') || isNtfsDotGit(raw)
 }
 
 /** The tree-entry modes git writes (fsck refuses anything else). */
 export const GIT_TREE_MODES: ReadonlySet<number> = new Set([0o40000, 0o100644, 0o100755, 0o120000, 0o160000])
+
+/** The longest entry name fsck accepts (`max_tree_entry_len`; longer is `largePathname`). */
+export const MAX_TREE_ENTRY_NAME = 4096
+
+/** The deepest tree nesting git walks (`core.maxTreeDepth`; the root tree is depth 0). */
+export const MAX_TREE_DEPTH = 2048
+
+/** The refusal for tree `oid` nested past {@link MAX_TREE_DEPTH}. */
+export function treeTooDeep(oid: string): MalformedObjectError {
+  return new MalformedObjectError(oid, `trees nested more than ${MAX_TREE_DEPTH} deep, deeper than git walks`)
+}
 
 /** git's tree order: bytes, a subtree's name compared as if it ended in `/`. */
 function treeKey(name: Uint8Array, mode: number): Uint8Array {
@@ -200,10 +306,22 @@ function compareBytes(a: Uint8Array, b: Uint8Array): number {
   return a.length - b.length
 }
 
+/** The bytes of a tree holding `entries` (names unique), in git's order, as git writes it. */
+export function serializeTree(entries: readonly TreeEntry[]): Uint8Array {
+  const enc = new TextEncoder()
+  const rows = entries.map((e) => ({ e, name: enc.encode(e.name) }))
+  rows.sort((a, b) => compareBytes(treeKey(a.name, a.e.mode), treeKey(b.name, b.e.mode)))
+  return concatBytes(...rows.flatMap(({ e, name }) => [enc.encode(`${e.mode.toString(8)} `), name, new Uint8Array([0]), hexToBytes(e.oid)]))
+}
+
 /**
- * Refuse a tree `git fsck` would refuse: every entry `<mode> <name>\0<20 bytes>` with a mode
- * git writes (no leading zeros), names non-empty without `/` and not `.`, `..` or `.git`
- * (any case), no name twice, entries in git's order; nothing left over.
+ * Refuse a tree `git fsck --strict` would refuse: every entry `<mode> <name>\0<20 bytes>` with a
+ * mode git writes (no leading zeros), no entry naming the null oid, names non-empty, at most
+ * {@link MAX_TREE_ENTRY_NAME} bytes, without `/`, not `.`, `..` or anything a filesystem reads as
+ * `.git`, no name twice, entries in git's order, nothing left over; `.gitmodules` and
+ * `.gitattributes` (or a name a filesystem reads as one) only as a file, and `.gitignore` and
+ * `.mailmap` never as a symbolic link (fsck reports those too). Stricter than git in
+ * places (names must be UTF-8 and without `\`), never looser.
  */
 export function checkTree(oid: string, bytes: Uint8Array): void {
   const bad = (why: string): never => {
@@ -223,15 +341,20 @@ export function checkTree(oid: string, bytes: Uint8Array): void {
     while (nul < bytes.length && bytes[nul] !== 0x00) nul += 1
     if (nul + 21 > bytes.length) bad('truncated entry')
     const raw = bytes.subarray(sp + 1, nul)
-    // Names must be UTF-8: the merge (isomorphic-git) decodes them, and would rewrite others.
+    if (bytes.subarray(nul + 1, nul + 21).every((b) => b === 0)) bad('an entry naming the null oid')
+    if (raw.length > MAX_TREE_ENTRY_NAME) bad(`an entry name over ${MAX_TREE_ENTRY_NAME} bytes`)
+    // Names must be UTF-8: paths are compared and shown as text, and must round-trip.
     let name = ''
     try {
       name = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw)
     } catch {
       bad('an entry name that is not UTF-8')
     }
-    if (name === '' || name.includes('/') || name.includes('\\') || isDotGitLike(name)) bad(`bad entry name ${JSON.stringify(name)}`)
-    if (mode === 0o120000 && isDotGitModulesLike(name)) bad('".gitmodules" as a symbolic link')
+    if (name === '' || name.includes('/') || name.includes('\\') || isDotGitLike(name, raw)) bad(`bad entry name ${JSON.stringify(name)}`)
+    const special = specialFileName(name, raw)
+    if (special !== null && mode !== 0o100644 && mode !== 0o100755) bad(`".${special}" (as ${JSON.stringify(name)}) that is not a file`)
+    // fsck --strict reports these (gitignoreSymlink, mailmapSymlink): refused too.
+    if (mode === 0o120000 && isIgnoreOrMailmap(name, raw)) bad(`${JSON.stringify(name)} as a symbolic link`)
     if (names.has(name)) bad(`entry ${JSON.stringify(name)} twice`)
     names.add(name)
     const key = treeKey(raw, mode)

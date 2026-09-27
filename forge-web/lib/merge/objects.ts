@@ -17,15 +17,37 @@
  */
 
 import { MODE_GITLINK, MODE_TREE, type GitObject } from '../browse'
-import { checkCommit, checkTree, MalformedObjectError, parseCommit, parseTree, type TreeEntry } from '../view/git-objects'
+import { checkCommit, checkTree, MalformedObjectError, MAX_TREE_DEPTH, parseCommit, parseTree, specialFileName, treeTooDeep, type TreeEntry } from '../view/git-objects'
 import type { ObjectReader } from '../view/tree-nav'
 
 /** Commits a walk may read before it gives up (a runaway or corrupt history). */
 export const WALK_COMMIT_CAP = 5000
 
+/**
+ * Tree visits (a tree under given parents at a given depth) the pack walk may make: the same
+ * few trees nested in many ways would otherwise be visited exponentially often.
+ */
+export const TREE_VISIT_CAP = 100_000
+
 export class WalkLimitError extends Error {
-  constructor(readonly cap: number) {
-    super(`the history walk stopped at its ${cap}-commit limit; merge with the CLI instead`)
+  constructor(
+    readonly cap: number,
+    what = 'commit',
+  ) {
+    super(`the history walk stopped at its ${cap}-${what} limit; merge with the CLI instead`)
+  }
+}
+
+/**
+ * History the browser does not merge although git may accept it: a new or changed
+ * `.gitmodules` or `.gitattributes` (in any directory, under any name a filesystem reads as
+ * one). git checks their contents (submodule URLs and paths, attribute line lengths); the
+ * browser does not, so such a PR is merged with `dg pr merge`.
+ */
+export class UnsupportedChangeError extends Error {
+  constructor(readonly entry: string) {
+    super(`this history adds or changes ${JSON.stringify(entry)} (a .gitmodules or .gitattributes file), which only \`dg pr merge\` merges`)
+    this.name = 'UnsupportedChangeError'
   }
 }
 
@@ -94,8 +116,12 @@ async function readTreeEntries(reader: ObjectReader, oid: string): Promise<TreeE
  * one stops the merge rather than be read differently from other clients. Whether an entry is
  * a tree or a blob comes from the object itself, never only from the mode its tree claims.
  * Submodule entries (gitlinks) name commits of another repository and are never packed.
+ *
+ * Refuses, as {@link MalformedObjectError}, trees nested deeper than git walks
+ * ({@link MAX_TREE_DEPTH}), and, as {@link UnsupportedChangeError}, any new or changed
+ * `.gitmodules` or `.gitattributes` entry.
  */
-export async function objectsToPack(reader: ObjectReader, commits: readonly string[]): Promise<GitObject[]> {
+export async function objectsToPack(reader: ObjectReader, commits: readonly string[], visitCap = TREE_VISIT_CAP): Promise<GitObject[]> {
   const taken = new Set<string>()
   const out: GitObject[] = []
   const take = async (oid: string): Promise<GitObject | null> => {
@@ -107,13 +133,18 @@ export async function objectsToPack(reader: ObjectReader, commits: readonly stri
     return obj
   }
   // `parents` are the same-path tree oids of every parent (absent ones left out). A tree seen
-  // before is still walked again under different parents: what its children may skip depends
-  // on the parents it is compared with, so only an identical (tree, parents) pair is a repeat.
+  // before is still walked again under different parents or at another depth: what its
+  // children may skip depends on the parents it is compared with, and how deep they nest on
+  // where it sits, so only an identical (tree, depth, parents) triple is a repeat.
   const walked = new Set<string>()
-  const walkTree = async (oid: string, parents: readonly string[]): Promise<void> => {
+  const walkTree = async (oid: string, parents: readonly string[], depth: number): Promise<void> => {
     if (parents.includes(oid)) return
-    const key = `${oid}:${[...parents].sort().join(',')}`
+    // git refuses to walk deeper (core.maxTreeDepth); a new tree only sits under new trees, so
+    // the walk reaches every new tree at its real depth.
+    if (depth > MAX_TREE_DEPTH) throw treeTooDeep(oid)
+    const key = `${oid}:${depth}:${[...parents].sort().join(',')}`
     if (walked.has(key)) return
+    if (walked.size >= visitCap) throw new WalkLimitError(visitCap, 'tree visit')
     walked.add(key)
     await take(oid)
     const entries = await readTreeEntries(reader, oid)
@@ -124,12 +155,13 @@ export async function objectsToPack(reader: ObjectReader, commits: readonly stri
       // Skip only what a parent has at this path with the SAME mode and oid, and never on a
       // parent's gitlink (its oid names nothing in this repository).
       if (same.some((x) => x.oid === e.oid && x.mode === e.mode && x.mode !== MODE_GITLINK)) continue
+      if (specialFileName(e.name) !== null) throw new UnsupportedChangeError(e.name)
       // A tree entry names a tree; every other (non-gitlink) mode — file, executable,
       // symlink — names a blob. A commit or tag under a blob mode is refused, as by fsck.
       const kind = (await reader.readObject(e.oid)).type
       const want = e.mode === MODE_TREE ? 'tree' : 'blob'
       if (kind !== want) throw new MalformedObjectError(oid, `entry "${e.name}" is a ${kind} under mode ${e.mode.toString(8)}`)
-      if (kind === 'tree') await walkTree(e.oid, same.filter((x) => x.mode === MODE_TREE).map((x) => x.oid))
+      if (kind === 'tree') await walkTree(e.oid, same.filter((x) => x.mode === MODE_TREE).map((x) => x.oid), depth + 1)
       else await take(e.oid)
     }
   }
@@ -145,7 +177,7 @@ export async function objectsToPack(reader: ObjectReader, commits: readonly stri
         return parseCommit(po.bytes).tree
       }),
     )
-    await walkTree(commit.tree, parentTrees)
+    await walkTree(commit.tree, parentTrees, 0)
   }
   return out
 }

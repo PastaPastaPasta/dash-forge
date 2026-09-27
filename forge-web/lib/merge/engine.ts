@@ -1,56 +1,30 @@
 /**
  * The browser merge engine (`ux-dx-spec.md` §5.7): given the base branch's tip and a PR head,
- * decide how the PR merges and build the pack that makes it so.
+ * decide how the PR merges and build the pack that makes it so. The browser never merges file
+ * contents:
  *
  *  - **Fast-forward** when the head descends from the base tip: the new tip is the head.
- *  - Otherwise a **clean three-way merge** with isomorphic-git (merge base, tree merge, and a
- *    merge commit authored and committed by the merger, message
- *    `Merge pull request #<n> from <source>`). Conflicts are reported by path, and nothing is
- *    built.
+ *  - A **merge commit** only when the two sides changed disjoint sets of paths since their one
+ *    merge base ({@link mergeTrees}): each path takes the side that changed it. Anything else —
+ *    a path, or an ancestor or descendant of it, touched by both sides; a criss-cross history
+ *    with more than one merge base — is refused as "overlapping", and `dg pr merge` does it.
+ *    The merge commit is authored and committed by the merger, message
+ *    `Merge pull request #<n> from <source>`.
  *  - The **pack**: every object reachable from the new tip that the base repo does not hold,
  *    as a non-thin pack (see `objects.ts`, `pack-writer.ts`).
  *
- * Pure apart from its object reads, so it runs the same in a Web Worker and in tests.
+ * Every commit and tree read is checked as `git fsck --strict` would ({@link strictReader}),
+ * and the pack walk runs for fast-forwards and merges alike, so {@link checkMerge} and
+ * {@link runMerge} always agree. Pure apart from its object reads, so it runs the same in a
+ * Web Worker and in tests.
  */
 
-import diff3Merge from 'diff3'
-
-import { MODE_TREE } from '../browse'
-
-import { checkCommit, checkTree, MalformedObjectError, parseCommit, parseTree } from '../view/git-objects'
-import { findMergeBase } from '../view/pull-diff'
+import { gitOidHex, MODE_TREE, type GitObject } from '../browse'
+import { checkCommit, checkTree, MalformedObjectError, MAX_TREE_DEPTH, parseCommit, parseTree, serializeTree, treeTooDeep, type TreeEntry } from '../view/git-objects'
+import { findMergeBases, MergeBaseSearchLimitError } from '../view/pull-diff'
 import type { ObjectReader } from '../view/tree-nav'
-import { createMergeFs } from './git-fs'
-import { newCommits, objectsToPack } from './objects'
+import { newCommits, objectsToPack, UnsupportedChangeError, WalkLimitError } from './objects'
 import { writePack } from './pack-writer'
-
-/** The largest file (in UTF-16 units, about bytes for text) merged line by line in the browser. */
-export const TEXT_MERGE_MAX_CHARS = 1024 * 1024
-
-/**
- * The line merge for files both sides changed: isomorphic-git's diff3, but refusing (as a
- * conflict) any file that is binary or not valid UTF-8 on any side. isomorphic-git hands the
- * driver the three versions decoded as UTF-8, so a NUL byte survives as U+0000 and an invalid
- * sequence becomes U+FFFD; merging those as text would commit a corrupted blob and call it
- * clean. Such files, and files over {@link TEXT_MERGE_MAX_CHARS}, are merged with the CLI.
- */
-export function textOnlyMergeDriver({ branches, contents }: { branches: readonly string[]; contents: readonly string[] }): { cleanMerge: boolean; mergedText: string } {
-  if (contents.some((c) => c.includes('\u0000') || c.includes('\ufffd'))) return { cleanMerge: false, mergedText: '' }
-  // A file this large is merged with the CLI: a line merge in the browser could stall the tab.
-  if (contents.some((c) => c.length > TEXT_MERGE_MAX_CHARS)) return { cleanMerge: false, mergedText: '' }
-  const lines = (text: string): string[] => text.match(/^.*(\r?\n|$)/gm) ?? []
-  const [base = '', ours = '', theirs = ''] = contents
-  let mergedText = ''
-  let cleanMerge = true
-  for (const block of diff3Merge(lines(ours), lines(base), lines(theirs))) {
-    if (block.ok) mergedText += block.ok.join('')
-    else {
-      cleanMerge = false
-      mergedText += `<<<<<<< ${branches[1] ?? 'ours'}\n${block.conflict.a.join('')}=======\n${block.conflict.b.join('')}>>>>>>> ${branches[2] ?? 'theirs'}\n`
-    }
-  }
-  return { cleanMerge, mergedText }
-}
 
 /** Who the merge commit is by (the merger's Settings name and email). */
 export interface MergeIdentity {
@@ -58,7 +32,7 @@ export interface MergeIdentity {
   readonly email: string
   /** Seconds since the epoch; defaults to now. */
   readonly timestamp?: number
-  /** Minutes, as `Date.getTimezoneOffset()` (isomorphic-git's convention); defaults to local. */
+  /** Minutes, as `Date.getTimezoneOffset()` (positive west of UTC); defaults to local. */
   readonly timezoneOffset?: number
 }
 
@@ -84,9 +58,12 @@ export interface MergeInput {
 export type MergePlan =
   | { readonly kind: 'fast-forward'; readonly newTip: string }
   | { readonly kind: 'merge'; readonly mergeBase: string }
+  /** Both sides touched the same paths (or the history has several merge bases): `paths` says where, when known. */
   | { readonly kind: 'conflict'; readonly paths: readonly string[] }
-  /** A commit or tree fsck would refuse: nothing is merged in the browser. */
+  /** A commit or tree fsck would refuse, or a change only the CLI merges: nothing is merged in the browser. */
   | { readonly kind: 'malformed'; readonly reason: string }
+  /** Past a walk or read limit: too large to merge in a tab. */
+  | { readonly kind: 'too-large'; readonly reason: string }
   | { readonly kind: 'up-to-date' }
   | { readonly kind: 'unrelated' }
 
@@ -111,150 +88,156 @@ export function mergeMessage(prNumber: number, sourceLabel: string, rawTitle = '
   return title === '' ? `Merge pull request #${prNumber} from ${sourceLabel}\n` : `Merge pull request #${prNumber} from ${sourceLabel}\n\n${title}\n`
 }
 
-interface ConflictData {
-  readonly data?: { readonly filepaths?: readonly string[] }
-  readonly code?: string
-}
-
 /**
  * Classify the merge (no objects written). `reader` must read both sides (the base repo's
- * objects, and the head's source repo's).
+ * objects, and the head's source repo's). A criss-cross history (several merge bases) is a
+ * `conflict`: which base a three-way merge starts from changes the answer, so only the CLI
+ * merges it.
  */
-export async function planMerge(reader: ObjectReader, input: Pick<MergeInput, 'baseTip' | 'headOid'>): Promise<Exclude<MergePlan, { kind: 'conflict' | 'malformed' }>> {
+export async function planMerge(reader: ObjectReader, input: Pick<MergeInput, 'baseTip' | 'headOid'>): Promise<Exclude<MergePlan, { kind: 'malformed' | 'too-large' }>> {
   const { baseTip, headOid } = input
   if (baseTip === '') return { kind: 'fast-forward', newTip: headOid }
-  const base = await findMergeBase(reader, baseTip, headOid)
-  if (base === null) return { kind: 'unrelated' }
+  const bases = await findMergeBases(reader, baseTip, headOid)
+  const base = bases[0]
+  if (base === undefined) return { kind: 'unrelated' }
+  if (bases.length > 1) return { kind: 'conflict', paths: [] }
   if (base === headOid) return { kind: 'up-to-date' }
   if (base === baseTip) return { kind: 'fast-forward', newTip: headOid }
   return { kind: 'merge', mergeBase: base }
 }
 
+type Entry = Pick<TreeEntry, 'mode' | 'oid'>
+
+const same = (a: Entry | undefined, b: Entry | undefined): boolean => a?.mode === b?.mode && a?.oid === b?.oid
+
+/** A merged directory with nothing left in it. */
+const EMPTY = Symbol('empty tree')
+
 /**
- * The merge commit (three-way, via isomorphic-git) over `reader`: its oid and every object it
- * created, or the conflicting paths.
+ * The tree a merge of two disjoint sides makes, over `reader`: `ours` and `theirs` as changed
+ * from `base` (root tree oids). Walked name by name:
+ *
+ *  - unchanged on a side → the other side's entry (a deletion included);
+ *  - changed on both → both must be directories (or new on both as directories), merged the
+ *    same way one level down; anything else — the same file changed twice, even identically;
+ *    a file on one side where the other changed the directory it replaced, or anything under
+ *    a directory the other side removed entirely — is a conflict at that path.
+ *
+ * A merged directory left with no entries (each side deleted different files of it) is dropped
+ * from its parent, as git does; an empty root is written as the empty tree. Returns the merged
+ * root oid and the trees it wrote (bytes as git writes them), or the conflicting paths.
  */
-export async function threeWayMerge(
+export async function mergeTrees(
+  reader: ObjectReader,
+  base: string,
+  ours: string,
+  theirs: string,
+): Promise<{ kind: 'merged'; oid: string; written: GitObject[] } | { kind: 'conflict'; paths: string[] }> {
+  const conflicts: string[] = []
+  const written: GitObject[] = []
+  const entries = async (oid: string | undefined): Promise<Map<string, Entry>> => {
+    if (oid === undefined) return new Map()
+    const obj = await reader.readObject(oid)
+    if (obj.type !== 'tree') throw new MalformedObjectError(oid, `a ${obj.type} where a tree was expected`)
+    return new Map(parseTree(obj.bytes).map((e) => [e.name, { mode: e.mode, oid: e.oid }]))
+  }
+  const isTree = (e: Entry | undefined): e is Entry => e !== undefined && e.mode === MODE_TREE
+  const conflict = (prefix: string): null => {
+    conflicts.push(prefix === '' ? '/' : prefix.slice(0, -1))
+    return null
+  }
+  // Returns the merged tree's oid, EMPTY when the merge leaves it with no entries, or null
+  // once a conflict was recorded at or below `prefix`.
+  const walk = async (b: string | undefined, o: string, t: string, prefix: string, depth: number): Promise<string | typeof EMPTY | null> => {
+    if (b === o) return t
+    if (b === t) return o
+    // The same change on both sides is still a path both touched.
+    if (o === t) return conflict(prefix)
+    if (depth > MAX_TREE_DEPTH) throw treeTooDeep(o)
+    const [be, oe, te] = await Promise.all([entries(b), entries(o), entries(t)])
+    // A side that emptied this directory removed every entry of it: whatever the other side
+    // changed here overlaps (git would call it a directory rename or a delete/modify).
+    if (oe.size === 0 || te.size === 0) return conflict(prefix)
+    const out: TreeEntry[] = []
+    let clean = true
+    for (const name of new Set([...be.keys(), ...oe.keys(), ...te.keys()])) {
+      const [bb, oo, tt] = [be.get(name), oe.get(name), te.get(name)]
+      const path = `${prefix}${name}`
+      let pick: Entry | undefined
+      if (same(oo, bb)) pick = tt
+      else if (same(tt, bb)) pick = oo
+      else if (isTree(oo) && isTree(tt) && (bb === undefined || isTree(bb))) {
+        const sub = await walk(bb?.oid, oo.oid, tt.oid, `${path}/`, depth + 1)
+        if (sub === null) {
+          clean = false
+          continue
+        }
+        // Emptied by the two sides' deletions together: the directory goes, as in git.
+        if (sub === EMPTY) continue
+        pick = { mode: MODE_TREE, oid: sub }
+      } else {
+        conflicts.push(path)
+        clean = false
+        continue
+      }
+      if (pick !== undefined) out.push({ name, ...pick })
+    }
+    if (!clean) return null
+    if (out.length === 0) return EMPTY
+    const bytes = serializeTree(out)
+    const oid = gitOidHex('tree', bytes)
+    // What this client writes is held to the same checks as what it reads.
+    checkTree(oid, bytes)
+    written.push({ type: 'tree', bytes })
+    return oid
+  }
+  const root = await walk(base, ours, theirs, '', 0)
+  if (root === null) return { kind: 'conflict', paths: conflicts }
+  if (root === EMPTY) {
+    const bytes = new Uint8Array(0)
+    return { kind: 'merged', oid: gitOidHex('tree', bytes), written: [{ type: 'tree', bytes }] }
+  }
+  return { kind: 'merged', oid: root, written }
+}
+
+/** `Name <email> <seconds> <±hhmm>` for a git commit header. */
+function identLine(who: MergeIdentity): string {
+  const when = who.timestamp ?? Math.floor(Date.now() / 1000)
+  // The offset in force at that moment (daylight saving differs across the year).
+  const offset = who.timezoneOffset ?? new Date(when * 1000).getTimezoneOffset()
+  const east = -offset
+  const abs = Math.abs(east)
+  const tz = `${east < 0 ? '-' : '+'}${String(Math.floor(abs / 60)).padStart(2, '0')}${String(abs % 60).padStart(2, '0')}`
+  return `${who.name} <${who.email}> ${when} ${tz}`
+}
+
+/** The merge commit's bytes: the merged tree, parents base tip then head, the merger as author and committer. */
+export function mergeCommitBytes(tree: string, input: MergeInput): Uint8Array {
+  const ident = identLine(input.author)
+  const text = `tree ${tree}\nparent ${input.baseTip}\nparent ${input.headOid}\nauthor ${ident}\ncommitter ${ident}\n\n${mergeMessage(input.prNumber, input.sourceLabel, input.title)}`
+  return new TextEncoder().encode(text)
+}
+
+/** `reader` with some objects added in memory (what the merge wrote). */
+function withObjects(reader: ObjectReader, objects: readonly GitObject[]): ObjectReader {
+  const extra = new Map(objects.map((o) => [gitOidHex(o.type, o.bytes), o]))
+  return { readObject: async (oid) => extra.get(oid) ?? reader.readObject(oid) }
+}
+
+/** The merge commit over `reader`, with every object it created, or the conflicting paths. */
+export async function disjointMerge(
   reader: ObjectReader,
   input: MergeInput,
   mergeBase: string,
 ): Promise<{ kind: 'merge'; oid: string; reader: ObjectReader } | { kind: 'conflict'; paths: readonly string[] }> {
-  const git = await import('isomorphic-git')
-  const fs = createMergeFs(reader)
-  const gitdir = '/.git'
-  const p = fs.client.promises as unknown as {
-    mkdir(path: string): Promise<void>
-    writeFile(path: string, data: string): Promise<void>
-  }
-  await p.mkdir(gitdir)
-  // A branch at the base tip for `ours`, and the head for `theirs`; nothing else is local.
-  await p.writeFile(`${gitdir}/HEAD`, 'ref: refs/heads/base\n')
-  await p.mkdir(`${gitdir}/refs`)
-  await p.mkdir(`${gitdir}/refs/heads`)
-  await p.mkdir(`${gitdir}/objects`)
-  await p.mkdir(`${gitdir}/objects/pack`)
-  await p.writeFile(`${gitdir}/refs/heads/base`, `${input.baseTip}\n`)
-  await p.writeFile(`${gitdir}/refs/heads/head`, `${input.headOid}\n`)
-  const who = {
-    name: input.author.name,
-    email: input.author.email,
-    timestamp: input.author.timestamp ?? Math.floor(Date.now() / 1000),
-    timezoneOffset: input.author.timezoneOffset ?? new Date().getTimezoneOffset(),
-  }
-  try {
-    const r = await git.merge({
-      fs: fs.client as unknown as Parameters<typeof git.merge>[0]['fs'],
-      gitdir,
-      ours: 'refs/heads/base',
-      theirs: 'refs/heads/head',
-      fastForward: false,
-      noUpdateBranch: true,
-      abortOnConflict: true,
-      message: mergeMessage(input.prNumber, input.sourceLabel, input.title),
-      author: who,
-      committer: who,
-      mergeDriver: textOnlyMergeDriver,
-    })
-    const underlying = fs.readError()
-    if (underlying !== undefined) throw underlying
-    if (r.oid === undefined) throw new Error('the merge produced no commit')
-    const merged = parseCommit((await fs.reader.readObject(r.oid)).bytes).tree
-    const trees = await Promise.all([input.baseTip, input.headOid, mergeBase].map(async (c) => parseCommit((await fs.reader.readObject(c)).bytes).tree))
-    const refused = await auditMergedTree(fs.reader, merged, trees[0] as string, trees[1] as string, trees[2] as string)
-    if (refused.length > 0) return { kind: 'conflict', paths: refused }
-    return { kind: 'merge', oid: r.oid, reader: fs.reader }
-  } catch (e) {
-    // A read that failed underneath isomorphic-git surfaces as its own error, not "not found".
-    const underlying = fs.readError()
-    if (underlying !== undefined) throw underlying
-    const err = e as ConflictData
-    if (err.code === 'MergeConflictError') return { kind: 'conflict', paths: [...(err.data?.filepaths ?? [])] }
-    // Conflicts isomorphic-git cannot express (add/add, file vs directory) come as this.
-    if (err.code === 'MergeNotSupportedError') return { kind: 'conflict', paths: [] }
-    throw e
-  }
-}
-
-const MODE_LINK = 0o120000
-const MODE_SUBMODULE = 0o160000
-
-/** What an entry is, as git's merge compares them: a directory, a file (either file mode), a symlink, a submodule. */
-function entryKind(mode: number): 'tree' | 'file' | 'link' | 'gitlink' {
-  if (mode === MODE_TREE) return 'tree'
-  if (mode === MODE_LINK) return 'link'
-  if (mode === MODE_SUBMODULE) return 'gitlink'
-  return 'file'
-}
-
-/**
- * Audit a tree isomorphic-git merged, against the merge base and both sides, before anything
- * is built from it. Returns the paths git would call conflicts that isomorphic-git merged:
- *
- *  - a path whose kind changed on one side (a file became a symlink, say) while the other side
- *    changed it too — git reports "CONFLICT (distinct types)", isomorphic-git merges the text;
- *  - a symlink or submodule entry that is neither side's (their targets are never merged).
- *
- * Every tree the merge wrote is also checked as fsck would ({@link checkTree}): isomorphic-git
- * orders entries by UTF-16, not git's bytes, so a merge the check offered never fails later.
- */
-export async function auditMergedTree(reader: ObjectReader, merged: string, ours: string, theirs: string, base: string): Promise<string[]> {
-  const conflicts: string[] = []
-  const entries = async (oid: string | undefined): Promise<Map<string, { mode: number; oid: string }>> => {
-    if (oid === undefined) return new Map()
-    const obj = await reader.readObject(oid)
-    if (obj.type !== 'tree') return new Map()
-    return new Map(parseTree(obj.bytes).map((e) => [e.name, { mode: e.mode, oid: e.oid }]))
-  }
-  const walk = async (m: string, o: string | undefined, t: string | undefined, b: string | undefined, prefix: string): Promise<void> => {
-    if (m === o || m === t) return // one side's tree unchanged: nothing merged below
-    checkTree(m, (await reader.readObject(m)).bytes)
-    const [me, oe, te, be] = await Promise.all([entries(m), entries(o), entries(t), entries(b)])
-    const names = new Set([...me.keys(), ...oe.keys(), ...te.keys()])
-    for (const name of names) {
-      const path = `${prefix}${name}`
-      const [mm, oo, tt, bb] = [me.get(name), oe.get(name), te.get(name), be.get(name)]
-      const kinds = (x: { mode: number } | undefined): string => (x === undefined ? 'none' : entryKind(x.mode))
-      const oursChanged = oo?.oid !== bb?.oid || oo?.mode !== bb?.mode
-      const theirsChanged = tt?.oid !== bb?.oid || tt?.mode !== bb?.mode
-      if (oursChanged && theirsChanged && oo !== undefined && tt !== undefined && kinds(oo) !== kinds(tt)) {
-        conflicts.push(path)
-        continue
-      }
-      if (mm === undefined) continue
-      const special = mm.mode === MODE_LINK || mm.mode === MODE_SUBMODULE
-      const isSide = (x: { mode: number; oid: string } | undefined): boolean => x !== undefined && x.mode === mm.mode && x.oid === mm.oid
-      if (special && !isSide(oo) && !isSide(tt)) {
-        conflicts.push(path)
-        continue
-      }
-      if (mm.mode === MODE_TREE) {
-        const sub = (x: { mode: number; oid: string } | undefined): string | undefined => (x !== undefined && x.mode === MODE_TREE ? x.oid : undefined)
-        await walk(mm.oid, sub(oo), sub(tt), sub(bb), `${path}/`)
-      }
-    }
-  }
-  await walk(merged, ours, theirs, base, '')
-  return conflicts
+  const tree = async (commit: string): Promise<string> => parseCommit((await reader.readObject(commit)).bytes).tree
+  const [b, o, t] = await Promise.all([tree(mergeBase), tree(input.baseTip), tree(input.headOid)])
+  const merged = await mergeTrees(reader, b, o, t)
+  if (merged.kind === 'conflict') return merged
+  const bytes = mergeCommitBytes(merged.oid, input)
+  const oid = gitOidHex('commit', bytes)
+  checkCommit(oid, bytes)
+  return { kind: 'merge', oid, reader: withObjects(reader, [...merged.written, { type: 'commit', bytes }]) }
 }
 
 /** Object reads one merge (or check) may make before it is refused as too large. */
@@ -270,15 +253,17 @@ export class ReadBudgetError extends Error {
 
 /**
  * `reader` refusing (with {@link MalformedObjectError}) any commit or tree fsck would refuse:
- * everything the merge reads — the history walks, isomorphic-git's tree merge, the pack
- * walk — sees only objects git and this client read the same way.
+ * everything the merge reads — the history walks, the tree merge, the pack walk — sees only
+ * objects git and this client read the same way.
  */
 export function strictReader(reader: ObjectReader, budget = MERGE_READ_BUDGET): ObjectReader {
-  let reads = 0
+  // Distinct objects, so a run that walks again (a same-repo PR's second pack walk) counts
+  // exactly what its check did. The walks' own caps bound repeated visits.
+  const seen = new Set<string>()
   return {
     readObject: async (oid) => {
-      // A small history can still name a huge number of paths (a tree DAG): cap the work.
-      if (++reads > budget) throw new ReadBudgetError(budget)
+      seen.add(oid)
+      if (seen.size > budget) throw new ReadBudgetError(budget)
       const obj = await reader.readObject(oid)
       if (obj.type === 'commit') checkCommit(oid, obj.bytes)
       else if (obj.type === 'tree') checkTree(oid, obj.bytes)
@@ -288,51 +273,66 @@ export function strictReader(reader: ObjectReader, budget = MERGE_READ_BUDGET): 
   }
 }
 
-/** What the merge button can offer: the plan, with a three-way merge tried for conflicts. */
-export type MergeCheck = 'fast-forward' | 'merge' | 'conflict' | 'malformed' | 'up-to-date' | 'unrelated'
+/** What the merge button can offer. */
+export type MergeCheck = MergePlan['kind']
 
+/**
+ * Whether (and how) the PR merges: the whole merge and pack walk, without building the pack,
+ * so a check that says "merge" is one {@link runMerge} completes.
+ */
 export async function checkMerge(raw: ObjectReader, input: MergeInput, budget = MERGE_READ_BUDGET): Promise<MergeCheck> {
-  const reader = strictReader(raw, budget)
-  try {
-    const plan = await planMerge(reader, input)
-    if (plan.kind !== 'merge') return plan.kind
-    return (await threeWayMerge(reader, input, plan.mergeBase)).kind
-  } catch (e) {
-    if (e instanceof MalformedObjectError) return 'malformed'
-    throw e
-  }
+  const out = await refusing(() => build(strictReader(raw, budget), input, false))
+  return out.kind === 'checked' ? out.check : out.kind
 }
 
 /** Run the whole merge: classify, merge when needed, and build the pack. */
-export async function runMerge(raw: ObjectReader, input: MergeInput, onProgress?: MergeProgress): Promise<MergeOutcome | Extract<MergePlan, { kind: 'conflict' | 'malformed' | 'up-to-date' | 'unrelated' }>> {
+export async function runMerge(raw: ObjectReader, input: MergeInput, onProgress?: MergeProgress): Promise<MergeOutcome | Exclude<MergePlan, { kind: 'fast-forward' | 'merge' }>> {
+  const out = await refusing(() => build(strictReader(raw), input, true, onProgress))
+  if (out.kind === 'checked') throw new Error('the merge built no pack')
+  return out
+}
+
+/** A refusal as a result: history git would reject, or a change the browser does not merge. */
+async function refusing<T>(work: () => Promise<T>): Promise<T | { kind: 'malformed' | 'too-large'; reason: string }> {
   try {
-    return await runStrict(strictReader(raw), input, onProgress)
+    return await work()
   } catch (e) {
-    if (e instanceof MalformedObjectError) return { kind: 'malformed', reason: e.message }
+    if (e instanceof MalformedObjectError || e instanceof UnsupportedChangeError) return { kind: 'malformed', reason: e.message }
+    if (e instanceof ReadBudgetError || e instanceof WalkLimitError || e instanceof MergeBaseSearchLimitError) return { kind: 'too-large', reason: e.message }
     throw e
   }
 }
 
-async function runStrict(reader: ObjectReader, input: MergeInput, onProgress?: MergeProgress): Promise<MergeOutcome | Extract<MergePlan, { kind: 'conflict' | 'up-to-date' | 'unrelated' }>> {
+async function build(
+  reader: ObjectReader,
+  input: MergeInput,
+  pack: boolean,
+  onProgress?: MergeProgress,
+): Promise<MergeOutcome | { kind: 'checked'; check: 'fast-forward' | 'merge' } | Exclude<MergePlan, { kind: 'fast-forward' | 'merge' | 'malformed' | 'too-large' }>> {
   onProgress?.('analyse')
   const plan = await planMerge(reader, input)
-  if (plan.kind === 'up-to-date' || plan.kind === 'unrelated') return plan
+  if (plan.kind === 'up-to-date' || plan.kind === 'unrelated' || plan.kind === 'conflict') return plan
   let tip: string
   let source = reader
   if (plan.kind === 'fast-forward') {
     tip = plan.newTip
   } else {
     onProgress?.('merge')
-    const merged = await threeWayMerge(reader, input, plan.mergeBase)
+    const merged = await disjointMerge(reader, input, plan.mergeBase)
     if (merged.kind === 'conflict') return merged
     tip = merged.oid
     source = merged.reader
   }
   onProgress?.('pack')
-  // A fast-forward to a head the base repo already holds packs nothing (the tip is "had").
-  const have = [input.baseTip, ...(input.headInBase ? [input.headOid] : [])].filter((o) => o !== '')
-  const commits = await newCommits(source, tip, have)
-  const objects = await objectsToPack(source, commits)
+  // Every commit the base branch gains is walked — for the check too — against the base tip
+  // alone: the walk is where fsck parity and the unsupported-change rules apply, and a
+  // same-repo head's commits are new to the branch even though the repo's packs hold them.
+  const baseHave = input.baseTip === '' ? [] : [input.baseTip]
+  let objects = await objectsToPack(source, await newCommits(source, tip, baseHave))
+  if (!pack) return { kind: 'checked', check: plan.kind }
+  // What the base repo's packs already hold is not packed again: for a same-repo PR the head's
+  // history (a fast-forward to it packs nothing).
+  if (input.headInBase) objects = await objectsToPack(source, await newCommits(source, tip, [...baseHave, input.headOid]))
   const built = writePack(objects)
   onProgress?.('pack', `${built.objectCount} objects`)
   return { kind: plan.kind, newTip: tip, pack: built.bytes, packHash: built.packHash, objectCount: built.objectCount }

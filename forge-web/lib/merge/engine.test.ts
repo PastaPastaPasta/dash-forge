@@ -4,7 +4,7 @@ import { gitOidHex, ObjectLocator, BrowseReader } from '../browse'
 import { indexPacks, memoryPackSource, serializeLocator } from '../browse/indexer'
 import { Store } from '../view/diff-fixtures'
 import { parseCommit, parseTree } from '../view/git-objects'
-import { mergeMessage, planMerge, runMerge, textOnlyMergeDriver, type MergeInput } from './engine'
+import { checkMerge, mergeMessage, planMerge, runMerge, type MergeInput } from './engine'
 import { newCommits } from './objects'
 import { writePack } from './pack-writer'
 
@@ -61,7 +61,7 @@ describe('merge engine', () => {
     const root = s.commit(s.files({ 'a.txt': 'one\ntwo\nthree\n', 'b.txt': 'b\n' }))
     const base = s.commit(s.files({ 'a.txt': 'ONE\ntwo\nthree\n', 'b.txt': 'b\n' }), [root])
     const baseHad = s.snapshot()
-    const head = s.commit(s.files({ 'a.txt': 'one\ntwo\nTHREE\n', 'b.txt': 'b\n', 'new/c.txt': 'c\n' }), [root])
+    const head = s.commit(s.files({ 'a.txt': 'one\ntwo\nthree\n', 'b.txt': 'b, changed\n', 'new/c.txt': 'c\n' }), [root])
     const out = await runMerge(s.reader(), input(base, head))
     if (out.kind !== 'merge') throw new Error(`expected a merge, got ${out.kind}`)
 
@@ -74,7 +74,7 @@ describe('merge engine', () => {
     expect(commit.committer).toMatchObject({ name: 'Merger', email: 'merger@example.com' })
 
     // The merged tree is both sides' edits, byte for byte.
-    const expected = new Store().files({ 'a.txt': 'ONE\ntwo\nTHREE\n', 'b.txt': 'b\n', 'new/c.txt': 'c\n' })
+    const expected = new Store().files({ 'a.txt': 'ONE\ntwo\nthree\n', 'b.txt': 'b, changed\n', 'new/c.txt': 'c\n' })
     expect(commit.tree).toBe(expected)
     const entries = parseTree((await reader.readObject(commit.tree)).bytes).map((e) => e.name)
     expect(entries).toEqual(['a.txt', 'b.txt', 'new'])
@@ -141,18 +141,69 @@ describe('merge engine', () => {
   })
 })
 
-describe('merge driver refuses what it cannot merge as text', () => {
-  it('merges text cleanly and marks overlapping edits as conflicts', () => {
-    expect(textOnlyMergeDriver({ branches: ['base', 'ours', 'theirs'], contents: ['a\nb\nc\n', 'A\nb\nc\n', 'a\nb\nC\n'] })).toEqual({ cleanMerge: true, mergedText: 'A\nb\nC\n' })
-    expect(textOnlyMergeDriver({ branches: ['base', 'ours', 'theirs'], contents: ['a\n', 'x\n', 'y\n'] }).cleanMerge).toBe(false)
+describe('only disjoint changes merge; file contents are never merged', () => {
+  it('a file both sides edited is a conflict, even on lines far apart', async () => {
+    const s = new Store()
+    const root = s.commit(s.files({ 'a.txt': 'one\ntwo\nthree\n', 'k.txt': 'k\n' }))
+    const base = s.commit(s.files({ 'a.txt': 'ONE\ntwo\nthree\n', 'k.txt': 'k\n' }), [root])
+    const head = s.commit(s.files({ 'a.txt': 'one\ntwo\nTHREE\n', 'k.txt': 'k\n' }), [root])
+    expect(await runMerge(s.reader(), input(base, head))).toEqual({ kind: 'conflict', paths: ['a.txt'] })
   })
 
-  it('refuses NUL bytes and invalid UTF-8 on any side', () => {
-    for (const bad of ['a\u0000\n', 'caf�\n']) {
-      expect(textOnlyMergeDriver({ branches: ['b', 'o', 't'], contents: [bad, 'a\n', 'b\n'] }).cleanMerge).toBe(false)
-      expect(textOnlyMergeDriver({ branches: ['b', 'o', 't'], contents: ['a\n', bad, 'b\n'] }).cleanMerge).toBe(false)
-      expect(textOnlyMergeDriver({ branches: ['b', 'o', 't'], contents: ['a\n', 'b\n', bad] }).cleanMerge).toBe(false)
-    }
+  it('the same change on both sides is still a path both touched', async () => {
+    const s = new Store()
+    const root = s.commit(s.files({ 'a.txt': 'a\n', 'b.txt': 'b\n', 'c.txt': 'c\n' }))
+    const base = s.commit(s.files({ 'a.txt': 'A\n', 'b.txt': 'B\n', 'c.txt': 'c\n' }), [root])
+    const head = s.commit(s.files({ 'a.txt': 'A\n', 'b.txt': 'b\n', 'c.txt': 'C\n' }), [root])
+    expect(await runMerge(s.reader(), input(base, head))).toEqual({ kind: 'conflict', paths: ['a.txt'] })
+  })
+
+  it('a directory one side removed and the other changed inside, or replaced by a file', async () => {
+    const s = new Store()
+    const root = s.commit(s.files({ 'd/x': '1\n', 'd/y': '1\n', k: 'k\n' }))
+    const gone = s.commit(s.files({ k: 'k\n', e: 'moved\n' }), [root])
+    const inside = s.commit(s.files({ 'd/x': '1\n', 'd/y': '1\n', 'd/new': 'n\n', k: 'k\n' }), [root])
+    expect(await runMerge(s.reader(), input(gone, inside))).toEqual({ kind: 'conflict', paths: ['d'] })
+    const file = s.commit(s.files({ d: 'now a file\n', k: 'k\n' }), [root])
+    expect(await runMerge(s.reader(), input(inside, file))).toEqual({ kind: 'conflict', paths: ['d'] })
+  })
+
+  it('deletions of different files that together empty a directory merge, dropping it (as git)', async () => {
+    const s = new Store()
+    const root = s.commit(s.files({ 'd/x': 'x\n', 'd/y': 'y\n', k: 'k\n' }))
+    const base = s.commit(s.files({ 'd/y': 'y\n', k: 'k\n' }), [root])
+    const head = s.commit(s.files({ 'd/x': 'x\n', k: 'k\n' }), [root])
+    const out = await runMerge(s.reader(), input(base, head))
+    if (out.kind !== 'merge') throw new Error(out.kind)
+    const { reader } = await readBack(out.pack)
+    expect(parseCommit((await reader.readObject(out.newTip)).bytes).tree).toBe(new Store().files({ k: 'k\n' }))
+  })
+
+  it('the merge commit carries the timezone offset of its own timestamp', async () => {
+    const s = new Store()
+    const root = s.commit(s.files({ a: '1\n', b: '1\n' }))
+    const base = s.commit(s.files({ a: '2\n', b: '1\n' }), [root])
+    const head = s.commit(s.files({ a: '1\n', b: '2\n' }), [root])
+    const when = 1_700_000_000
+    const out = await runMerge(s.reader(), input(base, head, { author: { name: 'M', email: 'm@x', timestamp: when } }))
+    if (out.kind !== 'merge') throw new Error(out.kind)
+    const { reader } = await readBack(out.pack)
+    const text = new TextDecoder().decode((await reader.readObject(out.newTip)).bytes)
+    const east = -new Date(when * 1000).getTimezoneOffset()
+    const tz = `${east < 0 ? '-' : '+'}${String(Math.floor(Math.abs(east) / 60)).padStart(2, '0')}${String(Math.abs(east) % 60).padStart(2, '0')}`
+    expect(text).toContain(`author M <m@x> ${when} ${tz}\n`)
+  })
+
+  it('a criss-cross history (two merge bases) is left to the CLI', async () => {
+    const s = new Store()
+    const r = s.commit(s.files({ a: '1\n', b: '1\n', c: '1\n', d: '1\n' }))
+    const x = s.commit(s.files({ a: '2\n', b: '1\n', c: '1\n', d: '1\n' }), [r])
+    const y = s.commit(s.files({ a: '1\n', b: '2\n', c: '1\n', d: '1\n' }), [r])
+    const b1 = s.commit(s.files({ a: '2\n', b: '2\n', c: '1\n', d: '1\n' }), [x, y])
+    const h1 = s.commit(s.files({ a: '2\n', b: '2\n', c: '1\n', d: '1\n' }), [y, x])
+    const base = s.commit(s.files({ a: '2\n', b: '2\n', c: '2\n', d: '1\n' }), [b1])
+    const head = s.commit(s.files({ a: '2\n', b: '2\n', c: '1\n', d: '2\n' }), [h1])
+    expect(await checkMerge(s.reader(), input(base, head))).toBe('conflict')
   })
 
   it('a binary file both sides changed is a conflict, not a corrupted clean merge', async () => {
