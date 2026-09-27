@@ -18,10 +18,10 @@ import type { RepoRef } from './contract'
 
 const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', group: 'GROUP' }
 const REPO = 'C8XSf6R4shR1kqFKUZQnuaEZ5DkW7uoe9qtQYZpS5SRd'
-const OWNER = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
-const MAINT = 'GKBTXUdo3MpRYAUqgZvTZGTav9mXGqfJfR5822K2tp79'
-const COLLAB = '6jAyDGGcc6fgA7bsraQPriTAZ73Lkq5QgnenaRhqteHd'
-const AUTHOR = 'Dd1m1JJM3M5DjBaXaCbC5hXBsU6248KHpGcBAtaHsqc7'
+const OWNER = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
+const MAINT = 'AFbkc2KjmmGFvKUDTXqu94XU5BVrD3p7QQu19TSCqeHb'
+const COLLAB = 'Bq2aZ3xzfN46kruWXhGWHzFBUQrRpnBauHAAfUD5g4W9'
+const AUTHOR = '8unje8KNimvQ15NJeNTM15m7Dc4o7QJs4ZstWrbXdGxv'
 
 type Doc = Record<string, unknown>
 

@@ -40,7 +40,7 @@ describe('shortRepoPath → shim → canonical route', () => {
 
   it('accepts a trailing slash and an identity id owner', () => {
     expect(expand('/alice/project/')).toBe('/repo/?owner=alice&name=project')
-    const id = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
+    const id = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
     expect(expand(`/${id}/forge-v2-demo`)).toBe(`/repo/?owner=${id}&name=forge-v2-demo`)
   })
 

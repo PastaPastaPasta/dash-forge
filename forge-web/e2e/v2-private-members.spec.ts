@@ -13,7 +13,7 @@ import { expect, test } from '@playwright/test'
 import { deployment, nodeSdk, signedIn, waitForRepoResolved } from './helpers'
 import type { Page } from '@playwright/test'
 
-const OWNER = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
+const OWNER = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
 
 test.describe.configure({ mode: 'serial', timeout: 300_000 })
 test.skip(process.env['E2E_WRITE'] !== '1', 'needs a signed-in vault: set E2E_WRITE=1')

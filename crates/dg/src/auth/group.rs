@@ -356,7 +356,7 @@ mod tests {
 
     use super::*;
 
-    const DEPLOYER: &str = "8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV";
+    const DEPLOYER: &str = "7mRv16E77y5dPzhNhBBhUMqFNMoBNTNsBeEYCAtpLnTu";
     const STRANGER: &str = "H1DBHnGmX3tMrsnMjtjXr9fZzPRAyfnLXzqy78THTPxS";
     const NET: &str = "devnet-moutai";
 

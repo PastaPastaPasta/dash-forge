@@ -15,8 +15,8 @@ import { idFile, repoUrl, shot, signedIn, unlock } from './helpers'
  * its cost preview, and the spend ledger in /settings records it.
  */
 
-const OWNER = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
-const COLLAB = '6jAyDGGcc6fgA7bsraQPriTAZ73Lkq5QgnenaRhqteHd'
+const OWNER = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
+const COLLAB = 'Bq2aZ3xzfN46kruWXhGWHzFBUQrRpnBauHAAfUD5g4W9'
 const REPO = `e2e-${Date.now().toString(36)}`
 const ISSUE_TITLE = `Browser-written issue ${REPO}`
 

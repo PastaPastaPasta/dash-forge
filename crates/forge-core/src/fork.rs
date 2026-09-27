@@ -263,8 +263,8 @@ mod tests {
     use crate::network::ForgeIds;
     use crate::rules::v2::Visibility;
 
-    const PARENT: &str = "GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL";
-    const UPLOADER: &str = "9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD";
+    const PARENT: &str = "6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux";
+    const UPLOADER: &str = "5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp";
 
     fn parent() -> RepoRef {
         RepoRef {
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn one_manifest_per_pack_with_every_copy_members_first() {
-        let stranger = "Dd1m1JJM3M5DjBaXaCbC5hXBsU6248KHpGcBAtaHsqc7";
+        let stranger = "8unje8KNimvQ15NJeNTM15m7Dc4o7QJs4ZstWrbXdGxv";
         let all = [
             // A former member's early, chunkless copy of pack 1 ...
             PackManifestInfo {

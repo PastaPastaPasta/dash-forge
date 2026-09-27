@@ -68,11 +68,11 @@ import {
 } from './review-writes'
 import type { WriteAuth } from '../sdk'
 
-const ALICE = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
-const BOB = '6jAyDGGcc6fgA7bsraQPriTAZ73Lkq5QgnenaRhqteHd'
-const PR = 'GKBTXUdo3MpRYAUqgZvTZGTav9mXGqfJfR5822K2tp79'
+const ALICE = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
+const BOB = 'Bq2aZ3xzfN46kruWXhGWHzFBUQrRpnBauHAAfUD5g4W9'
+const PR = 'AFbkc2KjmmGFvKUDTXqu94XU5BVrD3p7QQu19TSCqeHb'
 const REPO: RepoRef = {
-  forge: { core: 'GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL', collab: 'BMfPmaEiMqDp64NDa4Am79VoRpZ9MPVNnCUy6i3UiyWi', group: 'G6T1mjQZJ4pqjaraEw71RRSbVasd7JSbgsWfmLUgNhL2' },
+  forge: { core: '6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux', collab: '6BbENuf3uZhkntw9DSsxQcTu9a5fATxQoSe6Ph1JxHkS', group: 'FtHLFE1xLqn7s6FzS56GbY6Hh6KgLjCezNJ8HLUNJ3mc' },
   repoId: '8H5JaQm8Z765UunuttoUuVsVMCmDoy2EBKgmGKYpdB2z',
   ownerId: ALICE,
   name: 'demo',

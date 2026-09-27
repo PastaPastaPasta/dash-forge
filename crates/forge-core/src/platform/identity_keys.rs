@@ -614,7 +614,7 @@ mod tests {
 
     fn bridge(mnemonic: &str, keys: Vec<IdentityKey>) -> BridgeIdentity {
         let mut b = BridgeIdentity::from_dfk1(
-            "dfk1:testnet:9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD:1:x",
+            "dfk1:testnet:5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp:1:x",
         )
         .unwrap();
         b.mnemonic = Secret::new(mnemonic);

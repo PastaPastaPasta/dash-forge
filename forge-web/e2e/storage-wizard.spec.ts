@@ -27,7 +27,7 @@ test.skip(!existsSync(idFile('MAINTAINER')), 'devnet test identities not found')
 test.describe.configure({ mode: 'serial', timeout: 240_000 })
 
 const MINIO = { endpoint: 'http://127.0.0.1:9000', bucket: 'forge-byo', publicUrl: 'http://127.0.0.1:9000/forge-byo', key: 'minioadmin', secret: 'minioadmin' }
-const EMPTY_REPO = { owner: 'GKBTXUdo3MpRYAUqgZvTZGTav9mXGqfJfR5822K2tp79', name: 'forge-v2-empty' }
+const EMPTY_REPO = { owner: 'AFbkc2KjmmGFvKUDTXqu94XU5BVrD3p7QQu19TSCqeHb', name: 'forge-v2-empty' }
 
 async function fillS3(page: Page, v: { name: string; endpoint: string; bucket: string; publicUrl: string }): Promise<void> {
   await page.getByLabel('Profile name', { exact: true }).fill(v.name)

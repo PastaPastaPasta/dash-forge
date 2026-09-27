@@ -26,7 +26,7 @@ test.skip(!existsSync(idFile('CI-RUNNER')), 'devnet test identities not found')
 test.describe.configure({ mode: 'serial', timeout: 10 * 60_000 })
 
 const ROOT = resolve(__dirname, '../..')
-const OWNER = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
+const OWNER = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
 const RUNNER = String(JSON.parse(readFileSync(idFile('CI-RUNNER'), 'utf8')).identityId)
 
 interface NodeSdk {

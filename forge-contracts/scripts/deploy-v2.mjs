@@ -68,7 +68,7 @@ const GROUP = { name: 'dash-forge', description: 'Dash Forge v2: forge-core and 
 const PUT_SETTINGS = { connectTimeoutMs: 10000, timeoutMs: 90000, retries: 3 };
 const CREDITS_PER_DASH = 1e11;
 const DEFAULT_ADDRESSES = {
-  // devnet moutai (protocol 14, drive 4.2.0-beta.4)
+  // devnet moutai (protocol 14, drive 4.2.0-beta.5; chain reset 2026-09-27)
   moutai: [254, 207, 192, 194, 195, 196, 253, 198, 199, 84].map((o) => `https://68.67.122.${o}:1443`),
 };
 

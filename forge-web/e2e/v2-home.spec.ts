@@ -13,8 +13,8 @@ import { collectPageErrors, E2E_DEVNET, readErrorBanner, runAxe, SCREENSHOT_DIR,
  */
 
 
-const OWNER = process.env['E2E_V2_OWNER'] ?? '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
-const MAINTAINER = 'GKBTXUdo3MpRYAUqgZvTZGTav9mXGqfJfR5822K2tp79'
+const OWNER = process.env['E2E_V2_OWNER'] ?? '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
+const MAINTAINER = 'AFbkc2KjmmGFvKUDTXqu94XU5BVrD3p7QQu19TSCqeHb'
 const NAME = process.env['E2E_V2_NAME'] ?? 'forge-v2-demo'
 
 function url(path = '', extra = '', owner = OWNER, name = NAME): string {

@@ -70,7 +70,7 @@ import {
 } from './write'
 import { encodeWif } from '../auth/wif'
 
-const OWNER = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
+const OWNER = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
 /** A well-formed WIF (the signing-key lookup decodes it); the fake key accepts any bytes. */
 const TEST_WIF = encodeWif(new Uint8Array(32).fill(7), 'devnet')
 

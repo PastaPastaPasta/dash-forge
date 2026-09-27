@@ -946,6 +946,9 @@ impl PlatformClient {
                 identity_public_key: on_chain,
                 signer,
                 preorder_callback: None,
+                // Contested (short) names: state the fund to join the SDK reads just before
+                // submitting the domain (beta.5 default, PV14 contender pricing).
+                contest_fund: None,
             })
             .await
             .map_err(|e| sdk_err("registering the name", e))?;

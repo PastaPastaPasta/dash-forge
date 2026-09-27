@@ -12,7 +12,7 @@ import { pathToFileURL } from 'node:url'
 export const E2E_DEVNET = process.env['E2E_DEVNET'] || 'moutai'
 
 /** The MAINTAINER test identity: a maintainer of {@link DEMO} and the owner of {@link EMPTY}. */
-export const MAINTAINER = 'GKBTXUdo3MpRYAUqgZvTZGTav9mXGqfJfR5822K2tp79'
+export const MAINTAINER = 'AFbkc2KjmmGFvKUDTXqu94XU5BVrD3p7QQu19TSCqeHb'
 
 /**
  * The forge-v2 READ fixture, written only by `forge-contracts/scripts/seed-v2-fixture.mjs`:
@@ -29,7 +29,7 @@ export const MAINTAINER = 'GKBTXUdo3MpRYAUqgZvTZGTav9mXGqfJfR5822K2tp79'
  * Override with E2E_V2_OWNER / E2E_V2_NAME.
  */
 export const DEMO = {
-  owner: process.env['E2E_V2_OWNER'] ?? '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD',
+  owner: process.env['E2E_V2_OWNER'] ?? '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp',
   name: process.env['E2E_V2_NAME'] ?? 'forge-v2-demo',
 } as const
 

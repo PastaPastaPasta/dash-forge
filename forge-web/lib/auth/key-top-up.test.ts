@@ -62,7 +62,7 @@ describe('assertTopUp', () => {
 })
 
 describe('isForgeBrowserKey', () => {
-  const bound = (type: string) => ({ toJSON: () => ({ $type: type, id: 'G6T1mjQZJ4pqjaraEw71RRSbVasd7JSbgsWfmLUgNhL2' }) })
+  const bound = (type: string) => ({ toJSON: () => ({ $type: type, id: 'FtHLFE1xLqn7s6FzS56GbY6Hh6KgLjCezNJ8HLUNJ3mc' }) })
   const key = { purposeNumber: 0, securityLevelNumber: 2, contractBounds: bound('contractGroup'), totalBudget: 5n }
   it('accepts an AUTHENTICATION / HIGH, group-bound, budgeted key', () => {
     expect(isForgeBrowserKey(key)).toBe(true)

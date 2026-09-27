@@ -30,13 +30,13 @@ import { deriveLoginKey, parseKeyRequest, parseStRequest, sealLoginKeys, DashCon
 import { decodeWif, encodeWif } from './wif'
 
 const FORGE: ForgeIds = {
-  core: 'GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL',
-  collab: 'BMfPmaEiMqDp64NDa4Am79VoRpZ9MPVNnCUy6i3UiyWi',
-  group: 'G6T1mjQZJ4pqjaraEw71RRSbVasd7JSbgsWfmLUgNhL2',
+  core: '6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux',
+  collab: '6BbENuf3uZhkntw9DSsxQcTu9a5fATxQoSe6Ph1JxHkS',
+  group: 'FtHLFE1xLqn7s6FzS56GbY6Hh6KgLjCezNJ8HLUNJ3mc',
 }
 const LEGACY = 'LegacyKeyExchange1111111111111111111111111111'.slice(0, 44)
-const ALICE = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
-const MALLORY = '6jAyDGGcc6fgA7bsraQPriTAZ73Lkq5QgnenaRhqteHd'
+const ALICE = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
+const MALLORY = 'Bq2aZ3xzfN46kruWXhGWHzFBUQrRpnBauHAAfUD5g4W9'
 
 describe('dash-key request: byte-compatible with the shipped wallets', () => {
   // Dash Wallet Android DashConnectUriTest.kt: SERIALIZED_REQUEST_HEX from the DApp fixtures,

@@ -216,7 +216,7 @@ forge-collab is 12,241 B signed today against the 20,480 B limit and 11 types / 
 
 ### 3.9 As registered (2026-09-27), and what protocol 14 changed
 
-Registered on moutai as forge-collab `BMfPmaEiMqDp64NDa4Am79VoRpZ9MPVNnCUy6i3UiyWi` (nonce 10, same contract group, forge-core unchanged): 14,287 B signed, 12 types, 27 indexes, 0.616306 DASH. Every keyword was checked against rs-dpp / rs-drive `v4.2.0-beta.4` (the tag moutai runs and `Cargo.lock` pins), the document meta-schema v3 and the Platform book, and the schema passes `tools/contract-validate` (full PV14 parse, registration reference checks, sample documents) and `negative.sh`. Where the text above and the registered schema differ, the schema wins:
+Registered on moutai as forge-collab `BMfPmaEiMqDp64NDa4Am79VoRpZ9MPVNnCUy6i3UiyWi` (nonce 10, same contract group, forge-core unchanged; that chain was wiped on 2026-09-27, and the same schema is now `6BbENuf3uZhkntw9DSsxQcTu9a5fATxQoSe6Ph1JxHkS`, `docs/contracts/forge-v2.md` §8): 14,287 B signed, 12 types, 27 indexes, 0.616306 DASH. Every keyword was checked against rs-dpp / rs-drive `v4.2.0-beta.4` (the tag moutai runs and `Cargo.lock` pins), the document meta-schema v3 and the Platform book, and the schema passes `tools/contract-validate` (full PV14 parse, registration reference checks, sample documents) and `negative.sh`. Where the text above and the registered schema differ, the schema wins:
 
 | Spec (§3.1–§3.6) | Registered | Why |
 |---|---|---|
