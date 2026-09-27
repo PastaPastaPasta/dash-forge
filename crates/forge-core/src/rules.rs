@@ -225,18 +225,31 @@ pub fn tip_of(state: &RefState) -> Option<String> {
 ///    protected). If `u.refName` matches any `cfg.protectedPatterns`, `u` must be a
 ///    `protectedRefUpdate` (`protected == true`); a plain `refUpdate` on a protected
 ///    ref is **inert** and dropped. Un-protected refs admit either type.
-/// 2. **Order** valid updates ascending by `(createdAt, id)`.
+/// 2. **Order** valid updates by the *causal order* ([`causal_order`]): ascending
+///    `createdAt`, and within one `createdAt` the prevOid chain (an update that recorded
+///    another's tip as its `prevOid` comes after it), then `id`.
 /// 3. If none remain → [`RefState::Unborn`]. If the newest valid update is a deletion
 ///    (null `newOid`) → [`RefState::Unborn`].
-/// 4. **Live heads.** A valid update `u` (non-null tip) is *superseded* by a strictly
-///    newer valid update `v` — newer by `(createdAt, id)` — when any holds:
+/// 4. **Live heads.** A valid update `u` (non-null tip) is *superseded* by a valid update
+///    `v` strictly later in the causal order when any holds:
 ///    * `v` is a deletion or a force (it clears/replaces the ref outright), or
 ///    * `v.prevOid == u.newOid` (someone fast-forwarded directly off `u`'s tip), or
 ///    * `is_ancestor(u.newOid, v.newOid)` (later history descends from `u`'s tip).
 ///
 ///    The **live heads** are the non-superseded, non-null updates, deduplicated by tip.
+///    Supersession only looks forward in a total order, so the newest update is always a
+///    head: a non-null newest update never resolves to Unborn.
 /// 5. Exactly one live head → [`RefState::Resolved`]. Two or more (a concurrent race
 ///    nothing has merged past) → [`RefState::Diverged`], heads newest-first.
+///
+/// **Why the clock comes first.** A `prevOid` names a commit, not a document, and a ref can
+/// point at the same commit more than once (`A → B → force A`, or a delete and a recreate).
+/// A chain match against a *newer* document is then no causal link: the old `A → B` update's
+/// `prevOid` equals the newest tip `A`. Letting such a match override the clock made the old
+/// update supersede the newest one while the newest superseded it back, leaving no head, so
+/// the ref read as deleted (D-600). `$createdAt` is consensus block time and is required on
+/// both ref update types, so it orders every pair of updates from different blocks; the
+/// chain is only consulted inside one block, where the clock cannot tell them apart.
 ///
 /// The "supersedes both" clause falls out of step 4: a merge whose commit descends
 /// from every racing head supersedes them all (leaving itself as the sole head), and a
@@ -249,7 +262,7 @@ pub fn resolve_ref(
     ref_name_hash: &str,
     is_ancestor: impl Fn(&str, &str) -> bool,
 ) -> RefState {
-    // (1) validity filter, keeping only this ref's updates; (2) ascending by (createdAt, id).
+    // (1) validity filter, keeping only this ref's updates; (2) the causal order.
     let valid = valid_updates(updates, config_history, ref_name_hash);
 
     // (3) unborn / deleted.
@@ -260,74 +273,30 @@ pub fn resolve_ref(
         return RefState::Unborn;
     }
 
-    // (4) live heads.
-    let newer_supersedes = |u: &RefUpdate, v: &RefUpdate| -> bool {
-        // A direct prevOid chain — `v` recorded `u`'s tip as its `prevOid` — is an
-        // *unambiguous causal* "v came after u": whoever authored v had u's tip in hand.
-        // This ordering is independent of the `($createdAt, $id)` clock, which matters
-        // because Platform only records `$createdAt` when the document type requires the
-        // timestamp; where it is absent (0), the clock degrades to arbitrary document-id
-        // order and could otherwise let a superseded tip out-rank the update that
-        // fast-forwarded off it. The chain is acyclic (v.prevOid==u.newOid and
-        // u.prevOid==v.newOid would require each tip to be the other's parent), so hoisting
-        // it out of the `v_newer` gate cannot create a supersession cycle. When `$createdAt`
-        // *is* present, a chain child always sorts at-or-after its parent, so this changes
-        // nothing — it only repairs the degenerate all-equal-timestamp case.
-        if !is_null_oid(&v.prev_oid) && v.prev_oid == u.new_oid && v.new_oid != u.new_oid {
-            return true;
-        }
-        // Conversely, if `u` chained off `v` (`u.prevOid == v.newOid`), then `u` is a causal
-        // *descendant* of `v` — so `v` must NEVER supersede `u`, not even a force/delete `v`.
-        // Without this, the unreliable `($createdAt, $id)` clock can mis-rank an older force
-        // push as "newer" than the fast-forward that later built on it, letting a superseded
-        // tip clobber its own descendant. Combined with the chain rule above, this makes the
-        // prevOid DAG authoritative for causal order (the clock only breaks ties between
-        // genuinely unrelated — diverged — updates). The two chain guards can't both fire for
-        // one `(u, v)` (that needs a 2-cycle of tips), so there is no contradiction.
-        if !is_null_oid(&u.prev_oid) && u.prev_oid == v.new_oid && u.new_oid != v.new_oid {
-            return false;
-        }
-
-        // The remaining conditions (delete/force/ancestry) do not carry their own causal
-        // proof, so they stay gated on `v` being strictly newer by `($createdAt, $id)` —
-        // this asymmetry is what stops two competing force pushes from cancelling to Unborn.
-        let v_newer = (v.created_at, &v.id) > (u.created_at, &u.id);
-        if !v_newer {
-            return false;
-        }
-        if is_null_oid(&v.new_oid) || v.force {
-            return true;
-        }
-        is_ancestor(&u.new_oid, &v.new_oid)
+    // (4) live heads: `v` (later in the causal order) supersedes `u`.
+    let supersedes = |u: &RefUpdate, v: &RefUpdate| -> bool {
+        is_null_oid(&v.new_oid) || v.force || builds_on(v, u) || is_ancestor(&u.new_oid, &v.new_oid)
     };
 
+    // Heads newest-first: walking the causal order backwards, the first occurrence of a tip
+    // is its newest, and a later duplicate of the same tip is one head, not two.
     let mut heads: Vec<RefHead> = Vec::new();
-    for u in &valid {
-        if is_null_oid(&u.new_oid) {
+    for (i, u) in valid.iter().enumerate().rev() {
+        if is_null_oid(&u.new_oid) || heads.iter().any(|h| h.oid == u.new_oid) {
             continue;
         }
-        if valid.iter().any(|v| newer_supersedes(u, v)) {
+        if valid[i + 1..].iter().any(|v| supersedes(u, v)) {
             continue;
         }
-        let candidate = RefHead {
+        heads.push(RefHead {
             id: u.id.clone(),
             oid: u.new_oid.clone(),
             author: u.author.clone(),
             created_at: u.created_at,
-        };
-        // Deduplicate by tip: the same oid pushed more than once is one head, and we
-        // keep the newest occurrence by the `($createdAt, $id)` total order. `valid` is
-        // sorted ascending, so a later match is always the newer one.
-        if let Some(existing) = heads.iter_mut().find(|h| h.oid == candidate.oid) {
-            if (candidate.created_at, &candidate.id) > (existing.created_at, &existing.id) {
-                *existing = candidate;
-            }
-        } else {
-            heads.push(candidate);
-        }
+        });
     }
 
-    // (5) resolve.
+    // (5) resolve. `heads[0]` is the provisional read-only tip of a diverged ref (§2.3).
     match heads.len() {
         0 => RefState::Unborn, // unreachable given step 3, but total.
         1 => {
@@ -338,18 +307,61 @@ pub fn resolve_ref(
                 created_at: h.created_at,
             }
         }
-        _ => {
-            // Newest-first by the `($createdAt, $id)` total order: `heads[0]` is the
-            // provisional read-only tip (§2.3), and two heads racing in the same
-            // consensus block break ties on `$id` so every client agrees.
-            heads.sort_by(|a, b| {
-                b.created_at
-                    .cmp(&a.created_at)
-                    .then_with(|| b.id.cmp(&a.id))
-            });
-            RefState::Diverged { heads }
-        }
+        _ => RefState::Diverged { heads },
     }
+}
+
+/// Whether `v` recorded `u`'s tip as its `prevOid` (a fast-forward, or a force naming the
+/// tip it replaced) and moved the ref somewhere else.
+fn builds_on(v: &RefUpdate, u: &RefUpdate) -> bool {
+    !is_null_oid(&v.prev_oid) && v.prev_oid == u.new_oid && v.new_oid != u.new_oid
+}
+
+/// Sort one ref's updates into the causal order [`resolve_ref`] folds in: ascending
+/// `created_at`; within one `created_at` (one block), an update that [`builds_on`] another
+/// comes after it; remaining ties, and chain cycles (`A → B` and `B → A` in one block), by
+/// ascending `id`.
+///
+/// Within a block this is Kahn's topological sort with the smallest `id` picked first: take
+/// the smallest-`id` unplaced update that builds on no other unplaced update of the block;
+/// when there is none (a cycle), take the smallest-`id` unplaced one. Deterministic, total,
+/// the same in every client (parity: forge-web `causalOrder`), and O(n²) in the block size.
+fn causal_order(mut updates: Vec<&RefUpdate>) -> Vec<&RefUpdate> {
+    updates.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+    let mut out = Vec::with_capacity(updates.len());
+    let mut rest = updates.as_slice();
+    while let Some(first) = rest.first() {
+        let len = rest
+            .iter()
+            .take_while(|u| u.created_at == first.created_at)
+            .count();
+        let (block, tail) = rest.split_at(len);
+        // `waiting[v]`: how many unplaced updates of the block `v` builds on.
+        let mut waiting: Vec<usize> = (0..len)
+            .map(|v| {
+                (0..len)
+                    .filter(|&u| u != v && builds_on(block[v], block[u]))
+                    .count()
+            })
+            .collect();
+        let mut placed = vec![false; len];
+        for _ in 0..len {
+            let unplaced = || (0..len).filter(|&i| !placed[i]);
+            let next = unplaced()
+                .find(|&i| waiting[i] == 0)
+                .or_else(|| unplaced().next())
+                .expect("an unplaced update remains");
+            placed[next] = true;
+            out.push(block[next]);
+            for v in 0..len {
+                if !placed[v] && builds_on(block[v], block[next]) {
+                    waiting[v] -= 1;
+                }
+            }
+        }
+        rest = tail;
+    }
+    out
 }
 
 /// Whether a ref name is legal to advertise on the git wire protocol.
@@ -468,8 +480,8 @@ pub fn display_ref_name<'a>(updates: &'a [RefUpdate], ref_name_hash: &str) -> Op
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MergeBaseTips {
-    /// Every commit a VALID update has set the ref to (deletions excluded), oldest first by
-    /// `(createdAt, id)`, each once. A merge counts iff its `oid` is one of them.
+    /// Every commit a VALID update has set the ref to (deletions excluded), oldest first in
+    /// [`resolve_ref`]'s causal order, each once. A merge counts iff its `oid` is one of them.
     pub historical: Vec<Oid>,
     /// The newest of `historical`, or `None` when the ref never had a valid tip. A deletion
     /// does not clear it: a PR merged into a branch stays merged after the branch is deleted.
@@ -514,7 +526,7 @@ pub fn merge_base_tips(
             historical.push(u.new_oid.clone());
         }
     }
-    // `valid` is ascending: the newest non-null tip, and the newest update's own tip.
+    // `valid` is in causal order: the newest non-null tip, and the newest update's own tip.
     let tip = valid
         .iter()
         .rev()
@@ -531,19 +543,54 @@ pub fn merge_base_tips(
     }
 }
 
-/// The valid updates of the ref keyed `ref_name_hash` ([`is_update_valid`]), ascending by
-/// `(created_at, id)`: steps 1 and 2 of [`resolve_ref`], shared with [`merge_base_tips`].
+/// The base history a PR opened at `opened_at` (its `$createdAt`) is folded against: the
+/// PR's base must have been a branch when the PR was opened (D-501).
+///
+/// [`merge_base_tips`], except that when the base had no valid tip at `opened_at` (never
+/// created, or deleted then) `historical` is empty and `tip` is `None`, so no merge event
+/// counts, whatever is pushed to that name later. `current` is kept: it is where the ref
+/// points now, which a merge tool reports. Without this a PR opened against a name that was no
+/// branch (a typo) could be "merged" by creating the branch with the PR head, and a merged PR
+/// cannot be reopened. Updates at exactly `opened_at` count as before it (same block).
+#[must_use]
+pub fn pr_base_tips(
+    updates: &[RefUpdate],
+    config_history: &[ConfigDoc],
+    ref_name_hash: &str,
+    opened_at: u64,
+) -> MergeBaseTips {
+    let tips = merge_base_tips(updates, config_history, ref_name_hash);
+    let before: Vec<RefUpdate> = updates
+        .iter()
+        .filter(|u| u.created_at <= opened_at)
+        .cloned()
+        .collect();
+    if merge_base_tips(&before, config_history, ref_name_hash)
+        .current
+        .is_some()
+    {
+        return tips;
+    }
+    MergeBaseTips {
+        historical: Vec::new(),
+        tip: None,
+        current: tips.current,
+    }
+}
+
+/// The valid updates of the ref keyed `ref_name_hash` ([`is_update_valid`]) in the causal
+/// order ([`causal_order`]): steps 1 and 2 of [`resolve_ref`], shared with [`merge_base_tips`].
 fn valid_updates<'a>(
     updates: &'a [RefUpdate],
     config_history: &[ConfigDoc],
     ref_name_hash: &str,
 ) -> Vec<&'a RefUpdate> {
-    let mut valid: Vec<&RefUpdate> = updates
-        .iter()
-        .filter(|u| u.ref_name_hash == ref_name_hash && is_update_valid(u, config_history))
-        .collect();
-    valid.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
-    valid
+    causal_order(
+        updates
+            .iter()
+            .filter(|u| u.ref_name_hash == ref_name_hash && is_update_valid(u, config_history))
+            .collect(),
+    )
 }
 
 /// The as-of-time protection check from §4: is update `u` a valid mover of its ref? A legal
@@ -1022,8 +1069,8 @@ pub fn overlay_tree(base: &FlatIndex, later_commit_tree_diffs: &[TreeDiff]) -> F
 mod tests {
     use super::{
         display_ref_name, is_legal_ref_name, matches_protected, merge_base_tips, overlay_tree,
-        resolve_ref, v2, Ancestry, ConfigDoc, Event, EventKind, FlatIndex, IssueState,
-        MergeBaseTips, PrState, RefState, RefUpdate, TreeDiff, Verdict,
+        pr_base_tips, resolve_ref, v2, Ancestry, ConfigDoc, Event, EventKind, FlatIndex,
+        IssueState, MergeBaseTips, PrState, RefState, RefUpdate, TreeDiff, Verdict,
     };
     use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
@@ -1154,7 +1201,8 @@ mod tests {
     }
 
     /// A PR base ref's raw history: the fold's base tip and merge predicate then come from
-    /// [`merge_base_tips`] instead of a vector-supplied `baseTip` / `ancestry`.
+    /// [`merge_base_tips`] (or, with `openedAt`, [`pr_base_tips`]) instead of a
+    /// vector-supplied `baseTip` / `ancestry`.
     #[derive(Debug, Deserialize, Serialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct BaseHistory {
@@ -1162,6 +1210,20 @@ mod tests {
         #[serde(default)]
         config_history: Vec<ConfigDoc>,
         ref_name_hash: String,
+        /// The PR's `$createdAt`: when present the base is read through [`pr_base_tips`].
+        #[serde(default)]
+        opened_at: Option<u64>,
+    }
+
+    impl BaseHistory {
+        fn tips(&self) -> MergeBaseTips {
+            match self.opened_at {
+                Some(at) => {
+                    pr_base_tips(&self.updates, &self.config_history, &self.ref_name_hash, at)
+                }
+                None => merge_base_tips(&self.updates, &self.config_history, &self.ref_name_hash),
+            }
+        }
     }
 
     /// The fold's base tip and ancestry for a vector: as supplied, or from `base_history`
@@ -1181,7 +1243,7 @@ mod tests {
             base_tip.is_none() && ancestry.pairs.is_empty(),
             "vector `{ctx}`: baseHistory replaces baseTip and ancestry"
         );
-        let tips = merge_base_tips(&h.updates, &h.config_history, &h.ref_name_hash);
+        let tips = h.tips();
         let pairs = match &tips.tip {
             Some(tip) => tips
                 .historical
@@ -1621,8 +1683,16 @@ mod tests {
             }
             "merge_base_tips" => {
                 let inp: BaseHistory = input(v);
-                let got = merge_base_tips(&inp.updates, &inp.config_history, &inp.ref_name_hash);
-                assert_eq!(got, expected::<MergeBaseTips>(v), "vector `{ctx}`");
+                assert!(inp.opened_at.is_none(), "vector `{ctx}`: use pr_base_tips");
+                assert_eq!(inp.tips(), expected::<MergeBaseTips>(v), "vector `{ctx}`");
+            }
+            "pr_base_tips" => {
+                let inp: BaseHistory = input(v);
+                assert!(
+                    inp.opened_at.is_some(),
+                    "vector `{ctx}`: pr_base_tips needs openedAt"
+                );
+                assert_eq!(inp.tips(), expected::<MergeBaseTips>(v), "vector `{ctx}`");
             }
             "ref_name_hashes" => {
                 let inp: RefNameHashesInput = input(v);
@@ -1886,5 +1956,54 @@ mod tests {
                 created_at: 100,
             }
         );
+    }
+
+    /// D-600 as a property: over every short history built from a few tips (fast-forwards,
+    /// forces, deletes, with and without `prevOid`, spread over one or two blocks), a ref is
+    /// Unborn exactly when its causally newest update is a deletion, and the answer does not
+    /// depend on the order the updates were read in.
+    #[test]
+    fn newest_non_null_update_never_resolves_unborn() {
+        const OIDS: [&str; 4] = ["A", "B", "C", "0"];
+        let mk = |i: usize, code: usize| -> RefUpdate {
+            // code: new (4) x prev (4) x force (2) x block (2)
+            let new = OIDS[code % 4];
+            let prev = OIDS[(code / 4) % 4];
+            RefUpdate {
+                id: format!("u{i}"),
+                ref_name_hash: "H".into(),
+                ref_name: "refs/heads/main".into(),
+                prev_oid: prev.into(),
+                new_oid: new.into(),
+                force: (code / 16) % 2 == 1,
+                protected: false,
+                author: "a".into(),
+                created_at: 100 * (i as u64 / 2 + 1) + 100 * ((code / 32) as u64 % 2),
+            }
+        };
+        let mut checked = 0u32;
+        for a in 0..64 {
+            for b in 0..64 {
+                for c in (0..64).step_by(3) {
+                    let ups = vec![mk(0, a), mk(1, b), mk(2, c)];
+                    let got = resolve_ref(&ups, &[], "H", |x, y| x == y);
+                    let order = super::valid_updates(&ups, &[], "H");
+                    let newest = order.last().expect("three updates");
+                    assert_eq!(
+                        got == RefState::Unborn,
+                        super::is_null_oid(&newest.new_oid),
+                        "{ups:?}"
+                    );
+                    let reversed: Vec<RefUpdate> = ups.iter().rev().cloned().collect();
+                    assert_eq!(
+                        got,
+                        resolve_ref(&reversed, &[], "H", |x, y| x == y),
+                        "{ups:?}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert!(checked > 80_000);
     }
 }

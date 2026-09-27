@@ -3,8 +3,9 @@
  *
  * Ports `resolve_ref` (+ `is_update_valid`, `config_as_of`) from
  * `crates/forge-core/src/rules.rs`, byte-for-byte behaviorally. Implements
- * protected-ref routing (`forge-v2.md` §2, §6) plus the same-`prevOid` divergence rule,
- * with the prevOid causal DAG authoritative over the `(createdAt, id)` clock.
+ * protected-ref routing (`forge-v2.md` §2, §6) plus the same-`prevOid` divergence rule. Updates
+ * are folded in consensus-clock order, with the prevOid chain ordering updates within one
+ * block (see forge-core `resolve_ref` for why the clock must come first: D-600).
  */
 
 import { matchesProtected } from './matchesProtected'
@@ -40,9 +41,45 @@ function isUpdateValid(u: RefUpdate, configHistory: readonly ConfigDoc[]): boole
   return true
 }
 
-/** The valid updates of the ref keyed `refNameHash`, ascending by (createdAt, id): steps 1–2 of {@link resolveRef}. */
+/** The valid updates of the ref keyed `refNameHash` in the causal order: steps 1–2 of {@link resolveRef}. */
 function validUpdates(updates: readonly RefUpdate[], configHistory: readonly ConfigDoc[], refNameHash: string): RefUpdate[] {
-  return updates.filter((u) => u.refNameHash === refNameHash && isUpdateValid(u, configHistory)).sort(compareKey)
+  return causalOrder(updates.filter((u) => u.refNameHash === refNameHash && isUpdateValid(u, configHistory)))
+}
+
+/** Whether `v` recorded `u`'s tip as its `prevOid` and moved the ref somewhere else. */
+function buildsOn(v: RefUpdate, u: RefUpdate): boolean {
+  return !isNullOid(v.prevOid) && v.prevOid === u.newOid && v.newOid !== u.newOid
+}
+
+/**
+ * The causal order {@link resolveRef} folds in: ascending `createdAt`; within one `createdAt`
+ * (one block) an update that builds on another comes after it; remaining ties, and chain
+ * cycles, by ascending `id`. Within a block: Kahn's sort taking the smallest-`id` unplaced
+ * update that builds on no other unplaced one, else (a cycle) the smallest-`id` unplaced one.
+ * Parity: forge-core `rules::causal_order`.
+ */
+function causalOrder(updates: readonly RefUpdate[]): RefUpdate[] {
+  const sorted = [...updates].sort(compareKey)
+  const out: RefUpdate[] = []
+  for (let start = 0; start < sorted.length; ) {
+    let end = start
+    while (end < sorted.length && (sorted[end] as RefUpdate).createdAt === (sorted[start] as RefUpdate).createdAt) end++
+    const block = sorted.slice(start, end)
+    const waiting = block.map((v, i) => block.filter((u, j) => j !== i && buildsOn(v, u)).length)
+    const placed = block.map(() => false)
+    for (let n = 0; n < block.length; n++) {
+      let next = block.findIndex((_, i) => !placed[i] && waiting[i] === 0)
+      if (next < 0) next = placed.indexOf(false)
+      placed[next] = true
+      const u = block[next] as RefUpdate
+      out.push(u)
+      block.forEach((v, i) => {
+        if (!placed[i] && buildsOn(v, u)) waiting[i] = (waiting[i] as number) - 1
+      })
+    }
+    start = end
+  }
+  return out
 }
 
 /**
@@ -73,6 +110,29 @@ export function mergeBaseTips(
     tip: newestTip?.newOid ?? null,
     current: newest === undefined || isNullOid(newest.newOid) ? null : newest.newOid,
   }
+}
+
+/**
+ * The base history a PR opened at `openedAt` (its `$createdAt`) is folded against: the PR's
+ * base must have been a branch when the PR was opened (D-501). {@link mergeBaseTips}, except
+ * that when the base had no valid tip at `openedAt` (never created, or deleted then)
+ * `historical` is empty and `tip` null, so no merge event counts, whatever is pushed to that
+ * name later; `current` is kept. Updates at exactly `openedAt` count as before it.
+ * Parity: forge-core `rules::pr_base_tips` (vectors `pr_base_tips__*`).
+ */
+export function prBaseTips(
+  updates: readonly RefUpdate[],
+  configHistory: readonly ConfigDoc[],
+  refNameHash: string,
+  openedAt: number,
+): MergeBaseTips {
+  const tips = mergeBaseTips(updates, configHistory, refNameHash)
+  const before = mergeBaseTips(
+    updates.filter((u) => u.createdAt <= openedAt),
+    configHistory,
+    refNameHash,
+  )
+  return before.current !== null ? tips : { historical: [], tip: null, current: tips.current }
 }
 
 /**
@@ -111,7 +171,7 @@ export function resolveRef(
   refNameHash: string,
   isAncestor: IsAncestor,
 ): RefState {
-  // (1) validity filter, keeping only this ref's updates; (2) ascending by (createdAt, id).
+  // (1) validity filter, keeping only this ref's updates; (2) the causal order.
   const valid = validUpdates(updates, configHistory, refNameHash)
 
   // (3) unborn / deleted.
@@ -119,51 +179,25 @@ export function resolveRef(
   if (newest === undefined) return { state: 'unborn' }
   if (isNullOid(newest.newOid)) return { state: 'unborn' }
 
-  // (4) live heads.
-  const newerSupersedes = (u: RefUpdate, v: RefUpdate): boolean => {
-    // A direct prevOid chain (`v.prevOid == u.newOid`) is an unambiguous causal "v after
-    // u" — independent of the (createdAt, id) clock, repairing the all-zero-timestamp case.
-    if (!isNullOid(v.prevOid) && v.prevOid === u.newOid && v.newOid !== u.newOid) {
-      return true
-    }
-    // Conversely, if `u` chained off `v`, `u` is a causal descendant — `v` NEVER supersedes.
-    if (!isNullOid(u.prevOid) && u.prevOid === v.newOid && u.newOid !== v.newOid) {
-      return false
-    }
+  // (4) live heads: `v` (later in the causal order) supersedes `u`.
+  const supersedes = (u: RefUpdate, v: RefUpdate): boolean =>
+    isNullOid(v.newOid) || v.force === true || buildsOn(v, u) || isAncestor(u.newOid, v.newOid)
 
-    // Remaining conditions carry no causal proof → gate on `v` strictly newer by (createdAt, id).
-    if (compareKey(v, u) <= 0) return false
-    if (isNullOid(v.newOid) || v.force === true) return true
-    return isAncestor(u.newOid, v.newOid)
-  }
-
+  // Heads newest-first: walking the causal order backwards, the first occurrence of a tip is
+  // its newest, and a later duplicate of the same tip is one head, not two.
   const heads: RefHead[] = []
-  for (const u of valid) {
-    if (isNullOid(u.newOid)) continue
-    if (valid.some((v) => newerSupersedes(u, v))) continue
-    const candidate: RefHead = {
-      id: u.id,
-      oid: u.newOid,
-      author: u.author,
-      createdAt: u.createdAt,
-    }
-    // Deduplicate by tip, keeping the newest occurrence by (createdAt, id).
-    const existingIdx = heads.findIndex((h) => h.oid === candidate.oid)
-    if (existingIdx >= 0) {
-      const existing = heads[existingIdx] as RefHead
-      if (compareKey(candidate, existing) > 0) heads[existingIdx] = candidate
-    } else {
-      heads.push(candidate)
-    }
+  for (let i = valid.length - 1; i >= 0; i--) {
+    const u = valid[i] as RefUpdate
+    if (isNullOid(u.newOid) || heads.some((h) => h.oid === u.newOid)) continue
+    if (valid.slice(i + 1).some((v) => supersedes(u, v))) continue
+    heads.push({ id: u.id, oid: u.newOid, author: u.author, createdAt: u.createdAt })
   }
 
-  // (5) resolve.
+  // (5) resolve. heads[0] is the provisional read-only tip of a diverged ref.
   if (heads.length === 0) return { state: 'unborn' } // unreachable given (3), but total.
   if (heads.length === 1) {
     const h = heads[0] as RefHead
     return { state: 'resolved', oid: h.oid, author: h.author, createdAt: h.createdAt }
   }
-  // Newest-first by (createdAt, id): heads[0] is the provisional tip a reader shows.
-  heads.sort((a, b) => compareKey(b, a))
   return { state: 'diverged', heads }
 }
