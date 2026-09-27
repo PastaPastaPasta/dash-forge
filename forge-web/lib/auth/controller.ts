@@ -37,6 +37,7 @@ import type { KeyLimits } from '../view/funds'
 import { normalizeToWif } from './wif'
 import { identityFileMatchesNetwork, masterMaterialFromFile } from './identity-file'
 import { deriveMasterKey, isValidMnemonic } from './hd'
+import { identityOfMasterKey } from './identity-lookup'
 import { checkWalletKey, hasNoLimits, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
 import { encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
 import {
@@ -497,9 +498,16 @@ export class AuthController {
         identityId = m.identityId
         masterWif = m.masterWif ?? (m.mnemonic ? (await deriveMasterKey(m.mnemonic, this.network)).wif : null)
       } else {
+        this.step('Checking the recovery phrase')
         if (!(await isValidMnemonic(input.mnemonic))) throw new Error('those words are not a valid recovery phrase')
+        const master = await deriveMasterKey(input.mnemonic, this.network)
+        masterWif = master.wif
         identityId = input.identityId.trim()
-        masterWif = (await deriveMasterKey(input.mnemonic, this.network)).wif
+        // The words alone: the identity is the one holding their master key.
+        if (identityId === '') {
+          this.step('Finding the identity of these words')
+          identityId = await identityOfMasterKey(await this.getSdk(), master.publicKeyHex, this.network)
+        }
       }
       if (!masterWif) throw new Error('no master key found')
       this.step("Checking this browser's stored keys")

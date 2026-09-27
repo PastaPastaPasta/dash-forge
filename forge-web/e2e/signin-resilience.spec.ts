@@ -114,6 +114,8 @@ test('s2. the Platform library cannot download: a named error and a working "Try
   await openSheet(page, 'create')
   const dialog = page.getByRole('dialog')
   await expect(dialog.getByRole('alert')).toContainText('Could not download the Dash Platform library', { timeout: WITHIN })
+  // One "Try again" on screen (L-30): the page's own unreachable banner defers to the sheet's.
+  await expect(page.getByRole('button', { name: /try again/i })).toHaveCount(1)
   await shot(page, `signin-s2-create-${test.info().project.name}`)
 
   // The wallet tile still shows (its availability could not be checked) and names the failure.

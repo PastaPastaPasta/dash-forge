@@ -83,6 +83,8 @@ interface AuthContextValue {
   readonly vaults: readonly VaultInfo[]
   /** Why the stored-key list could not be read (null when it was). */
   readonly vaultsError: string | null
+  /** Whether the stored-key list has been read at least once. */
+  readonly vaultsLoaded: boolean
   /** The limited-key ceremony: import an identity file or a mnemonic once. */
   importIdentity: (
     input: { fileText: string } | { mnemonic: string; identityId: string },
@@ -149,11 +151,14 @@ export function AuthProvider({
   // Why the stored-key list could not be read (storage blocked by another tab, say): the last
   // list read stays, so a stored key never silently turns into "no key here".
   const [vaultsError, setVaultsError] = useState<string | null>(null)
+  // The list has been read at least once (the sheet waits for it before choosing a view).
+  const [vaultsLoaded, setVaultsLoaded] = useState(false)
   const reloadVaults = useCallback(() => {
     controller.storedVaults().then(
       (v) => {
         setVaults(v)
         setVaultsError(null)
+        setVaultsLoaded(true)
       },
       (e: unknown) => setVaultsError(errorMessage(e)),
     )
@@ -253,11 +258,12 @@ export function AuthProvider({
       limitedKeys: controller.supportsLimitedKeys(),
       vaults,
       vaultsError,
+      vaultsLoaded,
       reloadVaults,
       controller,
       ...actions,
     }),
-    [actions, controller, funds, keyLimits, reloadVaults, session, signer, state.error, state.isLoading, state.step, vaults, vaultsError],
+    [actions, controller, funds, keyLimits, reloadVaults, session, signer, state.error, state.isLoading, state.step, vaults, vaultsError, vaultsLoaded],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

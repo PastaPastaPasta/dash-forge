@@ -83,6 +83,33 @@ export async function fetchAndCompile(
   }
 }
 
+/** Waits before each automatic retry of a failed download (L-19). */
+export const DOWNLOAD_RETRY_MS: readonly number[] = [1_000, 3_000]
+
+/**
+ * {@link fetchAndCompile}, retried after a transient failure: a reset connection or a stream
+ * that errors mid-body ("Failed to read from a ReadableStream", a QUIC reset on a cold profile)
+ * usually succeeds at once on a second try. An HTTP 4xx is not transient and is not retried.
+ */
+export async function fetchAndCompileWithRetry(
+  url: string | URL,
+  total: number,
+  onProgress?: (p: DownloadProgress) => void,
+  options: FetchWasmOptions & { readonly retryMs?: readonly number[] } = {},
+): Promise<WebAssembly.Module> {
+  const waits = options.retryMs ?? DOWNLOAD_RETRY_MS
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fetchAndCompile(url, total, onProgress, options)
+    } catch (e) {
+      const permanent = e instanceof Error && /HTTP 4\d\d/.test(e.message)
+      const wait = waits[attempt]
+      if (permanent || wait === undefined) throw e
+      await new Promise((r) => setTimeout(r, wait))
+    }
+  }
+}
+
 const listeners = new Set<(p: DownloadProgress) => void>()
 
 /** Follow the SDK download's progress. Returns the unsubscribe. */
@@ -104,7 +131,7 @@ export function compileWasm(): Promise<WebAssembly.Module> {
     // webpack emits the file as a hashed static asset and rewrites this to its URL (a
     // `new URL` specifier is a URL, so the path is relative, not a package name).
     const url = new URL('../../node_modules/@dashevo/wasm-sdk/dist/raw/wasm_sdk_bg.wasm', import.meta.url)
-    const run = fetchAndCompile(url, WASM_BYTES, (p) => listeners.forEach((l) => l(p)))
+    const run = fetchAndCompileWithRetry(url, WASM_BYTES, (p) => listeners.forEach((l) => l(p)))
     compiled = run
     run.catch(() => {
       if (compiled === run) compiled = null

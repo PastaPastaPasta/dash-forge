@@ -45,21 +45,24 @@ export function LoginModal(): JSX.Element {
   const open = useUiStore((s) => s.loginOpen)
   const requested = useUiStore((s) => s.loginView)
   const close = useUiStore((s) => s.closeLogin)
-  const { vaults, vaultsError, reloadVaults, limitedKeys } = useAuth()
-  const [view, setView] = useState<View>('choose')
+  const { vaults, vaultsLoaded, vaultsError, reloadVaults, limitedKeys } = useAuth()
+  const [view, setView] = useState<View | null>(null)
   const [unlockFor, setUnlockFor] = useState<string | null>(null)
   const hasVault = vaults.length > 0
 
-  // Pick the view when the sheet opens. If the stored-key list arrives after it opened (the
-  // /login route opens it on load), move from the untouched tile list to Unlock — never
-  // away from a flow the user already started.
+  // Pick the view when the sheet opens: once the stored-key list has been read, so a returning
+  // user lands on Unlock without the tile list flashing first (L-29). If a key shows up later
+  // (another tab stored one), move from the untouched tile list to Unlock — never away from a
+  // flow the user already started.
   const opened = useRef<{ hasVault: boolean } | null>(null)
   useEffect(() => {
     if (!open) {
       opened.current = null
+      setView(null)
       return
     }
     if (opened.current === null) {
+      if (requested === null && !vaultsLoaded && !vaultsError) return
       // Read the stored keys again: another tab may have added one, or storage was blocked.
       reloadVaults()
       opened.current = { hasVault }
@@ -71,14 +74,16 @@ export function LoginModal(): JSX.Element {
       opened.current = { hasVault }
       setView((v) => (v === 'choose' ? 'unlock' : v))
     }
-  }, [open, requested, hasVault, reloadVaults])
+  }, [open, requested, hasVault, vaultsLoaded, vaultsError, reloadVaults])
 
-  const back = view === 'choose' || view === 'unlock' || view === 'grant' ? null : () => setView('choose')
-  const description = describeView(view, limitedKeys)
+  const back = view === null || view === 'choose' || view === 'unlock' || view === 'grant' ? null : () => setView('choose')
+  // Before the stored-key list is read (a few ms, or storage blocked): the Unlock line, the
+  // likelier view for someone opening the sheet on a device that holds a key.
+  const description = view === null ? 'Checking this browser for a stored key…' : describeView(view, limitedKeys)
 
   return (
     <Dialog open={open} onClose={close} title={view === 'grant' ? 'Approve issues and pull requests' : 'Sign in to Dash Forge'} description={description} className="max-w-lg">
-      {vaultsError && (view === 'choose' || view === 'unlock') ? (
+      {vaultsError && (view === null || view === 'choose' || view === 'unlock') ? (
         <div className="mb-3">
           <StepFailed error={`Couldn't read the keys stored in this browser: ${vaultsError}`} onRetry={reloadVaults} />
         </div>
@@ -397,7 +402,7 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
     setFileName(file.name)
   }
 
-  const ready = protection !== null && !isLoading && (mode === 'file' ? fileChosen : mnemonic.trim() !== '' && identityId.trim() !== '')
+  const ready = protection !== null && !isLoading && (mode === 'file' ? fileChosen : mnemonic.trim() !== '')
   const submit = async (): Promise<void> => {
     if (!protection || isLoading) return
     setError(null)
@@ -436,12 +441,16 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
         <FilePicker label={fileName || 'Choose an identity file (.json)'} detail={fileIdentity || undefined} onFile={(f) => void onFile(f)} />
       ) : (
         <>
-          <Field label="Identity ID" htmlFor="import-id">
-            <Input id="import-id" value={identityId} onChange={(e) => setIdentityId(e.target.value)} className="font-mono" spellCheck={false} autoComplete="off" />
-          </Field>
           <Field label="Recovery phrase (12 or 24 words)" htmlFor="import-mnemonic" hint="Used once to derive the master key; not stored.">
             {/* Uncontrolled: a controlled textarea's value is also its DOM text content. */}
             <Textarea id="import-mnemonic" ref={bindMnemonic} onChange={(e) => setMnemonic(e.target.value)} className="min-h-[72px] font-mono" spellCheck={false} autoComplete="off" />
+          </Field>
+          <Field
+            label="Identity ID (optional)"
+            htmlFor="import-id"
+            hint="Leave empty: Forge finds the identity these words created. Enter it only for an identity made with other software."
+          >
+            <Input id="import-id" value={identityId} onChange={(e) => setIdentityId(e.target.value)} className="font-mono" spellCheck={false} autoComplete="off" />
           </Field>
         </>
       )}
