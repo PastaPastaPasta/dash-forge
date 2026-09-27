@@ -8,7 +8,7 @@
 use anyhow::Result;
 use serde_json::json;
 
-use forge_core::collab::v2::{Collab, IssueView, Target};
+use forge_core::collab::v2::{IssueView, Target};
 use forge_core::create::default_journal_dir;
 use forge_core::rules::{EventKind, IssueState};
 
@@ -160,7 +160,8 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
     };
     // Every issue and the whole feed, folded once: the filters see the whole repo, not the
     // newest page (SR-04), and there is no per-row read.
-    let (all, hidden) = Collab::reader(&s.client).issues_with_state(&s.repo).await?;
+    // The session's signer, not a bare reader: a private repo's issues open with its keys.
+    let (all, hidden) = s.collab().issues_with_state(&s.repo).await?;
     let matching: Vec<Row> = all
         .into_iter()
         .filter(|v| issue_matches(args, author.as_deref(), assignee.as_ref(), v))

@@ -129,6 +129,13 @@ if dg_read_retry "$P_MEMBER" "$LOG-iv.json" "$LOG-iv.err" --json issue view "$RE
     && ok "issue #$ISSUE: title and comment decrypt" || { cat "$LOG-iv.json" >&2; bad "issue view"; }
   [[ "$(json_field "$LOG-iv.json" 'd["state"]["labels"]')" == "['$LABEL']" ]] \
     && ok "issue #$ISSUE: the sealed label opens" || { cat "$LOG-iv.json" >&2; bad "issue label"; }
+  # the list folds every issue from the repo's event feed: the sealed label filters it too
+  if dg_read_retry "$P_MEMBER" "$LOG-il.json" "$LOG-il.err" --json issue list "$REPO" --label "$LABEL" --state all \
+     && [[ "$(json_field "$LOG-il.json" '[i["number"] for i in d["issues"]]')" == "[$ISSUE]" ]]; then
+    ok "dg issue list --label finds issue #$ISSUE by its sealed label"
+  else
+    cat "$LOG-il.json" "$LOG-il.err" >&2; bad "issue list --label"
+  fi
   [[ "$(json_field "$LOG-pv.json" 'd["title"]')" == "$PR_TITLE" && "$(json_field "$LOG-pv.json" 'd["baseRef"]')" == refs/heads/main \
      && "$(json_field "$LOG-pv.json" 'len(d["approvedBy"])')" == 1 ]] \
     && ok "PR #$PR: title, base branch and the sealed approval" || { cat "$LOG-pv.json" >&2; bad "pr view"; }
