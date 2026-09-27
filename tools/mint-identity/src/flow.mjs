@@ -1,7 +1,7 @@
 // Mint orchestration primitives shared by the CLI subcommands.
 import { generateNewMnemonic, deriveAssetLockKeyPair } from './hd.mjs';
 import { generateDefaultIdentityKeysHD, publicKeyToAddress } from './keys.mjs';
-import { privateKeyToWif, bytesToHex } from './bytes.mjs';
+import { privateKeyToWif } from './bytes.mjs';
 import {
   createAssetLockTransaction,
   createP2PKHTransaction,
@@ -10,7 +10,7 @@ import {
   serializeTransaction,
   calculateTxId,
 } from './tx.mjs';
-import { InsightClient } from './insight.mjs';
+import { ChainClient } from './chain.mjs';
 import { obtainAssetLock, waitForFundingTx } from './lock.mjs';
 import * as platform from './platform.mjs';
 
@@ -31,7 +31,7 @@ export function createRole(label, network, mnemonic = generateNewMnemonic(128)) 
  * Returns { txid, transactionBytes }.
  */
 export async function broadcastAssetLock({ utxo, assetLockKeyPair, tag = '' }, network, log) {
-  const insight = new InsightClient(network);
+  const chain = new ChainClient(network, { log });
   const { privateKey, publicKey } = assetLockKeyPair;
 
   log(`${tag}Building asset-lock (type 8) tx from ${utxo.txid}:${utxo.vout} (${(utxo.satoshis / 1e8).toFixed(8)} DASH)`);
@@ -42,10 +42,10 @@ export async function broadcastAssetLock({ utxo, assetLockKeyPair, tag = '' }, n
   const txid = calculateTxId(signed);
   log(`${tag}Broadcasting asset-lock tx ${txid}...`);
   try {
-    await insight.broadcastTransaction(bytesToHex(transactionBytes));
+    await chain.broadcastTransaction(transactionBytes);
   } catch (err) {
     // A lost response can hide an accepted broadcast; don't strand the deposit over it.
-    if (!(await insight.getTransaction(txid).then(() => true, () => false))) throw err;
+    if (!(await chain.isKnown(txid))) throw err;
     log(`${tag}${txid} is known to the network despite the error (${err.message})`);
   }
   log(`${tag}Broadcast accepted: ${txid}`);
@@ -55,12 +55,12 @@ export async function broadcastAssetLock({ utxo, assetLockKeyPair, tag = '' }, n
 /**
  * Register the identity for a role whose asset-lock tx (role.txid) is already
  * broadcast: wait for its lock, then create the identity — unless an earlier,
- * interrupted run already did. `transactionBytes` is refetched from Insight
+ * interrupted run already did. `transactionBytes` is refetched (Insight or DAPI)
  * when not given (a resumed run). Mutates role.identityId.
  */
 export async function registerRoleFromLockTx(role, network, log, transactionBytes) {
   const tag = `[${role.label}] `;
-  const bytes = transactionBytes ?? (await new InsightClient(network).getRawTransactionBytes(role.txid));
+  const bytes = transactionBytes ?? (await new ChainClient(network, { log }).getRawTransactionBytes(role.txid));
   const lock = await obtainAssetLock(network, { txid: role.txid, transactionBytes: bytes, log });
 
   const expectedId = platform.identityIdFromLock(lock);
@@ -113,7 +113,7 @@ export async function assetLockAndTopUp({ identityId, assetLockKeyPair, resumeTx
     onBroadcast(txid);
   } else {
     log(`Resuming top-up from asset-lock tx ${txid}`);
-    transactionBytes = await new InsightClient(network).getRawTransactionBytes(txid);
+    transactionBytes = await new ChainClient(network, { log }).getRawTransactionBytes(txid);
   }
   const lock = await obtainAssetLock(network, { txid, transactionBytes, log });
   try {
@@ -146,7 +146,7 @@ const FAN_OUT_FEE = 2000n;
  * asset-lock) is output N. Returns the txid once its outputs are spendable.
  */
 export async function fanOutFunds({ sourceUtxo, sourceKeyPair, recipients, perRoleDuffs, changeAddress }, network, log) {
-  const insight = new InsightClient(network);
+  const chain = new ChainClient(network, { log });
   const { privateKey, publicKey } = sourceKeyPair;
 
   const change = BigInt(sourceUtxo.satoshis) - BigInt(perRoleDuffs) * BigInt(recipients.length) - FAN_OUT_FEE;
@@ -159,7 +159,8 @@ export async function fanOutFunds({ sourceUtxo, sourceKeyPair, recipients, perRo
   const tx = createP2PKHTransaction(sourceUtxo, outputs, addressToScript(changeAddress), FAN_OUT_FEE);
   const signed = await signTransaction(tx, [sourceUtxo], privateKey, publicKey);
 
-  const txid = await insight.broadcastTransaction(bytesToHex(serializeTransaction(signed)));
+  const txid = calculateTxId(signed);
+  await chain.broadcastTransaction(serializeTransaction(signed));
   log(`Fan-out broadcast accepted: ${txid}`);
   await waitForFundingTx(network, txid, log);
   return txid;

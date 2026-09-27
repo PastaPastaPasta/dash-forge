@@ -1,23 +1,76 @@
-//! The Core-chain side of funding an identity: a block explorer (Insight API) to watch a
-//! deposit address and read raw transactions, and the `getislocks` JSON-RPC that recovers an
-//! InstantSend lock by txid.
+//! The Core-chain side of funding an identity.
 //!
-//! The explorer is not trusted with amounts or keys: every output it lists is re-derived from
-//! its raw funding transaction by the caller (`platform::identity::verify_deposit`), and it
-//! never sees a private key. It can delay the user or hide funds, not take them. Broadcast goes
-//! to DAPI first; the explorer is only the fallback.
+//! [`CoreChain`] is the DAPI Core service every evonode serves next to Platform (dapi-grpc
+//! `core.proto`): `broadcastTransaction`, `getTransaction` (raw bytes, height, lock status),
+//! `getBlockchainStatus`, and `subscribeToTransactionsWithProofs`, a bloom-filtered stream of
+//! the transactions that pay or spend an address. [`crate::platform::PlatformClient`]
+//! implements it over the SDK's DAPI client, so funding needs no service besides the
+//! evonodes. The [`Insight`] block explorer is only a fallback for when DAPI cannot answer,
+//! and `getislocks` JSON-RPC recovers an InstantSend lock by txid where one exists.
+//!
+//! Neither is trusted with amounts or keys: every output a deposit is built from is re-read
+//! from its raw funding transaction, which must hash to its txid
+//! (`platform::identity::DepositWatch`, `verify_deposit`), and neither sees a private key.
+//! A node or explorer can delay the user or hide funds, not take them.
 
 use std::time::Duration;
 
+use async_trait::async_trait;
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
 use crate::network::Network;
+use crate::platform::core_chain::DepositTracker;
+use crate::platform::identity::{verify_deposit, VerifiedUtxo};
 
-/// Where an identity's deposit is watched and its asset lock proven, per network.
+/// A Core transaction as a DAPI node reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoreTxStatus {
+    /// The raw transaction bytes.
+    pub raw: Vec<u8>,
+    /// The height it was mined at; `None` while it is in the mempool.
+    pub height: Option<u32>,
+    /// Whether its block is chain-locked.
+    pub chain_locked: bool,
+    /// Whether it is InstantSend-locked.
+    pub instant_locked: bool,
+}
+
+/// A live feed of the raw transactions a bloom filter matched.
+#[async_trait]
+pub trait CoreTxFeed: Send {
+    /// The next batch of matched raw transactions; `None` once the node ends the stream.
+    async fn next_transactions(&mut self) -> Result<Option<Vec<Vec<u8>>>>;
+    /// How many blocks the feed has replayed so far (a reconnect resumes after them).
+    fn blocks_seen(&self) -> u32 {
+        0
+    }
+}
+
+/// The DAPI Core calls funding needs (implemented by [`crate::platform::PlatformClient`]).
+#[async_trait]
+pub trait CoreChain: Send + Sync {
+    /// Broadcast a raw transaction.
+    async fn broadcast(&self, raw: &[u8]) -> Result<()>;
+    /// Transaction `txid` (display hex), or `None` when no node knows it.
+    async fn transaction(&self, txid: &str) -> Result<Option<CoreTxStatus>>;
+    /// The height of the best block.
+    async fn best_height(&self) -> Result<u32>;
+    /// Subscribe to the transactions that pay or spend `address`, from block `from_height`.
+    /// With `history_only` the feed ends at the tip; otherwise it continues with the mempool
+    /// and new blocks.
+    async fn watch_address(
+        &self,
+        address: &str,
+        from_height: u32,
+        history_only: bool,
+    ) -> Result<Box<dyn CoreTxFeed>>;
+}
+
+/// The fallback explorer and the lock-proof endpoint, per network.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreEndpoints {
-    /// Insight API base URL (`…/insight-api`).
+    /// Insight API base URL (`…/insight-api`), consulted only when DAPI cannot answer.
     pub insight: String,
     /// JSON-RPC with `getislocks` (InstantSend proofs), or `None` to use chain-lock proofs.
     pub islock_rpc: Option<String>,
@@ -158,6 +211,242 @@ impl Insight {
     }
 }
 
+/// How long one read of the DAPI feed may sit idle before the explorer is asked as well.
+const FEED_IDLE: Duration = Duration::from_secs(30);
+/// Pause before reopening a DAPI feed that ended or failed.
+const RECONNECT_DELAY: Duration = Duration::from_secs(5);
+/// Blocks to rewind a deposit watch whose start height was not recorded (older journals):
+/// the blocks since the creation started (2.5-minute target spacing), plus a margin.
+const REWIND_MARGIN_BLOCKS: u32 = 50;
+/// The deepest rewind: about a week of blocks. Replaying further would not reach the live
+/// feed before DAPI's five-minute stream deadline.
+const MAX_REWIND_BLOCKS: u32 = 4_032;
+/// Blocks subtracted from a recorded start height: nodes' tips differ by a block or two.
+pub const START_HEIGHT_MARGIN: u32 = 6;
+
+/// Where to start watching a deposit address: the recorded height, else far enough back to
+/// cover every block since `started_at_ms`.
+pub async fn watch_start(
+    chain: &dyn CoreChain,
+    recorded: Option<u32>,
+    started_at_ms: u64,
+) -> Result<u32> {
+    if let Some(h) = recorded {
+        return Ok(h.saturating_sub(START_HEIGHT_MARGIN).max(1));
+    }
+    let best = chain.best_height().await?;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+    let elapsed_blocks = now_ms.saturating_sub(started_at_ms) / 150_000;
+    let back = u32::try_from(elapsed_blocks)
+        .unwrap_or(u32::MAX)
+        .saturating_add(REWIND_MARGIN_BLOCKS)
+        .min(MAX_REWIND_BLOCKS);
+    Ok(best.saturating_sub(back).max(1))
+}
+
+/// The explorer's view of `address`, every output re-read from its raw transaction.
+async fn explorer_deposit(insight: &Insight, address: &str) -> Result<Vec<VerifiedUtxo>> {
+    let mut verified = Vec::new();
+    for u in insight.utxos(address).await? {
+        let raw = insight.raw_tx(&u.txid).await?;
+        match verify_deposit(&raw, &u.txid, u.vout, address) {
+            Ok(v) => verified.push(v),
+            Err(e) => tracing::warn!("ignoring {}:{}: {e}", u.txid, u.vout),
+        }
+    }
+    Ok(verified)
+}
+
+fn total(utxos: &[VerifiedUtxo]) -> u64 {
+    utxos.iter().map(|u| u.duffs).sum()
+}
+
+/// Wait until `address` holds at least `min_duffs`, and return its verified unspent outputs;
+/// `None` once `timeout` passes. The deposit is seen through a DAPI bloom-filtered
+/// transaction feed from block `from_height` (history, then the mempool and new blocks); the
+/// explorer, when given, is asked as well whenever the feed is idle or unavailable.
+/// `on_seen` hears each new total.
+pub async fn wait_for_deposit(
+    chain: &dyn CoreChain,
+    explorer: Option<&Insight>,
+    address: &str,
+    min_duffs: u64,
+    from_height: u32,
+    timeout: Duration,
+    on_seen: &mut (dyn FnMut(u64) + Send),
+) -> Result<Option<Vec<VerifiedUtxo>>> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut tracker = DepositTracker::new(address)?;
+    let mut last_seen = 0;
+    // Where the next (re)connection replays from: past the blocks a feed already delivered,
+    // less a margin (the tracker ignores repeats), so a long replay still reaches the tip.
+    let mut from_height = from_height;
+    let mut next_from = from_height;
+    let mut report = |total: u64, on_seen: &mut (dyn FnMut(u64) + Send)| {
+        if total != last_seen {
+            last_seen = total;
+            on_seen(total);
+        }
+    };
+    let ask_explorer = || async move {
+        let insight = explorer?;
+        explorer_deposit(insight, address)
+            .await
+            .inspect_err(|e| tracing::debug!("explorer check failed: {e}"))
+            .ok()
+    };
+    while tokio::time::Instant::now() < deadline {
+        // Follow the feed until it ends, fails or cannot be opened; the tracker keeps what it
+        // learned, and a replay after reconnecting re-applies the same transactions.
+        match chain.watch_address(address, from_height, false).await {
+            Ok(mut feed) => loop {
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if left.is_zero() {
+                    return Ok(None);
+                }
+                let next =
+                    tokio::time::timeout(left.min(FEED_IDLE), feed.next_transactions()).await;
+                // The next connection replays from past what this one delivered.
+                next_from = next_from.max(
+                    from_height
+                        .saturating_add(feed.blocks_seen())
+                        .saturating_sub(START_HEIGHT_MARGIN),
+                );
+                match next {
+                    Ok(Ok(Some(txs))) => {
+                        for raw in &txs {
+                            tracker.ingest(raw);
+                        }
+                        report(tracker.total(), on_seen);
+                        if tracker.total() >= min_duffs {
+                            return Ok(Some(tracker.utxos()));
+                        }
+                    }
+                    Ok(Ok(None)) => break,
+                    Ok(Err(e)) => {
+                        tracing::warn!("DAPI transaction feed failed: {e}; reconnecting");
+                        break;
+                    }
+                    Err(_idle) => {
+                        if let Some(u) = ask_explorer().await {
+                            report(total(&u), on_seen);
+                            if total(&u) >= min_duffs {
+                                return Ok(Some(u));
+                            }
+                        }
+                    }
+                }
+            },
+            Err(e) => tracing::warn!("watching {address} through DAPI failed: {e}"),
+        }
+        if let Some(u) = ask_explorer().await {
+            report(total(&u), on_seen);
+            if total(&u) >= min_duffs {
+                return Ok(Some(u));
+            }
+        }
+        tokio::time::sleep(
+            RECONNECT_DELAY.min(deadline.saturating_duration_since(tokio::time::Instant::now())),
+        )
+        .await;
+        from_height = next_from;
+    }
+    Ok(None)
+}
+
+/// What `address` holds (duffs): the larger of DAPI's confirmed history since `from_height` and
+/// the explorer's view. `None` when neither answers, and also when only DAPI answered zero:
+/// its history leaves out the mempool, so an unconfirmed payment would read as empty.
+pub async fn deposit_balance(
+    chain: &dyn CoreChain,
+    explorer: Option<&Insight>,
+    address: &str,
+    from_height: u32,
+) -> Option<u64> {
+    let via_dapi = async {
+        let mut tracker = DepositTracker::new(address)?;
+        let mut feed = chain.watch_address(address, from_height, true).await?;
+        while let Some(txs) = feed.next_transactions().await? {
+            for raw in &txs {
+                tracker.ingest(raw);
+            }
+        }
+        Ok::<_, Error>(tracker.total())
+    };
+    let dapi = via_dapi
+        .await
+        .inspect_err(|e| tracing::warn!("reading {address} through DAPI failed: {e}"))
+        .ok();
+    let explorer = match explorer {
+        Some(insight) => explorer_deposit(insight, address)
+            .await
+            .ok()
+            .map(|u| total(&u)),
+        None => None,
+    };
+    match (dapi, explorer) {
+        (Some(d), Some(e)) => Some(d.max(e)),
+        (Some(d), None) if d > 0 => Some(d),
+        (None, Some(e)) => Some(e),
+        _ => None,
+    }
+}
+
+/// The height `txid` was mined at (`None` while unconfirmed or unknown): DAPI first, the
+/// explorer only when DAPI cannot answer.
+pub async fn tx_height(
+    chain: &dyn CoreChain,
+    explorer: Option<&Insight>,
+    txid: &str,
+) -> Result<Option<u32>> {
+    match chain.transaction(txid).await {
+        Ok(status) => Ok(status.and_then(|s| s.height)),
+        Err(dapi) => match explorer {
+            Some(insight) => insight.tx_height(txid).await,
+            None => Err(dapi),
+        },
+    }
+}
+
+/// Broadcast `raw` (id `txid`): DAPI first, the explorer as fallback. A transaction the
+/// network already has counts as broadcast, so a lost response never strands a deposit.
+pub async fn broadcast(
+    chain: &dyn CoreChain,
+    explorer: Option<&Insight>,
+    raw: &[u8],
+    txid: &str,
+) -> Result<()> {
+    let dapi = chain.broadcast(raw).await;
+    if dapi.is_ok() {
+        return Ok(());
+    }
+    let via_explorer = match explorer {
+        Some(insight) => insight.broadcast(&hex::encode(raw)).await,
+        None => Err(Error::Io("no block explorer configured".into())),
+    };
+    if via_explorer.is_ok() {
+        return Ok(());
+    }
+    if matches!(chain.transaction(txid).await, Ok(Some(_))) {
+        return Ok(());
+    }
+    if let Some(insight) = explorer {
+        if insight.tx_height(txid).await.is_ok() {
+            return Ok(());
+        }
+    }
+    Err(Error::Io(format!(
+        "broadcasting {txid} failed: DAPI: {}; explorer: {}",
+        dapi.err().map(|e| e.to_string()).unwrap_or_default(),
+        via_explorer
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default()
+    )))
+}
+
 /// The InstantSend lock of `txid` from a `getislocks` JSON-RPC endpoint, if it has one yet.
 pub async fn fetch_islock(rpc: &str, txid: &str) -> Result<Option<Vec<u8>>> {
     #[derive(Deserialize)]
@@ -196,6 +485,210 @@ pub async fn fetch_islock(rpc: &str, txid: &str) -> Result<Option<Vec<u8>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    use dash_sdk::dpp::dashcore::consensus::encode::serialize;
+    use dash_sdk::dpp::dashcore::hashes::Hash as _;
+    use dash_sdk::dpp::dashcore::{Address, OutPoint, Transaction, TxIn, TxOut, Txid};
+
+    const ADDR: &str = "yhJHMkBAT2TF6D8GHc4v9bMfBh3V2Z6meg";
+
+    /// An Insight explorer that is down: every request gets `503 Back-end server is at
+    /// capacity`, as insight.moutai did on 2026-09-27. Counts the requests it served.
+    fn insight_503() -> (Insight, Arc<AtomicUsize>) {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/insight-api", listener.local_addr().unwrap());
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counter = hits.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                counter.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let body = "Back-end server is at capacity";
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 503 Service Unavailable\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        let endpoints = CoreEndpoints {
+            insight: base,
+            islock_rpc: None,
+        };
+        (Insight::new(&endpoints), hits)
+    }
+
+    /// DAPI Core in memory: transactions by id, a feed per watch, and a broadcast log.
+    #[derive(Default)]
+    struct FakeDapi {
+        txs: Mutex<BTreeMap<String, CoreTxStatus>>,
+        feed: Mutex<Vec<Vec<Vec<u8>>>>,
+        broadcasts: Mutex<Vec<Vec<u8>>>,
+        watched_from: Mutex<Vec<u32>>,
+    }
+
+    struct FakeFeed(Vec<Vec<Vec<u8>>>);
+
+    #[async_trait]
+    impl CoreTxFeed for FakeFeed {
+        async fn next_transactions(&mut self) -> Result<Option<Vec<Vec<u8>>>> {
+            if self.0.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(self.0.remove(0)))
+        }
+    }
+
+    #[async_trait]
+    impl CoreChain for FakeDapi {
+        async fn broadcast(&self, raw: &[u8]) -> Result<()> {
+            self.broadcasts.lock().unwrap().push(raw.to_vec());
+            Ok(())
+        }
+        async fn transaction(&self, txid: &str) -> Result<Option<CoreTxStatus>> {
+            Ok(self.txs.lock().unwrap().get(txid).cloned())
+        }
+        async fn best_height(&self) -> Result<u32> {
+            Ok(88_900)
+        }
+        async fn watch_address(
+            &self,
+            _address: &str,
+            from_height: u32,
+            _history_only: bool,
+        ) -> Result<Box<dyn CoreTxFeed>> {
+            self.watched_from.lock().unwrap().push(from_height);
+            Ok(Box::new(FakeFeed(self.feed.lock().unwrap().clone())))
+        }
+    }
+
+    fn payment(to: &str, duffs: u64) -> Transaction {
+        Transaction {
+            version: 3,
+            lock_time: 0,
+            input: vec![TxIn {
+                previous_output: OutPoint::new(Txid::all_zeros(), 7),
+                ..TxIn::default()
+            }],
+            output: vec![TxOut {
+                value: duffs,
+                script_pubkey: Address::from_str(to)
+                    .unwrap()
+                    .assume_checked()
+                    .script_pubkey(),
+            }],
+            special_transaction_payload: None,
+        }
+    }
+
+    use std::collections::BTreeMap;
+    use std::str::FromStr;
+
+    #[tokio::test]
+    async fn insight_503_the_deposit_is_seen_broadcast_and_mined_through_dapi() {
+        let (insight, hits) = insight_503();
+        let dapi = FakeDapi::default();
+        let pay = payment(ADDR, 3_000_000);
+        dapi.feed.lock().unwrap().push(vec![serialize(&pay)]);
+
+        let mut seen = Vec::new();
+        let utxos = wait_for_deposit(
+            &dapi,
+            Some(&insight),
+            ADDR,
+            2_700_000,
+            88_850,
+            Duration::from_secs(5),
+            &mut |d| seen.push(d),
+        )
+        .await
+        .unwrap()
+        .expect("the deposit is found");
+        assert_eq!(utxos.len(), 1);
+        assert_eq!(utxos[0].txid, pay.txid().to_string());
+        assert_eq!(utxos[0].duffs, 3_000_000);
+        assert_eq!(seen, vec![3_000_000]);
+        assert_eq!(*dapi.watched_from.lock().unwrap(), vec![88_850]);
+
+        let lock = serialize(&payment(ADDR, 2_999_000));
+        broadcast(&dapi, Some(&insight), &lock, "ab").await.unwrap();
+        assert_eq!(dapi.broadcasts.lock().unwrap().len(), 1);
+
+        dapi.txs.lock().unwrap().insert(
+            "ab".into(),
+            CoreTxStatus {
+                raw: lock,
+                height: Some(88_861),
+                chain_locked: true,
+                instant_locked: false,
+            },
+        );
+        assert_eq!(
+            tx_height(&dapi, Some(&insight), "ab").await.unwrap(),
+            Some(88_861)
+        );
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            0,
+            "a healthy DAPI never needs the explorer"
+        );
+    }
+
+    #[tokio::test]
+    async fn insight_503_and_no_deposit_times_out_instead_of_failing() {
+        let (insight, _hits) = insight_503();
+        let dapi = FakeDapi::default();
+        let found = wait_for_deposit(
+            &dapi,
+            Some(&insight),
+            ADDR,
+            1,
+            1,
+            Duration::from_millis(300),
+            &mut |_| {},
+        )
+        .await
+        .unwrap();
+        assert!(found.is_none());
+        // DAPI's history says zero, but it leaves out the mempool and the explorer is down:
+        // unknown, so a discard still asks.
+        assert_eq!(deposit_balance(&dapi, Some(&insight), ADDR, 1).await, None);
+        let pay = payment(ADDR, 7_000);
+        dapi.feed.lock().unwrap().push(vec![serialize(&pay)]);
+        assert_eq!(
+            deposit_balance(&dapi, Some(&insight), ADDR, 1).await,
+            Some(7_000)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_watch_starts_at_the_recorded_height_else_rewinds_past_the_start() {
+        let dapi = FakeDapi::default();
+        assert_eq!(
+            watch_start(&dapi, Some(88_000), 0).await.unwrap(),
+            88_000 - START_HEIGHT_MARGIN
+        );
+        // A journal from long ago rewinds at most about a week.
+        assert_eq!(
+            watch_start(&dapi, None, 0).await.unwrap(),
+            88_900 - MAX_REWIND_BLOCKS
+        );
+        let now_ms = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis(),
+        )
+        .unwrap();
+        // Started an hour ago: 24 blocks at 2.5 min, plus the margin.
+        let from = watch_start(&dapi, None, now_ms - 3_600_000).await.unwrap();
+        assert_eq!(from, 88_900 - 24 - REWIND_MARGIN_BLOCKS);
+    }
 
     #[test]
     fn endpoints_follow_the_network_and_the_override() {

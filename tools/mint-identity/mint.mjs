@@ -15,7 +15,9 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { resolveNetwork, networkFromName, dashToDuffs } from './src/config.mjs';
-import { InsightClient } from './src/insight.mjs';
+import { ChainClient } from './src/chain.mjs';
+import { depositBalance, waitForDeposit } from './src/deposit.mjs';
+import { defaultLedgerPath, recordedPayment } from './src/utxo-ledger.mjs';
 import { requestTestnetFunds } from './src/faucet.mjs';
 import {
   createRole,
@@ -117,37 +119,57 @@ function fundingMode(args, network) {
   return mode;
 }
 
-/** Pay `recipients` ([{ address, duffs }]) from the funding key and wait until spendable. */
+/** The funding key (fund-from-key mode) and the UTXO ledger path beside its key file. */
+function fundingContext(args, network) {
+  const keyFile = str(args['funding-key-file']);
+  const key = loadFundingKey(network, { keyFile });
+  return { key, ledgerPath: defaultLedgerPath({ keyFile, address: key.address }) };
+}
+
+/**
+ * Pay `recipients` ([{ address, duffs }]) from the funding key and wait until
+ * spendable. Returns what each address was paid ([{ address, txid, vout, ... }]).
+ */
 async function payFromFundingKey(args, network, recipients) {
-  const key = loadFundingKey(network, { keyFile: str(args['funding-key-file']) });
+  const { key, ledgerPath } = fundingContext(args, network);
   log(`fund-from-key: funding address ${key.address}`);
-  const txid = await fundFromKey(key, recipients, network, log);
+  const { txid, paid } = await fundFromKey(key, recipients, network, log, { ledgerPath });
   await waitForFundingTx(network, txid, log);
+  return paid;
+}
+
+/** The outpoint an earlier fund-from-key run paid to `address` (from the ledger), if any. */
+function knownPayment(args, network, funding, address) {
+  if (funding !== 'fund-from-key') return undefined;
+  const { key, ledgerPath } = fundingContext(args, network);
+  return recordedPayment(ledgerPath, key.address, address);
 }
 
 /**
  * Fund one deposit `address` with `amountDash` in the given mode, unless it
- * already holds `minDuffs`. Returns the faucet's actual amount (DASH) when the
- * faucet paid, else undefined.
+ * already holds `minDuffs`. Returns { faucetDash, known }: the faucet's actual
+ * amount (DASH) when the faucet paid, and the outpoint funding the address when
+ * this tool knows it (so the deposit is found through DAPI when Insight is down).
  */
-async function fundDeposit(args, network, funding, insight, { address, amountDash, minDuffs, tag }) {
-  const held = await insight.getBalance(address);
+async function fundDeposit(args, network, funding, chain, { address, amountDash, minDuffs, tag }) {
+  const known = knownPayment(args, network, funding, address);
+  const held = await depositBalance(chain, address, known);
   if (held >= minDuffs) {
     log(`${tag} deposit address already holds ${(held / 1e8).toFixed(8)} DASH; not funding again.`);
-    return undefined;
+    return { known };
   }
   if (funding === 'manual') {
     log(`${tag} --funding manual: send >= ${amountDash} DASH to ${address}, then this run will continue.`);
-    return undefined;
+    return {};
   }
   if (funding === 'fund-from-key') {
-    await payFromFundingKey(args, network, [{ address, duffs: dashToDuffs(amountDash) }]);
-    return undefined;
+    const [paid] = await payFromFundingKey(args, network, [{ address, duffs: dashToDuffs(amountDash) }]);
+    return { known: { txid: paid.txid, vout: paid.vout } };
   }
   log(`${tag} Requesting funds from faucet (${network.faucetBaseUrl})...`);
   const res = await requestTestnetFunds(network.faucetBaseUrl, address, { amount: amountDash, log });
   log(`${tag} Faucet sent ${res.amount} tDASH (txid ${res.txid}).`);
-  return res.amount;
+  return { faucetDash: res.amount, known: res.txid ? { txid: res.txid } : undefined };
 }
 
 /** Asset-lock the deposit, never re-requesting less than the network minimum. */
@@ -218,12 +240,12 @@ async function cmdMint(args) {
     log(`[${label}] resuming from asset-lock tx ${role.txid}`);
     result = await registerRoleFromLockTx(role, network, log);
   } else {
-    const insight = new InsightClient(network);
+    const chain = new ChainClient(network, { log });
     let minDuffs = minDepositDuffs(dashToDuffs(amountDash));
-    const faucetDash = await fundDeposit(args, network, funding, insight, { address: role.depositAddress, amountDash, minDuffs, tag: `[${label}]` });
+    const { faucetDash, known } = await fundDeposit(args, network, funding, chain, { address: role.depositAddress, amountDash, minDuffs, tag: `[${label}]` });
     if (faucetDash !== undefined) minDuffs = minDepositDuffs(dashToDuffs(faucetDash));
     log(`[${label}] Waiting for deposit UTXO (>= ${minDuffs} duffs)...`);
-    const utxo = await insight.waitForUtxo(role.depositAddress, minDuffs, { timeoutMs: DEPOSIT_WAIT_MS, log });
+    const utxo = await waitForDeposit(chain, role.depositAddress, minDuffs, { known, timeoutMs: DEPOSIT_WAIT_MS, log });
     result = await assetLockAndRegister(role, utxo, network, log, () => saveRole(outFile, role, network));
   }
 
@@ -252,24 +274,28 @@ async function cmdPool(args) {
   }
 
   // Roles that have neither broadcast an asset lock nor received their deposit.
-  const insight = new InsightClient(network);
+  const chain = new ChainClient(network, { log });
+  // Where each role's asset-lock input comes from: an exact outpoint when this
+  // tool funded it (never a stale, already-spent UTXO), else any large-enough UTXO.
+  const outpoints = new Map();
   const unfunded = [];
   for (const r of todo) {
-    if (!r.txid && (await insight.getBalance(r.depositAddress)) < minDepositDuffs(duffsFor(r))) unfunded.push(r);
+    if (r.txid) continue;
+    const known = knownPayment(args, network, funding, r.depositAddress);
+    if (known) outpoints.set(r.label, known);
+    if ((await depositBalance(chain, r.depositAddress, known)) < minDepositDuffs(duffsFor(r))) unfunded.push(r);
   }
 
-  // Where each role's asset-lock input comes from: an exact outpoint when this
-  // run funded it (never a stale, already-spent UTXO), else any large-enough UTXO.
-  const outpoints = new Map();
   if (unfunded.length === 0) {
     log(todo.length === 0 ? 'Every role is already minted; nothing to fund.' : 'Every role still to mint is already funded.');
   } else if (funding === 'faucet') {
     if (unfunded.length !== roles.length) {
       throw new Error('--funding faucet funds a fresh pool only; finish a partial pool with --funding fund-from-key or manual');
     }
-    await fundPoolFromFaucet(roles, network, insight, dashToDuffs(perRoleDash), outpoints);
+    await fundPoolFromFaucet(roles, network, chain, dashToDuffs(perRoleDash), outpoints);
   } else if (funding === 'fund-from-key') {
-    await payFromFundingKey(args, network, unfunded.map((r) => ({ address: r.depositAddress, duffs: duffsFor(r) })));
+    const paid = await payFromFundingKey(args, network, unfunded.map((r) => ({ address: r.depositAddress, duffs: duffsFor(r) })));
+    unfunded.forEach((r, i) => outpoints.set(r.label, { txid: paid[i].txid, vout: paid[i].vout }));
   } else {
     for (const r of unfunded) log(`[${r.label}] --funding manual: send ${(duffsFor(r) / 1e8).toFixed(8)} DASH to ${r.depositAddress}`);
   }
@@ -279,10 +305,8 @@ async function cmdPool(args) {
   // its broadcast, while its InstantSend lock can still be fetched.
   const batch = network.lockProof === 'chain';
   const broadcast = async (r) => {
-    const at = outpoints.get(r.label);
-    const utxo = at
-      ? await insight.waitForOutpoint(r.depositAddress, at.txid, at.vout, { timeoutMs: DEPOSIT_WAIT_MS, log })
-      : await insight.waitForUtxo(r.depositAddress, minDepositDuffs(duffsFor(r)), { timeoutMs: DEPOSIT_WAIT_MS, log });
+    const known = outpoints.get(r.label);
+    const utxo = await waitForDeposit(chain, r.depositAddress, known ? 1 : minDepositDuffs(duffsFor(r)), { known, timeoutMs: DEPOSIT_WAIT_MS, log });
     const { txid, transactionBytes } = await broadcastAssetLock({ utxo, assetLockKeyPair: r.assetLockKeyPair, tag: `[${r.label}] ` }, network, log);
     r.txid = txid;
     saveRole(fileForLabel(dir, r.label), r, network);
@@ -312,7 +336,7 @@ async function cmdPool(args) {
  * the change (output 8) back to TREASURY's deposit address as its own asset-lock
  * UTXO. Records each role's funding outpoint in `outpoints`.
  */
-async function fundPoolFromFaucet(roles, network, insight, perRoleDuffs, outpoints) {
+async function fundPoolFromFaucet(roles, network, chain, perRoleDuffs, outpoints) {
   const treasury = roles.find((r) => r.label === 'TREASURY');
   const others = roles.filter((r) => r.label !== 'TREASURY');
 
@@ -320,7 +344,8 @@ async function fundPoolFromFaucet(roles, network, insight, perRoleDuffs, outpoin
   const faucetRes = await requestTestnetFunds(network.faucetBaseUrl, treasury.depositAddress, { log });
   log(`[TREASURY] Faucet sent ${faucetRes.amount} tDASH (txid ${faucetRes.txid}).`);
   const treasuryFundDuffs = Math.floor(dashToDuffs(faucetRes.amount) * 0.9);
-  const treasuryUtxo = await insight.waitForUtxo(treasury.depositAddress, treasuryFundDuffs, { timeoutMs: DEPOSIT_WAIT_MS, log });
+  const known = faucetRes.txid ? { txid: faucetRes.txid } : undefined;
+  const treasuryUtxo = await waitForDeposit(chain, treasury.depositAddress, treasuryFundDuffs, { known, timeoutMs: DEPOSIT_WAIT_MS, log });
 
   const txid = await fanOutFunds(
     {
@@ -373,10 +398,10 @@ async function cmdTopup(args) {
 
   let utxo = null; // null: finish the asset lock an earlier run already broadcast
   if (!pending.assetLockTxid) {
-    const insight = new InsightClient(network);
+    const chain = new ChainClient(network, { log });
     const minDuffs = minDepositDuffs(dashToDuffs(amountDash));
-    await fundDeposit(args, network, funding, insight, { address: depositAddress, amountDash, minDuffs, tag: '[topup]' });
-    utxo = await insight.waitForUtxo(depositAddress, minDuffs, { timeoutMs: waitSeconds * 1000, log });
+    const { known } = await fundDeposit(args, network, funding, chain, { address: depositAddress, amountDash, minDuffs, tag: '[topup]' });
+    utxo = await waitForDeposit(chain, depositAddress, minDuffs, { known, timeoutMs: waitSeconds * 1000, log });
   }
   const { txid, balance } = await assetLockAndTopUp(
     { identityId, assetLockKeyPair, resumeTxid: pending.assetLockTxid },

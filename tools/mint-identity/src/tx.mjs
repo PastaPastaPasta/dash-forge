@@ -228,3 +228,51 @@ export async function signTransaction(tx, utxos, privateKey, publicKey) {
   }
   return signedTx;
 }
+
+// ---- parsing ----
+/**
+ * Parse a serialized (DIP2) transaction far enough to list its outputs:
+ * { txid, txType, outputs: [{ vout, satoshis, scriptPubKey (hex) }] }.
+ */
+export function parseTransactionOutputs(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let i = 0;
+  const need = (n) => {
+    if (i + n > bytes.length) throw new Error('truncated transaction');
+  };
+  const compact = () => {
+    need(1);
+    const b = bytes[i++];
+    if (b < 253) return b;
+    const size = b === 253 ? 2 : b === 254 ? 4 : 8;
+    need(size);
+    const n = size === 2 ? view.getUint16(i, true) : size === 4 ? view.getUint32(i, true) : Number(view.getBigUint64(i, true));
+    i += size;
+    return n;
+  };
+  need(4);
+  const txType = view.getUint32(0, true) >>> 16;
+  i = 4;
+  const vinCount = compact();
+  for (let n = 0; n < vinCount; n++) {
+    need(36);
+    i += 36;
+    const scriptLen = compact();
+    need(scriptLen + 4);
+    i += scriptLen + 4;
+  }
+  const outputs = [];
+  const voutCount = compact();
+  for (let n = 0; n < voutCount; n++) {
+    need(8);
+    const satoshis = Number(view.getBigInt64(i, true));
+    i += 8;
+    const len = compact();
+    need(len);
+    const script = bytes.slice(i, i + len);
+    i += len;
+    outputs.push({ vout: n, satoshis, scriptPubKey: Array.from(script, (b) => b.toString(16).padStart(2, '0')).join('') });
+  }
+  const txid = Array.from(reverseBytes(hash256(bytes)), (b) => b.toString(16).padStart(2, '0')).join('');
+  return { txid, txType, outputs };
+}

@@ -61,3 +61,21 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm build
+
+  # The headless minting CLI the QA harness and the web e2e fund identities with: its offline
+  # tests (tx building, the funding ledger, the Insight → DAPI Core fallback).
+  mint-identity:
+    name: mint-identity
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/mint-identity
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/mint-identity/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm test

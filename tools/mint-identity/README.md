@@ -96,8 +96,29 @@ their pending file, so an interrupted run resumes from that tx.
   Only outputs with ≥ 101 confirmations are spent (coinbase maturity). A
   single random output that covers the whole amount is preferred, so concurrent runs rarely
   pick the same input. A rejected broadcast retries with other inputs.
+
+  **Funding ledger.** Each funding transaction's change output is recorded in a
+  UTXO ledger (0600, no keys) next to the key file (`secrets/moutai-funding.wif` →
+  `secrets/moutai-funding.utxos.json`; `FORGE_FUNDING_LEDGER` overrides it), along
+  with the outpoint paid to each deposit address. Runs serialise through a lock
+  file beside it, so parallel mints chain change outputs instead of racing. When
+  Insight cannot list the key's UTXOs (5xx, 429, timeout), the ledger is spent
+  instead. An empty ledger is seeded once from recent funding txids, whose
+  outputs are read back through DAPI:
+  `FORGE_FUNDING_BOOTSTRAP_TXIDS=<txid>[,<txid>…]`.
 - **`manual`** (alias `--skip-faucet`): prints the deposit address and waits up
   to 5 minutes for you to fund it from any wallet.
+
+### Without Insight
+
+Insight is one server; DAPI is every evonode. Broadcasts, transaction status
+(height, chain lock) and raw transactions go to Insight first and fall back to
+DAPI Core over gRPC-web (`broadcastTransaction`, `getTransaction`,
+`src/dapi-core.mjs`) on a 5xx, 429 or timeout; Insight is then skipped for five
+minutes. Core keeps no address index, so a deposit is found without Insight only
+when this tool knows the outpoint that pays it: the fund-from-key transaction
+(recorded in the ledger) or the faucet's txid. `--funding manual` still needs
+Insight to notice a payment.
 
 Every mode writes a *pending* identity file (mnemonic + deposit key) before any
 funds move. Rerunning with the same `--out` resumes: it does not fund an address that already holds funds, it
@@ -258,7 +279,11 @@ src/tx.mjs          serialization, type-8 asset-lock + multi-input P2PKH build/s
 src/cap.mjs         headless CAP proof-of-work solver
 src/faucet.mjs      testnet faucet client (status + core-faucet + CAP)
 src/funding.mjs     fund-from-key: load the WIF, select UTXOs, pay deposit addresses
-src/insight.mjs     Insight API (UTXO polling, broadcast, tx status, raw tx)
+src/insight.mjs     Insight API (UTXO listing, broadcast, tx status, raw tx)
+src/dapi-core.mjs   DAPI Core over gRPC-web (broadcast, getTransaction, best height)
+src/chain.mjs       Insight first, DAPI Core on an Insight outage
+src/deposit.mjs     find a deposit UTXO (Insight, or the known outpoint via DAPI)
+src/utxo-ledger.mjs funding-key UTXO ledger + lock file (spend without Insight)
 src/islock.mjs      InstantSend lock retrieval via JSON-RPC (getislocks)
 src/lock.mjs        asset-lock proof data: instant (testnet) or chain (devnets)
 src/platform.mjs    evo-sdk connect / register / topUp / balance / describe
