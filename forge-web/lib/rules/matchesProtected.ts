@@ -56,21 +56,48 @@ const SLASH = '/'
 export function wildmatch(pattern: string, text: string): boolean {
   // dowild is pure in (pi, ti), so memoizing it turns the star backtracking — exponential
   // in the number of `*` (`*a*a*a*a*a*a*a*b` against 40 `a`s took seconds) — into at most
-  // |pattern|·|text| distinct calls. 0 = unknown, 1 = false, 2 = true.
-  const memo = new Uint8Array((pattern.length + 1) * (text.length + 1))
-  return dowild(pattern, 0, text, 0, memo)
+  // |pattern|·|text| distinct calls. On-chain inputs are small (a pattern is at most 100 chars
+  // and a ref name 255 bytes, so ~26k states) and use a dense table. Anything larger (a ref
+  // name nothing bounded) uses a sparse map of only the states actually reached, rather than
+  // allocating |pattern|·|text| bytes up front.
+  const size = (pattern.length + 1) * (text.length + 1)
+  return dowild(pattern, 0, text, 0, size <= DENSE_MEMO_MAX ? denseMemo(size) : sparseMemo())
 }
 
-function dowild(p: string, pi: number, t: string, ti: number, memo: Uint8Array): boolean {
+/** Largest pattern × text state space memoized in a flat byte table (64 KiB). */
+const DENSE_MEMO_MAX = 1 << 16
+
+/** Memoized `dowild` results by state key: undefined when not yet computed. */
+interface Memo {
+  get(key: number): boolean | undefined
+  set(key: number, value: boolean): void
+}
+
+function denseMemo(size: number): Memo {
+  const table = new Uint8Array(size) // 0 = unknown, 1 = false, 2 = true
+  return {
+    get: (key) => (table[key] === 0 ? undefined : table[key] === 2),
+    set: (key, value) => {
+      table[key] = value ? 2 : 1
+    },
+  }
+}
+
+function sparseMemo(): Memo {
+  const map = new Map<number, boolean>()
+  return { get: (key) => map.get(key), set: (key, value) => void map.set(key, value) }
+}
+
+function dowild(p: string, pi: number, t: string, ti: number, memo: Memo): boolean {
   const key = pi * (t.length + 1) + ti
-  const known = memo[key]
-  if (known !== 0) return known === 2
+  const known = memo.get(key)
+  if (known !== undefined) return known
   const result = dowildUncached(p, pi, t, ti, memo)
-  memo[key] = result ? 2 : 1
+  memo.set(key, result)
   return result
 }
 
-function dowildUncached(p: string, pi: number, t: string, ti: number, memo: Uint8Array): boolean {
+function dowildUncached(p: string, pi: number, t: string, ti: number, memo: Memo): boolean {
   let i = pi
   let j = ti
   while (i < p.length) {

@@ -143,6 +143,9 @@ describe('renderers terminate quickly on hostile input', () => {
       ['**/'.repeat(33), 'a/'.repeat(127)],
       ['*?'.repeat(50), 'a'.repeat(255)],
       ['[a-z]*'.repeat(16) + 'b', 'a'.repeat(255)],
+      // Ref names have no length bound in resolveRef: a huge one must not allocate the full
+      // pattern × text memo up front (100 × 1 MiB would be ~100 MiB).
+      ['*a'.repeat(49) + '*b', 'refs/heads/' + 'a'.repeat(MAX_LEN * 5)],
     ]
     const rand = prng(0x61ab)
     const globAlphabet = ['*', '**', '?', '/', 'a', 'b', '[a-b]', '[!a]', '\\*', '{', '!']
