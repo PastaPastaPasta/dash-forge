@@ -101,7 +101,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   const target = { id: pull.id, number: pull.number }
 
   const postComment = async (): Promise<void> => {
-    if (posting || comment.trim() === '' || !guard.check(commentCost.credits)) return
+    if (posting || comment.trim() === '' || !guard.check(commentCost.credits, 'collab')) return
     if (!sdk || !signer) return
     setPosting(true)
     setCommentError(null)
@@ -237,7 +237,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
                 variant={v === 'approve' ? 'primary' : 'outline'}
                 disabled={guard.disabledReason !== null}
                 onClick={() => {
-                  if (guard.check(previewCreate('review', { body: comment.trim() }).credits)) setPending({ review: v, body: comment.trim() })
+                  if (guard.check(previewCreate('review', { body: comment.trim() }).credits, 'collab')) setPending({ review: v, body: comment.trim() })
                 }}
               >
                 {VERDICT_TEXT[v]}

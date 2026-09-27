@@ -97,6 +97,12 @@ Fix: correct the value (`git config --show-origin --get-regexp '^dash\.'` shows 
 
 Fix: use a partial clone for a lightweight checkout: `git clone --filter=blob:none dash://…`.
 
+## E206
+
+**Git repository not usable.** `dg init` or `dg repo create --push` needs the local git repository, and could not use it: the current directory is not inside a git work tree, or the remote it would add (`origin` by default) already points somewhere else. Nothing was written to Platform when this is reported before the create; after a create, the repository exists and only the local setup is missing.
+
+Fix: run `git init` first (or `cd` into the repository), or pass `--remote <name>` to add the Forge remote under another name and leave the existing one alone.
+
 ## E301
 
 **No identity configured.** The command needs to sign, and no identity file was found.
@@ -206,11 +212,17 @@ Fix: restore that storage, or re-upload the pack from this clone with `dg reseed
 
 ## E508
 
+**No storage configured.** `dg repo create` or `dg init` found no storage profile for the new repository: no `--storage`, no `dash.storage` in git config (this repository's or your global one), and not exactly one profile in `storage.toml` to default to. Without one, every push would store its packs on Platform at about 0.28 DASH per MiB, so the command stops **before** creating anything. The cause line prices this repository's current size.
+
+Fix: add your own storage with `dg storage add` (a prompt flow when run with no arguments), or pass `--storage platform` to accept the Platform price. `git config --global dash.storage <profile>` sets a default for every new repository.
+
+## E509
+
 **Sealed pack corrupt.** A private repository's sealed artifact hash-verified against its manifest but failed decryption: a segment tag, the header, or the length does not check out. The uploader stored bytes no honest client writes, so every copy of that pack is the same bad bytes.
 
 Fix: ask the member who pushed it to push again (`git push` re-stores it under a new hash). `dg repo keys status` shows which epochs you can read.
 
-## E509
+## E510
 
 **Written after the key was rotated.** The content is under a superseded key epoch and was written more than 240 blocks after the next epoch's anchor by someone who is no longer a member (the late-content rule). It is hidden, not deleted.
 

@@ -133,7 +133,7 @@ function depPath(network, devnetName) {
 function readDep(file) {
   return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
 }
-function writeDep(file, dep) {
+export function writeDep(file, dep) {
   mkdirSync(dirname(file), { recursive: true });
   const tmp = `${file}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(dep, null, 2)}\n`);

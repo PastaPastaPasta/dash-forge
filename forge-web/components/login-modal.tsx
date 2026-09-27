@@ -30,7 +30,7 @@ import { FORGET_CONFIRM } from '@/components/keys-panel'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { NotDeployedState } from '@/components/ui/network-badge'
 import { BROWSER_KEY_DEFAULTS, masterMaterialFromFile } from '@/lib/auth'
-import { appConnectAvailable } from '@/lib/auth/app-connect'
+import { walletLoginAvailable } from '@/lib/auth/app-connect'
 import { ensureSdk } from '@/lib/sdk'
 import { formatDate } from '@/lib/view/format'
 import { cn, errorMessage } from '@/lib/utils'
@@ -67,16 +67,11 @@ export function LoginModal(): JSX.Element {
     }
   }, [open, requested, hasVault])
 
-  const back = view === 'choose' || view === 'unlock' ? null : () => setView('choose')
-  const description =
-    view === 'advanced'
-      ? 'A pasted key signs for this tab only, with whatever power it has.'
-      : limitedKeys
-        ? `Forge signs with a limited key: at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for ${BROWSER_KEY_DEFAULTS.days} days.`
-        : `Dash Forge is not deployed on ${ACTIVE_NETWORK.key}, so there is nothing to sign in to here.`
+  const back = view === 'choose' || view === 'unlock' || view === 'grant' ? null : () => setView('choose')
+  const description = describeView(view, limitedKeys)
 
   return (
-    <Dialog open={open} onClose={close} title="Sign in to Dash Forge" description={description} className="max-w-lg">
+    <Dialog open={open} onClose={close} title={view === 'grant' ? 'Approve issues and pull requests' : 'Sign in to Dash Forge'} description={description} className="max-w-lg">
       {back ? (
         <button type="button" onClick={back} className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-500 hover:text-anvil-800 dark:hover:text-anvil-100">
           <ArrowLeft className="h-3.5 w-3.5" aria-hidden /> All options
@@ -99,9 +94,18 @@ export function LoginModal(): JSX.Element {
       ) : null}
       {view === 'create' ? <CreateIdentityFlow onDone={close} /> : null}
       {view === 'wallet' ? <WalletConnectFlow onDone={close} /> : null}
+      {view === 'grant' ? <WalletConnectFlow mode="grant" contractId={ACTIVE_NETWORK.v2?.collab} onDone={close} /> : null}
       {view === 'advanced' ? <AdvancedView onDone={close} /> : null}
     </Dialog>
   )
+}
+
+/** The sheet's description line for a view. */
+function describeView(view: View, limitedKeys: boolean): string {
+  if (view === 'advanced') return 'A pasted key signs for this tab only, with whatever power it has.'
+  if (view === 'wallet' || view === 'grant') return 'Your wallet grants this browser its own key for Dash Forge. Your wallet keys never leave the phone.'
+  if (!limitedKeys) return `Dash Forge is not deployed on ${ACTIVE_NETWORK.key}, so there is nothing to sign in to here.`
+  return `Forge signs with a limited key: at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for ${BROWSER_KEY_DEFAULTS.days} days.`
 }
 
 function Tile({ icon: Icon, title, body, onClick, testId }: { icon: typeof Wallet; title: string; body: string; onClick: () => void; testId: string }): JSX.Element {
@@ -130,7 +134,7 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
   return (
     <div className="space-y-2">
       {walletAvailable ? (
-        <Tile testId="tile-wallet" icon={Wallet} title="Use my Dash wallet" body="Scan a QR with a wallet that supports Platform login. It grants Forge a limited key." onClick={() => onPick('wallet')} />
+        <Tile testId="tile-wallet" icon={Wallet} title="Use my Dash wallet" body="Dash Wallet on your phone: scan a QR code (or tap a link on the phone) and approve." onClick={() => onPick('wallet')} />
       ) : null}
       <Tile testId="tile-create" icon={Plus} title="Create a new identity" body="12 words you write down, then fund it from any Dash wallet. ~0.0005 DASH per issue or push." onClick={() => onPick('create')} />
       <Tile
@@ -154,14 +158,14 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
   )
 }
 
-/** Whether the App Connect tile applies here (protocol 14 + the system contract present). */
+/** Whether the wallet tile applies here (a wallet login contract exists on this network). */
 function useWalletAvailability(limitedKeys: boolean): boolean {
   const [available, setAvailable] = useState(false)
   useEffect(() => {
     if (!limitedKeys) return
     let cancelled = false
     ensureSdk(ACTIVE_NETWORK.network)
-      .then(appConnectAvailable)
+      .then((sdk) => walletLoginAvailable(sdk, ACTIVE_NETWORK.key))
       .then(
         (ok) => !cancelled && setAvailable(ok),
         () => undefined,

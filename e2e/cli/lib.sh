@@ -327,9 +327,12 @@ harness_init() {
 # Create the forge-v2 repo <name> under OWNER unless it exists. Idempotent and resumable:
 # `dg repo create` finishes an interrupted create without paying twice, and re-running a
 # finished one writes nothing. Leaves its --json output at ${WORKROOT}/create-<name>.json.
+# The suite's repos are Platform-stored (e2e/README.md), so the storage is given explicitly:
+# `dg repo create` otherwise follows the runner's dash.storage / storage.toml, or stops (E508).
 harness_ensure_repo() { # harness_ensure_repo <name>
   local name="$1" out="${WORKROOT}/create-$1"
   if _retry "${out}.err" _dg_read "$ID_OWNER" "${out}.json" "${out}.err" --yes --json repo create "$name" \
+      --storage platform \
       --description "Dash Forge CLI e2e fixture (reserved; see e2e/README.md)"; then
     info "repo ${name}: $(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["status"], d["cost"]["dash"], "DASH")' "${out}.json" 2>/dev/null)"
     return 0

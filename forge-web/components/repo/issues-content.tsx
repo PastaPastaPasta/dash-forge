@@ -181,7 +181,7 @@ function ComposeIssueDialog({
   const cost = previewCreate('issue', { title: title.trim(), body })
 
   const submit = async (): Promise<void> => {
-    if (pending || !guard.check(cost.credits)) return
+    if (pending || !guard.check(cost.credits, 'collab')) return
     if (!sdk || !signer || title.trim() === '') return
     setPending(true)
     setError(null)

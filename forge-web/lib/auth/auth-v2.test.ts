@@ -1,11 +1,10 @@
 /**
- * Limited-key sign-in, offline: the vault's encryption and unlock rules, the App Connect
- * envelope, the asset-lock transaction, and the identity-file master-key extraction.
+ * Limited-key sign-in, offline: the vault's encryption and unlock rules, the asset-lock
+ * transaction, and the identity-file master-key extraction. (The wallet protocol has its own
+ * suite: wallet-protocol.test.ts.)
  */
 
 import * as secp from '@noble/secp256k1'
-import { hkdf } from '@noble/hashes/hkdf.js'
-import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -21,10 +20,9 @@ import {
   unlockWithPassphrase,
   unlockedSecret,
 } from './vault'
-import { authKeyFromLogin, newRequest, openResponse } from './app-connect'
 import { buildAssetLock, buildPayment, hash160, txid, verifiedUtxos, type Utxo } from './asset-lock'
 import { masterMaterialFromFile } from './identity-file'
-import { base58CheckEncode, base58Decode, base58Encode } from './base58'
+import { base58CheckEncode } from './base58'
 import { encodeWif } from './wif'
 import { purgeLegacyKeystore } from './controller'
 
@@ -111,42 +109,6 @@ describe('vault', () => {
       delete (globalThis as { window?: unknown }).window
     }
     expect([...store.keys()]).toEqual(['theme'])
-  })
-})
-
-describe('App Connect envelope (Yappr key exchange)', () => {
-  it('builds a dash-key request that carries the ephemeral key and contract', () => {
-    const contract = 'GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL'
-    const req = newRequest('devnet', contract)
-    expect(req.uri).toMatch(/^dash-key:[1-9A-HJ-NP-Za-km-z]+\?n=d&v=1$/)
-    const body = base58Decode(req.uri.slice('dash-key:'.length, req.uri.indexOf('?')))
-    expect(body[0]).toBe(1)
-    const pub = body.slice(1, 34)
-    expect(bytesToHex(hash160(pub))).toBe(bytesToHex(req.appEphemeralPubKeyHash))
-    expect(base58Encode(body.slice(34, 66))).toBe(contract)
-    expect(req.pairingCode).toMatch(/^\d{6}$/)
-  })
-
-  it('opens what a wallet seals, and derives the auth key', async () => {
-    const req = newRequest('devnet', 'GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL')
-    const appPub = base58Decode(req.uri.slice(9, req.uri.indexOf('?'))).slice(1, 34)
-    // The wallet side (BrowserLoginKeyProtocol.seal).
-    const walletPriv = secp.utils.randomSecretKey()
-    const walletPub = secp.getPublicKey(walletPriv, true)
-    const sharedX = secp.getSharedSecret(walletPriv, appPub, true).slice(1, 33)
-    const aes = hkdf(sha256, sharedX, new TextEncoder().encode('dash:key-exchange:v1'), new Uint8Array(0), 32)
-    const loginKey = new Uint8Array(32).fill(9)
-    const iv = new Uint8Array(12).fill(3)
-    const k = await crypto.subtle.importKey('raw', aes, { name: 'AES-GCM' }, false, ['encrypt'])
-    const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, k, loginKey))
-    const payload = new Uint8Array([...iv, ...ct])
-    expect(payload.length).toBe(60)
-    expect(await openResponse(req, walletPub, payload)).toEqual(loginKey)
-    const expected = hkdf(sha256, loginKey, base58Decode(ID), new TextEncoder().encode('auth'), 32)
-    expect(authKeyFromLogin(loginKey, ID)).toEqual(expected)
-    // A tampered payload fails authentication.
-    payload[20] = (payload[20] as number) ^ 1
-    await expect(openResponse(req, walletPub, payload)).rejects.toBeTruthy()
   })
 })
 

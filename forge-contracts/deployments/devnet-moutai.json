@@ -134,5 +134,13 @@
       "owner": "8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV",
       "verifiedAt": "2026-09-26T17:57:01.708Z"
     }
+  },
+  "keyExchange": {
+    "contractId": "E2ykCqF8mysgjVWNMRFdMzT6X7wgnFdaV5UdohpzUkDK",
+    "ownerId": "8HGxMu4atPn4jThH5h9X1MajzhoD3PRnzCRGrAsFcLcV",
+    "identityNonce": "7",
+    "copyOf": "7UaqHGBJBbRLJ4fUWS45cnud8PPUugJWoGTt1SKwHJ2P",
+    "deployedAt": "2026-09-27T00:05:56.562Z",
+    "costDash": 0.1407955968
   }
 }

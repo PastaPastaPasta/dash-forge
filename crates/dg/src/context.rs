@@ -140,6 +140,26 @@ impl Ctx {
     /// non-interactive stdin (piped / CI without `--yes`) is likewise refused rather than
     /// silently proceeding.
     pub fn confirm(&self, prompt: &str) -> Result<bool> {
+        self.ask(prompt, false)
+    }
+
+    /// [`Self::confirm`] for a question whose empty answer is yes (`[Y/n]`); a "no" is the
+    /// E803 cancellation.
+    pub fn proceed(&self, prompt: &str) -> Result<()> {
+        if self.ask(prompt, true)? {
+            Ok(())
+        } else {
+            Err(crate::errors::cancelled())
+        }
+    }
+
+    /// Whether prompt flows may ask questions: stdin is a terminal and neither `--yes` nor
+    /// `--json` was given (UX spec §7.1).
+    pub fn interactive(&self) -> bool {
+        !self.yes && !self.json && std::io::stdin().is_terminal()
+    }
+
+    fn ask(&self, prompt: &str, default_yes: bool) -> Result<bool> {
         if self.yes {
             return Ok(true);
         }
@@ -156,16 +176,21 @@ impl Ctx {
         if !std::io::stdin().is_terminal() {
             return Err(no_prompt("stdin is not a terminal"));
         }
-        eprint!("{prompt} [y/N] ");
+        eprint!("{prompt} {} ", if default_yes { "[Y/n]" } else { "[y/N]" });
         std::io::stderr().flush().ok();
         let mut line = String::new();
-        std::io::stdin()
+        if std::io::stdin()
             .read_line(&mut line)
-            .context("reading confirmation")?;
-        Ok(matches!(
-            line.trim().to_ascii_lowercase().as_str(),
-            "y" | "yes"
-        ))
+            .context("reading confirmation")?
+            == 0
+        {
+            // EOF (Ctrl-D) is never a yes.
+            return Ok(false);
+        }
+        Ok(match line.trim().to_ascii_lowercase().as_str() {
+            "" => default_yes,
+            answer => matches!(answer, "y" | "yes"),
+        })
     }
 
     /// [`Self::confirm`], turning a "no" into the E803 cancellation.

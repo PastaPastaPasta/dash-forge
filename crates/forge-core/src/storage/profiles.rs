@@ -54,8 +54,9 @@ pub const STORAGE_CONFIG_ENV: &str = "DASH_FORGE_STORAGE_CONFIG";
 pub enum SecretRef {
     /// An environment variable name (`env:R2_SECRET_ACCESS_KEY`).
     Env(String),
-    /// An OS keychain entry (`keychain:<service>/<account>`): the macOS login keychain
-    /// (`security`), or the freedesktop Secret Service (`secret-tool`) elsewhere.
+    /// An OS keychain entry (`keychain:<service>/<account>`): the macOS login keychain,
+    /// Windows Credential Manager, or the freedesktop Secret Service (see
+    /// [`crate::keychain::get`]).
     Keychain {
         /// Keychain service name.
         service: String,
@@ -154,9 +155,15 @@ impl SecretRef {
                     "secret {self} is not set (export {var}=… in the environment git and dg run in)"
                 ))),
             },
-            SecretRef::Keychain { service, account } => keychain_lookup(service, account)
-                .map(Secret::new)
-                .map_err(|why| Error::Config(format!("secret {self}: {why}"))),
+            SecretRef::Keychain { service, account } => {
+                match crate::keychain::get(service, account) {
+                    Ok(Some(secret)) => Ok(secret),
+                    Ok(None) => Err(Error::Config(format!(
+                    "secret {self}: no keychain entry for service {service:?} account {account:?}"
+                ))),
+                    Err(why) => Err(Error::Config(format!("secret {self}: {why}"))),
+                }
+            }
         }
     }
 
@@ -165,38 +172,6 @@ impl SecretRef {
     pub fn is_available(&self) -> bool {
         self.resolve().is_ok()
     }
-}
-
-/// Look a secret up in the OS keychain.
-fn keychain_lookup(service: &str, account: &str) -> std::result::Result<String, String> {
-    use std::process::{Command, Stdio};
-    let output = if cfg!(target_os = "macos") {
-        Command::new("security")
-            .args(["find-generic-password", "-s", service, "-a", account, "-w"])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-    } else {
-        Command::new("secret-tool")
-            .args(["lookup", "service", service, "account", account])
-            .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
-    }
-    .map_err(|e| format!("could not run the keychain tool: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "no keychain entry for service {service:?} account {account:?}"
-        ));
-    }
-    let value = String::from_utf8(output.stdout)
-        .map_err(|_| "keychain entry is not UTF-8".to_string())?
-        .trim_end_matches(['\r', '\n'])
-        .to_string();
-    if value.is_empty() {
-        return Err("keychain entry is empty".into());
-    }
-    Ok(value)
 }
 
 /// An access key id: a literal (it is not secret — it appears in every signed request) or
