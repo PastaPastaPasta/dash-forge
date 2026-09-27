@@ -52,17 +52,42 @@ impl Classes {
     }
 }
 
+/// GitLab-only options (`forge-import` and `dg import` flatten them into their flags).
+#[derive(Debug, Clone, Default, clap::Args)]
+pub struct GitlabOptions {
+    /// A self-hosted GitLab instance (`https://gitlab.example.org`, or with a relative URL
+    /// root, `https://example.org/gitlab`): the source is then a project path on it.
+    #[arg(id = "gitlab_url", long = "gitlab-url", value_name = "URL")]
+    pub url: Option<String>,
+    /// Accept an `http://` `--gitlab-url` (a local or lab instance). The token and
+    /// everything read then travel unencrypted.
+    #[arg(long)]
+    pub allow_http: bool,
+    /// Mirror issues or merge requests that GitLab shows only to project members. They
+    /// are published publicly and permanently on Dash Platform, readable by anyone; without
+    /// this flag such a project is refused.
+    #[arg(long)]
+    pub include_members_only: bool,
+}
+
 /// The source named on the command line: GitLab for `gitlab.com/…`, a `https://gitlab.com/`
-/// URL, or anything with `gitlab_url` (a self-hosted instance); GitHub otherwise
+/// URL, or anything with `--gitlab-url` (a self-hosted instance); GitHub otherwise
 /// (`owner/repo`, `github.com/owner/repo`, its URL).
-pub fn parse(spec: &str, gitlab_url: Option<&str>) -> Result<Box<dyn Source>> {
+pub fn parse(spec: &str, gitlab: &GitlabOptions) -> Result<Box<dyn Source>> {
     let s = spec.trim();
-    let gitlab = gitlab_url.is_some()
+    let is_gitlab = gitlab.url.is_some()
         || s.starts_with("gitlab.com/")
         || s.starts_with("https://gitlab.com/");
-    Ok(if gitlab {
+    if !is_gitlab && (gitlab.allow_http || gitlab.include_members_only) {
+        anyhow::bail!("--allow-http and --include-members-only apply to a GitLab source only");
+    }
+    Ok(if is_gitlab {
+        let opts = crate::gitlab::BaseOptions {
+            allow_http: gitlab.allow_http,
+        };
         Box::new(crate::source_gitlab::GitlabSource::new(
-            crate::gitlab::GitlabRepoRef::parse(s, gitlab_url)?,
+            crate::gitlab::GitlabRepoRef::parse(s, gitlab.url.as_deref(), opts)?,
+            gitlab.include_members_only,
         ))
     } else {
         Box::new(crate::source_github::GithubSource::new(

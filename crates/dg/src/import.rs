@@ -21,17 +21,16 @@ pub struct ImportArgs {
     /// `gitlab.com/group/project` or its URL, or `group/project` with `--gitlab-url`
     /// (token: `GITLAB_TOKEN`).
     pub url: String,
-    /// A self-hosted GitLab instance (`https://gitlab.example.org`).
-    #[arg(long, value_name = "URL")]
-    pub gitlab_url: Option<String>,
-    /// Destination repository (`owner/name`, or a bare name of yours; default: the GitHub
+    #[command(flatten)]
+    pub gitlab: source::GitlabOptions,
+    /// Destination repository (`owner/name`, or a bare name of yours; default: the source's
     /// name). Created when missing.
     #[arg(long)]
     pub repo: Option<String>,
     /// What to import: code, issues, prs, releases, labels, or all.
     #[arg(long, default_value = "all")]
     pub sync: String,
-    /// Incremental state file (only GitHub items updated since the last run are read).
+    /// Incremental state file (only items updated at the source since the last run are read).
     #[arg(long)]
     pub state: Option<PathBuf>,
     /// Hard cap in DASH, checked before every write.
@@ -64,10 +63,14 @@ fn report(ctx: &Ctx, summary: &Summary) -> Result<()> {
         Status::Ok | Status::DryRun => None,
         Status::Partial => Some(
             UserError::new(codes::PARTIAL, "some items were not mirrored")
-                .cause(format!(
-                    "{} item(s) and {} optional git push(es) skipped; see the warnings",
-                    summary.counts.skipped, summary.counts.git_skipped
-                ))
+                .cause(if summary.incomplete {
+                    "the source refused part of what was asked for; see the warnings".to_string()
+                } else {
+                    format!(
+                        "{} item(s) and {} optional git push(es) skipped; see the warnings",
+                        summary.counts.skipped, summary.counts.git_skipped
+                    )
+                })
                 .fix("re-run later: skipped items are retried, and written ones are not written again"),
         ),
         Status::CapExceeded => Some(
@@ -102,7 +105,7 @@ fn report(ctx: &Ctx, summary: &Summary) -> Result<()> {
 /// `dg import`.
 pub async fn import(ctx: &Ctx, a: &ImportArgs) -> Result<()> {
     let cfg = ImportConfig {
-        source: source::parse(&a.url, a.gitlab_url.as_deref()).map_err(|e| {
+        source: source::parse(&a.url, &a.gitlab).map_err(|e| {
             UserError::new(codes::USAGE, "not a GitHub repository or GitLab project")
                 .cause(e.to_string())
         })?,

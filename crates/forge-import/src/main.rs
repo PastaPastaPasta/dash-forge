@@ -47,13 +47,11 @@ struct RunArgs {
     #[arg(long, default_value = "all")]
     sync: String,
 
-    /// A self-hosted GitLab instance (`https://gitlab.example.org`): the source is then a
-    /// project path on it.
-    #[arg(long, value_name = "URL")]
-    gitlab_url: Option<String>,
+    #[command(flatten)]
+    gitlab: source::GitlabOptions,
 
-    /// Incremental state file: only GitHub items updated since the last successful run are
-    /// read. Optional; what is already mirrored is always decided on chain.
+    /// Incremental state file: only items updated at the source since the last successful
+    /// run are read. Optional; what is already mirrored is always decided on chain.
     #[arg(long)]
     state: Option<PathBuf>,
 
@@ -195,7 +193,7 @@ async fn run(cli: Cli) -> Result<ExitCode> {
             )?;
             let r = cli.run;
             let cfg = ImportConfig {
-                source: source::parse(&spec, r.gitlab_url.as_deref())?,
+                source: source::parse(&spec, &r.gitlab)?,
                 dest: r.repo.clone(),
                 classes: Classes::parse(&r.sync)?,
                 state_path: r.state.clone(),
@@ -260,20 +258,36 @@ mod tests {
             "code,issues,mrs",
         ])
         .unwrap();
-        let src = source::parse(
-            cli.source.as_deref().unwrap(),
-            cli.run.gitlab_url.as_deref(),
-        )
-        .unwrap();
+        let src = source::parse(cli.source.as_deref().unwrap(), &cli.run.gitlab).unwrap();
         assert_eq!(src.display(), "git.example.org/team/app");
         assert!(Classes::parse(&cli.run.sync).unwrap().prs);
+        let none = source::GitlabOptions::default();
         assert_eq!(
-            source::parse("gitlab.com/g/p", None).unwrap().display(),
+            source::parse("gitlab.com/g/p", &none).unwrap().display(),
             "gitlab.com/g/p"
         );
         assert_eq!(
-            source::parse("o/r", None).unwrap().display(),
+            source::parse("o/r", &none).unwrap().display(),
             "github.com/o/r"
         );
+        // GitLab-only flags on a GitHub source are a mistake worth saying.
+        let members = source::GitlabOptions {
+            include_members_only: true,
+            ..Default::default()
+        };
+        assert!(source::parse("o/r", &members).is_err());
+        // http:// needs --allow-http.
+        let http =
+            Cli::try_parse_from(["forge-import", "a/b", "--gitlab-url", "http://lab"]).unwrap();
+        assert!(source::parse("a/b", &http.run.gitlab).is_err());
+        let allowed = Cli::try_parse_from([
+            "forge-import",
+            "a/b",
+            "--gitlab-url",
+            "http://lab",
+            "--allow-http",
+        ])
+        .unwrap();
+        assert!(source::parse("a/b", &allowed.run.gitlab).is_ok());
     }
 }

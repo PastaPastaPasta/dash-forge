@@ -94,7 +94,7 @@ async fn run_inner<'a>(
     let mut dest = dest::resolve(client, signer_id.as_deref(), &spec).await?;
     summary.repo = dest.info(false);
 
-    // Collaboration data (diffed on chain; `since` narrows what GitHub is asked for).
+    // Collaboration data (diffed on chain; `since` narrows what the source is asked for).
     let scope = state::scope(&summary.source, cfg.classes, cfg.limit);
     let existing_id = dest.existing.as_ref().map(|r| r.id().to_string());
     let mut sync_state = SyncState::load(
@@ -105,6 +105,7 @@ async fn run_inner<'a>(
     let since = sync_state.since();
     let collab_src = src.collect(cfg.classes, since.as_deref(), cfg.limit)?;
     summary.warnings.extend(collab_src.warnings.iter().cloned());
+    summary.incomplete = collab_src.incomplete;
     if collab_src.truncated && cfg.state_path.is_some() {
         // Every run would take the same first `--limit` items and never reach the rest.
         summary.warnings.push(format!(

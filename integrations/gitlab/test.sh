@@ -91,11 +91,14 @@ exec "$real_git" "\$@"
 EOF
 chmod +x "$tmp/bin/git"
 yq forge-mirror-code/script/0 "$tpl" >"$tmp/push.sh"
-# The job's checkout is shallow (depth 1); the template sets GIT_DEPTH 0, and the fetch of
-# every branch must work from a shallow clone too.
-(cd "$job" && git fetch -q --unshallow origin && PATH="$tmp/bin:$PATH" FORGE_REPO=dash://Owner/repo sh "$tmp/push.sh") ||
+# The job's checkout is shallow (depth 1), as a runner that ignored GIT_DEPTH would leave
+# it: the script's fetch of every branch must still work, as is.
+[ -f "$job/.git/shallow" ] || fail "the test checkout is not shallow"
+(cd "$job" && PATH="$tmp/bin:$PATH" FORGE_REPO=dash://Owner/repo FORGE_PUSH_CAP=0.05 sh "$tmp/push.sh") ||
     fail "the code push script failed"
 grep -qx -- '--prune' "$tmp/push-args" || fail "push without --prune"
+grep -qx -- 'dash.confirm=refuse' "$tmp/push-args" || fail "push not capped (dash.confirm=refuse)"
+grep -qx -- 'dash.costWarnThreshold=0.05' "$tmp/push-args" || fail "push without FORGE_PUSH_CAP"
 grep -qx -- '--mirror' "$tmp/push-args" && fail "push uses --mirror"
 grep -qx -- '+refs/forge/heads/\*:refs/heads/\*' "$tmp/push-args" || fail "no heads refspec"
 grep -qx -- '+refs/tags/\*:refs/tags/\*' "$tmp/push-args" || fail "no tags refspec"
@@ -112,6 +115,44 @@ yq forge-import/rules/0/if "$tpl" | grep -q 'FORGE_IMPORT != "true"' || fail "im
 for src in push schedule web; do
     yq 'forge-mirror-code/rules/[]/if' "$tpl" | grep -q "\"$src\"" || fail "code job lacks the $src rule"
 done
+for job_name in forge-mirror-code forge-import; do
+    yq "$job_name/rules/1/if" "$tpl" | grep -qx '$CI_COMMIT_REF_PROTECTED != "true"' ||
+        fail "$job_name runs on unprotected refs"
+    [ "$(yq "$job_name/rules/1/when" "$tpl")" = never ] || fail "$job_name protected rule is not never"
+done
+[ "$(yq 'forge-import/allow_failure/exit_codes/0' "$tpl")" = 4 ] || fail "partial (4) is not a warning"
+
+# 5. before_script: the key must be a file; nothing installs without a pinned version.
+yq .dash-forge/before_script/0 "$tpl" >"$tmp/before.sh"
+# Stop the script right after the key checks and the install decision: replace the rest
+# with a marker (the lines up to "Network and storage" are what is tested here).
+sed '/--- Network and storage/,$d' "$tmp/before.sh" >"$tmp/before-head.sh"
+printf '%s\n' 'echo REACHED-END' >>"$tmp/before-head.sh"
+mkdir -p "$tmp/fakebin"
+for b in git-remote-dash forge-import dg; do printf '#!/bin/sh\necho "%s 0.0.0"\n' "$b" >"$tmp/fakebin/$b"; done
+chmod +x "$tmp/fakebin"/*
+before() {
+    env -i PATH="$tmp/fakebin:/usr/bin:/bin" CI_PROJECT_DIR="$tmp/proj" FORGE_VERSION="" FORGE_SOURCE_REF="" \
+        "$@" sh "$tmp/before-head.sh" >"$tmp/before.out" 2>&1
+}
+mkdir -p "$tmp/proj"
+secret='{"identityId":"X","identityKeys":[{"privateKeyWif":"cSECRETwif"}]}'
+if before DASH_FORGE_KEY="$secret"; then fail "a non-file DASH_FORGE_KEY was accepted"; fi
+grep -q 'must be a File variable' "$tmp/before.out" || fail "no File-variable message"
+grep -q cSECRET "$tmp/before.out" && fail "the key was printed"
+if before DASH_FORGE_KEY=dfk1:devnet:X:3:cSECRETwif; then fail "an inline dfk1 key was accepted"; fi
+grep -q cSECRET "$tmp/before.out" && fail "the dfk1 key was printed"
+printf '%s' "$secret" >"$tmp/key.json"
+before DASH_FORGE_KEY="$tmp/key.json" || fail "a File variable was refused: $(cat "$tmp/before.out")"
+grep -q REACHED-END "$tmp/before.out" || fail "before_script stopped early with a key file"
+# Nothing on PATH and nothing pinned: refuse to install.
+rm -rf "$tmp/fakebin"
+if before DASH_FORGE_KEY="$tmp/key.json"; then fail "installed with neither FORGE_VERSION nor FORGE_SOURCE_REF"; fi
+grep -q 'FORGE_VERSION' "$tmp/before.out" || fail "no pinning message"
+# Installers run without secrets; protoc is checksummed.
+grep -q 'env -u DASH_FORGE_KEY -u GITLAB_TOKEN' "$tmp/before.sh" || fail "an installer sees the secrets"
+grep -q 'sha256sum -c' "$tmp/before.sh" || fail "protoc is not checksummed"
+grep -q 'dash.replicas' "$tmp/before.sh" || fail "s3 storage does not set dash.replicas"
 
 if [ "$fails" -ne 0 ]; then
     echo "$fails check(s) failed"

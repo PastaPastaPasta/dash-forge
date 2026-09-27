@@ -43,7 +43,12 @@ Name the project as `gitlab.com/<group>/<project>` or by its URL. A project on y
 export GITLAB_TOKEN=glpat-…        # read_api
 forge-import gitlab.com/acme/widget --dry-run
 forge-import team/app --gitlab-url https://git.example.org --dry-run
+forge-import team/app --gitlab-url https://example.org/gitlab --dry-run   # a relative URL root
 ```
+
+The token is sent as `Authorization: Bearer`, only to that instance: the importer follows no redirect. A project that moved answers with a redirect, and the importer reports the new path instead of following it. An `http://` instance is refused unless you pass `--allow-http`, because the token would travel unencrypted.
+
+**Members-only content is refused by default.** When a project's issues or merge requests are visible only to its members on GitLab, the importer stops and names the flag `--include-members-only`. A Forge mirror is public and permanent, so members-only discussions must never be published by accident. Pass the flag only if you mean to publish them, or leave that class out with `--sync`. Internal comments and confidential issues are never mirrored, flag or not.
 
 Start with a dry run. It reads everything, compares it with what the destination already holds, and prints what it would write and the estimate. Then run it with a cap:
 
@@ -55,7 +60,9 @@ The flags are the same as for GitHub: `--repo`, `--sync`, `--max-spend`, `--stat
 
 **Re-running is safe and cheap.** What is already mirrored is decided on chain, by the GitLab URL each document records (`https://gitlab.com/acme/widget/-/issues/12`, `…/-/merge_requests/3`, and `…#note_<id>` for a comment). A re-run writes only what is new and costs nothing when nothing changed. It is the same scheme as the GitHub importer.
 
-The exit codes and the summary's `status` are the same as for GitHub: `ok`, `partial`, `cap_exceeded` or `error`. A run that could not read comments or labels, for lack of a token, does not advance `--state`. That way the next run with a token reads those items again.
+The exit codes and the summary's `status` are the same as for GitHub: `ok`, `partial`, `cap_exceeded` or `error`.
+
+**When GitLab refuses part of the project,** the run carries on with the rest. Examples: comments or labels without a token (`401`), or releases that are disabled or members-only (`403`). Each refusal is a warning that names the cause, and the run ends `partial` (exit 4). A partial run does not advance `--state`, so the next run with more access reads those items again. Only a refused project read fails the run.
 
 **Rate limits.** The importer makes at most 100 API requests a minute, which is GitLab.com's planned limit for the Free tier. On a `429` it waits for as long as GitLab's `Retry-After` says.
 
@@ -65,8 +72,10 @@ The exit codes and the summary's `status` are the same as for GitHub: `ok`, `par
 
 GitLab's own push mirroring cannot target Forge: it accepts only `http://`, `https://`, `ssh://` and `git://` URLs ([GitLab docs](https://docs.gitlab.com/user/project/repository/mirror/)). Use the CI template in [`integrations/gitlab/`](../../integrations/gitlab/README.md) instead. It has two jobs:
 
-- **`forge-mirror-code`** runs on every push to a branch or tag, on schedules, and on manual runs. It pushes `refs/heads/*` and `refs/tags/*` with explicit refspecs.
-- **`forge-import`** runs on schedules and manual runs when `FORGE_IMPORT` is `"true"`. It runs `forge-import` for issues, merge requests, labels and releases, under `FORGE_COST_CAP`.
+- **`forge-mirror-code`** runs on every push to a protected branch or tag, on schedules, and on manual runs. It pushes `refs/heads/*` and `refs/tags/*` with explicit refspecs, capped at `FORGE_PUSH_CAP`.
+- **`forge-import`** runs on schedules and manual runs when `FORGE_IMPORT` is `"true"`. It runs `forge-import` for issues, merge requests, labels and releases, under `FORGE_COST_CAP`. A partial run (exit 4) shows as a warning, or as a failure with `FORGE_FAIL_ON_PARTIAL: "true"`.
+
+Both jobs run only on protected refs. That is where the protected key is available, and an unprotected branch's pipeline must never reach it.
 
 Add to the project's `.gitlab-ci.yml`, pinning a dash-forge commit you have reviewed:
 
@@ -91,7 +100,7 @@ Then, in **Settings > CI/CD > Variables**:
 
 Why these settings:
 
-- **A File variable for the key.** A masked variable must be a single line of a limited character set, which an identity JSON is not. A File variable is written to a temporary file, and the job reads its path from `DASH_FORGE_KEY`.
+- **A File variable for the key.** A masked variable must be a single line of a limited character set, which an identity JSON is not. A File variable is written to a temporary file, and the job reads its path from `DASH_FORGE_KEY`. The jobs refuse any other type without printing the value. The tools refuse identity contents passed where a path belongs, and never echo them.
 - **Protected.** Protected variables reach only pipelines on protected branches and tags. The default branch is protected by default. Protect tags (`*`) too if they should mirror. A merge request from a fork never sees the key.
 
 For the scheduled import, add a schedule in **Build > Pipeline schedules > New schedule**, for example daily. It runs with the schedule owner's permissions.
@@ -100,12 +109,16 @@ What the template does:
 
 - `resource_group: dash-forge-mirror`, so two mirror jobs never run at once. A second job waits for the first.
 - `GIT_DEPTH: "0"`, the whole history. New projects clone 20 commits deep, and a shallow push is refused.
-- **Installing the tools.** It installs `dg`, `git-remote-dash` and `forge-import` with the same `install.sh` the GitHub Mirror Action uses, which checks the release archive against its `SHA256SUMS`. No release is published yet, so it then falls back to `cargo install --git … --rev $FORGE_SOURCE_REF`. The first build takes several minutes, and the CI cache keeps the binaries after that. Set `FORGE_VERSION` once a release exists.
+- **Installing the tools.** One of `FORGE_VERSION` (a release) or `FORGE_SOURCE_REF` (a reviewed commit) is required, so nothing is installed from a moving branch.
+  - With `FORGE_VERSION`, it runs that release tag's `install.sh`, the same installer the GitHub Mirror Action uses, which checks the archive against its `SHA256SUMS`.
+  - Otherwise it runs `cargo install --git … --rev $FORGE_SOURCE_REF`, with a checksummed protoc. No release is published yet, so this is the path today. The first build takes several minutes, and the CI cache keeps the binaries after that.
+  - Installers run with the key and tokens removed from their environment.
 - **The code push** fetches every branch into a private namespace, then runs `git push --prune dash://… '+refs/forge/heads/*:refs/heads/*' '+refs/tags/*:refs/tags/*'`. It never uses `--mirror`. GitLab also advertises `refs/merge-requests/*`, `refs/pipelines/*` and `refs/environments/*`, and `--mirror` would publish each of them as a paid ref update.
 - **The import** keeps its `--state` file in the CI cache, so a scheduled run asks GitLab only for what changed. The run summary is kept as an artifact (`.forge/summary.json`).
-- **Storage.** `FORGE_STORAGE_KIND: s3` with the `FORGE_S3_*` variables adds your bucket for the job only, as the GitHub Action's inputs do. `FORGE_S3_VIRTUAL_HOSTED: "true"` selects virtual-hosted addressing (AWS).
+- **Storage.** `FORGE_STORAGE_KIND: s3` with the `FORGE_S3_*` variables adds your bucket for the job only, as the GitHub Action's inputs do. `FORGE_S3_VIRTUAL_HOSTED: "true"` selects virtual-hosted addressing (AWS), and `FORGE_REPLICAS` sets the storage confirmations a push needs.
+- **Members-only content.** `FORGE_INCLUDE_MEMBERS_ONLY: "true"` passes `--include-members-only`. An `http://` GitLab needs `FORGE_GITLAB_ALLOW_HTTP: "true"`.
 
-**The CI key can spend.** A run spends at most `FORGE_COST_CAP` on the import, and the code push costs what the push costs. Give CI a separate identity with a small balance, or a limited `dfk1:` key, as described for [GitHub](mirror-a-github-repo.md#the-ci-secret).
+**The CI key can spend.** An import spends at most `FORGE_COST_CAP`. A code push the helper prices above `FORGE_PUSH_CAP` (default 0.05 DASH) is refused before anything is stored. Give CI a separate identity with a small balance, or a limited `dfk1:` key, as described for [GitHub](mirror-a-github-repo.md#the-ci-secret).
 
 ---
 

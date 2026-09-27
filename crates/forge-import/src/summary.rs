@@ -124,6 +124,10 @@ pub struct Summary {
     pub warnings: Vec<String>,
     /// The error, when `status` is `error` or `cap_exceeded`.
     pub error: Option<String>,
+    /// The source refused part of what was asked for (the warnings say what): the run
+    /// ends `partial`, and the next run with more access reads it.
+    #[serde(skip)]
+    pub incomplete: bool,
 }
 
 impl Summary {
@@ -142,6 +146,7 @@ impl Summary {
             key: KeyInfo::default(),
             warnings: Vec::new(),
             error: None,
+            incomplete: false,
         }
     }
 

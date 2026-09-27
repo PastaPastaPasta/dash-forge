@@ -34,20 +34,24 @@ use forge_core::collab::v2::TargetKind;
 use forge_core::collab::{CommentAnchor, ReleaseAsset};
 
 use crate::github::iso8601_to_unix;
-use crate::gitlab::{Denied, GitlabClient, GitlabRepoRef, GlItem, GlNote, GlRelease};
+use crate::gitlab::{GitlabClient, GitlabRepoRef, GlItem, GlNote, GlProject, GlRelease, Readable};
 use crate::model::{self, SrcCollab, SrcComment, SrcPatch, SrcRelease, SrcTarget};
 use crate::source::{Classes, Source, SourceMeta};
 
 /// A GitLab project as a [`Source`].
 pub struct GitlabSource {
     gl: GitlabClient,
+    include_members_only: bool,
 }
 
 impl GitlabSource {
-    /// Read `repo` over HTTPS (`GITLAB_TOKEN` when set).
-    pub fn new(repo: GitlabRepoRef) -> Self {
+    /// Read `repo` over HTTPS (`GITLAB_TOKEN` when set). `include_members_only`
+    /// (`--include-members-only`) lets a run mirror issues or merge requests that GitLab
+    /// shows only to project members; without it such a run is refused.
+    pub fn new(repo: GitlabRepoRef, include_members_only: bool) -> Self {
         Self {
             gl: GitlabClient::new(repo),
+            include_members_only,
         }
     }
 }
@@ -70,7 +74,7 @@ impl Source for GitlabSource {
     }
 
     fn collect(&self, classes: Classes, since: Option<&str>, limit: usize) -> Result<SrcCollab> {
-        collect(&self.gl, classes, since, limit)
+        collect(&self.gl, classes, since, limit, self.include_members_only)
     }
 
     fn sync_mirror(&self, dir: &Path) -> Result<()> {
@@ -88,31 +92,87 @@ struct Item {
     gl: GlItem,
 }
 
-/// The note the run leaves when the token cannot read something.
-fn denied(what: &str, repo: &GitlabRepoRef) -> String {
-    format!(
-        "GitLab did not let this run read {what} of {} (no GITLAB_TOKEN, or one without the \
-         read_api scope); they are not mirrored, and the next run with a token reads them",
-        repo.display()
+/// The source's view of what one run read: the model, and helpers for refused reads.
+trait Outcome {
+    /// `value`, or, when GitLab refused it, a warning, the run marked incomplete (so
+    /// `--state` does not advance and the summary is partial), and `None`.
+    fn readable<T>(&mut self, r: Readable<T>, what: &str, repo: &GitlabRepoRef) -> Option<T>;
+}
+
+impl Outcome for SrcCollab {
+    fn readable<T>(&mut self, r: Readable<T>, what: &str, repo: &GitlabRepoRef) -> Option<T> {
+        match r {
+            Ok(v) => Some(v),
+            Err(d) => {
+                self.incomplete = true;
+                self.warnings.push(d.explain(what, repo));
+                None
+            }
+        }
+    }
+}
+
+/// Refuse a project whose issues or merge requests GitLab shows only to its members,
+/// unless `--include-members-only`: the mirror is public and permanent, and such content
+/// must never be published by accident. (GitLab reports the access levels only to a token
+/// that can see them; an anonymous run cannot read members-only content in the first place.)
+fn check_members_only(project: &GlProject, classes: Classes, include: bool) -> Result<()> {
+    let hidden: Vec<&str> = project
+        .members_only()
+        .into_iter()
+        .filter(|f| match *f {
+            "issues" => classes.issues,
+            _ => classes.prs,
+        })
+        .collect();
+    if hidden.is_empty() || include {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "this project's {} are visible only to its members on GitLab, and a Forge mirror is \
+         public and permanent. Pass --include-members-only to publish them anyway, or leave \
+         them out with --sync",
+        hidden.join(" and ")
     )
 }
 
-/// The label definitions into `out.labels`, or a warning when the token may not read them.
-fn labels(gl: &GitlabClient, out: &mut SrcCollab) -> Result<()> {
-    match gl.labels()? {
-        Ok(labels) => {
-            out.labels = Some(
-                labels
-                    .iter()
+/// The project-level reads into `out`: label definitions, releases, and the open merge
+/// requests whose heads the push mirrors. `--limit` bounds these listings too, so a trial
+/// reads a few pages whatever the project's size.
+fn project_level(
+    gl: &GitlabClient,
+    classes: Classes,
+    limit: usize,
+    out: &mut SrcCollab,
+) -> Result<()> {
+    let repo = gl.repo();
+    if classes.labels {
+        let labels = gl.labels()?;
+        out.labels = out
+            .readable(labels, "the label definitions", repo)
+            .map(|l| {
+                l.iter()
                     .filter_map(|l| model::label(&l.name, &l.color, l.description.as_deref()))
+                    .collect()
+            });
+    }
+    if classes.releases {
+        let releases = gl.releases(limit)?;
+        if let Some((r, more)) = out.readable(releases, "the releases", repo) {
+            out.truncated |= more;
+            out.releases = Some(
+                r.iter()
+                    .filter(|r| !r.upcoming_release && !r.tag_name.is_empty())
+                    .map(release)
                     .collect(),
             );
         }
-        Err(Denied::Unauthorized) => {
-            out.incomplete = true;
-            out.warnings
-                .push(denied("the label definitions", gl.repo()));
-        }
+    }
+    if classes.code && classes.prs {
+        let open = gl.open_merge_requests(limit)?;
+        out.open_pulls = out
+            .readable(open, "the open merge requests", repo)
+            .unwrap_or_default();
     }
     Ok(())
 }
@@ -123,9 +183,11 @@ pub fn collect(
     classes: Classes,
     since: Option<&str>,
     limit: usize,
+    include_members_only: bool,
 ) -> Result<SrcCollab> {
     let repo = gl.repo();
     let project = gl.project()?;
+    check_members_only(&project, classes, include_members_only)?;
     // Keys use the canonical project path (GitLab's own case), so they never depend on how
     // the source was typed.
     let canonical = GitlabRepoRef {
@@ -137,27 +199,12 @@ pub fn collect(
         ..repo.clone()
     };
     let mut out = SrcCollab::default();
-    if classes.labels {
-        labels(gl, &mut out)?;
-    }
-    if classes.releases {
-        out.releases = Some(
-            gl.releases()?
-                .iter()
-                .filter(|r| !r.upcoming_release && !r.tag_name.is_empty())
-                .map(release)
-                .collect(),
-        );
-    }
-    if classes.code && classes.prs {
-        out.open_pulls = gl.open_merge_requests()?;
-    }
+    project_level(gl, classes, limit, &mut out)?;
     if !(classes.issues || classes.prs) {
         return Ok(out);
     }
 
-    let (items, truncated) = items(gl, classes, since, limit)?;
-    out.truncated = truncated;
+    let items = items(gl, classes, since, limit, &mut out)?;
     // Which merge requests GitLab still has a head for (it deletes the ref 14 days after
     // one closes or merges). Unknown (the git read failed) is never reported as gone.
     let heads: Option<BTreeSet<u64>> = if classes.prs {
@@ -174,7 +221,10 @@ pub fn collect(
     } else {
         None
     };
-    let (mut skipped_confidential, mut threads_denied) = (0, false);
+    let mut skipped_confidential = 0;
+    // After the first refusal no more threads are asked for: the token will not read the
+    // others either (the warning says so once).
+    let mut threads_readable = true;
     for item in &items {
         let Ok(number) = u32::try_from(item.gl.iid) else {
             continue;
@@ -187,34 +237,29 @@ pub fn collect(
         let head_gone = item.kind == TargetKind::Patch
             && heads.as_ref().is_some_and(|h| !h.contains(&item.gl.iid));
         let mut t = target(&canonical, item, number, &url, head_gone);
-        if item.gl.user_notes_count > 0 {
+        if threads_readable && item.gl.user_notes_count > 0 {
             let notes = match item.kind {
                 TargetKind::Issue => gl.issue_notes(item.gl.iid)?,
                 TargetKind::Patch => gl
                     .mr_discussions(item.gl.iid)?
                     .map(|ds| ds.into_iter().flat_map(|d| d.notes).collect()),
             };
-            match notes {
-                Ok(mut notes) => {
+            match out.readable(notes, "the comments on issues and merge requests", repo) {
+                Some(mut notes) => {
                     notes.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
                     t.comments = notes
                         .iter()
-                        .filter(|n| !n.system && !n.internal)
+                        .filter(|n| n.is_public_comment())
                         .map(|n| comment(&canonical, item, number, &url, n))
                         .collect();
                 }
-                Err(Denied::Unauthorized) => threads_denied = true,
+                None => threads_readable = false,
             }
         }
         if item.kind == TargetKind::Patch {
             t.patch = Some(patch(&item.gl, number, classes.code, head_gone));
         }
         out.targets.push(t);
-    }
-    if threads_denied {
-        out.incomplete = true;
-        out.warnings
-            .push(denied("the comments on issues and merge requests", repo));
     }
     if skipped_confidential > 0 {
         out.warnings.push(format!(
@@ -226,36 +271,39 @@ pub fn collect(
     Ok(out)
 }
 
-/// The issues and merge requests to mirror, oldest first, and whether `limit` left some
-/// out. With `limit`, only the first page of each listing is read.
+/// The issues and merge requests to mirror, oldest first; `out.truncated` when `limit` left
+/// some out, and a refused listing is a warning (the run is partial). With `limit`, each
+/// listing is read only as far as its first `limit` items.
 fn items(
     gl: &GitlabClient,
     classes: Classes,
     since: Option<&str>,
     limit: usize,
-) -> Result<(Vec<Item>, bool)> {
+    out: &mut SrcCollab,
+) -> Result<Vec<Item>> {
     let mut all = Vec::new();
-    let mut more = false;
-    for (on, kind) in [
-        (classes.issues, TargetKind::Issue),
-        (classes.prs, TargetKind::Patch),
+    for (on, kind, what) in [
+        (classes.issues, TargetKind::Issue, "the issues"),
+        (classes.prs, TargetKind::Patch, "the merge requests"),
     ] {
         if !on {
             continue;
         }
-        let (list, has_more) = match kind {
+        let listed = match kind {
             TargetKind::Issue => gl.issues(since, limit)?,
             TargetKind::Patch => gl.merge_requests(since, limit)?,
         };
-        more |= has_more;
-        all.extend(list.into_iter().map(|gl| Item { kind, gl }));
+        if let Some((list, more)) = out.readable(listed, what, gl.repo()) {
+            out.truncated |= more;
+            all.extend(list.into_iter().map(|gl| Item { kind, gl }));
+        }
     }
     all.sort_by(|a, b| a.gl.created_at.cmp(&b.gl.created_at));
     if limit > 0 && all.len() > limit {
         all.truncate(limit);
-        more = true;
+        out.truncated = true;
     }
-    Ok((all, more))
+    Ok(all)
 }
 
 /// The canonical web URL of an issue or merge request (the idempotency key).
@@ -350,32 +398,33 @@ fn comment(repo: &GitlabRepoRef, item: &Item, number: u32, url: &str, n: &GlNote
     let created = iso8601_to_unix(&n.created_at);
     let note_url = format!("{url}#note_{}", n.id);
     let r = reference(item.kind, number);
-    // A text diff note keeps its line: the new side, or the old side for a removed line.
-    let anchor = n
-        .position
-        .as_ref()
-        .filter(|p| p.position_type == "text")
-        .and_then(|p| {
-            let (path, line, side) = match (p.new_line, p.old_line) {
-                (Some(l), _) => (p.new_path.as_ref()?, l, 1),
-                (None, Some(l)) => (p.old_path.as_ref().or(p.new_path.as_ref())?, l, 0),
-                (None, None) => return None,
-            };
-            Some(CommentAnchor {
-                reply_to: None,
-                commit_oid: p.head_sha.as_deref().and_then(model::oid),
-                path: Some(model::clip(path, 500, 1000)),
-                line: Some(line),
-                side: Some(side),
-            })
-        });
+    // A diff note keeps its place: a text note its line (the new side, or the old side for
+    // a removed line), a file or image note its file.
+    let anchor = n.position.as_ref().and_then(|p| {
+        let (path, line, side) = match (p.new_line, p.old_line) {
+            (Some(l), _) => (p.new_path.as_ref()?, Some(l), Some(1)),
+            (None, Some(l)) => (
+                p.old_path.as_ref().or(p.new_path.as_ref())?,
+                Some(l),
+                Some(0),
+            ),
+            (None, None) => (p.new_path.as_ref().or(p.old_path.as_ref())?, None, None),
+        };
+        Some(CommentAnchor {
+            reply_to: None,
+            commit_oid: p.head_sha.as_deref().and_then(model::oid),
+            path: Some(model::clip(path, 500, 1000)),
+            line,
+            side,
+        })
+    });
     let (kind, text) = match &anchor {
         Some(a) => (
             "diff comment",
             format!(
-                "`{}` line {}\n\n{}",
+                "`{}`{}\n\n{}",
                 a.path.as_deref().unwrap_or_default(),
-                a.line.unwrap_or_default(),
+                a.line.map(|l| format!(" line {l}")).unwrap_or_default(),
                 n.body
             ),
         ),

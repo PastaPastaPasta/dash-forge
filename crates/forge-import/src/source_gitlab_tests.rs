@@ -17,21 +17,22 @@ fn fixture(name: &str) -> String {
 }
 
 /// The recorded project, every request logged. `anonymous` answers notes, discussions and
-/// labels with 401, as gitlab.com does without a token.
+/// labels with 401, as gitlab.com does without a token; `overrides` answer a route (the path
+/// after the project) with a fixed response.
+#[derive(Default)]
 struct Recorded {
     anonymous: bool,
     /// Answer the first request with a 429 (Retry-After 1).
     throttle_once: RefCell<bool>,
+    /// Fail the first request with no answer at all (curl exit 7).
+    unreachable_once: RefCell<bool>,
+    overrides: Vec<(&'static str, GlResponse)>,
+    project: Option<String>,
     log: Rc<RefCell<Vec<String>>>,
 }
 
 fn ok(body: String, next: Option<String>) -> GlResponse {
-    GlResponse {
-        status: 200,
-        body: body.into_bytes(),
-        next,
-        retry_after: None,
-    }
+    GlResponse::ok(body, next)
 }
 
 fn mrs(range: std::ops::Range<usize>) -> String {
@@ -43,24 +44,25 @@ fn mrs(range: std::ops::Range<usize>) -> String {
 impl GlApi for Recorded {
     fn get(&self, url: &str) -> Result<GlResponse> {
         self.log.borrow_mut().push(url.to_string());
+        if self.unreachable_once.replace(false) {
+            return Err(crate::gitlab::Transient("curl: (7) Failed to connect".into()).into());
+        }
         if self.throttle_once.replace(false) {
-            return Ok(GlResponse {
-                status: 429,
-                body: Vec::new(),
-                next: None,
-                retry_after: Some(1),
-            });
+            let mut r = GlResponse::status(429, Vec::new(), None);
+            r.retry_after = Some(1);
+            return Ok(r);
         }
         let rest = url.strip_prefix(BASE).unwrap();
         let (route, query) = rest.split_once('?').unwrap_or((rest, ""));
-        let denied = GlResponse {
-            status: 401,
-            body: br#"{"message":"401 Unauthorized"}"#.to_vec(),
-            next: None,
-            retry_after: None,
-        };
+        if let Some((_, r)) = self.overrides.iter().find(|(p, _)| *p == route) {
+            return Ok(r.clone());
+        }
+        let denied = GlResponse::status(401, br#"{"message":"401 Unauthorized"}"#.to_vec(), None);
         Ok(match route {
-            "" => ok(fixture("project.json"), None),
+            "" => ok(
+                self.project.clone().unwrap_or_else(|| fixture("project.json")),
+                None,
+            ),
             "/issues" => ok(fixture("issues.json"), None),
             "/merge_requests" if query.contains("state=opened") => {
                 ok(r#"[{"iid":5,"state":"opened"}]"#.into(), None)
@@ -91,20 +93,30 @@ impl GlApi for Recorded {
     }
 }
 
-fn client_with(anonymous: bool, throttle: bool) -> (GitlabClient, Rc<RefCell<Vec<String>>>) {
-    let log = Rc::default();
-    let api = Recorded {
-        anonymous,
-        throttle_once: RefCell::new(throttle),
-        log: Rc::clone(&log),
-    };
-    let repo =
-        GitlabRepoRef::parse("gitlab.com/gitlab-org/gitlab-runner-docker-cleanup", None).unwrap();
-    (GitlabClient::with_api(repo, Box::new(api)), log)
+fn repo() -> GitlabRepoRef {
+    GitlabRepoRef::parse(
+        "gitlab.com/gitlab-org/gitlab-runner-docker-cleanup",
+        None,
+        crate::gitlab::BaseOptions::default(),
+    )
+    .unwrap()
+}
+
+fn serve(api: Recorded) -> (GitlabClient, Rc<RefCell<Vec<String>>>) {
+    let log = Rc::clone(&api.log);
+    (GitlabClient::with_api(repo(), Box::new(api)), log)
 }
 
 fn client(anonymous: bool) -> (GitlabClient, Rc<RefCell<Vec<String>>>) {
-    client_with(anonymous, false)
+    serve(Recorded {
+        anonymous,
+        ..Default::default()
+    })
+}
+
+/// `collect` with members-only content refused (the default).
+fn collect(gl: &GitlabClient, c: Classes, since: Option<&str>, limit: usize) -> Result<SrcCollab> {
+    super::collect(gl, c, since, limit, false)
 }
 
 fn all() -> Classes {
@@ -186,9 +198,22 @@ fn diff_discussions_become_anchored_comments_in_order() {
             "a single comment",
             "diff comment",
             "on a removed line",
+            "on the whole file",
             "reply to the discussion"
         ]
     );
+    // A file-level note keeps its file, with no line.
+    let file = mr
+        .comments
+        .iter()
+        .find(|c| c.body.ends_with("on the whole file"))
+        .unwrap();
+    let a = file.anchor.as_ref().unwrap();
+    assert_eq!(
+        (a.path.as_deref(), a.line, a.side),
+        (Some("logo.png"), None, None)
+    );
+    assert!(file.body.contains("`logo.png`\n"));
     let diff = mr
         .comments
         .iter()
@@ -264,14 +289,141 @@ fn releases_reference_their_links() {
 /// imports what it can, warns, and does not let `--state` skip the rest next time.
 #[test]
 fn an_anonymous_run_is_marked_incomplete() {
-    let (gl, _) = client(true);
+    let (gl, log) = client(true);
     let out = collect(&gl, all(), None, 0).unwrap();
     assert_eq!(out.targets.len(), 9);
     assert!(out.incomplete);
     assert!(out.labels.is_none());
     assert!(out.targets.iter().all(|t| t.comments.is_empty()));
     assert_eq!(out.warnings.len(), 2, "{:?}", out.warnings);
-    assert!(out.warnings.iter().all(|w| w.contains("GITLAB_TOKEN")));
+    assert!(out
+        .warnings
+        .iter()
+        .all(|w| w.contains("GITLAB_TOKEN") && w.contains("401")));
+    // After the first refused thread, no more are asked for.
+    let threads = log
+        .borrow()
+        .iter()
+        .filter(|u| u.contains("/notes") || u.contains("/discussions"))
+        .count();
+    assert_eq!(threads, 1, "{:#?}", log.borrow());
+}
+
+/// H1: a refused listing (403: releases disabled or members-only, as gitlab-foss answers
+/// anonymously; 401 for issues) is a warning and a partial run, never an aborted import.
+#[test]
+fn a_refused_listing_is_partial_not_fatal() {
+    let (gl, _) = serve(Recorded {
+        overrides: vec![
+            ("/releases", GlResponse::status(403, b"{}".to_vec(), None)),
+            ("/issues", GlResponse::status(401, b"{}".to_vec(), None)),
+        ],
+        ..Default::default()
+    });
+    let out = collect(&gl, all(), None, 0).unwrap();
+    assert!(out.incomplete);
+    assert!(out.releases.is_none());
+    assert!(out.targets.iter().all(|t| t.kind == TargetKind::Patch));
+    assert_eq!(out.targets.len(), 6);
+    assert!(out
+        .warnings
+        .iter()
+        .any(|w| w.contains("the releases") && w.contains("403") && w.contains("members")));
+    assert!(out
+        .warnings
+        .iter()
+        .any(|w| w.contains("the issues") && w.contains("401") && w.contains("GITLAB_TOKEN")));
+    // Only a refused project read is fatal.
+    let (gl, _) = serve(Recorded {
+        overrides: vec![("", GlResponse::status(401, b"{}".to_vec(), None))],
+        ..Default::default()
+    });
+    assert!(collect(&gl, all(), None, 0).is_err());
+}
+
+/// M2: a next page on another origin is not followed (the token would go there), and the
+/// listing is reported incomplete rather than silently short.
+#[test]
+fn an_off_origin_next_link_is_refused_and_partial() {
+    let (gl, log) = serve(Recorded {
+        overrides: vec![(
+            "/issues",
+            GlResponse::ok(
+                fixture("issues.json"),
+                Some("https://evil.example/api/v4/projects/1/issues?page=2".into()),
+            ),
+        )],
+        ..Default::default()
+    });
+    let out = collect(&gl, Classes::parse("issues").unwrap(), None, 0).unwrap();
+    assert!(out.incomplete);
+    assert!(
+        out.targets.is_empty(),
+        "a short listing is not mirrored as if complete"
+    );
+    assert!(out.warnings.iter().any(|w| w.contains("evil.example")));
+    assert!(!log.borrow().iter().any(|u| u.contains("evil.example")));
+}
+
+/// A moved project answers 301: reported with its new place, not followed.
+#[test]
+fn a_redirect_is_reported_not_followed() {
+    let mut moved = GlResponse::status(301, Vec::new(), None);
+    moved.location = Some("https://gitlab.com/new/place".into());
+    let (gl, _) = serve(Recorded {
+        overrides: vec![("", moved)],
+        ..Default::default()
+    });
+    let e = format!("{:#}", collect(&gl, all(), None, 0).unwrap_err());
+    assert!(
+        e.contains("https://gitlab.com/new/place") && e.contains("moved"),
+        "{e}"
+    );
+}
+
+/// M8: a project whose issues or merge requests are members-only is refused unless the
+/// run opts in; what the run does not ask for does not matter.
+#[test]
+fn members_only_content_needs_the_opt_in() {
+    let private = r#"{"id":444821,"path_with_namespace":"gitlab-org/gitlab-runner-docker-cleanup","issues_access_level":"private","merge_requests_access_level":"enabled"}"#;
+    let api = || Recorded {
+        project: Some(private.into()),
+        ..Default::default()
+    };
+    let (gl, _) = serve(api());
+    let e = format!("{:#}", collect(&gl, all(), None, 0).unwrap_err());
+    assert!(
+        e.contains("--include-members-only") && e.contains("issues"),
+        "{e}"
+    );
+    let (gl, _) = serve(api());
+    assert!(collect(&gl, Classes::parse("code,prs,releases").unwrap(), None, 0).is_ok());
+    let (gl, _) = serve(api());
+    let out = super::collect(&gl, all(), None, 0, true).unwrap();
+    assert_eq!(out.targets.len(), 9);
+}
+
+/// H2: a members-only note flagged the old way (`confidential`) is never mirrored.
+#[test]
+fn old_style_confidential_notes_are_not_mirrored() {
+    let (gl, _) = client(false);
+    let out = collect(&gl, all(), None, 0).unwrap();
+    let issue = by_number(&out, TargetKind::Issue, 2);
+    assert!(
+        issue.comments.iter().all(|c| !c.body.contains("old-style")),
+        "{:#?}",
+        issue.comments
+    );
+}
+
+#[test]
+fn an_unreachable_gitlab_is_retried() {
+    let (gl, log) = serve(Recorded {
+        unreachable_once: RefCell::new(true),
+        ..Default::default()
+    });
+    assert_eq!(gl.project().unwrap().id, 444_821);
+    assert_eq!(log.borrow().len(), 2);
 }
 
 #[test]
@@ -282,11 +434,19 @@ fn a_limited_run_reads_one_page_of_each_listing() {
     assert!(out.truncated);
     let log = log.borrow();
     assert!(!log.iter().any(|u| u.contains("page=2")), "{log:#?}");
+    drop(log);
+    // Releases are bounded too: one of the recorded release's listing.
+    let (gl, _) = client(false);
+    let out = collect(&gl, Classes::parse("releases").unwrap(), None, 1).unwrap();
+    assert_eq!(out.releases.as_ref().map(Vec::len), Some(1));
 }
 
 #[test]
 fn a_rate_limited_request_is_retried() {
-    let (gl, log) = client_with(false, true);
+    let (gl, log) = serve(Recorded {
+        throttle_once: RefCell::new(true),
+        ..Default::default()
+    });
     assert_eq!(gl.project().unwrap().id, 444_821);
     assert_eq!(log.borrow().len(), 2);
 }
