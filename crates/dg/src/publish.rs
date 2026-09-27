@@ -169,11 +169,21 @@ impl Local {
         git(&self.root, &["remote"], &[]).is_ok_and(|out| out.lines().any(|l| l.trim() == remote))
     }
 
-    /// The remote's push URL(s) as git resolves them (`git remote get-url --all`).
+    /// The remote's fetch and push URLs as git resolves them (`git remote get-url --all`,
+    /// then `--push --all`): a push goes to the push URL, a clone reads the fetch URL.
     fn remote_urls(&self, remote: &str) -> Vec<String> {
-        git(&self.root, &["remote", "get-url", "--all", remote], &[])
-            .map(|out| out.lines().map(str::to_string).collect())
-            .unwrap_or_default()
+        let mut urls = Vec::new();
+        for args in [
+            &["remote", "get-url", "--all", remote][..],
+            &["remote", "get-url", "--push", "--all", remote][..],
+        ] {
+            for u in git(&self.root, args, &[]).unwrap_or_default().lines() {
+                if !urls.iter().any(|x| x == u) {
+                    urls.push(u.to_string());
+                }
+            }
+        }
+        urls
     }
 
     /// The branch's upstream remote, if it tracks one.
@@ -903,7 +913,9 @@ fn configure_local(
     if replicas < storage.policy.total() || opts.replicas.is_some() {
         set("dash.replicas", &replicas.to_string())?;
         out.push(format!("dash.replicas={replicas}"));
-    } else if storage.source == Source::Flag {
+    } else if storage.source != Source::GitConfig {
+        // Only a git-config source read the local count; any other source replaces the
+        // target list, and a stale count could exceed it.
         let _ = git(root, &["config", "--unset", "dash.replicas"], &[]);
     }
     // Whether the helper would pick dg's network from env + git config; pin it when not.
@@ -1014,6 +1026,7 @@ fn run_push(
         return Ok(PushOutcome { charged });
     }
     let helper_error = events.iter().rev().find(|e| e["event"] == "error");
+    let rejected = events.iter().rev().find(|e| e["event"] == "rejected");
     let code = helper_error
         .and_then(|e| e["error"]["code"].as_str())
         .and_then(|c| {
@@ -1033,7 +1046,14 @@ fn run_push(
                 None => m.to_string(),
             }
         }
-        None => format!("git push exited with {status}"),
+        None => match rejected {
+            Some(r) => format!(
+                "{} was rejected: {}",
+                r["ref"].as_str().unwrap_or("the ref"),
+                r["reason"].as_str().unwrap_or("refused")
+            ),
+            None => format!("git push exited with {status}"),
+        },
     };
     let upstream = if track { "-u " } else { "" };
     Err(UserError::new(code, format!("the push of {branch} failed"))

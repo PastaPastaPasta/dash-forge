@@ -1251,6 +1251,9 @@ async fn precheck(
     // The block says why and what to do; git's own `! [remote rejected]` lines (from the
     // per-ref reason) make the push fail.
     denied.error.eprint("dash: ");
+    let mut event = denied.error.to_json();
+    event["event"] = serde_json::json!("error");
+    progress::report(&event);
     let (refused, allowed): (Vec<PushSpec>, Vec<PushSpec>) = specs
         .iter()
         .cloned()

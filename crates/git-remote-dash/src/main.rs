@@ -292,6 +292,18 @@ fn protocol_loop<R: BufRead, W: Write>(
                 for o in &outcomes {
                     writeln!(writer, "{}", o.wire())?;
                 }
+                // A refused ref (non-fast-forward, …) for a caller reading the report file;
+                // a refusal the helper explained itself was reported already.
+                if let Some(helper::PushOutcome::Error(dst, why)) = outcomes
+                    .iter()
+                    .find(|o| matches!(o, helper::PushOutcome::Error(..)))
+                {
+                    progress::report(&serde_json::json!({
+                        "event": "rejected",
+                        "ref": dst,
+                        "reason": why,
+                    }));
+                }
                 writeln!(writer)?; // end-of-batch
                 writer.flush()?;
             }
