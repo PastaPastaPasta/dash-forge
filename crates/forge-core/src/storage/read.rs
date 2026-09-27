@@ -354,33 +354,54 @@ impl PackReader {
         // the request open for a minute each before they say so. Once bytes flow, every
         // candidate keeps its own size-scaled deadline, so a slow but healthy stream is
         // never cut off.
-        let flowing = AtomicBool::new(false);
+        //
+        // "Flowing" is per candidate: a copy that sent some bytes and then failed (a reset,
+        // a wrong hash, an HTML error page) leaves the race, and if no other copy in flight
+        // is streaming the budget starts again for the ones still waiting.
+        let flags: &[AtomicBool] = &candidates
+            .iter()
+            .map(|_| AtomicBool::new(false))
+            .collect::<Vec<_>>();
+        // Candidates in flight: (index, label).
+        let mut in_flight: Vec<(usize, String)> = Vec::new();
+        let any_flowing = |in_flight: &[(usize, String)]| {
+            in_flight
+                .iter()
+                .any(|(i, _)| flags[*i].load(Ordering::Relaxed))
+        };
         let first_byte = tokio::time::sleep(self.first_byte_budget);
         tokio::pin!(first_byte);
-        let mut pending = candidates.iter();
+        let mut pending = candidates.iter().enumerate();
         let mut race = FuturesUnordered::new();
-        let mut in_flight: Vec<String> = Vec::new();
         loop {
             while race.len() < RACE_WIDTH {
-                let Some(c) = pending.next() else { break };
+                let Some((i, c)) = pending.next() else { break };
                 // Said once, and only when a candidate is actually left untried.
                 if let Some(b) = budget.filter(|b| started.elapsed() >= *b) {
                     reasons.push(format!("gave up after the {}s budget", b.as_secs()));
-                    pending = [].iter();
+                    pending = [].iter().enumerate();
                     break;
                 }
-                in_flight.push(c.label());
-                race.push(self.fetch_one_verified(c, expected_sha256, size, &flowing));
+                in_flight.push((i, c.label()));
+                race.push(async move {
+                    (
+                        i,
+                        self.fetch_one_verified(c, expected_sha256, size, &flags[i])
+                            .await,
+                    )
+                });
             }
             let res = tokio::select! {
+                // A finished candidate first: its own error beats "sent no data".
+                biased;
                 r = race.next() => r,
-                () = &mut first_byte, if !flowing.load(Ordering::Relaxed) => {
+                () = &mut first_byte, if !any_flowing(&in_flight) => {
                     // A body may have started while this select was waiting.
-                    if flowing.load(Ordering::Relaxed) {
+                    if any_flowing(&in_flight) {
                         continue;
                     }
                     let secs = self.first_byte_budget.as_secs();
-                    for label in &in_flight {
+                    for (_, label) in &in_flight {
                         reasons.push(format!("{label}: sent no data within {secs}s"));
                     }
                     let untried = pending.len();
@@ -392,11 +413,18 @@ impl PackReader {
                     break;
                 }
             };
-            let Some(res) = res else { break };
+            let Some((done, res)) = res else { break };
+            let was_flowing = flags[done].load(Ordering::Relaxed);
+            in_flight.retain(|(i, _)| *i != done);
+            if was_flowing && !any_flowing(&in_flight) {
+                // The only streaming copy is gone: the rest get a fresh first-byte budget.
+                first_byte
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + self.first_byte_budget);
+            }
             match res {
                 Ok(bytes) => return Ok(bytes),
                 Err((label, why)) => {
-                    in_flight.retain(|l| *l != label);
                     tracing::debug!(candidate = %label, reason = %why, "external copy unusable");
                     reasons.push(format!("{label}: {why}"));
                 }
@@ -1105,6 +1133,56 @@ mod tests {
         assert_eq!(err.matches(": sent no data within 0s").count(), 2, "{err}");
         assert!(err.contains(&format!("{}: sent no data", uris[0])), "{err}");
         assert!(err.contains("1 more not tried"), "{err}");
+    }
+
+    /// A host that sends the headers and one body byte, then closes the connection.
+    fn one_byte_then_close() -> String {
+        use std::io::{BufRead as _, BufReader, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) == 0 || h == "\r\n" {
+                        break;
+                    }
+                }
+                let _ = stream.write_all(
+                    b"HTTP/1.1 200 OK\r\ncontent-length: 100\r\nconnection: close\r\n\r\nx",
+                );
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn a_copy_that_streamed_then_failed_does_not_disable_the_first_byte_budget() {
+        // One byte then a broken body, next to silent gateways: once the streaming copy is
+        // gone, the silent ones must still be given up on at the first-byte budget.
+        let broken = one_byte_then_close();
+        let silent: Vec<String> = (0..2).map(|_| silent_gateway()).collect();
+        let mut gws = vec![broken.clone()];
+        gws.extend(silent);
+        let uris: Vec<String> = gws.iter().map(|g| format!("{g}/x")).collect();
+        let r = PackReader::new(gws, &StorageProfiles::default())
+            .with_candidate_timeout(std::time::Duration::from_secs(30))
+            .with_first_byte_budget(std::time::Duration::from_millis(800));
+        let started = std::time::Instant::now();
+        let err = r
+            .fetch_verified(&uris, &"0".repeat(64), None, None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(8),
+            "the silent copies held their slots after the streaming one failed: {:?}",
+            started.elapsed()
+        );
+        assert!(err.contains("sent no data within"), "{err}");
     }
 
     #[tokio::test]

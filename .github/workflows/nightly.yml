@@ -183,8 +183,9 @@ jobs:
     needs: [fixtures, seed-read-fixture]
     if: ${{ !cancelled() && needs.fixtures.outputs.present == 'true' }}
     runs-on: ubuntu-latest
-    # checkout + protoc + toolchain + cache (~3 min), build (≤30), suite (≤45).
-    timeout-minutes: 85
+    # checkout + protoc + toolchain + cache (~3 min), storage fixture (≤3), build (≤30),
+    # fixture wait (≤3), suite (≤45), plus room for the log upload after a failure.
+    timeout-minutes: 95
     env:
       ID_OWNER_JSON: ${{ secrets.FORGE_MOUTAI_IDENTITY_OWNER }}
       ID_COLLAB_JSON: ${{ secrets.FORGE_MOUTAI_IDENTITY_COLLAB }}
@@ -192,12 +193,20 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # The local storage fixture (RustFS + kubo + nginx, infra/docker-compose.yml) the
-      # Rust workflow's `storage-it` step uses. Scenarios 11, 13 and 20 store packs on it;
-      # without it run.sh drops 11 and 13 and 20 SKIPs its dead-copy step. Started first so
-      # it comes up while the binaries build.
+      # The local S3 store from the storage fixture the Rust workflow's `storage-it` step
+      # uses (infra/docker-compose.yml): RustFS and its bucket setup only, since no CLI
+      # scenario needs kubo or nginx. Scenarios 11, 13 and 20 store packs on it. Not fatal:
+      # if it will not start, the ::error below marks the run, run.sh drops 11 and 13, 20
+      # SKIPs its dead-copy step, and every other scenario still runs. `up -d` waits for
+      # RustFS's healthcheck before it creates s3-init, so this step takes a minute or two.
       - name: Start the storage fixture
-        run: docker compose -f infra/docker-compose.yml up -d
+        id: storage
+        continue-on-error: true
+        run: |
+          docker compose -f infra/docker-compose.yml up -d rustfs s3-init || {
+            echo "::error title=Storage fixture::RustFS did not start; scenarios 11, 13 and 20 cannot store packs"
+            exit 1
+          }
 
       # Ubuntu's `protobuf-compiler` package is protoc 3.21.x, whose `libprotoc 3.21.12`
       # version string the tenderdash proto-compiler cannot parse ("invalid float literal") —
@@ -237,13 +246,17 @@ jobs:
       # The same readiness gate as `make storage-it`: the buckets, their policies and CORS
       # exist only once s3-init has exited 0.
       - name: Wait for the storage fixture
+        id: storage_wait
+        if: steps.storage.outcome == 'success'
+        continue-on-error: true
         timeout-minutes: 3
         run: |
+          fail() { echo "::error title=Storage fixture::$1; scenarios 11, 13 and 20 cannot store packs"; exit 1; }
           rc=$(docker wait forge-e2e-s3-init)
-          [ "$rc" = 0 ] || { echo "s3-init failed (exit $rc)"; docker logs forge-e2e-s3-init; exit 1; }
+          [ "$rc" = 0 ] || { docker logs forge-e2e-s3-init; fail "s3-init failed (exit $rc)"; }
           for i in $(seq 1 60); do
             curl -fsS -o /dev/null http://127.0.0.1:9000/health/ready && break
-            [ "$i" = 60 ] && { echo "RustFS not ready after 120 s"; exit 1; }
+            [ "$i" = 60 ] && fail "RustFS not ready after 120 s"
             sleep 2
           done
 
@@ -281,7 +294,7 @@ jobs:
           exit $rc
 
       - name: Storage fixture logs
-        if: failure()
+        if: failure() || steps.storage.outcome == 'failure' || steps.storage_wait.outcome == 'failure'
         run: docker compose -f infra/docker-compose.yml logs --no-color --tail 200
 
       - uses: actions/upload-artifact@v6

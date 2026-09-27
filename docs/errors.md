@@ -246,7 +246,11 @@ Fix: ask the member who pushed it to push again (`git push` re-stores it under a
 
 Fix: none needed; if the writer is still meant to be a member, re-add them and have them write it again.
 
-A clone or fetch reports E510 as `clone incomplete: a ref points at content written after the key was rotated` when a branch you asked for needs objects that only such hidden packs hold. Restoring a copy would not help, because the rule hides that content from every reader. A maintainer can re-add the writer (`dg collab add`) and have them push that branch again, or move the ref back to history every member can read.
+A clone or fetch reports E510 as `clone incomplete: N packs hidden by the late-content rule` when a branch you asked for needs objects that only such hidden packs hold. Restoring a copy would not help, because the rule hides that content from every reader.
+- **A removed member's late upload:** it becomes readable again as soon as its uploader is a member (`dg collab add`).
+- **A pack sealed under an earlier use of an epoch number:** nobody can open it again. A member whose clone has the commits can push the branch again.
+
+In either case, a maintainer can instead move the ref back to history every member can read.
 
 ## E601
 

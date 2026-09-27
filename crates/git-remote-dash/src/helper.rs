@@ -617,9 +617,17 @@ fn index_fetched(
     // ones it is E510: the history needs content the late-content rule withholds.
     let incomplete = || -> anyhow::Error {
         if unreadable.is_empty() {
-            hidden_packs_needed(repo, options.cloning, &hidden).into()
-        } else {
-            packs_unreadable(repo, options.cloning, &unreadable, total).into()
+            return hidden_packs_needed(repo, options.cloning, &hidden).into();
+        }
+        let e503 = packs_unreadable(repo, options.cloning, &unreadable, total);
+        match hidden.len() {
+            0 => e503.into(),
+            n => e503
+                .note(format!(
+                    "{n} more {} hidden by the late-content rule (E510); restoring copies will not bring those back",
+                    if n == 1 { "pack is" } else { "packs are" }
+                ))
+                .into(),
         }
     };
     if let Some(filter) = options.filter.as_deref() {
@@ -659,23 +667,37 @@ fn index_fetched(
 /// epoch number). No copy would help: the rule withholds them from every reader.
 fn hidden_packs_needed(repo: &str, cloning: bool, hidden: &[UserError]) -> UserError {
     let what = if cloning { "clone" } else { "fetch" };
+    let n = hidden.len();
     // `message: cause`, as UserError displays itself.
     let first = hidden.first().map_or_else(String::new, ToString::to_string);
-    let cause = match hidden.len() {
+    let cause = match n {
         0 | 1 => first,
-        n => format!("{first}; and {} more such pack(s)", n - 1),
+        2 => format!("{first}; and 1 more such pack"),
+        n => format!("{first}; and {} more such packs", n - 1),
     };
-    UserError::new(
+    // Two kinds (private-repos.md §8.2, §8.1 step 7). A removed member's late upload opens
+    // again as soon as its uploader is a current member (the member exception). A pack
+    // sealed under an earlier use of an epoch number opens for nobody: its key is gone.
+    let earlier_use = hidden
+        .iter()
+        .all(|u| u.message.contains("earlier use of key epoch"));
+    let err = UserError::new(
         codes::LATE_CONTENT,
         format!(
-            "{what} incomplete: a ref points at content written after the key was rotated"
+            "{what} incomplete: {n} {} hidden by the late-content rule",
+            if n == 1 { "pack" } else { "packs" }
         ),
     )
-    .cause(cause)
-    .fix(format!(
-        "a maintainer can re-add the writer (`dg collab add {repo} <identity id> --role writer`) and have them push that branch again"
-    ))
-    .fix(format!(
+    .cause(cause);
+    let err = if earlier_use {
+        err.fix("a member whose clone has these commits can push the branch again: it is stored under the current key")
+    } else {
+        err.fix(format!(
+            "a maintainer can re-add the uploader (`dg collab add {repo} <identity id> --role writer`): a current member's uploads are readable again"
+        ))
+        .fix("or a member whose clone has these commits can push the branch again")
+    };
+    err.fix(format!(
         "or a maintainer can move the ref back to history every member can read; `dg repo keys status {repo}` shows the epochs"
     ))
     .note("the content is hidden from every reader, not deleted; no other copy would open it")
@@ -1933,17 +1955,41 @@ mod tests {
         let u = hidden_packs_needed("OWNER/repo", true, &[late.clone(), late]);
         assert_eq!(u.code, "E510");
         assert_eq!(u.exit_code(), 5);
-        assert!(u.message.starts_with("clone incomplete:"), "{}", u.message);
+        assert_eq!(
+            u.message,
+            "clone incomplete: 2 packs hidden by the late-content rule"
+        );
         let cause = u.cause.clone().unwrap();
         assert!(cause.contains("uploaded under an old key"), "{cause}");
         assert!(cause.contains("no longer a member"), "{cause}");
-        assert!(cause.ends_with("; and 1 more such pack(s)"), "{cause}");
+        assert!(cause.ends_with("; and 1 more such pack"), "{cause}");
+        // A removed uploader's pack opens again once they are a member (§8.2).
         assert!(u.fix[0].contains("dg collab add OWNER/repo"), "{:?}", u.fix);
         assert!(
-            u.fix[1].contains("dg repo keys status OWNER/repo"),
+            u.fix
+                .last()
+                .unwrap()
+                .contains("dg repo keys status OWNER/repo"),
             "{:?}",
             u.fix
         );
+
+        // Sealed under an earlier use of an epoch number: nobody can open it again.
+        let earlier = UserError::new(
+            codes::LATE_CONTENT,
+            "pack 0123456789ab was sealed under an earlier use of key epoch 2",
+        );
+        let u = hidden_packs_needed("OWNER/repo", false, &[earlier]);
+        assert_eq!(
+            u.message,
+            "fetch incomplete: 1 pack hidden by the late-content rule"
+        );
+        assert!(
+            !u.fix.iter().any(|f| f.contains("collab add")),
+            "{:?}",
+            u.fix
+        );
+        assert!(u.fix[0].contains("push the branch again"), "{:?}", u.fix);
     }
     use forge_core::rules::RefState;
 

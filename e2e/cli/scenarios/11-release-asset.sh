@@ -8,8 +8,8 @@
 #   4. A reader with NO storage credentials downloads it through the public URL; the bytes
 #      are sha256-verified and identical to the file.
 #
-# Needs infra/docker-compose.yml up (RustFS). SKIPs when RustFS is down (the nightly runner has
-# none); `make storage-e2e` brings it up. The asset lives on this machine's RustFS, which is
+# Needs infra/docker-compose.yml up (RustFS). SKIPs when RustFS is down (the nightly starts it;
+# locally `make infra-up`). The asset lives on this machine's RustFS, which is
 # fine for a release (no clone depends on it).
 SCENARIO_NAME="11 release with an asset on RustFS"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
