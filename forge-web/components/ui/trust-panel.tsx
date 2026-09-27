@@ -125,7 +125,7 @@ export function TrustPanel({ report }: { report: TrustReport }): JSX.Element {
           </span>
         </span>
         <ChevronRight
-          className={cn('mt-0.5 h-4 w-4 shrink-0 text-anvil-400 transition-transform', open && 'rotate-90')}
+          className={cn('mt-0.5 h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400 transition-transform', open && 'rotate-90')}
           aria-hidden
         />
       </button>

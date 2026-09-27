@@ -152,7 +152,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
           {profile.name ? (
             <div className="text-dense font-medium">
               {profile.name}
-              {profile.namedAt ? <span className="ml-2 text-[12px] font-normal text-anvil-500">named {formatDate(profile.namedAt)}</span> : null}
+              {profile.namedAt ? <span className="ml-2 text-[12px] font-normal text-anvil-500 dark:text-anvil-400">named {formatDate(profile.namedAt)}</span> : null}
             </div>
           ) : null}
           <div data-testid="granted-identity" className="break-all font-mono text-dense">
@@ -160,7 +160,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
           </div>
         </div>
         {profile.warnings.map((w) => (
-          <div key={w} role="alert" data-testid="responder-warning" className="flex gap-2 rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-dense text-danger">
+          <div key={w} role="alert" data-testid="responder-warning" className="flex gap-2 rounded-md border border-danger/40 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
             <span>{w}</span>
           </div>
@@ -194,7 +194,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
         >
           Finish signing in
         </Button>
-        {problem ? <p className="text-[12px] text-anvil-500">{problem}</p> : null}
+        {problem ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{problem}</p> : null}
         <ErrorBox error={error} />
       </div>
     )
@@ -235,7 +235,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
             >
               <Smartphone className="h-4 w-4" aria-hidden /> {isRegister ? 'Add the key in DashPay (Dash Wallet)' : 'Open in DashPay (Dash Wallet)'}
             </a>
-            <details className="text-[12px] text-anvil-500">
+            <details className="text-[12px] text-anvil-500 dark:text-anvil-400">
               <summary className="cursor-pointer">Wallet on another device? Show the QR code</summary>
               <div className="pt-2">
                 <Qr value={uri} label={qrLabel} size={180} />
@@ -246,11 +246,11 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
           <Qr value={uri} label={qrLabel} size={200} />
         )
       ) : error ? null : (
-        <Loader2 className="mx-auto h-5 w-5 animate-spin text-anvil-400" aria-hidden />
+        <Loader2 className="mx-auto h-5 w-5 animate-spin text-anvil-500 dark:text-anvil-400" aria-hidden />
       )}
       {step?.kind === 'request' ? <p className="text-dense">Keep this QR code private: anyone who scans it can answer it.</p> : null}
       {status === 'incomplete-read' && step?.kind === 'request' ? (
-        <p className="text-[12px] text-caution" data-testid="incomplete-read">
+        <p className="text-[12px] text-caution-700 dark:text-caution-400" data-testid="incomplete-read">
           Couldn&apos;t read all answer sources — retrying. Forge won&apos;t accept an answer until it has read them all.
         </p>
       ) : null}
@@ -297,7 +297,7 @@ export function WalletSupportNote(): JSX.Element {
 export function UnlimitedKeyWarning({ unbounded }: { unbounded: boolean }): JSX.Element {
   return (
     <div role="note" data-testid="unlimited-key-warning" className="flex gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense">
-      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution" aria-hidden />
+      <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
       <span>
         This wallet key has no spending limit or expiry: anyone who copies it from this browser can spend your balance
         {unbounded ? ', on any Platform app, not only Forge' : ' on Forge'}. Disabling it on chain stops it, but this wallet derives the same key every time,
@@ -316,7 +316,7 @@ function Countdown({ until }: { until: number }): JSX.Element {
   }, [])
   const left = Math.max(0, Math.round((until - now) / 1000))
   return (
-    <p className="text-center font-mono text-[12px] text-anvil-500" aria-live="off" data-testid="request-countdown">
+    <p className="text-center font-mono text-[12px] text-anvil-500 dark:text-anvil-400" aria-live="off" data-testid="request-countdown">
       Expires in {Math.floor(left / 60)}:{String(left % 60).padStart(2, '0')}
     </p>
   )

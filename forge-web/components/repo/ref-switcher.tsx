@@ -63,9 +63,9 @@ export function RefSwitcher({
         aria-expanded={open}
         className="inline-flex items-center gap-1.5 rounded-md border border-anvil-200 bg-white px-2.5 py-1 text-dense text-anvil-700 transition-colors hover:border-anvil-300 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-200 dark:hover:border-anvil-600"
       >
-        <CurrentIcon className="h-3.5 w-3.5 text-anvil-400" aria-hidden />
+        <CurrentIcon className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
         <span className="max-w-[180px] truncate font-mono">{current.name}</span>
-        <ChevronDown className="h-3.5 w-3.5 text-anvil-400" aria-hidden />
+        <ChevronDown className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
       </button>
 
       {open ? (
@@ -167,7 +167,7 @@ function RefGroup({
   const Icon = isTagGroup ? Tag : GitBranch
   return (
     <div>
-      <div className="px-3 pb-1 pt-2 text-[11px] uppercase tracking-wide text-anvil-400">{label}</div>
+      <div className="px-3 pb-1 pt-2 text-[11px] uppercase tracking-wide text-anvil-500 dark:text-anvil-400">{label}</div>
       {[...names].sort((a, b) => a.localeCompare(b)).map((name) => {
         const active = current.isTag === isTagGroup && current.name === name
         return (
@@ -182,7 +182,7 @@ function RefGroup({
               active ? 'text-anvil-900 dark:text-anvil-50' : 'text-anvil-600 dark:text-anvil-300',
             )}
           >
-            <Icon className="h-3.5 w-3.5 shrink-0 text-anvil-400" aria-hidden />
+            <Icon className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
             <span className="min-w-0 flex-1 truncate font-mono">{name}</span>
             {active ? <Check className="h-3.5 w-3.5 shrink-0 text-forge-500" aria-hidden /> : null}
           </Link>

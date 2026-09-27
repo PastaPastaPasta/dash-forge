@@ -30,6 +30,7 @@ import { lineKey } from '@/lib/view/inline-threads'
 import { useMinWidth, usePrefs } from '@/hooks/use-prefs'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/states'
+import { ScrollRegion } from '@/components/ui/scroll-region'
 import { cn } from '@/lib/utils'
 
 /**
@@ -55,17 +56,13 @@ const PATCH_CONCURRENCY = 4
 const PATCH_FLUSH_MS = 100
 
 /**
- * Text shades for small added/deleted counts. The semantic `verify` / `danger` hues are one
- * weight too light for 12px text: `danger` on the dark theme's background is 4.0:1, under
- * WCAG AA's 4.5:1. These are the same hues a step darker (light) or lighter (dark).
+ * A changed file's A / M / D letter. Added and deleted take the diff palette's marker colors
+ * (AA-checked in `lib/design/contrast.test.ts`), so the color-blind palette recolors them too.
  */
-const ADDED_TEXT = 'text-green-700 dark:text-green-400'
-const DELETED_TEXT = 'text-red-700 dark:text-red-400'
-
-const STATUS_META: Record<FileChange['status'], { label: string; klass: string }> = {
-  added: { label: 'A', klass: ADDED_TEXT },
-  modified: { label: 'M', klass: 'text-caution' },
-  deleted: { label: 'D', klass: DELETED_TEXT },
+function statusMeta(status: FileChange['status'], palette: DiffPalette): { label: string; klass: string } {
+  if (status === 'added') return { label: 'A', klass: DIFF_PALETTES[palette].added.marker }
+  if (status === 'deleted') return { label: 'D', klass: DIFF_PALETTES[palette].deleted.marker }
+  return { label: 'M', klass: 'text-caution-700 dark:text-caution-400' }
 }
 
 const anchorId = (index: number): string => `diff-file-${index}`
@@ -84,7 +81,7 @@ export function DiffView({
   fileHref?: (path: string) => string
 }): JSX.Element {
   const [shown, setShown] = useState(Math.min(FILE_PAGE, changes.length))
-  const [{ ignoreWhitespace }] = usePrefs()
+  const [{ ignoreWhitespace, palette }] = usePrefs()
   // Patches are keyed by mode + path: toggling whitespace loads the other mode's patches
   // without discarding these (toggling back is instant).
   const keyOf = (path: string): string => `${ignoreWhitespace ? 'w' : 'x'}:${path}`
@@ -172,20 +169,20 @@ export function DiffView({
       <DiffToolbar />
       <details open={changes.length <= FILE_PAGE} className="group rounded-lg border border-anvil-200 dark:border-anvil-800">
         <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 text-dense [&::-webkit-details-marker]:hidden">
-          <ChevronRight className="h-3.5 w-3.5 text-anvil-400 transition-transform group-open:rotate-90" aria-hidden />
-          <FileDiff className="h-3.5 w-3.5 text-anvil-400" aria-hidden />
+          <ChevronRight className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400 transition-transform group-open:rotate-90" aria-hidden />
+          <FileDiff className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
           <span className="font-medium">
             {changes.length}
             {truncated ? '+' : ''} file{changes.length === 1 ? '' : 's'} changed
           </span>
           <DiffStat added={added} deleted={deleted} />
           {counted < textFiles ? (
-            <span className="text-[12px] text-anvil-400">line counts cover {counted} of {textFiles} files</span>
+            <span className="text-[12px] text-anvil-500 dark:text-anvil-400">line counts cover {counted} of {textFiles} files</span>
           ) : null}
         </summary>
         <ul className="max-h-80 overflow-y-auto border-t border-anvil-200 dark:border-anvil-800">
           {changes.map((c, index) => {
-            const meta = STATUS_META[c.status]
+            const meta = statusMeta(c.status, palette)
             const p = patches.get(c.path)
             return (
               <li key={c.path}>
@@ -199,7 +196,7 @@ export function DiffView({
                   </span>
                   <span className="min-w-0 flex-1 truncate font-mono">{c.path}</span>
                   {p?.kind === 'text' ? <DiffStat added={p.added} deleted={p.deleted} /> : null}
-                  {p?.kind === 'placeholder' ? <span className="text-[12px] text-anvil-400">{p.reason}</span> : null}
+                  {p?.kind === 'placeholder' ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{p.reason}</span> : null}
                 </button>
               </li>
             )
@@ -300,7 +297,8 @@ function FilePatchView({
 }): JSX.Element {
   // Deleted files start collapsed: their patch is the whole old file in red.
   const [open, setOpen] = useState(change.status !== 'deleted')
-  const meta = STATUS_META[change.status]
+  const [{ palette }] = usePrefs()
+  const meta = statusMeta(change.status, palette)
   const modeChanged =
     change.baseMode !== null && change.headMode !== null && change.baseMode !== change.headMode
 
@@ -312,7 +310,7 @@ function FilePatchView({
           onClick={() => setOpen((o) => !o)}
           aria-expanded={open}
           aria-label={`${open ? 'Collapse' : 'Expand'} ${change.path}`}
-          className="rounded p-0.5 text-anvil-400 hover:bg-anvil-200 hover:text-anvil-700 dark:hover:bg-anvil-800 dark:hover:text-anvil-200"
+          className="rounded p-0.5 text-anvil-500 dark:text-anvil-400 hover:bg-anvil-200 hover:text-anvil-700 dark:hover:bg-anvil-800 dark:hover:text-anvil-200"
         >
           {open ? <ChevronDown className="h-4 w-4" aria-hidden /> : <ChevronRight className="h-4 w-4" aria-hidden />}
         </button>
@@ -320,14 +318,14 @@ function FilePatchView({
           {meta.label}
         </span>
         {href ? (
-          <Link href={href} className="min-w-0 flex-1 truncate font-mono hover:text-forge-600 dark:hover:text-forge-400">
+          <Link href={href} className="min-w-0 flex-1 truncate font-mono hover:text-forge-800 dark:hover:text-forge-400">
             {change.path}
           </Link>
         ) : (
           <span className="min-w-0 flex-1 truncate font-mono">{change.path}</span>
         )}
         {modeChanged ? (
-          <span className="shrink-0 font-mono text-[12px] text-anvil-400">
+          <span className="shrink-0 font-mono text-[12px] text-anvil-500 dark:text-anvil-400">
             {modeString(change.baseMode as number)} → {modeString(change.headMode as number)}
           </span>
         ) : null}
@@ -448,7 +446,7 @@ function PatchLines({ path, lines }: { path: string; lines: readonly CompactDiff
   )
   return (
     <>
-      <div className="overflow-x-auto">
+      <ScrollRegion label={`Changes to ${path}`} className="overflow-x-auto">
         <table
           className={cn('w-full border-collapse font-mono text-[12px] leading-5', split && 'table-fixed')}
           aria-label={`Changes to ${path}${split ? ' (side by side)' : ''}`}
@@ -502,7 +500,7 @@ function PatchLines({ path, lines }: { path: string; lines: readonly CompactDiff
                 })}
           </tbody>
         </table>
-      </div>
+      </ScrollRegion>
       {lines.length > limit ? (
         <div className="flex items-center justify-center gap-3 border-t border-anvil-100 py-2 dark:border-anvil-850">
           <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{lines.length - limit} more rows</span>

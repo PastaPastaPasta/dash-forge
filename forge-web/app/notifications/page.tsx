@@ -84,7 +84,7 @@ export default function NotificationsPage(): JSX.Element {
         </div>
 
         <p role="note" className="flex items-start gap-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-dense text-anvil-700 dark:border-anvil-800 dark:bg-anvil-900 dark:text-anvil-200">
-          <Info className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500" aria-hidden />
+          <Info className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
           <span>
             Local only: this tab checks the chain every {POLL_MS / 1000} s while it is open. There is no email, no push and no
             sync to your other devices; each browser keeps its own read state.
@@ -98,7 +98,7 @@ export default function NotificationsPage(): JSX.Element {
               type="button"
               aria-pressed={filter === f}
               onClick={() => setFilter(f)}
-              className={cn('rounded px-3 py-1 text-dense font-medium', filter === f ? 'bg-forge-500/15 text-forge-700 dark:text-forge-300' : 'text-anvil-600 dark:text-anvil-300')}
+              className={cn('rounded px-3 py-1 text-dense font-medium', filter === f ? 'bg-forge-500/15 text-forge-800 dark:text-forge-300' : 'text-anvil-600 dark:text-anvil-300')}
             >
               {f === 'unread' ? `Unread (${unread})` : `All (${items.length})`}
             </button>
@@ -147,7 +147,7 @@ export default function NotificationsPage(): JSX.Element {
                 </li>
               ) : null}
               {subs.incomplete && subs.incomplete.length > 0 ? (
-                <li className="text-caution" data-partial="true">
+                <li className="text-caution-700 dark:text-caution-400" data-partial="true">
                   Could not read all of: {subs.incomplete.join('; ')}. What they would add is not watched until the next check
                   succeeds.
                 </li>
@@ -183,7 +183,7 @@ function InboxRow({ item, onRead }: { item: InboxItem; onRead: () => void }): JS
   const Icon = ICON[item.kind]
   return (
     <li className={cn('flex items-start gap-3 px-3 py-2.5 sm:px-4', item.read ? 'bg-transparent' : 'bg-forge-500/5')} data-read={item.read}>
-      <Icon className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500" aria-hidden />
+      <Icon className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
       <div className="min-w-0 flex-1">
         <Link href={hrefOf(item)} onClick={onRead} className="block text-dense hover:underline">
           <span className="font-mono text-anvil-500 dark:text-anvil-400">{item.repo.name}</span>

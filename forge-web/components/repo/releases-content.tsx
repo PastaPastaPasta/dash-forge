@@ -162,10 +162,10 @@ function ReleaseCard({
       )}
     >
       <header className="flex flex-wrap items-center gap-2">
-        <Tag className="h-4 w-4 text-anvil-400" aria-hidden />
+        <Tag className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
         <Link
           href={repoHref('/repo/release', addr, { tag: r.tagName })}
-          className="font-mono text-prose font-semibold text-anvil-900 hover:text-forge-600 dark:text-anvil-50 dark:hover:text-forge-400"
+          className="font-mono text-prose font-semibold text-anvil-900 hover:text-forge-800 dark:text-anvil-50 dark:hover:text-forge-400"
         >
           {r.tagName}
         </Link>
@@ -174,7 +174,7 @@ function ReleaseCard({
           <span className="rounded bg-anvil-100 px-1.5 text-[11px] uppercase text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300">previous</span>
         ) : null}
         {r.yanked ? (
-          <span className="inline-flex items-center gap-1 rounded bg-caution/10 px-1.5 text-[11px] uppercase text-caution-700 dark:text-caution">
+          <span className="inline-flex items-center gap-1 rounded bg-caution/10 px-1.5 text-[11px] uppercase text-caution-700 dark:text-caution-400">
             <AlertTriangle className="h-3 w-3" aria-hidden /> yanked
           </span>
         ) : null}
@@ -196,7 +196,7 @@ function ReleaseCard({
         </ul>
       ) : null}
       {r.badAssets > 0 ? (
-        <p className="mt-2 text-[12px] text-caution-700 dark:text-caution">
+        <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400">
           {r.badAssets} {r.badAssets === 1 ? 'asset entry is' : 'asset entries are'} unreadable and not shown.
         </p>
       ) : null}
@@ -234,7 +234,7 @@ function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
       data-state={state.kind}
       className={cn('flex flex-wrap items-center gap-2 px-3 py-2 text-dense', bad && 'bg-danger/5')}
     >
-      <FileArchive className={cn('h-4 w-4 shrink-0', bad ? 'text-danger' : 'text-anvil-400')} aria-hidden />
+      <FileArchive className={cn('h-4 w-4 shrink-0', bad ? 'text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400')} aria-hidden />
       <span className="min-w-0 flex-1 truncate font-mono">{asset.name}</span>
       {asset.size !== null ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{formatBytes(asset.size)}</span> : null}
       <span className="font-mono text-[11px] text-anvil-500 dark:text-anvil-400" title={`SHA-256 ${asset.sha256}`}>
@@ -251,15 +251,15 @@ function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
             {state.progress ? ` · ${formatBytes(state.progress.bytes)}${state.progress.total ? ` of ${formatBytes(state.progress.total)}` : ''}` : ''}
           </span>
         ) : state.kind === 'saved' ? (
-          <span className="inline-flex items-center gap-1 text-verify-700 dark:text-verify">
+          <span className="inline-flex items-center gap-1 text-verify-700 dark:text-verify-400">
             <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> Verified: the SHA-256 matched, saved.
           </span>
         ) : state.kind === 'mismatch' ? (
-          <span className="inline-flex items-center gap-1 font-medium text-danger">
+          <span className="inline-flex items-center gap-1 font-medium text-danger-700 dark:text-danger-400">
             <XCircle className="h-3.5 w-3.5" aria-hidden /> Failed: {state.message}. Not saved.
           </span>
         ) : state.kind === 'error' ? (
-          <span className="inline-flex items-center gap-1 text-caution-700 dark:text-caution">
+          <span className="inline-flex items-center gap-1 text-caution-700 dark:text-caution-400">
             <AlertTriangle className="h-3.5 w-3.5" aria-hidden /> Couldn&apos;t download: {state.message}
           </span>
         ) : null}

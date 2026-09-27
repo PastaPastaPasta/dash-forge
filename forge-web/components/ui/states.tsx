@@ -67,7 +67,7 @@ export function ErrorState({
 }): JSX.Element {
   return (
     <div className="flex flex-col items-center justify-center rounded-lg border border-danger/30 bg-danger/5 px-6 py-10 text-center">
-      <span className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-danger/10 text-danger">
+      <span className="mb-3 flex h-10 w-10 items-center justify-center rounded-full bg-danger/10 text-danger-700 dark:text-danger-400">
         <AlertTriangle className="h-5 w-5" aria-hidden />
       </span>
       <h3 className="text-prose text-anvil-900 dark:text-anvil-50">{title}</h3>

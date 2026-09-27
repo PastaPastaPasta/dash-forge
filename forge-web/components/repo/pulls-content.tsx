@@ -29,11 +29,11 @@ type Filter = 'open' | 'closed' | 'all'
 
 function pullStatus(p: PullView): { label: string; icon: JSX.Element; klass: string } {
   // A fold over a partial event log is not a state. Say unverified rather than guess.
-  if (!p.stateComplete) return { label: 'Unverified', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, klass: 'text-danger' }
+  if (!p.stateComplete) return { label: 'Unverified', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, klass: 'text-danger-700 dark:text-danger-400' }
   if (p.state.merged) return { label: 'Merged', icon: <GitMerge className="h-4 w-4" aria-hidden />, klass: 'text-dash' }
-  if (!p.state.open) return { label: 'Closed', icon: <GitPullRequestClosed className="h-4 w-4" aria-hidden />, klass: 'text-danger' }
-  if (p.state.draft) return { label: 'Draft', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, klass: 'text-anvil-400' }
-  return { label: 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, klass: 'text-verify' }
+  if (!p.state.open) return { label: 'Closed', icon: <GitPullRequestClosed className="h-4 w-4" aria-hidden />, klass: 'text-danger-700 dark:text-danger-400' }
+  if (p.state.draft) return { label: 'Draft', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, klass: 'text-anvil-500 dark:text-anvil-400' }
+  return { label: 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, klass: 'text-verify-700 dark:text-verify-400' }
 }
 
 export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
@@ -102,7 +102,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
                 <span className={cn('mt-0.5 shrink-0', st.klass)}>{st.icon}</span>
                 <div className="min-w-0 flex-1">
                   <span className="text-dense font-medium text-anvil-900 dark:text-anvil-50">{p.title || '(untitled)'}</span>
-                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-400">
+                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
                     <span className="font-mono">#{p.number}</span>
                     <span>{st.label} · into <span className="font-mono">{p.baseRefName || '?'}</span> · {timeAgo(p.createdAt)} by</span>
                     <Author identityId={p.author} link={false} />

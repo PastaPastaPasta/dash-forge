@@ -50,12 +50,12 @@ type AssetState = { readonly state: 'waiting' | 'uploading' | 'failed' } | { rea
 function AssetStateIcon({ state }: { state: AssetState | undefined }): JSX.Element | null {
   switch (state?.state) {
     case 'uploading':
-      return <Loader2 className="h-3.5 w-3.5 animate-spin text-anvil-500" aria-hidden />
+      return <Loader2 className="h-3.5 w-3.5 animate-spin text-anvil-500 dark:text-anvil-400" aria-hidden />
     case 'done':
       return state.copies < state.of ? (
-        <AlertTriangle className="h-3.5 w-3.5 text-caution-700 dark:text-caution" aria-hidden />
+        <AlertTriangle className="h-3.5 w-3.5 text-caution-700 dark:text-caution-400" aria-hidden />
       ) : (
-        <CheckCircle2 className="h-3.5 w-3.5 text-verify-700 dark:text-verify" aria-hidden />
+        <CheckCircle2 className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />
       )
     case 'failed':
       return <XCircle className="h-3.5 w-3.5 text-danger-700 dark:text-danger-400" aria-hidden />
@@ -245,7 +245,7 @@ function NewReleaseDialog({
       <div className="space-y-3">
         {repo.visibility === 'private' ? (
           <p role="note" className="flex items-start gap-1.5 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px] text-anvil-700 dark:text-anvil-200" data-testid="release-plaintext-note">
-            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-caution" aria-hidden />
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
             Release notes and labels are not encrypted in this release: anyone can read the tag, title and notes. Assets can&apos;t be attached to a private repo&apos;s release, because they would be uploaded unencrypted.
           </p>
         ) : null}
@@ -253,7 +253,7 @@ function NewReleaseDialog({
           <Input id="release-tag" value={tag} onChange={(e) => setTag(e.target.value)} onBlur={() => setTouched(true)} className="font-mono" placeholder="v1.0.0" disabled={locked} autoFocus />
         </Field>
         {existing ? (
-          <p role="note" className="flex items-start gap-1.5 text-[12px] text-caution-700 dark:text-caution">
+          <p role="note" className="flex items-start gap-1.5 text-[12px] text-caution-700 dark:text-caution-400">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
             {trimmedTag} already has a release{existing.name ? ` (“${existing.name}”)` : ''}. This one replaces it as the current release; its assets are not carried over, and the old one is listed as previous.
           </p>
@@ -306,10 +306,10 @@ function NewReleaseDialog({
         </div>
         )}
         <CostPreview cost={cost} />
-        <p id="release-problem" className="text-[12px] text-caution-700 dark:text-caution">
+        <p id="release-problem" className="text-[12px] text-caution-700 dark:text-caution-400">
           {shownProblem ?? ''}
         </p>
-        <p role="status" aria-live="polite" className={cn('text-dense', phase === 'done' ? 'text-verify-700 dark:text-verify' : 'sr-only')}>
+        <p role="status" aria-live="polite" className={cn('text-dense', phase === 'done' ? 'text-verify-700 dark:text-verify-400' : 'sr-only')}>
           {status}
         </p>
         {error ? (

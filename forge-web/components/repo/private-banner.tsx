@@ -74,7 +74,7 @@ export function PrivateBanner({ home }: { home: RepoHome }): JSX.Element | null 
   if (access === undefined) return null
   if (access.access === 'no-key') {
     return (
-      <Note tone="caution" icon={<KeyRound className="h-4 w-4 text-caution" aria-hidden />} testId="private-no-key">
+      <Note tone="caution" icon={<KeyRound className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />} testId="private-no-key">
         <p className="font-medium">You&apos;re a member, but this browser has no encryption key to read this repo.</p>
         <p className="mt-1">
           Add your identity&apos;s encryption key in{' '}
@@ -102,7 +102,7 @@ function MemberAlerts({ home, session }: { home: RepoHome; session: PrivateSessi
   const parts: JSX.Element[] = []
   if (alerts.length > 0) {
     parts.push(
-      <Note key="alerts" tone="danger" icon={<ShieldAlert className="h-4 w-4 text-danger" aria-hidden />} testId="private-alerts">
+      <Note key="alerts" tone="danger" icon={<ShieldAlert className="h-4 w-4 text-danger-700 dark:text-danger-400" aria-hidden />} testId="private-alerts">
         {alerts.map((a) => (
           <AlertLine key={`${a.kind}:${a.epoch}:${'author' in a ? bytesToHex(a.author) : ''}`} alert={a} />
         ))}
@@ -112,7 +112,7 @@ function MemberAlerts({ home, session }: { home: RepoHome; session: PrivateSessi
   if (cannotReadCurrent) {
     const setBy = r.currentEpoch === null ? undefined : session.anchors.get(r.currentEpoch)?.owner
     parts.push(
-      <Note key="current" tone="caution" icon={<KeyRound className="h-4 w-4 text-caution" aria-hidden />} testId="private-no-current">
+      <Note key="current" tone="caution" icon={<KeyRound className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />} testId="private-no-current">
         You don&apos;t have the current key (epoch {r.currentEpoch}) yet, so new content is hidden. A maintainer who holds it may be
         able to hand it to you with Repair on this repo&apos;s page.
         {maintainer && setBy !== undefined ? (
@@ -126,21 +126,21 @@ function MemberAlerts({ home, session }: { home: RepoHome; session: PrivateSessi
   }
   if (closed && !maintainer) {
     parts.push(
-      <Note key="closed" tone="caution" icon={<KeyRound className="h-4 w-4 text-caution" aria-hidden />} testId="private-closed">
+      <Note key="closed" tone="caution" icon={<KeyRound className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />} testId="private-closed">
         Key epoch {r.currentEpoch} is closed, so nothing new can be written until a maintainer rotates the key from this repo&apos;s page.
       </Note>,
     )
   }
   if (maintainer && session.unanchoredDocs > 0) {
     parts.push(
-      <Note key="unanchored" tone="info" icon={<AlertTriangle className="h-4 w-4 text-anvil-500" aria-hidden />}>
+      <Note key="unanchored" tone="info" icon={<AlertTriangle className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
         {session.unanchoredDocs} documents under an unrecognised epoch.
       </Note>,
     )
   }
   if (maintainer && session.suspectManifests.size > 0) {
     parts.push(
-      <Note key="suspect" tone="info" icon={<AlertTriangle className="h-4 w-4 text-anvil-500" aria-hidden />}>
+      <Note key="suspect" tone="info" icon={<AlertTriangle className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
         {session.suspectManifests.size} {session.suspectManifests.size === 1 ? 'pack was' : 'packs were'} uploaded under an old key.
       </Note>,
     )
@@ -162,7 +162,7 @@ function RepairNote({ home, session, self, plan }: { home: RepoHome; session: Pr
   const canAct = current !== null && session.resolution.keys.has(current) && (plan.rotate.length > 0 || plan.wrap.length > 0 || plan.burned)
   const closer = current === null ? undefined : session.anchors.get(current)?.owner
   return (
-    <Note tone="caution" icon={<Wrench className="h-4 w-4 text-caution" aria-hidden />} testId="private-repair">
+    <Note tone="caution" icon={<Wrench className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />} testId="private-repair">
       {plan.burned && closer !== undefined ? (
         <p data-testid="private-closed">
           key epoch {current} was closed by <Author identityId={closer} link={false} />

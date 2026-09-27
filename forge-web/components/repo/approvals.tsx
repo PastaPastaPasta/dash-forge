@@ -24,7 +24,7 @@ export function Approvals({ approvals, headOid }: { approvals: PullApprovals; he
       <div className="space-y-1">
         {approved !== '' ? (
           <p className="flex flex-wrap items-center gap-1.5 font-medium text-anvil-900 dark:text-anvil-50" data-testid="fold-approved">
-            <Check className="h-4 w-4 text-verify" aria-hidden />
+            <Check className="h-4 w-4 text-verify-700 dark:text-verify-400" aria-hidden />
             Approved by {approved} on {headOid ? <Oid value={headOid} chars={7} copyable={false} /> : 'this head'}
           </p>
         ) : null}
@@ -69,13 +69,13 @@ function Row({ row }: { row: ReviewerRow }): JSX.Element {
   return (
     <li className={cn('flex flex-wrap items-center gap-2', !counted && 'text-anvil-600 dark:text-anvil-400')}>
       {s.kind === 'approved' ? (
-        <Check className="h-3.5 w-3.5 text-verify" aria-hidden />
+        <Check className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />
       ) : s.kind === 'changes' ? (
         <X className="h-3.5 w-3.5 text-danger-700 dark:text-danger-400" aria-hidden />
       ) : s.kind === 'stale' ? (
-        <Clock className="h-3.5 w-3.5 text-anvil-400" aria-hidden />
+        <Clock className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
       ) : (
-        <MinusCircle className="h-3.5 w-3.5 text-anvil-400" aria-hidden />
+        <MinusCircle className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
       )}
       <Author identityId={row.reviewer} link={false} />
       <span>

@@ -158,7 +158,7 @@ function RootBody({
       {data.readme ? (
         <section aria-label="README" className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
           <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense font-medium dark:border-anvil-800 dark:bg-anvil-900">
-            <FileText className="h-3.5 w-3.5 text-anvil-400" aria-hidden />
+            <FileText className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
             {data.readmeName}
           </div>
           <div className="px-5 py-4">
@@ -178,13 +178,13 @@ function RootBody({
 
 function CommitCell({ commit, loading, addr }: { commit: LastCommit | undefined; loading: boolean; addr: RepoAddress }): JSX.Element {
   if (commit === undefined) {
-    return <span className="text-anvil-400 dark:text-anvil-500">{loading ? '…' : ''}</span>
+    return <span className="text-anvil-500 dark:text-anvil-400">{loading ? '…' : ''}</span>
   }
   return (
     <>
       <Link
         href={repoHref('/repo/commit', addr, { oid: commit.oid })}
-        className="min-w-0 flex-1 truncate text-anvil-600 hover:text-forge-600 dark:text-anvil-300 dark:hover:text-forge-400"
+        className="min-w-0 flex-1 truncate text-anvil-600 hover:text-forge-800 dark:text-anvil-300 dark:hover:text-forge-400"
       >
         {commit.subject || '(no message)'}
       </Link>
@@ -217,7 +217,7 @@ function GoToFile({
   const hits = q === '' ? [] : (walk.data?.files ?? []).map((f) => f.path).filter((p) => p.toLowerCase().includes(q)).slice(0, 12)
   return (
     <div className="relative ml-auto w-full sm:w-56">
-      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-anvil-400" aria-hidden />
+      <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-anvil-500 dark:text-anvil-400" aria-hidden />
       <label htmlFor="go-to-file" className="sr-only">
         Go to file
       </label>
@@ -240,7 +240,7 @@ function GoToFile({
           className="absolute right-0 z-20 mt-1 max-h-72 w-full overflow-y-auto rounded-lg border border-anvil-200 bg-white py-1 shadow-lg dark:border-anvil-750 dark:bg-anvil-900 sm:w-80"
         >
           {walk.loading ? <li className="px-3 py-1.5 text-anvil-500 dark:text-anvil-400">Listing files…</li> : null}
-          {walk.error ? <li className="px-3 py-1.5 text-danger">{walk.error}</li> : null}
+          {walk.error ? <li className="px-3 py-1.5 text-danger-700 dark:text-danger-400">{walk.error}</li> : null}
           {!walk.loading && hits.length === 0 ? <li className="px-3 py-1.5 text-anvil-500 dark:text-anvil-400">No matching file.</li> : null}
           {hits.map((p) => (
             <li key={p} role="option" aria-selected={false}>
@@ -304,7 +304,7 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
       </p>
       {!configured ? (
         <p role="note" className="mt-3 flex items-start gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px] text-anvil-700 dark:text-anvil-200">
-          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-caution" aria-hidden />
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
           <span>
             No storage configured: pushes will be stored on Platform at ~0.28 DASH/MiB.{' '}
             <Link href="/settings/storage" className="font-medium text-forge-700 underline dark:text-forge-400">

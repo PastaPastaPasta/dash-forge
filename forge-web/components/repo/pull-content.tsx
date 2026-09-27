@@ -156,7 +156,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
     <div className="mx-auto max-w-3xl space-y-5">
       <div>
         <h1 className="text-2xl">
-          {pull.title || '(untitled)'} <span className="font-mono font-normal text-anvil-400">#{pull.number}</span>
+          {pull.title || '(untitled)'} <span className="font-mono font-normal text-anvil-500 dark:text-anvil-400">#{pull.number}</span>
         </h1>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-dense">
           <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium text-white ${status.bg}`}>
@@ -166,7 +166,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
           <span className="text-anvil-500 dark:text-anvil-400">
             <Author identityId={pull.author} link={false} /> wants to merge into <span className="font-mono">{pull.baseRefName || '?'}</span> · {timeAgo(pull.createdAt)}
           </span>
-          {pull.headOid ? <span className="flex items-center gap-1 text-anvil-400">head <Oid value={pull.headOid} chars={9} /></span> : null}
+          {pull.headOid ? <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400">head <Oid value={pull.headOid} chars={9} /></span> : null}
           <CopyLinkButton repo={addr} target={{ kind: 'pull', number: pull.number }} className="ml-auto" />
         </div>
         {/* Where the PR's objects actually live. Without this a reviewer has a commit id
@@ -185,7 +185,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
               )}
               {pull.sourceRefName ? <> on <span className="font-mono">{pull.sourceRefName}</span></> : null}
             </span>
-            <div className="mt-1 font-mono text-[12px] text-anvil-400 break-all">
+            <div className="mt-1 font-mono text-[12px] text-anvil-500 dark:text-anvil-400 break-all">
               {checkoutCommand(home.repo, pull.number)}
             </div>
           </div>
@@ -200,10 +200,10 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
       <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
         <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
           <Author identityId={pull.author} />
-          <span className="text-anvil-400">proposed {timeAgo(pull.createdAt)}</span>
+          <span className="text-anvil-500 dark:text-anvil-400">proposed {timeAgo(pull.createdAt)}</span>
         </div>
         <div className="px-4 py-3">
-          {pull.body ? <MarkdownView source={pull.body} /> : <p className="italic text-anvil-400">No description.</p>}
+          {pull.body ? <MarkdownView source={pull.body} /> : <p className="italic text-anvil-500 dark:text-anvil-400">No description.</p>}
         </div>
       </div>
 
@@ -292,7 +292,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
               </Button>
             ))}
             {!isMember && holdings.settled ? (
-              <span className="text-[12px] text-anvil-400">Only approvals from maintainers and writers count.</span>
+              <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Only approvals from maintainers and writers count.</span>
             ) : null}
           </div>
         ) : null}
@@ -306,7 +306,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{actions.mergeHint}</p>
         ) : null}
         {commentError ? (
-          <div className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger break-words">{commentError}</div>
+          <div className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">{commentError}</div>
         ) : null}
       </div>
 

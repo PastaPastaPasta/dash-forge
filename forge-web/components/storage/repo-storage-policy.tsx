@@ -47,7 +47,7 @@ export function RepoStoragePolicy({ repoId }: { repoId: string }): JSX.Element {
   return (
     <div className="space-y-3 text-dense" data-testid="repo-storage-policy">
       <p className="flex items-start gap-2 text-anvil-600 dark:text-anvil-300">
-        <HardDrive className="mt-0.5 h-4 w-4 shrink-0 text-anvil-400" aria-hidden />
+        <HardDrive className="mt-0.5 h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
         <span>
           Where your browser pushes to this repo store packs.{' '}
           {override ? 'This repo has its own choice.' : effective ? 'Using your default.' : 'No default is set.'} Only you see this: it lives in this browser with your storage keys.
