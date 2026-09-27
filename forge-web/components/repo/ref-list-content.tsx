@@ -67,12 +67,12 @@ export function RefListContent({
             return (
               <div
                 key={ref.refName}
-                className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850"
+                className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 coarse:py-0 dark:border-anvil-850"
               >
                 <Icon className="h-3.5 w-3.5 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
                 <Link
                   href={repoHref('/repo', addr, browseRef ? { ref: browseRef } : {})}
-                  className="min-w-0 flex-1 truncate font-mono text-dense font-medium text-anvil-900 hover:text-forge-800 dark:text-anvil-50 dark:hover:text-forge-400"
+                  className="min-w-0 flex-1 truncate font-mono text-dense font-medium text-anvil-900 hover:text-forge-800 coarse:py-3 dark:text-anvil-50 dark:hover:text-forge-400"
                 >
                   {shortName}
                 </Link>
@@ -89,7 +89,7 @@ export function RefListContent({
                 {tip ? (
                   <Link
                     href={repoHref('/repo/commit', addr, { oid: tip })}
-                    className="hover:text-forge-800 dark:hover:text-forge-400"
+                    className="hit-area hover:text-forge-800 dark:hover:text-forge-400"
                   >
                     <Oid value={tip} copyable={false} />
                   </Link>
@@ -108,7 +108,7 @@ export function RefListContent({
 
       {deleted.length > 0 ? (
         <details className="rounded-lg border border-anvil-200 dark:border-anvil-800">
-          <summary className="cursor-pointer select-none px-4 py-2.5 text-dense text-anvil-500 hover:text-anvil-700 dark:text-anvil-400 dark:hover:text-anvil-200">
+          <summary className="cursor-pointer select-none px-4 py-2.5 text-dense coarse:py-3 text-anvil-500 hover:text-anvil-700 dark:text-anvil-400 dark:hover:text-anvil-200">
             {deleted.length} deleted {deleted.length === 1 ? single : kind}
           </summary>
           <div className="border-t border-anvil-100 dark:border-anvil-850">

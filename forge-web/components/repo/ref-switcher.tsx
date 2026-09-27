@@ -61,7 +61,7 @@ export function RefSwitcher({
         onClick={() => setOpen((o) => !o)}
         aria-haspopup="listbox"
         aria-expanded={open}
-        className="inline-flex items-center gap-1.5 rounded-md border border-anvil-200 bg-white px-2.5 py-1 text-dense text-anvil-700 transition-colors hover:border-anvil-300 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-200 dark:hover:border-anvil-600"
+        className="inline-flex items-center gap-1.5 rounded-md border border-anvil-200 bg-white px-2.5 py-1 text-dense coarse:min-h-11 text-anvil-700 transition-colors hover:border-anvil-300 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-200 dark:hover:border-anvil-600"
       >
         <CurrentIcon className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
         <span className="max-w-[180px] truncate font-mono">{current.name}</span>

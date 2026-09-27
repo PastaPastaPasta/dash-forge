@@ -152,7 +152,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
             id="pr-base"
             value={base}
             onChange={(e) => setBase(e.target.value)}
-            className="h-9 rounded-md border border-anvil-300 bg-white px-2 font-mono text-dense text-anvil-900 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100"
+            className="h-9 min-w-0 max-w-full rounded-md border border-anvil-300 bg-white px-2 font-mono text-dense coarse:h-11 coarse:text-base text-anvil-900 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100"
           >
             {noBase ? <option value={base}>{short(base)} (not a branch)</option> : null}
             {branches.map((b) => (
@@ -170,7 +170,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
             id="pr-head"
             value={head?.key ?? ''}
             onChange={(e) => setHeadKey(e.target.value)}
-            className="h-9 min-w-[14rem] rounded-md border border-anvil-300 bg-white px-2 font-mono text-dense text-anvil-900 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100"
+            className="h-9 min-w-0 max-w-full rounded-md border border-anvil-300 bg-white px-2 font-mono text-dense coarse:h-11 coarse:text-base sm:min-w-[14rem] text-anvil-900 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100"
           >
             {options.length === 0 ? <option value="">No branches yet</option> : null}
             <optgroup label={`${repo.name} (this repo)`}>
@@ -238,7 +238,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
               aria-pressed={preview}
               onClick={() => setPreview((p) => !p)}
               className={cn(
-                'rounded-md border border-anvil-200 px-2 py-0.5 text-[12px] font-medium dark:border-anvil-750',
+                'rounded-md border border-anvil-200 px-2 py-0.5 text-[12px] font-medium coarse:min-h-11 coarse:px-3 dark:border-anvil-750',
                 preview ? 'bg-anvil-200 text-anvil-900 dark:bg-anvil-750 dark:text-anvil-50' : 'text-anvil-600 dark:text-anvil-400',
               )}
             >

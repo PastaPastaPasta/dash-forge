@@ -288,7 +288,7 @@ function StateTab({ active, onClick, children }: { active: boolean; onClick: () 
       aria-selected={active}
       onClick={onClick}
       className={cn(
-        'inline-flex items-center gap-1.5 text-dense font-medium transition-colors',
+        'inline-flex items-center gap-1.5 whitespace-nowrap text-dense font-medium transition-colors coarse:min-h-11 coarse:min-w-11',
         active ? 'text-anvil-900 dark:text-anvil-50' : 'text-anvil-500 hover:text-anvil-800 dark:text-anvil-400 dark:hover:text-anvil-100',
       )}
     >

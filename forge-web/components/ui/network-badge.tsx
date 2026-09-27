@@ -28,11 +28,14 @@ export function networkLabel(config: NetworkConfig = ACTIVE_NETWORK): string {
 export function NetworkBadge({
   config = ACTIVE_NETWORK,
   always = false,
+  compact = false,
   className,
 }: {
   config?: NetworkConfig
   /** Show even on mainnet (settings / detail rows). The header hides it on mainnet. */
   always?: boolean
+  /** Below `sm`, show the network kind only (`devnet`); the devnet name stays in the title. */
+  compact?: boolean
   className?: string
 }): JSX.Element | null {
   if (config.network === 'mainnet' && !always) return null
@@ -54,7 +57,13 @@ export function NetworkBadge({
         className,
       )}
     >
-      {networkLabel(config)}
+      {compact && devnet && config.devnetName !== null ? (
+        <>
+          devnet<span className="max-sm:hidden"> · {config.devnetName}</span>
+        </>
+      ) : (
+        networkLabel(config)
+      )}
       {deployed ? null : <span className="normal-case"> · not deployed</span>}
     </span>
   )

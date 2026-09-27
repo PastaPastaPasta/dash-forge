@@ -564,7 +564,9 @@ export const MarkdownView = memo(function MarkdownView({
   const slugs = new Map<string, number>()
   return (
     <Ctx.Provider value={ctx}>
-      <div className={cn('text-prose text-anvil-700 dark:text-anvil-200', className)}>
+      {/* Author prose: its links are inline text links (WCAG 2.5.8 inline exception), so the
+          mobile tap-target check (e2e/mobile.spec.ts) skips them. */}
+      <div className={cn('text-prose text-anvil-700 dark:text-anvil-200', className)} data-tap-exempt="prose">
         {blocks.map((b, i) => renderBlock(b, `b-${i}`, slugs))}
       </div>
     </Ctx.Provider>

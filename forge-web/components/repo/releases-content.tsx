@@ -173,7 +173,7 @@ function ReleaseCard({
         <Tag className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
         <Link
           href={repoHref('/repo/release', addr, { tag: r.tagName })}
-          className="font-mono text-prose font-semibold text-anvil-900 hover:text-forge-800 dark:text-anvil-50 dark:hover:text-forge-400"
+          className="hit-area font-mono text-prose font-semibold text-anvil-900 hover:text-forge-800 dark:text-anvil-50 dark:hover:text-forge-400"
         >
           {r.tagName}
         </Link>

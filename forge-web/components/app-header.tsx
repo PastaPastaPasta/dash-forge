@@ -64,7 +64,7 @@ export function AppHeader(): JSX.Element {
   return (
     <header className="sticky top-0 z-40 border-b border-anvil-200 bg-anvil-50/85 backdrop-blur dark:border-anvil-800 dark:bg-anvil-950/85">
       <div className="mx-auto flex h-14 max-w-[1280px] items-center gap-2 px-3 sm:gap-3 sm:px-6">
-        <Link href="/" className="flex shrink-0 items-center gap-2" aria-label="Dash Forge home">
+        <Link href="/" className="flex shrink-0 items-center gap-2 coarse:min-h-11 coarse:min-w-11" aria-label="Dash Forge home">
           <span className="flex h-7 w-7 items-center justify-center rounded-md bg-forge-500/15">
             <Hammer className="h-4 w-4 text-forge-500" aria-hidden />
           </span>
@@ -72,7 +72,7 @@ export function AppHeader(): JSX.Element {
         </Link>
 
         {/* A devnet (resettable, test funds only) is flagged at every width. */}
-        <NetworkBadge className={ACTIVE_NETWORK.network === 'devnet' ? undefined : 'hidden sm:inline'} />
+        <NetworkBadge compact className={ACTIVE_NETWORK.network === 'devnet' ? undefined : 'hidden sm:inline'} />
 
         <div className="ml-1 hidden max-w-xs flex-1 sm:block">
           <Suspense fallback={null}>
@@ -80,7 +80,7 @@ export function AppHeader(): JSX.Element {
           </Suspense>
         </div>
 
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex items-center sm:gap-1">
           <Link
             href="/explore"
             className="hidden h-8 items-center gap-1.5 rounded-md px-2 text-dense text-anvil-700 hover:bg-anvil-100 dark:text-anvil-200 dark:hover:bg-anvil-800 lg:inline-flex"
@@ -217,7 +217,7 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
         onKeyDown={(e) => {
           if (e.key === 'Escape') e.currentTarget.blur()
         }}
-        className="peer h-8 w-full rounded-md border border-anvil-300 bg-white pl-8 pr-7 text-dense placeholder:text-anvil-500 focus-visible:border-forge-400 dark:border-anvil-700 dark:bg-anvil-900 dark:placeholder:text-anvil-400"
+        className="peer h-8 w-full rounded-md border border-anvil-300 bg-white pl-8 pr-7 text-dense placeholder:text-anvil-500 focus-visible:border-forge-400 coarse:h-11 coarse:text-base dark:border-anvil-700 dark:bg-anvil-900 dark:placeholder:text-anvil-400"
       />
       {compact ? null : (
         <kbd
@@ -288,11 +288,11 @@ function NewMenu(): JSX.Element | null {
         onClick={() => setOpen(!open)}
         aria-expanded={open}
         aria-controls="new-panel"
-        className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-dense text-anvil-700 hover:bg-anvil-100 dark:text-anvil-200 dark:hover:bg-anvil-800"
+        className="inline-flex h-8 items-center justify-center gap-1 rounded-md px-2 text-dense text-anvil-700 hover:bg-anvil-100 coarse:h-11 coarse:min-w-11 dark:text-anvil-200 dark:hover:bg-anvil-800"
       >
         <Plus className="h-4 w-4" aria-hidden />
         <span className="sr-only sm:not-sr-only">New</span>
-        <ChevronDown className="h-3 w-3" aria-hidden />
+        <ChevronDown className="hidden h-3 w-3 sm:block" aria-hidden />
       </button>
       {open ? (
         <nav id="new-panel" aria-label="New" className="absolute right-0 z-50 mt-2 w-64 animate-fade-in rounded-lg border border-anvil-200 bg-white p-1 shadow-xl dark:border-anvil-750 dark:bg-anvil-900">
@@ -326,7 +326,7 @@ function NotificationsBell(): JSX.Element {
       title={label}
       data-testid="notifications-bell"
       data-unread={unread}
-      className="relative inline-flex h-8 w-8 items-center justify-center rounded-md text-anvil-700 hover:bg-anvil-100 dark:text-anvil-200 dark:hover:bg-anvil-800"
+      className="relative inline-flex h-8 w-8 items-center justify-center rounded-md text-anvil-700 coarse:h-11 coarse:w-11 hover:bg-anvil-100 dark:text-anvil-200 dark:hover:bg-anvil-800"
     >
       <Bell className="h-4 w-4" aria-hidden />
       {unread > 0 ? (
@@ -359,9 +359,9 @@ function AccountMenu({
         aria-expanded={open}
         aria-controls="account-panel"
         aria-label="Account menu"
-        className="flex items-center gap-2 rounded-full py-0.5 pl-0.5 pr-1 hover:bg-anvil-100 dark:hover:bg-anvil-800"
+        className="flex items-center justify-center gap-2 rounded-full py-0.5 pl-0.5 pr-1 hover:bg-anvil-100 coarse:min-h-11 coarse:min-w-11 dark:hover:bg-anvil-800"
       >
-        <IdentityPill identityId={identity} className="max-w-[9rem] overflow-hidden sm:max-w-none" />
+        <IdentityPill identityId={identity} className="max-sm:bg-transparent max-sm:p-0 max-sm:dark:bg-transparent [&>*:not(:first-child)]:max-sm:hidden" />
       </button>
       {open ? (
         <div id="account-panel" className="absolute right-0 z-50 mt-2 w-60 animate-fade-in rounded-lg border border-anvil-200 bg-white p-1 shadow-xl dark:border-anvil-750 dark:bg-anvil-900">

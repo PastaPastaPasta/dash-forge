@@ -63,7 +63,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
             key={f}
             onClick={() => setFilter(f)}
             className={cn(
-              'rounded px-3 py-1.5 text-dense font-medium capitalize transition-colors',
+              'rounded px-3 py-1.5 text-dense font-medium capitalize transition-colors coarse:min-h-11 coarse:min-w-11',
               filter === f ? 'bg-anvil-100 text-anvil-900 dark:bg-anvil-800 dark:text-anvil-50' : 'text-anvil-500 hover:text-anvil-800 dark:text-anvil-400',
             )}
           >
@@ -73,7 +73,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
       </div>
       <Link
           href={repoHref('/repo/pulls/new', addr)}
-          className="inline-flex h-7 items-center gap-1.5 rounded-md bg-forge-700 px-2.5 text-dense font-medium text-white hover:bg-forge-800"
+          className="inline-flex h-7 items-center gap-1.5 whitespace-nowrap rounded-md bg-forge-700 px-2.5 text-dense font-medium text-white hover:bg-forge-800 coarse:h-11"
         >
           <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> New pull request
         </Link>

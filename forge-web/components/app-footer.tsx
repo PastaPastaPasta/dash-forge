@@ -10,15 +10,15 @@ export function AppFooter(): JSX.Element {
           Dash Forge — a git forge with no server to trust. Zero backend; Platform reads are
           proof-checked and file contents hash-checked.
         </p>
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center gap-x-5 gap-y-3">
           <span className="font-mono">trust-minimized</span>
-          <Link href="/" className="hover:text-anvil-800 dark:hover:text-anvil-100">
+          <Link href="/" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
             Discover
           </Link>
-          <Link href="/explore" className="hover:text-anvil-800 dark:hover:text-anvil-100">
+          <Link href="/explore" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
             Explore
           </Link>
-          <Link href="/new" className="hover:text-anvil-800 dark:hover:text-anvil-100">
+          <Link href="/new" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
             New repo
           </Link>
         </div>

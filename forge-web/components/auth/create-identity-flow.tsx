@@ -182,6 +182,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         persistKey: (id, k) => controller.persistKey({ identityId: id, keyId: k.keyId, wif: k.wif }, protection),
         onStage: (s, detail) => setStage(detail ?? STAGE_TEXT[s]),
         onDeposit: setSeen,
+        onCharge: (id, charge) => controller.reportCharge(id, charge),
       })
       reloadVaults()
       await controller.openStored(identityId, null, key.limits)

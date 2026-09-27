@@ -207,7 +207,7 @@ function Row({
     return (
       <Link
         href={href}
-        className="-mx-1 flex items-center justify-between rounded px-1 py-1 text-anvil-600 transition-colors hover:bg-anvil-50 hover:text-forge-800 dark:text-anvil-300 dark:hover:bg-anvil-850 dark:hover:text-forge-400"
+        className="-mx-1 flex items-center justify-between rounded px-1 py-1 text-anvil-600 transition-colors hover:bg-anvil-50 hover:text-forge-800 coarse:min-h-11 dark:text-anvil-300 dark:hover:bg-anvil-850 dark:hover:text-forge-400"
       >
         {body}
       </Link>

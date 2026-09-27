@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { affordability, fundsState, LOW_BALANCE_CREDITS } from './funds'
+import { affordability, fundsNotice, fundsState, LOW_BALANCE_CREDITS } from './funds'
 import { estimateMissed, reconcile, summarize, type SpendRow } from '../spend'
 import { stateEventRoute } from '../repo/writes'
 
@@ -46,6 +46,25 @@ describe('affordability names the blocking budget', () => {
   })
   it('never blocks a refund', () => {
     expect(affordability(-2000, 0n)).toEqual({ ok: true })
+  })
+})
+
+describe('fundsNotice (the low-balance banner, ux-dx-spec §4)', () => {
+  const key = (remaining: bigint, expiresIn: number) => ({ remaining, total: 5_000_000_000n, expiresAt: NOW + expiresIn })
+  it('says nothing when comfortable', () => {
+    expect(fundsNotice(fundsState(10n ** 11n, key(4_000_000_000n, 90 * DAY), NOW))).toBeNull()
+  })
+  it('names the specific fix: top up a low balance, renew a low or expiring key', () => {
+    expect(fundsNotice(fundsState(BigInt(LOW_BALANCE_CREDITS - 1), null, NOW))).toMatchObject({ key: 'low:balance', fix: 'top-up' })
+    expect(fundsNotice(fundsState(10n ** 11n, key(900_000_000n, 90 * DAY), NOW))).toMatchObject({ key: 'low:key-budget', fix: 'renew-key' })
+    expect(fundsNotice(fundsState(10n ** 11n, key(4_000_000_000n, 3 * DAY), NOW))).toMatchObject({ key: 'low:key-expiry', fix: 'renew-key' })
+  })
+  it('says writes are off when empty, with a distinct key per state (a new state shows again)', () => {
+    const empty = fundsNotice(fundsState(0n, null, NOW))
+    expect(empty).toMatchObject({ key: 'empty:balance', fix: 'top-up' })
+    expect(empty?.message).toMatch(/writes are off/)
+    expect(fundsNotice(fundsState(10n ** 11n, key(4_000_000_000n, -1), NOW))).toMatchObject({ key: 'empty:key-expiry', fix: 'renew-key' })
+    expect(fundsNotice(fundsState(10n ** 11n, key(0n, 90 * DAY), NOW))?.key).toBe('empty:key-budget')
   })
 })
 

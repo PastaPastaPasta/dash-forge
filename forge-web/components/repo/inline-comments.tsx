@@ -140,7 +140,7 @@ export function InlineCommentsProvider({
     <InlineCommentsContext.Provider value={value}>
       {placed.fileLevel.length > 0 ? (
         <details open className="mb-3 rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="file-comments">
-          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 dark:text-anvil-300">
+          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 coarse:py-3 dark:text-anvil-300">
             <MessageSquare className="mr-1.5 inline h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
             File comments ({placed.fileLevel.length})
           </summary>
@@ -153,7 +153,7 @@ export function InlineCommentsProvider({
       ) : null}
       {unshown.length > 0 ? (
         <details className="mb-3 rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="unshown-comments">
-          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 dark:text-anvil-300">
+          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 coarse:py-3 dark:text-anvil-300">
             <MessageSquare className="mr-1.5 inline h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
             {unshown.length} comment thread{unshown.length === 1 ? '' : 's'} on lines not shown below
           </summary>
@@ -166,7 +166,7 @@ export function InlineCommentsProvider({
       ) : null}
       {placed.outdatedCount > 0 ? (
         <details className="mb-3 rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="outdated-comments">
-          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 dark:text-anvil-300">
+          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 coarse:py-3 dark:text-anvil-300">
             <MessageSquare className="mr-1.5 inline h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
             {placed.outdatedCount} comment{placed.outdatedCount === 1 ? '' : 's'} on an older version
           </summary>

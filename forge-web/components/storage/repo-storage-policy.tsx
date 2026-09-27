@@ -73,7 +73,7 @@ export function RepoStoragePolicy({ repoId }: { repoId: string }): JSX.Element {
       <label className="flex items-center gap-2">
         <span className="text-anvil-600 dark:text-anvil-300">Copies</span>
         <select
-          className="rounded-md border border-anvil-300 bg-white px-2 py-1 dark:border-anvil-700 dark:bg-anvil-950"
+          className="rounded-md border border-anvil-300 bg-white px-2 py-1 coarse:h-11 coarse:text-base dark:border-anvil-700 dark:bg-anvil-950"
           value={shownChoice}
           onChange={(e) => {
             setMsg(null)

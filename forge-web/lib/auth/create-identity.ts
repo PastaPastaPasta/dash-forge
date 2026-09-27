@@ -56,6 +56,8 @@ export interface CreationJournal {
   readonly lockTxid: string | null
   /** The signed asset-lock transaction, saved before it is broadcast (hex). */
   readonly lockRaw: string | null
+  /** What the lock holds (duffs): the new identity's balance before Platform takes its fee. */
+  readonly lockedDuffs?: number | null
   readonly startedAt: number
   /** The Core height when the creation started: the deposit watch replays from here. */
   readonly startHeight?: number | null
@@ -114,6 +116,12 @@ export async function createIdentityFromMnemonic(
     readonly signal?: AbortSignal
     readonly onStage?: (stage: CreateStage, detail?: string) => void
     readonly onDeposit?: (duffs: number) => void
+    /**
+     * Told what the identity paid, for the spend ledger: the IdentityCreate (its fee comes out
+     * of the asset lock, so "before" is the lock's credit value) or, resuming a creation whose
+     * key was lost, the key registration.
+     */
+    readonly onCharge?: (identityId: string, charge: { kind: 'identity:create' | 'key:renew'; keyId: number | null; balanceBefore: bigint | null }) => void
   },
 ): Promise<{ identityId: string; key: LimitedKey }> {
   const { network, group } = params
@@ -155,7 +163,7 @@ export async function createIdentityFromMnemonic(
     const priv = wifBytes(lockKey.wif)
     const lock = buildAssetLock(utxos, priv)
     priv.fill(0)
-    await save({ lockTxid: lock.txid, lockRaw: bytesToHex(lock.raw) })
+    await save({ lockTxid: lock.txid, lockRaw: bytesToHex(lock.raw), lockedDuffs: lock.lockedDuffs })
   }
   const lockTxid = journal.lockTxid as string
   const lockRaw = hexToBytes(journal.lockRaw as string)
@@ -174,8 +182,8 @@ export async function createIdentityFromMnemonic(
   await save({ identityId })
 
   const limits = params.limits ?? defaultLimits()
-  const exists = (await authSdk(sdk).identities.balance(identityId).catch(() => undefined)) !== undefined
-  if (exists) {
+  const existingBalance = await authSdk(sdk).identities.balance(identityId).catch(() => undefined)
+  if (existingBalance !== undefined) {
     // Created by an earlier run whose browser key was lost: the master key renews it.
     params.onStage?.('registering', 'The identity exists; registering a key for this browser…')
     const master = await deriveMasterKey(mnemonic, network)
@@ -183,6 +191,7 @@ export async function createIdentityFromMnemonic(
     // the same update, so no key nobody holds stays live.
     // The group was checked at the start of this run (assertGroupHolds above).
     const key = await registerLimitedKey(sdk, { network, identityId, masterWif: master.wif, group, request: limits, replaceKeyId: BROWSER_KEY_ID, groupChecked: true })
+    params.onCharge?.(identityId, { kind: 'key:renew', keyId: key.keyId, balanceBefore: existingBalance })
     await params.persistKey(identityId, key)
     return { identityId, key }
   }
@@ -225,6 +234,9 @@ export async function createIdentityFromMnemonic(
     )
     signer.addKey(browserKey)
     await authSdk(sdk).identities.create({ identity, assetLockProof, assetLockPrivateKey, signer })
+    // 1 duff = 1000 credits (rs-dpp `CREDITS_PER_DUFF`); a journal from an older build lacks it.
+    const lockCredits = typeof journal.lockedDuffs === 'number' ? BigInt(journal.lockedDuffs) * 1000n : null
+    params.onCharge?.(identityId, { kind: 'identity:create', keyId: null, balanceBefore: lockCredits })
   } finally {
     signer.free()
     assetLockPrivateKey.free()

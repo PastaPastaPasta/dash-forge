@@ -109,5 +109,28 @@ module.exports = {
       },
     },
   },
-  plugins: [],
+  plugins: [
+    // `coarse:` — touch screens (phones, tablets): tap targets grow to 44×44 CSS px there
+    // (WCAG 2.5.5) while mouse-driven desktop layouts keep their dense sizes.
+    // `hit-area`: on touch screens only, an invisible ::after box of at least 44×44 CSS px
+    // centred on the element, so a small chip or inline link is easy to tap without drawing it
+    // any bigger. (Not for elements that clip their overflow, e.g. `truncate`: pad those.)
+    function ({ addVariant, addUtilities }) {
+      addVariant('coarse', '@media (pointer: coarse)')
+      addUtilities({
+        '@media (pointer: coarse)': {
+          '.hit-area': { position: 'relative' },
+          '.hit-area::after': {
+            content: "''",
+            position: 'absolute',
+            left: '50%',
+            top: '50%',
+            width: 'max(100%, 44px)',
+            height: 'max(100%, 44px)',
+            transform: 'translate(-50%, -50%)',
+          },
+        },
+      })
+    },
+  ],
 }

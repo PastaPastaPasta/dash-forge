@@ -43,6 +43,8 @@ export default defineConfig({
     {
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
+      // The phone/tablet spec has its own projects (each test picks its device).
+      testIgnore: /mobile\.spec\.ts/,
     },
     {
       // Safari's engine, for the flows whose storage and passkey behaviour differ there.
@@ -50,6 +52,19 @@ export default defineConfig({
       testMatch: /signin-resilience\.spec\.ts/,
       use: { ...devices['Desktop Safari'], viewport: { width: 1280, height: 900 } },
     },
+    {
+      name: 'mobile',
+      testMatch: /mobile\.spec\.ts/,
+      use: { browserName: 'chromium' },
+    },
+    // WebKit and Firefox (Firefox has no `isMobile`; the spec drops it there): opt in with
+    // E2E_ALL_ENGINES=1 so the default run stays Chromium-only and fast.
+    ...(process.env.E2E_ALL_ENGINES
+      ? [
+          { name: 'mobile-webkit', testMatch: /mobile\.spec\.ts/, use: { browserName: 'webkit' as const } },
+          { name: 'mobile-firefox', testMatch: /mobile\.spec\.ts/, use: { browserName: 'firefox' as const } },
+        ]
+      : []),
   ],
   // Build (if needed) then serve out/ with a hermetic, dependency-free static server
   // (sets COOP/COEP for the WASM SDK and mirrors trailingSlash routing). If you already

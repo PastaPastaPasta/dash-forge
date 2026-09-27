@@ -5,6 +5,10 @@
  * comfortable, amber when low (balance < 0.01 DASH, or this key < 20 % / < 7 days), red when
  * empty — with the one fix a click opens: the top-up sheet. A limited key adds a thin budget
  * bar and its expiry in the tooltip.
+ *
+ * Below `sm` the header has no room for the amount: the pill shrinks to a 44 px wallet icon in
+ * the level's colour with a dot, and only when funds are low or empty (the balance itself is in
+ * the account menu). {@link LowFundsBanner} spells out the fix once per session.
  */
 
 import { Wallet } from 'lucide-react'
@@ -44,7 +48,9 @@ export function FundsPill(): JSX.Element | null {
         }
       }}
       className={cn(
-        'hidden flex-col items-stretch rounded-full border px-2.5 py-0.5 text-[12px] sm:flex',
+        'flex-col items-stretch rounded-full border px-2.5 py-0.5 text-[12px] sm:flex',
+        // Phones: an icon-only cue, shown for low and empty funds.
+        level === 'comfortable' ? 'hidden' : 'relative flex max-sm:h-11 max-sm:w-11 max-sm:items-center max-sm:justify-center max-sm:border-0 max-sm:bg-transparent max-sm:p-0',
         level === 'empty'
           ? 'border-danger/50 bg-danger/10 text-danger-700 dark:text-danger-400'
           : level === 'low'
@@ -53,11 +59,14 @@ export function FundsPill(): JSX.Element | null {
       )}
     >
       <span className="inline-flex items-center gap-1 font-mono">
-        <Wallet className="h-3 w-3" aria-hidden />
-        {balanceToDash(balance)} DASH
+        <Wallet className="h-3 w-3 max-sm:h-5 max-sm:w-5" aria-hidden />
+        <span className="max-sm:hidden">{balanceToDash(balance)} DASH</span>
       </span>
+      {level !== 'comfortable' ? (
+        <span aria-hidden className="absolute right-2 top-2 h-2 w-2 rounded-full bg-current sm:hidden" />
+      ) : null}
       {budget !== null ? (
-        <span className="mt-0.5 h-0.5 w-full overflow-hidden rounded bg-anvil-200 dark:bg-anvil-800" aria-hidden>
+        <span className="mt-0.5 h-0.5 w-full overflow-hidden rounded bg-anvil-200 max-sm:hidden dark:bg-anvil-800" aria-hidden>
           <span className={cn('block h-full', level === 'comfortable' ? 'bg-dash-500' : 'bg-current')} style={{ width: `${budget * 100}%` }} />
         </span>
       ) : null}
