@@ -27,7 +27,9 @@ pub struct Config {
     /// Comma-separated devnet DAPI addresses. Overridden by `--dapi-addresses`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dapi_addresses: Option<String>,
-    /// Absolute path to the default identity file. Overridden by `--identity` / `DASH_FORGE_KEY`.
+    /// The default key source: an identity file path, or `keychain:dash-forge/<network>/<id>`
+    /// (written by `dg auth new` / `dg auth login`). Overridden by `--identity` /
+    /// `DASH_FORGE_KEY`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_identity: Option<String>,
     /// Base58 id of the default identity (for display in `auth status`).
@@ -46,11 +48,6 @@ pub fn config_dir() -> Result<PathBuf> {
 /// The `config.toml` path.
 pub fn config_path() -> Result<PathBuf> {
     Ok(config_dir()?.join("config.toml"))
-}
-
-/// The per-network identity import directory (`identities/<network>/`).
-pub fn identities_dir(network: &str) -> Result<PathBuf> {
-    Ok(config_dir()?.join("identities").join(network))
 }
 
 impl Config {

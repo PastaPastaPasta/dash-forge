@@ -34,6 +34,7 @@ use anyhow::Result;
 use clap::{CommandFactory, Parser, Subcommand};
 use tokio::runtime::Runtime;
 
+pub use auth::AuthCommand;
 use config::Config;
 use context::Ctx;
 use forge_core::user_error::{codes, ErrorContext, UserError};
@@ -99,7 +100,7 @@ impl NetworkArg {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Authentication and identity import.
+    /// Identities and keys: create, sign in, limited keys, DPNS names, export.
     #[command(subcommand)]
     Auth(AuthCommand),
     /// Repository lifecycle and configuration.
@@ -243,16 +244,6 @@ pub struct InitArgs {
     pub name: Option<String>,
     #[command(flatten)]
     pub opts: CreateOptions,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum AuthCommand {
-    /// Import a bridge-format identity (via `--identity <file>`) and set it as default.
-    Login,
-    /// Show the current identity and auth status.
-    Status,
-    /// Show the identity's credit balance (credits + ~DASH).
-    Balance,
 }
 
 #[derive(Debug, Subcommand)]

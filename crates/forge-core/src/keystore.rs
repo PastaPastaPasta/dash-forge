@@ -6,8 +6,15 @@
 //! in [`Secret`], whose `Debug`/`Display`-free surface keeps key material out of
 //! logs, journals and panic output (style guide §B: "newtype with redacted Debug").
 //!
-//! OS-keychain and agent-protocol storage land later; this module only models the
-//! import format and enforces redaction.
+//! Where a signing identity comes from (a *key source*, what `--identity` / `DASH_FORGE_KEY` /
+//! the config default hold):
+//!
+//! * a path to a bridge-format identity file (plaintext JSON);
+//! * a path to a passphrase-sealed file ([`crate::sealed`]) holding a bridge file or a `dfk1:`
+//!   key: `dg auth login` writes one where there is no OS keychain;
+//! * `keychain:dash-forge/<network>/<identityId>`: an OS keychain entry ([`crate::keychain`])
+//!   holding the same (`dg auth new` / `dg auth login` store limited keys there);
+//! * an inline `dfk1:<network>:<identityId>:<keyId>:<wif>` limited key (CI secrets).
 
 use std::fmt;
 use std::path::Path;
@@ -148,6 +155,93 @@ pub fn describe_key_source(source: &Path) -> String {
     }
 }
 
+/// The prefix of a key source kept in the OS keychain (`keychain:<service>/<account>`).
+pub const KEYCHAIN_PREFIX: &str = "keychain:";
+
+/// Whether `source` names a file on disk (not an inline `dfk1:` key or a keychain entry).
+pub fn is_file_source(source: &Path) -> bool {
+    source
+        .to_str()
+        .is_none_or(|s| !s.starts_with(DFK1_PREFIX) && !s.starts_with(KEYCHAIN_PREFIX))
+}
+
+/// The keychain key source for an identity: `keychain:dash-forge/<network>/<identityId>`.
+pub fn keychain_source(network: &str, identity_id: &str) -> String {
+    format!(
+        "{KEYCHAIN_PREFIX}{}/{network}/{identity_id}",
+        crate::keychain::SERVICE
+    )
+}
+
+/// `(service, account)` of a `keychain:` key source.
+pub fn parse_keychain_source(source: &str) -> Option<(&str, &str)> {
+    source
+        .strip_prefix(KEYCHAIN_PREFIX)?
+        .split_once('/')
+        .filter(|(s, a)| !s.is_empty() && !a.is_empty())
+}
+
+/// The key source `dg` recorded as the default (`default_identity` in
+/// `~/.config/dash-forge/config.toml`), for tools without an `--identity` of their own (the
+/// remote helper). `None` when there is none.
+pub fn configured_default_source() -> Option<String> {
+    let home = std::env::var_os("HOME")?;
+    let raw = std::fs::read_to_string(
+        std::path::PathBuf::from(home).join(".config/dash-forge/config.toml"),
+    )
+    .ok()?;
+    let v: toml::Value = toml::from_str(&raw).ok()?;
+    v.get("default_identity")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Write `bytes` to `path` readable by the owner only: the file is 0600 from the moment it
+/// exists (an existing file is tightened before it is overwritten), and a parent directory
+/// under `~/.config/dash-forge` is created and kept 0700. Plain create-and-write on
+/// platforms without Unix permissions.
+pub fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    let io = |e: std::io::Error| Error::Io(format!("writing {}: {e}", path.display()));
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(io)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let forge_dir = std::env::var_os("HOME")
+                .map(|h| std::path::PathBuf::from(h).join(".config/dash-forge"));
+            // Only Forge's own directories are tightened, never one the user named.
+            if forge_dir.is_some_and(|c| dir.starts_with(c)) {
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+                    .map_err(io)?;
+            }
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        if path.exists() {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(io)?;
+        }
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(io)?;
+        f.write_all(bytes).map_err(io)?;
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::File::create(path)
+            .and_then(|mut f| f.write_all(bytes))
+            .map_err(io)?;
+    }
+    Ok(())
+}
+
 /// Security levels acceptable for signing a document create/delete, in preference
 /// order. Document ops accept HIGH (spike S0.7); CRITICAL also works and is the
 /// fallback when a HIGH key is absent.
@@ -166,14 +260,110 @@ impl BridgeIdentity {
     ///
     /// Never format `path` into a message yourself: use [`describe_key_source`], which keeps
     /// an inline key's WIF out of it.
+    ///
+    /// Also takes a `keychain:<service>/<account>` source (an OS keychain entry) and a
+    /// passphrase-sealed file (the passphrase comes from `DASH_FORGE_PASSPHRASE` or a hidden
+    /// prompt on the terminal); see the module docs.
     pub fn load_from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         if let Some(inline) = path.to_str().filter(|s| s.starts_with(DFK1_PREFIX)) {
             return Self::from_dfk1(inline);
         }
-        let raw = std::fs::read_to_string(path)
-            .map_err(|e| Error::Io(format!("reading identity file {}: {e}", path.display())))?;
-        Self::from_json(&raw)
+        if let Some(src) = path.to_str().filter(|s| s.starts_with(KEYCHAIN_PREFIX)) {
+            let (service, account) = parse_keychain_source(src).ok_or_else(|| {
+                Error::Config(format!(
+                    "identity source {src:?} must be keychain:<service>/<account>"
+                ))
+            })?;
+            let text = crate::keychain::get(service, account)?.ok_or_else(|| {
+                Error::Io(format!(
+                    "reading identity: no key in the keychain under {service}/{account}"
+                ))
+            })?;
+            return Self::from_source_text(text.expose());
+        }
+        let raw =
+            zeroize::Zeroizing::new(std::fs::read_to_string(path).map_err(|e| {
+                Error::Io(format!("reading identity file {}: {e}", path.display()))
+            })?);
+        if crate::sealed::is_sealed(&raw) {
+            let pass = crate::sealed::passphrase(&path.display().to_string(), false)?;
+            let plain = crate::sealed::open(&raw, pass.expose())?;
+            let text = std::str::from_utf8(&plain)
+                .map_err(|_| Error::Io("the sealed identity file does not hold text".into()))?;
+            return Self::from_source_text(text);
+        }
+        if path.extension().is_some_and(|e| e == "key") {
+            tracing::warn!(
+                "{} holds an unencrypted identity key (stored with --insecure-plaintext)",
+                path.display()
+            );
+        }
+        Self::from_source_text(&raw)
+    }
+
+    /// Parse what a keychain entry or a key file holds: a `dfk1:` limited key or a
+    /// bridge-format identity JSON.
+    pub fn from_source_text(text: &str) -> Result<Self> {
+        let t = text.trim();
+        if t.starts_with(DFK1_PREFIX) {
+            Self::from_dfk1(t)
+        } else {
+            Self::from_json(t)
+        }
+    }
+
+    /// The identity as bridge-format JSON **with its secrets** (unlike `Serialize`, which
+    /// redacts them): what a `--full-key` login stores and `dg auth export --reveal-secrets`
+    /// writes. Handle the result as a secret.
+    pub fn to_json_with_secrets(&self) -> Secret {
+        let keys: Vec<serde_json::Value> = self
+            .identity_keys
+            .iter()
+            .map(|k| {
+                serde_json::json!({
+                    "id": k.id,
+                    "name": k.name,
+                    "keyType": k.key_type,
+                    "purpose": k.purpose,
+                    "securityLevel": k.security_level,
+                    "privateKeyWif": k.private_key_wif.expose(),
+                    "privateKeyHex": k.private_key_hex.expose(),
+                    "publicKeyHex": k.public_key_hex,
+                    "derivationPath": k.derivation_path,
+                })
+            })
+            .collect();
+        let v = serde_json::json!({
+            "network": self.network,
+            "identityId": self.identity_id,
+            "identityKeys": keys,
+            "mnemonic": self.mnemonic.expose(),
+            "assetLockKey": {
+                "wif": self.asset_lock_key.wif.expose(),
+                "publicKeyHex": self.asset_lock_key.public_key_hex,
+                "derivationPath": self.asset_lock_key.derivation_path,
+            },
+        });
+        Secret::new(serde_json::to_string_pretty(&v).unwrap_or_default() + "\n")
+    }
+
+    /// The identity's MASTER authentication key, when this source carries one.
+    pub fn master_key(&self) -> Option<&IdentityKey> {
+        self.auth_key("MASTER")
+            .filter(|k| !k.private_key_wif.expose().is_empty())
+    }
+
+    /// The `dfk1:` form of key `key_id` of this identity.
+    pub fn to_dfk1(&self, key_id: u32) -> Option<Secret> {
+        let k = self.identity_keys.iter().find(|k| k.id == key_id)?;
+        Some(Secret::new(format!(
+            "{DFK1_PREFIX}{}:{}:{}:{}",
+            self.network,
+            self.identity_id,
+            k.id,
+            k.private_key_wif.expose()
+        )))
     }
 
     /// Parse an inline limited key `dfk1:<network>:<identityId>:<keyId>:<wif>` into an

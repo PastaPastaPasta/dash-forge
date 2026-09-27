@@ -90,7 +90,9 @@ pub const CATALOGUE: &[(&str, &str)] = &[
         codes::IDENTITY_NOT_FOUND,
         "identity not found on this network",
     ),
+    (codes::KEY_EXPIRED, "this key expired or was disabled"),
     (codes::INSUFFICIENT_CREDITS, "not enough credits"),
+    (codes::KEY_BUDGET_SPENT, "this key's budget is used up"),
     (codes::STORAGE_CONFIG, "storage not configured correctly"),
     (codes::STORAGE_POLICY, "storage policy not met"),
     (codes::PACKS_UNREADABLE, "packs unreadable"),
@@ -149,8 +151,12 @@ pub mod codes {
     pub const IDENTITY_UNREADABLE: &str = "E303";
     /// The identity does not exist on the selected network.
     pub const IDENTITY_NOT_FOUND: &str = "E304";
+    /// The signing key is past its expiry or disabled (protocol-14 limited keys).
+    pub const KEY_EXPIRED: &str = "E305";
     /// The identity's balance cannot pay for the write.
     pub const INSUFFICIENT_CREDITS: &str = "E401";
+    /// The signing key has spent its whole budget (protocol-14 limited keys).
+    pub const KEY_BUDGET_SPENT: &str = "E402";
     /// `dash.storage` names an unknown profile, or storage.toml is invalid.
     pub const STORAGE_CONFIG: &str = "E501";
     /// Fewer than `dash.replicas` targets confirmed the pack.
@@ -684,6 +690,30 @@ fn from_config(msg: &str, chain: &str, ctx: &ErrorContext<'_>) -> UserError {
 /// as their messages at this boundary.
 fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
     let m = msg.to_ascii_lowercase();
+    // Protocol-14 key limits (PublicKeyBudgetExhaustedError / PublicKeyExpiredError), before
+    // the balance rule: a spent key is not an empty identity.
+    if m.contains("has spent its whole budget") {
+        return Some(
+            UserError::new(codes::KEY_BUDGET_SPENT, ctx.headline("this key's budget is used up"))
+                .cause(one_line(msg))
+                .fix("register a fresh limited key (uses your master key once): `dg auth login <identity file>` or `dg auth login --mnemonic`")
+                .note("the identity's balance is untouched; only this key can no longer sign"),
+        );
+    }
+    if m.contains("can no longer sign") && m.contains("expired") {
+        return Some(
+            UserError::new(codes::KEY_EXPIRED, ctx.headline("this key has expired"))
+                .cause(one_line(msg))
+                .fix("register a fresh limited key (uses your master key once): `dg auth login <identity file>` or `dg auth login --mnemonic`"),
+        );
+    }
+    if m.contains("disabled") && m.contains("public key") && !m.contains("contract") {
+        return Some(
+            UserError::new(codes::KEY_EXPIRED, ctx.headline("this key was disabled"))
+                .cause(one_line(msg))
+                .fix("sign in again with a live key: `dg auth login <identity file>` registers a new one; `dg auth keys list` shows which are live"),
+        );
+    }
     // 40210 IdentityInsufficientBalance / 30000 BalanceIsNotEnough.
     if m.contains("insufficient identity") || m.contains("is not enough to pay") {
         let detail = balance_numbers(&m).map_or_else(
@@ -859,7 +889,8 @@ fn identity_unreadable(msg: &str) -> UserError {
         "could not load your identity file",
     )
     .cause(msg)
-    .fix("pass the bridge identity export with `--identity <file>` (the helper reads DASH_FORGE_KEY); `dg auth status` shows which file is in use")
+    .fix("`dg auth login <file>` stores a key again (from the identity file or --mnemonic); `dg auth status` shows which key source is in use")
+    .fix("or pass `--identity <file>` / set DASH_FORGE_KEY for one command (the helper reads DASH_FORGE_KEY)")
 }
 
 /// E302 — the identity file has no key at the level an operation needs.

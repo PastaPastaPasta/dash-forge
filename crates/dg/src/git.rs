@@ -19,11 +19,19 @@ pub fn dash_env(ctx: &Ctx) -> Vec<(String, String)> {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))
         .collect();
-    // Absolute: git runs the helper from another directory (a scratch repo, or the
-    // repository root), where a relative identity path names nothing.
+    // A file path is made absolute: git runs the helper from another directory (a scratch
+    // repo, or the repository root), where a relative path names nothing. A `keychain:` or
+    // inline `dfk1:` source is not a path and passes through as it is.
     if let Some(p) = &ctx.identity_path {
-        let abs = std::path::absolute(p).unwrap_or_else(|_| p.clone());
-        env.push(("DASH_FORGE_KEY".into(), abs.to_string_lossy().into_owned()));
+        let value = if forge_core::keystore::is_file_source(p) {
+            std::path::absolute(p).unwrap_or_else(|_| p.clone())
+        } else {
+            p.clone()
+        };
+        env.push((
+            "DASH_FORGE_KEY".into(),
+            value.to_string_lossy().into_owned(),
+        ));
     }
     env
 }

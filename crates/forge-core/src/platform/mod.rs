@@ -118,8 +118,10 @@ pub use crate::network::{Network, NetworkTarget};
 
 pub mod wrap;
 
+pub mod identity;
+
 /// The `dashcore` network the SDK and its context provider use for `network`.
-fn to_dashcore(network: &Network) -> DashcoreNetwork {
+pub(crate) fn to_dashcore(network: &Network) -> DashcoreNetwork {
     match network {
         Network::Testnet => DashcoreNetwork::Testnet,
         Network::Mainnet => DashcoreNetwork::Mainnet,
@@ -167,7 +169,7 @@ impl std::fmt::Debug for LoadedContract {
 /// Wraps the SDK's `Identity` so the SDK type never appears in a `forge-core` public
 /// signature. Obtain one from [`PlatformClient::fetch_identity`].
 #[derive(Clone)]
-pub struct LoadedIdentity(Identity);
+pub struct LoadedIdentity(pub(crate) Identity);
 
 impl LoadedIdentity {
     /// The identity's base58 id.
@@ -1793,7 +1795,7 @@ fn parse_address_list(addresses: &[String]) -> Result<AddressList> {
 }
 
 /// Parse a base58 Platform id, mapping failures to a config error.
-fn parse_id(s: &str, what: &str) -> Result<Identifier> {
+pub(crate) fn parse_id(s: &str, what: &str) -> Result<Identifier> {
     Identifier::from_string(s, Encoding::Base58)
         .map_err(|e| Error::Config(format!("invalid {what} (expected base58): {e}")))
 }
@@ -2279,7 +2281,7 @@ fn duration_ms(d: std::time::Duration) -> u64 {
 // The error is the SDK's own (large) type, passed straight through from the SDK calls this
 // wraps; every caller maps it to a crate error on the next line.
 #[allow(clippy::result_large_err)]
-async fn retry_transient_read<T, F, Fut>(
+pub(crate) async fn retry_transient_read<T, F, Fut>(
     label: &str,
     op: F,
 ) -> std::result::Result<T, dash_sdk::Error>

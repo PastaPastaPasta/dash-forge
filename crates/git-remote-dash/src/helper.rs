@@ -130,7 +130,10 @@ impl Helper {
     /// Establish (once) the Platform connection and resolve the repo.
     async fn ensure_conn(&mut self) -> Result<&Conn> {
         if self.conn.is_none() {
-            if std::env::var_os("DASH_FORGE_KEY").is_none() && !self.key_path.exists() {
+            if std::env::var_os("DASH_FORGE_KEY").is_none()
+                && forge_core::keystore::is_file_source(&self.key_path)
+                && !self.key_path.exists()
+            {
                 return Err(no_identity(format!(
                     "DASH_FORGE_KEY is not set and {} does not exist",
                     self.key_path.display()
@@ -1367,11 +1370,17 @@ fn write_denied(repo: &str, me: &str) -> Denied {
     }
 }
 
-/// Resolve the identity key file: `DASH_FORGE_KEY` if set, else
+/// Resolve the identity key source: `DASH_FORGE_KEY` if set, else the default `dg` recorded
+/// in `~/.config/dash-forge/config.toml`, else
 /// `~/.config/dash-forge/identities/<owner>.identity.json`.
 fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("DASH_FORGE_KEY") {
         return Ok(PathBuf::from(p));
+    }
+    // The identity `dg auth new` / `dg auth login` recorded as the default (a keychain entry
+    // or a key file), so a plain `git push` signs as `dg` does.
+    if let Some(src) = forge_core::keystore::configured_default_source() {
+        return Ok(PathBuf::from(src));
     }
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)

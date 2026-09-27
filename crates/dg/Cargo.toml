@@ -24,11 +24,14 @@ serde = { workspace = true }
 serde_json.workspace = true
 toml = "0.8"
 hex = "0.4"
+# `dg auth new` shows the deposit address as a terminal QR code (text renderer only).
+qrcode = { version = "0.14", default-features = false }
+zeroize = "1"
 # `dg storage test` drives the storage probes over the same rustls client forge-core uses.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 # `dg pr merge` builds the merge in a throwaway repository.
 tempfile = "3"
-# `dg storage add` prompts: a pasted secret is read from the terminal without echo.
+# Hidden prompts: a pasted storage secret, the recovery words, backup-check words.
 rpassword = "7"
 
 # `cargo binstall` fetches the prebuilt release archive instead of compiling (release.yml
