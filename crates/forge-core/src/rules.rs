@@ -324,8 +324,10 @@ fn builds_on(v: &RefUpdate, u: &RefUpdate) -> bool {
 ///
 /// Within a block this is Kahn's topological sort with the smallest `id` picked first: take
 /// the smallest-`id` unplaced update that builds on no other unplaced update of the block;
-/// when there is none (a cycle), take the smallest-`id` unplaced one. Deterministic, total,
-/// the same in every client (parity: forge-web `causalOrder`), and O(n²) in the block size.
+/// when there is none, every unplaced update waits on a cycle, so take the smallest-`id` one
+/// that lies on a cycle ([`on_cycle`]) — never one merely downstream of it, which would then
+/// sort before its own predecessor. Deterministic, total, the same in every client (parity:
+/// forge-web `causalOrder`); O(n²) in the block size without cycles.
 fn causal_order(mut updates: Vec<&RefUpdate>) -> Vec<&RefUpdate> {
     updates.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
     let mut out = Vec::with_capacity(updates.len());
@@ -342,8 +344,8 @@ fn causal_order(mut updates: Vec<&RefUpdate>) -> Vec<&RefUpdate> {
             let unplaced = || (0..len).filter(|&i| !placed[i]);
             let next = unplaced()
                 .find(|&i| waiting[i] == 0)
-                .or_else(|| unplaced().next())
-                .expect("an unplaced update remains");
+                .or_else(|| unplaced().find(|&i| on_cycle(block, &placed, i)))
+                .expect("every unplaced update waits, so one lies on a cycle");
             placed[next] = true;
             out.push(block[next]);
             for v in 0..len {
@@ -354,6 +356,28 @@ fn causal_order(mut updates: Vec<&RefUpdate>) -> Vec<&RefUpdate> {
         }
     }
     out
+}
+
+/// Whether unplaced update `start` of `block` lies on a cycle of [`builds_on`] among the
+/// unplaced updates: it builds, through unplaced updates, on itself.
+fn on_cycle(block: &[&RefUpdate], placed: &[bool], start: usize) -> bool {
+    let mut seen = vec![false; block.len()];
+    let mut stack = vec![start];
+    while let Some(v) = stack.pop() {
+        for u in 0..block.len() {
+            if placed[u] || !builds_on(block[v], block[u]) {
+                continue;
+            }
+            if u == start {
+                return true;
+            }
+            if !seen[u] {
+                seen[u] = true;
+                stack.push(u);
+            }
+        }
+    }
+    false
 }
 
 /// Whether a ref name is legal to advertise on the git wire protocol.
@@ -1897,7 +1921,8 @@ mod tests {
     fn chained_force_in_middle_resolves_to_chain_tip_with_zero_timestamps() {
         // Regression: all `$createdAt` == 0 (the deployed refUpdate type doesn't record the
         // timestamp), history is A -> B(force) -> C via prevOid chains, and B's document id
-        // happens to sort *after* C's. The prevOid DAG must win: the head is C, never Unborn.
+        // happens to sort *after* C's. Within one block the prevOid chain orders them: the head is C,
+        // never Unborn.
         let hash = sha256_hex("refs/heads/main");
         let a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";

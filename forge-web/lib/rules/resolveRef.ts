@@ -51,11 +51,29 @@ function buildsOn(v: RefUpdate, u: RefUpdate): boolean {
   return !isNullOid(v.prevOid) && v.prevOid === u.newOid && v.newOid !== u.newOid
 }
 
+/** Whether unplaced `block[start]` builds, through unplaced updates, on itself. Parity: `on_cycle`. */
+function onCycle(block: readonly RefUpdate[], placed: readonly boolean[], start: number): boolean {
+  const seen = block.map(() => false)
+  const stack = [start]
+  for (let v = stack.pop(); v !== undefined; v = stack.pop()) {
+    for (let u = 0; u < block.length; u++) {
+      if (placed[u] || !buildsOn(block[v] as RefUpdate, block[u] as RefUpdate)) continue
+      if (u === start) return true
+      if (!seen[u]) {
+        seen[u] = true
+        stack.push(u)
+      }
+    }
+  }
+  return false
+}
+
 /**
  * The causal order {@link resolveRef} folds in: ascending `createdAt`; within one `createdAt`
  * (one block) an update that builds on another comes after it; remaining ties, and chain
  * cycles, by ascending `id`. Within a block: Kahn's sort taking the smallest-`id` unplaced
- * update that builds on no other unplaced one, else (a cycle) the smallest-`id` unplaced one.
+ * update that builds on no other unplaced one, else (every one waits on a cycle) the
+ * smallest-`id` unplaced one that lies on a cycle, never one merely downstream of it.
  * Parity: forge-core `rules::causal_order`.
  */
 function causalOrder(updates: readonly RefUpdate[]): RefUpdate[] {
@@ -70,7 +88,7 @@ function causalOrder(updates: readonly RefUpdate[]): RefUpdate[] {
     const placed = block.map(() => false)
     for (let n = 0; n < block.length; n++) {
       let next = block.findIndex((_, i) => !placed[i] && waiting[i] === 0)
-      if (next < 0) next = placed.indexOf(false)
+      if (next < 0) next = block.findIndex((_, i) => !placed[i] && onCycle(block, placed, i))
       placed[next] = true
       const u = block[next] as RefUpdate
       out.push(u)
@@ -190,7 +208,9 @@ export function resolveRef(
   for (let i = valid.length - 1; i >= 0; i--) {
     const u = valid[i] as RefUpdate
     if (isNullOid(u.newOid) || heads.some((h) => h.oid === u.newOid)) continue
-    if (valid.slice(i + 1).some((v) => supersedes(u, v))) continue
+    let superseded = false
+    for (let j = i + 1; j < valid.length && !superseded; j++) superseded = supersedes(u, valid[j] as RefUpdate)
+    if (superseded) continue
     heads.push({ id: u.id, oid: u.newOid, author: u.author, createdAt: u.createdAt })
   }
 

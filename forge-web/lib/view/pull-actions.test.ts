@@ -12,7 +12,7 @@ import type { PullView } from '../repo'
 import { historicalTipsPredicate } from '../repo'
 import type { Event, Holdings } from '../rules'
 import { foldPrStateV2 } from '../rules/v2'
-import { mergeButton, mergeRefProblem, pullActions, type PullActionInputs } from './pull-actions'
+import { mergeBaseTip, mergeButton, mergeRefProblem, pullActions, type PullActionInputs } from './pull-actions'
 
 const AUTHOR = 'author'
 const WRITER = 'writer'
@@ -161,5 +161,24 @@ describe('H2: what the browser merge will move', () => {
     expect(mergeButton({ ...ok, isPublic: false }).kind).toBe('unavailable')
     expect(mergeButton({ ...ok, baseLoaded: false })).toMatchObject({ kind: 'unavailable', reason: expect.stringMatching(/Load the base repo/) })
     expect(mergeButton({ ...ok, check: 'malformed' }).kind).toBe('unavailable')
+  })
+})
+
+describe('mergeBaseTip — the browser merge builds only on a base it may merge into (D-501)', () => {
+  const MAIN = 'refs/heads/main'
+  const OLD = 'aa'.repeat(20)
+  const NOW = 'bb'.repeat(20)
+  it('builds on the branch as it stands now', () => {
+    expect(mergeBaseTip({ baseRefName: MAIN, baseTipOid: OLD }, MAIN, NOW)).toBe(NOW)
+  })
+  it('refuses a deleted base (a push would re-create it), not falling back to its old tip', () => {
+    expect(mergeBaseTip({ baseRefName: MAIN, baseTipOid: OLD }, MAIN, null)).toBe('')
+    expect(mergeRefProblem(MAIN, '', HEAD)).toMatch(/does not exist/)
+  })
+  it('refuses a base that was no branch when the PR was opened, though it exists now', () => {
+    expect(mergeBaseTip({ baseRefName: MAIN, baseTipOid: '' }, MAIN, NOW)).toBe('')
+  })
+  it('merges a retargeted PR into its new base', () => {
+    expect(mergeBaseTip({ baseRefName: MAIN, baseTipOid: '' }, 'refs/heads/next', NOW)).toBe(NOW)
   })
 })

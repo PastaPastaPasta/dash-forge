@@ -6,7 +6,8 @@
  */
 
 import type { PullView, RepoRef } from '@/lib/repo'
-import type { RepoHome } from '@/lib/view'
+import { tipOidOf, type RepoHome } from '@/lib/view'
+import { mergeBaseTip } from '@/lib/view/pull-actions'
 import { MergePanel } from '@/components/repo/merge-panel'
 import { pullBase, useComparisonSides } from '@/components/repo/pull-diff'
 
@@ -48,6 +49,10 @@ function MergeReaders({
   onMerged: () => void
 }): JSX.Element | null {
   const { sides, baseOnly, sidesKey } = useComparisonSides(repo, pull.sourceId)
+  // Build only on the base as it stands now, and only on a base the PR could merge into (D-501);
+  // `pullBase` falls back to the PR's historical tip, which is right for the diff only.
+  const { baseRefName } = pullBase(pull, home)
+  const current = tipOidOf(home.branches.find((b) => b.refName === baseRefName))
   return (
     <MergePanel
       repo={repo}
@@ -55,7 +60,7 @@ function MergeReaders({
       sides={sides}
       baseOnly={baseOnly}
       sidesKey={sidesKey}
-      baseTipOid={pullBase(pull, home).baseTipOid}
+      baseTipOid={mergeBaseTip(pull, baseRefName, current)}
       protectedPatterns={home.config?.protectedPatterns ?? []}
       canMerge
       isMaintainer={isMaintainer}

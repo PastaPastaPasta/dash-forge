@@ -34,7 +34,8 @@
  * Divergence resolution that turns on real commit ancestry (a merge superseding both racing
  * heads) needs a commit-graph predicate from the browse plane; callers may pass one via
  * `isAncestor`. Without it, linear/fast-forward/force/delete cases still resolve correctly
- * (the prevOid causal DAG carries those); only unmerged three-way races stay `Diverged`.
+ * (the consensus clock, with the prevOid chain inside one block, carries those); only
+ * unmerged races stay `Diverged`.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
