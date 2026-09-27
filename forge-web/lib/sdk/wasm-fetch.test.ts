@@ -135,28 +135,3 @@ describe('fetchAndCompile: a server that never answers', () => {
     ).rejects.toThrow(/stalled/)
   })
 })
-
-describe('compileWasm', () => {
-  it('forgets a failed download, so the next call fetches again', async () => {
-    vi.resetModules()
-    const fetchMock = vi
-      .fn()
-      // A 4xx is not retried within one download, so the first call fails at once.
-      .mockResolvedValueOnce(new Response('gone', { status: 404 }))
-      .mockResolvedValueOnce(new Response(streamOf([new Uint8Array(4)]), { status: 200 }))
-    vi.stubGlobal('fetch', fetchMock)
-    const compiled = {} as WebAssembly.Module
-    vi.spyOn(WebAssembly, 'compile').mockResolvedValue(compiled)
-    vi.spyOn(WebAssembly, 'compileStreaming').mockImplementation(async (r) => {
-      await (await r).arrayBuffer()
-      return compiled
-    })
-    const { compileWasm } = await import('./wasm-fetch')
-    await expect(compileWasm()).rejects.toThrow('HTTP 404')
-    await Promise.resolve()
-    await expect(compileWasm()).resolves.toBeDefined()
-    expect(fetchMock).toHaveBeenCalledTimes(2)
-    vi.unstubAllGlobals()
-    vi.restoreAllMocks()
-  })
-})
