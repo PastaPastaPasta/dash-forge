@@ -106,10 +106,10 @@ pub fn is_private_host(hostname: &str) -> bool {
     false
 }
 
-/// `host` without one trailing root dot: `localhost.` and `nas.local.` are the same names
+/// `host` without trailing root dots: `localhost.` and `nas.local.` are the same names
 /// as `localhost` and `nas.local`, and URL parsers keep the dot.
 fn dns_name(host: &str) -> &str {
-    host.strip_suffix('.').unwrap_or(host)
+    host.trim_end_matches('.')
 }
 
 /// The first two octets of a `d.d.d.d` literal (each 1-3 digits, as `lib/net.ts` matches).

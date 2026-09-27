@@ -123,6 +123,7 @@ fn emit_repack_report(
             "newUris": report.new_uris,
             "supersededCount": report.superseded_count,
             "supersededBytes": report.superseded_bytes,
+            "unnamedLivePacks": report.remaining,
             "deletedDocuments": 0,
             "cost": crate::fmt::cost_json(report.cost_credits, price),
         }),
@@ -138,6 +139,15 @@ fn emit_repack_report(
                 "  supersedes:      {} pack(s), {} bytes (kept; nothing deleted)",
                 report.superseded_count, report.superseded_bytes
             );
+            if report.remaining > 0 {
+                println!(
+                    "  not named:       {} older pack(s): a manifest names at most {} packs, so \
+                     they stay live and keep the copies they have (the new pack holds their \
+                     objects too)",
+                    report.remaining,
+                    forge_core::repo::MAX_SUPERSEDES
+                );
+            }
             // The locator is what makes the repo browsable without downloading every pack,
             // so say plainly whether it landed rather than leaving it to be inferred.
             match &report.locator_manifest_id {
@@ -457,18 +467,21 @@ fn split_platform<'a>(names: &[&'a str]) -> Result<(Vec<&'a str>, Option<&'a str
 /// (`FORGE_S3_ENDPOINT/FORGE_S3_BUCKET`); `None` for the other legacy targets, which record
 /// no http(s) URL of their own.
 fn legacy_backend_uri(backend: Option<Backend>) -> Option<String> {
-    matches!(backend, Some(Backend::S3)).then(|| {
-        let endpoint = std::env::var("FORGE_S3_ENDPOINT").unwrap_or_default();
-        let bucket = std::env::var("FORGE_S3_BUCKET").unwrap_or_else(|_| "forge-packs".into());
-        format!("{}/{bucket}", endpoint.trim_end_matches('/'))
-    })
+    if !matches!(backend, Some(Backend::S3)) {
+        return None;
+    }
+    // Unset: `build_external_backend` reports what is missing.
+    let endpoint = std::env::var("FORGE_S3_ENDPOINT").ok()?;
+    let bucket = std::env::var("FORGE_S3_BUCKET").unwrap_or_else(|_| "forge-packs".into());
+    Some(format!("{}/{bucket}", endpoint.trim_end_matches('/')))
 }
 
 /// Refuse (E501) to record `url` on chain when it is not a public https address, unless
 /// git config `dash.allowPrivateUri` allows it (the legacy env-configured targets have no
 /// profile to carry the flag).
 fn refuse_unpublishable_url(url: &str, lead: &str) -> Result<()> {
-    let allowed = crate::storage::allow_private_uri_config(None)?;
+    let allowed =
+        crate::storage::allow_private_uri_config(crate::storage::dash_remote_name().as_deref())?;
     forge_core::storage::publish::refuse_unpublishable_url("FORGE_S3_ENDPOINT", url, allowed, lead)
         .map_err(Into::into)
 }
@@ -477,7 +490,8 @@ fn refuse_unpublishable_url(url: &str, lead: &str) -> Result<()> {
 /// read address (see [`crate::storage::check_publishable`]).
 fn refuse_unpublishable_profile(name: &str, lead: &str) -> Result<()> {
     let profile = load_external_profile(name)?;
-    crate::storage::check_publishable([(name, &profile)], None, None, lead)
+    let remote = crate::storage::dash_remote_name();
+    crate::storage::check_publishable([(name, &profile)], None, remote.as_deref(), lead)
 }
 
 /// A verified-upload target for the named external profile.
@@ -545,5 +559,21 @@ mod tests {
         assert!(profile_list("").is_err());
         assert!(profile_list("a,,b").is_err());
         assert!(format!("{:#}", profile_list("a,b,a").unwrap_err()).contains("twice"));
+    }
+
+    /// With FORGE_S3_ENDPOINT unset there is no address to judge: the legacy target reports
+    /// the missing variable itself, not E501.
+    #[test]
+    fn an_unset_legacy_endpoint_is_reported_as_missing() {
+        if std::env::var_os("FORGE_S3_ENDPOINT").is_some() {
+            return;
+        }
+        assert_eq!(legacy_backend_uri(Some(Backend::S3)), None);
+        let err = build_external_backend(Some(Backend::S3))
+            .err()
+            .map(|e| format!("{e:#}"))
+            .unwrap_or_default();
+        assert!(err.contains("FORGE_S3_ENDPOINT"), "{err}");
+        assert_eq!(legacy_backend_uri(Some(Backend::Ipfs)), None);
     }
 }

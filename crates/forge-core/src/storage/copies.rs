@@ -12,10 +12,13 @@
 //! - one IPFS CID: `ipfs://<cid>` and `https://<gateway>/ipfs/<cid>` are the same copy.
 //!
 //! Packs a repack superseded are left out: their objects live on in the superseding pack.
+//! Only a manifest recorded by a current maintainer or writer supersedes anything (the
+//! reader's representative rule, `rules::v2::v2_pack_list`): a stranger's manifest naming
+//! every pack must not hide them.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::repo::PackManifestInfo;
+use crate::repo::{PackManifestInfo, RoleMap};
 
 /// One live git pack with fewer copies than required.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,22 +101,33 @@ pub fn policy_copies(policy: &super::ResolvedPolicy) -> usize {
         .external
         .iter()
         .any(|(_, p)| matches!(p, Profile::IpfsKubo(_) | Profile::IpfsPinningService(_)));
-    let s3 = policy
+    // Two profiles naming the same bucket and prefix (on one endpoint) write one object.
+    let s3: BTreeSet<(String, &str, &str)> = policy
         .external
         .iter()
-        .filter(|(_, p)| matches!(p, Profile::S3(_)))
-        .count();
+        .filter_map(|(_, p)| match p {
+            Profile::S3(s) => Some((
+                s.endpoint.trim_end_matches('/').to_ascii_lowercase(),
+                s.bucket.as_str(),
+                s.prefix.trim_matches('/'),
+            )),
+            _ => None,
+        })
+        .collect();
+    let s3 = s3.len();
     policy
         .replicas
         .min(s3 + usize::from(ipfs) + usize::from(policy.platform))
 }
 
 /// Count the copies of every live git pack in `manifests` against `required` (see
-/// [`policy_copies`] for a policy's number).
-pub fn count_copies(manifests: &[PackManifestInfo], required: usize) -> CopyCount {
+/// [`policy_copies`] for a policy's number). `roles` are the repository's current members:
+/// only their manifests supersede.
+pub fn count_copies(manifests: &[PackManifestInfo], roles: &RoleMap, required: usize) -> CopyCount {
     let git = u64::from(crate::pack::KIND_GIT_PACK);
     let superseded: BTreeSet<[u8; 32]> = manifests
         .iter()
+        .filter(|m| roles.contains_key(&m.owner_id))
         .flat_map(|m| m.supersedes.iter().copied())
         .collect();
     let mut packs: BTreeMap<[u8; 32], Vec<&PackManifestInfo>> = BTreeMap::new();
@@ -123,21 +137,12 @@ pub fn count_copies(manifests: &[PackManifestInfo], required: usize) -> CopyCoun
     {
         packs.entry(m.pack_hash).or_default().push(m);
     }
-    // A consolidation (a pack whose manifest supersedes others) holds every object reachable
-    // from the refs when it was made, so once it has the copies asked for, packs recorded
-    // before it are covered too, including those beyond the 32 its `supersedes` can name.
-    let covered_until = packs
-        .values()
-        .filter(|ms| ms.iter().any(|m| !m.supersedes.is_empty()) && copies_of(ms) >= required)
-        .flat_map(|ms| ms.iter().map(|m| m.created_at))
-        .max();
     let mut thin: Vec<(u64, ThinPack)> = packs
         .iter()
         .filter_map(|(hash, ms)| {
             let copies = copies_of(ms);
             let first = ms.iter().map(|m| m.created_at).min().unwrap_or(0);
-            let covered = covered_until.is_some_and(|t| first < t);
-            (copies < required && !covered).then(|| {
+            (copies < required).then(|| {
                 (
                     first,
                     ThinPack {
@@ -159,6 +164,12 @@ pub fn count_copies(manifests: &[PackManifestInfo], required: usize) -> CopyCoun
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn roles(ids: &[&str]) -> RoleMap {
+        ids.iter()
+            .map(|i| ((*i).to_string(), crate::rules::v2::Role::Writer))
+            .collect()
+    }
 
     fn m(hash: u8, at: u64, storage: u64, chunks: u64, uris: &[&str]) -> PackManifestInfo {
         PackManifestInfo {
@@ -202,11 +213,11 @@ mod tests {
                 &format!("s3://forge/{k}"),
             ],
         );
-        let c = count_copies(&[new.clone(), old.clone()], 2);
+        let c = count_copies(&[new.clone(), old.clone()], &roles(&["o"]), 2);
         assert_eq!(c.live, 2);
         assert_eq!(c.thin.len(), 1);
         assert_eq!((c.thin[0].pack_hash, c.thin[0].copies), ([1; 32], 1));
-        assert!(count_copies(&[new, old], 1).thin.is_empty());
+        assert!(count_copies(&[new, old], &roles(&["o"]), 1).thin.is_empty());
     }
 
     #[test]
@@ -245,7 +256,7 @@ mod tests {
         repack.supersedes = vec![[1; 32]];
         let mut locator = m(3, 300, 1, 0, &["ipfs://c"]);
         locator.kind = 1;
-        let c = count_copies(&[old, repack, locator], 2);
+        let c = count_copies(&[old, repack, locator], &roles(&["o"]), 2);
         assert_eq!((c.live, c.thin.len()), (1, 0));
     }
 
@@ -270,37 +281,73 @@ mod tests {
         assert_eq!(p.replicas, 2);
         assert_eq!(policy_copies(&p), 1);
         let pushed = m(1, 1, 1, 0, &["ipfs://bafyx"]);
-        assert!(count_copies(&[pushed], policy_copies(&p)).thin.is_empty());
+        assert!(count_copies(&[pushed], &roles(&["o"]), policy_copies(&p))
+            .thin
+            .is_empty());
         assert_eq!(policy_copies(&policy("k1,r2,platform")), 3);
         assert_eq!(policy_copies(&policy("k1,k2,r2")), 2);
     }
 
-    /// A repack names at most 32 packs in `supersedes`; older packs it could not name are
-    /// still covered once the consolidated pack has the copies the policy asks for.
+    /// A stranger's manifest naming every pack in `supersedes` hides none of them; a
+    /// member's does.
     #[test]
-    fn a_replicated_consolidation_covers_older_packs_it_could_not_name() {
-        let mut ms: Vec<PackManifestInfo> = (0..40u8)
-            .map(|i| m(i, 100 + u64::from(i), 1, 0, &["ipfs://old"]))
-            .collect();
-        let mut repack = m(
+    fn only_members_supersede() {
+        let old = m(1, 100, 1, 0, &["ipfs://old"]);
+        let mut claim = m(
+            2,
             200,
-            500,
             1,
             0,
-            &["ipfs://new", "https://r2.example/packs/n.pack"],
+            &["ipfs://c", "https://r2.example/packs/c.pack"],
         );
-        repack.supersedes = (0..32u8).map(|i| [i; 32]).collect();
-        ms.push(repack.clone());
-        let c = count_copies(&ms, 2);
-        assert_eq!((c.live, c.thin.len()), (9, 0), "{c:?}");
-        // A pack pushed after the repack is not covered by it.
-        ms.push(m(201, 600, 1, 0, &["ipfs://later"]));
-        assert_eq!(count_copies(&ms, 2).thin.len(), 1);
-        // A thin consolidation covers nothing.
-        repack.uris.truncate(1);
-        let mut ms: Vec<_> = (0..3u8).map(|i| m(i, 100, 1, 0, &["ipfs://o"])).collect();
-        ms.push(repack);
-        assert_eq!(count_copies(&ms, 2).thin.len(), 1);
+        claim.owner_id = "mallory".into();
+        claim.supersedes = vec![[1; 32]];
+        let both = [old, claim];
+        assert_eq!(count_copies(&both, &roles(&["o"]), 2).thin.len(), 1);
+        assert_eq!(
+            count_copies(&both, &roles(&["o", "mallory"]), 2).thin.len(),
+            0
+        );
+    }
+
+    /// Two profiles of one bucket and prefix write one object.
+    #[test]
+    fn one_bucket_under_two_names_is_one_place() {
+        let profiles = crate::storage::StorageProfiles::parse(
+            "[profiles.a]\nkind = \"s3\"\nendpoint = \"https://s3.example\"\nbucket = \"b\"\nprefix = \"p\"\n\
+             [profiles.a2]\nkind = \"s3\"\nendpoint = \"https://S3.example/\"\nbucket = \"b\"\nprefix = \"p/\"\n\
+             [profiles.c]\nkind = \"s3\"\nendpoint = \"https://s3.example\"\nbucket = \"c\"\n",
+        )
+        .unwrap();
+        let p = |t: &str| {
+            crate::storage::StoragePolicy::from_git_values(Some(t), None, None)
+                .unwrap()
+                .resolve(&profiles)
+                .unwrap()
+        };
+        assert_eq!(policy_copies(&p("a,a2")), 1);
+        assert_eq!(policy_copies(&p("a,c")), 2);
+    }
+
+    /// H-A: a later reseed of an unrelated consolidated pack must not hide older thin packs
+    /// that no manifest supersedes.
+    #[test]
+    fn a_later_reseed_hides_no_older_thin_pack() {
+        let old = m(1, 100, 1, 0, &["ipfs://old"]);
+        let mut repack = m(
+            2,
+            50,
+            1,
+            0,
+            &["ipfs://r", "https://r2.example/packs/r.pack"],
+        );
+        repack.supersedes = vec![[9; 32]];
+        // Someone reseeds the consolidation long after `old` was pushed.
+        let mut reseed = repack.clone();
+        reseed.created_at = 900;
+        reseed.owner_id = "carol".into();
+        let c = count_copies(&[old, repack, reseed], &roles(&["o", "carol"]), 2);
+        assert_eq!(c.thin.len(), 1, "{c:?}");
     }
 
     /// A percent-encoded public URL and its raw `s3://` locator are one copy; two buckets
@@ -311,12 +358,18 @@ mod tests {
             "https://cdn.example/my%20dir/packs/a.pack",
             "s3://b/my dir/packs/a.pack",
         ];
-        assert_eq!(count_copies(&[m(1, 1, 1, 0, &uris)], 2).thin[0].copies, 1);
+        assert_eq!(
+            count_copies(&[m(1, 1, 1, 0, &uris)], &roles(&["o"]), 2).thin[0].copies,
+            1
+        );
         let uris = [
             "https://cdn.example/p/packs/a.pack",
             "s3://b1/p/packs/a.pack",
             "s3://b2/p/packs/a.pack",
         ];
-        assert_eq!(count_copies(&[m(1, 1, 1, 0, &uris)], 3).thin[0].copies, 2);
+        assert_eq!(
+            count_copies(&[m(1, 1, 1, 0, &uris)], &roles(&["o"]), 3).thin[0].copies,
+            2
+        );
     }
 }

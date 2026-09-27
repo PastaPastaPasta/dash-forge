@@ -205,7 +205,10 @@ pub enum Provider {
 pub fn provider_of(endpoint: &str) -> Provider {
     let host = reqwest::Url::parse(endpoint)
         .ok()
-        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+        .and_then(|u| {
+            u.host_str()
+                .map(|h| h.trim_end_matches('.').to_ascii_lowercase())
+        })
         .unwrap_or_default();
     if host.ends_with(".r2.cloudflarestorage.com") {
         Provider::R2
@@ -365,6 +368,11 @@ mod tests {
             Provider::Aws
         );
         assert_eq!(provider_of("http://127.0.0.1:9000"), Provider::Other);
+        // A fully qualified name is the same host.
+        assert_eq!(
+            provider_of("https://s3.eu-west-1.amazonaws.com."),
+            Provider::Aws
+        );
     }
 
     #[test]

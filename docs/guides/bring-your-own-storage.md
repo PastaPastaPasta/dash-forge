@@ -336,7 +336,7 @@ dg repack <owner>/<repo> --profile r2-main,kubo   # one new pack on both; every 
 dg repack <owner>/<repo> --profile r2-main,platform   # `platform` is a target too
 ```
 
-`dg repack` downloads every pack and writes one consolidated pack that supersedes them. It costs one pack upload and one browse-index upload per listed target (Platform chunks at the Platform rate when `platform` is listed), plus two small manifest writes. Once that pack has the copies the policy asks for, every pack recorded before it counts as covered, including older ones beyond the 32 a manifest can name. (`dg reseed --profile <p>` copies each pack separately instead, but records the new copy as your own manifest only for packs you have not recorded yet, so it cannot add a copy to packs you pushed yourself.)
+`dg repack` downloads every pack and writes one consolidated pack that supersedes them. It costs one pack upload and one browse-index upload per listed target (Platform chunks at the Platform rate when `platform` is listed), plus two small manifest writes. A manifest can name at most 32 packs it supersedes; with more live packs, `dg repack` says how many it could not name, and running it again names the next ones. It stops with nothing written if a push lands while it runs. (`dg reseed --profile <p>` copies each pack separately instead, but records the new copy as your own manifest only for packs you have not recorded yet, so it cannot add a copy to packs you pushed yourself.)
 
 These commands write git config, and you can also set it by hand:
 

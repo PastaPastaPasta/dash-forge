@@ -915,6 +915,11 @@ fn dash_remote_url() -> Option<(String, String)> {
         })
 }
 
+/// The name of this git repository's forge (`dash://`) remote, when it has one.
+pub(crate) fn dash_remote_name() -> Option<String> {
+    dash_remote_url().map(|(name, _)| name)
+}
+
 /// The storage policy a push through this repository's forge remote uses: its
 /// `remote.<name>.dash*` settings over `dash.*`, by the helper's scope rule.
 pub(crate) fn push_policy() -> Result<ResolvedPolicy> {
@@ -969,16 +974,16 @@ pub(crate) async fn existing_copies(
             Some(n) => forge_core::resolve::resolve_named(&client, &owner, n).await?,
             None => forge_core::resolve::resolve_id(&client, &owner).await?,
         };
-        let manifests = forge_core::repo::RepoService::reader(&client)
-            .read_pack_manifests(&handle)
-            .await?;
-        anyhow::Ok((handle.display(), manifests))
+        let svc = forge_core::repo::RepoService::reader(&client);
+        let manifests = svc.read_pack_manifests(&handle).await?;
+        let roles = svc.copy_roles(&handle).await?;
+        anyhow::Ok((handle.display(), manifests, roles))
     };
-    let (repo, manifests) = tokio::time::timeout(std::time::Duration::from_secs(15), read)
+    let (repo, manifests, roles) = tokio::time::timeout(std::time::Duration::from_secs(15), read)
         .await
         .map_err(|_| anyhow::anyhow!("reading the pack manifests timed out after 15 s"))??;
     Ok(Some(ExistingCopies {
-        count: count_copies(&manifests, required),
+        count: count_copies(&manifests, &roles, required),
         fix: repack_command(&repo, policy),
         repo,
         required,
