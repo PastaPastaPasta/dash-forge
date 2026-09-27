@@ -53,6 +53,7 @@ import { invalidateMembers, readMemberships } from './members'
 import {
   isMaintainer,
   loadPrivateSessionUncached,
+  shortBranch,
   parseWrapDoc,
   sdkSessionSource,
   sessionUnwrapper,
@@ -169,10 +170,21 @@ export function planRotation(
       unreachable.push(id)
       continue
     }
+    // §5.2: the new key goes to each member's newest usable key, the rotator's own included. If
+    // this browser holds an older one, the rotator would lose the epoch it creates: refused.
+    if (id === self && key.keyId !== heldKeyId) throw staleHeldKey(heldKeyId, key.keyId)
     recipients.push({ identity: id, keyId: key.keyId, done: wrappedBySelf.has(id) })
   }
   const burn = mustBurn(exclude.length > 0, resume !== null, mine, recipients, remaining)
   return { from: n, epoch, resume, burn, recipients, unreachable, excluded: [...excluded] }
+}
+
+/** This browser holds encryption key `held`, but the identity's newest usable key is `current`. */
+function staleHeldKey(held: number, current: number): PrivateMembersError {
+  return new PrivateMembersError(
+    `this browser holds encryption key ${held}, but your identity's current key is ${current}: the new repo key would go to key ${current}, which you couldn't read here. Import key ${current} (Settings → Keys), or rotate from the CLI with it.`,
+    'E306',
+  )
 }
 
 /** A pending self-wrap of `epoch` to a key of ours this browser does not hold: it cannot be resumed here. */
@@ -653,36 +665,15 @@ async function rotateWith(
           throw new PrivateMembersError(`key epoch ${closed} was closed, but the member list is still changing on Platform; run Repair in a moment to finish.`, 'E310')
         })
       }
-      // The key of `epoch`: this signer's pending self-wrap's (an earlier run's; the unique index
-      // keeps it), else a fresh one; a self-wrap that stands unseen by this read is adopted.
-      const pending = pendingSelfWrap(session, self.identity, epoch)
-      let next =
-        pending !== null
-          ? await c.ops.unwrapRaw({ document: pending.raw, counterpartyKey: keyOf(session, self.identity, pending.senderKeyId), repoId: session.repoId, epoch })
-          : await freshKey(session.repoId, epoch)
+      let next = await ownEpochKey(c, session, self, epoch, intent)
       try {
-        let adopted = false
-        const selfOutcome = pending !== null ? { kind: 'same' as const } : await postWrap(c, session, next.keys, next.raw, self.identity, self.keyId, intent)
-        if (selfOutcome.kind === 'different') {
-          const standing = await readOwnWrap(c, session, epoch, self.identity)
-          if (standing === null) throw unusableWrap({ kind: 'unreadable' }, self.identity, epoch)
-          if (standing.recipientKeyId !== c.ops.keyId) {
-            standing.raw.fill(0)
-            throw notHeldKey(epoch, standing.recipientKeyId)
-          }
-          next.raw.fill(0)
-          next = standing
-          adopted = true
-        } else if (selfOutcome.kind === 'unreadable') {
-          throw unusableWrap(selfOutcome, self.identity, epoch)
-        }
         onStep?.({ kind: 'wrapped', identity: self.identity, epoch })
         // An earlier run's key may already sit with someone who must not have it: a removal never
         // trusts a read that may lag that run's wrap; any run burns on a stray it can see, or on
         // a standing wrap it cannot replace.
         const mine = ownWraps(session, selfId, epoch)
         let leak =
-          (removing && (pending !== null || adopted)) ||
+          (removing && next.resumed) ||
           mustBurn(false, false, mine, plan.recipients, allowed) ||
           (await straysAt(c, epoch, allowed)).length > 0
         // Every recipient this run already wrapped or found standing at `epoch`: never posted twice.
@@ -722,7 +713,7 @@ async function rotateWith(
           if (skip === null) skip = from
           else from.raw.fill(0)
           from = { epoch, raw: next.raw }
-          next = { keys: next.keys, raw: new Uint8Array(0) }
+          next = { keys: next.keys, raw: new Uint8Array(0), resumed: false }
           continue
         }
         if ((await straysAt(c, epoch, allowed)).length > 0) {
@@ -757,6 +748,80 @@ async function skipBelow(session: PrivateSession, c: PrivateWriteContext, burned
     `key epoch ${burned} is burned and you hold no key of the epoch below it that the next epoch must skip to; a maintainer who holds it must rotate`,
     'E310',
   )
+}
+
+/**
+ * The last step of a private create (§5.3 epoch 0; parity: forge-core
+ * `keyring::create_private_state`): the owner's self-wrap of a fresh epoch-0 key, then the
+ * epoch-0 anchor `config` (`defaultBranch`, no protected patterns, backend in plaintext). A
+ * resumed create reuses its own standing epoch-0 self-wrap; one whose anchor already exists
+ * does nothing. Returns whether it wrote the anchor.
+ */
+export async function createEpochZero(c: PrivateWriteContext, defaultBranch: string, intent: string): Promise<boolean> {
+  return withFreshSession(c, async (read) => {
+    if (read.resolution.anchors.has(0)) return false
+    // The maintainer document was just written: a member-list read may not show it yet, so the
+    // owner's own keys are read directly.
+    const own = await fetchIdentityKeys(c.sdk, c.auth.identityId)
+    const session: PrivateSession = { ...read, memberKeys: new Map([...read.memberKeys, [c.auth.identityId, own]]) }
+    const selfKey = usableEncryptionKey(own ?? [], c.repo.forge.core)
+    if (selfKey === null) throw new PrivateMembersError('your identity has no usable encryption key', 'E306')
+    // Resume: our own epoch-0 self-wrap, if it landed, is the key (to whatever key of ours it
+    // went, as long as this browser holds it); else a fresh one, wrapped to the identity's newest
+    // encryption key (§5.2), which must be the one this browser holds, or the repo would be
+    // created unreadable to its own owner.
+    const pending = pendingSelfWrap(session, c.auth.identityId, 0)
+    if (pending !== null && pending.row.recipientKeyId !== c.ops.keyId) throw notHeldKey(0, pending.row.recipientKeyId)
+    if (pending === null && selfKey.keyId !== c.ops.keyId) {
+      throw new PrivateMembersError(`your identity's current encryption key is key ${selfKey.keyId}, but this browser holds key ${c.ops.keyId}; add key ${selfKey.keyId} here (Settings → Keys)`, 'E306')
+    }
+    const k0 = await ownEpochKey(c, session, { identity: c.auth.identityId, keyId: pending?.row.recipientKeyId ?? selfKey.keyId }, 0, intent)
+    try {
+      const fields = { defaultBranch: shortBranch(defaultBranch), protectedPatterns: [] as string[] }
+      const enc = await sealDoc(k0.keys, { type: 'config', ownerId: decodeIdentifier(c.auth.identityId), epoch: 0 }, fields, { anchor: true })
+      await postConfig(c, { repoId: decodeIdentifier(c.repo.repoId), epoch: 0, enc, backend: { mode: 0 }, archived: false }, `${intent}:anchor:0:${keyTag(k0.keys)}`)
+      return true
+    } finally {
+      k0.raw.fill(0)
+    }
+  })
+}
+
+/**
+ * The key of `epoch` for this signer (`self`: its identity and the key id its self-wrap goes to):
+ * its pending self-wrap's (an earlier run's; the unique index keeps it), else a fresh one, posted
+ * as its self-wrap; a self-wrap that stands unseen by this read is adopted, if it is to the key
+ * this browser holds. `resumed`: the key is an earlier run's. The caller wipes `raw`.
+ */
+async function ownEpochKey(
+  c: PrivateWriteContext,
+  session: PrivateSession,
+  self: { readonly identity: string; readonly keyId: number },
+  epoch: number,
+  intent: string,
+): Promise<{ keys: EpochKeys; raw: Uint8Array; resumed: boolean }> {
+  const pending = pendingSelfWrap(session, self.identity, epoch)
+  if (pending !== null) {
+    const k = await c.ops.unwrapRaw({ document: pending.raw, counterpartyKey: keyOf(session, self.identity, pending.senderKeyId), repoId: session.repoId, epoch })
+    return { ...k, resumed: true }
+  }
+  const fresh = await freshKey(session.repoId, epoch)
+  try {
+    const outcome = await postWrap(c, session, fresh.keys, fresh.raw, self.identity, self.keyId, intent)
+    if (outcome.kind === 'same') return { ...fresh, resumed: false }
+    if (outcome.kind === 'unreadable') throw unusableWrap(outcome, self.identity, epoch)
+    const standing = await readOwnWrap(c, session, epoch, self.identity)
+    if (standing === null) throw unusableWrap({ kind: 'unreadable' }, self.identity, epoch)
+    if (standing.recipientKeyId !== c.ops.keyId) {
+      standing.raw.fill(0)
+      throw notHeldKey(epoch, standing.recipientKeyId)
+    }
+    fresh.raw.fill(0)
+    return { keys: standing.keys, raw: standing.raw, resumed: true }
+  } catch (e) {
+    fresh.raw.fill(0)
+    throw e
+  }
 }
 
 async function freshKey(repoId: Uint8Array, epoch: number): Promise<{ keys: EpochKeys; raw: Uint8Array }> {
@@ -931,7 +996,8 @@ export async function removePrivateMember(
         )
       }
     }
-    if (removalEffect(s.members, memberId, role) === 'none') return
+    const effect = removalEffect(s.members, memberId, role)
+    if (effect === 'none') return
     const kept = chainFrom(s, memberId, role)
     if (kept !== null && !s.resolution.keys.has(kept)) {
       const holders = role === 'maintainer' ? vanishing(s, memberId).holders.filter((h) => h !== c.auth.identityId) : []
@@ -941,6 +1007,11 @@ export async function removePrivateMember(
           : `key epoch ${kept} stays current after this removal and you can't read it, so the key can't be rotated from this browser; a maintainer who holds it must do the removal. Nothing was removed.`,
         'E310',
       )
+    }
+    // The rotation after the delete is planned now (its own checks: the rotator's key among them),
+    // so a removal it would refuse is refused before the membership goes.
+    if (kept !== null && s.resolution.keys.has(kept)) {
+      planRotation(s, c.auth.identityId, effect === 'rotate-exclude' ? [memberId] : [], c.repo.forge.core, c.ops.keyId, kept)
     }
     // Another staying maintainer's config that would come before this browser's re-anchor, and
     // is not the same anchor, is known now: refuse before paying for anything.

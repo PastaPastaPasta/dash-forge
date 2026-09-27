@@ -13,7 +13,6 @@ import { CircleDot, CheckCircle2, MessageSquarePlus } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { IssueView, Listed } from '@/lib/repo'
 import { createIssue, listIssuesCached, repoContractIds, repoKey } from '@/lib/repo'
-import { previewCreate } from '@/lib/sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import { useIntent } from '@/hooks/use-intent'
@@ -26,6 +25,7 @@ import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input, Textarea } from '@/components/ui/input'
+import { SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { HiddenNote } from '@/components/repo/hidden-note'
@@ -41,9 +41,9 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const [composing, setComposing] = useState(false)
   const router = useRouter()
   const generation = useRepoWriteGeneration(home.repo)
-  // A private repo's issues are sealed; this browser does not write sealed issues yet, and
-  // never writes them in plaintext.
-  const canCompose = home.repo.visibility !== 'private'
+  // A private repo's issues are sealed on write (`lib/repo/private-writes.ts`); only a member
+  // holding the current key can open one, and non-members see no button (ux-dx-spec §9).
+  const canCompose = privateComposeBlock(home) === null
 
   const { data, loading, error, reload } = useAsync<Listed<IssueView>>(
     // Through the session cache the header's open count reads, and re-read after each
@@ -143,6 +143,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         open={composing}
         onClose={() => setComposing(false)}
         repo={home.repo}
+        home={home}
         onCreated={(n) => router.push(repoHref('/repo/issue', addr, { number: String(n), created: '1' }))}
         addr={addr}
       />
@@ -168,12 +169,14 @@ function ComposeIssueDialog({
   open,
   onClose,
   repo,
+  home,
   onCreated,
   addr,
 }: {
   open: boolean
   onClose: () => void
   repo: RepoHome['repo']
+  home: RepoHome
   onCreated: (number: number) => void
   addr: RepoAddress
 }): JSX.Element {
@@ -187,7 +190,7 @@ function ComposeIssueDialog({
   const [note, setNote] = useState<string | null>(null)
   const draft = useIntent()
 
-  const cost = previewCreate('issue', { title: title.trim(), body })
+  const cost = composeCost(repo, 'issue', { title: title.trim(), body })
 
   const submit = async (): Promise<void> => {
     if (pending || !guard.check(cost.credits, 'collab')) return
@@ -238,6 +241,7 @@ function ComposeIssueDialog({
         </Field>
         <Field label="Description" htmlFor="issue-body" hint="Markdown supported.">
           <Textarea id="issue-body" value={body} onChange={(e) => setBody(e.target.value)} placeholder="What happened, and how to reproduce it." className="min-h-[140px]" />
+          <SealedLimit repo={home.repo} kind="issue" text={title.trim() + body} />
         </Field>
         <CostPreview cost={cost} />
         {note ? <p className="text-dense text-caution-700 dark:text-caution-400">{note}</p> : null}
