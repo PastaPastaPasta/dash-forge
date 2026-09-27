@@ -221,6 +221,8 @@ dg storage use r2-main                 # this repository's packs go to r2-main
 git push -u origin main
 ```
 
+Anyone can clone a public repository without an identity: `git clone dash://<owner>/<repo>` reads refs and packs anonymously (`<owner>` is the identity id or DPNS name). Pushing needs your key.
+
 Or start from an empty clone:
 
 ```sh

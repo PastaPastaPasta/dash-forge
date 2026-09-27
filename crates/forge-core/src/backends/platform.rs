@@ -20,7 +20,7 @@ use futures::stream::{self, StreamExt, TryStreamExt};
 use super::{ByteRange, Caps, Health, PackBackend, PackMeta, Uri};
 use crate::error::{Error, Result};
 use crate::pack::{join, split, Chunk, FIELDS_PER_DOC};
-use crate::platform::{FieldValue, LoadedContract, QueryOrder, WriteEngine};
+use crate::platform::{FieldValue, LoadedContract, PlatformClient, QueryOrder, WriteEngine};
 use crate::scope::DocScope;
 
 /// The platform scheme label used in manifest URIs.
@@ -204,40 +204,78 @@ impl<'a> PlatformBackend<'a> {
     /// Read every `chunk` document of `owner`'s copy of `pack_hash` (complete, `seq`
     /// ordered) and decode each to a [`Chunk`].
     async fn read_chunks(&self, loc: &PlatformLocator) -> Result<Vec<Chunk>> {
-        let scope = self.read_scope(loc)?;
-        let docs = self
-            .engine
-            .client()
-            .query_all_documents(
-                self.contract,
-                CHUNK_DOC_TYPE,
-                &scope.chunk_filters(&loc.owner, loc.pack_hash)?,
-                &[QueryOrder::asc(FIELD_SEQ)],
-            )
-            .await?;
-        let mut chunks = docs
-            .iter()
-            .map(|d| decode_chunk_doc(&d.fields))
-            .collect::<Result<Vec<Chunk>>>()?;
-        // The (packHash, seq) index already returns seq-ordered, but sort defensively so
-        // reassembly never depends on traversal order.
-        chunks.sort_by_key(|c| c.seq);
-
-        // Diagnosable-integrity pre-check: chunk seqs must be the contiguous run 0..N. A
-        // missing chunk would otherwise surface only as an opaque whole-pack SHA-256
-        // mismatch downstream; report exactly which seq is absent instead.
-        for (i, chunk) in chunks.iter().enumerate() {
-            if usize::try_from(chunk.seq) != Ok(i) {
-                return Err(Error::Config(format!(
-                    "pack storage incomplete: expected chunk seq {i} but found {}; \
-                     {} chunk(s) present (a chunk failed to store or was deleted)",
-                    chunk.seq,
-                    chunks.len()
-                )));
-            }
-        }
-        Ok(chunks)
+        read_chunks_in(
+            self.engine.client(),
+            self.contract,
+            &self.read_scope(loc)?,
+            loc,
+        )
+        .await
     }
+}
+
+/// Read the whole pack a `platform://` locator names from its `chunk` documents and join
+/// them: a READ, so it needs only a connection — no identity or signing key (a clone of a
+/// public repo must work anonymously). The locator's scope must be in `contract`. The caller
+/// verifies the bytes against the pack hash.
+pub async fn read_platform_pack(
+    client: &PlatformClient,
+    contract: &LoadedContract,
+    loc: &PlatformLocator,
+) -> Result<Vec<u8>> {
+    let scope = loc.scope()?;
+    if scope.contract_id != contract.id() {
+        return Err(Error::Config(format!(
+            "platform locator names contract {}, not {}",
+            scope.contract_id,
+            contract.id()
+        )));
+    }
+    let chunks = read_chunks_in(client, contract, &scope, loc).await?;
+    if chunks.is_empty() {
+        return Err(Error::NotFound);
+    }
+    Ok(join(&chunks))
+}
+
+/// Every `chunk` document of `loc.owner`'s copy of `loc.pack_hash` in `scope` (complete,
+/// `seq` ordered), decoded, with the contiguous-`seq` check.
+async fn read_chunks_in(
+    client: &PlatformClient,
+    contract: &LoadedContract,
+    scope: &DocScope,
+    loc: &PlatformLocator,
+) -> Result<Vec<Chunk>> {
+    let docs = client
+        .query_all_documents(
+            contract,
+            CHUNK_DOC_TYPE,
+            &scope.chunk_filters(&loc.owner, loc.pack_hash)?,
+            &[QueryOrder::asc(FIELD_SEQ)],
+        )
+        .await?;
+    let mut chunks = docs
+        .iter()
+        .map(|d| decode_chunk_doc(&d.fields))
+        .collect::<Result<Vec<Chunk>>>()?;
+    // The (packHash, seq) index already returns seq-ordered, but sort defensively so
+    // reassembly never depends on traversal order.
+    chunks.sort_by_key(|c| c.seq);
+
+    // Diagnosable-integrity pre-check: chunk seqs must be the contiguous run 0..N. A
+    // missing chunk would otherwise surface only as an opaque whole-pack SHA-256
+    // mismatch downstream; report exactly which seq is absent instead.
+    for (i, chunk) in chunks.iter().enumerate() {
+        if usize::try_from(chunk.seq) != Ok(i) {
+            return Err(Error::Config(format!(
+                "pack storage incomplete: expected chunk seq {i} but found {}; \
+                 {} chunk(s) present (a chunk failed to store or was deleted)",
+                chunk.seq,
+                chunks.len()
+            )));
+        }
+    }
+    Ok(chunks)
 }
 
 #[async_trait::async_trait]
