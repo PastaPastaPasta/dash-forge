@@ -11,6 +11,7 @@
 import { Check, CheckCircle2, Eye, GitCommit, GitMerge, Lock, LockOpen, Milestone, MessageSquare, Tag, UserPlus, X } from 'lucide-react'
 import type { TimelineItem } from '@/lib/view'
 import { timeAgo } from '@/lib/view'
+import { anchorLabel } from '@/lib/view/inline-threads'
 import { VERDICT_LABEL, type VerdictName } from '@/lib/repo'
 import type { Event } from '@/lib/rules'
 import { Author } from '@/components/author'
@@ -115,6 +116,22 @@ export function Timeline({ items }: { items: readonly TimelineItem[] }): JSX.Ele
               {review.body ? (
                 <div className="px-4 py-3">
                   <MarkdownView source={review.body} />
+                </div>
+              ) : null}
+              {item.comments.length > 0 || item.expected > 0 ? (
+                <div className="space-y-2 border-t border-anvil-200 px-4 py-3 dark:border-anvil-800" data-testid="review-comments">
+                  {item.comments.map((c) => (
+                    <div key={c.id}>
+                      {c.anchor ? <p className="mb-1 font-mono text-[12px] text-anvil-600 dark:text-anvil-400">{anchorLabel(c.anchor)}</p> : null}
+                      <MarkdownView source={c.body} />
+                    </div>
+                  ))}
+                  {/* A submit writes the review first, then its comments: say when some have not landed (yet). */}
+                  {item.expected > item.comments.length ? (
+                    <p className="text-[12px] text-anvil-600 dark:text-anvil-400">
+                      {item.comments.length} of {item.expected} comments have landed.
+                    </p>
+                  ) : null}
                 </div>
               ) : null}
             </div>

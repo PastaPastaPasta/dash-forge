@@ -32,14 +32,22 @@ export interface ReviewSummary {
 
 /**
  * Summarize a PR's reviews against `headOid`. `reviews` must already be the well-formed ones
- * (the fold's input). Comment-only verdicts (3) and unknown ones neither count nor show here.
+ * (the fold's input). Comment-only verdicts (3), unknown ones and `dismissed` reviews (which
+ * the fold treats as comments) neither count nor show here.
  */
-export function summarizeReviews(reviews: readonly Review[], oracle: RoleOracle, headOid: string, author: string): ReviewSummary {
-  const counted = countApprovals(reviews, oracle, headOid)
+export function summarizeReviews(
+  reviews: readonly Review[],
+  oracle: RoleOracle,
+  headOid: string,
+  author: string,
+  dismissed: ReadonlySet<string> = new Set(),
+): ReviewSummary {
+  const counted = countApprovals(reviews, oracle, headOid, dismissed)
   const approvers = new Set(counted.approvers)
   const changes = new Set(counted.changesRequested)
   const newest = new Map<string, Review>()
-  for (const r of [...reviews].filter((r) => r.verdict === 1 || r.verdict === 2).sort(compareKey)) newest.set(r.reviewer, r)
+  const verdicts = reviews.filter((r) => (r.verdict === 1 || r.verdict === 2) && !dismissed.has(r.id))
+  for (const r of [...verdicts].sort(compareKey)) newest.set(r.reviewer, r)
 
   const rows: ReviewerRow[] = []
   let maintainers = 0

@@ -15,7 +15,6 @@ import {
   asIdentifierString,
   byteFieldToHex,
   num,
-  readAnchor,
   readIssue,
   readPull,
   readReviews,
@@ -24,7 +23,6 @@ import {
   repoSource,
   str,
   wellFormed,
-  type CommentAnchor,
   type IssueView,
   type PullView,
   type RepoRef,
@@ -32,40 +30,47 @@ import {
 } from '../repo'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
-import { countApprovals, type Approvals, type Role } from '../rules/v2'
+import { anchorOf, countApprovals, groupReviewComments, type Anchor, type Approvals, type Role } from '../rules/v2'
 import { summarizeReviews, type ReviewSummary } from './review-fold'
 
 /** One comment on an issue/PR. */
 export interface CommentView {
   readonly id: string
   readonly author: string
-  /** The body to render: an anchor block, when there was one, is stripped. */
   readonly body: string
   readonly createdAt: number
   /** The parent comment of a threaded reply (`replyTo`), or null. */
   readonly replyTo: string | null
-  /** Where an inline comment points (the contract fields, else the body block), or null. */
-  readonly anchor: CommentAnchor | null
+  /**
+   * Where an inline comment points (`anchorOf` over the `path`/`line`/`startLine`/`side`/
+   * `commitOid` fields), or null for a general comment (a malformed anchor is null too).
+   */
+  readonly anchor: Anchor | null
+  /** The review this comment was submitted with (`reviewId`), or null. */
+  readonly reviewId: string | null
 }
 
-/** A comment document as a {@link CommentView} (anchor fields first, then the body block). */
+/** A comment document as a {@link CommentView}. */
 export function toCommentView(d: PlainDocument): CommentView {
-  const n = (f: string): number | undefined => (d[f] === undefined || d[f] === null ? undefined : num(d, f))
-  const { anchor, body } = readAnchor({
-    ...(typeof d['path'] === 'string' ? { path: d['path'] } : {}),
-    ...(n('line') !== undefined ? { line: n('line') } : {}),
-    ...(n('side') !== undefined ? { side: n('side') } : {}),
-    commitOid: byteFieldToHex(d, 'commitOid'),
-    body: str(d, 'body'),
-  })
-  const replyTo = asIdentifierString(d['replyTo'])
+  const n = (f: string): number | null => {
+    const v = d[f]
+    return typeof v === 'number' ? v : null
+  }
+  const id = (f: string): string | null => asIdentifierString(d[f]) || null
   return {
     id: str(d, '$id'),
     author: str(d, '$ownerId'),
-    body,
+    body: str(d, 'body'),
     createdAt: num(d, '$createdAt'),
-    replyTo: replyTo === '' ? null : replyTo,
-    anchor,
+    replyTo: id('replyTo'),
+    anchor: anchorOf({
+      path: typeof d['path'] === 'string' ? d['path'] : null,
+      line: n('line'),
+      startLine: n('startLine'),
+      side: n('side'),
+      commitOid: byteFieldToHex(d, 'commitOid'),
+    }),
+    reviewId: id('reviewId'),
   }
 }
 
@@ -107,7 +112,18 @@ export type TimelineItem =
       /** An `authorEvent`: the author's own close/reopen (`forge-v2.md` §3). */
       readonly byAuthor?: boolean
     }
-  | { readonly kind: 'review'; readonly at: number; readonly review: ReviewView }
+  | {
+      readonly kind: 'review'
+      readonly at: number
+      readonly review: ReviewView
+      /**
+       * The comments submitted with the review (`groupReviewComments`: its `reviewId`, by its
+       * reviewer), oldest first. They show under the review, not on their own.
+       */
+      readonly comments: readonly CommentView[]
+      /** How many the review announced (`commentCount`, 0 when absent). */
+      readonly expected: number
+    }
 
 /** Find an issue or patch document by its `number` field, or null. */
 async function docByNumber(
@@ -213,7 +229,7 @@ async function readApprovals(
     return {
       ...counted,
       roles: new Map(reviewers.map((who) => [who, oracle.currentRole(who)])),
-      summary: summarizeReviews(input, oracle, headOid, author),
+      summary: summarizeReviews(input, oracle, headOid, author, dismissed),
     }
   } catch {
     return null
@@ -229,8 +245,11 @@ export async function readThread(sdk: EvoSDK, repo: RepoRef, targetId: string): 
   return mergeTimeline(comments, log.events, log.authorEvents, [])
 }
 
-/** Interleave a thread's parts by `($createdAt, $id)`. */
-function mergeTimeline(
+/**
+ * Interleave a thread's parts by `($createdAt, $id)`. A review's own comments
+ * (`groupReviewComments`) are nested under it; every other comment stands alone.
+ */
+export function mergeTimeline(
   comments: readonly CommentView[],
   events: readonly Event[],
   authorEvents: readonly Event[],
@@ -243,11 +262,19 @@ function mergeTimeline(
     event: e,
     ...(byAuthor ? { byAuthor } : {}),
   })
+  const byId = new Map(comments.map((c) => [c.id, c]))
+  const asReviewComments = comments.map((c) => ({ id: c.id, owner: c.author, reviewId: c.reviewId, createdAt: c.createdAt }))
+  const grouped = new Set<string>()
+  const reviewItems = reviews.map((r) => {
+    const group = groupReviewComments(r.id, r.reviewer, r.commentCount, asReviewComments)
+    for (const id of group.comments) grouped.add(id)
+    return { kind: 'review' as const, at: r.createdAt, id: r.id, review: r, comments: group.comments.flatMap((id) => byId.get(id) ?? []), expected: group.expected }
+  })
   const items: (TimelineItem & { readonly id: string })[] = [
-    ...comments.map((c) => ({ kind: 'comment' as const, at: c.createdAt, id: c.id, comment: c })),
+    ...comments.filter((c) => !grouped.has(c.id)).map((c) => ({ kind: 'comment' as const, at: c.createdAt, id: c.id, comment: c })),
     ...events.map((e) => eventItem(e, false)),
     ...authorEvents.map((e) => eventItem(e, true)),
-    ...reviews.map((r) => ({ kind: 'review' as const, at: r.createdAt, id: r.id, review: r })),
+    ...reviewItems,
   ]
   items.sort((a, b) => compareKey({ id: a.id, createdAt: a.at }, { id: b.id, createdAt: b.at }))
   return items

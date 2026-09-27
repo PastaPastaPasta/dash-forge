@@ -3,18 +3,19 @@
 /**
  * Inline review comments on a PR diff (`ux-dx-spec.md` §5.7). Clicking a line number opens a
  * composer under that line; the comment is written with its anchor in the contract fields
- * (`path`, `line`, `side`, `commitOid` = the PR head). Threads on the current head show under
- * their line with their replies (`replyTo`); threads on an older head, or on a line the diff
- * no longer shows, collapse under "n comments on an older version".
+ * (`path`, `line`, `side`, `commitOid` = the PR head; read back by `anchorOf`). Threads on the
+ * current head show under their line with their replies (`replyTo`); file-level threads are
+ * listed as "File comments"; threads on an older head, or on a line the diff no longer shows,
+ * collapse under "n comments on an older version".
  */
 
 import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { MessageSquare } from 'lucide-react'
 
-import { createComment, type CommentAnchor, type RepoRef } from '@/lib/repo'
+import { postComment, type AnchorInput, type RepoRef } from '@/lib/repo'
 import { previewCreate } from '@/lib/sdk'
 import { timeAgo, type CommentView } from '@/lib/view'
-import { lineKey, placeThreads, type InlineThread } from '@/lib/view/inline-threads'
+import { anchorLabel, lineKey, placeThreads, type InlineThread } from '@/lib/view/inline-threads'
 import { writeErrorMessage } from '@/lib/view/write-errors'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
@@ -56,11 +57,16 @@ export function InlineCommentsProvider({
 
   const placed = useMemo(
     () =>
-      placeThreads(comments, headOid, (path, side, line) => {
-        if (!changedPaths.has(path)) return false
-        const keys = loadedPaths.get(path)
-        return keys === undefined || keys.has(lineKey(path, side, line))
-      }),
+      placeThreads(
+        comments,
+        headOid,
+        (path, side, line) => {
+          if (!changedPaths.has(path)) return false
+          const keys = loadedPaths.get(path)
+          return keys === undefined || keys.has(lineKey(path, side, line))
+        },
+        (path) => changedPaths.has(path),
+      ),
     [comments, headOid, changedPaths, loadedPaths],
   )
   // Current threads whose line is not on screen right now: listed above the diff, never lost.
@@ -126,6 +132,19 @@ export function InlineCommentsProvider({
 
   return (
     <InlineCommentsContext.Provider value={value}>
+      {placed.fileLevel.length > 0 ? (
+        <details open className="mb-3 rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="file-comments">
+          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 dark:text-anvil-300">
+            <MessageSquare className="mr-1.5 inline h-3.5 w-3.5 text-anvil-400" aria-hidden />
+            File comments ({placed.fileLevel.length})
+          </summary>
+          <div className="space-y-2 border-t border-anvil-200 px-3 py-2 dark:border-anvil-800">
+            {placed.fileLevel.map((t) => (
+              <AnchoredThread key={t.root.id} thread={t} repo={repo} pullId={pullId} onPosted={onPosted} />
+            ))}
+          </div>
+        </details>
+      ) : null}
       {unshown.length > 0 ? (
         <details className="mb-3 rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="unshown-comments">
           <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 dark:text-anvil-300">
@@ -163,7 +182,7 @@ function AnchoredThread({ thread, repo, pullId, onPosted }: { thread: InlineThre
   return (
     <div>
       <p className="mb-1 font-mono text-[12px] text-anvil-600 dark:text-anvil-400">
-        {a.path}:{a.line} ({a.side === 1 ? 'new' : 'old'})
+        {anchorLabel(a)}
         {a.commitOid ? (
           <>
             {' '}
@@ -225,7 +244,7 @@ function Composer({
 }: {
   repo: RepoRef
   pullId: string
-  anchor?: CommentAnchor
+  anchor?: AnchorInput
   replyTo?: string
   label: string
   onDone: () => void
@@ -247,7 +266,7 @@ function Composer({
     setPosting(true)
     setError(null)
     try {
-      await createComment(sdk, signer, repo, {
+      await postComment(sdk, signer, repo, {
         targetId: pullId,
         body: body.trim(),
         ...(anchor ? { anchor } : {}),

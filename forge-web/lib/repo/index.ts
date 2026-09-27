@@ -174,7 +174,6 @@ export {
   type SubmitProgress,
   type SubmittedReview,
 } from './review-writes'
-export { parseAnchorBlock, readAnchor, writeAnchor, type CommentAnchor } from './anchors'
 export {
   manifestUrisProblem,
   refNameHash,

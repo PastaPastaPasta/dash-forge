@@ -1,83 +1,117 @@
 /**
- * The PR-side pure logic: comment anchors (fields and the body-block fallback), inline thread
- * placement, the review fold summary, and the byte encodings of `patch`, `packManifest` and
- * ref updates, which must match forge-core (`collab::v2::patch_props`,
- * `RepoService::write_pack_manifest` / `write_ref_update`).
+ * The PR-side pure logic: comment documents as views (anchors through `anchorOf`), review
+ * comments grouped under their review, inline thread placement, the review fold summary, and
+ * the byte encodings of `patch`, `packManifest` and ref updates, which must match forge-core
+ * (`collab::v2::patch_props`, `RepoService::write_pack_manifest` / `write_ref_update`).
  */
 
 import { sha256 } from '@noble/hashes/sha2.js'
-import { bytesToHex } from '@noble/hashes/utils.js'
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { describe, expect, it } from 'vitest'
 
 import { base58Decode } from '../auth/base58'
 import { RoleOracle, type Review } from '../rules/v2'
-import type { CommentView } from '../view/issues-view'
-import { placeThreads } from '../view/inline-threads'
+import { mergeTimeline, toCommentView, type CommentView } from '../view/issues-view'
+import { anchorLabel, placeThreads } from '../view/inline-threads'
 import { approverPhrase, summarizeReviews } from '../view/review-fold'
-import { parseAnchorBlock, readAnchor, serializeAnchorBlock, writeAnchor } from './anchors'
+import type { ReviewView } from './issues'
 import { refUpdateData, refUpdateType } from './push'
+import { commentData } from './review-writes'
 import { patchData } from './writes'
 
 const HEAD = 'ab'.repeat(20)
 const OLD = 'cd'.repeat(20)
 const REPO = 'C8XSf6R4shR1kqFKUZQnuaEZ5DkW7uoe9qtQYZpS5SRd'
+const ID_A = '4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF'
+const ID_B = 'GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec'
 
-describe('comment anchors', () => {
-  it('round-trips the body block and strips it from the rendered body', () => {
-    const anchor = { path: 'src/a.ts', line: 12, side: 1 as const, commitOid: HEAD }
-    const body = serializeAnchorBlock(anchor, 'Nit: rename this.')
-    expect(body.startsWith('<!-- forge-anchor {')).toBe(true)
-    expect(parseAnchorBlock(body)).toEqual({ anchor, body: 'Nit: rename this.' })
+describe('comment documents as views (anchors read by anchorOf)', () => {
+  const doc = (extra: Record<string, unknown>) => ({ $id: ID_A, $ownerId: ID_B, $createdAt: 5, targetId: REPO, body: 'hi', ...extra })
+
+  it('writes the contract fields and reads them back, a range included', () => {
+    const data = commentData({ targetId: REPO, body: 'Nit', anchor: { path: 'src/a.ts', line: 7, startLine: 5, side: 0, commitOid: HEAD } })
+    expect(Object.keys(data)).toEqual(['targetId', 'body', 'path', 'line', 'side', 'startLine', 'commitOid'])
+    const v = toCommentView(doc({ path: 'src/a.ts', line: 7, startLine: 5, side: 0, commitOid: hexToBytes(HEAD) }))
+    expect(v.anchor).toEqual({ path: 'src/a.ts', line: 7, startLine: 5, side: 0, commitOid: HEAD })
+    expect(anchorLabel(v.anchor as NonNullable<typeof v.anchor>)).toBe('src/a.ts lines 5–7 (old)')
   })
 
-  it('reads a block written by another client (spacing, CRLF, upper-case oid)', () => {
-    const body = `  <!--forge-anchor {"path":"x.md","line":3,"side":0,"commitOid":"${HEAD.toUpperCase()}"} -->\r\nhi`
-    expect(parseAnchorBlock(body)).toEqual({ anchor: { path: 'x.md', line: 3, side: 0, commitOid: HEAD }, body: 'hi' })
+  it('a body is shown as written: no anchor block is read from it', () => {
+    const body = '<!-- forge-anchor {"path":"x.md","line":3,"side":1} -->\nhi'
+    const v = toCommentView(doc({ body }))
+    expect(v.anchor).toBeNull()
+    expect(v.body).toBe(body)
   })
 
-  it('never renders a malformed block, and ignores blocks that are not at the top', () => {
-    expect(parseAnchorBlock('<!-- forge-anchor {"path":1} -->\nbody')).toEqual({ anchor: null, body: 'body' })
-    expect(parseAnchorBlock('<!-- forge-anchor {not json} -->\nbody')).toEqual({ anchor: null, body: 'body' })
-    expect(parseAnchorBlock('<!-- forge-anchor {"path":"a","line":1,"side":2} -->\nb')).toEqual({ anchor: null, body: 'b' })
-    const later = 'text\n<!-- forge-anchor {"path":"a","line":1,"side":1} -->'
-    expect(parseAnchorBlock(later)).toEqual({ anchor: null, body: later })
+  it('a malformed anchor is a general comment; a path alone is file-level', () => {
+    expect(toCommentView(doc({ path: 'a.ts', line: 3 })).anchor).toBeNull() // a line needs a side
+    expect(toCommentView(doc({ path: 'a.ts', line: 3, startLine: 4, side: 1 })).anchor).toBeNull()
+    expect(toCommentView(doc({ path: 'a.ts' })).anchor).toEqual({ path: 'a.ts', line: null, startLine: null, side: null, commitOid: '' })
   })
 
-  it('prefers the contract fields; the block is used only when every field is absent', () => {
-    const block = serializeAnchorBlock({ path: 'block.ts', line: 1, side: 0, commitOid: OLD }, 'text')
-    expect(readAnchor({ path: 'field.ts', line: 9, side: 1, commitOid: HEAD, body: block })).toEqual({
-      anchor: { path: 'field.ts', line: 9, side: 1, commitOid: HEAD },
-      body: 'text',
-    })
-    expect(readAnchor({ commitOid: '', body: block })).toEqual({
-      anchor: { path: 'block.ts', line: 1, side: 0, commitOid: OLD },
-      body: 'text',
-    })
-    // Fields present but incomplete: no anchor, and the block does not fill the gap.
-    expect(readAnchor({ path: 'f.ts', body: block }).anchor).toBeNull()
-    expect(readAnchor({ body: 'plain' })).toEqual({ anchor: null, body: 'plain' })
+  it('reads replyTo and reviewId as identifiers', () => {
+    // As the SDK returns them: base58, or base64 of the 32 bytes.
+    const v = toCommentView(doc({ replyTo: Buffer.from(base58Decode(ID_A)).toString('base64'), reviewId: ID_B }))
+    expect(v.replyTo).toBe(ID_A)
+    expect(v.reviewId).toBe(ID_B)
+    expect(toCommentView(doc({})).reviewId).toBeNull()
+  })
+})
+
+describe('review comments are grouped under their review (groupReviewComments)', () => {
+  const review = (id: string, reviewer: string, commentCount: number | null): ReviewView => ({
+    id,
+    reviewer,
+    verdict: 'requestChanges',
+    verdictCode: 2,
+    commitOid: HEAD,
+    body: 'see inline',
+    commentCount,
+    createdAt: 10,
   })
 
-  it('writes the contract fields (commitOid as bytes) and reads them back through the same adapter', () => {
-    const anchor = { path: 'src/a.ts', line: 7, side: 0 as const, commitOid: HEAD }
-    const { fields, body } = writeAnchor(anchor, 'hi')
-    expect(Object.keys(fields)).toEqual(['path', 'line', 'side', 'commitOid'])
-    expect(bytesToHex(fields['commitOid'] as Uint8Array)).toBe(HEAD)
-    expect(readAnchor({ path: 'src/a.ts', line: 7, side: 0, commitOid: bytesToHex(fields['commitOid'] as Uint8Array), body })).toEqual({ anchor, body: 'hi' })
-    expect('commitOid' in writeAnchor({ ...anchor, commitOid: '' }, '').fields).toBe(false)
+  it("nests the reviewer's own comments, leaves others alone, and reports what has landed", () => {
+    const cs = [
+      comment('c11', { author: 'R', reviewId: 'rv' }),
+      comment('c12', { author: 'X', reviewId: 'rv' }), // not the reviewer: stands alone
+      comment('c13'),
+    ]
+    const items = mergeTimeline(cs, [], [], [review('rv', 'R', 3)])
+    expect(items.map((i) => (i.kind === 'comment' ? i.comment.id : i.kind))).toEqual(['review', 'c12', 'c13'])
+    const r = items[0]
+    if (r?.kind !== 'review') throw new Error('expected the review first')
+    expect(r.comments.map((c) => c.id)).toEqual(['c11'])
+    expect(r.expected).toBe(3)
   })
 
-  it('refuses to serialize a path that would close the comment early', () => {
-    expect(() => serializeAnchorBlock({ path: 'a-->b', line: 1, side: 1, commitOid: '' }, '')).toThrow()
+  it('a reply to a grouped review comment stands alone in the timeline and joins its inline thread', () => {
+    const anchor = { path: 'a.ts', line: 3, startLine: 3, side: 1 as const, commitOid: HEAD }
+    const cs = [comment('c11', { author: 'R', reviewId: 'rv', anchor }), comment('c12', { author: 'X', replyTo: 'c11' })]
+    const items = mergeTimeline(cs, [], [], [review('rv', 'R', 1)])
+    expect(items.map((i) => (i.kind === 'comment' ? i.comment.id : i.kind))).toEqual(['review', 'c12'])
+    const placed = placeThreads(cs, HEAD, () => true)
+    expect(placed.current.get('1:3:a.ts')?.map((t) => [t.root.id, t.replies.map((x) => x.id)])).toEqual([['c11', ['c12']]])
   })
 })
 
 function comment(id: string, extra: Partial<CommentView> = {}): CommentView {
-  return { id, author: 'A', body: id, createdAt: Number(id.replace(/\D/g, '')) || 0, replyTo: null, anchor: null, ...extra }
+  return { id, author: 'A', body: id, createdAt: Number(id.replace(/\D/g, '')) || 0, replyTo: null, anchor: null, reviewId: null, ...extra }
 }
 
 describe('inline thread placement', () => {
-  const on = (path: string, line: number, commitOid = HEAD, side: 0 | 1 = 1) => ({ anchor: { path, line, side, commitOid } })
+  const on = (path: string, line: number, commitOid = HEAD, side: 0 | 1 = 1) => ({ anchor: { path, line, startLine: line, side, commitOid } })
+
+  it('places a range under its last line, and file-level threads apart', () => {
+    const cs = [
+      comment('c1', { anchor: { path: 'a.ts', line: 9, startLine: 4, side: 1, commitOid: HEAD } }),
+      comment('c2', { anchor: { path: 'a.ts', line: null, startLine: null, side: null, commitOid: HEAD } }),
+      comment('c3', { anchor: { path: 'gone.ts', line: null, startLine: null, side: null, commitOid: HEAD } }),
+    ]
+    const placed = placeThreads(cs, HEAD, () => true, (path) => path === 'a.ts')
+    expect([...placed.current.keys()]).toEqual(['1:9:a.ts'])
+    expect(placed.fileLevel.map((t) => t.root.id)).toEqual(['c2'])
+    expect(placed.outdated.map((t) => t.root.id)).toEqual(['c3'])
+  })
 
   it('shows threads on the current head under their line, replies included', () => {
     const cs = [comment('c1', on('a.ts', 3)), comment('c2', { replyTo: 'c1' }), comment('c3', { replyTo: 'c2' }), comment('c4')]
@@ -139,6 +173,18 @@ describe('review fold summary', () => {
       { reviewer: W, standing: { kind: 'stale', verdict: 'changes', commitOid: OLD } },
       { reviewer: S, standing: { kind: 'not-member', verdict: 'approve' } },
     ])
+  })
+
+  it('a dismissed review neither counts nor shows, as in the fold', () => {
+    const s = summarizeReviews([r('r1', M1, 1, HEAD, 10), r('r2', M2, 2, HEAD, 11)], oracle, HEAD, 'someone', new Set(['r2']))
+    expect(s.changesRequestedBy).toEqual([])
+    expect(s.rows).toEqual([{ reviewer: M1, standing: { kind: 'approved', role: 'maintainer', self: false } }])
+  })
+
+  it('dismissing a newer request for changes leaves the earlier approval standing', () => {
+    const s = summarizeReviews([r('r1', M1, 1, HEAD, 10), r('r2', M1, 2, HEAD, 11)], oracle, HEAD, 'someone', new Set(['r2']))
+    expect(s.changesRequestedBy).toEqual([])
+    expect(s.rows).toEqual([{ reviewer: M1, standing: { kind: 'approved', role: 'maintainer', self: false } }])
   })
 
   it('a newer request for changes replaces an approval', () => {

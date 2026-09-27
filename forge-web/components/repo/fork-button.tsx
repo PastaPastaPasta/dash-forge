@@ -113,7 +113,7 @@ function ForkDialog({ parent, owner, onClose }: { parent: RepoRef; owner: string
       ...manifests.map((m) => previewCreate('packManifest', { uris: m.uris })),
       ...(p?.refs ?? []).map((r) => previewCreate('refUpdate', { refName: r.refName })),
     ])
-  }, [plan.data, normalized, parent.name])
+  }, [plan.data, normalized, parent.name, parent.ownerId])
 
   const run = async (): Promise<void> => {
     if (!sdk || !signer || pending || nameError !== null || check?.kind === 'taken') return

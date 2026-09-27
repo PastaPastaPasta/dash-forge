@@ -38,7 +38,6 @@ import {
   type WriteResult,
 } from '../sdk'
 import { DOC, num, str, type RepoRef } from './contract'
-import { writeAnchor, type CommentAnchor } from './anchors'
 import { invalidateMembers } from './members'
 import { refNameHash } from './push'
 import { invalidateRepoFeed } from './issues'
@@ -362,19 +361,14 @@ async function numberHolder(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch',
   return typeof owner === 'string' ? owner : null
 }
 
-/**
- * Create a `comment` on an issue or PR (ungated; author-owned). An inline comment carries its
- * anchor in the contract fields (`path`, `line`, `side`, `commitOid`, forge-core
- * `CommentAnchor`); a reply names its parent in `replyTo`.
- */
+/** Create a `comment` on an issue or PR (ungated; author-owned). */
 export async function createComment(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { targetId: string; body: string; replyTo?: string; anchor?: CommentAnchor; intent?: string },
+  input: { targetId: string; body: string; replyTo?: string; intent?: string },
 ): Promise<WriteResult> {
-  const stored = input.anchor ? writeAnchor(input.anchor, input.body) : { fields: {}, body: input.body }
-  const data: Record<string, unknown> = { targetId: decodeIdentifier(input.targetId), body: stored.body, ...stored.fields }
+  const data: Record<string, unknown> = { targetId: decodeIdentifier(input.targetId), body: input.body }
   if (input.replyTo) data['replyTo'] = decodeIdentifier(input.replyTo)
   return writeRepoDoc(sdk, auth, repo, DOC.comment, data, input.intent)
 }
