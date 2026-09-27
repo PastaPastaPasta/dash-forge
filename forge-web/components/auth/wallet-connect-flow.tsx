@@ -3,7 +3,7 @@
 /**
  * "Use my Dash wallet" (`ux-dx-spec.md` §2.2 tile 1; docs/design/wallet-login.md).
  *
- * 1. Request: a `dash-key:` QR (and, on a phone, an "Open in Dash Wallet" link: both wallets
+ * 1. Request: a `dash-key:` QR (and, on a phone, an "Open in DashPay (Dash Wallet)" link: both wallets
  *    register the scheme) asking for a key bound to one Forge contract, with a countdown.
  * 2. Key registration, first time only: a legacy wallet answers with a key that is not on its
  *    identity yet, so a second QR/link (`dash-st:`) asks it to register the key.
@@ -273,20 +273,22 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
  * (v11.9.0, v9.0.2), and answers on testnet (plus devnets in internal iOS builds).
  */
 export function WalletSupportNote(): JSX.Element {
-  if (!walletSignInSupported(ACTIVE_NETWORK.network)) {
+  const { network, key } = ACTIVE_NETWORK
+  if (!walletSignInSupported(network)) {
     return (
       <p role="note" data-testid="wallet-support" className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px]">
-        Dash Wallet support arrives when Forge is on testnet, where its sign-in feature (DashConnect) works; that feature is not in a released wallet yet. On{' '}
-        {ACTIVE_NETWORK.key}, only an internal iOS build with this network&apos;s login contract entered by hand can answer. Here, use an identity file or
-        create an identity in the browser.
+        {network === 'devnet'
+          ? `Dash Wallet support arrives when Forge is on testnet, where its sign-in feature (DashConnect) works; that feature is not in a released wallet yet. On ${key}, only an internal iOS build with this network's login contract entered by hand can answer.`
+          : `No Dash Wallet build supports sign-in on ${key} yet: its sign-in feature (DashConnect) works on testnet only.`}{' '}
+        Here, use an identity file or create an identity in the browser.
       </p>
     )
   }
   return (
     <p data-testid="wallet-support" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-      Works with the DashPay (Dash Wallet) app on testnet: More → Tools → Connections → Scan QR. That feature (DashConnect) is not in a released version yet,
-      only in builds from the wallets&apos; development branches. The first approval covers repositories and pushes; issues, pull requests and stars may take a
-      second one.
+      Works with a testnet build of the DashPay (Dash Wallet) app: More → Tools → Connections → Scan QR. That feature (DashConnect) is not in a released
+      version yet, only in builds from the wallets&apos; development branches (on Android, the testnet build only). The first approval covers repositories
+      and pushes; issues, pull requests and stars may take a second one.
     </p>
   )
 }
@@ -298,9 +300,9 @@ export function UnlimitedKeyWarning({ unbounded }: { unbounded: boolean }): JSX.
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution" aria-hidden />
       <span>
         This wallet key has no spending limit or expiry: anyone who copies it from this browser can spend your balance
-        {unbounded ? ', on any Platform app, not only Forge' : ' on Forge'}. Disabling it on chain stops it, but this wallet derives the same key every time:
-        signing in with the wallet again would add the same key back, so Forge refuses that. Protect it with a passkey, and replace it with a limited key
-        (Settings → This browser&apos;s key) when you can.
+        {unbounded ? ', on any Platform app, not only Forge' : ' on Forge'}. Disabling it on chain stops it, but this wallet derives the same key every time,
+        so once it is disabled, Forge refuses wallet sign-in for this identity. Protect it with a passkey, and replace it with a limited key (Settings → This
+        browser&apos;s key) when you can.
       </span>
     </div>
   )

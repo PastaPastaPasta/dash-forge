@@ -6,7 +6,7 @@
 
 ## Context
 
-Dash Forge signs users in with the DashConnect key exchange (`Models/DashConnect/`). On testnet, and on devnet in internal builds with the configurable login contract, it works with today's `develop` code. Protocol 14 adds contract-group bounds, key budgets and expiry, and the App Connect system contract `H8F9mP1BM55TE1ShsxPZHzhyinaMdY9bMmP85mkDhcJJ` (platform `docs/protocol/app-connect.md`, `contract-bound-authentication-keys.md`, `authentication-key-limits.md`).
+Dash Forge signs users in with the DashConnect key exchange (`Models/DashConnect/`). Forge matches today's `develop` code (not in a release yet) byte for byte in unit and simulated tests, on testnet and on devnet in internal builds with the configurable login contract; it has not been run against a device. Protocol 14 adds contract-group bounds, key budgets and expiry, and the App Connect system contract `H8F9mP1BM55TE1ShsxPZHzhyinaMdY9bMmP85mkDhcJJ` (platform `docs/protocol/app-connect.md`, `contract-bound-authentication-keys.md`, `authentication-key-limits.md`).
 
 ## What happens today (from the source, `develop` a345cc852)
 

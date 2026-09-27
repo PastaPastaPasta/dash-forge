@@ -104,7 +104,7 @@ export function LoginModal(): JSX.Element {
 /** The sheet's description line for a view. */
 function describeView(view: View, limitedKeys: boolean): string {
   if (view === 'advanced') return 'A pasted key signs for this tab only, with whatever power it has.'
-  if (view === 'wallet' || view === 'grant') return 'Your wallet grants this browser its own key for Dash Forge. Your wallet keys never leave the phone.'
+  if (view === 'wallet' || view === 'grant') return 'Your wallet sends this browser a key it derives for Dash Forge. Your recovery phrase and master key stay on the phone.'
   if (!limitedKeys) return `Dash Forge is not deployed on ${ACTIVE_NETWORK.key}, so there is nothing to sign in to here.`
   const limits = `at most ${BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for ${BROWSER_KEY_DEFAULTS.days} days`
   if (view === 'create' || view === 'import') return `Forge signs with a limited key: ${limits}.`
@@ -146,7 +146,9 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
       body={
         walletFirst
           ? 'DashPay (Dash Wallet) on your phone: scan a QR code (or tap a link on the phone) and approve.'
-          : `Not on ${ACTIVE_NETWORK.key} yet: Dash Wallet's DashConnect works on testnet. Here only an internal iOS build can answer.`
+          : ACTIVE_NETWORK.network === 'devnet'
+            ? `Not on ${ACTIVE_NETWORK.key} yet: Dash Wallet's DashConnect works on testnet. Here only an internal iOS build can answer.`
+            : `Not on ${ACTIVE_NETWORK.key} yet: Dash Wallet's DashConnect works on testnet only.`
       }
       onClick={() => onPick('wallet')}
     />
