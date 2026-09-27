@@ -74,6 +74,8 @@ function stepText(s: RotationStep): string {
       return `Key for epoch ${s.epoch} handed to ${shortId(s.identity)}.`
     case 'anchored':
       return `Key epoch ${s.epoch} is in effect.`
+    case 'burned':
+      return `Key epoch ${s.epoch} had already reached a removed member: closed as chain-only.`
     case 'lost':
       return `Another maintainer set key epoch ${s.epoch} first; their key is in effect.`
     case 'reanchored':

@@ -228,7 +228,7 @@ beforeEach(async () => {
   for (const m of [ALICE, BOB, CAROL]) wrap(ALICE, m, 0, K0)
 })
 
-const { rotateRepoKey, removePrivateMember } = await import('./private-members')
+const { rotateRepoKey, removePrivateMember, runRepair } = await import('./private-members')
 const { loadPrivateSession, sdkSessionSource, sessionUnwrapper } = await import('./private-session')
 
 const ctx = { sdk, auth, repo: REPO_REF, network: 'devnet' as const, ops }
@@ -249,42 +249,55 @@ describe('rotation retries', () => {
     await expect(rotateRepoKey(ctx, [b58(CAROL)], 'intent-2')).rejects.toThrow(/already wrapped epoch 1/)
     expect((chain['repoKey'] ?? []).length).toBe(wrapsBefore)
     expect((chain['config'] ?? []).length).toBe(1)
-    // Attempt 3 reads everything (the refusal proved the row). A removal never resumes: a fresh
-    // epoch above the pending one, whose wraps (like epoch 1's) never reach CAROL.
-    await expect(rotateRepoKey(ctx, [b58(CAROL)], 'intent-3')).resolves.toBe(2)
+    // Attempt 3 reads everything (the refusal proved the row): it resumes epoch 1 with the key of
+    // its standing self-wrap (nobody outside the remaining members has it).
+    await expect(rotateRepoKey(ctx, [b58(CAROL)], 'intent-3')).resolves.toBe(1)
     hidden.clear()
     const s = await aliceSession()
-    expect(s.resolution.currentEpoch).toBe(2)
+    expect(s.resolution.currentEpoch).toBe(1)
     // ALICE can read the epoch she anchored: her self-wrap and the anchor carry the same key.
-    expect(s.resolution.writeEpoch).toBe(2)
+    expect(s.resolution.writeEpoch).toBe(1)
     expect(s.resolution.alerts).toEqual([])
-    // BOB's wrap carries the anchored key too; CAROL got nothing for epoch 1 or 2.
-    const e2 = (chain['repoKey'] ?? []).filter((d) => d['epoch'] === 2)
-    expect(new Set(e2.map((d) => d['wrapped'])).size).toBe(1)
-    expect((chain['repoKey'] ?? []).some((d) => (d['epoch'] as number) >= 1 && d['memberId'] === b58(CAROL))).toBe(false)
+    // BOB's wrap carries the anchored key too; CAROL got nothing for epoch 1.
+    const e1 = (chain['repoKey'] ?? []).filter((d) => d['epoch'] === 1)
+    expect(new Set(e1.map((d) => d['wrapped'])).size).toBe(1)
+    expect(e1.some((d) => d['memberId'] === b58(CAROL))).toBe(false)
   })
 })
 
 describe('keys never reach a removed member', () => {
-  it('an earlier run that wrapped a now-removed member is never anchored, even from a read that missed it', async () => {
-    // A crashed rotation to epoch 1 wrapped ALICE and CAROL, but reads miss both wraps.
+  it('an earlier run whose key reached a now-removed member is burned: chain-only, then n + 2', async () => {
+    // A crashed rotation to epoch 1 wrapped ALICE and CAROL.
     const leakedKey = new Uint8Array(32).fill(0x55)
     wrap(ALICE, ALICE, 1, leakedKey)
     wrap(ALICE, CAROL, 1, leakedKey)
-    const e1 = (chain['repoKey'] ?? []).filter((d) => d['epoch'] === 1)
-    for (const d of e1) hidden.add(String(d['$id']))
-    // CAROL is removed; the rotation's read does not see epoch 1 at all.
     members = members.filter((m) => m.identity !== b58(CAROL))
-    // The rotation's read misses epoch 1, picks it, and hits its own standing self-wrap: it stops.
-    await expect(rotateRepoKey(ctx, [b58(CAROL)], 'rm-1')).rejects.toThrow(/already wrapped epoch 1/)
-    // The next run sees that self-wrap but still misses CAROL's wrap. It removes someone, so it
-    // never resumes epoch 1: it takes a fresh one above it.
-    await expect(rotateRepoKey(ctx, [b58(CAROL)], 'rm-2')).resolves.toBe(2)
-    hidden.clear()
+    await expect(rotateRepoKey(ctx, [b58(CAROL)], 'rm')).resolves.toBe(2)
     const s = await aliceSession()
     expect(s.resolution.currentEpoch).toBe(2)
-    expect(s.resolution.anchors.has(1)).toBe(false)
+    expect(s.resolution.writeEpoch).toBe(2)
+    // Epoch 1 exists, chain-only: burned, readable for history, never a write epoch.
+    expect(s.resolution.anchors.has(1)).toBe(true)
+    expect(s.resolution.burned.has(1)).toBe(true)
+    expect(s.resolution.keys.has(0)).toBe(true)
+    // CAROL has no wrap of epoch 2.
     expect((chain['repoKey'] ?? []).some((d) => d['epoch'] === 2 && d['memberId'] === b58(CAROL))).toBe(false)
+  })
+
+  it('a burn left half done (epoch 1 burned, no epoch 2) is finished by the repair check', async () => {
+    const leakedKey = new Uint8Array(32).fill(0x55)
+    wrap(ALICE, ALICE, 1, leakedKey)
+    wrap(ALICE, CAROL, 1, leakedKey)
+    members = members.filter((m) => m.identity !== b58(CAROL))
+    // The burn's n + 2 anchor fails; the rotation stops after epoch 1 is anchored burned.
+    failNext['config'] = 2
+    await rotateRepoKey(ctx, [b58(CAROL)], 'rm').catch(() => undefined)
+    failNext['config'] = 0
+    // Whatever landed, the repair check (any maintainer, any time) completes it.
+    await runRepair(ctx, 'repair')
+    const s = await aliceSession()
+    expect(s.resolution.writeEpoch).toBe(s.resolution.currentEpoch)
+    expect(s.resolution.burned.has(s.resolution.currentEpoch as number)).toBe(false)
   })
 
   it('no key goes out while the member list still changes between reads', async () => {

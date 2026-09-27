@@ -91,6 +91,11 @@ export interface RotationPlan {
   readonly epoch: number
   /** Resume an interrupted rotation: its key comes from this self-wrap (never from storage). */
   readonly resume: WrapDoc | null
+  /**
+   * The pending epoch's key reached someone outside the remaining members: it is anchored burned
+   * (chain-only) and the rotation goes on to `epoch + 1` (§5.3).
+   */
+  readonly burn: boolean
   /** Self first, then the rest in byte order. */
   readonly recipients: readonly RotationRecipient[]
   /** Remaining members with no usable encryption key: they cannot be wrapped (they read nothing new). */
@@ -117,7 +122,8 @@ export function planRotation(
   const r = session.resolution
   const n = r.currentEpoch
   if (n === null) throw new PrivateMembersError('this repo has no key epoch yet')
-  if (r.writeEpoch !== n) {
+  // The current key must be readable to chain from (a burned current epoch still chains).
+  if (!r.keys.has(n)) {
     throw new PrivateMembersError(`you can't read the current key (epoch ${n}); ask another maintainer to rotate`, 'E310')
   }
   if (!isMaintainer(session, self)) {
@@ -128,34 +134,22 @@ export function planRotation(
   const remaining = [...new Set(session.members.map((m) => m.identity))].filter((id) => !excluded.has(id))
   if (!remaining.includes(self)) throw new PrivateMembersError('you cannot remove yourself this way')
 
-  // Resume (§5.5 crash between steps 2 and 3): the smallest unanchored epoch above n holding a
-  // self-wrap by self, unless one of self's wraps there went to an identity now excluded (the
-  // key would then be known to someone it must not be).
-  const mine = session.wraps.filter((w) => bytesEqual(w.row.owner, selfId) && w.row.epoch > n && !r.anchors.has(w.row.epoch))
-  const leaked = new Set(mine.filter((w) => !remaining.includes(base58Encode(w.row.memberId))).map((w) => w.row.epoch))
-  // An epoch someone else also named (a config or wrap by another identity) is never resumed: a
-  // removed maintainer's pre-posted config there would anchor it if they were added back.
-  const foreign = new Set([
-    ...session.configRows.filter((c) => !bytesEqual(c.owner, selfId)).map((c) => c.epoch),
-    ...session.wraps.filter((w) => !bytesEqual(w.row.owner, selfId)).map((w) => w.row.epoch),
-  ])
-  // A rotation that removes anyone never resumes: whether an earlier run's key reached them can
-  // only be judged from reads that may lag, so it always takes a fresh epoch (a few more wraps).
-  const resumable = mine
-    .filter(
-      (w) =>
-        exclude.length === 0 &&
-        bytesEqual(w.row.memberId, selfId) &&
-        w.row.recipientKeyId === heldKeyId &&
-        !leaked.has(w.row.epoch) &&
-        !foreign.has(w.row.epoch),
+  // Epochs are contiguous (§5.3): the new one is always n + 1. A rotation that stopped after its
+  // self-wrap left a pending n + 1 (the unique index keeps that wrap): its key is the one n + 1
+  // must use. When one of this signer's wraps there reached someone outside the remaining
+  // members, n + 1 is burned instead (anchored chain-only, then n + 2).
+  const epoch = n + 1
+  if (epoch > 0xffff_ffff) throw new PrivateMembersError('no key epoch number is left')
+  const mine = session.wraps.filter((w) => bytesEqual(w.row.owner, selfId) && w.row.epoch === epoch)
+  const selfWrap = mine.find((w) => bytesEqual(w.row.memberId, selfId)) ?? null
+  if (selfWrap !== null && selfWrap.row.recipientKeyId !== heldKeyId) {
+    throw new PrivateMembersError(
+      `your pending key wrap of epoch ${epoch} went to your key ${selfWrap.row.recipientKeyId}, which this browser does not hold; add it here, or ask another maintainer to rotate`,
+      'E310',
     )
-    .sort((a, b) => a.row.epoch - b.row.epoch)
-  const resume = resumable[0] ?? null
-  // A fresh epoch goes above every epoch number seen on any config or wrap, by anyone (§5.3:
-  // numbers are never reused; parity with forge-core `next_epoch`).
-  const epoch = resume !== null ? resume.row.epoch : nextEpochAbove(n, session.seenEpochs)
-
+  }
+  const resume = selfWrap
+  const burn = resume !== null && mine.some((w) => !remaining.includes(base58Encode(w.row.memberId)))
   const wrappedBySelf = new Set(mine.filter((w) => w.row.epoch === epoch).map((w) => base58Encode(w.row.memberId)))
   const ordered = [self, ...remaining.filter((id) => id !== self).sort((a, b) => compareBytes(decodeIdentifier(a), decodeIdentifier(b)))]
   const recipients: RotationRecipient[] = []
@@ -173,23 +167,19 @@ export function planRotation(
     from: n,
     epoch,
     resume,
+    burn,
     recipients,
     unreachable,
     excluded: [...excluded],
-    writes: recipients.filter((x) => !x.done).length + 1,
+    // A burn: its anchor, then a full rotation to n + 2.
+    writes: burn ? 1 + recipients.length + 1 : recipients.filter((x) => !x.done).length + 1,
   }
-}
-
-/** The epoch number above `n` and above every number in `seen`. */
-export function nextEpochAbove(n: number, seen: readonly number[]): number {
-  const e = Math.max(n, ...seen) + 1
-  if (e > 0xffff_ffff) throw new PrivateMembersError('no key epoch number is left')
-  return e
 }
 
 /** The cost shown before a rotation: its wraps plus the anchor (§5.5: members + 1). */
 export function rotationCost(plan: RotationPlan): CostPreview {
-  return sumPreviews([...plan.recipients.filter((x) => !x.done).map(() => previewCreate('repoKey')), previewCreate('config')])
+  const wraps = plan.burn ? plan.recipients.length : plan.recipients.filter((x) => !x.done).length
+  return sumPreviews([...Array.from({ length: wraps }, () => previewCreate('repoKey')), previewCreate('config'), ...(plan.burn ? [previewCreate('config')] : [])])
 }
 
 /** The cost shown before adding a member: the membership document and one wrap (~0.0006 DASH). */
@@ -241,6 +231,8 @@ export type RotationStep =
   | { readonly kind: 'wrapped'; readonly identity: string; readonly epoch: number }
   | { readonly kind: 'anchored'; readonly epoch: number }
   | { readonly kind: 'lost'; readonly epoch: number }
+  /** The epoch's key reached someone it must not: anchored chain-only (§5.3), then the next. */
+  | { readonly kind: 'burned'; readonly epoch: number }
   | { readonly kind: 'reanchored'; readonly epoch: number }
 
 /** A fresh session (§5.3: anchors are re-read before every write). */
@@ -460,21 +452,18 @@ function unusableWrap(outcome: WrapOutcome, identity: string, epoch: number): Pr
 }
 
 /**
- * Refuse to anchor `epoch` when this signer's `repoKey`s there, read fresh from chain, went to
- * anyone outside `allowed`: that key is known to someone it must not be.
+ * This signer's `repoKey`s at `epoch`, read fresh from chain, that went to anyone outside
+ * `allowed` (base58 member ids): a key known to someone it must not be.
  */
-async function assertNotLeaked(c: PrivateWriteContext, epoch: number, allowed: readonly string[]): Promise<void> {
+async function straysAt(c: PrivateWriteContext, epoch: number, allowed: readonly string[]): Promise<string[]> {
   // The repo's wraps through its one listing index (`memberEpoch`), then this signer's at `epoch`.
   const docs = await sdkSessionSource(c.sdk, c.repo).repoKeys().catch(() => null)
   if (docs === null) throw new PrivateMembersError(`your wraps of epoch ${epoch} could not be read back; try again`, 'E310')
-  const leaked = docs
+  return docs
     .map(parseWrapDoc)
     .filter((w): w is NonNullable<typeof w> => w !== null && w.row.epoch === epoch && base58Encode(w.row.owner) === c.auth.identityId)
     .map((w) => base58Encode(w.row.memberId))
     .filter((m) => !allowed.includes(m))
-  if (leaked.length > 0) {
-    throw new PrivateMembersError(`key epoch ${epoch} already went to ${leaked.map((m) => m.slice(0, 8)).join(', ')}…, who must not have it; run the rotation again`, 'E310')
-  }
 }
 
 /** Step 4's reading of the anchor of `epoch` for the key with commitment `commit`. */
@@ -558,69 +547,114 @@ async function rotateWith(
     throw new PrivateMembersError('the repo\'s key epochs are still catching up after the removal; try again in a moment', 'E310')
   }
   await assertMembersSettled(c, session, drop)
+  const self = plan.recipients[0]
+  if (self === undefined || self.identity !== c.auth.identityId) throw new PrivateMembersError('your identity has no usable encryption key', 'E306')
   const kn = await rawEpochKey(session, c, plan.from)
-  let next: { keys: EpochKeys; raw: Uint8Array }
   try {
-    if (plan.resume !== null) {
-      next = await c.ops.unwrapRaw({
-        document: plan.resume.raw,
-        counterpartyKey: keyOf(session, c.auth.identityId, plan.resume.senderKeyId),
-        repoId: session.repoId,
-        epoch: plan.epoch,
-      })
-    } else {
-      const raw = generateEpochKey()
-      next = { keys: await EpochKeys.import(session.repoId, plan.epoch, raw), raw }
-    }
+    // n + 1's key: the pending self-wrap's (the unique index keeps it; it is the only key n + 1
+    // can have for this signer), else a fresh one.
+    const pending = plan.resume
+    const next: { keys: EpochKeys; raw: Uint8Array } =
+      pending !== null
+        ? await c.ops.unwrapRaw({
+            document: pending.raw,
+            counterpartyKey: keyOf(session, c.auth.identityId, pending.senderKeyId),
+            repoId: session.repoId,
+            epoch: plan.epoch,
+          })
+        : await freshKey(session.repoId, plan.epoch)
     try {
-      // Step 2: wraps, self first (the self-wrap is the journal). A self-wrap that already stands
-      // with another key (a retry whose read lagged it) wins: its key is the one to go on with,
-      // or the rotator would anchor a key it cannot read (parity: forge-core `self_wrap`).
-      const self = plan.recipients[0]
-      if (self === undefined || self.identity !== c.auth.identityId) throw new PrivateMembersError('your identity has no usable encryption key', 'E306')
+      // The self-wrap first (the journal). A self-wrap that stands unseen by this read (a retry
+      // whose read lagged it) stops the run: it re-plans from a read that shows it.
       const selfOutcome = self.done
         ? await standingOutcome(c, session, next.keys, self.identity, self.keyId)
         : await postWrap(c, session, next.keys, next.raw, self.identity, self.keyId, intent)
       if (selfOutcome.kind === 'different') {
-        // An earlier run of this rotation wrapped this epoch and this read missed it: it may also
-        // have missed that run's wraps to others. Never go on under that key from here; start over
-        // from a read that shows them (planRotation then resumes it, or skips it if it leaked).
         throw new PrivateMembersError(`an earlier run of this rotation already wrapped epoch ${plan.epoch}; run it again in a moment`, 'E310')
       } else if (selfOutcome.kind === 'unreadable') {
         throw unusableWrap(selfOutcome, self.identity, plan.epoch)
       }
       onStep?.({ kind: 'wrapped', identity: self.identity, epoch: plan.epoch })
+      // Which of this signer's wraps at n + 1 stand now (a fresh read): any outside the remaining
+      // members means n + 1's key is burned.
+      const allowed = [...plan.recipients.map((r) => r.identity), ...plan.unreachable]
+      const strays = await straysAt(c, plan.epoch, allowed)
+      if (strays.length > 0) {
+        // §5.3 burn: anchor n + 1 chain-only with that key, then rotate to n + 2 from it.
+        await postAnchor(c, session, next.keys, plan.epoch, plan.from, kn.raw, intent, true)
+        onStep?.({ kind: 'burned', epoch: plan.epoch })
+        const n2 = plan.epoch + 1
+        const after = await freshKey(session.repoId, n2)
+        try {
+          for (const r of plan.recipients) {
+            requireSame(await postWrap(c, session, after.keys, after.raw, r.identity, r.keyId, intent), r.identity, n2)
+            onStep?.({ kind: 'wrapped', identity: r.identity, epoch: n2 })
+          }
+          if ((await straysAt(c, n2, allowed)).length > 0) throw new PrivateMembersError(`key epoch ${n2} reached someone it must not; stopped`, 'E310')
+          await postAnchor(c, session, after.keys, n2, plan.epoch, next.raw, intent, false)
+          return { epoch: n2, commit: after.keys.commit }
+        } finally {
+          after.raw.fill(0)
+        }
+      }
+      // A normal rotation: every remaining member, then the anchor.
       for (const r of plan.recipients.slice(1)) {
-        // Already wrapped by an earlier run of this rotation: verify it holds this key (a refused
-        // duplicate would still pay its fee), else post it.
+        // Already wrapped by an earlier run: verify it holds this key (a refused duplicate would
+        // still pay its fee), else post it.
         const outcome = r.done
           ? await standingOutcome(c, session, next.keys, r.identity, r.keyId)
           : await postWrap(c, session, next.keys, next.raw, r.identity, r.keyId, intent)
         requireSame(outcome, r.identity, plan.epoch)
         onStep?.({ kind: 'wrapped', identity: r.identity, epoch: plan.epoch })
       }
-      // Step 3: the anchor. First, a fresh read of every wrap this signer posted at this epoch: the
-      // key goes on only if none of them reached an identity it must not (a removed member).
-      await assertNotLeaked(c, plan.epoch, [...plan.recipients.map((r) => r.identity), ...plan.unreachable])
-      const fields = { ...currentConfigFields(session), prevEpoch: plan.from, prevEpochKey: kn.raw }
-      const enc = await sealDoc(next.keys, { type: 'config', ownerId: decodeIdentifier(c.auth.identityId), epoch: plan.epoch }, fields, { anchor: true })
-      await postConfig(
-        c,
-        {
-          repoId: decodeIdentifier(c.repo.repoId),
-          epoch: plan.epoch,
-          enc,
-          backend: session.configPlain?.backend ?? { mode: 0 },
-          archived: session.configPlain?.archived ?? false,
-        },
-        `${intent}:anchor:${plan.epoch}:${keyTag(next.keys)}`,
-      )
+      if ((await straysAt(c, plan.epoch, allowed)).length > 0) {
+        throw new PrivateMembersError(`key epoch ${plan.epoch} reached someone it must not; run the rotation again`, 'E310')
+      }
+      await postAnchor(c, session, next.keys, plan.epoch, plan.from, kn.raw, intent, false)
       return { epoch: plan.epoch, commit: next.keys.commit }
     } finally {
       next.raw.fill(0)
     }
   } finally {
     kn.raw.fill(0)
+  }
+}
+
+async function freshKey(repoId: Uint8Array, epoch: number): Promise<{ keys: EpochKeys; raw: Uint8Array }> {
+  const raw = generateEpochKey()
+  return { keys: await EpochKeys.import(repoId, epoch, raw), raw }
+}
+
+/**
+ * Post the anchor `config` of `epoch` under `keys`: the current config fields, the chain pair
+ * (`prevEpoch`, `prevEpochKey` = K_prev), and `burned` for a chain-only epoch (§5.3).
+ */
+async function postAnchor(
+  c: PrivateWriteContext,
+  session: PrivateSession,
+  keys: EpochKeys,
+  epoch: number,
+  prevEpoch: number,
+  prevEpochKey: Uint8Array,
+  intent: string,
+  burned: boolean,
+): Promise<void> {
+  const fields = { ...currentConfigFields(session), prevEpoch, prevEpochKey: new Uint8Array(prevEpochKey), ...(burned ? { burned: true as const } : {}) }
+  try {
+    const enc = await sealDoc(keys, { type: 'config', ownerId: decodeIdentifier(c.auth.identityId), epoch }, fields, { anchor: true })
+    await postConfig(
+      c,
+      {
+        repoId: decodeIdentifier(c.repo.repoId),
+        epoch,
+        enc,
+        backend: session.configPlain?.backend ?? { mode: 0 },
+        archived: session.configPlain?.archived ?? false,
+      },
+      `${intent}:anchor:${epoch}:${keyTag(keys)}${burned ? ':burned' : ''}`,
+    )
+  } finally {
+    fields.prevEpochKey.fill(0)
   }
 }
 

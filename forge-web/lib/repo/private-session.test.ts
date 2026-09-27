@@ -418,51 +418,47 @@ describe('rotation and repair planning', () => {
     expect(rotationCost(plan).credits).toBeGreaterThan(0)
   })
 
-  it('resumes from its own self-wrap for an unanchored epoch (no key is stored)', async () => {
+  it('a pending n + 1 is resumed: its self-wrap is the journal (no key is stored)', async () => {
     const w = await world()
     w.members = w.members.filter((m) => m.identity !== b58(CAROL))
     // A rotation to epoch 1 stopped after the self-wrap and BOB's wrap.
     w.wraps.push(wrapDoc(ALICE, ALICE, 1, 50), wrapDoc(ALICE, BOB, 1, 51))
     const s = await sessionFor(w, ALICE)
-    // A repair rotation (nobody excluded) resumes it: its self-wrap is the journal.
-    const plan = planRotation(s, b58(ALICE), [], FORGE.core, 4)
+    const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4)
     expect(plan.epoch).toBe(1)
     expect(plan.resume?.row.epoch).toBe(1)
+    expect(plan.burn).toBe(false)
     expect(plan.recipients.filter((r) => !r.done).map((r) => r.identity)).toEqual([])
     expect(plan.writes).toBe(1) // just the anchor
-    // A rotation that removes someone never resumes (a lagging read could hide a wrap to them).
-    const removing = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4)
-    expect(removing.resume).toBeNull()
-    expect(removing.epoch).toBe(2)
   })
 
-  it('only resumes a self-wrap to the key this browser holds', async () => {
+  it('a pending n + 1 to a key this browser does not hold is refused, not skipped', async () => {
     const w = await world()
     w.members = w.members.filter((m) => m.identity !== b58(CAROL))
     // The interrupted self-wrap went to key 3, an older key; this browser holds key 4.
     w.wraps.push(wrapDoc(ALICE, ALICE, 1, 50, 3))
     const s = await sessionFor(w, ALICE)
-    const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4)
-    expect(plan.resume).toBeNull()
-    expect(plan.epoch).toBe(2)
+    expect(() => planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4)).toThrow(/does not hold/)
   })
 
-  it('never resumes an epoch whose key went to someone now excluded; picks the next free one', async () => {
+  it('a pending n + 1 whose key reached someone now excluded is burned, then n + 2', async () => {
     const w = await world()
     // Stopped mid-rotation after wrapping CAROL too, then CAROL is the one being removed.
     w.wraps.push(wrapDoc(ALICE, ALICE, 1, 50), wrapDoc(ALICE, CAROL, 1, 51))
     const s = await sessionFor(w, ALICE)
     const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4)
-    expect(plan.resume).toBeNull()
-    expect(plan.epoch).toBe(2)
+    expect(plan.epoch).toBe(1)
+    expect(plan.burn).toBe(true)
+    // The burned anchor, then every remaining member wrapped at 2, then its anchor.
+    expect(plan.writes).toBe(1 + plan.recipients.length + 1)
   })
 
-  it('a new epoch goes above every epoch number seen, even one pre-posted by someone else', async () => {
+  it('epochs are contiguous: the new one is n + 1, whatever higher numbers others posted', async () => {
     const w = await world()
-    // A wrap for epoch 7 from CAROL (never a maintainer): inert, but its number is never reused.
+    // A wrap for epoch 7 from CAROL (never a maintainer) and a config at 2^32-1: both ignored.
     w.wraps.push(wrapDoc(CAROL, CAROL, 7, 60))
     const s = await sessionFor(w, ALICE)
-    expect(planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4).epoch).toBe(8)
+    expect(planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4).epoch).toBe(1)
   })
 
   it('removing a role: who is excluded, and what re-anchoring costs', async () => {

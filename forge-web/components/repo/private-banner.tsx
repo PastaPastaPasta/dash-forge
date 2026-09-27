@@ -58,6 +58,12 @@ function AlertLine({ alert }: { alert: EpochAlert }): JSX.Element | null {
           the key chain is broken at epoch {alert.epoch} (anchor by {who(alert.author)}).
         </p>
       )
+    case 'epochGap':
+      return (
+        <p>
+          a key epoch {alert.epoch} config by {who(alert.author)} skips an epoch number, so it is ignored.
+        </p>
+      )
     case 'rotationRequired':
       return null
   }
