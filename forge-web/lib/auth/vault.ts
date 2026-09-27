@@ -37,6 +37,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 
 import type { Network } from '../constants'
 import { idbBatch, idbDelete, idbEntries, idbGet, idbPut } from '../idb'
+import { withTimeout } from '../timeout'
 
 /** Unlocked vaults lock themselves after this long (spec §2.3). */
 export const AUTO_LOCK_MS = 12 * 60 * 60 * 1000
@@ -264,6 +265,12 @@ function rpId(): string {
 }
 
 /** Whether this browser can do WebAuthn at all (PRF support is only known after a ceremony). */
+/**
+ * How long a passkey ceremony may take (WebAuthn `timeout`, and a backstop for browsers that
+ * ignore it): the user needs time for Touch ID or a security key, but not forever.
+ */
+export const PASSKEY_TIMEOUT_MS = 120_000
+
 export function passkeysAvailable(): boolean {
   return typeof window !== 'undefined' && typeof window.PublicKeyCredential !== 'undefined' && window.isSecureContext
 }
@@ -279,8 +286,9 @@ export function passkeysAvailable(): boolean {
  */
 export async function enrollPasskey(label: string): Promise<{ credentialId: Uint8Array; prfSalt: Uint8Array; output: Uint8Array } | null> {
   const prfSalt = random(32)
-  const cred = (await navigator.credentials.create({
+  const cred = (await withTimeout(navigator.credentials.create({
     publicKey: {
+      timeout: PASSKEY_TIMEOUT_MS,
       rp: { id: rpId(), name: 'Dash Forge' },
       user: { id: buf(random(32)), name: label, displayName: label },
       challenge: buf(random(32)),
@@ -291,7 +299,7 @@ export async function enrollPasskey(label: string): Promise<{ credentialId: Uint
       authenticatorSelection: { residentKey: 'preferred', userVerification: 'required' },
       extensions: { prf: { eval: { first: buf(prfSalt) } } } as AuthenticationExtensionsClientInputs,
     },
-  })) as PublicKeyCredential | null
+  }), PASSKEY_TIMEOUT_MS + 5_000, 'The passkey prompt')) as PublicKeyCredential | null
   if (!cred) return null
   const ext = cred.getClientExtensionResults() as PrfExtensionResults
   const credentialId = new Uint8Array(cred.rawId)
@@ -306,15 +314,16 @@ export async function enrollPasskey(label: string): Promise<{ credentialId: Uint
 
 /** Evaluate the PRF of an enrolled passkey (a user-verified assertion). */
 async function evaluatePasskey(credentialId: Uint8Array, prfSalt: Uint8Array): Promise<ArrayBuffer | null> {
-  const assertion = (await navigator.credentials.get({
+  const assertion = (await withTimeout(navigator.credentials.get({
     publicKey: {
+      timeout: PASSKEY_TIMEOUT_MS,
       rpId: rpId(),
       challenge: buf(random(32)),
       allowCredentials: [{ type: 'public-key', id: buf(credentialId) }],
       userVerification: 'required',
       extensions: { prf: { eval: { first: buf(prfSalt) } } } as AuthenticationExtensionsClientInputs,
     },
-  })) as PublicKeyCredential | null
+  }), PASSKEY_TIMEOUT_MS + 5_000, 'The passkey prompt')) as PublicKeyCredential | null
   const ext = assertion?.getClientExtensionResults() as PrfExtensionResults | undefined
   return ext?.prf?.results?.first ?? null
 }

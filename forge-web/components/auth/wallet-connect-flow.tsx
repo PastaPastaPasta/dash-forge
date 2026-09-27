@@ -24,17 +24,19 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AlertTriangle, Loader2, RefreshCw, Smartphone } from 'lucide-react'
+import { AlertTriangle, RefreshCw, Smartphone } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
 import { Qr } from '@/components/ui/qr'
 import { ErrorBox, useProtection } from '@/components/auth/protection-fields'
+import { Waiting } from '@/components/auth/step-status'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { REQUEST_TTL_MS, RequestExpired, awaitRegisteredKey, awaitWalletAnswer, newLoginRequest, responseSources, walletSignInSupported, type PollStatus } from '@/lib/auth/app-connect'
 import { isUnlimited, keyRegistrationUri, scopeCovers, type WalletKey } from '@/lib/auth/key-registration'
 import { responderProfile, type ResponderProfile } from '@/lib/auth/responder-profile'
-import { ensureSdk } from '@/lib/sdk'
 import { isAbort } from '@/lib/sdk/facade'
+import { PHASE_TEXT, PLATFORM_READ_MS, connectPlatform } from '@/lib/auth/connect'
+import { withTimeout } from '@/lib/timeout'
 import { formatDate } from '@/lib/view/format'
 import { errorMessage } from '@/lib/utils'
 
@@ -61,6 +63,8 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
   const [step, setStep] = useState<Step | null>(null)
   const [status, setStatus] = useState<PollStatus>('waiting')
   const [error, setError] = useState<string | null>(null)
+  // What the request is waiting for before its QR can show.
+  const [preparing, setPreparing] = useState<string>(PHASE_TEXT.connecting)
   const [attempt, setAttempt] = useState(0)
   const [confirmed, setConfirmed] = useState(false)
   const grant = useRef<{ identityId: string; keys: readonly WalletKey[] } | null>(null)
@@ -84,8 +88,10 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
       try {
         if (!forge) throw new Error('Dash Forge is not deployed here')
         if (mode === 'grant' && !grantFor) throw new Error('Sign in (or unlock) first: the approval is added to the signed-in identity.')
-        const sdk = await ensureSdk(ACTIVE_NETWORK.network)
-        const sources = await responseSources(sdk, ACTIVE_NETWORK.key)
+        const sdk = await connectPlatform(ACTIVE_NETWORK.network, (p) => !signal.aborted && setPreparing(PHASE_TEXT[p]))
+        if (signal.aborted) return
+        setPreparing('Finding the wallet login contract')
+        const sources = await withTimeout(responseSources(sdk, ACTIVE_NETWORK.key), PLATFORM_READ_MS, 'Finding the wallet login contract')
         if (signal.aborted) return
         if (sources.length === 0) throw new Error(`No wallet login contract is available on ${ACTIVE_NETWORK.key}.`)
         const req = newLoginRequest(ACTIVE_NETWORK.network, target)
@@ -246,7 +252,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
           <Qr value={uri} label={qrLabel} size={200} />
         )
       ) : error ? null : (
-        <Loader2 className="mx-auto h-5 w-5 animate-spin text-anvil-500 dark:text-anvil-400" aria-hidden />
+        <Waiting label={preparing} hint="The first sign-in downloads the Dash Platform library (about 8 MB); on a slow connection this takes a minute." />
       )}
       {step?.kind === 'request' ? <p className="text-dense">Keep this QR code private: anyone who scans it can answer it.</p> : null}
       {status === 'incomplete-read' && step?.kind === 'request' ? (

@@ -10,6 +10,7 @@ import { AppHeader } from '@/components/app-header'
 import { AppFooter } from '@/components/app-footer'
 import { LoginModal } from '@/components/login-modal'
 import { PlatformBusy } from '@/components/platform-busy'
+import { StorageUpdated } from '@/components/storage-updated'
 import { TopUpSheet } from '@/components/top-up-sheet'
 import { Toaster } from '@/components/ui/toaster'
 
@@ -43,6 +44,7 @@ export function AppShell({
       <TopUpSheet />
       <Toaster />
       <PlatformBusy />
+      <StorageUpdated />
     </div>
   )
 }

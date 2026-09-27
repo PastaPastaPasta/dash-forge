@@ -44,6 +44,12 @@ export default defineConfig({
       name: 'chromium',
       use: { ...devices['Desktop Chrome'] },
     },
+    {
+      // Safari's engine, for the flows whose storage and passkey behaviour differ there.
+      name: 'webkit',
+      testMatch: /signin-resilience\.spec\.ts/,
+      use: { ...devices['Desktop Safari'], viewport: { width: 1280, height: 900 } },
+    },
   ],
   // Build (if needed) then serve out/ with a hermetic, dependency-free static server
   // (sets COOP/COEP for the WASM SDK and mirrors trailingSlash routing). If you already
