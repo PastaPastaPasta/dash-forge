@@ -71,21 +71,21 @@ $ dg storage add
 ? Provider › 1) Cloudflare R2   (region auto, path-style; recommended: free egress)
 ? Account id › 7c1…
 ? Bucket › forge
-? Public URL (r2.dev or custom domain) › https://pub-9a1.r2.dev
+? Public URL (your custom domain, or r2.dev) › https://files.example.org
 ? Access key id › …
 ? Secret access key — how do you want to store it? › 1) paste it now; dg stores it in the macOS Keychain (recommended)
 ? Secret access key ›                  (input is hidden)
 Testing r2-main …
   [ OK ] put            wrote probe/… (signed PUT)
   [ OK ] get            read back identical bytes (signed GET)
-  [ OK ] public read    anonymous GET https://pub-9a1.r2.dev/probe/… OK
+  [ OK ] public read    anonymous GET https://files.example.org/probe/… OK
   [FAIL] browser CORS   the CORS preflight for a Range request was refused (status 403 Forbidden)
   [ OK ] delete         probe removed
   → Cloudflare dashboard → R2 → forge → Settings → CORS Policy → Add CORS policy, paste: …
     then run `dg storage test r2-main`
   note: git push and clone work without CORS; the web app cannot read this storage until it passes
 Saved ~/.config/dash-forge/storage.toml (secret stored as keychain:dash-forge/r2-main)
-Equivalent: dg storage add r2-main --kind s3 --endpoint https://7c1….r2.cloudflarestorage.com --region auto --bucket forge --public-url https://pub-9a1.r2.dev --access-key-id … --secret-access-key keychain:dash-forge/r2-main
+Equivalent: dg storage add r2-main --kind s3 --endpoint https://7c1….r2.cloudflarestorage.com --region auto --bucket forge --public-url https://files.example.org --access-key-id … --secret-access-key keychain:dash-forge/r2-main
 Use it in a repo: dg storage use r2-main
 ? Make r2-main the default storage for new repos (and any repo without its own dash.storage)? [Y/n]
 ```
@@ -118,7 +118,7 @@ The web app has the same setup at **Settings → Storage** (`/settings/storage`)
 R2 has no egress fees, which makes it the cheapest way to serve clones.
 
 1. **Create a bucket.** In the Cloudflare dashboard, open R2 → Create bucket, for example `forge`.
-2. **Make it publicly readable.** Open the bucket → Settings → Public access, then either enable the **R2.dev subdomain** (you get `https://pub-<hash>.r2.dev`) or connect a custom domain. That URL is your `--public-url`.
+2. **Make it publicly readable.** Open the bucket → Settings → **Custom Domains** and connect a domain of yours; that URL is your `--public-url`. The **R2.dev subdomain** (`https://pub-<hash>.r2.dev`) also works, but Cloudflare rate-limits it and recommends it for development only, and the URL is recorded on chain forever.
 3. **Create an API token.** Go to R2 → Manage R2 API Tokens → Create API token with **Object Read & Write**, scoped to this bucket. Note the *Access Key ID*, the *Secret Access Key*, and the S3 endpoint `https://<account-id>.r2.cloudflarestorage.com`.
 4. **Store the secret** in your keychain (macOS shown; on Linux use `secret-tool store --label r2 service dash-forge account r2-main`):
    ```sh
@@ -149,7 +149,7 @@ R2 has no egress fees, which makes it the cheapest way to serve clones.
    dg storage add r2-main --kind s3 \
      --endpoint https://<account-id>.r2.cloudflarestorage.com \
      --region auto --bucket forge \
-     --public-url https://pub-<hash>.r2.dev \
+     --public-url https://files.example.org \
      --access-key-id <access-key-id> \
      --secret-access-key keychain:dash-forge/r2-main
    dg storage test r2-main
@@ -332,10 +332,11 @@ dg storage use platform                   # back to the default
 **A policy applies to packs pushed after you set it.** A pack's manifest is permanent, so packs already pushed keep the copies they were stored with. Inside a repository with a `dash://` remote, `dg storage use` counts the packs with fewer copies than the new policy asks for and prints the command that stores them again as one consolidated pack; `dg doctor` reports them too:
 
 ```sh
-dg repack <owner>/<repo> --profile r2-main,kubo   # one new pack on both; every listed profile must confirm; asks first
+dg repack <owner>/<repo> --profile r2-main,kubo   # one new pack on both; every listed target must confirm; asks first
+dg repack <owner>/<repo> --profile r2-main,platform   # `platform` is a target too
 ```
 
-`dg repack` downloads every pack, writes one consolidated pack that supersedes them, and costs one upload plus a small manifest write. (`dg reseed --profile <p>` copies each pack separately instead, but records the new copy as your own manifest only for packs you have not recorded yet, so it cannot add a copy to packs you pushed yourself.)
+`dg repack` downloads every pack and writes one consolidated pack that supersedes them. It costs one pack upload and one browse-index upload per listed target (Platform chunks at the Platform rate when `platform` is listed), plus two small manifest writes. Once that pack has the copies the policy asks for, every pack recorded before it counts as covered, including older ones beyond the 32 a manifest can name. (`dg reseed --profile <p>` copies each pack separately instead, but records the new copy as your own manifest only for packs you have not recorded yet, so it cannot add a copy to packs you pushed yourself.)
 
 These commands write git config, and you can also set it by hand:
 
@@ -345,7 +346,7 @@ These commands write git config, and you can also set it by hand:
 | `dash.replicas` | N. The push fails unless N targets confirm. Default: every listed target. |
 | `dash.platformFallback` | When the external targets cannot reach N, store the pack on Platform instead. The costed fallback is also subject to the cost guard. |
 | `dash.allowPrivateUri` | Record a profile's non-public read address anyway (see [Public addresses](#public-addresses)). |
-| `remote.<name>.dashStorage`, `…dashReplicas`, `…dashPlatformFallback` | Per-remote overrides. |
+| `remote.<name>.dashStorage`, `…dashReplicas`, `…dashPlatformFallback`, `…dashAllowPrivateUri` | Per-remote overrides. |
 
 When Platform is one of the targets, the manifest records `storage = 0`, `chunkCount > 0`, and **also** lists every external URI. Platform-reading clients, including today's web app, read the chunks. CLI readers race the external copies first. With only external targets, the manifest records `storage = 1`, `chunkCount = 0`, and the URIs.
 
@@ -364,7 +365,7 @@ Every push records each copy's read address (an S3 profile's `--public-url`, an 
 | Address | What happens |
 |---|---|
 | Loopback, LAN (`10/8`, `172.16/12`, `192.168/16`, CGNAT `100.64/10`, link-local, IPv6 ULA and link-local), `.local`, `.localhost`, `.internal` | Nobody else can read it. `git push` refuses ([E501](../errors.md#e501)) before anything is built, uploaded or paid for. |
-| Plain `http://` | Browsers refuse to read it from the web app, and readers skip it. `git push` refuses. |
+| Plain `http://` | The web app refuses to read it (the CLI still does). `git push` refuses. |
 | A Cloudflare quick tunnel (`*.trycloudflare.com`) | Its random name changes every time the tunnel restarts. `git push` refuses. Use a named tunnel on your own domain. |
 | Tailscale Funnel (`*.ts.net`) | Stops working when the machine or tailnet is renamed or Funnel is switched off. `git push` refuses. |
 | `*.r2.dev` | Works, but Cloudflare rate-limits it and does not recommend it for production. A warning only; connect a custom domain for real repositories. |

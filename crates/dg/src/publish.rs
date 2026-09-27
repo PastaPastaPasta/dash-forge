@@ -581,7 +581,8 @@ async fn plan(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -
     // The new repo's config advertises these read bases, and its pushes record them.
     crate::storage::check_publishable(
         storage.policy.external.iter().map(|(n, p)| (n.as_str(), p)),
-        opts.allow_private_uri,
+        Some((crate::storage::ALLOW_FLAG, opts.allow_private_uri)),
+        Some(opts.remote()),
         "repository not created",
     )?;
     if local.is_some() {

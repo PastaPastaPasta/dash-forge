@@ -960,15 +960,9 @@ async fn check_pack_copies(ctx: &Ctx) -> Vec<Check> {
     if !in_git_repo() {
         return Vec::new();
     }
-    let get = |k: &str| git_config_scoped(k).map(|(_, v)| v);
-    let policy = StoragePolicy::from_git_values(
-        get("dash.storage").as_deref(),
-        get("dash.replicas").as_deref(),
-        get("dash.platformFallback").as_deref(),
-    )
-    .and_then(|p| p.resolve(&StorageProfiles::load()?));
-    // A broken policy is reported under git config already.
-    let Ok(policy) = policy else {
+    // A broken policy is reported under git config already; a Platform-only one or one
+    // asking for a single copy has nothing to check (existing_copies returns None).
+    let Ok(policy) = crate::storage::push_policy() else {
         return Vec::new();
     };
     match crate::storage::existing_copies(ctx, &policy).await {

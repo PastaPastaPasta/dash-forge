@@ -154,6 +154,7 @@ impl PushPolicy {
             self.resolved.external.iter().map(|(n, p)| (n.as_str(), p)),
             push_option || self.allow_private_uri,
             "push not started",
+            Some(&format!("git push -o {ALLOW_PRIVATE_URI_PUSH_OPTION} …")),
         )
     }
 }

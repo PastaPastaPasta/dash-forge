@@ -74,7 +74,7 @@ impl PublishProblem {
 #[allow(clippy::case_sensitive_file_extension_comparisons)]
 pub fn is_private_host(hostname: &str) -> bool {
     let lower = hostname.to_ascii_lowercase();
-    let h = lower.trim_start_matches('[').trim_end_matches(']');
+    let h = dns_name(lower.trim_start_matches('[').trim_end_matches(']'));
     if h == "localhost"
         || h.ends_with(".localhost")
         || h.ends_with(".local")
@@ -106,6 +106,12 @@ pub fn is_private_host(hostname: &str) -> bool {
     false
 }
 
+/// `host` without one trailing root dot: `localhost.` and `nas.local.` are the same names
+/// as `localhost` and `nas.local`, and URL parsers keep the dot.
+fn dns_name(host: &str) -> &str {
+    host.strip_suffix('.').unwrap_or(host)
+}
+
 /// The first two octets of a `d.d.d.d` literal (each 1-3 digits, as `lib/net.ts` matches).
 fn dotted_quad_head(h: &str) -> Option<[u32; 2]> {
     let parts: Vec<&str> = h.split('.').collect();
@@ -135,11 +141,12 @@ pub fn publish_problem(url: &str) -> Option<PublishProblem> {
     if !u.username().is_empty() || u.password().is_some() {
         return Some(PublishProblem::Credentials);
     }
-    let host = u.host_str().unwrap_or_default().to_ascii_lowercase();
+    let lower = u.host_str().unwrap_or_default().to_ascii_lowercase();
+    let host = dns_name(&lower);
     if !matches!(u.scheme(), "http" | "https") {
         return Some(PublishProblem::NotHttps);
     }
-    if is_private_host(&host) {
+    if is_private_host(host) {
         return Some(PublishProblem::PrivateHost);
     }
     if u.scheme() != "https" {
@@ -178,7 +185,7 @@ pub fn describe(url: &str, problem: PublishProblem) -> String {
             format!("{host} carries a user name or password, which would be published")
         }
         PublishProblem::NotHttps => {
-            format!("{host} is not https: the web app refuses to read it and readers skip it")
+            format!("{host} is not https: the web app refuses to read it")
         }
         PublishProblem::PrivateHost => format!(
             "{host} is only reachable from this machine or its network, so nobody else can \
@@ -255,17 +262,32 @@ pub fn profile_problems(profile: &Profile) -> Vec<ProfileUrlProblem> {
         .collect()
 }
 
+/// The overrides that let a command record a non-public address, for the refusal's fix
+/// line: the command's own (`git push -o allow-private-uri`, `dg init --allow-private-uri`),
+/// then the ones every command honours (git config, the profile flag).
+pub fn overrides(own: Option<&str>, profile: &str) -> Vec<String> {
+    own.map(|o| format!("`{o}`"))
+        .into_iter()
+        .chain([
+            format!("`git config {ALLOW_PRIVATE_URI_GIT_KEY} true`"),
+            format!("`dg storage add {profile} … --allow-private-uri`"),
+        ])
+        .collect()
+}
+
 /// Refuse to record a non-public URL: the first refused problem among `profiles`, as the
 /// E501 a push (or `dg init`, `dg repack`, …) stops with **before** building, uploading or
 /// paying for anything. A profile with `allow_private_uri = true` is exempt, and
 /// `allowed` (the push option / git config override) exempts every profile. `lead` is the
-/// headline's goal ("push not started").
+/// headline's goal ("push not started"); `own` is the command's own override, if it has one
+/// (see [`overrides`]).
 // A refusal happens at most once per command; boxing it buys nothing.
 #[allow(clippy::result_large_err)]
 pub fn refuse_unpublishable<'a>(
     profiles: impl IntoIterator<Item = (&'a str, &'a Profile)>,
     allowed: bool,
     lead: &str,
+    own: Option<&str>,
 ) -> std::result::Result<(), UserError> {
     if allowed {
         return Ok(());
@@ -288,13 +310,37 @@ pub fn refuse_unpublishable<'a>(
                 p.field.replace('_', "-")
             ))
             .fix(format!(
-                "to record it anyway (a test, a LAN-only mirror): `git push -o {ALLOW_PRIVATE_URI_PUSH_OPTION} …`, \
-                 `git config {ALLOW_PRIVATE_URI_GIT_KEY} true`, or `dg storage add {name} … --allow-private-uri`"
+                "to record it anyway (a test, a LAN-only mirror): {}",
+                overrides(own, name).join(", or ")
             ))
             .note("nothing was built, uploaded or paid for"));
         }
     }
     Ok(())
+}
+
+/// [`refuse_unpublishable`] for a bare read base with no profile (the legacy
+/// `FORGE_S3_ENDPOINT` targets of `dg repack --backend s3` / `dg reseed --to s3`).
+#[allow(clippy::result_large_err)]
+pub fn refuse_unpublishable_url(
+    source: &str,
+    url: &str,
+    allowed: bool,
+    lead: &str,
+) -> std::result::Result<(), UserError> {
+    match publish_problem(url).filter(|p| p.refused() && !allowed) {
+        None => Ok(()),
+        Some(problem) => Err(UserError::new(
+            codes::STORAGE_CONFIG,
+            format!("{lead}: {source} would record a non-public address on chain"),
+        )
+        .cause(describe(url, problem))
+        .fix("use a storage profile with a public https address: `dg storage add …`, then --profile <name>")
+        .fix(format!(
+            "to record it anyway (a test, a LAN-only mirror): `git config {ALLOW_PRIVATE_URI_GIT_KEY} true`"
+        ))
+        .note("nothing was built, uploaded or paid for")),
+    }
 }
 
 #[cfg(test)]
@@ -376,7 +422,9 @@ mod tests {
     fn refusal_names_the_profile_and_every_override() {
         let p = profiles("");
         let loopback = [("loop", &p.profiles["loop"])];
-        let err = refuse_unpublishable(loopback, false, "push not started").unwrap_err();
+        let push = format!("git push -o {ALLOW_PRIVATE_URI_PUSH_OPTION} …");
+        let err =
+            refuse_unpublishable(loopback, false, "push not started", Some(&push)).unwrap_err();
         assert_eq!((err.code, err.exit_code()), ("E501", 5));
         let text = err.render("", false);
         for want in [
@@ -391,24 +439,40 @@ mod tests {
         ] {
             assert!(text.contains(want), "{want}\n{text}");
         }
+        // A command without a flag of its own offers only the overrides it honours.
+        let text = refuse_unpublishable(loopback, false, "x", None)
+            .unwrap_err()
+            .render("", false);
+        assert!(!text.contains("git push -o"), "{text}");
+        assert!(text.contains("dash.allowPrivateUri"), "{text}");
         // The override exempts everything.
-        assert!(refuse_unpublishable(loopback, true, "x").is_ok());
+        assert!(refuse_unpublishable(loopback, true, "x", None).is_ok());
+        // A bare legacy read base is judged the same way.
+        let err =
+            refuse_unpublishable_url("FORGE_S3_ENDPOINT", "http://127.0.0.1:9000/b", false, "x")
+                .unwrap_err();
+        assert_eq!(err.code, "E501");
+        assert!(refuse_unpublishable_url("s", "http://127.0.0.1:9000/b", true, "x").is_ok());
+        assert!(refuse_unpublishable_url("s", "https://files.example.org/b", false, "x").is_ok());
         // A tunnel gateway is refused; r2.dev is only a warning; no public URL is fine.
-        let err = refuse_unpublishable([("kubo", &p.profiles["kubo"])], false, "x").unwrap_err();
+        let err =
+            refuse_unpublishable([("kubo", &p.profiles["kubo"])], false, "x", None).unwrap_err();
         assert!(err.render("", false).contains("public_gateway"));
-        assert!(refuse_unpublishable([("r2", &p.profiles["r2"])], false, "x").is_ok());
+        assert!(refuse_unpublishable([("r2", &p.profiles["r2"])], false, "x", None).is_ok());
         assert_eq!(
             profile_problems(&p.profiles["r2"])[0].problem,
             PublishProblem::DevOnly
         );
-        assert!(refuse_unpublishable([("private", &p.profiles["private"])], false, "x").is_ok());
+        assert!(
+            refuse_unpublishable([("private", &p.profiles["private"])], false, "x", None).is_ok()
+        );
     }
 
     #[test]
     fn the_profile_flag_exempts_that_profile_and_round_trips() {
         let p = profiles("allow_private_uri = true");
         assert!(p.profiles["loop"].allow_private_uri());
-        assert!(refuse_unpublishable([("loop", &p.profiles["loop"])], false, "x").is_ok());
+        assert!(refuse_unpublishable([("loop", &p.profiles["loop"])], false, "x", None).is_ok());
         let again = StorageProfiles::parse(&p.to_toml().unwrap()).unwrap();
         assert!(again.profiles["loop"].allow_private_uri());
         // Unset is not written out.

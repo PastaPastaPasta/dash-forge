@@ -91,7 +91,7 @@ export const PROVIDERS: readonly ProviderPreset[] = [
     hints: {
       endpoint: { text: 'R2 → Overview → Account details → S3 API. Use the origin only, without the bucket.', href: 'https://dash.cloudflare.com/?to=/:account/r2/overview' },
       bucket: { text: 'R2 → Create bucket, e.g. forge.' },
-      publicUrl: { text: 'Bucket → Settings → Public access: the r2.dev subdomain or your custom domain.' },
+      publicUrl: { text: 'Bucket → Settings → Custom Domains: a domain of yours (the r2.dev subdomain is rate-limited, for development only). Recorded on chain forever.' },
       accessKeyId: { text: 'R2 → Manage R2 API Tokens → Create API token (Object Read & Write, this bucket).', href: 'https://dash.cloudflare.com/?to=/:account/r2/api-tokens' },
       region: { text: 'R2 always uses auto.' },
     },

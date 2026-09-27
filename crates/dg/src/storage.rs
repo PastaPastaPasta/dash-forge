@@ -17,7 +17,7 @@ use forge_core::user_error::{codes, UserError};
 use serde_json::json;
 
 use forge_core::backends::{Health, IpfsBackend, PackBackend, PackMeta, S3Backend, Uri};
-use forge_core::storage::copies::{count_copies, CopyCount};
+use forge_core::storage::copies::{count_copies, policy_copies, CopyCount};
 use forge_core::storage::cors::{cors_fix, kubo_cors_fix, probe_cors, provider_of};
 use forge_core::storage::policy::{git_config_scoped, parse_git_bool, pick_scoped};
 use forge_core::storage::profiles::{
@@ -265,20 +265,36 @@ pub(crate) fn publish_warnings(profile: &Profile) -> Vec<String> {
         .collect()
 }
 
+/// git config `dash.allowPrivateUri`, or `remote.<remote>.dashAllowPrivateUri` by the
+/// helper's scope rule ([`pick_scoped`]).
+pub(crate) fn allow_private_uri_config(remote: Option<&str>) -> Result<bool> {
+    let value = pick_scoped(
+        remote.and_then(|r| git_config_scoped(&format!("remote.{r}.dashAllowPrivateUri"))),
+        git_config_scoped(ALLOW_PRIVATE_URI_GIT_KEY),
+    );
+    Ok(value
+        .map(|v| parse_git_bool(ALLOW_PRIVATE_URI_GIT_KEY, &v))
+        .transpose()?
+        .unwrap_or(false))
+}
+
+/// The command-line override a `dg` command offers for a non-public address.
+pub(crate) const ALLOW_FLAG: &str = "--allow-private-uri";
+
 /// Refuse (E501) before anything is written when one of `targets` would record a read
-/// address that is not public https on chain, unless `allowed` (a command's
-/// `--allow-private-uri`), git config `dash.allowPrivateUri` or the profile's own
-/// `allow_private_uri` allows it. The same rule `git push` applies.
+/// address that is not public https on chain, unless the command's own override (`flag`:
+/// its name, and whether it was given), git config `dash.allowPrivateUri` (or
+/// `remote.<remote>.dashAllowPrivateUri`, by the same scope rule as the helper) or the
+/// profile's own `allow_private_uri` allows it. The same rule `git push` applies.
 pub(crate) fn check_publishable<'a>(
     targets: impl IntoIterator<Item = (&'a str, &'a Profile)>,
-    allowed: bool,
+    flag: Option<(&str, bool)>,
+    remote: Option<&str>,
     lead: &str,
 ) -> Result<()> {
-    let from_git = git_config_scoped(ALLOW_PRIVATE_URI_GIT_KEY)
-        .map(|(_, v)| parse_git_bool(ALLOW_PRIVATE_URI_GIT_KEY, &v))
-        .transpose()?
-        .unwrap_or(false);
-    refuse_unpublishable(targets, allowed || from_git, lead).map_err(Into::into)
+    let from_git = allow_private_uri_config(remote)?;
+    let given = flag.is_some_and(|(_, on)| on);
+    refuse_unpublishable(targets, given || from_git, lead, flag.map(|(f, _)| f)).map_err(Into::into)
 }
 
 /// A one-line, secret-free description of a profile.
@@ -813,9 +829,9 @@ impl ExistingCopies {
     }
 }
 
-/// The `dash://` URL of this git repository's forge remote: `origin` when it is one, else
-/// the first `dash://` remote.
-fn dash_remote_url() -> Option<String> {
+/// This git repository's forge remote, as `(name, dash:// URL)`: `origin` when it is one,
+/// else the first `dash://` remote.
+fn dash_remote_url() -> Option<(String, String)> {
     let out = Process::new("git")
         .args(["config", "--get-regexp", r"^remote\..*\.url$"])
         .stderr(std::process::Stdio::null())
@@ -831,27 +847,55 @@ fn dash_remote_url() -> Option<String> {
         .iter()
         .find(|(k, _)| *k == "remote.origin.url")
         .or_else(|| remotes.first())
-        .map(|(_, url)| (*url).to_string())
+        .map(|(k, url)| {
+            let name = k.trim_start_matches("remote.").trim_end_matches(".url");
+            (name.to_string(), (*url).to_string())
+        })
 }
 
-/// The command that repacks `repo` onto `policy`'s external targets (every one must
-/// confirm, so the consolidated pack gets the copies the policy asks for).
+/// The storage policy a push through this repository's forge remote uses: its
+/// `remote.<name>.dash*` settings over `dash.*`, by the helper's scope rule.
+pub(crate) fn push_policy() -> Result<ResolvedPolicy> {
+    let remote = dash_remote_url().map(|(name, _)| name);
+    let value = |remote_key: &str, key: &str| {
+        pick_scoped(
+            remote
+                .as_deref()
+                .and_then(|r| git_config_scoped(&format!("remote.{r}.{remote_key}"))),
+            git_config_scoped(&format!("dash.{key}")),
+        )
+    };
+    Ok(StoragePolicy::from_git_values(
+        value("dashStorage", "storage").as_deref(),
+        value("dashReplicas", "replicas").as_deref(),
+        value("dashPlatformFallback", "platformFallback").as_deref(),
+    )?
+    .resolve(&StorageProfiles::load()?)?)
+}
+
+/// The command that repacks `repo` onto every target of `policy`, Platform included, each
+/// of which must confirm: the consolidated pack then has the copies the policy asks for,
+/// and so covers every pack recorded before it ([`count_copies`]).
 fn repack_command(repo: &str, policy: &ResolvedPolicy) -> String {
-    let names: Vec<&str> = policy.external.iter().map(|(n, _)| n.as_str()).collect();
-    if names.is_empty() {
-        format!("dg repack {repo}")
-    } else {
-        format!("dg repack {repo} --profile {}", names.join(","))
-    }
+    format!(
+        "dg repack {repo} --profile {}",
+        policy.target_names().join(",")
+    )
 }
 
-/// Count the copies of every live pack of this git repository's forge repo against
-/// `policy`. `Ok(None)` when there is no `dash://` remote. Reads only (no spend).
+/// Count the copies of every live pack of this git repository's forge repo against what
+/// `policy` can make ([`policy_copies`]). `Ok(None)` when there is no `dash://` remote or
+/// the policy asks for one copy (every stored pack has one). Reads only (no spend), within
+/// 15 seconds.
 pub(crate) async fn existing_copies(
     ctx: &Ctx,
     policy: &ResolvedPolicy,
 ) -> Result<Option<ExistingCopies>> {
-    let Some(url) = dash_remote_url() else {
+    let required = policy_copies(policy);
+    if required <= 1 {
+        return Ok(None);
+    }
+    let Some((_, url)) = dash_remote_url() else {
         return Ok(None);
     };
     let (owner, name) = crate::publish::parse_dash_url(&url)
@@ -867,14 +911,14 @@ pub(crate) async fn existing_copies(
             .await?;
         anyhow::Ok((handle.display(), manifests))
     };
-    let (repo, manifests) = tokio::time::timeout(std::time::Duration::from_secs(60), read)
+    let (repo, manifests) = tokio::time::timeout(std::time::Duration::from_secs(15), read)
         .await
-        .map_err(|_| anyhow::anyhow!("reading the pack manifests timed out"))??;
+        .map_err(|_| anyhow::anyhow!("reading the pack manifests timed out after 15 s"))??;
     Ok(Some(ExistingCopies {
-        count: count_copies(&manifests, policy.replicas),
+        count: count_copies(&manifests, required),
         fix: repack_command(&repo, policy),
         repo,
-        required: policy.replicas,
+        required,
     }))
 }
 
@@ -913,12 +957,9 @@ async fn use_profiles(
     // A policy only applies to packs pushed after it: say what that leaves behind, from the
     // repo's manifests when they can be read (free reads), else in general.
     let existing = if global {
-        None
+        Ok(None)
     } else {
-        existing_copies(ctx, &resolved).await.unwrap_or_else(|e| {
-            tracing::debug!(error = %format!("{e:#}"), "could not count the existing packs' copies");
-            None
-        })
+        existing_copies(ctx, &resolved).await
     };
     ctx.emit(
         json!({
@@ -927,12 +968,15 @@ async fn use_profiles(
             "platformFallback": resolved.platform_fallback,
             "scope": if global { "global" } else { "repo" },
             "warnings": url_warnings,
-            "existingPacks": existing.as_ref().map(|e| json!({
-                "repo": e.repo,
-                "live": e.count.live,
-                "belowPolicy": e.count.thin.len(),
-                "fix": e.fix,
-            })),
+            "existingPacks": match &existing {
+                Ok(e) => e.as_ref().map(|e| json!({
+                    "repo": e.repo,
+                    "live": e.count.live,
+                    "belowPolicy": e.count.thin.len(),
+                    "fix": e.fix,
+                })),
+                Err(err) => Some(json!({ "error": format!("{err:#}") })),
+            },
         }),
         || {
             println!(
@@ -945,22 +989,28 @@ async fn use_profiles(
                 println!("warning: {w}");
             }
             match &existing {
-                Some(e) if !e.count.thin.is_empty() => {
+                Ok(Some(e)) if !e.count.thin.is_empty() => {
                     println!(
                         "Packs already pushed keep the copies they were stored with: {}.",
                         e.summary()
                     );
                     println!(
-                        "  Store them again under this policy as one consolidated pack (it asks first; one upload plus a small manifest write):\n  {}",
+                        "  Store them again under this policy as one consolidated pack (it asks first; one pack and one browse-index upload per target, plus two small manifest writes):\n  {}",
                         e.fix
                     );
                 }
-                None if resolved.replicas > 1 => println!(
-                    "This applies to packs pushed from now on; packs already pushed keep the copies they were stored with. \
-                     To store them under this policy as one consolidated pack: {}",
-                    repack_command("<owner>/<repo>", &resolved)
-                ),
-                Some(_) | None => {}
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) if policy_copies(&resolved) <= 1 => {}
+                other => {
+                    if let Err(e) = other {
+                        println!("(could not count the copies of packs already pushed: {e:#})");
+                    }
+                    println!(
+                        "This applies to packs pushed from now on; packs already pushed keep the copies they were stored with. \
+                         To store them under this policy as one consolidated pack: {}",
+                        repack_command("<owner>/<repo>", &resolved)
+                    );
+                }
             }
             if !resolved.external.is_empty() {
                 println!(
@@ -991,7 +1041,8 @@ async fn advertise(ctx: &Ctx, repo: &str, remote: Option<&str>) -> Result<()> {
     let resolved = policy.resolve(&StorageProfiles::load()?)?;
     check_publishable(
         resolved.external.iter().map(|(n, p)| (n.as_str(), p)),
-        false,
+        None,
+        remote,
         "nothing advertised",
     )?;
     let mode = resolved.advertised_mode();
@@ -1282,7 +1333,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_repack_command_names_every_external_target() {
+    fn the_repack_command_names_every_target_platform_included() {
         let profiles = StorageProfiles::parse(
             "[profiles.a]\nkind = \"ipfs-kubo\"\napi = \"http://127.0.0.1:5001\"\n\
              [profiles.b]\nkind = \"ipfs-kubo\"\napi = \"http://127.0.0.1:5002\"\n",
@@ -1294,11 +1345,14 @@ pub(crate) mod tests {
                 .resolve(&profiles)
                 .unwrap()
         };
-        assert_eq!(
-            repack_command("o/r", &policy("a,b,platform")),
-            "dg repack o/r --profile a,b"
-        );
-        assert_eq!(repack_command("o/r", &policy("platform")), "dg repack o/r");
+        // Every target, so the consolidated pack reaches N (Platform is one of the copies).
+        let cmd = repack_command("o/r", &policy("a,b,platform"));
+        assert_eq!(cmd, "dg repack o/r --profile a,b,platform");
+        let cli = <crate::Cli as clap::Parser>::try_parse_from(cmd.split(' ')).unwrap();
+        assert!(matches!(
+            cli.command,
+            crate::Command::Repack { profile: Some(ref p), .. } if p == "a,b,platform"
+        ));
     }
 
     #[test]

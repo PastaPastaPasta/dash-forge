@@ -39,10 +39,12 @@ pub struct CopyCount {
 
 /// The distinct copies the URIs of one pack's manifests point at (see the module docs).
 fn copies_of(manifests: &[&PackManifestInfo]) -> usize {
-    let uris: Vec<&str> = manifests
+    let mut uris: Vec<&str> = manifests
         .iter()
         .flat_map(|m| m.uris.iter().map(String::as_str))
         .collect();
+    uris.sort_unstable();
+    uris.dedup();
     let mut places: BTreeSet<String> = BTreeSet::new();
     if manifests
         .iter()
@@ -50,23 +52,32 @@ fn copies_of(manifests: &[&PackManifestInfo]) -> usize {
     {
         places.insert("platform".into());
     }
-    for u in &uris {
+    // Each S3 object is one copy: its `s3://bucket/key` locator, plus at most one public URL
+    // ending in the key as a push writes it (percent-encoded once). A matched public URL is
+    // consumed, so two buckets holding the same key still count twice.
+    let mut consumed: BTreeSet<&str> = BTreeSet::new();
+    for rest in uris.iter().filter_map(|u| u.strip_prefix("s3://")) {
+        let key = rest.split_once('/').map_or("", |(_, k)| k);
+        let suffix = format!("/{}", crate::backends::sigv4::uri_encode(key, true));
+        let public = uris.iter().copied().find(|o| {
+            o.starts_with("http")
+                && !consumed.contains(o)
+                && !key.is_empty()
+                && o.ends_with(&suffix)
+        });
+        if let Some(p) = public {
+            consumed.insert(p);
+        }
+        places.insert(format!("s3:{rest}"));
+    }
+    for u in uris
+        .iter()
+        .filter(|u| !u.starts_with("s3://") && !consumed.contains(*u))
+    {
         let place = if u.starts_with("platform://") {
             "platform".to_string()
         } else if let Some(cid) = u.strip_prefix("ipfs://") {
             format!("ipfs:{cid}")
-        } else if let Some(rest) = u.strip_prefix("s3://") {
-            // The same object's public URL ends in its key; count the object once.
-            let key = rest.split_once('/').map_or("", |(_, k)| k);
-            let suffix = format!("/{key}");
-            let public = !key.is_empty()
-                && uris
-                    .iter()
-                    .any(|o| o.starts_with("http") && o.ends_with(&suffix));
-            if public {
-                continue;
-            }
-            format!("s3:{rest}")
         } else if let Some((_, cid)) = u.split_once("/ipfs/") {
             format!("ipfs:{}", cid.trim_end_matches('/'))
         } else {
@@ -77,7 +88,28 @@ fn copies_of(manifests: &[&PackManifestInfo]) -> usize {
     places.len()
 }
 
-/// Count the copies of every live git pack in `manifests` against `required`.
+/// How many distinct copies a push under `policy` can record: its `replicas`, capped by
+/// the distinct places its targets write to. Every IPFS target records the same
+/// `ipfs://<cid>` (the CID is derived from the bytes), so any number of IPFS targets is one
+/// place; each S3 profile and Platform is one place each.
+pub fn policy_copies(policy: &super::ResolvedPolicy) -> usize {
+    use super::Profile;
+    let ipfs = policy
+        .external
+        .iter()
+        .any(|(_, p)| matches!(p, Profile::IpfsKubo(_) | Profile::IpfsPinningService(_)));
+    let s3 = policy
+        .external
+        .iter()
+        .filter(|(_, p)| matches!(p, Profile::S3(_)))
+        .count();
+    policy
+        .replicas
+        .min(s3 + usize::from(ipfs) + usize::from(policy.platform))
+}
+
+/// Count the copies of every live git pack in `manifests` against `required` (see
+/// [`policy_copies`] for a policy's number).
 pub fn count_copies(manifests: &[PackManifestInfo], required: usize) -> CopyCount {
     let git = u64::from(crate::pack::KIND_GIT_PACK);
     let superseded: BTreeSet<[u8; 32]> = manifests
@@ -91,12 +123,21 @@ pub fn count_copies(manifests: &[PackManifestInfo], required: usize) -> CopyCoun
     {
         packs.entry(m.pack_hash).or_default().push(m);
     }
+    // A consolidation (a pack whose manifest supersedes others) holds every object reachable
+    // from the refs when it was made, so once it has the copies asked for, packs recorded
+    // before it are covered too, including those beyond the 32 its `supersedes` can name.
+    let covered_until = packs
+        .values()
+        .filter(|ms| ms.iter().any(|m| !m.supersedes.is_empty()) && copies_of(ms) >= required)
+        .flat_map(|ms| ms.iter().map(|m| m.created_at))
+        .max();
     let mut thin: Vec<(u64, ThinPack)> = packs
         .iter()
         .filter_map(|(hash, ms)| {
             let copies = copies_of(ms);
-            (copies < required).then(|| {
-                let first = ms.iter().map(|m| m.created_at).min().unwrap_or(0);
+            let first = ms.iter().map(|m| m.created_at).min().unwrap_or(0);
+            let covered = covered_until.is_some_and(|t| first < t);
+            (copies < required && !covered).then(|| {
                 (
                     first,
                     ThinPack {
@@ -205,5 +246,76 @@ mod tests {
         locator.kind = 1;
         let c = count_copies(&[old, repack, locator], 2);
         assert_eq!((c.live, c.thin.len()), (1, 0));
+    }
+
+    fn policy(targets: &str) -> crate::storage::ResolvedPolicy {
+        let profiles = crate::storage::StorageProfiles::parse(
+            "[profiles.k1]\nkind = \"ipfs-kubo\"\napi = \"http://127.0.0.1:5001\"\n\
+             [profiles.k2]\nkind = \"ipfs-kubo\"\napi = \"http://127.0.0.1:5002\"\n\
+             [profiles.r2]\nkind = \"s3\"\nendpoint = \"https://a.r2.cloudflarestorage.com\"\nbucket = \"b\"\n",
+        )
+        .unwrap();
+        crate::storage::StoragePolicy::from_git_values(Some(targets), None, None)
+            .unwrap()
+            .resolve(&profiles)
+            .unwrap()
+    }
+
+    /// Two kubo targets record one `ipfs://cid`: a pack pushed under that N=2 policy has
+    /// every copy the policy can make, so it is not reported thin.
+    #[test]
+    fn two_ipfs_targets_are_one_place() {
+        let p = policy("k1,k2");
+        assert_eq!(p.replicas, 2);
+        assert_eq!(policy_copies(&p), 1);
+        let pushed = m(1, 1, 1, 0, &["ipfs://bafyx"]);
+        assert!(count_copies(&[pushed], policy_copies(&p)).thin.is_empty());
+        assert_eq!(policy_copies(&policy("k1,r2,platform")), 3);
+        assert_eq!(policy_copies(&policy("k1,k2,r2")), 2);
+    }
+
+    /// A repack names at most 32 packs in `supersedes`; older packs it could not name are
+    /// still covered once the consolidated pack has the copies the policy asks for.
+    #[test]
+    fn a_replicated_consolidation_covers_older_packs_it_could_not_name() {
+        let mut ms: Vec<PackManifestInfo> = (0..40u8)
+            .map(|i| m(i, 100 + u64::from(i), 1, 0, &["ipfs://old"]))
+            .collect();
+        let mut repack = m(
+            200,
+            500,
+            1,
+            0,
+            &["ipfs://new", "https://r2.example/packs/n.pack"],
+        );
+        repack.supersedes = (0..32u8).map(|i| [i; 32]).collect();
+        ms.push(repack.clone());
+        let c = count_copies(&ms, 2);
+        assert_eq!((c.live, c.thin.len()), (9, 0), "{c:?}");
+        // A pack pushed after the repack is not covered by it.
+        ms.push(m(201, 600, 1, 0, &["ipfs://later"]));
+        assert_eq!(count_copies(&ms, 2).thin.len(), 1);
+        // A thin consolidation covers nothing.
+        repack.uris.truncate(1);
+        let mut ms: Vec<_> = (0..3u8).map(|i| m(i, 100, 1, 0, &["ipfs://o"])).collect();
+        ms.push(repack);
+        assert_eq!(count_copies(&ms, 2).thin.len(), 1);
+    }
+
+    /// A percent-encoded public URL and its raw `s3://` locator are one copy; two buckets
+    /// with the same key and one public URL are two.
+    #[test]
+    fn s3_locators_match_their_encoded_public_url_once() {
+        let uris = [
+            "https://cdn.example/my%20dir/packs/a.pack",
+            "s3://b/my dir/packs/a.pack",
+        ];
+        assert_eq!(count_copies(&[m(1, 1, 1, 0, &uris)], 2).thin[0].copies, 1);
+        let uris = [
+            "https://cdn.example/p/packs/a.pack",
+            "s3://b1/p/packs/a.pack",
+            "s3://b2/p/packs/a.pack",
+        ];
+        assert_eq!(count_copies(&[m(1, 1, 1, 0, &uris)], 3).thin[0].copies, 2);
     }
 }

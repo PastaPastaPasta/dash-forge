@@ -14,7 +14,7 @@ use serde_json::json;
 
 use forge_core::backends::ipfs::IpfsConfig;
 use forge_core::backends::{IpfsBackend, PackBackend, S3Backend, S3Config};
-use forge_core::repo::{RepackTarget, RepoService};
+use forge_core::repo::{PlatformChunkTarget, RepackTarget, RepoService};
 use forge_core::storage::policy::git_config_scoped;
 use forge_core::storage::{ExternalTarget, StorageProfiles, StorageTarget};
 
@@ -33,18 +33,16 @@ pub async fn repack(
 ) -> Result<()> {
     let repo = repo.context("`dg repack` needs a repository: dg repack <owner>/<name>")?;
     let repo_ref = RepoRef::parse(repo)?;
-    // `--profile a,b`: the consolidated pack goes to every listed profile, and each must
-    // confirm (so older packs gain the copies a new storage policy asks for).
-    let profile_names: Vec<&str> = profile
-        .map(|p| {
-            p.split(',')
-                .map(str::trim)
-                .filter(|n| !n.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
-    for name in &profile_names {
+    // `--profile a,b[,platform]`: the consolidated pack goes to every listed profile, and
+    // each must confirm (so older packs gain the copies a new storage policy asks for).
+    let profile_names = profile.map(profile_list).transpose()?.unwrap_or_default();
+    let (external_names, platform) = split_platform(&profile_names)?;
+    for name in &external_names {
         refuse_unpublishable_profile(name, "nothing repacked")?;
+    }
+    let legacy_uri = legacy_backend_uri(backend);
+    if let Some(uri) = legacy_uri.as_deref() {
+        refuse_unpublishable_url(uri, "nothing repacked")?;
     }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &repo_ref).await?;
@@ -73,13 +71,14 @@ pub async fn repack(
         return Err(crate::errors::cancelled());
     }
 
-    // The consolidated pack's destination: Platform (default), an external profile
-    // (verified upload), or a legacy env-configured backend (migrates cold history out).
-    let profile_targets = profile_names
+    // The consolidated pack's destination: Platform (default), storage profiles and/or
+    // Platform (verified uploads), or a legacy env-configured backend.
+    let profile_targets = external_names
         .iter()
         .map(|n| external_profile_target(n))
         .collect::<Result<Vec<_>>>()?;
-    let external = if profile_targets.is_empty() {
+    let platform_target = platform.map(|name| PlatformChunkTarget::new(&svc, &handle, name));
+    let external = if profile_names.is_empty() {
         build_external_backend(backend)?
     } else {
         None
@@ -87,6 +86,7 @@ pub async fn repack(
     let profile_refs: Vec<&dyn StorageTarget> = profile_targets
         .iter()
         .map(|t| t as &dyn StorageTarget)
+        .chain(platform_target.as_ref().map(|t| t as &dyn StorageTarget))
         .collect();
     let target = if !profile_refs.is_empty() {
         RepackTarget::Replicated {
@@ -172,6 +172,11 @@ pub async fn reseed(
     let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = RepoService::new(&client, &identity, &bridge);
 
+    if profile.is_none() {
+        if let Some(uri) = legacy_backend_uri(to) {
+            refuse_unpublishable_url(&uri, "nothing reseeded")?;
+        }
+    }
     let backend = match profile {
         Some(name) => profile_backend(name)?,
         None => build_external_backend(to)?.ok_or_else(|| {
@@ -401,11 +406,73 @@ fn load_external_profile(name: &str) -> Result<forge_core::storage::Profile> {
     Ok(profile)
 }
 
+/// The names of a `--profile a,b` list: none empty, none twice.
+fn profile_list(list: &str) -> Result<Vec<&str>> {
+    let names: Vec<&str> = list.split(',').map(str::trim).collect();
+    if names.iter().any(|n| n.is_empty()) {
+        return Err(crate::errors::usage(format!(
+            "--profile {list:?} has an empty name; list profiles as a,b"
+        )));
+    }
+    if let Some(dup) = names
+        .iter()
+        .enumerate()
+        .find(|(i, n)| names[..*i].contains(n))
+    {
+        return Err(crate::errors::usage(format!(
+            "--profile lists {:?} twice",
+            dup.1
+        )));
+    }
+    Ok(names)
+}
+
+/// Split a profile list into its external profiles and the Platform one (the built-in
+/// `platform`, or a `kind = "platform"` profile), which may appear at most once.
+fn split_platform<'a>(names: &[&'a str]) -> Result<(Vec<&'a str>, Option<&'a str>)> {
+    let profiles = StorageProfiles::load()?;
+    let mut external = Vec::new();
+    let mut platform = None;
+    for name in names {
+        let is_platform = profiles.get(name).is_some_and(|p| p.is_platform());
+        match (is_platform, platform) {
+            (true, Some(_)) => {
+                return Err(crate::errors::usage(
+                    "--profile lists Platform storage twice (under two names)",
+                ))
+            }
+            (true, None) => platform = Some(*name),
+            (false, _) => external.push(*name),
+        }
+    }
+    Ok((external, platform))
+}
+
+/// The public read base a legacy `--backend s3` / `--to s3` target records
+/// (`FORGE_S3_ENDPOINT/FORGE_S3_BUCKET`); `None` for the other legacy targets, which record
+/// no http(s) URL of their own.
+fn legacy_backend_uri(backend: Option<Backend>) -> Option<String> {
+    matches!(backend, Some(Backend::S3)).then(|| {
+        let endpoint = std::env::var("FORGE_S3_ENDPOINT").unwrap_or_default();
+        let bucket = std::env::var("FORGE_S3_BUCKET").unwrap_or_else(|_| "forge-packs".into());
+        format!("{}/{bucket}", endpoint.trim_end_matches('/'))
+    })
+}
+
+/// Refuse (E501) to record `url` on chain when it is not a public https address, unless
+/// git config `dash.allowPrivateUri` allows it (the legacy env-configured targets have no
+/// profile to carry the flag).
+fn refuse_unpublishable_url(url: &str, lead: &str) -> Result<()> {
+    let allowed = crate::storage::allow_private_uri_config(None)?;
+    forge_core::storage::publish::refuse_unpublishable_url("FORGE_S3_ENDPOINT", url, allowed, lead)
+        .map_err(Into::into)
+}
+
 /// Refuse before anything is written when the named profile would record a non-public
 /// read address (see [`crate::storage::check_publishable`]).
 fn refuse_unpublishable_profile(name: &str, lead: &str) -> Result<()> {
     let profile = load_external_profile(name)?;
-    crate::storage::check_publishable([(name, &profile)], false, lead)
+    crate::storage::check_publishable([(name, &profile)], None, None, lead)
 }
 
 /// A verified-upload target for the named external profile.
@@ -461,4 +528,17 @@ fn build_external_backend(backend: Option<Backend>) -> Result<Option<Box<dyn Pac
             ))
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_lists_refuse_empty_and_repeated_names() {
+        assert_eq!(profile_list("a, b").unwrap(), ["a", "b"]);
+        assert!(profile_list("").is_err());
+        assert!(profile_list("a,,b").is_err());
+        assert!(format!("{:#}", profile_list("a,b,a").unwrap_err()).contains("twice"));
+    }
 }

@@ -903,11 +903,19 @@ impl<'a> RepoService<'a> {
         let new_pack_hash = new_meta.pack_hash_bytes()?;
         let object_count = consolidated.parsed.object_count() as u64;
 
-        // Already a single optimal pack: nothing to gain, and nothing to write.
-        if git.iter().any(|m| m.pack_hash == new_pack_hash) {
-            return Err(Error::Config(
-                "repack: the repo is already a single consolidated pack (nothing to do)".into(),
-            ));
+        // Already this exact pack. A manifest is unique per (repo, uploader, packHash) and
+        // permanent: if the caller recorded it, there is nothing a repack can add. If only
+        // others did, storing it on `target` records the caller's own copy (more places).
+        if git
+            .iter()
+            .any(|m| m.pack_hash == new_pack_hash && m.owner_id == caller)
+        {
+            return Err(Error::Config(format!(
+                "repack: the repo is already the single consolidated pack {} and you recorded \
+                 it; its manifest is permanent, so a repack cannot add copies to it (new pushes \
+                 follow the storage policy)",
+                hex::encode(new_pack_hash)
+            )));
         }
 
         let balance_start = self.client.get_balance(&caller).await.unwrap_or(0);

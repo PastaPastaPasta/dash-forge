@@ -132,8 +132,8 @@ pub enum Command {
         /// env-configured targets (FORGE_S3_* / FORGE_IPFS_*); prefer --profile.
         #[arg(long, conflicts_with = "profile")]
         backend: Option<Backend>,
-        /// Storage profile(s) (from `dg storage add`) for the consolidated pack; a comma-
-        /// separated list stores it on each, and every one must confirm.
+        /// Storage profile(s) (from `dg storage add`, or `platform`) for the consolidated
+        /// pack; a comma-separated list stores it on each, and every one must confirm.
         #[arg(long)]
         profile: Option<String>,
     },

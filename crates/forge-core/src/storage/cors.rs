@@ -314,7 +314,7 @@ pub fn cors_fix(provider: Provider, bucket: &str) -> String {
         Provider::R2 => format!(
             "Cloudflare dashboard → R2 → {bucket} → Settings → CORS Policy → Add CORS policy, paste:\n\
              {}\n{tail}\n\
-             Also enable public access: Settings → Public access → R2.dev subdomain (or connect a custom domain).",
+             Also give the bucket a public address: Settings → Custom Domains → connect a domain of yours (the r2.dev subdomain is rate-limited and for development only).",
             rules_json(&rules, "")
         ),
         Provider::B2 => format!(
