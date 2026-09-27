@@ -47,4 +47,13 @@ describe('the composer cost on a private repo', () => {
     expect(withPath.credits).toBeGreaterThan(small.credits)
     expect(composeCost(PUB, 'comment', { body: 'hi' }).credits).not.toBe(small.credits)
   })
+
+  it('a PR prices its sealed text plus its plaintext bind fields, never the bind fields as sealed text', async () => {
+    const { estimateBytesCredits } = await import('@/lib/sdk/cost')
+    const sealedOnly = { title: 't', body: 'b', baseRefName: 'refs/heads/main', sourceRefName: 'refs/heads/x' }
+    const withBind = { ...sealedOnly, sourceRepoId: 'S'.repeat(44), headOid: 'ab'.repeat(20) }
+    const used = 1 + 1 + 'refs/heads/main'.length + 'refs/heads/x'.length
+    expect(composeCost(PRIV, 'patch', withBind).credits).toBe(estimateBytesCredits('patch', used + 3 * 4 + 29, { sourceRepoId: 'S'.repeat(44), headOid: 'ab'.repeat(20) }))
+    expect(composeCost(PRIV, 'patch', withBind).credits).toBeGreaterThan(composeCost(PRIV, 'patch', sealedOnly).credits)
+  })
 })

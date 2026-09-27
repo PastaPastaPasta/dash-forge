@@ -41,7 +41,7 @@ import {
 import { DOC, num, str, type RepoRef } from './contract'
 import { invalidateMembers } from './members'
 import { refNameHash } from './push'
-import { privateWriter, sealForRepo, sealedTextUse, PrivateWriteError, type PrivateWriter, type SealedKind } from './private-writes'
+import { privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter, type SealedKind } from './private-writes'
 import { invalidateRepoFeed } from './issues'
 import { repoSource } from './source'
 
@@ -177,7 +177,9 @@ export async function writeRepoDoc(
   writer?: PrivateWriter,
 ): Promise<WriteResult> {
   if (repo.visibility === 'private' && SEALED_TYPES.has(documentType)) {
-    data = await sealForRepo(sdk, auth, repo, documentType as SealedKind, data, writer)
+    const w = writer ?? (await privateWriter(sdk, auth, repo))
+    data = await sealForRepo(sdk, auth, repo, documentType as SealedKind, data, w)
+    intent = sealedIntent(intent, w.keys)
   }
   assertNoPlaintext(repo, documentType, data)
   try {

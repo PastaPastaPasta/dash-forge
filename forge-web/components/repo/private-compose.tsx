@@ -9,7 +9,7 @@
 
 import type { RepoRef } from '@/lib/repo'
 import type { RepoHome } from '@/lib/view'
-import { SEALED_TEXT_LIMIT, sealedTextUse, writeBlockReason, type SealedKind } from '@/lib/repo/private-writes'
+import { SEALED_FIELDS_OF, SEALED_TEXT_LIMIT, sealedTextUse, writeBlockReason, type SealedKind } from '@/lib/repo/private-writes'
 import { previewCreate, previewCredits, type CostPreview } from '@/lib/sdk'
 import { estimateBytesCredits } from '@/lib/sdk/cost'
 
@@ -41,9 +41,9 @@ export function PrivateComposeNote({ reason }: { reason: string }): JSX.Element 
  */
 export function composeCost(repo: RepoRef, kind: SealedKind, data: Readonly<Record<string, unknown>>): CostPreview {
   if (repo.visibility !== 'private') return previewCreate(kind, data)
-  const { used } = sealedTextUse(kind, data)
-  const fields = Object.values(data).filter((v) => typeof v === 'string' && v !== '').length
-  const bind = Object.fromEntries(Object.entries(data).filter(([, v]) => typeof v !== 'string'))
+  const { used, fields } = sealedTextUse(kind, data)
+  const sealed = new Set<string>(SEALED_FIELDS_OF[kind])
+  const bind = Object.fromEntries(Object.entries(data).filter(([k]) => !sealed.has(k)))
   return previewCredits(estimateBytesCredits(kind, used + 3 * fields + 29, bind))
 }
 

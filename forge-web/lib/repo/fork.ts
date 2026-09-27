@@ -228,6 +228,8 @@ export async function forkRepoV2(
   input: { readonly name: string; readonly description?: string },
   onProgress?: (p: ForkProgress) => void,
 ): Promise<ForkResult> {
+  // A fork is public: forking a private repo would publish its decrypted names and code.
+  if (parent.visibility !== 'public') throw new Error('a private repository cannot be forked')
   const name = normalizeRepoName(input.name)
   const owner = auth.identityId
   if (owner === parent.ownerId && name === parent.name) throw new Error('this repository is yours already; pick another name for the fork')

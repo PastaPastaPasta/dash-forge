@@ -755,6 +755,11 @@ export async function createEpochZero(c: PrivateWriteContext, defaultBranch: str
     const session: PrivateSession = { ...read, memberKeys: new Map([...read.memberKeys, [c.auth.identityId, own]]) }
     const selfKey = usableEncryptionKey(own ?? [], c.repo.forge.core)
     if (selfKey === null) throw new PrivateMembersError('your identity has no usable encryption key', 'E306')
+    // The self-wrap goes to the identity's newest encryption key (§5.2): it must be the one this
+    // browser holds, or the repo would be created unreadable to its own owner.
+    if (selfKey.keyId !== c.ops.keyId) {
+      throw new PrivateMembersError(`your identity's current encryption key is key ${selfKey.keyId}, but this browser holds key ${c.ops.keyId}; add key ${selfKey.keyId} here (Settings → Keys)`, 'E306')
+    }
     // Resume: our own epoch-0 self-wrap, if it landed, is the key; else a fresh one.
     const pending = pendingSelfWrap(session, c.auth.identityId, 0)
     if (pending !== null && pending.row.recipientKeyId !== c.ops.keyId) throw notHeldKey(0, pending.row.recipientKeyId)

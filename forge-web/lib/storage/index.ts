@@ -55,10 +55,11 @@ export async function storeAndRecordPack(
 ): Promise<RecordedPack> {
   // A private repo stores the artifact sealed (`private-repos.md` §3); `packHash` and
   // `sizeBytes` are then the sealed bytes', as every reader checks them.
-  const stored = await storeArtifact(sdk, auth, repo, await sealArtifact(sdk, auth, repo, bytes), opts)
+  const sealed = await sealArtifact(sdk, auth, repo, bytes)
+  const stored = await storeArtifact(sdk, auth, repo, sealed, opts)
   const { packHash, sizeBytes, chunkCount, storage, uris } = stored
   const manifest = await writePackManifest(sdk, auth, repo, { ...meta, packHash, sizeBytes, chunkCount, storage, uris }, opts.intent)
   // Recorded: the kept sealed bytes of a private upload are no longer needed for a resume.
-  await forgetSealedArtifact(auth, repo, bytes)
+  await forgetSealedArtifact(auth, repo, sealed)
   return { stored, manifest }
 }

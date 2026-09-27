@@ -42,7 +42,8 @@ vi.mock('../sdk/write', async (orig) => {
   const real = await orig<typeof import('../sdk/write')>()
   return {
     ...real,
-    createDocumentIdempotent: async (_sdk: unknown, auth: { identityId: string }, p: { documentType: string; data: Doc }) => {
+    createDocumentIdempotent: async (_sdk: unknown, auth: { identityId: string }, p: { documentType: string; data: Doc; intent?: string }) => {
+      intents.push(p.intent)
       // Someone else holds this number (the unique `(repoId, number)` index refuses it).
       if ((p.documentType === 'issue' || p.documentType === 'patch') && squatted.has(p.data['number'] as number)) {
         squatted.delete(p.data['number'] as number)
@@ -63,6 +64,8 @@ let members: Membership[] = []
 const squatted = new Set<number>()
 /** How many sessions were loaded (one per write action, not per document). */
 let sessionLoads = 0
+/** The intent of every write (the engine replays a cached signed write per intent). */
+const intents: (string | undefined)[] = []
 vi.mock('./members', async (orig) => ({ ...(await orig<typeof import('./members')>()), readMemberships: async () => members, invalidateMembers: () => undefined }))
 
 const encKey = (keyId = 4): EncKeyLike => ({ keyId, purposeNumber: 1, keyTypeNumber: 0, data: '02' + 'ab'.repeat(32) })
@@ -126,6 +129,7 @@ beforeEach(async () => {
   held = ops
   squatted.clear()
   sessionLoads = 0
+  intents.length = 0
   identityKeys = [encKey()]
   members = [
     { identity: b58(ALICE), role: 'maintainer', createdAt: 1 },
@@ -404,5 +408,51 @@ describe('private create, correctness review', () => {
     const ref: RepoRef = { forge: FORGE, repoId, ownerId: b58(ALICE), name: 'resume', visibility: 'private' }
     const s = await loadPrivateSession({ repo: ref, network: 'devnet', reader: b58(ALICE), source: sdkSessionSource(sdk, ref), unwrapper: sessionUnwrapper(ops) })
     expect(s.resolution.writeEpoch).toBe(0)
+  })
+})
+
+describe('security review of the sealed writes', () => {
+  it('M1 a retried write after a rotation signs afresh: its intent names the key it was sealed under', async () => {
+    await createComment(sdk, auth, REPO_REF, { targetId: b58(id(0x44)), body: 'first', intent: 'draft-1' })
+    const k1 = await EpochKeys.import(REPO, 1, K1)
+    await anchor(ALICE, k1, { defaultBranch: 'main', protectedPatterns: ['refs/heads/main'], prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
+    wrap(ALICE, ALICE, 1, K1)
+    await createComment(sdk, auth, REPO_REF, { targetId: b58(id(0x44)), body: 'first', intent: 'draft-1' })
+    expect(intents[0]).not.toBe(intents[1])
+    expect(intents[0]).toMatch(/^draft-1:e0:/)
+    expect(intents[1]).toMatch(/^draft-1:e1:/)
+  })
+
+  it('M1 a numbered create names the key too, per number', async () => {
+    squatted.add(1)
+    await createIssue(sdk, auth, REPO_REF, { title: 't', body: '', intent: 'i' })
+    expect(intents.filter((x) => x !== undefined)).toEqual([expect.stringMatching(/^i#1:e0:/), expect.stringMatching(/^i#2:e0:/)])
+  })
+
+  it('L7 the sealed-artifact cache is keyed without the plaintext hash', async () => {
+    const { sealArtifact } = await import('./private-writes')
+    const { idbEntries } = await import('../idb')
+    const plain = new TextEncoder().encode('PACK key check')
+    await sealArtifact(sdk, auth, REPO_REF, plain)
+    const { sha256Hex } = await import('../storage/sigv4')
+    const keys = (await idbEntries('journal', 'sealed-pack')).map(([k]) => k)
+    expect(keys.length).toBeGreaterThan(0)
+    const hash = await sha256Hex(plain)
+    expect(keys.some((k) => k.includes(hash))).toBe(false)
+  })
+
+  it('a private repo cannot be forked (its names would go into a public fork)', async () => {
+    const { forkRepoV2 } = await import('./fork')
+    await expect(forkRepoV2(sdk, auth, REPO_REF, { name: 'leak' })).rejects.toThrow(/private/)
+    expect(chain['repo']).toBeUndefined()
+  })
+
+  it('a private review draft is never written to this browser’s storage', async () => {
+    const { saveReviewDraft, loadReviewDraft } = await import('./review-writes')
+    const draft = { draftId: 'd', network: 'devnet', identity: b58(ALICE), repoId: b58(REPO), prId: 'P', headOid: 'ab'.repeat(20), verdict: 'comment' as const, summary: 'secret summary', startedAt: 1, comments: [], private: true }
+    await saveReviewDraft(draft)
+    const { idbEntries } = await import('../idb')
+    expect(JSON.stringify(await idbEntries('journal'))).not.toContain('secret summary')
+    expect((await loadReviewDraft('devnet', b58(ALICE), 'P'))?.summary).toBe('secret summary')
   })
 })

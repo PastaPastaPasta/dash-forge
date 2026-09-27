@@ -65,6 +65,18 @@ export interface PrivateWriter {
   readonly protectedPatterns: readonly string[]
 }
 
+/**
+ * The intent of a sealed write under `keys`: the action's intent plus the epoch and a tag of the
+ * key. The write engine replays a cached signed write per intent (for up to a day); a retry
+ * after a rotation must sign afresh under the new key, never re-broadcast bytes sealed under a
+ * key a removed member holds (§5.5; as the key-rotation writes do).
+ */
+export function sealedIntent(intent: string | undefined, keys: EpochKeys): string | undefined {
+  if (intent === undefined) return undefined
+  const tag = [...keys.commit.slice(0, 8)].map((b) => b.toString(16).padStart(2, '0')).join('')
+  return `${intent}:e${keys.epoch}:${tag}`
+}
+
 /** A fresh session of the signer for `repo` (never the page's). The caller closes it. */
 async function freshSession(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef): Promise<PrivateSession> {
   const ops = await encryptionOps(sdk, auth.network, auth.identityId, repo.forge.core)
@@ -132,10 +144,22 @@ function idOf(v: unknown): Uint8Array | undefined {
   return undefined
 }
 
-/** The text bytes `data` puts into a sealed `type`, and that type's limit (null for none). */
-export function sealedTextUse(type: PrivateDocType, data: Readonly<Record<string, unknown>>): { used: number; limit: number | null } {
-  const used = SEALED_FIELDS[type].reduce((n, f) => n + (typeof data[f] === 'string' ? new TextEncoder().encode(data[f] as string).length : 0), 0)
-  return { used, limit: type in SEALED_TEXT_LIMIT ? SEALED_TEXT_LIMIT[type as SealedKind] : null }
+/** The fields each user-written type moves into `enc`. */
+export const SEALED_FIELDS_OF: Readonly<Record<SealedKind, readonly string[]>> = {
+  issue: SEALED_FIELDS.issue,
+  patch: SEALED_FIELDS.patch,
+  comment: SEALED_FIELDS.comment,
+  review: SEALED_FIELDS.review,
+}
+
+/**
+ * The text bytes `data` puts into a sealed `type` (`used`, over `fields` non-empty text
+ * fields), and that type's limit (null for none).
+ */
+export function sealedTextUse(type: PrivateDocType, data: Readonly<Record<string, unknown>>): { used: number; fields: number; limit: number | null } {
+  const present = SEALED_FIELDS[type].filter((f) => typeof data[f] === 'string' && data[f] !== '')
+  const used = present.reduce((n, f) => n + new TextEncoder().encode(data[f] as string).length, 0)
+  return { used, fields: present.length, limit: type in SEALED_TEXT_LIMIT ? SEALED_TEXT_LIMIT[type as SealedKind] : null }
 }
 
 /**
@@ -264,11 +288,13 @@ export async function sealArtifact(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, 
   if (repo.visibility !== 'private') return plain
   const { keys } = await privateWriter(sdk, auth, repo)
   await pruneSealedArtifacts()
-  const cacheKey = sealedKey(auth, repo, await sha256Hex(plain))
+  const cacheKey = sealedKey(auth, repo, await plainTag(keys, plain))
   const cached = await idbGet<CachedSeal>('journal', cacheKey)
   if (cached !== undefined && cached.bytes instanceof Uint8Array) {
     const opened = await openPack(cached.bytes, cached.bytes.length, new Map([[keys.epoch, keys]])).catch(() => null)
-    if (opened !== null && sameBytes(opened, plain)) return cached.bytes
+    const same = opened !== null && sameBytes(opened, plain)
+    opened?.fill(0)
+    if (same) return cached.bytes
   }
   const sealed = await sealPack(keys, plain)
   await idbPut<CachedSeal>('journal', cacheKey, { bytes: sealed, at: Date.now() }).catch(() => undefined)
@@ -293,13 +319,27 @@ function sealedKey(auth: WriteAuth, repo: RepoRef, plainHash: string): string {
  * Forget the kept seal of `plain` once its manifest is recorded (the upload is done; a later
  * upload of the same bytes is a new one).
  */
-export async function forgetSealedArtifact(auth: WriteAuth, repo: RepoRef, plain: Uint8Array): Promise<void> {
+export async function forgetSealedArtifact(auth: WriteAuth, repo: RepoRef, sealed: Uint8Array): Promise<void> {
   if (repo.visibility !== 'private') return
-  await idbDelete('journal', sealedKey(auth, repo, await sha256Hex(plain))).catch(() => undefined)
+  const rows = await idbEntries<CachedSeal>('journal', `${SEALED_PREFIX}${auth.network}:${repo.repoId}:`).catch(() => [] as [string, CachedSeal][])
+  for (const [k, v] of rows) if (v?.bytes instanceof Uint8Array && sameBytes(v.bytes, sealed)) await idbDelete('journal', k).catch(() => undefined)
 }
 
-/** Drop kept seals older than {@link SEALED_MAX_AGE_MS}. */
+/**
+ * The cache tag of a plaintext artifact: keyed (the epoch's ref-name key), so this browser's
+ * storage never holds a plain hash of a private pack (a content-equality oracle, §3.4).
+ */
+async function plainTag(keys: EpochKeys, plain: Uint8Array): Promise<string> {
+  const h = await refNameHash(keys, `sealed-artifact:${await sha256Hex(plain)}`)
+  return `e${keys.epoch}:${[...h].map((b) => b.toString(16).padStart(2, '0')).join('')}`
+}
+
+let pruned = false
+
+/** Drop kept seals older than {@link SEALED_MAX_AGE_MS} (once per page load). */
 async function pruneSealedArtifacts(now = Date.now()): Promise<void> {
+  if (pruned) return
+  pruned = true
   const rows = await idbEntries<CachedSeal>('journal', SEALED_PREFIX).catch(() => [] as [string, CachedSeal][])
   for (const [k, v] of rows) if (typeof v?.at !== 'number' || now - v.at > SEALED_MAX_AGE_MS) await idbDelete('journal', k).catch(() => undefined)
 }

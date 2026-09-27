@@ -75,7 +75,7 @@ const INITIAL_PROGRESS: Record<CreateRepoStep, StepState> = { repo: 'todo', main
 
 export default function NewRepoPage(): JSX.Element {
   const router = useRouter()
-  const { sdk } = useSdk()
+  const { sdk, ready } = useSdk()
   const { identity, signer } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   const guard = useWriteGuard()
@@ -89,7 +89,7 @@ export default function NewRepoPage(): JSX.Element {
   // A private create wraps its key from the encryption key in this browser's vault.
   const ops = useAsync(
     () => encryptionOps(sdk!, DEFAULT_NETWORK, identity!, forge!.core),
-    [sdk, identity ?? '', forge?.core ?? '', isPrivate],
+    [ready, identity ?? '', forge?.core ?? '', isPrivate],
     { enabled: isPrivate && sdk !== null && identity !== null && forge !== null },
   )
   // Re-read when a key is added (Settings in another tab, or this one) or the tab regains focus.

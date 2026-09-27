@@ -32,7 +32,7 @@ import {
   type WriteResult,
 } from '../sdk'
 import { DOC, type RepoRef } from './contract'
-import { privateWriter, sealForRepo } from './private-writes'
+import { privateWriter, sealForRepo, sealedIntent } from './private-writes'
 import { repoSource } from './source'
 import { assertNoPlaintext } from './writes'
 
@@ -280,6 +280,7 @@ export async function writeRefUpdate(
     const writer = await privateWriter(sdk, auth, repo)
     documentType = refUpdateType(input.refName, options.protectedPatterns ?? writer.protectedPatterns)
     data = await sealForRepo(sdk, auth, repo, documentType, data, writer)
+    options = { ...options, ...(options.intent !== undefined ? { intent: sealedIntent(options.intent, writer.keys) } : {}) }
   } else {
     // The complete config timeline's newest well-formed config: the one the rules apply.
     const patterns = options.protectedPatterns ?? (await readConfigBundle(sdk, repo)).config?.protectedPatterns ?? []

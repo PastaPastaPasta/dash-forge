@@ -101,6 +101,7 @@ export function InlineCommentsProvider({
 
   const value = useMemo<InlineComments>(
     () => ({
+      canComment: writeBlock === null,
       start: (path, side, line) => {
         if (writeBlock === null) setComposing(lineKey(path, side, line))
       },

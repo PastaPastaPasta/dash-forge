@@ -214,6 +214,11 @@ export interface DraftComment {
  */
 export interface ReviewDraft {
   readonly draftId: string
+  /**
+   * A private repo's draft: its summary and comments are the repo's plaintext, so it is kept in
+   * this page's memory only (never IndexedDB, which outlives a locked vault).
+   */
+  readonly private?: boolean
   readonly network: string
   readonly identity: string
   readonly repoId: string
@@ -238,16 +243,27 @@ export function reviewDraftKey(network: string, identity: string, prId: string):
   return `review:${network}:${identity}:${prId}`
 }
 
-export function loadReviewDraft(network: string, identity: string, prId: string): Promise<ReviewDraft | undefined> {
-  return idbGet<ReviewDraft>('journal', reviewDraftKey(network, identity, prId))
+/** Private repos' drafts: this page's memory only (see {@link ReviewDraft.private}). */
+const memoryDrafts = new Map<string, ReviewDraft>()
+
+export async function loadReviewDraft(network: string, identity: string, prId: string): Promise<ReviewDraft | undefined> {
+  const key = reviewDraftKey(network, identity, prId)
+  return memoryDrafts.get(key) ?? idbGet<ReviewDraft>('journal', key)
 }
 
 export function saveReviewDraft(draft: ReviewDraft): Promise<void> {
-  return idbPut('journal', reviewDraftKey(draft.network, draft.identity, draft.prId), draft)
+  const key = reviewDraftKey(draft.network, draft.identity, draft.prId)
+  if (draft.private === true) {
+    memoryDrafts.set(key, draft)
+    return Promise.resolve()
+  }
+  return idbPut('journal', key, draft)
 }
 
 export function discardReviewDraft(network: string, identity: string, prId: string): Promise<void> {
-  return idbDelete('journal', reviewDraftKey(network, identity, prId))
+  const key = reviewDraftKey(network, identity, prId)
+  memoryDrafts.delete(key)
+  return idbDelete('journal', key)
 }
 
 /** Progress of a submit: `done` of `total` documents written. */
@@ -407,6 +423,7 @@ export async function submitReviewDraft(
   if (repo.visibility === 'private' && repo.session === undefined) throw new Error("a private repo's review is submitted by a member reading it with their key")
   // One writer (one fresh key read) for the review and all its comments.
   const writer = repo.visibility === 'private' ? await privateWriter(sdk, auth, repo) : undefined
+  if (repo.visibility === 'private' && draft.private !== true) draft = { ...draft, private: true }
   let current: ReviewDraft = await reconcileReviewDraft(draft, reads)
   if (current.attemptedAt === undefined) current = { ...current, attemptedAt: Date.now() }
   // Saved before the first write, so a crash after it leaves a draft that reconciles.
