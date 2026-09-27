@@ -671,7 +671,9 @@ impl PlatformClient {
                         v.len()
                     }
                 };
-                if n == 100 {
+                // Always ask for the next page: a node may cap pages below the limit. An
+                // empty page ends it.
+                if n > 0 {
                     query = q.after(&page);
                 }
             }

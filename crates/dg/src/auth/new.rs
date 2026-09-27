@@ -467,6 +467,11 @@ async fn start_or_resume(
         Some(j) => j,
         None => {
             backup_ceremony(ctx, &words, args.backup.skip_backup_check)?;
+            // The backup is written before the journal: a bad backup path leaves nothing
+            // behind that would ask for --resume.
+            if let Some(path) = &args.backup.backup_file {
+                write_backup(path, &keys, "", backup_pass, true)?;
+            }
             let j = Journal {
                 network,
                 deposit_address: address,
@@ -478,14 +483,16 @@ async fn start_or_resume(
         }
     };
     if let Some(path) = &args.backup.backup_file {
-        write_backup(
-            path,
-            &keys,
-            j.identity_id.as_deref().unwrap_or(""),
-            backup_pass,
-            // A fresh creation refuses an existing file; a resume replaces its own backup.
-            fresh,
-        )?;
+        if !fresh {
+            // A resume replaces its own backup (written when the creation started).
+            write_backup(
+                path,
+                &keys,
+                j.identity_id.as_deref().unwrap_or(""),
+                backup_pass,
+                false,
+            )?;
+        }
         say(
             ctx,
             format!(

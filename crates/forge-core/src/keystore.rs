@@ -249,7 +249,11 @@ pub fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
         SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         hex::encode(nonce)
     ));
-    create_private_file(&tmp, bytes)?;
+    if let Err(e) = create_private_file(&tmp, bytes) {
+        // Never leave a partial secret behind.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
     // rename() replaces a symlink at `path` instead of writing through it.
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
@@ -389,7 +393,8 @@ impl BridgeIdentity {
                 "derivationPath": self.asset_lock_key.derivation_path,
             },
         });
-        Secret::new(serde_json::to_string_pretty(&v).unwrap_or_default() + "\n")
+        // Compact: one line, so it also fits where a line break is not allowed.
+        Secret::new(serde_json::to_string(&v).unwrap_or_default())
     }
 
     /// The identity's MASTER authentication key, when this source carries one.

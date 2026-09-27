@@ -10,10 +10,21 @@
 //! travels over its stdin and stdout, never a command line). macOS grants a keychain item to
 //! the program that created it, and a Rust binary's identity changes with every build and
 //! upgrade; `security` is the same Apple-signed program every time, so `dg`, `git-remote-dash`
-//! and the importer all read what any of them stored without a dialog, across upgrades. The
-//! trade-off is the one the GitHub CLI makes: any program running as you can ask `security`
-//! for the entry. Forge keeps only limited keys there (a budget, an expiry, the forge
-//! contracts only), and the keychain still protects them at rest and from other users.
+//! and the importer all read what any of them stored without a dialog, across upgrades.
+//!
+//! The trade-off, the same one the GitHub CLI makes: the item's access list trusts
+//! `/usr/bin/security`, so **any program running as you can read it without a prompt**. The
+//! keychain still protects it at rest and from other users. What Dash Forge puts there:
+//! limited identity keys (a budget, an expiry, the forge contracts only) and the storage
+//! credentials `dg storage add` is given (S3 secret keys, pinning tokens). Master keys and
+//! recovery words never go there: `dg auth login --full-key` always uses a passphrase-sealed
+//! file. Treat a storage credential kept here like one in an `env:` variable: scope it to the
+//! one bucket.
+//!
+//! Values are written as `b64:<base64>` so any text round-trips (`security -w` prints a value
+//! with a tab or non-ASCII bytes as hex, which a reader cannot tell from a literal); entries
+//! written by hand or by older versions are read literally, their hex form recognized with
+//! `security -g`.
 //!
 //! **Elsewhere** it uses the `keyring` crate (Secret Service over D-Bus, Credential Manager),
 //! with `secret-tool` as a read fallback for entries created by hand. A machine without a
@@ -83,39 +94,17 @@ fn set_unless(disabled: bool, service: &str, account: &str, secret: &str) -> Res
 /// happen even with [`DISABLE_ENV`] set: the caller named this entry explicitly.
 ///
 /// A read of an entry another program created can wait on an access dialog: after a few
-/// seconds a line on stderr says so, and after [`READ_TIMEOUT`] the read fails instead of
-/// hanging the command (a `git push` waiting on a dialog nobody sees).
+/// seconds a line on stderr says so, and after [`READ_TIMEOUT`] the read fails (on macOS the
+/// `security` process is killed) instead of hanging the command. It blocks: call it from
+/// async code through `spawn_blocking`, or accept blocking one worker for that long.
 pub fn get(service: &str, account: &str) -> Result<Option<Secret>> {
-    let (tx, rx) = std::sync::mpsc::channel();
-    let (svc, acct) = (service.to_string(), account.to_string());
-    std::thread::spawn(move || {
-        let _ = tx.send(platform::get(&svc, &acct));
-    });
-    let notice = std::time::Duration::from_secs(4);
-    let answer = match rx.recv_timeout(notice) {
-        Ok(r) => Some(r),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            eprintln!(
-                "waiting for the {}: allow access to {service}/{account} in the dialog it shows",
-                store_name()
-            );
-            rx.recv_timeout(READ_TIMEOUT.saturating_sub(notice)).ok()
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
-    };
-    match answer {
-        Some(Ok(v)) => Ok(v.map(|z| Secret::new(z.as_str()))),
-        Some(Err(why)) => Err(Error::Config(format!(
-            "could not read keychain entry {service}/{account}: {why}"
-        ))),
-        None => Err(Error::Config(format!(
-            "could not read keychain entry {service}/{account}: no answer to the {} access \
-             dialog within {} s (over SSH there is no dialog: use an env: reference or a key \
-             file there)",
-            store_name(),
-            READ_TIMEOUT.as_secs()
-        ))),
-    }
+    platform::get(service, account)
+        .map(|v| v.map(|z| Secret::new(z.as_str())))
+        .map_err(|why| {
+            Error::Config(format!(
+                "could not read keychain entry {service}/{account}: {why}"
+            ))
+        })
 }
 
 /// Delete the entry under `(service, account)`. `Ok(false)` when there was none.
@@ -131,24 +120,69 @@ pub fn delete(service: &str, account: &str) -> Result<bool> {
 #[cfg(target_os = "macos")]
 mod platform {
     use std::io::Write as _;
-    use std::process::{Command, Output, Stdio};
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
 
     const SECURITY: &str = "/usr/bin/security";
     /// `security` exits 44 when the item is not found.
     const NOT_FOUND: i32 = 44;
     /// `security -i` reads each command into a fixed-size line buffer; stay well under it.
     const MAX_COMMAND: usize = 3_800;
+    /// The prefix of values dg writes.
+    const B64: &str = "b64:";
 
-    fn run(args: &[&str]) -> std::io::Result<Output> {
-        Command::new(SECURITY)
+    /// Run `security` with `args`, killing it after `deadline` (an access dialog nobody
+    /// answers). Returns (exit code, stdout, stderr).
+    /// Exit code, stdout and stderr of one `security` run.
+    type Output = (
+        Option<i32>,
+        zeroize::Zeroizing<Vec<u8>>,
+        zeroize::Zeroizing<Vec<u8>>,
+    );
+
+    fn run(args: &[&str], deadline: Duration) -> Result<Output, String> {
+        let mut child = Command::new(SECURITY)
             .args(args)
             .stdin(Stdio::null())
-            .stderr(Stdio::null())
-            .output()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("could not run {SECURITY}: {e}"))?;
+        let start = Instant::now();
+        let mut noticed = false;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => {}
+                Err(e) => return Err(format!("waiting for {SECURITY}: {e}")),
+            }
+            if !noticed && start.elapsed() > Duration::from_secs(4) {
+                eprintln!("waiting for the macOS Keychain: allow access in the dialog it shows");
+                noticed = true;
+            }
+            if start.elapsed() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "no answer to the macOS Keychain access dialog within {} s (over SSH there \
+                     is no dialog: use an env: reference or a key file there)",
+                    deadline.as_secs()
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let out = child
+            .wait_with_output()
+            .map_err(|e| format!("reading {SECURITY}: {e}"))?;
+        Ok((
+            out.status.code(),
+            zeroize::Zeroizing::new(out.stdout),
+            zeroize::Zeroizing::new(out.stderr),
+        ))
     }
 
     pub(super) fn available() -> bool {
-        run(&["default-keychain"]).is_ok_and(|o| o.status.success())
+        run(&["default-keychain"], Duration::from_secs(10)).is_ok_and(|(c, _, _)| c == Some(0))
     }
 
     /// Quote `s` for a `security -i` command line.
@@ -157,12 +191,17 @@ mod platform {
     }
 
     pub(super) fn set(service: &str, account: &str, secret: &str) -> Result<(), String> {
-        if [service, account, secret]
+        use base64::Engine as _;
+        if [service, account]
             .iter()
             .any(|v| v.contains(['\n', '\r', '\0']))
         {
-            return Err("a line break or NUL in the value".into());
+            return Err("a line break or NUL in the service or account".into());
         }
+        let encoded = zeroize::Zeroizing::new(format!(
+            "{B64}{}",
+            base64::engine::general_purpose::STANDARD.encode(secret.as_bytes())
+        ));
         // Delete then add: an update would keep an existing item's access list (an entry an
         // older version wrote straight through the Security framework).
         let delete = format!(
@@ -175,10 +214,12 @@ mod platform {
             quote(service),
             quote(account),
             quote(&format!("{service} ({account})")),
-            quote(secret)
+            quote(&encoded)
         ));
         if add.len() > MAX_COMMAND {
-            return Err(format!("the value is longer than {MAX_COMMAND} bytes"));
+            return Err(format!(
+                "the value is longer than the keychain command allows ({MAX_COMMAND} bytes)"
+            ));
         }
         let mut child = Command::new(SECURITY)
             .arg("-i")
@@ -210,31 +251,64 @@ mod platform {
         service: &str,
         account: &str,
     ) -> Result<Option<zeroize::Zeroizing<String>>, String> {
-        let out = run(&["find-generic-password", "-s", service, "-a", account, "-w"])
-            .map_err(|e| format!("could not run {SECURITY}: {e}"))?;
-        let stdout = zeroize::Zeroizing::new(out.stdout);
-        match out.status.code() {
-            Some(0) => {
-                let text = std::str::from_utf8(&stdout)
-                    .map_err(|_| "the entry is not text".to_string())?
-                    .trim_end_matches(['\r', '\n']);
-                Ok((!text.is_empty()).then(|| zeroize::Zeroizing::new(text.to_string())))
+        // `-g` prints the value on stderr as `password: "…"` or, for bytes that are not
+        // plain printable ASCII, `password: 0x<HEX>  "…"`, so the two cannot be confused.
+        let (code, _, stderr) = run(
+            &["find-generic-password", "-s", service, "-a", account, "-g"],
+            super::READ_TIMEOUT,
+        )?;
+        match code {
+            Some(0) => {}
+            Some(NOT_FOUND) => return Ok(None),
+            Some(c) => {
+                return Err(format!(
+                    "{SECURITY} refused (exit {c}; access denied, or the keychain is locked)"
+                ))
             }
-            Some(NOT_FOUND) => Ok(None),
-            Some(code) => Err(format!(
-                "{SECURITY} refused (exit {code}; access denied, or the keychain is locked)"
-            )),
-            None => Err(format!("{SECURITY} was interrupted")),
+            None => return Err(format!("{SECURITY} was interrupted")),
         }
+        let text =
+            std::str::from_utf8(&stderr).map_err(|_| "unreadable keychain output".to_string())?;
+        let value = parse_g(text).ok_or("unreadable keychain output")?;
+        decode(&value).map(|v| (!v.is_empty()).then_some(v))
+    }
+
+    /// The raw value from `security … -g` output (stderr).
+    pub(super) fn parse_g(stderr: &str) -> Option<zeroize::Zeroizing<Vec<u8>>> {
+        let line = stderr.lines().find_map(|l| l.strip_prefix("password: "))?;
+        if let Some(rest) = line.strip_prefix("0x") {
+            let hex_part = rest.split_whitespace().next().unwrap_or_default();
+            return hex::decode(hex_part).ok().map(zeroize::Zeroizing::new);
+        }
+        let inner = line.strip_prefix('"')?.strip_suffix('"')?;
+        Some(zeroize::Zeroizing::new(inner.as_bytes().to_vec()))
+    }
+
+    /// A stored value: `b64:` decoded, anything else taken as it is.
+    pub(super) fn decode(raw: &[u8]) -> Result<zeroize::Zeroizing<String>, String> {
+        use base64::Engine as _;
+        let bytes = match raw.strip_prefix(B64.as_bytes()) {
+            Some(b) => zeroize::Zeroizing::new(
+                base64::engine::general_purpose::STANDARD
+                    .decode(b)
+                    .map_err(|_| "a malformed b64: keychain value".to_string())?,
+            ),
+            None => zeroize::Zeroizing::new(raw.to_vec()),
+        };
+        String::from_utf8(bytes.to_vec())
+            .map(zeroize::Zeroizing::new)
+            .map_err(|_| "the keychain value is not text".to_string())
     }
 
     pub(super) fn delete(service: &str, account: &str) -> Result<bool, String> {
-        let out = run(&["delete-generic-password", "-s", service, "-a", account])
-            .map_err(|e| format!("could not run {SECURITY}: {e}"))?;
-        match out.status.code() {
+        let (code, _, _) = run(
+            &["delete-generic-password", "-s", service, "-a", account],
+            super::READ_TIMEOUT,
+        )?;
+        match code {
             Some(0) => Ok(true),
             Some(NOT_FOUND) => Ok(false),
-            Some(code) => Err(format!("{SECURITY} refused (exit {code})")),
+            Some(c) => Err(format!("{SECURITY} refused (exit {c})")),
             None => Err(format!("{SECURITY} was interrupted")),
         }
     }
@@ -255,7 +329,11 @@ mod platform {
     pub(super) fn set(service: &str, account: &str, secret: &str) -> Result<(), String> {
         entry(service, account)?
             .set_password(secret)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        match get(service, account)? {
+            Some(v) if *v == *secret => Ok(()),
+            _ => Err("the credential store did not keep the value".into()),
+        }
     }
 
     pub(super) fn get(
@@ -312,6 +390,20 @@ mod tests {
         assert!(!super::available_unless(true));
         let err = super::set_unless(true, super::SERVICE, "test/none", "x").unwrap_err();
         assert!(err.to_string().contains(super::DISABLE_ENV));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn security_output_parses_literal_hex_and_b64() {
+        use super::platform::{decode, parse_g};
+        let lit = parse_g("keychain: \"x\"\npassword: \"plain value\"\n").unwrap();
+        assert_eq!(&*decode(&lit).unwrap(), "plain value");
+        // A value with a tab / non-ASCII prints as hex.
+        let hex = parse_g("password: 0x636166C3A9  \"caf\\303\\251\"\n").unwrap();
+        assert_eq!(&*decode(&hex).unwrap(), "café");
+        let b = parse_g("password: \"b64:eAl5\"\n").unwrap();
+        assert_eq!(&*decode(&b).unwrap(), "x\ty");
+        assert!(parse_g("nothing here").is_none());
     }
 
     #[cfg(target_os = "macos")]

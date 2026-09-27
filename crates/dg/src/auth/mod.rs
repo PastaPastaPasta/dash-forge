@@ -258,10 +258,11 @@ pub fn key_spec(
     })
 }
 
-/// Refuse to bind a key to a group unless the chain shows it holds exactly the two forge
-/// contracts and nothing else: a key bound to the group can sign for whatever it holds, so
-/// "only on Dash Forge" is true only while the group is just forge-core and forge-collab. (The
-/// group id comes from the bundled deployment file; this checks it against state.)
+/// Refuse to bind a key to a group unless the chain shows it holds the two forge contracts and
+/// nothing but Forge's own contracts (the current pair, and earlier versions the bundled
+/// deployment lists as superseded in the same group): a key bound to the group can sign for
+/// whatever it holds. This is a check at binding time: the group's owner can add members later,
+/// so the owner is a trust root (docs/guides/identity-and-keys.md#trust-roots).
 pub async fn check_group(ctx: &Ctx, client: &PlatformClient, group: &str) -> Result<()> {
     let forge = ctx.target.require_v2()?;
     let members = client
@@ -270,9 +271,15 @@ pub async fn check_group(ctx: &Ctx, client: &PlatformClient, group: &str) -> Res
         .context("checking the forge contract group on chain")?;
     let mut have = members.contracts;
     have.sort();
-    let mut want = vec![forge.core.clone(), forge.collab.clone()];
-    want.sort();
-    if have == want && members.document_types == 0 && members.tokens == 0 {
+    let ours = |c: &String| {
+        *c == forge.core || *c == forge.collab || forge.superseded_in_group.contains(c)
+    };
+    let current_present = have.contains(&forge.core) && have.contains(&forge.collab);
+    if current_present
+        && have.iter().all(ours)
+        && members.document_types == 0
+        && members.tokens == 0
+    {
         return Ok(());
     }
     Err(UserError::new(
@@ -427,8 +434,12 @@ pub async fn register_limited_key(
     Ok(key_id)
 }
 
-/// [`register_limited_key`], storing the key as this computer's (keychain, else a sealed
-/// file) before it is registered. Returns its id and where it was stored.
+/// [`register_limited_key`], making the new key this computer's. The new key is written to a
+/// staging slot before it is registered and moved over the key in use only once the chain has
+/// it, so a failed or refused update never leaves this computer without a working key. When the
+/// outcome is unclear (the update errored, but it may have landed), the chain is asked: a key
+/// that landed is promoted; otherwise both copies stay and the error says where each is.
+/// Returns the new key's id and where it is stored.
 pub async fn register_and_store(
     ctx: &Ctx,
     client: &PlatformClient,
@@ -438,18 +449,87 @@ pub async fn register_and_store(
     insecure_plaintext: bool,
 ) -> Result<(u32, store::Stored)> {
     let network = ctx.network_label();
-    let mut stored = None;
-    let id = register_limited_key(ctx, client, master, spec, replace, &mut |t| {
-        stored = Some(store::store(
-            &network,
-            &master.identity_id,
-            t,
-            insecure_plaintext,
-        )?);
+    let id_ = master.identity_id.clone();
+    let storer = std::cell::RefCell::new(store::Storer::new(insecure_plaintext));
+    let in_use = ctx.identity_path.as_ref().map_or_else(
+        || "none".to_string(),
+        |p| store::describe_source(&p.to_string_lossy()).0,
+    );
+    let slots = KeySlots {
+        stage: |t: &Secret| {
+            storer
+                .borrow_mut()
+                .store(&network, &id_, t, store::Slot::Pending)
+        },
+        promote: |t: &Secret| store::promote(&mut storer.borrow_mut(), &network, &id_, t),
+    };
+    let mut staged = None;
+    let result = register_limited_key(ctx, client, master, spec, replace, &mut |t| {
+        staged = Some((t.clone(), (slots.stage)(t)?));
         Ok(())
     })
-    .await?;
-    Ok((id, stored.context("the key was not stored")?))
+    .await;
+    let landed = if result.is_err() {
+        // Did it land anyway? The staged key's public half is on chain if so.
+        let wif = staged.as_ref().and_then(|(t, _)| {
+            BridgeIdentity::from_dfk1(t.expose())
+                .ok()
+                .and_then(|b| b.doc_op_key().ok().map(|k| k.private_key_wif.clone()))
+        });
+        match (&wif, client.fetch_identity(&id_).await) {
+            (Some(w), Ok(identity)) => identity
+                .key_id_for(w.expose(), ctx.network())
+                .map(|id| (id, keystore::dfk1(&network, &id_, id, w.expose()))),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    settle(&slots, result, staged, landed, &in_use)
+}
+
+/// Where a new key is kept while it is being registered.
+struct KeySlots<S, P> {
+    /// Write the key to the staging slot.
+    stage: S,
+    /// Move a confirmed key over the one in use (and drop the staged copy).
+    promote: P,
+}
+
+/// Decide what happens to a staged key once the registration returned: promote it when it
+/// registered (or when the chain shows it landed despite an error); otherwise leave the key in
+/// use untouched and say where both are.
+fn settle<S, P>(
+    slots: &KeySlots<S, P>,
+    result: Result<u32>,
+    staged: Option<(Secret, store::Stored)>,
+    landed: Option<(u32, Secret)>,
+    in_use: &str,
+) -> Result<(u32, store::Stored)>
+where
+    P: Fn(&Secret) -> Result<store::Stored>,
+{
+    match (result, staged) {
+        (Ok(id), Some((text, _))) => Ok((id, (slots.promote)(&text)?)),
+        (Ok(_), None) => Err(anyhow::anyhow!("the new key was registered but not staged")),
+        // Staging itself failed: nothing was broadcast.
+        (Err(e), None) => Err(e),
+        (Err(e), Some((_, pending_at))) => {
+            if let Some((id, text)) = landed {
+                let main = (slots.promote)(&text)?;
+                eprintln!(
+                    "note: the update reported an error ({e:#}), but key #{id} is on chain; using it"
+                );
+                return Ok((id, main));
+            }
+            Err(e.context(format!(
+                "the new key is not on chain (as far as Platform shows now); the key in use is \
+                 unchanged ({in_use}); the new one is kept in {} — run the command again, or \
+                 `dg auth logout` removes both",
+                pending_at.describe()
+            )))
+        }
+    }
 }
 
 /// Disable `key_id` on the identity, signed once by `master`'s MASTER key.
@@ -613,9 +693,26 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     }
     let (stored, key_id, spec) = if full_key || master.master_key().is_none() {
         // --full-key, no forge-v2 here, or a file holding one limited key (an export of this
-        // or another computer's key): store it as it is.
-        let text = master.to_json_with_secrets();
-        let stored = store::store(&network, &master.identity_id, &text, insecure)?;
+        // or another computer's key): store it as it is. A master key never goes into the
+        // keychain (any program running as you can read it there): a sealed file only.
+        let lone_key = master.master_key().is_none();
+        let text = if lone_key {
+            let k = master.doc_op_key()?;
+            keystore::dfk1(
+                &master.network,
+                &master.identity_id,
+                k.id,
+                k.private_key_wif.expose(),
+            )
+        } else {
+            master.to_json_with_secrets()
+        };
+        let mut keeper = if lone_key {
+            store::Storer::new(insecure)
+        } else {
+            store::Storer::sealed_only(insecure)
+        };
+        let stored = keeper.store(&network, &master.identity_id, &text, store::Slot::Main)?;
         (stored, None, None)
     } else {
         let spec = key_spec(ctx, &args.limits, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS)?;
@@ -1143,6 +1240,85 @@ mod tests {
             explicit_dapi_addresses(&forge_core::platform::Network::Testnet),
             None
         );
+    }
+
+    /// A simulated broadcast failure never touches the key in use; a confirmed (or landed)
+    /// key is promoted.
+    #[test]
+    fn a_failed_registration_keeps_the_key_in_use() {
+        use std::cell::RefCell;
+        let main: RefCell<Option<String>> = RefCell::new(Some("dfk1:old".into()));
+        let pending: RefCell<Option<String>> = RefCell::new(None);
+        let at = |p: &str| store::Stored::Sealed(std::path::PathBuf::from(p));
+        let slots = KeySlots {
+            stage: |t: &Secret| {
+                *pending.borrow_mut() = Some(t.expose().to_string());
+                anyhow::Ok(at("pending"))
+            },
+            promote: |t: &Secret| {
+                *main.borrow_mut() = Some(t.expose().to_string());
+                *pending.borrow_mut() = None;
+                Ok(at("main"))
+            },
+        };
+        let new = Secret::new("dfk1:new");
+        (slots.stage)(&new).unwrap();
+
+        // The broadcast fails and the chain does not have the key.
+        let err = settle(
+            &slots,
+            Err(anyhow::anyhow!("broadcast failed")),
+            Some((new.clone(), at("pending"))),
+            None,
+            "keychain old",
+        )
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("broadcast failed") && msg.contains("unchanged (keychain old)"),
+            "{msg}"
+        );
+        assert_eq!(
+            main.borrow().as_deref(),
+            Some("dfk1:old"),
+            "key in use untouched"
+        );
+        assert_eq!(
+            pending.borrow().as_deref(),
+            Some("dfk1:new"),
+            "new key kept"
+        );
+
+        // The broadcast errors but the key landed: promoted.
+        let (id, where_) = settle(
+            &slots,
+            Err(anyhow::anyhow!("timeout")),
+            Some((new.clone(), at("pending"))),
+            Some((9, Secret::new("dfk1:new9"))),
+            "x",
+        )
+        .unwrap();
+        assert_eq!((id, where_.kind()), (9, "sealed-file"));
+        assert_eq!(main.borrow().as_deref(), Some("dfk1:new9"));
+        assert!(pending.borrow().is_none());
+
+        // Staging failed: the error is the staging error, nothing promoted.
+        *main.borrow_mut() = Some("dfk1:old".into());
+        let err = settle(
+            &slots,
+            Err(anyhow::anyhow!("no passphrase")),
+            None,
+            None,
+            "x",
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("no passphrase"));
+        assert_eq!(main.borrow().as_deref(), Some("dfk1:old"));
+
+        // Success: promoted.
+        let (id, _) = settle(&slots, Ok(7), Some((new, at("pending"))), None, "x").unwrap();
+        assert_eq!(id, 7);
+        assert_eq!(main.borrow().as_deref(), Some("dfk1:new"));
     }
 
     #[test]

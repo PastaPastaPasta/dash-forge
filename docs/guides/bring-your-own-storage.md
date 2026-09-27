@@ -26,7 +26,7 @@ This guide covers:
 | Piece | Where it lives | Who can see it |
 |---|---|---|
 | Storage **profiles** (endpoint, bucket, public URL, *references* to secrets) | `~/.config/dash-forge/storage.toml` (override with `DASH_FORGE_STORAGE_CONFIG`) | only you |
-| **Secrets** (S3 secret key, pinning token, …) | environment variables or your OS keychain | only you |
+| **Secrets** (S3 secret key, pinning token, …) | environment variables or your OS keychain | only you (and, on macOS, any program running as you: see below) |
 | A repo's **storage policy**: which profiles, how many copies | git config (`dash.storage`, `dash.replicas`) | only you |
 | Pack bytes | your bucket / IPFS node (and/or Platform chunks) | public, if you give the bucket a public URL |
 | Manifest: pack SHA-256, public URLs, CID | Dash Platform | everyone |
@@ -37,7 +37,7 @@ This guide covers:
 >
 > It never records the endpoint or any credential. If the bucket name itself is sensitive, give the profile a `--public-url` (a CDN or custom domain that hides the bucket) and treat the bucket name as public anyway. `dg storage advertise` publishes only the https public read bases.
 
-Secrets are **never** written to `storage.toml`, to the chain, or to logs. `storage.toml` holds only references like `env:R2_SECRET_ACCESS_KEY` or `keychain:dash-forge/r2-main`. If you paste a literal secret into it, `dg` refuses to load the file.
+Secrets are **never** written to `storage.toml`, to the chain, or to logs. A keychain entry is protected at rest and from other users; on macOS `dg` reads it through Apple's `security` tool, so any program running as you can read it without a prompt, like an `env:` variable in your shell. Give Forge a key scoped to the one bucket. `storage.toml` holds only references like `env:R2_SECRET_ACCESS_KEY` or `keychain:dash-forge/r2-main`. If you paste a literal secret into it, `dg` refuses to load the file.
 
 A push works like this:
 

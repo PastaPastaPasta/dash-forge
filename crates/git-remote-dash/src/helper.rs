@@ -1399,8 +1399,9 @@ fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
                 })
         }
     };
-    let per_owner = home
-        .join(".config/dash-forge/identities")
+    let per_owner = forge_core::keystore::forge_config_dir()
+        .unwrap_or_else(|| home.join(".config/dash-forge"))
+        .join("identities")
         .join(format!("{owner}.identity.json"));
     if per_owner.exists() {
         return Ok(per_owner);

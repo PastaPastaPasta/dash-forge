@@ -58,9 +58,12 @@ pub struct AddArgs {
     /// spec's command line).
     #[arg(long, value_name = "GROUP", default_value = "dash-forge", value_parser = ["dash-forge"])]
     pub bound: String,
-    /// Disable this limited key in the same update (e.g. the one being replaced).
+    /// Disable this limited key in the same update (default: the one this computer signs with).
     #[arg(long, value_name = "KEY_ID")]
     pub replace: Option<u32>,
+    /// Keep the key this computer signs with now live on chain (it is no longer stored here).
+    #[arg(long, conflicts_with = "replace")]
+    pub keep_current: bool,
     /// The identity file with the master key (else you are asked for the words).
     #[arg(long, value_name = "FILE")]
     pub master: Option<PathBuf>,
@@ -196,12 +199,24 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
     let spec = key_spec(ctx, &args.limits, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS)?;
     super::explain_new_key(ctx, &master.identity_id, &spec, "for this computer");
     ctx.confirm_or_cancel("Add the key?")?;
+    // The key this computer signs with now is replaced by default: otherwise it would stay live
+    // on chain with nothing holding it. `--replace` names another one; `--keep-current` keeps it.
+    let replace = match args.replace {
+        Some(id) => Some(id),
+        None if args.keep_current => None,
+        None => {
+            let identity = client.fetch_identity(&master.identity_id).await?;
+            identity
+                .signing_key_id(&current, ctx.network())
+                .filter(|id| identity.is_limited_key(*id))
+        }
+    };
     let (id, stored) = super::register_and_store(
         ctx,
         &client,
         &master,
         &spec,
-        args.replace,
+        replace,
         args.storage.insecure_plaintext,
     )
     .await?;
@@ -213,12 +228,12 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
             "budgetCredits": spec.budget_credits,
             "expiresAt": spec.expires_at_ms,
             "storedAt": stored.describe(),
-            "replacedKeyId": args.replace,
+            "replacedKeyId": replace,
         }),
         || {
             println!("✓ limited key #{id} added; this computer now signs with it");
             println!("  stored in {}", stored.describe());
-            if let Some(old) = args.replace {
+            if let Some(old) = replace {
                 println!("  key #{old} disabled");
             }
         },
