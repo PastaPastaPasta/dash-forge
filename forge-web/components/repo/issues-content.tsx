@@ -13,7 +13,6 @@ import { CircleDot, CheckCircle2, MessageSquarePlus } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { IssueView, Listed } from '@/lib/repo'
 import { createIssue, listIssuesCached, repoContractIds, repoKey } from '@/lib/repo'
-import { previewCreate } from '@/lib/sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import { useIntent } from '@/hooks/use-intent'
@@ -26,7 +25,7 @@ import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input, Textarea } from '@/components/ui/input'
-import { SealedLimit, privateComposeBlock } from '@/components/repo/private-compose'
+import { SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { HiddenNote } from '@/components/repo/hidden-note'
@@ -191,7 +190,7 @@ function ComposeIssueDialog({
   const [note, setNote] = useState<string | null>(null)
   const draft = useIntent()
 
-  const cost = previewCreate('issue', { title: title.trim(), body })
+  const cost = composeCost(repo, 'issue', { title: title.trim(), body })
 
   const submit = async (): Promise<void> => {
     if (pending || !guard.check(cost.credits, 'collab')) return
@@ -242,7 +241,7 @@ function ComposeIssueDialog({
         </Field>
         <Field label="Description" htmlFor="issue-body" hint="Markdown supported.">
           <Textarea id="issue-body" value={body} onChange={(e) => setBody(e.target.value)} placeholder="What happened, and how to reproduce it." className="min-h-[140px]" />
-          <SealedLimit home={home} kind="issue" text={title.trim() + body} />
+          <SealedLimit repo={home.repo} kind="issue" text={title.trim() + body} />
         </Field>
         <CostPreview cost={cost} />
         {note ? <p className="text-dense text-caution-700 dark:text-caution-400">{note}</p> : null}

@@ -33,6 +33,7 @@ import { DOC, asIdentifierString, byteFieldToHex, num, str, type RepoRef } from 
 import { invalidateRepoFeed, readReviews } from './issues'
 import { repoSource } from './source'
 import { admitAll, gateFor } from './private-content'
+import { privateWriter } from './private-writes'
 import { EVENT_KIND_CODE, VERDICT_INT, contractFor, eventRoute, refusePlaintextInPrivate, writeRepoDoc, type VerdictInput, type WriteTarget } from './writes'
 
 export { EVENT_KIND_CODE, eventRoute }
@@ -401,6 +402,11 @@ export async function submitReviewDraft(
   reads: SubmitReads = chainReads(sdk, repo, draft.prId),
 ): Promise<SubmittedReview> {
   if (draft.identity !== auth.identityId) throw new Error('this pending review belongs to another identity')
+  // A private repo: the reconcile reads the draft's landed comments decrypted, which needs the
+  // reader's session (without it none would match and each would be posted again).
+  if (repo.visibility === 'private' && repo.session === undefined) throw new Error("a private repo's review is submitted by a member reading it with their key")
+  // One writer (one fresh key read) for the review and all its comments.
+  const writer = repo.visibility === 'private' ? await privateWriter(sdk, auth, repo) : undefined
   let current: ReviewDraft = await reconcileReviewDraft(draft, reads)
   if (current.attemptedAt === undefined) current = { ...current, attemptedAt: Date.now() }
   // Saved before the first write, so a crash after it leaves a draft that reconciles.
@@ -416,7 +422,7 @@ export async function submitReviewDraft(
       commitOid: draft.headOid,
       body: draft.summary,
       commentCount: draft.comments.length,
-    }), `review:${draft.draftId}:review`)
+    }), `review:${draft.draftId}:review`, writer)
     reviewId = r.documentId
     current = { ...current, reviewId }
     await saveReviewDraft(current)
@@ -433,7 +439,7 @@ export async function submitReviewDraft(
       body: c.body,
       anchor: { ...c.anchor, commitOid: c.anchor.commitOid ?? draft.headOid },
       reviewId,
-    }), `review:${draft.draftId}:comment:${c.localId}`)
+    }), `review:${draft.draftId}:comment:${c.localId}`, writer)
     ids.push(r.documentId)
     const comments = [...current.comments]
     comments[i] = { ...c, landedId: r.documentId }

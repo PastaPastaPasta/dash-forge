@@ -13,7 +13,6 @@ import { useCallback, useMemo, useState, type ReactNode } from 'react'
 import { MessageSquare } from 'lucide-react'
 
 import { postComment, type AnchorInput, type RepoRef } from '@/lib/repo'
-import { previewCreate } from '@/lib/sdk'
 import { timeAgo, type CommentView } from '@/lib/view'
 import { anchorLabel, lineKey, placeThreads, type InlineThread } from '@/lib/view/inline-threads'
 import { writeErrorMessage } from '@/lib/view/write-errors'
@@ -27,6 +26,7 @@ import { MarkdownView } from '@/components/markdown-view'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
+import { PrivateComposeNote, SealedLimit, composeCost } from '@/components/repo/private-compose'
 import { Oid } from '@/components/ui/oid'
 
 export function InlineCommentsProvider({
@@ -36,9 +36,12 @@ export function InlineCommentsProvider({
   comments,
   changedPaths,
   onPosted,
+  writeBlock = null,
   children,
 }: {
   repo: RepoRef
+  /** Why this browser cannot write here (a private repo it cannot write to), or null. */
+  writeBlock?: string | null
   pullId: string
   headOid: string
   comments: readonly CommentView[]
@@ -98,7 +101,9 @@ export function InlineCommentsProvider({
 
   const value = useMemo<InlineComments>(
     () => ({
-      start: (path, side, line) => setComposing(lineKey(path, side, line)),
+      start: (path, side, line) => {
+        if (writeBlock === null) setComposing(lineKey(path, side, line))
+      },
       report,
       render: (path, side, line) => {
         const key = lineKey(path, side, line)
@@ -108,7 +113,7 @@ export function InlineCommentsProvider({
         return (
           <div key={key} className="space-y-2" data-testid="inline-thread">
             {threads.map((t) => (
-              <Thread key={t.root.id} thread={t} repo={repo} pullId={pullId} onPosted={onPosted} />
+              <Thread key={t.root.id} thread={t} repo={repo} pullId={pullId} onPosted={onPosted} writeBlock={writeBlock} />
             ))}
             {open ? (
               <Composer
@@ -127,7 +132,7 @@ export function InlineCommentsProvider({
         )
       },
     }),
-    [placed, composing, repo, pullId, headOid, onPosted, report],
+    [placed, composing, repo, pullId, headOid, onPosted, report, writeBlock],
   )
 
   return (
@@ -140,7 +145,7 @@ export function InlineCommentsProvider({
           </summary>
           <div className="space-y-2 border-t border-anvil-200 px-3 py-2 dark:border-anvil-800">
             {placed.fileLevel.map((t) => (
-              <AnchoredThread key={t.root.id} thread={t} repo={repo} pullId={pullId} onPosted={onPosted} />
+              <AnchoredThread key={t.root.id} thread={t} repo={repo} pullId={pullId} onPosted={onPosted} writeBlock={writeBlock} />
             ))}
           </div>
         </details>
@@ -153,7 +158,7 @@ export function InlineCommentsProvider({
           </summary>
           <div className="space-y-2 border-t border-anvil-200 px-3 py-2 dark:border-anvil-800">
             {unshown.map((t) => (
-              <AnchoredThread key={t.root.id} thread={t} repo={repo} pullId={pullId} onPosted={onPosted} />
+              <AnchoredThread key={t.root.id} thread={t} repo={repo} pullId={pullId} onPosted={onPosted} writeBlock={writeBlock} />
             ))}
           </div>
         </details>
@@ -166,7 +171,7 @@ export function InlineCommentsProvider({
           </summary>
           <div className="space-y-2 border-t border-anvil-200 px-3 py-2 dark:border-anvil-800">
             {placed.outdated.map((t) => (
-              <AnchoredThread key={t.root.id} thread={t} repo={repo} pullId={pullId} onPosted={onPosted} />
+              <AnchoredThread key={t.root.id} thread={t} repo={repo} pullId={pullId} onPosted={onPosted} writeBlock={writeBlock} />
             ))}
           </div>
         </details>
@@ -177,7 +182,19 @@ export function InlineCommentsProvider({
 }
 
 /** A thread shown away from its line, headed by where it points. */
-function AnchoredThread({ thread, repo, pullId, onPosted }: { thread: InlineThread; repo: RepoRef; pullId: string; onPosted: () => void }): JSX.Element {
+function AnchoredThread({
+  thread,
+  repo,
+  pullId,
+  onPosted,
+  writeBlock,
+}: {
+  thread: InlineThread
+  repo: RepoRef
+  pullId: string
+  onPosted: () => void
+  writeBlock: string | null
+}): JSX.Element {
   const a = thread.root.anchor
   return (
     <div>
@@ -190,12 +207,24 @@ function AnchoredThread({ thread, repo, pullId, onPosted }: { thread: InlineThre
           </>
         ) : null}
       </p>
-      <Thread thread={thread} repo={repo} pullId={pullId} onPosted={onPosted} />
+      <Thread thread={thread} repo={repo} pullId={pullId} onPosted={onPosted} writeBlock={writeBlock} />
     </div>
   )
 }
 
-function Thread({ thread, repo, pullId, onPosted }: { thread: InlineThread; repo: RepoRef; pullId: string; onPosted: () => void }): JSX.Element {
+function Thread({
+  thread,
+  repo,
+  pullId,
+  onPosted,
+  writeBlock,
+}: {
+  thread: InlineThread
+  repo: RepoRef
+  pullId: string
+  onPosted: () => void
+  writeBlock: string | null
+}): JSX.Element {
   const [replying, setReplying] = useState(false)
   return (
     <div className="rounded-md border border-anvil-200 bg-white dark:border-anvil-750 dark:bg-anvil-950">
@@ -223,6 +252,8 @@ function Thread({ thread, repo, pullId, onPosted }: { thread: InlineThread; repo
             }}
             onCancel={() => setReplying(false)}
           />
+        ) : writeBlock !== null ? (
+          <PrivateComposeNote reason={writeBlock} />
         ) : (
           <Button size="sm" variant="ghost" onClick={() => setReplying(true)}>
             Reply
@@ -257,7 +288,7 @@ function Composer({
   const [body, setBody] = useState('')
   const [posting, setPosting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const cost = previewCreate('comment', {
+  const cost = composeCost(repo, 'comment', {
     body: body.trim(),
     ...(anchor ? { path: anchor.path } : {}),
   })
@@ -285,6 +316,7 @@ function Composer({
   return (
     <div className="space-y-2 font-sans">
       <Textarea aria-label={label} value={body} onChange={(e) => setBody(e.target.value)} placeholder="Leave a comment" className="min-h-[72px]" autoFocus />
+      <SealedLimit repo={repo} kind="comment" text={body.trim() + (anchor?.path ?? '')} />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <CostPreview cost={cost} />
         <div className="flex gap-2">

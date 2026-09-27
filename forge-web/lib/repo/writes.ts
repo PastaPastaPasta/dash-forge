@@ -23,7 +23,7 @@ import { decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { isLegalRefName, type EventKind } from '../rules'
 import { allocateNumber, isAuthorKind, numberCeiling, normalizeRepoName as normalizeV2RepoName, type Role, type Visibility } from '../rules/v2'
-import type { EncryptionOps } from '../auth/encryption-key'
+import { fetchIdentityKeys, usableEncryptionKey, type EncryptionOps } from '../auth/encryption-key'
 import {
   ConsensusRefusal,
   DUPLICATE_UNIQUE_CODE,
@@ -41,7 +41,7 @@ import {
 import { DOC, num, str, type RepoRef } from './contract'
 import { invalidateMembers } from './members'
 import { refNameHash } from './push'
-import { sealForRepo } from './private-writes'
+import { privateWriter, sealForRepo, sealedTextUse, PrivateWriteError, type PrivateWriter, type SealedKind } from './private-writes'
 import { invalidateRepoFeed } from './issues'
 import { repoSource } from './source'
 
@@ -173,9 +173,11 @@ export async function writeRepoDoc(
   documentType: string,
   data: Record<string, unknown>,
   intent?: string,
+  /** A private repo's writer for this action (resolved here when not given; see `privateWriter`). */
+  writer?: PrivateWriter,
 ): Promise<WriteResult> {
   if (repo.visibility === 'private' && SEALED_TYPES.has(documentType)) {
-    data = await sealForRepo(sdk, auth, repo, documentType as 'issue' | 'patch' | 'comment' | 'review', data)
+    data = await sealForRepo(sdk, auth, repo, documentType as SealedKind, data, writer)
   }
   assertNoPlaintext(repo, documentType, data)
   try {
@@ -364,6 +366,16 @@ async function createNumbered(
   onRetry?: (taken: number, next: number) => void,
 ): Promise<CreateIssueResult> {
   const noun = type === 'issue' ? 'issue' : 'PR'
+  // A private repo: refuse over-long text before allocating, and seal every renumbered retry
+  // under the one writer of this action (the AD binds each new number).
+  let writer: PrivateWriter | undefined
+  if (repo.visibility === 'private') {
+    const { used, limit } = sealedTextUse(type, fields)
+    if (limit !== null && used > limit) {
+      throw new PrivateWriteError(`the text is too long for a private repo: an encrypted ${type} holds at most ${limit} bytes of text (this one has ${used})`)
+    }
+    writer = await privateWriter(sdk, auth, repo)
+  }
   const next = (): Promise<number | null> => nextNumber(sdk, repo, type)
   let number = await next()
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -371,7 +383,7 @@ async function createNumbered(
     try {
       // Each number is its own write: a renumbered retry must not reuse the earlier bytes.
       const intent = intentBase ? `${intentBase}#${number}` : undefined
-      return { ...(await writeRepoDoc(sdk, auth, repo, DOC[type], { number, ...fields }, intent)), number }
+      return { ...(await writeRepoDoc(sdk, auth, repo, DOC[type], { number, ...fields }, intent, writer)), number }
     } catch (e) {
       if (e instanceof UnconfirmedWriteError) {
         // Not seen yet. If someone else holds the number, ours was refused: renumber.
@@ -819,6 +831,7 @@ export function checkRepoInput(input: CreateRepoInput): void {
     throw new Error(`The description is ${bytes(input.description)} bytes; the limit is ${REPO_LIMITS.description} (accented letters and emoji take more than one byte).`)
   }
   if (bytes(input.defaultBranch) > REPO_LIMITS.defaultBranch) throw new Error('The default branch name is too long.')
+  if (input.visibility === 'private' && input.forkOf !== undefined) throw new Error('a fork is public: a private repository cannot be a fork')
 }
 
 function journalKey(network: Network, ownerId: string, name: string): string {
@@ -866,9 +879,18 @@ export async function createRepo(
   const key = journalKey(auth.network, ownerId, name)
   checkRepoInput(input)
   const visibility: Visibility = input.visibility ?? 'public'
-  // Refused before anything is written: a private repo nobody can hold a key for.
-  if (visibility === 'private' && privateCreate === undefined) {
-    throw new Error('cannot create a private repository: add your encryption key to this browser first (Settings → Keys)')
+  // Refused before anything is written: a private repo nobody can hold a key for, or whose
+  // epoch-0 key would be wrapped to a key this browser does not hold (§5.2: writers use the
+  // identity's highest usable encryption key).
+  if (visibility === 'private') {
+    if (privateCreate === undefined) throw new Error('cannot create a private repository: add your encryption key to this browser first (Settings → Keys)')
+    const current = usableEncryptionKey((await fetchIdentityKeys(sdk, ownerId)) ?? [], forge.core)
+    if (current === null) throw new Error('cannot create a private repository: your identity has no encryption key')
+    if (current.keyId !== privateCreate.ops.keyId) {
+      throw new Error(
+        `cannot create a private repository: your identity's current encryption key is key ${current.keyId}, but this browser holds key ${privateCreate.ops.keyId}; add key ${current.keyId} here (Settings → Keys)`,
+      )
+    }
   }
   // A resumed creation keeps the values it started with, so the repo and config documents
   // agree (the form may have been edited since; the page warns about that).
@@ -911,10 +933,12 @@ export async function createRepo(
       ],
       limit: 1,
     })
-    // A repo of this name exists: resume only one of the same visibility (it is immutable).
-    const existing = documents[0]?.['visibility']
-    if (existing !== undefined && existing !== visibility) {
-      throw new Error(`${name} already exists with the other visibility (visibility is immutable)`)
+    // A repo of this name exists: resume only one of the same visibility (it is immutable; a
+    // document without one is not a repo this client made, so it is never adopted).
+    if (documents[0] !== undefined) {
+      const existing = documents[0]['visibility']
+      if (existing !== 'public' && existing !== 'private') throw new Error(`${name} already exists without a readable visibility; pick another name`)
+      if (existing !== visibility) throw new Error(`${name} already exists with the other visibility (visibility is immutable)`)
     }
     return firstId(documents)
   }

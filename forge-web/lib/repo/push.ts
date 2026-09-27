@@ -32,7 +32,7 @@ import {
   type WriteResult,
 } from '../sdk'
 import { DOC, type RepoRef } from './contract'
-import { sealForRepo } from './private-writes'
+import { privateWriter, sealForRepo } from './private-writes'
 import { repoSource } from './source'
 import { assertNoPlaintext } from './writes'
 
@@ -272,15 +272,18 @@ export async function writeRefUpdate(
   input: RefUpdateInput,
   options: { readonly intent?: string; readonly protectedPatterns?: readonly string[] } = {},
 ): Promise<WriteResult & { readonly documentType: 'refUpdate' | 'protectedRefUpdate' }> {
-  // The complete config timeline's newest well-formed config: the one the rules apply.
-  const patterns = options.protectedPatterns ?? (await readConfigBundle(sdk, repo)).config?.protectedPatterns ?? []
-  const documentType = refUpdateType(input.refName, patterns)
   let data = refUpdateData(input)
+  let documentType: 'refUpdate' | 'protectedRefUpdate'
   if (repo.visibility === 'private') {
-    if (options.protectedPatterns === undefined && repo.session === undefined) {
-      throw new Error("a private repo's protected branches are sealed: read it as a member before moving a ref")
-    }
-    data = await sealForRepo(sdk, auth, repo, documentType, data)
+    // Sealed patterns: only a member reading the repo can route, on a fresh session's config.
+    if (repo.session === undefined) throw new Error("a private repo's protected branches are sealed: read it as a member before moving a ref")
+    const writer = await privateWriter(sdk, auth, repo)
+    documentType = refUpdateType(input.refName, options.protectedPatterns ?? writer.protectedPatterns)
+    data = await sealForRepo(sdk, auth, repo, documentType, data, writer)
+  } else {
+    // The complete config timeline's newest well-formed config: the one the rules apply.
+    const patterns = options.protectedPatterns ?? (await readConfigBundle(sdk, repo)).config?.protectedPatterns ?? []
+    documentType = refUpdateType(input.refName, patterns)
   }
   assertNoPlaintext(repo, documentType, data)
   try {

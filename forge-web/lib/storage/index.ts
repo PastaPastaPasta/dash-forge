@@ -8,7 +8,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { WriteAuth, WriteResult } from '../sdk'
 import type { RepoRef } from '../repo/contract'
-import { sealArtifact } from '../repo/private-writes'
+import { forgetSealedArtifact, sealArtifact } from '../repo/private-writes'
 import { writePackManifest, type PackManifestInput } from '../repo/push'
 import { storeArtifact, type StoreOptions, type StoredArtifact } from './upload'
 
@@ -58,5 +58,7 @@ export async function storeAndRecordPack(
   const stored = await storeArtifact(sdk, auth, repo, await sealArtifact(sdk, auth, repo, bytes), opts)
   const { packHash, sizeBytes, chunkCount, storage, uris } = stored
   const manifest = await writePackManifest(sdk, auth, repo, { ...meta, packHash, sizeBytes, chunkCount, storage, uris }, opts.intent)
+  // Recorded: the kept sealed bytes of a private upload are no longer needed for a resume.
+  await forgetSealedArtifact(auth, repo, bytes)
   return { stored, manifest }
 }

@@ -44,6 +44,7 @@ import {
 } from '@/lib/repo'
 import { createEpochZero } from '@/lib/repo/private-members'
 import { encryptionOps } from '@/lib/auth/encryption-key'
+import { onEncryptionKeyChange } from '@/lib/auth/vault'
 import { useAsync } from '@/hooks/use-async'
 import type { Visibility } from '@/lib/rules/v2'
 import { previewCreate, sumPreviews } from '@/lib/sdk'
@@ -88,10 +89,23 @@ export default function NewRepoPage(): JSX.Element {
   // A private create wraps its key from the encryption key in this browser's vault.
   const ops = useAsync(
     () => encryptionOps(sdk!, DEFAULT_NETWORK, identity!, forge!.core),
-    [sdk !== null, identity ?? '', forge?.core ?? '', isPrivate],
+    [sdk, identity ?? '', forge?.core ?? '', isPrivate],
     { enabled: isPrivate && sdk !== null && identity !== null && forge !== null },
   )
-  const noKey = isPrivate && ops.data === null && !ops.loading
+  // Re-read when a key is added (Settings in another tab, or this one) or the tab regains focus.
+  const reloadOps = ops.reload
+  useEffect(() => {
+    if (!isPrivate) return
+    const off = onEncryptionKeyChange(reloadOps)
+    window.addEventListener('focus', reloadOps)
+    return () => {
+      off()
+      window.removeEventListener('focus', reloadOps)
+    }
+  }, [isPrivate, reloadOps])
+  // Only a settled answer of "no key" says so; a failed read says what failed.
+  const noKey = isPrivate && ops.settled && ops.error === null && ops.data === null
+  const privateBlocked = !isPrivate ? null : ops.error !== null ? `Couldn't read your encryption key: ${ops.error}` : noKey ? 'Add your encryption key to this browser first (Settings → Keys).' : ops.data == null ? 'Checking your encryption key…' : null
   const [confirm, setConfirm] = useState<CreateRepoInput | null>(null)
   const [progress, setProgress] = useState<Record<CreateRepoStep, StepState> | null>(null)
   const [pending, setPending] = useState<RepoCreationJournal[]>([])
@@ -275,6 +289,11 @@ export default function NewRepoPage(): JSX.Element {
                 ))}
               </ul>
               {description.trim() ? <p className="mt-2 text-caution">{PUBLIC_DESCRIPTION_NOTE}</p> : null}
+              {ops.error !== null ? (
+                <p className="mt-2 text-danger" data-testid="private-key-error">
+                  Couldn&apos;t read your encryption key: {ops.error}
+                </p>
+              ) : null}
               {noKey ? (
                 <p className="mt-2 text-caution" data-testid="private-no-key">
                   cannot create a private repository: your identity has no encryption key in this browser. Add it in{' '}
@@ -326,8 +345,8 @@ export default function NewRepoPage(): JSX.Element {
             variant="primary"
             size="lg"
             className="w-full"
-            disabled={name.trim() === '' || nameError !== null || guard.disabledReason !== null || (isPrivate && ops.data == null)}
-            title={guard.disabledReason ?? undefined}
+            disabled={name.trim() === '' || nameError !== null || guard.disabledReason !== null || privateBlocked !== null}
+            title={guard.disabledReason ?? privateBlocked ?? undefined}
             onClick={() => {
               if (guard.check(cost.credits)) setConfirm(input())
             }}

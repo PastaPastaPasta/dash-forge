@@ -7,13 +7,20 @@
  * holding it). The seal itself happens in `lib/repo/private-writes.ts` on every write.
  */
 
+import type { RepoRef } from '@/lib/repo'
 import type { RepoHome } from '@/lib/view'
-import { SEALED_TEXT_LIMIT, writeBlockReason } from '@/lib/repo/private-writes'
+import { SEALED_TEXT_LIMIT, sealedTextUse, writeBlockReason, type SealedKind } from '@/lib/repo/private-writes'
+import { previewCreate, previewCredits, type CostPreview } from '@/lib/sdk'
+import { estimateBytesCredits } from '@/lib/sdk/cost'
 
 /** For a public repo: always null. For a private one: null when sealed writes can go ahead, else why not. */
 export function privateComposeBlock(home: RepoHome): string | null {
-  if (home.repo.visibility !== 'private') return null
-  const access = home.private
+  return privateWriteBlock(home.repo, home.private)
+}
+
+/** {@link privateComposeBlock} from a repo and its private access (components without a home). */
+export function privateWriteBlock(repo: RepoRef, access: RepoHome['private']): string | null {
+  if (repo.visibility !== 'private') return null
   if (access?.access === 'no-key') return 'Add your encryption key to this browser (Settings → Keys) to write to this private repo.'
   if (access?.access !== 'member') return 'Only members can write to a private repo.'
   return writeBlockReason(access.session.resolution)
@@ -29,16 +36,29 @@ export function PrivateComposeNote({ reason }: { reason: string }): JSX.Element 
 }
 
 /**
+ * What a new document costs: on a private repo its text is stored sealed (`enc`: the text, 3
+ * bytes of framing per field, and a 29-byte frame), priced as such; public ones as they are.
+ */
+export function composeCost(repo: RepoRef, kind: SealedKind, data: Readonly<Record<string, unknown>>): CostPreview {
+  if (repo.visibility !== 'private') return previewCreate(kind, data)
+  const { used } = sealedTextUse(kind, data)
+  const fields = Object.values(data).filter((v) => typeof v === 'string' && v !== '').length
+  const bind = Object.fromEntries(Object.entries(data).filter(([, v]) => typeof v !== 'string'))
+  return previewCredits(estimateBytesCredits(kind, used + 3 * fields + 29, bind))
+}
+
+/**
  * The composer line §4.3 asks for on a private repo: the combined size limit of the sealed text,
  * and how much of it is used. Null on a public repo.
  */
-export function SealedLimit({ home, kind, text }: { home: RepoHome; kind: 'issue' | 'patch' | 'comment' | 'review'; text: string }): JSX.Element | null {
-  if (home.repo.visibility !== 'private') return null
+export function SealedLimit({ repo, kind, text }: { repo: RepoRef; kind: SealedKind; text: string }): JSX.Element | null {
+  if (repo.visibility !== 'private') return null
   const used = new TextEncoder().encode(text).length
-  const limit = SEALED_TEXT_LIMIT[kind] as number
+  const limit = SEALED_TEXT_LIMIT[kind]
   return (
     <p className={`mt-1 text-[11px] ${used > limit ? 'text-danger' : 'text-anvil-500 dark:text-anvil-400'}`} data-testid="sealed-limit">
-      {kind === 'issue' || kind === 'patch' ? 'Title and text' : 'Text'} {used} / {limit} bytes (encrypted to this repo&apos;s members).
+      {kind === 'patch' ? 'Title, text and branch names' : kind === 'issue' ? 'Title and text' : kind === 'comment' ? 'Text and file path' : 'Text'} {used} / {limit} bytes
+      (encrypted to this repo&apos;s members).
     </p>
   )
 }

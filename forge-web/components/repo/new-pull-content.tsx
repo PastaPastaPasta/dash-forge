@@ -14,9 +14,8 @@ import { useRouter } from 'next/navigation'
 import { GitBranch } from 'lucide-react'
 
 import { createPatch, findForks, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
-import { previewCreate } from '@/lib/sdk'
 import { commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
-import { PrivateComposeNote, SealedLimit, privateComposeBlock } from '@/components/repo/private-compose'
+import { PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { writeErrorMessage } from '@/lib/view/write-errors'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
@@ -140,7 +139,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     head === null
       ? null
       : { title: title.trim(), body, baseRefName: base, sourceRepoId: head.repo.repoId, sourceRefName: head.refName, headOid: head.oid }
-  const cost = previewCreate('patch', input ?? { title: title.trim(), body })
+  const cost = composeCost(repo, 'patch', input ?? { title: title.trim(), body })
   const composeBlock = privateComposeBlock(home)
   const blocked = input === null || title.trim() === '' || noBase || sameBranch || nothing || composeBlock !== null
 
@@ -278,7 +277,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
               {body.trim() ? <MarkdownView source={body} /> : <p className="italic text-anvil-600 dark:text-anvil-400">Nothing to preview.</p>}
             </div>
           ) : null}
-          <SealedLimit home={home} kind="patch" text={title.trim() + body + (input?.baseRefName ?? '') + (input?.sourceRefName ?? '')} />
+          <SealedLimit repo={home.repo} kind="patch" text={title.trim() + body + (input?.baseRefName ?? '') + (input?.sourceRefName ?? '')} />
         </div>
         {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}
         <div className="flex flex-wrap items-center justify-between gap-3">
