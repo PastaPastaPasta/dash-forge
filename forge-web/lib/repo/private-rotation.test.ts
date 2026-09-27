@@ -506,13 +506,15 @@ describe('burn and contiguity review', () => {
   })
 
   it('re-review #1 epochs another maintainer holds never vanish with the leaving one', async () => {
-    // BOB anchored epoch 1 and wrapped it to himself and CAROL (a maintainer), not to ALICE.
+    // BOB anchored epoch 1, not wrapped to ALICE; CAROL (a staying maintainer) holds it through
+    // her own self-wrap, which keeps counting after BOB's role goes.
     maintainer(BOB)
     maintainer(CAROL)
     const raw = new Uint8Array(32).fill(0xd1)
     await anchor(BOB, await EpochKeys.import(REPO, 1, raw), { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
     wrap(BOB, BOB, 1, raw)
     wrap(BOB, CAROL, 1, raw)
+    wrap(CAROL, CAROL, 1, raw)
     await expect(removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-bob')).rejects.toThrow(/holds/)
     expect(isMaintainerNow(BOB)).toBe(true)
   })
@@ -696,6 +698,49 @@ describe('correctness review of the burn fixes', () => {
     await expect(removePrivateMember(ctx, b58(CAROL), 'writer', 'rm-again')).resolves.toBe(2)
     const s = await aliceSession()
     expect(s.resolution.writeEpoch).toBe(2)
+  })
+
+  it("CLI-H1 the leaving maintainer's own wraps never keep an epoch from vanishing", async () => {
+    // BOB anchored epoch 1 and wrapped it to himself and to CAROL, a staying maintainer: only his
+    // wraps say CAROL holds it, and they stop counting with his role.
+    maintainer(BOB)
+    maintainer(CAROL)
+    const raw = new Uint8Array(32).fill(0x64)
+    await anchor(BOB, await EpochKeys.import(REPO, 1, raw), { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
+    wrap(BOB, BOB, 1, raw)
+    wrap(BOB, CAROL, 1, raw)
+    await expect(removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-bob-h1')).resolves.toBe(1)
+    const s = await aliceSession()
+    expect(s.anchors.get(1)?.owner).toBe(b58(ALICE))
+  })
+
+  it('CLI-M2 the remover keeps every epoch it holds only through the leaving maintainer', async () => {
+    // BOB anchored epoch 1 and is ALICE's only source of it; ALICE rotates 2 from it herself.
+    maintainer(BOB)
+    const raw = new Uint8Array(32).fill(0x65)
+    await anchor(BOB, await EpochKeys.import(REPO, 1, raw), { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
+    wrap(BOB, ALICE, 1, raw)
+    wrap(BOB, CAROL, 1, raw)
+    const raw2 = new Uint8Array(32).fill(0x66)
+    await anchor(ALICE, await EpochKeys.import(REPO, 2, raw2), { defaultBranch: 'main', prevEpoch: 1, prevEpochKey: new Uint8Array(raw) })
+    wrap(ALICE, ALICE, 2, raw2)
+    // ALICE's only wrap of epoch 1 is BOB's (she reads it through it and through the chain): she
+    // wraps it to herself before his role goes, as the CLI does.
+    await removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-bob-m2')
+    const own = e(1).filter((d) => d['$ownerId'] === b58(ALICE) && d['memberId'] === b58(ALICE))
+    expect(own).toHaveLength(1)
+  })
+
+  it('CLI-M3 the refusal names the maintainer whose config would take over', async () => {
+    maintainer(BOB)
+    maintainer(CAROL)
+    const raw = new Uint8Array(32).fill(0x67)
+    const k1 = await EpochKeys.import(REPO, 1, raw)
+    await anchor(BOB, k1, { defaultBranch: 'main', prevEpoch: 0, prevEpochKey: new Uint8Array(K0) })
+    wrap(BOB, ALICE, 1, raw)
+    wrap(BOB, CAROL, 1, raw)
+    await anchor(CAROL, k1, { defaultBranch: 'main', prevEpoch: 0, burned: true })
+    await expect(removePrivateMember(ctx, b58(BOB), 'maintainer', 'rm-bob-m3')).rejects.toThrow(new RegExp(b58(CAROL).slice(0, 8)))
   })
 
   it('L-a an adopted self-wrap to a key this browser lacks is refused before anything else is paid', async () => {

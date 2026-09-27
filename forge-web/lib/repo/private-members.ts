@@ -943,8 +943,9 @@ export async function removePrivateMember(
     if (role === 'maintainer') {
       const changed = await anchorsAfterReanchor(s, memberId, c.auth.identityId)
       if (changed.length > 0) {
+        const by = takenOverBy(s, memberId, changed)
         throw new PrivateMembersError(
-          `another maintainer's config for key epoch ${changed.join(', ')} comes first and does not match its anchor, so removing this maintainer would change that epoch's key; nothing was removed. It can't be removed from here until the other maintainer is removed first or the key is rotated past it.`,
+          `${by.length > 0 ? by.map(short).join(', ') : "another maintainer"}'s config for key epoch ${changed.join(', ')} comes first and does not match its anchor, so removing this maintainer would change that epoch's key; nothing was removed. It can't be removed from here until that maintainer is removed first or the key is rotated past it.`,
           'E310',
         )
       }
@@ -963,7 +964,7 @@ export async function removePrivateMember(
       const [changed, kept] = await withFreshSession(c, async (s) => [await anchorsWithout(s, memberId), keptEpoch(s, memberId)] as const)
       if (kept !== null) before = Math.max(before ?? kept, kept)
       if (changed.length === 0) break
-      if (i + 1 >= SURVIVE_POLLS) throw anchorsWouldChange(changed)
+      if (i + 1 >= SURVIVE_POLLS) throw anchorsWouldChange(changed, await withFreshSession(c, async (s) => takenOverBy(s, memberId, changed)))
       await sleep(POLL_MS)
     }
   }
@@ -1007,7 +1008,7 @@ export async function removePrivateMember(
  */
 export function removalCost(session: PrivateSession, self: string, memberId: string, role: Role, plan: RotationPlan | null): CostPreview {
   const reanchors = role === 'maintainer' ? epochsToReanchor(session, memberId).map(() => previewCreate('config')) : []
-  const keep = role === 'maintainer' && needsKeepWrap(session, self, memberId) ? [previewCreate('repoKey')] : []
+  const keep = role === 'maintainer' ? keepWrapEpochs(session, self, memberId).map(() => previewCreate('repoKey')) : []
   return sumPreviews([...keep, ...reanchors, ...(plan !== null ? [rotationCost(plan)] : [])])
 }
 
@@ -1122,10 +1123,12 @@ export function vanishing(session: PrivateSession, leaving: string): { epochs: n
     if (!epochs.includes(w.row.epoch)) continue
     const owner = base58Encode(w.row.owner)
     const member = base58Encode(w.row.memberId)
-    // A maintainer who stays and wrote or received a wrap there holds it (or can be handed it).
+    if (staying.has(member) && !maintainers.has(member)) losing.add(member)
+    // A maintainer who stays and wrote or received a wrap there holds it. The leaving
+    // maintainer's own wraps stop counting with the role (§5.4 (2); parity: `reanchor_plan`).
+    if (owner === leaving) continue
     if (maintainers.has(owner)) holders.add(owner)
     if (maintainers.has(member)) holders.add(member)
-    else if (staying.has(member)) losing.add(member)
   }
   if (holders.size > 0) return { ...none, holders: [...holders].sort() }
   return { epochs, holders: [], losing: [...losing].sort() }
@@ -1152,11 +1155,24 @@ export function epochsToReanchor(session: PrivateSession, leaving: string): numb
 const SURVIVE_POLLS = 4
 
 /** The refusal when a maintainer's removal would change an epoch's key (nothing was removed). */
-function anchorsWouldChange(changed: readonly number[]): PrivateMembersError {
+function anchorsWouldChange(changed: readonly number[], by: readonly string[]): PrivateMembersError {
+  const who = by.length > 0 ? `a config by ${by.map(short).join(', ')} comes first` : 'another config comes first'
   return new PrivateMembersError(
-    `removing this maintainer would change the key of epoch ${changed.join(', ')} (another config comes first, or the re-anchor is not visible yet); nothing was removed. Try again in a moment, or ask the other maintainers about their configs for that epoch.`,
+    `removing this maintainer would change the key of epoch ${changed.join(', ')} (${who}, or the re-anchor is not visible yet); nothing was removed. Try again in a moment, or ask that maintainer about their configs for that epoch.`,
     'E310',
   )
+}
+
+/** Who anchors each of `epochs` once `leaving` is gone and is not this reader (base58, sorted). */
+function takenOverBy(session: PrivateSession, leaving: string, epochs: readonly number[]): string[] {
+  const staying = maintainersOf(session).filter((m) => !bytesEqual(m, decodeIdentifier(leaving)))
+  const after = selectAnchors(session.configRows, new IdSet(staying))
+  const by = new Set<string>()
+  for (const e of epochs) {
+    const a = after.get(e)
+    if (a !== undefined) by.add(base58Encode(a.owner))
+  }
+  return [...by].sort()
 }
 
 /** The epochs whose anchor `memberId` wrote (the ones that go when their maintainer role does). */
@@ -1164,31 +1180,47 @@ export function epochsAnchoredBy(session: PrivateSession, memberId: string): num
   return [...session.anchors.values()].filter((a) => a.owner === memberId).map((a) => a.epoch).sort((a, b) => a - b)
 }
 
-/** Whether `self` needs a self-wrap of the kept epoch's key before `leaving`'s maintainer role goes. */
-export function needsKeepWrap(session: PrivateSession, self: string, leaving: string): boolean {
-  const n = keptEpoch(session, leaving)
-  if (n === null) return false
+/**
+ * The epochs `self` must wrap to itself before `leaving`'s maintainer role goes (parity:
+ * forge-core `wrap_held_through`): every epoch up to the kept one ({@link keptEpoch}) whose only
+ * accepted wraps to `self` come from `leaving` (they stop counting with the role, §5.4 (2), and
+ * the chain may not reach it), and the kept epoch itself when so.
+ */
+export function keepWrapEpochs(session: PrivateSession, self: string, leaving: string): number[] {
+  const top = keptEpoch(session, leaving)
+  if (top === null) return []
   const leavingId = decodeIdentifier(leaving)
-  return !acceptedOwnWraps(session, self, n).some((w) => !bytesEqual(w.row.owner, leavingId))
+  const heldOtherwise = (e: number): boolean => acceptedOwnWraps(session, self, e).some((w) => !bytesEqual(w.row.owner, leavingId))
+  const selfId = decodeIdentifier(self)
+  const onlyTheirs = session.wraps
+    .filter((w) => bytesEqual(w.row.memberId, selfId) && bytesEqual(w.row.owner, leavingId) && w.row.epoch <= top && session.resolution.keys.has(w.row.epoch))
+    .map((w) => w.row.epoch)
+    .filter((e) => !heldOtherwise(e))
+  if (!heldOtherwise(top)) onlyTheirs.push(top)
+  return [...new Set(onlyTheirs)].sort((x, y) => x - y)
+}
+
+/** Whether `self` needs any self-wrap before `leaving`'s maintainer role goes ({@link keepWrapEpochs}). */
+export function needsKeepWrap(session: PrivateSession, self: string, leaving: string): boolean {
+  return keepWrapEpochs(session, self, leaving).length > 0
 }
 
 /**
- * Before a maintainer's role is deleted: the remover must keep the epoch `n` it chains the rotation
- * from ({@link keptEpoch}). When its only accepted wraps for `n` come from the leaving maintainer
- * (whose wraps stop counting, §5.4 check 2), it posts a self-wrap of `K_n` first. A reader that
- * holds `n` only through the chain has no wrap to unwrap: refused.
+ * Before a maintainer's role is deleted: wrap to this signer every epoch in {@link keepWrapEpochs}.
+ * An epoch it holds only through the chain has no wrap of its own to unwrap: refused. A standing
+ * self-wrap with another key is an error (a wrap cannot be replaced within an epoch).
  */
 async function keepCurrentKey(c: PrivateWriteContext, session: PrivateSession, leaving: string, intent: string): Promise<void> {
-  const n = keptEpoch(session, leaving)
-  if (n === null || !needsKeepWrap(session, c.auth.identityId, leaving)) return
-  if (acceptedOwnWraps(session, c.auth.identityId, n).length === 0) {
-    throw new PrivateMembersError(`you have no copy of the current key (epoch ${n}) of your own to keep; ask another maintainer to remove this one`, 'E310')
-  }
-  const kn = await rawEpochKey(session, c, n)
-  try {
-    requireSame(await postWrap(c, session, kn.keys, kn.raw, c.auth.identityId, c.ops.keyId, `${intent}:keep`), c.auth.identityId, n)
-  } finally {
-    kn.raw.fill(0)
+  for (const n of keepWrapEpochs(session, c.auth.identityId, leaving)) {
+    if (acceptedOwnWraps(session, c.auth.identityId, n).length === 0) {
+      throw new PrivateMembersError(`you have no copy of key epoch ${n} of your own to keep; ask another maintainer to remove this one`, 'E310')
+    }
+    const kn = await rawEpochKey(session, c, n)
+    try {
+      requireSame(await postWrap(c, session, kn.keys, kn.raw, c.auth.identityId, c.ops.keyId, `${intent}:keep`), c.auth.identityId, n)
+    } finally {
+      kn.raw.fill(0)
+    }
   }
 }
 
