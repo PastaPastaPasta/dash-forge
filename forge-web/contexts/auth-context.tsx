@@ -122,7 +122,11 @@ export function AuthProvider({
   const notice = state.notice ?? null
   useEffect(() => {
     if (!notice) return
-    const title = /private repos/i.test(notice) ? 'Private repos not enabled' : 'Storage settings were not carried over'
+    const title = /carried over/i.test(notice)
+      ? 'Not carried over to the new key'
+      : /private repos/i.test(notice)
+        ? 'Private repos not enabled'
+        : 'Sign-in notice'
     toast({ title, tone: 'warn', detail: notice })
     controller.clearNotice()
   }, [notice, controller])

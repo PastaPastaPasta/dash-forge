@@ -20,7 +20,7 @@ import { usePrivateHome } from '@/hooks/use-private-home'
 import { PrivateBanner } from '@/components/repo/private-banner'
 import { PrivateRepoState } from '@/components/repo/private-repo-state'
 import { selectRef, type RepoHome } from '@/lib/view'
-import type { RepoAddress } from '@/hooks/use-query-param'
+import { repoHref, useExpiredLink, type RepoAddress } from '@/hooks/use-query-param'
 
 export function RepoScaffold({
   addr,
@@ -43,6 +43,7 @@ export function RepoScaffold({
   const { data, loading, error, settled, sdkError, ready, reload } = useRepoHome(addr)
   // A private repo is re-read through the viewer's decryption session (or shown as sealed).
   const privateHome = usePrivateHome(data ?? null, addr)
+  const expiredLink = useExpiredLink()
 
   if (!addr.owner || (!addr.name && !addr.repoId)) {
     return (
@@ -121,6 +122,22 @@ export function RepoScaffold({
     )
   }
   const home = privateHome.home
+
+  // A private repo's file and branch links carry tokens that only mean something in the tab
+  // that made them (`lib/view/private-nav.ts`).
+  if (expiredLink) {
+    return (
+      <AppShell wide>
+        <RepoHeader home={home} addr={addr} />
+        <EmptyState
+          icon={GitBranch}
+          title="This link only works in the tab that opened it"
+          body="File and branch names of a private repo are kept out of links. Open the repo and browse to it again."
+          action={<Link href={repoHref('/repo', addr)}><Button variant="primary">Open the repo</Button></Link>}
+        />
+      </AppShell>
+    )
+  }
 
   // The rail's assay attests the ref the page shows: the `?ref=` selection, else the
   // default branch.

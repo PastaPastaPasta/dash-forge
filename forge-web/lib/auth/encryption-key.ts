@@ -218,21 +218,41 @@ export async function importEncryptionKey(
   return null
 }
 
+/** The identity already has a usable encryption key this browser could not get from the phrase. */
+export class EncryptionKeyExistsError extends Error {
+  constructor(readonly keyId: number) {
+    super(
+      `This identity already has a usable encryption key (key ${keyId}). Add that key here from your identity file or by pasting it: a new key would lock you out of the private repos whose keys went to key ${keyId} until a maintainer repairs them.`,
+    )
+    this.name = 'EncryptionKeyExistsError'
+  }
+}
+
 /**
- * Register a new ENCRYPTION key on the identity (Settings → Keys → Enable private repos): the
- * next key id, derived from the recovery phrase, added by one `IdentityUpdate` the master key
- * (from the same phrase) signs. Then stores it in the vault. Neither private key is retained
- * beyond the call.
+ * Enable private repos from a recovery phrase (Settings → Keys → Enable private repos): when the
+ * identity already has a usable ENCRYPTION key the phrase derives, that key is stored (nothing
+ * is registered); when it has one the phrase does not derive, this refuses
+ * ({@link EncryptionKeyExistsError}: registering another would strand the wraps to the old one,
+ * which is `private-repos.md` §5.2's rekey without its rotations). Otherwise it registers the
+ * next key id, derived from the phrase, with one `IdentityUpdate` the master key (from the same
+ * phrase) signs, and stores it. Neither private key is retained beyond the call.
  */
 export async function registerEncryptionKey(
   sdk: EvoSDK,
   network: Network,
   identityId: string,
+  coreId: string,
   source: { readonly mnemonic: string; readonly identityIndex?: number },
-): Promise<number> {
+): Promise<{ readonly keyId: number; readonly registered: boolean }> {
   if (!(await isValidMnemonic(source.mnemonic))) throw new Error('those words are not a valid recovery phrase')
   // The new key must land in the vault: never pay for a key this browser cannot keep.
   if (unlockedSecret(network, identityId) === null) throw new VaultLockedError('unlock this browser first')
+  const existing = usableEncryptionKey(await requireIdentityKeys(sdk, identityId), coreId)
+  if (existing !== null) {
+    const imported = await importEncryptionKey(sdk, network, identityId, coreId, source)
+    if (imported !== null) return { keyId: imported, registered: false }
+    throw new EncryptionKeyExistsError(existing.keyId)
+  }
   const mnemonic = normalizeMnemonic(source.mnemonic)
   const identityIndex = source.identityIndex ?? 0
   const { IdentityPublicKeyInCreation, IdentitySigner, PrivateKey } = await import('@dashevo/evo-sdk')
@@ -278,7 +298,7 @@ export async function registerEncryptionKey(
   try {
     for (let i = 0; ; i++) {
       try {
-        return await adoptEncryptionKey(sdk, network, identityId, new Uint8Array(secret))
+        return { keyId: await adoptEncryptionKey(sdk, network, identityId, new Uint8Array(secret)), registered: true }
       } catch (e) {
         if (i >= 6 || e instanceof VaultLockedError) throw e
         await sleep(1500)

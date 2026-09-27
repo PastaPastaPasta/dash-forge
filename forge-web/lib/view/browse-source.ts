@@ -52,7 +52,7 @@ import {
   resetRepoGateways,
 } from './storage-status'
 import { openPrivateArtifact, readPrivateRange } from './private-packs'
-import { onPrivateSessionsClosed } from '../repo/private-session'
+import { onPrivateSessionEnded } from '../repo/private-session'
 
 /** Chunk queries in flight at once when one range spans more than a single query. */
 const CHUNK_QUERY_POOL = 6
@@ -1210,9 +1210,9 @@ interface BrowseCacheEntry {
 const browseCache = new Map<string, BrowseCacheEntry>()
 
 // A private repo's entries are keyed `repoId#sessionId` and hold decrypted state: they go with
-// the session (vault lock, key change).
-onPrivateSessionsClosed(() => {
-  for (const m of [browseCache]) for (const k of [...m.keys()]) if (k.includes('#')) m.delete(k)
+// the session, however it ends (lock, key change, retirement).
+onPrivateSessionEnded((id) => {
+  for (const m of [browseCache]) for (const k of [...m.keys()]) if (k.endsWith(`#${id}`) || k.includes(`#${id}\0`)) m.delete(k)
 })
 
 function browseEntryLive(entry: BrowseCacheEntry): boolean {

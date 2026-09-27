@@ -8,7 +8,7 @@
 
 import { useSearchParams } from 'next/navigation'
 
-import { openParam, sealParams } from '@/lib/view/private-nav'
+import { SEALED_PARAMS, isExpiredToken, openParam, sealParams } from '@/lib/view/private-nav'
 
 /**
  * Read a single query param (or a fallback). A private repo's `path` / `ref` / `oid` travel as
@@ -17,7 +17,16 @@ import { openParam, sealParams } from '@/lib/view/private-nav'
 export function useParam(name: string, fallback = ''): string {
   const params = useSearchParams()
   const raw = params.get(name)
-  return raw === null ? fallback : openParam(raw)
+  return raw === null ? fallback : openParam(name, raw)
+}
+
+/** Whether the URL carries a private-repo token this tab did not issue (`private-nav.ts`). */
+export function useExpiredLink(): boolean {
+  const params = useSearchParams()
+  return [...SEALED_PARAMS].some((n) => {
+    const raw = params.get(n)
+    return raw !== null && isExpiredToken(n, raw)
+  })
 }
 
 /**

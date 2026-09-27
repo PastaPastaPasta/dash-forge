@@ -33,8 +33,11 @@ import { Field, Input, Textarea } from '@/components/ui/input'
 
 type Mode = 'file' | 'paste' | 'register'
 
+/** An identity update adding one key (measured like the limited-key registration). */
+const REGISTER_COST = '~0.0005 DASH'
+
 export function EncryptionKeyPanel(): JSX.Element | null {
-  const { identity } = useAuth()
+  const { identity, storage } = useAuth()
   const { sdk, ready, network } = useSdk()
   const core = NETWORKS[network].v2?.core ?? null
   const [keyId, setKeyId] = useState<number | null | undefined>(undefined)
@@ -66,7 +69,10 @@ export function EncryptionKeyPanel(): JSX.Element | null {
   if (identity === null || core === null) return null
 
   const run = async (work: () => Promise<number | null>): Promise<void> => {
-    if (!ready || sdk === null) return
+    if (!ready || sdk === null) {
+      setError('Still connecting to Platform; try again in a moment.')
+      return
+    }
     setBusy(true)
     setError(null)
     setNote(null)
@@ -105,8 +111,8 @@ export function EncryptionKeyPanel(): JSX.Element | null {
 
   const register = (): void => {
     const mnemonic = phrase.current?.value ?? ''
-    if (!window.confirm('Register a new encryption key on your identity? Your recovery phrase signs one identity update and is not stored.')) return
-    void run(() => registerEncryptionKey(sdk!, network, identity, { mnemonic }))
+    if (!window.confirm(`Register a new encryption key on your identity (${REGISTER_COST})? Your recovery phrase signs one identity update and is not stored. If your identity already has an encryption key, it is added here instead and nothing is registered.`)) return
+    void run(async () => (await registerEncryptionKey(sdk!, network, identity, core, { mnemonic })).keyId)
   }
 
   return (
@@ -118,14 +124,16 @@ export function EncryptionKeyPanel(): JSX.Element | null {
       {keyId !== null && keyId !== undefined ? (
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
           <span className="text-dense" data-testid="encryption-key-stored">
-            Encryption key {keyId} is stored in this browser, locked with the rest of the vault.
+            {storage === 'session'
+              ? `Encryption key ${keyId} is held for this tab only; it is forgotten on reload or lock.`
+              : `Encryption key ${keyId} is stored in this browser, locked with the rest of the vault.`}
           </span>
           <Button
             size="sm"
             variant="outline"
             onClick={() => {
               if (window.confirm('Remove the encryption key from this browser? You can add it again from your identity file.')) {
-                void removeEncryptionKey(network, identity)
+                removeEncryptionKey(network, identity).catch((e: unknown) => setError(errorMessage(e)))
               }
             }}
           >
@@ -187,7 +195,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
               <Field
                 label="Recovery phrase (12 or 24 words)"
                 htmlFor="enc-phrase"
-                hint="Derives the new key and your master key, which signs one identity update (one master-key signature). Neither is stored."
+                hint={`Derives the new key and your master key, which signs one identity update (${REGISTER_COST}, one master-key signature). Neither is stored.`}
               >
                 <Textarea id="enc-phrase" ref={phrase} className="min-h-[64px] font-mono" spellCheck={false} autoComplete="off" />
               </Field>

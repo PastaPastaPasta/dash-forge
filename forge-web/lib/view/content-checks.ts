@@ -14,7 +14,7 @@
  */
 
 import type { ObjectVerdict } from '../browse'
-import { onPrivateSessionsClosed } from '../repo/private-session'
+import { onPrivateSessionEnded } from '../repo/private-session'
 
 /** Everything the browse plane checked (or could not check) for one repo. */
 export interface ContentChecks {
@@ -78,9 +78,9 @@ export type ContentCheckDelta = Partial<Record<Counter, number>> & {
 const ledger = new Map<string, ContentChecks>()
 
 // A private repo's entries are keyed `repoId#sessionId` and hold decrypted state: they go with
-// the session (vault lock, key change).
-onPrivateSessionsClosed(() => {
-  for (const m of [ledger]) for (const k of [...m.keys()]) if (k.includes('#')) m.delete(k)
+// the session, however it ends (lock, key change, retirement).
+onPrivateSessionEnded((id) => {
+  for (const m of [ledger]) for (const k of [...m.keys()]) if (k.endsWith(`#${id}`) || k.includes(`#${id}\0`)) m.delete(k)
 })
 const listeners = new Set<() => void>()
 

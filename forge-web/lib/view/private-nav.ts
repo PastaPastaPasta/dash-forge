@@ -1,6 +1,7 @@
 /**
- * Keep a private repo's decrypted names out of URLs (`docs/security/private-repos.md` §7: file,
- * branch and commit names are hidden).
+ * Keep a private repo's decrypted names out of URLs (`docs/security/private-repos.md` §1, §4.3:
+ * file paths and ref names are encrypted content; commit ids are visible metadata under §7, and
+ * are tokenized too only so every sealed route behaves the same).
  *
  * Routes are query-param (`?path=src/secret.rs&ref=feature/x&oid=…`), and a URL ends up in the
  * browser history, in bookmarks, and in the request a reload sends to whoever hosts the app. For a
@@ -12,7 +13,7 @@
 const TOKEN = /^~[0-9a-f]{16}$/
 
 /** The params whose values are decrypted names in a private repo. */
-const SEALED_PARAMS: ReadonlySet<string> = new Set(['path', 'ref', 'oid'])
+export const SEALED_PARAMS: ReadonlySet<string> = new Set(['path', 'ref', 'oid'])
 
 /** Repos (by address key) whose URLs are sealed in this tab. */
 const sealedRepos = new Set<string>()
@@ -56,12 +57,18 @@ export function sealParams(
 }
 
 /**
- * The value a route param stands for: a token resolves to its value in this tab, or `''` when
- * this tab never made it (a reload, a copied link); anything else is itself.
+ * The value route param `name` stands for: a token this tab issued resolves to its value;
+ * anything else (another param, a public repo's file literally named like a token, a token from
+ * another tab) is returned as it is. See {@link isExpiredToken} for the last case.
  */
-export function openParam(raw: string): string {
-  if (!TOKEN.test(raw)) return raw
-  return byToken.get(raw) ?? ''
+export function openParam(name: string, raw: string): string {
+  if (!SEALED_PARAMS.has(name)) return raw
+  return byToken.get(raw) ?? raw
+}
+
+/** A sealed param holding a token this tab did not issue (a reload, a copied link, a lock). */
+export function isExpiredToken(name: string, raw: string): boolean {
+  return SEALED_PARAMS.has(name) && TOKEN.test(raw) && !byToken.has(raw)
 }
 
 /** Forget every token and sealed repo (vault lock: nothing decrypted outlives it). */

@@ -127,5 +127,8 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
   if (!isPrivate) return { home, pending: false, error: null, retry: state.reload }
   if (state.error !== null) return { home, pending: false, error: state.error, retry: state.reload }
   if (state.data === null) return { home, pending: true, error: null, retry: state.reload }
+  // Before anything renders a link: whatever address form reached this repo (a pinned id, a DPNS
+  // owner), its links carry tokens, including on a warm seed (idempotent).
+  if (state.data.private?.access === 'member') sealRepoUrls(addr)
   return { home: state.data, pending: false, error: null, retry: state.reload }
 }

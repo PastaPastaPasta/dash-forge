@@ -34,7 +34,7 @@ import { ConsensusRefusal, DUPLICATE_UNIQUE_CODE, createDocumentIdempotent, prev
 import { sleep } from '../sdk/facade'
 import { DOC, type RepoRef } from './contract'
 import { invalidateMembers, readMemberships } from './members'
-import { invalidatePrivateSession, isMaintainer, loadPrivateSessionFresh, sessionUnwrapper, type PrivateSession, type WrapDoc } from './private-session'
+import { isMaintainer, loadPrivateSessionUncached, sessionUnwrapper, type PrivateSession, type WrapDoc } from './private-session'
 import { grantMember, revokeMember } from './writes'
 
 
@@ -204,9 +204,15 @@ export type RotationStep =
   | { readonly kind: 'anchored'; readonly epoch: number }
 
 /** A fresh session (§5.3: anchors are re-read before every write). */
-function freshSession(c: PrivateWriteContext): Promise<PrivateSession> {
+async function withFreshSession<T>(c: PrivateWriteContext, use: (s: PrivateSession) => Promise<T>): Promise<T> {
   invalidateMembers(c.repo, c.network)
-  return loadPrivateSessionFresh(c.sdk, c.repo, c.network, c.auth.identityId, sessionUnwrapper(c.ops))
+  // Uncached: it never replaces the session the page reads through, and it ends with the step.
+  const session = await loadPrivateSessionUncached(c.sdk, c.repo, c.network, c.auth.identityId, sessionUnwrapper(c.ops))
+  try {
+    return await use(session)
+  } finally {
+    session.close()
+  }
 }
 
 function keyOf(session: PrivateSession, identity: string, keyId: number): IdentityPublicKey {
@@ -275,7 +281,34 @@ export async function rotateRepoKey(
   intent: string,
   onStep?: (s: RotationStep) => void,
 ): Promise<number> {
-  const session = await freshSession(c)
+  const plan = await withFreshSession(c, (session) => rotateWith(c, session, exclude, intent, onStep))
+  // Step 4: confirm the anchor of the new epoch is this identity's, among current maintainers.
+  for (let i = 0; i < POLL_ATTEMPTS; i++) {
+    onStep?.({ kind: 'waiting', what: `the anchor of epoch ${plan.epoch}` })
+    const anchor = await withFreshSession(c, async (s) => s.anchors.get(plan.epoch))
+    if (anchor !== undefined) {
+      if (anchor.owner !== c.auth.identityId) {
+        throw new PrivateMembersError(
+          `another maintainer rotated to epoch ${plan.epoch} first; their key is the repo's key. Nothing more to do.`,
+          'E309',
+        )
+      }
+      onStep?.({ kind: 'anchored', epoch: plan.epoch })
+      return plan.epoch
+    }
+    await sleep(POLL_MS)
+  }
+  throw new PrivateMembersError(`the anchor of epoch ${plan.epoch} is not visible yet; reload and repair to finish`, 'E309')
+}
+
+/** §5.5 steps 1–3 over `session`: wraps (self first), then the anchor. Returns the plan. */
+async function rotateWith(
+  c: PrivateWriteContext,
+  session: PrivateSession,
+  exclude: readonly string[],
+  intent: string,
+  onStep?: (s: RotationStep) => void,
+): Promise<RotationPlan> {
   const plan = planRotation(session, c.auth.identityId, exclude, c.repo.forge.core, c.ops.keyId)
   const kn = await rawEpochKey(session, c, plan.from)
   let next: { keys: EpochKeys; raw: Uint8Array }
@@ -323,25 +356,7 @@ export async function rotateRepoKey(
   } finally {
     kn.raw.fill(0)
   }
-  // Step 4: confirm the anchor of the new epoch is this identity's, among current maintainers.
-  for (let i = 0; i < POLL_ATTEMPTS; i++) {
-    onStep?.({ kind: 'waiting', what: `the anchor of epoch ${plan.epoch}` })
-    const s = await freshSession(c)
-    const anchor = s.anchors.get(plan.epoch)
-    s.close()
-    if (anchor !== undefined) {
-      if (anchor.owner !== c.auth.identityId) {
-        throw new PrivateMembersError(
-          `another maintainer rotated to epoch ${plan.epoch} first; their key is the repo's key. Nothing more to do.`,
-          'E309',
-        )
-      }
-      onStep?.({ kind: 'anchored', epoch: plan.epoch })
-      return plan.epoch
-    }
-    await sleep(POLL_MS)
-  }
-  throw new PrivateMembersError(`the anchor of epoch ${plan.epoch} is not visible yet; reload and repair to finish`, 'E309')
+  return plan
 }
 
 /**
@@ -349,12 +364,14 @@ export async function rotateRepoKey(
  * wrap of the current epoch to them. Two transitions.
  */
 export async function addPrivateMember(c: PrivateWriteContext, memberId: string, role: Role, intent: string): Promise<void> {
-  const before = await freshSession(c)
-  const keys = before.memberKeys.get(memberId) ?? (await fetchIdentityKeys(c.sdk, memberId))
+  const keys = await fetchIdentityKeys(c.sdk, memberId)
   if (usableEncryptionKey(keys ?? [], c.repo.forge.core) === null) throw new PrivateMembersError(`${memberId.slice(0, 8)}… has no encryption key yet`, 'E305')
   await grantMember(c.sdk, c.auth, c.repo, memberId, role, `${intent}:member`)
   await waitForMembers(c, (rows) => holds(rows, memberId, role))
-  const session = await freshSession(c)
+  await withFreshSession(c, (session) => wrapForMember(c, session, memberId, intent))
+}
+
+async function wrapForMember(c: PrivateWriteContext, session: PrivateSession, memberId: string, intent: string): Promise<void> {
   const n = session.resolution.writeEpoch
   if (n === null) throw new PrivateMembersError("you can't read the current key, so you can't hand it out", 'E309')
   const key = usableEncryptionKey(session.memberKeys.get(memberId) ?? [], c.repo.forge.core)
@@ -365,7 +382,6 @@ export async function addPrivateMember(c: PrivateWriteContext, memberId: string,
   } finally {
     kn.raw.fill(0)
   }
-  invalidatePrivateSession(c.repo)
 }
 
 /** Whether `id` has a usable ENCRYPTION key (the Add button's check). */
@@ -389,10 +405,24 @@ const holds = (rows: readonly Membership[], identity: string, role?: Role): bool
   rows.some((m) => m.identity === identity && (role === undefined || m.role === role))
 
 /**
- * Remove a member (owner only) and rotate (§5.5): delete the membership, wait until the list no
- * longer shows it, then {@link rotateRepoKey} excluding them explicitly. Removing one role of an
- * identity that keeps the other is not a removal: nothing rotates (they are still a member).
- * Returns the new epoch, or null when no rotation was needed.
+ * What removing `role` from `memberId` does to the key (§5.4, §5.5), given the current members:
+ * - `rotate-exclude`: they leave the repo; rotate without them;
+ * - `rotate-keep`: a maintainer stays on as a writer; their wraps no longer count (§5.4 check 2),
+ *   so rotate, and they get the new key like every remaining member;
+ * - `none`: a writer role goes while they stay maintainer; nothing about the key changes.
+ */
+export type RemovalEffect = 'rotate-exclude' | 'rotate-keep' | 'none'
+
+export function removalEffect(members: readonly Membership[], memberId: string, role: Role): RemovalEffect {
+  const keeps = members.some((m) => m.identity === memberId && m.role !== role)
+  if (!keeps) return 'rotate-exclude'
+  return role === 'maintainer' ? 'rotate-keep' : 'none'
+}
+
+/**
+ * Remove a member's role (owner only) and rotate as {@link removalEffect} says (§5.5): delete the
+ * membership, wait until the list no longer shows it, then {@link rotateRepoKey}, excluding them
+ * explicitly when they left. Returns the new epoch, or null when no rotation was needed.
  */
 export async function removePrivateMember(
   c: PrivateWriteContext,
@@ -405,8 +435,9 @@ export async function removePrivateMember(
   onStep?.({ kind: 'deleted' })
   onStep?.({ kind: 'waiting', what: 'the member list to drop them' })
   const rows = await waitForMembers(c, (r) => !holds(r, memberId, role))
-  if (holds(rows, memberId)) return null
-  return rotateRepoKey(c, [memberId], intent, onStep)
+  const effect = removalEffect([...rows, { identity: memberId, role, createdAt: 0 }], memberId, role)
+  if (effect === 'none') return null
+  return rotateRepoKey(c, effect === 'rotate-exclude' ? [memberId] : [], intent, onStep)
 }
 
 /**
@@ -414,15 +445,16 @@ export async function removePrivateMember(
  * wrap each member without a wrap to an enabled key.
  */
 export async function runRepair(c: PrivateWriteContext, intent: string, onStep?: (s: RotationStep) => void): Promise<void> {
-  let session = await freshSession(c)
-  let plan = planRepair(session, c.auth.identityId, c.repo.forge.core)
+  const first = await withFreshSession(c, async (s) => planRepair(s, c.auth.identityId, c.repo.forge.core))
+  if (first === null) return
+  if (first.rotate.length > 0) await rotateRepoKey(c, first.rotate, `${intent}:rotate`, onStep)
+  await withFreshSession(c, (session) => wrapMissing(c, session, intent, onStep))
+}
+
+/** §5.6's second action: wrap the current epoch to each member with no wrap to an enabled key. */
+async function wrapMissing(c: PrivateWriteContext, session: PrivateSession, intent: string, onStep?: (s: RotationStep) => void): Promise<void> {
+  const plan = planRepair(session, c.auth.identityId, c.repo.forge.core)
   if (plan === null) return
-  if (plan.rotate.length > 0) {
-    await rotateRepoKey(c, plan.rotate, `${intent}:rotate`, onStep)
-    session = await freshSession(c)
-    plan = planRepair(session, c.auth.identityId, c.repo.forge.core)
-    if (plan === null) return
-  }
   const n = session.resolution.writeEpoch
   if (n === null || plan.wrap.length === 0) return
   const kn = await rawEpochKey(session, c, n)
@@ -436,7 +468,6 @@ export async function runRepair(c: PrivateWriteContext, intent: string, onStep?:
   } finally {
     kn.raw.fill(0)
   }
-  invalidatePrivateSession(c.repo)
 }
 
 /** The cost of a repair: a rotation (members + 1) when needed, plus one wrap per unwrapped member. */

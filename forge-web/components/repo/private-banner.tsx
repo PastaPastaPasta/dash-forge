@@ -178,8 +178,12 @@ function RepairNote({ home, session, self, plan }: { home: RepoHome; session: Pr
         confirmLabel="Sign & repair"
         onConfirm={async (intent) => {
           if (write.context === null) throw new Error('unlock with your encryption key first')
-          await runRepair(write.context, intent)
-          write.done()
+          try {
+            await runRepair(write.context, intent)
+          } finally {
+            // Some steps may have landed even when a later one failed: re-read either way.
+            write.done()
+          }
         }}
       />
     </Note>

@@ -26,7 +26,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { BrowseReader, ObjectLocator } from '../browse'
 import { repoKey, type PackManifest, type RepoRef } from '../repo'
-import { onPrivateSessionsClosed } from '../repo/private-session'
+import { onPrivateSessionEnded } from '../repo/private-session'
 import {
   loadArtifactBytesProgress,
   PackUnavailableError,
@@ -63,9 +63,9 @@ const cache = new Map<string, CacheEntry>()
 const restores = new Map<string, Promise<BrowseContext | null>>()
 
 // A private repo's entries are keyed `repoId#sessionId` and hold decrypted state: they go with
-// the session (vault lock, key change).
-onPrivateSessionsClosed(() => {
-  for (const m of [cache, restores]) for (const k of [...m.keys()]) if (k.includes('#')) m.delete(k)
+// the session, however it ends (lock, key change, retirement).
+onPrivateSessionEnded((id) => {
+  for (const m of [cache, restores]) for (const k of [...m.keys()]) if (k.endsWith(`#${id}`) || k.includes(`#${id}\0`)) m.delete(k)
 })
 
 /**

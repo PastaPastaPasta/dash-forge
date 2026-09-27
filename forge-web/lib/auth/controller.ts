@@ -66,6 +66,7 @@ import {
   unlockedSecret,
   type ExtraKey,
   type Protection,
+  type StoreOutcome,
   type VaultInfo,
   type VaultSecret,
 } from './vault'
@@ -346,13 +347,11 @@ export class AuthController {
    */
   private async adopt(identityId: string, key: LimitedKey, protection: Protection): Promise<AuthSession> {
     const secret: VaultSecret = { identityId, keyId: key.keyId, wif: key.wif }
-    const { storageSettingsDropped, encryptionKeyDropped } = await storeInVault(this.network, secret, protection)
-    if (storageSettingsDropped) {
-      this.setState({
-        notice: 'Your storage settings were sealed with the previous key, which was locked when you renewed it, so they could not be carried over. Add your storage again in Settings → Storage.',
-      })
-    }
-    if (encryptionKeyDropped) this.setState({ notice: ENCRYPTION_KEY_DROPPED })
+    const outcome = await storeInVault(this.network, secret, protection)
+    this.noteDropped(
+      outcome,
+      'Your storage settings were sealed with the previous key, which was locked when you renewed it, so they could not be carried over. Add your storage again in Settings → Storage.',
+    )
     try {
       return await this.open(secret, 'vault', key.limits)
     } catch (e) {
@@ -389,6 +388,7 @@ export class AuthController {
       if (options.enablePrivateRepos === true) {
         material = 'fileText' in input ? encryptionMaterialFromFile(input.fileText) : { mnemonic: input.mnemonic }
       }
+      try {
       if ('fileText' in input) {
         const m = masterMaterialFromFile(input.fileText)
         this.checkFileNetwork(m.networkKey)
@@ -419,15 +419,18 @@ export class AuthController {
       })
       masterWif = null
       const session = await this.adopt(identityId, key, protection)
-      if (material !== null) {
-        try {
-          await this.enableEncryption(identityId, material)
-        } finally {
-          if ('keys' in material) wipeMaterial(material)
-        }
-      }
+      if (material !== null) await this.enableEncryption(identityId, material)
       return session
+      } finally {
+        if (material !== null && 'keys' in material) wipeMaterial(material)
+      }
     })
+  }
+
+  /** Tell the user what a renewal could not carry over (one notice, both parts). */
+  private noteDropped(outcome: StoreOutcome, storageText: string): void {
+    const parts = [...(outcome.storageSettingsDropped ? [storageText] : []), ...(outcome.encryptionKeyDropped ? [ENCRYPTION_KEY_DROPPED] : [])]
+    if (parts.length > 0) this.setState({ notice: parts.join(' ') })
   }
 
   /**
@@ -486,11 +489,10 @@ export class AuthController {
         .map((h) => ({ contractId: 'contractId' in h ? h.contractId : forge.core, keyId: h.keyId, wif: h.wif }))
       const extra = [...rest.map((k) => toExtraKey(k, forge)), ...kept]
       const secret: VaultSecret = { identityId, keyId: main.keyId, wif: main.wif, ...(extra.length ? { extra } : {}) }
-      const { storageSettingsDropped, encryptionKeyDropped } = await storeInVault(this.network, secret, protection)
-      if (storageSettingsDropped) {
-        this.setState({ notice: 'Your storage settings could not be carried over to the new key. Add your storage again in Settings → Storage.' })
-      }
-      if (encryptionKeyDropped) this.setState({ notice: ENCRYPTION_KEY_DROPPED })
+      this.noteDropped(
+        await storeInVault(this.network, secret, protection),
+        'Your storage settings could not be carried over to the new key. Add your storage again in Settings → Storage.',
+      )
       try {
         return await this.open(secret, 'vault', main.limits ?? undefined)
       } catch (e) {

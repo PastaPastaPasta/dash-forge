@@ -27,6 +27,8 @@ import {
   addPrivateMember,
   hasUsableEncryptionKey,
   planRotation,
+  removalEffect,
+  type RemovalEffect,
   rotationCost,
   removePrivateMember,
   type RotationPlan,
@@ -45,6 +47,15 @@ import { Field, Input } from '@/components/ui/input'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 
 /** The spec's removal warning, verbatim, with the member's name. */
+/** What the remove dialog says, for what the removal will do. */
+function removalText(effect: RemovalEffect, name: string, role: Role): string {
+  if (effect === 'none') return `Removes ${name}'s ${role} role. They stay a maintainer, so the repo key does not change.`
+  if (effect === 'rotate-keep') {
+    return `Removes ${name}'s ${role} role; they stay a writer. The repo key rotates, because keys they handed out as a maintainer stop counting, and ${name} gets the new key too.`
+  }
+  return removeWarning(name)
+}
+
 function removeWarning(name: string): string {
   return `Removing ${name} rotates the repo key. New pushes, issues and comments will be unreadable to ${name}. Everything ${name} could already read stays readable to ${name} — encryption can't take back what was shared.`
 }
@@ -101,10 +112,11 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
   const removalPlan = useMemo((): { plan: RotationPlan | null; error: string | null } => {
     if (removing === null || identity === null || write.context === null) return { plan: null, error: null }
     // Removing one role of someone who keeps the other rotates nothing (they stay a member).
-    const keepsRole = session.members.some((m) => m.identity === removing.member && m.role !== removing.role)
-    if (keepsRole) return { plan: null, error: null }
+    const effect = removalEffect(session.members, removing.member, removing.role)
+    if (effect === 'none') return { plan: null, error: null }
     try {
-      return { plan: planRotation(session, identity, [removing.member], repo.forge.core, write.context.ops.keyId), error: null }
+      const exclude = effect === 'rotate-exclude' ? [removing.member] : []
+      return { plan: planRotation(session, identity, exclude, repo.forge.core, write.context.ops.keyId), error: null }
     } catch (e) {
       return { plan: null, error: e instanceof Error ? e.message : String(e) }
     }
@@ -215,23 +227,29 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         confirmLabel="Sign & add"
         onConfirm={async (intent) => {
           if (write.context === null) throw new Error('unlock with your encryption key first')
-          await addPrivateMember(write.context, trimmed, role, intent)
-          setMemberId('')
-          write.done()
+          try {
+            await addPrivateMember(write.context, trimmed, role, intent)
+            setMemberId('')
+          } finally {
+            write.done()
+          }
         }}
       />
       <ConfirmDialog
         open={removing !== null}
         onClose={() => setRemoving(null)}
         title={`Remove ${removing?.role ?? 'member'}`}
-        description={removing === null ? '' : removeWarning(shortId(removing.member))}
+        description={removing === null ? '' : removalText(removalEffect(session.members, removing.member, removing.role), shortId(removing.member), removing.role)}
         cost={removalPlan.plan !== null ? rotationCost(removalPlan.plan) : removing !== null ? previewDelete(removing.role) : null}
         confirmLabel="Sign & remove"
         onConfirm={async (intent) => {
           if (write.context === null || removing === null) throw new Error('unlock with your encryption key first')
           if (removalPlan.error !== null) throw new Error(removalPlan.error)
-          await removePrivateMember(write.context, removing.member, removing.role, intent, (s) => setSteps((prev) => [...prev, stepText(s)]))
-          write.done()
+          try {
+            await removePrivateMember(write.context, removing.member, removing.role, intent, (s) => setSteps((prev) => [...prev, stepText(s)]))
+          } finally {
+            write.done()
+          }
         }}
       />
       {removing !== null && removalPlan.error !== null ? <p className="text-[12px] text-danger">{removalPlan.error}</p> : null}

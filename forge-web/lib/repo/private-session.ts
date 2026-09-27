@@ -5,7 +5,7 @@
  * the content gate (`openContent` over the reader's keys), the pack header cache, the keys.
  *
  * Lifetime: one session per (network, repo, reader) is cached for the view session
- * (`SESSION_TTL_MS`); writers call {@link loadPrivateSessionFresh} before every write (§5.3: anchors are re-read before every
+ * (`SESSION_TTL_MS`); writers call {@link loadPrivateSessionUncached} before every write (§5.3: anchors are re-read before every
  * write). Every session closes when the vault locks or the encryption key changes: its gate
  * then admits nothing, its header cache is cleared, and listeners purge the decrypted browse
  * state built on it. No key and no decrypted string is persisted anywhere.
@@ -195,6 +195,18 @@ function toPrivateRepoConfig(doc: PlainDocument): RepoConfig {
 }
 
 const liveSessions = new Set<{ close(): void }>()
+const endListeners = new Set<(sessionId: string) => void>()
+
+/**
+ * Be told when any one session ends (lock, key change, TTL retirement, a write flow closing
+ * its own): caches keyed `repoId#sessionId` drop that session's decrypted state.
+ */
+export function onPrivateSessionEnded(listener: (sessionId: string) => void): () => void {
+  endListeners.add(listener)
+  return () => {
+    endListeners.delete(listener)
+  }
+}
 /**
  * Bumped by every {@link closePrivateSessions}. A load that started before a close must not
  * outlive it: it checks the generation it started under before handing anything out.
@@ -359,10 +371,12 @@ export async function loadPrivateSession(input: {
   }
   const handle = {
     close() {
+      if (closed) return
       closed = true
       refs = null
       headerCache.clear()
       liveSessions.delete(handle)
+      for (const l of endListeners) l(session.id)
     },
   }
   // The vault locked (or the key changed) while this loaded: it must not survive the close.
@@ -401,7 +415,7 @@ export function sdkSessionSource(sdk: EvoSDK, repo: RepoRef): SessionSource {
   }
 }
 
-const sessionCache = new Map<string, { at: number; promise: Promise<PrivateSession> }>()
+const sessionCache = new Map<string, { at: number; promise: Promise<PrivateSession>; session?: PrivateSession }>()
 
 function cacheKey(network: Network, repo: RepoRef, reader: string): string {
   return `${network}:${repo.forge.core}:${repo.repoId}:${reader}`
@@ -420,9 +434,13 @@ export function loadPrivateSessionCached(
 ): Promise<PrivateSession> {
   const key = cacheKey(network, repo, reader)
   const hit = sessionCache.get(key)
-  if (hit !== undefined && Date.now() - hit.at < SESSION_TTL_MS) return hit.promise
+  if (hit !== undefined && Date.now() - hit.at < SESSION_TTL_MS && hit.session?.closed !== true) return hit.promise
   const promise = loadPrivateSession({ repo, network, reader, source: sdkSessionSource(sdk, repo), unwrapper })
-  sessionCache.set(key, { at: Date.now(), promise })
+  const entry: { at: number; promise: Promise<PrivateSession>; session?: PrivateSession } = { at: Date.now(), promise }
+  sessionCache.set(key, entry)
+  promise.then((s) => {
+    entry.session = s
+  }, () => undefined)
   // The session it replaces may still back the page for a moment: end it a little later.
   if (hit !== undefined) retire(hit.promise, promise)
   promise.catch(() => {
@@ -443,20 +461,18 @@ function retire(old: Promise<PrivateSession>, next: Promise<PrivateSession>): vo
   next.then(end, end)
 }
 
-/** A fresh session (writes: §5.3 re-reads anchors before every write), replacing the cached one. */
-export function loadPrivateSessionFresh(
+/**
+ * A fresh, uncached session for a write (§5.3: anchors are re-read before every write). It never
+ * replaces the session a page reads through; the caller closes it when done.
+ */
+export function loadPrivateSessionUncached(
   sdk: EvoSDK,
   repo: RepoRef,
   network: Network,
   reader: string,
   unwrapper: SessionUnwrapper | null,
 ): Promise<PrivateSession> {
-  const key = cacheKey(network, repo, reader)
-  const hit = sessionCache.get(key)
-  sessionCache.delete(key)
-  const next = loadPrivateSessionCached(sdk, repo, network, reader, unwrapper)
-  if (hit !== undefined) retire(hit.promise, next)
-  return next
+  return loadPrivateSession({ repo, network, reader, source: sdkSessionSource(sdk, repo), unwrapper })
 }
 
 /** Drop the cached session of a repo (after a membership or key change). */
