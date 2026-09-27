@@ -37,6 +37,7 @@ import {
   removeDraftComment,
   setDraftVerdict,
   splitDraftComments,
+  startSubmit,
   submitStarted,
 } from '@/lib/view/pending-review'
 import { useAuth } from '@/contexts/auth-context'
@@ -175,18 +176,19 @@ export function ReviewDrawer({
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
+  // Follow the draft being shown: another draft (loaded, or another identity's), or none at all
+  // (discarded, submitted, or signed out) resets the fields, so one draft's words never land in
+  // another.
   useEffect(() => {
-    if (draft !== null) {
-      setSummary(draft.summary)
-      setVerdict(draft.verdict)
-    }
-  }, [draft?.draftId]) // eslint-disable-line react-hooks/exhaustive-deps
+    setSummary(draft?.summary ?? '')
+    setVerdict(draft?.verdict ?? 'comment')
+  }, [draft?.draftId, identity]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // The summary and verdict are part of the draft: kept in this browser as they change (shortly
   // after typing stops), so closing the panel or reloading the page loses neither.
   const frozenNow = draft !== null && submitStarted(draft)
   useEffect(() => {
-    if (!loaded || frozenNow) return
+    if (!loaded || frozenNow || progress !== null) return
     const same = draft === null ? summary === '' && verdict === 'comment' : draft.summary === summary && draft.verdict === verdict
     if (same) return
     const t = setTimeout(() => {
@@ -194,7 +196,7 @@ export function ReviewDrawer({
       if (d !== null && !submitStarted(d)) update(setDraftVerdict(d, verdict, summary))
     }, 250)
     return () => clearTimeout(t)
-  }, [summary, verdict, draft, loaded, frozenNow, ensure, update])
+  }, [summary, verdict, draft, loaded, frozenNow, progress, ensure, update])
 
   const count = draft?.comments.length ?? 0
   const frozen = draft !== null && submitStarted(draft)
@@ -213,11 +215,16 @@ export function ReviewDrawer({
       setError('Write a summary or add a comment first.')
       return
     }
-    // The draft as it will be written: with a real id and the chosen verdict and summary.
+    // The draft as it will be written, frozen before anything is: its attempt on record, the
+    // chosen verdict and the trimmed summary. The page then offers no edits (pending.frozen) and
+    // the auto-save stands down, so nothing re-saves an editable draft over the submit's.
     const base = frozen ? null : ensure()
     if (!frozen && base === null) return
-    const toSubmit: ReviewDraft = frozen ? planned : setDraftVerdict(base!, verdict, summary.trim())
-    if (!frozen) update(toSubmit)
+    const toSubmit: ReviewDraft = frozen ? planned : startSubmit(base!, verdict, summary, Date.now())
+    if (!frozen) {
+      setSummary(toSubmit.summary)
+      update(toSubmit)
+    }
     setError(null)
     setProgress({ done: 0, total: documents })
     try {

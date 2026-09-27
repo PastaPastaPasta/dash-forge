@@ -139,8 +139,11 @@ export type TimelineItem =
       readonly kind: 'comment'
       readonly at: number
       readonly comment: CommentView
-      /** It replies to a comment that is no longer there (its author deleted it). */
-      readonly orphaned?: boolean
+      /**
+       * It replies to a comment that is not shown: `'deleted'` when every comment was read (its
+       * author deleted it), `'hidden'` when some could not be opened here (a private repo).
+       */
+      readonly orphaned?: 'deleted' | 'hidden'
     }
   | {
       readonly kind: 'event'
@@ -255,7 +258,7 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
   const labels = docs(3).length < 100 ? newestLabels(docs(3)) : await readLabels(sdk, repo)
   return {
     issue: issueViewOf(doc, log),
-    timeline: mergeTimeline(comments, log.events, log.authorEvents, []),
+    timeline: mergeTimeline(comments, log.events, log.authorEvents, [], tally.total > 0),
     hidden: tally.value,
     eventValues: eventValues(log),
     labels,
@@ -388,7 +391,7 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number,
   const approvals = await readApprovals(members, policy, reviews, review, pull.author)
   return {
     pull,
-    timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews),
+    timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews, tally.total > 0),
     comments,
     reviews,
     review,
@@ -459,6 +462,8 @@ export function mergeTimeline(
   events: readonly Event[],
   authorEvents: readonly Event[],
   reviews: readonly ReviewView[],
+  /** Some comments could not be opened by this reader (private repo): a missing parent may be one. */
+  someHidden = false,
 ): TimelineItem[] {
   const eventItem = (e: Event, byAuthor: boolean) => ({
     kind: 'event' as const,
@@ -478,7 +483,7 @@ export function mergeTimeline(
   const items: (TimelineItem & { readonly id: string })[] = [
     ...comments
       .filter((c) => !grouped.has(c.id))
-      .map((c) => ({ kind: 'comment' as const, at: c.createdAt, id: c.id, comment: c, ...(c.replyTo !== null && !byId.has(c.replyTo) ? { orphaned: true } : {}) })),
+      .map((c) => ({ kind: 'comment' as const, at: c.createdAt, id: c.id, comment: c, ...(c.replyTo !== null && !byId.has(c.replyTo) ? { orphaned: someHidden ? ('hidden' as const) : ('deleted' as const) } : {}) })),
     ...events.map((e) => eventItem(e, false)),
     ...authorEvents.map((e) => eventItem(e, true)),
     ...reviewItems,

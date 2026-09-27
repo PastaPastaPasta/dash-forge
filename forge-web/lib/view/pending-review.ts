@@ -48,12 +48,26 @@ function editable(d: ReviewDraft): void {
   if (submitStarted(d)) throw new Error('this review is being submitted: retry or discard it first')
 }
 
-/** Add a pending comment (its anchor carries no commit: the submit uses the draft's head). */
+/**
+ * Add a pending comment. An anchor on the draft's own head carries no commit (the submit uses the
+ * draft's head); one made on another head (the PR moved since the draft began, and the diff now
+ * shows the new head) keeps that head, so it is never filed under a line of the old one.
+ */
 export function addDraftComment(d: ReviewDraft, localId: string, anchor: AnchorInput, body: string): ReviewDraft {
   editable(d)
   if (body.trim() === '') throw new Error('a comment needs a body')
-  const { commitOid: _drop, ...rest } = anchor
-  return { ...d, comments: [...d.comments, { localId, anchor: rest, body: body.trim() }] }
+  const { commitOid, ...rest } = anchor
+  const own = commitOid === undefined || commitOid.toLowerCase() === d.headOid.toLowerCase()
+  return { ...d, comments: [...d.comments, { localId, anchor: own ? rest : { ...rest, commitOid }, body: body.trim() }] }
+}
+
+/**
+ * The draft as a submit begins: frozen at once (`attemptedAt`), with the chosen verdict and the
+ * trimmed summary, so nothing on the page can edit or re-save it while the documents are written.
+ */
+export function startSubmit(d: ReviewDraft, verdict: VerdictInput, summary: string, now: number): ReviewDraft {
+  const set = submitStarted(d) ? d : setDraftVerdict(d, verdict, summary.trim())
+  return set.attemptedAt === undefined ? { ...set, attemptedAt: now } : set
 }
 
 export function editDraftComment(d: ReviewDraft, localId: string, body: string): ReviewDraft {

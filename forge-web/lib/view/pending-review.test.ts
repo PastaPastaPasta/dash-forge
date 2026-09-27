@@ -11,6 +11,7 @@ import {
   removeDraftComment,
   setDraftVerdict,
   splitDraftComments,
+  startSubmit,
   submitStarted,
 } from './pending-review'
 
@@ -73,5 +74,27 @@ describe('what a pending review keeps', () => {
     expect(splitDraftComments(d, H2)).toEqual({ onLines: [], elsewhere: d.comments })
     expect(splitDraftComments(d, H1)).toEqual({ onLines: d.comments, elsewhere: [] })
     expect(splitDraftComments(null, H1)).toEqual({ onLines: [], elsewhere: [] })
+  })
+})
+
+describe('a submit and a moved head', () => {
+  it('freezes the draft the moment a submit begins, with the trimmed summary', () => {
+    const d = addDraftComment(base(), 'a', { path: 'x', line: 1, side: 1 }, 'hi')
+    const s = startSubmit(d, 'approve', 'Looks good.\n', 42)
+    expect(submitStarted(s)).toBe(true)
+    expect(s).toMatchObject({ attemptedAt: 42, verdict: 'approve', summary: 'Looks good.' })
+    expect(() => editDraftComment(s, 'a', 'x')).toThrow(/being submitted/)
+    // A retry keeps the first attempt's time and words.
+    expect(startSubmit(s, 'comment', 'other', 99)).toBe(s)
+  })
+
+  it('files a comment made on a newer head under that head, not a line of the old one', () => {
+    let d = addDraftComment(base(), 'a', { path: 'x', line: 3, side: 1, commitOid: H1 }, 'on the draft head')
+    d = addDraftComment(d, 'b', { path: 'x', line: 3, side: 1, commitOid: H2 }, 'on the moved head')
+    expect(d.comments[0]?.anchor.commitOid).toBeUndefined()
+    expect(d.comments[1]?.anchor.commitOid).toBe(H2)
+    // Shown on H2's lines, and listed apart while the diff shows H1.
+    expect(splitDraftComments(d, H2).onLines.map((c) => c.localId)).toEqual(['b'])
+    expect(splitDraftComments(d, H1).onLines.map((c) => c.localId)).toEqual(['a'])
   })
 })

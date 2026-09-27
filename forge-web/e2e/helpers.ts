@@ -279,8 +279,19 @@ export async function signedIn(browser: Browser, name: string, path = '/'): Prom
 
 /** After a reload: unlock the vault this context already holds. */
 export async function unlock(page: Page): Promise<void> {
-  await page.getByRole('button', { name: /^sign in$/i }).first().click()
-  await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
+  // A click that lands before the page hydrates opens nothing (the static button has no handler
+  // yet): click again until the sign-in sheet shows its passphrase field.
+  const passphrase = page.getByLabel('Passphrase', { exact: true })
+  for (let i = 0; ; i++) {
+    await page.getByRole('button', { name: /^sign in$/i }).first().click()
+    try {
+      await passphrase.waitFor({ state: 'visible', timeout: 10_000 })
+      break
+    } catch (e) {
+      if (i >= 4) throw e
+    }
+  }
+  await passphrase.fill(PASSPHRASE)
   await page.getByRole('button', { name: /^unlock$/i }).click()
   await expect(page.getByTestId('funds-pill')).toBeVisible({ timeout: 60_000 })
 }
