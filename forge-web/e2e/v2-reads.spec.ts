@@ -120,7 +120,8 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     // MAINTAINER's seeded approval; the write spec (v2-writes w6) may have added OWNER's.
     await expect(approvals.getByText(/approved · maintainer/).first()).toBeVisible()
     await expect(page.getByText(/Objects live in this repo/)).toBeVisible()
-    // The diff reads both sides through the browse plane.
+    // The diff (the Files changed tab) reads both sides through the browse plane.
+    await page.getByRole('tab', { name: /Files changed/ }).click()
     await expect(page.getByText('src/main.rs').first()).toBeVisible({ timeout: 45_000 })
     await expect(page.getByText(/hello, \{name\}/).first()).toBeVisible({ timeout: 45_000 })
     await shot(page, 'v2-06-pull')
