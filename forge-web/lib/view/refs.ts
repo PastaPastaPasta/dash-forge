@@ -29,6 +29,15 @@ export function isLive(ref: ResolvedRef): boolean {
   return tipOidOf(ref) !== null
 }
 
+/**
+ * A `?ref=` that names a commit by its full id (a permalink), lowercased, or null. Only used
+ * when no branch or tag has that name; the commit is then read by id and hash-checked like
+ * any other object, so a permalink can only show what the repo actually holds.
+ */
+export function pinnedCommit(refParam: string): string | null {
+  return /^[0-9a-f]{40}$/i.test(refParam) ? refParam.toLowerCase() : null
+}
+
 /** Find a branch ref by short name (`main`) within a resolved ref list. */
 export function findBranch(
   branches: readonly ResolvedRef[],

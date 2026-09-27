@@ -134,6 +134,7 @@ export {
   findBranch,
   isDiverged,
   isLive,
+  pinnedCommit,
   refParamFor,
   selectRef,
   tipOidOf,
@@ -152,6 +153,17 @@ export {
   type TreeDiff,
 } from './commit-log'
 export { mapPooled } from './pool'
+export {
+  blobDisplay,
+  imagePreviewType,
+  lineHash,
+  parseLineHash,
+  selectLine,
+  visibleRows,
+  RENDER_CONFIRM_BYTES,
+  VIRTUALIZE_LINES,
+  type LineRange,
+} from './blob-view'
 export {
   loadIssueThread,
   loadPullThread,
