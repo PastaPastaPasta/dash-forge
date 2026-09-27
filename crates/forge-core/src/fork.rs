@@ -167,7 +167,7 @@ pub async fn fork_repo(
     opts: &CreateRepoOpts,
     journal_dir: &std::path::Path,
 ) -> Result<ForkResult> {
-    parent.require_readable()?;
+    parent.require_public("forking")?;
     let forge = parent.forge();
     let mut opts = opts.clone();
     opts.name = crate::resolve::repo_slug(&opts.name)?;
@@ -295,6 +295,7 @@ mod tests {
             offset_index_parts: 0,
             uris: uris.iter().map(|u| (*u).to_string()).collect(),
             supersedes: Vec::new(),
+            created_at_block_height: 0,
         }
     }
 

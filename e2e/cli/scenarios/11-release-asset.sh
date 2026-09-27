@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-# Scenario 11: a release with an asset on the maintainer's own storage (local MinIO).
+# Scenario 11: a release with an asset on the maintainer's own storage (local RustFS).
 #
 #   1. COLLAB (not a maintainer) tries to publish: refused before anything is uploaded (E601).
-#   2. OWNER publishes release e2e-<run> with one asset: the file goes to MinIO (SigV4),
+#   2. OWNER publishes release e2e-<run> with one asset: the file goes to RustFS (SigV4),
 #      is re-read and verified, and the release records {name, sha256, sizeBytes, uris}.
 #   3. `dg release list` shows it, published by OWNER, with the recorded sha256.
 #   4. A reader with NO storage credentials downloads it through the public URL; the bytes
 #      are sha256-verified and identical to the file.
 #
-# Needs infra/docker-compose.yml up (MinIO). SKIPs when MinIO is down (the nightly runner has
-# none); `make storage-e2e` brings it up. The asset lives on this machine's MinIO, which is
+# Needs infra/docker-compose.yml up (RustFS). SKIPs when RustFS is down (the nightly runner has
+# none); `make storage-e2e` brings it up. The asset lives on this machine's RustFS, which is
 # fine for a release (no clone depends on it).
-SCENARIO_NAME="11 release with an asset on MinIO"
+SCENARIO_NAME="11 release with an asset on RustFS"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
 [[ -n "${HARNESS_SHARED:-}" ]] || harness_ensure_repo "$E2E_REPO_NAME" || skip_scenario "could not create/resolve the test repo"
 
-MINIO="http://127.0.0.1:9000"
-curl -fsS -o /dev/null "${MINIO}/minio/health/live" || skip_scenario "MinIO not up (make infra-up)"
+S3="http://127.0.0.1:9000"
+curl -fsS -o /dev/null "${S3}/health/ready" || skip_scenario "the local S3 store (RustFS) is not up (make infra-up)"
 
 REPO="${E2E_OWNER_ID}/${E2E_REPO_NAME}"
 TAG="e2e-${RUN_ID}"
@@ -28,19 +28,19 @@ ASSET="${WORKROOT}/s11-dg-${RUN_ID}.tar.gz"
 
 jq_py() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)" "$1"; }
 
-export FORGE_E2E_MINIO_SECRET="minioadmin"
+export FORGE_E2E_S3_SECRET="minioadmin"
 cat >"$CFG" <<EOF
-[profiles.minio]
+[profiles.rustfs]
 kind = "s3"
-endpoint = "${MINIO}"
+endpoint = "${S3}"
 region = "us-east-1"
 bucket = "forge-byo"
 path_style = true
-public_url = "${MINIO}/forge-byo"
+public_url = "${S3}/forge-byo"
 prefix = "e2e/${RUN_ID}/releases"
 access_key_id = "minioadmin"
-secret_access_key = "env:FORGE_E2E_MINIO_SECRET"
-# A loopback MinIO URL: a local fixture, never readable by anyone else.
+secret_access_key = "env:FORGE_E2E_S3_SECRET"
+# A loopback S3 URL: a local fixture, never readable by anyone else.
 allow_private_uri = true
 EOF
 printf '[read]\nipfs_gateways = []\n' >"$READER_CFG"
@@ -49,19 +49,19 @@ SHA="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb
 
 step "COLLAB (not a maintainer) is refused before anything is uploaded"
 if DASH_FORGE_STORAGE_CONFIG="$CFG" dg_as "$ID_COLLAB" --yes --json release create "$REPO" --tag "$TAG-x" \
-    --asset "$ASSET" --storage minio >"$LOG-deny.json" 2>"$LOG-deny.err"; then
+    --asset "$ASSET" --storage rustfs >"$LOG-deny.json" 2>"$LOG-deny.err"; then
   bad "a non-maintainer published a release"
 else
   check "E601" assert_eq "E601" "$(jq_py "$LOG-deny.json" 'd["error"]["code"]')"
   check "names the maintainer role" assert_file_contains "$LOG-deny.json" "maintainer"
 fi
 
-step "OWNER publishes ${TAG} with an asset on MinIO"
+step "OWNER publishes ${TAG} with an asset on RustFS"
 if DASH_FORGE_STORAGE_CONFIG="$CFG" dg_as "$ID_OWNER" --yes --json release create "$REPO" --tag "$TAG" \
-    --name "e2e ${RUN_ID}" --notes "published by the e2e suite" --asset "$ASSET" --storage minio \
+    --name "e2e ${RUN_ID}" --notes "published by the e2e suite" --asset "$ASSET" --storage rustfs \
     >"$LOG-create.json" 2>"$LOG-create.err"; then
   check "sha256 recorded" assert_eq "$SHA" "$(jq_py "$LOG-create.json" 'd["assets"][0]["sha256"]')"
-  check "a public MinIO URL recorded" assert_contains "$(jq_py "$LOG-create.json" 'd["assets"][0]["uris"]')" "${MINIO}/forge-byo/e2e/${RUN_ID}/releases/"
+  check "a public RustFS URL recorded" assert_contains "$(jq_py "$LOG-create.json" 'd["assets"][0]["uris"]')" "${S3}/forge-byo/e2e/${RUN_ID}/releases/"
   ok "published ($(jq_py "$LOG-create.json" 'd["cost"]["dash"]') DASH)"
 else
   cat "$LOG-create.err" "$LOG-create.json" >&2

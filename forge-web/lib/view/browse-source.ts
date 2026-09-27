@@ -40,7 +40,17 @@ import {
 import { base64ToBytes, queryDocumentsWithProof } from '../sdk'
 import { isPublicHttpsUrl } from '../net'
 import { externalSourceName, noteContentCheck, objectObserver } from './content-checks'
-import { describePack, readGateways } from './storage-status'
+import {
+  describePack,
+  gatewayDownReason,
+  gatewayHealth,
+  gatewayOf,
+  noteRepoGateways,
+  readGateways,
+  readGatewaysFor,
+  resetGatewayHealth,
+  resetRepoGateways,
+} from './storage-status'
 
 /** Chunk queries in flight at once when one range spans more than a single query. */
 const CHUNK_QUERY_POOL = 6
@@ -352,12 +362,15 @@ const deadUrls = new Set<string>()
 /** "Try again": ask every mirror afresh, including the ones that failed this session. */
 export function forgetDeadMirrors(): void {
   deadUrls.clear()
+  resetGatewayHealth()
 }
 
-/** Test hook: forget the dead-URL list and the per-origin queues. */
+/** Test hook: forget the dead-URL list, the gateway probes and the per-origin queues. */
 export function resetExternalFetchState(): void {
   deadUrls.clear()
   originSlots.clear()
+  resetGatewayHealth()
+  resetRepoGateways()
 }
 
 /**
@@ -431,6 +444,47 @@ function hostsOf(urls: readonly string[]): string[] {
 }
 
 /**
+ * Drop the URLs that `ipfs://` fanned out to on an IPFS gateway known to be down
+ * ({@link gatewayHealth}: probed in parallel, once per gateway), with a `host: reason` line
+ * each, so a retired gateway costs nothing instead of a timeout per pack and the storage card
+ * can name it. URLs the manifest itself recorded (`recorded`: an R2/S3 URL, the repo's own
+ * `https://gw/ipfs/<cid>`) are never dropped. If every URL would be dropped, all are kept:
+ * a stale verdict must not make a pack unreadable without one real attempt.
+ */
+async function skipDeadGateways(
+  urls: readonly string[],
+  recorded: ReadonlySet<string>,
+): Promise<{ readonly live: string[]; readonly reasons: string[] }> {
+  const verdicts = await Promise.all(
+    urls.map(async (url) => {
+      const gw = recorded.has(url) ? null : gatewayOf(url)
+      return { url, down: gw === null ? null : await gatewayHealth(gw) }
+    }),
+  )
+  const live: string[] = []
+  const reasons = new Set<string>()
+  for (const { url, down } of verdicts) {
+    if (down === null) live.push(url)
+    else reasons.add(gatewayDownReason(externalSourceName(url), down))
+  }
+  if (live.length === 0) return { live: [...urls], reasons: [] }
+  return { live, reasons: [...reasons] }
+}
+
+/** An artifact's fetchable URLs, and those still worth trying (not failed this session, gateway up). */
+async function mirrorUrls(
+  manifest: PackManifest,
+  gateways: readonly string[],
+): Promise<{ readonly urls: string[]; readonly live: string[]; readonly downReasons: string[] }> {
+  const urls = externalFetchUrls(manifest.uris, gateways)
+  const { live, reasons } = await skipDeadGateways(
+    urls.filter((u) => !deadUrls.has(u)),
+    new Set(manifest.uris),
+  )
+  return { urls, live, downReasons: reasons }
+}
+
+/**
  * Fetch a contiguous range of an external artifact via HTTP Range, trying each fetchable
  * mirror in turn. `onServed` is told which URL answered, so the trust panel can name the host
  * bytes actually came from. A range cannot be hashed on its own: the reader re-hashes every
@@ -440,11 +494,12 @@ async function fetchExternalRange(
   manifest: PackManifest,
   start: number,
   end: number,
+  gateways: readonly string[],
   onServed?: (uri: string) => void,
 ): Promise<Uint8Array> {
-  const urls = externalFetchUrls(manifest.uris)
-  let lastErr: unknown = 'no browser-fetchable mirror'
-  for (const url of urls.filter((u) => !deadUrls.has(u))) {
+  const { urls, live, downReasons } = await mirrorUrls(manifest, gateways)
+  let lastErr: unknown = downReasons.join('; ') || 'no browser-fetchable mirror'
+  for (const url of live) {
     try {
       const buf = await fetchBody(url, { headers: { Range: `bytes=${start}-${end - 1}` } })
       onServed?.(url)
@@ -475,22 +530,22 @@ function errorText(e: unknown): string {
  */
 async function fetchExternalWhole(
   manifest: PackManifest,
+  gateways: readonly string[],
   onServed?: (uri: string) => void,
   cancel?: AbortSignal,
 ): Promise<Uint8Array> {
-  const urls = externalFetchUrls(manifest.uris)
+  const { urls, live, downReasons } = await mirrorUrls(manifest, gateways)
   const want = manifest.packHash.toLowerCase()
-  const live = urls.filter((u) => !deadUrls.has(u))
   if (live.length === 0) {
     throw new PackUnavailableError(
       manifest.packHash,
       hostsOf(urls),
       false,
-      urls.length === 0 ? 'nothing to try' : 'every mirror already failed this session',
+      urls.length === 0 ? 'nothing to try' : downReasons.join('; ') || 'every mirror already failed this session',
     )
   }
   let corrupt = false
-  const reasons: string[] = []
+  const reasons: string[] = [...downReasons]
   const timedOut: string[] = []
   // Cancels the losing mirrors once one has served the pack (or the whole clone gave up):
   // an ipfs:// URI fans out to one request per gateway, and each would otherwise download
@@ -674,10 +729,11 @@ export function artifactRangeFetch(
           lastErr = e
         }
       }
-      if (lastErr !== undefined && externalFetchUrls(copy.uris).length === 0) {
+      const gateways = readGatewaysFor(repoKey(repo))
+      if (lastErr !== undefined && externalFetchUrls(copy.uris, gateways).length === 0) {
         throw new PackUnavailableError(copy.packHash, ['platform'], false, errorText(lastErr))
       }
-      return fetchExternalRange(copy, start, end, (uri) => noteSource(repo, uri))
+      return fetchExternalRange(copy, start, end, gateways, (uri) => noteSource(repo, uri))
     }
     const bytes = await fetchPlatformRange(sdk, repo, copy, start, end)
     noteSource(repo)
@@ -703,7 +759,9 @@ export function artifactRangeFetch(
     }
     // The rail's "where the bytes came from" row lists the places that did not answer.
     if (lastErr instanceof PackUnavailableError) {
-      noteContentCheck(repoKey(repo), { unreachable: describePack(unavailableOf(lastErr)) })
+      noteContentCheck(repoKey(repo), {
+        unreachable: describePack(unavailableOf(lastErr), readGatewaysFor(repoKey(repo))),
+      })
     }
     throw lastErr
   }
@@ -846,12 +904,13 @@ async function loadExternalCopy(
       reasons.push(`platform: ${errorText(e)}`)
     }
   }
-  if (reasons.length === 0) return fetchExternalWhole(manifest, (uri) => noteSource(repo, uri), cancel)
+  const gateways = readGatewaysFor(repoKey(repo))
+  if (reasons.length === 0) return fetchExternalWhole(manifest, gateways, (uri) => noteSource(repo, uri), cancel)
   const unavailable = (hosts: readonly string[], why: readonly string[], bad: boolean): PackUnavailableError =>
     new PackUnavailableError(manifest.packHash, ['platform', ...hosts], corrupt || bad, [...reasons, ...why].join('; '))
-  if (externalFetchUrls(manifest.uris).length === 0) throw unavailable([], [], false)
+  if (externalFetchUrls(manifest.uris, gateways).length === 0) throw unavailable([], [], false)
   try {
-    return await fetchExternalWhole(manifest, (uri) => noteSource(repo, uri), cancel)
+    return await fetchExternalWhole(manifest, gateways, (uri) => noteSource(repo, uri), cancel)
   } catch (e) {
     // Report the chunk failures alongside the mirrors', not only the mirrors'.
     if (e instanceof PackUnavailableError) throw unavailable(e.hosts, [errorText(e)], e.corrupt)
@@ -1003,6 +1062,13 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   // resolves to the wrong pack silently. That is the same misalignment the completeness fix
   // exists to prevent, reintroduced through the back door.
   const manifests = await readRepoPackManifests(sdk, repo)
+  // The gateways this repo's CURRENT members' pushes recorded reach its IPFS node: try them
+  // first. A past writer's or a stranger's manifest cannot steer every read.
+  noteRepoGateways(
+    repoKey(repo),
+    'manifests',
+    manifests.filter((m) => m.ownerRole !== null && m.ownerRole !== undefined).flatMap((m) => m.uris),
+  )
   const livePacks = locatorPackSpace(manifests)
   if (livePacks.length === 0) return { kind: 'no-packs' }
   const totalSizeBytes = livePacks.reduce((s, m) => s + m.sizeBytes, 0)

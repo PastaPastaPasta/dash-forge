@@ -139,7 +139,7 @@ fn run(goal: &mut Goal) -> Result<()> {
     let dash_url = DashUrl::parse(url_arg).map_err(|e| {
         UserError::new(codes::INVALID_REPO_REF, "invalid dash:// URL")
             .cause(e.to_string())
-            .fix("use dash://<owner identity id>/<repo>, or dash://<contract id>")
+            .fix("use dash://<owner>/<repo> (the owner's identity id or DPNS name), or dash://<repo id>")
     })?;
     goal.repo = Some(dash_url.to_string());
 

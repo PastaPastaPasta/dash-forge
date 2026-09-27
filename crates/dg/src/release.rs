@@ -116,6 +116,9 @@ async fn upload_asset(
 
 async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
     let s = Session::open(ctx, &args.repo).await?;
+    // Release notes and assets are not encrypted in this release: refuse before any asset
+    // leaves the machine.
+    s.repo.require_public("releases")?;
     let collab = s.collab();
     let tag = &args.tag;
     // Maintainer-only at consensus: find out before uploading anything.
@@ -278,7 +281,9 @@ async fn download(
     if asset.uris.is_empty() {
         bail!("asset {:?} records no URI to download from", asset.name);
     }
+    // The gateway the uploader recorded reaches its node: try it before the shared list.
     let bytes = PackReader::from_user_config()
+        .prefer_gateways(forge_core::storage::read::repo_gateways(&asset.uris))
         .fetch_verified(
             &asset.uris,
             &asset.sha256.to_ascii_lowercase(),

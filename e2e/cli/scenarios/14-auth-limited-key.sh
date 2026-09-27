@@ -22,6 +22,10 @@ LOG="${WORKROOT}/s14"
 XDG="${WORKROOT}/s14-xdg"
 mkdir -p "$XDG"
 export XDG_CONFIG_HOME="$XDG/config" XDG_STATE_HOME="$XDG/state"
+# HOME stays the real one, so without this marker dg's one-time copy of the pre-XDG
+# ~/.config/dash-forge would pull the real config and keys into this scratch directory.
+mkdir -p -m 700 "$XDG_CONFIG_HOME/dash-forge"
+: >"$XDG_CONFIG_HOME/dash-forge/.migrated-from-home-config"
 export DASH_FORGE_NO_KEYCHAIN=1
 export DASH_FORGE_PASSPHRASE="e2e-${RUN_ID}-passphrase"
 REPO="${E2E_OWNER_ID}/${E2E_REPO_NAME}"

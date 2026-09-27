@@ -128,7 +128,7 @@ describe('profiles', () => {
 
 describe('what readers may fetch', () => {
   it('only public https hosts', () => {
-    for (const h of ['127.0.0.1', 'localhost', 'x.localhost', '10.1.2.3', '172.20.0.1', '192.168.0.9', '169.254.1.1', '100.64.0.1', '::1', 'fe80::1', 'fc00::5', '::ffff:127.0.0.1']) {
+    for (const h of ['127.0.0.1', 'localhost', 'x.localhost', '10.1.2.3', '172.20.0.1', '192.168.0.9', '169.254.1.1', '100.64.0.1', '::1', 'fe80::1', 'fc00::5', '::ffff:127.0.0.1', 'nas.local.', 'localhost.']) {
       expect(isPrivateHost(h), h).toBe(true)
     }
     for (const h of ['pub-9a1.r2.dev', '8.8.8.8', '172.32.0.1', 'ipfs.io']) expect(isPrivateHost(h), h).toBe(false)

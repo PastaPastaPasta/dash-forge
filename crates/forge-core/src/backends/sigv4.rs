@@ -7,7 +7,7 @@
 //! the RustCrypto stack at newer major versions (`rusty-s3`). The algorithm is small and
 //! fully specified; correctness is pinned by the official test vectors (the AWS SigV4 test
 //! suite and the worked S3 examples in the S3 API reference) in this module's tests, and
-//! exercised live against MinIO by `make storage-it`.
+//! exercised live against the local S3 fixture (RustFS) by `make storage-it`.
 //!
 //! Two forms are provided:
 //! - [`sign_request`] — header-based auth (`Authorization: AWS4-HMAC-SHA256 …`), used by

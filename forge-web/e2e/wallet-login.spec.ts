@@ -11,15 +11,16 @@ import { E2E_DEVNET, PASSPHRASE, idFile, repoUrl, shot, unlock } from './helpers
  *
  *   E2E_DEVNET=moutai E2E_WRITE=1 pnpm exec playwright test wallet-login.spec.ts
  *
- * m1. Desktop: the sheet shows a dash-key QR (its text is in the caption), a pairing code and a
- *     countdown. The wallet approves (legacy key-exchange contract); the page shows QR #2
+ * m1. Desktop: on a devnet the wallet tile comes after Create and Import, and the request says
+ *     plainly that Dash Wallet answers on testnet only. The sheet shows a dash-key QR (its text is
+ *     in the caption) and a countdown, and no deep link. The wallet approves (legacy key-exchange contract); the page shows QR #2
  *     (dash-st); the wallet registers the key; the page shows the identity, the "no spending
  *     limit" warning and asks for a passkey; the user confirms and signs in with a passphrase;
  *     Settings shows the grant prompt for issues and pull requests. On the demo repo, Star (a
  *     forge-collab write) opens the one-tap grant sheet by itself, before anything is signed;
  *     the wallet approves it, and the star lands.
- * m2. Phone viewport: the sheet offers "Open in Dash Wallet" (the dash-key: link) instead of a
- *     QR, with the QR behind a disclosure.
+ * m2. Phone viewport: the sheet offers "Open in DashPay (Dash Wallet)" (the dash-key: link)
+ *     instead of a QR, with the QR behind a disclosure.
  *
  * RELAY's keys that this run adds are disabled at the end.
  */
@@ -63,9 +64,17 @@ test('m1. desktop: scan, register, confirm, sign in; then the one-tap grant for 
   try {
     await page.goto('/settings/', { waitUntil: 'domcontentloaded' })
     await page.getByRole('button', { name: /^sign in$/i }).first().click()
-    await page.getByTestId('tile-wallet').click({ timeout: 60_000 })
-    await expect(page.getByTestId('pairing-code')).toHaveText(/^\d{6}$/)
+    const wallet = page.getByTestId('tile-wallet')
+    await expect(wallet).toBeVisible({ timeout: 60_000 })
+    // Not the first option on a devnet: no released wallet answers here.
+    const order = await page.locator('[data-testid^="tile-"]').evaluateAll((els) => els.map((e) => e.getAttribute('data-testid')))
+    expect(order.slice(0, 3)).toEqual(['tile-create', 'tile-import', 'tile-wallet'])
+    await expect(wallet).toContainText(/testnet/i)
+    await wallet.click()
     await expect(page.getByTestId('request-countdown')).toContainText('Expires in')
+    await expect(page.getByTestId('wallet-support')).toContainText(/arrives when Forge is on testnet/i)
+    await expect(page.getByTestId('wallet-deep-link')).toHaveCount(0)
+    await expect(page.getByText(/pairing|shows code/i)).toHaveCount(0)
     await shot(page, 'wallet-login-01-request')
 
     await walletAnswers(page, dep.forgeCore.contractId, 'login')
@@ -107,7 +116,7 @@ test('m1. desktop: scan, register, confirm, sign in; then the one-tap grant for 
   }
 })
 
-test('m2. phone: "Open in Dash Wallet" instead of a QR', async ({ browser }) => {
+test('m2. phone: "Open in DashPay (Dash Wallet)" instead of a QR', async ({ browser }) => {
   const context = await browser.newContext({ ...devices['Pixel 7'] })
   const page = await context.newPage()
   await page.goto('/', { waitUntil: 'domcontentloaded' })
@@ -116,6 +125,7 @@ test('m2. phone: "Open in Dash Wallet" instead of a QR', async ({ browser }) => 
   const link = page.getByTestId('wallet-deep-link')
   await expect(link).toBeVisible({ timeout: 60_000 })
   expect(await link.getAttribute('href')).toMatch(/^dash-key:[1-9A-HJ-NP-Za-km-z]+\?n=d&v=1$/)
+  await expect(link).toHaveText(/open in dashpay \(dash wallet\)/i)
   await expect(page.getByRole('img', { name: /wallet login request/i })).toHaveCount(0)
   await expect(page.getByText(/wallet on another device/i)).toBeVisible()
   await shot(page, 'wallet-login-07-phone')

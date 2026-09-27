@@ -91,6 +91,20 @@ pub const CATALOGUE: &[(&str, &str)] = &[
         "identity not found on this network",
     ),
     (codes::KEY_EXPIRED, "this key expired or was disabled"),
+    (
+        codes::NO_ENCRYPTION_KEY,
+        "no encryption key for private repositories",
+    ),
+    (
+        codes::NOT_A_KEY_HOLDER,
+        "no key for this private repository",
+    ),
+    (codes::KEY_MISMATCH, "a maintainer gave you the wrong key"),
+    (
+        codes::KEY_CHAIN_BROKEN,
+        "the repository's key chain is broken",
+    ),
+    (codes::ROTATION_PENDING, "key rotation or repair pending"),
     (codes::INSUFFICIENT_CREDITS, "not enough credits"),
     (codes::KEY_BUDGET_SPENT, "this key's budget is used up"),
     (codes::STORAGE_CONFIG, "storage not configured correctly"),
@@ -101,6 +115,8 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::STORAGE_TEST, "storage profile failed its checks"),
     (codes::RECORDED_COPY_LOST, "recorded pack copy unreachable"),
     (codes::NO_STORAGE, "no storage configured"),
+    (codes::SEALED_PACK_CORRUPT, "sealed pack corrupt"),
+    (codes::LATE_CONTENT, "written after the key was rotated"),
     (codes::NOT_A_WRITER, "not a writer of this repository"),
     (codes::ALREADY_EXISTS, "already exists"),
     (codes::REJECTED, "rejected by Platform"),
@@ -153,6 +169,16 @@ pub mod codes {
     pub const IDENTITY_NOT_FOUND: &str = "E304";
     /// The signing key is past its expiry or disabled (protocol-14 limited keys).
     pub const KEY_EXPIRED: &str = "E305";
+    /// A private repository needs an `ENCRYPTION` key the identity file holds.
+    pub const NO_ENCRYPTION_KEY: &str = "E306";
+    /// No accepted `repoKey` wrap opens this private repository for the identity.
+    pub const NOT_A_KEY_HOLDER: &str = "E307";
+    /// A current maintainer's wrap holds a key that is not the epoch's (§5.4 KeyMismatch).
+    pub const KEY_MISMATCH: &str = "E308";
+    /// The `prevEpochKey` chain stops before an epoch the content needs (ChainBroken).
+    pub const KEY_CHAIN_BROKEN: &str = "E309";
+    /// The current epoch cannot be written under yet: a rotation or a repair is pending.
+    pub const ROTATION_PENDING: &str = "E310";
     /// The identity's balance cannot pay for the write.
     pub const INSUFFICIENT_CREDITS: &str = "E401";
     /// The signing key has spent its whole budget (protocol-14 limited keys).
@@ -173,6 +199,10 @@ pub mod codes {
     pub const RECORDED_COPY_LOST: &str = "E507";
     /// A new repository has no storage profile to push to; stopped before any spend.
     pub const NO_STORAGE: &str = "E508";
+    /// A sealed (private-repository) artifact failed its checks after its hash verified.
+    pub const SEALED_PACK_CORRUPT: &str = "E509";
+    /// Content under a superseded key epoch, written after the rotation by a non-member.
+    pub const LATE_CONTENT: &str = "E510";
     /// Consensus refused a write: no `writer`/`maintainer` document (40120).
     pub const NOT_A_WRITER: &str = "E601";
     // E602 (token suspended) is retired with forge-v1 and stays reserved.
@@ -515,6 +545,27 @@ pub fn classify<'e>(
     if let Some(u) = layers.iter().find_map(|l| l.downcast_ref::<UserError>()) {
         return u.clone();
     }
+    // A phrased error raised inside forge-core (`Error::User`): kept as raised, but the
+    // context layers wrapped around it (what had already happened, what to do next) are
+    // carried as its note rather than dropped.
+    if let Some(i) = layers
+        .iter()
+        .position(|l| matches!(l.downcast_ref::<CoreError>(), Some(CoreError::User(_))))
+    {
+        let Some(CoreError::User(u)) = layers[i].downcast_ref::<CoreError>() else {
+            unreachable!("matched above")
+        };
+        let mut u = (**u).clone();
+        let outer: Vec<String> = layers[..i].iter().map(ToString::to_string).collect();
+        if !outer.is_empty() {
+            let mut note = outer.join(": ");
+            if let Some(n) = &u.note {
+                note = format!("{n}; {note}");
+            }
+            u = u.note(note);
+        }
+        return u;
+    }
     let text = layers
         .iter()
         .map(ToString::to_string)
@@ -622,6 +673,7 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
         CoreError::Io(msg) if mentions_identity(chain) => identity_unreadable(msg),
         CoreError::Config(msg) => from_config(msg, chain, ctx),
         CoreError::Platform(msg) => return from_platform_text(msg, ctx),
+        CoreError::User(u) => (**u).clone(),
         _ => return None,
     })
 }
@@ -1328,6 +1380,34 @@ mod tests {
             o
         };
         assert_eq!(strip(&colored), u.render("", false));
+    }
+
+    #[test]
+    fn a_phrased_core_error_keeps_the_context_around_it() {
+        #[derive(Debug)]
+        struct Ctx(String, CoreError);
+        impl fmt::Display for Ctx {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(&self.0)
+            }
+        }
+        impl StdError for Ctx {
+            fn source(&self) -> Option<&(dyn StdError + 'static)> {
+                Some(&self.1)
+            }
+        }
+        let inner: CoreError =
+            UserError::new(codes::NO_ENCRYPTION_KEY, "bob has no encryption key")
+                .fix("dg auth keys add --encryption")
+                .into();
+        let outer = Ctx("the membership stands; re-run dg collab add".into(), inner);
+        let chain: Vec<&(dyn StdError + 'static)> = vec![&outer, &outer.1];
+        let u = classify(chain, &ErrorContext::default());
+        assert_eq!(u.code, codes::NO_ENCRYPTION_KEY);
+        assert_eq!(
+            u.note.as_deref(),
+            Some("the membership stands; re-run dg collab add")
+        );
     }
 
     #[test]

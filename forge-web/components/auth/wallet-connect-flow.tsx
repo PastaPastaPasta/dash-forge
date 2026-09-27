@@ -3,15 +3,18 @@
 /**
  * "Use my Dash wallet" (`ux-dx-spec.md` §2.2 tile 1; docs/design/wallet-login.md).
  *
- * 1. Request: a `dash-key:` QR (and, on a phone, an "Open in Dash Wallet" link) asking for a key
- *    bound to one Forge contract, with a countdown and the pairing code.
+ * 1. Request: a `dash-key:` QR (and, on a phone, an "Open in DashPay (Dash Wallet)" link: both wallets
+ *    register the scheme) asking for a key bound to one Forge contract, with a countdown.
  * 2. Key registration, first time only: a legacy wallet answers with a key that is not on its
  *    identity yet, so a second QR/link (`dash-st:`) asks it to register the key.
  * 3. Confirm: the identity that answered. The response does not prove who answered: anyone who
  *    saw the QR could, and on the legacy contract the FIRST answer is the only one Forge can see.
- *    So the user compares the full id with the one their wallet shows, and is warned when the
- *    identity has no username, a brand-new one, or is not the one this device already holds.
- *    A key without a budget or expiry is flagged, and a passkey is the default protection.
+ *    So the user compares the username and id with what the wallet's approval screen showed (the
+ *    username and a shortened id), and is warned when the identity has no username, a brand-new
+ *    one, or is not the one this device already holds. A key without a budget or expiry is
+ *    flagged, and a passkey is the default protection.
+ *
+ * Dash Wallet answers on testnet only (`walletSignInSupported`); elsewhere the sheet says so.
  *
  * `mode="grant"` asks the signed-in identity's wallet for a key on another contract (a shipped
  * wallet grants one contract per approval) and adds it to the session: no confirmation step,
@@ -27,7 +30,7 @@ import { Button } from '@/components/ui/button'
 import { Qr } from '@/components/ui/qr'
 import { ErrorBox, useProtection } from '@/components/auth/protection-fields'
 import { ACTIVE_NETWORK } from '@/lib/constants'
-import { REQUEST_TTL_MS, RequestExpired, awaitRegisteredKey, awaitWalletAnswer, newLoginRequest, responseSources, type PollStatus } from '@/lib/auth/app-connect'
+import { REQUEST_TTL_MS, RequestExpired, awaitRegisteredKey, awaitWalletAnswer, newLoginRequest, responseSources, walletSignInSupported, type PollStatus } from '@/lib/auth/app-connect'
 import { isUnlimited, keyRegistrationUri, scopeCovers, type WalletKey } from '@/lib/auth/key-registration'
 import { responderProfile, type ResponderProfile } from '@/lib/auth/responder-profile'
 import { ensureSdk } from '@/lib/sdk'
@@ -36,12 +39,15 @@ import { formatDate } from '@/lib/view/format'
 import { errorMessage } from '@/lib/utils'
 
 type Step =
-  | { readonly kind: 'request'; readonly uri: string; readonly pairing: string; readonly expiresAt: number }
+  | { readonly kind: 'request'; readonly uri: string; readonly expiresAt: number }
   | { readonly kind: 'register'; readonly uri: string; readonly expiresAt: number }
   | { readonly kind: 'confirm'; readonly profile: ResponderProfile; readonly unlimited: boolean; readonly unbounded: boolean }
   | { readonly kind: 'expired' }
 
-/** A phone or tablet browser: the wallet is on this device, so a link beats a QR. */
+/**
+ * A phone or tablet browser: the wallet is on this device, so a link beats a QR. Dash Wallet
+ * exists for Android and iOS only, so a desktop browser gets the QR alone.
+ */
 function onMobile(): boolean {
   if (typeof navigator === 'undefined') return false
   const uaData = (navigator as Navigator & { userAgentData?: { mobile?: boolean } }).userAgentData
@@ -83,7 +89,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
         if (signal.aborted) return
         if (sources.length === 0) throw new Error(`No wallet login contract is available on ${ACTIVE_NETWORK.key}.`)
         const req = newLoginRequest(ACTIVE_NETWORK.network, target)
-        setStep({ kind: 'request', uri: req.uri, pairing: req.pairingCode, expiresAt: req.expiresAt })
+        setStep({ kind: 'request', uri: req.uri, expiresAt: req.expiresAt })
         const answer = await awaitWalletAnswer(sdk, req, {
           network: ACTIVE_NETWORK.network,
           forge,
@@ -137,7 +143,10 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
     return (
       <div className="space-y-3" data-testid="wallet-confirm">
         <p className="text-dense">
-          A wallet answered for this identity. <span className="font-medium">Your wallet shows the identity it signed in with: check it matches, character for character.</span>
+          A wallet answered for this identity.{' '}
+          <span className="font-medium">
+            Your wallet&apos;s approval screen showed your username and the start and end of your identity id: check they match the ones below.
+          </span>
         </p>
         <div className="rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800">
           {profile.name ? (
@@ -158,12 +167,12 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
         ))}
         {step.unlimited ? <UnlimitedKeyWarning unbounded={step.unbounded} /> : null}
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-          Anyone who saw your QR code could have answered first with their own identity; this wallet protocol cannot tell. Only you can, by comparing the id above
-          with your wallet.
+          Anyone who saw your QR code could have answered first with their own identity; this wallet protocol cannot tell. Only you can, by comparing the
+          username and id above with what your wallet showed.
         </p>
         <label className="flex items-start gap-2 text-dense">
           <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} className="mt-1" />
-          <span>This is my identity: it matches what my wallet shows. (If it does not, close this and start again.)</span>
+          <span>This is my identity: it matches what my wallet showed. (If it does not, close this and start again.)</span>
         </label>
         {fields}
         <Button
@@ -208,7 +217,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
   return (
     <div className="space-y-3" data-testid={isRegister ? 'wallet-register' : 'wallet-request'}>
       {mode === 'grant' && !isRegister ? (
-        <p className="text-dense">Approve issues, pull requests, reviews and stars for this identity in your wallet: one more approval.</p>
+        <p className="text-dense">Approve issues, pull requests, reviews and stars for this identity in your wallet.</p>
       ) : null}
       {isRegister ? (
         <p className="text-dense">
@@ -224,7 +233,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
               data-testid="wallet-deep-link"
               className="flex w-full items-center justify-center gap-2 rounded-md bg-forge-700 px-4 py-3 text-dense font-medium text-white hover:bg-forge-800"
             >
-              <Smartphone className="h-4 w-4" aria-hidden /> {isRegister ? 'Add the key in Dash Wallet' : 'Open in Dash Wallet'}
+              <Smartphone className="h-4 w-4" aria-hidden /> {isRegister ? 'Add the key in DashPay (Dash Wallet)' : 'Open in DashPay (Dash Wallet)'}
             </a>
             <details className="text-[12px] text-anvil-500">
               <summary className="cursor-pointer">Wallet on another device? Show the QR code</summary>
@@ -234,37 +243,19 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
             </details>
           </>
         ) : (
-          <>
-            <Qr value={uri} label={qrLabel} size={200} />
-            <a href={uri} className="block text-center text-dense text-forge-600 underline dark:text-forge-400">
-              The wallet is on this device? Open it here
-            </a>
-          </>
+          <Qr value={uri} label={qrLabel} size={200} />
         )
       ) : error ? null : (
         <Loader2 className="mx-auto h-5 w-5 animate-spin text-anvil-400" aria-hidden />
       )}
-      {step?.kind === 'request' ? (
-        <p className="text-dense">
-          Keep this QR code private: anyone who scans it can answer it. If your wallet shows a pairing code, it must be{' '}
-          <span data-testid="pairing-code" className="font-mono font-semibold">
-            {step.pairing}
-          </span>
-          .
-        </p>
-      ) : null}
+      {step?.kind === 'request' ? <p className="text-dense">Keep this QR code private: anyone who scans it can answer it.</p> : null}
       {status === 'incomplete-read' && step?.kind === 'request' ? (
         <p className="text-[12px] text-caution" data-testid="incomplete-read">
           Couldn&apos;t read all answer sources — retrying. Forge won&apos;t accept an answer until it has read them all.
         </p>
       ) : null}
       {step?.kind === 'request' || step?.kind === 'register' ? <Countdown until={step.expiresAt} /> : null}
-      {mode === 'login' && step?.kind === 'request' ? (
-        <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-          Works with Dash Wallet for Android and iOS (Settings → Connections) on {ACTIVE_NETWORK.key}. The wallet grants Forge its own key for repositories
-          and pushes; issues and pull requests take one more approval, the first time you use them.
-        </p>
-      ) : null}
+      {mode === 'login' && step?.kind === 'request' ? <WalletSupportNote /> : null}
       <ErrorBox error={error} />
       {error ? (
         <Button variant="outline" className="w-full" onClick={restart}>
@@ -275,6 +266,33 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
   )
 }
 
+/**
+ * Which wallets can answer here, from the wallets' sources (docs/design/wallet-login.md,
+ * "Compatibility matrix"). Nothing more is claimed: DashConnect is in both wallets' development
+ * branches (dash-wallet `master`, dashwallet-ios `develop`), in neither's latest release
+ * (v11.9.0, v9.0.2), and answers on testnet (plus devnets in internal iOS builds).
+ */
+export function WalletSupportNote(): JSX.Element {
+  const { network, key } = ACTIVE_NETWORK
+  if (!walletSignInSupported(network)) {
+    return (
+      <p role="note" data-testid="wallet-support" className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px]">
+        {network === 'devnet'
+          ? `Dash Wallet support arrives when Forge is on testnet, where its sign-in feature (DashConnect) works; that feature is not in a released wallet yet. On ${key}, only an internal iOS build with this network's login contract entered by hand can answer.`
+          : `No Dash Wallet build supports sign-in on ${key} yet: its sign-in feature (DashConnect) works on testnet only.`}{' '}
+        Here, use an identity file or create an identity in the browser.
+      </p>
+    )
+  }
+  return (
+    <p data-testid="wallet-support" className="text-[12px] text-anvil-500 dark:text-anvil-400">
+      Works with a testnet build of the DashPay (Dash Wallet) app: More → Tools → Connections → Scan QR. That feature (DashConnect) is not in a released
+      version yet, only in builds from the wallets&apos; development branches (on Android, the testnet build only). The first approval covers repositories
+      and pushes; issues, pull requests and stars may take a second one.
+    </p>
+  )
+}
+
 /** "This key has no spending limit" (a shipped wallet's key): what it means, what to do. */
 export function UnlimitedKeyWarning({ unbounded }: { unbounded: boolean }): JSX.Element {
   return (
@@ -282,9 +300,9 @@ export function UnlimitedKeyWarning({ unbounded }: { unbounded: boolean }): JSX.
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution" aria-hidden />
       <span>
         This wallet key has no spending limit or expiry: anyone who copies it from this browser can spend your balance
-        {unbounded ? ', on any Platform app, not only Forge' : ' on Forge'}. Disabling it on chain stops it, but this wallet derives the same key every time:
-        signing in with the wallet again would need a new wallet key. Protect it with a passkey, and replace it with a limited key (Settings → Keys) when
-        you can.
+        {unbounded ? ', on any Platform app, not only Forge' : ' on Forge'}. Disabling it on chain stops it, but this wallet derives the same key every time,
+        so once it is disabled, Forge refuses wallet sign-in for this identity. Protect it with a passkey, and replace it with a limited key (Settings → This
+        browser&apos;s key) when you can.
       </span>
     </div>
   )

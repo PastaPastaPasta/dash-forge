@@ -29,7 +29,6 @@ import { hkdf } from '@noble/hashes/hkdf.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 
 import type { Network } from '../constants'
-import { hash160 } from './asset-lock'
 import { base58Decode, base58Encode } from './base58'
 
 const enc = new TextEncoder()
@@ -63,17 +62,6 @@ export function encodeKeyRequest(appEphemeralPub: Uint8Array, contractId: Uint8A
 /** `<scheme>:<base58>?n=<code>&v=1` — the envelope both URI kinds share. */
 export function protocolUri(scheme: 'dash-key' | 'dash-st', payload: Uint8Array, network: Network): string {
   return `${scheme}:${base58Encode(payload)}?n=${networkCode(network)}&v=${PROTOCOL_VERSION}`
-}
-
-/**
- * Six digits derived from the request's ephemeral key: hash160(pub)[0..4] as a big-endian u32,
- * mod 10^6 (Platform's `BrowserLoginKeyProtocol.pairingCode`). A wallet that shows the same
- * code proves it scanned this request, not one an attacker put in front of the user. The
- * shipped Dash wallets do not show it yet (docs/upstream/).
- */
-export function pairingCode(appEphemeralPub: Uint8Array): string {
-  const d = hash160(appEphemeralPub)
-  return String(new DataView(d.buffer, d.byteOffset, 4).getUint32(0) % 1_000_000).padStart(6, '0')
 }
 
 /** The AES-256-GCM key of a response: HKDF(ECDH x, "dash:key-exchange:v1"). */

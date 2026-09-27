@@ -385,8 +385,13 @@ fn emit_local_reseed(
                     println!("      {u}");
                 }
             }
+            let hint = if handle.visibility == forge_core::rules::v2::Visibility::Private {
+                "a private repo's stored packs are sealed: only the clone that pushed it keeps them; re-push from a clone with the objects instead"
+            } else {
+                "try a clone that fetched it"
+            };
             for h in &missing {
-                println!("  {h} — no local copy in this clone (try a clone that fetched it)");
+                println!("  {h} — no local copy in this clone ({hint})");
             }
         },
     );

@@ -198,7 +198,7 @@ Choose the network at build time: `NEXT_PUBLIC_NETWORK=testnet|mainnet|devnet`, 
 ipfs add -r --cid-version 1 out/     # the last line's CID is the site root
 ```
 
-Open it through a **subdomain** gateway, which serves the site at the root of its own origin: `https://<cid>.ipfs.dweb.link/`, or `http://<cid>.ipfs.localhost:8080/` on your own kubo node. Path gateways (`https://<gateway>/ipfs/<cid>/`) do not work, because the build loads its assets from `/`. The same applies to any host that serves the app under a sub-path: build with `NEXT_PUBLIC_BASE_PATH=/<sub-path>`.
+Open it through a **subdomain** gateway, which serves the site at the root of its own origin: `http://<cid>.ipfs.localhost:8080/` on your own kubo node, or `https://<cid>.ipfs.<gateway>/` on a public gateway that supports subdomain resolution and can find your node. Path gateways (`https://<gateway>/ipfs/<cid>/`) do not work, because the build loads its assets from `/`. The same applies to any host that serves the app under a sub-path: build with `NEXT_PUBLIC_BASE_PATH=/<sub-path>`.
 
 The app talks only to Platform nodes, the quorum key endpoint, IPFS gateways, and wherever each repository's packs are stored. Your copy works exactly like the hosted one.
 

@@ -1,9 +1,9 @@
 {
-  "$comment": "Shared storage defaults for every Dash Forge client: forge-core (and through it dg, git-remote-dash, forge-relay) embeds this file with include_str!, and forge-web imports it. The gateways are only ever byte sources. Every read is SHA-256-verified against the on-chain packManifest, so a gateway that lies or disappears costs a retry, never integrity. Users override the list in ~/.config/dash-forge/storage.toml ([read] ipfs_gateways). The Forge project operates none of these.",
+  "$comment": "Shared storage defaults for every Dash Forge client: forge-core (and through it dg, git-remote-dash, forge-relay) embeds this file with include_str!, and forge-web imports it. The gateways are only ever byte sources. Every read is SHA-256-verified against the on-chain packManifest, so a gateway that lies or disappears costs a retry, never integrity. A repo's own public gateway (recorded on chain in its config.backend.uris and its current members' manifests) is tried before this list. Users override the list in $XDG_CONFIG_HOME/dash-forge/storage.toml ([read] ipfs_gateways) and in the web app's Settings. The Forge project operates none of these. Keep it short, one entry per operator, and re-verify it: each entry must serve a freshly added CID with CORS and Range (see ipfsGatewaysVerified).",
   "ipfsGateways": [
-    "https://ipfs.io",
-    "https://dweb.link",
-    "https://w3s.link",
-    "https://4everland.io"
-  ]
+    "https://ipfs.filebase.io",
+    "https://gw.ipfs-lens.dev",
+    "https://ipfs.orbitor.dev"
+  ],
+  "ipfsGatewaysVerified": "2026-09-27, three independent operators (Filebase, IPFS Lens, Orbitor), each probed with freshly added random CIDs (raw leaf and multi-block) from a kubo node behind NAT: each served them hash-exact, answered Range with 206 and Content-Range, sent Access-Control-Allow-Origin *, and allowed the range preflight. How fast each finds content that was just added varies by run, which is why there are three. ipfs.filebase.io and gw.ipfs-lens.dev resolve through AdGuard DNS (94.140.14.14); ipfs.orbitor.dev is blocked there, so it is last. Dropped: ipfs.io and dweb.link (429, Sunset 2026-09-21), w3s.link, nftstorage.link and storacha.link (redirect to them), 4everland.io (504 on fresh CIDs), gateway.pinata.cloud (429 on the preflight and ranged reads), latam.orbitor.dev (same operator as ipfs.orbitor.dev, also AdGuard-blocked)."
 }

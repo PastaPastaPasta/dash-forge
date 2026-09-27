@@ -31,7 +31,7 @@ import {
   type BrowseContext,
   type UnavailablePack,
 } from './browse-source'
-import { describePack } from './storage-status'
+import { describePack, readGatewaysFor } from './storage-status'
 import { noteContentCheck, objectObserver } from './content-checks'
 import {
   deleteStoredFallback,
@@ -315,7 +315,7 @@ async function runFallback(
     noteContentCheck(repoKey(repo), {
       unavailablePack: u.packHash,
       corruptMirror: u.corrupt,
-      unreachable: describePack(u),
+      unreachable: describePack(u, readGatewaysFor(repoKey(repo))),
     })
   }
   if (got.length === 0) throw new StorageUnreachableError(unavailable)

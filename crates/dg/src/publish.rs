@@ -37,6 +37,20 @@ use crate::storage_wizard::shell_word;
 use crate::{CreateOptions, InitArgs, RepoCreateArgs};
 
 /// `dg repo create`.
+/// The create estimate for a private repository: `repo`, `maintainer`, the owner's
+/// self-`repoKey` and the anchor `config` (four documents).
+const PRIVATE_CREATE_ESTIMATE_CREDITS: u64 = 260_000_000;
+
+/// The four facts a private create states before it spends (ux-dx-spec §9 "Create"), and
+/// what stays visible (`docs/security/private-repos.md` §7).
+const PRIVATE_FACTS: &[&str] = &[
+    "private: code, ref names, issues, PRs, comments and reviews are encrypted to members",
+    "visible to everyone: that it exists, its name, owner, members, sizes and timing,",
+    "  commit ids, and release notes, labels and event values (not encrypted in this release)",
+    "members keep whatever they could already read, even after they are removed",
+    "no recovery: if every member loses their encryption key, the contents are gone",
+];
+
 pub async fn create(ctx: &Ctx, args: &RepoCreateArgs) -> Result<()> {
     if !args.push && args.opts.remote.is_some() {
         return Err(crate::errors::usage(
@@ -67,6 +81,15 @@ enum Flow {
 impl Flow {
     fn pushes(self) -> bool {
         self != Flow::Create
+    }
+
+    /// The command, as the user typed it.
+    fn command(self) -> &'static str {
+        match self {
+            Flow::Create => "`dg repo create`",
+            Flow::CreatePush => "`dg repo create --push`",
+            Flow::Init => "`dg init`",
+        }
     }
 
     /// The whole command line that repeats this run without prompts.
@@ -107,6 +130,9 @@ impl Flow {
         flag("remote", opts.remote.as_deref());
         if opts.allow_private_uri {
             words.push("--allow-private-uri".into());
+        }
+        if opts.private {
+            words.push("--private".into());
         }
         words.join(" ")
     }
@@ -677,10 +703,23 @@ fn confirm_plan(
             plan.slug,
             ctx.network_label()
         );
-        println!(
-            "  repo + maintainer + config     {}",
-            cost_line(REPO_CREATE_ESTIMATE_CREDITS, price)
-        );
+        if opts.private {
+            println!(
+                "  repo + maintainer + key + anchor {}",
+                cost_line(PRIVATE_CREATE_ESTIMATE_CREDITS, price)
+            );
+            for line in PRIVATE_FACTS {
+                println!("  {line}");
+            }
+            if !opts.description.is_empty() || !opts.display_name.is_empty() {
+                println!("  note: the description and display name are public; leave them empty to keep them private");
+            }
+        } else {
+            println!(
+                "  repo + maintainer + config     {}",
+                cost_line(REPO_CREATE_ESTIMATE_CREDITS, price)
+            );
+        }
         println!("  {}", packs_line(&plan.storage.policy, plan.size));
         if plan.storage.source != Source::Flag {
             println!("  (storage: {})", plan.storage.source.label());
@@ -697,6 +736,9 @@ fn confirm_plan(
 }
 
 async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -> Result<()> {
+    // Every run ends at `Proceed?`: a script without --yes would do all the checks and print
+    // the plan only to stop there, so it stops here instead.
+    ctx.require_confirmable(flow.command())?;
     let plan = plan(ctx, name, opts, flow).await?;
     let price = dash_usd_price();
     confirm_plan(ctx, &plan, flow, opts, price)?;
@@ -708,6 +750,11 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
         default_branch: plan.default_branch.clone(),
         backend_mode: plan.storage.policy.advertised_mode(),
         backend_uris: plan.storage.uris(),
+        visibility: if opts.private {
+            forge_core::rules::v2::Visibility::Private
+        } else {
+            forge_core::rules::v2::Visibility::Public
+        },
         ..CreateRepoOpts::public(plan.slug.clone())
     };
     let result = create_repo(
@@ -736,6 +783,7 @@ async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow
         "webUrl": url,
         "storage": plan.storage.json(),
         "network": ctx.network_label(),
+        "visibility": if opts.private { "private" } else { "public" },
         "steps": steps,
         "cost": cost_json(result.cost_credits, price),
         "push": Value::Null,
@@ -1098,6 +1146,41 @@ const REPORT_FILE_ENV: &str = "DASH_FORGE_REPORT_FILE";
 mod tests {
     use super::*;
 
+    /// F-17: without --yes and without a terminal, `dg init` / `dg repo create` stop with E802
+    /// naming --yes before anything else runs (here, before the identity is even read: the
+    /// path names no file, and no network is reachable from a unit test).
+    #[tokio::test]
+    async fn scripted_publish_without_yes_stops_before_any_work() {
+        let opts = CreateOptions {
+            storage: Some("platform".into()),
+            replicas: None,
+            description: String::new(),
+            display_name: String::new(),
+            default_branch: None,
+            remote: None,
+            private: false,
+            allow_private_uri: false,
+        };
+        let missing = PathBuf::from("/nonexistent/dash-forge-test/identity.json");
+        for flow in [Flow::Create, Flow::CreatePush, Flow::Init] {
+            let ctx = Ctx::scripted(false, false, false, Some(missing.clone()));
+            let err = publish(&ctx, Some("proj"), &opts, flow).await.unwrap_err();
+            let u = forge_core::user_error::classify(
+                err.chain(),
+                &forge_core::user_error::ErrorContext::default(),
+            );
+            assert_eq!(u.code, "E802", "{flow:?}: {err:#}");
+            assert!(u.fix.iter().any(|f| f.contains("--yes")), "{:?}", u.fix);
+            assert!(u.cause.unwrap().contains(flow.command()));
+        }
+        // With --yes the same run gets past the gate (and fails later, reading the identity).
+        let ctx = Ctx::scripted(true, false, false, Some(missing));
+        let err = publish(&ctx, Some("proj"), &opts, Flow::Create)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("identity"), "{err:#}");
+    }
+
     #[test]
     fn directory_names_become_repo_slugs() {
         assert_eq!(default_name("my-project").as_deref(), Some("my-project"));
@@ -1244,6 +1327,7 @@ mod tests {
             default_branch: Some("trunk".into()),
             remote: Some("forge".into()),
             allow_private_uri: true,
+            private: true,
         };
         for flow in [Flow::Create, Flow::CreatePush, Flow::Init] {
             let line = flow.equivalent("proj", "r2,platform", &opts);
@@ -1261,6 +1345,7 @@ mod tests {
             assert_eq!(got.default_branch.as_deref(), Some("trunk"), "{line}");
             assert_eq!(got.remote(), "forge", "{line}");
             assert!(got.allow_private_uri, "{line}");
+            assert!(got.private, "{line}");
             assert_eq!(pushes, flow.pushes(), "{line}");
         }
     }

@@ -164,6 +164,7 @@ mod tests {
         PackManifestInfo {
             document_id: format!("d{hash}{at}"),
             created_at: at,
+            created_at_block_height: 0,
             owner_id: "o".into(),
             pack_hash: [hash; 32],
             kind: 0,

@@ -10,7 +10,7 @@ name: Devnet Nightly
 #   * e2e/cli/run.sh          — 11 CLI scenarios on moutai: clone/push round-trip, non-ff,
 #                               ref delete, revoked-writer push, non-member push, third-party
 #                               verify, depth+filter, issue lifecycle, PR from a fork with a
-#                               real merge, release asset (SKIPs: no MinIO on the runner),
+#                               real merge, release asset (SKIPs: no local S3 store on the runner),
 #                               star/unstar
 #
 # They split by what they need:

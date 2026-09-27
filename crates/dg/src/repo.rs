@@ -39,6 +39,7 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
         RepoCommand::Backend(RepoBackendCommand::Set { repo, mode }) => {
             backend_set(ctx, repo, mode.mode(), mode.label()).await
         }
+        RepoCommand::Keys(cmd) => crate::keys::run(ctx, cmd).await,
     }
 }
 
@@ -292,7 +293,12 @@ fn ref_state_short(state: &forge_core::rules::RefState) -> String {
 /// List an owner's repositories.
 async fn list(ctx: &Ctx, owner: Option<&str>) -> Result<()> {
     let (client, _bridge, identity) = ctx.connect_with_identity().await?;
-    let owner_id = owner.map_or_else(|| identity.id(), str::to_string);
+    let owner_id = match owner {
+        Some(o) => forge_core::resolve::resolve_owner(&client, o)
+            .await
+            .with_context(|| format!("resolving owner {o}"))?,
+        None => identity.id(),
+    };
     let repos = list_owned(&client, &owner_id)
         .await
         .context("listing repositories")?;

@@ -9,8 +9,9 @@ use forge_core::user_error::{codes, UserError};
 /// A parsed `owner/name` (or bare `name`) repository reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoRef {
-    /// The owner: a base58 identity id (DPNS labels are not yet resolvable). `None` when the
-    /// caller passed a bare `name` and the signing identity should be used.
+    /// The owner: a base58 identity id or a DPNS name (`alice`, `alice.dash`), resolved by
+    /// `forge_core::resolve::resolve_owner`. `None` when the caller passed a bare `name` and
+    /// the signing identity should be used.
     pub owner: Option<String>,
     /// The repository name.
     pub name: String,
@@ -18,8 +19,8 @@ pub struct RepoRef {
 
 impl RepoRef {
     /// Parse an `owner/name` reference, or a bare `name` (owner defaults to the signing
-    /// identity). A `owner` that is not plausibly a base58 identity id is rejected with an
-    /// actionable message (DPNS resolution is a documented follow-up).
+    /// identity). The owner is a base58 identity id or a DPNS name; anything else is
+    /// rejected with an actionable message.
     pub fn parse(s: &str) -> Result<Self> {
         let Some((owner, name)) = s.split_once('/') else {
             if s.is_empty() {
@@ -33,12 +34,10 @@ impl RepoRef {
         if owner.is_empty() || name.is_empty() {
             return Err(invalid_ref(s, "expected `owner/name`"));
         }
-        if !looks_like_identity_id(owner) {
+        if !looks_like_identity_id(owner) && forge_core::resolve::dpns_label(owner).is_none() {
             return Err(invalid_ref(
                 s,
-                &format!(
-                    "owner {owner:?} is not a base58 identity id (DPNS name resolution is not yet wired)"
-                ),
+                &format!("owner {owner:?} is neither a base58 identity id nor a DPNS name"),
             ));
         }
         Ok(Self {
@@ -70,16 +69,14 @@ fn invalid_ref(input: &str, why: &str) -> anyhow::Error {
         format!("invalid repository reference {input:?}"),
     )
     .cause(why)
-    .fix("use `<owner identity id>/<name>`, e.g. `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB/project`, a bare `<name>` for your own repositories, or the repo's id")
+    .fix("use `<owner>/<name>` with the owner's identity id or DPNS name, e.g. `alice/project` or `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB/project`, a bare `<name>` for your own repositories, or the repo's id")
     .into()
 }
 
 /// Whether `s` is plausibly a base58 identity id (32-byte id ≈ 42-44 base58 chars, no
 /// `0OIl` and no `/`). Used to distinguish an identity owner from a DPNS label.
 fn looks_like_identity_id(s: &str) -> bool {
-    (40..=44).contains(&s.len())
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() && !matches!(c, '0' | 'O' | 'I' | 'l'))
+    forge_core::resolve::looks_like_identity_id(s)
 }
 
 /// Resolve a [`RepoRef`]: a bare id as a repo document id; otherwise `owner/name`.
@@ -197,9 +194,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_dpns_owner() {
-        let err = RepoRef::parse("alice/project").unwrap_err();
-        assert!(err.to_string().contains("DPNS"));
+    fn accepts_a_dpns_owner_and_refuses_junk() {
+        for (input, owner) in [
+            ("alice/project", "alice"),
+            ("alice.dash/project", "alice.dash"),
+        ] {
+            let r = RepoRef::parse(input).unwrap();
+            assert_eq!(r.owner.as_deref(), Some(owner));
+            assert_eq!(r.name, "project");
+        }
+        for bad in ["al ice/project", "a_b/project", ".dash/project"] {
+            assert!(RepoRef::parse(bad).is_err(), "{bad:?} should be refused");
+        }
     }
 
     #[test]

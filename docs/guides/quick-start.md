@@ -127,7 +127,7 @@ dg doctor --fix     # free, local fixes only: file modes, and a cost guard for g
 
 `dg doctor --fix` sets `git config --global dash.costWarnThreshold 0.01` if you have no threshold yet, so that a push asks before spending more than 0.01 DASH. It never spends anything.
 
-Your identity id is the long base58 string, such as `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB`. You will use it in repository addresses. A DPNS username is optional: `dg auth name register <label>`. The web app resolves names (`forge.dashhq.org/alice/project`); `dash://` addresses and `dg` do not yet (**coming soon**).
+Your identity id is the long base58 string, such as `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB`. You will use it in repository addresses. A DPNS username is optional: `dg auth name register <label>`. Names work everywhere a repository address does: `forge.dashhq.org/alice/project`, `git clone dash://alice/project` and `dg … alice/project`.
 
 ---
 
@@ -220,6 +220,8 @@ git remote add origin dash://<owner identity id>/my-project
 dg storage use r2-main                 # this repository's packs go to r2-main
 git push -u origin main
 ```
+
+Anyone can clone a public repository without an identity: `git clone dash://<owner>/<repo>` reads refs and packs anonymously (`<owner>` is the identity id or DPNS name). Pushing needs your key.
 
 Or start from an empty clone:
 

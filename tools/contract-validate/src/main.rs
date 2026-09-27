@@ -767,12 +767,24 @@ fn sample_documents(contract: &str) -> Vec<(&'static str, Json)> {
                 serde_json::json!({ "repoId": id(1), "number": 1, "title": "Fix", "baseRefNameHash": bytes(9, 32), "baseRefName": "refs/heads/main", "sourceRepoId": id(3), "sourceRefNameHash": bytes(8, 32), "sourceRefName": "refs/heads/fix", "headOid": bytes(1, 20), "patchManifestHash": bytes(4, 32) }),
             ),
             (
+                "patch",
+                serde_json::json!({ "repoId": id(1), "number": 2, "title": "WIP", "baseRefNameHash": bytes(9, 32), "sourceRepoId": id(3), "headOid": bytes(1, 20), "draft": true }),
+            ),
+            (
                 "comment",
                 serde_json::json!({ "repoId": id(1), "targetId": id(5), "body": "LGTM", "commitOid": bytes(1, 20), "path": "src/main.rs", "line": 10, "side": 1 }),
             ),
             (
+                "comment",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "body": "range", "commitOid": bytes(1, 20), "path": "src/main.rs", "startLine": 3, "line": 5, "side": 0, "reviewId": id(6) }),
+            ),
+            (
                 "review",
                 serde_json::json!({ "repoId": id(1), "patchId": id(5), "verdict": 1, "commitOid": bytes(1, 20), "body": "ok" }),
+            ),
+            (
+                "review",
+                serde_json::json!({ "repoId": id(1), "patchId": id(5), "verdict": 2, "commitOid": bytes(1, 20), "commentCount": 6 }),
             ),
             (
                 "event",
@@ -786,6 +798,37 @@ fn sample_documents(contract: &str) -> Vec<(&'static str, Json)> {
                 "authorEvent",
                 serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 2 }),
             ),
+            // review parity (docs/design/review-parity-spec.md §3): the author marks ready,
+            // resolves a thread, requests a reviewer and moves the head
+            (
+                "authorEvent",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 10 }),
+            ),
+            (
+                "authorEvent",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 11, "refId": id(7) }),
+            ),
+            (
+                "authorEvent",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 13, "refId": id(8) }),
+            ),
+            (
+                "authorEvent",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 16, "oid": bytes(2, 20) }),
+            ),
+            (
+                "event",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 15, "refId": id(9), "value": "stale after the rebase" }),
+            ),
+            (
+                "event",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 4, "enc": bytes(1, 64), "epoch": 0 }),
+            ),
+            (
+                "policy",
+                serde_json::json!({ "repoId": id(1), "requiredApprovals": 2, "approverRole": 1, "requireChecks": true, "mergeMethods": 3 }),
+            ),
+            ("policy", serde_json::json!({ "repoId": id(1), "requiredApprovals": 0 })),
             (
                 "checkRun",
                 serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci/test", "status": "completed", "conclusion": "success", "detailsUrl": "https://ci.example/1", "summary": "12 passed" }),
@@ -884,6 +927,47 @@ fn bad_documents(contract: &str) -> Vec<(&'static str, &'static str, Json)> {
                 "authorEvent",
                 "kind 0",
                 serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 0 }),
+            ),
+            (
+                "authorEvent",
+                "label kind (author kinds are 1,2,9-14,16)",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 4 }),
+            ),
+            (
+                "authorEvent",
+                "review dismissal kind (members only)",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 15, "refId": id(9) }),
+            ),
+            (
+                "authorEvent",
+                "retarget kind (members only)",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 8 }),
+            ),
+            (
+                "event",
+                "enc without epoch",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 4, "enc": bytes(1, 64) }),
+            ),
+            (
+                "policy",
+                "more than 10 required approvals",
+                serde_json::json!({ "repoId": id(1), "requiredApprovals": 11 }),
+            ),
+            (
+                "policy",
+                "approverRole 2",
+                serde_json::json!({ "repoId": id(1), "requiredApprovals": 1, "approverRole": 2 }),
+            ),
+            ("policy", "missing requiredApprovals", serde_json::json!({ "repoId": id(1) })),
+            (
+                "review",
+                "commentCount over 65535",
+                serde_json::json!({ "repoId": id(1), "patchId": id(5), "verdict": 3, "commitOid": bytes(1, 20), "commentCount": 65536 }),
+            ),
+            (
+                "comment",
+                "short reviewId",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "body": "x", "reviewId": bytes(6, 31) }),
             ),
             (
                 "authorEvent",

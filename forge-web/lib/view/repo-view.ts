@@ -16,6 +16,7 @@ import {
   readRefs,
   readStarCount,
   resolveAnyRepo,
+  repoKey,
   tagsOf,
   type RepoAddressParams,
   type RepoConfig,
@@ -23,6 +24,7 @@ import {
   type ResolvedRef,
   type RepoDoc,
 } from '../repo'
+import { noteRepoGateways } from './storage-status'
 
 /** Backend descriptor for the repo header badge / clone box. */
 export interface BackendInfo {
@@ -87,6 +89,9 @@ export async function loadRepoHome(
     readRefs(sdk, repo, undefined, bundlePromise.then((b) => b.history)),
     readStarCount(sdk, repo.forge, repo.repoId).catch(() => null),
   ])
+  // The public gateway the owner advertises (`config.backend.uris`, `https://<gw>/ipfs/`)
+  // reaches the node holding this repo's IPFS content: every read of it tries that first.
+  noteRepoGateways(repoKey(repo), 'config', config?.backendUris ?? [])
 
   return {
     repo,

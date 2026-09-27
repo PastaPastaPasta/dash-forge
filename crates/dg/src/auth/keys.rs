@@ -162,6 +162,63 @@ async fn list(ctx: &Ctx) -> Result<()> {
     Ok(())
 }
 
+/// Register an ENCRYPTION key for an identity that has none (`docs/security/private-repos.md`
+/// §5.2): derived from the recovery words at the identity's DIP-13 key path with the next key
+/// id, so the words alone recover it. One identity update signed by the master key.
+///
+/// Only a master identity that carries its words can do this: the private half must be
+/// recoverable, and `dg` keeps nothing but limited keys (an ENCRYPTION key is not one). Readers
+/// (`git clone`, `dg`) need the key's private half in the identity they sign with: sign in with
+/// the full identity for private repositories (`dg auth login --full-key`), or keep the words'
+/// file, which now derives it.
+async fn add_encryption(
+    ctx: &Ctx,
+    client: &forge_core::platform::PlatformClient,
+    master: &forge_core::keystore::BridgeIdentity,
+) -> Result<()> {
+    use forge_core::platform::identity_keys;
+    let identity = client.fetch_identity(&master.identity_id).await?;
+    let key_id = identity_keys::next_key_id(&identity);
+    let secret = if identity_keys::recorded_keys_match(master, &identity.public_keys()) {
+        identity_keys::derive_encryption_secret(master, key_id, ctx.network())
+    } else {
+        None
+    }
+    .ok_or_else(|| {
+        UserError::new(
+            codes::KEY_CANNOT_SIGN,
+            "the ENCRYPTION key cannot be derived from what was given",
+        )
+        .cause("the key must come from the identity's recovery words, so that they alone recover it; the source given does not reproduce the identity's keys from its words")
+        .fix("run it again and type the recovery words when asked, or pass --master <identity file> with the words")
+        .note("nothing was sent")
+    })?;
+    let price = crate::fmt::dash_usd_price();
+    if !ctx.json {
+        println!(
+            "Add ENCRYPTION key #{key_id} to {} (derived from the recovery words), {}",
+            master.identity_id,
+            crate::fmt::cost_line(identity_keys::ADD_KEY_ESTIMATE_CREDITS, price)
+        );
+        println!("  This key can read every private repo you're a member of, and every key you've handed out as a maintainer.");
+    }
+    ctx.confirm_or_cancel("Add the key?")?;
+    let added = identity_keys::add_encryption_key(client, &identity, master, &secret)
+        .await
+        .context("adding the encryption key")?;
+    ctx.emit(
+        json!({
+            "status": "added",
+            "identityId": master.identity_id,
+            "keyId": added,
+            "purpose": "ENCRYPTION",
+            "derived": true,
+        }),
+        || println!("✓ added ENCRYPTION key #{added}; the recovery words re-derive it"),
+    );
+    Ok(())
+}
+
 async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
     let current = ctx.load_bridge()?;
     let client = ctx.connect().await?;
@@ -187,13 +244,7 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
                 );
                 Ok(())
             }
-            None => Err(UserError::new(
-                codes::NOT_IMPLEMENTED,
-                "adding an ENCRYPTION key is not wired yet",
-            )
-            .cause("this identity has none, and dg cannot yet keep the private half of a new one")
-            .fix("create identities with `dg auth new` (they include one), or add it from the web app")
-            .into()),
+            None => add_encryption(ctx, &client, &master).await,
         };
     }
     let spec = key_spec(ctx, &args.limits, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS)?;

@@ -162,10 +162,12 @@ fn ref_names_match(header: &DocHeader, fields: &Fields, keys: &EpochKeys) -> boo
     }
 }
 
-/// Whether a `config` is its epoch's anchor with `e ≥ 1`: then tags 8 and 9 are required, and
-/// anywhere else they are refused.
-fn anchor_with_prev(header: &DocHeader, is_anchor: bool) -> bool {
-    header.kind == DocKind::Config && is_anchor && header.epoch >= 1
+/// Whether a `config` must carry tags 8 and 9: every config of an epoch `e ≥ 1`, anchor or
+/// not (§4.3). Any of an epoch's configs may become its anchor when an earlier one's author
+/// stops being a maintainer (§5.3), and it must then still chain to the previous epoch. They
+/// are refused everywhere else. `_is_anchor` is kept for the call sites' documentation value.
+fn anchor_with_prev(header: &DocHeader, _is_anchor: bool) -> bool {
+    header.kind == DocKind::Config && header.epoch >= 1
 }
 
 /// Seal `fields` for the document `header` under `keys` (the keys of `header.epoch`) with a

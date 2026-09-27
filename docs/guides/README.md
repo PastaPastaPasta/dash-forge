@@ -25,7 +25,6 @@ These guides describe what is on `master` today. Features that are specified but
 
 - prebuilt release binaries and `install.sh` (the pipeline is merged; no release is tagged yet);
 - opening pull requests, inline review comments, forks and merges in the browser;
-- DPNS usernames in `dash://` addresses and `dg` (the web app already resolves them);
 - private repositories;
 - the `forge.dashhq.org/mirror` setup wizard.
 
