@@ -33,9 +33,8 @@ import {
   removePrivateMember,
   type RotationPlan,
   type RotationStep,
-  keptEpoch,
+  chainFrom,
   vanishing,
-  vanishingEpochs,
 } from '@/lib/repo/private-members'
 import type { PrivateSession } from '@/lib/repo/private-session'
 import { useAuth } from '@/contexts/auth-context'
@@ -125,8 +124,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
     if (effect === 'none') return { plan: null, error: null }
     try {
       const exclude = effect === 'rotate-exclude' ? [removing.member] : []
-      // A maintainer's removal chains from the epoch that stays current once their role goes.
-      const from = removing.role === 'maintainer' ? keptEpoch(session, removing.member) : session.resolution.currentEpoch
+      const from = chainFrom(session, removing.member, removing.role)
       return { plan: planRotation(session, identity, exclude, repo.forge.core, write.context.ops.keyId, from), error: null }
     } catch (e) {
       return { plan: null, error: e instanceof Error ? e.message : String(e) }
@@ -169,7 +167,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
                 size="sm"
                 variant="danger"
                 className="ml-auto"
-                disabled={guard.disabledReason !== null || locked || (cannotRead && !(m.role === 'maintainer' && vanishingEpochs(session, m.identity).length > 0))}
+                disabled={guard.disabledReason !== null || locked || (cannotRead && !(m.role === 'maintainer' && vanishing(session, m.identity).epochs.length > 0))}
                 onClick={() => {
                   setSteps([])
                   setRemoving({ member: m.identity, role: m.role })
@@ -269,9 +267,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
           }
         }}
       />
-      {removing !== null && removing.role === 'maintainer' && vanishingEpochs(session, removing.member).length > 0 ? (
-        <VanishingNote session={session} leaving={removing.member} />
-      ) : null}
+      {removing?.role === 'maintainer' ? <VanishingNote session={session} leaving={removing.member} /> : null}
       {removing !== null && removalPlan.error !== null ? <p className="text-[12px] text-danger">{removalPlan.error}</p> : null}
       {removing !== null && removalPlan.plan !== null && write.context !== null && removalPlan.plan.recipients[0]?.keyId !== write.context.ops.keyId ? (
         <p className="text-[12px] text-caution">
@@ -297,8 +293,9 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
 }
 
 /** The key epochs a maintainer's removal drops (§5.3), and the members who stay and lose them. */
-function VanishingNote({ session, leaving }: { session: PrivateSession; leaving: string }): JSX.Element {
+function VanishingNote({ session, leaving }: { session: PrivateSession; leaving: string }): JSX.Element | null {
   const { epochs, losing } = vanishing(session, leaving)
+  if (epochs.length === 0) return null
   return (
     <p className="text-[12px] text-caution" data-testid="removal-vanishing">
       Key epoch {epochs.join(', ')} was set by {shortId(leaving)} and no other maintainer holds it: it goes with their role, and anything

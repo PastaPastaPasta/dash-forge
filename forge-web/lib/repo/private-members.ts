@@ -63,6 +63,16 @@ import { repoSource } from './source'
 import { assertNoPlaintext, grantMember, revokeMember } from './writes'
 
 
+/** An identity as the messages name it: its first 8 characters. */
+function short(id: string): string {
+  return `${id.slice(0, 8)}…`
+}
+
+/** Whether the current epoch is burned (§5.3): chain-only, nothing is written under it. */
+export function currentBurned(r: PrivateSession['resolution']): boolean {
+  return r.currentEpoch !== null && r.burned.has(r.currentEpoch)
+}
+
 /** A private-repo membership change that cannot go ahead, with the message to show. */
 export class PrivateMembersError extends Error {
   constructor(
@@ -212,7 +222,7 @@ export function planRepair(session: PrivateSession, self: string, coreId: string
   const repair = r.repair
   if (repair === null || !isMaintainer(session, self)) return null
   const rotate = repair.nonMembers.map(base58Encode)
-  const burned = r.currentEpoch !== null && r.burned.has(r.currentEpoch)
+  const burned = currentBurned(r)
   const wrap: string[] = []
   const waiting: string[] = []
   for (const m of repair.missingWraps.map(base58Encode)) {
@@ -264,7 +274,7 @@ async function withFreshSession<T>(
 
 function keyOf(session: PrivateSession, identity: string, keyId: number): IdentityPublicKey {
   const k = session.memberKeys.get(identity)?.find((x) => x.keyId === keyId)
-  if (k === undefined) throw new PrivateMembersError(`the encryption key of ${identity.slice(0, 8)}… could not be read`)
+  if (k === undefined) throw new PrivateMembersError(`the encryption key of ${short(identity)} could not be read`)
   return k as unknown as IdentityPublicKey
 }
 
@@ -456,8 +466,8 @@ function requireSame(outcome: WrapOutcome, identity: string, epoch: number): voi
 function unusableWrap(outcome: WrapOutcome, identity: string, epoch: number): PrivateMembersError {
   return new PrivateMembersError(
     outcome.kind === 'unreadable'
-      ? `your key wrap of epoch ${epoch} for ${identity.slice(0, 8)}… stands and cannot be read back from this browser`
-      : `key epoch ${epoch} already holds another key of yours for ${identity.slice(0, 8)}…; run the rotation again`,
+      ? `your key wrap of epoch ${epoch} for ${short(identity)} stands and cannot be read back from this browser`
+      : `key epoch ${epoch} already holds another key of yours for ${short(identity)}; run the rotation again`,
     'E310',
   )
 }
@@ -478,7 +488,7 @@ async function straysAt(c: PrivateWriteContext, epoch: number, allowed: readonly
 }
 
 /** Step 4's reading of the anchor of `epoch` for the key with commitment `commit`. */
-export type AnchorVerdict = 'ours' | 'lost' | 'mismatch' | 'pending' | { readonly preempted: number }
+export type AnchorVerdict = 'ours' | 'lost' | 'mismatch' | 'pending' | { readonly preempted: number; readonly by: string }
 
 /**
  * `ours` only when the anchor is by `self`, commits to our key, and this reader holds the epoch;
@@ -494,7 +504,7 @@ export function anchorVerdict(session: PrivateSession, epoch: number, commit: Ui
   if (base58Encode(anchor.owner) !== self) return 'lost'
   if (anchor.commit === null || !bytesEqual(anchor.commit, commit)) return 'mismatch'
   // A rotation past ours after it is fine; a later anchor from before ours is not.
-  for (const [e, a] of r.anchors) if (e > epoch && a.height < anchor.height) return { preempted: e }
+  for (const [e, a] of r.anchors) if (e > epoch && a.height < anchor.height) return { preempted: e, by: base58Encode(a.owner) }
   // Our anchor, with our key: we must be able to read it (our self-wrap holds this key).
   return r.keys.has(epoch) ? 'ours' : 'mismatch'
 }
@@ -513,7 +523,7 @@ export async function rotateRepoKey(
   onStep?: (s: RotationStep) => void,
   /** Memberships just deleted, dropped from every read of this rotation (see `loadPrivateSession`). */
   drop: readonly { readonly identity: string; readonly role?: Role }[] = exclude.map((identity) => ({ identity })),
-  /** The current epoch before the removal this rotation follows (see `rotateWith`). */
+  /** The epoch the removal this rotation follows keeps as current (see `rotateWith`). */
   minFrom?: number,
   /** This rotation is the repair after a lost one: do not chain another repair. */
   afterLoss = false,
@@ -521,7 +531,7 @@ export async function rotateRepoKey(
   const done = await withFreshSession(c, (session) => rotateWith(c, session, exclude, intent, onStep, minFrom, drop), drop)
   // Step 4: confirm the anchor of the new epoch is ours, with our key, among current maintainers.
   const epoch = 'lost' in done ? done.lost : done.epoch
-  if (!('lost' in done) && (await confirmAnchor(c, done.epoch, done.commit, drop, onStep)) === 'ours') {
+  if ('commit' in done && (await confirmAnchor(c, epoch, done.commit, drop, onStep)) === 'ours') {
     onStep?.({ kind: 'anchored', epoch })
     return epoch
   }
@@ -550,9 +560,8 @@ async function confirmAnchor(
     const verdict = await withFreshSession(c, async (s) => anchorVerdict(s, epoch, commit, c.auth.identityId), drop)
     if (verdict === 'ours' || verdict === 'lost') return verdict
     if (typeof verdict === 'object') {
-      const by = (await withFreshSession(c, async (s) => s.anchors.get(verdict.preempted)?.owner, drop)) ?? 'another maintainer'
       throw new PrivateMembersError(
-        `key epoch ${epoch} is anchored, but a config for epoch ${verdict.preempted} by ${by.slice(0, 8)}… was posted before it and now follows it, so its key is the repo's current key; the owner can remove that maintainer to drop it.`,
+        `key epoch ${epoch} is anchored, but a config for epoch ${verdict.preempted} by ${short(verdict.by)} was posted before it and now follows it, so its key is the repo's current key; the owner can remove that maintainer to drop it.`,
         'E310',
       )
     }
@@ -706,7 +715,7 @@ async function postAnchor(
  */
 export async function addPrivateMember(c: PrivateWriteContext, memberId: string, role: Role, intent: string): Promise<void> {
   const keys = await fetchIdentityKeys(c.sdk, memberId)
-  if (usableEncryptionKey(keys ?? [], c.repo.forge.core) === null) throw new PrivateMembersError(`${memberId.slice(0, 8)}… has no encryption key yet`, 'E306')
+  if (usableEncryptionKey(keys ?? [], c.repo.forge.core) === null) throw new PrivateMembersError(`${short(memberId)} has no encryption key yet`, 'E306')
   // Nothing is written unless the wrap can follow, and a new maintainer's old configs must not
   // take over any epoch (§5.3: under contiguity an earlier config of theirs would come first).
   await withFreshSession(c, async (s) => {
@@ -720,7 +729,7 @@ export async function addPrivateMember(c: PrivateWriteContext, memberId: string,
     const changed = [...new Set([...(await anchorChanges(s, new IdSet([...maintainersOf(s), id]))), ...above])].sort((a, b) => a - b)
     if (changed.length > 0) {
       throw new PrivateMembersError(
-        `making ${memberId.slice(0, 8)}… a maintainer would change the key of epoch ${changed.join(', ')} (an earlier config of theirs would come first), so they can't be a maintainer of this repo again; add them as a writer`,
+        `making ${short(memberId)} a maintainer would change the key of epoch ${changed.join(', ')} (an earlier config of theirs would come first), so they can't be a maintainer of this repo again; add them as a writer`,
         'E310',
       )
     }
@@ -734,7 +743,7 @@ export async function addPrivateMember(c: PrivateWriteContext, memberId: string,
 function requireWriteEpoch(session: PrivateSession): number {
   const r = session.resolution
   if (r.writeEpoch !== null) return r.writeEpoch
-  if (r.currentEpoch !== null && r.burned.has(r.currentEpoch)) {
+  if (currentBurned(r)) {
     throw new PrivateMembersError(`key epoch ${r.currentEpoch} is closed; run Repair on the repo page to rotate the key first`, 'E310')
   }
   throw new PrivateMembersError("you can't read the current key, so you can't hand it out", 'E310')
@@ -747,7 +756,7 @@ function maintainersOf(session: PrivateSession): Uint8Array[] {
 async function wrapForMember(c: PrivateWriteContext, session: PrivateSession, memberId: string, intent: string): Promise<void> {
   const n = requireWriteEpoch(session)
   const key = usableEncryptionKey(session.memberKeys.get(memberId) ?? [], c.repo.forge.core)
-  if (key === null) throw new PrivateMembersError(`${memberId.slice(0, 8)}… has no encryption key yet`, 'E306')
+  if (key === null) throw new PrivateMembersError(`${short(memberId)} has no encryption key yet`, 'E306')
   await assertMembersSettled(c, session)
   const kn = await rawEpochKey(session, c, n)
   try {
@@ -811,17 +820,17 @@ export async function removePrivateMember(
   onStep?: (s: RotationStep) => void,
 ): Promise<number | null> {
   // §5.3: a maintainer's anchors stop counting when their role goes. Re-anchor each of their
-  // epochs first (refused when this browser cannot read one), so no epoch vanishes or falls back.
+  // epochs that stays ({@link epochsToReanchor}) first, so no kept epoch falls back.
   // The rotation after the delete chains from the epoch that stays current: refuse now, before
   // anything is deleted, when this browser cannot read it (a maintainer who holds it must remove).
   await withFreshSession(c, async (s) => {
     if (removalEffect(s.members, memberId, role) === 'none') return
-    const kept = role === 'maintainer' ? keptEpoch(s, memberId) : s.resolution.currentEpoch
+    const kept = chainFrom(s, memberId, role)
     if (kept !== null && !s.resolution.keys.has(kept)) {
       const holders = role === 'maintainer' ? vanishing(s, memberId).holders : []
       throw new PrivateMembersError(
         holders.length > 0
-          ? `you can't read key epoch ${kept}, which ${holders.map((h) => `${h.slice(0, 8)}…`).join(', ')} also holds${holders.length === 1 ? 's' : ''}; ask a maintainer who holds it to run Repair (it hands you the key), then remove again. Nothing was removed.`
+          ? `you can't read key epoch ${kept}, which ${holders.map(short).join(', ')} also hold${holders.length === 1 ? 's' : ''}; ask a maintainer who holds it to run Repair (it hands you the key), then remove again. Nothing was removed.`
           : `key epoch ${kept} stays current after this removal and you can't read it, so the key can't be rotated from this browser; a maintainer who holds it must do the removal. Nothing was removed.`,
         'E310',
       )
@@ -882,14 +891,10 @@ export function removalCost(session: PrivateSession, self: string, memberId: str
   return sumPreviews([...keep, ...reanchors, ...(plan !== null ? [rotationCost(plan)] : [])])
 }
 
-/**
- * The epochs whose anchor would change in substance once `leaving` is no longer a maintainer
- * (§5.3): each epoch that stays must fall back to a config with the same key, the same `burned`
- * flag and the same chain pair. The epochs that vanish ({@link vanishingEpochs}) must vanish.
- */
+/** {@link anchorChanges} with `leaving` no longer a maintainer; the {@link vanishing} epochs must vanish. */
 export async function anchorsWithout(session: PrivateSession, leaving: string): Promise<number[]> {
   const remaining = maintainersOf(session).filter((m) => !bytesEqual(m, decodeIdentifier(leaving)))
-  return anchorChanges(session, new IdSet(remaining), new Set(vanishingEpochs(session, leaving)))
+  return anchorChanges(session, new IdSet(remaining), new Set(vanishing(session, leaving).epochs))
 }
 
 /**
@@ -974,20 +979,20 @@ export function vanishing(session: PrivateSession, leaving: string): { epochs: n
   return { epochs, holders: [], losing: [...losing].sort() }
 }
 
-/** The epochs {@link vanishing} drops with `leaving`'s maintainer role. */
-export function vanishingEpochs(session: PrivateSession, leaving: string): number[] {
-  return vanishing(session, leaving).epochs
-}
-
 /** The current epoch once `leaving`'s maintainer role goes: below the ones that vanish. */
 export function keptEpoch(session: PrivateSession, leaving: string): number | null {
-  const gone = vanishingEpochs(session, leaving)
-  return gone.length > 0 ? (gone[0] as number) - 1 : session.resolution.currentEpoch
+  const [first] = vanishing(session, leaving).epochs
+  return first === undefined ? session.resolution.currentEpoch : first - 1
+}
+
+/** The epoch the rotation after removing `role` from `member` chains from. */
+export function chainFrom(session: PrivateSession, member: string, role: Role): number | null {
+  return role === 'maintainer' ? keptEpoch(session, member) : session.resolution.currentEpoch
 }
 
 /** The epochs `leaving` anchored that must be re-anchored before their role goes (not the vanishing ones). */
 export function epochsToReanchor(session: PrivateSession, leaving: string): number[] {
-  const gone = new Set(vanishingEpochs(session, leaving))
+  const gone = new Set(vanishing(session, leaving).epochs)
   return epochsAnchoredBy(session, leaving).filter((e) => !gone.has(e))
 }
 
@@ -1007,13 +1012,7 @@ export function epochsAnchoredBy(session: PrivateSession, memberId: string): num
   return [...session.anchors.values()].filter((a) => a.owner === memberId).map((a) => a.epoch).sort((a, b) => a - b)
 }
 
-/**
- * Before a maintainer's role is deleted: the remover must keep the current epoch `n` it chains the
- * rotation from. When its only accepted wraps for `n` come from the leaving maintainer (whose
- * wraps stop counting, §5.4 check 2), it posts a self-wrap of `K_n` first. A reader that holds
- * `n` only through the chain has no wrap to unwrap: refused.
- */
-/** Whether `self` needs a self-wrap of the current key before `leaving`'s maintainer role goes. */
+/** Whether `self` needs a self-wrap of the kept epoch's key before `leaving`'s maintainer role goes. */
 export function needsKeepWrap(session: PrivateSession, self: string, leaving: string): boolean {
   const n = keptEpoch(session, leaving)
   if (n === null) return false
@@ -1021,6 +1020,12 @@ export function needsKeepWrap(session: PrivateSession, self: string, leaving: st
   return !acceptedOwnWraps(session, self, n).some((w) => !bytesEqual(w.row.owner, leavingId))
 }
 
+/**
+ * Before a maintainer's role is deleted: the remover must keep the epoch `n` it chains the rotation
+ * from ({@link keptEpoch}). When its only accepted wraps for `n` come from the leaving maintainer
+ * (whose wraps stop counting, §5.4 check 2), it posts a self-wrap of `K_n` first. A reader that
+ * holds `n` only through the chain has no wrap to unwrap: refused.
+ */
 async function keepCurrentKey(c: PrivateWriteContext, session: PrivateSession, leaving: string, intent: string): Promise<void> {
   const n = keptEpoch(session, leaving)
   if (n === null || !needsKeepWrap(session, c.auth.identityId, leaving)) return
@@ -1036,7 +1041,8 @@ async function keepCurrentKey(c: PrivateWriteContext, session: PrivateSession, l
 }
 
 /**
- * Before a maintainer's role is deleted (§5.3): for every epoch they anchored, post a config under
+ * Before a maintainer's role is deleted (§5.3): for every epoch they anchored that does not vanish
+ * ({@link epochsToReanchor}), post a config under
  * the same key with the same `prevEpoch` / `prevEpochKey` and the current config fields, so the
  * next anchor among the remaining maintainers carries the same commitment and still chains.
  * Refuses (nothing written) when this browser cannot read one of those epochs.
@@ -1066,7 +1072,11 @@ async function reanchorEpochsOf(
     // that stands in for the anchor. Never pay for it twice.
     let done = false
     for (const cfg of session.configRows) {
-      if (cfg.epoch === e && bytesEqual(cfg.owner, self) && !bytesEqual(cfg.id, anchor.id) && (await sameAnchor(session, e, cfg))) done = true
+      if (cfg.epoch !== e || !bytesEqual(cfg.owner, self) || bytesEqual(cfg.id, anchor.id)) continue
+      if (await sameAnchor(session, e, cfg)) {
+        done = true
+        break
+      }
     }
     if (done) {
       onStep?.({ kind: 'reanchored', epoch: e })

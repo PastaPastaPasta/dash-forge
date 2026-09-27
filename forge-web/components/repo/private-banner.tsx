@@ -18,7 +18,7 @@ import { AlertTriangle, KeyRound, ShieldAlert, Wrench } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { base58Encode } from '@/lib/auth/base58'
 import { bytesToHex, type EpochAlert } from '@/lib/private'
-import { planRepair, repairCost, runRepair, type RepairPlan } from '@/lib/repo/private-members'
+import { currentBurned, planRepair, repairCost, runRepair, type RepairPlan } from '@/lib/repo/private-members'
 import { isMaintainer, type PrivateSession } from '@/lib/repo/private-session'
 import { useAuth } from '@/contexts/auth-context'
 import { usePrivateWrite } from '@/hooks/use-private-write'
@@ -96,7 +96,7 @@ function MemberAlerts({ home, session }: { home: RepoHome; session: PrivateSessi
   const r = session.resolution
   const maintainer = isMaintainer(session, identity)
   const alerts = r.alerts.filter((a) => a.kind !== 'rotationRequired')
-  const closed = r.currentEpoch !== null && r.burned.has(r.currentEpoch)
+  const closed = currentBurned(r)
   const cannotReadCurrent = r.currentEpoch !== null && r.writeEpoch === null && !closed
   const repair = identity === null ? null : planRepair(session, identity, home.repo.forge.core)
   const parts: JSX.Element[] = []
@@ -166,8 +166,8 @@ function RepairNote({ home, session, self, plan }: { home: RepoHome; session: Pr
       {plan.burned && closer !== undefined ? (
         <p data-testid="private-closed">
           key epoch {current} was closed by <Author identityId={closer} link={false} />
-          {closer === self ? '' : ' (its key reached someone it must not)'}: nothing can be written until the key rotates.
-          {closer === self ? null : ' If this keeps happening, the owner can remove that maintainer.'}
+          {closer !== self ? ' (its key reached someone it must not)' : null}: nothing can be written until the key rotates.
+          {closer !== self ? ' If this keeps happening, the owner can remove that maintainer.' : null}
         </p>
       ) : null}
       {plan.rotate.map((id) => (
