@@ -74,6 +74,7 @@ pub const CATALOGUE: &[(&str, &str)] = &[
     (codes::CHECKS_FAILED, "checks failed"),
     (codes::MERGE_CONFLICT, "merge has conflicts"),
     (codes::PARTIAL, "partially completed"),
+    (codes::SUGGESTION, "suggestion not applicable"),
     (codes::USAGE, "invalid arguments"),
     (codes::INVALID_REPO_NAME, "invalid repository name"),
     (
@@ -148,6 +149,9 @@ pub mod codes {
     pub const MERGE_CONFLICT: &str = "E105";
     /// `dg import` finished, but skipped some items; a re-run retries them.
     pub const PARTIAL: &str = "E106";
+    /// A review suggestion cannot be applied: overlapping ranges, an older head, the old side,
+    /// or lines that no longer exist.
+    pub const SUGGESTION: &str = "E107";
     /// Arguments that do not make sense together.
     pub const USAGE: &str = "E201";
     /// A repository name outside `^[a-z0-9][a-z0-9._-]{0,62}$`.
@@ -696,6 +700,9 @@ fn not_permitted(ctx: &ErrorContext<'_>, action: &str, reason: &str, needs: &str
     .note("checked before anything was signed; nothing was written or paid");
     if needs == "author" {
         u.fix("ask the author or a member of the repository to do it")
+    } else if needs == "owner" {
+        // An edit: consensus admits a document replace from its owner only, members included.
+        u.fix("only the author can edit it; comment instead, or ask them to make the change")
     } else {
         u.fix(format!(
             "ask the owner to run `dg collab add {repo} <your identity id> --role {needs}`"
@@ -1582,6 +1589,26 @@ mod tests {
         assert_eq!(u.message, "issue not closed: you cannot close issue #3");
         assert!(u.fix[0].contains("dg collab add alice/project"), "{u:?}");
         assert!(u.note.as_deref().unwrap().contains("nothing was written"));
+    }
+
+    #[test]
+    fn an_edit_by_a_non_author_does_not_suggest_membership() {
+        let ctx = ErrorContext {
+            goal: Some("issue not edited"),
+            repo: Some("alice/project"),
+            ..ErrorContext::default()
+        };
+        let u = core_chain(
+            CoreError::NotPermitted {
+                action: "edit issue #3".into(),
+                reason: "you are not its author".into(),
+                needs: "owner".into(),
+            },
+            &ctx,
+        );
+        assert_eq!(u.code, "E601");
+        assert!(u.fix[0].contains("only the author can edit it"), "{u:?}");
+        assert!(!u.fix[0].contains("collab add"), "{u:?}");
     }
 
     #[test]

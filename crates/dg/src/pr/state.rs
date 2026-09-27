@@ -1,0 +1,687 @@
+//! PR state commands: `edit` (P5), `sync` (R14, C6), `ready` / `draft` (P6, C7), `resolve` /
+//! `unresolve` (R7, C8), `request-review` (R9, C9), `dismiss-review` (R11, C10), `checks`
+//! (P3, C4), `commits` (P2, C5). Each state change is one `event` (a member) or `authorEvent`
+//! (the PR author, for the author kinds), through `Collab::post_target_event`, which refuses
+//! before signing what consensus would refuse (E601).
+
+use anyhow::{Context, Result};
+use serde_json::json;
+
+use forge_core::collab::v2::{kind_route, Collab, EventPayload, PatchView, StateRoute};
+use forge_core::rules::EventKind;
+use forge_core::scope::RepoRef as Repo;
+use forge_core::user_error::{codes, UserError};
+
+use super::{estimate, event_estimate, open_pr, open_pr_read, Est, Pr};
+use crate::common::Session;
+use crate::context::Ctx;
+use crate::fmt::{cost_line, dash_usd_price, route_text, safe, short};
+use crate::git;
+
+/// The route an event of `kind` by the signer takes, or E601 before anything is signed.
+async fn route_for(
+    collab: &Collab<'_>,
+    repo: &Repo,
+    view: &PatchView,
+    kind: EventKind,
+) -> Result<StateRoute> {
+    let me = collab.signer_id()?;
+    let role = collab.signer_role(repo).await?;
+    if let Some(r) = kind_route(role, &me, &view.patch.target(), kind) {
+        return Ok(r);
+    }
+    // `post_target_event` refuses the same way; asking here keeps the confirmation prompt
+    // from offering a write that cannot land.
+    let author_kind = forge_core::rules::v2::is_author_kind(kind);
+    Err(forge_core::Error::NotPermitted {
+        action: format!("{} pull request #{}", verb(kind), view.patch.number),
+        reason: if author_kind {
+            format!(
+                "you are neither a member of {} nor the pull request's author",
+                repo.display()
+            )
+        } else {
+            format!("you are not a member of {}", repo.display())
+        },
+        needs: "writer".into(),
+    }
+    .into())
+}
+
+fn verb(kind: EventKind) -> &'static str {
+    match kind {
+        EventKind::Draft => "convert to a draft",
+        EventKind::Ready => "mark ready",
+        EventKind::ThreadResolve => "resolve a conversation on",
+        EventKind::ThreadUnresolve => "unresolve a conversation on",
+        EventKind::ReviewRequest => "request a review on",
+        EventKind::ReviewRequestRemove => "remove a review request on",
+        EventKind::ReviewDismiss => "dismiss a review on",
+        EventKind::HeadUpdate => "move the head of",
+        _ => "change",
+    }
+}
+
+/// Confirm and post one event of `kind` on the PR; returns its route and id.
+async fn post(
+    ctx: &Ctx,
+    pr: &Pr,
+    kind: EventKind,
+    payload: &EventPayload<'_>,
+    what: &str,
+) -> Result<(StateRoute, String)> {
+    let collab = pr.s.collab();
+    let route = route_for(&collab, &pr.s.repo, &pr.view, kind).await?;
+    let est = event_estimate(route, payload.value.map_or(0, str::len));
+    ctx.confirm_or_cancel(&format!(
+        "{what}? (one {}, {})",
+        match route {
+            StateRoute::Member => "event",
+            StateRoute::Author => "authorEvent",
+        },
+        cost_line(est, dash_usd_price())
+    ))?;
+    Ok(collab
+        .post_target_event(&pr.s.repo, &pr.view.patch.target(), kind, payload)
+        .await?)
+}
+
+/// Print a no-op and emit its JSON.
+fn unchanged(ctx: &Ctx, status: &str, number: u64, text: &str, extra: serde_json::Value) {
+    let mut body = json!({ "status": status, "pr": number, "written": false });
+    if let (Some(b), serde_json::Value::Object(e)) = (body.as_object_mut(), extra) {
+        b.extend(e);
+    }
+    ctx.emit(body, || println!("{text}; nothing written"));
+}
+
+// ---------------------------------------------------------------------------
+// edit
+// ---------------------------------------------------------------------------
+
+/// `dg pr edit`: replace the PR document's title and/or body (the author only).
+pub async fn edit(
+    ctx: &Ctx,
+    repo: &str,
+    number: u64,
+    title: Option<&str>,
+    body: Option<&str>,
+    body_file: Option<&std::path::Path>,
+) -> Result<()> {
+    let body = match (body, body_file) {
+        (Some(b), _) => Some(b.to_string()),
+        (None, Some(p)) => Some(super::inline::read_body_file(p)?),
+        (None, None) => None,
+    };
+    if title.is_none() && body.is_none() {
+        return Err(crate::errors::usage("pass --title, --body or --body-file"));
+    }
+    let pr = open_pr(ctx, repo, number, "pull request not edited").await?;
+    let changed = title.map_or(0, str::len) + body.as_deref().map_or(0, str::len);
+    let est = estimate(Est::Replace, changed);
+    ctx.confirm_or_cancel(&format!(
+        "Edit PR #{number}? (one document replace, {})",
+        cost_line(est, dash_usd_price())
+    ))?;
+    let landed =
+        pr.s.collab()
+            .update_target(&pr.s.repo, &pr.view.patch.target(), title, body.as_deref())
+            .await?;
+    ctx.emit(
+        json!({
+            "status": if landed { "edited" } else { "unchanged" },
+            "pr": number,
+            "written": landed,
+            "title": title.unwrap_or(&pr.view.patch.title),
+            "bodyChanged": body.is_some(),
+        }),
+        || {
+            if landed {
+                println!("✓ edited PR #{number}");
+            } else {
+                println!("PR #{number} already reads that way; nothing written");
+            }
+        },
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// sync
+// ---------------------------------------------------------------------------
+
+/// Where the PR's source branch points now, or E102.
+async fn source_tip(s: &Session, view: &PatchView, number: u64) -> Result<(Repo, String, String)> {
+    let Some(branch) = view.patch.source_ref_name.clone() else {
+        return Err(
+            UserError::new(codes::USAGE, format!("PR #{number} names no source branch"))
+                .fix("pass the new head: `dg pr sync <repo> <n> --head <commit>`")
+                .into(),
+        );
+    };
+    let source = forge_core::resolve::resolve_id(&s.client, &view.patch.source_repo_id)
+        .await
+        .context("resolving the PR's source repository")?;
+    let svc = forge_core::repo::RepoService::new(&s.client, &s.identity, &s.bridge);
+    let refs = svc.read_refs(&source).await?;
+    let tip = refs
+        .iter()
+        .find(|(n, _)| *n == branch)
+        .and_then(|(_, st)| forge_core::rules::tip_of(st))
+        .ok_or_else(|| {
+            crate::errors::not_found(
+                format!("{} is no longer in {}", safe(&branch), source.display()),
+                "the branch was deleted; push it again, or pass --head <commit>",
+            )
+        })?;
+    Ok((source, branch, tip))
+}
+
+/// `dg pr sync`: post a `headUpdate` when the source branch (or `--head`) is not the PR head.
+pub async fn sync(ctx: &Ctx, repo: &str, number: u64, head: Option<&str>) -> Result<()> {
+    let pr = open_pr(ctx, repo, number, "pull request head not moved").await?;
+    if !pr.view.state.open {
+        return Err(UserError::new(
+            codes::USAGE,
+            format!("PR #{number} is {}", super::state_label(&pr.view)),
+        )
+        .fix("reopen it first: `dg pr reopen`")
+        .note("nothing was written")
+        .into());
+    }
+    let (new_head, from) = if let Some(h) = head {
+        let h = h.to_ascii_lowercase();
+        if !git::is_oid(&h) {
+            return Err(crate::errors::usage("--head must be a full hex commit id"));
+        }
+        (h, "--head".to_string())
+    } else {
+        let (source, branch, tip) = source_tip(&pr.s, &pr.view, number).await?;
+        (tip, format!("{} in {}", safe(&branch), source.display()))
+    };
+    if new_head.eq_ignore_ascii_case(&pr.view.head) {
+        unchanged(
+            ctx,
+            "in_sync",
+            number,
+            &format!("PR #{number} is already at {} ({from})", short(&new_head)),
+            json!({ "headOid": pr.view.head }),
+        );
+        return Ok(());
+    }
+    let oid = hex::decode(&new_head).context("head oid")?;
+    let (route, id) = post(
+        ctx,
+        &pr,
+        EventKind::HeadUpdate,
+        &EventPayload {
+            oid: Some(&oid),
+            ..EventPayload::default()
+        },
+        &format!(
+            "Move PR #{number}'s head {} → {}",
+            short(&pr.view.head),
+            short(&new_head)
+        ),
+    )
+    .await?;
+    ctx.emit(
+        json!({
+            "status": "synced",
+            "pr": number,
+            "written": true,
+            "previousHead": pr.view.head,
+            "headOid": new_head,
+            "via": route,
+            "eventId": id,
+        }),
+        || {
+            println!(
+                "✓ PR #{number} head {} → {} {}",
+                short(&pr.view.head),
+                short(&new_head),
+                route_text(route)
+            );
+        },
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// ready / draft
+// ---------------------------------------------------------------------------
+
+/// `dg pr ready` / `dg pr draft`.
+pub async fn set_draft(ctx: &Ctx, repo: &str, number: u64, draft: bool) -> Result<()> {
+    let pr = open_pr(ctx, repo, number, "pull request state not changed").await?;
+    let (kind, word) = if draft {
+        (EventKind::Draft, "a draft")
+    } else {
+        (EventKind::Ready, "ready for review")
+    };
+    if pr.view.state.draft == draft {
+        unchanged(
+            ctx,
+            if draft { "draft" } else { "ready" },
+            number,
+            &format!("PR #{number} is already {word}"),
+            json!({ "draft": draft }),
+        );
+        return Ok(());
+    }
+    let (route, id) = post(
+        ctx,
+        &pr,
+        kind,
+        &EventPayload::default(),
+        &format!("Mark PR #{number} {word}"),
+    )
+    .await?;
+    ctx.emit(
+        json!({
+            "status": if draft { "draft" } else { "ready" },
+            "pr": number,
+            "written": true,
+            "draft": draft,
+            "via": route,
+            "eventId": id,
+        }),
+        || println!("✓ PR #{number} is {word} {}", route_text(route)),
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// resolve / unresolve
+// ---------------------------------------------------------------------------
+
+/// `dg pr resolve` / `unresolve`: the event names the thread's root comment.
+pub async fn resolve(
+    ctx: &Ctx,
+    repo: &str,
+    number: u64,
+    comment_id: &str,
+    resolve: bool,
+) -> Result<()> {
+    let pr = open_pr(ctx, repo, number, "conversation not changed").await?;
+    let comments =
+        pr.s.collab()
+            .comments(&pr.s.repo, &pr.view.patch.document_id)
+            .await?;
+    let Some(root) = super::threads::root_id(&comments, comment_id) else {
+        return Err(crate::errors::not_found(
+            format!("comment {comment_id} is not on PR #{number}"),
+            format!("`dg pr view {repo} {number} --comments` lists the threads and their ids"),
+        ));
+    };
+    let state = pr.view.review_with_threads(&comments);
+    let is_resolved = state.resolved_threads.contains(&root);
+    let word = if resolve { "resolved" } else { "unresolved" };
+    if is_resolved == resolve {
+        unchanged(
+            ctx,
+            word,
+            number,
+            &format!("the conversation {} is already {word}", short(&root)),
+            json!({ "threadId": root, "resolved": resolve }),
+        );
+        return Ok(());
+    }
+    let kind = if resolve {
+        EventKind::ThreadResolve
+    } else {
+        EventKind::ThreadUnresolve
+    };
+    let (route, id) = post(
+        ctx,
+        &pr,
+        kind,
+        &EventPayload {
+            ref_id: Some(&root),
+            ..EventPayload::default()
+        },
+        &format!(
+            "{} the conversation {} on PR #{number}",
+            if resolve { "Resolve" } else { "Unresolve" },
+            short(&root)
+        ),
+    )
+    .await?;
+    ctx.emit(
+        json!({
+            "status": word,
+            "pr": number,
+            "written": true,
+            "threadId": root,
+            "resolved": resolve,
+            "via": route,
+            "eventId": id,
+        }),
+        || {
+            println!(
+                "✓ {word} the conversation {} {}",
+                short(&root),
+                route_text(route)
+            );
+        },
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// request-review / unrequest
+// ---------------------------------------------------------------------------
+
+/// The identity a reviewer argument names: an identity id, or a DPNS name (`@alice`,
+/// `alice`, `alice.dash`).
+async fn reviewer_id(s: &Session, who: &str) -> Result<String> {
+    let name = who.strip_prefix('@').unwrap_or(who);
+    forge_core::resolve::resolve_owner(&s.client, name)
+        .await
+        .with_context(|| format!("resolving reviewer {who}"))
+}
+
+/// `dg pr request-review` (`add`) / `unrequest-review`.
+pub async fn request_review(
+    ctx: &Ctx,
+    repo: &str,
+    number: u64,
+    reviewers: &[String],
+    add: bool,
+) -> Result<()> {
+    let pr = open_pr(ctx, repo, number, "review request not changed").await?;
+    let collab = pr.s.collab();
+    let reviews = collab
+        .reviews(&pr.s.repo, &pr.view.patch.document_id)
+        .await?;
+    let mut results = Vec::new();
+    let (kind, word) = if add {
+        (EventKind::ReviewRequest, "requested")
+    } else {
+        (EventKind::ReviewRequestRemove, "removed")
+    };
+    for who in reviewers {
+        let id = reviewer_id(&pr.s, who).await?;
+        let standing = pr
+            .view
+            .review
+            .requested_reviewers
+            .iter()
+            .find(|r| r.identity == id)
+            .map(|r| r.requested_at);
+        let reviewed_since = |at: u64| {
+            reviews
+                .iter()
+                .any(|r| r.reviewer == id && r.created_at > at)
+        };
+        // Adding: a standing request with no review since is already there; after a review it
+        // is a re-request. Removing: only a standing request can be removed.
+        let skip = match (add, standing) {
+            (true, Some(at)) => !reviewed_since(at),
+            (false, None) => true,
+            _ => false,
+        };
+        if skip {
+            results.push(json!({ "reviewer": id, "input": who, "written": false,
+                "status": if add { "already_requested" } else { "not_requested" } }));
+            if !ctx.json {
+                println!(
+                    "{id}: {}; nothing written",
+                    if add {
+                        "already requested"
+                    } else {
+                        "not requested"
+                    }
+                );
+            }
+            continue;
+        }
+        let re = add && standing.is_some();
+        let (route, ev) = post(
+            ctx,
+            &pr,
+            kind,
+            &EventPayload {
+                ref_id: Some(&id),
+                ..EventPayload::default()
+            },
+            &format!(
+                "{} a review from {id} on PR #{number}",
+                if !add {
+                    "Remove the request for"
+                } else if re {
+                    "Re-request"
+                } else {
+                    "Request"
+                }
+            ),
+        )
+        .await?;
+        results.push(json!({ "reviewer": id, "input": who, "written": true,
+            "status": if re { "re_requested" } else { word }, "via": route, "eventId": ev }));
+        if !ctx.json {
+            println!(
+                "✓ {} {id} {}",
+                if re { "re-requested" } else { word },
+                route_text(route)
+            );
+        }
+    }
+    if ctx.json {
+        crate::errors::print_json(&json!({ "pr": number, "reviewers": results }));
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// dismiss-review
+// ---------------------------------------------------------------------------
+
+/// `dg pr dismiss-review` (maintainers and writers).
+pub async fn dismiss(
+    ctx: &Ctx,
+    repo: &str,
+    number: u64,
+    review_id: &str,
+    reason: &str,
+) -> Result<()> {
+    let pr = open_pr(ctx, repo, number, "review not dismissed").await?;
+    let reviews =
+        pr.s.collab()
+            .reviews(&pr.s.repo, &pr.view.patch.document_id)
+            .await?;
+    let Some(r) = reviews.iter().find(|r| r.document_id == review_id) else {
+        return Err(crate::errors::not_found(
+            format!("review {review_id} is not on PR #{number}"),
+            format!("`dg pr view {repo} {number} --json` lists its reviews (`reviews[].id`)"),
+        ));
+    };
+    if let Some(d) = pr
+        .view
+        .review
+        .dismissed_reviews
+        .iter()
+        .find(|d| d.review_id == review_id)
+    {
+        unchanged(
+            ctx,
+            "already_dismissed",
+            number,
+            &format!("review {} is already dismissed", short(review_id)),
+            json!({ "reviewId": review_id, "reason": d.reason }),
+        );
+        return Ok(());
+    }
+    let (route, id) = post(
+        ctx,
+        &pr,
+        EventKind::ReviewDismiss,
+        &EventPayload {
+            ref_id: Some(review_id),
+            value: (!reason.is_empty()).then_some(reason),
+            ..EventPayload::default()
+        },
+        &format!(
+            "Dismiss {}'s {} review on PR #{number} (the reason is public)",
+            r.reviewer,
+            r.verdict.label()
+        ),
+    )
+    .await?;
+    ctx.emit(
+        json!({
+            "status": "dismissed",
+            "pr": number,
+            "written": true,
+            "reviewId": review_id,
+            "reviewer": r.reviewer,
+            "reason": reason,
+            "via": route,
+            "eventId": id,
+        }),
+        || println!("✓ dismissed {}'s review {}", r.reviewer, short(review_id)),
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// checks
+// ---------------------------------------------------------------------------
+
+/// `dg pr checks`: the newest run per check name on the PR head.
+pub async fn checks(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
+    let pr = open_pr_read(ctx, repo, number).await?;
+    let runs = pr.s.collab().check_runs(&pr.s.repo, &pr.view.head).await?;
+    let trusted: Vec<_> = runs.iter().filter(|r| r.trusted).collect();
+    let count = |f: &dyn Fn(&&forge_core::collab::v2::CheckRun) -> bool| {
+        trusted.iter().filter(|r| f(r)).count()
+    };
+    let passed = count(&|r| {
+        r.status == "completed"
+            && matches!(r.conclusion.as_str(), "success" | "neutral" | "skipped")
+    });
+    let failed = count(&|r| {
+        r.status == "completed"
+            && !matches!(r.conclusion.as_str(), "success" | "neutral" | "skipped")
+    });
+    let pending = trusted.len() - passed - failed;
+    ctx.emit(
+        json!({
+            "pr": number,
+            "headOid": pr.view.head,
+            "checks": runs,
+            "passed": passed,
+            "failed": failed,
+            "pending": pending,
+        }),
+        || {
+            if runs.is_empty() {
+                println!("no checks reported for {}", short(&pr.view.head));
+                return;
+            }
+            println!(
+                "checks on {}: {passed} passed, {failed} failing, {pending} pending",
+                short(&pr.view.head)
+            );
+            for r in &runs {
+                let state = if r.status == "completed" {
+                    r.conclusion.as_str()
+                } else {
+                    r.status.as_str()
+                };
+                let mark = match state {
+                    "success" => "✓",
+                    "neutral" | "skipped" => "-",
+                    "queued" | "in_progress" => "…",
+                    _ => "✗",
+                };
+                println!(
+                    "  {mark} {:<24} {state}{}{}",
+                    safe(&r.name),
+                    if r.details_url.is_empty() {
+                        String::new()
+                    } else {
+                        format!("  {}", safe(&r.details_url))
+                    },
+                    if r.trusted {
+                        String::new()
+                    } else {
+                        "  (reporter is no longer a member: not counted)".into()
+                    }
+                );
+            }
+        },
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// commits
+// ---------------------------------------------------------------------------
+
+/// `dg pr commits`: the commits in `base..head`, newest first, from a scratch clone.
+pub async fn commits(ctx: &Ctx, repo: &str, number: u64, limit: usize) -> Result<()> {
+    let Pr { s, view } = open_pr_read(ctx, repo, number).await?;
+    let scratch = super::scratch_with_pr(ctx, &s.repo, &view)?;
+    let dir = scratch.path();
+    let range = match &view.base_tip {
+        // The commits the PR adds: reachable from the head, not from the base.
+        Some(b) => format!("{b}..{}", view.head),
+        None => view.head.clone(),
+    };
+    let max = format!("--max-count={}", limit.max(1));
+    let out = git::git(
+        dir,
+        &[
+            "log",
+            &max,
+            "--format=%H%x1f%an%x1f%ae%x1f%aI%x1f%s",
+            &range,
+            "--",
+        ],
+        &[],
+    )?;
+    let total: usize = git::git(dir, &["rev-list", "--count", &range, "--"], &[])?
+        .trim()
+        .parse()
+        .unwrap_or(0);
+    let rows: Vec<serde_json::Value> = out
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\u{1f}').collect();
+            (f.len() == 5).then(|| {
+                json!({ "oid": f[0], "author": f[1], "email": f[2], "date": f[3], "subject": f[4] })
+            })
+        })
+        .collect();
+    ctx.emit(
+        json!({
+            "pr": number,
+            "baseOid": view.base_tip,
+            "headOid": view.head,
+            "total": total,
+            "truncated": total > rows.len(),
+            "commits": rows,
+        }),
+        || {
+            println!(
+                "{total} commit{} on {} not in {}",
+                if total == 1 { "" } else { "s" },
+                short(&view.head),
+                view.patch.base_ref_name
+            );
+            for r in &rows {
+                println!(
+                    "  {}  {}  {}",
+                    short(r["oid"].as_str().unwrap_or("")),
+                    safe(r["subject"].as_str().unwrap_or("")),
+                    safe(r["author"].as_str().unwrap_or(""))
+                );
+            }
+            if total > rows.len() {
+                println!("  … {} more (raise --limit)", total - rows.len());
+            }
+        },
+    );
+    Ok(())
+}

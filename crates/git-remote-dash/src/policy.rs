@@ -83,7 +83,7 @@ pub struct PushPolicy {
 /// The effective value of a setting that exists both per remote
 /// (`remote.<remote>.<remote_key>`) and repo-wide (`dash.<key>`), by the scope rule of
 /// [`pick_scoped`].
-fn config_value(remote: Option<&str>, remote_key: &str, key: &str) -> Option<String> {
+pub(crate) fn config_value(remote: Option<&str>, remote_key: &str, key: &str) -> Option<String> {
     let per_remote =
         remote.and_then(|r| LocalRepo::config_get_scoped(&format!("remote.{r}.{remote_key}")));
     let repo_wide = LocalRepo::config_get_scoped(&format!("dash.{key}"));

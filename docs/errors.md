@@ -59,13 +59,21 @@ Fix: check the owner id and the name (`dg repo list --owner <identity id>`). Als
 
 **Merge has conflicts.** `dg pr merge` tried a three-way merge of the pull request's head into its base locally and the two change the same lines. Nothing was pushed and no merge event was posted.
 
-Fix: resolve it by hand: `dg pr checkout <owner>/<repo> <n>`, merge the base into `pr/<n>` and fix the conflicts, push the result to the base branch (a member can), then run `dg pr merge` again: it finds the PR head already in the base and only records the merge. A PR names a fixed head commit, so pushing the resolution to the PR's source branch does not change the PR: open a new one from it instead.
+The message lists the conflicting files.
+
+Fix: `dg pr update-branch <owner>/<repo> <n>` merges the base into the PR's branch when that merge is clean. Otherwise resolve it by hand: `dg pr checkout <owner>/<repo> <n>`, merge the base into `pr/<n>`, fix the conflicts, and push the result to the PR's branch. The push moves the PR head, or run `dg pr sync` if it did not. Then run `dg pr merge` again.
 
 ## E106
 
 **Partially completed.** `dg import` finished, but some items were not mirrored: an issue or PR whose number is held by someone else, a document the destination refused, or the optional push of open pull request heads. The warnings name each one, and `counts.skipped` / `counts.gitSkipped` in the `--json` summary count them. Everything else was written.
 
 Fix: run the same command again later: skipped items are retried and nothing already written is written twice. The standalone `forge-import` binary (and the GitHub Mirror Action) reports this as status `partial` with exit code 4.
+
+## E107
+
+**Suggestion not applicable.** `dg pr suggestion apply` could not apply a review suggestion (a ```` ```suggestion ```` block) to the PR's branch. The message says which. The comment may be on an older head, or on the old side of the diff. It may name lines the file no longer has. Two suggestions may touch the same lines. Or the comment may have no suggestion block at all. Nothing was committed or pushed.
+
+Fix: apply the suggestions that still fit, one by one or with `--all`, and edit the rest by hand. Push, then `dg pr sync` moves the PR head. When two suggestions overlap, apply one, then ask the reviewer to re-suggest against the new head.
 
 ## E201
 

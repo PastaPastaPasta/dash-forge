@@ -30,6 +30,7 @@ const markdownUrl = new URL('./markdown.ts', import.meta.url)
 const gitObjectsUrl = new URL('./git-objects.ts', import.meta.url)
 const textDiffUrl = new URL('./text-diff.ts', import.meta.url)
 const wildmatchUrl = new URL('../rules/matchesProtected.ts', import.meta.url)
+const suggestionUrl = new URL('../rules/suggestion.ts', import.meta.url)
 
 /** Run `calls` against `fn`, asserting the batch finishes and no single call exceeds budget. */
 async function expectFast(
@@ -153,5 +154,69 @@ describe('renderers terminate quickly on hostile input', () => {
       calls.push([nastyString(rand, 100, globAlphabet), nastyString(rand, 255, ['a', 'b', '/'])])
     }
     await expectFast(wildmatchUrl, 'wildmatch', calls, 'wildmatch')
+  }, 120_000)
+})
+
+/** Hand-picked worst cases for the suggestion parser: fences, fence-looking runs, whitespace. */
+const SUGGESTION_ADVERSARIAL: readonly string[] = [
+  // An info string that starts with a word, then a long space run, then a word: a
+  // `/^\s+|\s+$/` trim retries its trailing branch at every space (quadratic).
+  '```x' + ' '.repeat(MAX_LEN) + 'y',
+  '```suggestion' + ' '.repeat(MAX_LEN) + 'y',
+  '```' + ' '.repeat(MAX_LEN),
+  '```' + ' '.repeat(MAX_LEN) + 'x',
+  '```suggestion' + '\t'.repeat(MAX_LEN),
+  '```suggestion\n' + '``' + ' '.repeat(MAX_LEN),
+  '```suggestion\n' + '```' + ' '.repeat(MAX_LEN) + 'x',
+  '`'.repeat(MAX_LEN),
+  '~'.repeat(MAX_LEN),
+  '```\n'.repeat(MAX_LEN / 4),
+  '```suggestion\n'.repeat(MAX_LEN / 14),
+  '```suggestion\nx\n```\n'.repeat(MAX_LEN / 20),
+  '   ```suggestion\n' + '   x\n'.repeat(MAX_LEN / 5),
+  '````suggestion\n```\n'.repeat(MAX_LEN / 20),
+  '\r'.repeat(MAX_LEN),
+  '\r\n'.repeat(MAX_LEN / 2),
+  '```suggestion \t\r'.repeat(MAX_LEN / 17),
+  ' '.repeat(3) + '`'.repeat(MAX_LEN - 3),
+]
+
+/** 1 MiB units for the suggestion parser. */
+const SUGGESTION_MIB_UNITS: readonly string[] = [' ', '`', '~', '```\n', '```suggestion\n', '```suggestion\nx\n```\n', '\r', '\r\n', '\t', '   ```\n']
+
+describe('suggestion parsing terminates quickly on hostile input', () => {
+  it('parseSuggestions: adversarial cases', async () => {
+    await expectFast(suggestionUrl, 'parseSuggestions', SUGGESTION_ADVERSARIAL.map((s) => [s]), 'parseSuggestions')
+  }, 120_000)
+
+  it('parseSuggestions: 1 MiB worst cases stay under budget', async () => {
+    const calls = SUGGESTION_MIB_UNITS.map((u) => [fill(MIB, u)])
+    calls.push(
+      ['```' + fill(MIB - 4, ' ', 'x')],
+      ['```x' + fill(MIB - 5, ' ', 'y')],
+      ['```suggestion\n```' + fill(MIB - 20, ' ', 'x')],
+    )
+    await expectFast(suggestionUrl, 'parseSuggestions', calls, 'parseSuggestions 1 MiB', MIB_CALL_MS)
+  }, 120_000)
+
+  it(`parseSuggestions: ${CASES} random nasty inputs up to 20 KB`, async () => {
+    const alphabet = ['```', '~~~', '`', '~', 'suggestion', ' ', '\t', '\r', '\n', '\r\n', 'x', '   ', '````']
+    const rand = prng(0x5ec0)
+    const calls = corpus(0x5ec1, CASES).map((s) => [s])
+    for (let n = 0; n < CASES; n++) calls.push([nastyString(rand, MAX_LEN, alphabet)])
+    await expectFast(suggestionUrl, 'parseSuggestions', calls, 'parseSuggestions')
+  }, 120_000)
+
+  it('applySuggestion: large files and replacements stay linear', async () => {
+    const big = fill(MIB, 'line\n')
+    const lines = Math.floor(MIB / 5)
+    const calls: unknown[][] = [
+      [big, 1, lines, ''],
+      [big, 1, 1, fill(MIB, '\n')],
+      [big, lines, lines, fill(MIB, 'x\r\n')],
+      [fill(MIB, 'a\r\n'), 2, 3, 'b'],
+      [fill(MIB, '\n'), 1, 1, 'x'],
+    ]
+    await expectFast(suggestionUrl, 'applySuggestion', calls, 'applySuggestion 1 MiB', MIB_CALL_MS)
   }, 120_000)
 })
