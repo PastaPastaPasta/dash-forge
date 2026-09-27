@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { existsSync } from 'node:fs'
-import { E2E_DEVNET, idFile, runAxe, shot, signedIn, stateFile, unlock } from './helpers'
+import { EMPTY, fixtureWriteBlocked, idFile, runAxe, shot, signedIn, stateFile, unlock } from './helpers'
 
 /**
  * The storage wizard (`/settings/storage`) against the local S3 store of infra/docker-compose.yml
@@ -24,10 +24,11 @@ import { E2E_DEVNET, idFile, runAxe, shot, signedIn, stateFile, unlock } from '.
 
 test.skip(process.env['E2E_WRITE'] !== '1', 'needs a signed-in vault: set E2E_WRITE=1')
 test.skip(!existsSync(idFile('MAINTAINER')), 'devnet test identities not found')
+test.skip(fixtureWriteBlocked('empty') !== null, fixtureWriteBlocked('empty') ?? '')
 test.describe.configure({ mode: 'serial', timeout: 240_000 })
 
 const MINIO = { endpoint: 'http://127.0.0.1:9000', bucket: 'forge-byo', publicUrl: 'http://127.0.0.1:9000/forge-byo', key: 'minioadmin', secret: 'minioadmin' }
-const EMPTY_REPO = { owner: 'GKBTXUdo3MpRYAUqgZvTZGTav9mXGqfJfR5822K2tp79', name: 'forge-v2-empty' }
+const EMPTY_REPO = EMPTY
 
 async function fillS3(page: Page, v: { name: string; endpoint: string; bucket: string; publicUrl: string }): Promise<void> {
   await page.getByLabel('Profile name', { exact: true }).fill(v.name)

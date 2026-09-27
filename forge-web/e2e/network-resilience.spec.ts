@@ -34,7 +34,8 @@ async function quorumSwitch(page: Page): Promise<{ down: boolean; hits: number }
 }
 
 test.describe('network resilience', () => {
-  test('nr-1. Slow 3G: shell first, SDK download with progress, no chunk timeout', async ({ page, context }) => {
+  test('nr-1. Slow 3G: shell first, SDK download with progress, no chunk timeout', async ({ page, context, browserName }) => {
+    test.skip(browserName !== 'chromium', 'network throttling goes through the DevTools protocol, which only Chromium has')
     test.setTimeout(8 * 60_000)
     const { errors } = collectPageErrors(page)
     const cdp = await context.newCDPSession(page)

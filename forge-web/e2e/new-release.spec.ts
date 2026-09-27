@@ -58,7 +58,7 @@ async function removeAllProfiles(page: Page): Promise<void> {
 test('r1. a non-maintainer is not offered "New release"', async ({ browser }) => {
   test.skip(!existsSync(idFile('CONTRIB')), 'CONTRIB identity not found')
   const page = await signedIn(browser, 'CONTRIB', releasesPath())
-  await expect(page.getByRole('heading', { name: 'Releases' })).toBeVisible({ timeout: 60_000 })
+  await expect(page.getByRole('heading', { name: 'Releases', exact: true })).toBeVisible({ timeout: 60_000 })
   // Wait until the page has DECIDED the viewer's role, then assert the button is absent.
   await expect(page.getByTestId('new-release-role')).toHaveAttribute('data-role', 'none', { timeout: 60_000 })
   await expect(page.getByRole('button', { name: /new release/i })).toHaveCount(0)
