@@ -9,7 +9,7 @@ import { resolveNetwork } from '../src/config.mjs';
 import { fundFromKey, loadFundingKey, FUNDING_WIF_ENV } from '../src/funding.mjs';
 import { ChainClient, resetInsightHealth } from '../src/chain.mjs';
 import { InsightClient } from '../src/insight.mjs';
-import { DapiCoreClient, encodeField, decodeMessage, parseGrpcWebBody } from '../src/dapi-core.mjs';
+import { DapiCoreClient, DapiError, encodeField, decodeMessage, parseGrpcWebBody } from '../src/dapi-core.mjs';
 import { waitForDeposit } from '../src/deposit.mjs';
 import { waitForTxHeight } from '../src/lock.mjs';
 import { withLedger, defaultLedgerPath } from '../src/utxo-ledger.mjs';
@@ -179,24 +179,82 @@ test('a spent ledger input is dropped and the next one is used', async () => {
   assert.ok(ledger.utxos.some((u) => u.txid === result.txid), 'the new change is recorded');
 });
 
-test('a healthy Insight is still used first (no DAPI call)', async () => {
-  const key = fundingKey();
-  const ledgerPath = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'funding.utxos.json');
-  const utxo = { txid: 'cd'.repeat(32), vout: 3, satoshis: 900_000_000, scriptPubKey: bytesToHex(addressToScript(key.address)), confirmations: 500 };
-  const posted = [];
+/** An Insight that is up: lists `utxos` for `address` and serves raw txs from `raws`. */
+function insightUp(address, utxos, raws, posted = []) {
   const fetchImpl = async (url, init) => {
-    if (url.endsWith('/utxo')) return Response.json([utxo]);
+    if (url.endsWith(`/addr/${address}/utxo`)) return Response.json(utxos);
+    const raw = url.match(/\/rawtx\/([0-9a-f]{64})$/);
+    if (raw && raws.has(raw[1])) return Response.json({ rawtx: bytesToHex(raws.get(raw[1])) });
     if (url.endsWith('/tx/send')) {
       posted.push(JSON.parse(init.body).rawtx);
       return Response.json({ txid: 'x' });
     }
     return new Response('nope', { status: 404 });
   };
+  return new InsightClient(MOUTAI, { fetchImpl });
+}
+
+test('a healthy Insight is still used first (no DAPI call), its amounts checked against raw txs', async () => {
+  const key = fundingKey();
+  const ledgerPath = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'funding.utxos.json');
+  const prev = await fundingTx(key, publicKeyToAddress(generateKeyPair().publicKey, MOUTAI), 1_000_000, 900_000_000);
+  const utxo = { txid: prev.txid, vout: 1, satoshis: 900_000_000, scriptPubKey: bytesToHex(addressToScript(key.address)), confirmations: 500 };
+  const posted = [];
   const dapi = fakeDapi({ reject: () => 'DAPI must not be used' });
-  const chain = new ChainClient(MOUTAI, { insight: new InsightClient(MOUTAI, { fetchImpl }), dapi });
+  const chain = new ChainClient(MOUTAI, { insight: insightUp(key.address, [utxo], new Map([[prev.txid, prev.bytes]]), posted), dapi });
   await fundFromKey(key, [{ address: key.address, duffs: 1000_000 }], MOUTAI, () => {}, { chain, ledgerPath });
   assert.equal(posted.length, 1);
   assert.equal(dapi.broadcasts.length, 0);
+});
+
+test('an explorer that under-reports a funding output cannot turn it into fees', async () => {
+  const key = fundingKey();
+  const ledgerPath = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'funding.utxos.json');
+  const prev = await fundingTx(key, publicKeyToAddress(generateKeyPair().publicKey, MOUTAI), 1_000_000, 900_000_000);
+  // Claims 5 DASH for an output that holds 9: signing would burn the 4 DASH difference.
+  const lie = { txid: prev.txid, vout: 1, satoshis: 500_000_000, scriptPubKey: bytesToHex(addressToScript(key.address)), confirmations: 500 };
+  const posted = [];
+  const chain = new ChainClient(MOUTAI, { insight: insightUp(key.address, [lie], new Map([[prev.txid, prev.bytes]]), posted), dapi: fakeDapi() });
+  await assert.rejects(fundFromKey(key, [{ address: key.address, duffs: 1000_000 }], MOUTAI, () => {}, { chain, ledgerPath }), /misreported/);
+  assert.equal(posted.length, 0);
+});
+
+test('a DAPI node returning bytes for another tx is refused (deposit value never from its word)', async () => {
+  const key = fundingKey();
+  const deposit = publicKeyToAddress(generateKeyPair().publicKey, MOUTAI);
+  const real = await fundingTx(key, deposit, 150_000_000, 50_000_000);
+  const forged = await fundingTx(key, deposit, 1_000_000, 50_000_000);
+  const dapi = fakeDapi();
+  dapi.txs.set(real.txid, { transactionBytes: forged.bytes, height: 5, confirmations: 1, isInstantLocked: false, isChainLocked: true, mined: true });
+  const chain = new ChainClient(MOUTAI, { insight: insight503().client, dapi });
+  await assert.rejects(
+    waitForDeposit(chain, deposit, 1, { known: { txid: real.txid, vout: 0 }, timeoutMs: 200, pollIntervalMs: 10 }),
+    /Timed out/
+  );
+});
+
+test('an ambiguous broadcast failure re-sends the same tx and never pays from other inputs', async () => {
+  const key = fundingKey();
+  const ledgerPath = join(mkdtempSync(join(tmpdir(), 'ledger-')), 'funding.utxos.json');
+  const a = await fundingTx(key, publicKeyToAddress(generateKeyPair().publicKey, MOUTAI), 1_000_000, 300_000_000);
+  const b = await fundingTx(key, publicKeyToAddress(generateKeyPair().publicKey, MOUTAI), 1_000_000, 300_000_000);
+  const sent = [];
+  const dapi = fakeDapi();
+  dapi.broadcastTransaction = async (bytes) => {
+    sent.push(bytesToHex(bytes));
+    throw new DapiError('broadcastTransaction to https://n: timed out', { code: 4 });
+  };
+  await withLedger(ledgerPath, key.address, async (l) => {
+    l.addOutputsOf(a.bytes, bytesToHex(addressToScript(key.address)));
+    l.addOutputsOf(b.bytes, bytesToHex(addressToScript(key.address)));
+  });
+  const chain = new ChainClient(MOUTAI, { insight: insight503().client, dapi });
+  await assert.rejects(
+    fundFromKey(key, [{ address: key.address, duffs: 100_000_000 }], MOUTAI, () => {}, { chain, ledgerPath, utxoFetchAttempts: 1, resendDelayMs: 1 }),
+    /fate is unknown/
+  );
+  assert.ok(sent.length >= 2);
+  assert.equal(new Set(sent).size, 1, 'every attempt re-sent the same signed bytes');
 });
 
 test('Insight 503: the deposit is found from its known outpoint and the height from DAPI', async () => {
@@ -281,4 +339,27 @@ test('DAPI Core client moves to the next node on UNAVAILABLE but not on a reject
   };
   await assert.rejects(new DapiCoreClient(['https://a', 'https://b'], { fetchImpl: invalid }).broadcastTransaction(Uint8Array.of(1)), /missingorspent/);
   assert.equal(n, 1, 'a node rejection is final');
+});
+
+test('the ledger lock: a live holder keeps it, a dead one loses it, release only frees our own', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'lock-'));
+  const path = join(dir, 'l.utxos.json');
+  const lockPath = `${path}.lock`;
+  const { hostname } = await import('node:os');
+
+  // A live holder (this process) with a fresh heartbeat: a waiter times out rather than break it.
+  writeFileSync(lockPath, JSON.stringify({ token: 'live', pid: process.pid, host: hostname(), at: Date.now() }));
+  await assert.rejects(withLedger(path, 'yA', async () => {}, { waitMs: 300 }), /Timed out/);
+  assert.equal(JSON.parse(readFileSync(lockPath, 'utf8')).token, 'live');
+
+  // A holder whose pid is dead on this host: broken at once.
+  writeFileSync(lockPath, JSON.stringify({ token: 'dead', pid: 2 ** 22 + 12345, host: hostname(), at: Date.now() }));
+  let ran = false;
+  await withLedger(path, 'yA', async () => {
+    ran = true;
+    // While held, the lock is ours; someone replacing it must not be deleted on release.
+    writeFileSync(lockPath, JSON.stringify({ token: 'other', pid: process.pid, host: hostname(), at: Date.now() }));
+  });
+  assert.ok(ran);
+  assert.equal(JSON.parse(readFileSync(lockPath, 'utf8')).token, 'other', 'release left the other holder alone');
 });

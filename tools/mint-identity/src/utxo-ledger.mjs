@@ -13,14 +13,17 @@
 //                payments: { <address>: { txid, vout, satoshis, scriptPubKey, at } } }
 // `payments` remembers what each recent funding tx paid where, so a resumed
 // mint finds its deposit without an address lookup. The ledger holds no keys.
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { randomBytes } from 'node:crypto';
+import { closeSync, existsSync, linkSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs';
+import { homedir, hostname } from 'node:os';
 import { basename, dirname, extname, join } from 'node:path';
 import { parseTransactionOutputs } from './tx.mjs';
 import { sleep } from './insight.mjs';
 
 export const LEDGER_ENV = 'FORGE_FUNDING_LEDGER';
-const LOCK_STALE_MS = 10 * 60 * 1000;
+// A holder rewrites its heartbeat every HEARTBEAT_MS; one silent for LOCK_STALE_MS is gone.
+const HEARTBEAT_MS = 5000;
+const LOCK_STALE_MS = 60 * 1000;
 const LOCK_WAIT_MS = 20 * 60 * 1000;
 const MAX_PAYMENTS = 500;
 
@@ -109,42 +112,81 @@ function pidAlive(pid) {
   }
 }
 
-/** Take `${path}.lock` (O_EXCL), breaking it when its holder died or it is older than 10 minutes. */
+function readHolder(lockPath) {
+  try {
+    return JSON.parse(readFileSync(lockPath, 'utf8'));
+  } catch {
+    return null; // gone, or half-written
+  }
+}
+
+/**
+ * Take `${path}.lock` (O_EXCL). The holder's record carries a random token, its pid and
+ * host, and a heartbeat it rewrites every few seconds. A lock is broken only when its
+ * holder is provably gone: its pid is dead on this host, or its heartbeat stopped for
+ * LOCK_STALE_MS. Breaking renames the lock aside first, so two waiters cannot both break it
+ * (the second rename fails) and a fresh lock is never deleted by mistake.
+ * Returns the token for {@link releaseLock}.
+ */
 async function acquireLock(lockPath, { waitMs = LOCK_WAIT_MS, log = () => {} } = {}) {
   const start = Date.now();
+  const token = randomBytes(16).toString('hex');
   let announced = false;
   for (;;) {
     try {
       const fd = openSync(lockPath, 'wx', 0o600);
-      writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() }));
+      writeSync(fd, JSON.stringify({ token, pid: process.pid, host: hostname(), at: Date.now() }));
       closeSync(fd);
-      return;
+      return token;
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
     }
-    let holder = {};
-    try {
-      holder = JSON.parse(readFileSync(lockPath, 'utf8'));
-    } catch {
-      /* half-written: treat by age */
-    }
-    const age = Date.now() - (holder.at ?? statSync(lockPath, { throwIfNoEntry: false })?.mtimeMs ?? 0);
-    if ((holder.pid && !pidAlive(holder.pid)) || age > LOCK_STALE_MS) {
-      log(`funding ledger: breaking stale lock (pid ${holder.pid ?? '?'}, ${Math.round(age / 1000)}s old)`);
+    const holder = readHolder(lockPath);
+    const beat = holder?.at ?? statSync(lockPath, { throwIfNoEntry: false })?.mtimeMs ?? Date.now();
+    const deadHere = holder?.pid && holder.host === hostname() && !pidAlive(holder.pid);
+    if (deadHere || Date.now() - beat > LOCK_STALE_MS) {
+      const aside = `${lockPath}.stale-${token}`;
       try {
-        unlinkSync(lockPath);
+        renameSync(lockPath, aside); // atomic: of two waiters, only one moves it
       } catch {
-        /* someone else broke it */
+        continue; // another waiter broke it first
       }
+      const moved = readHolder(aside);
+      if (holder && moved?.token !== holder.token) {
+        // Not the lock we judged stale (a live holder re-took it): put it back, unless a
+        // new holder already took the path (link fails on an existing file).
+        try {
+          linkSync(aside, lockPath);
+        } catch {
+          /* a new holder owns the path now */
+        }
+      } else {
+        log(`funding ledger: broke a stale lock (pid ${holder?.pid ?? '?'}, no heartbeat for ${Math.round((Date.now() - beat) / 1000)}s)`);
+      }
+      rmSync(aside, { force: true });
       continue;
     }
     if (Date.now() - start > waitMs) throw new Error(`Timed out waiting for the funding ledger lock ${lockPath}`);
     if (!announced) {
-      log(`funding ledger: another mint (pid ${holder.pid ?? '?'}) is funding; waiting for it`);
+      log(`funding ledger: another mint (pid ${holder?.pid ?? '?'}) is funding; waiting for it`);
       announced = true;
     }
     await sleep(250 + Math.floor(Math.random() * 500));
   }
+}
+
+/** Rewrite our heartbeat while the lock is ours. */
+function heartbeat(lockPath, token) {
+  const holder = readHolder(lockPath);
+  if (holder?.token !== token) return;
+  const tmp = `${lockPath}.${token}.tmp`;
+  writeFileSync(tmp, JSON.stringify({ ...holder, at: Date.now() }), { mode: 0o600 });
+  renameSync(tmp, lockPath);
+}
+
+/** Remove the lock only if it is still ours. */
+function releaseLock(lockPath, token) {
+  if (readHolder(lockPath)?.token === token) rmSync(lockPath, { force: true });
 }
 
 /**
@@ -154,7 +196,15 @@ async function acquireLock(lockPath, { waitMs = LOCK_WAIT_MS, log = () => {} } =
 export async function withLedger(path, address, fn, { log = () => {}, waitMs } = {}) {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const lockPath = `${path}.lock`;
-  await acquireLock(lockPath, { waitMs, log });
+  const token = await acquireLock(lockPath, { waitMs, log });
+  const beat = setInterval(() => {
+    try {
+      heartbeat(lockPath, token);
+    } catch {
+      /* next beat retries */
+    }
+  }, HEARTBEAT_MS);
+  beat.unref();
   try {
     const ledger = readLedger(path, address);
     try {
@@ -163,11 +213,8 @@ export async function withLedger(path, address, fn, { log = () => {}, waitMs } =
       writeLedger(path, ledger);
     }
   } finally {
-    try {
-      unlinkSync(lockPath);
-    } catch {
-      /* already gone */
-    }
+    clearInterval(beat);
+    releaseLock(lockPath, token);
   }
 }
 

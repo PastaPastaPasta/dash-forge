@@ -7,9 +7,11 @@ import { readFileSync } from 'node:fs';
 import { wifToPrivateKey, bytesToHex } from './bytes.mjs';
 import { getPublicKey, publicKeyToAddress } from './keys.mjs';
 import { addressToScript, calculateTxId, createP2PKHTransaction, estimateP2PKHSize, signTransaction, serializeTransaction } from './tx.mjs';
-import { sleep } from './insight.mjs';
+import { InsightError, sleep } from './insight.mjs';
+import { DapiError } from './dapi-core.mjs';
 import { ChainClient, isInsightUnavailable } from './chain.mjs';
 import { defaultLedgerPath, withLedger } from './utxo-ledger.mjs';
+import { verifyUtxo } from './deposit.mjs';
 
 export const FUNDING_WIF_ENV = 'FORGE_DEVNET_FUNDING_WIF';
 
@@ -120,7 +122,8 @@ async function fetchFundingUtxos(chain, address, log, attempts = UTXO_FETCH_ATTE
 async function bootstrapLedger(ledger, chain, txids, changeScript, log) {
   for (const txid of txids) {
     try {
-      ledger.addOutputsOf(await chain.getRawTransactionBytes(txid), changeScript);
+      const got = ledger.addOutputsOf(await chain.getRawTransactionBytes(txid), changeScript);
+      if (got !== txid) log(`fund-from-key: the source returned ${got} for ${txid}; seeded from what it returned`);
     } catch (err) {
       log(`fund-from-key: cannot seed the ledger from ${txid}: ${err.message}`);
     }
@@ -130,6 +133,20 @@ async function bootstrapLedger(ledger, chain, txids, changeScript, log) {
 
 // Node rejections meaning an input is gone for good (someone else spent it).
 const SPENT_INPUT = /missingorspent|missing inputs|txn-mempool-conflict|already spent|inputs-spent/i;
+const RESEND_ATTEMPTS = 3;
+
+/**
+ * Whether a broadcast error is the node refusing the transaction (it will never be mined),
+ * as opposed to a transport failure that says nothing about whether it was accepted.
+ */
+function isRejection(err) {
+  if (err instanceof DapiError) return !TRANSIENT_DAPI.has(err.code);
+  if (err instanceof InsightError) return !err.unavailable;
+  return SPENT_INPUT.test(err?.message ?? '');
+}
+// gRPC codes that say nothing about the transaction: CANCELLED, UNKNOWN, DEADLINE_EXCEEDED,
+// RESOURCE_EXHAUSTED, INTERNAL, UNAVAILABLE.
+const TRANSIENT_DAPI = new Set([1, 2, 4, 8, 13, 14]);
 
 export const BOOTSTRAP_TXIDS_ENV = 'FORGE_FUNDING_BOOTSTRAP_TXIDS';
 
@@ -173,7 +190,15 @@ export async function fundFromKey(fundingKey, recipients, network, log = () => {
               `${BOOTSTRAP_TXIDS_ENV}=<txid of a recent funding tx from ${fundingKey.address}>`
           );
         }
-        const { inputs, fee } = selectFundingUtxos(utxos, total, outputs.length, { exclude: tried, minFee: network.minFee * 2 });
+        const picked = selectFundingUtxos(utxos, total, outputs.length, { exclude: tried, minFee: network.minFee * 2 });
+        // Insight's amounts are claims: read each input's value from its raw transaction (a
+        // ledger entry came from our own bytes). Under-reported values would become fees.
+        const inputs = listed === null ? picked.inputs : await Promise.all(picked.inputs.map((u) => verifyUtxo(chain, u)));
+        const claimed = picked.inputs.reduce((s, u) => s + u.satoshis, 0);
+        if (inputs.reduce((s, u) => s + u.satoshis, 0) !== claimed) {
+          throw new Error('the block explorer misreported a funding output value; refusing to sign');
+        }
+        const { fee } = picked;
         const tx = createP2PKHTransaction(inputs, outputs, changeScript, BigInt(fee));
         const signed = await signTransaction(tx, inputs, fundingKey.privateKey, fundingKey.publicKey);
         const bytes = serializeTransaction(signed);
@@ -185,20 +210,37 @@ export async function fundFromKey(fundingKey, recipients, network, log = () => {
           for (const p of paid) ledger.recordPayment(p.address, { txid: p.txid, vout: p.vout, satoshis: p.satoshis, scriptPubKey: p.scriptPubKey });
           return { txid, paid };
         };
-        try {
-          await chain.broadcastTransaction(bytes);
-          log(`fund-from-key: broadcast ${txid} (${inputs.length} input(s), fee ${fee} duffs)`);
-          return settle();
-        } catch (err) {
-          if (await chain.isKnown(txid)) {
-            log(`fund-from-key: ${txid} is known to the network despite the error (${err.message}); using it`);
+        // An ambiguous failure (timeout, 5xx, lost response) may hide an accepted broadcast:
+        // re-send these same bytes, never a second payment from other inputs. Inputs change
+        // only after a node rejects the transaction outright.
+        let rejected = null;
+        for (let send = 1; send <= RESEND_ATTEMPTS && !rejected; send++) {
+          try {
+            await chain.broadcastTransaction(bytes);
+            log(`fund-from-key: broadcast ${txid} (${inputs.length} input(s), fee ${fee} duffs)`);
             return settle();
+          } catch (err) {
+            if (await chain.isKnown(txid)) {
+              log(`fund-from-key: ${txid} is known to the network despite the error (${err.message}); using it`);
+              return settle();
+            }
+            lastError = err;
+            if (isRejection(err)) rejected = err;
+            else {
+              log(`fund-from-key: broadcast of ${txid} failed (${err.message}); re-sending the same transaction`);
+              await sleep(send * (opts.resendDelayMs ?? 3000));
+            }
           }
-          lastError = err;
-          for (const u of inputs) tried.add(outpointKey(u));
-          if (SPENT_INPUT.test(err.message)) ledger.markSpent(inputs);
-          log(`fund-from-key: broadcast attempt ${attempt} rejected (${err.message}); retrying with other inputs`);
         }
+        if (!rejected) {
+          throw new Error(
+            `fund-from-key: ${txid} could not be broadcast and its fate is unknown (${lastError.message}); ` +
+              'not paying again from other inputs. Rerun the same command once the network answers.'
+          );
+        }
+        for (const u of inputs) tried.add(outpointKey(u));
+        if (SPENT_INPUT.test(rejected.message)) ledger.markSpent(inputs);
+        log(`fund-from-key: broadcast attempt ${attempt} rejected (${rejected.message}); retrying with other inputs`);
       }
       throw lastError;
     },

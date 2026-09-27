@@ -2,9 +2,8 @@
 // outpoint this tool itself paid (fund-from-key or the faucet reply), resolved
 // through DAPI Core getTransaction. DAPI has no address index, so a deposit
 // nobody told us about (--funding manual) still needs Insight.
-import { addressToScript } from './tx.mjs';
+import { addressToScript, parseTransactionOutputs } from './tx.mjs';
 import { bytesToHex } from './bytes.mjs';
-import { parseTransactionOutputs } from './tx.mjs';
 import { isInsightUnavailable } from './chain.mjs';
 import { sleep } from './insight.mjs';
 
@@ -17,12 +16,27 @@ export async function resolveKnownOutpoint(chain, address, known) {
   const tx = await chain.dapi.getTransaction(known.txid);
   if (!tx) return null;
   const script = bytesToHex(addressToScript(address));
-  const outs = parseTransactionOutputs(tx.transactionBytes).outputs.filter(
-    (o) => o.scriptPubKey === script && (known.vout === undefined || o.vout === known.vout)
-  );
+  // The value comes from bytes that hash to the txid we asked for, never from the node's word.
+  const parsed = parseTransactionOutputs(tx.transactionBytes);
+  if (parsed.txid !== known.txid) throw new Error(`a DAPI node returned a transaction that is not ${known.txid}`);
+  const outs = parsed.outputs.filter((o) => o.scriptPubKey === script && (known.vout === undefined || o.vout === known.vout));
   if (outs.length === 0) throw new Error(`${known.txid} pays nothing to ${address}`);
   const best = outs.reduce((a, b) => (b.satoshis > a.satoshis ? b : a));
   return { txid: known.txid, vout: best.vout, satoshis: best.satoshis, scriptPubKey: best.scriptPubKey, confirmations: tx.confirmations };
+}
+
+/**
+ * `utxo` with its value and script read from its raw transaction (Insight's or DAPI's bytes,
+ * which must hash to `utxo.txid`). The legacy sighash does not commit to input values, so a
+ * source that under-reports a value would otherwise turn the difference into miner fees.
+ */
+export async function verifyUtxo(chain, utxo) {
+  const parsed = parseTransactionOutputs(await chain.getRawTransactionBytes(utxo.txid));
+  if (parsed.txid !== utxo.txid) throw new Error(`the transaction returned for ${utxo.txid} hashes to ${parsed.txid}`);
+  const out = parsed.outputs[utxo.vout];
+  if (!out) throw new Error(`${utxo.txid} has no output ${utxo.vout}`);
+  if (out.scriptPubKey !== utxo.scriptPubKey) throw new Error(`${utxo.txid}:${utxo.vout} does not pay the expected script`);
+  return { ...utxo, satoshis: out.satoshis };
 }
 
 /**
@@ -65,6 +79,7 @@ export async function waitForDeposit(chain, address, minSatoshis, { known, timeo
         announced = true;
         utxo = await resolveKnownOutpoint(chain, address, known);
       }
+      if (utxo) utxo = await verifyUtxo(chain, { ...utxo, scriptPubKey: utxo.scriptPubKey ?? bytesToHex(addressToScript(address)) });
       if (utxo && utxo.satoshis >= minSatoshis) return utxo;
     } catch (err) {
       log(`  poll error (${address}): ${err.message}`);

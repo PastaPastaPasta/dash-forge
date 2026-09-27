@@ -104,6 +104,7 @@ export function parseGrpcWebBody(body) {
   while (i + 5 <= body.length) {
     const flag = body[i];
     const len = new DataView(body.buffer, body.byteOffset + i + 1, 4).getUint32(0);
+    if (i + 5 + len > body.length) throw new DapiError('truncated grpc-web frame', { code: 13 });
     const payload = body.slice(i + 5, i + 5 + len);
     if (flag & 0x80) trailers = { ...trailers, ...parseTrailers(payload) };
     else message = payload;
