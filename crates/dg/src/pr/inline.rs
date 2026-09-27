@@ -370,6 +370,18 @@ impl clap::FromArgMatches for InlineArgs {
         tokens.extend(positioned::<String>(m, "suggest", Token::Suggest));
         tokens.sort_by_key(|(i, _)| *i);
         let summary_file = m.get_one::<PathBuf>("body_file").cloned();
+        // `--body-file` is the review summary only: after a `--file` it would read as that
+        // comment's text, so it must come first.
+        let first_file = m.indices_of("file").and_then(|mut i| i.next());
+        let body_file_at = m.indices_of("body_file").and_then(|mut i| i.next());
+        if let (Some(f), Some(b)) = (first_file, body_file_at) {
+            if b > f {
+                return Err(clap::Error::raw(
+                    clap::error::ErrorKind::ValueValidation,
+                    "--body-file is the review summary: give it before the first --file (a comment takes --body)\n",
+                ));
+            }
+        }
         group(tokens.into_iter().map(|(_, t)| t).collect(), summary_file)
             .map_err(|e| clap::Error::raw(clap::error::ErrorKind::ValueValidation, e + "\n"))
     }
@@ -509,6 +521,10 @@ mod tests {
                 "new side",
             ),
             (vec!["--body", "a", "--body", "b"], "two --body"),
+            (
+                vec!["--file", "a", "--line", "1", "--body-file", "x"],
+                "before the first --file",
+            ),
         ] {
             let err = parse(&args).unwrap_err();
             assert!(err.contains(want), "{args:?}: {err}");

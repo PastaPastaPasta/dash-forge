@@ -72,6 +72,9 @@ pub const DOC_RELEASE: &str = "release";
 /// forge-core: a label definition (member-gated).
 pub const DOC_LABEL: &str = "label";
 
+/// The most PRs one push follows ([`Collab::prs_following`]): each costs a few reads.
+pub const MAX_FOLLOWING: usize = 20;
+
 /// Attempts at claiming a number before giving up: each collision re-reads the index, so
 /// the next attempt starts above whatever took the number.
 const MAX_NUMBER_ATTEMPTS: usize = 8;
@@ -1792,8 +1795,11 @@ impl<'a> Collab<'a> {
     }
 
     /// The open PRs a push of `source_ref_name` to `source_repo_id` should move, with their
-    /// target repos and views: PRs from that branch ([`Self::patches_from_branch`]), re-read
-    /// well-formed in their own repo, open, whose folded head is not already `new_head`. What
+    /// target repos and views: PRs from that branch ([`Self::patches_from_branch`]) authored
+    /// by `author` (anyone can open a PR naming someone's branch; only the author's are
+    /// read further), re-read well-formed in their own repo, open, whose folded head is not
+    /// already `new_head`. At most [`MAX_FOLLOWING`] are read. A PR that cannot be read
+    /// (its repo gone, private, or malformed) is skipped, never failing the others. What
     /// `git push` and `dg pr sync` post a `headUpdate` for.
     pub async fn prs_following(
         &self,
@@ -1801,20 +1807,35 @@ impl<'a> Collab<'a> {
         source_repo_id: &str,
         source_ref_name: &str,
         new_head: &str,
+        author: &str,
     ) -> Result<Vec<(RepoRef, PatchView)>> {
         let mut out = Vec::new();
-        for p in self
+        let mine = self
             .patches_from_branch(forge, source_repo_id, source_ref_name)
             .await?
-        {
-            let repo = crate::resolve::resolve_id(self.client, &p.repo_id).await?;
-            // The branch query saw the raw document; the reader rule (§5) is per repo.
-            let Some(p) = self.patch(&repo, p.number).await? else {
-                continue;
+            .into_iter()
+            .filter(|p| p.author == author)
+            .take(MAX_FOLLOWING);
+        for p in mine {
+            let read = async {
+                let repo = crate::resolve::resolve_id(self.client, &p.repo_id).await?;
+                // The branch query saw the raw document; the reader rule (§5) is per repo.
+                let Some(p) = self.patch(&repo, p.number).await? else {
+                    return Ok(None);
+                };
+                let view = self.patch_view(&repo, p).await?;
+                Ok::<_, Error>(Some((repo, view)))
             };
-            let view = self.patch_view(&repo, p).await?;
-            if view.state.open && !view.head.eq_ignore_ascii_case(new_head) {
-                out.push((repo, view));
+            match read.await {
+                Ok(Some((repo, view)))
+                    if view.state.open && !view.head.eq_ignore_ascii_case(new_head) =>
+                {
+                    out.push((repo, view));
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(pr = p.number, repo = %p.repo_id, error = %e, "skipping a pull request that cannot be read");
+                }
             }
         }
         Ok(out)

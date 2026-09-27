@@ -188,8 +188,13 @@ async fn commit_push_move(
     let moved = async {
         let mut argv = vec!["-c".to_string(), "dash.prAutoSync=false".to_string()];
         argv.extend(push_argv(ctx, &src.url, commit, &src.ref_name));
-        push_to(dir, &argv, &git::dash_env(ctx))
-            .with_context(|| format!("pushing to {} in {}", src.ref_name, src.repo_display))?;
+        push_to(
+            dir,
+            &argv,
+            &git::dash_env(ctx),
+            "push to the PR branch failed",
+        )
+        .with_context(|| format!("pushing to {} in {}", src.ref_name, src.repo_display))?;
         steps.ok("push", format!("{} → {}", src.ref_name, short(commit)));
         let oid = hex::decode(commit).context("commit oid")?;
         let (_, id) =
@@ -221,7 +226,13 @@ async fn commit_push_move(
     let number = u64::from(pr.view.patch.number);
     moved.map_err(|e| {
         crate::errors::reported(
-            super::merge_failure(&e, number, repo),
+            super::step_failure(
+                &e,
+                number,
+                repo,
+                "PR branch not updated",
+                "the PR head was not moved",
+            ),
             json!({ "status": "failed", "pr": number, "steps": steps.done }),
         )
     })
@@ -424,11 +435,19 @@ pub async fn apply_suggestions(
     let applied = applied_ids(&git::git(dir, &["log", "--format=%B", &range, "--"], &[])?);
 
     let chosen: Vec<&Comment> = if all {
+        // `--all` takes suggestions from the PR's author and the repo's members only (anyone
+        // can comment); name a stranger's comment to apply it. A suggestion in a resolved
+        // thread (the root or a reply) is skipped.
         let resolved: BTreeSet<&str> = state.resolved_threads.iter().map(String::as_str).collect();
+        let oracle = collab.member_oracle(&s.repo).await?;
+        let trusted = |who: &str| who == view.patch.author || oracle.current_role(who).is_some();
         comments
             .iter()
             .filter(|c| {
-                !applied.contains(&c.document_id) && !resolved.contains(c.document_id.as_str())
+                let root = super::threads::root_id(&comments, &c.document_id).unwrap_or_default();
+                !applied.contains(&c.document_id)
+                    && !resolved.contains(root.as_str())
+                    && trusted(&c.author)
             })
             .filter(|c| !parse_suggestions(&c.body).is_empty())
             .filter(|c| plan_suggestion(c, &view.head).is_ok())
@@ -471,8 +490,12 @@ pub async fn apply_suggestions(
         .map(|p| p.path.as_str())
         .collect::<BTreeSet<_>>()
     {
-        let blob = git::git_raw(dir, &["show", &format!("{}:{path}", view.head)])
-            .map_err(|_| *e107(format!("{} is not in the PR head", safe(path))))?;
+        let blob = git::regular_file(dir, &view.head, path).map_err(|_| {
+            *e107(format!(
+                "{} is not a regular text file in the PR head",
+                safe(path)
+            ))
+        })?;
         files.insert(path.to_string(), blob);
     }
     let edited = apply_all(&plans, &files).map_err(|e| anyhow::Error::from(*e))?;
@@ -500,10 +523,18 @@ pub async fn apply_suggestions(
         );
         for p in &plans {
             eprintln!(
-                "  {}  {}",
+                "  {}  {} (by {})",
                 super::inline::location(&p.path, Some(p.start), Some(p.end), Some(1)),
-                short(&p.comment_id)
+                short(&p.comment_id),
+                p.reviewer
             );
+            // The text that will be committed: review it before confirming.
+            for line in safe(&p.text).lines() {
+                eprintln!("    + {line}");
+            }
+            if p.text.is_empty() {
+                eprintln!("    (deletes the lines)");
+            }
         }
     }
     ctx.confirm_or_cancel(&format!(
@@ -557,6 +588,12 @@ pub async fn apply_suggestions(
 pub async fn update_branch(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let pr = open_pr(ctx, repo, number).await?;
     let (s, view) = (&pr.s, &pr.view);
+    if !view.state.open {
+        return Err(crate::errors::usage(format!(
+            "PR #{number} is {}; only an open PR's branch is updated",
+            super::state_label(view)
+        )));
+    }
     let Some(base) = view.base_tip.clone() else {
         return Err(crate::errors::usage(format!(
             "{} has no commits; there is nothing to merge in",
@@ -680,7 +717,7 @@ pub fn delete_source_branch(ctx: &Ctx, src: &SourceBranch) -> Result<()> {
         src.url.clone(),
         format!(":{}", src.ref_name),
     ]);
-    push_to(dir, &argv, &git::dash_env(ctx))
+    push_to(dir, &argv, &git::dash_env(ctx), "branch not deleted")
 }
 
 #[cfg(test)]

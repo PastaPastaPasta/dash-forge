@@ -607,8 +607,18 @@ fn comments_json(comments: &[forge_core::collab::v2::Comment]) -> Vec<serde_json
 /// it adds "new commits since your review", and opens a private repo's sealed documents.
 #[allow(clippy::too_many_lines)]
 async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result<()> {
+    // A signed session opens a private repo's sealed documents and names the viewer. A
+    // configured identity that cannot be used (missing file, locked keychain, not found on
+    // this network) must not stop a read of a public PR: fall back to an anonymous reader,
+    // which still refuses a private repo with its own error.
     let session = if ctx.identity_path.is_some() {
-        Some(Session::open(ctx, repo).await?)
+        match Session::open(ctx, repo).await {
+            Ok(s) => Some(s),
+            Err(e) => {
+                tracing::warn!(error = %format!("{e:#}"), "reading without the configured identity");
+                None
+            }
+        }
     } else {
         None
     };
@@ -663,13 +673,19 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
             "author": v.patch.author,
             "state": state_label(&v),
             "draft": v.state.draft,
-            "fold": serde_json::to_value(&v.state).unwrap_or_default(),
+            "labels": v.state.labels,
+            "assignees": v.state.assignees,
+            "retargetedTo": v.state.base_ref,
             "baseRef": v.patch.base_ref_name,
             "baseTip": v.base_tip,
             "headOid": v.head,
             "initialHeadOid": v.patch.head_oid,
             "headOnBase": v.head_on_base,
-            "review": serde_json::to_value(&review_state).unwrap_or_default(),
+            "headUpdates": review_state.head_updates.iter().map(|h| json!({
+                "oid": h.oid, "actor": h.actor, "createdAt": h.created_at, "id": h.id,
+            })).collect::<Vec<_>>(),
+            "resolvedThreads": review_state.resolved_threads,
+            "milestone": review_state.milestone,
             "sourceRepoId": v.patch.source_repo_id,
             "sourceRepo": source,
             "sourceRefName": v.patch.source_ref_name,
@@ -1214,18 +1230,35 @@ fn event_only_oid(view: &PatchView, given: Option<&str>, number: u64) -> Result<
 
 /// The E-coded error for a failed merge step (conflicts are E105; the rest classify).
 pub(crate) fn merge_failure(e: &anyhow::Error, number: u64, repo: &str) -> UserError {
+    step_failure(e, number, repo, "merge failed", "no merge event was posted")
+}
+
+/// The E-coded error for a failed step of `goal` on PR `number`; `nothing` says what did not
+/// happen (added to a helper's own error when it has no note of its own).
+pub(crate) fn step_failure(
+    e: &anyhow::Error,
+    number: u64,
+    repo: &str,
+    goal: &str,
+    nothing: &str,
+) -> UserError {
     if let Some(u) = e.downcast_ref::<UserError>() {
-        return u.clone();
+        let u = u.clone();
+        return if u.note.is_none() {
+            u.note(format!("{nothing} for PR #{number}"))
+        } else {
+            u
+        };
     }
     forge_core::user_error::classify(
         e.chain(),
         &forge_core::user_error::ErrorContext {
-            goal: Some("merge failed"),
+            goal: Some(goal),
             repo: Some(repo),
             ..Default::default()
         },
     )
-    .note(format!("no merge event was posted for PR #{number}"))
+    .note(format!("{nothing} for PR #{number}"))
 }
 
 /// Do the git side of a merge in a throwaway repository and push the result to the base
@@ -1260,6 +1293,7 @@ fn push_merge(
         dir,
         &push_argv(ctx, &base_url, &target, base_ref),
         &git::dash_env(ctx),
+        "merge failed",
     )?;
     steps.ok("push", format!("{base_ref} → {}", short(&target)));
     Ok(target)
@@ -1508,8 +1542,14 @@ pub(crate) fn squash_message(
     m
 }
 
-/// Run the push, surfacing the helper's own E-coded error when it refused.
-pub(crate) fn push_to(dir: &Path, argv: &[String], env: &[(String, String)]) -> Result<()> {
+/// Run `git push` (`argv`) in `dir` for `goal` ("merge failed", "suggestions not applied"),
+/// surfacing the helper's own E-coded error when it refused.
+pub(crate) fn push_to(
+    dir: &Path,
+    argv: &[String],
+    env: &[(String, String)],
+    goal: &str,
+) -> Result<()> {
     let out = std::process::Command::new("git")
         .current_dir(dir)
         .args(argv)
@@ -1538,7 +1578,7 @@ pub(crate) fn push_to(dir: &Path, argv: &[String], env: &[(String, String)]) -> 
         let headline = text
             .lines()
             .find(|l| l.contains(code))
-            .map_or("push to the base branch rejected", |l| {
+            .map_or("the push was rejected", |l| {
                 l.trim_start_matches("dash: ").trim_start_matches("error: ")
             })
             .replace(&format!("[{code}]"), "")
@@ -1548,12 +1588,11 @@ pub(crate) fn push_to(dir: &Path, argv: &[String], env: &[(String, String)]) -> 
             .iter()
             .find(|(c, _)| *c == code)
             .map_or(codes::REJECTED, |(c, _)| c);
-        return Err(UserError::new(code, format!("merge failed: {headline}"))
+        return Err(UserError::new(code, format!("{goal}: {headline}"))
             .cause(text.replace("dash: ", ""))
-            .note("no merge event was posted")
             .into());
     }
-    anyhow::bail!("git push to the base branch failed: {text}")
+    anyhow::bail!("{goal}: git push failed: {text}")
 }
 
 // ---------------------------------------------------------------------------

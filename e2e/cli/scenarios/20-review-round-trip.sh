@@ -224,7 +224,7 @@ json.dump({
     "reviews": [{"id": r["id"], "verdict": r["verdict"], "commitOid": r["commitOid"], "stale": r["stale"]} for r in d["reviews"]],
     "threads": [{"id": t["id"], "path": t["anchor"]["path"], "line": t["anchor"]["line"], "startLine": t["anchor"]["startLine"],
                  "side": t["anchor"]["side"], "outdated": t["outdated"], "resolved": t["resolved"], "comments": len(t["comments"])} for t in d["threads"]],
-    "headUpdates": len(d["review"]["headUpdates"]),
+    "headUpdates": len(d["headUpdates"]),
 }, open(sys.argv[2], "w"), indent=2)
 PY
 info "fold for the web cross-check: ${STATE}"

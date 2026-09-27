@@ -72,6 +72,20 @@ pub fn git_raw(dir: &Path, args: &[&str]) -> Result<String> {
     String::from_utf8(out.stdout).context("the file is not UTF-8 text")
 }
 
+/// The text of `path` at `commit`, when it is a regular file (mode 100644 or 100755): not a
+/// directory, symlink or submodule, whose `git show` output is not file content.
+pub fn regular_file(dir: &Path, commit: &str, path: &str) -> Result<String> {
+    let entry = git(dir, &["ls-tree", commit, "--", path], &[])?;
+    let mut fields = entry.split_whitespace();
+    let (mode, kind, oid) = (fields.next(), fields.next(), fields.next());
+    match (mode, kind, oid) {
+        (Some("100644" | "100755"), Some("blob"), Some(oid)) if is_oid(oid) => {
+            git_raw(dir, &["cat-file", "blob", oid])
+        }
+        _ => bail!("{path} is not a regular file at {commit}"),
+    }
+}
+
 /// The tree of `commit` with each `path → content` of `files` replaced (the paths exist; file
 /// modes are kept), written to `dir`'s object store through a temporary index.
 pub fn tree_with(

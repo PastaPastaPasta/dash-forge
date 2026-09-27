@@ -151,18 +151,23 @@ fn load_draft(path: &Path) -> Result<Option<ReviewDraft>> {
     }
 }
 
-/// Save atomically (write + rename), readable by the user only.
+/// Save atomically (write + rename), created readable by the user only.
 fn save_draft(path: &Path, draft: &ReviewDraft) -> std::io::Result<()> {
+    use std::io::Write as _;
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(draft)?)?;
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true).create(true).truncate(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        open.mode(0o600);
     }
+    let mut f = open.open(&tmp)?;
+    f.write_all(&serde_json::to_vec_pretty(draft)?)?;
+    f.sync_all()?;
     std::fs::rename(&tmp, path)
 }
 
@@ -363,7 +368,7 @@ fn spec_json(spec: &InlineSpec) -> serde_json::Value {
         "path": spec.path,
         "line": spec.line,
         "startLine": spec.start_line,
-        "side": spec.side,
+        "side": spec.side.map(super::inline::SideArg::code),
         "location": spec.location(),
     })
 }
@@ -501,7 +506,9 @@ async fn submit(
 
     let collab = s.collab();
     let before = s.balance().await;
-    save_draft(path, &draft).with_context(|| format!("saving {}", path.display()))?;
+    // Not saved here: the first save is the one that records the review's signed transition
+    // (`write_all`). Until then the file keeps what `--pending` saved, so a submit that fails
+    // before anything was signed can be run again as it was, without adding its comments twice.
     let result = write_all(&collab, s, &mut draft, path, &head, v, count).await;
     let spent = s.spent_since(before).await;
     let landed = draft.landed();
@@ -514,7 +521,7 @@ async fn submit(
                 "path": c.spec.path,
                 "line": c.spec.line,
                 "startLine": c.spec.start_line,
-                "side": c.spec.side,
+                "side": c.spec.side.map(super::inline::SideArg::code),
                 "location": c.spec.location(),
             })
         })
@@ -823,6 +830,47 @@ mod tests {
         assert_eq!(back.landed(), 2);
         assert_eq!(back.comments[1].spec, spec("f", 2));
         assert!(load_draft(&dir.path().join("none.json")).unwrap().is_none());
+    }
+
+    /// A submit that fails before the review's transition is saved leaves the draft file as
+    /// `--pending` left it, so running the same command again adds its `--file` comments once.
+    #[test]
+    fn a_failed_submit_before_signing_does_not_append_twice() {
+        use clap::Parser;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("d.json");
+        let pending = draft(1);
+        save_draft(&path, &pending).unwrap();
+        let cli = crate::Cli::parse_from([
+            "dg",
+            "pr",
+            "review",
+            "o/r",
+            "1",
+            "--request-changes",
+            "--file",
+            "g",
+            "--line",
+            "9",
+            "--body",
+            "new",
+        ]);
+        let crate::Command::Pr(crate::PrCommand::Review(a)) = cli.command else {
+            panic!("expected pr review");
+        };
+        // What `submit` builds, twice (a run that failed before signing, then its re-run):
+        // each starts from the file, which the failed run did not touch.
+        for _ in 0..2 {
+            let mut d = load_draft(&path).unwrap().unwrap();
+            assert!(!d.attempted());
+            d.verdict = Some(2);
+            d.add_args(&a).unwrap();
+            assert_eq!(
+                d.comments.len(),
+                2,
+                "the pending comment + the given one, once"
+            );
+        }
     }
 
     #[test]

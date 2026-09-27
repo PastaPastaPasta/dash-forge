@@ -5,11 +5,13 @@
 //! found through the forge-collab `sourceRef` index (`Collab::prs_following`, which also skips
 //! closed PRs and PRs already at the new tip). One whose author is the signer gets a
 //! `headUpdate` (`authorEvent`, or a member `event` when the author is also a member of the
-//! PR's repo): `PR #7 follows this branch: updating its head (≈ 0.0007 DASH)`. Any other PR
-//! is only named, with the `dg pr sync` line its author (or a member) can run.
+//! PR's repo): `PR #7 follows this branch: updating its head (≈ 0.0007 DASH)`. Other people's
+//! PRs from the branch are not read at all (anyone can open one naming your branch).
 //!
 //! `git config dash.prAutoSync false` (or `remote.<name>.dashPrAutoSync`) turns the write
-//! off; the helper then prints the `dg pr sync` line for each PR instead. The code that
+//! off; the helper then prints the `dg pr sync` line for each PR instead. So does a
+//! `dash.confirm` of `refuse` or `always` (an unattended cap, or "ask before every spend",
+//! which a push that already landed cannot ask for). The code that
 //! commits to a PR branch on the user's behalf (`dg pr suggestion apply`, `update-branch`)
 //! turns it off and posts the head update itself.
 //!
@@ -27,8 +29,14 @@ use crate::progress::Progress;
 pub const AUTO_SYNC_KEY: &str = "dash.prAutoSync";
 
 /// Whether the push should post head updates: `dash.prAutoSync` (default true), or its
-/// per-remote `remote.<name>.dashPrAutoSync`.
+/// per-remote `remote.<name>.dashPrAutoSync`, and a `dash.confirm` that allows an unasked
+/// spend (`auto` or `never`).
 pub fn auto_sync_enabled(remote: Option<&str>) -> Result<bool> {
+    let confirm = crate::policy::config_value(remote, "dashConfirm", "confirm")
+        .map(|v| v.trim().to_ascii_lowercase());
+    if matches!(confirm.as_deref(), Some("refuse" | "always")) {
+        return Ok(false);
+    }
     match crate::policy::config_value(remote, "dashPrAutoSync", "prAutoSync") {
         Some(v) => Ok(parse_git_bool(AUTO_SYNC_KEY, &v)?),
         None => Ok(true),
@@ -89,7 +97,7 @@ pub async fn sync_after_push(
         .filter(|m| m.ref_name.starts_with("refs/heads/"))
     {
         let prs = match collab
-            .prs_following(source.forge(), source.id(), &m.ref_name, &m.oid)
+            .prs_following(source.forge(), source.id(), &m.ref_name, &m.oid, &me)
             .await
         {
             Ok(p) => p,
@@ -102,6 +110,10 @@ pub async fn sync_after_push(
             }
         };
         for (repo, view) in prs {
+            // A private PR's documents are sealed; moving its head is `dg pr sync`'s job.
+            if repo.visibility == forge_core::rules::v2::Visibility::Private {
+                continue;
+            }
             let n = view.patch.number;
             let label = repo.display();
             let hint = |reason: String| Outcome::Hint {
@@ -112,16 +124,9 @@ pub async fn sync_after_push(
             let sync_line = format!("dg pr sync {label} {n}");
             if !enabled {
                 progress.note(&format!(
-                    "PR #{n} in {label} follows this branch; {AUTO_SYNC_KEY} is off: run `{sync_line}` to move its head"
+                    "PR #{n} in {label} follows this branch; not moving its head ({AUTO_SYNC_KEY} is off, or dash.confirm asks first): run `{sync_line}`"
                 ));
-                out.push(hint(format!("{AUTO_SYNC_KEY} is false")));
-                continue;
-            }
-            if view.patch.author != me {
-                progress.note(&format!(
-                    "PR #{n} in {label} follows this branch but is not yours; its author (or a member) can run `{sync_line}`"
-                ));
-                out.push(hint("not the PR's author".into()));
+                out.push(hint(format!("{AUTO_SYNC_KEY} is off")));
                 continue;
             }
             let Ok(oid) = hex::decode(&m.oid) else {

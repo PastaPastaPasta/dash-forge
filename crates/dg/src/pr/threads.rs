@@ -255,14 +255,16 @@ pub fn reviewer_rows(
             let requested_at = requested.get(id).copied();
             let awaiting = requested_at.is_some_and(|at| review.is_none_or(|r| r.created_at <= at));
             let dismissal = review.and_then(|r| dismissed.get(r.document_id.as_str()).copied());
+            // What counts comes first, so a row never disagrees with the approvals fold: an older,
+            // undismissed verdict on the head still stands when only the newest was dismissed.
             let state = if awaiting {
                 Standing::Awaiting
-            } else if dismissal.is_some() {
-                Standing::Dismissed
             } else if approvals.approvers.contains(id) {
                 Standing::Approved
             } else if approvals.changes_requested.contains(id) {
                 Standing::ChangesRequested
+            } else if dismissal.is_some() {
+                Standing::Dismissed
             } else {
                 match review {
                     Some(r) if matches!(r.verdict, Verdict::Approve | Verdict::RequestChanges) => {

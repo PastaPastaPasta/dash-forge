@@ -552,8 +552,8 @@ impl Helper {
             }
         };
         let collab = forge_core::collab::v2::Collab::new(&conn.client, &s.identity, &s.bridge);
-        // A private repository's PRs are sealed (private-repos PR 2); the collab service
-        // refuses them, and there is nothing to sync that this helper can read yet.
+        // A private repository's PRs are sealed and found by keyed hashes, not the plain
+        // `sourceRef` index this lookup uses: `dg pr sync` moves their heads.
         if conn.repo.visibility == forge_core::rules::v2::Visibility::Private {
             return;
         }
