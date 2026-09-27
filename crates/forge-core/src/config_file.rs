@@ -48,6 +48,20 @@ pub fn config_toml_error(path: &Path, raw: &str, e: &toml::de::Error) -> UserErr
     .fix("or move it aside and sign in again with `dg auth login`, which writes a new one")
 }
 
+/// `dg`'s `config.toml` at `path` as a TOML table, for the tools that only read a key or two
+/// of it (the remote helper's default identity and network). `Ok(None)` when the file does
+/// not exist; a file that cannot be read or does not parse is E204, as it is in `dg`.
+pub(crate) fn read_config_toml(path: &Path) -> crate::Result<Option<toml::Value>> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(config_read_error(path, &e).into()),
+    };
+    toml::from_str(&raw)
+        .map(Some)
+        .map_err(|e| config_toml_error(path, &raw, &e).into())
+}
+
 /// E204: `config.toml` at `path` exists but cannot be read (permissions, a directory).
 pub fn config_read_error(path: &Path, e: &std::io::Error) -> UserError {
     UserError::new(

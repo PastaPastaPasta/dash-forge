@@ -109,9 +109,8 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Auth(a) => (a.context(), None),
         Command::Repo(Rp::Create(a)) => ("repository not created", a.name.as_ref()),
         Command::Init(a) => ("repository not published", a.name.as_ref()),
-        Command::Repo(Rp::Clone { repo } | Rp::View { repo }) => {
-            ("could not show the repository", Some(repo))
-        }
+        Command::Repo(Rp::Clone { repo, .. }) => ("repository not cloned", Some(repo)),
+        Command::Repo(Rp::View { repo }) => ("could not show the repository", Some(repo)),
         Command::Repo(Rp::Fork { repo, .. }) => ("repository not forked", Some(repo)),
         Command::Repo(Rp::Star { repo }) => ("repository not starred", Some(repo)),
         Command::Repo(Rp::Unstar { repo }) => ("star not removed", Some(repo)),

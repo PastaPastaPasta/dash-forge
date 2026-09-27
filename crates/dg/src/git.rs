@@ -8,6 +8,8 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use forge_core::network::NetworkSettings;
+use forge_core::platform::Network;
 
 use crate::context::Ctx;
 
@@ -34,6 +36,54 @@ pub fn dash_env(ctx: &Ctx) -> Vec<(String, String)> {
         ));
     }
     env
+}
+
+/// Pin `dg`'s network in the repository at `root` (its own git config) unless its git config
+/// already resolves it. A `dash://` repository lives on one network, so its clone keeps
+/// using that network in a shell without `DASH_FORGE_NETWORK` and after `dg auth` saves
+/// another default. Returns the keys set.
+pub fn pin_network(ctx: &Ctx, root: &Path) -> Result<Vec<String>> {
+    let set = |k: &str, v: &str| git(root, &["config", k, v], &[]).map(drop);
+    let want = ctx.network();
+    let git_config = || {
+        NetworkSettings::from_git_config(|k| {
+            git(root, &["config", "--get", k], &[])
+                .ok()
+                .filter(|v| !v.is_empty())
+        })
+    };
+    let pinned = || git_config().resolve().is_ok_and(|t| t.network == *want);
+    let mut out = Vec::new();
+    if !pinned() {
+        set("dash.network", want.kind())?;
+        out.push(format!("dash.network={}", want.kind()));
+        if let Some(name) = want.devnet_name() {
+            set("dash.devnetName", name)?;
+            out.push(format!("dash.devnetName={name}"));
+        }
+    }
+    if !pinned() {
+        if let Network::Devnet {
+            dapi_addresses,
+            quorum_base_url,
+            ..
+        } = want
+        {
+            set("dash.dapiAddresses", &dapi_addresses.join(","))?;
+            out.push("dash.dapiAddresses".into());
+            if let Some(q) = quorum_base_url {
+                set("dash.quorumUrl", q)?;
+                out.push(format!("dash.quorumUrl={q}"));
+            }
+        }
+    }
+    let helper = NetworkSettings::from_env().overlay(git_config());
+    if !helper.resolve().is_ok_and(|t| t.network == *want) {
+        tracing::warn!(
+            "git may still resolve another network: DASH_FORGE_NETWORK and friends in the environment override git config"
+        );
+    }
+    Ok(out)
 }
 
 /// `git <args>` in `dir`, returning trimmed stdout; stderr goes into the error.
@@ -401,6 +451,26 @@ mod tests {
 
     const B: &str = "1111111111111111111111111111111111111111";
     const H: &str = "2222222222222222222222222222222222222222";
+
+    #[test]
+    fn a_clone_is_pinned_to_dgs_network_once() {
+        // L-21: `dg repo clone` (and `dg init`) record the network in the repository, so a
+        // later `git push` there needs neither DASH_FORGE_NETWORK nor dg's config.
+        let dir = tempfile::tempdir().unwrap();
+        git(dir.path(), &["init", "-q"], &[]).unwrap();
+        let ctx = Ctx::scripted(true, true, false, None); // devnet moutai
+        let set = pin_network(&ctx, dir.path()).unwrap();
+        assert_eq!(set[..2], ["dash.network=devnet", "dash.devnetName=moutai"]);
+        let get = |k: &str| git(dir.path(), &["config", "--get", k], &[]).unwrap();
+        assert_eq!(
+            (get("dash.network"), get("dash.devnetName")),
+            ("devnet".into(), "moutai".into())
+        );
+        assert!(
+            pin_network(&ctx, dir.path()).unwrap().is_empty(),
+            "already pinned"
+        );
+    }
 
     #[test]
     fn merge_planning_covers_every_graph_shape() {

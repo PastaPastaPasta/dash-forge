@@ -146,8 +146,13 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     await openHome(page)
     const box = page.getByTestId('clone-box')
     await expect(box.getByText(`dash://${OWNER}/${NAME}`, { exact: true })).toBeVisible()
-    await expect(box.getByText(`git clone dash://${OWNER}/${NAME}`)).toBeVisible()
-    await expect(box.getByText(`dg repo clone ${OWNER}/${NAME}`)).toBeVisible()
+    // L-03 / L-21: pasted on a machine where nothing chose a network, a bare `git clone` goes to
+    // testnet. Both commands name the build's devnet, which the clone keeps in its git config.
+    await expect(
+      box.getByText(`git clone -c dash.network=devnet -c dash.devnetName=${E2E_DEVNET} dash://${OWNER}/${NAME}`, { exact: true }),
+    ).toBeVisible()
+    await expect(box.getByText(`dg repo clone ${OWNER}/${NAME} --network devnet --devnet-name ${E2E_DEVNET}`, { exact: true })).toBeVisible()
+    await expect(box.getByTestId('clone-network')).toContainText(`devnet-${E2E_DEVNET}`)
     await expect(box.getByText(/No https clone URL/)).toBeVisible()
 
     await box.getByRole('button', { name: 'install' }).click()
@@ -176,8 +181,19 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     await expectLanded(page, empty)
     await expect(empty.getByText(/is empty\./)).toBeVisible()
     await expect(empty.getByText(`git remote add origin dash://${MAINTAINER}/forge-v2-empty`)).toBeVisible()
-    await expect(empty.getByText('git push -u origin main')).toBeVisible()
+    // The network goes into the repository's git config before the push (L-03), and the
+    // from-scratch line clones on the build's network before its `cd` (L-21).
+    const lines = await empty.locator('code').allInnerTexts()
+    expect(lines).toEqual([
+      `git remote add origin dash://${MAINTAINER}/forge-v2-empty`,
+      `git config dash.network devnet && git config dash.devnetName ${E2E_DEVNET}`,
+      'git push -u origin main',
+      `dg repo clone ${MAINTAINER}/forge-v2-empty --network devnet --devnet-name ${E2E_DEVNET} && cd forge-v2-empty`,
+    ])
+    await expect(empty.getByTestId('empty-repo-network')).toContainText(`devnet-${E2E_DEVNET}`)
     await expect(empty.getByText(/Storage: packs go to/)).toBeVisible()
+    // L-11: the ~0.0003 DASH per push copy was 5-10x low.
+    await expect(empty.getByText(/0\.0003 DASH/)).toHaveCount(0)
     await expect(empty.getByRole('link', { name: 'Install →' })).toBeVisible()
     // With no storage configured, the amber note links to the storage settings.
     const note = empty.getByRole('note')

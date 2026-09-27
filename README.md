@@ -98,8 +98,8 @@ attestations, `cargo binstall` and shell completions (`dg completions <shell>`).
 **Networks.** Testnet is the default network, but only devnet moutai has a forge-v2
 deployment today, so pass `--network devnet --devnet-name moutai` (`dg auth new` / `dg auth login` record
 it as your default; `--dapi-addresses` sets the devnet's nodes). The helper reads the same
-settings from `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME` or git config
-(`dash.network`, `dash.devnetName`, `dash.dapiAddresses`), and the web build reads them from
+settings from `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME`, git config
+(`dash.network`, `dash.devnetName`, `dash.dapiAddresses`), or else the default `dg` recorded, and the web build reads them from
 `NEXT_PUBLIC_NETWORK` and `NEXT_PUBLIC_DEVNET_NAME`. Contract ids come only from
 `forge-contracts/deployments/<network>.json`. A network with no deployment (testnet and
 mainnet today) fails with a clear "not deployed" error and never falls back to another

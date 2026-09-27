@@ -269,10 +269,13 @@ pub enum RepoCommand {
     /// Create a forge-v2 repository (repo + your maintainer membership + initial config);
     /// with --push, also add the remote and push the current branch.
     Create(Box<RepoCreateArgs>),
-    /// Print the `git clone` command for a repo (`owner/name`).
+    /// Clone a repo (`owner/name`) with `git clone dash://…`, and record this network in the
+    /// clone's git config so `git push` from it goes to the same place.
     Clone {
         /// The repository (`owner/name`).
         repo: String,
+        /// Where to clone it (default: the repository's name).
+        dir: Option<std::path::PathBuf>,
     },
     /// Fork a repo: a new repo with `forkOf`, the parent's packs recorded by reference
     /// (nothing re-uploaded) and its refs copied.

@@ -320,7 +320,7 @@ Fix: check your connection and run the command again after a minute. `dg doctor`
 
 **Dash Forge not deployed on this network.** The embedded `forge-contracts/deployments/<network>.json` records no registered forge-v2 contracts (forge-core, forge-collab and their contract group), so there is nothing to read or write. The tools never fall back to another network's contracts. Today forge-v2 is deployed on devnet moutai only; testnet and mainnet follow once they run Platform protocol 14.
 
-Fix: use a network with a deployment (`--network devnet --devnet-name moutai`). See [the mainnet runbook](mainnet-runbook.md).
+Fix: use a network with a deployment. For `dg`, pass `--network devnet --devnet-name moutai` (`dg auth new` and `dg auth login` record it as the default). For `git clone` / `git push`, the helper takes the network from `DASH_FORGE_NETWORK`, then git config `dash.network` / `dash.devnetName`, then the network `dg` recorded, so set one of those: `git config --global dash.network devnet && git config --global dash.devnetName moutai`, or `git clone -c dash.network=devnet -c dash.devnetName=moutai dash://…` for one clone. See [the mainnet runbook](mainnet-runbook.md).
 
 ## E703
 

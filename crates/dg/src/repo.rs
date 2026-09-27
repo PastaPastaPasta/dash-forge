@@ -8,9 +8,12 @@
 //! Repositories cannot be deleted.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde_json::json;
+
+use forge_core::user_error::{codes, UserError};
 
 use forge_core::create::{default_journal_dir, CreateRepoOpts};
 use forge_core::members::MemberReader;
@@ -36,7 +39,7 @@ const STAR_VISIBLE_DELAY: std::time::Duration = std::time::Duration::from_millis
 pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
     match cmd {
         RepoCommand::Create(args) => crate::publish::create(ctx, args).await,
-        RepoCommand::Clone { repo } => clone(ctx, repo),
+        RepoCommand::Clone { repo, dir } => clone(ctx, repo, dir.as_deref()),
         RepoCommand::Fork { repo, name } => fork(ctx, repo, name.as_deref()).await,
         RepoCommand::Star { repo } => star(ctx, repo, true).await,
         RepoCommand::Unstar { repo } => star(ctx, repo, false).await,
@@ -54,19 +57,75 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
     }
 }
 
-/// Print the `git clone` invocation for a repo (cloning itself is the remote helper's job).
-fn clone(ctx: &Ctx, repo: &str) -> Result<()> {
+/// `git clone dash://<owner>/<name> [<dir>]` on `dg`'s network, then pin that network in the
+/// clone's git config, so `cd <dir> && git push` works in any shell (L-21). The helper does
+/// the cloning; its progress and errors go to the terminal as with a plain `git clone`.
+fn clone(ctx: &Ctx, repo: &str, dir: Option<&Path>) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
-    let owner = repo_ref
-        .owner
-        .clone()
-        .context("clone needs an explicit owner: `dg repo clone <owner>/<name>`")?;
-    let url = format!("dash://{}/{}", owner, repo_ref.name);
+    let Some(owner) = repo_ref.owner.clone() else {
+        return Err(crate::errors::usage(
+            "clone needs an explicit owner: `dg repo clone <owner>/<name>`",
+        ));
+    };
+    // E702 with dg's own fix (flags) before git runs, rather than the helper's git-shaped one.
+    ctx.target.require_v2()?;
+    let url = format!("dash://{owner}/{}", repo_ref.name);
+    let dest = dir.map_or_else(
+        || PathBuf::from(clone_dir_name(&repo_ref.name)),
+        Path::to_path_buf,
+    );
+    let (_report_dir, report) = crate::publish::Report::new()?;
+    let (report_var, report_path) = report.env();
+    let mut cmd = std::process::Command::new("git");
+    cmd.arg("clone")
+        .arg(&url)
+        .arg(&dest)
+        .envs(crate::git::dash_env(ctx))
+        .env(report_var, report_path)
+        .stdin(std::process::Stdio::null());
+    if ctx.json {
+        cmd.stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+    }
+    let status = cmd.status().context("running git clone")?;
+    if !status.success() {
+        let (code, cause) = report
+            .helper_error(ctx.json)
+            .unwrap_or((codes::UNEXPECTED, format!("git clone exited with {status}")));
+        return Err(UserError::new(code, format!("could not clone {url}"))
+            .cause(cause)
+            .fix("fix what the clone reported, then run the same command again")
+            .into());
+    }
+    let pinned = crate::git::pin_network(ctx, &dest)?;
+    let shown = dest.display();
     ctx.emit(
-        json!({ "remoteUrl": url, "command": format!("git clone {url}") }),
-        || println!("git clone {url}"),
+        json!({
+            "remoteUrl": url,
+            "directory": shown.to_string(),
+            "network": ctx.network_label(),
+            "gitConfig": pinned,
+        }),
+        || {
+            println!("✓ cloned {url} into {shown} ({})", ctx.network_label());
+            if !pinned.is_empty() {
+                println!(
+                    "✓ git config {} (so `git push` there uses {})",
+                    pinned.join(", "),
+                    ctx.network_label()
+                );
+            }
+        },
     );
     Ok(())
+}
+
+/// The directory `git clone` would make for a repository called `name` (its name without a
+/// trailing `.git`, which `RepoRef` keeps and the helper strips).
+fn clone_dir_name(name: &str) -> &str {
+    name.strip_suffix(".git")
+        .filter(|n| !n.is_empty())
+        .unwrap_or(name)
 }
 
 /// Fork `repo`: a new forge-v2 repository with `forkOf` = the parent, the parent's packs

@@ -525,6 +525,9 @@ pub struct ErrorContext<'a> {
     /// Whether re-running the same command is safe after an ambiguous timeout (a push is:
     /// chunks are journaled and ref updates idempotent; creating an issue is not).
     pub retry_is_idempotent: bool,
+    /// The error comes from `git-remote-dash` under a plain `git` command, which takes no
+    /// `dg` flags: a fix names git config or the environment instead.
+    pub via_git: bool,
 }
 
 impl ErrorContext<'_> {
@@ -640,14 +643,7 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
             reason,
             needs,
         } => not_permitted(ctx, action, reason, needs),
-        CoreError::V2NotDeployed { network } => UserError::new(
-            codes::NOT_DEPLOYED,
-            ctx.headline(&format!("forge-v2 isn't deployed on {network} yet")),
-        )
-        .cause(format!(
-            "forge-contracts/deployments/{network}.json records no forge-v2 contracts"
-        ))
-        .fix("use a network where it is: `--network devnet --devnet-name moutai`"),
+        CoreError::V2NotDeployed { network } => not_deployed(ctx, network),
         CoreError::Timeout { retryable } => timed_out(ctx, *retryable),
         CoreError::IncompleteRead {
             document_type,
@@ -933,6 +929,33 @@ fn not_a_writer(ctx: &ErrorContext<'_>, why: &str) -> UserError {
         "ask the owner to run `dg collab add {repo} <your identity id> --role writer`"
     ))
     .fix("push to a repo of your own: `dg repo create <name>`, then `git push dash://<you>/<name> <branch>`")
+}
+
+/// E702: no forge-v2 on `network`. The fix names a network that has it, in the form the
+/// failing tool takes: `dg` flags, or (under `git`, which passes no flags to the helper) the
+/// git config and environment the helper reads.
+fn not_deployed(ctx: &ErrorContext<'_>, network: &str) -> UserError {
+    let u = UserError::new(
+        codes::NOT_DEPLOYED,
+        ctx.headline(&format!("forge-v2 isn't deployed on {network} yet")),
+    )
+    .cause(format!(
+        "forge-contracts/deployments/{network}.json records no forge-v2 contracts"
+    ));
+    let Some(there) = crate::network::suggested_v2_network() else {
+        return u.note("no network has a forge-v2 deployment in this build");
+    };
+    if !ctx.via_git {
+        return u.fix(format!("use a network where it is: `{}`", there.dg_flags()));
+    }
+    u.fix(format!(
+        "use a network where it is: `{}`, then run the git command again",
+        there.git_config_command("--global ")
+    ))
+    .fix(format!(
+        "for one command: `{} git …`",
+        there.env_assignments()
+    ))
 }
 
 fn timed_out(ctx: &ErrorContext<'_>, retryable: bool) -> UserError {
@@ -1540,6 +1563,7 @@ mod tests {
         rejected: Some("push rejected"),
         repo: Some("alice/project"),
         retry_is_idempotent: true,
+        via_git: false,
     };
 
     /// The SDK's text for a forge-v2 writer-gate refusal: `ReferencedEntityNotFoundError`'s
@@ -1631,6 +1655,31 @@ mod tests {
         );
         assert_eq!(u.code, "E702");
         assert!(u.fix[0].contains("--devnet-name moutai"), "{u:?}");
+    }
+
+    #[test]
+    fn undeployed_v2_under_git_names_git_config_not_dg_flags() {
+        // L-03: git takes no `--network`; the fix has to be something git's helper reads.
+        let ctx = ErrorContext {
+            via_git: true,
+            ..PUSH
+        };
+        let u = core_chain(
+            CoreError::V2NotDeployed {
+                network: "testnet".into(),
+            },
+            &ctx,
+        );
+        assert_eq!(u.code, "E702");
+        assert_eq!(
+            u.fix[0],
+            "use a network where it is: `git config --global dash.network devnet && git config --global dash.devnetName moutai`, then run the git command again"
+        );
+        assert!(
+            u.fix[1].contains("DASH_FORGE_DEVNET_NAME=moutai git"),
+            "{u:?}"
+        );
+        assert!(u.fix.iter().all(|f| !f.contains("--network ")), "{u:?}");
     }
 
     #[test]

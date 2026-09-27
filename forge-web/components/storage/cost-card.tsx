@@ -5,13 +5,11 @@
  * list prices, rounded, and say so.
  */
 
-import { CREDITS_PER_DASH, estimateChunkCredits } from '@/lib/sdk/cost'
+import { BYO_PUSH_DASH as PER_PUSH_DASH, CREDITS_PER_DASH, estimateChunkCredits } from '@/lib/sdk/cost'
 import { dashToUsd, formatDash } from '@/lib/view/format'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 
 const MIB = 1024 * 1024
-/** Manifest + ref update per push, measured on moutai (≈ 0.0003 DASH). */
-const PER_PUSH_DASH = 0.0003
 
 export function CostCard(): JSX.Element {
   const platform50 = estimateChunkCredits(50 * MIB) / CREDITS_PER_DASH

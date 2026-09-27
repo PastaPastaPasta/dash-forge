@@ -13,6 +13,10 @@ import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, FileText, GitCommit, Rocket, Search } from 'lucide-react'
 import { CopyRow } from '@/components/ui/copy-row'
+import { ACTIVE_NETWORK } from '@/lib/constants'
+import { BYO_PUSH_DASH } from '@/lib/sdk/cost'
+import { formatDash } from '@/lib/view/format'
+import { repoCommands } from '@/lib/view/repo-commands'
 import type { BrowseReader } from '@/lib/browse'
 import { walkFiles } from '@/lib/view/zip'
 import type { RepoHome, SelectedRef } from '@/lib/view'
@@ -268,7 +272,7 @@ function GoToFile({
  * repository, or start from scratch, and where the bytes will go.
  */
 function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddress; branch: string }): JSX.Element {
-  const remote = `dash://${addr.owner}/${addr.name}`
+  const cmd = repoCommands(addr.owner, addr.name)
   const configured = home.backend.kind !== 'platform' || home.backend.uris.length > 0
   return (
     <section
@@ -285,13 +289,20 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
         </h2>
       </div>
       <h3 className="mb-1.5 text-dense font-medium">Push an existing repository</h3>
-      <CopyRow text={`git remote add origin ${remote}`} />
+      <CopyRow text={cmd.remoteAdd} />
+      <CopyRow text={cmd.setNetwork} label="Copy the network setting" />
       <CopyRow text={`git push -u origin ${branch.replace(/^refs\/heads\//, '')}`} />
       <h3 className="mb-1.5 mt-4 text-dense font-medium">Or start from scratch</h3>
-      <CopyRow text={`dg repo clone ${addr.owner}/${addr.name} && cd ${addr.name}`} />
+      <CopyRow text={`${cmd.dgClone} && cd ${addr.name}`} />
+      <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="empty-repo-network">
+        This repository is on <span className="font-mono">{ACTIVE_NETWORK.key}</span>: the commands set that in the
+        repository&apos;s git config, so a later <span className="font-mono">git push</span> goes there.
+      </p>
       <p className="mt-4 text-[12px] text-anvil-600 dark:text-anvil-300">
         Storage: packs go to <span className="font-mono">{configured ? home.backend.label : 'Platform'}</span>
-        {configured ? ' (set by the owner)' : ''} · Platform: manifest + refs only, ~0.0003 DASH per push
+        {configured
+          ? ` (set by the owner) · Platform: manifest + refs only, ~${formatDash(BYO_PUSH_DASH)} DASH per push`
+          : ''}
       </p>
       <p className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-300">
         No git-remote-dash yet?{' '}

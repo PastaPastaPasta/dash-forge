@@ -217,6 +217,20 @@ const ADMISSION_MARGIN = 1.05
 /** For a type never measured: requirements as a multiple of its preview (the largest seen). */
 const DEFAULT_ADMISSION_FACTOR: Admission = { budget: 2, balance: 5 }
 
+/**
+ * What one small `git push` whose packs go to the pusher's own storage (a bucket, IPFS) costs
+ * on Platform, in DASH: the pack manifest, the ref update and the browse-index publish. The one
+ * place the web quotes it (repository page, storage settings, cost card).
+ *
+ * Measured on moutai (drive 4.2.0-beta.4, 2026-09-27, live journeys J3/J4/J6): eight 3–7 object
+ * pushes to S3-compatible storage were charged 0.0021, 0.0022, 0.0023, 0.0028, 0.0028, 0.0029,
+ * 0.0029 and 0.0029 DASH. The same size of push with Platform-stored packs came to 0.0042–0.0055
+ * DASH, and a tag-only push to 0.00066. Earlier copy said ~0.0003, the manifest-plus-ref estimate
+ * without the per-document base fees (ledger D-009/D-010). Re-measure when fees change (moutai
+ * moved to beta.5 on 2026-09-27).
+ */
+export const BYO_PUSH_DASH = 0.003
+
 /** A pre-sign cost preview for the confirm UI. */
 export interface CostPreview {
   /** Estimated credits (an upper bound); negative when the action refunds storage. */

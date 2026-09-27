@@ -12,7 +12,9 @@
 //!
 //! `--fix` applies only local, reversible, free fixes: create the config directories with
 //! mode 0700, tighten an identity file to 0600, and set git config keys that are unset (the
-//! spec's default cost guard, and `dash.network` so `git push` uses the network `dg` uses).
+//! spec's default cost guard). git needs no network fix for the network `dg auth` saved: the
+//! helper reads it from `config.toml`. Doctor reports git config or environment values that
+//! override it, with the command that fixes them in the right scope.
 //! It never overwrites a value the user set and never signs or broadcasts anything.
 
 use std::path::{Path, PathBuf};
@@ -78,8 +80,6 @@ enum AutoFix {
     PrivateFile(PathBuf),
     /// `git config --global <key> <value>` for a key that is unset everywhere.
     GitConfigGlobal(&'static str, String),
-    /// `git config <key> <value>` in this repository, for a key that is unset everywhere.
-    GitConfigLocal(&'static str, String),
 }
 
 impl AutoFix {
@@ -88,7 +88,6 @@ impl AutoFix {
             AutoFix::PrivateDir(p) => format!("mkdir -p -m 700 {}", p.display()),
             AutoFix::PrivateFile(p) => format!("chmod 600 {}", p.display()),
             AutoFix::GitConfigGlobal(k, v) => format!("git config --global {k} {v}"),
-            AutoFix::GitConfigLocal(k, v) => format!("git config {k} {v}"),
         }
     }
 
@@ -99,19 +98,13 @@ impl AutoFix {
                 set_mode(p, 0o700)
             }
             AutoFix::PrivateFile(p) => set_mode(p, 0o600),
-            AutoFix::GitConfigGlobal(k, v) | AutoFix::GitConfigLocal(k, v) => {
+            AutoFix::GitConfigGlobal(k, v) => {
                 // Re-check: never overwrite a value that appeared since the check ran.
                 if git_config_scoped(k).is_some() {
                     return Ok(());
                 }
-                let scope = if matches!(self, AutoFix::GitConfigGlobal(..)) {
-                    &["config", "--global"][..]
-                } else {
-                    &["config"][..]
-                };
                 let out = Command::new("git")
-                    .args(scope)
-                    .args([k, v.as_str()])
+                    .args(["config", "--global", k, v.as_str()])
                     .output()
                     .map_err(|e| e.to_string())?;
                 if out.status.success() {
@@ -193,7 +186,7 @@ pub async fn run(ctx: &Ctx, fix: bool) -> Result<()> {
         },
         Section {
             title: "contracts",
-            checks: vec![check_contracts(&ctx.target)],
+            checks: vec![check_contracts(&ctx.target, !ctx.network_is_default)],
         },
         Section {
             title: "storage",
@@ -645,6 +638,16 @@ fn set_mode(_: &Path, _: u32) -> std::result::Result<(), String> {
 
 async fn check_network(ctx: &Ctx) -> Vec<Check> {
     let network = ctx.network();
+    if unchosen_undeployed(ctx) {
+        return vec![Check::warn(
+            "target",
+            format!("no network chosen yet (the default, {network}, has no forge-v2)"),
+            format!(
+                "`dg auth new {}` records one (so does `dg auth login`)",
+                deployed_network_flags()
+            ),
+        )];
+    }
     let target = match network {
         Network::Devnet { dapi_addresses, .. } => format!(
             "{network} (DAPI: {}; quorums: {})",
@@ -754,9 +757,33 @@ async fn check_forge_v2(client: &PlatformClient, target: &NetworkTarget) -> Chec
     }
 }
 
+/// A fresh install: no flag, `config.toml` or environment chose a network, and the default
+/// one has no forge-v2 deployment. The network rows are then one warning naming what to do,
+/// instead of probing (and failing on) a network nobody picked (L-33).
+fn unchosen_undeployed(ctx: &Ctx) -> bool {
+    ctx.network_is_default && ctx.target.v2.is_none()
+}
+
+/// The `dg` flags that select a network with a forge-v2 deployment.
+fn deployed_network_flags() -> String {
+    forge_core::network::suggested_v2_network()
+        .map_or_else(|| "--network <a deployed network>".into(), |n| n.dg_flags())
+}
+
 /// The forge-v2 contracts this invocation will use and where they came from. A network with
-/// no deployment fails here with the same actionable message the commands give.
-fn check_contracts(target: &NetworkTarget) -> Check {
+/// no deployment fails here with the same actionable message the commands give, unless no
+/// network was chosen at all (`chosen` false: a fresh install), which only warns.
+fn check_contracts(target: &NetworkTarget, chosen: bool) -> Check {
+    if !chosen && target.v2.is_none() {
+        return Check::warn(
+            "forge-v2",
+            format!("none on {}, the default network", target.network),
+            format!(
+                "choose a network with a deployment: `dg auth new {}`",
+                deployed_network_flags()
+            ),
+        );
+    }
     match target.require_v2() {
         Ok(ids) => Check::ok(
             "forge-v2",
@@ -771,7 +798,10 @@ fn check_contracts(target: &NetworkTarget) -> Check {
         Err(e) => Check::fail(
             "forge-v2",
             e.to_string(),
-            "use a network with a deployment: `--network devnet --devnet-name moutai`",
+            format!(
+                "use a network with a deployment: `{}`",
+                deployed_network_flags()
+            ),
         ),
     }
 }
@@ -987,42 +1017,23 @@ fn check_git_config(ctx: &Ctx) -> Vec<Check> {
     let get = |k: &str| git_config_scoped(k).map(|(_, v)| v);
     let mut out = Vec::new();
 
-    // The helper's network comes from env + git config; if that differs from dg's, pushes
-    // go to one network and `dg` reads another.
-    let helper_net = NetworkSettings::from_env()
-        .overlay(NetworkSettings::from_git_config(|k| get(k)))
-        .resolve()
+    // What a `git` command resolves (env > git config > dg's config.toml, as the helper
+    // does) against what dg uses. dg's own choice is the reference: a mismatch is fixed on
+    // git's side, in the scope that holds the conflicting value.
+    let helper_net = NetworkSettings::for_git_helper(|k| get(k))
+        .and_then(NetworkSettings::resolve)
         .map(|t| t.network.key());
     let dg_net = ctx.network_label();
     out.push(match helper_net {
-        Ok(h) if h == dg_net => Check::ok("dash.network", format!("git push uses {h}, same as dg")),
-        Ok(h) => {
-            let mut c = Check::warn(
-                "dash.network",
-                format!("git push would use {h}, but dg uses {dg_net}"),
-                network_fix_command(ctx.network()),
-            );
-            // Only when dg's network is the user's saved default (config.toml, not a one-off
-            // --network flag or env var), git config sets none, and this is a repository:
-            // then pinning it in this repo's config makes `git push` agree with `dg`. Never
-            // global, never overwriting a choice, never a devnet (that needs more keys).
-            let saved = Config::load().ok().and_then(|c| c.network);
-            if saved.as_deref() == Some(ctx.network().kind())
-                && get("dash.network").is_none()
-                && std::env::var_os("DASH_FORGE_NETWORK").is_none()
-                && ctx.network().devnet_name().is_none()
-                && in_git_repo()
-            {
-                c = c.auto(AutoFix::GitConfigLocal(
-                    "dash.network",
-                    ctx.network().kind().to_string(),
-                ));
-            }
-            c
-        }
+        Ok(h) if h == dg_net => Check::ok("dash.network", format!("git uses {h}, same as dg")),
+        Ok(h) => Check::warn(
+            "dash.network",
+            format!("git would use {h}, but dg uses {dg_net}"),
+            network_fix_command(ctx.network(), &GitNetworkSource::detect(), in_git_repo()),
+        ),
         Err(e) => Check::fail(
             "dash.network",
-            format!("git config dash.* does not resolve: {e}"),
+            format!("git's network does not resolve: {e}"),
             "fix or unset the dash.network / dash.devnetName / dash.dapiAddresses values",
         ),
     });
@@ -1135,13 +1146,44 @@ async fn check_pack_copies(ctx: &Ctx) -> Vec<Check> {
     }
 }
 
-fn network_fix_command(n: &Network) -> String {
-    match n.devnet_name() {
-        Some(name) => {
-            format!("git config dash.network devnet && git config dash.devnetName {name}")
+/// Where git's conflicting network setting comes from.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct GitNetworkSource {
+    /// `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME` are set: the helper reads them before
+    /// any config.
+    env: bool,
+    /// The git config scope (`local`, `global`, `system`, ...) holding `dash.network` or
+    /// `dash.devnetName`, if any.
+    scope: Option<String>,
+}
+
+impl GitNetworkSource {
+    fn detect() -> Self {
+        let set = |k: &str| std::env::var(k).is_ok_and(|v| !v.trim().is_empty());
+        Self {
+            env: set(forge_core::network::ENV_NETWORK) || set(forge_core::network::ENV_DEVNET_NAME),
+            scope: git_config_scoped("dash.network")
+                .or_else(|| git_config_scoped("dash.devnetName"))
+                .map(|(scope, _)| scope),
         }
-        None => format!("git config dash.network {}", n.kind()),
     }
+}
+
+/// The command that makes git use `n`. The environment wins over git config in the helper,
+/// so an override there is dropped first. Otherwise git config is set where the conflicting
+/// value lives: this repository's config only for a repo-local value inside the repository,
+/// else `--global`, which also works outside a repository (L-24) and outranks a system value.
+fn network_fix_command(n: &Network, from: &GitNetworkSource, in_repo: bool) -> String {
+    if from.env {
+        return format!(
+            "unset {} {} {} (git reads them before any config)",
+            forge_core::network::ENV_NETWORK,
+            forge_core::network::ENV_DEVNET_NAME,
+            forge_core::network::ENV_DAPI_ADDRESSES
+        );
+    }
+    let local = in_repo && matches!(from.scope.as_deref(), Some("local" | "worktree"));
+    n.git_config_command(if local { "" } else { "--global " })
 }
 
 fn in_git_repo() -> bool {
@@ -1281,7 +1323,7 @@ mod tests {
         }
         .resolve()
         .unwrap();
-        let c = check_contracts(&target);
+        let c = check_contracts(&target, true);
         assert_eq!(c.status, Status::Ok, "{}", c.detail);
         assert!(
             c.detail
@@ -1300,7 +1342,7 @@ mod tests {
         }
         .resolve()
         .unwrap();
-        let c = check_contracts(&target);
+        let c = check_contracts(&target, true);
         assert_eq!(c.status, Status::Fail);
         assert!(
             c.detail
@@ -1309,6 +1351,24 @@ mod tests {
             c.detail
         );
         assert!(c.fix.is_some());
+    }
+
+    #[test]
+    fn a_fresh_install_warns_instead_of_failing_on_testnet() {
+        // L-33: the quick start's first `dg doctor` (nothing configured) exited 1 with E104.
+        let testnet = NetworkSettings::default().resolve().unwrap();
+        let c = check_contracts(&testnet, false);
+        assert_eq!(c.status, Status::Warn, "{}", c.detail);
+        assert!(
+            c.fix
+                .as_deref()
+                .unwrap()
+                .contains("dg auth new --network devnet --devnet-name moutai"),
+            "{:?}",
+            c.fix
+        );
+        // Chosen explicitly (`--network testnet`), it is still the failure it was.
+        assert_eq!(check_contracts(&testnet, true).status, Status::Fail);
     }
 
     #[test]
@@ -1417,8 +1477,8 @@ mod tests {
     }
 
     #[test]
-    fn network_fix_names_the_devnet() {
-        let n = NetworkSettings {
+    fn network_fix_names_the_devnet_and_the_scope() {
+        let moutai = NetworkSettings {
             network: Some("devnet".into()),
             devnet_name: Some("moutai".into()),
             ..Default::default()
@@ -1426,10 +1486,35 @@ mod tests {
         .resolve()
         .unwrap()
         .network;
-        assert!(network_fix_command(&n).contains("dash.devnetName moutai"));
+        let from = |scope: Option<&str>| GitNetworkSource {
+            env: false,
+            scope: scope.map(str::to_string),
+        };
+        // L-24: outside a repository (where the quick start runs doctor), the repo-local
+        // form fails; the fix is --global.
         assert_eq!(
-            network_fix_command(&Network::Mainnet),
+            network_fix_command(&moutai, &from(None), false),
+            "git config --global dash.network devnet && git config --global dash.devnetName moutai"
+        );
+        assert_eq!(
+            network_fix_command(&moutai, &from(Some("global")), true),
+            "git config --global dash.network devnet && git config --global dash.devnetName moutai"
+        );
+        // A repo-local value is fixed where it lives.
+        assert_eq!(
+            network_fix_command(&Network::Mainnet, &from(Some("local")), true),
             "git config dash.network mainnet"
         );
+        // ... but not from outside that repository.
+        assert_eq!(
+            network_fix_command(&Network::Mainnet, &from(Some("local")), false),
+            "git config --global dash.network mainnet"
+        );
+        // The environment beats any git config in the helper: drop it first.
+        let env = GitNetworkSource {
+            env: true,
+            scope: Some("global".into()),
+        };
+        assert!(network_fix_command(&moutai, &env, true).starts_with("unset DASH_FORGE_NETWORK"));
     }
 }

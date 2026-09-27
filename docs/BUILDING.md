@@ -207,9 +207,11 @@ prints the network, the forge-core and forge-collab ids, and where they came fro
 
 Precedence is per field. For `dg`, `forge-relay` and `forge-import` it is: flags, then the
 config file, then the environment, then the deployment file. For `git-remote-dash` it is the
-environment, then git config, then the deployment file. The environment comes first there
-because `dg` and `forge-import` pass their resolved network to the helper through it. Two
-more rules apply to every tool:
+environment, then git config, then the network `dg` recorded in `config.toml` (by `dg auth new`
+or `dg auth login`), then the deployment file. The environment comes first there because `dg`
+and `forge-import` pass their resolved network to the helper through it. `dg init` and
+`dg repo clone` write the network into the repository's git config, so the repository keeps it
+when the default changes. Two more rules apply to every tool:
 
 - `--devnet-name` on its own implies `--network devnet`.
 - A layer that names a different network contributes nothing network-specific. For example,
@@ -232,7 +234,8 @@ Each address is `host`, `host:port` or `https://host:port`. The port defaults to
 dg --devnet-name moutai doctor                       # moutai, addresses from devnet-moutai.json
 dg --network devnet --devnet-name moutai --dapi-addresses 68.67.122.254,68.67.122.207 repo list
 git config dash.network devnet && git config dash.devnetName moutai   # per repo
-git clone -c dash.network=devnet -c dash.devnetName=moutai dash://<owner>/<repo>
+git clone -c dash.network=devnet -c dash.devnetName=moutai dash://<owner>/<repo>   # kept in the clone
+dg repo clone <owner>/<repo>                            # the same, on dg's network
 NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai pnpm build  # forge-web
 ```
 
