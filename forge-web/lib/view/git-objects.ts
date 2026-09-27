@@ -101,12 +101,14 @@ export function parseCommit(bytes: Uint8Array): CommitObject {
 
 /** A commit or tree that `git fsck` would refuse (or that git and this client would read differently). */
 export class MalformedObjectError extends Error {
-  constructor(
-    readonly oid: string,
-    reason: string,
-  ) {
+  // A plain field, not a parameter property: this module also loads under Node's
+  // strip-only TypeScript (the render fuzz workers), which cannot run those.
+  readonly oid: string
+
+  constructor(oid: string, reason: string) {
     super(`malformed git object ${oid.slice(0, 9)}: ${reason}`)
     this.name = 'MalformedObjectError'
+    this.oid = oid
   }
 }
 
