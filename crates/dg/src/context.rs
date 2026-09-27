@@ -27,6 +27,21 @@ pub struct Ctx {
     pub identity_path: Option<PathBuf>,
     /// `--identity` as given on the command line (not the environment or the default).
     pub cli_identity: Option<PathBuf>,
+    /// Whether stdin is a terminal (a prompt can be answered).
+    pub stdin_tty: bool,
+}
+
+/// Why a confirmation prompt cannot be asked, or `None` when it can (or `--yes` answers it).
+fn prompt_blocker(yes: bool, json: bool, stdin_tty: bool) -> Option<&'static str> {
+    if yes {
+        None
+    } else if json {
+        Some("--json mode cannot prompt")
+    } else if !stdin_tty {
+        Some("stdin is not a terminal")
+    } else {
+        None
+    }
 }
 
 /// Stack the network layers in `dg`'s precedence order and resolve them.
@@ -80,6 +95,7 @@ impl Ctx {
             target,
             identity_path,
             cli_identity: cli.identity.clone(),
+            stdin_tty: std::io::stdin().is_terminal(),
         })
     }
 
@@ -159,25 +175,40 @@ impl Ctx {
     /// Whether prompt flows may ask questions: stdin is a terminal and neither `--yes` nor
     /// `--json` was given (UX spec §7.1).
     pub fn interactive(&self) -> bool {
-        !self.yes && !self.json && std::io::stdin().is_terminal()
+        !self.yes && !self.json && self.stdin_tty
+    }
+
+    /// E802 up front, for a command (`what`) that will ask before it spends: when the answer
+    /// could not be given (no `--yes`, and `--json` or a stdin that is not a terminal), stop
+    /// before any identity load, network read or plan output, not at the prompt.
+    pub fn require_confirmable(&self, what: &str) -> Result<()> {
+        match prompt_blocker(self.yes, self.json, self.stdin_tty) {
+            None => Ok(()),
+            Some(why) => Err(
+                UserError::new(codes::CONFIRMATION_REQUIRED, "confirmation required")
+                    .cause(format!(
+                        "{what} asks for confirmation before it spends, and {why}"
+                    ))
+                    .fix("pass --yes (-y) to confirm without a prompt, as scripts and CI must")
+                    .fix("run it in a terminal to review the plan and answer the prompt")
+                    .note("nothing was written")
+                    .into(),
+            ),
+        }
     }
 
     fn ask(&self, prompt: &str, default_yes: bool) -> Result<bool> {
         if self.yes {
             return Ok(true);
         }
-        let no_prompt = |why: &str| -> anyhow::Error {
-            UserError::new(codes::CONFIRMATION_REQUIRED, "confirmation required")
-                .cause(format!("{prompt} — and {why}"))
-                .fix("check the estimate, then run the same command with --yes")
-                .note("nothing was written")
-                .into()
-        };
-        if self.json {
-            return Err(no_prompt("--json mode cannot prompt"));
-        }
-        if !std::io::stdin().is_terminal() {
-            return Err(no_prompt("stdin is not a terminal"));
+        if let Some(why) = prompt_blocker(self.yes, self.json, self.stdin_tty) {
+            return Err(
+                UserError::new(codes::CONFIRMATION_REQUIRED, "confirmation required")
+                    .cause(format!("{prompt} — and {why}"))
+                    .fix("check the estimate, then run the same command with --yes")
+                    .note("nothing was written")
+                    .into(),
+            );
         }
         eprint!("{prompt} {} ", if default_yes { "[Y/n]" } else { "[y/N]" });
         std::io::stderr().flush().ok();
@@ -217,6 +248,27 @@ impl Ctx {
 }
 
 #[cfg(test)]
+impl Ctx {
+    /// A `Ctx` for devnet moutai (forge-v2 deployed) as a script would run it, for tests.
+    pub(crate) fn scripted(
+        yes: bool,
+        json: bool,
+        stdin_tty: bool,
+        identity_path: Option<PathBuf>,
+    ) -> Self {
+        let flags = NetworkSettings::from_flags(None, Some("moutai".into()), None);
+        Self {
+            json,
+            yes,
+            target: resolve_target(flags, &Config::default(), NetworkSettings::default()).unwrap(),
+            identity_path,
+            cli_identity: None,
+            stdin_tty,
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -244,6 +296,49 @@ mod tests {
         let flags = NetworkSettings::from_flags(Some("mainnet".into()), None, None);
         let t = resolve_target(flags, &config("testnet"), NetworkSettings::default()).unwrap();
         assert_eq!(t.network, Network::Mainnet);
+    }
+
+    #[test]
+    fn prompts_need_yes_unless_a_terminal_can_answer() {
+        assert_eq!(prompt_blocker(true, true, false), None);
+        assert_eq!(prompt_blocker(false, false, true), None);
+        assert_eq!(
+            prompt_blocker(false, false, false),
+            Some("stdin is not a terminal")
+        );
+        assert_eq!(
+            prompt_blocker(false, true, true),
+            Some("--json mode cannot prompt")
+        );
+    }
+
+    fn scripted_ctx(yes: bool, json: bool, stdin_tty: bool) -> Ctx {
+        Ctx::scripted(yes, json, stdin_tty, None)
+    }
+
+    #[test]
+    fn require_confirmable_names_yes_when_it_refuses() {
+        assert!(scripted_ctx(true, false, false)
+            .require_confirmable("`dg init`")
+            .is_ok());
+        assert!(scripted_ctx(false, false, true)
+            .require_confirmable("`dg init`")
+            .is_ok());
+        let err = scripted_ctx(false, false, false)
+            .require_confirmable("`dg init`")
+            .unwrap_err();
+        let u = forge_core::user_error::classify(
+            err.chain(),
+            &forge_core::user_error::ErrorContext::default(),
+        );
+        assert_eq!((u.code, u.exit_code()), ("E802", 8));
+        assert!(u
+            .cause
+            .as_deref()
+            .unwrap()
+            .contains("stdin is not a terminal"));
+        assert!(u.fix[0].contains("--yes"), "{:?}", u.fix);
+        assert_eq!(u.note.as_deref(), Some("nothing was written"));
     }
 
     #[test]

@@ -69,6 +69,15 @@ impl Flow {
         self != Flow::Create
     }
 
+    /// The command, as the user typed it.
+    fn command(self) -> &'static str {
+        match self {
+            Flow::Create => "`dg repo create`",
+            Flow::CreatePush => "`dg repo create --push`",
+            Flow::Init => "`dg init`",
+        }
+    }
+
     /// The whole command line that repeats this run without prompts.
     fn equivalent(self, name: &str, storage: &str, opts: &CreateOptions) -> String {
         let mut words: Vec<String> = match self {
@@ -687,6 +696,9 @@ fn confirm_plan(
 }
 
 async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -> Result<()> {
+    // Every run ends at `Proceed?`: a script without --yes would do all the checks and print
+    // the plan only to stop there, so it stops here instead.
+    ctx.require_confirmable(flow.command())?;
     let plan = plan(ctx, name, opts, flow).await?;
     let price = dash_usd_price();
     confirm_plan(ctx, &plan, flow, opts, price)?;
@@ -1073,6 +1085,39 @@ const REPORT_FILE_ENV: &str = "DASH_FORGE_REPORT_FILE";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F-17: without --yes and without a terminal, `dg init` / `dg repo create` stop with E802
+    /// naming --yes before anything else runs (here, before the identity is even read: the
+    /// path names no file, and no network is reachable from a unit test).
+    #[tokio::test]
+    async fn scripted_publish_without_yes_stops_before_any_work() {
+        let opts = CreateOptions {
+            storage: Some("platform".into()),
+            replicas: None,
+            description: String::new(),
+            display_name: String::new(),
+            default_branch: None,
+            remote: None,
+        };
+        let missing = PathBuf::from("/nonexistent/dash-forge-test/identity.json");
+        for flow in [Flow::Create, Flow::CreatePush, Flow::Init] {
+            let ctx = Ctx::scripted(false, false, false, Some(missing.clone()));
+            let err = publish(&ctx, Some("proj"), &opts, flow).await.unwrap_err();
+            let u = forge_core::user_error::classify(
+                err.chain(),
+                &forge_core::user_error::ErrorContext::default(),
+            );
+            assert_eq!(u.code, "E802", "{flow:?}: {err:#}");
+            assert!(u.fix.iter().any(|f| f.contains("--yes")), "{:?}", u.fix);
+            assert!(u.cause.unwrap().contains(flow.command()));
+        }
+        // With --yes the same run gets past the gate (and fails later, reading the identity).
+        let ctx = Ctx::scripted(true, false, false, Some(missing));
+        let err = publish(&ctx, Some("proj"), &opts, Flow::Create)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("identity"), "{err:#}");
+    }
 
     #[test]
     fn directory_names_become_repo_slugs() {
