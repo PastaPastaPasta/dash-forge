@@ -1,24 +1,24 @@
 /**
  * Core-chain side of creating an identity in the browser (`ux-dx-spec.md` §2.2 tile 2), ported
- * from `tools/mint-identity` (tx.mjs, lock.mjs, insight.mjs):
+ * from `tools/mint-identity` (tx.mjs, lock.mjs, dapi-core.mjs):
  *
- *   1. watch the deposit address through a block explorer (Insight; configurable) until funds
- *      arrive;
+ *   1. watch the deposit address through DAPI (the evonodes' Core service, `dapi-core.ts`): a
+ *      bloom-filtered `subscribeToTransactionsWithProofs` feed from the height the creation
+ *      started at. A block explorer (Insight; configurable) is asked only when the feed is
+ *      idle or unavailable;
  *   2. build and sign a type-8 asset-lock transaction spending them to one credit output
- *      controlled by the asset-lock key, and broadcast it;
+ *      controlled by the asset-lock key, and broadcast it (DAPI first, the explorer as
+ *      fallback);
  *   3. prove the lock: an InstantSend lock where a public `getislocks` endpoint exists
- *      (testnet), else a chain-lock proof once Platform's chain-locked Core height reaches the
- *      transaction's block (devnets).
+ *      (testnet), else a chain-lock proof once DAPI reports the transaction mined and
+ *      Platform's chain-locked Core height reaches its block (devnets).
  *
- * The explorer is not trusted with amounts. It lists which outputs pay the deposit address,
- * but every input is re-derived from its raw funding transaction — fetched, hashed and checked
- * against the txid, then parsed for the output's value and script — before anything is
- * signed. (The legacy sighash does not commit to input values: trusting the explorer's
- * amounts would let a lying one turn the deposit into miner fees.) With that, an explorer can
- * delay the user or hide funds, but not take them or learn a key.
- *
- * Broadcast goes to the explorer: the evo-sdk exposes no DAPI Core broadcast. A lying explorer
- * can drop the transaction, which only delays; the signed bytes are journaled and re-sent.
+ * Neither source is trusted with amounts. Every input is derived from a raw funding
+ * transaction whose txid is computed here — for the explorer, fetched and checked against the
+ * txid it named — and parsed for the output's value and script before anything is signed.
+ * (The legacy sighash does not commit to input values: trusting a claimed amount would let a
+ * lying source turn the deposit into miner fees.) A node or explorer can delay the user or
+ * hide funds, but not take them or learn a key.
  */
 
 import * as secp from '@noble/secp256k1'
@@ -27,17 +27,21 @@ import { ripemd160 } from '@noble/hashes/legacy.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, concatBytes, hexToBytes } from '@noble/hashes/utils.js'
 
-import { ACTIVE_NETWORK, type Network } from '../constants'
-import { sleep } from '../sdk/facade'
+import { ACTIVE_NETWORK, NETWORKS, type Network } from '../constants'
+import { isAbort, sleep } from '../sdk/facade'
 import { base58CheckDecode } from './base58'
+import { DapiCore, bloomFilter } from './dapi-core'
 import { decodeWif } from './wif'
 
 // @noble/secp256k1 v3 needs sync hashes wired for sign/getPublicKey.
 secp.hashes.sha256 = sha256
 secp.hashes.hmacSha256 = (k, m) => hmac(sha256, k, m)
 
-/** Explorer + lock-proof endpoints per network. */
+/** DAPI, the fallback explorer, and the lock-proof endpoint per network. */
 export interface CoreEndpoints {
+  /** DAPI nodes (`https://host:port`) serving the Core gRPC-web service; empty = explorer only. */
+  readonly dapi: readonly string[]
+  /** Insight API base URL, asked only when DAPI cannot answer. */
   readonly insight: string
   /** JSON-RPC with `getislocks` (InstantSend proof), or null to use chain-lock proofs. */
   readonly islockRpc: string | null
@@ -49,13 +53,18 @@ export const INSIGHT_OVERRIDE_KEY = 'forge:insight-url'
 /** The endpoints this build uses (Settings may override the explorer, spec §2.2). */
 export function coreEndpoints(network: Network = ACTIVE_NETWORK.network): CoreEndpoints {
   const override = typeof window !== 'undefined' ? window.localStorage.getItem(INSIGHT_OVERRIDE_KEY) : null
+  const dapi = NETWORKS[network].dapiAddresses
   if (network === 'devnet') {
-    return { insight: override ?? `https://insight.${ACTIVE_NETWORK.devnetName}.networks.dash.org/insight-api`, islockRpc: null }
+    return { dapi, insight: override ?? `https://insight.${ACTIVE_NETWORK.devnetName}.networks.dash.org/insight-api`, islockRpc: null }
   }
   if (network === 'testnet') {
-    return { insight: override ?? 'https://insight.testnet.networks.dash.org/insight-api', islockRpc: 'https://trpc.digitalcash.dev' }
+    return { dapi, insight: override ?? 'https://insight.testnet.networks.dash.org/insight-api', islockRpc: 'https://trpc.digitalcash.dev' }
   }
-  return { insight: override ?? 'https://insight.dash.org/insight-api', islockRpc: null }
+  return { dapi, insight: override ?? 'https://insight.dash.org/insight-api', islockRpc: null }
+}
+
+function dapiOf(ep: CoreEndpoints): DapiCore | null {
+  return ep.dapi.length > 0 ? new DapiCore(ep.dapi) : null
 }
 
 // ---------------------------------------------------------------------------
@@ -147,12 +156,46 @@ export async function verifiedUtxos(ep: CoreEndpoints, address: string, listed: 
   return out
 }
 
+/** The height `txid` was mined at (null while unconfirmed): DAPI first, the explorer if DAPI fails. */
 export async function getTxHeight(ep: CoreEndpoints, txid: string): Promise<number | null> {
+  const dapi = dapiOf(ep)
+  if (dapi) {
+    try {
+      return (await dapi.transaction(txid))?.height ?? null
+    } catch {
+      // fall through to the explorer
+    }
+  }
   const tx = await getJson<{ blockheight?: number }>(`${ep.insight}/tx/${txid}`)
   return typeof tx.blockheight === 'number' && tx.blockheight >= 0 ? tx.blockheight : null
 }
 
+/** Whether the network knows `txid` (mempool or chain), through DAPI or the explorer. */
+async function txKnown(ep: CoreEndpoints, txid: string): Promise<boolean> {
+  const dapi = dapiOf(ep)
+  if (dapi && (await dapi.transaction(txid).catch(() => null))) return true
+  return getJson(`${ep.insight}/tx/${txid}`).then(
+    () => true,
+    () => false,
+  )
+}
+
+/**
+ * Broadcast through DAPI, else the explorer. Re-sending an accepted transaction is harmless;
+ * a transaction the network already has counts as sent, so a lost response never strands the
+ * deposit.
+ */
 export async function broadcastTx(ep: CoreEndpoints, rawHex: string, txid: string): Promise<void> {
+  const dapi = dapiOf(ep)
+  let dapiError: unknown = null
+  if (dapi) {
+    try {
+      await dapi.broadcast(hexToBytes(rawHex))
+      return
+    } catch (e) {
+      dapiError = e
+    }
+  }
   try {
     await getJson(`${ep.insight}/tx/send`, {
       method: 'POST',
@@ -160,12 +203,7 @@ export async function broadcastTx(ep: CoreEndpoints, rawHex: string, txid: strin
       body: JSON.stringify({ rawtx: rawHex }),
     })
   } catch (e) {
-    // A lost response can hide an accepted broadcast: never strand the deposit over it.
-    const known = await getJson(`${ep.insight}/tx/${txid}`).then(
-      () => true,
-      () => false,
-    )
-    if (!known) throw e
+    if (!(await txKnown(ep, txid))) throw dapiError ?? e
   }
 }
 
@@ -393,25 +431,220 @@ export async function obtainLockProof(
   throw new Error('timed out waiting for the asset lock to be provable; it is saved — try again later')
 }
 
-/** Wait until `address` holds at least `minDuffs` (polling the explorer). */
+/**
+ * The unspent outputs paying `address`, built from raw transactions (their txid computed
+ * here): outputs to the address's P2PKH script, minus any a later transaction spends.
+ */
+export class DepositTracker {
+  private readonly script: string
+  private readonly unspent = new Map<string, Utxo>()
+  private readonly spent = new Set<string>()
+
+  constructor(address: string) {
+    this.script = bytesToHex(p2pkh(addressHash(address)))
+  }
+
+  ingest(raw: Uint8Array): void {
+    let parsed: { inputs: { txid: string; vout: number }[]; outputs: { value: bigint; script: Uint8Array }[] }
+    try {
+      parsed = parseTx(raw)
+    } catch {
+      return // a bloom false positive we cannot parse
+    }
+    for (const i of parsed.inputs) {
+      const k = `${i.txid}:${i.vout}`
+      this.unspent.delete(k)
+      this.spent.add(k)
+    }
+    const id = txid(raw)
+    parsed.outputs.forEach((o, vout) => {
+      const k = `${id}:${vout}`
+      if (bytesToHex(o.script) !== this.script || this.spent.has(k)) return
+      if (o.value > BigInt(Number.MAX_SAFE_INTEGER)) return
+      this.unspent.set(k, { txid: id, vout, satoshis: Number(o.value), scriptPubKey: this.script, confirmations: 0 })
+    })
+  }
+
+  get total(): number {
+    let t = 0
+    for (const u of this.unspent.values()) t += u.satoshis
+    return t
+  }
+
+  get utxos(): Utxo[] {
+    return [...this.unspent.values()]
+  }
+}
+
+/** Parse inputs' outpoints and outputs of a raw Dash transaction. */
+function parseTx(raw: Uint8Array): { inputs: { txid: string; vout: number }[]; outputs: { value: bigint; script: Uint8Array }[] } {
+  const inputs: { txid: string; vout: number }[] = []
+  let at = 4
+  const need = (n: number): void => {
+    if (at + n > raw.length) throw new Error('truncated transaction')
+  }
+  const varintAt = (): number => {
+    need(1)
+    const first = raw[at++] as number
+    if (first < 0xfd) return first
+    const len = first === 0xfd ? 2 : first === 0xfe ? 4 : 8
+    need(len)
+    let n = 0
+    for (let i = len - 1; i >= 0; i--) n = n * 256 + (raw[at + i] as number)
+    at += len
+    return n
+  }
+  const count = varintAt()
+  for (let i = 0; i < count; i++) {
+    need(36)
+    const id = bytesToHex(raw.slice(at, at + 32).reverse())
+    const vout = new DataView(raw.buffer, raw.byteOffset + at + 32, 4).getUint32(0, true)
+    at += 36
+    const len = varintAt()
+    need(len + 4)
+    at += len + 4
+    inputs.push({ txid: id, vout })
+  }
+  return { inputs, outputs: parseOutputs(raw) }
+}
+
+/** The explorer's view of the deposit, every output proven from its raw transaction. */
+async function explorerDeposit(ep: CoreEndpoints, address: string): Promise<Utxo[]> {
+  return verifiedUtxos(ep, address, await getUtxos(ep, address))
+}
+
+/** The Core height to start a deposit watch from (the tip, before the address is shown). */
+export async function currentHeight(ep: CoreEndpoints): Promise<number | null> {
+  const dapi = dapiOf(ep)
+  return dapi ? dapi.bestHeight().catch(() => null) : null
+}
+
+/** Where a deposit watch starts: a recorded height, else a height or start time. */
+export type WatchStart = number | { readonly startedAt: number }
+
+/** Blocks added to a rewind from a start time (2.5-minute target spacing). */
+const REWIND_MARGIN_BLOCKS = 50
+/** The deepest rewind, about a week: a longer replay would not reach the live feed. */
+const MAX_REWIND_BLOCKS = 4032
+/** Blocks subtracted from a recorded height: nodes' tips differ by a block or two. */
+const START_HEIGHT_MARGIN = 6
+
+/** The block to replay from: the recorded height, else far enough back to cover `startedAt`. */
+export async function watchFrom(dapi: DapiCore, start: WatchStart): Promise<number> {
+  if (typeof start === 'number') return Math.max(1, start - START_HEIGHT_MARGIN)
+  const elapsedBlocks = Math.ceil(Math.max(0, Date.now() - start.startedAt) / 150_000)
+  return Math.max(1, (await dapi.bestHeight()) - Math.min(elapsedBlocks + REWIND_MARGIN_BLOCKS, MAX_REWIND_BLOCKS))
+}
+
+/**
+ * A filter for `address`. With BLOOM_UPDATE_ALL the node inserts each matched outpoint, so
+ * one sized for the address hash alone would saturate after a match or two and stream every
+ * transaction; room for 50 elements keeps it under 150 bytes.
+ */
+function addressFilter(address: string): ReturnType<typeof bloomFilter> {
+  return bloomFilter([addressHash(address)], 0.0001, undefined, 50)
+}
+
+/**
+ * What `address` holds (duffs): the larger of DAPI's confirmed history from `from` and the
+ * explorer's view. Throws when neither can say — and when only DAPI answered zero, since its
+ * history leaves out the mempool and an unconfirmed payment would read as empty.
+ */
+export async function depositHeld(ep: CoreEndpoints, address: string, from: WatchStart, timeoutMs = 60_000): Promise<number> {
+  const dapi = dapiOf(ep)
+  let viaDapi: number | null = null
+  if (dapi) {
+    try {
+      const height = await watchFrom(dapi, from)
+      const tracker = new DepositTracker(address)
+      const count = (await dapi.bestHeight()) - height + 1
+      const signal = AbortSignal.timeout(timeoutMs)
+      for await (const txs of dapi.watch(addressFilter(address), height, { count: Math.max(1, count), signal })) {
+        for (const raw of txs) tracker.ingest(raw)
+      }
+      viaDapi = tracker.total
+    } catch {
+      // unknown through DAPI; the explorer may still say
+    }
+  }
+  const viaExplorer = await getUtxos(ep, address).then(
+    (u) => u.reduce((s, x) => s + x.satoshis, 0),
+    () => null,
+  )
+  if (viaExplorer !== null) return Math.max(viaExplorer, viaDapi ?? 0)
+  if (viaDapi !== null && viaDapi > 0) return viaDapi
+  throw new Error('could not check the deposit address (the network nodes see no confirmed payment and the block explorer is unreachable)')
+}
+
+/** How long the DAPI feed may be silent before the explorer is asked as well. */
+const FEED_IDLE_MS = 30_000
+
+/**
+ * Wait until `address` holds at least `minDuffs`, and return its outputs. The deposit is seen
+ * on a DAPI bloom-filtered transaction feed from `from` (history, then the mempool and
+ * new blocks); the explorer is asked whenever the feed is idle, fails, or DAPI is not
+ * configured.
+ */
 export async function waitForDeposit(
   ep: CoreEndpoints,
   address: string,
   minDuffs: number,
-  opts: { signal?: AbortSignal; onSeen?: (duffs: number) => void; intervalMs?: number } = {},
+  opts: { signal?: AbortSignal; onSeen?: (duffs: number) => void; intervalMs?: number; from?: WatchStart } = {},
 ): Promise<Utxo[]> {
-  for (;;) {
-    const listed = await getUtxos(ep, address).catch(() => [] as Utxo[])
-    const claimed = listed.reduce((s, u) => s + u.satoshis, 0)
-    if (claimed >= minDuffs && listed.length > 0) {
-      // The explorer says it is there: prove each output from its raw transaction.
-      const utxos = await verifiedUtxos(ep, address, listed)
+  const dapi = dapiOf(ep)
+  const tracker = new DepositTracker(address)
+  const askExplorer = async (): Promise<Utxo[] | null> => {
+    const utxos = await explorerDeposit(ep, address).catch(() => null)
+    if (utxos) {
       const total = utxos.reduce((s, u) => s + u.satoshis, 0)
-      opts.onSeen?.(total)
+      opts.onSeen?.(Math.max(total, tracker.total))
       if (total >= minDuffs) return utxos
-    } else {
-      opts.onSeen?.(claimed)
     }
-    await sleep(opts.intervalMs ?? 4000, opts.signal)
+    return null
+  }
+  for (;;) {
+    if (opts.signal?.aborted) throw new DOMException('cancelled', 'AbortError')
+    if (dapi) {
+      const run = new AbortController()
+      const stop = (): void => run.abort()
+      opts.signal?.addEventListener('abort', stop, { once: true })
+      try {
+        const height = await watchFrom(dapi, opts.from ?? { startedAt: Date.now() })
+        const feed = dapi.watch(addressFilter(address), height, { signal: run.signal })
+        // One read in flight at a time: an idle timeout asks the explorer, then keeps waiting
+        // on the same read (a second next() would queue behind it and drop its batch).
+        let pending = feed.next()
+        // Returning (or failing) aborts the fetch under a read still in flight: observe it.
+        pending.catch(() => undefined)
+        for (;;) {
+          let timer: ReturnType<typeof setTimeout> | undefined
+          const idle = new Promise<'idle'>((r) => {
+            timer = setTimeout(() => r('idle'), FEED_IDLE_MS)
+          })
+          const next = await Promise.race([pending, idle])
+          clearTimeout(timer)
+          if (next === 'idle') {
+            const found = await askExplorer()
+            if (found) return found
+            continue
+          }
+          if (next.done) break
+          for (const raw of next.value) tracker.ingest(raw)
+          opts.onSeen?.(tracker.total)
+          if (tracker.total >= minDuffs) return tracker.utxos
+          pending = feed.next()
+          pending.catch(() => undefined)
+        }
+      } catch (e) {
+        if (isAbort(e) && opts.signal?.aborted) throw e
+        // The feed failed or ended: ask the explorer, then reconnect.
+      } finally {
+        run.abort()
+        opts.signal?.removeEventListener('abort', stop)
+      }
+    }
+    const found = await askExplorer()
+    if (found) return found
+    await sleep(dapi ? 5000 : (opts.intervalMs ?? 4000), opts.signal)
   }
 }

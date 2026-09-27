@@ -225,11 +225,11 @@ fn s3(
     let public_url = text_valid(
         p,
         match preset {
-            Preset::R2 => "Public URL (r2.dev or custom domain)",
+            Preset::R2 => "Public URL (your custom domain, or r2.dev)",
             _ => "Public URL",
         },
         match preset {
-            Preset::R2 => "bucket → Settings → Public access: the R2.dev subdomain (https://pub-….r2.dev) or your custom domain; empty = private",
+            Preset::R2 => "bucket → Settings → Custom Domains: a domain of yours (the r2.dev subdomain is rate-limited, for development only); empty = private",
             Preset::B2 => "a public bucket serves https://s3.<region>.backblazeb2.com/<bucket>; type `none` for a private bucket",
             Preset::Aws => "needs a public-read bucket policy or CloudFront; type `none` for a private bucket",
             Preset::Other => "where anonymous readers GET objects; type `none` for a private bucket",
@@ -449,6 +449,9 @@ pub fn equivalent_command(a: &StorageAddArgs) -> String {
     flag("pin-timeout-secs", timeout.as_ref());
     if a.virtual_hosted {
         words.push("--virtual-hosted".into());
+    }
+    if a.allow_private_uri {
+        words.push("--allow-private-uri".into());
     }
     words.join(" ")
 }

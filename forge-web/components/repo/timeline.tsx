@@ -8,11 +8,12 @@
  * here as the audit trail it is.
  */
 
-import { Check, GitMerge, Lock, LockOpen, MessageSquare, Tag, UserPlus, X } from 'lucide-react'
+import { Check, CheckCircle2, Eye, GitCommit, GitMerge, Lock, LockOpen, Milestone, MessageSquare, Tag, UserPlus, X } from 'lucide-react'
 import type { TimelineItem } from '@/lib/view'
 import { timeAgo } from '@/lib/view'
+import { anchorLabel } from '@/lib/view/inline-threads'
 import { VERDICT_LABEL, type VerdictName } from '@/lib/repo'
-import type { EventKind } from '@/lib/rules'
+import type { Event } from '@/lib/rules'
 import { Author } from '@/components/author'
 import { MarkdownView } from '@/components/markdown-view'
 import { Oid } from '@/components/ui/oid'
@@ -28,7 +29,13 @@ function verdictIcon(verdict: VerdictName): JSX.Element {
   }
 }
 
-function eventPhrase(kind: EventKind, value?: string | null): { text: string; icon: JSX.Element } {
+/**
+ * The one-line phrase of an event. `who` is an identity the phrase names (a requested
+ * reviewer), rendered after `text`; `after` follows it.
+ */
+function eventPhrase(e: Event): { text: string; icon: JSX.Element; who?: string; after?: string } {
+  const { kind, value } = e
+  const muted = 'h-3.5 w-3.5 text-anvil-400'
   switch (kind) {
     case 'close':
       return { text: 'closed this', icon: <Lock className="h-3.5 w-3.5 text-forge-500" aria-hidden /> }
@@ -49,11 +56,27 @@ function eventPhrase(kind: EventKind, value?: string | null): { text: string; ic
     case 'retarget':
       return { text: `retargeted to ${value ?? ''}`, icon: <GitMerge className="h-3.5 w-3.5 text-anvil-400" aria-hidden /> }
     case 'draft':
-      return { text: 'marked as draft', icon: <Lock className="h-3.5 w-3.5 text-anvil-400" aria-hidden /> }
+      return { text: 'converted this to a draft', icon: <Lock className={muted} aria-hidden /> }
     case 'ready':
-      return { text: 'marked ready for review', icon: <LockOpen className="h-3.5 w-3.5 text-anvil-400" aria-hidden /> }
+      return { text: 'marked this ready for review', icon: <LockOpen className={muted} aria-hidden /> }
+    case 'headUpdate':
+      return { text: e.oid ? `pushed new commits (head ${e.oid.slice(0, 9)})` : 'pushed new commits', icon: <GitCommit className={muted} aria-hidden /> }
+    case 'threadResolve':
+      return { text: 'resolved a conversation', icon: <CheckCircle2 className="h-3.5 w-3.5 text-verify" aria-hidden /> }
+    case 'threadUnresolve':
+      return { text: 'unresolved a conversation', icon: <MessageSquare className={muted} aria-hidden /> }
+    case 'reviewRequest':
+      return e.refId ? { text: 'requested a review from', who: e.refId, icon: <Eye className={muted} aria-hidden /> } : { text: 'requested a review', icon: <Eye className={muted} aria-hidden /> }
+    case 'reviewRequestRemove':
+      return e.refId ? { text: 'removed the review request for', who: e.refId, icon: <Eye className={muted} aria-hidden /> } : { text: 'removed a review request', icon: <Eye className={muted} aria-hidden /> }
+    case 'reviewDismiss':
+      return { text: value ? `dismissed a review: ${value}` : 'dismissed a review', icon: <X className={muted} aria-hidden /> }
+    case 'milestoneSet':
+      return { text: `set the milestone to ${value ?? ''}`, icon: <Milestone className={muted} aria-hidden /> }
+    case 'milestoneClear':
+      return { text: 'cleared the milestone', icon: <Milestone className={muted} aria-hidden /> }
     default:
-      return { text: String(kind), icon: <Tag className="h-3.5 w-3.5 text-anvil-400" aria-hidden /> }
+      return { text: String(kind), icon: <Tag className={muted} aria-hidden /> }
   }
 }
 
@@ -95,10 +118,26 @@ export function Timeline({ items }: { items: readonly TimelineItem[] }): JSX.Ele
                   <MarkdownView source={review.body} />
                 </div>
               ) : null}
+              {item.comments.length > 0 || item.expected > 0 ? (
+                <div className="space-y-2 border-t border-anvil-200 px-4 py-3 dark:border-anvil-800" data-testid="review-comments">
+                  {item.comments.map((c) => (
+                    <div key={c.id}>
+                      {c.anchor ? <p className="mb-1 font-mono text-[12px] text-anvil-600 dark:text-anvil-400">{anchorLabel(c.anchor)}</p> : null}
+                      <MarkdownView source={c.body} />
+                    </div>
+                  ))}
+                  {/* A submit writes the review first, then its comments: say when some have not landed (yet). */}
+                  {item.expected > item.comments.length ? (
+                    <p className="text-[12px] text-anvil-600 dark:text-anvil-400">
+                      {item.comments.length} of {item.expected} comments have landed.
+                    </p>
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           )
         }
-        const phrase = eventPhrase(item.event.kind, item.event.value)
+        const phrase = eventPhrase(item.event)
         return (
           <div key={`e-${item.event.id}-${i}`} className="flex items-center gap-2 px-2 text-dense text-anvil-500 dark:text-anvil-400">
             <span className="flex h-6 w-6 items-center justify-center rounded-full bg-anvil-100 dark:bg-anvil-800">
@@ -106,6 +145,7 @@ export function Timeline({ items }: { items: readonly TimelineItem[] }): JSX.Ele
             </span>
             <Author identityId={item.event.actor} link={false} />
             <span>{phrase.text}</span>
+            {phrase.who ? <Author identityId={phrase.who} link={false} /> : null}
             <span className="text-anvil-400">· {timeAgo(item.event.createdAt)}</span>
           </div>
         )

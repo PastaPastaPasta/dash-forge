@@ -1,5 +1,5 @@
 //! The incremental state file (`--state`): when the last successful sync started, so the
-//! next run asks GitHub only for what changed since.
+//! next run asks the source only for what changed since.
 //!
 //! It is an optimisation, never the source of truth: what is already mirrored is decided
 //! on chain (see [`crate::sink`]), so a lost, stale or foreign state file costs a full
@@ -18,7 +18,7 @@ const OVERLAP_SECS: u64 = 600;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SyncState {
-    /// `github.com/owner/repo` this state belongs to.
+    /// The source this state belongs to (`github.com/owner/repo`, `gitlab.com/group/project`).
     pub source: String,
     /// The destination repo id.
     pub repo_id: String,
@@ -60,7 +60,7 @@ impl SyncState {
         }
     }
 
-    /// The `since` to ask GitHub with (ISO 8601), or `None` for a full scan.
+    /// The `since` to ask the source with (ISO 8601), or `None` for a full scan.
     pub fn since(&self) -> Option<String> {
         self.last_sync_started
             .map(|t| crate::github::unix_to_iso8601(t.saturating_sub(OVERLAP_SECS)))
@@ -82,7 +82,7 @@ impl SyncState {
 
 /// The state key of a run: its source plus what it reads (`github.com/o/r
 /// [issues,prs,releases,labels,code] limit=0`).
-pub fn scope(source: &str, classes: crate::source_github::Classes, limit: usize) -> String {
+pub fn scope(source: &str, classes: crate::source::Classes, limit: usize) -> String {
     let c = classes;
     let on = [
         (c.code, "code"),

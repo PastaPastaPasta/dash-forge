@@ -658,6 +658,50 @@ async fn prime_ref_streams(
     Ok(())
 }
 
+/// PRs follow their branch through `headUpdate` events (review-parity spec §4.6): fold the
+/// repo's event feeds, oldest first, so each PR's head is its newest update, and watch recently
+/// active PRs' current heads for check runs.
+async fn fold_head_updates(
+    shared: &Shared,
+    repo_id: &str,
+    baseline: Baseline,
+    recent: u64,
+    targets: &mut BTreeMap<String, TargetInfo>,
+    heads: &mut BTreeMap<String, Head>,
+) -> Result<()> {
+    let collab = &shared.contracts.collab;
+    for (doc_type, author_path) in [(DOC_EVENT, false), (DOC_AUTHOR_EVENT, true)] {
+        for d in read_all(shared, collab, doc_type, repo_id).await? {
+            let Some(t) = d
+                .field_bytes32("targetId")
+                .map(forge_core::platform::encode_identifier)
+                .and_then(|tid| targets.get_mut(&tid))
+            else {
+                continue;
+            };
+            if t.apply_head_update(&d, author_path).is_some() {
+                t.last_activity = t.last_activity.max(d.created_at.unwrap_or(0));
+            }
+        }
+    }
+    // Watch the current head (not every intermediate one) of each recently active PR.
+    for t in targets
+        .values()
+        .filter(|t| t.is_pr && t.head_set_by.is_some())
+    {
+        if t.last_activity >= recent {
+            heads.insert(
+                t.head_oid.clone(),
+                Head {
+                    seen: t.last_activity,
+                    baseline,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Resolve a repo's metadata, config history, issue/PR index, valid ref tips, and recently
 /// opened PR heads.
 async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result<RepoState> {
@@ -725,6 +769,7 @@ async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result
             targets.insert(d.id.clone(), t);
         }
     }
+    fold_head_updates(shared, repo_id, baseline, recent, &mut targets, &mut heads).await?;
     prune_heads(&mut heads, &mut cursors);
     tracing::info!(repo = %repo_id, name = %name, owner = %owner_id, targets = targets.len(), ?baseline, "serving repo");
     let mut state = RepoState {
@@ -1058,7 +1103,14 @@ async fn poll_repo_rest(
                 _ => {
                     let verified = st.merge_verified(d);
                     note_activity(st, d);
-                    ingest::translate_event(&st.meta, d, &st.targets, verified)
+                    // A head update that did not move the head (older, stranger's, malformed)
+                    // is not a `synchronize`.
+                    let moved = follow_head(st, d, doc_type == DOC_AUTHOR_EVENT);
+                    if d.field_u64("kind") == Some(16) && !moved {
+                        None
+                    } else {
+                        ingest::translate_event(&st.meta, d, &st.targets, verified)
+                    }
                 }
             };
             st.emit(shared, event);
@@ -1233,6 +1285,30 @@ fn note_activity(s: &mut RepoState, d: &FetchedDocument) {
     }
 }
 
+/// A live `headUpdate`: move the PR's head, and watch the new head for check runs from now.
+/// Whether the head moved.
+fn follow_head(s: &mut RepoState, d: &FetchedDocument, author_path: bool) -> bool {
+    let Some(tid) = d
+        .field_bytes32("targetId")
+        .map(forge_core::platform::encode_identifier)
+    else {
+        return false;
+    };
+    let Some(t) = s.targets.get_mut(&tid) else {
+        return false;
+    };
+    let Some(head) = t.apply_head_update(d, author_path) else {
+        return false;
+    };
+    let seen = d.created_at.unwrap_or(t.last_activity);
+    s.heads.entry(head).or_insert(Head {
+        seen,
+        baseline: Baseline::Since(seen),
+    });
+    prune_heads(&mut s.heads, &mut s.cursors);
+    true
+}
+
 /// Keep the newest [`MAX_HEADS`] head oids.
 fn prune_heads(heads: &mut BTreeMap<String, Head>, cursors: &mut BTreeMap<String, Cursor>) {
     if heads.len() <= MAX_HEADS {
@@ -1358,6 +1434,7 @@ mod tests {
                         title: String::new(),
                         base_ref: String::new(),
                         head_oid: String::new(),
+                        head_set_by: None,
                         base_ref_hash: String::new(),
                         baseline: Baseline::Beginning,
                         last_activity: 0,
@@ -1429,6 +1506,7 @@ mod tests {
             title: String::new(),
             base_ref: base_ref.into(),
             head_oid: String::new(),
+            head_set_by: None,
             base_ref_hash: base_ref_hash.into(),
             baseline: Baseline::Beginning,
             last_activity: 0,

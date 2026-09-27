@@ -91,6 +91,8 @@ Fix: use the owner's identity id, e.g. `dg repo view 8hJmcHWTsdvkHyCrk4UgjbyugDA
 
 Fix: correct the value (`git config --show-origin --get-regexp '^dash\.'` shows where each git setting comes from). `dg doctor` checks the rest.
 
+`refusing to bind a key to the forge contract group` is also E204: the contract group on chain failed the trust check made before a limited key is bound to it ([forge-v2 § Contract group trust](contracts/forge-v2.md#contract-group-trust)). Its owner differs from the one `dg` pins, or it has admins. Or a member contract has another owner (proof-verified), or the group lacks forge-core and forge-collab. Do not bind a key to it. With `--strict-group` (or `DASH_FORGE_STRICT_GROUP=1`), any member `dg` does not know causes it too: update `dg`, or drop strict mode to accept members the Forge deployer owns.
+
 ## E205
 
 **Unsupported git operation.** `dash://` cannot serve shallow clones (`--depth`, `--shallow-since`, `--shallow-exclude`). It fails instead of quietly making a full clone.
@@ -105,7 +107,7 @@ Fix: run `git init` first (or `cd` into the repository), or pass `--remote <name
 
 ## E301
 
-**No identity configured.** The command needs to sign, and no identity or key was found.
+**No identity configured.** The command needs to sign (a push, a `dg` write) or to open a private repository, and no identity or key was found. Cloning and fetching a public repository never need one: `git clone dash://<owner>/<repo>` works anonymously.
 
 Fix: `dg auth new` creates an identity and stores a limited key for this computer; `dg auth login <file>` (or `dg auth login --mnemonic`) signs in with an existing one. For a single command pass `--identity <file>`, or set `DASH_FORGE_KEY` to a file, a `keychain:dash-forge/<network>/<id>` entry, or a `dfk1:` key (this is also how `git-remote-dash` finds the key; without it the helper uses the default `dg auth` recorded, then `~/.config/dash-forge/identities/<owner>.identity.json`).
 
@@ -179,7 +181,9 @@ Fix: register a fresh limited key (uses the master key once): `dg auth login <id
 
 **Storage not configured correctly.** `dash.storage` names a profile that `~/.config/dash-forge/storage.toml` does not define, `dash.replicas` is out of range, or `storage.toml` does not parse.
 
-Fix: `dg storage list` shows your profiles and `dg storage use <profiles>` sets `dash.storage`. See [bring your own storage](guides/bring-your-own-storage.md).
+It is also what `git push`, `dg init`, `dg repo create`, `dg storage advertise`, `dg repack --profile`, `dg reseed --profile` and `dg release create` stop with, **before** anything is built, uploaded or paid for, when a target profile's public read address is not a public https URL: loopback, a LAN or other private address, `.local`, plain http, or a temporary tunnel name (`*.trycloudflare.com`, `*.ts.net`). That address would be recorded on chain forever, and nobody else could read it for long, or at all.
+
+Fix: `dg storage list` shows your profiles and `dg storage use <profiles>` sets `dash.storage`. For an address problem, re-add the profile with a public https `--public-url` / `--public-gateway` (a bucket domain, a CDN, a named tunnel or a reverse proxy on your own domain), or record it anyway with `git push -o allow-private-uri`, `git config dash.allowPrivateUri true`, `dg storage add … --allow-private-uri`, or `--allow-private-uri` on `dg init` / `dg repo create`. See [bring your own storage](guides/bring-your-own-storage.md#public-addresses).
 
 ## E502
 

@@ -18,8 +18,10 @@ use super::{sha256, verify_and_get, BackendRegistry, ByteRange, PackBackend, Pac
 use crate::error::Error;
 
 const STATIC_HTTP: &str = "http://127.0.0.1:8082";
-const MINIO_ENDPOINT: &str = "http://127.0.0.1:9000";
-const MINIO_BUCKET: &str = "forge-packs";
+/// The fixture's S3 store (RustFS; its root key is `minioadmin`/`minioadmin`, kept from the
+/// MinIO fixture it replaced).
+const S3_ENDPOINT: &str = "http://127.0.0.1:9000";
+const S3_BUCKET: &str = "forge-packs";
 const IPFS_API: &str = "http://127.0.0.1:5001";
 const IPFS_GATEWAY: &str = "http://127.0.0.1:8081";
 
@@ -108,10 +110,10 @@ async fn https_whole_range_and_probe() {
 #[tokio::test]
 async fn s3_put_get_range_verify_probe() {
     skip_unless!(
-        &format!("{MINIO_ENDPOINT}/{MINIO_BUCKET}/"),
+        &format!("{S3_ENDPOINT}/{S3_BUCKET}/"),
         "s3_put_get_range_verify_probe"
     );
-    let backend = S3Backend::new(S3Config::public(MINIO_ENDPOINT, MINIO_BUCKET));
+    let backend = S3Backend::new(S3Config::public(S3_ENDPOINT, S3_BUCKET));
     let data = payload();
     let meta = PackMeta::for_bytes(&data);
 
@@ -202,7 +204,7 @@ async fn registry_live_failover_bad_then_good() {
         "registry_live_failover_bad_then_good"
     );
     skip_unless!(
-        &format!("{MINIO_ENDPOINT}/{MINIO_BUCKET}/"),
+        &format!("{S3_ENDPOINT}/{S3_BUCKET}/"),
         "registry_live_failover_bad_then_good"
     );
 
@@ -214,13 +216,13 @@ async fn registry_live_failover_bad_then_good() {
     let good_uri = ipfs.put(&data, &meta).await.expect("IPFS add").remove(0);
 
     // Registry: s3 backend (preferred, but we point at a MISSING key) + ipfs (good).
-    let s3 = S3Backend::new(S3Config::public(MINIO_ENDPOINT, MINIO_BUCKET));
+    let s3 = S3Backend::new(S3Config::public(S3_ENDPOINT, S3_BUCKET));
     let mut reg = BackendRegistry::new();
     reg.register(Box::new(s3)).register(Box::new(ipfs));
 
     // Default preference tries s3 first → 404 → fails over to the ipfs uri.
     let bad_uri = Uri(format!(
-        "s3://{MINIO_BUCKET}/packs/does-not-exist-{}.pack",
+        "s3://{S3_BUCKET}/packs/does-not-exist-{}.pack",
         meta.pack_hash
     ));
     let uris = vec![bad_uri, good_uri];
@@ -240,11 +242,11 @@ const BYO_BUCKET: &str = "forge-byo";
 
 fn byo_config(secret: &str) -> S3Config {
     S3Config {
-        endpoint: MINIO_ENDPOINT.into(),
+        endpoint: S3_ENDPOINT.into(),
         region: "us-east-1".into(),
         bucket: BYO_BUCKET.into(),
         path_style: true,
-        public_url: Some(format!("{MINIO_ENDPOINT}/{BYO_BUCKET}")),
+        public_url: Some(format!("{S3_ENDPOINT}/{BYO_BUCKET}")),
         prefix: "it/".into(),
         credentials: Some(super::s3::S3Credentials {
             access_key_id: "minioadmin".into(),
@@ -260,7 +262,7 @@ fn byo_config(secret: &str) -> S3Config {
 #[tokio::test]
 async fn s3_sigv4_signed_ops_on_private_write_bucket() {
     skip_unless!(
-        &format!("{MINIO_ENDPOINT}/minio/health/live"),
+        &format!("{S3_ENDPOINT}/health/ready"),
         "s3_sigv4_signed_ops_on_private_write_bucket"
     );
     let anon = S3Backend::new(S3Config {
@@ -270,7 +272,7 @@ async fn s3_sigv4_signed_ops_on_private_write_bucket() {
     let key = anon.object_key("special chars/a+b=c&d$e,f;g@h(i)!*'~.bin");
     // Anonymous PUT must be refused — this is what proves the signed path below is real.
     // (A failure here means the fixture bucket is missing or public-write: re-run
-    // `make infra-up` so minio-init provisions it.)
+    // `make infra-up` so s3-init provisions it.)
     let anon_err = anon
         .put_object(&key, b"x", "application/octet-stream")
         .await
@@ -325,7 +327,7 @@ async fn s3_sigv4_signed_ops_on_private_write_bucket() {
 #[tokio::test]
 async fn s3_put_is_idempotent_and_content_addressed() {
     skip_unless!(
-        &format!("{MINIO_ENDPOINT}/minio/health/live"),
+        &format!("{S3_ENDPOINT}/health/ready"),
         "s3_put_is_idempotent_and_content_addressed"
     );
     let signed = S3Backend::new(byo_config("minioadmin"));
@@ -398,18 +400,18 @@ async fn ipfs_cid_matches_kubo_for_a_two_level_tree() {
 /// Replication across the real stores: signed S3 + kubo, N = 2, then the reader races
 /// the recorded URIs back (hash-verified); a dead target with N = 2 fails the policy.
 #[tokio::test]
-async fn replicate_to_minio_and_kubo_then_read_back() {
+async fn replicate_to_s3_and_kubo_then_read_back() {
     use crate::storage::{replicate, ExternalTarget, PackReader, StorageProfiles, StorageTarget};
     skip_unless!(
-        &format!("{MINIO_ENDPOINT}/minio/health/live"),
-        "replicate_to_minio_and_kubo_then_read_back"
+        &format!("{S3_ENDPOINT}/health/ready"),
+        "replicate_to_s3_and_kubo_then_read_back"
     );
     skip_unless!(
         &format!("{IPFS_GATEWAY}/ipfs/bafkqaaa"),
-        "replicate_to_minio_and_kubo_then_read_back"
+        "replicate_to_s3_and_kubo_then_read_back"
     );
     let s3 = ExternalTarget::new(
-        "minio",
+        "s3",
         Box::new(S3Backend::new(byo_config("minioadmin"))),
         None,
         true,
@@ -472,6 +474,6 @@ async fn replicate_to_minio_and_kubo_then_read_back() {
     let targets: [&dyn StorageTarget; 2] = [&s3, &dead];
     let err = replicate(&targets, &data, &meta, 2).await.unwrap_err();
     assert_eq!(err.confirmed.len(), 1);
-    assert_eq!(err.confirmed[0].target, "minio");
+    assert_eq!(err.confirmed[0].target, "s3");
     assert!(err.to_string().contains("dead:"), "{err}");
 }

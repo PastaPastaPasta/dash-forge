@@ -1,0 +1,13 @@
+{
+  "name": "bad_commit_malformed",
+  "description": "A commitOid that is not 40 or 64 hex digits is malformed.",
+  "case": "anchor",
+  "rules": "v2",
+  "input": {
+    "path": "src/a.rs",
+    "line": 5,
+    "side": 1,
+    "commitOid": "abc"
+  },
+  "expected": null
+}

@@ -14,7 +14,7 @@ use serde_json::json;
 
 use forge_core::backends::ipfs::IpfsConfig;
 use forge_core::backends::{IpfsBackend, PackBackend, S3Backend, S3Config};
-use forge_core::repo::{RepackTarget, RepoService};
+use forge_core::repo::{PlatformChunkTarget, RepackTarget, RepoService};
 use forge_core::storage::policy::git_config_scoped;
 use forge_core::storage::{ExternalTarget, StorageProfiles, StorageTarget};
 
@@ -33,6 +33,17 @@ pub async fn repack(
 ) -> Result<()> {
     let repo = repo.context("`dg repack` needs a repository: dg repack <owner>/<name>")?;
     let repo_ref = RepoRef::parse(repo)?;
+    // `--profile a,b[,platform]`: the consolidated pack goes to every listed profile, and
+    // each must confirm (so older packs gain the copies a new storage policy asks for).
+    let profile_names = profile.map(profile_list).transpose()?.unwrap_or_default();
+    let (external_names, platform) = split_platform(&profile_names)?;
+    for name in &external_names {
+        refuse_unpublishable_profile(name, "nothing repacked")?;
+    }
+    let legacy_uri = legacy_backend_uri(backend);
+    if let Some(uri) = legacy_uri.as_deref() {
+        refuse_unpublishable_url(uri, "nothing repacked")?;
+    }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = RepoService::new(&client, &identity, &bridge);
@@ -60,25 +71,32 @@ pub async fn repack(
         return Err(crate::errors::cancelled());
     }
 
-    // The consolidated pack's destination: Platform (default), an external profile
-    // (verified upload), or a legacy env-configured backend (migrates cold history out).
-    let profile_target = profile.map(external_profile_target).transpose()?;
-    let external = if profile_target.is_some() {
-        None
-    } else {
+    // The consolidated pack's destination: Platform (default), storage profiles and/or
+    // Platform (verified uploads), or a legacy env-configured backend.
+    let profile_targets = external_names
+        .iter()
+        .map(|n| external_profile_target(n))
+        .collect::<Result<Vec<_>>>()?;
+    let platform_target = platform.map(|name| PlatformChunkTarget::new(&svc, &handle, name));
+    let external = if profile_names.is_empty() {
         build_external_backend(backend)?
+    } else {
+        None
     };
-    let profile_targets: Vec<&dyn StorageTarget> = profile_target
+    let profile_refs: Vec<&dyn StorageTarget> = profile_targets
         .iter()
         .map(|t| t as &dyn StorageTarget)
+        .chain(platform_target.as_ref().map(|t| t as &dyn StorageTarget))
         .collect();
-    let target = match (&profile_target, &external) {
-        (Some(_), _) => RepackTarget::Replicated {
-            targets: &profile_targets,
-            required: 1,
-        },
-        (None, Some(b)) => RepackTarget::External(b.as_ref()),
-        (None, None) => RepackTarget::Platform,
+    let target = if !profile_refs.is_empty() {
+        RepackTarget::Replicated {
+            targets: &profile_refs,
+            required: profile_refs.len(),
+        }
+    } else if let Some(b) = &external {
+        RepackTarget::External(b.as_ref())
+    } else {
+        RepackTarget::Platform
     };
 
     let report = svc.repack(&handle, target).await.context("repack failed")?;
@@ -105,6 +123,7 @@ fn emit_repack_report(
             "newUris": report.new_uris,
             "supersededCount": report.superseded_count,
             "supersededBytes": report.superseded_bytes,
+            "unnamedLivePacks": report.remaining,
             "deletedDocuments": 0,
             "cost": crate::fmt::cost_json(report.cost_credits, price),
         }),
@@ -120,6 +139,15 @@ fn emit_repack_report(
                 "  supersedes:      {} pack(s), {} bytes (kept; nothing deleted)",
                 report.superseded_count, report.superseded_bytes
             );
+            if report.remaining > 0 {
+                println!(
+                    "  not named:       {} older pack(s): a manifest names at most {} packs, so \
+                     they stay live and keep the copies they have (the new pack holds their \
+                     objects too)",
+                    report.remaining,
+                    forge_core::repo::MAX_SUPERSEDES
+                );
+            }
             // The locator is what makes the repo browsable without downloading every pack,
             // so say plainly whether it landed rather than leaving it to be inferred.
             match &report.locator_manifest_id {
@@ -147,10 +175,18 @@ pub async fn reseed(
 ) -> Result<()> {
     let repo = repo.context("`dg reseed` needs a repository: dg reseed <owner>/<name>")?;
     let repo_ref = RepoRef::parse(repo)?;
+    if let Some(name) = profile {
+        refuse_unpublishable_profile(name, "nothing reseeded")?;
+    }
     let (client, bridge, identity) = ctx.connect_with_identity().await?;
     let handle = resolve(&client, &identity, &repo_ref).await?;
     let svc = RepoService::new(&client, &identity, &bridge);
 
+    if profile.is_none() {
+        if let Some(uri) = legacy_backend_uri(to) {
+            refuse_unpublishable_url(&uri, "nothing reseeded")?;
+        }
+    }
     let backend = match profile {
         Some(name) => profile_backend(name)?,
         None => build_external_backend(to)?.ok_or_else(|| {
@@ -385,6 +421,79 @@ fn load_external_profile(name: &str) -> Result<forge_core::storage::Profile> {
     Ok(profile)
 }
 
+/// The names of a `--profile a,b` list: none empty, none twice.
+fn profile_list(list: &str) -> Result<Vec<&str>> {
+    let names: Vec<&str> = list.split(',').map(str::trim).collect();
+    if names.iter().any(|n| n.is_empty()) {
+        return Err(crate::errors::usage(format!(
+            "--profile {list:?} has an empty name; list profiles as a,b"
+        )));
+    }
+    if let Some(dup) = names
+        .iter()
+        .enumerate()
+        .find(|(i, n)| names[..*i].contains(n))
+    {
+        return Err(crate::errors::usage(format!(
+            "--profile lists {:?} twice",
+            dup.1
+        )));
+    }
+    Ok(names)
+}
+
+/// Split a profile list into its external profiles and the Platform one (the built-in
+/// `platform`, or a `kind = "platform"` profile), which may appear at most once.
+fn split_platform<'a>(names: &[&'a str]) -> Result<(Vec<&'a str>, Option<&'a str>)> {
+    let profiles = StorageProfiles::load()?;
+    let mut external = Vec::new();
+    let mut platform = None;
+    for name in names {
+        let is_platform = profiles.get(name).is_some_and(|p| p.is_platform());
+        match (is_platform, platform) {
+            (true, Some(_)) => {
+                return Err(crate::errors::usage(
+                    "--profile lists Platform storage twice (under two names)",
+                ))
+            }
+            (true, None) => platform = Some(*name),
+            (false, _) => external.push(*name),
+        }
+    }
+    Ok((external, platform))
+}
+
+/// The public read base a legacy `--backend s3` / `--to s3` target records
+/// (`FORGE_S3_ENDPOINT/FORGE_S3_BUCKET`); `None` for the other legacy targets, which record
+/// no http(s) URL of their own.
+fn legacy_backend_uri(backend: Option<Backend>) -> Option<String> {
+    if !matches!(backend, Some(Backend::S3)) {
+        return None;
+    }
+    // Unset: `build_external_backend` reports what is missing.
+    let endpoint = std::env::var("FORGE_S3_ENDPOINT").ok()?;
+    let bucket = std::env::var("FORGE_S3_BUCKET").unwrap_or_else(|_| "forge-packs".into());
+    Some(format!("{}/{bucket}", endpoint.trim_end_matches('/')))
+}
+
+/// Refuse (E501) to record `url` on chain when it is not a public https address, unless
+/// git config `dash.allowPrivateUri` allows it (the legacy env-configured targets have no
+/// profile to carry the flag).
+fn refuse_unpublishable_url(url: &str, lead: &str) -> Result<()> {
+    let allowed =
+        crate::storage::allow_private_uri_config(crate::storage::dash_remote_name().as_deref())?;
+    forge_core::storage::publish::refuse_unpublishable_url("FORGE_S3_ENDPOINT", url, allowed, lead)
+        .map_err(Into::into)
+}
+
+/// Refuse before anything is written when the named profile would record a non-public
+/// read address (see [`crate::storage::check_publishable`]).
+fn refuse_unpublishable_profile(name: &str, lead: &str) -> Result<()> {
+    let profile = load_external_profile(name)?;
+    let remote = crate::storage::dash_remote_name();
+    crate::storage::check_publishable([(name, &profile)], None, remote.as_deref(), lead)
+}
+
 /// A verified-upload target for the named external profile.
 fn external_profile_target(name: &str) -> Result<ExternalTarget> {
     let profile = load_external_profile(name)?;
@@ -438,4 +547,33 @@ fn build_external_backend(backend: Option<Backend>) -> Result<Option<Box<dyn Pac
             ))
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_lists_refuse_empty_and_repeated_names() {
+        assert_eq!(profile_list("a, b").unwrap(), ["a", "b"]);
+        assert!(profile_list("").is_err());
+        assert!(profile_list("a,,b").is_err());
+        assert!(format!("{:#}", profile_list("a,b,a").unwrap_err()).contains("twice"));
+    }
+
+    /// With FORGE_S3_ENDPOINT unset there is no address to judge: the legacy target reports
+    /// the missing variable itself, not E501.
+    #[test]
+    fn an_unset_legacy_endpoint_is_reported_as_missing() {
+        if std::env::var_os("FORGE_S3_ENDPOINT").is_some() {
+            return;
+        }
+        assert_eq!(legacy_backend_uri(Some(Backend::S3)), None);
+        let err = build_external_backend(Some(Backend::S3))
+            .err()
+            .map(|e| format!("{e:#}"))
+            .unwrap_or_default();
+        assert!(err.contains("FORGE_S3_ENDPOINT"), "{err}");
+        assert_eq!(legacy_backend_uri(Some(Backend::Ipfs)), None);
+    }
 }

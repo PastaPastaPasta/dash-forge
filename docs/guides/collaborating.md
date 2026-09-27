@@ -9,7 +9,7 @@ Everything a team does on Forge is a signed document on Dash Platform: who may p
 5. [From the web app](#from-the-web-app)
 6. [Webhooks and CI](#webhooks-and-ci)
 
-The commands below take a repository as `<owner>/<name>`, where `<owner>` is the owner's **identity id** (base58). A bare `<name>` means one of your own repositories. `dg` does not resolve DPNS usernames yet; the web app does (`forge.dashhq.org/alice/project`).
+The commands below take a repository as `<owner>/<name>`, where `<owner>` is the owner's **identity id** (base58) or **DPNS username** (`alice` or `alice.dash`, resolved with a proof-verified DPNS read). A bare `<name>` means one of your own repositories.
 
 ---
 

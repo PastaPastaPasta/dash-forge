@@ -9,7 +9,7 @@
 //!
 //! ```toml
 //! [read]
-//! ipfs_gateways = ["https://ipfs.io", "https://dweb.link"]  # optional override
+//! ipfs_gateways = ["http://127.0.0.1:8080", "https://ipfs.filebase.io"]  # optional override
 //!
 //! [profiles.r2-main]
 //! kind = "s3"
@@ -269,7 +269,7 @@ pub struct S3Profile {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub prefix: String,
     /// Access key id (literal or reference). Omit, with the secret, for an anonymous
-    /// public-write bucket (local MinIO fixture only).
+    /// public-write bucket (the local S3 fixture only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_key_id: Option<KeyId>,
     /// Secret access key reference.
@@ -278,6 +278,11 @@ pub struct S3Profile {
     /// STS session token reference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_token: Option<SecretRef>,
+    /// Record a non-public read address (loopback, LAN, plain http, a temporary tunnel) on
+    /// chain anyway: a local test or a LAN-only mirror. Pushes refuse such an address
+    /// otherwise ([`super::publish::refuse_unpublishable`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_private_uri: bool,
 }
 
 /// `kind = "ipfs-kubo"`.
@@ -297,6 +302,11 @@ pub struct KuboProfile {
     /// Full `Authorization` header value for an RPC API behind auth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_auth: Option<SecretRef>,
+    /// Record a non-public read address (loopback, LAN, plain http, a temporary tunnel) on
+    /// chain anyway: a local test or a LAN-only mirror. Pushes refuse such an address
+    /// otherwise ([`super::publish::refuse_unpublishable`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_private_uri: bool,
 }
 
 /// `kind = "ipfs-pinning-service"`.
@@ -321,6 +331,11 @@ pub struct PinningProfile {
     /// Seconds to wait for `pinned` (default 120).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pin_timeout_secs: Option<u64>,
+    /// Record a non-public read address (loopback, LAN, plain http, a temporary tunnel) on
+    /// chain anyway: a local test or a LAN-only mirror. Pushes refuse such an address
+    /// otherwise ([`super::publish::refuse_unpublishable`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_private_uri: bool,
 }
 
 /// Reader settings.
@@ -533,6 +548,17 @@ impl Profile {
             Profile::IpfsKubo(p) => p.public_gateway.as_deref(),
             Profile::IpfsPinningService(p) => p.public_gateway.as_deref(),
             _ => None,
+        }
+    }
+
+    /// Whether the profile opts in to recording a non-public read address
+    /// (`allow_private_uri = true`).
+    pub fn allow_private_uri(&self) -> bool {
+        match self {
+            Profile::S3(p) => p.allow_private_uri,
+            Profile::IpfsKubo(p) => p.allow_private_uri,
+            Profile::IpfsPinningService(p) => p.allow_private_uri,
+            Profile::Platform(_) => false,
         }
     }
 

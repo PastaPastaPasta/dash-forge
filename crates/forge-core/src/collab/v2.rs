@@ -38,9 +38,9 @@ use crate::platform::{
     PlatformClient, QueryFilter, QueryOrder, WriteEngine, WriteIntent,
 };
 use crate::rules::v2::{
-    allocate_number, count_approvals, fold_issue_state_v2, fold_pr_state_v2, is_well_formed,
-    number_ceiling, Approvals, ContentDoc, ContentKind, Review as RuleReview, Role, RoleOracle,
-    Visibility,
+    allocate_number, count_approvals, fold_issue_state_v2, fold_pr_review_v2, fold_pr_state_v2,
+    is_author_kind, is_well_formed, number_ceiling, Approvals, ContentDoc, ContentKind, Policy,
+    PrReviewState, Review as RuleReview, Role, RoleOracle, Visibility,
 };
 use crate::rules::{self, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
@@ -55,8 +55,11 @@ pub const DOC_COMMENT: &str = "comment";
 pub const DOC_REVIEW: &str = "review";
 /// A member-gated state event.
 pub const DOC_EVENT: &str = "event";
-/// An author-gated close / reopen.
+/// An author-gated state event (close, reopen, draft, ready, thread resolution, review
+/// requests, head update).
 pub const DOC_AUTHOR_EVENT: &str = "authorEvent";
+/// A branch policy (maintainer-gated).
+pub const DOC_POLICY: &str = "policy";
 /// A star (`indexOnly`).
 pub const DOC_STAR: &str = "star";
 /// forge-core: a release (maintainer-gated).
@@ -176,6 +179,8 @@ pub struct Patch {
     pub head_oid: String,
     /// A `packManifest` hash in the source repo, when the author recorded one (hex).
     pub patch_manifest_hash: Option<String>,
+    /// Opened as a draft (`draft`); `draft` / `ready` events override it ([`PatchView::state`]).
+    pub draft: bool,
     /// Consensus `$createdAt` (ms).
     pub created_at: u64,
     /// Importer provenance.
@@ -211,6 +216,8 @@ pub struct PatchInput {
     pub head_oid: Vec<u8>,
     /// A `packManifest` hash in the source repo, if the author published one.
     pub patch_manifest_hash: Option<[u8; 32]>,
+    /// Open as a draft.
+    pub draft: bool,
 }
 
 /// A `comment`, flattened.
@@ -222,6 +229,12 @@ pub struct Comment {
     pub author: String,
     /// Body.
     pub body: String,
+    /// The comment this replies to (`replyTo`); `None` for a thread root.
+    pub reply_to: Option<String>,
+    /// The review it belongs to (`reviewId`).
+    pub review_id: Option<String>,
+    /// Its anchor fields (read them through [`crate::rules::v2::anchor_of`]).
+    pub anchor: crate::rules::v2::AnchorFields,
     /// Consensus `$createdAt` (ms).
     pub created_at: u64,
     /// Importer provenance.
@@ -241,6 +254,8 @@ pub struct Review {
     pub commit_oid: String,
     /// Body.
     pub body: String,
+    /// How many `reviewId` comments the review announced (`commentCount`).
+    pub comment_count: Option<u32>,
     /// Consensus `$createdAt` (ms).
     pub created_at: u64,
     /// Importer provenance.
@@ -293,12 +308,61 @@ pub struct PatchView {
     pub patch: Patch,
     /// Open/closed/merged, labels, draft.
     pub state: PrState,
+    /// The PR's current head (hex): the newest `headUpdate`, else `patch.head_oid` (the head
+    /// it was opened with). Approvals, staleness, the diff and merges use this.
+    pub head: String,
+    /// The review fold ([`fold_pr_review_v2`]) without thread roots, so `resolved_threads` is
+    /// empty here; [`PatchView::review_with_threads`] adds them from the PR's comments.
+    pub review: PrReviewState,
     /// The base ref's current tip (hex), when it has one.
     pub base_tip: Option<String>,
     /// Whether the head has been a tip of the base ref (a merge naming it would count).
     pub head_on_base: bool,
     /// Every commit the base ref has pointed at (what a merge event may name).
     pub base_tips: BTreeSet<String>,
+    /// The PR's `event` and `authorEvent` documents.
+    pub log: TargetLog,
+}
+
+impl PatchView {
+    /// The review fold with thread resolution: the thread roots are the PR's comments that
+    /// reply to nothing.
+    #[must_use]
+    pub fn review_with_threads(&self, comments: &[Comment]) -> PrReviewState {
+        let roots: BTreeSet<String> = comments
+            .iter()
+            .filter(|c| c.reply_to.is_none())
+            .map(|c| c.document_id.clone())
+            .collect();
+        fold_pr_review_v2(
+            &self.log.events,
+            &self.log.author_events,
+            &self.patch.author,
+            &self.patch.head_oid,
+            &roots,
+        )
+    }
+
+    /// The review ids a `reviewDismiss` names.
+    #[must_use]
+    pub fn dismissed(&self) -> BTreeSet<String> {
+        self.review
+            .dismissed_reviews
+            .iter()
+            .map(|d| d.review_id.clone())
+            .collect()
+    }
+}
+
+/// The payload of a state event (forge-v2.md §3 kinds table).
+#[derive(Debug, Clone, Default)]
+pub struct EventPayload<'a> {
+    /// `value`: a label, an assignee, a retarget base, a dismissal reason, a milestone.
+    pub value: Option<&'a str>,
+    /// `oid`: a merge commit or a new head.
+    pub oid: Option<&'a [u8]>,
+    /// `refId` (base58): a thread root comment, a reviewer identity, a review.
+    pub ref_id: Option<&'a str>,
 }
 
 /// How a create with an explicit number ended.
@@ -402,9 +466,14 @@ pub fn patch_from_doc(d: &FetchedDocument) -> Patch {
         source_ref_name: d.field_str("sourceRefName"),
         head_oid: d.field_hex("headOid").unwrap_or_default(),
         patch_manifest_hash: d.field_hex("patchManifestHash"),
+        draft: d.field_bool("draft"),
         created_at: d.created_at.unwrap_or_default(),
         imported: imported_of(d),
     }
+}
+
+fn id_field(d: &FetchedDocument, name: &str) -> Option<String> {
+    d.field_bytes32(name).map(platform::encode_identifier)
 }
 
 fn comment_from_doc(d: &FetchedDocument) -> Comment {
@@ -412,6 +481,15 @@ fn comment_from_doc(d: &FetchedDocument) -> Comment {
         document_id: d.id.clone(),
         author: d.owner_id.clone(),
         body: d.field_str("body").unwrap_or_default(),
+        reply_to: id_field(d, "replyTo"),
+        review_id: id_field(d, "reviewId"),
+        anchor: crate::rules::v2::AnchorFields {
+            path: d.field_str("path"),
+            line: d.field_u64("line"),
+            start_line: d.field_u64("startLine"),
+            side: d.field_u64("side"),
+            commit_oid: d.field_hex("commitOid"),
+        },
         created_at: d.created_at.unwrap_or_default(),
         imported: imported_of(d),
     }
@@ -424,8 +502,29 @@ fn review_from_doc(d: &FetchedDocument) -> Review {
         verdict: Verdict::from_code(d.field_u64("verdict").unwrap_or_default()),
         commit_oid: d.field_hex("commitOid").unwrap_or_default(),
         body: d.field_str("body").unwrap_or_default(),
+        comment_count: d
+            .field_u64("commentCount")
+            .and_then(|n| u32::try_from(n).ok()),
         created_at: d.created_at.unwrap_or_default(),
         imported: imported_of(d),
+    }
+}
+
+/// A fetched `policy` as a [`Policy`].
+pub fn policy_from_doc(d: &FetchedDocument) -> Policy {
+    let small = |name: &str| {
+        d.field_u64(name)
+            .and_then(|n| u8::try_from(n).ok())
+            .unwrap_or(0)
+    };
+    Policy {
+        required_approvals: d
+            .field_u64("requiredApprovals")
+            .and_then(|n| u32::try_from(n).ok())
+            .unwrap_or(0),
+        approver_role: small("approverRole"),
+        require_checks: d.field_bool("requireChecks"),
+        merge_methods: small("mergeMethods"),
     }
 }
 
@@ -442,6 +541,7 @@ pub fn event_from_doc(d: &FetchedDocument) -> Option<Event> {
         actor: d.owner_id.clone(),
         value: d.field_str("value"),
         oid: d.field_hex("oid"),
+        ref_id: id_field(d, "refId"),
         created_at: d.created_at.unwrap_or_default(),
     })
 }
@@ -558,6 +658,9 @@ pub fn patch_props(
     if let Some(h) = input.patch_manifest_hash {
         p.insert("patchManifestHash".to_string(), FieldValue::bytes32(h));
     }
+    if input.draft {
+        p.insert("draft".to_string(), FieldValue::boolean(true));
+    }
     insert_imported(&mut p, imported)?;
     Ok(p)
 }
@@ -576,13 +679,57 @@ pub fn event_props(
     value: Option<&str>,
     oid: Option<&[u8]>,
 ) -> Result<BTreeMap<String, FieldValue>> {
+    event_payload_props(
+        target,
+        kind,
+        &EventPayload {
+            value,
+            oid,
+            ref_id: None,
+        },
+    )
+}
+
+/// The properties of an `event` or `authorEvent` of any kind, with the payload its kind needs
+/// (forge-v2.md §3): 11–15 a `ref_id`, 16 an `oid` (20–32 bytes), 17 a `value`, 8 a legal ref
+/// name. A missing payload is refused before signing (the folds would ignore the document).
+pub fn event_payload_props(
+    target: &Target,
+    kind: EventKind,
+    payload: &EventPayload<'_>,
+) -> Result<BTreeMap<String, FieldValue>> {
+    let EventPayload { value, oid, ref_id } = *payload;
     if let Some(v) = value {
         check_text("event value", v, 120, 480)?;
     }
-    if kind == EventKind::Retarget && !value.is_some_and(rules::is_legal_ref_name) {
-        return Err(Error::Config(format!(
-            "illegal retarget base ref name {value:?}"
-        )));
+    let missing = |what: &str| {
+        Err(Error::Config(format!(
+            "a {} event needs {what}",
+            kind_verb(kind)
+        )))
+    };
+    match kind {
+        EventKind::Retarget if !value.is_some_and(rules::is_legal_ref_name) => {
+            return Err(Error::Config(format!(
+                "illegal retarget base ref name {value:?}"
+            )));
+        }
+        EventKind::ThreadResolve
+        | EventKind::ThreadUnresolve
+        | EventKind::ReviewRequest
+        | EventKind::ReviewRequestRemove
+        | EventKind::ReviewDismiss
+            if ref_id.is_none() =>
+        {
+            return missing("a refId");
+        }
+        EventKind::HeadUpdate if !oid.is_some_and(|o| matches!(o.len(), 20 | 32)) => {
+            return missing("a 20- or 32-byte commit oid (SHA-1 or SHA-256)");
+        }
+        EventKind::MilestoneSet if value.is_none_or(str::is_empty) => {
+            return missing("a milestone name");
+        }
+        _ => {}
     }
     let mut p = target_props(target)?;
     p.insert(
@@ -595,13 +742,47 @@ pub fn event_props(
     if let Some(o) = oid {
         p.insert("oid".to_string(), FieldValue::bytes(o.to_vec()));
     }
+    if let Some(r) = ref_id {
+        p.insert(
+            "refId".to_string(),
+            FieldValue::identifier(platform::decode_identifier(r)?),
+        );
+    }
     Ok(p)
 }
 
-/// The properties of an `authorEvent`: close or reopen only (the schema refuses the rest),
-/// and no value or oid.
+/// The properties of an `authorEvent` close or reopen.
 pub fn author_event_props(target: &Target, close: bool) -> Result<BTreeMap<String, FieldValue>> {
     event_props(target, close_kind(close), None, None)
+}
+
+/// The properties of a `policy` (without `repoId`).
+pub fn policy_props(policy: &Policy) -> Result<BTreeMap<String, FieldValue>> {
+    if policy.required_approvals > 10 || policy.approver_role > 1 {
+        return Err(Error::Config(
+            "a policy takes 0-10 required approvals and approver role 0 (any member) or 1 \
+             (maintainers)"
+                .into(),
+        ));
+    }
+    let mut p = BTreeMap::new();
+    p.insert(
+        "requiredApprovals".to_string(),
+        FieldValue::integer(u64::from(policy.required_approvals)),
+    );
+    p.insert(
+        "approverRole".to_string(),
+        FieldValue::integer(u64::from(policy.approver_role)),
+    );
+    p.insert(
+        "requireChecks".to_string(),
+        FieldValue::boolean(policy.require_checks),
+    );
+    p.insert(
+        "mergeMethods".to_string(),
+        FieldValue::integer(u64::from(policy.merge_methods)),
+    );
+    Ok(p)
 }
 
 fn close_kind(close: bool) -> EventKind {
@@ -630,9 +811,21 @@ fn target_props(target: &Target) -> Result<BTreeMap<String, FieldValue>> {
 /// would refuse both. A member who is also the author uses the member route, which carries
 /// every kind.
 pub fn state_route(signer_role: Option<Role>, signer: &str, target: &Target) -> Option<StateRoute> {
+    kind_route(signer_role, signer, target, EventKind::Close)
+}
+
+/// [`state_route`] for any kind: the author route only for an author kind
+/// ([`is_author_kind`]); merge, labels, assignees, retarget, dismissals and milestones are
+/// members only.
+pub fn kind_route(
+    signer_role: Option<Role>,
+    signer: &str,
+    target: &Target,
+    kind: EventKind,
+) -> Option<StateRoute> {
     if signer_role.is_some() {
         Some(StateRoute::Member)
-    } else if signer == target.author {
+    } else if signer == target.author && is_author_kind(kind) {
         Some(StateRoute::Author)
     } else {
         None
@@ -1024,7 +1217,8 @@ impl<'a> Collab<'a> {
         crate::refs::read_merge_base(self.client, &core, &repo.scope()?, base_ref_name).await
     }
 
-    /// A pull request's state (§3 fold; a merge counts once its oid has been a base tip).
+    /// A pull request's state (§3 fold; a merge counts once its oid has been a base tip), its
+    /// current head (the review fold's) and review state.
     pub async fn patch_view(&self, repo: &RepoRef, patch: Patch) -> Result<PatchView> {
         let log = self.target_log(repo, &patch.document_id).await?;
         let base = self.base_ref_tips(repo, &patch.base_ref_name).await?;
@@ -1034,25 +1228,38 @@ impl<'a> Collab<'a> {
             &patch.author,
             base.tip.as_deref(),
             |oid, _| base.contains(oid),
+            patch.draft,
         );
-        let head_on_base = base.contains(&patch.head_oid);
+        let review = fold_pr_review_v2(
+            &log.events,
+            &log.author_events,
+            &patch.author,
+            &patch.head_oid,
+            &BTreeSet::new(),
+        );
+        let head = review.head.clone();
+        let head_on_base = base.contains(&head);
         Ok(PatchView {
             patch,
             state,
+            head,
+            review,
             base_tip: base.current,
             head_on_base,
             base_tips: base.historical.into_iter().collect(),
+            log,
         })
     }
 
-    /// The PR's approvals on its current head (§6): member reviews only.
+    /// The PR's approvals on its current head (§6): member reviews only, dismissed reviews
+    /// skipped.
     pub async fn approvals(
         &self,
         repo: &RepoRef,
-        patch: &Patch,
+        view: &PatchView,
     ) -> Result<(Approvals, Vec<Review>)> {
         let oracle = self.member_oracle(repo).await?;
-        self.approvals_with(repo, patch, &oracle).await
+        self.approvals_with(repo, view, &oracle).await
     }
 
     /// The repo's current membership as the rules take it (read once for a whole list).
@@ -1066,10 +1273,10 @@ impl<'a> Collab<'a> {
     pub async fn approvals_with(
         &self,
         repo: &RepoRef,
-        patch: &Patch,
+        view: &PatchView,
         oracle: &RoleOracle,
     ) -> Result<(Approvals, Vec<Review>)> {
-        let reviews = self.reviews(repo, &patch.document_id).await?;
+        let reviews = self.reviews(repo, &view.patch.document_id).await?;
         let rule: Vec<RuleReview> = reviews
             .iter()
             .map(|r| RuleReview {
@@ -1080,7 +1287,68 @@ impl<'a> Collab<'a> {
                 created_at: r.created_at,
             })
             .collect();
-        Ok((count_approvals(&rule, oracle, &patch.head_oid), reviews))
+        Ok((
+            count_approvals(&rule, oracle, &view.head, &view.dismissed()),
+            reviews,
+        ))
+    }
+
+    /// The branch policy in force: the newest `policy` of `repo` by `($createdAt, $id)`
+    /// (forge-v2.md §2), or `None`.
+    pub async fn policy(&self, repo: &RepoRef) -> Result<Option<Policy>> {
+        let collab = self.collab_contract(repo).await?;
+        let docs = self
+            .client
+            .query_all_documents(
+                &collab,
+                DOC_POLICY,
+                &[Self::repo_filter(repo)?],
+                &[QueryOrder::asc("$createdAt")],
+            )
+            .await?;
+        Ok(docs
+            .iter()
+            .max_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)))
+            .map(policy_from_doc))
+    }
+
+    /// The open-or-closed PRs whose head branch is `source_ref_name` in `source_repo_id` (the
+    /// `sourceRef` index): what a push to that branch may have to move with a `headUpdate`.
+    pub async fn patches_from_branch(
+        &self,
+        forge: &ForgeIds,
+        source_repo_id: &str,
+        source_ref_name: &str,
+    ) -> Result<Vec<Patch>> {
+        let collab = self.client.fetch_contract(&forge.collab).await?;
+        let docs = self
+            .client
+            .query_all_documents(
+                &collab,
+                DOC_PATCH,
+                &[
+                    QueryFilter::eq(
+                        "sourceRepoId",
+                        FieldValue::identifier(platform::decode_identifier(source_repo_id)?),
+                    ),
+                    QueryFilter::eq(
+                        "sourceRefNameHash",
+                        FieldValue::bytes32(sha256(source_ref_name.as_bytes())),
+                    ),
+                ],
+                &[
+                    QueryOrder::asc("sourceRepoId"),
+                    QueryOrder::asc("sourceRefNameHash"),
+                ],
+            )
+            .await?;
+        // A public patch whose name does not hash to its key is malformed (§5); the query
+        // matched the hash, so compare the name too.
+        Ok(docs
+            .iter()
+            .map(patch_from_doc)
+            .filter(|p| p.source_ref_name.as_deref() == Some(source_ref_name))
+            .collect())
     }
 
     // --- numbering --------------------------------------------------------------------
@@ -1371,6 +1639,20 @@ impl<'a> Collab<'a> {
             if let Some(s) = a.side {
                 p.insert("side".to_string(), FieldValue::integer(s));
             }
+            if let Some(start) = a.start_line {
+                if a.line.is_none_or(|l| start > l) {
+                    return Err(Error::Config(
+                        "a range comment needs a line, and its start line may not follow it".into(),
+                    ));
+                }
+                p.insert("startLine".to_string(), FieldValue::integer(start));
+            }
+            if let Some(r) = &a.review_id {
+                p.insert(
+                    "reviewId".to_string(),
+                    FieldValue::identifier(platform::decode_identifier(r)?),
+                );
+            }
         }
         insert_imported(&mut p, imported)?;
         self.write(repo, &collab, DOC_COMMENT, p).await
@@ -1378,6 +1660,7 @@ impl<'a> Collab<'a> {
 
     /// Review a PR: `verdict` on `commit_oid` (the head a reviewer saw). Un-gated; only
     /// members' reviews count (§6).
+    #[allow(clippy::too_many_arguments)]
     pub async fn review(
         &self,
         repo: &RepoRef,
@@ -1385,6 +1668,7 @@ impl<'a> Collab<'a> {
         verdict: Verdict,
         commit_oid: &[u8],
         body: &str,
+        comment_count: Option<u16>,
         imported: Option<&Imported>,
     ) -> Result<String> {
         if !(1..=3).contains(&verdict.code()) {
@@ -1404,6 +1688,12 @@ impl<'a> Collab<'a> {
         );
         if !body.is_empty() {
             p.insert("body".to_string(), FieldValue::text(body));
+        }
+        if let Some(n) = comment_count {
+            p.insert(
+                "commentCount".to_string(),
+                FieldValue::integer(u64::from(n)),
+            );
         }
         insert_imported(&mut p, imported)?;
         self.write(repo, &collab, DOC_REVIEW, p).await
@@ -1475,6 +1765,66 @@ impl<'a> Collab<'a> {
         let collab = self.collab_contract(repo).await?;
         let id = self.write(repo, &collab, doc_type, props).await?;
         Ok((route, id))
+    }
+
+    /// Post a PR/issue event of any kind through whichever gate admits the signer
+    /// ([`kind_route`]): a member's `event`, else — for an author kind — the author's
+    /// `authorEvent`. Review kinds: resolve / unresolve a thread (`ref_id` = its root comment),
+    /// request / unrequest a reviewer (`ref_id` = the identity), dismiss a review (members;
+    /// `ref_id` = the review, `value` = the reason), move the head (`oid`), set / clear a
+    /// milestone (members). [`Error::NotPermitted`] before signing when no gate admits the
+    /// signer (unless [`SKIP_PRECHECK_ENV`] is set: then a member event is attempted).
+    pub async fn post_target_event(
+        &self,
+        repo: &RepoRef,
+        target: &Target,
+        kind: EventKind,
+        payload: &EventPayload<'_>,
+    ) -> Result<(StateRoute, String)> {
+        let props = event_payload_props(target, kind, payload)?;
+        let me = self.signer_id()?;
+        let role = self.signer_role(repo).await?;
+        let route = match kind_route(role, &me, target, kind) {
+            Some(r) => r,
+            None if !precheck_enabled() => StateRoute::Member,
+            None => {
+                return Err(Error::NotPermitted {
+                    action: format!(
+                        "{} {} #{}",
+                        kind_verb(kind),
+                        target.kind.noun(),
+                        target.number
+                    ),
+                    reason: if is_author_kind(kind) {
+                        format!(
+                            "you are neither a member of {} nor the {}'s author",
+                            repo.display(),
+                            target.kind.noun()
+                        )
+                    } else {
+                        format!("you are not a member of {}", repo.display())
+                    },
+                    needs: "writer".into(),
+                })
+            }
+        };
+        let doc_type = match route {
+            StateRoute::Member => DOC_EVENT,
+            StateRoute::Author => DOC_AUTHOR_EVENT,
+        };
+        let collab = self.collab_contract(repo).await?;
+        let id = self.write(repo, &collab, doc_type, props).await?;
+        Ok((route, id))
+    }
+
+    /// Set the branch policy (maintainers only at consensus; the client checks first unless
+    /// [`SKIP_PRECHECK_ENV`] is set). Policies are append-only; the newest wins.
+    pub async fn set_policy(&self, repo: &RepoRef, policy: &Policy) -> Result<String> {
+        let props = policy_props(policy)?;
+        self.require_role(repo, Role::Maintainer, "set the branch policy")
+            .await?;
+        let collab = self.collab_contract(repo).await?;
+        self.write(repo, &collab, DOC_POLICY, props).await
     }
 
     // --- releases and labels (forge-core) ---------------------------------------------------
@@ -1676,7 +2026,7 @@ impl<'a> Collab<'a> {
                     if self.own_star(&collab, repo).await?.is_none() {
                         return Ok(true);
                     }
-                    tracing::warn!("another write took the unstar's nonce; re-preparing");
+                    tracing::debug!("another write took the unstar's nonce; re-preparing");
                 }
                 Ok(_) => return Ok(true),
                 // Already gone (another process unstarred it first).
@@ -1700,6 +2050,14 @@ fn kind_verb(kind: EventKind) -> &'static str {
         EventKind::Retarget => "retarget",
         EventKind::Draft => "mark draft",
         EventKind::Ready => "mark ready",
+        EventKind::ThreadResolve => "resolve a thread on",
+        EventKind::ThreadUnresolve => "unresolve a thread on",
+        EventKind::ReviewRequest => "request a review on",
+        EventKind::ReviewRequestRemove => "remove a review request on",
+        EventKind::ReviewDismiss => "dismiss a review on",
+        EventKind::HeadUpdate => "move the head of",
+        EventKind::MilestoneSet => "set the milestone of",
+        EventKind::MilestoneClear => "clear the milestone of",
     }
 }
 
@@ -1853,6 +2211,81 @@ mod tests {
     }
 
     #[test]
+    fn review_events_carry_their_payload_and_route_by_kind() {
+        let t = target("alice");
+        let root = "GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL";
+        let p = event_payload_props(
+            &t,
+            EventKind::ThreadResolve,
+            &EventPayload {
+                ref_id: Some(root),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(p.get("kind"), Some(&FieldValue::integer(11)));
+        assert!(matches!(p.get("refId"), Some(FieldValue::Identifier(_))));
+        // A payload-less review kind is refused before signing.
+        for kind in [
+            EventKind::ThreadResolve,
+            EventKind::ReviewRequest,
+            EventKind::ReviewDismiss,
+            EventKind::HeadUpdate,
+            EventKind::MilestoneSet,
+        ] {
+            assert!(event_payload_props(&t, kind, &EventPayload::default()).is_err());
+        }
+        let head = event_payload_props(
+            &t,
+            EventKind::HeadUpdate,
+            &EventPayload {
+                oid: Some(&[7; 20]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(head.get("kind"), Some(&FieldValue::integer(16)));
+        // The author may resolve and move the head, never dismiss, label or merge.
+        assert_eq!(
+            kind_route(None, "alice", &t, EventKind::HeadUpdate),
+            Some(StateRoute::Author)
+        );
+        for kind in [
+            EventKind::ReviewDismiss,
+            EventKind::LabelAdd,
+            EventKind::Merge,
+        ] {
+            assert_eq!(kind_route(None, "alice", &t, kind), None);
+            assert_eq!(
+                kind_route(Some(Role::Writer), "bob", &t, kind),
+                Some(StateRoute::Member)
+            );
+        }
+        assert_eq!(
+            kind_route(None, "mallory", &t, EventKind::ThreadResolve),
+            None
+        );
+    }
+
+    #[test]
+    fn policies_are_bounded_like_the_schema() {
+        let mut policy = Policy {
+            required_approvals: 2,
+            approver_role: 1,
+            require_checks: true,
+            merge_methods: 3,
+        };
+        let p = policy_props(&policy).unwrap();
+        assert_eq!(p.get("requiredApprovals"), Some(&FieldValue::integer(2)));
+        assert_eq!(p.get("requireChecks"), Some(&FieldValue::boolean(true)));
+        policy.required_approvals = 11;
+        assert!(policy_props(&policy).is_err());
+        policy.required_approvals = 1;
+        policy.approver_role = 2;
+        assert!(policy_props(&policy).is_err());
+    }
+
+    #[test]
     fn patch_documents_carry_hashes_and_refuse_injection() {
         let input = PatchInput {
             title: "t".into(),
@@ -1862,6 +2295,7 @@ mod tests {
             source_ref_name: Some("refs/heads/feature".into()),
             head_oid: vec![0xab; 20],
             patch_manifest_hash: None,
+            draft: false,
         };
         let p = patch_props(7, &input, None).unwrap();
         assert_eq!(
@@ -2048,6 +2482,7 @@ mod tests {
             source_ref_name: Some("refs/heads/feature".into()),
             head_oid: vec![0xab; 20],
             patch_manifest_hash: None,
+            draft: false,
         };
         let doc = |fields: BTreeMap<String, FieldValue>| FetchedDocument {
             id: "x".into(),

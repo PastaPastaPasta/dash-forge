@@ -2290,6 +2290,7 @@ mod tests {
                 core: "C".into(),
                 collab: "L".into(),
                 group: "G".into(),
+                group_owner: None,
                 superseded_in_group: vec![],
             },
             repo_id: "R".into(),

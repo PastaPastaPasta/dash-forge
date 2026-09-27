@@ -29,7 +29,7 @@ import {
   queryDocumentsWithProof,
   type PlainDocument,
 } from '../sdk'
-import { foldIssueStateV2, foldPrStateV2 } from '../rules/v2'
+import { foldIssueStateV2, foldPrReviewV2, foldPrStateV2, type PrReviewState } from '../rules/v2'
 import {
   asIdentifierString,
   byteFieldToHex,
@@ -101,7 +101,19 @@ export interface PullView {
    * from it is the head itself — an empty diff.
    */
   readonly baseOidAtOpen: string
+  /**
+   * The PR's CURRENT head, hex: the newest `headUpdate` (author or member), else
+   * {@link initialHeadOid}. Approvals, staleness, the diff and merges use this.
+   */
   readonly headOid: string
+  /** The head the PR was opened with (`patch.headOid`, immutable). */
+  readonly initialHeadOid: string
+  /**
+   * The review fold (`foldPrReviewV2`) without thread roots: head updates, requested reviewers,
+   * dismissed reviews, milestone. `resolvedThreads` is empty here; a view that has the PR's
+   * comments folds them in (`foldPrReviewV2` with the root comment ids).
+   */
+  readonly review: PrReviewState
   /**
    * Where the PR's objects actually live: the **source** `repo` document id
    * (`sourceRepoId`), base58.
@@ -166,6 +178,8 @@ export interface ReviewView {
   readonly verdictCode: number
   readonly commitOid: string
   readonly body: string
+  /** How many `reviewId` comments the review announced (`commentCount`), or null. */
+  readonly commentCount: number | null
   readonly createdAt: number
 }
 
@@ -383,6 +397,7 @@ export async function readReviews(sdk: EvoSDK, repo: RepoRef, patchId: string): 
       verdictCode: code,
       commitOid: byteFieldToHex(d, 'commitOid'),
       body: str(d, 'body'),
+      commentCount: typeof d['commentCount'] === 'number' ? d['commentCount'] : null,
       createdAt: num(d, '$createdAt'),
     }
   })
@@ -637,15 +652,18 @@ export async function readPull(
   const baseTip = tips.tip
 
   const l = log ?? (await readTargetLog(sdk, repo, id))
-  const state: PrState = foldPrStateV2(l.events, l.authorEvents, author, baseTip, isAncestor)
-  let headOid = ''
+  const state: PrState = foldPrStateV2(l.events, l.authorEvents, author, baseTip, isAncestor, patchDoc['draft'] === true)
+  let initialHeadOid = ''
   if (typeof baseHeadOidRaw === 'string' && baseHeadOidRaw.length > 0) {
     try {
-      headOid = base64ToHex(baseHeadOidRaw)
+      initialHeadOid = base64ToHex(baseHeadOidRaw)
     } catch {
-      headOid = baseHeadOidRaw
+      initialHeadOid = baseHeadOidRaw
     }
   }
+  // The PR follows its branch through `headUpdate` events (review-parity spec §4.6).
+  const review = foldPrReviewV2(l.events, l.authorEvents, author, initialHeadOid, new Set())
+  const headOid = review.head
 
   return {
     id,
@@ -658,6 +676,8 @@ export async function readPull(
     baseTipOid: baseTip ?? '',
     baseOidAtOpen: tips.atOpen ?? baseTip ?? '',
     headOid,
+    initialHeadOid,
+    review,
     sourceId: sourceIdOf(patchDoc),
     sourceRefName: typeof patchDoc['sourceRefName'] === 'string' ? patchDoc['sourceRefName'] : null,
     headOnBase: headOid !== '' && baseTip !== undefined && isAncestor(headOid, baseTip),
@@ -720,14 +740,17 @@ function incompletePullView(doc: PlainDocument): PullView {
     // No ref history was read for this row, so there is no baseline to diff against.
     baseTipOid: '',
     baseOidAtOpen: '',
+    // The log was not read, so the head cannot be folded: the opened head, marked incomplete.
     headOid,
+    initialHeadOid: headOid,
+    review: { head: headOid, headUpdates: [], requestedReviewers: [], resolvedThreads: [], dismissedReviews: [], milestone: null },
     // The source pointer is plain document content, not a fold — it is readable even when
     // the event log is not, and it is what a reviewer needs to fetch the PR at all.
     sourceId: sourceIdOf(doc),
     sourceRefName: typeof doc['sourceRefName'] === 'string' ? doc['sourceRefName'] : null,
     headOnBase: false,
     ...readImported(doc),
-    state: { open: true, merged: false, draft: false, baseRef: null, labels: [], assignees: [] },
+    state: { open: true, merged: false, draft: doc['draft'] === true, baseRef: null, labels: [], assignees: [] },
     stateComplete: false,
   }
 }

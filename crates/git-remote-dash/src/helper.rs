@@ -23,6 +23,7 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
 use forge_core::backends::PackMeta;
+use forge_core::cost::git_doc_sizes::URIS_PER_TARGET as URIS_JSON_PER_TARGET;
 use forge_core::keystore::BridgeIdentity;
 use forge_core::members::MemberReader;
 use forge_core::network::{NetworkSettings, NetworkTarget};
@@ -89,26 +90,47 @@ impl PushOutcome {
     }
 }
 
+/// The signing identity and its key material.
+struct Signer {
+    identity: LoadedIdentity,
+    bridge: BridgeIdentity,
+}
+
 /// A live Platform connection plus the resolved repo handle.
 struct Conn {
     client: PlatformClient,
-    identity: LoadedIdentity,
-    bridge: BridgeIdentity,
     repo: RepoRef,
     /// A private repository's keys, read once when the helper connects and replaced by every
     /// write-time reload of any of its services.
     keyring: forge_core::repo::KeyringCache,
+    /// The signing identity, loaded only when something needs it: a push, or opening a
+    /// private repository. `list` and `fetch` of a public repository never load one, so
+    /// anyone can clone without an identity (F-2).
+    signer: Option<Signer>,
 }
 
 impl Conn {
-    /// The data-plane service, with this invocation's keyring (a private repo's).
+    /// The data-plane service: signing as the loaded identity, with this invocation's
+    /// keyring (a private repo's), or an anonymous reader when no identity is loaded.
     fn service(&self) -> RepoService<'_> {
-        RepoService::with_keyring(
-            &self.client,
-            &self.identity,
-            &self.bridge,
-            std::sync::Arc::clone(&self.keyring),
-        )
+        match &self.signer {
+            Some(s) => RepoService::with_keyring(
+                &self.client,
+                &s.identity,
+                &s.bridge,
+                std::sync::Arc::clone(&self.keyring),
+            ),
+            None => RepoService::reader(&self.client),
+        }
+    }
+
+    /// The signing identity. Only called on the push path, after [`Helper::ensure_signer`].
+    fn identity(&self) -> &LoadedIdentity {
+        &self
+            .signer
+            .as_ref()
+            .expect("the push path loads the signer first")
+            .identity
     }
 }
 
@@ -118,57 +140,33 @@ pub struct Helper {
     /// The git remote name (`origin`), when git invoked us for a named remote — selects
     /// the per-remote `remote.<name>.dash*` storage settings.
     remote: Option<String>,
-    key_path: PathBuf,
     target: NetworkTarget,
     conn: Option<Conn>,
 }
 
 impl Helper {
-    /// Build a helper for `url`, reading identity + network config from the environment
-    /// and git config.
-    ///
-    /// `DASH_FORGE_KEY` names the bridge-format identity JSON (falling back to
-    /// `~/.config/dash-forge/identities/<owner>.identity.json`). The network comes from
-    /// [`network_target`].
+    /// Build a helper for `url`, reading the network config from the environment and git
+    /// config ([`network_target`]). No identity is read here: see [`Self::ensure_signer`].
     pub fn new(url: DashUrl, remote: Option<String>) -> Result<Self> {
-        let key_path = resolve_key_path(&url)?;
         let target = network_target()?;
         Ok(Self {
             url,
             remote,
-            key_path,
             target,
             conn: None,
         })
     }
 
-    /// Establish (once) the Platform connection and resolve the repo.
+    /// Establish (once) the Platform connection and resolve the repo. Anonymous for a public
+    /// repository; a private one needs the reader's identity (its ENCRYPTION key opens the
+    /// content), so that is loaded and checked here.
     async fn ensure_conn(&mut self) -> Result<&Conn> {
         if self.conn.is_none() {
-            if std::env::var_os("DASH_FORGE_KEY").is_none()
-                && forge_core::keystore::is_file_source(&self.key_path)
-                && !self.key_path.exists()
-            {
-                return Err(no_identity(format!(
-                    "DASH_FORGE_KEY is not set and {} does not exist",
-                    self.key_path.display()
-                )));
-            }
-            let bridge = BridgeIdentity::load_from_file(&self.key_path).with_context(|| {
-                format!(
-                    "loading identity from {} (set DASH_FORGE_KEY)",
-                    forge_core::keystore::describe_key_source(&self.key_path)
-                )
-            })?;
             let client = PlatformClient::connect(self.target.clone())
                 .await
                 .with_context(|| {
                     format!("connecting to Dash Platform ({})", self.target.network)
                 })?;
-            let identity = client
-                .fetch_identity(&bridge.identity_id)
-                .await
-                .with_context(|| format!("fetching identity {}", bridge.identity_id))?;
             let repo = match &self.url {
                 DashUrl::Named { owner, repo } => {
                     forge_core::resolve::resolve_named(&client, owner, repo)
@@ -180,11 +178,18 @@ impl Helper {
                     .with_context(|| format!("resolving repo {id}"))?,
             };
             let keyring = forge_core::repo::KeyringCache::default();
+            let mut signer = None;
             if repo.visibility == forge_core::rules::v2::Visibility::Private {
-                let kr = require_private_key(&client, &identity, &bridge, &repo).await?;
+                let why = format!(
+                    "{} is a private repository: reading it needs a member's identity (its ENCRYPTION key opens the content)",
+                    repo.display()
+                );
+                let s = load_signer(&self.url, &client, &repo, &why).await?;
+                let kr = require_private_key(&client, &s.identity, &s.bridge, &repo).await?;
                 *keyring
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(kr);
+                signer = Some(s);
             }
             tracing::info!(
                 repo = %repo.id(),
@@ -193,18 +198,30 @@ impl Helper {
             );
             self.conn = Some(Conn {
                 client,
-                identity,
-                bridge,
                 repo,
                 keyring,
+                signer,
             });
         }
         Ok(self.conn.as_ref().expect("conn populated"))
     }
 
-    /// The `list` / `list for-push` response lines: `<oid> <refname>` per resolved ref and
-    /// an `@refs/heads/<default> HEAD` symref.
-    pub async fn list(&mut self) -> Result<Vec<String>> {
+    /// [`Self::ensure_conn`], plus the signing identity (loaded once, on first need): a push
+    /// signs every document it writes.
+    async fn ensure_signer(&mut self) -> Result<&Conn> {
+        self.ensure_conn().await?;
+        let conn = self.conn.as_ref().expect("conn populated");
+        if conn.signer.is_none() {
+            let why = "a push signs every document it writes";
+            let s = load_signer(&self.url, &conn.client, &conn.repo, why).await?;
+            self.conn.as_mut().expect("conn populated").signer = Some(s);
+        }
+        Ok(self.conn.as_ref().expect("conn populated"))
+    }
+
+    /// The `list` / `list for-push` response lines: `<oid> <refname>` per resolved ref and,
+    /// for a fetch, an `@refs/heads/<default> HEAD` symref.
+    pub async fn list(&mut self, for_push: bool) -> Result<Vec<String>> {
         let conn = self.ensure_conn().await?;
         let svc = conn.service();
         let refs = svc.read_refs(&conn.repo).await?;
@@ -212,34 +229,7 @@ impl Helper {
             .read_default_branch(&conn.repo)
             .await?
             .unwrap_or_else(|| "main".to_string());
-
-        let mut lines = Vec::new();
-        let mut names: Vec<String> = Vec::new();
-        for (name, state) in &refs {
-            // Emission guard (defense-in-depth with rules::is_update_valid): never advertise
-            // a ref name carrying control chars/whitespace — it could inject a spoofed
-            // advertisement line into git's parse of this output (S0.9 wire protocol).
-            if !forge_core::rules::is_legal_ref_name(name) {
-                tracing::warn!(ref_name = %name.escape_debug(), "skipping illegal ref name in list");
-                continue;
-            }
-            if let Some(oid) = tip_oid(state) {
-                lines.push(format!("{oid} {name}"));
-                names.push(name.clone());
-            }
-        }
-
-        // Emit the HEAD symref when the default branch exists (a fresh/empty repo has no
-        // head yet — git handles the absence).
-        let default_ref = format!("refs/heads/{default_branch}");
-        if names.iter().any(|n| n == &default_ref) {
-            lines.push(format!("@{default_ref} HEAD"));
-        } else if let Some(first_head) = names.iter().find(|n| n.starts_with("refs/heads/")) {
-            // No default branch present but some head is — point HEAD at it so clone can
-            // check something out rather than warning about a dangling HEAD.
-            lines.push(format!("@{first_head} HEAD"));
-        }
-        Ok(lines)
+        Ok(list_lines(&refs, &default_branch, for_push))
     }
 
     /// Serve a `fetch` batch: download the packs covering the wanted objects and index them
@@ -290,14 +280,16 @@ impl Helper {
         // first copy that verifies, maintainers' copies first (FORGE_RULES_V2 reader rule).
         let svc = &svc;
         let repo = &conn.repo;
-        let contract = &svc.repo_contract(repo).await?;
-        let reader = &PackReader::from_user_config();
-        // Membership only ranks copies; if it cannot be read, fall back to time order
-        // rather than failing the clone (every copy is still hash-verified).
-        let roles = &svc.copy_roles(repo).await.unwrap_or_else(|e| {
+        // Membership only ranks copies (and picks whose recorded gateways are trusted); if it
+        // cannot be read, fall back to time order rather than failing the clone (every copy
+        // is still hash-verified).
+        let (contract, roles) = futures::join!(svc.repo_contract(repo), svc.copy_roles(repo));
+        let contract = &contract?;
+        let roles = &roles.unwrap_or_else(|e| {
             tracing::warn!(error = %e, "could not read the member list; trying pack copies in time order");
             forge_core::repo::RoleMap::new()
         });
+        let reader = &svc.repo_reader(repo, &git_packs, roles).await;
         let packs = group_by_hash(&git_packs);
         let fetched: Vec<Option<Vec<u8>>> = stream::iter(packs.iter().map(|(h, copies)| async move {
             let hash = hex::encode(h);
@@ -390,6 +382,23 @@ impl Helper {
         specs: &[PushSpec],
         options: &OptionState,
     ) -> Result<Vec<PushOutcome>> {
+        // `HEAD` is derived from the default branch, never stored: a push that names it
+        // (`:HEAD`, `HEAD:HEAD`) writes nothing and is never charged.
+        let (head, refs): (Vec<PushSpec>, Vec<PushSpec>) =
+            specs.iter().cloned().partition(|s| is_head(&s.dst));
+        let mut outcomes: Vec<PushOutcome> = head.into_iter().map(head_outcome).collect();
+        if !refs.is_empty() {
+            outcomes.extend(self.push_refs(&refs, options).await?);
+        }
+        Ok(outcomes)
+    }
+
+    /// [`Self::push`] of real refs (no `HEAD`).
+    async fn push_refs(
+        &mut self,
+        specs: &[PushSpec],
+        options: &OptionState,
+    ) -> Result<Vec<PushOutcome>> {
         let git_dir = LocalRepo::git_dir()?;
         let dry_run = options.dry_run;
         // Resolve the storage policy before touching the network when this push stores
@@ -398,13 +407,13 @@ impl Helper {
         // storage.toml must not block it.
         let push_policy = if specs.iter().any(|s| !s.src.is_empty()) {
             Some(
-                PushPolicy::load(self.remote.as_deref())
+                PushPolicy::load_for_push(self.remote.as_deref(), options)
                     .context("reading the storage policy (dash.storage / dash.replicas)")?,
             )
         } else {
             None
         };
-        let conn = self.ensure_conn().await?;
+        let conn = self.ensure_signer().await?;
         // How the repo is named in fixes the user may paste into `dg`: `owner/name`.
         let repo_label = conn.repo.display();
         let svc = conn.service();
@@ -435,7 +444,7 @@ impl Helper {
 
         let planned = plan_pushes(specs, &remote_refs);
         let progress = Progress::new(options.verbosity);
-        let balance_before = conn.identity.balance();
+        let balance_before = conn.identity().balance();
         let mut est_credits =
             policy::estimate_ref_updates(planned.iter().filter(|p| p.reject.is_none()).count());
 
@@ -459,7 +468,7 @@ impl Helper {
                 policy: push_policy,
                 progress,
                 dry_run,
-                identity: conn.identity.id(),
+                identity: conn.identity().id(),
             };
             // Storage first. Any error here — the policy's N not met, the cost guard
             // refusing, the manifest write failing — returns before a single ref update
@@ -529,7 +538,7 @@ impl Helper {
     /// push skips the read.
     async fn report_done(&self, progress: Progress, balance_before: u64, est_credits: u64) {
         let conn = self.conn.as_ref().expect("connected");
-        let after = conn.client.get_balance(&conn.identity.id()).await.ok();
+        let after = conn.client.get_balance(&conn.identity().id()).await.ok();
         let charge = match after.map(|a| balance_before.saturating_sub(a)) {
             Some(c) if c > 0 => Charge::Measured(c),
             _ => Charge::Estimated(est_credits),
@@ -596,6 +605,66 @@ fn remote_tip(refs: &[(String, RefState)], name: &str) -> Option<String> {
     refs.iter()
         .find(|(n, _)| n == name)
         .and_then(|(_, s)| tip_oid(s))
+}
+
+/// The `list` answer for `refs`: `<oid> <refname>` per resolved ref, then (for a fetch
+/// only) the `HEAD` symref at the default branch.
+///
+/// `HEAD` is not a ref of the repository: the helper derives it from the default branch
+/// on every read, and no `refUpdate` can move it. So a `list for-push` does not advertise
+/// it. Otherwise `git push --mirror`, finding a remote `HEAD` with no local ref of that
+/// name, asks to delete it on every run, and each of those deletes was a paid write that
+/// changed nothing.
+fn list_lines(refs: &[(String, RefState)], default_branch: &str, for_push: bool) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut names: Vec<&str> = Vec::new();
+    for (name, state) in refs {
+        // Emission guard (defense-in-depth with rules::is_update_valid): never advertise
+        // a ref name carrying control chars/whitespace — it could inject a spoofed
+        // advertisement line into git's parse of this output (S0.9 wire protocol).
+        if !forge_core::rules::is_legal_ref_name(name) {
+            tracing::warn!(ref_name = %name.escape_debug(), "skipping illegal ref name in list");
+            continue;
+        }
+        if let Some(oid) = tip_oid(state) {
+            lines.push(format!("{oid} {name}"));
+            names.push(name);
+        }
+    }
+    if for_push {
+        return lines;
+    }
+    // Emit the HEAD symref when the default branch exists (a fresh/empty repo has no head
+    // yet — git handles the absence).
+    let default_ref = format!("refs/heads/{default_branch}");
+    if names.contains(&default_ref.as_str()) {
+        lines.push(format!("@{default_ref} HEAD"));
+    } else if let Some(first_head) = names.iter().find(|n| n.starts_with("refs/heads/")) {
+        // No default branch present but some head is — point HEAD at it so clone can
+        // check something out rather than warning about a dangling HEAD.
+        lines.push(format!("@{first_head} HEAD"));
+    }
+    lines
+}
+
+/// Whether `dst` is the symbolic `HEAD`, which a push never writes (see [`list_lines`]).
+fn is_head(dst: &str) -> bool {
+    dst == "HEAD"
+}
+
+/// The answer to a push to `HEAD`, which writes nothing: a delete (what `git push --mirror`
+/// would send, were `HEAD` advertised to it; [`list_lines`] no longer does) is `ok`, since
+/// `HEAD` is not a stored ref; any update is refused, since only the repository's default
+/// branch moves it.
+fn head_outcome(spec: PushSpec) -> PushOutcome {
+    if spec.src.is_empty() {
+        PushOutcome::Ok(spec.dst)
+    } else {
+        PushOutcome::Error(
+            spec.dst,
+            "HEAD follows the default branch and is not pushed".to_string(),
+        )
+    }
 }
 
 /// A push refspec resolved to its intended write, with any pre-write rejection.
@@ -680,9 +749,6 @@ impl PushContext<'_> {
         self.progress.note(line);
     }
 }
-
-/// Rough JSON length of the manifest `uris` each external target adds (public URL + locator).
-const URIS_JSON_PER_TARGET: u64 = 180;
 
 /// Build one self-contained pack for `want_tips` (excluding remote tips already local as
 /// thin-pack bases), store it according to the repo's storage policy, and record the
@@ -1464,7 +1530,7 @@ async fn write_access_denied(
     svc: &RepoService<'_>,
     specs: &[PushSpec],
 ) -> Option<Denied> {
-    let me = conn.identity.id();
+    let me = conn.identity().id();
     let members = MemberReader::new(&conn.client)
         .roles_of(&conn.repo, &me)
         .await
@@ -1535,10 +1601,43 @@ fn write_denied(repo: &str, me: &str) -> Denied {
     }
 }
 
-/// Resolve the identity key source: `DASH_FORGE_KEY` if set, else the default `dg` recorded
-/// in `~/.config/dash-forge/config.toml`, else
-/// `~/.config/dash-forge/identities/<owner>.identity.json`.
-fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
+/// Load the signing identity for `repo` ([`resolve_key_path`]) and fetch it: E301 naming
+/// `why` an identity is needed when no key source is configured.
+async fn load_signer(
+    url: &DashUrl,
+    client: &PlatformClient,
+    repo: &RepoRef,
+    why: &str,
+) -> Result<Signer> {
+    let key_path =
+        resolve_key_path(url, repo.owner_id()).map_err(|e| e.context(why.to_string()))?;
+    if std::env::var_os("DASH_FORGE_KEY").is_none()
+        && forge_core::keystore::is_file_source(&key_path)
+        && !key_path.exists()
+    {
+        return Err(no_identity(format!(
+            "{why}; DASH_FORGE_KEY is not set and {} does not exist",
+            key_path.display()
+        )));
+    }
+    let bridge = BridgeIdentity::load_from_file(&key_path).with_context(|| {
+        format!(
+            "loading identity from {} (set DASH_FORGE_KEY)",
+            forge_core::keystore::describe_key_source(&key_path)
+        )
+    })?;
+    let identity = client
+        .fetch_identity(&bridge.identity_id)
+        .await
+        .with_context(|| format!("fetching identity {}", bridge.identity_id))?;
+    Ok(Signer { identity, bridge })
+}
+
+/// Resolve the identity key source: `DASH_FORGE_KEY` if set, else (for `dash://<owner>/…`)
+/// `~/.config/dash-forge/identities/<owner id>.identity.json` when it exists, else the
+/// default `dg` recorded in `~/.config/dash-forge/config.toml`. `owner_id` is the resolved
+/// owner, so a DPNS-named owner finds its per-owner file too.
+fn resolve_key_path(url: &DashUrl, owner_id: &str) -> Result<PathBuf> {
     if let Some(p) = std::env::var_os("DASH_FORGE_KEY") {
         return Ok(PathBuf::from(p));
     }
@@ -1548,25 +1647,19 @@ fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| no_identity("neither DASH_FORGE_KEY nor HOME is set"))?;
-    // The per-owner default only makes sense for the named form. A contract-addressed URL
-    // names no owner (that is the point), so it requires an explicit DASH_FORGE_KEY —
-    // which is fine, because it is reached from `dg`, not typed by hand.
-    let owner = match url {
-        DashUrl::Named { owner, .. } => owner.clone(),
-        DashUrl::Id { .. } => {
-            return forge_core::keystore::configured_default_source()
-                .map(PathBuf::from)
-                .ok_or_else(|| {
-                    no_identity(
-                        "an id-addressed dash:// URL has no owner to pick a default key for",
-                    )
-                })
-        }
-    };
+    // The per-owner default only makes sense for the named form. A repo-id URL is reached
+    // from `dg` (a pull request's head), not typed by hand, so it uses the recorded default.
+    if let DashUrl::Id { .. } = url {
+        return forge_core::keystore::configured_default_source()
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                no_identity("an id-addressed dash:// URL has no owner to pick a default key for")
+            });
+    }
     let per_owner = forge_core::keystore::forge_config_dir()
         .unwrap_or_else(|| home.join(".config/dash-forge"))
         .join("identities")
-        .join(format!("{owner}.identity.json"));
+        .join(format!("{owner_id}.identity.json"));
     if per_owner.exists() {
         return Ok(per_owner);
     }
@@ -1575,8 +1668,86 @@ fn resolve_key_path(url: &DashUrl) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{oid_to_bytes, protected_denied, resolve_network, write_denied, PushOutcome};
+    use super::{
+        head_outcome, is_head, list_lines, oid_to_bytes, protected_denied, resolve_network,
+        write_denied, PushOutcome, PushSpec,
+    };
     use forge_core::network::NetworkSettings;
+    use forge_core::rules::RefState;
+
+    fn resolved(oid: &str) -> RefState {
+        RefState::Resolved {
+            oid: oid.to_string(),
+            author: "A".into(),
+            created_at: 0,
+        }
+    }
+
+    /// F-11: `git push --mirror` saw the `HEAD` symref in `list for-push`, had no local
+    /// ref of that name, and deleted it on every run, a paid write that changed nothing.
+    /// A push listing leaves `HEAD` out; a fetch listing still has it (clone checks it out).
+    #[test]
+    fn head_is_advertised_to_fetches_only() {
+        let refs = vec![
+            ("refs/heads/main".to_string(), resolved(&"a".repeat(40))),
+            ("refs/tags/v1".to_string(), resolved(&"b".repeat(40))),
+        ];
+        let fetch = list_lines(&refs, "main", false);
+        assert_eq!(fetch.last().unwrap(), "@refs/heads/main HEAD");
+        let push = list_lines(&refs, "main", true);
+        assert_eq!(push.len(), 2);
+        assert!(push.iter().all(|l| !l.ends_with(" HEAD")), "{push:?}");
+    }
+
+    /// A push that names `HEAD` anyway (an explicit `:HEAD` or `HEAD:HEAD`) is answered
+    /// without a write: a delete is a no-op `ok`, an update is refused.
+    #[test]
+    fn a_push_to_head_writes_nothing() {
+        assert!(is_head("HEAD") && !is_head("refs/heads/HEAD"));
+        let spec = |src: &str| PushSpec {
+            force: false,
+            src: src.into(),
+            dst: "HEAD".into(),
+        };
+        assert_eq!(head_outcome(spec("")).wire(), "ok HEAD");
+        assert!(head_outcome(spec("refs/heads/main"))
+            .wire()
+            .starts_with("error HEAD "));
+    }
+
+    /// Serializes tests that change process environment variables.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// F-2: building the helper (what `git clone dash://…` does first) reads no identity, so
+    /// `list` and `fetch` of a public repo work with no key source at all. It used to resolve
+    /// the key path up front (E301 with no HOME) and then load the identity file before
+    /// connecting (E301 with no file). No other test in this binary reads these variables;
+    /// ENV_LOCK serializes any that ever does.
+    #[test]
+    fn the_helper_starts_without_any_identity() {
+        let url = crate::url::DashUrl::parse(
+            "dash://9cBMULwtQUMtxhBkgaTKb4tJtoczd8TEQ8gmiroDWf4F/sqa-anon",
+        )
+        .unwrap();
+        let _env = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let saved: Vec<_> = ["DASH_FORGE_KEY", "HOME", "XDG_CONFIG_HOME"]
+            .iter()
+            .map(|k| (*k, std::env::var_os(k)))
+            .collect();
+        for (k, _) in &saved {
+            std::env::remove_var(k);
+        }
+        let built = super::Helper::new(url, None);
+        for (k, v) in saved {
+            if let Some(v) = v {
+                std::env::set_var(k, v);
+            }
+        }
+        let helper = built.expect("no identity is needed to start a read");
+        assert!(helper.conn.is_none(), "nothing is loaded before a command");
+    }
 
     #[test]
     fn a_writer_on_a_protected_ref_is_told_it_needs_maintainer() {

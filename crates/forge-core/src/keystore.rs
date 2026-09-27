@@ -16,8 +16,9 @@
 //!   holding the same (`dg auth new` / `dg auth login` store limited keys there);
 //! * an inline `dfk1:<network>:<identityId>:<keyId>:<wif>` limited key (CI secrets).
 
-use std::fmt;
-use std::path::Path;
+use std::ffi::OsStr;
+use std::fmt::{self, Write as _};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -147,9 +148,22 @@ pub fn is_inline_key(source: &Path) -> bool {
     source.to_str().is_some_and(|s| s.starts_with(DFK1_PREFIX))
 }
 
+/// Whether a key source that should be a path is instead key material pasted into it: an
+/// identity JSON (a CI variable of the wrong type holds the file's text, not its path), or
+/// anything multi-line. Such a value must never be echoed.
+pub fn looks_like_pasted_key(source: &Path) -> bool {
+    let s = source.to_string_lossy();
+    let t = s.trim_start();
+    t.starts_with('{') || t.contains('\n') || t.len() > 4096
+}
+
 /// How to name a key source in messages: the path of an identity file, or for an inline
-/// `dfk1:` key everything but its WIF.
+/// `dfk1:` key everything but its WIF. Pasted key material (see [`looks_like_pasted_key`])
+/// is never shown.
 pub fn describe_key_source(source: &Path) -> String {
+    if looks_like_pasted_key(source) {
+        return "[an identity's contents, not a path: redacted]".to_string();
+    }
     match source.to_str().filter(|s| s.starts_with(DFK1_PREFIX)) {
         Some(inline) => {
             let parts: Vec<&str> = inline[DFK1_PREFIX.len()..].splitn(4, ':').collect();
@@ -190,15 +204,356 @@ pub fn parse_keychain_source(source: &str) -> Option<(&str, &str)> {
 
 /// Dash Forge's config directory: `$XDG_CONFIG_HOME/dash-forge`, else
 /// `~/.config/dash-forge` (ux-dx-spec §7.6).
-pub fn forge_config_dir() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
+///
+/// Releases before the XDG change always used `~/.config/dash-forge`. When the two differ, the
+/// first call in a process copies what the new directory lacks from the old one, once
+/// ([`migrate_legacy_config`]), and says so on stderr.
+pub fn forge_config_dir() -> Option<PathBuf> {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    let xdg = std::env::var_os("XDG_CONFIG_HOME");
+    let home = std::env::var_os("HOME");
+    let mut resolved = None;
+    ONCE.call_once(|| {
+        // Leave storage.toml alone while DASH_FORGE_STORAGE_CONFIG names another file.
+        let storage_env = crate::storage::profiles::STORAGE_CONFIG_ENV;
+        let hold_back: &[&str] = if std::env::var_os(storage_env).is_some() {
+            &["storage.toml"]
+        } else {
+            &[]
+        };
+        resolved = Some(config_dir_migrating(
+            xdg.as_deref(),
+            home.as_deref(),
+            hold_back,
+        ));
+    });
+    match resolved {
+        Some(r) => {
+            let (dir, notice) = r?;
+            // stderr only: stdout is git's protocol channel in the remote helper.
+            if let Some(line) = notice {
+                eprintln!("{line}");
+            }
+            Some(dir)
+        }
+        None => config_dirs(xdg.as_deref(), home.as_deref()).map(|(dir, _)| dir),
+    }
+}
+
+/// [`forge_config_dir`] for explicit `XDG_CONFIG_HOME` / `HOME` values: the directory, after
+/// copying the pre-XDG one into it when they differ ([`migrate_legacy_config`]), and the
+/// notice to print when that copied (or failed to copy) anything.
+pub fn config_dir_migrating(
+    xdg: Option<&OsStr>,
+    home: Option<&OsStr>,
+    hold_back: &[&str],
+) -> Option<(PathBuf, Option<String>)> {
+    let (dir, legacy) = config_dirs(xdg, home)?;
+    let notice = legacy.and_then(|legacy| {
+        migrate_legacy_config(&legacy, &dir, hold_back)
+            .and_then(|m| migration_notice(&legacy, &dir, &m))
+    });
+    Some((dir, notice))
+}
+
+/// The config directory for these `XDG_CONFIG_HOME` / `HOME` values, and the pre-XDG
+/// directory (`$HOME/.config/dash-forge`) when it is a different path. A relative
+/// `XDG_CONFIG_HOME` is ignored, as the XDG spec requires.
+pub fn config_dirs(
+    xdg: Option<&OsStr>,
+    home: Option<&OsStr>,
+) -> Option<(PathBuf, Option<PathBuf>)> {
+    let legacy = home.map(|h| PathBuf::from(h).join(".config").join("dash-forge"));
+    let dir = xdg
         .filter(|v| !v.is_empty())
-        .map(std::path::PathBuf::from)
+        .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
-        })?;
-    Some(base.join("dash-forge"))
+        .map(|p| p.join("dash-forge"))
+        .or_else(|| legacy.clone())?;
+    let legacy = legacy.filter(|l| *l != dir);
+    Some((dir, legacy))
+}
+
+/// The file in the new config directory that records that the old one was copied, so a file
+/// deleted afterwards (a `dg auth logout`, a removed profile) is never brought back. Its
+/// `pending <name>` lines name top-level entries that were held back, still to copy.
+pub const LEGACY_MIGRATION_MARKER: &str = ".migrated-from-home-config";
+
+/// What [`migrate_legacy_config`] did.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Migration {
+    /// Files (and symlinks) copied.
+    pub copied: usize,
+    /// Entries that could not be copied, with why (not retried: the notice says so once).
+    pub failed: Vec<String>,
+    /// Top-level names left behind on purpose (see `hold_back`), copied by a later run.
+    pub held_back: Vec<String>,
+}
+
+/// Copy everything under `legacy` that `dir` lacks into `dir`, recursively, once. Nothing in
+/// `dir` is ever overwritten; `legacy` is left as it is (older binaries and scripts keep
+/// reading it). Directories are created 0700; a file keeps its owner bits and loses every
+/// group and other bit (a key file stays 0600). Top-level names in `hold_back` are not copied
+/// (`storage.toml` while `DASH_FORGE_STORAGE_CONFIG` points elsewhere): the marker records
+/// them, and the first later run that does not hold them back copies them if still missing.
+///
+/// Returns `None` when there is nothing to do: no `legacy` directory, the same directory
+/// under two names (or one inside the other), or an earlier run's [`LEGACY_MIGRATION_MARKER`]
+/// with nothing pending.
+pub fn migrate_legacy_config(legacy: &Path, dir: &Path, hold_back: &[&str]) -> Option<Migration> {
+    if !legacy.is_dir() {
+        return None;
+    }
+    let marker = dir.join(LEGACY_MIGRATION_MARKER);
+    // `None`: never ran. `Some(names)`: ran; only these top-level names are still to copy.
+    let pending: Option<Vec<String>> = match std::fs::read_to_string(&marker) {
+        Ok(text) => Some(
+            text.lines()
+                .filter_map(|l| l.strip_prefix("pending "))
+                .map(str::to_string)
+                .collect(),
+        ),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(_) => return None, // unreadable marker: never risk a second full copy
+    };
+    if let Some(p) = &pending {
+        if p.iter().all(|n| hold_back.contains(&n.as_str())) {
+            return None;
+        }
+    }
+    // The same directory under two names, or one inside the other (copying would recurse into
+    // its own output): nothing to do.
+    let (a, b) = (real_path(legacy), real_path(dir));
+    if a.starts_with(&b) || b.starts_with(&a) {
+        return None;
+    }
+    // An empty old directory has nothing to carry over; no marker is needed either.
+    std::fs::read_dir(legacy).ok()?.next()?.ok()?;
+    let mut m = Migration::default();
+    if let Err(e) = ensure_private_dir(dir) {
+        m.failed.push(format!("{}: {e}", dir.display()));
+        return Some(m);
+    }
+    copy_missing(legacy, dir, pending.as_deref(), hold_back, &mut m);
+    // Written after every walk, so a copy runs once; what was held back stays pending.
+    let mut note = format!("copied from {}\n", legacy.display());
+    for name in &m.held_back {
+        let _ = writeln!(note, "pending {name}");
+    }
+    if let Err(e) = replace_private_file(&marker, note.as_bytes()) {
+        m.failed.push(format!("{LEGACY_MIGRATION_MARKER}: {e}"));
+    }
+    Some(m)
+}
+
+/// `p` with symlinks resolved, including when its tail does not exist yet: the nearest
+/// existing ancestor is resolved and the rest appended.
+fn real_path(p: &Path) -> PathBuf {
+    let mut tail = Vec::new();
+    let mut cur = p;
+    loop {
+        if let Ok(real) = cur.canonicalize() {
+            return tail.iter().rev().fold(real, |acc, c| acc.join(c));
+        }
+        match (cur.parent(), cur.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name.to_os_string());
+                cur = parent;
+            }
+            _ => return p.to_path_buf(),
+        }
+    }
+}
+
+/// Replace `path` with `bytes` (0600) through a temporary file and a rename.
+fn replace_private_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let tmp = temp_sibling(path);
+    create_private_file(&tmp, bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
+/// A unique `.<name>.<pid>.<seq>.<nonce>.tmp` path next to `path` (in `.` for a bare file
+/// name). Unique per process, thread and call; callers create it with `create_new`, which
+/// refuses any collision. The legacy-config copy skips these names.
+fn temp_sibling(path: &Path) -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let mut nonce = [0u8; 8];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
+    dir.join(format!(
+        ".{name}.{}.{}.{}.tmp",
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        hex::encode(nonce)
+    ))
+}
+
+/// The one-line notice for a migration, or `None` when it did nothing worth saying.
+pub fn migration_notice(legacy: &Path, dir: &Path, m: &Migration) -> Option<String> {
+    if m.copied == 0 && m.failed.is_empty() && m.held_back.is_empty() {
+        return None;
+    }
+    let mut line = format!(
+        "dash-forge: XDG_CONFIG_HOME is set, so the config now lives in {}; copied {} file{} \
+         from {} (left in place)",
+        dir.display(),
+        m.copied,
+        if m.copied == 1 { "" } else { "s" },
+        legacy.display()
+    );
+    if let Some(first) = m.failed.first() {
+        let _ = write!(
+            line,
+            "; {} could not be copied (first: {first}): copy them by hand",
+            m.failed.len()
+        );
+    }
+    if !m.held_back.is_empty() {
+        let _ = write!(
+            line,
+            "; not copied while {} is set: {}",
+            crate::storage::profiles::STORAGE_CONFIG_ENV,
+            m.held_back.join(", ")
+        );
+    }
+    Some(line)
+}
+
+/// Create `dir` (and its parents) if missing; a directory this creates is 0700.
+fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+    if dir.is_dir() {
+        return Ok(());
+    }
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        b.mode(0o700);
+    }
+    match b.create(dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => Ok(()),
+        other => other,
+    }
+}
+
+/// The recursive step of [`migrate_legacy_config`]. `only` (copy just these names) and
+/// `hold_back` apply to `src`'s own entries only (the call for the top directory).
+fn copy_missing(
+    src: &Path,
+    dst: &Path,
+    only: Option<&[String]>,
+    hold_back: &[&str],
+    m: &mut Migration,
+) {
+    let entries = match std::fs::read_dir(src) {
+        Ok(e) => e,
+        Err(e) => return m.failed.push(format!("{}: {e}", src.display())),
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                m.failed.push(format!("{}: {e}", src.display()));
+                continue;
+            }
+        };
+        let name = entry.file_name();
+        let (from, to) = (entry.path(), dst.join(&name));
+        let lossy = name.to_string_lossy();
+        // The marker, and a write_private_file temporary a crash left behind.
+        if name == LEGACY_MIGRATION_MARKER
+            || (lossy.starts_with('.') && lossy.ends_with(".tmp"))
+            || only.is_some_and(|o| !o.iter().any(|n| name == n.as_str()))
+        {
+            continue;
+        }
+        let exists = std::fs::symlink_metadata(&to).is_ok();
+        if hold_back.iter().any(|h| name == **h) {
+            if !exists {
+                m.held_back.push(lossy.into_owned());
+            }
+            continue;
+        }
+        let meta = match std::fs::symlink_metadata(&from) {
+            Ok(meta) => meta,
+            Err(e) => {
+                m.failed.push(format!("{}: {e}", from.display()));
+                continue;
+            }
+        };
+        let result = if meta.is_dir() {
+            if exists && !to.is_dir() {
+                continue; // a file where the old directory was: the new one wins
+            }
+            ensure_private_dir(&to).map(|()| copy_missing(&from, &to, None, &[], m))
+        } else if exists {
+            continue; // never overwrite
+        } else if meta.file_type().is_symlink() {
+            copy_symlink(&from, &to).map(|()| m.copied += 1)
+        } else if meta.is_file() {
+            copy_file_private(&from, &to, &meta).map(|()| m.copied += 1)
+        } else {
+            Err(std::io::Error::other("not a regular file"))
+        };
+        match result {
+            // Another process (git's helper next to `dg`) copied it first.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => m.failed.push(format!("{}: {e}", from.display())),
+            Ok(()) => {}
+        }
+    }
+}
+
+/// Copy one regular file to a new `to`, keeping only its owner permission bits. The bytes go
+/// to a temporary file first (created exclusively, never through a symlink) that is then
+/// hard-linked into place, so a reader never sees a half-written file and an existing `to`
+/// is never replaced (the link fails with `AlreadyExists`).
+fn copy_file_private(from: &Path, to: &Path, meta: &std::fs::Metadata) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let bytes = zeroize::Zeroizing::new(std::fs::read(from)?);
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
+        let owner = meta.permissions().mode() & 0o700;
+        opts.mode(if owner == 0 { 0o600 } else { owner });
+    }
+    #[cfg(not(unix))]
+    let _ = meta;
+    let tmp = temp_sibling(to);
+    let result = opts
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(&bytes).and_then(|()| f.sync_all()))
+        .and_then(|()| std::fs::hard_link(&tmp, to));
+    let _ = std::fs::remove_file(&tmp);
+    result
+}
+
+/// Recreate a symlink as it is (same target, not followed).
+fn copy_symlink(from: &Path, to: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(std::fs::read_link(from)?, to)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = to;
+        Err(std::io::Error::other(format!(
+            "{} is a symlink; not copied on this platform",
+            from.display()
+        )))
+    }
 }
 
 /// The key source `dg` recorded as the default (`default_identity` in `config.toml`), for
@@ -217,7 +572,6 @@ pub fn configured_default_source() -> Option<String> {
 /// followed) that is then renamed over `path`. A parent directory under the Forge config
 /// directory is created and kept 0700.
 pub fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
-    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let io = |e: std::io::Error| Error::Io(format!("writing {}: {e}", path.display()));
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).map_err(io)?;
@@ -236,19 +590,10 @@ pub fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
         .parent()
         .filter(|d| !d.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let name = path
-        .file_name()
-        .ok_or_else(|| Error::Io(format!("{} names no file", path.display())))?;
-    // Unique per process, thread and call; create_new refuses any collision.
-    let mut nonce = [0u8; 8];
-    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
-    let tmp = dir.join(format!(
-        ".{}.{}.{}.{}.tmp",
-        name.to_string_lossy(),
-        std::process::id(),
-        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        hex::encode(nonce)
-    ));
+    if path.file_name().is_none() {
+        return Err(Error::Io(format!("{} names no file", path.display())));
+    }
+    let tmp = temp_sibling(path);
     if let Err(e) = create_private_file(&tmp, bytes) {
         // Never leave a partial secret behind.
         let _ = std::fs::remove_file(&tmp);
@@ -324,12 +669,22 @@ impl BridgeIdentity {
             })?;
             return Self::from_source_text(text.expose());
         }
-        let raw =
-            zeroize::Zeroizing::new(std::fs::read_to_string(path).map_err(|e| {
-                Error::Io(format!("reading identity file {}: {e}", path.display()))
-            })?);
+        if looks_like_pasted_key(path) {
+            // The value is the identity itself where a path was expected (a CI variable of
+            // the wrong type). Say so without echoing a byte of it.
+            return Err(Error::Config(
+                "the identity source holds an identity's contents, not a path to it: store it \
+                 as a file (in GitLab CI, a File-type variable) and pass that file's path"
+                    .into(),
+            ));
+        }
+        let shown = describe_key_source(path);
+        let raw = zeroize::Zeroizing::new(
+            std::fs::read_to_string(path)
+                .map_err(|e| Error::Io(format!("reading identity file {shown}: {e}")))?,
+        );
         if crate::sealed::is_sealed(&raw) {
-            let pass = crate::sealed::passphrase(&path.display().to_string(), false)?;
+            let pass = crate::sealed::passphrase(&shown, false)?;
             let plain = crate::sealed::open(&raw, pass.expose())?;
             let text = std::str::from_utf8(&plain)
                 .map_err(|_| Error::Io("the sealed identity file does not hold text".into()))?;
@@ -337,8 +692,7 @@ impl BridgeIdentity {
         }
         if path.extension().is_some_and(|e| e == "key") {
             tracing::warn!(
-                "{} holds an unencrypted identity key (stored with --insecure-plaintext)",
-                path.display()
+                "{shown} holds an unencrypted identity key (stored with --insecure-plaintext)"
             );
         }
         Self::from_source_text(&raw)
@@ -634,6 +988,23 @@ mod tests {
         assert!(!super::is_inline_key(std::path::Path::new("/tmp/id.json")));
     }
 
+    /// An identity JSON passed where a path belongs (a GitLab CI variable of type Variable,
+    /// not File) is refused without a byte of it in the message.
+    #[test]
+    fn pasted_identity_contents_are_never_echoed() {
+        let pasted = r#"{"identityId":"X","identityKeys":[{"privateKeyWif":"cSECRETwif"}]}"#;
+        let p = std::path::Path::new(pasted);
+        assert!(super::looks_like_pasted_key(p));
+        assert!(!super::describe_key_source(p).contains("cSECRET"));
+        let e = super::BridgeIdentity::load_from_file(p)
+            .unwrap_err()
+            .to_string();
+        assert!(!e.contains("cSECRET") && e.contains("File-type"), "{e}");
+        assert!(!super::looks_like_pasted_key(std::path::Path::new(
+            "/tmp/id.json"
+        )));
+    }
+
     #[test]
     fn malformed_dfk1_keys_are_refused_without_echoing_the_wif() {
         for bad in [
@@ -673,5 +1044,240 @@ mod tests {
         // Non-secret fields are still visible for diagnostics.
         assert!(dumped.contains("testnet"));
         assert!(dumped.contains("02aabbccddmaster"));
+    }
+
+    // ---- F-16: the pre-XDG config directory is carried over once ----------------------
+
+    mod legacy_config {
+        use super::super::{
+            config_dir_migrating, config_dirs, migrate_legacy_config, LEGACY_MIGRATION_MARKER,
+        };
+        use std::ffi::OsStr;
+        use std::path::{Path, PathBuf};
+
+        fn write(p: &Path, text: &str, mode: u32) {
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(p, text).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode)).unwrap();
+            }
+            #[cfg(not(unix))]
+            let _ = mode;
+        }
+
+        #[cfg(unix)]
+        fn mode(p: &Path) -> u32 {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::metadata(p).unwrap().permissions().mode() & 0o777
+        }
+
+        /// A HOME with a pre-XDG config (profiles, config, an identity key) and an empty
+        /// XDG_CONFIG_HOME elsewhere.
+        fn upgraded_user() -> (tempfile::TempDir, PathBuf, PathBuf) {
+            let t = tempfile::tempdir().unwrap();
+            let home = t.path().join("home");
+            let xdg = t.path().join("xdg");
+            let old = home.join(".config/dash-forge");
+            write(
+                &old.join("storage.toml"),
+                "[profiles.r2]\nkind = \"s3\"\n",
+                0o600,
+            );
+            write(&old.join("config.toml"), "network = \"testnet\"\n", 0o600);
+            write(&old.join("identities/testnet-X.key"), "sealed", 0o600);
+            write(&old.join("import-dash/state.json"), "{}", 0o644);
+            (t, home, xdg)
+        }
+
+        fn dirs(home: &Path, xdg: &Path) -> (PathBuf, Option<String>) {
+            config_dir_migrating(Some(xdg.as_os_str()), Some(home.as_os_str()), &[]).unwrap()
+        }
+
+        #[test]
+        fn legacy_dir_is_only_reported_when_it_differs() {
+            let (home, xdg) = (OsStr::new("/h"), OsStr::new("/x"));
+            assert_eq!(
+                config_dirs(Some(xdg), Some(home)),
+                Some((
+                    PathBuf::from("/x/dash-forge"),
+                    Some(PathBuf::from("/h/.config/dash-forge"))
+                ))
+            );
+            // No XDG, an empty one, a relative one, or XDG = ~/.config: no second directory.
+            for x in [None, Some(""), Some("rel/dir"), Some("/h/.config")] {
+                assert_eq!(
+                    config_dirs(x.map(OsStr::new), Some(home)),
+                    Some((PathBuf::from("/h/.config/dash-forge"), None)),
+                    "{x:?}"
+                );
+            }
+            assert_eq!(
+                config_dirs(Some(xdg), None),
+                Some((PathBuf::from("/x/dash-forge"), None))
+            );
+            assert_eq!(config_dirs(None, None), None);
+        }
+
+        #[test]
+        fn upgrade_copies_the_old_config_once_and_says_where() {
+            let (_t, home, xdg) = upgraded_user();
+            let old = home.join(".config/dash-forge");
+            let (dir, notice) = dirs(&home, &xdg);
+            assert_eq!(dir, xdg.join("dash-forge"));
+            for f in [
+                "storage.toml",
+                "config.toml",
+                "identities/testnet-X.key",
+                "import-dash/state.json",
+            ] {
+                assert_eq!(
+                    std::fs::read(dir.join(f)).unwrap(),
+                    std::fs::read(old.join(f)).unwrap(),
+                    "{f}"
+                );
+            }
+            let notice = notice.expect("a notice");
+            assert!(!notice.contains('\n'), "{notice}");
+            assert!(notice.contains(&dir.display().to_string()), "{notice}");
+            assert!(notice.contains(&old.display().to_string()), "{notice}");
+            assert!(notice.contains("copied 4 files"), "{notice}");
+            // The old directory is left for older binaries.
+            assert!(old.join("storage.toml").exists());
+            assert!(dir.join(LEGACY_MIGRATION_MARKER).exists());
+
+            // Once: a file removed from the new directory later is not brought back, and
+            // nothing more is said.
+            std::fs::remove_file(dir.join("storage.toml")).unwrap();
+            let (_, again) = dirs(&home, &xdg);
+            assert_eq!(again, None);
+            assert!(!dir.join("storage.toml").exists());
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn secrets_stay_owner_only() {
+            let (_t, home, xdg) = upgraded_user();
+            let (dir, _) = dirs(&home, &xdg);
+            assert_eq!(mode(&dir), 0o700);
+            assert_eq!(mode(&dir.join("identities")), 0o700);
+            assert_eq!(mode(&dir.join("identities/testnet-X.key")), 0o600);
+            assert_eq!(mode(&dir.join("storage.toml")), 0o600);
+            // A world-readable file loses its group/other bits.
+            assert_eq!(mode(&dir.join("import-dash/state.json")), 0o600);
+        }
+
+        #[test]
+        fn nothing_in_the_new_dir_is_overwritten() {
+            let (_t, home, xdg) = upgraded_user();
+            let dir = xdg.join("dash-forge");
+            write(&dir.join("storage.toml"), "new", 0o600);
+            let (_, notice) = dirs(&home, &xdg);
+            assert_eq!(
+                std::fs::read_to_string(dir.join("storage.toml")).unwrap(),
+                "new"
+            );
+            assert_eq!(
+                std::fs::read_to_string(dir.join("config.toml")).unwrap(),
+                "network = \"testnet\"\n"
+            );
+            assert!(notice.unwrap().contains("copied 3 files"));
+        }
+
+        #[test]
+        fn a_held_back_storage_toml_waits_for_a_later_run() {
+            let (_t, home, xdg) = upgraded_user();
+            let dir = xdg.join("dash-forge");
+            let held = |home: &Path, xdg: &Path| {
+                config_dir_migrating(
+                    Some(xdg.as_os_str()),
+                    Some(home.as_os_str()),
+                    &["storage.toml"],
+                )
+                .unwrap()
+                .1
+            };
+            // DASH_FORGE_STORAGE_CONFIG set: storage.toml is not touched, the rest is.
+            let notice = held(&home, &xdg).unwrap();
+            assert!(notice.contains("DASH_FORGE_STORAGE_CONFIG"), "{notice}");
+            assert!(!dir.join("storage.toml").exists());
+            assert!(dir.join("config.toml").exists());
+            // Still one-time for everything else: a key removed later (a logout) stays gone,
+            // and a second held-back run says nothing.
+            std::fs::remove_file(dir.join("identities/testnet-X.key")).unwrap();
+            assert_eq!(held(&home, &xdg), None);
+            assert!(!dir.join("identities/testnet-X.key").exists());
+            // Without the override, the next run copies just the pending file, then is done.
+            let (_, notice) = dirs(&home, &xdg);
+            assert!(notice.unwrap().contains("copied 1 file "), "one file");
+            assert!(dir.join("storage.toml").exists());
+            assert!(!dir.join("identities/testnet-X.key").exists());
+            std::fs::remove_file(dir.join("storage.toml")).unwrap();
+            assert_eq!(dirs(&home, &xdg).1, None);
+            assert!(!dir.join("storage.toml").exists());
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn a_file_that_cannot_be_copied_is_reported_once() {
+            use std::os::unix::fs::PermissionsExt as _;
+            let (_t, home, xdg) = upgraded_user();
+            let old = home.join(".config/dash-forge");
+            let fifo_like = old.join("unreadable.toml");
+            write(&fifo_like, "x", 0o000);
+            // Root reads anything; the point is moot there.
+            if std::fs::read(&fifo_like).is_ok() {
+                return;
+            }
+            let notice = dirs(&home, &xdg).1.unwrap();
+            assert!(notice.contains("1 could not be copied"), "{notice}");
+            assert!(xdg.join("dash-forge/storage.toml").exists());
+            // Not retried on every run.
+            assert_eq!(dirs(&home, &xdg).1, None);
+            std::fs::set_permissions(&fifo_like, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        /// XDG_CONFIG_HOME set to the old directory itself, reached through a symlinked
+        /// HOME: the new directory is inside the old one and must not be copied into itself.
+        #[cfg(unix)]
+        #[test]
+        fn a_new_dir_inside_the_old_one_is_not_filled_from_it() {
+            let (t, home, _) = upgraded_user();
+            let link = t.path().join("home-link");
+            std::os::unix::fs::symlink(&home, &link).unwrap();
+            let old = link.join(".config/dash-forge");
+            // $XDG_CONFIG_HOME/dash-forge = <old>/dash-forge, which does not exist yet.
+            let (dir, notice) =
+                config_dir_migrating(Some(old.as_os_str()), Some(home.as_os_str()), &[]).unwrap();
+            assert_eq!(notice, None);
+            assert!(!dir.exists(), "copied into itself: {}", dir.display());
+        }
+
+        #[test]
+        fn no_legacy_dir_or_the_same_dir_does_nothing() {
+            let t = tempfile::tempdir().unwrap();
+            let (home, xdg) = (t.path().join("home"), t.path().join("xdg"));
+            // No old directory at all.
+            assert_eq!(dirs(&home, &xdg).1, None);
+            assert!(!xdg.join("dash-forge").exists());
+            // An empty old directory: nothing to carry over, nothing created.
+            std::fs::create_dir_all(home.join(".config/dash-forge")).unwrap();
+            assert_eq!(dirs(&home, &xdg).1, None);
+            assert!(!xdg.join("dash-forge").exists());
+            // XDG_CONFIG_HOME a symlink to ~/.config: one directory, nothing copied.
+            write(&home.join(".config/dash-forge/storage.toml"), "x", 0o600);
+            #[cfg(unix)]
+            {
+                let link = t.path().join("link");
+                std::os::unix::fs::symlink(home.join(".config"), &link).unwrap();
+                let legacy = home.join(".config/dash-forge");
+                assert_eq!(
+                    migrate_legacy_config(&legacy, &link.join("dash-forge"), &[]),
+                    None
+                );
+                assert!(!legacy.join(LEGACY_MIGRATION_MARKER).exists());
+            }
+        }
     }
 }

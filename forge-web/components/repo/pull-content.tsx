@@ -2,19 +2,17 @@
 
 /**
  * PullContent — PR detail: folded state, base/head, where the PR's objects live, the author's
- * body, the files changed (see {@link PullDiff}), the timeline (comments, state events and
- * review verdicts), a comment composer, and mark-as-merged / close / reopen.
+ * body, the review fold, the files changed (see {@link PullDiff}) with inline threads, the
+ * timeline (comments, state events and review verdicts), a comment composer, and
+ * mark-as-merged / close / reopen.
  *
- * **It cannot merge code**, stated here because the name suggests otherwise. "Mark as merged"
- * appends a `merge` event carrying the PR head oid. Consensus accepts that event only from a
- * maintainer or writer, and the fold applies it only once the head has been a tip of the base
- * ref — which a push must do. So the control is shown only to members ({@link pullActions})
- * and says whether the head is already on the base branch. For a base branch that has moved
- * on, the merge commit is not the head oid at all; that merge is recorded with the CLI
- * (`dg pr merge --merge-oid`).
+ * The merge panel ({@link PullMerge}) merges code in the browser. "Mark as merged" only
+ * appends a `merge` event carrying the PR head oid; the fold accepts it only from a maintainer
+ * or writer, and only once the head has been a tip of the base ref, so the control says
+ * whether the head is already on the base branch.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { GitMerge, GitPullRequest, GitPullRequestClosed } from 'lucide-react'
 import type { RepoHome, PullThread } from '@/lib/view'
 import { loadPullThread, pullActions, timeAgo } from '@/lib/view'
@@ -39,7 +37,11 @@ import { Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { Approvals } from '@/components/repo/approvals'
-import type { RepoAddress } from '@/hooks/use-query-param'
+import { InlineCommentsProvider } from '@/components/repo/inline-comments'
+import { PullMerge } from '@/components/repo/pull-merge'
+import { inlineCommentIds } from '@/lib/view/inline-threads'
+import { useParam, type RepoAddress } from '@/hooks/use-query-param'
+import { retryWhileMissing } from '@/lib/view/retry'
 
 type Pending = 'merge' | 'close' | 'reopen' | { review: VerdictInput; body: string } | null
 
@@ -54,8 +56,10 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
 
+  // Just opened here: a node one block behind answers "not found"; keep asking briefly.
+  const justCreated = useParam('created') === '1'
   const { data, loading, error, reload } = useAsync<PullThread | null>(
-    () => loadPullThread(sdk!, home.repo, number),
+    () => retryWhileMissing(() => loadPullThread(sdk!, home.repo, number), justCreated ? 8 : 0),
     [ready, repoKey(home.repo), number],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
@@ -73,6 +77,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   const [posting, setPosting] = useState(false)
   const [commentError, setCommentError] = useState<string | null>(null)
   const [pending, setPending] = useState<Pending>(null)
+  const [diffShown, setDiffShown] = useState(false)
 
   if (!Number.isFinite(number)) return <EmptyState icon={GitPullRequest} title="No PR addressed" body="Add &number= to the URL." />
   if (loading && !data) return <LoadingBlock label="Folding PR" />
@@ -80,6 +85,10 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   if (!data) return <EmptyState icon={GitPullRequest} title={`PR #${number} not found`} body="No patch with that number in this repo." />
 
   const { pull, timeline } = data
+  // Inline comments and their replies show with the diff once it has rendered; until then (or
+  // when it cannot render at all) they stay in the conversation, so none is ever hidden.
+  const inlineIds = new Set(diffShown ? inlineCommentIds(data.comments) : [])
+  const conversation = timeline.filter((t) => t.kind !== 'comment' || !inlineIds.has(t.comment.id))
   const merged = pull.state.merged
   const open = pull.state.open
   const actions = pullActions({
@@ -174,8 +183,13 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
               {pull.sourceRefName ? <> on <span className="font-mono">{pull.sourceRefName}</span></> : null}
             </span>
             <div className="mt-1 font-mono text-[12px] text-anvil-400 break-all">
-              dg pr checkout {addr.owner}/{addr.name} {pull.number}
+              {checkoutCommand(home.repo, pull.number)}
             </div>
+          </div>
+        ) : null}
+        {data.approvals !== null ? (
+          <div className="mt-3">
+            <Approvals approvals={data.approvals} headOid={pull.headOid} />
           </div>
         ) : null}
       </div>
@@ -190,13 +204,35 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
         </div>
       </div>
 
-      {data.approvals !== null ? (
-        <Approvals approvals={data.approvals} author={pull.author} headOid={pull.headOid} />
-      ) : null}
+      <PullMerge
+        repo={home.repo}
+        home={home}
+        pull={pull}
+        canMerge={actions.canMarkMerged}
+        isMaintainer={holdings.data?.maintain === true}
+        checkout={checkoutCommand(home.repo, pull.number)}
+        onMerged={reload}
+      />
 
-      <PullDiff pull={pull} home={home} />
+      <PullDiff
+        pull={pull}
+        home={home}
+        wrap={(comparison, diff) => (
+          <InlineCommentsProvider
+            repo={home.repo}
+            pullId={pull.id}
+            headOid={pull.headOid}
+            comments={data.comments}
+            changedPaths={new Set(comparison.changes.map((c) => c.path))}
+            onPosted={reload}
+          >
+            <DiffMounted onChange={setDiffShown} />
+            {diff}
+          </InlineCommentsProvider>
+        )}
+      />
 
-      {timeline.length > 0 ? <Timeline items={timeline} /> : null}
+      {conversation.length > 0 ? <Timeline items={conversation} /> : null}
 
       <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
         <h3 className="mb-2 text-dense font-medium">Review</h3>
@@ -251,8 +287,8 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
         {actions.canMarkMerged ? (
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
             {actions.markCountsNow
-              ? `The head commit is already on ${base}, so a merge mark counts as soon as it lands. The web app cannot merge code itself.`
-              : `The web app cannot merge code. Push the head commit to ${base} first; a merge mark only counts once it is there.`}
+              ? `The head commit is already on ${base}, so a merge mark counts as soon as it lands.`
+              : `A merge mark only counts once the head commit is on ${base}; merge it above, or push it there first.`}
           </p>
         ) : actions.mergeHint !== null ? (
           <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{actions.mergeHint}</p>
@@ -299,4 +335,18 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
       />
     </div>
   )
+}
+
+/** Tells the page while the diff (with its inline threads) is on screen. */
+function DiffMounted({ onChange }: { onChange: (shown: boolean) => void }): null {
+  useEffect(() => {
+    onChange(true)
+    return () => onChange(false)
+  }, [onChange])
+  return null
+}
+
+/** The copy-to-shell checkout line, from the resolved repo (never the URL's own text). */
+export function checkoutCommand(repo: { readonly ownerId: string; readonly name: string }, number: number): string {
+  return `dg pr checkout ${repo.ownerId}/${repo.name} ${number}`
 }

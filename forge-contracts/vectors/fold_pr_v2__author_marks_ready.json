@@ -1,0 +1,32 @@
+{
+  "name": "author_marks_ready",
+  "description": "The author's authorEvent ready (kind 10) clears the draft the document opened with.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "ready",
+        "actor": "alice",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice",
+    "baseTip": "B",
+    "ancestry": [],
+    "initialDraft": true
+  },
+  "expected": {
+    "open": true,
+    "merged": false,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": []
+  }
+}

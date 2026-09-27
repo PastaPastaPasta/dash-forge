@@ -156,7 +156,7 @@ describe('asset-lock transaction', () => {
       { address, duffs: 500_000_000 },
       address,
     )
-    const ep = { insight: 'https://explorer.invalid', islockRpc: null }
+    const ep = { dapi: [], insight: 'https://explorer.invalid', islockRpc: null }
     const serve = (rawtx: Uint8Array): void => {
       vi.stubGlobal('fetch', async (url: string) => ({ ok: true, json: async () => ({ rawtx: bytesToHex(rawtx) }), url }))
     }

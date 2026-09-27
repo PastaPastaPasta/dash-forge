@@ -1,0 +1,44 @@
+{
+  "name": "dismissed_approval_not_counted",
+  "description": "Policy: 1 approval. The only approval was dismissed: 0 of 1.",
+  "case": "policy",
+  "rules": "v2",
+  "input": {
+    "reviews": [
+      {
+        "id": "r1",
+        "reviewer": "maint",
+        "verdict": 1,
+        "commitOid": "H",
+        "createdAt": 100
+      }
+    ],
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "headOid": "H",
+    "dismissed": [
+      "r1"
+    ],
+    "policy": {
+      "requiredApprovals": 1,
+      "approverRole": 0,
+      "requireChecks": false,
+      "mergeMethods": 0
+    }
+  },
+  "expected": {
+    "met": false,
+    "have": 0,
+    "need": 1
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "name": "head_update_bad_length_inert",
+  "description": "A headUpdate whose oid is not 40 or 64 hex digits (here 20 and 41 characters, and non-hex) is inert; the valid one applies.",
+  "case": "fold_review",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "headUpdate",
+        "actor": "maint",
+        "value": null,
+        "oid": "abababababababababab",
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "headUpdate",
+        "actor": "maint",
+        "value": null,
+        "oid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "createdAt": 110
+      },
+      {
+        "id": "e3",
+        "targetId": "T",
+        "kind": "headUpdate",
+        "actor": "maint",
+        "value": null,
+        "oid": "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+        "createdAt": 120
+      },
+      {
+        "id": "e4",
+        "targetId": "T",
+        "kind": "headUpdate",
+        "actor": "maint",
+        "value": null,
+        "oid": "CDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCDCD",
+        "createdAt": 130
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice",
+    "initialHead": "H1",
+    "knownRoots": []
+  },
+  "expected": {
+    "head": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+    "headUpdates": [
+      {
+        "oid": "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+        "actor": "maint",
+        "createdAt": 130,
+        "id": "e4"
+      }
+    ],
+    "requestedReviewers": [],
+    "resolvedThreads": [],
+    "dismissedReviews": [],
+    "milestone": null
+  }
+}

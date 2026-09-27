@@ -8,7 +8,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { Archive, Code2, GitPullRequest, Lock, MessageSquare, Settings, Tag, Users } from 'lucide-react'
+import { Archive, Code2, GitFork, GitPullRequest, Lock, MessageSquare, Settings, Tag, Users } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { CopyLinkButton } from '@/components/ui/copy-link'
@@ -17,6 +17,34 @@ import { StarButton } from '@/components/repo/star-button'
 import { useTargetCounts, useViewerRole } from '@/hooks/use-repo-chrome'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
+import { ForkButton } from '@/components/repo/fork-button'
+import { readRepoById } from '@/lib/repo'
+import type { ForgeIds } from '@/lib/deployments'
+import { useSdk } from '@/hooks/use-sdk'
+import { useAsync } from '@/hooks/use-async'
+
+/** "forked from owner/name", linking to the parent (read by its id). */
+function ForkedFrom({ forge, parentId }: { forge: ForgeIds; parentId: string }): JSX.Element {
+  const { sdk, ready } = useSdk()
+  const parent = useAsync(() => readRepoById(sdk!, forge, parentId), [ready, parentId], { enabled: ready && sdk !== null })
+  const doc = parent.data
+  return (
+    <p className="mt-1 flex flex-wrap items-center gap-1 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="forked-from">
+      <GitFork className="h-3 w-3" aria-hidden /> forked from{' '}
+      {doc ? (
+        <>
+          <Author identityId={doc.ownerId} link={false} />
+          <span>/</span>
+          <Link href={repoHref('/repo', { owner: doc.ownerId, name: doc.name })} className="font-mono hover:text-forge-600 dark:hover:text-forge-400">
+            {doc.name}
+          </Link>
+        </>
+      ) : (
+        <span className="font-mono">{parentId.slice(0, 8)}…</span>
+      )}
+    </p>
+  )
+}
 
 /**
  * The five tabs (`ux-dx-spec.md` §5.2): Code · Issues (n) · Pull requests (n) · Releases ·
@@ -36,7 +64,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
   const tabs = [
     { label: 'Code', path: '/repo', icon: Code2, refAware: true, match: CODE_ROUTES, count: null },
     { label: 'Issues', path: '/repo/issues', icon: MessageSquare, refAware: false, match: ['/repo/issues', '/repo/issue'], count: counts.issues },
-    { label: 'Pull requests', path: '/repo/pulls', icon: GitPullRequest, refAware: false, match: ['/repo/pulls', '/repo/pull'], count: counts.pulls },
+    { label: 'Pull requests', path: '/repo/pulls', icon: GitPullRequest, refAware: false, match: ['/repo/pulls', '/repo/pull', '/repo/pulls/new'], count: counts.pulls },
     { label: 'Releases', path: '/repo/releases', icon: Tag, refAware: false, match: ['/repo/releases', '/repo/release'], count: null },
     ...(role === 'maintainer'
       ? [{ label: 'Settings', path: '/repo/settings', icon: Settings, refAware: false, match: ['/repo/settings'], count: null }]
@@ -63,9 +91,12 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
         </div>
         <div className="ml-auto flex items-center gap-2">
           <CopyLinkButton repo={addr} />
+          {home.repo.visibility === 'public' ? <ForkButton parent={home.repo} /> : null}
           <StarButton repo={home.repo} count={home.starCount} />
         </div>
       </div>
+
+      {home.v2.forkOf ? <ForkedFrom forge={home.repo.forge} parentId={home.v2.forkOf} /> : null}
 
       {home.description ? (
         <p className="mt-2 max-w-3xl text-dense text-anvil-600 dark:text-anvil-300">{home.description}</p>

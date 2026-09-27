@@ -161,6 +161,7 @@ async fn create(ctx: &Ctx, args: &crate::PrCreateArgs) -> Result<()> {
         source_repo_id: source.id().to_string(),
         source_ref_name: Some(head_ref.clone()),
         head_oid: hex::decode(&head_oid).context("head oid")?,
+        draft: false,
         patch_manifest_hash: None,
     };
     if !ctx.json {
@@ -296,7 +297,7 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
         if !state.matches(v.state.open) {
             continue;
         }
-        let (approvals, _) = collab.approvals_with(handle, &v.patch, &oracle).await?;
+        let (approvals, _) = collab.approvals_with(handle, &v, &oracle).await?;
         rows.push((v, approvals));
     }
     let json_rows: Vec<_> = rows
@@ -308,8 +309,9 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
                 "author": v.patch.author,
                 "state": state_label(v),
                 "baseRef": v.patch.base_ref_name,
-                "headOid": v.patch.head_oid,
+                "headOid": v.head,
                 "sourceRepoId": v.patch.source_repo_id,
+                "draft": v.state.draft,
                 "approvals": a.approvers.len(),
                 "changesRequested": a.changes_requested.len(),
             })
@@ -335,7 +337,7 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
                     v.patch.number,
                     state_label(v),
                     safe(&v.patch.title),
-                    short(&v.patch.head_oid)
+                    short(&v.head)
                 );
             }
             if hidden > 0 {
@@ -351,32 +353,65 @@ async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Resu
     Ok(())
 }
 
+/// A PR's reviews for `dg pr view --json`: stale when not on the current head, dismissed when
+/// a `reviewDismiss` names it.
+fn reviews_json(
+    reviews: &[forge_core::collab::v2::Review],
+    head: &str,
+    dismissed: &std::collections::BTreeSet<String>,
+) -> Vec<serde_json::Value> {
+    reviews
+        .iter()
+        .map(|r| {
+            json!({
+                "id": r.document_id,
+                "reviewer": r.reviewer,
+                "verdict": r.verdict.code(),
+                "verdictLabel": r.verdict.label(),
+                "commitOid": r.commit_oid,
+                "stale": r.commit_oid != head,
+                "dismissed": dismissed.contains(&r.document_id),
+                "commentCount": r.comment_count,
+                "body": r.body,
+                "createdAt": r.created_at,
+            })
+        })
+        .collect()
+}
+
+/// A PR's comments for `dg pr view --json`: thread, review and anchor (`anchor_of`: null for
+/// a general or malformed-anchor comment).
+fn comments_json(comments: &[forge_core::collab::v2::Comment]) -> Vec<serde_json::Value> {
+    comments
+        .iter()
+        .map(|c| {
+            json!({
+                "id": c.document_id,
+                "author": c.author,
+                "body": c.body,
+                "replyTo": c.reply_to,
+                "reviewId": c.review_id,
+                "anchor": forge_core::rules::v2::anchor_of(&c.anchor),
+            })
+        })
+        .collect()
+}
+
 async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
     let (client, handle) = (&s.client, &s.repo);
     let collab = Collab::reader(client);
     let p = patch(&collab, handle, repo, number).await?;
     let v = collab.patch_view(handle, p).await?;
-    let (approvals, reviews) = collab.approvals(handle, &v.patch).await?;
+    let (approvals, reviews) = collab.approvals(handle, &v).await?;
     let comments = collab.comments(handle, &v.patch.document_id).await?;
+    let review_state = v.review_with_threads(&comments);
+    let dismissed = v.dismissed();
     let source = forge_core::resolve::resolve_id(client, &v.patch.source_repo_id)
         .await
         .map_or_else(|_| v.patch.source_repo_id.clone(), |r| r.display());
 
-    let reviews_json: Vec<_> = reviews
-        .iter()
-        .map(|r| {
-            json!({
-                "reviewer": r.reviewer,
-                "verdict": r.verdict.code(),
-                "verdictLabel": r.verdict.label(),
-                "commitOid": r.commit_oid,
-                "stale": r.commit_oid != v.patch.head_oid,
-                "body": r.body,
-                "createdAt": r.created_at,
-            })
-        })
-        .collect();
+    let reviews_json = reviews_json(&reviews, &v.head, &dismissed);
     ctx.emit(
         json!({
             "number": v.patch.number,
@@ -387,15 +422,17 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "fold": serde_json::to_value(&v.state).unwrap_or_default(),
             "baseRef": v.patch.base_ref_name,
             "baseTip": v.base_tip,
-            "headOid": v.patch.head_oid,
+            "headOid": v.head,
+            "initialHeadOid": v.patch.head_oid,
             "headOnBase": v.head_on_base,
+            "review": serde_json::to_value(&review_state).unwrap_or_default(),
             "sourceRepoId": v.patch.source_repo_id,
             "sourceRepo": source,
             "sourceRefName": v.patch.source_ref_name,
             "approvedBy": approvals.approvers,
             "changesRequestedBy": approvals.changes_requested,
             "reviews": reviews_json,
-            "comments": comments.iter().map(|c| json!({"author": c.author, "body": c.body})).collect::<Vec<_>>(),
+            "comments": comments_json(&comments),
         }),
         || {
             println!(
@@ -409,12 +446,20 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
                 "{} {} ({}) → {}",
                 source,
                 safe(v.patch.source_ref_name.as_deref().unwrap_or("(no branch)")),
-                short(&v.patch.head_oid),
+                short(&v.head),
                 v.patch.base_ref_name
             );
+            if v.state.draft {
+                println!("draft");
+            }
             if !approvals.approvers.is_empty() {
                 let who: Vec<_> = approvals.approvers.iter().cloned().collect();
-                println!("approved by {} on {}: {}", who.len(), short(&v.patch.head_oid), who.join(", "));
+                println!(
+                    "approved by {} on {}: {}",
+                    who.len(),
+                    short(&v.head),
+                    who.join(", ")
+                );
             }
             if !approvals.changes_requested.is_empty() {
                 let who: Vec<_> = approvals.changes_requested.iter().cloned().collect();
@@ -424,7 +469,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
                 println!("\n{}", safe(&v.patch.body));
             }
             for r in &reviews {
-                let stale = if r.commit_oid == v.patch.head_oid {
+                let stale = if dismissed.contains(&r.document_id) {
+                    " (dismissed)"
+                } else if r.commit_oid == v.head {
                     ""
                 } else {
                     " (stale — new commits since)"
@@ -450,15 +497,18 @@ async fn review(ctx: &Ctx, repo: &str, number: u64, verdict: VerdictArg, body: &
     let s = Session::open(ctx, repo).await?;
     let (handle, collab) = (&s.repo, s.collab());
     let p = patch(&collab, handle, repo, number).await?;
+    // Review the PR's current head (the newest headUpdate), which is what approvals count on.
+    let view = collab.patch_view(handle, p).await?;
+    let (p, head_hex) = (&view.patch, view.head.clone());
     let v = Verdict::from_code(verdict.code());
     ctx.confirm_or_cancel(&format!(
         "Post a {} review on PR #{number} at {}? (one small document)",
         v.label(),
-        short(&p.head_oid)
+        short(&head_hex)
     ))?;
-    let head = hex::decode(&p.head_oid).context("PR head oid")?;
+    let head = hex::decode(&head_hex).context("PR head oid")?;
     let id = collab
-        .review(handle, &p.document_id, v, &head, body, None)
+        .review(handle, &p.document_id, v, &head, body, None, None)
         .await?;
     let counts = collab.signer_role(handle).await?.is_some();
     ctx.emit(
@@ -466,12 +516,12 @@ async fn review(ctx: &Ctx, repo: &str, number: u64, verdict: VerdictArg, body: &
             "status": "reviewed",
             "pr": number,
             "verdict": verdict.code(),
-            "commitOid": p.head_oid,
+            "commitOid": head_hex,
             "reviewId": id,
             "counts": counts,
         }),
         || {
-            println!("✓ {} PR #{number} at {}", v.label(), short(&p.head_oid));
+            println!("✓ {} PR #{number} at {}", v.label(), short(&head_hex));
             if !counts && verdict != VerdictArg::Comment {
                 println!("  note: you are not a member of {}, so this review does not count toward approvals", handle.display());
             }
@@ -715,7 +765,7 @@ fn refuse_retargeted(view: &PatchView, number: u64) -> Result<()> {
 /// naming a commit the base never held would not count now and would flip the PR to merged
 /// the day that commit is pushed.
 fn event_only_oid(view: &PatchView, given: Option<&str>, number: u64) -> Result<String> {
-    let oid = given.map_or_else(|| view.patch.head_oid.clone(), str::to_ascii_lowercase);
+    let oid = given.map_or_else(|| view.head.clone(), str::to_ascii_lowercase);
     if !git::is_oid(&oid) {
         return Err(crate::errors::usage(
             "--merge-oid must be a full hex commit id",
@@ -769,7 +819,7 @@ fn push_merge(
     // The base ref and head are PR document fields anyone could have written; they become a
     // refspec and a push destination below.
     git::require_branch_ref(&view.patch.base_ref_name)?;
-    if !git::is_oid(&view.patch.head_oid) {
+    if !git::is_oid(&view.head) {
         anyhow::bail!("the PR names a malformed head commit");
     }
     let env = git::dash_env(ctx);
@@ -777,7 +827,7 @@ fn push_merge(
     let dir = scratch.path();
     git::git(dir, &["init", "-q", "--bare"], &[])?;
     let base_ref = &view.patch.base_ref_name;
-    let head = &view.patch.head_oid;
+    let head = &view.head;
 
     // Fetch base (its whole history) and head (from the source repo).
     let base_url = format!("dash://{}", handle.id());
@@ -864,7 +914,7 @@ fn build_merge(
     steps: &mut Steps,
 ) -> Result<Option<String>> {
     let base_ref = &view.patch.base_ref_name;
-    let head = &view.patch.head_oid;
+    let head = &view.head;
     let base_tip = view.base_tip.as_deref();
     let plan = git::plan_merge(
         base_tip,
@@ -981,8 +1031,15 @@ struct Located {
 async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<Located> {
     let s = Session::open(ctx, repo).await?;
     let target = s.repo.id().to_string();
-    let p = patch(&Collab::reader(&s.client), &s.repo, repo, number).await?;
-    let (source, head, base_ref) = (p.source_repo_id, p.head_oid, p.base_ref_name);
+    let collab = Collab::reader(&s.client);
+    let p = patch(&collab, &s.repo, repo, number).await?;
+    // The PR's current head: its newest headUpdate, else the head it was opened with.
+    let view = collab.patch_view(&s.repo, p).await?;
+    let (source, head, base_ref) = (
+        view.patch.source_repo_id,
+        view.head,
+        view.patch.base_ref_name,
+    );
     // Every field came from a document anyone could have written: check the shapes before
     // any of them reaches git.
     if !git::is_oid(&head) {

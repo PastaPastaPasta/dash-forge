@@ -27,7 +27,7 @@ export {
   type GitIdent,
   type TreeEntry,
 } from './git-objects'
-export { parseMarkdown, type Block, type Inline, type TableAlignment } from './markdown'
+export { MARKDOWN_MAX_CHARS, parseMarkdown, type Block, type Inline, type TableAlignment } from './markdown'
 export {
   compactDiffLines,
   diffStat,
@@ -101,8 +101,10 @@ export {
 export { crossCheckQuorumKeysCached, type QuorumCrossCheck } from './quorum-check'
 export {
   describeUnavailable,
+  onlyGatewaysFailed,
   normalizeGateway,
   readGateways,
+  readGatewaysFor,
   setUserGateways,
   userGateways,
 } from './storage-status'

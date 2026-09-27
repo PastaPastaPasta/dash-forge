@@ -33,6 +33,7 @@ export const DOC = {
   label: 'label',
   release: 'release',
   checkRun: 'checkRun',
+  policy: 'policy',
   webhook: 'webhook',
   star: 'star',
   follow: 'follow',
@@ -50,6 +51,14 @@ const EVENT_KIND_BY_INT: Readonly<Record<number, EventKind>> = {
   8: 'retarget',
   9: 'draft',
   10: 'ready',
+  11: 'threadResolve',
+  12: 'threadUnresolve',
+  13: 'reviewRequest',
+  14: 'reviewRequestRemove',
+  15: 'reviewDismiss',
+  16: 'headUpdate',
+  17: 'milestoneSet',
+  18: 'milestoneClear',
 }
 
 /**
@@ -170,6 +179,7 @@ export function toEvent(doc: PlainDocument): Event | null {
   if (kind === undefined) return null
   const oidHex = byteFieldToHex(doc, 'oid')
   const value = doc['value']
+  const refId = asIdentifierString(doc['refId'])
   return {
     id: str(doc, '$id'),
     // An identifier-typed byteArray: base58 from 4.2's toJSON, base64 from others. The repo
@@ -179,6 +189,7 @@ export function toEvent(doc: PlainDocument): Event | null {
     actor: str(doc, '$ownerId'),
     value: typeof value === 'string' ? value : null,
     oid: oidHex.length > 0 ? oidHex : null,
+    ...(refId !== '' ? { refId } : {}),
     createdAt: num(doc, '$createdAt'),
   }
 }

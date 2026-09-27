@@ -18,7 +18,8 @@
  * credentials, and responses are opaque to other origins.
  */
 export function isPrivateHost(hostname: string): boolean {
-  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '')
+  // A fully qualified name (`nas.local.`) is the same host: drop one trailing dot.
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, '')
   if (h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.internal')) return true
   const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h)
   if (v4) {
@@ -30,6 +31,17 @@ export function isPrivateHost(hostname: string): boolean {
     return h === '::1' || h === '::' || /^f[cd]/.test(h) || /^fe[89ab]/.test(h) || h.startsWith('::ffff:')
   }
   return false
+}
+
+/**
+ * Whether `hostname` is a name that stops working when a process restarts or a machine is
+ * renamed: a Cloudflare quick tunnel (`*.trycloudflare.com`) or Tailscale Funnel (`*.ts.net`).
+ * Public, so readers may fetch it, but a poor address to record on chain forever: the storage
+ * test says so. forge-core `storage/publish.rs` refuses to push to one without an override.
+ */
+export function isTemporaryHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/\.+$/, '')
+  return h.endsWith('.trycloudflare.com') || h.endsWith('.ts.net')
 }
 
 /** Whether `url` is a public https URL (what readers may fetch and a manifest may record). */

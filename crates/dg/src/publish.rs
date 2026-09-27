@@ -83,6 +83,15 @@ impl Flow {
         self != Flow::Create
     }
 
+    /// The command, as the user typed it.
+    fn command(self) -> &'static str {
+        match self {
+            Flow::Create => "`dg repo create`",
+            Flow::CreatePush => "`dg repo create --push`",
+            Flow::Init => "`dg init`",
+        }
+    }
+
     /// The whole command line that repeats this run without prompts.
     fn equivalent(self, name: &str, storage: &str, opts: &CreateOptions) -> String {
         let mut words: Vec<String> = match self {
@@ -119,6 +128,9 @@ impl Flow {
         flag("display-name", Some(&opts.display_name));
         flag("default-branch", opts.default_branch.as_deref());
         flag("remote", opts.remote.as_deref());
+        if opts.allow_private_uri {
+            words.push("--allow-private-uri".into());
+        }
         if opts.private {
             words.push("--private".into());
         }
@@ -249,7 +261,7 @@ pub fn default_name(dir: &str) -> Option<String> {
 
 /// A `dash://` URL's `(owner, name)`, ignoring a trailing `/` or `.git`; `name` is `None` for
 /// the id form (`dash://<repoId>`).
-fn parse_dash_url(url: &str) -> Option<(String, Option<String>)> {
+pub(crate) fn parse_dash_url(url: &str) -> Option<(String, Option<String>)> {
     let rest = url.strip_prefix("dash://")?.trim_end_matches('/');
     let rest = rest.strip_suffix(".git").unwrap_or(rest);
     match rest.split_once('/') {
@@ -592,6 +604,13 @@ async fn plan(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -
         .or_else(|| local.as_ref().and_then(|l| l.branch.clone()))
         .unwrap_or_else(|| "main".into());
     let storage = choose_storage(ctx, opts, size).await?;
+    // The new repo's config advertises these read bases, and its pushes record them.
+    crate::storage::check_publishable(
+        storage.policy.external.iter().map(|(n, p)| (n.as_str(), p)),
+        Some((crate::storage::ALLOW_FLAG, opts.allow_private_uri)),
+        Some(opts.remote()),
+        "repository not created",
+    )?;
     if local.is_some() {
         storage.require_secrets()?;
     }
@@ -717,6 +736,9 @@ fn confirm_plan(
 }
 
 async fn publish(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -> Result<()> {
+    // Every run ends at `Proceed?`: a script without --yes would do all the checks and print
+    // the plan only to stop there, so it stops here instead.
+    ctx.require_confirmable(flow.command())?;
     let plan = plan(ctx, name, opts, flow).await?;
     let price = dash_usd_price();
     confirm_plan(ctx, &plan, flow, opts, price)?;
@@ -901,7 +923,14 @@ async fn wire_and_push(
     // GitHub `origin` stays the upstream when the Forge remote is `--remote forge`).
     let track = local.upstream_remote(branch).is_none_or(|r| r == remote);
     let before = client.get_balance(&plan.owner).await.ok();
-    let outcome = run_push(ctx, &local.root, remote, branch, track)?;
+    let outcome = run_push(
+        ctx,
+        &local.root,
+        remote,
+        branch,
+        track,
+        opts.allow_private_uri,
+    )?;
     let after = client.get_balance(&plan.owner).await.ok();
     // The helper's own measurement; the balance change only when it reported none.
     let push_cost = outcome
@@ -1033,6 +1062,7 @@ fn run_push(
     remote: &str,
     branch: &str,
     track: bool,
+    allow_private_uri: bool,
 ) -> Result<PushOutcome> {
     let (_dir, report) = Report::new()?;
     let spec = format!("refs/heads/{branch}:refs/heads/{branch}");
@@ -1044,6 +1074,12 @@ fn run_push(
     cmd.arg("push");
     if track {
         cmd.arg("-u");
+    }
+    if allow_private_uri {
+        cmd.args([
+            "-o",
+            forge_core::storage::publish::ALLOW_PRIVATE_URI_PUSH_OPTION,
+        ]);
     }
     cmd.args([remote, spec.as_str()])
         .envs(dash_env(ctx))
@@ -1109,6 +1145,41 @@ const REPORT_FILE_ENV: &str = "DASH_FORGE_REPORT_FILE";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// F-17: without --yes and without a terminal, `dg init` / `dg repo create` stop with E802
+    /// naming --yes before anything else runs (here, before the identity is even read: the
+    /// path names no file, and no network is reachable from a unit test).
+    #[tokio::test]
+    async fn scripted_publish_without_yes_stops_before_any_work() {
+        let opts = CreateOptions {
+            storage: Some("platform".into()),
+            replicas: None,
+            description: String::new(),
+            display_name: String::new(),
+            default_branch: None,
+            remote: None,
+            private: false,
+            allow_private_uri: false,
+        };
+        let missing = PathBuf::from("/nonexistent/dash-forge-test/identity.json");
+        for flow in [Flow::Create, Flow::CreatePush, Flow::Init] {
+            let ctx = Ctx::scripted(false, false, false, Some(missing.clone()));
+            let err = publish(&ctx, Some("proj"), &opts, flow).await.unwrap_err();
+            let u = forge_core::user_error::classify(
+                err.chain(),
+                &forge_core::user_error::ErrorContext::default(),
+            );
+            assert_eq!(u.code, "E802", "{flow:?}: {err:#}");
+            assert!(u.fix.iter().any(|f| f.contains("--yes")), "{:?}", u.fix);
+            assert!(u.cause.unwrap().contains(flow.command()));
+        }
+        // With --yes the same run gets past the gate (and fails later, reading the identity).
+        let ctx = Ctx::scripted(true, false, false, Some(missing));
+        let err = publish(&ctx, Some("proj"), &opts, Flow::Create)
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("identity"), "{err:#}");
+    }
 
     #[test]
     fn directory_names_become_repo_slugs() {
@@ -1255,6 +1326,7 @@ mod tests {
             display_name: String::new(),
             default_branch: Some("trunk".into()),
             remote: Some("forge".into()),
+            allow_private_uri: true,
             private: true,
         };
         for flow in [Flow::Create, Flow::CreatePush, Flow::Init] {
@@ -1272,6 +1344,7 @@ mod tests {
             assert_eq!(got.description, "my project", "{line}");
             assert_eq!(got.default_branch.as_deref(), Some("trunk"), "{line}");
             assert_eq!(got.remote(), "forge", "{line}");
+            assert!(got.allow_private_uri, "{line}");
             assert!(got.private, "{line}");
             assert_eq!(pushes, flow.pushes(), "{line}");
         }

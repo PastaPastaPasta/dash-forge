@@ -2,7 +2,7 @@
 # Scenario 13: `dg init` publishes a local repository in one command, and `dg repo create`
 # refuses to spend when no storage is configured.
 #
-#   1. `dg storage add` (flags, env-var secret) makes a MinIO profile in a scratch storage.toml.
+#   1. `dg storage add` (flags, env-var secret) makes a RustFS profile in a scratch storage.toml.
 #   2. A fresh local repo → `dg init --storage <that profile>` on a NEW repo `e2e-init-<run-id>`:
 #      the repo is created, remote origin = dash://<owner>/<name>, repo-local dash.storage is
 #      set, the branch is pushed with upstream tracking, and the web URL is printed. A second
@@ -11,35 +11,35 @@
 #      exits 5 with E508 before creating anything: the balance does not move.
 #
 # The repo is new every run (a v2 repo cannot be deleted; ~0.0015 DASH to create, plus a
-# manifest + ref update for the push). Its pack lives on the runner's local MinIO, so only
-# this scenario reads it (e2e/README.md). SKIPs when MinIO is down (make infra-up).
+# manifest + ref update for the push). Its pack lives on the runner's local RustFS, so only
+# this scenario reads it (e2e/README.md). SKIPs when RustFS is down (make infra-up).
 SCENARIO_NAME="13 dg init (create + remote + push) / E508 stop-before-spend"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
 
-MINIO="http://127.0.0.1:9000"
-curl -fsS -m 3 -o /dev/null "${MINIO}/minio/health/live" || skip_scenario "MinIO not up (make infra-up)"
+S3="http://127.0.0.1:9000"
+curl -fsS -m 3 -o /dev/null "${S3}/health/ready" || skip_scenario "the local S3 store (RustFS) is not up (make infra-up)"
 
 LOG="${WORKROOT}/s13"
 NAME="e2e-init-${RUN_ID}"
 NAME="$(printf '%s' "$NAME" | tr 'A-Z' 'a-z')"
-PROFILE="s13-minio"
+PROFILE="s13-rustfs"
 CFG="${WORKROOT}/s13-storage.toml"
 GLOBAL="${WORKROOT}/s13-gitconfig"
 SRC="${WORKROOT}/s13-src/${NAME}"
 CLONE="${WORKROOT}/s13-clone"
 : >"$GLOBAL"
 rm -f "$CFG"
-export FORGE_E2E_MINIO_SECRET="minioadmin"
+export FORGE_E2E_S3_SECRET="minioadmin"
 jq_py() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)" "$1"; }
 balance() { # balance <out> — the OWNER's balance in credits
   dg_read_retry "$ID_OWNER" "$1.json" "$1.err" --json auth balance && jq_py "$1.json" 'd["balanceCredits"]'
 }
 
 step "1. dg storage add (flags, env: secret)"
-if DASH_FORGE_STORAGE_CONFIG="$CFG" "$DG" storage add "$PROFILE" --kind s3 --endpoint "$MINIO" \
-     --bucket forge-byo --public-url "${MINIO}/forge-byo" --prefix "e2e/${RUN_ID}/s13" \
-     --access-key-id minioadmin --secret-access-key env:FORGE_E2E_MINIO_SECRET \
+if DASH_FORGE_STORAGE_CONFIG="$CFG" "$DG" storage add "$PROFILE" --kind s3 --endpoint "$S3" \
+     --bucket forge-byo --public-url "${S3}/forge-byo" --prefix "e2e/${RUN_ID}/s13" \
+     --access-key-id minioadmin --secret-access-key env:FORGE_E2E_S3_SECRET --allow-private-uri \
      >"$LOG-add.out" 2>&1; then
   ok "profile ${PROFILE} added"
 else

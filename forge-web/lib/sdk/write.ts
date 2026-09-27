@@ -33,7 +33,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import type { Network } from '../constants'
 import { base58Encode } from '../auth/base58'
 import { controlsKey } from '../auth/wif'
-import { previewCreate, previewDelete, type CostPreview } from './cost'
+import { previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview } from './cost'
 import { base64ToBytes, bytesToBase64 } from './query'
 
 export type { CostPreview } from './cost'
@@ -293,6 +293,9 @@ export const DUPLICATE_UNIQUE_CODE = 40105
 
 /** An `ownerRefersTo` gate was not satisfied (not a member, not the author). */
 export const GATE_REFUSED_CODE = 40120
+
+/** A replace named a revision other than the stored one + 1 (`InvalidDocumentRevisionError`). */
+export const INVALID_REVISION_CODE = 40106
 
 /** The numeric consensus code a wasm error carries, if any. */
 function consensusCodeOf(e: unknown): number | null {
@@ -1008,6 +1011,172 @@ async function deleteDocumentUnlocked(
   }
   if (!(proven || (await pollUntil(gone, confirmTimeoutMs)))) throw new UnconfirmedWriteError(documentId)
   return { result: { deleted: true, actualCredits: null }, spend: spend('delete') }
+}
+
+/** The outcome of a replace. A replace that did not confirm throws {@link UnconfirmedWriteError}. */
+export interface ReplaceResult {
+  readonly documentId: string
+  /** The revision the replace wrote. */
+  readonly revision: bigint
+  readonly cost: CostPreview
+  /** Measured after the lock; reported through `onSpend`. */
+  readonly actualCredits: number | null
+}
+
+interface DocumentsReplaceFacadeLike {
+  replace(options: { document: unknown; identityKey: unknown; signer: unknown; settings?: unknown }): Promise<void>
+}
+
+interface FetchedDocumentLike {
+  readonly revision?: bigint
+  readonly ownerId: { toBase58(): string }
+  toObject(): Record<string, unknown>
+  /** String identifiers, base64 byte arrays (what {@link sameValue} compares). */
+  toJSON(platformVersion?: number): Record<string, unknown>
+}
+
+export interface ReplaceParams {
+  readonly contractId: string
+  readonly documentType: string
+  readonly documentId: string
+  /**
+   * The properties to change (merged over the stored document). A property set to
+   * `undefined` is removed (for example a `reviewId` whose review was deleted).
+   */
+  readonly changes: Readonly<Record<string, unknown>>
+  /** The revision the caller read; a replace against a newer stored revision is refused. */
+  readonly expectedRevision?: bigint | undefined
+  /** The repo the document belongs to, for the ledger. */
+  readonly repo?: string | null
+  readonly requiredLevel?: number
+  readonly confirmTimeoutMs?: number
+}
+
+/**
+ * Replace one of the signer's own mutable documents (edit an issue/PR title or body, a
+ * comment's body) through the SDK's replace builder: read the stored document, merge
+ * `changes`, write revision + 1.
+ *
+ * Idempotent by content: when the stored document already holds every change (an earlier
+ * attempt landed and only its answer was lost), nothing is signed. A replace whose wait ended
+ * without an answer is settled by reading the document back: its revision and the changed
+ * values decide, and an unanswered, unseen replace throws {@link UnconfirmedWriteError}.
+ * Consensus enforces the rest: only the owner may replace, `immutable` properties may not
+ * change (40128), and every reference is re-validated.
+ */
+export function replaceDocumentIdempotent(sdk: EvoSDK, auth: WriteAuth, params: ReplaceParams): Promise<ReplaceResult> {
+  return serialized(auth.identityId, () => replaceDocumentUnlocked(sdk, auth, params)).then((r) => {
+    if (r.spend) reportSpend(sdk, auth, r.spend)
+    return r.result
+  })
+}
+
+/**
+ * Whether a stored value (from the document's JSON form: identifiers base58, other byte arrays
+ * base64) equals a wanted one. Bytes are compared by content; an identifier's wanted bytes
+ * also match its base58 form.
+ */
+function sameValue(stored: unknown, wanted: unknown): boolean {
+  if (wanted === undefined) return stored === undefined || stored === null
+  if (wanted instanceof Uint8Array) {
+    if (typeof stored !== 'string') return false
+    if (wanted.length === 32 && stored === base58Encode(wanted)) return true
+    try {
+      const bytes = base64ToBytes(stored)
+      return bytes.length === wanted.length && bytes.every((b, i) => b === wanted[i])
+    } catch {
+      return false
+    }
+  }
+  return stored === wanted
+}
+
+async function replaceDocumentUnlocked(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  params: ReplaceParams,
+): Promise<{ result: ReplaceResult; spend: Spend | null }> {
+  const { contractId, documentType, documentId, changes } = params
+  const requiredLevel = params.requiredLevel ?? SECURITY_LEVEL.HIGH
+  const confirmTimeoutMs = params.confirmTimeoutMs ?? 30_000
+  const cost = previewReplace(documentType, changes)
+
+  const read = async (): Promise<FetchedDocumentLike | null> => {
+    const doc = await facades(sdk).documents.get(contractId, documentType, documentId)
+    return (doc ?? null) as FetchedDocumentLike | null
+  }
+  const current = await read()
+  if (current === null) throw new Error(`${documentType} ${documentId} was not found`)
+  if (current.ownerId.toBase58() !== auth.identityId) throw new WriteAuthError('only the author can edit this')
+  const stored = current.toObject()
+  const revision = current.revision ?? 1n
+  const holds = (doc: FetchedDocumentLike) => {
+    const json = doc.toJSON(sdk.version())
+    return Object.entries(changes).every(([k, v]) => sameValue(json[k], v))
+  }
+  if (holds(current)) {
+    return { result: { documentId, revision, cost: previewCredits(0), actualCredits: 0 }, spend: null }
+  }
+  if (params.expectedRevision !== undefined && params.expectedRevision !== revision) {
+    throw new Error(`this ${documentType} changed since you opened it (revision ${revision}); reload and edit again`)
+  }
+
+  const wif = auth.getSigningKeyWif(contractId)
+  const identity = await facades(sdk).identities.fetch(auth.identityId)
+  if (!identity) throw new WriteAuthError(`identity ${auth.identityId} not found on ${auth.network}`)
+  const signing = await findSigningKey(identity, wif, auth.network, requiredLevel)
+  if (!signing) {
+    throw new WriteAuthError('no usable AUTHENTICATION key for the stored signing key (it may be disabled or expired)')
+  }
+  const next = revision + 1n
+  const spend = (kind: string): Spend => ({
+    kind: `${kind}:${documentType}`,
+    repo: params.repo ?? null,
+    documentId,
+    estimateCredits: cost.credits,
+    balanceBefore: identity.balance,
+  })
+
+  const { Document, IdentitySigner } = await import('@dashevo/evo-sdk')
+  const merged: Record<string, unknown> = { ...stored, $revision: next }
+  for (const [k, v] of Object.entries(changes)) {
+    if (v === undefined) delete merged[k]
+    else merged[k] = v
+  }
+  const document = Document.fromObject(merged as Parameters<typeof Document.fromObject>[0], sdk.version())
+  const signer = new IdentitySigner()
+  signer.addKeyFromWif(wif)
+  const landed = async (): Promise<boolean> => {
+    const doc = await read().catch(() => null)
+    return doc !== null && (doc.revision ?? 0n) >= next && holds(doc)
+  }
+  try {
+    await (sdk as unknown as { documents: DocumentsReplaceFacadeLike }).documents.replace({
+      document,
+      identityKey: signing.publicKey,
+      signer,
+      settings: { identityNonceStaleTimeS: 0, timeoutMs: WAIT_REQUEST_MS, retries: 2 },
+    })
+  } catch (e) {
+    const refusal = asConsensusRefusal(e)
+    // A revision refusal on a retry: an earlier attempt of this edit may have landed (its answer
+    // lost), leaving the stored revision already at `next`. Re-read; if the content matches, the
+    // edit is done.
+    if (refusal !== null && refusal.code === INVALID_REVISION_CODE && (await landed())) {
+      return { result: { documentId, revision: next, cost, actualCredits: null }, spend: null }
+    }
+    if (refusal !== null) {
+      if (!refusal.isKeyLimit) reportSpend(sdk, auth, spend('refused'))
+      throw refusal
+    }
+    if (!(await pollUntil(landed, confirmTimeoutMs))) {
+      if (isAlreadyExistsError(e)) throw new UnconfirmedWriteError(documentId)
+      throw e
+    }
+  } finally {
+    signer.free()
+  }
+  return { result: { documentId, revision: next, cost, actualCredits: null }, spend: spend('replace') }
 }
 
 /** Read an identity's credit balance (for the auth surface / cost affordability checks). */

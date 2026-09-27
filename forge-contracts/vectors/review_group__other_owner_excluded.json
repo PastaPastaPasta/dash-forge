@@ -1,0 +1,50 @@
+{
+  "name": "other_owner_excluded",
+  "description": "A comment naming the review but written by someone else is not the review's (consensus refuses it; readers check again).",
+  "case": "review_group",
+  "rules": "v2",
+  "input": {
+    "reviewId": "R1",
+    "reviewer": "maint",
+    "commentCount": 2,
+    "comments": [
+      {
+        "id": "c2",
+        "owner": "maint",
+        "createdAt": 110,
+        "reviewId": "R1"
+      },
+      {
+        "id": "x",
+        "owner": "mallory",
+        "createdAt": 105,
+        "reviewId": "R1"
+      },
+      {
+        "id": "c1",
+        "owner": "maint",
+        "createdAt": 100,
+        "reviewId": "R1"
+      },
+      {
+        "id": "y",
+        "owner": "maint",
+        "createdAt": 90
+      },
+      {
+        "id": "z",
+        "owner": "maint",
+        "createdAt": 95,
+        "reviewId": "R2"
+      }
+    ]
+  },
+  "expected": {
+    "comments": [
+      "c1",
+      "c2"
+    ],
+    "landed": 2,
+    "expected": 2
+  }
+}

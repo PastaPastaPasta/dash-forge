@@ -41,6 +41,9 @@ inputs:
   s3-prefix:
     description: "s3: key prefix inside the bucket."
     default: ""
+  s3-virtual-hosted:
+    description: "s3: true for virtual-hosted addressing (https://<bucket>.<endpoint host>/<key>), as `dg storage add --virtual-hosted`; AWS deprecates path-style. Default false: path-style, which R2, B2, MinIO, Garage and RustFS all accept."
+    default: "false"
   pinning-endpoint:
     description: "ipfs-pinning: Pinning Service API base URL."
     default: ""
@@ -100,6 +103,7 @@ runs:
         INPUT_S3_BUCKET: ${{ inputs.s3-bucket }}
         INPUT_S3_PUBLIC_URL: ${{ inputs.s3-public-url }}
         INPUT_S3_PREFIX: ${{ inputs.s3-prefix }}
+        INPUT_S3_VIRTUAL_HOSTED: ${{ inputs.s3-virtual-hosted }}
         INPUT_PINNING_ENDPOINT: ${{ inputs.pinning-endpoint }}
         INPUT_IPFS_API: ${{ inputs.ipfs-api }}
         INPUT_REPLICAS: ${{ inputs.replicas }}
@@ -164,6 +168,7 @@ runs:
         INPUT_S3_BUCKET: ${{ inputs.s3-bucket }}
         INPUT_S3_PUBLIC_URL: ${{ inputs.s3-public-url }}
         INPUT_S3_PREFIX: ${{ inputs.s3-prefix }}
+        INPUT_S3_VIRTUAL_HOSTED: ${{ inputs.s3-virtual-hosted }}
         INPUT_PINNING_ENDPOINT: ${{ inputs.pinning-endpoint }}
         INPUT_IPFS_API: ${{ inputs.ipfs-api }}
         INPUT_REPLICAS: ${{ inputs.replicas }}

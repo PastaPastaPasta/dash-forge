@@ -10,6 +10,7 @@
 //! | `dash.platformFallback` | store on Platform when the external targets cannot confirm N. |
 //! | `dash.costWarnThreshold` | DASH; a push estimated above it asks for confirmation. |
 //! | `dash.confirm` | `auto` (default: ask only above the threshold), `always`, `never`, `refuse` (never ask: above the threshold, fail; for unattended callers such as forge-import). |
+//! | `dash.allowPrivateUri` | record a profile's non-public read address (loopback, LAN, plain http, a temporary tunnel) anyway; `git push -o allow-private-uri` does the same for one push. |
 //!
 //! The helper's stdin/stdout belong to git, so confirmation is read from `/dev/tty`. With
 //! no terminal (CI, a GUI client) a push that needs confirmation fails with a message
@@ -19,17 +20,18 @@ use std::io::{BufRead as _, Write as _};
 
 use anyhow::{anyhow, bail, Result};
 use forge_core::cost::estimate;
+use forge_core::cost::git_doc_sizes::{MANIFEST_BASE_BYTES, REF_UPDATE_BYTES};
 use forge_core::repo::credits_to_dash;
-use forge_core::storage::policy::pick_scoped;
+use forge_core::storage::policy::{parse_git_bool, pick_scoped};
+use forge_core::storage::publish::{
+    refuse_unpublishable, ALLOW_PRIVATE_URI_GIT_KEY, ALLOW_PRIVATE_URI_PUSH_OPTION,
+};
 use forge_core::storage::{ResolvedPolicy, StoragePolicy, StorageProfiles};
 use forge_core::user_error::{codes, dash, UserError};
 
 use crate::git::LocalRepo;
+use crate::options::OptionState;
 
-/// Serialized size assumed for a `packManifest` document before its `uris` field.
-const MANIFEST_BASE_BYTES: u64 = 220;
-/// Serialized size assumed for a `refUpdate` document.
-const REF_UPDATE_BYTES: u64 = 200;
 /// Per-object row size of a browse-index fragment (36-byte rows + fanout overhead).
 const LOCATOR_ROW_BYTES: u64 = 36;
 /// Fixed browse-index header (256-entry u32 fanout + header).
@@ -74,6 +76,8 @@ pub struct PushPolicy {
     pub cost_warn_threshold: Option<f64>,
     /// `dash.confirm`.
     pub confirm: ConfirmMode,
+    /// `dash.allowPrivateUri`.
+    pub allow_private_uri: bool,
 }
 
 /// The effective value of a setting that exists both per remote
@@ -118,11 +122,37 @@ impl PushPolicy {
             .map(|v| ConfirmMode::parse(&v))
             .transpose()?
             .unwrap_or_default();
+        let allow_private_uri = config_value(remote, "dashAllowPrivateUri", "allowPrivateUri")
+            .map(|v| parse_git_bool(ALLOW_PRIVATE_URI_GIT_KEY, &v))
+            .transpose()?
+            .unwrap_or(false);
         Ok(Self {
             resolved,
             cost_warn_threshold,
             confirm,
+            allow_private_uri,
         })
+    }
+
+    /// [`Self::load`], then refuse (E501) when a target would record a read address that
+    /// is not public https — before anything is built, uploaded or paid for — unless the
+    /// push option `allow-private-uri`, `dash.allowPrivateUri` or the profile's
+    /// `allow_private_uri` allows it.
+    pub fn load_for_push(remote: Option<&str>, options: &OptionState) -> Result<Self> {
+        let policy = Self::load(remote)?;
+        policy.check_publishable(options.has_push_option(ALLOW_PRIVATE_URI_PUSH_OPTION))?;
+        Ok(policy)
+    }
+
+    // A refusal happens at most once per push; boxing it buys nothing.
+    #[allow(clippy::result_large_err)]
+    fn check_publishable(&self, push_option: bool) -> std::result::Result<(), UserError> {
+        refuse_unpublishable(
+            self.resolved.external.iter().map(|(n, p)| (n.as_str(), p)),
+            push_option || self.allow_private_uri,
+            "push not started",
+            Some(&format!("git push -o {ALLOW_PRIVATE_URI_PUSH_OPTION} …")),
+        )
     }
 }
 
@@ -414,6 +444,37 @@ mod tests {
         );
         assert_eq!(pick_scoped(None, s("global", "g")).as_deref(), Some("g"));
         assert_eq!(pick_scoped(None, None), None);
+    }
+
+    #[test]
+    fn a_non_public_read_address_is_refused_unless_allowed() {
+        let profiles = StorageProfiles::parse(
+            "[profiles.loop]\nkind = \"s3\"\nendpoint = \"http://127.0.0.1:9000\"\nbucket = \"b\"\n\
+             public_url = \"http://127.0.0.1:9000/b\"\n\
+             [profiles.pub]\nkind = \"s3\"\nendpoint = \"https://a.r2.cloudflarestorage.com\"\n\
+             bucket = \"b\"\npublic_url = \"https://files.example.org\"\n",
+        )
+        .unwrap();
+        let policy = |targets: &str, allow: bool| PushPolicy {
+            resolved: StoragePolicy::from_git_values(Some(targets), Some("1"), None)
+                .unwrap()
+                .resolve(&profiles)
+                .unwrap(),
+            cost_warn_threshold: None,
+            confirm: ConfirmMode::Auto,
+            allow_private_uri: allow,
+        };
+        let err = policy("pub,loop", false)
+            .check_publishable(false)
+            .unwrap_err();
+        assert_eq!(err.code, "E501");
+        let text = err.render("dash: ", false);
+        assert!(text.contains("push not started"), "{text}");
+        assert!(text.contains("-o allow-private-uri"), "{text}");
+        // The push option, and git config, each allow it.
+        assert!(policy("pub,loop", false).check_publishable(true).is_ok());
+        assert!(policy("pub,loop", true).check_publishable(false).is_ok());
+        assert!(policy("pub", false).check_publishable(false).is_ok());
     }
 
     #[test]

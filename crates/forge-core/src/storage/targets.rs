@@ -112,9 +112,11 @@ impl Replication {
         groups.concat()
     }
 
-    /// The URI list for a manifest's `uris`, trimmed to fit `budget`: private `s3://`
-    /// locators are dropped first (readers without that profile cannot use them), then an
-    /// error — never a silently truncated or empty list.
+    /// The URI list for a manifest's `uris`, trimmed to fit `budget`: the `s3://` locators
+    /// of copies that also have a public URL are dropped first (readers without that
+    /// profile cannot use them, and the public URL still records the copy), then an error —
+    /// never a silently truncated or empty list, and never one that loses a confirmed copy
+    /// (a private bucket's locator is its only record).
     pub fn manifest_uris(&self, budget: UriBudget) -> Result<Vec<String>> {
         let fits = |v: &Vec<String>| budget.fits(v);
         let mut uris = self.uris();
@@ -127,7 +129,14 @@ impl Replication {
         if fits(&uris) {
             return Ok(uris);
         }
-        uris.retain(|u| !u.starts_with("s3://"));
+        let redundant: Vec<&str> = self
+            .replicas
+            .iter()
+            .filter(|r| r.uris.iter().any(|u| !u.0.starts_with("s3://")))
+            .flat_map(|r| r.uris.iter().map(|u| u.0.as_str()))
+            .filter(|u| u.starts_with("s3://"))
+            .collect();
+        uris.retain(|u| !redundant.contains(&u.as_str()));
         if fits(&uris) && !uris.is_empty() {
             return Ok(uris);
         }
@@ -637,6 +646,32 @@ pub(crate) mod tests {
         let trimmed = rep.manifest_uris(UriBudget::array(1, 300)).unwrap();
         assert!(trimmed[0].starts_with("https://"));
         assert!(rep.manifest_uris(UriBudget::array(8, 10)).is_err());
+    }
+
+    /// A private bucket's `s3://` locator is its only recorded copy: trimming it would
+    /// record fewer copies than confirmed, so the manifest is refused instead.
+    #[test]
+    fn a_private_buckets_only_locator_is_never_trimmed() {
+        let replica = |t: &str, uris: &[&str]| Replica {
+            target: t.into(),
+            uris: uris.iter().map(|u| Uri((*u).to_string())).collect(),
+            platform: false,
+        };
+        let rep = Replication {
+            replicas: vec![
+                replica("pub", &["https://h/p", "s3://b1/p"]),
+                replica("private", &["s3://b2/p"]),
+            ],
+            failures: vec![],
+        };
+        // Room for two: only the public bucket's locator (it has a public URL) may go.
+        let err = rep.manifest_uris(UriBudget::array(2, 300));
+        assert_eq!(
+            err.as_deref().ok(),
+            Some(&["https://h/p".to_string(), "s3://b2/p".to_string()][..])
+        );
+        // Room for one: dropping either copy's last URI loses a copy.
+        assert!(rep.manifest_uris(UriBudget::array(1, 300)).is_err());
     }
 
     /// An in-memory backend whose reads can be made to lie (`lie`), or whose first stored

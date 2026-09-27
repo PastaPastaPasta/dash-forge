@@ -7,6 +7,7 @@
  */
 
 import { useState } from 'react'
+import Link from 'next/link'
 import { CloudOff, RotateCw, Server } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { CopyRow } from '@/components/ui/copy-row'
@@ -14,7 +15,7 @@ import { GatewaysField } from '@/components/gateways-field'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { repoKey, type RepoRef } from '@/lib/repo'
-import { describeUnavailable, forgetDeadMirrors, type UnavailablePack } from '@/lib/view'
+import { describeUnavailable, forgetDeadMirrors, onlyGatewaysFailed, readGatewaysFor, type UnavailablePack } from '@/lib/view'
 import { clearUnreachable } from '@/lib/view/content-checks'
 
 export function StorageUnreachableCard({
@@ -28,9 +29,12 @@ export function StorageUnreachableCard({
   packs: readonly UnavailablePack[]
   retry: () => void
 }): JSX.Element {
-  const [adding, setAdding] = useState(false)
+  const places = describeUnavailable(packs, readGatewaysFor(repoKey(repo)))
+  // Every place that failed is an IPFS gateway: a working gateway is the fix, so the form is
+  // open from the start instead of hidden behind a button.
+  const gatewaysOnly = onlyGatewaysFailed(places)
+  const [adding, setAdding] = useState(gatewaysOnly)
   const { role } = useViewerRole(repo)
-  const places = describeUnavailable(packs)
   const slug = addr ? `${addr.owner}/${addr.name}` : repo.name
 
   return (
@@ -57,6 +61,17 @@ export function StorageUnreachableCard({
               </li>
             ))}
           </ul>
+          {gatewaysOnly ? (
+            <p data-testid="gateway-advice" className="mt-2 text-dense text-anvil-700 dark:text-anvil-200">
+              This repo is stored on IPFS, and none of the gateways this browser tried could serve it.
+              Add a gateway that can reach the owner&apos;s IPFS node below (or in{' '}
+              <Link href="/settings" className="underline underline-offset-2">
+                Settings → Your IPFS gateways
+              </Link>
+              ), then Try again. The owner can fix it for everyone by setting a public gateway on
+              their storage profile (<code className="font-mono text-[12px]">--public-gateway</code>).
+            </p>
+          ) : null}
           <p className="mt-2 text-dense text-anvil-600 dark:text-anvil-300">
             Branches, issues and pull requests are unaffected.
           </p>

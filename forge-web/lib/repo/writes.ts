@@ -21,7 +21,8 @@ import type { Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
-import { allocateNumber, numberCeiling, normalizeRepoName as normalizeV2RepoName, type Role } from '../rules/v2'
+import { isLegalRefName, type EventKind } from '../rules'
+import { allocateNumber, isAuthorKind, numberCeiling, normalizeRepoName as normalizeV2RepoName, type Role } from '../rules/v2'
 import {
   ConsensusRefusal,
   DUPLICATE_UNIQUE_CODE,
@@ -38,6 +39,7 @@ import {
 } from '../sdk'
 import { DOC, num, str, type RepoRef } from './contract'
 import { invalidateMembers } from './members'
+import { refNameHash } from './push'
 import { invalidateRepoFeed } from './issues'
 import { repoSource } from './source'
 
@@ -45,19 +47,11 @@ import { repoSource } from './source'
 // event kind name → integer (parity with forge-core `event_kind_to_u64`)
 // ---------------------------------------------------------------------------
 
-export type EventKindName =
-  | 'close'
-  | 'reopen'
-  | 'merge'
-  | 'labelAdd'
-  | 'labelRemove'
-  | 'assign'
-  | 'unassign'
-  | 'retarget'
-  | 'draft'
-  | 'ready'
+/** The event kinds a member `event` may carry. Kept for callers that name them. */
+export type EventKindName = EventKind
 
-const EVENT_KIND_INT: Readonly<Record<EventKindName, number>> = {
+/** `event.kind` integers (forge-v2.md §3), parity with forge-core `event_kind_to_u64`. */
+export const EVENT_KIND_CODE: Readonly<Record<EventKind, number>> = {
   close: 1,
   reopen: 2,
   merge: 3,
@@ -68,6 +62,14 @@ const EVENT_KIND_INT: Readonly<Record<EventKindName, number>> = {
   retarget: 8,
   draft: 9,
   ready: 10,
+  threadResolve: 11,
+  threadUnresolve: 12,
+  reviewRequest: 13,
+  reviewRequestRemove: 14,
+  reviewDismiss: 15,
+  headUpdate: 16,
+  milestoneSet: 17,
+  milestoneClear: 18,
 }
 
 /** Review verdicts (`review.verdict`). */
@@ -89,7 +91,7 @@ function isDuplicate(e: unknown): boolean {
 }
 
 /** The contract (forge-core or forge-collab) a write of `documentType` targets. */
-function contractFor(repo: RepoRef, documentType: string): string {
+export function contractFor(repo: RepoRef, documentType: string): string {
   return repoSource(repo).repoQuery(documentType).dataContractId
 }
 
@@ -112,10 +114,29 @@ function afterWrite(repo: RepoRef, network: Network, documentType: string): void
 }
 
 /**
- * Create one repo-scoped document: the right contract, `repoId` set, then drop the caches
- * the write invalidates.
+ * The document types whose content a private repo seals in `enc` (`docs/security/private-repos.md`
+ * §4): an `issue`, `patch`, `comment` or `review` written in plaintext would publish it and be
+ * malformed for members (`is_well_formed`). Events, labels and releases are plaintext by design.
  */
-async function writeRepoDoc(
+const SEALED_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.comment, DOC.review])
+
+/**
+ * Refuse a plaintext write of sealed content to a private repo. The sealed writers
+ * (`lib/private` `sealDoc`) are wired by the private-repo web work; until then nothing here may
+ * write an issue, PR, comment or review into a private repo.
+ */
+export function refusePlaintextInPrivate(repo: RepoRef, documentType: string): void {
+  if (repo.visibility === 'private' && SEALED_TYPES.has(documentType)) {
+    throw new Error(`this ${documentType} would be written in plaintext into a private repo; writing private content from here is not supported yet`)
+  }
+}
+
+/**
+ * Create one repo-scoped document: the right contract, `repoId` set, then drop the caches
+ * the write invalidates. Refuses plaintext content in a private repo
+ * ({@link refusePlaintextInPrivate}).
+ */
+export async function writeRepoDoc(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
@@ -123,6 +144,7 @@ async function writeRepoDoc(
   data: Record<string, unknown>,
   intent?: string,
 ): Promise<WriteResult> {
+  refusePlaintextInPrivate(repo, documentType)
   try {
     return await createDocumentIdempotent(sdk, auth, {
       contractId: contractFor(repo, documentType),
@@ -243,33 +265,98 @@ export async function createIssue(
   input: { title: string; body: string; intent?: string },
   onRetry?: (taken: number, next: number) => void,
 ): Promise<CreateIssueResult> {
-  let number = await nextNumber(sdk, repo, 'issue')
+  const data: Record<string, unknown> = { title: input.title }
+  if (input.body.length > 0) data['body'] = input.body
+  return createNumbered(sdk, auth, repo, 'issue', data, input.intent, onRetry)
+}
+
+/** A PR to open (forge-core `PatchInput`). */
+export interface PatchInput {
+  readonly title: string
+  readonly body: string
+  /** The branch to merge into, full name (`refs/heads/main`). */
+  readonly baseRefName: string
+  /** The repo holding the head (this repo, or a fork of it), base58. */
+  readonly sourceRepoId: string
+  /** The branch the head was pushed to in the source repo, full name. */
+  readonly sourceRefName: string
+  /** The head commit, hex. */
+  readonly headOid: string
+}
+
+/**
+ * The `patch` document data (without `repoId` and `number`) forge-core `patch_props` writes:
+ * `title`, `body` when non-empty, `baseRefNameHash = sha256(baseRefName)`, `baseRefName`,
+ * `sourceRepoId`, `sourceRefNameHash = sha256(sourceRefName)`, `sourceRefName`, `headOid`.
+ */
+export function patchData(input: PatchInput): Record<string, unknown> {
+  if (input.title.trim() === '') throw new Error('a title is required')
+  for (const name of [input.baseRefName, input.sourceRefName]) {
+    if (!isLegalRefName(name) || new TextEncoder().encode(name).length > 255) {
+      throw new Error(`illegal ref name ${JSON.stringify(name)}`)
+    }
+  }
+  const head = hexToBytes(input.headOid)
+  if (head.length < 20 || head.length > 32) throw new Error('the PR head must be a 20-32 byte oid')
+  const data: Record<string, unknown> = { title: input.title }
+  if (input.body.length > 0) data['body'] = input.body
+  data['baseRefNameHash'] = refNameHash(input.baseRefName)
+  data['baseRefName'] = input.baseRefName
+  data['sourceRepoId'] = decodeIdentifier(input.sourceRepoId)
+  data['sourceRefNameHash'] = refNameHash(input.sourceRefName)
+  data['sourceRefName'] = input.sourceRefName
+  data['headOid'] = head
+  return data
+}
+
+/** Open a PR (`patch`, ungated), numbered like an issue (PRs number independently). */
+export async function createPatch(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: PatchInput & { intent?: string },
+  onRetry?: (taken: number, next: number) => void,
+): Promise<CreateIssueResult> {
+  return createNumbered(sdk, auth, repo, 'patch', patchData(input), input.intent, onRetry)
+}
+
+/** Create a numbered `issue` / `patch`, allocating again when the number is taken meanwhile. */
+async function createNumbered(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  type: 'issue' | 'patch',
+  fields: Record<string, unknown>,
+  intentBase: string | undefined,
+  onRetry?: (taken: number, next: number) => void,
+): Promise<CreateIssueResult> {
+  const noun = type === 'issue' ? 'issue' : 'PR'
+  const next = (): Promise<number | null> => nextNumber(sdk, repo, type)
+  let number = await next()
   for (let attempt = 0; attempt < 4; attempt++) {
-    if (number === null) throw new Error('this repo has no issue numbers left to allocate')
-    const data: Record<string, unknown> = { number, title: input.title }
-    if (input.body.length > 0) data['body'] = input.body
+    if (number === null) throw new Error(`this repo has no ${noun} numbers left to allocate`)
     try {
       // Each number is its own write: a renumbered retry must not reuse the earlier bytes.
-      const intent = input.intent ? `${input.intent}#${number}` : undefined
-      return { ...(await writeRepoDoc(sdk, auth, repo, DOC.issue, data, intent)), number }
+      const intent = intentBase ? `${intentBase}#${number}` : undefined
+      return { ...(await writeRepoDoc(sdk, auth, repo, DOC[type], { number, ...fields }, intent)), number }
     } catch (e) {
       if (e instanceof UnconfirmedWriteError) {
         // Not seen yet. If someone else holds the number, ours was refused: renumber.
-        const holder = await issueHolder(sdk, repo, number).catch(() => undefined)
+        const holder = await numberHolder(sdk, repo, type, number).catch(() => undefined)
         if (holder === undefined || holder === null || holder === auth.identityId) throw e
       } else if (!isDuplicate(e)) throw e
       const taken: number = number
-      number = await nextNumber(sdk, repo, 'issue')
+      number = await next()
       if (number !== null && number <= taken) number = taken + 1
       if (number !== null) onRetry?.(taken, number)
     }
   }
-  throw new Error('could not claim an issue number after several attempts; try again')
+  throw new Error(`could not claim ${type === 'issue' ? 'an issue' : 'a PR'} number after several attempts; try again`)
 }
 
-/** Who holds issue `number` (its `$ownerId`), or null when nobody does. */
-async function issueHolder(sdk: EvoSDK, repo: RepoRef, number: number): Promise<string | null> {
-  const { documents } = await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(DOC.issue, { where: [['number', '==', number]], limit: 1 }))
+/** Who holds issue / PR `number` (its `$ownerId`), or null when nobody does. */
+async function numberHolder(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch', number: number): Promise<string | null> {
+  const { documents } = await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(DOC[type], { where: [['number', '==', number]], limit: 1 }))
   const owner = documents[0]?.['$ownerId']
   return typeof owner === 'string' ? owner : null
 }
@@ -295,7 +382,7 @@ function eventData(
   const data: Record<string, unknown> = {
     targetId: decodeIdentifier(target.id),
     targetNumber: target.number,
-    kind: EVENT_KIND_INT[kind],
+    kind: EVENT_KIND_CODE[kind],
   }
   if (extra.value !== undefined && extra.value.length > 0) data['value'] = extra.value
   if (extra.oidHex !== undefined && extra.oidHex.length > 0) data['oid'] = hexToBytes(extra.oidHex)
@@ -328,15 +415,29 @@ export async function addAuthorEvent(
   return writeRepoDoc(sdk, auth, repo, DOC.authorEvent, eventData(input.target, input.kind), input.intent)
 }
 
+/**
+ * Which document an event of `kind` by the viewer must be: a member's `event` (every kind),
+ * else the author's `authorEvent` for an author kind, else null (no gate admits it). Parity:
+ * forge-core `kind_route`.
+ */
+export function eventRoute(params: {
+  readonly viewer: string
+  readonly author: string
+  readonly isMember: boolean
+  readonly kind: EventKind
+}): 'event' | 'authorEvent' | null {
+  // A member's event is cheaper and needs no authorship; the author path needs no membership.
+  if (params.isMember) return 'event'
+  return params.viewer === params.author && isAuthorKind(params.kind) ? 'authorEvent' : null
+}
+
 /** Which state-event type a close/reopen by the viewer should be. */
 export function stateEventRoute(params: {
   readonly viewer: string
   readonly author: string
   readonly isMember: boolean
 }): 'event' | 'authorEvent' | null {
-  // A member's event is cheaper and needs no authorship; the author path needs no membership.
-  if (params.isMember) return 'event'
-  return params.viewer === params.author ? 'authorEvent' : null
+  return eventRoute({ ...params, kind: 'close' })
 }
 
 /** Close or reopen an issue/PR by whichever route the viewer holds. */
@@ -591,6 +692,8 @@ export interface CreateRepoInput {
   readonly name: string
   readonly description?: string
   readonly defaultBranch?: string
+  /** The parent repo's id (`repo.forkOf`, immutable) when this is a fork. */
+  readonly forkOf?: string
 }
 
 /** The steps of a repo creation, in order. */
@@ -669,6 +772,16 @@ export async function createRepo(
   // A resumed creation keeps the values it started with, so the repo and config documents
   // agree (the form may have been edited since; the page warns about that).
   const previous = await idbGet<RepoCreationJournal>('journal', key)
+  // A fork and a plain repo of the same name are different creations: resuming one as the
+  // other would write (or drop) `forkOf`, and a fork's packs and refs would land in a repo
+  // that is not a fork of their parent. Refuse rather than guess.
+  if (previous && (previous.input.forkOf ?? null) !== (input.forkOf ?? null)) {
+    throw new Error(
+      previous.input.forkOf
+        ? `an unfinished fork named ${name} is pending in this browser; finish it (Fork again) or dismiss it on the New repository page`
+        : `an unfinished repository named ${name} is pending in this browser; finish or dismiss it on the New repository page first`,
+    )
+  }
   const journal: { -readonly [K in keyof RepoCreationJournal]: RepoCreationJournal[K] } = previous
     ? { ...previous }
     : { network: auth.network, ownerId, input: { ...input, name }, repoId: null, done: [], startedAt: Date.now() }
@@ -702,6 +815,7 @@ export async function createRepo(
     const data: Record<string, unknown> = { name, visibility: 'public' }
     if (input.description) data['description'] = input.description
     if (input.defaultBranch) data['defaultBranch'] = input.defaultBranch
+    if (input.forkOf) data['forkOf'] = decodeIdentifier(input.forkOf)
     try {
       const r = await createDocumentIdempotent(sdk, auth, { contractId: forge.core, documentType: DOC.repo, data, intent: `${key}:repo` })
       repoId = r.documentId

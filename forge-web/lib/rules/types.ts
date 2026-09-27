@@ -88,7 +88,10 @@ export interface Holdings {
   readonly maintain: boolean
 }
 
-/** A collaboration `event` kind (§2.3 numeric kinds 1–10, string-tagged in vectors). */
+/**
+ * A collaboration `event` kind (forge-v2.md §3, numeric kinds 1–18, string-tagged in vectors).
+ * 1–10 change the issue/PR state; 11–18 are the review state (`foldPrReviewV2`).
+ */
 export type EventKind =
   | 'close'
   | 'reopen'
@@ -100,6 +103,14 @@ export type EventKind =
   | 'retarget'
   | 'draft'
   | 'ready'
+  | 'threadResolve'
+  | 'threadUnresolve'
+  | 'reviewRequest'
+  | 'reviewRequestRemove'
+  | 'reviewDismiss'
+  | 'headUpdate'
+  | 'milestoneSet'
+  | 'milestoneClear'
 
 /** A single `event` document (§2.3), flattened for the fold. */
 export interface Event {
@@ -113,8 +124,10 @@ export interface Event {
   readonly actor: string
   /** Kind-dependent payload: label name, assignee id, or retarget base ref. */
   readonly value?: string | null
-  /** Merge commit oid (kind `merge` only). */
+  /** Merge commit oid (kind `merge`) or new head (kind `headUpdate`). */
   readonly oid?: Oid | null
+  /** `refId` (base58): a thread root (11, 12), a reviewer (13, 14), a review (15). */
+  readonly refId?: string | null
   /** Consensus `$createdAt` (ms). */
   readonly createdAt: number
 }

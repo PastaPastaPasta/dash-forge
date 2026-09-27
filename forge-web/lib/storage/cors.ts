@@ -2,12 +2,16 @@
  * The exact CORS configuration to paste for each provider (`ux-dx-spec.md` §3.1 step 3),
  * prefilled with the bucket and this app's origin.
  *
- * Two rules, as in forge-core `storage/cors.rs` plus the write half the browser needs:
- *  - **read**, any origin: `GET`/`HEAD` with `Range`, exposing `Content-Range`, `Content-Length`
+ * Two rules, the same as forge-core `storage/cors.rs` `s3_cors_rules`:
+ *  - **read**, any origin: `GET`/`HEAD` with `range`, exposing `Content-Range`, `Content-Length`
  *    and `ETag`. The objects are public; every Forge web app (and any mirror of it) reads them.
  *  - **write**, this app's origin only: `PUT`/`GET`/`HEAD`/`DELETE` with the SigV4 headers, so
  *    browser pushes and merges can upload. Listed header by header rather than `x-amz-*`,
  *    because not every provider accepts a wildcard there.
+ *
+ * Header names are lowercase: browsers send `Access-Control-Request-Headers` lowercased, and
+ * some stores match `AllowedHeaders` case-sensitively (Garage refuses a `range` preflight for
+ * `["Range"]`).
  */
 
 import { FORGE_RPC_PATHS } from './ipfs'
@@ -26,7 +30,7 @@ export interface CorsFix {
 
 function s3Rules(origin: string): unknown[] {
   return [
-    { AllowedOrigins: ['*'], AllowedMethods: ['GET', 'HEAD'], AllowedHeaders: ['Range'], ExposeHeaders: [...EXPOSE], MaxAgeSeconds: 86400 },
+    { AllowedOrigins: ['*'], AllowedMethods: ['GET', 'HEAD'], AllowedHeaders: ['range'], ExposeHeaders: [...EXPOSE], MaxAgeSeconds: 86400 },
     { AllowedOrigins: [origin], AllowedMethods: ['PUT', 'GET', 'HEAD', 'DELETE'], AllowedHeaders: [...SIGNED_HEADERS], ExposeHeaders: [...EXPOSE], MaxAgeSeconds: 86400 },
   ]
 }
@@ -59,9 +63,8 @@ export function corsFix(provider: ProviderId, bucket: string, origin: string): C
       }
     case 'minio':
       return {
-        where:
-          'MinIO answers CORS for every origin by default (cors_allow_origin="*", which reads need: every Forge web app and mirror reads the objects). If it was restricted, restore it, then make the bucket publicly readable (not writable):',
-        text: ['mc admin config set <alias> api cors_allow_origin="*"', 'mc admin service restart <alias>', `mc anonymous set download <alias>/${b}`].join('\n'),
+        where: `Garage, RustFS and most S3-compatible stores take this document through the S3 API: save it as cors.json and run aws --endpoint-url <your endpoint> s3api put-bucket-cors --bucket ${b} --cors-configuration file://cors.json (Garage applies it to its web endpoint too). MinIO community edition (archived) has no per-bucket CORS: it answers every origin unless it was restricted; restore that with mc admin config set <alias> api cors_allow_origin="*", then make the bucket publicly readable (not writable) with mc anonymous set download <alias>/${b}.`,
+        text: JSON.stringify({ CORSRules: s3Rules(origin) }, null, 2),
       }
     case 'kubo':
     case 'pinning':

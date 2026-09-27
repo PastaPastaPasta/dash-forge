@@ -12,13 +12,15 @@ This guide covers:
 2. [Cloudflare R2](#cloudflare-r2)
 3. [Backblaze B2](#backblaze-b2)
 4. [AWS S3](#aws-s3)
-5. [MinIO (self-hosted)](#minio-self-hosted)
+5. [Self-hosted S3: Garage, RustFS, MinIO](#self-hosted-s3-garage-rustfs-minio)
 6. [IPFS: your own kubo node](#ipfs-your-own-kubo-node)
 7. [IPFS: kubo + a pinning service](#ipfs-kubo--a-pinning-service)
 8. [Choosing where a repo pushes](#choosing-where-a-repo-pushes)
-9. [Cost guard](#cost-guard)
-10. [Reading: gateways and fallbacks](#reading-gateways-and-fallbacks)
-11. [Troubleshooting](#troubleshooting)
+9. [Public addresses](#public-addresses)
+10. [CORS header names](#cors-header-names)
+11. [Cost guard](#cost-guard)
+12. [Reading: gateways and fallbacks](#reading-gateways-and-fallbacks)
+13. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -69,21 +71,21 @@ $ dg storage add
 ? Provider › 1) Cloudflare R2   (region auto, path-style; recommended: free egress)
 ? Account id › 7c1…
 ? Bucket › forge
-? Public URL (r2.dev or custom domain) › https://pub-9a1.r2.dev
+? Public URL (your custom domain, or r2.dev) › https://files.example.org
 ? Access key id › …
 ? Secret access key — how do you want to store it? › 1) paste it now; dg stores it in the macOS Keychain (recommended)
 ? Secret access key ›                  (input is hidden)
 Testing r2-main …
   [ OK ] put            wrote probe/… (signed PUT)
   [ OK ] get            read back identical bytes (signed GET)
-  [ OK ] public read    anonymous GET https://pub-9a1.r2.dev/probe/… OK
-  [FAIL] browser CORS   preflight: Access-Control-Allow-Headers does not include Range
+  [ OK ] public read    anonymous GET https://files.example.org/probe/… OK
+  [FAIL] browser CORS   the CORS preflight for a Range request was refused (status 403 Forbidden)
   [ OK ] delete         probe removed
   → Cloudflare dashboard → R2 → forge → Settings → CORS Policy → Add CORS policy, paste: …
     then run `dg storage test r2-main`
   note: git push and clone work without CORS; the web app cannot read this storage until it passes
 Saved ~/.config/dash-forge/storage.toml (secret stored as keychain:dash-forge/r2-main)
-Equivalent: dg storage add r2-main --kind s3 --endpoint https://7c1….r2.cloudflarestorage.com --region auto --bucket forge --public-url https://pub-9a1.r2.dev --access-key-id … --secret-access-key keychain:dash-forge/r2-main
+Equivalent: dg storage add r2-main --kind s3 --endpoint https://7c1….r2.cloudflarestorage.com --region auto --bucket forge --public-url https://files.example.org --access-key-id … --secret-access-key keychain:dash-forge/r2-main
 Use it in a repo: dg storage use r2-main
 ? Make r2-main the default storage for new repos (and any repo without its own dash.storage)? [Y/n]
 ```
@@ -100,7 +102,7 @@ Keychain entries you created by hand (`security add-generic-password -s dash-for
 
 The web app has the same setup at **Settings → Storage** (`/settings/storage`) on forge.dashhq.org. It is what the browser uses when it uploads to your storage itself, for example a release's assets; `git push` keeps using `dg`'s profiles.
 
-- **Providers:** Cloudflare R2 (recommended: free egress), Backblaze B2, AWS S3, MinIO or other S3, IPFS (your kubo node), an IPFS pinning service, and Dash Platform last (permanent, about 0.28 DASH/MiB). Each field has a "where to find this" hint.
+- **Providers:** Cloudflare R2 (recommended: free egress), Backblaze B2, AWS S3, Garage / RustFS / other S3, IPFS (your kubo node), an IPFS pinning service, and Dash Platform last (permanent, about 0.28 DASH/MiB). Each field has a "where to find this" hint.
 - **A live test from the page**, so it checks exactly what the browser will do, CORS included. S3: signed PUT, signed GET, anonymous GET through the public URL, a ranged read, a CORS preflight for PUT, then the probe is deleted. IPFS: the kubo API, add with a CID check and pin, the gateway re-read, the public gateway, the pinning service, then unpin. A failing CORS row shows a copy-paste fix for your provider, filled in with your bucket and this app's origin; the browser needs PUT allowed from the app's origin, where the CLI needs no CORS at all.
 - **Credentials stay in this browser**, sealed in the same encrypted vault as your [limited key](identity-and-keys.md#the-browser-vault-and-its-limits), and are never sent anywhere else or written on chain. Lock the vault and they are unreadable.
 - **Replication:** one place, every chosen place, or Platform as a costed fallback that asks first. A repository's **Settings → Your browser pushes** overrides the default for that repository.
@@ -116,30 +118,38 @@ The web app has the same setup at **Settings → Storage** (`/settings/storage`)
 R2 has no egress fees, which makes it the cheapest way to serve clones.
 
 1. **Create a bucket.** In the Cloudflare dashboard, open R2 → Create bucket, for example `forge`.
-2. **Make it publicly readable.** Open the bucket → Settings → Public access, then either enable the **R2.dev subdomain** (you get `https://pub-<hash>.r2.dev`) or connect a custom domain. That URL is your `--public-url`.
+2. **Make it publicly readable.** Open the bucket → Settings → **Custom Domains** and connect a domain of yours; that URL is your `--public-url`. The **R2.dev subdomain** (`https://pub-<hash>.r2.dev`) also works, but Cloudflare rate-limits it and recommends it for development only, and the URL is recorded on chain forever.
 3. **Create an API token.** Go to R2 → Manage R2 API Tokens → Create API token with **Object Read & Write**, scoped to this bucket. Note the *Access Key ID*, the *Secret Access Key*, and the S3 endpoint `https://<account-id>.r2.cloudflarestorage.com`.
 4. **Store the secret** in your keychain (macOS shown; on Linux use `secret-tool store --label r2 service dash-forge account r2-main`):
    ```sh
    security add-generic-password -s dash-forge -a r2-main -w   # prompts for the secret
    ```
-5. **Configure CORS** so the web app can read packs. Open the bucket → Settings → CORS Policy → Add CORS policy, and paste:
+5. **Configure CORS** so the web app can read packs, and push to the bucket from the browser. Open the bucket → Settings → CORS Policy → Add CORS policy, and paste:
    ```json
    [
      {
        "AllowedOrigins": ["*"],
        "AllowedMethods": ["GET", "HEAD"],
-       "AllowedHeaders": ["Range"],
+       "AllowedHeaders": ["range"],
+       "ExposeHeaders": ["Content-Range", "Content-Length", "ETag"],
+       "MaxAgeSeconds": 86400
+     },
+     {
+       "AllowedOrigins": ["https://forge.dashhq.org"],
+       "AllowedMethods": ["PUT", "GET", "HEAD", "DELETE"],
+       "AllowedHeaders": ["authorization", "content-type", "range", "x-amz-content-sha256", "x-amz-date", "x-amz-security-token"],
        "ExposeHeaders": ["Content-Range", "Content-Length", "ETag"],
        "MaxAgeSeconds": 86400
      }
    ]
    ```
+   The first rule lets any browser read the (public) packs. The second lets the web app at `https://forge.dashhq.org` push, merge and upload release assets with your key; leave it out if you only push from the CLI. Header names are lowercase on purpose (see [CORS header names](#cors-header-names)).
 6. **Add and test the profile:**
    ```sh
    dg storage add r2-main --kind s3 \
      --endpoint https://<account-id>.r2.cloudflarestorage.com \
      --region auto --bucket forge \
-     --public-url https://pub-<hash>.r2.dev \
+     --public-url https://files.example.org \
      --access-key-id <access-key-id> \
      --secret-access-key keychain:dash-forge/r2-main
    dg storage test r2-main
@@ -164,9 +174,18 @@ R2 wants `region = auto` and path-style addressing (the default).
        "allowedHeaders": ["range"],
        "exposeHeaders": ["content-range", "content-length", "etag"],
        "maxAgeSeconds": 86400
+     },
+     {
+       "corsRuleName": "dashForgeWrite",
+       "allowedOrigins": ["https://forge.dashhq.org"],
+       "allowedOperations": ["s3_put", "s3_get", "s3_head", "s3_delete"],
+       "allowedHeaders": ["authorization", "content-type", "range", "x-amz-content-sha256", "x-amz-date", "x-amz-security-token"],
+       "exposeHeaders": ["content-range", "content-length", "etag"],
+       "maxAgeSeconds": 86400
      }
    ]
    ```
+   Setting CORS needs a key with `writeBuckets`, which a key restricted to one bucket cannot have: run it with an unrestricted key, and give Forge the restricted one.
 6. **Add the profile:**
    ```sh
    export B2_SECRET=…   # or put it in the keychain
@@ -192,18 +211,39 @@ R2 wants `region = auto` and path-style addressing (the default).
    }
    ```
 3. **Create an IAM user or role** limited to `s3:PutObject`, `s3:GetObject` and `s3:DeleteObject` on `arn:aws:s3:::my-forge-packs/*`. Temporary STS credentials work too: add `--session-token env:AWS_SESSION_TOKEN`.
-4. **CORS.** Save the following as `cors.json` and run `aws s3api put-bucket-cors --bucket my-forge-packs --cors-configuration file://cors.json`:
    ```json
    {
-     "CORSRules": [{
-       "AllowedOrigins": ["*"],
-       "AllowedMethods": ["GET", "HEAD"],
-       "AllowedHeaders": ["Range"],
-       "ExposeHeaders": ["Content-Range", "Content-Length", "ETag"],
-       "MaxAgeSeconds": 86400
+     "Version": "2012-10-17",
+     "Statement": [{
+       "Effect": "Allow",
+       "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+       "Resource": "arn:aws:s3:::my-forge-packs/*"
      }]
    }
    ```
+   `s3:ListBucket` is not needed. Without it AWS answers a check for a pack that is not there yet with `403` instead of `404` ([HeadObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API_HeadObject.html)), and Forge then simply uploads the pack.
+4. **CORS.** Save the following as `cors.json` and run `aws s3api put-bucket-cors --bucket my-forge-packs --cors-configuration file://cors.json`:
+   ```json
+   {
+     "CORSRules": [
+       {
+         "AllowedOrigins": ["*"],
+         "AllowedMethods": ["GET", "HEAD"],
+         "AllowedHeaders": ["range"],
+         "ExposeHeaders": ["Content-Range", "Content-Length", "ETag"],
+         "MaxAgeSeconds": 86400
+       },
+       {
+         "AllowedOrigins": ["https://forge.dashhq.org"],
+         "AllowedMethods": ["PUT", "GET", "HEAD", "DELETE"],
+         "AllowedHeaders": ["authorization", "content-type", "range", "x-amz-content-sha256", "x-amz-date", "x-amz-security-token"],
+         "ExposeHeaders": ["Content-Range", "Content-Length", "ETag"],
+         "MaxAgeSeconds": 86400
+       }
+     ]
+   }
+   ```
+   The second rule is only for pushing from the web app; see the R2 section.
 5. **Add the profile.** AWS prefers virtual-hosted addressing; path-style also works in most regions.
    ```sh
    dg storage add aws --kind s3 \
@@ -215,20 +255,28 @@ R2 wants `region = auto` and path-style addressing (the default).
    ```
    A bucket name that contains dots cannot use virtual-hosted addressing over TLS, and `dg` will say so.
 
-## MinIO (self-hosted)
+## Self-hosted S3: Garage, RustFS, MinIO
 
-MinIO answers CORS for every origin by default (`MINIO_API_CORS_ALLOW_ORIGIN`). Make the bucket publicly readable but not publicly writable:
+The MinIO community edition is archived and its images no longer pull, so for a new server use [Garage](https://garagehq.deuxfleurs.fr/) or [RustFS](https://github.com/rustfs/rustfs). Both take the CORS document from the AWS section through the S3 API:
 
 ```sh
-mc mb myminio/forge
-mc anonymous set download myminio/forge
-dg storage add minio --kind s3 --endpoint https://minio.example.org \
-  --bucket forge --public-url https://minio.example.org/forge \
-  --access-key-id <user> --secret-access-key env:MINIO_SECRET
-dg storage test minio
+aws --endpoint-url https://s3.example.org s3api put-bucket-cors --bucket forge --cors-configuration file://cors.json
 ```
 
-The repo's `infra/docker-compose.yml` runs a local MinIO whose `forge-byo` bucket has this exact shape: signed writes (`minioadmin` / `minioadmin`) and anonymous reads. `make storage-it` and `make storage-e2e` test against it.
+- **Garage** serves anonymous reads only on its web endpoint (port 3902), not on the S3 API. Allow website access (`garage bucket website --allow forge`) and give the bucket an alias equal to the public hostname (`garage bucket alias forge files.example.org`). The public URL is that hostname **without** a `/forge` path, and the region is `garage`. Garage applies the bucket's CORS to the web endpoint too, and it compares `AllowedHeaders` case-sensitively, so keep the lowercase names.
+- **RustFS** reads are anonymous once a bucket policy allows `s3:GetObject` (the AWS section's policy works); the public URL is `<endpoint>/<bucket>`.
+- **MinIO** has no per-bucket CORS: it answers every origin unless `mc admin config set <alias> api cors_allow_origin=…` restricted it. Make the bucket publicly readable but not publicly writable with `mc anonymous set download <alias>/forge`.
+
+```sh
+dg storage add garage --kind s3 --endpoint https://s3.example.org --region garage \
+  --bucket forge --public-url https://files.example.org \
+  --access-key-id <key id> --secret-access-key env:GARAGE_SECRET
+dg storage test garage
+```
+
+**The public URL is recorded on chain forever**, with every pack, and everyone who clones reads it. Use a stable public https name on your own domain: a named Cloudflare Tunnel or a reverse proxy with TLS. `dg storage add`, `dg storage test` and `dg doctor` warn, and `git push` refuses, when it is loopback, a LAN address, `.local`, plain http, or a temporary tunnel (`*.trycloudflare.com`, Tailscale Funnel's `*.ts.net`); see [Public addresses](#public-addresses).
+
+The repo's `infra/docker-compose.yml` runs a local S3 store (RustFS, since the `minio/minio` image no longer pulls) whose `forge-byo` bucket has this exact shape: signed writes (`minioadmin` / `minioadmin`) and anonymous reads. `make storage-it` and `make storage-e2e` test against it.
 
 ## IPFS: your own kubo node
 
@@ -243,12 +291,11 @@ dg storage test kubo
 ```
 
 - `--gateway` is where the helper re-reads the upload to verify it. Without it, verification relies on the CID match plus the pin check alone.
-- `--public-gateway` also records `https://…/ipfs/<cid>` in the manifest, which browsers can use directly. Readers already race `ipfs://<cid>` across the public gateway list (see [Reading](#reading-gateways-and-fallbacks)), but content that only your node holds is only reachable through a gateway that can reach your node.
+- `--public-gateway` also records `https://…/ipfs/<cid>` in the manifest, which browsers can use directly, and every reader tries that gateway first. **Set it for any repo stored only on IPFS.** Without it, readers depend on the shared public gateways finding your node on the IPFS network, and a node at home behind NAT usually cannot be found: clones fail and the web page cannot show the code. `dg storage test` warns when no shared gateway could fetch its probe from your node, and `dg doctor` checks every gateway you rely on.
 - If the RPC API sits behind auth (kubo `API.Authorizations`, or a reverse proxy), add `--api-auth env:KUBO_AUTH`. It must hold the full `Authorization` header value, for example `Basic dXNlcjpwYXNz`.
-- CORS: kubo's gateway sends `Access-Control-Allow-Origin: *` by default. If you changed that:
+- CORS: kubo's gateway sends `Access-Control-Allow-Origin: *` by default, and allows the `Range` header. If you changed that:
   ```sh
   ipfs config --json Gateway.HTTPHeaders.Access-Control-Allow-Origin '["*"]'
-  ipfs config --json Gateway.HTTPHeaders.Access-Control-Expose-Headers '["Content-Range", "Content-Length", "ETag"]'
   ```
 
 A pin on a laptop that is usually offline makes a poor replica. Pair it with a bucket, or with a pinning service.
@@ -282,6 +329,15 @@ dg storage use r2-main,platform           # keep an on-chain copy as well
 dg storage use platform                   # back to the default
 ```
 
+**A policy applies to packs pushed after you set it.** A pack's manifest is permanent, so packs already pushed keep the copies they were stored with. Inside a repository with a `dash://` remote, `dg storage use` counts the packs with fewer copies than the new policy asks for and prints the command that stores them again as one consolidated pack; `dg doctor` reports them too:
+
+```sh
+dg repack <owner>/<repo> --profile r2-main,kubo   # one new pack on both; every listed target must confirm; asks first
+dg repack <owner>/<repo> --profile r2-main,platform   # `platform` is a target too
+```
+
+`dg repack` downloads every pack and writes one consolidated pack that supersedes them. It costs one pack upload and one browse-index upload per listed target (Platform chunks at the Platform rate when `platform` is listed), plus two small manifest writes. A manifest can name at most 32 packs it supersedes; with more live packs, `dg repack` says how many it could not name, and running it again names the next ones. It stops with nothing written if a push lands while it runs. (`dg reseed --profile <p>` copies each pack separately instead, but records the new copy as your own manifest only for packs you have not recorded yet, so it cannot add a copy to packs you pushed yourself.)
+
 These commands write git config, and you can also set it by hand:
 
 | key | meaning |
@@ -289,7 +345,8 @@ These commands write git config, and you can also set it by hand:
 | `dash.storage` | Comma-separated profile names. `platform` is built in. **Unset means Platform only**, exactly as before. |
 | `dash.replicas` | N. The push fails unless N targets confirm. Default: every listed target. |
 | `dash.platformFallback` | When the external targets cannot reach N, store the pack on Platform instead. The costed fallback is also subject to the cost guard. |
-| `remote.<name>.dashStorage`, `…dashReplicas`, `…dashPlatformFallback` | Per-remote overrides. |
+| `dash.allowPrivateUri` | Record a profile's non-public read address anyway (see [Public addresses](#public-addresses)). |
+| `remote.<name>.dashStorage`, `…dashReplicas`, `…dashPlatformFallback`, `…dashAllowPrivateUri` | Per-remote overrides. |
 
 When Platform is one of the targets, the manifest records `storage = 0`, `chunkCount > 0`, and **also** lists every external URI. Platform-reading clients, including today's web app, read the chunks. CLI readers race the external copies first. With only external targets, the manifest records `storage = 1`, `chunkCount = 0`, and the URIs.
 
@@ -300,6 +357,35 @@ dg storage advertise <owner>/<repo>
 ```
 
 A **new** repository needs none of this: `dg repo create --push --storage r2-main` and `dg init --storage r2-main` write the advertised mode and read bases into the repository's first config, set `dash.storage` (and `dash.replicas` when you pass `--replicas`) in the repository's own git config, and push. Without `--storage` they use `dash.storage` from git config (this repository's, then your global one), then your only profile if you have exactly one. With none of those they stop **before creating anything** ([E508](../errors.md#e508)) and quote what Platform storage would cost for this repository; pass `--storage platform` to accept that price.
+
+## Public addresses
+
+Every push records each copy's read address (an S3 profile's `--public-url`, an IPFS profile's `--public-gateway`) in its manifest, **on chain, forever**. Everyone who clones or browses reads it. So it must be a public https URL that will keep working:
+
+| Address | What happens |
+|---|---|
+| Loopback, LAN (`10/8`, `172.16/12`, `192.168/16`, CGNAT `100.64/10`, link-local, IPv6 ULA and link-local), `.local`, `.localhost`, `.internal` | Nobody else can read it. `git push` refuses ([E501](../errors.md#e501)) before anything is built, uploaded or paid for. |
+| Plain `http://` | The web app refuses to read it (the CLI still does). `git push` refuses. |
+| A Cloudflare quick tunnel (`*.trycloudflare.com`) | Its random name changes every time the tunnel restarts. `git push` refuses. Use a named tunnel on your own domain. |
+| Tailscale Funnel (`*.ts.net`) | Stops working when the machine or tailnet is renamed or Funnel is switched off. `git push` refuses. |
+| `*.r2.dev` | Works, but Cloudflare rate-limits it and does not recommend it for production. A warning only; connect a custom domain for real repositories. |
+
+`dg storage add`, `dg storage test` and `dg doctor` print these warnings. To record such an address anyway (a local test, a LAN-only mirror), use one of:
+
+```sh
+git push -o allow-private-uri origin main          # this push only
+git config dash.allowPrivateUri true               # this repository
+dg storage add minio-lan … --allow-private-uri     # this profile (allow_private_uri = true in storage.toml)
+dg init --storage minio-lan --allow-private-uri    # dg init / dg repo create --push
+```
+
+The web app refuses the same loopback, private and plain-http addresses and warns about temporary tunnels; `forge-contracts/fixtures/public-urls.json` holds the cases both test.
+
+## CORS header names
+
+Browsers send the request headers of a preflight in lowercase (`Access-Control-Request-Headers: range`), and some stores compare `AllowedHeaders` case-sensitively: Garage refuses a `range` preflight for `"AllowedHeaders": ["Range"]`. So every document in this guide lists lowercase names, which work on AWS, R2, B2, Garage and RustFS alike.
+
+The web app does not need `Content-Range` in `Access-Control-Expose-Headers` (it slices ranged reads itself), so `dg storage test` only warns when a store does not expose it (Storj linksharing sends no `Access-Control-Expose-Headers` at all).
 
 ## Cost guard
 
@@ -322,7 +408,7 @@ Every clone, fetch, repack and reseed reads each pack like this:
 
 1. It tries every `https://` URL the manifest recorded (public bucket URLs, public gateway URLs).
 2. For each recorded `s3://bucket/key` where you have a profile for that bucket, it tries a signed GET. This covers private buckets. The secrets are resolved only when this step is actually reached. If several profiles name the same bucket (on different endpoints), each is tried in turn. Keys containing `.`, `..` or empty segments are never signed.
-3. It tries `ipfs://<cid>` on **every gateway in your list**, two at a time.
+3. It tries `ipfs://<cid>` on the repo's **own** public gateways first (the `…/ipfs/` URLs its pushes recorded and its advertised read URLs), then on **every gateway in your list**, two at a time.
 4. Only then does it fall back to Platform chunks, if the manifest has any.
 
 A candidate wins only when its bytes hash to the manifest's SHA-256. Limits:
@@ -330,12 +416,14 @@ A candidate wins only when its bytes hash to the manifest's SHA-256. Limits:
 - each candidate's whole transfer gets `max(120 s, size ÷ 1 MiB/s)`, so a 2 GiB pack gets about 34 minutes. A host that stalls outright is cut off sooner, after 120 s with no bytes;
 - when Platform chunks exist, no new external candidate is started after `max(90 s, half that deadline)`, and the reader falls back to the chunks. A transfer already in progress is not abandoned.
 
-The default gateway list lives in one place, [`forge-contracts/config/storage-defaults.json`](../../forge-contracts/config/storage-defaults.json). `git-remote-dash`, `dg` and the web app all embed it; in the web app, **Settings → Your IPFS gateways** adds gateways tried before it. Override it for the CLI in `storage.toml`:
+The default gateway list lives in one place, [`forge-contracts/config/storage-defaults.json`](../../forge-contracts/config/storage-defaults.json), with the date it was last verified. `git-remote-dash`, `dg` and the web app all embed it; in the web app, **Settings → Your IPFS gateways** adds gateways tried before it. It is deliberately short: public gateways come and go (ipfs.io and dweb.link stopped serving on 2026-09-21), and every dead entry costs a timeout. Override it for the CLI in `storage.toml`:
 
 ```toml
 [read]
-ipfs_gateways = ["http://127.0.0.1:8080", "https://ipfs.io", "https://dweb.link"]
+ipfs_gateways = ["http://127.0.0.1:8080", "https://ipfs.filebase.io"]
 ```
+
+`dg doctor` probes every gateway in the list (and each IPFS profile's public gateway) and flags the dead ones. When no gateway can serve a repo, the web app says which gateways failed and offers to add one, instead of loading forever.
 
 `dg storage status <owner>/<repo>` probes every copy of every pack: each recorded URL, and each CID on each gateway.
 
@@ -374,6 +462,7 @@ Plain `dg reseed --profile <name>` (without `--from-local`) re-uploads packs tha
 | `kubo returned CID … but these bytes derive to …` | The node ignored the pinned import parameters (a very old kubo, or a proxy rewriting the request). Upgrade kubo. |
 | `pinning service request … still queued` | The service cannot reach your node. Make it dialable or raise `--pin-timeout-secs`. |
 | `dg storage test`: `browser CORS` FAIL | Paste the printed provider CORS configuration. The CLI works without CORS, but the web app does not. |
+| `push not started: storage profile "x" would record a non-public public_url on chain [E501]` | The profile's public address is loopback, LAN, plain http or a temporary tunnel. Give it a public https address, or see [Public addresses](#public-addresses) to record it anyway. |
 | `No terminal to confirm on` | See [Cost guard](#cost-guard). |
 | `pack … already recorded at …, none reachable` | An earlier push already recorded this exact pack, but none of its copies can be read now. This push stored nothing and updated no ref. Restore the copy: see [Restoring a lost copy](#restoring-a-lost-copy). |
 | `note: an earlier interrupted push left Platform chunks …` | A Platform upload was interrupted and you then pushed the same pack to external storage only. Those chunks still hold a refundable deposit. Re-push with `platform` in `dash.storage` to use them, or reclaim them at teardown. The journal that names them is kept. |

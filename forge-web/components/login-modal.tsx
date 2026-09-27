@@ -24,7 +24,7 @@ import { useUiStore, type LoginView } from '@/hooks/use-ui-store'
 import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
-import { ErrorBox, useProtection } from '@/components/auth/protection-fields'
+import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protection-fields'
 import { CreateIdentityFlow } from '@/components/auth/create-identity-flow'
 import { WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
 import { FORGET_CONFIRM } from '@/components/keys-panel'
@@ -323,7 +323,7 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
 }
 
 function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (identityId: string) => void }): JSX.Element {
-  const { importIdentity, isLoading, vaults, identity } = useAuth()
+  const { importIdentity, isLoading, vaults, identity, controller } = useAuth()
   const [mode, setMode] = useState<'file' | 'mnemonic'>('file')
   // The identity file holds every private key: a ref (not React state), dropped on unmount
   // and after use; state only records that one was chosen.
@@ -420,6 +420,7 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
         Registers a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for {BROWSER_KEY_DEFAULTS.days} days (~0.0005 DASH, one master-key signature).
       </p>
+      {controller.supportsLimitedKeys() ? <GroupNotice check={() => controller.checkGroup()} /> : null}
       <Button variant="primary" className="w-full" onClick={submit} loading={isLoading} disabled={!ready}>
         Create this browser&apos;s key
       </Button>

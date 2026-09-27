@@ -133,7 +133,8 @@ pub enum Command {
         /// env-configured targets (FORGE_S3_* / FORGE_IPFS_*); prefer --profile.
         #[arg(long, conflicts_with = "profile")]
         backend: Option<Backend>,
-        /// Storage profile (from `dg storage add`) for the consolidated pack.
+        /// Storage profile(s) (from `dg storage add`, or `platform`) for the consolidated
+        /// pack; a comma-separated list stores it on each, and every one must confirm.
         #[arg(long)]
         profile: Option<String>,
     },
@@ -165,7 +166,7 @@ pub enum Command {
     /// Webhooks a relay delivers (forge-v2).
     #[command(subcommand)]
     Webhook(webhook::WebhookCommand),
-    /// Import (or re-sync) a GitHub repository into forge-v2: code, issues, PRs, releases.
+    /// Import (or re-sync) a GitHub repository or GitLab project into forge-v2: code, issues, PRs/MRs, releases.
     Import(Box<import::ImportArgs>),
     /// Diagnose the identity, network, contracts, storage, git config and toolchain.
     Doctor {
@@ -214,6 +215,11 @@ pub struct CreateOptions {
     /// The git remote to add for the repo (default: origin). Pushing flows only.
     #[arg(long, value_name = "NAME")]
     pub remote: Option<String>,
+    /// Record the storage's public URL on chain even though it is not a public https
+    /// address (loopback, LAN, plain http, a temporary tunnel). Without it the command stops
+    /// before creating anything.
+    #[arg(long)]
+    pub allow_private_uri: bool,
     /// Create a private repository: contents (code, ref names, issues, PRs, comments,
     /// reviews) are encrypted to its members. Needs an encryption key on your identity
     /// (`dg auth keys add --encryption`). Visibility cannot be changed later.
@@ -768,6 +774,11 @@ pub struct StorageAddArgs {
     /// pinning service: seconds to wait for `pinned`.
     #[arg(long)]
     pub pin_timeout_secs: Option<u64>,
+    /// Let pushes record this profile's public URL / public gateway on chain even though it
+    /// is not a public https address (loopback, LAN, plain http, a temporary tunnel): for a
+    /// local test or a LAN-only mirror. Pushes refuse such an address otherwise.
+    #[arg(long)]
+    pub allow_private_uri: bool,
 }
 
 /// A storage backend mode (`repo backend set`).
@@ -864,13 +875,7 @@ impl RoleArg {
 }
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_writer(std::io::stderr)
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .init();
+    forge_core::logging::init_cli();
 
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,

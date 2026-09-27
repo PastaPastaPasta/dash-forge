@@ -1,0 +1,14 @@
+{
+  "name": "parse_unclosed_runs_to_end",
+  "description": "An unclosed suggestion fence runs to the end of the body.",
+  "case": "suggestion",
+  "rules": "v2",
+  "input": {
+    "body": "```suggestion\nlast line"
+  },
+  "expected": [
+    {
+      "text": "last line"
+    }
+  ]
+}

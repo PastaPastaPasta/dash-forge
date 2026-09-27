@@ -91,6 +91,8 @@ export interface TrustInputs {
   readonly configuredBackend: string
   /** The config's declared storage URIs (hosts not tried are listed as such). */
   readonly configuredUris?: readonly string[]
+  /** The IPFS gateways this repo's reads try ({@link readGatewaysFor}); default: the reader's. */
+  readonly gateways?: readonly string[]
 }
 
 /** The rules that fold a repo's refs. */
@@ -294,7 +296,7 @@ function sourceName(source: string): string {
 
 function deriveSource(input: TrustInputs, content: TrustLink): TrustLink {
   const { sources, unreachable } = input.checks
-  const gatewayHosts = new Set(readGateways().map(urlHost))
+  const gatewayHosts = new Set((input.gateways ?? readGateways()).map(urlHost))
   const tried = new Set(sources.map((s) => (gatewayHosts.has(s) ? 'ipfs' : s)))
   const notTried = [...new Set((input.configuredUris ?? []).map(urlHost))].filter((h) => h !== '' && !tried.has(h))
   const also = notTried.length > 0 ? ` Also recorded: ${notTried.map((h) => `${h} (not tried)`).join(', ')}.` : ''

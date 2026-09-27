@@ -11,6 +11,7 @@
 //!   store only that key.
 //! - `status`, `balance`, `keys list|add|disable`, `name register`, `export`, `logout`.
 
+pub mod group;
 mod keys;
 mod new;
 pub mod store;
@@ -97,6 +98,17 @@ pub struct KeyLimitArgs {
     /// How long the key lives: `180d`, `12w`, `6m`, `1y` (default 180d).
     #[arg(long, value_name = "DURATION")]
     pub expires: Option<String>,
+    /// Refuse to bind the key if the forge contract group holds any contract this dg does not
+    /// know, even one the Forge deployer owns (also DASH_FORGE_STRICT_GROUP=1).
+    #[arg(long)]
+    pub strict_group: bool,
+}
+
+impl KeyLimitArgs {
+    /// Whether the group check is strict: `--strict-group` or DASH_FORGE_STRICT_GROUP.
+    pub fn strict_group(&self) -> bool {
+        group::strict_requested(self.strict_group)
+    }
 }
 
 /// Where to put the key when there is no OS keychain.
@@ -258,46 +270,7 @@ pub fn key_spec(
     })
 }
 
-/// Refuse to bind a key to a group unless the chain shows it holds the two forge contracts and
-/// nothing but Forge's own contracts (the current pair, and earlier versions the bundled
-/// deployment lists as superseded in the same group): a key bound to the group can sign for
-/// whatever it holds. This is a check at binding time: the group's owner can add members later,
-/// so the owner is a trust root (docs/guides/identity-and-keys.md#trust-roots).
-pub async fn check_group(ctx: &Ctx, client: &PlatformClient, group: &str) -> Result<()> {
-    let forge = ctx.target.require_v2()?;
-    let members = client
-        .contract_group_members(group)
-        .await
-        .context("checking the forge contract group on chain")?;
-    let mut have = members.contracts;
-    have.sort();
-    let ours = |c: &String| {
-        *c == forge.core || *c == forge.collab || forge.superseded_in_group.contains(c)
-    };
-    let current_present = have.contains(&forge.core) && have.contains(&forge.collab);
-    if current_present
-        && have.iter().all(ours)
-        && members.document_types == 0
-        && members.tokens == 0
-    {
-        return Ok(());
-    }
-    Err(UserError::new(
-        codes::INVALID_CONFIG,
-        "refusing to bind a key to the forge contract group",
-    )
-    .cause(format!(
-        "group {group} on {} holds contracts {have:?}, {} document type(s) and {} token(s); \
-         a Forge limited key must be usable only on forge-core {} and forge-collab {}",
-        ctx.network_label(),
-        members.document_types,
-        members.tokens,
-        forge.core,
-        forge.collab
-    ))
-    .fix("update dg (its deployment file may be stale), or report it")
-    .into())
-}
+pub use group::check_group;
 
 /// Ask for the 12 recovery words without echo (never from the environment: child processes
 /// would inherit them).
@@ -397,9 +370,15 @@ pub async fn register_limited_key(
     master: &BridgeIdentity,
     spec: &LimitedKeySpec,
     replace: Option<u32>,
+    checked: &group::GroupCheck,
     persist: &mut dyn FnMut(&Secret) -> Result<()>,
 ) -> Result<u32> {
-    check_group(ctx, client, &spec.group).await?;
+    if !checked.covers(&spec.group) {
+        anyhow::bail!(
+            "internal error: the group check was not made for group {}",
+            spec.group
+        );
+    }
     let before = client.fetch_identity(&master.identity_id).await?;
     let disable: Vec<u32> = match replace {
         Some(id) if before.is_limited_key(id) => vec![id],
@@ -446,6 +425,7 @@ pub async fn register_and_store(
     master: &BridgeIdentity,
     spec: &LimitedKeySpec,
     replace: Option<u32>,
+    checked: &group::GroupCheck,
     insecure_plaintext: bool,
 ) -> Result<(u32, store::Stored)> {
     let network = ctx.network_label();
@@ -464,7 +444,7 @@ pub async fn register_and_store(
         promote: |t: &Secret| store::promote(&mut storer.borrow_mut(), &network, &id_, t),
     };
     let mut staged = None;
-    let result = register_limited_key(ctx, client, master, spec, replace, &mut |t| {
+    let result = register_limited_key(ctx, client, master, spec, replace, checked, &mut |t| {
         staged = Some((t.clone(), (slots.stage)(t)?));
         Ok(())
     })
@@ -682,6 +662,7 @@ async fn login_source(
 
 /// Import an identity once: register a limited key signed by its master key and store only
 /// that key (or, with `--full-key`, the whole identity).
+#[allow(clippy::too_many_lines)]
 async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
     let client = ctx.connect().await?;
     let master = login_source(ctx, &client, args).await?;
@@ -731,33 +712,51 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         (stored, None, None)
     } else {
         let spec = key_spec(ctx, &args.limits, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS)?;
-        explain_new_key(ctx, &master.identity_id, &spec, "for this computer");
+        let checked = check_group(ctx, &client, &spec.group, args.limits.strict_group()).await?;
+        explain_new_key(
+            ctx,
+            &master.identity_id,
+            &spec,
+            "for this computer",
+            &checked,
+        );
         ctx.confirm_or_cancel("Register the key?")?;
-        let (id, stored) =
-            register_and_store(ctx, &client, &master, &spec, args.replace, insecure).await?;
-        (stored, Some(id), Some(spec))
+        let (id, stored) = register_and_store(
+            ctx,
+            &client,
+            &master,
+            &spec,
+            args.replace,
+            &checked,
+            insecure,
+        )
+        .await?;
+        (stored, Some(id), Some((spec, checked)))
     };
     store::set_default(ctx, &master.identity_id, &stored.source())?;
     let balance = on_chain.balance();
     ctx.emit(
-        json!({
-            "status": "logged_in",
-            "identityId": master.identity_id,
-            "network": network,
-            "keyId": key_id,
-            "fullKey": full_key,
-            "budgetCredits": spec.as_ref().map(|s| s.budget_credits),
-            "expiresAt": spec.as_ref().map(|s| s.expires_at_ms),
-            "storage": stored.kind(),
-            "storedAt": stored.describe(),
-            "source": stored.source(),
-            "balanceCredits": balance,
-            "balanceDash": credits_to_dash(balance),
-        }),
+        group::with_group_fields(
+            json!({
+                "status": "logged_in",
+                "identityId": master.identity_id,
+                "network": network,
+                "keyId": key_id,
+                "fullKey": full_key,
+                "budgetCredits": spec.as_ref().map(|(s, _)| s.budget_credits),
+                "expiresAt": spec.as_ref().map(|(s, _)| s.expires_at_ms),
+                "storage": stored.kind(),
+                "storedAt": stored.describe(),
+                "source": stored.source(),
+                "balanceCredits": balance,
+                "balanceDash": credits_to_dash(balance),
+            }),
+            spec.as_ref().map(|(_, c)| c),
+        ),
         || {
             println!("✓ signed in as {} on {network}", master.identity_id);
             match (key_id, &spec) {
-                (Some(id), Some(s)) => println!(
+                (Some(id), Some((s, _))) => println!(
                     "  key #{id}: limited, {} DASH budget, expires {}",
                     dash_amount(credits_to_dash(s.budget_credits)),
                     expiry_text(s.expires_at_ms)
@@ -780,7 +779,15 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
 }
 
 /// Say what registering a limited key will allow and cost (human mode).
-fn explain_new_key(ctx: &Ctx, identity_id: &str, spec: &LimitedKeySpec, purpose: &str) {
+/// `checked` is the group check made just before: members beyond Forge's known contracts are
+/// listed here, so they are seen before the key is confirmed.
+pub fn explain_new_key(
+    ctx: &Ctx,
+    identity_id: &str,
+    spec: &LimitedKeySpec,
+    purpose: &str,
+    checked: &group::GroupCheck,
+) {
     if ctx.json {
         return;
     }
@@ -797,6 +804,7 @@ fn explain_new_key(ctx: &Ctx, identity_id: &str, spec: &LimitedKeySpec, purpose:
         "  one identity update, {}; the master key signs once and is not stored",
         crate::fmt::cost_line(KEY_UPDATE_ESTIMATE_CREDITS, crate::fmt::dash_usd_price())
     );
+    checked.print_notice(ctx, "  ");
 }
 
 /// Estimate for one identity update adding a key (credits; an upper bound).
@@ -1103,14 +1111,15 @@ async fn export(ctx: &Ctx, args: &ExportArgs) -> Result<()> {
             true,
         )?)
     };
-    let (key_id, identity_id) = if args.new_key {
+    let (key_id, identity_id, checked) = if args.new_key {
         let client = ctx.connect().await?;
         let master = master_identity(ctx, args.master.as_deref(), &current.identity_id)?;
         let spec = key_spec(ctx, &args.limits, 0.5, 365)?;
-        explain_new_key(ctx, &master.identity_id, &spec, "to export");
+        let checked = check_group(ctx, &client, &spec.group, args.limits.strict_group()).await?;
+        explain_new_key(ctx, &master.identity_id, &spec, "to export", &checked);
         ctx.confirm_or_cancel("Register the key?")?;
         let mut written = false;
-        let id = register_limited_key(ctx, &client, &master, &spec, None, &mut |t| {
+        let id = register_limited_key(ctx, &client, &master, &spec, None, &checked, &mut |t| {
             // A bridge-format export of a lone limited key.
             let text = if args.format == "bridge" {
                 BridgeIdentity::from_dfk1(t.expose())?.to_json_with_secrets()
@@ -1129,7 +1138,7 @@ async fn export(ctx: &Ctx, args: &ExportArgs) -> Result<()> {
             Ok(())
         })
         .await?;
-        (Some(id), master.identity_id)
+        (Some(id), master.identity_id, Some(checked))
     } else {
         let (text, key_id) = current_key_text(ctx, &current, &args.format).await?;
         if to_stdout {
@@ -1138,19 +1147,22 @@ async fn export(ctx: &Ctx, args: &ExportArgs) -> Result<()> {
             return Ok(());
         }
         keystore::create_private_file(&path, &sealed_or_clear(&text, pass.as_ref())?)?;
-        (key_id, current.identity_id.clone())
+        (key_id, current.identity_id.clone(), None)
     };
     let encrypted = pass.is_some();
     ctx.emit(
-        json!({
-            "status": "exported",
-            "path": path.display().to_string(),
-            "identityId": identity_id,
-            "keyId": key_id,
-            "encrypted": encrypted,
-            "format": args.format,
-            "network": ctx.network_label(),
-        }),
+        group::with_group_fields(
+            json!({
+                "status": "exported",
+                "path": path.display().to_string(),
+                "identityId": identity_id,
+                "keyId": key_id,
+                "encrypted": encrypted,
+                "format": args.format,
+                "network": ctx.network_label(),
+            }),
+            checked.as_ref(),
+        ),
         || {
             println!(
                 "✓ wrote {} (0600, {})",

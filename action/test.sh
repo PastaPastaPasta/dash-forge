@@ -159,6 +159,10 @@ bad INPUT_STORAGE_KIND=ipfs-pinning
 bad INPUT_VERSION=latest
 bad INPUT_STORAGE_KIND=s3 INPUT_S3_ENDPOINT=https://x.example INPUT_S3_BUCKET=b INPUT_S3_PREFIX=$'a\nb'
 bad INPUT_STORAGE_KIND=s3 INPUT_S3_ENDPOINT='https://x.example/$(id)' INPUT_S3_BUCKET=b
+good INPUT_STORAGE_KIND=s3 INPUT_S3_ENDPOINT=https://s3.us-east-1.amazonaws.com INPUT_S3_BUCKET=forge \
+    INPUT_S3_VIRTUAL_HOSTED=true
+bad INPUT_STORAGE_KIND=s3 INPUT_S3_ENDPOINT=https://x.example INPUT_S3_BUCKET=forge INPUT_S3_VIRTUAL_HOSTED=yes
+bad INPUT_S3_VIRTUAL_HOSTED=true
 
 # mirror.sh with stub binaries that record their arguments and environment.
 mkdir -p "$tmp/bin"
@@ -205,6 +209,13 @@ expect env 'GIT_CONFIG_VALUE_0=mirror'
 expect env 'GIT_CONFIG_KEY_2=dash.platformFallback'
 expect env 'GIT_CONFIG_COUNT=3'
 reject args '--dry-run'
+reject dg '--virtual-hosted'
+
+case="mirror s3 virtual-hosted"
+mirror DASH_FORGE_KEY=dfk1:a:b:1:w INPUT_STORAGE_KIND=s3 INPUT_S3_ENDPOINT=https://s3.us-east-1.amazonaws.com \
+    INPUT_S3_BUCKET=b INPUT_S3_VIRTUAL_HOSTED=true S3_ACCESS_KEY_ID=AK S3_SECRET_ACCESS_KEY=SK ||
+    echo "FAIL [$case] exited $?"
+expect dg '--virtual-hosted'
 
 case="mirror exit codes"
 mirror DASH_FORGE_KEY=dfk1:a:b:1:w STUB_RC=4 || { echo "FAIL [$case] partial (4) failed the step"; fails=$((fails + 1)); }

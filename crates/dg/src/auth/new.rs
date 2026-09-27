@@ -3,12 +3,15 @@
 //! 1. Twelve recovery words, shown once; the user types three of them back.
 //! 2. The deposit address (the words' BIP-44 asset-lock key) as a QR code and as text, with the
 //!    amount. Funds come from any Dash wallet.
-//! 3. The deposit is watched through a block explorer (Insight; `--explorer` changes it). Each
-//!    output it reports is re-read from its raw transaction before anything is signed.
+//! 3. The deposit is watched through DAPI: a bloom-filtered `subscribeToTransactionsWithProofs`
+//!    feed of the address, from the height the creation started at. Values come from the raw
+//!    transactions themselves. A block explorer (Insight; `--explorer` changes it) is asked
+//!    only when the feed is idle or unavailable, and its outputs are re-read from their raw
+//!    transactions too.
 //! 4. A type-8 asset lock spends the deposit to a credit output; it is saved to the journal
 //!    before it is broadcast (DAPI first, the explorer as fallback).
 //! 5. The lock is proven: an InstantSend lock where the network offers one, else a chain lock
-//!    once Platform's chain-locked height reaches the transaction (devnets).
+//!    once DAPI reports the transaction mined and Platform's chain-locked height reaches it.
 //! 6. One IdentityCreate registers the canonical keys (MASTER, HIGH, CRITICAL, TRANSFER,
 //!    ENCRYPTION — the same DIP-13 keys the bridge and the web app derive) plus this computer's
 //!    limited key, which is stored **before** the identity exists, so an interruption can never
@@ -25,16 +28,16 @@ use anyhow::{Context as _, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use forge_core::funding::{fetch_islock, CoreEndpoints, Insight};
+use forge_core::funding::{self, fetch_islock, CoreChain as _, CoreEndpoints, Insight};
 use forge_core::keystore::{BridgeIdentity, Secret};
 use forge_core::platform::identity::{
-    self, build_asset_lock, identity_id_for, verify_deposit, FreshKey, LimitedKeySpec, LockProof,
-    NewIdentityKeys, SignedAssetLock, VerifiedUtxo, DUFFS_PER_DASH, FIRST_LIMITED_KEY_ID,
-    MIN_DEPOSIT_DUFFS,
+    self, build_asset_lock, identity_id_for, FreshKey, LimitedKeySpec, LockProof, NewIdentityKeys,
+    SignedAssetLock, VerifiedUtxo, DUFFS_PER_DASH, FIRST_LIMITED_KEY_ID, MIN_DEPOSIT_DUFFS,
 };
 use forge_core::platform::PlatformClient;
 use forge_core::user_error::{codes, UserError};
 
+use super::group::GroupCheck;
 use super::{
     check_group, dash_amount, expiry_text, key_spec, read_mnemonic, register_and_store, store,
     KeyLimitArgs, StorageArgs, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS,
@@ -60,7 +63,7 @@ pub struct NewArgs {
     pub name: Option<String>,
     #[command(flatten)]
     pub backup: BackupArgs,
-    /// Block explorer (Insight API base URL) used to watch the deposit.
+    /// Fallback block explorer (Insight API base URL), asked only when DAPI cannot answer.
     #[arg(long, value_name = "URL")]
     pub explorer: Option<String>,
     /// Resume an interrupted creation (asks for the words again).
@@ -102,6 +105,9 @@ struct Journal {
     lock_raw: Option<String>,
     identity_id: Option<String>,
     started_at: u64,
+    /// The Core height when the creation started: the deposit watch replays from here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    start_height: Option<u32>,
 }
 
 fn journal_path(network: &str) -> Result<PathBuf> {
@@ -210,86 +216,56 @@ fn backup_ceremony(ctx: &Ctx, words: &Secret, skip_check: bool) -> Result<()> {
     Ok(())
 }
 
-/// Wait until the deposit address holds `min_duffs`, verifying every output from its raw
-/// transaction. Returns the verified outputs.
+/// Wait until the deposit address holds `min_duffs` (DAPI feed first, the explorer when the
+/// feed is idle or down). Returns the verified outputs.
 async fn wait_for_deposit(
     ctx: &Ctx,
+    client: &PlatformClient,
     insight: &Insight,
     address: &str,
     min_duffs: u64,
+    from_height: u32,
 ) -> Result<Vec<VerifiedUtxo>> {
-    let start = Instant::now();
-    let mut last_seen = u64::MAX;
-    loop {
-        match insight.utxos(address).await {
-            Ok(listed) => {
-                let claimed: u64 = listed.iter().map(|u| u.satoshis).sum();
-                if claimed != last_seen {
-                    if claimed > 0 {
-                        say(
-                            ctx,
-                            format!(
-                                "  deposit seen: {} DASH",
-                                dash_amount(duffs_to_dash(claimed))
-                            ),
-                        );
-                    }
-                    last_seen = claimed;
-                }
-                if claimed >= min_duffs && !listed.is_empty() {
-                    let mut verified = Vec::new();
-                    for u in &listed {
-                        let raw = insight.raw_tx(&u.txid).await?;
-                        match verify_deposit(&raw, &u.txid, u.vout, address) {
-                            Ok(v) => verified.push(v),
-                            Err(e) => tracing::warn!("ignoring {}:{}: {e}", u.txid, u.vout),
-                        }
-                    }
-                    let total: u64 = verified.iter().map(|v| v.duffs).sum();
-                    if total >= min_duffs {
-                        return Ok(verified);
-                    }
-                }
-            }
-            Err(e) => tracing::warn!("explorer poll failed: {e}"),
+    let mut on_seen = |duffs: u64| {
+        if duffs > 0 {
+            say(
+                ctx,
+                format!("  deposit seen: {} DASH", dash_amount(duffs_to_dash(duffs))),
+            );
         }
-        if start.elapsed() > DEPOSIT_WAIT {
-            return Err(UserError::new(codes::TIMED_OUT, "no deposit yet")
-                .cause(format!("nothing arrived at {address} within {} minutes", DEPOSIT_WAIT.as_secs() / 60))
-                .fix("send the deposit, then run `dg auth new --resume` (the address stays the same)")
-                .note("nothing was spent; the journal keeps the address")
-                .into());
-        }
-        tokio::time::sleep(Duration::from_secs(5)).await;
-    }
+    };
+    let found = funding::wait_for_deposit(
+        client,
+        Some(insight),
+        address,
+        min_duffs,
+        from_height,
+        DEPOSIT_WAIT,
+        &mut on_seen,
+    )
+    .await?;
+    found.ok_or_else(|| {
+        UserError::new(codes::TIMED_OUT, "no deposit yet")
+            .cause(format!(
+                "nothing arrived at {address} within {} minutes",
+                DEPOSIT_WAIT.as_secs() / 60
+            ))
+            .fix("send the deposit, then run `dg auth new --resume` (the address stays the same)")
+            .note("nothing was spent; the journal keeps the address")
+            .into()
+    })
 }
 
 /// Broadcast the asset lock: DAPI first, the explorer as fallback; an "already known" answer
 /// from either is success.
 async fn broadcast(
-    ctx: &Ctx,
     client: &PlatformClient,
     insight: &Insight,
     lock: &SignedAssetLock,
 ) -> Result<()> {
-    let dapi = client.broadcast_core_tx(&lock.raw).await;
-    if dapi.is_ok() {
-        return Ok(());
-    }
-    let explorer = insight.broadcast(&hex::encode(&lock.raw)).await;
-    if explorer.is_ok() {
-        return Ok(());
-    }
-    // A lost response can hide an accepted broadcast: never strand the deposit over it.
-    if insight.tx_height(&lock.txid).await.is_ok() {
-        say(ctx, "  (the network already has the asset lock)");
-        return Ok(());
-    }
-    Err(anyhow::anyhow!(
-        "broadcasting the asset lock failed: DAPI: {}; explorer: {}",
-        dapi.err().map(|e| e.to_string()).unwrap_or_default(),
-        explorer.err().map(|e| e.to_string()).unwrap_or_default()
-    ))
+    funding::broadcast(client, Some(insight), &lock.raw, &lock.txid)
+        .await
+        .context("broadcasting the asset lock")
 }
 
 /// Wait until the lock is provable: InstantSend where available, else a chain lock.
@@ -325,7 +301,10 @@ async fn prove(
     );
     while start.elapsed() < PROOF_WAIT {
         if height.is_none() {
-            height = insight.tx_height(&lock.txid).await.ok().flatten();
+            height = funding::tx_height(client, Some(insight), &lock.txid)
+                .await
+                .ok()
+                .flatten();
             if let Some(h) = height {
                 say(
                     ctx,
@@ -383,12 +362,17 @@ async fn discard(ctx: &Ctx, args: &NewArgs, j: &Journal) -> Result<()> {
         ctx.network(),
         args.explorer.as_deref(),
     ));
-    // An explorer that does not answer is "unknown", not "empty": ask.
-    let held: Option<u64> = insight
-        .utxos(&j.deposit_address)
-        .await
-        .ok()
-        .map(|u| u.iter().map(|x| x.satoshis).sum());
+    // Neither source answering is "unknown", not "empty": ask. DAPI's history also misses an
+    // unconfirmed payment, so a zero is only trusted when the explorer agrees.
+    let held = match ctx.connect().await {
+        Ok(client) => match funding::watch_start(&client, j.start_height, j.started_at).await {
+            Ok(from) => {
+                funding::deposit_balance(&client, Some(&insight), &j.deposit_address, from).await
+            }
+            Err(_) => None,
+        },
+        Err(_) => None,
+    };
     if held != Some(0) || j.lock_txid.is_some() {
         ctx.confirm_or_cancel(&format!(
             "The unfinished creation's address {} holds funds or a broadcast asset lock; they \
@@ -400,9 +384,28 @@ async fn discard(ctx: &Ctx, args: &NewArgs, j: &Journal) -> Result<()> {
     Ok(())
 }
 
+/// Start and save a journal. The Core tip is read before the address is ever shown: nothing
+/// can pay it earlier, so the deposit watch replays from there (less a margin for node lag).
+async fn new_journal(client: &PlatformClient, network: String, address: String) -> Result<Journal> {
+    let start_height = client
+        .best_height()
+        .await
+        .context("reading the Core chain height")?;
+    let j = Journal {
+        network,
+        deposit_address: address,
+        started_at: super::now_ms(),
+        start_height: Some(start_height),
+        ..Journal::default()
+    };
+    save_journal(&j)?;
+    Ok(j)
+}
+
 /// Load, discard or start the journal and get the words; returns the keys and the journal.
 async fn start_or_resume(
     ctx: &Ctx,
+    client: &PlatformClient,
     args: &NewArgs,
     backup_pass: Option<&Secret>,
 ) -> Result<(NewIdentityKeys, Journal)> {
@@ -472,14 +475,7 @@ async fn start_or_resume(
             if let Some(path) = &args.backup.backup_file {
                 write_backup(path, &keys, "", backup_pass, true)?;
             }
-            let j = Journal {
-                network,
-                deposit_address: address,
-                started_at: super::now_ms(),
-                ..Journal::default()
-            };
-            save_journal(&j)?;
-            j
+            new_journal(client, network, address).await?
         }
     };
     if let Some(path) = &args.backup.backup_file {
@@ -561,8 +557,8 @@ fn show_deposit(ctx: &Ctx, endpoints: &CoreEndpoints, address: &str, duffs: u64)
     eprintln!();
     eprintln!("It becomes your Platform credits (~0.0005 DASH per issue or push).");
     eprintln!(
-        "To see the deposit dg asks a block explorer ({}). It can delay you but cannot take \
-         funds or keys.",
+        "dg watches for the deposit through the Dash network's own nodes (DAPI), and asks a \
+         block explorer ({}) only if they cannot answer. Neither can take funds or keys.",
         endpoints.insight_host()
     );
     if ctx.network().devnet_name().is_some() {
@@ -591,7 +587,16 @@ async fn fund_and_lock(
     } else {
         let want = deposit_duffs(args.amount)?;
         show_deposit(ctx, &endpoints, &j.deposit_address, want);
-        let utxos = wait_for_deposit(ctx, &insight, &j.deposit_address, want * 9 / 10).await?;
+        let from = funding::watch_start(client, j.start_height, j.started_at).await?;
+        let utxos = wait_for_deposit(
+            ctx,
+            client,
+            &insight,
+            &j.deposit_address,
+            want * 9 / 10,
+            from,
+        )
+        .await?;
         let lock = build_asset_lock(keys, &utxos)?;
         j.lock_txid = Some(lock.txid.clone());
         j.lock_raw = Some(hex::encode(&lock.raw));
@@ -606,13 +611,14 @@ async fn fund_and_lock(
         );
         lock
     };
-    broadcast(ctx, client, &insight, &lock).await?;
+    broadcast(client, &insight, &lock).await?;
     let proof = prove(ctx, client, &endpoints, &insight, &lock).await?;
     Ok((lock, proof))
 }
 
 /// Store this computer's limited key, then register the identity with it (or, when an earlier
 /// run already created the identity, register a fresh limited key with the words' master key).
+#[allow(clippy::too_many_arguments)]
 async fn register(
     ctx: &Ctx,
     client: &PlatformClient,
@@ -621,6 +627,7 @@ async fn register(
     proof: &LockProof,
     identity_id: &str,
     spec: &LimitedKeySpec,
+    checked: &GroupCheck,
 ) -> Result<(u32, store::Stored)> {
     let network = ctx.network_label();
     let insecure = args.storage.insecure_plaintext;
@@ -650,7 +657,7 @@ async fn register(
         let replace = identity
             .is_limited_key(FIRST_LIMITED_KEY_ID)
             .then_some(FIRST_LIMITED_KEY_ID);
-        return register_and_store(ctx, client, &master, spec, replace, insecure).await;
+        return register_and_store(ctx, client, &master, spec, replace, checked, insecure).await;
     }
     let limited = FreshKey::generate(ctx.network());
     let dfk1 = forge_core::keystore::dfk1(
@@ -692,16 +699,27 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
         }
     }
     let client = ctx.connect().await?;
-    check_group(ctx, &client, &spec.group).await?;
+    let checked = check_group(ctx, &client, &spec.group, args.limits.strict_group()).await?;
+    checked.print_notice(ctx, "");
 
     let backup_pass = backup_passphrase(args)?;
-    let (keys, mut j) = start_or_resume(ctx, args, backup_pass.as_ref()).await?;
+    let (keys, mut j) = start_or_resume(ctx, &client, args, backup_pass.as_ref()).await?;
     let (lock, proof) = fund_and_lock(ctx, &client, args, &keys, &mut j).await?;
     let identity_id = identity_id_for(&proof)?;
     j.identity_id = Some(identity_id.clone());
     save_journal(&j)?;
 
-    let (key_id, stored) = register(ctx, &client, args, &keys, &proof, &identity_id, &spec).await?;
+    let (key_id, stored) = register(
+        ctx,
+        &client,
+        args,
+        &keys,
+        &proof,
+        &identity_id,
+        &spec,
+        &checked,
+    )
+    .await?;
     store::set_default(ctx, &identity_id, &stored.source())?;
     clear_journal(&network);
     if let Some(path) = &args.backup.backup_file {
@@ -724,7 +742,7 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
     }
 
     ctx.emit(
-        json!({
+        super::group::with_group_fields(json!({
             "status": "created",
             "identityId": identity_id,
             "network": network,
@@ -739,7 +757,7 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
             "balanceDash": credits_to_dash(balance),
             "name": name,
             "backupFile": args.backup.backup_file.as_ref().map(|p| p.display().to_string()),
-        }),
+        }), Some(&checked)),
         || {
             println!("✓ identity {identity_id} created on {network}");
             if let Some(n) = &name {
@@ -778,6 +796,7 @@ mod tests {
             lock_raw: Some("00".into()),
             identity_id: None,
             started_at: 1,
+            start_height: Some(88_000),
         };
         let s = serde_json::to_string(&j).unwrap();
         for field in ["mnemonic", "wif", "private"] {

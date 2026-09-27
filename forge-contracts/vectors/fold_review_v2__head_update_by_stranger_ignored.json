@@ -1,0 +1,31 @@
+{
+  "name": "head_update_by_stranger_ignored",
+  "description": "A headUpdate authorEvent by someone who is not the author is ignored; the head stays.",
+  "case": "fold_review",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "headUpdate",
+        "actor": "mallory",
+        "value": null,
+        "oid": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice",
+    "initialHead": "H1",
+    "knownRoots": []
+  },
+  "expected": {
+    "head": "H1",
+    "headUpdates": [],
+    "requestedReviewers": [],
+    "resolvedThreads": [],
+    "dismissedReviews": [],
+    "milestone": null
+  }
+}

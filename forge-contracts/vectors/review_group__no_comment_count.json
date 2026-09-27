@@ -1,0 +1,16 @@
+{
+  "name": "no_comment_count",
+  "description": "A review without commentCount expects 0.",
+  "case": "review_group",
+  "rules": "v2",
+  "input": {
+    "reviewId": "R1",
+    "reviewer": "maint",
+    "comments": []
+  },
+  "expected": {
+    "comments": [],
+    "landed": 0,
+    "expected": 0
+  }
+}

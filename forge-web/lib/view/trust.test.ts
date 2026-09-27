@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { NETWORKS, QUORUM_KEY_ENDPOINT } from '../constants'
+import { IPFS_GATEWAYS, NETWORKS, QUORUM_KEY_ENDPOINT } from '../constants'
 import type { RefState } from '../rules'
 import { NO_CONTENT_CHECKS, type ContentChecks } from './content-checks'
 import type { QuorumCrossCheck } from './quorum-check'
@@ -190,8 +190,9 @@ describe('where the bytes came from row', () => {
   })
 
   it('counts bytes from an IPFS gateway as ipfs tried', () => {
-    const r = deriveTrust(inputs({ checks: checks({ objectsVerified: 1, sources: ['ipfs.io'] }), configuredUris: ['ipfs://bafy'] }))
-    expect(r.source.detail).toBe('ipfs.io.')
+    const gw = new URL(IPFS_GATEWAYS[0] as string).host
+    const r = deriveTrust(inputs({ checks: checks({ objectsVerified: 1, sources: [gw] }), configuredUris: ['ipfs://bafy'] }))
+    expect(r.source.detail).toBe(`${gw}.`)
   })
 
   it('reads Failed with the list of places when no storage answered', () => {

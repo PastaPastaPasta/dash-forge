@@ -14,14 +14,18 @@
 //!   gateway list, hash-verifying every candidate; Platform chunks are the caller's last
 //!   resort.
 //! - [`cors`] — browser-readability checks and the exact provider CORS config to paste.
+//! - [`publish`] — which read URLs may be recorded on chain (public https only).
+//! - [`copies`] — how many copies each live pack has, against a policy's N.
 //!
 //! Nothing in this module is operated by the Forge project: every endpoint is the user's
 //! own, or a public gateway that is only ever trusted for bytes that hash-verify.
 
+pub mod copies;
 pub mod cors;
 pub mod local;
 pub mod policy;
 pub mod profiles;
+pub mod publish;
 pub mod read;
 pub mod targets;
 
@@ -89,6 +93,41 @@ mod tests {
         assert!(g
             .iter()
             .all(|u| u.starts_with("https://") && !u.ends_with('/')));
+    }
+
+    #[test]
+    fn defaults_come_from_independent_operators() {
+        // One gateway per operator (registrable domain): one outage, one blocklist entry or
+        // one rate limit must not take every default down at once.
+        let g = default_ipfs_gateways();
+        let operators: std::collections::BTreeSet<String> = g
+            .iter()
+            .map(|u| {
+                let host = reqwest::Url::parse(u)
+                    .unwrap()
+                    .host_str()
+                    .unwrap()
+                    .to_string();
+                let labels: Vec<&str> = host.rsplitn(3, '.').collect();
+                format!("{}.{}", labels[1], labels[0])
+            })
+            .collect();
+        assert!(g.len() >= 3, "at least three defaults: {g:?}");
+        assert_eq!(operators.len(), g.len(), "one default per operator: {g:?}");
+    }
+
+    #[test]
+    fn retired_gateways_are_not_defaults() {
+        // ipfs.io and dweb.link answer 429 with `Sunset: Mon, 21 Sep 2026`; w3s.link and
+        // nftstorage.link redirect to them (B-1). A default list of dead hosts makes every
+        // IPFS-only repo unreadable.
+        let g = default_ipfs_gateways();
+        for dead in ["ipfs.io", "dweb.link", "w3s.link", "nftstorage.link"] {
+            assert!(
+                !g.iter().any(|u| u == &format!("https://{dead}")),
+                "{dead} is retired but still a default: {g:?}"
+            );
+        }
     }
 
     #[test]

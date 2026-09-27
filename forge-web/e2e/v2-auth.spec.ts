@@ -106,7 +106,9 @@ test('a2. create an identity in the browser, funded from the devnet key', async 
   expect(address).toMatch(/^y[1-9A-HJ-NP-Za-km-z]{33}$/)
   await shot(page, 'v2a-03-deposit')
   const fundingKey = funding.loadFundingKey(network, { keyFile })
-  const fundTx = await funding.fundFromKey(fundingKey, [{ address, duffs: 3_000_000 }], network, () => undefined)
+  const ledgers = await import(pathToFileURL(join(ROOT, 'tools/mint-identity/src/utxo-ledger.mjs')).href)
+  const ledgerPath = ledgers.defaultLedgerPath({ keyFile, address: fundingKey.address })
+  const { txid: fundTx } = await funding.fundFromKey(fundingKey, [{ address, duffs: 3_000_000 }], network, () => undefined, { ledgerPath })
   test.info().annotations.push({ type: 'funding', description: `${fundTx} → ${address} (0.03 DASH)` })
 
   // Chain-lock proofs on a devnet wait for a mined, chain-locked block: minutes.

@@ -16,8 +16,13 @@
 //     objectLocator over it, so the web app browses it through the published index;
 //   * refs: main by protectedRefUpdate (two updates), the feature branch by COLLAB's
 //     refUpdate, the tag by OWNER;
-//   * issues, a PR still open with an approval, a merged PR, comments, `event`s and an
+//   * issues #1-#4, a PR still open with an approval, a merged PR, comments, `event`s and an
 //     `authorEvent`, a star;
+//   * a review-parity PR (#3, docs/design/review-parity-spec.md): opened as a draft by CONTRIB
+//     (not a member) from c2, its head moved to c3 by the author's `headUpdate`, a reviewer
+//     requested by OWNER, MAINTAINER's request-changes review with one multi-line inline
+//     comment attached through `reviewId`, CONTRIB's reply, the author resolving the thread,
+//     OWNER dismissing the review with a reason, and a branch `policy` by OWNER;
 //   * repo `forge-v2-empty` owned by MAINTAINER, with no refs (the empty-repo state).
 //
 // The git-remote-dash v2 push path is not there yet (forge-core PR C), which is why the
@@ -26,7 +31,10 @@
 // (fanout || 36-byte rows, deltaChainSpan = the sentinel so readers walk each base).
 //
 // Idempotent: the result of every step is recorded in
-// ~/.cache/dash-forge/seed-v2-<network>.json and a rerun skips what is recorded. Without that
+// ~/.cache/dash-forge/seed-v2-<network>.json and a rerun skips what is recorded. The state
+// records which forge-collab it seeded (`collabContract`): after a forge-collab re-registration
+// (forge-core unchanged) the collab steps are archived to `supersededCollab` and re-seeded under
+// the new contract, while the repo, membership, pack and refs (forge-core) are kept. Without that
 // file (a fresh CI runner), a fixture that already exists on chain is left alone: the run
 // checks `forge-v2-demo` resolves and exits. Delete the file (and pick new repo names) to
 // seed from scratch.
@@ -50,7 +58,22 @@ const FIELDS_PER_DOC = 3;
 const FANOUT_LEN = 1024;
 const ROW_LEN = 36;
 const SPAN_SENTINEL = 0xffffffff;
-const EVENT = { close: 1, reopen: 2, merge: 3, labelAdd: 4 };
+const EVENT = {
+  close: 1,
+  reopen: 2,
+  merge: 3,
+  labelAdd: 4,
+  draft: 9,
+  ready: 10,
+  threadResolve: 11,
+  threadUnresolve: 12,
+  reviewRequest: 13,
+  reviewRequestRemove: 14,
+  reviewDismiss: 15,
+  headUpdate: 16,
+};
+// Steps whose documents live in forge-collab: re-seeded when forge-collab is re-registered.
+const COLLAB_STEP = /^(issue:|patch:|pr3:|policy$|star:)/;
 
 const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}`);
 
@@ -242,16 +265,34 @@ async function main() {
       let n = 0n;
       for (const v of stars.values()) n += v;
       if (n === 0n) {
-        throw new Error(`${DEMO} exists on ${key} but its seed never finished (no star); finish it where ~/.cache/dash-forge/seed-v2-${key}.json lives`);
+        // Either an interrupted seed, or a forge-collab re-registered since the fixture was
+        // seeded (its collab documents, the star included, are under the old contract). Both
+        // are finished where the state file lives: that run re-seeds the collab part.
+        throw new Error(`${DEMO} exists on ${key} but has no star under forge-collab ${collab}: the seed was interrupted or forge-collab was re-registered since; run the seeder where ~/.cache/dash-forge/seed-v2-${key}.json lives`);
       }
       const repoId = String(doc.toJSON?.().$id ?? doc.id?.toBase58?.() ?? doc.id);
       log(`${DEMO} already exists on ${key} (${repoId}); nothing to seed`);
-      console.log(JSON.stringify({ network: key, forgeCore: core, forgeCollab: collab, demo: { owner: OWNER.id, name: DEMO, repoId }, seeded: false }, null, 2));
+      console.log(JSON.stringify({ network: key, forgeCore: core, forgeCollab: collab, demo: { owner: OWNER.id, name: DEMO, repoId, reviewParityPull: 3 }, seeded: false }, null, 2));
       return;
     }
   }
   const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : {};
   const save = () => writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
+  // A state file from before forge-collab was re-registered (or from before this field existed)
+  // names collab documents under another contract: archive them and seed the collab part again.
+  if (state.collabContract !== collab) {
+    const stale = Object.keys(state).filter((k) => COLLAB_STEP.test(k));
+    if (stale.length > 0) {
+      state.supersededCollab = [
+        ...(state.supersededCollab ?? []),
+        { contract: state.collabContract ?? 'unrecorded', steps: Object.fromEntries(stale.map((k) => [k, state[k]])) },
+      ];
+      for (const k of stale) delete state[k];
+      log(`forge-collab is now ${collab}: re-seeding ${stale.length} collab steps`);
+    }
+    state.collabContract = collab;
+    save();
+  }
 
   const b58 = (s) => Buffer.from(evo.Identifier.fromBase58(s).toBytes());
   const version = sdk.version();
@@ -363,6 +404,9 @@ async function main() {
   const i1 = await issue(1, CONTRIB, 'README should explain the event split', 'The README does not say why `authorEvent` is its own type.');
   const i2 = await issue(2, CONTRIB, 'Duplicate of #1', 'Opened twice by mistake.');
   const i3 = await issue(3, CONTRIB, 'Add a rules page', 'A page documenting the fold would help.');
+  // PR #3 (below) shares #3 with this issue; #4 keeps a number that is only an issue, which the
+  // jump-box spec (e2e/v2-explore.spec.ts x3) needs.
+  await issue(4, CONTRIB, 'Explain review requests', 'Who can request a review, and does it count?');
   const ev = (step, who, type, targetId, targetNumber, kind, extra = {}) =>
     create(step, who, collab, type, { repoId: R, targetId: b58(targetId), targetNumber, kind, ...extra });
   await ev('issue:2:author-close', CONTRIB, 'authorEvent', i2, 2, EVENT.close);
@@ -399,6 +443,58 @@ async function main() {
   await comment('patch:1:comment:1', OWNER, p1, 'Nice. Waiting on one more review.');
   await ev('patch:2:merge', OWNER, 'event', p2, 2, EVENT.merge, { oid: oid(commits.c2) });
 
+  // --- review parity (docs/design/review-parity-spec.md §3, §4) ------------------------
+  // PR #3 by CONTRIB, who is not a member: every author action goes through `authorEvent`.
+  const p3 = await create('patch:3', CONTRIB, collab, 'patch', {
+    repoId: R,
+    number: 3,
+    title: 'Greet by name, reviewed',
+    body: 'Opened as a draft from the commit before the greeting, then moved to it.',
+    baseRefNameHash: refHash('refs/heads/main'),
+    baseRefName: 'refs/heads/main',
+    sourceRepoId: R,
+    sourceRefNameHash: refHash('refs/heads/feature/greeting'),
+    sourceRefName: 'refs/heads/feature/greeting',
+    headOid: oid(commits.c2),
+    draft: true,
+  });
+  await ev('pr3:head-update', CONTRIB, 'authorEvent', p3, 3, EVENT.headUpdate, { oid: oid(commits.c3) });
+  await ev('pr3:request', OWNER, 'event', p3, 3, EVENT.reviewRequest, { refId: b58(MAINTAINER.id) });
+  const review3 = await create('pr3:review', MAINTAINER, collab, 'review', {
+    repoId: R,
+    patchId: b58(p3),
+    verdict: 2,
+    commitOid: oid(commits.c3),
+    body: 'One suggestion on the greeting.',
+    commentCount: 1,
+  });
+  const thread3 = await create('pr3:review-comment', MAINTAINER, collab, 'comment', {
+    repoId: R,
+    targetId: b58(p3),
+    reviewId: b58(review3),
+    commitOid: oid(commits.c3),
+    path: 'src/main.rs',
+    startLine: 2,
+    line: 3,
+    side: 1,
+    body: 'Default to "world":\n\n```suggestion\n    let name = std::env::args().nth(1).unwrap_or("world".into());\n    println!("hello, {name}");\n```\n',
+  });
+  await create('pr3:reply', CONTRIB, collab, 'comment', {
+    repoId: R,
+    targetId: b58(p3),
+    replyTo: b58(thread3),
+    body: 'Keeping "forge" on purpose; resolving.',
+  });
+  await ev('pr3:resolve', CONTRIB, 'authorEvent', p3, 3, EVENT.threadResolve, { refId: b58(thread3) });
+  await ev('pr3:dismiss', OWNER, 'event', p3, 3, EVENT.reviewDismiss, { refId: b58(review3), value: 'the author answered the suggestion' });
+  await create('policy', OWNER, collab, 'policy', {
+    repoId: R,
+    requiredApprovals: 1,
+    approverRole: 1,
+    requireChecks: false,
+    mergeMethods: 3,
+  });
+
   // --- social ---------------------------------------------------------------------------
   // `star` is indexOnly: evo-sdk 4.2's strict wait refuses that transition family after it
   // lands, so the star is confirmed by a count read instead.
@@ -433,7 +529,7 @@ async function main() {
     network: key,
     forgeCore: core,
     forgeCollab: collab,
-    demo: { owner: OWNER.id, name: DEMO, repoId },
+    demo: { owner: OWNER.id, name: DEMO, repoId, reviewParityPull: 3 },
     empty: { owner: MAINTAINER.id, name: EMPTY, repoId: emptyId },
     commits,
     packHash: packHash.toString('hex'),

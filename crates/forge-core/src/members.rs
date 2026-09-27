@@ -273,6 +273,7 @@ mod tests {
                 collab: "L".into(),
                 group: "G".into(),
                 superseded_in_group: vec![],
+                group_owner: None,
             },
             repo_id: "R".into(),
             owner_id: "alice".into(),

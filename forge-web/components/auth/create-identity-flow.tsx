@@ -6,7 +6,7 @@
  *   2. a quiz on three of them (the flow does not continue until they match);
  *   3. how to protect this browser's key (passkey / passphrase);
  *   4. the deposit QR + address (any Dash wallet; the faucet on dev networks), watched through
- *      the block explorer; then the asset lock, its proof, and one IdentityCreate that also
+ *      the network's own nodes (DAPI); then the asset lock, its proof, and one IdentityCreate that also
  *      registers this browser's limited key — stored in the vault before it is registered.
  * A closed tab resumes from step 4 once the same words are typed in again; an unfinished
  * creation can be discarded (after a warning when its deposit address holds funds).
@@ -21,7 +21,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
 import { Qr } from '@/components/ui/qr'
-import { ErrorBox, useProtection } from '@/components/auth/protection-fields'
+import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protection-fields'
 import { faucetUrl } from '@/components/top-up-sheet'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { ensureSdk } from '@/lib/sdk'
@@ -134,7 +134,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         network,
         mnemonic: m,
         group: v2.group,
-        contracts: [v2.core, v2.collab],
+        trust: controller.groupTrust(),
         minDepositDuffs: MIN_DEPOSIT_DUFFS,
         signal: controllerRun.signal,
         persistKey: (id, k) => controller.persistKey({ identityId: id, keyId: k.keyId, wif: k.wif }, protection),
@@ -160,7 +160,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
   const discard = async (): Promise<void> => {
     if (!journal) return
     if (discardWarning === null) {
-      const held = await depositBalance(network, journal.depositAddress).catch(() => -1)
+      const held = await depositBalance(network, journal).catch(() => -1)
       if (held !== 0) {
         setDiscardWarning(
           held > 0
@@ -269,6 +269,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     return (
       <div className="space-y-3">
         {fields}
+        <GroupNotice check={() => controller.checkGroup()} />
         <Button
           variant="primary"
           className="w-full"
@@ -308,9 +309,10 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
         ) : null}
       </div>
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        To see your deposit this page asks a Dash block explorer ({new URL(coreEndpoints(network).insight).host}, changeable in
-        Settings). It can delay you, but amounts are checked against the raw transactions, so it cannot take funds or keys. On {ACTIVE_NETWORK.key} the lock is proven once a block
-        chain-locks it, which can take a few minutes.
+        This page watches for your deposit through the Dash network&apos;s own nodes, and asks a block explorer (
+        {new URL(coreEndpoints(network).insight).host}, changeable in Settings) only if they cannot answer. Amounts are checked against the raw
+        transactions, so neither can take funds or keys. On {ACTIVE_NETWORK.key} the lock is proven once a block chain-locks it, which can take a few
+        minutes.
       </p>
       {error ? <ErrorBox error={`${error} — your deposit is recorded on this device; reopen this sheet and type your 12 words to resume.`} /> : null}
     </div>

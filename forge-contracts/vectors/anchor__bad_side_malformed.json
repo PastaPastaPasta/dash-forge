@@ -1,0 +1,12 @@
+{
+  "name": "bad_side_malformed",
+  "description": "side 2 is malformed.",
+  "case": "anchor",
+  "rules": "v2",
+  "input": {
+    "path": "src/a.rs",
+    "line": 5,
+    "side": 2
+  },
+  "expected": null
+}

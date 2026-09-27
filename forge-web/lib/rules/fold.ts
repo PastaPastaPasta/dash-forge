@@ -41,8 +41,8 @@ export function newIssueAcc(): IssueAcc {
   return { open: true, labels: new Set(), assignees: new Set() }
 }
 
-export function newPrAcc(): PrAcc {
-  return { ...newIssueAcc(), merged: false, draft: false, baseRef: null }
+export function newPrAcc(draft = false): PrAcc {
+  return { ...newIssueAcc(), merged: false, draft, baseRef: null }
 }
 
 /** Apply one authorized event to an issue. PR-only kinds do nothing. */
@@ -66,10 +66,9 @@ export function applyIssueEvent(s: IssueAcc, e: Event): void {
     case 'unassign':
       if (e.value != null) s.assignees.delete(e.value)
       break
-    case 'merge':
-    case 'retarget':
-    case 'draft':
-    case 'ready':
+    default:
+      // PR-only kinds (merge, retarget, draft, ready) and the review kinds (11–18,
+      // `foldPrReviewV2`) do nothing to an issue.
       break
   }
 }
@@ -96,6 +95,7 @@ export function applyPrEvent(s: PrAcc, e: Event): void {
       s.draft = false
       break
     default:
+      // close and the label / assignee kinds; review kinds (11–18) are no-ops there.
       applyIssueEvent(s, e)
   }
 }

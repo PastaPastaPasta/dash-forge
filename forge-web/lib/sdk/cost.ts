@@ -42,6 +42,12 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   event: 50_000_000,
   authorEvent: 56_600_000,
   review: 34_900_000,
+  // Measured on moutai (2026-09-27) under the review-parity forge-collab: a policy 33.9M; a
+  // draft patch with a 10-byte title 114.9M; an event carrying `refId` 64.6M–80.7M and an
+  // authorEvent carrying `oid` 71.9M, both on a PR's first such write (the rows above are
+  // steady-state writes into existing index subtrees; a target's first comment or event also
+  // pays for its subtree, ~10–25M more).
+  policy: 34_000_000,
   star: 27_800_000,
   follow: 38_400_000,
 }
@@ -124,6 +130,19 @@ export function estimateBytesCredits(documentType: string, byteLen: number, data
 export function estimateChunkCredits(bytes: number): number {
   const chunks = Math.max(1, Math.ceil(bytes / (4900 * 3)))
   return chunks * (BASE_CREDITS['chunk'] ?? DEFAULT_BASE_CREDITS) + CREDITS_PER_TEXT_BYTE * bytes
+}
+
+/**
+ * What a replace (an edit) costs: the processing of a document write plus the storage of the
+ * changed text. Measured on moutai (2026-09-27): a patch title replaced with one of the same
+ * length 17.0M credits, a comment body grown by 10 bytes 3.9M. The estimate is the larger
+ * fixed part plus every changed byte, an upper bound.
+ */
+export const REPLACE_BASE_CREDITS = 17_000_000
+
+/** Preview for replacing a document's `changes`. */
+export function previewReplace(_documentType: string, changes: Readonly<Record<string, unknown>> = {}): CostPreview {
+  return previewCredits(REPLACE_BASE_CREDITS + CREDITS_PER_TEXT_BYTE * textBytes(changes))
 }
 
 /** Preview for deleting one document of `documentType` (usually a refund: negative credits). */

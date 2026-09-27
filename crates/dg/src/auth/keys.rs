@@ -248,7 +248,14 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
         };
     }
     let spec = key_spec(ctx, &args.limits, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS)?;
-    super::explain_new_key(ctx, &master.identity_id, &spec, "for this computer");
+    let checked = super::check_group(ctx, &client, &spec.group, args.limits.strict_group()).await?;
+    super::explain_new_key(
+        ctx,
+        &master.identity_id,
+        &spec,
+        "for this computer",
+        &checked,
+    );
     ctx.confirm_or_cancel("Add the key?")?;
     // The key this computer signs with now is replaced by default: otherwise it would stay live
     // on chain with nothing holding it. `--replace` names another one; `--keep-current` keeps it.
@@ -268,19 +275,23 @@ async fn add(ctx: &Ctx, args: &AddArgs) -> Result<()> {
         &master,
         &spec,
         replace,
+        &checked,
         args.storage.insecure_plaintext,
     )
     .await?;
     super::store::set_default(ctx, &master.identity_id, &stored.source())?;
     ctx.emit(
-        json!({
-            "status": "added",
-            "keyId": id,
-            "budgetCredits": spec.budget_credits,
-            "expiresAt": spec.expires_at_ms,
-            "storedAt": stored.describe(),
-            "replacedKeyId": replace,
-        }),
+        super::group::with_group_fields(
+            json!({
+                "status": "added",
+                "keyId": id,
+                "budgetCredits": spec.budget_credits,
+                "expiresAt": spec.expires_at_ms,
+                "storedAt": stored.describe(),
+                "replacedKeyId": replace,
+            }),
+            Some(&checked),
+        ),
         || {
             println!("✓ limited key #{id} added; this computer now signs with it");
             println!("  stored in {}", stored.describe());

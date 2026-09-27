@@ -65,6 +65,12 @@ fn asset_targets(storage: Option<&str>) -> Result<(Vec<ExternalTarget>, usize)> 
         .note("nothing was uploaded or written")
         .into());
     }
+    crate::storage::check_publishable(
+        policy.external.iter().map(|(n, p)| (n.as_str(), p)),
+        None,
+        crate::storage::dash_remote_name().as_deref(),
+        "release not created",
+    )?;
     let http = forge_core::storage::http_client();
     let targets = policy
         .external
@@ -275,7 +281,9 @@ async fn download(
     if asset.uris.is_empty() {
         bail!("asset {:?} records no URI to download from", asset.name);
     }
+    // The gateway the uploader recorded reaches its node: try it before the shared list.
     let bytes = PackReader::from_user_config()
+        .prefer_gateways(forge_core::storage::read::repo_gateways(&asset.uris))
         .fetch_verified(
             &asset.uris,
             &asset.sha256.to_ascii_lowercase(),

@@ -1,0 +1,31 @@
+{
+  "name": "author_milestone_inert",
+  "description": "The author cannot set a milestone: an authorEvent kind 17 is inert.",
+  "case": "fold_review",
+  "rules": "v2",
+  "input": {
+    "events": [],
+    "authorEvents": [
+      {
+        "id": "a1",
+        "targetId": "T",
+        "kind": "milestoneSet",
+        "actor": "alice",
+        "value": "mine",
+        "oid": null,
+        "createdAt": 100
+      }
+    ],
+    "targetAuthor": "alice",
+    "initialHead": "H1",
+    "knownRoots": []
+  },
+  "expected": {
+    "head": "H1",
+    "headUpdates": [],
+    "requestedReviewers": [],
+    "resolvedThreads": [],
+    "dismissedReviews": [],
+    "milestone": null
+  }
+}

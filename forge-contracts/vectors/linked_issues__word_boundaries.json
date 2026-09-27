@@ -1,0 +1,12 @@
+{
+  "name": "word_boundaries",
+  "description": "Not a verb inside a word (prefix), not a verb followed by letters, not #12abc, not without whitespace.",
+  "case": "linked_issues",
+  "rules": "v2",
+  "input": {
+    "text": "prefixes #1 closeness #2 fixes #3abc fixes#4 unfix #5 fixes #6"
+  },
+  "expected": [
+    6
+  ]
+}

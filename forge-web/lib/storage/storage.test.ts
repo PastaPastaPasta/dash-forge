@@ -128,7 +128,7 @@ describe('profiles', () => {
 
 describe('what readers may fetch', () => {
   it('only public https hosts', () => {
-    for (const h of ['127.0.0.1', 'localhost', 'x.localhost', '10.1.2.3', '172.20.0.1', '192.168.0.9', '169.254.1.1', '100.64.0.1', '::1', 'fe80::1', 'fc00::5', '::ffff:127.0.0.1']) {
+    for (const h of ['127.0.0.1', 'localhost', 'x.localhost', '10.1.2.3', '172.20.0.1', '192.168.0.9', '169.254.1.1', '100.64.0.1', '::1', 'fe80::1', 'fc00::5', '::ffff:127.0.0.1', 'nas.local.', 'localhost.']) {
       expect(isPrivateHost(h), h).toBe(true)
     }
     for (const h of ['pub-9a1.r2.dev', '8.8.8.8', '172.32.0.1', 'ipfs.io']) expect(isPrivateHost(h), h).toBe(false)
@@ -259,20 +259,26 @@ describe('chunks and manifests', () => {
 })
 
 describe('CORS fix blocks', () => {
-  it('are valid JSON naming the bucket, Range for reads and PUT for this origin', () => {
-    for (const p of ['r2', 'aws', 'b2'] as const) {
+  it('are valid JSON naming the bucket, lowercase range for reads and PUT for this origin', () => {
+    for (const p of ['r2', 'aws', 'b2', 'minio'] as const) {
       const fix = corsFix(p, 'my-bucket', 'https://forge.dashhq.org')
       expect(fix.where + fix.text).toContain('my-bucket')
-      const text = JSON.stringify(JSON.parse(fix.text) as unknown).toLowerCase()
-      expect(text).toContain('range')
+      const raw = JSON.stringify(JSON.parse(fix.text) as unknown)
+      // Garage matches AllowedHeaders case-sensitively and browsers send `range`.
+      expect(raw).toMatch(/"(AllowedHeaders|allowedHeaders)":\["range"\]/)
+      expect(raw).not.toContain('"Range"')
+      const text = raw.toLowerCase()
       expect(text).toMatch(/put/)
       expect(text).toContain('https://forge.dashhq.org')
       expect(text).toContain('x-amz-content-sha256')
     }
   })
 
-  it('keeps MinIO reads open to every origin', () => {
-    expect(corsFix('minio', 'b', 'https://forge.dashhq.org').text).toContain('cors_allow_origin="*"')
+  it('points other S3 stores at put-bucket-cors and keeps MinIO reads open to every origin', () => {
+    const fix = corsFix('minio', 'b', 'https://forge.dashhq.org')
+    expect(fix.where).toMatch(/Garage, RustFS/)
+    expect(fix.where).toContain('put-bucket-cors')
+    expect(fix.where).toContain('cors_allow_origin="*"')
   })
 
   it('gives kubo a restricted token and merges the origin into the existing list', () => {
@@ -306,7 +312,7 @@ function serve(obj: Uint8Array, init?: RequestInit): Response {
   return new Response(obj.slice(start, end + 1), { status: 206, headers: { 'content-range': `bytes ${start}-${end}/${obj.length}` } })
 }
 
-function fakeNetwork(opts: { s3Down?: boolean; corruptOnce?: boolean; publicDenied?: boolean } = {}) {
+function fakeNetwork(opts: { s3Down?: boolean; corruptOnce?: boolean; publicDenied?: boolean; headForbidden?: boolean } = {}) {
   const objects = new Map<string, Uint8Array>()
   let corrupt = opts.corruptOnce === true
   const puts: string[] = []
@@ -324,6 +330,8 @@ function fakeNetwork(opts: { s3Down?: boolean; corruptOnce?: boolean; publicDeni
         return new Response(null, { status: 200 })
       }
       const obj = objects.get(key)
+      // AWS without s3:ListBucket: a missing key's HEAD is 403.
+      if (!obj && method === 'HEAD' && opts.headForbidden) return new Response(null, { status: 403 })
       if (!obj) return new Response(null, { status: 404 })
       if (method === 'HEAD') return new Response(null, { status: 200, headers: { 'content-length': String(obj.length) } })
       return serve(obj, init)
@@ -374,6 +382,14 @@ describe('storeArtifact', () => {
     const pub = net.fetchMock.mock.calls.find(([u]) => String(u).startsWith('https://pub-9a1.r2.dev/'))
     expect(pub).toBeDefined()
     expect(new Headers(pub?.[1]?.headers).get('authorization')).toBeNull()
+  })
+
+  it('uploads when the pre-upload HEAD is refused (AWS without s3:ListBucket)', async () => {
+    const net = fakeNetwork({ headForbidden: true })
+    vi.stubGlobal('fetch', net.fetchMock)
+    const stored = await storeArtifact(SDK, AUTH, REPO, bytes, { policy: policyFor(['r2-main'], 'one'), profiles: [S3], confirmPlatform: async () => false })
+    expect(stored.confirmed).toEqual(['r2-main'])
+    expect(net.puts).toHaveLength(1)
   })
 
   it('does not count a copy whose public URL others cannot read', async () => {

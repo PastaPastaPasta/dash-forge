@@ -1,0 +1,77 @@
+{
+  "name": "request_remove_request",
+  "description": "Request bob, remove, request again: bob is requested, as of the newest request.",
+  "case": "fold_review",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "reviewRequest",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 100,
+        "refId": "bob"
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "reviewRequestRemove",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 110,
+        "refId": "bob"
+      },
+      {
+        "id": "e3",
+        "targetId": "T",
+        "kind": "reviewRequest",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 120,
+        "refId": "bob"
+      },
+      {
+        "id": "e4",
+        "targetId": "T",
+        "kind": "reviewRequest",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 130,
+        "refId": "carol"
+      },
+      {
+        "id": "e5",
+        "targetId": "T",
+        "kind": "reviewRequestRemove",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 140,
+        "refId": "carol"
+      }
+    ],
+    "authorEvents": [],
+    "targetAuthor": "alice",
+    "initialHead": "H1",
+    "knownRoots": []
+  },
+  "expected": {
+    "head": "H1",
+    "headUpdates": [],
+    "requestedReviewers": [
+      {
+        "identity": "bob",
+        "requestedAt": 120
+      }
+    ],
+    "resolvedThreads": [],
+    "dismissedReviews": [],
+    "milestone": null
+  }
+}

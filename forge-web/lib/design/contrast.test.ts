@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import tailwindConfig from '@/tailwind.config.js'
+import { DIFF_PALETTES } from '@/lib/view/prefs'
 import { avatarFill, hslToRgb, whiteContrast } from './avatar'
 
 /**
@@ -136,7 +137,7 @@ describe('no component renders text in the raw brand blue', () => {
   // dark surface.
   const ICON = /<[A-Z]\w*\s+className="[^"]*\btext-dash(?![-\w/])[^"]*"\s+aria-hidden\s*\/>/g
   // Class strings that are applied only to an icon wrapper, checked by hand.
-  const ICON_ONLY = new Set(['components/repo/pulls-content.tsx:36'])
+  const ICON_ONLY = new Set(['components/repo/pulls-content.tsx:33'])
 
   it('uses raw dash blue only on icons', () => {
     const offenders = ['app', 'components']
@@ -160,6 +161,52 @@ describe('no component renders text in the raw brand blue', () => {
     expect(flagged('<GitMerge className="h-4 w-4 text-dash" aria-hidden />')).toBe(false)
     expect(flagged('<span className="text-dash-600 dark:text-dash-400">{n}</span>')).toBe(false)
     expect(flagged('<span className="bg-dash/10">{n}</span>')).toBe(false)
+  })
+})
+
+describe('diff palettes meet WCAG AA on their row tints, in both themes', () => {
+  // A diff row is its palette's tint at 10% over the page surface; the line text, the line
+  // numbers and the +/− markers sit on it. Both palettes, both themes, every surface.
+  const LIGHT_TEXT = { body: anvil['800']!, gutter: anvil['600']! }
+  const DARK_TEXT = { body: anvil['200']!, gutter: anvil['400']! }
+  const cases = Object.entries(DIFF_PALETTES).flatMap(([name, p]) =>
+    (['added', 'deleted'] as const).map((side) => [name, side, p[side]] as const),
+  )
+
+  it.each(cases)('%s palette, %s rows', (_, __, side) => {
+    for (const bg of Object.values(LIGHT_SURFACES)) {
+      const row = over(rgb(side.tint), rgb(bg!), 0.1)
+      expect(contrast(rgb(LIGHT_TEXT.body), row)).toBeGreaterThanOrEqual(AA_TEXT)
+      expect(contrast(rgb(LIGHT_TEXT.gutter), row)).toBeGreaterThanOrEqual(AA_TEXT)
+      expect(contrast(rgb(side.markerLight), row)).toBeGreaterThanOrEqual(AA_TEXT)
+      // The +N / −N counts sit on the plain surface.
+      expect(contrast(rgb(side.markerLight), rgb(bg!))).toBeGreaterThanOrEqual(AA_TEXT)
+    }
+    for (const bg of Object.values(DARK_SURFACES)) {
+      const row = over(rgb(side.tint), rgb(bg!), 0.1)
+      expect(contrast(rgb(DARK_TEXT.body), row)).toBeGreaterThanOrEqual(AA_TEXT)
+      expect(contrast(rgb(DARK_TEXT.gutter), row)).toBeGreaterThanOrEqual(AA_TEXT)
+      expect(contrast(rgb(side.markerDark), row)).toBeGreaterThanOrEqual(AA_TEXT)
+      expect(contrast(rgb(side.markerDark), rgb(bg!))).toBeGreaterThanOrEqual(AA_TEXT)
+    }
+  })
+
+  it('names the Tailwind shades it claims (so the classes and the checked hexes agree)', () => {
+    const TAILWIND: Record<string, string> = {
+      'green-600': '#16a34a', 'green-800': '#166534', 'green-400': '#4ade80',
+      'red-600': '#dc2626', 'red-700': '#b91c1c', 'red-400': '#f87171',
+      'blue-600': '#2563eb', 'blue-700': '#1d4ed8', 'blue-400': '#60a5fa',
+      'orange-500': '#f97316', 'orange-800': '#9a3412', 'orange-400': '#fb923c',
+    }
+    for (const p of Object.values(DIFF_PALETTES)) {
+      for (const side of [p.added, p.deleted]) {
+        const tint = /bg-([a-z]+-\d+)\/10/.exec(side.row)?.[1] as string
+        const [light, dark] = [/^text-([a-z]+-\d+)/, /dark:text-([a-z]+-\d+)/].map((re) => re.exec(side.marker)?.[1] as string)
+        expect(TAILWIND[tint]).toBe(side.tint)
+        expect(TAILWIND[light as string]).toBe(side.markerLight)
+        expect(TAILWIND[dark as string]).toBe(side.markerDark)
+      }
+    }
   })
 })
 

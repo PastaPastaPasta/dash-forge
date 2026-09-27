@@ -1,0 +1,134 @@
+[
+  {
+    "iid": 1,
+    "title": "typo",
+    "description": "",
+    "author": {
+      "username": "bashy"
+    },
+    "state": "merged",
+    "web_url": "https://gitlab.com/gitlab-org/gitlab-runner-docker-cleanup/-/merge_requests/1",
+    "created_at": "2016-03-23T22:50:43.657Z",
+    "updated_at": "2017-01-10T20:16:07.939Z",
+    "labels": [],
+    "user_notes_count": 1,
+    "sha": "1d00a3d2d98ff73b439a7e584f067b454b3c094c",
+    "merge_commit_sha": "4b5cefa8c57f54cc2b200a87e235e77ec4c29a80",
+    "squash_commit_sha": null,
+    "target_branch": "master",
+    "source_branch": "patch-1",
+    "source_project_id": null,
+    "target_project_id": 444821,
+    "draft": false
+  },
+  {
+    "iid": 2,
+    "title": "Fixed usage of 'go' command in .gitlab-ci.yml",
+    "description": "Unfortunately, there are still some package issues that prevent gitlab-ci from successfully building this project, however, I have fixed the usage of 'go test -cover' so it no longer causes a failure.",
+    "author": {
+      "username": "rmkoesters"
+    },
+    "state": "closed",
+    "web_url": "https://gitlab.com/gitlab-org/gitlab-runner-docker-cleanup/-/merge_requests/2",
+    "created_at": "2017-06-07T17:58:01.362Z",
+    "updated_at": "2025-07-14T17:19:13.112Z",
+    "labels": [],
+    "user_notes_count": 1,
+    "sha": "dd24920ef68b8e3c603d6bd042b8bb6045ec7f1b",
+    "merge_commit_sha": null,
+    "squash_commit_sha": null,
+    "target_branch": "master",
+    "source_branch": "patch-1",
+    "source_project_id": 3459006,
+    "target_project_id": 444821,
+    "draft": false
+  },
+  {
+    "iid": 3,
+    "title": "Docker multi stage builds",
+    "description": "As stated in #5, it's ironic that a cleaning tool takes so much space itself (947MB). Taking advantage of [docker multi-stage builds](https://blog.docker.com/2017/07/multi-stage-builds/), the tool now",
+    "author": {
+      "username": "MichaelPereira"
+    },
+    "state": "closed",
+    "web_url": "https://gitlab.com/gitlab-org/gitlab-runner-docker-cleanup/-/merge_requests/3",
+    "created_at": "2017-09-08T20:04:31.469Z",
+    "updated_at": "2025-07-14T17:19:13.886Z",
+    "labels": [],
+    "user_notes_count": 1,
+    "sha": "bb1e96d61ade0673c220879ccc6137db91086bfd",
+    "merge_commit_sha": null,
+    "squash_commit_sha": null,
+    "target_branch": "master",
+    "source_branch": "docker-multi-stage-builds",
+    "source_project_id": 4106750,
+    "target_project_id": 444821,
+    "draft": false
+  },
+  {
+    "iid": 4,
+    "title": "Go 1.9 update",
+    "description": "change to use go 1.9.x\nuse alpine and multistage build to bring image size down to ~15MB rather than ~600MB.\nremoved gitlab.com/gitlab-org/gitlab-ci-multi-runner/helpers to use just github.com/fsouza/",
+    "author": {
+      "username": "s_c"
+    },
+    "state": "closed",
+    "web_url": "https://gitlab.com/gitlab-org/gitlab-runner-docker-cleanup/-/merge_requests/4",
+    "created_at": "2017-09-11T16:28:24.204Z",
+    "updated_at": "2025-07-14T17:19:14.435Z",
+    "labels": [],
+    "user_notes_count": 2,
+    "sha": "6a9448f8b2cacd3854b8aac3f7ec00f15b585eae",
+    "merge_commit_sha": null,
+    "squash_commit_sha": null,
+    "target_branch": "master",
+    "source_branch": "go-1.9-update",
+    "source_project_id": 4088600,
+    "target_project_id": 444821,
+    "draft": false
+  },
+  {
+    "iid": 5,
+    "title": "Resolve \"Warning output compares files free to space.\"",
+    "description": "Closes #20",
+    "author": {
+      "username": "davinwalker"
+    },
+    "state": "opened",
+    "web_url": "https://gitlab.com/gitlab-org/gitlab-runner-docker-cleanup/-/merge_requests/5",
+    "created_at": "2018-01-16T18:42:59.889Z",
+    "updated_at": "2024-10-29T13:50:29.324Z",
+    "labels": [],
+    "user_notes_count": 3,
+    "sha": "e679098f9fd5a20b4dc370746a90ed736b8e5702",
+    "merge_commit_sha": null,
+    "squash_commit_sha": null,
+    "target_branch": "master",
+    "source_branch": "20-warning-output-compares-files-free-to-space",
+    "source_project_id": 444821,
+    "target_project_id": 444821,
+    "draft": false
+  },
+  {
+    "iid": 6,
+    "title": "Update golang to 1.9, add user defined internal protected images, support muilti-tag image delete",
+    "description": "## New features:\r\n\r\n* Update go version to 1.9\r\n* Be able to define a protected internal images list in a file to prevent from removing, your builder image for example. \r\n* Support to remove multi-tag",
+    "author": {
+      "username": "PengBAI"
+    },
+    "state": "closed",
+    "web_url": "https://gitlab.com/gitlab-org/gitlab-runner-docker-cleanup/-/merge_requests/6",
+    "created_at": "2018-10-18T08:05:13.973Z",
+    "updated_at": "2025-07-14T17:19:14.878Z",
+    "labels": [],
+    "user_notes_count": 2,
+    "sha": "da8e2b646e71a11891f40dd13c3b7632d78913fa",
+    "merge_commit_sha": null,
+    "squash_commit_sha": null,
+    "target_branch": "master",
+    "source_branch": "master",
+    "source_project_id": 8564242,
+    "target_project_id": 444821,
+    "draft": false
+  }
+]

@@ -119,6 +119,7 @@ pub use crate::network::{Network, NetworkTarget};
 pub mod identity_keys;
 pub mod wrap;
 
+pub mod core_chain;
 pub mod identity;
 
 /// The `dashcore` network the SDK and its context provider use for `network`.
@@ -1452,7 +1453,9 @@ impl<'a> WriteEngine<'a> {
                     if ours {
                         return Ok(prepared);
                     }
-                    tracing::warn!(
+                    // Expected when one identity writes in parallel, and recovered here; a
+                    // write that cannot recover fails with `Error::Nonce` below.
+                    tracing::debug!(
                         document_type,
                         "another write by this identity took the nonce; re-preparing"
                     );
@@ -1529,7 +1532,7 @@ impl<'a> WriteEngine<'a> {
                     {
                         return Ok(());
                     }
-                    tracing::warn!(
+                    tracing::debug!(
                         document_type,
                         "another write by this identity took the nonce; re-preparing the delete"
                     );

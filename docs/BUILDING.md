@@ -265,15 +265,18 @@ its `Cargo.lock`. A green `make check-rust` therefore does not by itself prove a
 run after a dependency bump — run `cargo test --locked --workspace` once before pushing
 one.
 
-## Storage integration tests (local MinIO + kubo)
+## Storage integration tests (local RustFS + kubo)
 
 * `make storage-it`: brings up `infra/docker-compose.yml`, then runs the bring-your-own
   storage tests against it. Covered: SigV4-signed S3 operations on a bucket that refuses
   anonymous writes, kubo CIDs matching the local CIDv1 derivation, and N-of-M
   replication with gateway read-back. Localhost only; no Platform network. `FORGE_IT_S3=1` /
-  `FORGE_IT_IPFS=1` make an unreachable fixture fail instead of skip.
+  `FORGE_IT_IPFS=1` make an unreachable fixture fail instead of skip. CI runs it on every
+  Rust change (the `storage-it` step of the `rust` job in `.github/workflows/rust.yml`). The S3 store is
+  RustFS (`rustfs/rustfs`, pinned by digest), set up by a one-shot `amazon/aws-cli`
+  container; the `minio/minio` and `minio/mc` images it replaced no longer pull.
 * `make storage-e2e`: a real `git push` / `git clone` over `dash://` with packs on the
-  local MinIO + kubo. Only the manifest and ref go to devnet moutai, paid by the e2e OWNER
+  local RustFS (S3) + kubo. Only the manifest and ref go to devnet moutai, paid by the e2e OWNER
   identity. See `e2e/cli/storage-byo.sh`.
 
 ## End-to-end suites

@@ -4,8 +4,9 @@
  *
  * A browser signs with an AUTHENTICATION / HIGH key that is:
  *   - bound to the `dash-forge` contract group (`contractBounds: contractGroup`) — it can sign
- *     only Batch transitions on forge-core and forge-collab; an identity update, a credit
- *     transfer or a write to any other contract is refused at consensus;
+ *     only Batch transitions on the group's members (forge-core, forge-collab, and any later
+ *     Forge contract the deployer adds: `./group-trust`); an identity update, a credit transfer
+ *     or a write to any other contract is refused at consensus;
  *   - budgeted (`totalBudget`, default 0.05 DASH) — it can take at most that from the identity;
  *   - expiring (`expiresAt`, default 90 days).
  *
@@ -18,10 +19,12 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import type { Network } from '../constants'
+import type { GroupTrust } from '../deployments'
 import { CREDITS_PER_DASH } from '../sdk/cost'
 import { authSdk, type WasmKey } from '../sdk/facade'
 import type { KeyLimits } from '../view/funds'
 import { retryWhileMissing } from '../view/retry'
+import { assertGroupHolds } from './group-trust'
 import { controlsKey } from './wif'
 
 export { controlsKey }
@@ -54,7 +57,8 @@ export interface LimitedKey {
  * Register a limited key on `identityId`, signed once by `masterWif`. Generates the new key
  * in the WASM (not retained beyond the returned WIF), registers it, verifies on chain that it
  * landed with the group bound, the requested budget and expiry, and returns it. The group is
- * first checked on chain to hold forge-core and forge-collab.
+ * first checked on chain against its pinned owner (`./group-trust`): pass `trust`, or
+ * `groupChecked: true` when the caller has just run that check itself.
  *
  * `replaceKeyId`: a renewal disables this browser's previous limited key in the same update,
  * so renewing never leaves a live key nobody holds. Only a live group-bound HIGH key is
@@ -74,13 +78,20 @@ export async function registerLimitedKey(
      * update: each is disabled only if the stored private key controls it.
      */
     readonly disableHeld?: readonly HeldKey[]
-    /** The contracts the group must hold (forge-core, forge-collab), checked on chain first. */
-    readonly contracts?: readonly string[]
-  },
+  } & (
+    | {
+        /** The group's pinned trust root (`groupTrust`), checked on chain first. */
+        readonly trust: GroupTrust
+      }
+    | {
+        /** The caller ran `assertGroupHolds` for this group just before: do not repeat it. */
+        readonly groupChecked: true
+      }
+  ),
 ): Promise<LimitedKey> {
   const { IdentityPublicKeyInCreation, ContractBounds, IdentitySigner, PrivateKey } = await import('@dashevo/evo-sdk')
   const request = params.request ?? defaultLimits()
-  if (params.contracts) await assertGroupHolds(sdk, params.group, params.contracts)
+  if ('trust' in params) await assertGroupHolds(sdk, params.group, params.trust)
   const identity = await authSdk(sdk).identities.fetch(params.identityId)
   if (!identity) throw new Error(`identity ${params.identityId} not found on ${params.network}`)
 
@@ -252,20 +263,6 @@ export async function readKeyLimits(sdk: EvoSDK, identityId: string, keyId: numb
     remaining,
     total: k.totalBudget ?? null,
     expiresAt: k.expiresAt === undefined ? null : Number(k.expiresAt),
-  }
-}
-
-/**
- * Refuse to bind a key to a group the chain does not show holding the forge contracts. The
- * group id comes from the bundled deployment file; this checks it against state. (Its owner
- * can add contracts later, which widens every group-bound key: see docs/guides/identity-and-keys.md.)
- */
-export async function assertGroupHolds(sdk: EvoSDK, group: string, contracts: readonly string[]): Promise<void> {
-  const facade = (sdk as unknown as { contractGroups: { forContract(id: string): Promise<{ toJSON?(): { contract: string[] }; contract?: string[] }> } }).contractGroups
-  for (const id of contracts) {
-    const m = await facade.forContract(id)
-    const groups = (m.toJSON ? m.toJSON() : m).contract ?? []
-    if (!groups.includes(group)) throw new Error(`contract ${id} is not in the dash-forge group on chain; refusing to bind a key to it`)
   }
 }
 

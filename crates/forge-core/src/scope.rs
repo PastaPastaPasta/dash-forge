@@ -184,6 +184,7 @@ mod tests {
                 collab: "COLLAB".into(),
                 group: "GROUP".into(),
                 superseded_in_group: vec![],
+                group_owner: None,
             },
             repo_id: REPO.into(),
             owner_id: OWNER.into(),

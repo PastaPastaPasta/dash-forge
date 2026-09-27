@@ -4,7 +4,8 @@
  * The flow, journaled in IndexedDB so a closed tab resumes rather than stranding the deposit:
  *   1. a fresh 12-word mnemonic; the user proves they wrote it down (three words);
  *   2. the deposit address (the mnemonic's BIP-44 asset-lock key) and QR; funds arrive from
- *      any wallet (or the faucet on dev networks);
+ *      any wallet (or the faucet on dev networks) and are seen on a DAPI transaction feed
+ *      that replays from the Core height recorded when the creation started;
  *   3. the asset lock is built, saved to the journal, broadcast, and proven (InstantSend or
  *      chain lock);
  *   4. this browser's limited key is generated and **stored in the vault first**, then one
@@ -25,13 +26,15 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 
 import type { Network } from '../constants'
+import type { GroupTrust } from '../deployments'
 import { idbDelete, idbGet, idbPut } from '../idb'
 import { authSdk } from '../sdk/facade'
 import {
   broadcastTx,
   buildAssetLock,
   coreEndpoints,
-  getUtxos,
+  currentHeight,
+  depositHeld,
   obtainLockProof,
   waitForDeposit,
   wifBytes,
@@ -39,7 +42,8 @@ import {
   type LockProof,
 } from './asset-lock'
 import { CANONICAL_KEYS, assetLockKeyPath, deriveAt, deriveMasterKey, identityKeyPath, normalizeMnemonic } from './hd'
-import { assertGroupHolds, defaultLimits, registerLimitedKey, verifyLimitedKey, type LimitedKey, type LimitedKeyRequest } from './limited-key'
+import { assertGroupHolds } from './group-trust'
+import { defaultLimits, registerLimitedKey, verifyLimitedKey, type LimitedKey, type LimitedKeyRequest } from './limited-key'
 
 /** Minimum deposit (spec §2.2: 0.02 DASH; the asset-lock floor is 0.003). */
 export const MIN_DEPOSIT_DUFFS = 2_000_000
@@ -53,6 +57,8 @@ export interface CreationJournal {
   /** The signed asset-lock transaction, saved before it is broadcast (hex). */
   readonly lockRaw: string | null
   readonly startedAt: number
+  /** The Core height when the creation started: the deposit watch replays from here. */
+  readonly startHeight?: number | null
 }
 
 function journalKey(network: Network): string {
@@ -68,9 +74,8 @@ export function clearCreationJournal(network: Network): Promise<void> {
 }
 
 /** What an unfinished creation's deposit address holds (duffs), to warn before discarding. */
-export async function depositBalance(network: Network, address: string, endpoints = coreEndpoints(network)): Promise<number> {
-  const utxos = await getUtxos(endpoints, address)
-  return utxos.reduce((s, u) => s + u.satoshis, 0)
+export async function depositBalance(network: Network, journal: CreationJournal, endpoints = coreEndpoints(network)): Promise<number> {
+  return depositHeld(endpoints, journal.depositAddress, journal.startHeight ?? { startedAt: journal.startedAt })
 }
 
 /** The deposit address a mnemonic funds (its BIP-44 asset-lock key). */
@@ -100,8 +105,8 @@ export async function createIdentityFromMnemonic(
     readonly network: Network
     readonly mnemonic: string
     readonly group: string
-    /** forge-core and forge-collab: the group must hold them on chain before a key binds to it. */
-    readonly contracts: readonly string[]
+    /** The group's pinned trust root: checked on chain before a key binds to it (`./group-trust`). */
+    readonly trust: GroupTrust
     readonly persistKey: (identityId: string, key: { keyId: number; wif: string }) => Promise<void>
     readonly minDepositDuffs?: number
     readonly limits?: LimitedKeyRequest
@@ -112,13 +117,14 @@ export async function createIdentityFromMnemonic(
   },
 ): Promise<{ identityId: string; key: LimitedKey }> {
   const { network, group } = params
-  await assertGroupHolds(sdk, group, params.contracts)
+  await assertGroupHolds(sdk, group, params.trust)
   const mnemonic = normalizeMnemonic(params.mnemonic)
   const ep = params.endpoints ?? coreEndpoints(network)
   const { AssetLockProof, OutPoint, Identity, IdentityPublicKey, IdentitySigner, PrivateKey, ContractBounds } = await import('@dashevo/evo-sdk')
 
   const lockKey = await deriveAt(mnemonic, assetLockKeyPath(network), network)
-  let journal: CreationJournal = (await readCreationJournal(network)) ?? {
+  const existing = await readCreationJournal(network)
+  let journal: CreationJournal = existing ?? {
     network,
     depositAddress: lockKey.address,
     identityId: null,
@@ -135,10 +141,15 @@ export async function createIdentityFromMnemonic(
 
   // 1-3: deposit → asset lock (saved before broadcast) → proof.
   if (journal.lockTxid === null || journal.lockRaw === null) {
+    // A journal this call created records the Core tip (the flow shows the address first, so
+    // the watch starts a few blocks earlier). A resumed journal without one is left alone: its
+    // watch rewinds past `startedAt` instead of skipping a deposit mined meanwhile.
+    if (existing === undefined) await save({ startHeight: await currentHeight(ep) })
     params.onStage?.('waiting-deposit')
     const utxos = await waitForDeposit(ep, lockKey.address, params.minDepositDuffs ?? MIN_DEPOSIT_DUFFS, {
       signal: params.signal,
       onSeen: params.onDeposit,
+      from: journal.startHeight ?? { startedAt: journal.startedAt },
     })
     params.onStage?.('locking')
     const priv = wifBytes(lockKey.wif)
@@ -148,7 +159,7 @@ export async function createIdentityFromMnemonic(
   }
   const lockTxid = journal.lockTxid as string
   const lockRaw = hexToBytes(journal.lockRaw as string)
-  // Idempotent: re-sending an accepted transaction is a no-op the explorer tolerates.
+  // Idempotent: re-sending an accepted transaction is harmless (DAPI, else the explorer).
   await broadcastTx(ep, bytesToHex(lockRaw), lockTxid)
   params.onStage?.('proving')
   const proof: LockProof = await obtainLockProof(ep, { txid: lockTxid, raw: lockRaw }, () => platformClh(sdk), {
@@ -170,7 +181,8 @@ export async function createIdentityFromMnemonic(
     const master = await deriveMasterKey(mnemonic, network)
     // The earlier run's key 5 may be live (its vault copy is locked or gone): disable it in
     // the same update, so no key nobody holds stays live.
-    const key = await registerLimitedKey(sdk, { network, identityId, masterWif: master.wif, group, request: limits, replaceKeyId: BROWSER_KEY_ID })
+    // The group was checked at the start of this run (assertGroupHolds above).
+    const key = await registerLimitedKey(sdk, { network, identityId, masterWif: master.wif, group, request: limits, replaceKeyId: BROWSER_KEY_ID, groupChecked: true })
     await params.persistKey(identityId, key)
     return { identityId, key }
   }
