@@ -30,6 +30,7 @@ const markdownUrl = new URL('./markdown.ts', import.meta.url)
 const gitObjectsUrl = new URL('./git-objects.ts', import.meta.url)
 const textDiffUrl = new URL('./text-diff.ts', import.meta.url)
 const wildmatchUrl = new URL('../rules/matchesProtected.ts', import.meta.url)
+const suggestionUrl = new URL('../rules/suggestion.ts', import.meta.url)
 
 /** Run `calls` against `fn`, asserting the batch finishes and no single call exceeds budget. */
 async function expectFast(
@@ -54,6 +55,25 @@ function corpus(seed: number, count: number, maxLen = MAX_LEN): string[] {
 
 /** Hand-picked worst cases for each class of bug the audit found. */
 const ADVERSARIAL: readonly string[] = [
+  '<'.repeat(MAX_LEN),
+  '<kbd>'.repeat(MAX_LEN / 5),
+  '<a href="x">'.repeat(MAX_LEN / 12),
+  '<details>\n'.repeat(MAX_LEN / 10),
+  '<div>'.repeat(MAX_LEN / 5) + '\n' + '</div>'.repeat(MAX_LEN / 6),
+  '[!['.repeat(MAX_LEN / 3),
+  '[![a](b)]('.repeat(MAX_LEN / 10),
+  '[a]: b\n'.repeat(MAX_LEN / 7) + '[a] '.repeat(MAX_LEN / 4),
+  '[x]['.repeat(MAX_LEN / 4),
+  '\\'.repeat(MAX_LEN),
+  '&#'.repeat(MAX_LEN / 2),
+  '  \n'.repeat(MAX_LEN / 3),
+  'https://x.io/' + ')'.repeat(MAX_LEN),
+  'https://x.io/' + '.'.repeat(MAX_LEN),
+  '`['.repeat(MAX_LEN / 2),
+  '# a' + ' '.repeat(MAX_LEN) + 'x',
+  '<pre>\na' + '\n'.repeat(MAX_LEN) + 'b\n</pre>',
+  'İ'.repeat(MAX_LEN / 2) + '<kbd>x</kbd>',
+  '[a ['.repeat(MAX_LEN / 4) + '](x)',
   '# a\u2028',
   '# a\u2029',
   '## Feature\u2028\u2028- item',
@@ -98,6 +118,11 @@ const MIB_UNITS: readonly string[] = [
   '[a](b', '![a](b', '[a](b) ', '[', '![', '`x', '*x', '*x* ', '**x', '__*_a_*__ ', '~~x', 'http://',
   '- ', '>', '> ', '>\n', 'a|b\n', 'c|d\n', '- a\n', '1. a\n', '```\n', '# a\n', 'a\n\n', '\u2028', '\r', 'a|',
   '# a\u2028[b](c *d* `e` ~~f~~ | g\n> h\n- i\n',
+  // D-051 / D-052: HTML, badges, references, escapes, entities, hard breaks, autolinks.
+  '<kbd>', '<kbd>x', '</kbd>', '<a href="x">', '<', '<a ', '<img src="x" ', '<details>\n', '<p align="center">\n',
+  '<div>\n\n', '<script>', '<!--', '[![a](b)](c) ', '[![', '[a][b] ', '[a]: x\n', '[a]\n', '\\*', '\\',
+  '&amp;', '&#x', '&', 'a  \n', 'a\\\n', 'https://x.io/a." ', '<https://x.io>', '- [ ] a\n', '- [x] ',
+  '<td>\n', '<table>\n<tr>\n<td>\n\n', '<pre>\n',
 ]
 
 describe('renderers terminate quickly on hostile input', () => {
@@ -153,5 +178,69 @@ describe('renderers terminate quickly on hostile input', () => {
       calls.push([nastyString(rand, 100, globAlphabet), nastyString(rand, 255, ['a', 'b', '/'])])
     }
     await expectFast(wildmatchUrl, 'wildmatch', calls, 'wildmatch')
+  }, 120_000)
+})
+
+/** Hand-picked worst cases for the suggestion parser: fences, fence-looking runs, whitespace. */
+const SUGGESTION_ADVERSARIAL: readonly string[] = [
+  // An info string that starts with a word, then a long space run, then a word: a
+  // `/^\s+|\s+$/` trim retries its trailing branch at every space (quadratic).
+  '```x' + ' '.repeat(MAX_LEN) + 'y',
+  '```suggestion' + ' '.repeat(MAX_LEN) + 'y',
+  '```' + ' '.repeat(MAX_LEN),
+  '```' + ' '.repeat(MAX_LEN) + 'x',
+  '```suggestion' + '\t'.repeat(MAX_LEN),
+  '```suggestion\n' + '``' + ' '.repeat(MAX_LEN),
+  '```suggestion\n' + '```' + ' '.repeat(MAX_LEN) + 'x',
+  '`'.repeat(MAX_LEN),
+  '~'.repeat(MAX_LEN),
+  '```\n'.repeat(MAX_LEN / 4),
+  '```suggestion\n'.repeat(MAX_LEN / 14),
+  '```suggestion\nx\n```\n'.repeat(MAX_LEN / 20),
+  '   ```suggestion\n' + '   x\n'.repeat(MAX_LEN / 5),
+  '````suggestion\n```\n'.repeat(MAX_LEN / 20),
+  '\r'.repeat(MAX_LEN),
+  '\r\n'.repeat(MAX_LEN / 2),
+  '```suggestion \t\r'.repeat(MAX_LEN / 17),
+  ' '.repeat(3) + '`'.repeat(MAX_LEN - 3),
+]
+
+/** 1 MiB units for the suggestion parser. */
+const SUGGESTION_MIB_UNITS: readonly string[] = [' ', '`', '~', '```\n', '```suggestion\n', '```suggestion\nx\n```\n', '\r', '\r\n', '\t', '   ```\n']
+
+describe('suggestion parsing terminates quickly on hostile input', () => {
+  it('parseSuggestions: adversarial cases', async () => {
+    await expectFast(suggestionUrl, 'parseSuggestions', SUGGESTION_ADVERSARIAL.map((s) => [s]), 'parseSuggestions')
+  }, 120_000)
+
+  it('parseSuggestions: 1 MiB worst cases stay under budget', async () => {
+    const calls = SUGGESTION_MIB_UNITS.map((u) => [fill(MIB, u)])
+    calls.push(
+      ['```' + fill(MIB - 4, ' ', 'x')],
+      ['```x' + fill(MIB - 5, ' ', 'y')],
+      ['```suggestion\n```' + fill(MIB - 20, ' ', 'x')],
+    )
+    await expectFast(suggestionUrl, 'parseSuggestions', calls, 'parseSuggestions 1 MiB', MIB_CALL_MS)
+  }, 120_000)
+
+  it(`parseSuggestions: ${CASES} random nasty inputs up to 20 KB`, async () => {
+    const alphabet = ['```', '~~~', '`', '~', 'suggestion', ' ', '\t', '\r', '\n', '\r\n', 'x', '   ', '````']
+    const rand = prng(0x5ec0)
+    const calls = corpus(0x5ec1, CASES).map((s) => [s])
+    for (let n = 0; n < CASES; n++) calls.push([nastyString(rand, MAX_LEN, alphabet)])
+    await expectFast(suggestionUrl, 'parseSuggestions', calls, 'parseSuggestions')
+  }, 120_000)
+
+  it('applySuggestion: large files and replacements stay linear', async () => {
+    const big = fill(MIB, 'line\n')
+    const lines = Math.floor(MIB / 5)
+    const calls: unknown[][] = [
+      [big, 1, lines, ''],
+      [big, 1, 1, fill(MIB, '\n')],
+      [big, lines, lines, fill(MIB, 'x\r\n')],
+      [fill(MIB, 'a\r\n'), 2, 3, 'b'],
+      [fill(MIB, '\n'), 1, 1, 'x'],
+    ]
+    await expectFast(suggestionUrl, 'applySuggestion', calls, 'applySuggestion 1 MiB', MIB_CALL_MS)
   }, 120_000)
 })

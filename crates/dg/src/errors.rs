@@ -97,6 +97,7 @@ pub fn print_json(v: &Value) {
 }
 
 /// What the command was for: the headline lead ("issue not created") and the repo.
+#[allow(clippy::too_many_lines)] // one arm per command
 pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
     use CollabCommand as C;
     use IssueCommand as I;
@@ -160,10 +161,27 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             P::List { repo, .. }
             | P::View { repo, .. }
             | P::Diff { repo, .. }
-            | P::Checkout { repo, .. },
+            | P::Checkout { repo, .. }
+            | P::Checks { repo, .. }
+            | P::Commits { repo, .. },
         ) => ("could not read the pull request", Some(repo)),
-        Command::Pr(P::Review { repo, .. }) => ("review not posted", Some(repo)),
-        Command::Pr(P::Merge { repo, .. }) => ("merge failed", Some(repo)),
+        Command::Pr(P::Review(a)) => ("review not posted", Some(&a.repo)),
+        Command::Pr(P::Comment(a)) => ("comment not posted", Some(&a.repo)),
+        Command::Pr(P::Merge(a)) => ("merge failed", Some(&a.repo)),
+        Command::Pr(P::Edit { repo, .. }) => ("pull request not edited", Some(repo)),
+        Command::Pr(P::Sync { repo, .. }) => ("pull request head not moved", Some(repo)),
+        Command::Pr(P::Ready { repo, .. }) => ("pull request not marked ready", Some(repo)),
+        Command::Pr(P::Draft { repo, .. }) => ("pull request not converted to a draft", Some(repo)),
+        Command::Pr(P::Resolve { repo, .. }) => ("conversation not resolved", Some(repo)),
+        Command::Pr(P::Unresolve { repo, .. }) => ("conversation not unresolved", Some(repo)),
+        Command::Pr(P::RequestReview { repo, .. } | P::UnrequestReview { repo, .. }) => {
+            ("review request not changed", Some(repo))
+        }
+        Command::Pr(P::DismissReview { repo, .. }) => ("review not dismissed", Some(repo)),
+        Command::Pr(P::UpdateBranch { repo, .. }) => ("branch not updated", Some(repo)),
+        Command::Pr(P::Suggestion(crate::PrSuggestionCommand::Apply { repo, .. })) => {
+            ("suggestions not applied", Some(repo))
+        }
         Command::Release(R::Create(args)) => ("release not created", Some(&args.repo)),
         Command::Release(R::List { repo } | R::Download { repo, .. }) => {
             ("could not read releases", Some(repo))

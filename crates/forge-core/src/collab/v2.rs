@@ -63,12 +63,17 @@ pub const DOC_EVENT: &str = "event";
 pub const DOC_AUTHOR_EVENT: &str = "authorEvent";
 /// A branch policy (maintainer-gated).
 pub const DOC_POLICY: &str = "policy";
+/// A check run reported on a head (maintainer- or writer-gated).
+pub const DOC_CHECK_RUN: &str = "checkRun";
 /// A star (`indexOnly`).
 pub const DOC_STAR: &str = "star";
 /// forge-core: a release (maintainer-gated).
 pub const DOC_RELEASE: &str = "release";
 /// forge-core: a label definition (member-gated).
 pub const DOC_LABEL: &str = "label";
+
+/// The most PRs one push follows ([`Collab::prs_following`]): each costs a few reads.
+pub const MAX_FOLLOWING: usize = 20;
 
 /// Attempts at claiming a number before giving up: each collision re-reads the index, so
 /// the next attempt starts above whatever took the number.
@@ -219,6 +224,8 @@ pub struct Patch {
     pub number: u32,
     /// Document `$id`.
     pub document_id: String,
+    /// The repo it was opened in (`repoId`, base58): the base repo.
+    pub repo_id: String,
     /// Author (`$ownerId`).
     pub author: String,
     /// Title.
@@ -410,6 +417,67 @@ impl PatchView {
     }
 }
 
+/// A `checkRun` on a head: the newest by `($createdAt, $id)` per `name` ([`Collab::check_runs`]).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckRun {
+    /// Document `$id`.
+    pub document_id: String,
+    /// The check's name (`build`, `test`).
+    pub name: String,
+    /// `queued`, `in_progress` or `completed`.
+    pub status: String,
+    /// The outcome once completed (`success`, `failure`, …); empty before.
+    pub conclusion: String,
+    /// A link to the run's details.
+    pub details_url: String,
+    /// A short summary.
+    pub summary: String,
+    /// Who reported it (`$ownerId`).
+    pub reporter: String,
+    /// Whether the reporter is a current maintainer or writer of the repo. Consensus admitted
+    /// the document from a member; a member removed since is no longer trusted (the approvals
+    /// rule). When `runner` memberships land (platform-parity C-1), runners count too.
+    pub trusted: bool,
+    /// Consensus `$createdAt` (ms).
+    pub created_at: u64,
+}
+
+/// The newest check run per name among `docs` (a head's `checkRun` documents), trusting a run
+/// only when `is_member(reporter)`. Sorted by name.
+pub fn newest_check_runs(
+    docs: &[FetchedDocument],
+    is_member: impl Fn(&str) -> bool,
+) -> Vec<CheckRun> {
+    let mut newest: BTreeMap<String, &FetchedDocument> = BTreeMap::new();
+    for d in docs {
+        let Some(name) = d.field_str("name").filter(|n| !n.is_empty()) else {
+            continue;
+        };
+        let key = (d.created_at.unwrap_or_default(), &d.id);
+        if newest
+            .get(&name)
+            .is_none_or(|e| key > (e.created_at.unwrap_or_default(), &e.id))
+        {
+            newest.insert(name, d);
+        }
+    }
+    newest
+        .into_iter()
+        .map(|(name, d)| CheckRun {
+            document_id: d.id.clone(),
+            name,
+            status: d.field_str("status").unwrap_or_default(),
+            conclusion: d.field_str("conclusion").unwrap_or_default(),
+            details_url: d.field_str("detailsUrl").unwrap_or_default(),
+            summary: d.field_str("summary").unwrap_or_default(),
+            trusted: is_member(&d.owner_id),
+            reporter: d.owner_id.clone(),
+            created_at: d.created_at.unwrap_or_default(),
+        })
+        .collect()
+}
+
 /// The payload of a state event (forge-v2.md §3 kinds table).
 #[derive(Debug, Clone, Default)]
 pub struct EventPayload<'a> {
@@ -511,6 +579,7 @@ pub fn patch_from_doc(d: &FetchedDocument) -> Patch {
     Patch {
         number: number_of(d),
         document_id: d.id.clone(),
+        repo_id: id_field(d, "repoId").unwrap_or_default(),
         author: d.owner_id.clone(),
         title: d.field_str("title").unwrap_or_default(),
         body: d.field_str("body").unwrap_or_default(),
@@ -850,6 +919,100 @@ pub fn policy_props(policy: &Policy) -> Result<BTreeMap<String, FieldValue>> {
         "mergeMethods".to_string(),
         FieldValue::integer(u64::from(policy.merge_methods)),
     );
+    Ok(p)
+}
+
+/// The properties of a `comment` (without `repoId`): its target, body and anchor. Refuses an
+/// empty body and a range whose start follows its line before anything is signed.
+pub fn comment_props(
+    target_id: &str,
+    body: &str,
+    anchor: Option<&CommentAnchor>,
+    imported: Option<&Imported>,
+) -> Result<BTreeMap<String, FieldValue>> {
+    if body.trim().is_empty() {
+        return Err(Error::Config("a comment needs a body".into()));
+    }
+    check_text("comment body", body, 5120, 5120)?;
+    let mut p = BTreeMap::new();
+    p.insert(
+        "targetId".to_string(),
+        FieldValue::identifier(platform::decode_identifier(target_id)?),
+    );
+    p.insert("body".to_string(), FieldValue::text(body));
+    if let Some(a) = anchor {
+        if let Some(r) = &a.reply_to {
+            p.insert(
+                "replyTo".to_string(),
+                FieldValue::identifier(platform::decode_identifier(r)?),
+            );
+        }
+        if let Some(o) = &a.commit_oid {
+            p.insert("commitOid".to_string(), FieldValue::bytes(o.clone()));
+        }
+        if let Some(path) = &a.path {
+            check_text("comment path", path, 500, 1000)?;
+            p.insert("path".to_string(), FieldValue::text(path));
+        }
+        if let Some(l) = a.line {
+            p.insert("line".to_string(), FieldValue::integer(l));
+        }
+        if let Some(s) = a.side {
+            p.insert("side".to_string(), FieldValue::integer(s));
+        }
+        if let Some(start) = a.start_line {
+            if a.line.is_none_or(|l| start > l) {
+                return Err(Error::Config(
+                    "a range comment needs a line, and its start line may not follow it".into(),
+                ));
+            }
+            p.insert("startLine".to_string(), FieldValue::integer(start));
+        }
+        if let Some(r) = &a.review_id {
+            p.insert(
+                "reviewId".to_string(),
+                FieldValue::identifier(platform::decode_identifier(r)?),
+            );
+        }
+    }
+    insert_imported(&mut p, imported)?;
+    Ok(p)
+}
+
+/// The properties of a `review` (without `repoId`): `verdict` on `commit_oid`, with the number
+/// of `reviewId` comments its submit will write.
+pub fn review_props(
+    patch_id: &str,
+    verdict: Verdict,
+    commit_oid: &[u8],
+    body: &str,
+    comment_count: Option<u16>,
+    imported: Option<&Imported>,
+) -> Result<BTreeMap<String, FieldValue>> {
+    if !(1..=3).contains(&verdict.code()) {
+        return Err(Error::Config(format!("unknown verdict {}", verdict.code())));
+    }
+    check_text("review body", body, 5120, 5120)?;
+    let mut p = BTreeMap::new();
+    p.insert(
+        "patchId".to_string(),
+        FieldValue::identifier(platform::decode_identifier(patch_id)?),
+    );
+    p.insert("verdict".to_string(), FieldValue::integer(verdict.code()));
+    p.insert(
+        "commitOid".to_string(),
+        FieldValue::bytes(commit_oid.to_vec()),
+    );
+    if !body.is_empty() {
+        p.insert("body".to_string(), FieldValue::text(body));
+    }
+    if let Some(n) = comment_count {
+        p.insert(
+            "commentCount".to_string(),
+            FieldValue::integer(u64::from(n)),
+        );
+    }
+    insert_imported(&mut p, imported)?;
     Ok(p)
 }
 
@@ -1723,6 +1886,85 @@ impl<'a> Collab<'a> {
             .collect())
     }
 
+    /// The open PRs a push of `source_ref_name` to `source_repo_id` should move, with their
+    /// target repos and views: PRs from that branch ([`Self::patches_from_branch`]) authored
+    /// by `author` (anyone can open a PR naming someone's branch; only the author's are
+    /// read further), re-read well-formed in their own repo, open, whose folded head is not
+    /// already `new_head`. At most [`MAX_FOLLOWING`] are read. A PR that cannot be read
+    /// (its repo gone, private, or malformed) is skipped, never failing the others. What
+    /// `git push` and `dg pr sync` post a `headUpdate` for.
+    pub async fn prs_following(
+        &self,
+        forge: &ForgeIds,
+        source_repo_id: &str,
+        source_ref_name: &str,
+        new_head: &str,
+        author: &str,
+    ) -> Result<Vec<(RepoRef, PatchView)>> {
+        let mut out = Vec::new();
+        let mine = self
+            .patches_from_branch(forge, source_repo_id, source_ref_name)
+            .await?
+            .into_iter()
+            .filter(|p| p.author == author)
+            .take(MAX_FOLLOWING);
+        for p in mine {
+            let read = async {
+                let repo = crate::resolve::resolve_id(self.client, &p.repo_id).await?;
+                // The branch query saw the raw document; the reader rule (§5) is per repo.
+                let Some(p) = self.patch(&repo, p.number).await? else {
+                    return Ok(None);
+                };
+                let view = self.patch_view(&repo, p).await?;
+                Ok::<_, Error>(Some((repo, view)))
+            };
+            match read.await {
+                Ok(Some((repo, view)))
+                    if view.state.open && !view.head.eq_ignore_ascii_case(new_head) =>
+                {
+                    out.push((repo, view));
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!(pr = p.number, repo = %p.repo_id, error = %e, "skipping a pull request that cannot be read");
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// The check runs reported on `head_oid` in `repo` (the `checkRun` `head` index): the
+    /// newest per `name`, each marked trusted when its reporter is a current maintainer or
+    /// writer ([`newest_check_runs`]).
+    pub async fn check_runs(&self, repo: &RepoRef, head_oid: &str) -> Result<Vec<CheckRun>> {
+        let collab = self.collab_contract(repo).await?;
+        let oid = hex::decode(head_oid)
+            .map_err(|_| Error::Config(format!("{head_oid:?} is not a hex commit id")))?;
+        let docs = self
+            .client
+            .query_all_documents(
+                &collab,
+                DOC_CHECK_RUN,
+                &[
+                    Self::repo_filter(repo)?,
+                    QueryFilter::eq("headOid", FieldValue::bytes(oid)),
+                ],
+                &[
+                    QueryOrder::asc("repoId"),
+                    QueryOrder::asc("headOid"),
+                    QueryOrder::asc("$createdAt"),
+                ],
+            )
+            .await?;
+        if docs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let oracle = self.member_oracle(repo).await?;
+        Ok(newest_check_runs(&docs, |who| {
+            oracle.current_role(who).is_some()
+        }))
+    }
+
     // --- numbering --------------------------------------------------------------------
 
     /// The number a new issue or PR would claim now (§6).
@@ -2073,53 +2315,8 @@ impl<'a> Collab<'a> {
         anchor: Option<&CommentAnchor>,
         imported: Option<&Imported>,
     ) -> Result<String> {
-        if body.trim().is_empty() {
-            return Err(Error::Config("a comment needs a body".into()));
-        }
-        check_text("comment body", body, 5120, 5120)?;
+        let p = comment_props(target_id, body, anchor, imported)?;
         let collab = self.collab_contract(repo).await?;
-        let mut p = BTreeMap::new();
-        p.insert(
-            "targetId".to_string(),
-            FieldValue::identifier(platform::decode_identifier(target_id)?),
-        );
-        p.insert("body".to_string(), FieldValue::text(body));
-        if let Some(a) = anchor {
-            if let Some(r) = &a.reply_to {
-                p.insert(
-                    "replyTo".to_string(),
-                    FieldValue::identifier(platform::decode_identifier(r)?),
-                );
-            }
-            if let Some(o) = &a.commit_oid {
-                p.insert("commitOid".to_string(), FieldValue::bytes(o.clone()));
-            }
-            if let Some(path) = &a.path {
-                check_text("comment path", path, 500, 1000)?;
-                p.insert("path".to_string(), FieldValue::text(path));
-            }
-            if let Some(l) = a.line {
-                p.insert("line".to_string(), FieldValue::integer(l));
-            }
-            if let Some(s) = a.side {
-                p.insert("side".to_string(), FieldValue::integer(s));
-            }
-            if let Some(start) = a.start_line {
-                if a.line.is_none_or(|l| start > l) {
-                    return Err(Error::Config(
-                        "a range comment needs a line, and its start line may not follow it".into(),
-                    ));
-                }
-                p.insert("startLine".to_string(), FieldValue::integer(start));
-            }
-            if let Some(r) = &a.review_id {
-                p.insert(
-                    "reviewId".to_string(),
-                    FieldValue::identifier(platform::decode_identifier(r)?),
-                );
-            }
-        }
-        insert_imported(&mut p, imported)?;
         let p = self.seal_if_private(repo, ContentKind::Comment, p).await?;
         self.write(repo, &collab, DOC_COMMENT, p).await
     }
@@ -2137,33 +2334,53 @@ impl<'a> Collab<'a> {
         comment_count: Option<u16>,
         imported: Option<&Imported>,
     ) -> Result<String> {
-        if !(1..=3).contains(&verdict.code()) {
-            return Err(Error::Config(format!("unknown verdict {}", verdict.code())));
-        }
-        check_text("review body", body, 5120, 5120)?;
+        let p = review_props(patch_id, verdict, commit_oid, body, comment_count, imported)?;
+        let p = self.seal_if_private(repo, ContentKind::Review, p).await?;
         let collab = self.collab_contract(repo).await?;
-        let mut p = BTreeMap::new();
-        p.insert(
-            "patchId".to_string(),
-            FieldValue::identifier(platform::decode_identifier(patch_id)?),
-        );
-        p.insert("verdict".to_string(), FieldValue::integer(verdict.code()));
-        p.insert(
-            "commitOid".to_string(),
-            FieldValue::bytes(commit_oid.to_vec()),
-        );
-        if !body.is_empty() {
-            p.insert("body".to_string(), FieldValue::text(body));
-        }
-        if let Some(n) = comment_count {
-            p.insert(
-                "commentCount".to_string(),
-                FieldValue::integer(u64::from(n)),
+        self.write(repo, &collab, DOC_REVIEW, p).await
+    }
+
+    /// Create one forge-collab document of `repo` exactly once across runs: the signed
+    /// transition is handed to `persist` before its first broadcast, and `saved` (an earlier
+    /// run's persisted transition, if any) is re-broadcast instead of signing a new one. A
+    /// saved transition that provably never landed is dropped and a fresh one signed. Returns
+    /// the document id. What a resumable batch (a pending review's submit) builds on.
+    pub async fn create_once(
+        &self,
+        repo: &RepoRef,
+        kind: ContentKind,
+        props: BTreeMap<String, FieldValue>,
+        saved: Option<&WriteIntent>,
+        mut persist: impl FnMut(&WriteIntent) -> Result<()>,
+    ) -> Result<String> {
+        let doc_type = match kind {
+            ContentKind::Comment => DOC_COMMENT,
+            ContentKind::Review => DOC_REVIEW,
+            other => {
+                return Err(Error::Config(format!(
+                    "create_once writes comments and reviews, not {other:?}"
+                )))
+            }
+        };
+        let collab = self.collab_contract(repo).await?;
+        let engine = self.engine()?;
+        if let Some(intent) = saved {
+            if replay_landed(&engine, &collab, doc_type, intent).await? {
+                return Ok(intent.document_id.clone());
+            }
+            tracing::warn!(
+                document = %intent.document_id,
+                "a saved write from an interrupted run never landed; signing it afresh"
             );
         }
-        insert_imported(&mut p, imported)?;
-        let p = self.seal_if_private(repo, ContentKind::Review, p).await?;
-        self.write(repo, &collab, DOC_REVIEW, p).await
+        // Sealed only when signing afresh: a replay re-broadcasts the saved (sealed) bytes.
+        let props = self.seal_if_private(repo, kind, props).await?;
+        let prepared = engine
+            .create_journaled(&collab, doc_type, Self::with_repo(repo, props)?, |p| {
+                persist(&WriteIntent::for_prepared(0, p))
+            })
+            .await?;
+        Ok(prepared.document_id().to_string())
     }
 
     // --- writes: events ------------------------------------------------------------------

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Scenario 21: GitHub-parity issue commands (platform-parity-spec §1.2, F-1).
+# Scenario 22: GitHub-parity issue commands (platform-parity-spec §1.2, F-1).
 #
 #   1. OWNER opens an issue, then edits its title and body     -> `dg issue edit`, reads back
 #   2. a re-run of the same edit writes nothing                 -> status "unchanged", 0 credits
@@ -13,13 +13,13 @@
 #   7. OWNER deletes the label                                   -> `dg label delete`
 #
 # Everything is written by OWNER (a maintainer of the suite repo) except the refused edit.
-SCENARIO_NAME="21 issue parity (edit, labels, assignees, list filters and paging)"
+SCENARIO_NAME="22 issue parity (edit, labels, assignees, list filters and paging)"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
 [[ -n "${HARNESS_SHARED:-}" ]] || harness_ensure_repo "$E2E_REPO_NAME" || skip_scenario "could not create/resolve the test repo"
 
 REPO="${E2E_OWNER_ID}/${E2E_REPO_NAME}"
-LOG="${WORKROOT}/s21"
+LOG="${WORKROOT}/s22"
 TITLE="e2e ${RUN_ID} parity"
 LABEL="e2e-${RUN_ID: -8}"
 jq_py() { python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print($2)" "$1"; }

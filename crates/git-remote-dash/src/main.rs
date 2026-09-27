@@ -32,6 +32,7 @@ mod helper;
 mod journal;
 mod options;
 mod policy;
+mod pr_sync;
 mod progress;
 mod url;
 

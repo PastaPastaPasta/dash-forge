@@ -262,95 +262,9 @@ export function groupReviewComments(
 // Suggestions
 // ---------------------------------------------------------------------------
 
-export interface Suggestion {
-  readonly text: string
-}
-
-function leadingSpaces(line: string): number {
-  let n = 0
-  while (n < line.length && line[n] === ' ') n++
-  return n
-}
-
-function runOf(s: string, ch: string): number {
-  let n = 0
-  while (n < s.length && s[n] === ch) n++
-  return n
-}
-
-/** Fence whitespace: ASCII space, tab and CR only (the Rust `is_fence_space`). */
-const FENCE_SPACE = /[ \t\r]/
-const FENCE_TRIM = /^[ \t\r]+|[ \t\r]+$/g
-
-function fenceOpen(line: string): { indent: number; ch: string; run: number; word: string } | null {
-  const indent = leadingSpaces(line)
-  if (indent > 3) return null
-  const rest = line.slice(indent)
-  const ch = rest[0]
-  if (ch !== '`' && ch !== '~') return null
-  const run = runOf(rest, ch)
-  if (run < 3) return null
-  const info = rest.slice(run).replace(FENCE_TRIM, '')
-  if (ch === '`' && info.includes('`')) return null
-  return { indent, ch, run, word: info.split(FENCE_SPACE)[0] ?? '' }
-}
-
-function fenceClose(line: string, ch: string, run: number): boolean {
-  const indent = leadingSpaces(line)
-  if (indent > 3) return false
-  const rest = line.slice(indent)
-  const n = runOf(rest, ch)
-  return n >= run && /^[ \t\r]*$/.test(rest.slice(n))
-}
-
-/** The ```` ```suggestion ```` blocks of a body, in order (the Rust `parse_suggestions`). */
-export function parseSuggestions(body: string): Suggestion[] {
-  const out: Suggestion[] = []
-  let open: { indent: number; ch: string; run: number; isSuggestion: boolean; lines: string[] } | null = null
-  for (const line of body.replace(/\r\n?/g, '\n').split('\n')) {
-    if (open !== null) {
-      if (fenceClose(line, open.ch, open.run)) {
-        if (open.isSuggestion) out.push({ text: open.lines.join('\n') })
-        open = null
-      } else {
-        // Up to the opener's indentation is removed from content lines (CommonMark).
-        open.lines.push(line.slice(Math.min(leadingSpaces(line), open.indent)))
-      }
-      continue
-    }
-    const f = fenceOpen(line)
-    if (f !== null) open = { indent: f.indent, ch: f.ch, run: f.run, isSuggestion: f.word === 'suggestion', lines: [] }
-  }
-  if (open?.isSuggestion) out.push({ text: open.lines.join('\n') })
-  return out
-}
-
-export type SuggestionError = 'badRange' | 'outOfRange'
-
-/**
- * Replace lines `startLine..=endLine` (1-based) of `file` with `text`, keeping the file's
- * newline style and trailing-newline state (the Rust `apply_suggestion`).
- */
-export function applySuggestion(
-  file: string,
-  startLine: number,
-  endLine: number,
-  text: string,
-): { ok: string } | { error: SuggestionError } {
-  if (startLine < 1 || startLine > endLine) return { error: 'badRange' }
-  const firstNl = file.indexOf('\n')
-  const nl = firstNl > 0 && file[firstNl - 1] === '\r' ? '\r\n' : '\n'
-  const trailing = file.endsWith('\n')
-  const normalized = file.replace(/\r\n/g, '\n')
-  const body = normalized.endsWith('\n') ? normalized.slice(0, -1) : normalized
-  const lines = normalized === '' ? [] : body.split('\n')
-  if (endLine > lines.length) return { error: 'outOfRange' }
-  const replacement = text.replace(/\r\n/g, '\n')
-  lines.splice(startLine - 1, endLine - startLine + 1, ...(replacement === '' ? [] : replacement.split('\n')))
-  let out = lines.join(nl)
-  if (trailing && lines.length > 0) out += nl
-  return { ok: out }
-}
+// The parser and the replacement live in `./suggestion` (no imports, so the fuzz worker can load
+// it with plain Node).
+export { applySuggestion, parseSuggestions, type Suggestion, type SuggestionError } from './suggestion'
 
 // ---------------------------------------------------------------------------
 // Linked issues

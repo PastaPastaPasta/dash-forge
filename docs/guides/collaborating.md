@@ -198,21 +198,40 @@ PR numbers follow the same rule as issue numbers.
 
 ```sh
 dg pr list     <owner>/project [--state open|closed|all]
-dg pr view     <owner>/project 7          # state, source fork, approvals, reviews, comments
+dg pr view     <owner>/project 7          # state, reviewers, approvals, reviews
+dg pr view     <owner>/project 7 --comments   # + threads under their file and line
 dg pr diff     <owner>/project 7          # fetches head and base, then git diff base...head
+dg pr commits  <owner>/project 7          # the commits the PR adds
+dg pr checks   <owner>/project 7          # check runs reported on the head
 dg pr checkout <owner>/project 7          # creates local branch pr/7 at the PR head
 dg pr review   <owner>/project 7 --approve --body "LGTM"
-dg pr review   <owner>/project 7 --request-changes --body "Needs a test"
-dg pr review   <owner>/project 7 --comment --body "Why this approach?"
+dg pr review   <owner>/project 7 --request-changes --body "Needs a test" \
+  --file src/a.rs --line 12 --body "off by one?" \
+  --file src/b.rs --start-line 3 --line 5 --side old --body "why remove these?" \
+  --file src/c.rs --line 9 --suggest 'let x = 1;' --body "simpler"
+dg pr comment  <owner>/project 7 --body "Why this approach?"          # one comment now
+dg pr comment  <owner>/project 7 --reply-to <comment id> --body "Done"
 ```
+
+**Inline comments.** Every flag after a `--file` belongs to that file's comment, until the next `--file`. `--line` alone is one line; `--start-line` makes a range. `--side old` is the removed side of the diff. With no `--line`, the comment is about the whole file. `--suggest` adds a ```` ```suggestion ```` block that the PR's author can apply. The review and its comments are 1 + N documents, written one after another. If the submit is interrupted, running the same command again finishes it without writing anything twice.
+
+**Pending review.** `dg pr review … --pending --file … --line … --body …` adds comments to a review kept on your machine and writes nothing. A later `dg pr review … --request-changes` (or `--approve`, `--comment`) submits all of them with the verdict. `--discard` throws the pending review away.
+
+**Conversations.** `dg pr resolve <owner>/project 7 <comment id>` resolves a thread, and `unresolve` reopens it. The PR's author and its members can do this. `dg pr request-review <owner>/project 7 @alice` asks for a review, and `unrequest-review` withdraws the request. A member can `dg pr dismiss-review <owner>/project 7 <review id> --reason "…"`: the review then counts neither for nor against. The reason is public.
+
+**Suggestions.** The PR's author (anyone who can push to its branch) runs `dg pr suggestion apply <owner>/project 7 --all`, or names comment ids. This commits the suggestions to the PR branch as one commit, with a `Forge-Suggestion:` trailer per comment, and moves the PR head to it. Overlapping suggestions, or ones made on an older head, are refused with [`E107`](../errors.md#e107).
+
+**Drafts and edits.** `dg pr create --draft` opens a draft. `dg pr ready` and `dg pr draft` switch between the two. The author can change the title and description with `dg pr edit <owner>/project 7 --title … --body …`.
 
 A review records the commit it was made on, which is the PR's head at the time. **Which approvals count:**
 
 - Only reviews from current writers and maintainers count.
-- Only reviews on the PR's **current** head count. A new push makes older ones stale, and `dg pr view` marks them so.
+- Only reviews on the PR's **current** head count. When the head moves, older reviews go stale: `dg pr view` marks them, and tells a reviewer "new commits since your review".
 - A reviewer's newest approve or request-changes review is the one that stands.
 
 Anyone can post a review, but `dg` tells a non-member that theirs does not count.
+
+**The PR follows its branch.** When you `git push` the PR's branch, the helper moves the PR's head to the new commit (a `headUpdate`, about 0.0007 DASH) and says so. It does this for your own PRs only. `git config dash.prAutoSync false` turns it off, and `dg pr sync <owner>/project 7` then does it by hand. `dg pr update-branch <owner>/project 7` merges the base branch into the PR branch and moves the head.
 
 **5. Merge.** A writer or maintainer runs:
 
@@ -232,13 +251,13 @@ Merging PR #7 of <owner>/project into refs/heads/main
 `dg` does the merge on your machine, in a scratch repository, in four steps:
 
 1. Fetch the base branch and the PR head, each from its own repository.
-2. Fast-forward if it can. Otherwise build a merge commit, authored with your git `user.name` and `user.email`.
+2. Fast-forward if it can. Otherwise build a merge commit, authored with your git `user.name` and `user.email`. `--squash` instead makes one commit on the base with the PR's changes, with a `Co-authored-by` line for each other author (`--message` sets its message).
 3. Push the result to the base branch. The push uses your `dash.storage` settings when you run `dg pr merge` inside a clone of the repository.
 4. Post the `merge` event naming the commit that landed.
 
-Each step is reported. If one fails, the output says what already happened. If the push landed but the event did not, `dg pr merge --event-only` records the event.
+Each step is reported. If one fails, the output says what already happened. If the push landed but the event did not, `dg pr merge --event-only` records the event. `--delete-branch` deletes the PR's branch afterwards. This needs write access to the repository it lives in.
 
-- **Conflicts:** nothing is pushed ([`E105`](../errors.md#e105)). Check the PR out, merge the base into it, resolve, push the result to the base branch, and run `dg pr merge` again (it sees the head is already in the base and only records the merge). A PR names a fixed head commit, so pushing the resolution to your source branch does not update the PR; open a new PR from it instead.
+- **Conflicts:** nothing is pushed ([`E105`](../errors.md#e105)). Check the PR out, merge the base into it, resolve, push the result to the PR's branch (the PR follows it), and run `dg pr merge` again. `dg pr update-branch` does this for you when the merge is clean.
 - **Protected base branch:** only a maintainer can push to it. A writer's merge is refused with [`E601`](../errors.md#e601) before any git work.
 - **Merged elsewhere:** if the merge was pushed some other way, `dg pr merge --event-only [--merge-oid <commit>]` only posts the event. The commit must already have been a tip of the base branch: a merge event is permanent, so `dg` refuses to post one that would not count.
 

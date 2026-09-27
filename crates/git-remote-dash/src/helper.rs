@@ -503,7 +503,13 @@ impl Helper {
         } else {
             self.read_refs_until_converged(&planned).await?
         };
+        // The branches that moved: the PRs following them get a head update (review-parity
+        // R14). Read before `finalize_outcomes` consumes the plan.
+        let moved = moved_branches(&planned, &final_refs);
         let outcomes = finalize_outcomes(planned, &final_refs, dry_run);
+        if !dry_run && !moved.is_empty() {
+            self.sync_prs(&moved, progress).await;
+        }
         let reporting = progress.enabled || progress::reporting();
         if reporting && !dry_run && outcomes.iter().any(|o| matches!(o, PushOutcome::Ok(_))) {
             self.report_done(progress, balance_before, est_credits)
@@ -511,6 +517,46 @@ impl Helper {
         }
         refused.extend(outcomes);
         Ok(refused)
+    }
+
+    /// Post the head updates of the PRs following `moved` ([`crate::pr_sync`]). Never fails
+    /// the push: its refs already landed.
+    async fn sync_prs(&self, moved: &[crate::pr_sync::Moved], progress: Progress) {
+        let conn = self.conn.as_ref().expect("connected");
+        let Some(s) = &conn.signer else {
+            return;
+        };
+        let enabled = match crate::pr_sync::auto_sync_enabled(self.remote.as_deref()) {
+            Ok(e) => e,
+            Err(e) => {
+                progress.note(&format!("{e}; not updating pull requests"));
+                return;
+            }
+        };
+        let collab = forge_core::collab::v2::Collab::new(&conn.client, &s.identity, &s.bridge);
+        // A private repository's PRs are sealed and found by keyed hashes, not the plain
+        // `sourceRef` index this lookup uses: `dg pr sync` moves their heads.
+        if conn.repo.visibility == forge_core::rules::v2::Visibility::Private {
+            return;
+        }
+        let outcomes =
+            crate::pr_sync::sync_after_push(&collab, &conn.repo, moved, enabled, progress).await;
+        for o in &outcomes {
+            if let crate::pr_sync::Outcome::Synced {
+                repo,
+                number,
+                event,
+            } = o
+            {
+                progress.emit(
+                    &format!("dash: PR #{number} in {repo} now follows this push ({event})"),
+                    &serde_json::json!({ "event": "prSync", "repo": repo, "pr": number, "eventId": event }),
+                );
+                progress::report(
+                    &serde_json::json!({ "event": "prSync", "repo": repo, "pr": number, "eventId": event }),
+                );
+            }
+        }
     }
 
     /// The summary line with actuals: the balance change is what this push cost (≈: other
@@ -570,6 +616,27 @@ impl Helper {
         }
         Ok(last)
     }
+}
+
+/// The accepted, non-delete updates of `planned` that `final_refs` shows landed.
+fn moved_branches(
+    planned: &[Planned],
+    final_refs: &[(String, RefState)],
+) -> Vec<crate::pr_sync::Moved> {
+    planned
+        .iter()
+        .filter(|p| p.reject.is_none())
+        .filter_map(|p| {
+            let oid = p.new_oid.clone()?;
+            let landed = final_refs.iter().any(|(n, st)| {
+                n == &p.spec.dst && matches!(st, RefState::Resolved { oid: got, .. } if *got == oid)
+            });
+            landed.then(|| crate::pr_sync::Moved {
+                ref_name: p.spec.dst.clone(),
+                oid,
+            })
+        })
+        .collect()
 }
 
 /// One pack's outcome in a fetch.
