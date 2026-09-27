@@ -42,8 +42,8 @@ const M_COST: u32 = 64 * 1024;
 const T_COST: u32 = 3;
 const P_COST: u32 = 1;
 /// Upper bounds accepted when opening, so a crafted file cannot make `dg` allocate gigabytes.
-const MAX_M_COST: u32 = 1024 * 1024;
-const MAX_T_COST: u32 = 16;
+const MAX_M_COST: u32 = 256 * 1024;
+const MAX_T_COST: u32 = 10;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

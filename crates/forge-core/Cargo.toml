@@ -32,9 +32,6 @@ aes-gcm = { version = "0.10", features = ["zeroize"] }
 hkdf = "0.12"
 subtle = "2.6"
 zeroize = { version = "1.8", features = ["derive"] }
-# OS credential store (macOS Keychain, Windows Credential Manager, Secret Service): identity
-# keys and storage secrets (`forge_core::keychain`).
-keyring = "4"
 getrandom = "0.2"
 
 # storage backends (HTTP/S3/IPFS adapters). reqwest on rustls (no system OpenSSL);
@@ -67,6 +64,12 @@ rand = "0.8"
 argon2 = "0.5"
 chacha20poly1305 = "0.10"
 rpassword = "7"
+
+# OS credential store for identity keys and storage secrets (`forge_core::keychain`): the
+# Secret Service / Credential Manager through `keyring`. macOS uses /usr/bin/security instead
+# (a stable program identity across dg upgrades), so it does not link keyring.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+keyring = "4"
 
 # Only for `vendored-openssl` below. rs-sdk-trusted-context-provider enables reqwest's default
 # (native-tls) features, which on Linux link the system OpenSSL; this lets a release build

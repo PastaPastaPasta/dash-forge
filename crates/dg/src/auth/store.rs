@@ -16,6 +16,7 @@ use anyhow::{Context as _, Result};
 use forge_core::keychain;
 use forge_core::keystore::{self, Secret};
 use forge_core::sealed;
+use forge_core::user_error::{codes, UserError};
 
 use crate::config::{config_dir, Config};
 use crate::context::Ctx;
@@ -120,9 +121,9 @@ pub fn store(
                         source: keystore::keychain_source(network, identity_id),
                     });
                 }
-                tracing::warn!("the keychain did not return what was written; using a file");
+                eprintln!("note: the keychain did not return what was written; using a file");
             }
-            Err(e) => tracing::warn!("keychain unavailable ({e}); using a file"),
+            Err(e) => eprintln!("note: the keychain refused the key ({e}); using a file"),
         }
     }
     let path = key_file(network, identity_id)?;
@@ -137,23 +138,36 @@ pub fn store(
         ),
         true,
     )
-    .context("no OS keychain, so the key is stored in a passphrase-encrypted file; set DASH_FORGE_PASSPHRASE for non-interactive use, or pass --insecure-plaintext")?;
+    .map_err(|e| {
+        UserError::new(codes::USAGE, "the key could not be stored")
+            .cause(format!(
+                "there is no OS keychain here, so the key goes to a passphrase-encrypted file, and {e}"
+            ))
+            .fix("run it in a terminal to type a passphrase, or set DASH_FORGE_PASSPHRASE")
+            .fix("or pass --insecure-plaintext to store it unencrypted (0600)")
+            .note("nothing was registered on chain")
+    })?;
     let sealed_text = sealed::seal(text.expose().as_bytes(), pass.expose())?;
     keystore::write_private_file(&path, sealed_text.as_bytes())?;
     Ok(Stored::Sealed(path))
 }
 
-/// Remove what [`store`] wrote for `identity_id` on `network` (keychain entry and key file).
-/// Returns what was removed.
-pub fn remove(network: &str, identity_id: &str) -> Result<Vec<String>> {
+/// Remove what [`store`] wrote for `identity_id` on `network` (keychain entry and key file),
+/// and the keychain entry `source` names if it is another one. Returns what was removed.
+pub fn remove(network: &str, identity_id: &str, source: Option<&str>) -> Result<Vec<String>> {
     let mut removed = Vec::new();
-    let account = format!("{network}/{identity_id}");
-    if keychain::available() && keychain::delete(keychain::SERVICE, &account)? {
-        removed.push(format!(
-            "{} entry {}/{account}",
-            keychain::store_name(),
-            keychain::SERVICE
-        ));
+    let default_account = format!("{network}/{identity_id}");
+    let mut entries = vec![(keychain::SERVICE.to_string(), default_account)];
+    if let Some((svc, acct)) = source.and_then(keystore::parse_keychain_source) {
+        if !entries.iter().any(|(s, a)| s == svc && a == acct) {
+            entries.push((svc.to_string(), acct.to_string()));
+        }
+    }
+    for (svc, acct) in &entries {
+        // Tried even with the keychain switched off: the entry may predate the switch.
+        if keychain::delete(svc, acct).unwrap_or(false) {
+            removed.push(format!("{} entry {svc}/{acct}", keychain::store_name()));
+        }
     }
     let path = key_file(network, identity_id)?;
     if path.exists() {

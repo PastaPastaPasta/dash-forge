@@ -181,15 +181,23 @@ pub fn parse_keychain_source(source: &str) -> Option<(&str, &str)> {
         .filter(|(s, a)| !s.is_empty() && !a.is_empty())
 }
 
-/// The key source `dg` recorded as the default (`default_identity` in
-/// `~/.config/dash-forge/config.toml`), for tools without an `--identity` of their own (the
-/// remote helper). `None` when there is none.
+/// Dash Forge's config directory: `$XDG_CONFIG_HOME/dash-forge`, else
+/// `~/.config/dash-forge` (ux-dx-spec §7.6).
+pub fn forge_config_dir() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
+        })?;
+    Some(base.join("dash-forge"))
+}
+
+/// The key source `dg` recorded as the default (`default_identity` in `config.toml`), for
+/// tools without an `--identity` of their own (the remote helper). `None` when there is none.
 pub fn configured_default_source() -> Option<String> {
-    let home = std::env::var_os("HOME")?;
-    let raw = std::fs::read_to_string(
-        std::path::PathBuf::from(home).join(".config/dash-forge/config.toml"),
-    )
-    .ok()?;
+    let raw = std::fs::read_to_string(forge_config_dir()?.join("config.toml")).ok()?;
     let v: toml::Value = toml::from_str(&raw).ok()?;
     v.get("default_identity")?
         .as_str()
@@ -197,20 +205,18 @@ pub fn configured_default_source() -> Option<String> {
         .map(str::to_string)
 }
 
-/// Write `bytes` to `path` readable by the owner only: the file is 0600 from the moment it
-/// exists (an existing file is tightened before it is overwritten), and a parent directory
-/// under `~/.config/dash-forge` is created and kept 0700. Plain create-and-write on
-/// platforms without Unix permissions.
+/// Write `bytes` to `path` readable by the owner only, replacing it atomically: the data goes
+/// to a 0600 temporary file in the same directory (created exclusively, so no symlink is
+/// followed) that is then renamed over `path`. A parent directory under the Forge config
+/// directory is created and kept 0700.
 pub fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
-    use std::io::Write as _;
     let io = |e: std::io::Error| Error::Io(format!("writing {}: {e}", path.display()));
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).map_err(io)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            let forge_dir = std::env::var_os("HOME")
-                .map(|h| std::path::PathBuf::from(h).join(".config/dash-forge"));
+            let forge_dir = forge_config_dir();
             // Only Forge's own directories are tightened, never one the user named.
             if forge_dir.is_some_and(|c| dir.starts_with(c)) {
                 std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
@@ -218,28 +224,43 @@ pub fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
             }
         }
     }
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .ok_or_else(|| Error::Io(format!("{} names no file", path.display())))?;
+    let tmp = dir.join(format!(
+        ".{}.{}.tmp",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&tmp);
+    create_private_file(&tmp, bytes)?;
+    // rename() replaces a symlink at `path` instead of writing through it.
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        io(e)
+    })?;
+    Ok(())
+}
+
+/// Create `path` for a new export or backup, owner-only, refusing to overwrite anything or to
+/// follow a symlink planted at the name (`O_EXCL` does not follow links).
+pub fn create_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    let io = |e: std::io::Error| Error::Io(format!("writing {}: {e}", path.display()));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
-        if path.exists() {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(io)?;
-        }
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(path)
-            .map_err(io)?;
-        f.write_all(bytes).map_err(io)?;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
     }
-    #[cfg(not(unix))]
-    {
-        std::fs::File::create(path)
-            .and_then(|mut f| f.write_all(bytes))
-            .map_err(io)?;
-    }
-    Ok(())
+    let mut f = opts.open(path).map_err(io)?;
+    f.write_all(bytes).map_err(io)?;
+    f.sync_all().map_err(io)
 }
 
 /// Security levels acceptable for signing a document create/delete, in preference
@@ -309,7 +330,13 @@ impl BridgeIdentity {
         if t.starts_with(DFK1_PREFIX) {
             Self::from_dfk1(t)
         } else {
-            Self::from_json(t)
+            // serde_json quotes the offending text in its errors, and this text holds keys.
+            Self::from_json(t).map_err(|_| {
+                Error::Config(
+                    "the stored identity is neither a dfk1: key nor a bridge-format identity file"
+                        .into(),
+                )
+            })
         }
     }
 
@@ -388,6 +415,21 @@ impl BridgeIdentity {
         };
         if network.is_empty() || identity_id.is_empty() || wif.is_empty() {
             return Err(bad("an empty field"));
+        }
+        // The network and id end up in file names and keychain accounts: letters, digits
+        // and `-` only for the network, base58 for the id.
+        if !network
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(bad("the network is not a network name"));
+        }
+        if !(40..=44).contains(&identity_id.len())
+            || !identity_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() && !b"0OIl".contains(&b))
+        {
+            return Err(bad("the identity id is not base58"));
         }
         let id: u32 = key_id
             .parse()
@@ -545,10 +587,10 @@ mod tests {
 
     #[test]
     fn an_inline_dfk1_key_loads_as_one_high_auth_key() {
-        let v = "dfk1:devnet-moutai:FAKEid111:5:cFAKEwifDONOTUSE";
+        let v = "dfk1:devnet-moutai:FAKEid1111111111111111111111111111111111111:5:cFAKEwifDONOTUSE";
         let id = BridgeIdentity::load_from_file(v).unwrap();
         assert_eq!(id.network, "devnet-moutai");
-        assert_eq!(id.identity_id, "FAKEid111");
+        assert_eq!(id.identity_id, "FAKEid1111111111111111111111111111111111111");
         let key = id.doc_op_key().unwrap();
         assert_eq!(key.id, 5);
         assert_eq!(key.private_key_wif.expose(), "cFAKEwifDONOTUSE");
@@ -560,7 +602,7 @@ mod tests {
         // Nothing prints the WIF.
         assert!(!format!("{id:?}").contains("cFAKEwif"));
         let shown = super::describe_key_source(std::path::Path::new(v));
-        assert_eq!(shown, "dfk1:devnet-moutai:FAKEid111:5:[redacted]");
+        assert_eq!(shown, "dfk1:devnet-moutai:FAKEid1111111111111111111111111111111111111:5:[redacted]");
         assert!(super::is_inline_key(std::path::Path::new(v)));
         assert!(!super::is_inline_key(std::path::Path::new("/tmp/id.json")));
     }
@@ -572,6 +614,10 @@ mod tests {
             "dfk1:testnet:id:5",
             "dfk1:testnet:id:five:cWIFsecret",
             "dfk1::id:5:cWIFsecret",
+            // An id that is not base58, and a network that is not a name (both end up in file
+            // names and keychain accounts).
+            "dfk1:testnet:../../etc/passwd:5:cWIFsecret",
+            "dfk1:test/net:FAKEid1111111111111111111111111111111111111:5:cWIFsecret",
         ] {
             let err = BridgeIdentity::from_dfk1(bad).unwrap_err().to_string();
             assert!(err.contains("dfk1:<network>"), "{err}");

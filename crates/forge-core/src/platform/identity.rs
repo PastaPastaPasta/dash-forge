@@ -643,6 +643,59 @@ impl PlatformClient {
         Ok(metadata.core_chain_locked_height)
     }
 
+    /// Everything contract group `group` holds, proof-verified: whole contracts (base58), and
+    /// how many document-type and token members it has. A limited key bound to the group can
+    /// sign for exactly these, so `dg auth` refuses a group holding anything beyond the forge
+    /// contracts.
+    pub async fn contract_group_members(&self, group: &str) -> Result<GroupMembers> {
+        use dash_sdk::platform::contract_groups::{
+            ContractGroupMembersPage, ContractGroupMembersPageQuery,
+        };
+        let id = parse_id(group, "contract group id")?;
+        let mut out = GroupMembers::default();
+        for first in [
+            ContractGroupMembersPageQuery::contracts(id),
+            ContractGroupMembersPageQuery::document_types(id),
+            ContractGroupMembersPageQuery::tokens(id),
+        ] {
+            let mut query = Some(first.with_limit(100));
+            let mut pages = 0;
+            while let Some(q) = query.take() {
+                pages += 1;
+                if pages > 20 {
+                    return Err(Error::Platform(format!(
+                        "contract group {group} has more members than dg checks"
+                    )));
+                }
+                let page = retry_transient_read("fetch contract group members", || {
+                    ContractGroupMembersPage::fetch(self.sdk(), q.clone())
+                })
+                .await
+                .map_err(|e| sdk_err(&format!("reading contract group {group}"), e))?;
+                let Some(page) = page else { break };
+                let n = match &page {
+                    ContractGroupMembersPage::Contracts(v) => {
+                        out.contracts
+                            .extend(v.iter().map(|c| c.to_string(Encoding::Base58)));
+                        v.len()
+                    }
+                    ContractGroupMembersPage::DocumentTypes(v) => {
+                        out.document_types += v.len();
+                        v.len()
+                    }
+                    ContractGroupMembersPage::Tokens(v) => {
+                        out.tokens += v.len();
+                        v.len()
+                    }
+                };
+                if n == 100 {
+                    query = q.after(&page);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Broadcast a raw Core transaction through DAPI.
     pub async fn broadcast_core_tx(&self, raw: &[u8]) -> Result<()> {
         use dapi_grpc::core::v0::BroadcastTransactionRequest;
@@ -947,6 +1000,17 @@ impl LoadedIdentity {
         }
         Ok(())
     }
+}
+
+/// What a contract group holds ([`PlatformClient::contract_group_members`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupMembers {
+    /// Whole contracts, base58.
+    pub contracts: Vec<String>,
+    /// Number of individual document-type members.
+    pub document_types: usize,
+    /// Number of token members.
+    pub tokens: usize,
 }
 
 /// What a key added by [`PlatformClient::update_identity_keys`] is.

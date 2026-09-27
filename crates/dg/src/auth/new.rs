@@ -58,16 +58,11 @@ pub struct NewArgs {
     /// Register this DPNS username right after (see `dg auth name register`).
     #[arg(long, value_name = "LABEL")]
     pub name: Option<String>,
-    /// Write the full identity (recovery words and every key) to this file as a backup (0600).
-    /// Without it, only the words are the backup.
-    #[arg(long, value_name = "FILE")]
-    pub backup_file: Option<PathBuf>,
+    #[command(flatten)]
+    pub backup: BackupArgs,
     /// Block explorer (Insight API base URL) used to watch the deposit.
     #[arg(long, value_name = "URL")]
     pub explorer: Option<String>,
-    /// Skip the three-word backup check (automation; the words still print unless --json).
-    #[arg(long)]
-    pub skip_backup_check: bool,
     /// Resume an interrupted creation (asks for the words again).
     #[arg(long)]
     pub resume: bool,
@@ -78,6 +73,22 @@ pub struct NewArgs {
     pub limits: KeyLimitArgs,
     #[command(flatten)]
     pub storage: StorageArgs,
+}
+
+/// How `dg auth new` backs the identity up besides the words shown on screen.
+#[derive(Debug, clap::Args)]
+pub struct BackupArgs {
+    /// Also write the full identity (recovery words and every key) to this new file,
+    /// encrypted under a passphrase (0600). Required with --skip-backup-check.
+    #[arg(long, value_name = "FILE")]
+    pub backup_file: Option<PathBuf>,
+    /// Write the --backup-file unencrypted.
+    #[arg(long, requires = "backup_file")]
+    pub reveal_secrets: bool,
+    /// Skip showing the words and the three-word check (automation). Needs --backup-file:
+    /// the file is then the only backup.
+    #[arg(long, requires = "backup_file")]
+    pub skip_backup_check: bool,
 }
 
 /// A pending creation: public facts only.
@@ -398,29 +409,43 @@ fn duffs_to_dash(duffs: u64) -> f64 {
     duffs as f64 / DUFFS_PER_DASH as f64
 }
 
-/// Load, discard or start the journal and get the words; returns the keys and the journal.
-async fn start_or_resume(ctx: &Ctx, args: &NewArgs) -> Result<(NewIdentityKeys, Journal)> {
-    let network = ctx.network_label();
-    let mut journal = read_journal(&network)?;
-    if let (Some(j), true) = (&journal, args.restart) {
-        let insight = Insight::new(&CoreEndpoints::for_network(
-            ctx.network(),
-            args.explorer.as_deref(),
-        ));
-        let held: u64 = insight
-            .utxos(&j.deposit_address)
-            .await
-            .map_or(0, |u| u.iter().map(|x| x.satoshis).sum());
-        if held > 0 || j.lock_txid.is_some() {
-            ctx.confirm_or_cancel(&format!(
-                "The unfinished creation's address {} holds funds or a broadcast asset lock; they \
-                 stay recoverable only with its words. Discard it anyway?",
-                j.deposit_address
-            ))?;
-        }
-        clear_journal(&network);
-        journal = None;
+/// `--restart`: drop the unfinished journal, asking first if its address may hold funds.
+async fn discard(ctx: &Ctx, args: &NewArgs, j: &Journal) -> Result<()> {
+    let insight = Insight::new(&CoreEndpoints::for_network(
+        ctx.network(),
+        args.explorer.as_deref(),
+    ));
+    // An explorer that does not answer is "unknown", not "empty": ask.
+    let held: Option<u64> = insight
+        .utxos(&j.deposit_address)
+        .await
+        .ok()
+        .map(|u| u.iter().map(|x| x.satoshis).sum());
+    if held != Some(0) || j.lock_txid.is_some() {
+        ctx.confirm_or_cancel(&format!(
+            "The unfinished creation's address {} holds funds or a broadcast asset lock; they \
+             stay recoverable only with its words. Discard it anyway?",
+            j.deposit_address
+        ))?;
     }
+    clear_journal(&j.network);
+    Ok(())
+}
+
+/// Load, discard or start the journal and get the words; returns the keys and the journal.
+async fn start_or_resume(
+    ctx: &Ctx,
+    args: &NewArgs,
+    backup_pass: Option<&Secret>,
+) -> Result<(NewIdentityKeys, Journal)> {
+    let network = ctx.network_label();
+    let journal = match read_journal(&network)? {
+        Some(j) if args.restart => {
+            discard(ctx, args, &j).await?;
+            None
+        }
+        j => j,
+    };
     match (&journal, args.resume) {
         (Some(j), false) => {
             return Err(
@@ -446,9 +471,10 @@ async fn start_or_resume(ctx: &Ctx, args: &NewArgs) -> Result<(NewIdentityKeys, 
         );
         read_mnemonic()?
     } else {
-        if ctx.json && !args.skip_backup_check {
+        let stderr_tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
+        if (ctx.json || !stderr_tty) && !args.backup.skip_backup_check {
             return Err(crate::errors::usage(
-                "--json cannot show the recovery words; run in a terminal, or add \
+                "the recovery words can only be shown on a terminal; run it in one, or add \
                  --skip-backup-check --backup-file <file>",
             ));
         }
@@ -471,7 +497,7 @@ async fn start_or_resume(ctx: &Ctx, args: &NewArgs) -> Result<(NewIdentityKeys, 
         }
         Some(j) => j,
         None => {
-            backup_ceremony(ctx, &words, args.skip_backup_check)?;
+            backup_ceremony(ctx, &words, args.backup.skip_backup_check)?;
             let j = Journal {
                 network,
                 deposit_address: address,
@@ -482,28 +508,64 @@ async fn start_or_resume(ctx: &Ctx, args: &NewArgs) -> Result<(NewIdentityKeys, 
             j
         }
     };
-    if let Some(path) = &args.backup_file {
-        write_backup(path, &keys, j.identity_id.as_deref().unwrap_or(""))?;
+    if let Some(path) = &args.backup.backup_file {
+        write_backup(
+            path,
+            &keys,
+            j.identity_id.as_deref().unwrap_or(""),
+            backup_pass,
+            true,
+        )?;
         say(
             ctx,
             format!(
-                "  backup written to {} (0600; contains the words and every key)",
-                path.display()
+                "  backup written to {} (0600, {}; it holds the words and every key)",
+                path.display(),
+                if backup_pass.is_some() {
+                    "passphrase-encrypted"
+                } else {
+                    "UNENCRYPTED"
+                }
             ),
         );
     }
     Ok((keys, j))
 }
 
-fn write_backup(path: &std::path::Path, keys: &NewIdentityKeys, identity_id: &str) -> Result<()> {
-    forge_core::keystore::write_private_file(
-        path,
-        keys.to_bridge(identity_id)
-            .to_json_with_secrets()
-            .expose()
-            .as_bytes(),
-    )?;
+/// Write the backup file: sealed under a passphrase unless `--reveal-secrets`. The first write
+/// creates it (refusing an existing file or a symlink); the second, once the identity id is
+/// known, replaces it.
+fn write_backup(
+    path: &std::path::Path,
+    keys: &NewIdentityKeys,
+    identity_id: &str,
+    pass: Option<&Secret>,
+    first: bool,
+) -> Result<()> {
+    let text = keys.to_bridge(identity_id).to_json_with_secrets();
+    let bytes = match pass {
+        Some(p) => zeroize::Zeroizing::new(
+            forge_core::sealed::seal(text.expose().as_bytes(), p.expose())?.into_bytes(),
+        ),
+        None => zeroize::Zeroizing::new(text.expose().as_bytes().to_vec()),
+    };
+    if first {
+        forge_core::keystore::create_private_file(path, &bytes)?;
+    } else {
+        forge_core::keystore::write_private_file(path, &bytes)?;
+    }
     Ok(())
+}
+
+/// The passphrase the backup file is sealed with (`None` with --reveal-secrets).
+fn backup_passphrase(args: &NewArgs) -> Result<Option<Secret>> {
+    match (&args.backup.backup_file, args.backup.reveal_secrets) {
+        (Some(path), false) => Ok(Some(forge_core::sealed::passphrase(
+            &format!("the backup {}", path.display()),
+            true,
+        )?)),
+        _ => Ok(None),
+    }
 }
 
 /// Show the deposit request (QR + address + amount), human or `--json` event.
@@ -600,8 +662,13 @@ async fn register(
         let replace = identity
             .is_limited_key(FIRST_LIMITED_KEY_ID)
             .then_some(FIRST_LIMITED_KEY_ID);
-        let (id, dfk1) = register_limited_key(ctx, client, &master, spec, replace).await?;
-        return Ok((id, store::store(&network, identity_id, &dfk1, insecure)?));
+        let mut stored = None;
+        let (id, _) = register_limited_key(ctx, client, &master, spec, replace, &mut |t| {
+            stored = Some(store::store(&network, identity_id, t, insecure)?);
+            Ok(())
+        })
+        .await?;
+        return Ok((id, stored.context("the key was not stored")?));
     }
     let limited = FreshKey::generate(ctx.network());
     let dfk1 = Secret::new(format!(
@@ -644,7 +711,8 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
     let client = ctx.connect().await?;
     check_group(ctx, &client, &spec.group).await?;
 
-    let (keys, mut j) = start_or_resume(ctx, args).await?;
+    let backup_pass = backup_passphrase(args)?;
+    let (keys, mut j) = start_or_resume(ctx, args, backup_pass.as_ref()).await?;
     let (lock, proof) = fund_and_lock(ctx, &client, args, &keys, &mut j).await?;
     let identity_id = identity_id_for(&proof)?;
     j.identity_id = Some(identity_id.clone());
@@ -653,8 +721,8 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
     let (key_id, stored) = register(ctx, &client, args, &keys, &proof, &identity_id, &spec).await?;
     store::set_default(ctx, &identity_id, &stored.source())?;
     clear_journal(&network);
-    if let Some(path) = &args.backup_file {
-        write_backup(path, &keys, &identity_id)?;
+    if let Some(path) = &args.backup.backup_file {
+        write_backup(path, &keys, &identity_id, backup_pass.as_ref(), false)?;
     }
     let balance = client.get_balance(&identity_id).await.unwrap_or(0);
 
@@ -687,7 +755,7 @@ pub async fn run(ctx: &Ctx, args: &NewArgs) -> Result<()> {
             "balanceCredits": balance,
             "balanceDash": credits_to_dash(balance),
             "name": name,
-            "backupFile": args.backup_file.as_ref().map(|p| p.display().to_string()),
+            "backupFile": args.backup.backup_file.as_ref().map(|p| p.display().to_string()),
         }),
         || {
             println!("✓ identity {identity_id} created on {network}");

@@ -37,12 +37,10 @@ pub struct Config {
     pub default_identity_id: Option<String>,
 }
 
-/// The `~/.config/dash-forge` directory (honoring `$HOME`).
+/// The config directory: `$XDG_CONFIG_HOME/dash-forge`, else `~/.config/dash-forge`.
 pub fn config_dir() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .context("HOME is not set; cannot locate ~/.config/dash-forge")?;
-    Ok(home.join(".config/dash-forge"))
+    forge_core::keystore::forge_config_dir()
+        .context("neither XDG_CONFIG_HOME nor HOME is set; cannot locate the dash-forge config")
 }
 
 /// The `config.toml` path.

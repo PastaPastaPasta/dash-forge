@@ -261,50 +261,53 @@ pub fn key_spec(
     })
 }
 
-/// Refuse to bind a key to a group the chain does not show holding both forge contracts (the
-/// group id comes from the bundled deployment file; this checks it against state).
+/// Refuse to bind a key to a group unless the chain shows it holds exactly the two forge
+/// contracts and nothing else: a key bound to the group can sign for whatever it holds, so
+/// "only on Dash Forge" is true only while the group is just forge-core and forge-collab. (The
+/// group id comes from the bundled deployment file; this checks it against state.)
 pub async fn check_group(ctx: &Ctx, client: &PlatformClient, group: &str) -> Result<()> {
     let forge = ctx
         .target
         .v2
         .as_ref()
         .context("forge-v2 is not deployed on this network")?;
-    for contract in [&forge.core, &forge.collab] {
-        let groups = client
-            .contract_groups_of(contract)
-            .await
-            .with_context(|| format!("checking contract {contract}'s group on chain"))?;
-        if !groups.iter().any(|g| g == group) {
-            return Err(UserError::new(
-                codes::INVALID_CONFIG,
-                "refusing to bind a key to the forge contract group",
-            )
-            .cause(format!(
-                "contract {contract} is not in group {group} on {} (the deployment file and the chain disagree)",
-                ctx.network_label()
-            ))
-            .fix("update dg (its deployment file may be stale), or report it")
-            .into());
-        }
+    let members = client
+        .contract_group_members(group)
+        .await
+        .context("checking the forge contract group on chain")?;
+    let mut have = members.contracts.clone();
+    have.sort();
+    let mut want = vec![forge.core.clone(), forge.collab.clone()];
+    want.sort();
+    if have == want && members.document_types == 0 && members.tokens == 0 {
+        return Ok(());
     }
-    Ok(())
+    Err(UserError::new(
+        codes::INVALID_CONFIG,
+        "refusing to bind a key to the forge contract group",
+    )
+    .cause(format!(
+        "group {group} on {} holds contracts {have:?}, {} document type(s) and {} token(s); \
+         a Forge limited key must be usable only on forge-core {} and forge-collab {}",
+        ctx.network_label(),
+        members.document_types,
+        members.tokens,
+        forge.core,
+        forge.collab
+    ))
+    .fix("update dg (its deployment file may be stale), or report it")
+    .into())
 }
 
-/// Ask for the 12 recovery words without echo (or read `DASH_FORGE_MNEMONIC`).
+/// Ask for the 12 recovery words without echo (never from the environment: child processes
+/// would inherit them).
 pub fn read_mnemonic() -> Result<Secret> {
-    let words = match std::env::var("DASH_FORGE_MNEMONIC")
-        .ok()
-        .filter(|v| !v.is_empty())
-    {
-        Some(w) => w,
-        None => rpassword::prompt_password("Recovery words (12, hidden as you type): ").map_err(
-            |e| {
-                UserError::new(codes::USAGE, "the recovery words could not be read")
-                    .cause(format!("no terminal to ask on ({e})"))
-                    .fix("run it in a terminal, or pass the identity file instead")
-            },
-        )?,
-    };
+    let words =
+        rpassword::prompt_password("Recovery words (12, hidden as you type): ").map_err(|e| {
+            UserError::new(codes::USAGE, "the recovery words could not be read")
+                .cause(format!("no terminal to ask on ({e})"))
+                .fix("run it in a terminal, or pass the identity file instead")
+        })?;
     let words = zeroize::Zeroizing::new(words);
     identity::normalize_mnemonic(&words).map_err(Into::into)
 }
@@ -376,13 +379,17 @@ async fn identity_from_words(
 }
 
 /// Register a fresh limited key on the identity (one IdentityUpdate signed by `master`),
-/// optionally disabling `replace`, verify it on chain, and return it as a `dfk1:` source text.
+/// optionally disabling `replace`, and verify it on chain. `persist` receives the key (as a
+/// `dfk1:` source text) **before** anything is broadcast, so a failure to store it stops the
+/// command before a key nobody holds is registered; it is called again if the key lands under
+/// another id than predicted (a concurrent update).
 pub async fn register_limited_key(
     ctx: &Ctx,
     client: &PlatformClient,
     master: &BridgeIdentity,
     spec: &LimitedKeySpec,
     replace: Option<u32>,
+    persist: &mut dyn FnMut(&Secret) -> Result<()>,
 ) -> Result<(u32, Secret)> {
     check_group(ctx, client, &spec.group).await?;
     let before = client.fetch_identity(&master.identity_id).await?;
@@ -396,6 +403,18 @@ pub async fn register_limited_key(
         None => vec![],
     };
     let fresh = FreshKey::generate(ctx.network());
+    let wif = fresh.wif();
+    let dfk1_for = |id: u32| {
+        Secret::new(format!(
+            "{}{}:{}:{id}:{}",
+            keystore::DFK1_PREFIX,
+            ctx.network_label(),
+            master.identity_id,
+            wif.expose()
+        ))
+    };
+    let predicted = before.next_key_id();
+    persist(&dfk1_for(predicted)).context("storing the new key before registering it")?;
     let master_key = master.master_key().context("no master key")?;
     let ids = client
         .update_identity_keys(
@@ -407,15 +426,11 @@ pub async fn register_limited_key(
         .await
         .context("registering the limited key")?;
     let key_id = *ids.first().context("no key id")?;
-    let wif = fresh.wif();
+    let dfk1 = dfk1_for(key_id);
+    if key_id != predicted {
+        persist(&dfk1)?;
+    }
     verify_key(client, &master.identity_id, key_id, &wif, ctx, spec).await?;
-    let dfk1 = Secret::new(format!(
-        "{}{}:{}:{key_id}:{}",
-        keystore::DFK1_PREFIX,
-        ctx.network_label(),
-        master.identity_id,
-        wif.expose()
-    ));
     Ok((key_id, dfk1))
 }
 
@@ -462,7 +477,7 @@ fn expiry_text(ms: u64) -> String {
     if ms <= now {
         return "expired".into();
     }
-    let days = (ms - now) / DAY_MS;
+    let days = (ms - now + DAY_MS / 2) / DAY_MS;
     format!("in {days} day(s)")
 }
 
@@ -540,21 +555,32 @@ async fn login(ctx: &Ctx, args: &LoginArgs) -> Result<()> {
         .await
         .context("fetching the signing identity")?;
 
-    let (text, key_id, spec) = if args.full_key {
-        (master.to_json_with_secrets(), None, None)
+    let insecure = args.storage.insecure_plaintext;
+    if args.full_key && insecure {
+        return Err(crate::errors::usage(
+            "--full-key keeps the master key: it goes to the keychain or behind a passphrase, never unencrypted (drop --insecure-plaintext)",
+        ));
+    }
+    let (stored, key_id, spec) = if args.full_key {
+        let text = master.to_json_with_secrets();
+        let stored = store::store(&network, &master.identity_id, &text, insecure)?;
+        (stored, None, None)
     } else {
         let spec = key_spec(ctx, &args.limits, CLI_KEY_BUDGET_DASH, CLI_KEY_DAYS)?;
         explain_new_key(ctx, &master.identity_id, &spec, "for this computer");
         ctx.confirm_or_cancel("Register the key?")?;
-        let (id, dfk1) = register_limited_key(ctx, &client, &master, &spec, args.replace).await?;
-        (dfk1, Some(id), Some(spec))
+        let mut stored = None;
+        let (id, _) = register_limited_key(ctx, &client, &master, &spec, args.replace, &mut |t| {
+            stored = Some(store::store(&network, &master.identity_id, t, insecure)?);
+            Ok(())
+        })
+        .await?;
+        (
+            stored.context("the key was not stored")?,
+            Some(id),
+            Some(spec),
+        )
     };
-    let stored = store::store(
-        &network,
-        &master.identity_id,
-        &text,
-        args.storage.insecure_plaintext,
-    )?;
     store::set_default(ctx, &master.identity_id, &stored.source())?;
     let balance = on_chain.balance();
     ctx.emit(
@@ -824,35 +850,88 @@ async fn name_register(ctx: &Ctx, label: &str, master: Option<&std::path::Path>)
 // export / logout
 // ---------------------------------------------------------------------------------------
 
-/// What `dg auth export` writes: the source text, the key id and the identity id.
-async fn export_payload(ctx: &Ctx, args: &ExportArgs) -> Result<(Secret, Option<u32>, String)> {
-    let current = ctx.load_bridge()?;
-    let (text, key_id, identity_id) = if args.new_key {
-        let client = ctx.connect().await?;
-        let master = master_identity(ctx, args.master.as_deref(), &current.identity_id)?;
-        let spec = key_spec(ctx, &args.limits, 0.5, 365)?;
-        explain_new_key(ctx, &master.identity_id, &spec, "to export");
-        ctx.confirm_or_cancel("Register the key?")?;
-        let (id, dfk1) = register_limited_key(ctx, &client, &master, &spec, None).await?;
-        (dfk1, Some(id), master.identity_id)
-    } else if args.format == "dfk1" {
-        let id = current.doc_op_key()?.id;
-        let dfk1 = current.to_dfk1(id).context("no key")?;
-        (dfk1, Some(id), current.identity_id.clone())
-    } else {
-        (
-            current.to_json_with_secrets(),
-            None,
-            current.identity_id.clone(),
-        )
+/// How an export is protected: encrypted under a passphrase, or in the clear.
+enum ExportProtection {
+    Sealed(Secret),
+    Clear,
+}
+
+/// Write the export file (0600): sealed under the passphrase, or the text as is.
+fn write_export(
+    path: &std::path::Path,
+    text: &Secret,
+    protection: &ExportProtection,
+) -> Result<()> {
+    let bytes = match protection {
+        ExportProtection::Clear => zeroize::Zeroizing::new(text.expose().as_bytes().to_vec()),
+        ExportProtection::Sealed(pass) => zeroize::Zeroizing::new(
+            forge_core::sealed::seal(text.expose().as_bytes(), pass.expose())?.into_bytes(),
+        ),
     };
-    // A dfk1 source text becomes a bridge file when --format bridge was asked for.
-    let text = if args.format == "bridge" && text.expose().starts_with(keystore::DFK1_PREFIX) {
-        BridgeIdentity::from_dfk1(text.expose())?.to_json_with_secrets()
-    } else {
-        text
+    keystore::create_private_file(path, &bytes)?;
+    Ok(())
+}
+
+/// The text an export holds in `format`: a `dfk1:` value, or a bridge-format JSON.
+fn export_text(text: Secret, format: &str) -> Result<Secret> {
+    if format == "bridge" && text.expose().starts_with(keystore::DFK1_PREFIX) {
+        return Ok(BridgeIdentity::from_dfk1(text.expose())?.to_json_with_secrets());
+    }
+    Ok(text)
+}
+
+/// Where an export goes: `-o`, else a file under the config directory (not the current
+/// directory: that is usually a git work tree, one `git add .` away from publishing the key).
+/// The file must not exist yet.
+fn export_path(args: &ExportArgs, identity_id: &str, to_stdout: bool) -> Result<PathBuf> {
+    let path = match &args.output {
+        Some(p) => p.clone(),
+        None => crate::config::config_dir()?.join("exports").join(
+            match (args.reveal_secrets, args.format.as_str()) {
+                (true, "dfk1") => format!("dash-forge-{identity_id}.dfk1"),
+                (true, _) => format!("dash-forge-{identity_id}.identity.json"),
+                (false, _) => format!("dash-forge-{identity_id}.key.json"),
+            },
+        ),
     };
-    Ok((text, key_id, identity_id))
+    if to_stdout {
+        return Ok(path);
+    }
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    }
+    if path.exists() || path.symlink_metadata().is_ok() {
+        return Err(crate::errors::usage(format!(
+            "{} exists; pass another -o",
+            path.display()
+        )));
+    }
+    Ok(path)
+}
+
+/// The stored key as an export: a `dfk1:` value (only a limited key: it is for CI, and CI gets
+/// a bounded key) or the identity as a bridge file.
+async fn current_key_text(
+    ctx: &Ctx,
+    current: &BridgeIdentity,
+    format: &str,
+) -> Result<(Secret, Option<u32>)> {
+    if format != "dfk1" {
+        return Ok((current.to_json_with_secrets(), None));
+    }
+    let key = current.doc_op_key()?;
+    let client = ctx.connect().await?;
+    let identity = client.fetch_identity(&current.identity_id).await?;
+    let id = identity
+        .key_id_for(key.private_key_wif.expose(), ctx.network())
+        .filter(|id| identity.is_limited_key(*id))
+        .ok_or_else(|| {
+            crate::errors::usage(
+                "the key in use is not a Forge limited key; export a new one for CI with \
+                 `dg auth export --new-key --format dfk1 --reveal-secrets -o <file>`",
+            )
+        })?;
+    Ok((current.to_dfk1(key.id).context("no key")?, Some(id)))
 }
 
 async fn export(ctx: &Ctx, args: &ExportArgs) -> Result<()> {
@@ -867,35 +946,46 @@ async fn export(ctx: &Ctx, args: &ExportArgs) -> Result<()> {
             "`-o -` (stdout) is only for --format dfk1 --reveal-secrets",
         ));
     }
-    let (text, key_id, identity_id) = export_payload(ctx, args).await?;
-    if to_stdout {
-        // The value itself is the output; nothing else goes to stdout.
-        println!("{}", text.expose());
-        return Ok(());
+    if to_stdout && args.new_key {
+        return Err(crate::errors::usage(
+            "--new-key writes the key to a file (so it is kept before it is registered); pass -o <file>",
+        ));
     }
-    let path = args.output.clone().unwrap_or_else(|| {
-        PathBuf::from(match (args.reveal_secrets, args.format.as_str()) {
-            (true, "dfk1") => format!("dash-forge-{identity_id}.dfk1"),
-            (true, _) => format!("dash-forge-{identity_id}.identity.json"),
-            (false, _) => format!("dash-forge-{identity_id}.key.json"),
-        })
-    });
-    if path.exists() {
-        return Err(crate::errors::usage(format!(
-            "{} exists; pass another -o",
-            path.display()
-        )));
-    }
-    let bytes = if args.reveal_secrets {
-        zeroize::Zeroizing::new(text.expose().as_bytes().to_vec())
+    let current = ctx.load_bridge()?;
+    let path = export_path(args, &current.identity_id, to_stdout)?;
+    // Ask for the passphrase before anything is registered.
+    let protection = if args.reveal_secrets || to_stdout {
+        ExportProtection::Clear
     } else {
-        let pass = forge_core::sealed::passphrase(&format!("the export {}", path.display()), true)?;
-        zeroize::Zeroizing::new(
-            forge_core::sealed::seal(text.expose().as_bytes(), pass.expose())?.into_bytes(),
-        )
+        ExportProtection::Sealed(forge_core::sealed::passphrase(
+            &format!("the export {}", path.display()),
+            true,
+        )?)
     };
-    keystore::write_private_file(&path, &bytes)?;
-    let encrypted = !args.reveal_secrets;
+    let (key_id, identity_id) = if args.new_key {
+        let client = ctx.connect().await?;
+        let master = master_identity(ctx, args.master.as_deref(), &current.identity_id)?;
+        let spec = key_spec(ctx, &args.limits, 0.5, 365)?;
+        explain_new_key(ctx, &master.identity_id, &spec, "to export");
+        ctx.confirm_or_cancel("Register the key?")?;
+        let format = args.format.clone();
+        let (id, _) = register_limited_key(ctx, &client, &master, &spec, None, &mut |t| {
+            write_export(&path, &export_text(t.clone(), &format)?, &protection)
+        })
+        .await?;
+        (Some(id), master.identity_id)
+    } else {
+        let (text, key_id) = current_key_text(ctx, &current, &args.format).await?;
+        let text = export_text(text, &args.format)?;
+        if to_stdout {
+            // The value itself is the output; nothing else goes to stdout.
+            println!("{}", text.expose());
+            return Ok(());
+        }
+        write_export(&path, &text, &protection)?;
+        (key_id, current.identity_id.clone())
+    };
+    let encrypted = matches!(protection, ExportProtection::Sealed(_));
     ctx.emit(
         json!({
             "status": "exported",
@@ -954,7 +1044,11 @@ async fn logout(ctx: &Ctx, disable: bool, master: Option<&std::path::Path>) -> R
             .await?;
         disabled = Some(key_id);
     }
-    let removed = store::remove(&network, &bridge.identity_id)?;
+    let source = ctx
+        .identity_path
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned());
+    let removed = store::remove(&network, &bridge.identity_id, source.as_deref())?;
     let mut config = Config::load().unwrap_or_default();
     if config.default_identity_id.as_deref() == Some(bridge.identity_id.as_str()) {
         config.default_identity = None;
