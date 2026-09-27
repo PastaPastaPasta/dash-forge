@@ -48,6 +48,7 @@ use crate::rules::v2::{
 };
 use crate::rules::{self, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
+use crate::user_error::{codes, UserError};
 
 /// forge-collab document types.
 pub const DOC_ISSUE: &str = "issue";
@@ -662,6 +663,87 @@ pub fn policy_from_doc(d: &FetchedDocument) -> Policy {
         require_checks: d.field_bool("requireChecks"),
         merge_methods: small("mergeMethods"),
     }
+}
+
+/// What every edit checks on the stored document before any key or signing work, and its
+/// revision: it belongs to `repo` (its `repoId`), so the repo's visibility, not the caller's
+/// argument, decides whether the edit is sealed (an id of a private repo's comment named with a
+/// public repo must never take the plaintext path); `signer` wrote it (consensus admits a
+/// replace from the owner only); and it has a `$revision` for the guard.
+fn edit_check(
+    repo: &RepoRef,
+    doc_type: &str,
+    stored: &FetchedDocument,
+    signer: &str,
+) -> Result<u64> {
+    let own = stored
+        .field_bytes32("repoId")
+        .is_some_and(|r| platform::encode_identifier(r) == repo.id());
+    if !own {
+        return Err(UserError::new(
+            codes::INVALID_REPO_REF,
+            format!("{doc_type} {} is not in {}", stored.id, repo.display()),
+        )
+        .fix("name the repository the document belongs to; nothing was written")
+        .into());
+    }
+    if stored.owner_id != signer {
+        return Err(Error::NotPermitted {
+            action: format!("edit this {doc_type}"),
+            reason: "you are not its author; consensus admits an edit from the author only".into(),
+            needs: "owner".into(),
+        });
+    }
+    stored.revision.ok_or_else(|| {
+        Error::Platform(format!(
+            "{doc_type} {} came back without a $revision; it cannot be edited safely",
+            stored.id
+        ))
+    })
+}
+
+/// A private replace's changes plus the removal of any plaintext text an older client left next
+/// to `enc` on an issue or PR (its mutable `title` / `body`; a comment's `body` likewise), so
+/// the re-sealed text is the only text the document carries.
+fn clear_plaintext(
+    kind: DocKind,
+    stored: &FetchedDocument,
+    mut sealed: BTreeMap<String, Option<FieldValue>>,
+) -> BTreeMap<String, Option<FieldValue>> {
+    let mutable: &[&str] = match kind {
+        DocKind::Issue | DocKind::Patch => &["title", "body"],
+        DocKind::Comment => &["body"],
+        _ => &[],
+    };
+    for f in mutable {
+        if stored.fields.contains_key(*f) {
+            sealed.insert((*f).to_string(), None);
+        }
+    }
+    sealed
+}
+
+/// The keys a PR edit re-seals under: the PR's own `epoch` (its ref-name hashes are keyed by it,
+/// §4.5), which must be held and not `burned`.
+fn patch_epoch_keys<'k>(
+    burned: &BTreeSet<u32>,
+    writer: &'k crate::private::Private,
+    epoch: u32,
+) -> Result<&'k crate::private::EpochKeys> {
+    if burned.contains(&epoch) {
+        return Err(UserError::new(
+            codes::ROTATION_PENDING,
+            format!("this PR was opened under key epoch {epoch}, which is closed; it can no longer be edited"),
+        )
+        .into());
+    }
+    writer.epoch_keys(epoch).ok_or_else(|| {
+        UserError::new(
+            codes::NOT_A_KEY_HOLDER,
+            format!("you do not hold key epoch {epoch}, the epoch this PR is sealed under"),
+        )
+        .into()
+    })
 }
 
 /// An issue's state from its log (§3 fold).
@@ -2302,9 +2384,8 @@ impl<'a> Collab<'a> {
     /// Edit an issue's or PR's title and/or body, as its author (consensus admits a replace only
     /// from the owner; `number`, and a PR's refs and head, are immutable or untouched). An empty
     /// `body` removes it. Returns whether an edit landed (`false`: it already read that way,
-    /// nothing was signed). Refused for a private repo: a plaintext replace would publish the
-    /// content next to its sealed `enc`; the CLI has no sealed edit yet (the web re-seals with
-    /// `sealEdit`).
+    /// nothing was signed). In a private repo the content is re-sealed as a whole and the
+    /// replace sets only `enc` / `epoch` ([`Self::private_edit`]).
     pub async fn update_target(
         &self,
         repo: &RepoRef,
@@ -2333,19 +2414,51 @@ impl<'a> Collab<'a> {
                 "nothing to change: pass a new title or body".into(),
             ));
         }
-        repo.require_public("editing from the CLI")?;
         self.require_author(
             &target.author,
             &format!("edit {} #{}", target.kind.noun(), target.number),
         )?;
         let collab = self.collab_contract(repo).await?;
-        self.engine()?
-            .replace_document(&collab, target.kind.doc_type(), &target.id, &changes)
+        let kind = match target.kind {
+            TargetKind::Issue => DocKind::Issue,
+            TargetKind::Patch => DocKind::Patch,
+        };
+        self.replace_content(repo, &collab, kind, &target.id, changes)
             .await
     }
 
+    /// A private PR's key epoch and the repo's current write epoch, when the PR's is older: an
+    /// edit re-seals under the PR's own epoch (§4.5), so the edited text stays readable to
+    /// anyone who held that epoch's key, including members removed since. `None` for a public
+    /// repo or a PR under the write epoch.
+    pub async fn pr_edit_epochs(
+        &self,
+        repo: &RepoRef,
+        patch_id: &str,
+    ) -> Result<Option<(u32, u32)>> {
+        if repo.visibility != Visibility::Private {
+            return Ok(None);
+        }
+        let collab = self.collab_contract(repo).await?;
+        let Some(stored) = self
+            .client
+            .fetch_document(&collab, DOC_PATCH, patch_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let pr_epoch = stored
+            .field_u64("epoch")
+            .and_then(|e| u32::try_from(e).ok());
+        let write = self.keyring(repo).await?.resolution().write_epoch;
+        Ok(match (pr_epoch, write) {
+            (Some(p), Some(w)) if p < w => Some((p, w)),
+            _ => None,
+        })
+    }
+
     /// Edit one of the signer's comments (the body only: the anchor, thread and review are
-    /// immutable). Refused for a private repo, like [`Self::update_target`].
+    /// immutable), re-sealed in a private repo like [`Self::update_target`].
     pub async fn update_comment(
         &self,
         repo: &RepoRef,
@@ -2356,13 +2469,106 @@ impl<'a> Collab<'a> {
             return Err(Error::Config("a comment needs a body".into()));
         }
         check_text("comment body", body, 5120, 5120)?;
-        // A plaintext replace would publish the body next to the sealed `enc`.
-        repo.require_public("editing from the CLI")?;
         let collab = self.collab_contract(repo).await?;
         let changes = BTreeMap::from([("body".to_string(), Some(FieldValue::text(body)))]);
-        self.engine()?
-            .replace_document(&collab, DOC_COMMENT, comment_id, &changes)
+        self.replace_content(repo, &collab, DocKind::Comment, comment_id, changes)
             .await
+    }
+
+    /// Replace the text of the signer's `kind` document `id` of `repo`. The stored document is
+    /// read first ([`edit_check`]: it is `repo`'s and the signer's). Public: the plaintext
+    /// `changes`. Private: [`Self::private_edit`]'s `enc` / `epoch`, guarded by the revision
+    /// read here.
+    async fn replace_content(
+        &self,
+        repo: &RepoRef,
+        collab: &LoadedContract,
+        kind: DocKind,
+        id: &str,
+        changes: BTreeMap<String, Option<FieldValue>>,
+    ) -> Result<bool> {
+        let doc_type = kind.type_name();
+        let stored = self
+            .client
+            .fetch_document(collab, doc_type, id)
+            .await?
+            .ok_or(Error::NotFound)?;
+        let revision = edit_check(repo, doc_type, &stored, &self.signer_id()?)?;
+        let changes = if repo.visibility == Visibility::Private {
+            self.private_edit(repo, kind, &stored, &changes).await?
+        } else {
+            changes
+        };
+        self.engine()?
+            .replace_document_guarded(collab, doc_type, id, &changes, Some(revision))
+            .await
+    }
+
+    /// The changes a private edit of the signer's `kind` document `stored` writes
+    /// (docs/security/private-repos.md §4.5, §5.3; the web's `sealEdit`): it is opened with keys
+    /// resolved now and its content re-sealed as a whole with `changes` applied
+    /// ([`private::reseal_edit`], the `private_collab_seal` transform), an issue or comment
+    /// under the current write epoch, a PR under its own epoch (its ref-name hashes are keyed by
+    /// it), which must still be held and not burned. Only `enc` / `epoch` are set, and any
+    /// plaintext text an older client left is cleared ([`clear_plaintext`]). Unchanged text
+    /// keeps the stored `enc`, so nothing is written.
+    async fn private_edit(
+        &self,
+        repo: &RepoRef,
+        kind: DocKind,
+        stored: &FetchedDocument,
+        changes: &BTreeMap<String, Option<FieldValue>>,
+    ) -> Result<BTreeMap<String, Option<FieldValue>>> {
+        let doc_type = kind.type_name();
+        let kr = self.fresh_keyring(repo).await?;
+        let opened = private::open_doc(kr.open(kind, stored), stored.clone()).ok_or_else(|| {
+            Error::from(
+                UserError::new(
+                    codes::NOT_A_KEY_HOLDER,
+                    format!(
+                        "this {doc_type} cannot be read with your keys, so it cannot be edited"
+                    ),
+                )
+                .fix(format!(
+                    "`dg repo keys status {}` explains the keys you hold",
+                    repo.display()
+                )),
+            )
+        })?;
+        // an empty value is no value, on either side
+        let text: BTreeMap<String, Option<String>> = changes
+            .iter()
+            .map(|(k, v)| {
+                let v = v
+                    .as_ref()
+                    .and_then(FieldValue::as_str)
+                    .filter(|s| !s.is_empty());
+                (k.clone(), v.map(str::to_owned))
+            })
+            .collect();
+        if text
+            .iter()
+            .all(|(k, v)| opened.field_str(k).filter(|s| !s.is_empty()) == *v)
+        {
+            // already reads that way: the stored enc/epoch, which the replace sees as held
+            return Ok(["enc", "epoch"]
+                .into_iter()
+                .map(|k| (k.to_string(), stored.fields.get(k).cloned()))
+                .collect());
+        }
+        let writer = kr.writer(repo)?;
+        let keys = if kind == DocKind::Patch {
+            let epoch = stored
+                .field_u64("epoch")
+                .and_then(|e| u32::try_from(e).ok())
+                .ok_or(Error::NotFound)?;
+            patch_epoch_keys(&kr.resolution().burned, &writer, epoch)?
+        } else {
+            writer.write_keys()
+        };
+        let owner = platform::decode_identifier(&self.signer_id()?)?;
+        let sealed = private::reseal_edit(keys, kind, owner, &opened, &text)?;
+        Ok(clear_plaintext(kind, stored, sealed))
     }
 
     /// Refuse, before anything is signed, an edit of a document the signer does not own.
@@ -3030,6 +3236,144 @@ fn create_journal_path(
 mod tests {
     use super::*;
 
+    const ME: &str = "GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL";
+    const OTHER_REPO: &str = "9sGUjxras61DAe457iUfbJcKTfVT7qVj16PJ3xstqMKr";
+
+    fn repo_ref(visibility: Visibility) -> RepoRef {
+        RepoRef {
+            forge: ForgeIds {
+                core: "CORE".into(),
+                collab: "COLLAB".into(),
+                group: "GROUP".into(),
+                superseded_in_group: vec![],
+                group_owner: None,
+            },
+            repo_id: ME.into(),
+            owner_id: ME.into(),
+            name: "proj".into(),
+            visibility,
+        }
+    }
+
+    fn stored(repo_id: &str, owner: &str, revision: Option<u64>) -> FetchedDocument {
+        FetchedDocument {
+            id: ME.into(),
+            owner_id: owner.into(),
+            created_at: Some(1),
+            created_at_block_height: Some(10),
+            updated_at_block_height: None,
+            fields: [(
+                "repoId".to_string(),
+                FieldValue::identifier(platform::decode_identifier(repo_id).unwrap()),
+            )]
+            .into(),
+            revision,
+        }
+    }
+
+    #[test]
+    fn an_edit_is_refused_for_a_document_of_another_repo() {
+        // HIGH: an id from a private repo edited "through" a public one must not take the
+        // plaintext path; the document's own repo decides.
+        let err = edit_check(
+            &repo_ref(Visibility::Public),
+            "comment",
+            &stored(OTHER_REPO, ME, Some(2)),
+            ME,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("not in"), "{err}");
+        assert_eq!(
+            edit_check(
+                &repo_ref(Visibility::Public),
+                "comment",
+                &stored(ME, ME, Some(2)),
+                ME
+            )
+            .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn an_edit_by_a_non_author_is_refused_before_any_key_work() {
+        let err = edit_check(
+            &repo_ref(Visibility::Private),
+            "comment",
+            &stored(ME, OTHER_REPO, Some(2)),
+            ME,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::NotPermitted { needs, .. } if needs == "owner"),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn an_edit_of_a_document_without_a_revision_says_so() {
+        let err = edit_check(
+            &repo_ref(Visibility::Private),
+            "comment",
+            &stored(ME, ME, None),
+            ME,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, Error::Platform(m) if m.contains("revision")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn a_private_replace_clears_legacy_plaintext_next_to_enc() {
+        let mut d = stored(ME, ME, Some(1));
+        d.fields.insert("title".into(), FieldValue::text("legacy"));
+        d.fields.insert("body".into(), FieldValue::text("legacy"));
+        let sealed: BTreeMap<String, Option<FieldValue>> = [
+            ("enc".to_string(), Some(FieldValue::bytes(vec![1; 40]))),
+            ("epoch".to_string(), Some(FieldValue::integer(0))),
+        ]
+        .into();
+        let c = clear_plaintext(DocKind::Issue, &d, sealed.clone());
+        assert_eq!(c.get("title"), Some(&None));
+        assert_eq!(c.get("body"), Some(&None));
+        // nothing stored in plaintext: nothing to clear
+        assert_eq!(
+            clear_plaintext(DocKind::Issue, &stored(ME, ME, Some(1)), sealed.clone()),
+            sealed
+        );
+    }
+
+    #[test]
+    fn a_pr_edit_uses_the_pr_epoch_keys_only_while_held_and_not_burned() {
+        use crate::private::{EpochKey, EpochResolution, Private};
+        let res = EpochResolution {
+            write_epoch: Some(2),
+            keys: [
+                (1, EpochKey::from_bytes([1; 32])),
+                (2, EpochKey::from_bytes([2; 32])),
+            ]
+            .into(),
+            ..EpochResolution::default()
+        };
+        let w = Private::from_resolution(&[0x11; 32], &res).unwrap();
+        assert_eq!(
+            patch_epoch_keys(&BTreeSet::new(), &w, 1).unwrap().epoch(),
+            1
+        );
+        let burned = patch_epoch_keys(&[1].into(), &w, 1).unwrap_err();
+        assert!(
+            matches!(&burned, Error::User(u) if u.code == codes::ROTATION_PENDING),
+            "{burned:?}"
+        );
+        let unheld = patch_epoch_keys(&BTreeSet::new(), &w, 0).unwrap_err();
+        assert!(
+            matches!(&unheld, Error::User(u) if u.code == codes::NOT_A_KEY_HOLDER),
+            "{unheld:?}"
+        );
+    }
+
     fn target(author: &str) -> Target {
         Target {
             kind: TargetKind::Issue,
@@ -3263,6 +3607,7 @@ mod tests {
             created_at: Some(5),
             created_at_block_height: None,
             updated_at_block_height: None,
+            revision: None,
             fields: p,
         };
         let issue = issue_from_doc(&doc);
@@ -3406,6 +3751,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            revision: None,
             fields,
         };
         let ok = doc(issue_props(1, "t", "", None).unwrap());
@@ -3439,6 +3785,7 @@ mod tests {
             created_at: Some(1),
             created_at_block_height: None,
             updated_at_block_height: None,
+            revision: None,
             fields,
         };
         let honest = patch_props(1, &input, None).unwrap();
