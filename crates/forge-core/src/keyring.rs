@@ -1420,9 +1420,12 @@ pub struct Reanchor {
 }
 
 /// Which of `leaving`'s anchors a remover re-anchors, and the epochs that go (pure; §5.3):
-/// `Ok((reanchor, top))` where `top` is the current epoch once `leaving` is gone, or
-/// `Err(e)` when `leaving` anchored an epoch `e` the remover cannot read below one it can
-/// (re-anchoring is impossible and dropping it would drop readable epochs too).
+/// `Ok((reanchor, top))` where `top` is the current epoch once `leaving` is gone. `leaving`'s
+/// lowest unreadable epoch and everything above it are dropped, but only when nothing above it
+/// is readable. `Err(e)` when the removal needs a maintainer who can read epoch `e`: `leaving`
+/// anchored `e` below a readable epoch (dropping it would drop readable ones too), or `e` is the
+/// surviving current epoch and the remover cannot chain the removal's rotation from it
+/// (`None`: nothing would survive at all). Refused before anything is written.
 fn reanchor_plan(
     res: &EpochResolution,
     leaving: [u8; 32],
@@ -1444,6 +1447,9 @@ fn reanchor_plan(
         Some(0) => return Err(None),
         Some(u) => u - 1,
     };
+    if !res.keys.contains_key(&top) {
+        return Err(Some(top));
+    }
     Ok((
         theirs.into_iter().filter(|&e| e <= top).collect(),
         Some(top),
@@ -1586,9 +1592,9 @@ fn unremovable(repo: &RepoRef, leaving: [u8; 32], epoch: Option<u32>) -> Error {
     );
     UserError::new(
         codes::ROTATION_PENDING,
-        format!("{who} anchored {what} of {}, which you cannot read", repo.display()),
+        format!("removing {who} from {} needs a maintainer who can read {what}", repo.display()),
     )
-    .cause("removing them would make it, and every epoch above it, unreadable to every member")
+    .cause("you cannot read it: either they anchored it and it would stop existing with every epoch above it, or it stays current and the removal's rotation must chain from it")
     .fix(format!(
         "ask a maintainer who holds that epoch to run `dg collab remove {} {who} --role maintainer`",
         repo.display()
@@ -2001,6 +2007,20 @@ mod tests {
             .wrap(ALICE, ALICE, 4, 14);
         let before = f.keyring(ALICE).resolution;
         assert_eq!(reanchor_plan(&before, DAVE), Err(Some(3)));
+        // carol anchored epoch 3 (unreadable to alice), dave epoch 4: 3 survives as current and
+        // alice cannot rotate from it, so she cannot remove dave (refused before any write)
+        let carol = [3; 32];
+        let mut h = three_epochs(&[
+            (ALICE, Role::Maintainer),
+            (DAVE, Role::Maintainer),
+            (carol, Role::Maintainer),
+        ]);
+        h.config(carol, 3, 13, Some(12), 40, false)
+            .config(DAVE, 4, 14, Some(13), 50, false);
+        assert_eq!(
+            reanchor_plan(&h.keyring(ALICE).resolution, DAVE),
+            Err(Some(3))
+        );
         // dave's readable anchors are re-anchored
         let f = {
             let mut g = Fixture::new(&members);
