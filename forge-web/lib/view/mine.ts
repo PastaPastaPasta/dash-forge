@@ -17,6 +17,7 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
+import { mentions } from '../repo/issue-index'
 import { z } from 'zod'
 
 import type { ForgeIds } from '../deployments'
@@ -310,16 +311,7 @@ export async function latestReleases(sdk: EvoSDK, forge: ForgeIds, repos: readon
   return { rows, failed, total: repos.length }
 }
 
-/** Whether `body` mentions `@name` (DPNS label, case-insensitive) or the identity id. */
-export function mentions(body: string | undefined, me: string, name: string | null): boolean {
-  if (!body) return false
-  if (body.includes(me)) return true
-  if (name === null || name === '') return false
-  const label = name.split('.')[0] ?? ''
-  if (label === '') return false
-  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(`(^|[^\\w@])@${escaped}(?![\\w-])`, 'i').test(body)
-}
+export { mentions }
 
 /** An `event` / `authorEvent` row (`value` only on label / assign kinds). */
 export const eventDoc = baseDoc.extend({ targetId: ident, kind: int, value: z.string().optional().catch(undefined) })
@@ -387,7 +379,23 @@ export async function scanAssignedAndMentions(
     }
   })
   const repoOf = new Map(scanned.map((r) => [r.repo.id, r.repo]))
-  const assignedRows = await readTargetsByIds(sdk, forge, scanned.flatMap((r) => r.assignedIds))
+  // Assignments in ANY repo, from the sparse `event.addressee (refId)` index: an assign names
+  // the assignee in `refId` since F-1 (platform-parity-spec §1.2). Only member events can be
+  // assign kinds, and only those carrying `refId` are indexed, so this is a small read.
+  const addressed = await read(sdk, {
+    dataContractId: forge.collab,
+    documentTypeName: DOC.event,
+    where: [['refId', '==', me]],
+    orderBy: [['refId', 'asc']],
+    limit: 100,
+  }).catch(() => [] as PlainDocument[])
+  const indexed = parseDocs(eventDoc, addressed).filter((e) => e.kind === ASSIGN || e.kind === UNASSIGN)
+  const fromIndex = assignedTargets(indexed, me)
+  // The per-repo scan also sees older assigns written without `refId`. A target the index
+  // folds as unassigned was unassigned by a newer, indexed event: drop it from the scan's set.
+  const unassigned = new Set(indexed.map((e) => e.targetId).filter((t) => !fromIndex.has(t)))
+  const scannedIds = scanned.flatMap((r) => r.assignedIds).filter((t) => !unassigned.has(t))
+  const assignedRows = await readTargetsByIds(sdk, forge, [...new Set([...scannedIds, ...fromIndex])])
   const newestFirst = (a: TargetRow, b: TargetRow): number => b.createdAt - a.createdAt
   return {
     assigned: [...assignedRows.values()].map((t) => ({ ...t, repo: repoOf.get(t.repoId) ?? null })).sort(newestFirst),

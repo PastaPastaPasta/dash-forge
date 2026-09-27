@@ -144,14 +144,15 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         }
         Command::Repo(Rp::Archive { repo }) => ("repository not archived", Some(repo)),
         Command::Repo(Rp::Unarchive { repo }) => ("repository not unarchived", Some(repo)),
-        Command::Issue(I::List { repo, .. } | I::View { repo, .. }) => {
-            ("could not read issues", Some(repo))
+        Command::Issue(I::List(a)) => ("could not read issues", Some(&a.repo)),
+        Command::Issue(I::View { repo, .. }) => ("could not read issues", Some(repo)),
+        Command::Issue(I::Assign { repo, .. } | I::Unassign { repo, .. }) => {
+            ("assignees not changed", Some(repo))
         }
         Command::Issue(I::Create { repo, .. }) => ("issue not created", Some(repo)),
         Command::Issue(I::Comment { repo, .. }) => ("comment not posted", Some(repo)),
         Command::Issue(I::Close { repo, .. }) => ("issue not closed", Some(repo)),
         Command::Issue(I::Reopen { repo, .. }) => ("issue not reopened", Some(repo)),
-        Command::Issue(I::Label { repo, .. }) => ("label not changed", Some(repo)),
         Command::Issue(I::Edit { repo, .. }) => ("issue not edited", Some(repo)),
         Command::Pr(P::Create(args)) => ("pull request not created", Some(&args.repo)),
         Command::Pr(P::Close { repo, .. }) => ("pull request not closed", Some(repo)),
@@ -186,9 +187,12 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             ("could not read releases", Some(repo))
         }
         Command::Label(LabelCommand::List { repo, .. }) => ("could not list labels", Some(repo)),
-        Command::Label(LabelCommand::Create { repo, .. } | LabelCommand::Retire { repo, .. }) => {
-            ("label not changed", Some(repo))
-        }
+        Command::Issue(I::Label { repo, .. })
+        | Command::Label(
+            LabelCommand::Create { repo, .. }
+            | LabelCommand::Retire { repo, .. }
+            | LabelCommand::Delete { repo, .. },
+        ) => ("label not changed", Some(repo)),
         Command::Collab(C::Add { repo, .. }) => ("collaborator not added", Some(repo)),
         Command::Collab(C::Remove { repo, .. }) => ("collaborator not removed", Some(repo)),
         Command::Collab(C::List { repo }) => ("could not list collaborators", Some(repo)),

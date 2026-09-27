@@ -93,6 +93,36 @@ export type ElementTag =
 
 export type TableAlignment = 'left' | 'center' | 'right' | null
 
+/** A piece of plain text split by {@link splitRefs}. */
+export type RefPiece =
+  | { readonly t: 'text'; readonly v: string }
+  /** `#12`: issue or PR 12 of the current repo. */
+  | { readonly t: 'ref'; readonly n: number }
+  /** `@alice` / `@alice.dash`: a DPNS name. */
+  | { readonly t: 'mention'; readonly name: string }
+
+/**
+ * `#n` (1–10 digits) and `@name` (a DPNS label, optionally `.dash`) in plain text, the GitHub
+ * way: only at a word boundary (not inside `a#1`, `x@y.com` or a URL fragment), and a `#n`
+ * followed by a letter or digit is not a reference. Code spans and links are never split (the
+ * caller applies this to text nodes only). Pure, so the parser stays render-agnostic.
+ */
+export function splitRefs(text: string): RefPiece[] {
+  const out: RefPiece[] = []
+  const re = /(^|[^\w/#@.&-])(?:#(\d{1,10})(?![\w-])|@([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)(?:\.dash)?(?![\w.@-]*[\w@]))/g
+  let last = 0
+  for (const m of text.matchAll(re)) {
+    const lead = m[1] ?? ''
+    const start = (m.index ?? 0) + lead.length
+    if (start > last) out.push({ t: 'text', v: text.slice(last, start) })
+    if (m[2] !== undefined) out.push({ t: 'ref', n: Number(m[2]) })
+    else out.push({ t: 'mention', name: (m[3] ?? '').toLowerCase() })
+    last = (m.index ?? 0) + m[0].length
+  }
+  if (last < text.length) out.push({ t: 'text', v: text.slice(last) })
+  return out
+}
+
 /**
  * Restrict link/image hrefs to safe schemes, same-site paths and relative paths. Protocol-
  * relative forms (`//host/x`, and `/\host/x` or `\\host`, which browsers read the same way)

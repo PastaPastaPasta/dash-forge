@@ -92,7 +92,7 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await waitForRepoResolved(page)
     await expectLanded(page, page.getByText('README should explain the event split'))
     await expect(page.getByText('question').first()).toBeVisible()
-    await page.getByRole('button', { name: /Closed/ }).click()
+    await page.getByRole('tab', { name: /Closed/ }).click()
     await expect(page.getByText('Duplicate of #1')).toBeVisible()
     await expect(page.getByText('Add a rules page')).toBeVisible()
     await shot(page, 'v2-04-issues')

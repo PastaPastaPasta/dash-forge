@@ -31,6 +31,7 @@ import {
 } from '../sdk'
 import { DOC, asIdentifierString, byteFieldToHex, num, str, type RepoRef } from './contract'
 import { invalidateRepoFeed, readReviews } from './issues'
+import { sealEdit } from './private-writes'
 import { repoSource } from './source'
 import { admitAll, gateFor } from './private-content'
 import { privateWriterWithSession, type PrivateWriter } from './private-writes'
@@ -51,6 +52,9 @@ export interface EventPayload {
 
 const REF_KINDS: ReadonlySet<EventKind> = new Set<EventKind>(['threadResolve', 'threadUnresolve', 'reviewRequest', 'reviewRequestRemove', 'reviewDismiss'])
 
+/** Kinds that carry an identity in `value` and, from F-1 on, the same identity in `refId`. */
+const ASSIGN_KINDS: ReadonlySet<EventKind> = new Set<EventKind>(['assign', 'unassign'])
+
 /**
  * The document data of an event of `kind` on `target`, refusing a payload the kind needs but
  * lacks (the folds would ignore such a document): 11–15 a `refId`, 16 a 20–32 byte oid, 17 a
@@ -62,6 +66,13 @@ export function targetEventData(target: WriteTarget, kind: EventKind, payload: E
   // The folds read only 40- or 64-hex heads (SHA-1 or SHA-256): anything else would be inert.
   if (kind === 'headUpdate' && oid?.length !== 20 && oid?.length !== 32) throw new Error('a head update needs a 20- or 32-byte commit oid')
   if (kind === 'milestoneSet' && !payload.value) throw new Error('a milestone needs a name')
+  if ((kind === 'labelAdd' || kind === 'labelRemove') && !payload.value?.trim()) throw new Error('a label event needs a label name')
+  // An assignee is `value` (what the fold reads, forge-v2.md §3) and `refId` (so the sparse
+  // `addressee (refId)` index answers "assigned to me", platform-parity-spec §1.2): both the
+  // same identity.
+  if (ASSIGN_KINDS.has(kind) && (!payload.value || payload.refId !== payload.value)) {
+    throw new Error(`an ${kind} event names the assignee in both value and refId`)
+  }
   if (kind === 'retarget' && !(payload.value !== undefined && isLegalRefName(payload.value))) {
     throw new Error(`illegal retarget base ref name ${JSON.stringify(payload.value ?? null)}`)
   }
@@ -515,29 +526,74 @@ export function setPolicy(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, policy: P
   }, intent)
 }
 
-/** Replace one of the signer's documents of `repo`, dropping the caches the edit invalidates. */
+/**
+ * Assign or unassign `assignee` on an issue or PR (members only at consensus: an `authorEvent`
+ * cannot carry these kinds). The identity is both `value` and `refId`.
+ */
+export async function setAssignee(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: { target: WriteTarget; assignee: string; assign: boolean; intent?: string },
+): Promise<WriteResult> {
+  const data = targetEventData(input.target, input.assign ? 'assign' : 'unassign', { value: input.assignee, refId: input.assignee })
+  return write(sdk, auth, repo, DOC.event, data, input.intent)
+}
+
+/** Apply or remove a label on an issue or PR (members only at consensus). */
+export async function setLabel(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: { target: WriteTarget; label: string; add: boolean; intent?: string },
+): Promise<WriteResult> {
+  const data = targetEventData(input.target, input.add ? 'labelAdd' : 'labelRemove', { value: input.label.trim() })
+  return write(sdk, auth, repo, DOC.event, data, input.intent)
+}
+
+/**
+ * What a private repo's edit needs to re-seal it (`sealEdit`, `private-writes.ts`): the
+ * decrypted content now (`current`, e.g. the issue's title and body as the page shows them),
+ * the plaintext bind fields the seal covers (`bind`: an issue's `number`, a comment's
+ * `targetId`), and for a PR its own epoch.
+ */
+export interface SealContext {
+  readonly current: Readonly<Record<string, unknown>>
+  readonly bind: Readonly<Record<string, unknown>>
+  readonly patchEpoch?: number
+}
+
+/**
+ * Replace one of the signer's documents of `repo`, dropping the caches the edit invalidates.
+ * In a private repo the content is re-sealed as a whole (`sealEdit`) and the replace sets only
+ * `enc` / `epoch`: a plaintext replace would publish the edit next to the sealed `enc`.
+ */
 async function replace(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  documentType: string,
+  documentType: 'issue' | 'patch' | 'comment',
   documentId: string,
   changes: Record<string, unknown>,
   expectedRevision: bigint | undefined,
+  seal: SealContext | undefined,
 ): Promise<ReplaceResult> {
-  // A replace merges plaintext over the stored document: in a private repo that would publish
-  // the edit next to the sealed `enc` and make the document malformed for members.
-  refusePlaintextInPrivate(repo, documentType)
+  let replaced = changes
+  if (repo.visibility === 'private') {
+    if (seal === undefined) refusePlaintextInPrivate(repo, documentType)
+    else replaced = await sealEdit(sdk, auth, repo, documentType, { ...seal.bind }, seal.current, changes, seal.patchEpoch)
+  }
   try {
     return await replaceDocumentIdempotent(sdk, auth, {
       contractId: contractFor(repo, documentType),
       documentType,
       documentId,
-      changes,
+      changes: replaced,
       repo: repo.repoId,
       expectedRevision,
     })
   } finally {
+    // An edited title or body changes list rows and the index's text search, not open counts.
     invalidateRepoFeed(repo, { counts: false })
   }
 }
@@ -547,7 +603,7 @@ export function updateTarget(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { type: 'issue' | 'patch'; id: string; title?: string; body?: string; expectedRevision?: bigint },
+  input: { type: 'issue' | 'patch'; id: string; title?: string; body?: string; expectedRevision?: bigint; seal?: SealContext },
 ): Promise<ReplaceResult> {
   const changes: Record<string, unknown> = {}
   if (input.title !== undefined) {
@@ -556,7 +612,7 @@ export function updateTarget(
   }
   if (input.body !== undefined) changes['body'] = input.body === '' ? undefined : input.body
   if (Object.keys(changes).length === 0) throw new Error('nothing to change')
-  return replace(sdk, auth, repo, DOC[input.type], input.id, changes, input.expectedRevision)
+  return replace(sdk, auth, repo, input.type, input.id, changes, input.expectedRevision, input.seal)
 }
 
 /**
@@ -568,10 +624,10 @@ export function updateComment(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { id: string; body: string; dropReviewId?: boolean; expectedRevision?: bigint },
+  input: { id: string; body: string; dropReviewId?: boolean; expectedRevision?: bigint; seal?: SealContext },
 ): Promise<ReplaceResult> {
   if (input.body.trim() === '') throw new Error('a comment needs a body')
   const changes: Record<string, unknown> = { body: input.body }
   if (input.dropReviewId) changes['reviewId'] = undefined
-  return replace(sdk, auth, repo, DOC.comment, input.id, changes, input.expectedRevision)
+  return replace(sdk, auth, repo, 'comment', input.id, changes, input.expectedRevision, input.seal)
 }

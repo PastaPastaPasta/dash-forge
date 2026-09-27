@@ -49,7 +49,7 @@ import { repoSource } from './source'
 import { base64ToHex, hexToBase64 } from '../sdk'
 
 /** A row's title; ciphertext (a private repo's, which this client cannot decrypt) says so. */
-function titleOf(doc: PlainDocument): string {
+export function titleOf(doc: PlainDocument): string {
   const title = str(doc, 'title')
   if (title !== '') return title
   return byteFieldToHex(doc, 'enc') !== '' ? 'Encrypted (not readable here)' : ''
@@ -71,6 +71,13 @@ export interface IssueView {
   readonly body: string
   readonly author: string
   readonly createdAt: number
+  /**
+   * The last edit's consensus time (`$updatedAt`); equal to {@link createdAt} for a document
+   * never edited ("edited" = `updatedAt > createdAt`, review-parity spec §3).
+   */
+  readonly updatedAt: number
+  /** The document revision (1 = never edited): an edit names it to refuse a concurrent one. */
+  readonly revision: number
   readonly state: IssueState
   /**
    * False when the event log could not be read to completion, so `state` is a fold over a
@@ -79,6 +86,35 @@ export interface IssueView {
    * an error. See {@link listIssues}.
    */
   readonly stateComplete: boolean
+}
+
+/** A document's `$updatedAt` (its `$createdAt` when never edited or not recorded). */
+export function updatedAtOf(doc: PlainDocument): number {
+  const u = doc['$updatedAt']
+  return typeof u === 'number' && u > 0 ? u : num(doc, '$createdAt')
+}
+
+/** A document's `$revision` (1 when not recorded). */
+export function revisionOf(doc: PlainDocument): number {
+  const r = doc['$revision']
+  return typeof r === 'number' && r > 0 ? r : typeof r === 'bigint' ? Number(r) : 1
+}
+
+/** An issue document and its target log, folded (no reads). */
+export function issueViewOf(issueDoc: PlainDocument, log: TargetLog): IssueView {
+  const author = str(issueDoc, '$ownerId')
+  return {
+    id: str(issueDoc, '$id'),
+    number: num(issueDoc, 'number'),
+    title: titleOf(issueDoc),
+    body: str(issueDoc, 'body'),
+    author,
+    createdAt: num(issueDoc, '$createdAt'),
+    updatedAt: updatedAtOf(issueDoc),
+    revision: revisionOf(issueDoc),
+    state: foldIssueStateV2(log.events, log.authorEvents, author),
+    stateComplete: true,
+  }
 }
 
 /** A PR (patch) with its folded state. */
@@ -275,6 +311,30 @@ function changed(repo: RepoRef, counters: readonly Map<string, number>[]): void 
   for (const listener of listeners) listener()
 }
 
+/**
+ * Record a complete repo feed read by another reader (the issue index reads it inside its
+ * composite), so the pulls page and the header fold from it instead of reading it again.
+ */
+export function seedRepoFeed(repo: RepoRef, feed: Map<string, TargetLog>): void {
+  feedCache.set(feedKey(repo), { at: Date.now(), promise: Promise.resolve(feed) })
+}
+
+/** Group a repo feed's events by target. */
+export function groupFeed(events: readonly Event[], authorEvents: readonly Event[]): Map<string, TargetLog> {
+  const byTarget = new Map<string, TargetLog>()
+  const slot = (targetId: string): TargetLog => {
+    let entry = byTarget.get(targetId)
+    if (entry === undefined) {
+      entry = { events: [], authorEvents: [] }
+      byTarget.set(targetId, entry)
+    }
+    return entry
+  }
+  for (const e of events) slot(e.targetId ?? '').events.push(e)
+  for (const e of authorEvents) slot(e.targetId ?? '').authorEvents.push(e)
+  return byTarget
+}
+
 /** {@link readRepoFeed} through a short per-repo cache (issues and pulls pages share it). */
 function readRepoFeedCached(sdk: EvoSDK, repo: RepoRef): Promise<Map<string, TargetLog> | null> {
   return ttlCached(feedCache, pageKey(repo), () => readRepoFeed(sdk, repo))
@@ -292,9 +352,36 @@ export function invalidateRepoFeed(repo: RepoRef, { counts = true }: { counts?: 
   const ofRepo = (k: string): boolean => k === prefix || k.startsWith(`${prefix}:`) || k.startsWith(`${prefix}#`)
   for (const k of [...feedCache.keys()]) if (ofRepo(k)) feedCache.delete(k)
   for (const k of [...listCache.keys()]) if (ofRepo(k)) listCache.delete(k)
+  for (const drop of invalidationHooks) drop(repo)
   if (!counts) return
   for (const [k, settled] of settledLists) if (ofRepo(k)) settled.at = 0
+  // A close or reopen changes the open count without changing the total the count was proved
+  // against: forget it, so the header refolds instead of showing the old number.
+  issueCounts.delete(feedKey(repo))
   changed(repo, [writes, versions])
+}
+
+/** Other per-repo caches a write drops along with the feed (the issue index, `./issue-index`). */
+const invalidationHooks = new Set<(repo: RepoRef) => void>()
+
+/** Run `drop` whenever {@link invalidateRepoFeed} drops a repo's caches. */
+export function onRepoInvalidated(drop: (repo: RepoRef) => void): void {
+  invalidationHooks.add(drop)
+}
+
+/**
+ * Exact open issue counts the issue index proved (`./issue-index`: the complete feed's closed
+ * issues against the countable total), per repo, with the total they were proved against.
+ */
+const issueCounts = new Map<string, { open: number; total: number | null }>()
+
+/** Record an open issue count the issue index proved against `total`; the header shows it. */
+export function settleIssueCount(repo: RepoRef, open: number, total: number | null): void {
+  const key = feedKey(repo)
+  const held = issueCounts.get(key)
+  if (held?.open === open && held.total === total) return
+  issueCounts.set(key, { open, total })
+  changed(repo, [versions])
 }
 
 /** How often `repo`'s list pages changed this session: what a view derived from them re-renders on. */
@@ -315,7 +402,7 @@ export function subscribeRepoLists(listener: () => void): () => void {
   }
 }
 
-function toEvents(documents: readonly PlainDocument[]): Event[] {
+export function toEvents(documents: readonly PlainDocument[]): Event[] {
   return documents.map(toEvent).filter((e): e is Event => e !== null)
 }
 
@@ -366,18 +453,7 @@ async function readRepoFeed(sdk: EvoSDK, repo: RepoRef): Promise<Map<string, Tar
     if (e instanceof IncompleteReadError) return null
     throw e
   }
-  const byTarget = new Map<string, TargetLog>()
-  const slot = (targetId: string): TargetLog => {
-    let entry = byTarget.get(targetId)
-    if (entry === undefined) {
-      entry = { events: [], authorEvents: [] }
-      byTarget.set(targetId, entry)
-    }
-    return entry
-  }
-  for (const e of events) slot(e.targetId ?? '').events.push(e)
-  for (const e of authorEvents) slot(e.targetId ?? '').authorEvents.push(e)
-  return byTarget
+  return groupFeed(events, authorEvents)
 }
 
 /**
@@ -434,20 +510,7 @@ export async function readIssue(
   issueDoc: PlainDocument,
   log?: TargetLog,
 ): Promise<IssueView> {
-  const id = str(issueDoc, '$id')
-  const author = str(issueDoc, '$ownerId')
-  const l = log ?? (await readTargetLog(sdk, repo, id))
-  const state: IssueState = foldIssueStateV2(l.events, l.authorEvents, author)
-  return {
-    id,
-    number: num(issueDoc, 'number'),
-    title: titleOf(issueDoc),
-    body: str(issueDoc, 'body'),
-    author,
-    createdAt: num(issueDoc, '$createdAt'),
-    state,
-    stateComplete: true,
-  }
+  return issueViewOf(issueDoc, log ?? (await readTargetLog(sdk, repo, str(issueDoc, '$id'))))
 }
 
 /** Pages a list read may take to fill `limit` shown rows past hidden ones. */
@@ -566,6 +629,8 @@ function incompleteIssueView(doc: PlainDocument): IssueView {
     body: str(doc, 'body'),
     author: str(doc, '$ownerId'),
     createdAt: num(doc, '$createdAt'),
+    updatedAt: updatedAtOf(doc),
+    revision: revisionOf(doc),
     state: { open: true, labels: [], assignees: [] },
     stateComplete: false,
   }
@@ -881,8 +946,11 @@ export function openCountFor(total: number | null, list: CountedList | null | un
  */
 export function openCounts(repo: RepoRef, totals: TargetTotals | null): TargetTotals {
   if (totals === null) return { issues: null, pulls: null }
+  // The issue index's count, when it was proved against the current total (a newer issue makes
+  // it stale until the index refolds); else the folded list's.
+  const proved = issueCounts.get(feedKey(repo))
   return {
-    issues: openCountFor(totals.issues, settledLists.get(listKey(repo, 'issue'))?.list),
+    issues: totals.issues === 0 ? 0 : proved !== undefined && proved.total === totals.issues ? proved.open : openCountFor(totals.issues, settledLists.get(listKey(repo, 'issue'))?.list),
     pulls: openCountFor(totals.pulls, settledLists.get(listKey(repo, 'patch'))?.list),
   }
 }
@@ -894,14 +962,19 @@ export function openCounts(repo: RepoRef, totals: TargetTotals | null): TargetTo
  * re-read, so the header costs about one fold per repo per minute, plus one after each write
  * that can change a count. A failure leaves the count unshown.
  */
-export async function foldOpenCounts(sdk: EvoSDK, repo: RepoRef, totals: TargetTotals): Promise<void> {
+export async function foldOpenCounts(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  totals: TargetTotals,
+  { issues = true }: { issues?: boolean } = {},
+): Promise<void> {
   const wants = (type: 'issue' | 'patch', total: number | null): boolean => {
     if (!foldsForCount(total)) return false
     const settled = settledLists.get(listKey(repo, type))
     return settled === undefined || Date.now() - settled.at >= SETTLED_TTL_MS || !matchesTotal(total, settled.list)
   }
   await Promise.all([
-    wants('issue', totals.issues) ? listIssuesCached(sdk, repo).catch(() => null) : null,
+    issues && wants('issue', totals.issues) ? listIssuesCached(sdk, repo).catch(() => null) : null,
     wants('patch', totals.pulls) ? listPullsCached(sdk, repo).catch(() => null) : null,
   ])
 }

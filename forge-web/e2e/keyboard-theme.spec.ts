@@ -44,7 +44,7 @@ test.describe('keyboard', () => {
 
   test('the sign-in modal traps Tab and Shift+Tab, and returns focus to its trigger', async ({ page }) => {
     await page.goto('/explore/', { waitUntil: 'domcontentloaded' })
-    const trigger = page.getByRole('button', { name: 'Sign in' })
+    const trigger = page.getByRole('banner').getByRole('button', { name: 'Sign in' })
     await trigger.focus()
     await page.keyboard.press('Enter')
     const dialog = page.getByRole('dialog', { name: 'Sign in to Dash Forge' })

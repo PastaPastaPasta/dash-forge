@@ -117,16 +117,25 @@ Not supported for private repositories yet: forks (`dg repo fork`, refused with 
 Anyone with an identity and some credits can file an issue. Fees are the spam floor.
 
 ```sh
-dg issue list   <owner>/<repo> [--state open|closed|all] [--limit 50]
+dg issue list   <owner>/<repo> [--state open|closed|all] [--label bug]... [--author me|<id|name>]
+                [--assignee me|<id|name>|none] [--search "crash #12"] [--limit 30] [--page 2]
 dg issue view   <owner>/<repo> 12
 dg issue create <owner>/<repo> --title "Crash on empty input" --body "Steps: …"
+dg issue edit   <owner>/<repo> 12 --title "Crash on empty config" [--body … | --body-file notes.md]
 dg issue comment <owner>/<repo> 12 --body "Fixed in 8f3e2a1"
 dg issue close  <owner>/<repo> 12
 dg issue reopen <owner>/<repo> 12
-dg issue label  <owner>/<repo> 12 --add bug        # or --remove bug
+dg issue label  <owner>/<repo> 12 add bug docs     # or: remove bug (the older --add/--remove still work)
+dg issue assign <owner>/<repo> 12 me alice         # or: unassign; ids or DPNS names
 ```
 
-**Who can change state.** The issue's author can close and reopen it (an `authorEvent`). Writers and maintainers can close, reopen and label any issue (an `event`). `dg` picks the right one for you. Consensus refuses both from anyone else, and `dg` says so before anything is signed ([`E601`](../errors.md#e601)).
+**Who can change state.** The issue's author can close and reopen it (an `authorEvent`). Writers and maintainers can close, reopen, label and assign any issue (an `event`). `dg` picks the right one for you. Consensus refuses both from anyone else, and `dg` says so before anything is signed ([`E601`](../errors.md#e601)).
+
+**Edits.** Only the author can edit an issue's title or body: an edit replaces their document, so consensus admits it from them alone, members included. The earlier text stays readable on Platform, and the web shows "edited". Re-running an edit that already landed writes nothing.
+
+**Assignees** are events naming the identity twice: as the value the state fold reads, and as the event's `refId`, so "assigned to me" is one indexed query (Explore and `--assignee me`).
+
+**Listing.** `dg issue list` reads every issue and the repository's event feed once, then filters, so a filter sees the whole repository rather than the newest page. The web issue list has the same filters, keeps them in the URL, and pages 50 at a time.
 
 **Numbers.** Issue numbers are claimed by the client, by a rule every client shares: the count of issues bounds how far ahead a number can be, so someone squatting #4294967295 does not move numbering. If two people take the same number at once, consensus rejects the second one, and `dg` retries with the next free number. An interrupted `dg issue create` resumes when run again rather than opening a second issue.
 
@@ -284,6 +293,7 @@ Members define a repository's labels and apply them to issues:
 dg label create <owner>/<repo> bug --color "#d73a4a" --description "Something is broken"
 dg label list   <owner>/<repo> [--all]
 dg label retire <owner>/<repo> bug
+dg label delete <owner>/<repo> bug                 # deletes your definitions; retires it if others defined it too
 dg issue label  <owner>/<repo> 12 --add bug
 ```
 

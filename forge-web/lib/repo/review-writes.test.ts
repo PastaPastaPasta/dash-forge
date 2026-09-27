@@ -25,6 +25,23 @@ vi.mock('../sdk', async (importOriginal) => {
       writes.push({ documentType: p.documentType, data: p.data, ...(p.intent ? { intent: p.intent } : {}) })
       return { documentId: D(writes.length), confirmed: true, cost: { credits: 0, dash: 0 }, actualCredits: null }
     }),
+    replaceDocumentIdempotent: vi.fn(async (_sdk: unknown, _auth: unknown, p: { documentType: string; changes: Record<string, unknown> }) => {
+      replaces.push({ documentType: p.documentType, changes: p.changes })
+      return { documentId: 'x', revision: 2n, cost: { credits: 0, dash: 0 }, actualCredits: null }
+    }),
+  }
+})
+
+const replaces: { documentType: string; changes: Record<string, unknown> }[] = []
+const sealed: unknown[][] = []
+vi.mock('./private-writes', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./private-writes')>()
+  return {
+    ...real,
+    sealEdit: vi.fn(async (...args: unknown[]) => {
+      sealed.push(args.slice(3))
+      return { enc: new Uint8Array([1, 2, 3]), epoch: 4 }
+    }),
   }
 })
 
@@ -38,9 +55,12 @@ import {
   postTargetEvent,
   reviewData,
   saveReviewDraft,
+  setAssignee,
+  setLabel,
   submitReviewDraft,
   targetEventData,
   updateComment,
+  updateTarget,
   type ChainComment,
   type ChainReview,
   type ReviewDraft,
@@ -119,6 +139,58 @@ describe('event payloads and routes', () => {
     expect(writes[0]?.data['kind']).toBe(10)
     await expect(postTargetEvent(sdk, auth(ALICE), REPO, { target, kind: 'reviewDismiss', author: ALICE, isMember: false, payload: { refId: BOB } })).rejects.toThrow(/maintainer or writer/)
     expect(writes).toHaveLength(1)
+  })
+})
+
+describe('assignees and labels (F-1)', () => {
+  it('names the assignee in value and refId, so the addressee index finds it', async () => {
+    await setAssignee(sdk, auth(ALICE), REPO, { target, assignee: BOB, assign: true })
+    await setAssignee(sdk, auth(ALICE), REPO, { target, assignee: BOB, assign: false })
+    expect(writes.map((w) => [w.documentType, w.data['kind'], w.data['value']])).toEqual([
+      ['event', 6, BOB],
+      ['event', 7, BOB],
+    ])
+    for (const w of writes) {
+      expect(w.data['refId']).toBeInstanceOf(Uint8Array)
+      expect((w.data['refId'] as Uint8Array).length).toBe(32)
+    }
+  })
+
+  it('refuses an assign whose refId does not name the assignee', () => {
+    expect(() => targetEventData(target, 'assign', { value: BOB })).toThrow(/refId/)
+    expect(() => targetEventData(target, 'assign', { value: BOB, refId: ALICE })).toThrow(/refId/)
+    expect(() => targetEventData(target, 'unassign', { refId: BOB })).toThrow(/refId/)
+  })
+
+  it('writes label events with the trimmed name and refuses an empty one', async () => {
+    await setLabel(sdk, auth(ALICE), REPO, { target, label: ' bug ', add: true })
+    await setLabel(sdk, auth(ALICE), REPO, { target, label: 'bug', add: false })
+    expect(writes.map((w) => [w.data['kind'], w.data['value']])).toEqual([
+      [4, 'bug'],
+      [5, 'bug'],
+    ])
+    await expect(setLabel(sdk, auth(ALICE), REPO, { target, label: ' ', add: true })).rejects.toThrow(/label name/)
+  })
+
+  it('re-seals a private edit (sealEdit) and replaces only enc/epoch; without the context it refuses', async () => {
+    const PRIVATE: RepoRef = { ...REPO, visibility: 'private' }
+    replaces.length = 0
+    sealed.length = 0
+    await expect(updateTarget(sdk, auth(ALICE), PRIVATE, { type: 'issue', id: PR, title: 'x' })).rejects.toThrow(/private repo/)
+    expect(replaces).toHaveLength(0)
+    await updateTarget(sdk, auth(ALICE), PRIVATE, {
+      type: 'issue',
+      id: PR,
+      title: 'new',
+      seal: { current: { title: 'old', body: 'b' }, bind: { number: 3 } },
+    })
+    expect(sealed[0]).toEqual(['issue', { number: 3 }, { title: 'old', body: 'b' }, { title: 'new' }, undefined])
+    expect(replaces[0]).toEqual({ documentType: 'issue', changes: { enc: new Uint8Array([1, 2, 3]), epoch: 4 } })
+    await updateComment(sdk, auth(ALICE), PRIVATE, { id: PR, body: 'edited', seal: { current: { body: 'was' }, bind: { targetId: PR } } })
+    expect(replaces[1]?.changes).not.toHaveProperty('body')
+    // A public edit is plaintext, as before.
+    await updateTarget(sdk, auth(ALICE), REPO, { type: 'issue', id: PR, title: 'pub' })
+    expect(replaces[2]?.changes).toEqual({ title: 'pub' })
   })
 })
 

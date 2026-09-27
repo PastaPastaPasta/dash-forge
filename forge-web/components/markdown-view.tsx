@@ -26,6 +26,7 @@ import {
   isRelativeHref,
   MARKDOWN_MAX_CHARS,
   parseMarkdown,
+  splitRefs,
   type Block,
   type Inline,
   type TableAlignment,
@@ -51,12 +52,22 @@ export interface MarkdownRepoContext {
   readonly tipOid?: string
 }
 
+/**
+ * Where `#n` and `@name` in plain text link to (GitHub's autolinks, D-223). Omitted: they stay
+ * text (release notes, READMEs). `issueHref(n)` is the repo's issue route.
+ */
+export interface MarkdownLinks {
+  readonly issueHref: (n: number) => string
+  readonly profileHref?: (name: string) => string
+}
+
 interface RenderContext {
   readonly repo: MarkdownRepoContext | null
   readonly images: 'auto' | 'ask'
+  readonly links: MarkdownLinks | null
 }
 
-const Ctx = createContext<RenderContext>({ repo: null, images: 'ask' })
+const Ctx = createContext<RenderContext>({ repo: null, images: 'ask', links: null })
 
 function tableAlignClass(align: TableAlignment | 'left' | 'center' | 'right'): string {
   if (align === 'center') return 'text-center'
@@ -65,6 +76,34 @@ function tableAlignClass(align: TableAlignment | 'left' | 'center' | 'right'): s
 }
 
 const LINK = 'text-forge-700 underline decoration-forge-700/30 underline-offset-2 hover:decoration-forge-700 dark:text-forge-400'
+
+/** Plain text with its `#n` / `@name` references linked (when the page gave `links`). */
+function AutolinkedText({ text }: { text: string }): JSX.Element {
+  const { links } = useContext(Ctx)
+  if (links === null) return <>{text}</>
+  const pieces = splitRefs(text)
+  if (pieces.length === 1 && pieces[0]?.t === 'text') return <>{text}</>
+  return (
+    <>
+      {pieces.map((p, i) => {
+        if (p.t === 'text') return <Fragment key={i}>{p.v}</Fragment>
+        if (p.t === 'ref') {
+          return (
+            <Link key={i} href={links.issueHref(p.n)} className={LINK} data-autolink="ref">
+              #{p.n}
+            </Link>
+          )
+        }
+        const href = (links.profileHref ?? ((n: string) => `/u?name=${encodeURIComponent(n)}`))(p.name)
+        return (
+          <Link key={i} href={href} className={cn(LINK, 'font-medium')} data-autolink="mention">
+            @{p.name}
+          </Link>
+        )
+      })}
+    </>
+  )
+}
 
 /** A link: an in-page anchor, a repo-relative path (to the blob view), or an external URL. */
 function MdLink({ href, children }: { href: string; children: ReactNode }): JSX.Element {
@@ -278,7 +317,7 @@ function renderInline(nodes: readonly Inline[], keyPrefix: string): ReactNode {
     const key = `${keyPrefix}-${i}`
     switch (n.t) {
       case 'text':
-        return <Fragment key={key}>{n.v}</Fragment>
+        return <AutolinkedText key={key} text={n.v} />
       case 'strong':
         return <strong key={key} className="font-semibold">{renderInline(n.c, key)}</strong>
       case 'em':
@@ -499,6 +538,7 @@ export const MarkdownView = memo(function MarkdownView({
   className,
   repo = null,
   images = 'ask',
+  links = null,
 }: {
   source: string
   className?: string
@@ -506,8 +546,10 @@ export const MarkdownView = memo(function MarkdownView({
   repo?: MarkdownRepoContext | null
   /** `auto` for Markdown the repo itself publishes (README, release notes); `ask` for anyone's. */
   images?: 'auto' | 'ask'
+  /** Link `#n` / `@name` (issue and PR pages); keep it referentially stable (memo). */
+  links?: MarkdownLinks | null
 }): JSX.Element {
-  const ctx = useMemo<RenderContext>(() => ({ repo, images }), [repo, images])
+  const ctx = useMemo<RenderContext>(() => ({ repo, images, links }), [repo, images, links])
   const blocks = useMemo(() => (source.length > MARKDOWN_MAX_CHARS ? null : parseMarkdown(source)), [source])
   if (blocks === null) {
     return (

@@ -1,6 +1,31 @@
 import { describe, expect, it } from 'vitest'
 import { runWithDeadline } from './fuzz-fixtures'
-import { MARKDOWN_MAX_NODES, parseMarkdown, type Block, type Inline } from './markdown'
+import { MARKDOWN_MAX_NODES, parseMarkdown, splitRefs, type Block, type Inline } from './markdown'
+
+describe('splitRefs (#n and @name autolinks)', () => {
+  it('finds issue references and mentions at word boundaries', () => {
+    expect(splitRefs('see #12 and @alice.')).toEqual([
+      { t: 'text', v: 'see ' },
+      { t: 'ref', n: 12 },
+      { t: 'text', v: ' and ' },
+      { t: 'mention', name: 'alice' },
+      { t: 'text', v: '.' },
+    ])
+    expect(splitRefs('#3 first')).toEqual([{ t: 'ref', n: 3 }, { t: 'text', v: ' first' }])
+    expect(splitRefs('(@Bob.dash)')).toEqual([{ t: 'text', v: '(' }, { t: 'mention', name: 'bob' }, { t: 'text', v: ')' }])
+  })
+
+  it('leaves emails, fragments, hex and inner hashes alone', () => {
+    for (const s of ['mail x@example.com now', 'a#1', 'color #1f883d', 'path/#2', 'issue#4', '#12abc', 'user@@x', 'foo@bar']) {
+      expect(splitRefs(s).filter((p) => p.t !== 'text')).toEqual([])
+    }
+  })
+
+  it('returns the text unchanged when there is nothing to link', () => {
+    expect(splitRefs('plain text')).toEqual([{ t: 'text', v: 'plain text' }])
+    expect(splitRefs('')).toEqual([])
+  })
+})
 
 function inlineText(nodes: readonly Inline[]): string {
   return nodes

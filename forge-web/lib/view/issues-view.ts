@@ -14,10 +14,17 @@ import {
   DOC,
   asIdentifierString,
   byteFieldToHex,
+  issueViewOf,
+  membershipsFromDocs,
+  newestLabels,
   num,
-  readIssue,
+  readLabels,
+  readMembershipsCached,
   readPolicy,
   readPull,
+  seedMemberships,
+  toEvents,
+  updatedAtOf,
   readReviews,
   readRoleOracle,
   readTargetLog,
@@ -26,9 +33,14 @@ import {
   wellFormed,
   type IssueView,
   type PullView,
+  type LabelDef,
   type RepoRef,
   type ReviewView,
 } from '../repo'
+import { DEFAULT_NETWORK, type Network } from '../constants'
+import { compositeOf, docsAt, queryComposite, siblingOf } from '../sdk/composite'
+import { prefetchDpnsNames } from './dpns'
+import type { Membership } from '../rules/v2'
 import { HiddenTally, admitAll, gateFor, type HiddenCounts } from '../repo/private-content'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
@@ -50,6 +62,8 @@ export interface CommentView {
   readonly anchor: Anchor | null
   /** The review this comment was submitted with (`reviewId`), or null. */
   readonly reviewId: string | null
+  /** The last edit's time; equal to `createdAt` when never edited ("edited" marker). */
+  readonly updatedAt?: number
 }
 
 /** A comment document as a {@link CommentView}. */
@@ -73,6 +87,7 @@ export function toCommentView(d: PlainDocument): CommentView {
       commitOid: byteFieldToHex(d, 'commitOid'),
     }),
     reviewId: id('reviewId'),
+    updatedAt: updatedAtOf(d),
   }
 }
 
@@ -158,21 +173,85 @@ export interface IssueThread {
   readonly timeline: TimelineItem[]
   /** Comments (and reviews) left out as unreadable, by reason (private repos). */
   readonly hidden: HiddenCounts
+  /** The repo's label definitions (newest per name). */
+  readonly labels: readonly LabelDef[]
+  /** The repo's current members (the assignee picker's choices). */
+  readonly members: readonly Membership[]
 }
 
-/** Load an issue (folded state) + its comment/event timeline by number. Null if not found. */
-export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number): Promise<IssueThread | null> {
-  const doc = await docByNumber(sdk, repo, 'issue', number)
-  if (!doc) return null
+/**
+ * Load an issue (folded state) + its comment/event timeline by number, in ONE composite read
+ * (`platform-parity-spec.md` §3.3): the issue by `(repoId, number)`, its comments, events and
+ * author events (bound `$id → targetId`), and the repo's label definitions and members
+ * (siblings); then one batched DPNS read for every name shown. A target with more than 100
+ * comments or events continues with complete paged reads of that type only. The issue and
+ * comments pass the repo's content gate (a private repo's decrypt with the session keys).
+ * Null if not found.
+ */
+export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number, network: Network = DEFAULT_NETWORK): Promise<IssueThread | null> {
+  const source = repoSource(repo)
+  const page = source.repoQuery(DOC.issue, { where: [['number', '==', number]] })
+  const bound = { sourceProperty: '$id', field: 'targetId' }
+  const labelQuery = source.repoQuery(DOC.label, { orderBy: [['name', 'asc'], ['$createdAt', 'asc']] })
+  const memberQuery = (type: string) => source.repoQuery(type, { orderBy: [['memberId', 'asc']] })
+  const res = await queryComposite(
+    sdk,
+    compositeOf(page, 1, [
+      { documentType: DOC.comment, bind: bound, limit: 100 },
+      { documentType: DOC.event, bind: bound, limit: 100 },
+      { documentType: DOC.authorEvent, bind: bound, limit: 100 },
+      siblingOf(labelQuery),
+      siblingOf(memberQuery(DOC.maintainer)),
+      siblingOf(memberQuery(DOC.writer)),
+    ]),
+  )
+  const raw = res.page[0]
+  if (raw === undefined) return null
+  // A private repo's issue opens with the reader's session keys (the gate decrypts it).
+  const gate = gateFor(repo)
+  const admitted = await gate.admit('issue', raw)
+  if (!admitted.ok) return null
+  const doc = admitted.doc
   const id = str(doc, '$id')
-  // One read of the target's log serves both the fold and the timeline.
-  const tally = new HiddenTally()
-  const [log, comments] = await Promise.all([
-    readTargetLog(sdk, repo, id),
-    readComments(sdk, repo, id, tally),
+  const docs = (i: number): PlainDocument[] => docsAt(res, i)
+  // A full sub-result page may have more rows: finish that type with a complete read.
+  const complete = async (i: number, type: string): Promise<PlainDocument[]> =>
+    docs(i).length < 100
+      ? docs(i)
+      : queryAllDocuments(sdk, source.targetQuery(type, { where: [['targetId', '==', id]], orderBy: [['targetId', 'asc'], ['$createdAt', 'asc']] }))
+  const [commentDocs, eventDocs, authorEventDocs] = await Promise.all([
+    complete(0, DOC.comment),
+    complete(1, DOC.event),
+    complete(2, DOC.authorEvent),
   ])
-  const issue = await readIssue(sdk, repo, doc, log)
-  return { issue, timeline: mergeTimeline(comments, log.events, log.authorEvents, []), hidden: tally.value }
+  const byTime = (a: PlainDocument, b: PlainDocument) => num(a, '$createdAt') - num(b, '$createdAt')
+  const log = { events: toEvents([...eventDocs].sort(byTime)), authorEvents: toEvents([...authorEventDocs].sort(byTime)) }
+
+  // Members: complete when both sibling pages were short; recorded for the permission checks.
+  const memberships = membershipsFromDocs(docs(4).length < 100 ? docs(4) : null, docs(5).length < 100 ? docs(5) : null)
+  if (memberships !== null) seedMemberships(repo, network, memberships)
+  // Every name the page shows (the author, commenters, event actors, assignees, members) in one
+  // batched DPNS read. Two bound DPNS lookups in the composite would walk the same index path,
+  // which the node refuses when either carries a limit (verified on moutai).
+  const shownIds = [
+    str(doc, '$ownerId'),
+    ...commentDocs.map((c) => str(c, '$ownerId')),
+    ...[...log.events, ...log.authorEvents].flatMap((e) => [e.actor, ...(e.kind === 'assign' || e.kind === 'unassign' ? [e.value ?? ''] : []), e.refId ?? '']),
+    ...(memberships ?? []).map((m) => m.identity),
+  ]
+  await prefetchDpnsNames(sdk, shownIds.filter((id) => id !== ''), network)
+
+  // Private repo: only comments that open with the reader's keys (§8); the rest are counted.
+  const tally = new HiddenTally()
+  const comments = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
+  const labels = docs(3).length < 100 ? newestLabels(docs(3)) : await readLabels(sdk, repo)
+  return {
+    issue: issueViewOf(doc, log),
+    timeline: mergeTimeline(comments, log.events, log.authorEvents, []),
+    hidden: tally.value,
+    labels,
+    members: memberships ?? (await readMembershipsCached(sdk, repo, network)),
+  }
 }
 
 /** The counted approvals of a PR, and what each reviewer's role is now. */

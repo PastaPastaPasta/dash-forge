@@ -854,6 +854,18 @@ pub fn event_payload_props(
         EventKind::MilestoneSet if value.is_none_or(str::is_empty) => {
             return missing("a milestone name");
         }
+        // The assignee in `value` (the fold) and in `refId` (the `addressee` index), the same
+        // identity (platform-parity-spec §1.2; forge-web `targetEventData`).
+        EventKind::Assign | EventKind::Unassign
+            if value.is_none_or(str::is_empty) || ref_id != value =>
+        {
+            return missing("the assignee as both value and refId");
+        }
+        EventKind::LabelAdd | EventKind::LabelRemove
+            if value.is_none_or(|v| v.trim().is_empty() || v.trim() != v) =>
+        {
+            return missing("a label name without surrounding spaces");
+        }
         _ => {}
     }
     let mut p = target_props(target)?;
@@ -1482,6 +1494,86 @@ impl<'a> Collab<'a> {
             .newest(repo, TargetKind::Issue, limit)
             .await?
             .map(|d| issue_from_doc(&d)))
+    }
+
+    /// Every well-formed issue of `repo` (newest first) with its folded state, and how many
+    /// were skipped as malformed: one keyset walk of the `created` index (`$createdAt <=` the
+    /// oldest row read, 100 per page, deduped by id) and ONE complete read of the repo feed
+    /// (`event` / `authorEvent` by `(repoId, $createdAt)`), folded per issue. Requests: about
+    /// `⌈issues/100⌉ + ⌈events/100⌉ + ⌈authorEvents/100⌉`, where the old list paid 2 per row.
+    /// P-5 may cache the feed beneath this (it is append-only).
+    pub async fn issues_with_state(&self, repo: &RepoRef) -> Result<(Vec<IssueView>, usize)> {
+        let collab = self.collab_contract(repo).await?;
+        let mut docs: Vec<FetchedDocument> = Vec::new();
+        let mut seen = BTreeSet::new();
+        let mut before: Option<u64> = None;
+        loop {
+            let mut filters = vec![Self::repo_filter(repo)?];
+            if let Some(b) = before {
+                filters.push(QueryFilter::lte("$createdAt", FieldValue::uint64(b)));
+            }
+            let page = self
+                .client
+                .query_documents(
+                    &collab,
+                    DOC_ISSUE,
+                    &filters,
+                    &[QueryOrder::desc("$createdAt")],
+                    DEFAULT_PAGE,
+                    None,
+                )
+                .await?;
+            let full = page.len() >= DEFAULT_PAGE as usize;
+            let oldest = page.last().and_then(|d| d.created_at);
+            let mut added = 0;
+            for d in page {
+                if seen.insert(d.id.clone()) {
+                    docs.push(d);
+                    added += 1;
+                }
+            }
+            // A full page that added nothing sits on one timestamp shared by 100+ issues.
+            if !full || oldest.is_none() || (added == 0 && before == oldest) {
+                break;
+            }
+            before = oldest;
+        }
+        let feed = |doc_type: &'static str| {
+            let collab = &collab;
+            async move {
+                self.client
+                    .query_all_documents(
+                        collab,
+                        doc_type,
+                        &[Self::repo_filter(repo)?],
+                        &[QueryOrder::asc("$createdAt")],
+                    )
+                    .await
+            }
+        };
+        let (events, author_events) = (feed(DOC_EVENT).await?, feed(DOC_AUTHOR_EVENT).await?);
+        let mut logs: BTreeMap<String, TargetLog> = BTreeMap::new();
+        for e in events.iter().filter_map(event_from_doc) {
+            logs.entry(e.target_id.clone()).or_default().events.push(e);
+        }
+        for e in author_events.iter().filter_map(event_from_doc) {
+            logs.entry(e.target_id.clone())
+                .or_default()
+                .author_events
+                .push(e);
+        }
+        // Malformed rows, and in a private repo rows this reader cannot open, are hidden.
+        let (readable, hidden) = self.readable_all(repo, ContentKind::Issue, docs).await?;
+        let shown: Vec<IssueView> = readable
+            .iter()
+            .map(|d| {
+                let issue = issue_from_doc(d);
+                let log = logs.get(&issue.document_id).cloned().unwrap_or_default();
+                let state = fold_issue_state_v2(&log.events, &log.author_events, &issue.author);
+                IssueView { issue, state }
+            })
+            .collect();
+        Ok((shown, hidden))
     }
 
     /// The newest `limit` pull requests (0 = one page of 100), newest first.
@@ -2137,8 +2229,9 @@ impl<'a> Collab<'a> {
     /// Edit an issue's or PR's title and/or body, as its author (consensus admits a replace only
     /// from the owner; `number`, and a PR's refs and head, are immutable or untouched). An empty
     /// `body` removes it. Returns whether an edit landed (`false`: it already read that way,
-    /// nothing was signed). Refused for a private repo: a plaintext edit would publish the
-    /// content next to its sealed `enc` (the sealed edit path comes with private-repo PR 2).
+    /// nothing was signed). Refused for a private repo: a plaintext replace would publish the
+    /// content next to its sealed `enc`; the CLI has no sealed edit yet (the web re-seals with
+    /// `sealEdit`).
     pub async fn update_target(
         &self,
         repo: &RepoRef,
@@ -2167,6 +2260,7 @@ impl<'a> Collab<'a> {
                 "nothing to change: pass a new title or body".into(),
             ));
         }
+        repo.require_public("editing from the CLI")?;
         self.require_author(
             &target.author,
             &format!("edit {} #{}", target.kind.noun(), target.number),
@@ -2189,6 +2283,8 @@ impl<'a> Collab<'a> {
             return Err(Error::Config("a comment needs a body".into()));
         }
         check_text("comment body", body, 5120, 5120)?;
+        // A plaintext replace would publish the body next to the sealed `enc`.
+        repo.require_public("editing from the CLI")?;
         let collab = self.collab_contract(repo).await?;
         let changes = BTreeMap::from([("body".to_string(), Some(FieldValue::text(body)))]);
         self.engine()?
@@ -2504,6 +2600,88 @@ impl<'a> Collab<'a> {
             .await?;
         let core = self.core_contract(repo).await?;
         self.write(repo, &core, DOC_LABEL, p).await
+    }
+
+    /// Delete label `name`. A `label` document is deletable by its owner only, so: when every
+    /// definition of the name is the signer's, delete them all (the label is gone); otherwise
+    /// write a retirement first (the newest definition wins, so readers stop offering it) and
+    /// delete the signer's older definitions, keeping that retirement. Applied labels (events)
+    /// are history and stay. Returns `(retired, deleted documents)`; `(false, 0)` when there is
+    /// no such label.
+    pub async fn delete_label(&self, repo: &RepoRef, name: &str) -> Result<(bool, usize)> {
+        let me = self.signer_id()?;
+        let core = self.core_contract(repo).await?;
+        let docs = self.label_docs(repo, name).await?;
+        if docs.is_empty() {
+            return Ok((false, 0));
+        }
+        let all_mine = docs.iter().all(|d| d.owner_id == me);
+        if !all_mine {
+            self.create_label(repo, name, "", "", true).await?;
+        }
+        let engine = self.engine()?;
+        let mut n = 0;
+        for d in docs.iter().filter(|d| d.owner_id == me) {
+            engine.delete_document(&core, DOC_LABEL, &d.id).await?;
+            n += 1;
+        }
+        Ok((!all_mine, n))
+    }
+
+    /// Every definition document of label `name` in `repo`, oldest first.
+    async fn label_docs(&self, repo: &RepoRef, name: &str) -> Result<Vec<FetchedDocument>> {
+        let core = self.core_contract(repo).await?;
+        self.client
+            .query_all_documents(
+                &core,
+                DOC_LABEL,
+                &[
+                    Self::repo_filter(repo)?,
+                    QueryFilter::eq("name", FieldValue::text(name)),
+                ],
+                &[QueryOrder::asc("name"), QueryOrder::asc("$createdAt")],
+            )
+            .await
+    }
+
+    /// Assign or unassign `assignee` (base58) on `target`: a member `event` (kinds 6/7) with the
+    /// identity as `value` (what the fold reads) and as `refId`, so the sparse `addressee
+    /// (refId)` index answers "assigned to me" (platform-parity-spec §1.2). Members only.
+    pub async fn set_assignee(
+        &self,
+        repo: &RepoRef,
+        target: &Target,
+        assignee: &str,
+        assign: bool,
+    ) -> Result<String> {
+        platform::decode_identifier(assignee)?;
+        let kind = if assign {
+            EventKind::Assign
+        } else {
+            EventKind::Unassign
+        };
+        let props = event_payload_props(
+            target,
+            kind,
+            &EventPayload {
+                value: Some(assignee),
+                oid: None,
+                ref_id: Some(assignee),
+            },
+        )?;
+        self.require_role(
+            repo,
+            Role::Writer,
+            &format!(
+                "{} {} #{}",
+                kind_verb(kind),
+                target.kind.noun(),
+                target.number
+            ),
+        )
+        .await?;
+        let collab = self.collab_contract(repo).await?;
+        self.write(repo, &collab, DOC_EVENT, props).await
     }
 
     /// Every label of `repo`, newest definition per name.
@@ -2823,6 +3001,33 @@ mod tests {
         // A retarget must name a legal ref.
         assert!(event_props(&target("a"), EventKind::Retarget, Some("-x"), None).is_err());
         assert!(event_props(&target("a"), EventKind::Retarget, None, None).is_err());
+    }
+
+    #[test]
+    fn assign_events_name_the_assignee_in_value_and_ref_id() {
+        let who = "GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL";
+        let pay = |value, ref_id| EventPayload {
+            value,
+            oid: None,
+            ref_id,
+        };
+        let p = event_payload_props(&target("a"), EventKind::Assign, &pay(Some(who), Some(who)))
+            .unwrap();
+        assert_eq!(p.get("kind"), Some(&FieldValue::integer(6)));
+        assert_eq!(p.get("value"), Some(&FieldValue::text(who)));
+        assert!(matches!(p.get("refId"), Some(FieldValue::Identifier(_))));
+        // The addressee index needs refId; the fold needs value; they must agree.
+        for (kind, v, r) in [
+            (EventKind::Assign, Some(who), None),
+            (EventKind::Unassign, None, Some(who)),
+            (EventKind::Assign, Some("x"), Some(who)),
+        ] {
+            assert!(event_payload_props(&target("a"), kind, &pay(v, r)).is_err());
+        }
+        // A label event needs a name.
+        assert!(event_props(&target("a"), EventKind::LabelAdd, Some(" "), None).is_err());
+        assert!(event_props(&target("a"), EventKind::LabelRemove, None, None).is_err());
+        assert!(event_props(&target("a"), EventKind::LabelAdd, Some(" bug"), None).is_err());
     }
 
     #[test]
