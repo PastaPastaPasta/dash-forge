@@ -61,7 +61,7 @@ export function AssigneeAvatars({ ids, names }: { ids: readonly string[]; names?
           {(names?.get(id) ?? id).charAt(0).toUpperCase()}
         </span>
       ))}
-      {ids.length > shown.length ? <span className="ml-1 text-[11px] text-anvil-500">+{ids.length - shown.length}</span> : null}
+      {ids.length > shown.length ? <span className="ml-1 text-[11px] text-anvil-500 dark:text-anvil-400">+{ids.length - shown.length}</span> : null}
     </span>
   )
 }
@@ -100,7 +100,7 @@ export function MarkdownEditor({
   const tabClass = (on: boolean) =>
     cn(
       'rounded-t px-3 py-1.5 text-dense font-medium',
-      on ? 'border border-b-0 border-anvil-200 bg-white text-anvil-900 dark:border-anvil-750 dark:bg-anvil-950 dark:text-anvil-50' : 'text-anvil-500 hover:text-anvil-800 dark:text-anvil-400',
+      on ? 'border border-b-0 border-anvil-200 bg-white text-anvil-900 dark:border-anvil-750 dark:bg-anvil-950 dark:text-anvil-50' : 'text-anvil-500 dark:text-anvil-400 hover:text-anvil-800 dark:text-anvil-400',
     )
   return (
     <div className={className}>

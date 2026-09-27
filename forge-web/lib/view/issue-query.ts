@@ -50,8 +50,21 @@ const STATES: readonly IssueStateFilter[] = ['open', 'closed', 'all']
 const SORTS: readonly IssueSort[] = ['newest', 'oldest', 'comments']
 /** A label is 1-30 characters (the `label.name` schema); a longer value cannot match one. */
 const LABEL_MAX = 30
-/** A base58 identity id, the special `me`, or (for assignee) `none`. */
+/** A base58 identity id (32 bytes: 42-44 characters). */
 const IDENTITY = /^[1-9A-HJ-NP-Za-km-z]{42,44}$/
+
+/** Whether `s` is shaped like a base58 identity id. */
+export function isIdentityId(s: string): boolean {
+  return IDENTITY.test(s)
+}
+
+/** The bytes an issue, PR or comment `body` may hold (the contract's `maxBytes`). */
+export const BODY_MAX = 5120
+
+/** `s`'s length in UTF-8 bytes (what the contract's `maxBytes` counts). */
+export function utf8Length(s: string): number {
+  return new TextEncoder().encode(s).length
+}
 
 function identityParam(v: string | null, extra: readonly string[]): string | null {
   if (v === null) return null
@@ -185,12 +198,4 @@ export function searchText(q: IssueListQuery): string {
   if (q.sort === 'comments') parts.push('sort:comments-desc')
   if (q.q.trim() !== '') parts.push(q.q.trim())
   return parts.join(' ')
-}
-
-/** Whether `title` (or `#number`) matches the free text: every word, case-insensitive. */
-export function matchesText(text: string, row: { readonly title: string; readonly number: number }): boolean {
-  const words = text.trim().toLowerCase().split(/\s+/).filter((w) => w !== '')
-  if (words.length === 0) return true
-  const title = row.title.toLowerCase()
-  return words.every((w) => (/^#\d+$/.test(w) ? Number(w.slice(1)) === row.number : title.includes(w)))
 }

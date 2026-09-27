@@ -17,6 +17,7 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
+import { mentions } from '../repo/issue-index'
 import { z } from 'zod'
 
 import type { ForgeIds } from '../deployments'
@@ -310,16 +311,7 @@ export async function latestReleases(sdk: EvoSDK, forge: ForgeIds, repos: readon
   return { rows, failed, total: repos.length }
 }
 
-/** Whether `body` mentions `@name` (DPNS label, case-insensitive) or the identity id. */
-export function mentions(body: string | undefined, me: string, name: string | null): boolean {
-  if (!body) return false
-  if (body.includes(me)) return true
-  if (name === null || name === '') return false
-  const label = name.split('.')[0] ?? ''
-  if (label === '') return false
-  const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(`(^|[^\\w@])@${escaped}(?![\\w-])`, 'i').test(body)
-}
+export { mentions }
 
 /** An `event` / `authorEvent` row (`value` only on label / assign kinds). */
 export const eventDoc = baseDoc.extend({ targetId: ident, kind: int, value: z.string().optional().catch(undefined) })

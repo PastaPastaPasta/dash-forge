@@ -14,6 +14,7 @@ import { createDocumentIdempotent, queryAllDocuments, type PlainDocument, type W
 import { compareStrings } from '../rules/oid'
 import { DOC, num, str, type RepoRef } from './contract'
 import { repoSource } from './source'
+import { utf8Length } from '../view/issue-query'
 
 /** A label's current definition. */
 export interface LabelDef {
@@ -70,13 +71,12 @@ export async function readLabels(sdk: EvoSDK, repo: RepoRef): Promise<LabelDef[]
 
 /** Refuse a definition the schema would refuse, with a reason, before anything is signed. */
 export function checkLabelInput(input: { name: string; color?: string; description?: string }): void {
-  const bytes = (s: string): number => new TextEncoder().encode(s).length
   const name = input.name.trim()
   if (name === '') throw new Error('a label needs a name')
-  if ([...name].length > LABEL_LIMITS.name || bytes(name) > LABEL_LIMITS.nameBytes) throw new Error(`a label name is at most ${LABEL_LIMITS.name} characters`)
+  if ([...name].length > LABEL_LIMITS.name || utf8Length(name) > LABEL_LIMITS.nameBytes) throw new Error(`a label name is at most ${LABEL_LIMITS.name} characters`)
   if (input.color && !HEX_COLOR.test(input.color)) throw new Error('a label colour looks like #1f883d')
   const d = input.description ?? ''
-  if ([...d].length > LABEL_LIMITS.description || bytes(d) > LABEL_LIMITS.descriptionBytes) throw new Error(`a label description is at most ${LABEL_LIMITS.description} characters`)
+  if ([...d].length > LABEL_LIMITS.description || utf8Length(d) > LABEL_LIMITS.descriptionBytes) throw new Error(`a label description is at most ${LABEL_LIMITS.description} characters`)
 }
 
 /**

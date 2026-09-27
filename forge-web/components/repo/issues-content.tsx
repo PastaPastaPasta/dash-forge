@@ -28,6 +28,8 @@ import {
   parseSearchText,
   searchText,
   withQuery,
+  BODY_MAX,
+  utf8Length,
   type IssueListQuery,
 } from '@/lib/view/issue-query'
 import { createIssue, queryIssues, repoContractIds, repoKey, type IssueListPage, type IssueSelection, type LabelDef } from '@/lib/repo'
@@ -135,7 +137,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         <button
           type="button"
           onClick={() => setQuery({ ...DEFAULT_ISSUE_QUERY, state: query.state })}
-          className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-500 hover:text-forge-700 dark:hover:text-forge-400"
+          className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400"
         >
           <X className="h-3.5 w-3.5" aria-hidden /> Clear filters
         </button>
@@ -194,7 +196,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         </div>
 
         {needsViewer && identity === null ? (
-          <p className="px-4 py-6 text-dense text-anvil-500">Sign in to filter by your own issues, assignments and mentions.</p>
+          <p className="px-4 py-6 text-dense text-anvil-500 dark:text-anvil-400">Sign in to filter by your own issues, assignments and mentions.</p>
         ) : loading && !data ? (
           <LoadingBlock label="Reading issues" />
         ) : error ? (
@@ -240,7 +242,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                 <div className="flex shrink-0 items-center gap-3 pt-0.5">
                   <AssigneeAvatars ids={issue.state.assignees} />
                   {issue.comments ? (
-                    <span className="inline-flex items-center gap-1 text-[12px] text-anvil-500" aria-label={`${issue.comments} comments`}>
+                    <span className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400" aria-label={`${issue.comments} comments`}>
                       <MessageSquare className="h-3.5 w-3.5" aria-hidden /> {issue.comments}
                     </span>
                   ) : null}
@@ -252,7 +254,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
       </div>
 
       {data?.searchedOf ? (
-        <p className="mt-2 text-[12px] text-anvil-500">
+        <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
           Searched the newest {data.searchedOf.searched}
           {data.searchedOf.total !== null ? ` of ${data.searchedOf.total}` : ''} issues; older ones were not read for this search.
         </p>
@@ -312,7 +314,7 @@ function LabelFilter({ labels, selected, onChange }: { labels: readonly LabelDef
       </button>
       {open ? (
         <div role="listbox" aria-label="Filter by label" aria-multiselectable className="absolute right-0 z-20 mt-1 max-h-72 w-60 overflow-auto rounded-md border border-anvil-200 bg-white p-1 shadow-lg dark:border-anvil-750 dark:bg-anvil-950">
-          {names.length === 0 ? <p className="px-2 py-1.5 text-dense text-anvil-500">No labels defined.</p> : null}
+          {names.length === 0 ? <p className="px-2 py-1.5 text-dense text-anvil-500 dark:text-anvil-400">No labels defined.</p> : null}
           {names.map((n) => {
             const on = selected.includes(n)
             return (
@@ -394,7 +396,7 @@ function Pager({ page, hasNext, pages, onPage }: { page: number; hasNext: boolea
       <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => onPage(page - 1)}>
         <ChevronLeft className="h-3.5 w-3.5" aria-hidden /> Previous
       </Button>
-      <span className="text-anvil-500" data-testid="page-indicator">
+      <span className="text-anvil-500 dark:text-anvil-400" data-testid="page-indicator">
         Page {page}
         {pages !== null ? ` of ${pages}` : ''}
       </span>
@@ -431,7 +433,7 @@ function ComposeIssueDialog({
   const draft = useIntent()
 
   const cost = composeCost(repo, 'issue', { title: title.trim(), body })
-  const bodyBytes = new TextEncoder().encode(body).length
+  const bodyBytes = utf8Length(body)
 
   const pick = (t: IssueTemplate | null): void => {
     setTemplate(t)
@@ -476,7 +478,7 @@ function ComposeIssueDialog({
             variant="primary"
             onClick={submit}
             loading={pending}
-            disabled={title.trim() === '' || bodyBytes > 5120 || guard.disabledReason !== null}
+            disabled={title.trim() === '' || bodyBytes > BODY_MAX || guard.disabledReason !== null}
             title={guard.disabledReason ?? undefined}
           >
             {identity ? 'Submit issue' : 'Sign in to submit'}
@@ -498,9 +500,9 @@ function ComposeIssueDialog({
           links={{ issueHref: (n) => repoHref('/repo/issue', addr, { number: String(n) }) }}
         />
         <SealedLimit repo={repo} kind="issue" text={title.trim() + body} />
-        {bodyBytes > 5120 ? <p className="text-dense text-danger-700 dark:text-danger-400">The description is {bodyBytes} bytes; an issue holds 5,120.</p> : null}
+        {bodyBytes > BODY_MAX ? <p className="text-dense text-danger-700 dark:text-danger-400">The description is {bodyBytes} bytes; an issue holds 5,120.</p> : null}
         {template !== null && template.labels.length > 0 ? (
-          <p className="text-[12px] text-anvil-500">
+          <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
             This template suggests the labels {template.labels.join(', ')}. A maintainer or writer applies labels after the issue is opened.
           </p>
         ) : null}

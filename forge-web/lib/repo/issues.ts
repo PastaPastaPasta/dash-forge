@@ -355,6 +355,9 @@ export function invalidateRepoFeed(repo: RepoRef, { counts = true }: { counts?: 
   for (const drop of invalidationHooks) drop(repo)
   if (!counts) return
   for (const [k, settled] of settledLists) if (ofRepo(k)) settled.at = 0
+  // A close or reopen changes the open count without changing the total the count was proved
+  // against: forget it, so the header refolds instead of showing the old number.
+  issueCounts.delete(feedKey(repo))
   changed(repo, [writes, versions])
 }
 

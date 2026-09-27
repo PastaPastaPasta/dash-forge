@@ -4,12 +4,12 @@ import {
   DEFAULT_ISSUE_QUERY,
   hasFilters,
   issueQueryParams,
-  matchesText,
   parseIssueQuery,
   parseSearchText,
   searchText,
   withQuery,
 } from './issue-query'
+import { matchesText } from '../repo/issue-index'
 
 const ID = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
 const params = (s: string) => new URLSearchParams(s)

@@ -58,6 +58,7 @@ import { AssigneeAvatars, EditedMarker, LabelChip, MarkdownEditor } from '@/comp
 import { HiddenNote } from '@/components/repo/hidden-note'
 import { PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { cn } from '@/lib/utils'
+import { BODY_MAX, isIdentityId, utf8Length } from '@/lib/view/issue-query'
 
 /** The write the confirm dialog is about to sign. */
 type Pending =
@@ -70,8 +71,6 @@ type Pending =
   | null
 
 /** Bytes a body may hold (the `body` schema: 5,120). */
-const BODY_MAX = 5120
-const bytes = (s: string): number => new TextEncoder().encode(s).length
 
 export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: RepoAddress; number: number }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
@@ -226,7 +225,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 <Button
                   variant="primary"
                   size="sm"
-                  disabled={editing.title.trim() === '' || (editing.title === issue.title && editing.body === issue.body) || bytes(editing.body) > BODY_MAX || guard.disabledReason !== null}
+                  disabled={editing.title.trim() === '' || (editing.title === issue.title && editing.body === issue.body) || utf8Length(editing.body) > BODY_MAX || guard.disabledReason !== null}
                   onClick={() => setPending({ kind: 'editIssue', title: editing.title.trim(), body: editing.body })}
                 >
                   Save
@@ -329,14 +328,14 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 variant="primary"
                 onClick={postComment}
                 loading={posting}
-                disabled={composeBlock !== null || comment.trim() === '' || bytes(comment) > BODY_MAX || guard.disabledReason !== null}
+                disabled={composeBlock !== null || comment.trim() === '' || utf8Length(comment) > BODY_MAX || guard.disabledReason !== null}
                 title={guard.disabledReason ?? undefined}
               >
                 {identity ? 'Comment' : 'Sign in to comment'}
               </Button>
             </div>
           </div>
-          {bytes(comment) > BODY_MAX ? <p className="mt-2 text-dense text-danger-700 dark:text-danger-400">A comment holds 5,120 bytes; this one is {bytes(comment)}.</p> : null}
+          {utf8Length(comment) > BODY_MAX ? <p className="mt-2 text-dense text-danger-700 dark:text-danger-400">A comment holds 5,120 bytes; this one is {utf8Length(comment)}.</p> : null}
           {toggleHint !== null ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{toggleHint}</p> : null}
           {commentError ? (
             <div role="alert" className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">{commentError}</div>
@@ -363,7 +362,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             onToggle={(label, remove) => setPending({ kind: 'label', label, remove })}
             onDefine={(name, color, description) => setPending({ kind: 'defineLabel', name, color, description, apply: true })}
           />
-          {isPrivate ? <p className="mt-2 text-[12px] text-anvil-500">Labels are not encrypted in private repositories.</p> : null}
+          {isPrivate ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Labels are not encrypted in private repositories.</p> : null}
         </SidebarSection>
       </aside>
 
@@ -413,7 +412,7 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
 function SidebarSection({ title, icon: Icon, children }: { title: string; icon: typeof Tag; children: React.ReactNode }): JSX.Element {
   return (
     <section className="border-b border-anvil-200 pb-4 dark:border-anvil-800">
-      <h2 className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-wide text-anvil-500">
+      <h2 className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-wide text-anvil-500 dark:text-anvil-400">
         <Icon className="h-3.5 w-3.5" aria-hidden /> {title}
       </h2>
       {children}
@@ -445,7 +444,7 @@ function commentSlots({
       <div className="space-y-2 px-4 py-3">
         <MarkdownEditor id={`edit-comment-${c.id}`} label="Edit comment" value={editing.body} onChange={(body) => onEdit({ id: c.id, body })} links={links} autoFocus />
         <div className="flex gap-2">
-          <Button variant="primary" size="sm" disabled={editing.body.trim() === '' || editing.body === c.body || bytes(editing.body) > BODY_MAX} onClick={() => onSave(c.id, editing.body)}>
+          <Button variant="primary" size="sm" disabled={editing.body.trim() === '' || editing.body === c.body || utf8Length(editing.body) > BODY_MAX} onClick={() => onSave(c.id, editing.body)}>
             Save
           </Button>
           <Button variant="ghost" size="sm" onClick={() => onEdit(null)}>Cancel</Button>
@@ -459,7 +458,7 @@ function commentSlots({
       type="button"
       onClick={() => onEdit({ id: c.id, body: c.body })}
       disabled={disabled}
-      className="ml-auto inline-flex items-center gap-1 text-[12px] text-anvil-500 hover:text-forge-700 dark:hover:text-forge-400 disabled:opacity-50"
+      className="ml-auto inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400 disabled:opacity-50"
       aria-label="Edit comment"
     >
       <Pencil className="h-3 w-3" aria-hidden /> Edit
@@ -484,7 +483,7 @@ function AssigneePicker({
   const candidates = [...new Set([...assignees, ...members])]
   return (
     <div>
-      {assignees.length === 0 ? <p className="text-anvil-500">No one assigned</p> : null}
+      {assignees.length === 0 ? <p className="text-anvil-500 dark:text-anvil-400">No one assigned</p> : null}
       <ul className="space-y-1.5" aria-label="Assignees">
         {assignees.map((a) => (
           <li key={a} className="flex items-center gap-2">
@@ -495,7 +494,7 @@ function AssigneePicker({
       </ul>
       {canEdit ? (
         <div className="mt-2">
-          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 hover:text-forge-700 dark:hover:text-forge-400">
+          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400">
             <Settings2 className="h-3.5 w-3.5" aria-hidden /> Edit assignees
           </button>
           {open ? (
@@ -519,7 +518,7 @@ function AssigneePicker({
               })}
               <div className="flex gap-1 pt-1">
                 <Input aria-label="Assign identity id" value={other} onChange={(e) => setOther(e.target.value)} placeholder="identity id" className="h-7 py-0 font-mono text-[12px]" />
-                <Button variant="outline" size="sm" disabled={!/^[1-9A-HJ-NP-Za-km-z]{42,44}$/.test(other.trim())} onClick={() => onToggle(other.trim(), false)}>
+                <Button variant="outline" size="sm" disabled={!isIdentityId(other.trim())} onClick={() => onToggle(other.trim(), false)}>
                   <Plus className="h-3.5 w-3.5" aria-hidden />
                 </Button>
               </div>
@@ -557,7 +556,7 @@ function LabelPicker({
   const canCreate = newName !== '' && [...newName].length <= LABEL_LIMITS.name && !names.some((n) => n.toLowerCase() === newName.toLowerCase())
   return (
     <div>
-      {applied.length === 0 ? <p className="text-anvil-500">None yet</p> : null}
+      {applied.length === 0 ? <p className="text-anvil-500 dark:text-anvil-400">None yet</p> : null}
       <div className="flex flex-wrap gap-1.5" aria-label="Applied labels">
         {applied.map((l) => (
           <LabelChip key={l} name={l} def={byName.get(l)}>
@@ -571,7 +570,7 @@ function LabelPicker({
       </div>
       {canEdit ? (
         <div className="mt-2">
-          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 hover:text-forge-700 dark:hover:text-forge-400">
+          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400">
             <Settings2 className="h-3.5 w-3.5" aria-hidden /> Edit labels
           </button>
           {open ? (
@@ -599,7 +598,7 @@ function LabelPicker({
               </div>
               {canCreate ? (
                 <div className="space-y-2 border-t border-anvil-200 pt-2 dark:border-anvil-750">
-                  <p className="text-[12px] text-anvil-500">Create “{newName}” for this repo:</p>
+                  <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Create “{newName}” for this repo:</p>
                   <div className="flex flex-wrap gap-1" role="radiogroup" aria-label="Label colour">
                     {LABEL_COLORS.map((c) => (
                       <button

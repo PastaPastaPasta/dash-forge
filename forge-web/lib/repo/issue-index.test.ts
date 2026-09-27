@@ -238,6 +238,28 @@ describe('issue index', () => {
     expect(openCounts(repo, { issues: 113, pulls: 0 }).issues).toBeNull()
   })
 
+  it('sorts a small repo oldest first from the one composite (no second walk)', async () => {
+    const { sdk, seen, repo } = fresh(12, 'Ad88NKGHimxUgGHrTGpBJjKpnzrQe8Zh4V5q13mRh85h')
+    const page = await queryIssues(sdk, repo, { ...base, state: 'all', sort: 'oldest' }, 12, 'devnet')
+    expect(page.rows.map((r) => r.number)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12])
+    expect(page.matching).toBe(12)
+    expect(seen.composites).toHaveLength(1)
+  })
+
+  it('keeps a walk correct when two list pages load at once', async () => {
+    const { sdk, repo } = fresh(250)
+    const q = { ...base, state: 'all' as const }
+    const [a, b] = await Promise.all([queryIssues(sdk, repo, { ...q, page: 3 }, 250, 'devnet'), queryIssues(sdk, repo, { ...q, page: 4 }, 250, 'devnet')])
+    expect(a.rows.map((r) => r.number)[0]).toBe(150)
+    expect(b.rows.map((r) => r.number)[0]).toBe(100)
+    expect(b.hasNext).toBe(true)
+    const last = await queryIssues(sdk, repo, { ...q, page: 5 }, 250, 'devnet')
+    expect(last.rows.map((r) => r.number)).toEqual(Array.from({ length: 50 }, (_, i) => 50 - i))
+    expect(last.matching).toBe(250)
+    // No row listed twice.
+    expect(new Set(last.rows.map((r) => r.id)).size).toBe(50)
+  })
+
   it('reads a small repo whole in one composite, header included', async () => {
     const { sdk, seen, repo } = fresh(12, 'Ad88NKGHimxUgGHrTGpBJjKpnzrQe8Zh4V5q13mRh85h')
     // Only #3 of the fixture's closed issues exists in a 12-issue repo; the feed's other

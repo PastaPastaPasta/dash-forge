@@ -793,9 +793,9 @@ pub fn event_payload_props(
             return missing("the assignee as both value and refId");
         }
         EventKind::LabelAdd | EventKind::LabelRemove
-            if value.is_none_or(|v| v.trim().is_empty()) =>
+            if value.is_none_or(|v| v.trim().is_empty() || v.trim() != v) =>
         {
-            return missing("a label name");
+            return missing("a label name without surrounding spaces");
         }
         _ => {}
     }
@@ -2030,6 +2030,8 @@ impl<'a> Collab<'a> {
             return Err(Error::Config("a comment needs a body".into()));
         }
         check_text("comment body", body, 5120, 5120)?;
+        // A plaintext replace would publish the body next to the sealed `enc`.
+        repo.require_public("editing from the CLI")?;
         let collab = self.collab_contract(repo).await?;
         let changes = BTreeMap::from([("body".to_string(), Some(FieldValue::text(body)))]);
         self.engine()?
@@ -2797,6 +2799,7 @@ mod tests {
         // A label event needs a name.
         assert!(event_props(&target("a"), EventKind::LabelAdd, Some(" "), None).is_err());
         assert!(event_props(&target("a"), EventKind::LabelRemove, None, None).is_err());
+        assert!(event_props(&target("a"), EventKind::LabelAdd, Some(" bug"), None).is_err());
     }
 
     #[test]

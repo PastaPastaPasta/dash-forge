@@ -24,7 +24,7 @@ export interface IssueTemplate {
 }
 
 /** The directories searched, in order: the first that holds templates wins. */
-export const TEMPLATE_DIRS = ['.forge/ISSUE_TEMPLATE', '.github/ISSUE_TEMPLATE'] as const
+const TEMPLATE_DIRS = ['.forge/ISSUE_TEMPLATE', '.github/ISSUE_TEMPLATE'] as const
 
 /** Most templates read, and the size of one (a template is a short form). */
 const MAX_TEMPLATES = 20

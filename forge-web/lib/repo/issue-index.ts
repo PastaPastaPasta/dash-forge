@@ -26,12 +26,11 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '../constants'
-import { queryComposite, type CompositeSub } from '../sdk/composite'
-import { IncompleteReadError, queryAllDocuments, type PlainDocument } from '../sdk'
+import { compositeOf, countsAt, docsAt, queryComposite, siblingOf, type CompositeSub } from '../sdk/composite'
+import { IncompleteReadError, queryAllDocuments, type DocumentQuery, type PlainDocument } from '../sdk'
 import { DOC, asIdentifierString, repoKey, str, type RepoRef } from './contract'
 import {
   groupFeed,
-  invalidateRepoFeed,
   issueViewOf,
   onRepoInvalidated,
   seedRepoFeed,
@@ -66,6 +65,8 @@ interface Walk {
   /** The `$createdAt` bound of the next chunk (`<=` newest-first, `>=` oldest-first). */
   bound: number | null
   done: boolean
+  /** False when the walk stopped on a timestamp shared by 100+ issues (it did not reach the end). */
+  complete: boolean
 }
 
 /** A repo's issue index (mutable while it loads; readers use {@link IssueIndexView}). */
@@ -84,8 +85,14 @@ interface IndexState {
   readonly hidden: HiddenTally
   readonly desc: Walk
   readonly asc: Walk
-  /** The tail of in-flight `$id in` resolutions ({@link resolveIds}). */
-  resolving: Promise<void>
+  /**
+   * Every index read (keyset chunks, `$id in` resolutions, author reads) runs one at a time on
+   * this queue: concurrent readers of one bound would otherwise see "nothing new" and end a walk
+   * early, and an id admitted by two reads at once would be listed twice.
+   */
+  queue: Promise<void>
+  /** Every issue of the repo is loaded (a walk from the newest or oldest reached the end). */
+  all: boolean
   /** Issues per author, once read from the `author` index. */
   readonly byAuthor: Map<string, Set<string>>
   /** The repo's content gate: well-formedness, and for a private repo decryption with the session keys. */
@@ -148,11 +155,28 @@ async function addDocs(state: IndexState, docs: readonly PlainDocument[], counts
 /** Seed the DPNS cache with a composite's bound name lookup (a proven absence is recorded too). */
 async function seedNames(network: Network, docs: readonly PlainDocument[], domains: readonly PlainDocument[] | undefined): Promise<void> {
   if (domains === undefined) return
-  const { namesFromDomains, seedDpnsNames } = await import('../view/dpns')
-  const owners = docs.map((d) => str(d, '$ownerId'))
-  // A full lookup page may have cut names off: only a short one proves the rest nameless.
-  if (domains.length < 100) seedDpnsNames(network, owners, namesFromDomains(domains))
-  else seedDpnsNames(network, [], namesFromDomains(domains))
+  const { seedFromDomains } = await import('../view/dpns')
+  seedFromDomains(network, docs.map((d) => str(d, '$ownerId')), domains)
+}
+
+/**
+ * Read one chunk of issues (`page`, up to `limit`) with their comment counts and authors'
+ * names, and record it: keyset chunks record into `walk`; `keep` filters rows (the `$id in`
+ * read keeps only this repo's). Returns the chunk's documents.
+ */
+async function readChunk(
+  sdk: EvoSDK,
+  state: IndexState,
+  page: DocumentQuery,
+  limit: number,
+  { walk = null, keep }: { walk?: Walk | null; keep?: (d: PlainDocument) => boolean } = {},
+): Promise<PlainDocument[]> {
+  const res = await queryComposite(sdk, compositeOf(page, limit, chunkSubs(state.network)))
+  const docs = keep ? res.page.filter(keep) : res.page
+  if (walk === null) await addDocs(state, docs, countsAt(res, 0), null)
+  else await addChunk(state, walk, docs, countsAt(res, 0))
+  await seedNames(state.network, docs, docsAt(res, 1))
+  return docs
 }
 
 /** Read the rest of a sibling-started query, when its first page was full. */
@@ -167,29 +191,16 @@ async function loadIndex(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<
   const feedQuery = (type: string) => source.repoQuery(type, { orderBy: [['$createdAt', 'asc']] })
   const labelQuery = source.repoQuery(DOC.label, { orderBy: [['name', 'asc'], ['$createdAt', 'asc']] })
   const page = source.repoQuery(DOC.issue, { orderBy: [['$createdAt', 'desc']] })
-  const sibling = (q: ReturnType<typeof feedQuery>): CompositeSub => ({
-    dataContractId: q.dataContractId,
-    documentType: q.documentTypeName,
-    where: q.where ?? [],
-    orderBy: q.orderBy ?? [],
-    limit: CHUNK,
-  })
-  const res = await queryComposite(sdk, {
-    dataContractId: page.dataContractId,
-    documentType: page.documentTypeName,
-    where: page.where ?? [],
-    orderBy: page.orderBy ?? [],
-    limit: CHUNK,
-    subQueries: [...chunkSubs(network), sibling(feedQuery(DOC.event)), sibling(feedQuery(DOC.authorEvent)), sibling(labelQuery)],
-  })
-  const [counts, domains, events, authorEvents, labels] = res.subs
-  const docsOf = (s: typeof counts): PlainDocument[] => (s?.kind === 'documents' ? s.documents : [])
+  const res = await queryComposite(
+    sdk,
+    compositeOf(page, CHUNK, [...chunkSubs(network), siblingOf(feedQuery(DOC.event), CHUNK), siblingOf(feedQuery(DOC.authorEvent), CHUNK), siblingOf(labelQuery, CHUNK)]),
+  )
 
   let feed: Map<string, TargetLog> | null
   try {
     const [allEvents, allAuthorEvents] = await Promise.all([
-      rest(sdk, feedQuery(DOC.event), docsOf(events), FEED_MAX_PAGES),
-      rest(sdk, feedQuery(DOC.authorEvent), docsOf(authorEvents), FEED_MAX_PAGES),
+      rest(sdk, feedQuery(DOC.event), docsAt(res, 2), FEED_MAX_PAGES),
+      rest(sdk, feedQuery(DOC.authorEvent), docsAt(res, 3), FEED_MAX_PAGES),
     ])
     feed = groupFeed(toEvents(allEvents), toEvents(allAuthorEvents))
     // The pulls page and the header's PR count fold from the same feed.
@@ -198,7 +209,7 @@ async function loadIndex(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<
     if (!(e instanceof IncompleteReadError)) throw e
     feed = null
   }
-  let labelDocs = docsOf(labels)
+  let labelDocs = docsAt(res, 4)
   let labelsComplete = true
   try {
     labelDocs = await rest(sdk, labelQuery, labelDocs, 10)
@@ -216,14 +227,15 @@ async function loadIndex(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<
     rows: new Map(),
     notIssues: new Set(),
     hidden: new HiddenTally(),
-    desc: { ids: [], bound: null, done: false },
-    asc: { ids: [], bound: null, done: false },
+    desc: { ids: [], bound: null, done: false, complete: true },
+    asc: { ids: [], bound: null, done: false, complete: true },
     byAuthor: new Map(),
-    resolving: Promise.resolve(),
+    queue: Promise.resolve(),
+    all: false,
     gate: gateFor(repo),
   }
-  await addChunk(state, state.desc, res.page, counts?.kind === 'counts' ? counts.counts : null)
-  await seedNames(network, res.page, domains?.kind === 'documents' ? domains.documents : undefined)
+  await addChunk(state, state.desc, res.page, countsAt(res, 0))
+  await seedNames(network, res.page, docsAt(res, 1))
   return state
 }
 
@@ -237,36 +249,36 @@ async function addChunk(state: IndexState, walk: Walk, docs: readonly PlainDocum
     const last = docs[docs.length - 1]?.['$createdAt']
     // A full chunk that added nothing new sits on one timestamp shared by 100+ issues:
     // stop rather than loop (the walk is then incomplete, and says so).
-    if (typeof last !== 'number' || (walk.ids.length === before && walk.bound === last)) walk.done = true
+    if (typeof last !== 'number' || (walk.ids.length === before && walk.bound === last)) {
+      walk.done = true
+      walk.complete = false
+    }
     walk.bound = typeof last === 'number' ? last : walk.bound
   }
-  // A walk that reached the end in one direction has every issue: the other is done too.
-  if (walk.done && walk.bound === null) {
-    state.desc.done = true
-    state.asc.done = true
-  }
+  // A walk from the start that reached the end has read every issue.
+  if (walk.done && walk.complete) state.all = true
+}
+
+/** Run `task` on the index's read queue ({@link IndexState.queue}). */
+function serial<T>(state: IndexState, task: () => Promise<T>): Promise<T> {
+  const run = state.queue.then(task)
+  state.queue = run.then(
+    () => undefined,
+    () => undefined,
+  )
+  return run
 }
 
 /** Read the next keyset chunk of `walk` (`<=` / `>=` its bound; the boundary row is skipped as seen). */
-async function loadChunk(sdk: EvoSDK, state: IndexState, direction: 'desc' | 'asc'): Promise<void> {
-  const walk = direction === 'desc' ? state.desc : state.asc
-  if (walk.done) return
-  const source = repoSource(state.repo)
-  const bound: [string, '<=' | '>=', number][] = walk.bound === null ? [] : [['$createdAt', direction === 'desc' ? '<=' : '>=', walk.bound]]
-  const page = source.repoQuery(DOC.issue, { where: bound, orderBy: [['$createdAt', direction]] })
-  const res = await queryComposite(sdk, {
-    dataContractId: page.dataContractId,
-    documentType: page.documentTypeName,
-    where: page.where ?? [],
-    orderBy: page.orderBy ?? [],
-    limit: CHUNK,
-    subQueries: chunkSubs(state.network),
+function loadChunk(sdk: EvoSDK, state: IndexState, direction: 'desc' | 'asc'): Promise<void> {
+  return serial(state, async () => {
+    const walk = direction === 'desc' ? state.desc : state.asc
+    if (walk.done || state.all) return
+    const source = repoSource(state.repo)
+    const bound: [string, '<=' | '>=', number][] = walk.bound === null ? [] : [['$createdAt', direction === 'desc' ? '<=' : '>=', walk.bound]]
+    const page = source.repoQuery(DOC.issue, { where: bound, orderBy: [['$createdAt', direction]] })
+    await readChunk(sdk, state, page, CHUNK, { walk })
   })
-  const [counts, domains] = res.subs
-  const wasFirst = walk.bound === null
-  await addChunk(state, walk, res.page, counts?.kind === 'counts' ? counts.counts : null)
-  if (!wasFirst && walk.done && walk === state.desc) state.asc.done = state.asc.done || state.desc.ids.length === state.rows.size
-  await seedNames(state.network, res.page, domains?.kind === 'documents' ? domains.documents : undefined)
 }
 
 /** Resolve ids the feed names but no loaded chunk holds: `$id in` composites of up to 100. */
@@ -274,36 +286,25 @@ function resolveIds(sdk: EvoSDK, state: IndexState, ids: Iterable<string>): Prom
   // Serialized per index: the header's count and the list resolve the same closed targets at
   // once, and each must see what the other already read (one `$id in` composite, not two).
   const wanted = [...ids]
-  const run = state.resolving.then(() => resolveNow(sdk, state, wanted))
-  state.resolving = run.catch(() => undefined)
-  return run
+  return serial(state, () => resolveNow(sdk, state, wanted))
 }
 
 async function resolveNow(sdk: EvoSDK, state: IndexState, ids: readonly string[]): Promise<void> {
   const todo = [...new Set(ids)].filter((id) => !state.rows.has(id) && !state.notIssues.has(id))
   // Every issue is loaded: an id the rows do not hold is a patch (or not shown), no read needed.
-  if (state.desc.done && state.asc.done) {
+  if (state.all) {
     for (const id of todo) state.notIssues.add(id)
     return
   }
-  const collab = state.repo.forge.collab
+  const byId = repoSource(state.repo).targetQuery(DOC.issue)
   for (let i = 0; i < todo.length; i += CHUNK) {
     const batch = todo.slice(i, i + CHUNK)
-    const res = await queryComposite(sdk, {
-      dataContractId: collab,
-      documentType: DOC.issue,
-      where: [['$id', 'in', batch]],
-      orderBy: [['$id', 'asc']],
-      limit: batch.length,
-      subQueries: chunkSubs(state.network),
-    })
     // Only this repo's issues: the ids come from its feed (consensus ties an event's target to
     // the event's repo), but the read is by id, so check.
-    const mine = res.page.filter((d) => asIdentifierString(d['repoId']) === state.repo.repoId)
-    const [counts, domains] = res.subs
-    await addDocs(state, mine, counts?.kind === 'counts' ? counts.counts : null, null)
+    await readChunk(sdk, state, { ...byId, where: [['$id', 'in', batch]], orderBy: [['$id', 'asc']] }, batch.length, {
+      keep: (d) => asIdentifierString(d['repoId']) === state.repo.repoId,
+    })
     for (const id of batch) if (!state.rows.has(id)) state.notIssues.add(id)
-    await seedNames(state.network, mine, domains?.kind === 'documents' ? domains.documents : undefined)
   }
 }
 
@@ -375,12 +376,17 @@ export function rowMatches(row: IssueRow, q: IssueSelection): boolean {
   if (q.author !== null && row.author !== q.author) return false
   if (q.assignee === 'none' && row.state.assignees.length > 0) return false
   if (q.assignee !== null && q.assignee !== 'none' && !row.state.assignees.includes(q.assignee)) return false
-  if (q.mentions !== null && !mentionsIn(row.body, q.mentions.id, q.mentions.name)) return false
-  return textMatches(q.text, row)
+  if (q.mentions !== null && !mentions(row.body, q.mentions.id, q.mentions.name)) return false
+  return matchesText(q.text, row)
 }
 
-/** `@name` (word-bounded, case-insensitive) or the raw identity id in `body`. */
-export function mentionsIn(body: string, id: string, name: string | null): boolean {
+/**
+ * Whether `body` mentions the identity: `@name` (its DPNS label, word-bounded,
+ * case-insensitive) or the raw identity id. The one mention rule: the issue list's "mentions
+ * me" and the inbox / Explore scan both use it.
+ */
+export function mentions(body: string | undefined, id: string, name: string | null): boolean {
+  if (!body) return false
   if (body.includes(id)) return true
   const label = (name ?? '').split('.')[0] ?? ''
   if (label === '') return false
@@ -388,7 +394,8 @@ export function mentionsIn(body: string, id: string, name: string | null): boole
   return new RegExp(`(^|[^\\w@])@${escaped}(?![\\w-])`, 'i').test(body)
 }
 
-function textMatches(text: string, row: { readonly title: string; readonly number: number }): boolean {
+/** Whether `row`'s title holds every word of `text`, case-insensitively (`#12` matches the number). */
+export function matchesText(text: string, row: { readonly title: string; readonly number: number }): boolean {
   const words = text.trim().toLowerCase().split(/\s+/).filter((w) => w !== '')
   const title = row.title.toLowerCase()
   return words.every((w) => (/^#\d+$/.test(w) ? Number(w.slice(1)) === row.number : title.includes(w)))
@@ -430,7 +437,11 @@ function feedCandidates(state: IndexState, q: IssueSelection): Set<string> | nul
  * keyset composites of 100 by number, newest first. Null when there are more than
  * {@link MAX_CHUNKS} × 100 (the list then walks chunks instead).
  */
-async function authorCandidates(sdk: EvoSDK, state: IndexState, author: string): Promise<Set<string> | null> {
+function authorCandidates(sdk: EvoSDK, state: IndexState, author: string): Promise<Set<string> | null> {
+  return serial(state, () => readAuthor(sdk, state, author))
+}
+
+async function readAuthor(sdk: EvoSDK, state: IndexState, author: string): Promise<Set<string> | null> {
   const cached = state.byAuthor.get(author)
   if (cached !== undefined) return cached
   const out = new Set<string>()
@@ -438,20 +449,11 @@ async function authorCandidates(sdk: EvoSDK, state: IndexState, author: string):
   for (let chunk = 0; chunk < MAX_CHUNKS; chunk++) {
     const where: [string, '==' | '<', string | number][] = [['$ownerId', '==', author], ['repoId', '==', state.repo.repoId]]
     if (below !== null) where.push(['number', '<', below])
-    const res = await queryComposite(sdk, {
-      dataContractId: state.repo.forge.collab,
-      documentType: DOC.issue,
-      where,
-      orderBy: [['number', 'desc']],
-      limit: CHUNK,
-      subQueries: chunkSubs(state.network),
-    })
-    const [counts, domains] = res.subs
-    await addDocs(state, res.page, counts?.kind === 'counts' ? counts.counts : null, null)
-    for (const d of res.page) if (state.rows.has(str(d, '$id'))) out.add(str(d, '$id'))
-    await seedNames(state.network, res.page, domains?.kind === 'documents' ? domains.documents : undefined)
-    const last = res.page[res.page.length - 1]?.['number']
-    if (res.page.length < CHUNK || typeof last !== 'number') {
+    const page = { ...repoSource(state.repo).targetQuery(DOC.issue), where, orderBy: [['number', 'desc']] as const }
+    const docs = await readChunk(sdk, state, page, CHUNK)
+    for (const d of docs) if (state.rows.has(str(d, '$id'))) out.add(str(d, '$id'))
+    const last = docs[docs.length - 1]?.['number']
+    if (docs.length < CHUNK || typeof last !== 'number') {
       state.byAuthor.set(author, out)
       return out
     }
@@ -486,7 +488,7 @@ async function exactCounts(sdk: EvoSDK, state: IndexState, total: number | null)
   await resolveIds(sdk, state, closedTargets(state))
   const closed = [...state.rows.values()].filter((r) => !r.state.open).length
   // Every issue is loaded: count directly (no reliance on the total).
-  if (state.desc.done && state.asc.done) {
+  if (state.all) {
     return { open: state.rows.size - closed, closed }
   }
   // Not every issue is loaded: open = the countable total less the closed and the hidden seen so
@@ -519,34 +521,31 @@ export async function queryIssues(
   let rows: IssueRow[]
   let complete: boolean
   let searched: number | null = null
-  let candidates = feedCandidates(state, q)
-  if (q.author !== null) {
-    const mine = await authorCandidates(sdk, state, q.author)
-    if (mine !== null) candidates = candidates === null ? mine : new Set([...candidates].filter((id) => mine.has(id)))
-  }
+  const candidates = await candidatesFor(sdk, state, q)
   if (candidates !== null) {
     // The feed names every issue that can match: resolve them, then filter exactly.
     await resolveIds(sdk, state, candidates)
-    rows = [...candidates].map((id) => state.rows.get(id)).filter((r): r is IssueRow => r !== undefined)
-    rows = rows.filter((r) => stateMatches(r, q.state) && rowMatches(r, q)).sort(cmp)
+    rows = rowsOf(state, candidates).filter((r) => stateMatches(r, q.state) && rowMatches(r, q)).sort(cmp)
     complete = true
   } else {
-    const matching = (): IssueRow[] => walk.ids.map((id) => state.rows.get(id)).filter((r): r is IssueRow => r !== undefined && stateMatches(r, q.state) && rowMatches(r, q))
+    // Once every issue is loaded, the walk's own order does not matter: sort the whole set.
+    const loaded = (): Iterable<string> => (state.all ? state.rows.keys() : walk.ids)
+    const matching = (): IssueRow[] => rowsOf(state, loaded()).filter((r) => stateMatches(r, q.state) && rowMatches(r, q))
     let chunks = 0
     if (q.sort === 'comments') {
-      while (!walk.done && chunks < MAX_CHUNKS) {
+      while (!walk.done && !state.all && chunks < MAX_CHUNKS) {
         await loadChunk(sdk, state, direction)
         chunks++
       }
     } else {
       // Keep reading chunks until the page is full and one more row shows a next page exists.
-      while (!walk.done && matching().length <= want && chunks < MAX_CHUNKS) {
+      while (!walk.done && !state.all && matching().length <= want && chunks < MAX_CHUNKS) {
         await loadChunk(sdk, state, direction)
         chunks++
       }
     }
     rows = matching().sort(cmp)
-    complete = walk.done
+    complete = state.all || (walk.done && walk.complete)
     if (!complete && (q.text.trim() !== '' || q.mentions !== null || q.sort === 'comments')) searched = walk.ids.length
   }
 
@@ -563,7 +562,7 @@ export async function queryIssues(
     // Both tabs' counts need every candidate in either state: the feed or author index names
     // them, or a finished walk has loaded every issue.
     const both = await withBothStates(sdk, state, q)
-    const all = both ?? (walk.done ? walk.ids.map((id) => state.rows.get(id)).filter((r): r is IssueRow => r !== undefined && rowMatches(r, q)) : null)
+    const all = both ?? (state.all ? rowsOf(state, state.rows.keys()).filter((r) => rowMatches(r, q)) : null)
     if (all !== null) {
       openCount = all.filter((r) => r.state.open).length
       closedCount = all.length - openCount
@@ -590,19 +589,26 @@ export async function queryIssues(
  * author index names every candidate; null when only a chunk walk could.
  */
 async function withBothStates(sdk: EvoSDK, state: IndexState, q: IssueSelection): Promise<IssueRow[] | null> {
-  let cands = feedCandidates(state, { ...q, state: 'all' })
-  if (q.author !== null) {
-    const mine = await authorCandidates(sdk, state, q.author)
-    if (mine !== null) cands = cands === null ? mine : new Set([...cands].filter((id) => mine.has(id)))
-  }
+  const cands = await candidatesFor(sdk, state, { ...q, state: 'all' })
   if (cands === null) return null
   await resolveIds(sdk, state, cands)
-  return [...cands].map((id) => state.rows.get(id)).filter((r): r is IssueRow => r !== undefined && rowMatches(r, q))
+  return rowsOf(state, cands).filter((r) => rowMatches(r, q))
 }
 
-/** The repo's label definitions (from the index's first read). */
-export async function readIndexLabels(sdk: EvoSDK, repo: RepoRef, network: Network = DEFAULT_NETWORK): Promise<LabelDef[]> {
-  return (await indexOf(sdk, repo, network)).labels
+/**
+ * Every issue that can match `q`, when an index names them: the feed (state, labels, assignee)
+ * and the `author` index, intersected. Null when neither applies (the list walks chunks).
+ */
+async function candidatesFor(sdk: EvoSDK, state: IndexState, q: IssueSelection): Promise<Set<string> | null> {
+  const fromFeed = feedCandidates(state, q)
+  const mine = q.author === null ? null : await authorCandidates(sdk, state, q.author)
+  if (mine === null) return fromFeed
+  return fromFeed === null ? mine : new Set([...fromFeed].filter((id) => mine.has(id)))
+}
+
+/** The loaded rows of `ids`, in order (ids not loaded are skipped). */
+function rowsOf(state: IndexState, ids: Iterable<string>): IssueRow[] {
+  return [...ids].map((id) => state.rows.get(id)).filter((r): r is IssueRow => r !== undefined)
 }
 
 /**
@@ -618,9 +624,4 @@ export async function foldIssueOpenCount(sdk: EvoSDK, repo: RepoRef, total: numb
   const exact = await exactCounts(sdk, state, total)
   if (exact !== null) settleIssueCount(repo, exact.open, total)
   return exact?.open ?? null
-}
-
-/** Drop a repo's index (tests; writes go through {@link invalidateRepoFeed}). */
-export function dropIssueIndex(repo: RepoRef): void {
-  invalidateRepoFeed(repo, { counts: false })
 }

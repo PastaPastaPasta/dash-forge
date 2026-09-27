@@ -145,9 +145,9 @@ export {
 export {
   compareRows,
   foldIssueOpenCount,
-  mentionsIn,
+  matchesText,
+  mentions,
   queryIssues,
-  readIndexLabels,
   rowMatches,
   type IssueListPage,
   type IssueRow,

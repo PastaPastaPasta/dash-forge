@@ -1615,6 +1615,9 @@ impl<'a> WriteEngine<'a> {
                 stored == *v
             })
         };
+        // Set once one of our transitions may have landed unseen: a document that then reads
+        // as edited was edited by this call.
+        let mut sent = false;
         for _ in 0..2 {
             let Some(current) = self
                 .client
@@ -1631,7 +1634,7 @@ impl<'a> WriteEngine<'a> {
                 });
             }
             if holds(&current) {
-                return Ok(false);
+                return Ok(sent);
             }
             let revision = current.revision().unwrap_or(INITIAL_REVISION);
             if let Some(expected) = expected_revision {
@@ -1658,6 +1661,7 @@ impl<'a> WriteEngine<'a> {
                     if poll_confirm(&edited).await? {
                         return Ok(true);
                     }
+                    sent = true;
                 }
                 Ok(_) => return Ok(true),
                 // A refusal after an earlier attempt of these very bytes landed unanswered (a

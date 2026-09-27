@@ -36,7 +36,7 @@ import {
 } from './query'
 
 /** Most sub-queries one composite may carry. */
-export const MAX_SUB_QUERIES = 10
+const MAX_SUB_QUERIES = 10
 
 /** Where a sub-query's bound values come from: the page, or an earlier documents sub-query. */
 export interface CompositeBind {
@@ -84,8 +84,35 @@ export type CompositeSubResult =
 export interface CompositeResult {
   readonly page: PlainDocument[]
   readonly subs: CompositeSubResult[]
-  /** True when the answer came from the plain-query fallback (1 + N requests). */
-  readonly fellBack: boolean
+}
+
+/** A composite whose page is `page` (a {@link DocumentQuery}: its contract, type, clauses) and `limit`. */
+export function compositeOf(page: DocumentQuery, limit: number, subQueries: readonly CompositeSub[]): CompositeQuery {
+  return {
+    dataContractId: page.dataContractId,
+    documentType: page.documentTypeName,
+    ...(page.where ? { where: page.where } : {}),
+    ...(page.orderBy ? { orderBy: page.orderBy } : {}),
+    limit,
+    subQueries,
+  }
+}
+
+/** A sibling sub-query: `q` proved under the same root, its first `limit` rows. */
+export function siblingOf(q: DocumentQuery, limit = 100): CompositeSub {
+  return { dataContractId: q.dataContractId, documentType: q.documentTypeName, where: q.where ?? [], orderBy: q.orderBy ?? [], limit }
+}
+
+/** Sub-result `i`'s documents ([] when it is a counts result or absent). */
+export function docsAt(r: CompositeResult, i: number): PlainDocument[] {
+  const s = r.subs[i]
+  return s?.kind === 'documents' ? s.documents : []
+}
+
+/** Sub-result `i`'s counts, or null when it is not a counts result. */
+export function countsAt(r: CompositeResult, i: number): Map<string, number> | null {
+  const s = r.subs[i]
+  return s?.kind === 'counts' ? s.counts : null
 }
 
 interface RawComposite {
@@ -156,7 +183,6 @@ export async function queryComposite(sdk: EvoSDK, q: CompositeQuery): Promise<Co
             ? { kind: 'counts', counts: new Map([...r.counts.entries()].map(([k, v]) => [k, toNumber(v)])) }
             : { kind: 'documents', documents: r.documents.filter((d) => d != null).map(normalizeDocument) },
         ),
-        fellBack: false,
       }
     } catch (e) {
       if (!isUnsupported(e)) throw e
@@ -172,7 +198,7 @@ function sourceValue(doc: PlainDocument, property: string): string | null {
 }
 
 /** The composite's question as plain queries (the fallback). */
-export async function plainComposite(sdk: EvoSDK, q: CompositeQuery): Promise<CompositeResult> {
+async function plainComposite(sdk: EvoSDK, q: CompositeQuery): Promise<CompositeResult> {
   const pageQuery: DocumentQuery = {
     dataContractId: q.dataContractId,
     documentTypeName: q.documentType,
@@ -224,5 +250,5 @@ export async function plainComposite(sdk: EvoSDK, q: CompositeQuery): Promise<Co
     })
     subs.push({ kind: 'documents', documents })
   }
-  return { page, subs, fellBack: true }
+  return { page, subs }
 }

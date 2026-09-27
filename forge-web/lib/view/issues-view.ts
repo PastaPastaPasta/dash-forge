@@ -37,7 +37,7 @@ import {
   type ReviewView,
 } from '../repo'
 import { DEFAULT_NETWORK, type Network } from '../constants'
-import { queryComposite } from '../sdk/composite'
+import { compositeOf, docsAt, queryComposite, siblingOf } from '../sdk/composite'
 import { prefetchDpnsNames } from './dpns'
 import type { Membership } from '../rules/v2'
 import { HiddenTally, admitAll, gateFor, type HiddenCounts } from '../repo/private-content'
@@ -191,29 +191,19 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
   const source = repoSource(repo)
   const page = source.repoQuery(DOC.issue, { where: [['number', '==', number]] })
   const bound = { sourceProperty: '$id', field: 'targetId' }
-  const sibling = (q: ReturnType<typeof source.repoQuery>) => ({
-    dataContractId: q.dataContractId,
-    documentType: q.documentTypeName,
-    where: q.where ?? [],
-    orderBy: q.orderBy ?? [],
-    limit: 100,
-  })
   const labelQuery = source.repoQuery(DOC.label, { orderBy: [['name', 'asc'], ['$createdAt', 'asc']] })
   const memberQuery = (type: string) => source.repoQuery(type, { orderBy: [['memberId', 'asc']] })
-  const res = await queryComposite(sdk, {
-    dataContractId: page.dataContractId,
-    documentType: page.documentTypeName,
-    where: page.where ?? [],
-    limit: 1,
-    subQueries: [
+  const res = await queryComposite(
+    sdk,
+    compositeOf(page, 1, [
       { documentType: DOC.comment, bind: bound, limit: 100 },
       { documentType: DOC.event, bind: bound, limit: 100 },
       { documentType: DOC.authorEvent, bind: bound, limit: 100 },
-      sibling(labelQuery),
-      sibling(memberQuery(DOC.maintainer)),
-      sibling(memberQuery(DOC.writer)),
-    ],
-  })
+      siblingOf(labelQuery),
+      siblingOf(memberQuery(DOC.maintainer)),
+      siblingOf(memberQuery(DOC.writer)),
+    ]),
+  )
   const raw = res.page[0]
   if (raw === undefined) return null
   // A private repo's issue opens with the reader's session keys (the gate decrypts it).
@@ -222,10 +212,7 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
   if (!admitted.ok) return null
   const doc = admitted.doc
   const id = str(doc, '$id')
-  const docs = (i: number): PlainDocument[] => {
-    const s = res.subs[i]
-    return s?.kind === 'documents' ? s.documents : []
-  }
+  const docs = (i: number): PlainDocument[] => docsAt(res, i)
   // A full sub-result page may have more rows: finish that type with a complete read.
   const complete = async (i: number, type: string): Promise<PlainDocument[]> =>
     docs(i).length < 100

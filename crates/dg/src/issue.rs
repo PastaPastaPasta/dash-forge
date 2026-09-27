@@ -57,6 +57,11 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
     }
 }
 
+/// Label names as the web writes them: trimmed (the fold compares them exactly).
+fn trimmed(names: &[String]) -> Vec<String> {
+    names.iter().map(|n| n.trim().to_string()).collect()
+}
+
 /// `add bug docs` / `remove bug`, or the older `--add bug` / `--remove bug`: exactly one form.
 fn label_args(
     words: &[String],
@@ -69,11 +74,11 @@ fn label_args(
         )
     };
     match (words.split_first(), add, remove) {
-        (None, Some(l), None) => Ok((true, vec![l.to_string()])),
-        (None, None, Some(l)) => Ok((false, vec![l.to_string()])),
+        (None, Some(l), None) => Ok((true, trimmed(&[l.to_string()]))),
+        (None, None, Some(l)) => Ok((false, trimmed(&[l.to_string()]))),
         (Some((verb, names)), None, None) if !names.is_empty() => match verb.as_str() {
-            "add" => Ok((true, names.to_vec())),
-            "remove" | "rm" => Ok((false, names.to_vec())),
+            "add" => Ok((true, trimmed(names))),
+            "remove" | "rm" => Ok((false, trimmed(names))),
             _ => Err(usage()),
         },
         _ => Err(usage()),
