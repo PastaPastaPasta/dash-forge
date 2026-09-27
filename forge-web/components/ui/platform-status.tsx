@@ -16,6 +16,7 @@ import { AlertTriangle, RotateCw } from 'lucide-react'
 import { Spinner } from '@/components/ui/states'
 import { Button } from '@/components/ui/button'
 import type { SdkStatus } from '@/lib/sdk'
+import { useUiStore } from '@/hooks/use-ui-store'
 
 function mb(bytes: number): string {
   return `${(bytes / 1_000_000).toFixed(1)} MB`
@@ -83,6 +84,8 @@ export function UnreachableBanner({
   cached?: boolean
 }): JSX.Element {
   const seconds = useCountdown(status.retryAt)
+  // The sign-in sheet has its own "Try again" for the same connection: one at a time (L-30).
+  const sheetOpen = useUiStore((s) => s.loginOpen)
   return (
     <div
       role="alert"
@@ -104,9 +107,11 @@ export function UnreachableBanner({
             <p className="mt-1 break-words font-mono text-[12px]">{status.message}</p>
           </details>
         </div>
-        <Button variant="outline" size="sm" onClick={onRetry}>
-          <RotateCw className="h-3.5 w-3.5" aria-hidden /> Try again
-        </Button>
+        {sheetOpen ? null : (
+          <Button variant="outline" size="sm" onClick={onRetry}>
+            <RotateCw className="h-3.5 w-3.5" aria-hidden /> Try again
+          </Button>
+        )}
       </div>
     </div>
   )

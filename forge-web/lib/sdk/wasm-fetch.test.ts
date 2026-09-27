@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { fetchAndCompile, type DownloadProgress } from './wasm-fetch'
+import { fetchAndCompile, fetchAndCompileWithRetry, type DownloadProgress } from './wasm-fetch'
 
 function streamOf(chunks: Uint8Array[], gapMs = 0): ReadableStream<Uint8Array> {
   let i = 0
@@ -61,5 +61,39 @@ describe('fetchAndCompile (D-025)', () => {
     await expect(
       fetchAndCompile('/x.wasm', 100, undefined, { fetchImpl: fetchImpl as unknown as typeof fetch, compile: drain, stallMs: 40 }),
     ).rejects.toThrow(/stalled/)
+  })
+})
+
+describe('fetchAndCompileWithRetry (L-19)', () => {
+  /** A body that errors after its first chunk, as a reset connection does. */
+  const broken = (): Response =>
+    new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(4))
+          controller.error(new TypeError('Failed to read from a ReadableStream'))
+        },
+      }),
+      { status: 200 },
+    )
+
+  it('retries a stream that fails mid-body, and succeeds on the next attempt', async () => {
+    let calls = 0
+    const fetchImpl = vi.fn(async () => (++calls === 1 ? broken() : new Response(streamOf([new Uint8Array(8)]), { status: 200 })))
+    const mod = (await fetchAndCompileWithRetry('/x.wasm', 8, undefined, { fetchImpl, compile: drain, retryMs: [1, 1] })) as unknown as { bytes: number }
+    expect(mod.bytes).toBe(8)
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+  })
+
+  it('gives up after the retries, with the last error', async () => {
+    const fetchImpl = vi.fn(async () => broken())
+    await expect(fetchAndCompileWithRetry('/x.wasm', 8, undefined, { fetchImpl, compile: drain, retryMs: [1, 1] })).rejects.toThrow(/ReadableStream/)
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not retry an HTTP 4xx', async () => {
+    const fetchImpl = vi.fn(async () => new Response('gone', { status: 404 }))
+    await expect(fetchAndCompileWithRetry('/x.wasm', 0, undefined, { fetchImpl, compile: drain, retryMs: [1, 1] })).rejects.toThrow('HTTP 404')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 })

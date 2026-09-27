@@ -64,7 +64,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
   const [status, setStatus] = useState<PollStatus>('waiting')
   const [error, setError] = useState<string | null>(null)
   // What the request is waiting for before its QR can show.
-  const [preparing, setPreparing] = useState<string>(PHASE_TEXT.connecting)
+  const [preparing, setPreparing] = useState(PHASE_TEXT.connecting)
   const [attempt, setAttempt] = useState(0)
   const [confirmed, setConfirmed] = useState(false)
   const grant = useRef<{ identityId: string; keys: readonly WalletKey[] } | null>(null)
@@ -252,7 +252,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
           <Qr value={uri} label={qrLabel} size={200} />
         )
       ) : error ? null : (
-        <Waiting label={preparing} hint="The first sign-in downloads the Dash Platform library (about 8 MB); on a slow connection this takes a minute." />
+        <Waiting label={preparing} />
       )}
       {step?.kind === 'request' ? <p className="text-dense">Keep this QR code private: anyone who scans it can answer it.</p> : null}
       {status === 'incomplete-read' && step?.kind === 'request' ? (

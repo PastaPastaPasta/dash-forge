@@ -9,7 +9,7 @@
  * spend ledger, a toast shows what it actually cost, and the balance is re-read.
  */
 
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import {
@@ -29,6 +29,7 @@ import { DEFAULT_NETWORK, NETWORKS, type Network } from '../lib/constants'
 import { type SpendEvent, type WriteAuth } from '../lib/sdk'
 import { connectPlatform } from '../lib/auth/connect'
 import { recordSpend } from '../lib/spend'
+import { errorMessage } from '../lib/utils'
 import { fundsState, type FundsState, type KeyLimits } from '../lib/view/funds'
 import { toast } from '../hooks/use-toasts'
 
@@ -80,12 +81,16 @@ interface AuthContextValue {
   readonly limitedKeys: boolean
   /** Keys stored (encrypted) on this device for this network. */
   readonly vaults: readonly VaultInfo[]
+  /** Why the stored-key list could not be read (null when it was). */
+  readonly vaultsError: string | null
+  /** Whether the stored-key list has been read at least once. */
+  readonly vaultsLoaded: boolean
   /** The limited-key ceremony: import an identity file or a mnemonic once. */
   importIdentity: (
     input: { fileText: string } | { mnemonic: string; identityId: string },
     protection: Protection,
     request?: LimitedKeyRequest,
-    options?: { readonly enablePrivateRepos?: boolean },
+    options?: { readonly enablePrivateRepos?: boolean; readonly renew?: boolean },
   ) => Promise<void>
   adoptLimitedKey: (identityId: string, key: LimitedKey, protection: Protection) => Promise<void>
   /** Store the keys a wallet granted (verified on chain) and open the session. */
@@ -143,8 +148,28 @@ export function AuthProvider({
   }, [notice, controller])
 
   const [vaults, setVaults] = useState<readonly VaultInfo[]>([])
+  // Why the stored-key list could not be read (storage blocked by another tab, say): the last
+  // list read stays, so a stored key never silently turns into "no key here".
+  const [vaultsError, setVaultsError] = useState<string | null>(null)
+  // The list has been read successfully at least once. The sheet also proceeds on `vaultsError`:
+  // a caller waiting on this flag alone would wait forever while storage is blocked.
+  const [vaultsLoaded, setVaultsLoaded] = useState(false)
+  // Only the latest read may update the list: an older read that fails after a newer one
+  // succeeded must not report a failure.
+  const vaultRead = useRef(0)
   const reloadVaults = useCallback(() => {
-    controller.storedVaults().then(setVaults, () => setVaults([]))
+    const read = ++vaultRead.current
+    controller.storedVaults().then(
+      (v) => {
+        if (read !== vaultRead.current) return
+        setVaults(v)
+        setVaultsError(null)
+        setVaultsLoaded(true)
+      },
+      (e: unknown) => {
+        if (read === vaultRead.current) setVaultsError(errorMessage(e))
+      },
+    )
   }, [controller])
   useEffect(reloadVaults, [reloadVaults])
 
@@ -240,11 +265,13 @@ export function AuthProvider({
       unboundedKey: session?.unbounded === true,
       limitedKeys: controller.supportsLimitedKeys(),
       vaults,
+      vaultsError,
+      vaultsLoaded,
       reloadVaults,
       controller,
       ...actions,
     }),
-    [actions, controller, funds, keyLimits, reloadVaults, session, signer, state.error, state.isLoading, state.step, vaults],
+    [actions, controller, funds, keyLimits, reloadVaults, session, signer, state.error, state.isLoading, state.step, vaults, vaultsError, vaultsLoaded],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

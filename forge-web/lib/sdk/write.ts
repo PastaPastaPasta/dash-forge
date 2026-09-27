@@ -537,11 +537,12 @@ async function definitelyAbsent(sdk: EvoSDK, contractId: string, documentType: s
 const writeLocks = new Map<string, Promise<unknown>>()
 
 /**
- * How long a write waits for its turn (this tab's queue, then the cross-tab lock). One write
- * holds it for at most a few minutes (the result wait plus settling an unanswered transition),
- * so a wait past this means another write is stuck: say so rather than wait forever.
+ * How long a write waits for its turn (this tab's queue, then the cross-tab lock). A healthy
+ * write holds it for up to ~4 min (the 45 s result wait, two settle rounds and a final check),
+ * about twice that when a round comes back lost; a wait past this means another write is
+ * stuck: say so rather than wait forever.
  */
-export const WRITER_WAIT_MS = 3 * 60_000
+export const WRITER_WAIT_MS = 10 * 60_000
 
 /** Another write for this identity (in this tab or another) held the writer lock too long. */
 export class WriterBusyError extends Error {
@@ -571,28 +572,23 @@ function crossTab<T>(identityId: string, run: () => Promise<T>, signal: AbortSig
  */
 export function serialized<T>(identityId: string, run: () => Promise<T>, waitMs = WRITER_WAIT_MS): Promise<T> {
   const waiting = new AbortController()
-  let started = false
   let timer: ReturnType<typeof setTimeout> | undefined
+  // Rejects only while still waiting: getting the turn clears the timer.
   const turn = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      if (started) return
       waiting.abort()
       reject(new WriterBusyError())
     }, waitMs)
   })
-  turn.catch(() => undefined)
   const guarded = (): Promise<T> => {
     // Gave up while queued in this tab: pass the turn on without writing.
     if (waiting.signal.aborted) return Promise.reject(new WriterBusyError())
-    started = true
     clearTimeout(timer)
     return run()
   }
+  // The chain's tail never rejects (see `tail` below).
   const prev = writeLocks.get(identityId) ?? Promise.resolve()
-  const next = prev.then(
-    () => crossTab(identityId, guarded, waiting.signal),
-    () => crossTab(identityId, guarded, waiting.signal),
-  )
+  const next = prev.then(() => crossTab(identityId, guarded, waiting.signal))
   const tail = next.catch(() => undefined)
   writeLocks.set(identityId, tail)
   void tail.then(() => {

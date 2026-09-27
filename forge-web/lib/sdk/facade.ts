@@ -28,6 +28,8 @@ export interface WasmIdentity {
 export interface AuthSdk {
   identities: {
     fetch(id: string): Promise<WasmIdentity | undefined>
+    /** The identity holding a unique (ECDSA_SECP256K1) key whose hash160 is `hash` (hex or bytes). */
+    byPublicKeyHash(hash: string | Uint8Array): Promise<(WasmIdentity & { readonly id: { toBase58(): string } }) | undefined>
     balance(id: string): Promise<bigint | undefined>
     update(options: unknown): Promise<void>
     create(options: unknown): Promise<void>

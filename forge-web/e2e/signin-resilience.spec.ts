@@ -114,6 +114,8 @@ test('s2. the Platform library cannot download: a named error and a working "Try
   await openSheet(page, 'create')
   const dialog = page.getByRole('dialog')
   await expect(dialog.getByRole('alert')).toContainText('Could not download the Dash Platform library', { timeout: WITHIN })
+  // One "Try again" on screen (L-30): the page's own unreachable banner defers to the sheet's.
+  await expect(page.getByRole('button', { name: /try again/i })).toHaveCount(1)
   await shot(page, `signin-s2-create-${test.info().project.name}`)
 
   // The wallet tile still shows (its availability could not be checked) and names the failure.
@@ -215,6 +217,87 @@ test('s5. a pasted private key never reaches the DOM', async ({ page }) => {
   const loose = await page.evaluate(() => [...document.querySelectorAll('input[type=password]')].filter((i) => !i.closest('form')).map((i) => i.id))
   expect(loose).toEqual([])
   expect(logged.filter((t) => t.includes(secret))).toEqual([])
+
+  // A recovery phrase typed into Import: in the field, never in the page's HTML.
+  const words = 'abandon ability able about above absent absorb abstract absurd abuse access accident'
+  await page.getByRole('button', { name: 'All options' }).click()
+  await page.getByTestId('tile-import').click()
+  await page.getByRole('tab', { name: 'Recovery phrase' }).click()
+  await page.getByLabel('Recovery phrase (12 or 24 words)').fill(words)
+  await expect(page.getByLabel('Recovery phrase (12 or 24 words)')).toHaveValue(words)
+  expect(await page.content()).not.toContain('abandon ability')
+})
+
+test('s8. a remounted passphrase form never keeps a passphrase the screen does not show', async ({ page }) => {
+  await page.goto('/', { waitUntil: 'domcontentloaded' })
+  await openSheet(page, 'import')
+  const dialog = page.getByRole('dialog')
+  await page.setInputFiles('input[type="file"]', identityFile())
+  await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
+  await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
+  await expect(dialog.getByRole('button', { name: /create this browser's key/i })).toBeEnabled()
+  // Away to the tile list and back: a fresh form, empty, and nothing to submit with.
+  await dialog.getByRole('button', { name: 'All options' }).click()
+  await page.getByTestId('tile-import').click()
+  await page.setInputFiles('input[type="file"]', identityFile())
+  await expect(page.getByLabel('Passphrase', { exact: true })).toHaveValue('')
+  await expect(page.getByLabel('Repeat passphrase')).toHaveCount(0)
+  await expect(dialog.getByRole('button', { name: /create this browser's key/i })).toBeDisabled()
+})
+
+test('s9. Create: a passphrase typed on Resume does not carry into the new words after Discard', async ({ page, baseURL }) => {
+  // A creation in progress on this device, seeded from a blank page of the same origin before
+  // the app opens its storage (the app's current schema: version 2, with a journal store).
+  const blank = `${baseURL}/__seed__/`
+  await page.route(blank, (r) => r.fulfill({ contentType: 'text/html', body: '<!doctype html><title>seed</title>' }))
+  await page.goto(blank)
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        const req = indexedDB.open('dash-forge', 2)
+        req.onupgradeneeded = () => {
+          for (const n of ['spend', 'journal', 'vault', 'inbox']) {
+            if (!req.result.objectStoreNames.contains(n)) req.result.createObjectStore(n)
+          }
+        }
+        req.onsuccess = () => {
+          const tx = req.result.transaction('journal', 'readwrite')
+          tx.objectStore('journal').put(
+            { network: 'devnet', depositAddress: 'yNPbcFfabtNmmxKdGwhHomdYfVs6gikbPf', identityId: null, lockTxid: null, lockRaw: null, startedAt: Date.now() },
+            'create-identity:devnet',
+          )
+          tx.oncomplete = () => {
+            req.result.close()
+            resolve()
+          }
+          tx.onerror = () => reject(tx.error)
+        }
+        req.onerror = () => reject(req.error)
+      }),
+  )
+  await page.goto('/', { waitUntil: 'domcontentloaded' })
+  await openSheet(page, 'create')
+  const dialog = page.getByRole('dialog')
+  await expect(page.getByTestId('create-resume')).toBeVisible({ timeout: WITHIN })
+  await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
+  await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
+  // Discard: it checks the deposit address first. Empty, it goes ahead; otherwise (or when
+  // the check fails) it warns once and needs "Discard anyway".
+  await dialog.getByRole('button', { name: /discard this creation/i }).click()
+  const words12 = page.getByTestId('mnemonic-words').locator('li')
+  const anyway = dialog.getByRole('button', { name: /discard anyway/i })
+  await expect(words12.or(anyway).first()).toBeVisible({ timeout: 60_000 })
+  if (await anyway.isVisible()) await anyway.click()
+  await expect(words12).toHaveCount(12, { timeout: 60_000 })
+  const words = await page.getByTestId('mnemonic-words').locator('[data-word]').allInnerTexts()
+  await dialog.getByRole('button', { name: /i wrote them down/i }).click()
+  for (const input of await dialog.locator('input[id^="quiz-"]').all()) {
+    const at = Number((await input.getAttribute('id'))!.slice('quiz-'.length))
+    await input.fill(words[at]!)
+  }
+  await dialog.getByRole('button', { name: /^continue$/i }).click()
+  await expect(page.getByLabel('Passphrase', { exact: true })).toHaveValue('')
+  await expect(dialog.getByRole('button', { name: /continue to funding/i })).toBeDisabled()
 })
 
 test('s6. a newer tab upgrading storage: this tab lets go at once and offers a reload', async ({ browser, baseURL }) => {
@@ -244,4 +327,27 @@ test('s6. a newer tab upgrading storage: this tab lets go at once and offers a r
   await expect(page.getByTestId('storage-updated')).toContainText('updated in another tab')
   await shot(page, `signin-s6-reload-banner-${test.info().project.name}`)
   await context.close()
+})
+
+test('s7. a slow first download shows how much of the Platform library has arrived', async ({ page, browserName }) => {
+  // Network throttling is a Chromium DevTools feature.
+  test.skip(browserName !== 'chromium', 'throttling needs Chromium DevTools')
+  test.setTimeout(4 * 60_000)
+  // Throttled before the page loads: ~4 Mbps, so the ~8 MB library takes ~20 s and its
+  // progress is visible. /login opens the sheet by itself (the home page reads repos, which
+  // would start the download before the sheet shows it).
+  const cdp = await page.context().newCDPSession(page)
+  await cdp.send('Network.enable')
+  await cdp.send('Network.emulateNetworkConditions', { offline: false, latency: 50, downloadThroughput: 500_000, uploadThroughput: 500_000 })
+  await page.goto('/login/', { waitUntil: 'domcontentloaded', timeout: 60_000 })
+  await page.getByTestId('tile-create').click({ timeout: 60_000 })
+  const waiting = page.getByTestId('signin-waiting')
+  await expect(waiting).toContainText('Downloading the Dash Platform library')
+  const progress = page.getByTestId('signin-download')
+  await expect(progress).toContainText(/[\d.]+ of [\d.]+ MB of the library/, { timeout: 30_000 })
+  const first = await progress.innerText()
+  await expect(progress).not.toHaveText(first, { timeout: 15_000 })
+  await shot(page, `signin-s7-downloading-${test.info().project.name}`)
+  await cdp.send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 })
+  await expect(page.getByTestId('mnemonic-words').locator('li')).toHaveCount(12, { timeout: 90_000 })
 })
