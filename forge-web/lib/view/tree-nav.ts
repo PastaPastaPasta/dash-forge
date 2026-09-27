@@ -8,7 +8,7 @@
  */
 
 import type { BrowseReader, GitObject, LocatorEntry, ReadObjectOptions } from '../browse'
-import { MODE_TREE } from '../browse'
+import { MODE_TREE, ObjectTooLargeError } from '../browse'
 import { commitSubject, parseCommit, parseTree, type CommitObject, type TreeEntry } from './git-objects'
 
 /**
@@ -81,10 +81,15 @@ export function knownMinSize(reader: ObjectReader, oid: string): number | null {
   return Math.floor((entry.length - 64) / 1.01)
 }
 
-/** Read a blob's raw bytes by oid (refusing one over `maxBytes` before it is inflated). */
-export async function readBlob(reader: ObjectReader, blobOid: string, maxBytes?: number): Promise<Uint8Array> {
-  const obj = await reader.readObject(blobOid, maxBytes === undefined ? {} : { maxBytes })
+/**
+ * Read a blob's raw bytes by oid, refusing one over `maxBytes` ({@link ObjectTooLargeError}):
+ * a {@link BrowseReader} refuses it before inflating, and the result is checked here too, for
+ * readers that ignore the option.
+ */
+export async function readBlob(reader: ObjectReader, blobOid: string, maxBytes = Infinity): Promise<Uint8Array> {
+  const obj = await reader.readObject(blobOid, { maxBytes })
   if (obj.type !== 'blob') throw new Error(`${blobOid.slice(0, 8)} is not a blob`)
+  if (obj.bytes.length > maxBytes) throw new ObjectTooLargeError(obj.bytes.length, maxBytes)
   return obj.bytes
 }
 

@@ -34,8 +34,9 @@ import {
 } from '@/lib/view'
 import { imagePreviewType } from '@/lib/view/blob-view'
 import { IMAGE_HOSTS_KEY, parseImageHosts, resolveRepoPath, splitHref, upgradeHttp, urlHostOf } from '@/lib/view/markdown-links'
-import { readBlob, readTree, commitRootTree, treeAtPath, findEntry, knownMinSize } from '@/lib/view/tree-nav'
+import { readBlob, commitRootTree, treeAtPath, findEntry, knownMinSize } from '@/lib/view/tree-nav'
 import type { BrowseReader } from '@/lib/browse'
+import { bytesToBase64 } from '@/lib/sdk/query'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 import { cn } from '@/lib/utils'
@@ -122,10 +123,7 @@ function MdLink({ href, children }: { href: string; children: ReactNode }): JSX.
     const path = repo ? resolveRepoPath(repo.dir, splitHref(href).path) : null
     if (repo === null || path === null) return <>{children}</>
     const fragment = splitHref(href).fragment
-    const target = `${repoHref(/\/$/.test(href.split(/[?#]/)[0] ?? '') ? '/repo/tree' : '/repo/blob', repo.addr, {
-      path,
-      ...(repo.refParam ? { ref: repo.refParam } : {}),
-    })}${fragment ? `#${fragment}` : ''}`
+    const target = `${repoPathHref(repo, path, /\/$/.test(href.split(/[?#]/)[0] ?? '') ? '/repo/tree' : '/repo/blob')}${fragment ? `#${fragment}` : ''}`
     return (
       <Link href={target} className={LINK}>
         {children}
@@ -137,6 +135,11 @@ function MdLink({ href, children }: { href: string; children: ReactNode }): JSX.
       {children}
     </a>
   )
+}
+
+/** The page for `path` in the repo the Markdown came from, at the ref the page shows. */
+function repoPathHref(repo: MarkdownRepoContext, path: string, route: '/repo/blob' | '/repo/tree' = '/repo/blob'): string {
+  return repoHref(route, repo.addr, { path, ...(repo.refParam ? { ref: repo.refParam } : {}) })
 }
 
 /** The DOM id an in-page anchor (a heading slug, `<a name>` or `id`) renders with, as on GitHub. */
@@ -194,17 +197,6 @@ function subscribeHosts(l: () => void): () => void {
   }
 }
 
-/** Snapshot for {@link useSyncExternalStore}: stable until the stored list or the session's hosts change. */
-let hostsSnapshot: { always: readonly string[]; session: number } = { always: EMPTY_HOSTS, session: 0 }
-function hostsState(): typeof hostsSnapshot {
-  const always = readHosts()
-  if (always !== hostsSnapshot.always || sessionHosts.size !== hostsSnapshot.session) {
-    hostsSnapshot = { always, session: sessionHosts.size }
-  }
-  return hostsSnapshot
-}
-const SERVER_HOSTS = { always: EMPTY_HOSTS, session: 0 }
-
 function allowHost(host: string, always: boolean): void {
   sessionHosts.add(host)
   if (always) {
@@ -219,8 +211,11 @@ function allowHost(host: string, always: boolean): void {
 }
 
 function useHostAllowed(host: string | null): boolean {
-  const { always } = useSyncExternalStore(subscribeHosts, hostsState, () => SERVER_HOSTS)
-  return host !== null && (sessionHosts.has(host) || always.includes(host))
+  return useSyncExternalStore(
+    subscribeHosts,
+    () => host !== null && (sessionHosts.has(host) || readHosts().includes(host)),
+    () => false,
+  )
 }
 
 /** Test hook: forget this session's one-click hosts. */
@@ -232,16 +227,25 @@ export function resetImageHostsForTest(): void {
 
 const IMG = 'my-2 inline-block max-w-full rounded align-middle'
 
-function MdImage({ src, alt, width, height }: { src: string; alt: string; width?: number; height?: number }): JSX.Element | null {
+interface ImageProps {
+  readonly src: string
+  readonly alt: string
+  readonly width?: number
+  readonly height?: number
+}
+
+/** An image that cannot be shown here: its alt text, muted (or nothing). */
+function AltText({ alt }: { alt: string }): JSX.Element | null {
+  return alt ? <span className="text-anvil-500 dark:text-anvil-400">{alt}</span> : null
+}
+
+function MdImage(props: ImageProps): JSX.Element | null {
   const ctx = useContext(Ctx)
-  if (src === '#') return alt ? <span className="text-anvil-500 dark:text-anvil-400">{alt}</span> : null
-  if (isRelativeHref(src)) return <RepoImage src={src} alt={alt} width={width} height={height} />
+  const { src } = props
+  if (src === '#') return <AltText alt={props.alt} />
+  if (isRelativeHref(src)) return <RepoImage {...props} />
   if (src.startsWith('/') || src.startsWith('#')) return null // a site path means nothing here
-  return ctx.images === 'auto' ? (
-    <RemoteImg src={src} alt={alt} width={width} height={height} />
-  ) : (
-    <GatedImage src={src} alt={alt} width={width} height={height} />
-  )
+  return ctx.images === 'auto' ? <RemoteImg {...props} /> : <GatedImage {...props} />
 }
 
 /**
@@ -250,7 +254,7 @@ function MdImage({ src, alt, width, height }: { src: string; alt: string; width?
  * fails to load (a dead host, a removed upload), the image becomes a link to its URL rather
  * than a blank box.
  */
-function RemoteImg({ src, alt, width, height }: { src: string; alt: string; width?: number; height?: number }): JSX.Element {
+function RemoteImg({ src, alt, width, height }: ImageProps): JSX.Element {
   const url = upgradeHttp(src)
   const [failed, setFailed] = useState<string | null>(null)
   if (failed === url) {
@@ -280,10 +284,11 @@ function RemoteImg({ src, alt, width, height }: { src: string; alt: string; widt
  * An image in Markdown anyone could write: it is not fetched until the viewer asks, because
  * the fetch tells the image's host the viewer's IP address and when they looked (D-053).
  */
-function GatedImage({ src, alt, width, height }: { src: string; alt: string; width?: number; height?: number }): JSX.Element {
-  const host = urlHostOf(src)
+function GatedImage(props: ImageProps): JSX.Element {
+  const { alt } = props
+  const host = urlHostOf(props.src)
   const allowed = useHostAllowed(host)
-  if (allowed) return <RemoteImg src={src} alt={alt} width={width} height={height} />
+  if (allowed) return <RemoteImg {...props} />
   return (
     <span
       data-testid="gated-image"
@@ -317,26 +322,23 @@ export const REPO_IMAGE_MAX_BYTES = 5 * 1024 * 1024
 const treeWalks = new WeakMap<BrowseReader, Map<string, Promise<TreeEntry[]>>>()
 
 function entriesAt(reader: BrowseReader, tipOid: string, dir: string): Promise<TreeEntry[]> {
-  let walks = treeWalks.get(reader)
-  if (walks === undefined) {
-    walks = new Map()
-    treeWalks.set(reader, walks)
-  }
+  const walks = treeWalks.get(reader) ?? new Map<string, Promise<TreeEntry[]>>()
+  treeWalks.set(reader, walks)
   const key = `${tipOid}:${dir}`
   let walk = walks.get(key)
   if (walk === undefined) {
-    walk = commitRootTree(reader, tipOid).then(({ tree }) => (dir === '' ? readTree(reader, tree) : treeAtPath(reader, tree, dir)))
+    walk = commitRootTree(reader, tipOid).then(({ tree }) => treeAtPath(reader, tree, dir))
     walks.set(key, walk)
-    walk.catch(() => walks?.delete(key)) // a failed walk is retried by the next image
+    walk.catch(() => walks.delete(key)) // a failed walk is retried by the next image
   }
   return walk
 }
 
 /**
  * Read a relative image's blob, never more than {@link REPO_IMAGE_MAX_BYTES}: the reader
- * refuses an object whose header says it is larger before inflating it, and the result is
- * checked again. (A stored entry's length is only a hint: a delta or a run of zeros is tiny
- * in the pack and huge once inflated, so it is trusted only to skip an undeltified blob early.)
+ * refuses an object whose header says it is larger before inflating it, and `readBlob` checks
+ * the result. (A stored entry's length is only a hint: a delta or a run of zeros is tiny in
+ * the pack and huge once inflated, so it is trusted only to skip an undeltified blob early.)
  */
 export async function readRepoImage(reader: BrowseReader, tipOid: string, path: string): Promise<{ bytes: Uint8Array; type: string }> {
   const slash = path.lastIndexOf('/')
@@ -345,21 +347,13 @@ export async function readRepoImage(reader: BrowseReader, tipOid: string, path: 
   if (entry === undefined) throw new Error('not found')
   if ((knownMinSize(reader, entry.oid) ?? 0) > REPO_IMAGE_MAX_BYTES) throw new Error('too large')
   const bytes = await readBlob(reader, entry.oid, REPO_IMAGE_MAX_BYTES)
-  if (bytes.length > REPO_IMAGE_MAX_BYTES) throw new Error('too large')
   const type = imagePreviewType(path, bytes)
   if (type === null) throw new Error('not an image')
   return { bytes, type }
 }
 
-/** Base64 in 32 KiB steps: one `String.fromCharCode` per byte on a multi-MiB string is slow and churns memory. */
-function toBase64(bytes: Uint8Array): string {
-  const parts: string[] = []
-  for (let i = 0; i < bytes.length; i += 0x8000) parts.push(String.fromCharCode(...bytes.subarray(i, i + 0x8000)))
-  return btoa(parts.join(''))
-}
-
 /** A relative image: read from the repo's own objects (hash-checked), never fetched from a host. */
-function RepoImage({ src, alt, width, height }: { src: string; alt: string; width?: number; height?: number }): JSX.Element | null {
+function RepoImage({ src, alt, width, height }: ImageProps): JSX.Element | null {
   const { repo } = useContext(Ctx)
   const path = repo ? resolveRepoPath(repo.dir, splitHref(src).path) : null
   const reader = repo?.reader
@@ -377,7 +371,7 @@ function RepoImage({ src, alt, width, height }: { src: string; alt: string; widt
         // An SVG stays a data: URL: as a blob: URL it would be a same-origin document if
         // opened. Raster images use a blob: URL (no multi-MiB base64 string), revoked on unmount.
         if (type === 'image/svg+xml') {
-          setShown({ key, url: `data:${type};base64,${toBase64(bytes)}` })
+          setShown({ key, url: `data:${type};base64,${bytesToBase64(bytes)}` })
         } else {
           objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type }))
           setShown({ key, url: objectUrl })
@@ -390,13 +384,15 @@ function RepoImage({ src, alt, width, height }: { src: string; alt: string; widt
       if (objectUrl !== null) URL.revokeObjectURL(objectUrl)
     }
   }, [key, path, reader, tipOid])
-  if (repo === null || path === null) return alt ? <span className="text-anvil-500 dark:text-anvil-400">{alt}</span> : null
-  const url = key === null ? 'failed' : shown?.key === key ? shown.url : null
+  if (repo === null || path === null) return <AltText alt={alt} />
+  let url: string | null = null
+  if (key === null) url = 'failed' // no reader for this page
+  else if (shown?.key === key) url = shown.url
   if (url === null) return <span className={cn(IMG, 'inline-block h-5 w-16 animate-pulse bg-anvil-100 dark:bg-anvil-800')} aria-label={alt} />
   if (url === 'failed') {
     // No reader for this page, or the blob is missing, too large or not an image: link to it.
     return (
-      <Link href={repoHref('/repo/blob', repo.addr, { path, ...(repo.refParam ? { ref: repo.refParam } : {}) })} className={LINK} data-testid="repo-image-link">
+      <Link href={repoPathHref(repo, path)} className={LINK} data-testid="repo-image-link">
         {alt || path}
       </Link>
     )
@@ -476,7 +472,7 @@ function renderBlock(b: Block, key: string, slugs: Map<string, number>): ReactNo
       const base = headingSlug(textOf(b.c))
       const n = slugs.get(base) ?? 0
       slugs.set(base, n + 1)
-      const id = `user-content-${n === 0 ? base : `${base}-${n}`}`
+      const id = anchorTarget(n === 0 ? base : `${base}-${n}`)
       if (b.level <= 2) return <h2 key={key} id={id} className={cls}>{content}</h2>
       if (b.level === 3) return <h3 key={key} id={id} className={cls}>{content}</h3>
       return <h4 key={key} id={id} className={cls}>{content}</h4>

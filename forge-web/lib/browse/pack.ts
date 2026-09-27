@@ -139,8 +139,16 @@ export function inflateZlib(buf: Uint8Array, from: number, expected: number, max
  * The most bytes a delta producing at most `maxBytes` can hold: all-insert deltas spend one
  * opcode per 127 bytes, plus the two size varints.
  */
-export function deltaMaxBytes(maxBytes: number): number {
+function deltaMaxBytes(maxBytes: number): number {
   return maxBytes === Infinity ? Infinity : maxBytes + Math.ceil(maxBytes / 127) + 32
+}
+
+/**
+ * Inflate the delta whose zlib stream is at `buf[from..]` (declared `size`) and apply it to
+ * `base`, refusing a delta or a result that could exceed `maxBytes` before allocating either.
+ */
+export function inflateDelta(base: Uint8Array, buf: Uint8Array, from: number, size: number, maxBytes = Infinity): Uint8Array {
+  return applyDelta(base, inflateZlib(buf, from, size, deltaMaxBytes(maxBytes)), maxBytes)
 }
 
 /**
@@ -259,8 +267,7 @@ function decodeAt(
       const [rel, dpos] = parseOfsBase(buf, h.after)
       const baseAbs = absOff - rel
       const base = decodeAt(buf, baseAddr, baseAbs, refResolver, maxBytes)
-      const delta = inflateZlib(buf, dpos, h.size, deltaMaxBytes(maxBytes))
-      return { type: base.type, bytes: applyDelta(base.bytes, delta, maxBytes) }
+      return { type: base.type, bytes: inflateDelta(base.bytes, buf, dpos, h.size, maxBytes) }
     }
     case T_REF_DELTA: {
       if (refResolver === null) {
@@ -268,8 +275,7 @@ function decodeAt(
       }
       const oid = bytesToHex(buf.subarray(h.after, h.after + 20))
       const base = refResolver(oid)
-      const delta = inflateZlib(buf, h.after + 20, h.size, deltaMaxBytes(maxBytes))
-      return { type: base.type, bytes: applyDelta(base.bytes, delta, maxBytes) }
+      return { type: base.type, bytes: inflateDelta(base.bytes, buf, h.after + 20, h.size, maxBytes) }
     }
     default:
       throw new Error(`unknown pack object type ${h.type}`)

@@ -195,7 +195,7 @@ const isSpace = (ch: string | undefined): boolean => ch !== undefined && /\s/.te
  * `s` with ASCII letters lowercased and nothing else: `toLowerCase` lengthens some strings
  * (`İ` becomes two units), which would shift every offset after it.
  */
-export function asciiLower(s: string): string {
+function asciiLower(s: string): string {
   return s.replace(/[A-Z]+/g, (m) => m.toLowerCase())
 }
 
@@ -284,8 +284,9 @@ function inlineDoc(src: string): InlineDoc {
         if ((list[mid] as number) < from) lo = mid + 1
         else hi = mid
       }
-      const at = lo < list.length ? (list[lo] as number) : -1
-      return at !== -1 && at + needle.length <= end ? at : -1
+      if (lo === list.length) return -1
+      const at = list[lo] as number
+      return at + needle.length <= end ? at : -1
     },
     closeOf(open) {
       brackets ??= matchBrackets(src)
@@ -417,7 +418,7 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
     while (hrefEnd < paren && !isSpace(src[hrefEnd])) hrefEnd += 1
     let href = src.slice(hrefStart, hrefEnd)
     if (href.startsWith('<') && href.endsWith('>')) href = href.slice(1, -1)
-    return { href: decodeEntities(unescape(href)), end: paren + 1 }
+    return { href: plain(href), end: paren + 1 }
   }
 
   /**
@@ -427,18 +428,13 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
    */
   const reference = (open: number, close: number): { href: string; end: number } | null => {
     if (references.size === 0) return null
-    const textIsLabel = (): boolean => close - open - 1 <= MAX_LABEL
-    if (at(close + 1) === '[') {
-      const refEnd = closeOf(close + 1)
-      if (refEnd === -1) return null
-      const collapsed = refEnd === close + 2
-      if (collapsed ? !textIsLabel() : refEnd - close - 2 > MAX_LABEL) return null
-      const href = references.get(normalizeLabel(collapsed ? src.slice(open + 1, close) : src.slice(close + 2, refEnd)))
-      return href === undefined ? null : { href, end: refEnd + 1 }
-    }
-    if (!textIsLabel()) return null
-    const href = references.get(normalizeLabel(src.slice(open + 1, close)))
-    return href === undefined ? null : { href, end: close + 1 }
+    // `[text][ref]` names `ref`; `[text][]` and `[text]` name `text`.
+    const refEnd = at(close + 1) === '[' ? closeOf(close + 1) : close
+    if (refEnd === -1) return null
+    const [from, to] = refEnd > close + 2 ? [close + 2, refEnd] : [open + 1, close]
+    if (to - from > MAX_LABEL) return null
+    const href = references.get(normalizeLabel(src.slice(from, to)))
+    return href === undefined ? null : { href, end: refEnd + 1 }
   }
 
   let i = start
@@ -481,8 +477,9 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
     if (ch === '&') {
       const semi = find(';', i + 1)
       if (semi !== -1 && semi - i <= 32) {
-        const decoded = decodeEntities(src.slice(i, semi + 1))
-        if (decoded !== src.slice(i, semi + 1)) {
+        const raw = src.slice(i, semi + 1)
+        const decoded = decodeEntities(raw)
+        if (decoded !== raw) {
           add(decoded)
           i = semi + 1
           continue
@@ -584,7 +581,7 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
     // bare autolink (GFM: trailing punctuation and quotes are not part of it)
     if (ch === 'h' && !isWordChar(at(i - 1)) && (src.startsWith('http://', i) || src.startsWith('https://', i))) {
       const bodyStart = i + (src[i + 4] === 's' ? 8 : 7)
-      const linkEnd = bodyStart <= end ? autolinkEnd(src, bodyStart, end) : bodyStart
+      const linkEnd = autolinkEnd(src, bodyStart, end)
       if (linkEnd > bodyStart) {
         const url = src.slice(i, linkEnd)
         push({ t: 'link', href: safeHref(url), c: [{ t: 'text', v: url }] })
@@ -610,7 +607,7 @@ function unescape(s: string): string {
   return s.includes('\\') ? s.replace(/\\([!-/:-@[-`{-~])/g, '$1') : s
 }
 
-/** An image's alt text: its label with Markdown punctuation left as written, escapes and entities resolved. */
+/** Text with escapes and entities resolved (an image's alt, a link destination), Markdown punctuation left as written. */
 function plain(label: string): string {
   return decodeEntities(unescape(label))
 }
@@ -845,7 +842,7 @@ function collectReferences(lines: string[]): Map<string, string> {
     const m = !fenced && !fence && mayStart && line.length < 2048 ? REFERENCE_DEF.exec(line) : null
     if (m !== null && refs.size < MAX_REFERENCES) {
       const label = normalizeLabel(m[1] as string)
-      if (label !== '' && !refs.has(label)) refs.set(label, decodeEntities(unescape(m[2] as string)))
+      if (label !== '' && !refs.has(label)) refs.set(label, plain(m[2] as string))
       lines[i] = ''
       continue // the next line may be another definition
     }
@@ -986,6 +983,12 @@ function parseBlocks(lines: readonly string[], depth: number): Block[] {
   const blocks: Item[] = []
   let i = 0
 
+  /** Append lines to `buf` through the first one that `holds` (or to the end), advancing `i`. */
+  const takeThrough = (buf: string[], holds: (line: string) => boolean): void => {
+    while (i < lines.length && !holds(lines[i] ?? '')) buf.push(lines[i++] ?? '')
+    if (i < lines.length) buf.push(lines[i++] ?? '')
+  }
+
   /** Parse one block at `lines[i]`, advancing `i` past it. */
   const step = (): void => {
     const line = lines[i] ?? ''
@@ -1012,10 +1015,7 @@ function parseBlocks(lines: readonly string[], depth: number): Block[] {
     if (COMMENT_START.test(line)) {
       const buf = [line]
       i += 1
-      if (!line.includes('-->', line.indexOf('<!--') + 2)) {
-        while (i < lines.length && !(lines[i] ?? '').includes('-->')) buf.push(lines[i++] ?? '')
-        if (i < lines.length) buf.push(lines[i++] ?? '')
-      }
+      if (!line.includes('-->', line.indexOf('<!--') + 2)) takeThrough(buf, (l) => l.includes('-->'))
       blocks.push(...htmlItems(buf.join('\n')))
       return
     }
@@ -1028,10 +1028,8 @@ function parseBlocks(lines: readonly string[], depth: number): Block[] {
       if (RAW_TEXT.has(name)) {
         // Runs to the line holding its closing tag (or the end).
         const end = `</${name}>`
-        if (!line.toLowerCase().includes(end)) {
-          while (i < lines.length && !(lines[i] ?? '').toLowerCase().includes(end)) buf.push(lines[i++] ?? '')
-          if (i < lines.length) buf.push(lines[i++] ?? '')
-        }
+        const holdsEnd = (l: string): boolean => asciiLower(l).includes(end)
+        if (!holdsEnd(line)) takeThrough(buf, holdsEnd)
         if (name === 'pre') {
           const text = buf.join('\n').replace(/<[^<>]{0,1024}>/g, '')
           blocks.push({ t: 'code', lang: '', v: trimNewlines(decodeEntities(text)) })

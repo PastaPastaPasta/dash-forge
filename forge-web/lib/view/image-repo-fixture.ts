@@ -10,7 +10,7 @@ import { zlibSync } from 'fflate'
 import { BrowseReader, ObjectLocator, applyDelta, gitOidHex } from '../browse'
 import { indexPacks, memoryPackSource, serializeLocator } from '../browse/indexer'
 import { PACK_TYPE } from '../browse/pack'
-import { deltaSize, hexToBytes, objHeader, ofsBase, packFrame } from '../browse/pack-fixtures'
+import { concat, deltaSize, hexToBytes, objHeader, ofsBase, packFrame } from '../browse/pack-fixtures'
 
 /** A `size`-byte file that starts with the PNG magic (enough for `imagePreviewType`). */
 export function png(size: number): Uint8Array {
@@ -48,7 +48,7 @@ export async function imageRepo(files: readonly ImageRepoFile[]): Promise<{ read
     offset += bytes.length
     return at
   }
-  const whole = (type: number, bytes: Uint8Array): number => put(new Uint8Array([...objHeader(type, bytes.length), ...zlibSync(bytes)]))
+  const whole = (type: number, bytes: Uint8Array): number => put(concat(objHeader(type, bytes.length), zlibSync(bytes)))
 
   const oids: Record<string, string> = {}
   for (const f of files) {
@@ -57,7 +57,7 @@ export async function imageRepo(files: readonly ImageRepoFile[]): Promise<{ read
       const delta = repeatingDelta(base, size)
       oids[f.name] = gitOidHex('blob', applyDelta(base, delta))
       const baseAt = whole(PACK_TYPE.BLOB, base)
-      put(new Uint8Array([...objHeader(PACK_TYPE.OFS_DELTA, delta.length), ...ofsBase(offset - baseAt), ...zlibSync(delta)]))
+      put(concat(objHeader(PACK_TYPE.OFS_DELTA, delta.length), ofsBase(offset - baseAt), zlibSync(delta)))
     } else {
       const bytes = f.bytes ?? new Uint8Array(0)
       oids[f.name] = gitOidHex('blob', bytes)
@@ -67,7 +67,7 @@ export async function imageRepo(files: readonly ImageRepoFile[]): Promise<{ read
 
   const enc = new TextEncoder()
   const sorted = [...files].sort((a, b) => (a.name < b.name ? -1 : 1))
-  const tree = new Uint8Array(sorted.flatMap((f) => [...enc.encode(`100644 ${f.name}\0`), ...hexToBytes(oids[f.name] as string)]))
+  const tree = concat(...sorted.flatMap((f) => [enc.encode(`100644 ${f.name}\0`), hexToBytes(oids[f.name] as string)]))
   whole(PACK_TYPE.TREE, tree)
   const ident = 'A U Thor <a@example.com> 1700000000 +0000'
   const commit = enc.encode(`tree ${gitOidHex('tree', tree)}\nauthor ${ident}\ncommitter ${ident}\n\nimages\n`)

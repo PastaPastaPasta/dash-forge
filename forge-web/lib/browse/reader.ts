@@ -21,9 +21,8 @@ import { type LocatorEntry, ObjectLocator, offsetKey, singleReadAdvised } from '
 import {
   type GitObject,
   PACK_TYPE,
-  applyDelta,
   gitOidHex,
-  deltaMaxBytes,
+  inflateDelta,
   inflateZlib,
   ObjectTooLargeError,
   objTypeFromCode,
@@ -296,8 +295,7 @@ export class BrowseReader {
    * a stored entry's length says nothing about what it inflates to, so a few KiB of pack can
    * otherwise expand to gigabytes in the viewer's tab.
    */
-  async readObject(oidHex: string, options: ReadObjectOptions = {}): Promise<GitObject> {
-    const maxBytes = options.maxBytes ?? Infinity
+  async readObject(oidHex: string, { maxBytes = Infinity }: ReadObjectOptions = {}): Promise<GitObject> {
     const oidKey = oidHex.toLowerCase()
     const cached = this.objectsByOid.get(oidKey)
     if (cached !== undefined) return withinLimit(cached, maxBytes)
@@ -366,7 +364,6 @@ export class BrowseReader {
       const slice = await this.packs.fetchRange(entry.packRef, end - entry.deltaChainSpan, end, copy)
       return reconstructFromSpan(entry, slice, maxBytes)
     }
-    const deltaMax = deltaMaxBytes(maxBytes)
     const walk = async (e: LocatorEntry): Promise<GitObject> => {
       const self = await this.packs.fetchRange(e.packRef, e.offset, e.offset + e.length, copy)
       const h = parseObjHeader(self, 0)
@@ -382,11 +379,11 @@ export class BrowseReader {
           const baseEntry = this.offsetIndex.get(offsetKey(e.packRef, e.offset - rel))
           if (baseEntry === undefined) throw new Error(`base object at pack ${e.packRef} offset ${e.offset - rel} not in locator`)
           const base = await walk(baseEntry)
-          return { type: base.type, bytes: applyDelta(base.bytes, inflateZlib(self, dpos, h.size, deltaMax), maxBytes) }
+          return { type: base.type, bytes: inflateDelta(base.bytes, self, dpos, h.size, maxBytes) }
         }
         case PACK_TYPE.REF_DELTA: {
           const base = await this.readObject(bytesToHex(self.subarray(h.after, h.after + 20)), { maxBytes })
-          return { type: base.type, bytes: applyDelta(base.bytes, inflateZlib(self, h.after + 20, h.size, deltaMax), maxBytes) }
+          return { type: base.type, bytes: inflateDelta(base.bytes, self, h.after + 20, h.size, maxBytes) }
         }
         default:
           throw new Error(`unknown pack object type ${h.type}`)
@@ -420,7 +417,6 @@ export class BrowseReader {
   }
 
   private async decodeEntryUncached(entry: LocatorEntry, maxBytes: number): Promise<GitObject> {
-    const deltaMax = deltaMaxBytes(maxBytes)
     const packRef = entry.packRef
     const self = await this.packs.fetchRange(packRef, entry.offset, entry.offset + entry.length, this.copyOf.get(packRef))
     const h = parseObjHeader(self, 0)
@@ -434,15 +430,12 @@ export class BrowseReader {
       case PACK_TYPE.OFS_DELTA: {
         const [rel, dpos] = parseOfsBase(self, h.after)
         const base = await this.decodeByOffset(packRef, entry.offset - rel, maxBytes)
-        return { type: base.type, bytes: applyDelta(base.bytes, inflateZlib(self, dpos, h.size, deltaMax), maxBytes) }
+        return { type: base.type, bytes: inflateDelta(base.bytes, self, dpos, h.size, maxBytes) }
       }
       case PACK_TYPE.REF_DELTA: {
         const oidHex = bytesToHex(self.subarray(h.after, h.after + 20))
         const base = await this.decodeByOid(oidHex, maxBytes)
-        return {
-          type: base.type,
-          bytes: applyDelta(base.bytes, inflateZlib(self, h.after + 20, h.size, deltaMax), maxBytes),
-        }
+        return { type: base.type, bytes: inflateDelta(base.bytes, self, h.after + 20, h.size, maxBytes) }
       }
       default:
         throw new Error(`unknown pack object type ${h.type}`)

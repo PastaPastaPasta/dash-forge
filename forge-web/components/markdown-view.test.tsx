@@ -100,8 +100,8 @@ describe('RepoImage (review of #82)', () => {
     addr: { owner: 'o', name: 'r' },
     refParam: '',
     dir: '',
-    ...(reader ? { reader } : {}),
-    ...(tipOid ? { tipOid } : {}),
+    reader,
+    tipOid,
   })
   const settle = async (): Promise<void> => {
     for (let i = 0; i < 20 && host.querySelector('.animate-pulse') !== null; i++) {
