@@ -46,12 +46,13 @@ You need Rust and `protoc` 25 or newer to build ([BUILDING.md](docs/BUILDING.md)
 - **Bring your own storage.** Packs go to your S3-compatible bucket (R2, B2, AWS S3, MinIO), your IPFS node or pinning service, or Platform, with N-of-M replication. Set it up with `dg storage add` or the web app's storage wizard.
 - **Collaborate.** Writers and maintainers enforced at consensus, issues, labels, pull requests from a branch or a fork, reviews that count only from members on the current head, real merges (`dg pr merge`), releases with hash-checked assets, forks and stars.
 - **Mirror GitHub.** `forge-import` (or `dg import`) copies code, issues, PRs, releases and labels, and the [Mirror Action](action/README.md) keeps the copy in sync from GitHub Actions, idempotently and under a cost cap.
+- **Keep it private.** `dg repo create --private`: code, branch names and (soon) issues and PRs are encrypted to members' identity encryption keys, removing a member rotates the key, and the [collaborating guide](docs/guides/collaborating.md#private-repositories) lists exactly what stays visible (existence, name, members, sizes, timing, commit ids; release notes and labels are not encrypted in this release). The web app's private views follow.
 - **Keep keys contained.** `dg auth` and the web app sign with *limited keys*: a budget, an expiry, and usable only on Forge's contracts, enforced by Platform. The master key signs only one-time steps and is not stored (unless you ask for `dg auth login --full-key`). CLI keys live in the OS keychain; browser keys in an encrypted vault (passkey or passphrase). CI gets one pasteable `dfk1:` runner key.
 - **Use the web app.** Browse code, commits and diffs; file and triage issues; review PRs; publish releases; manage members and storage; Explore and a local notifications inbox. Sign in by creating an identity in the browser, importing one, or scanning a QR code with Dash Wallet (today: Dash Wallet iOS on devnet, with limits; see [Identity and keys](docs/guides/identity-and-keys.md#signing-in-with-the-dash-wallet-app-what-works-today)).
 - **Check everything.** A Verification card on every repository page says what was proven and how, including a cross-check of the quorum keys against a second source.
 - **Wire up CI.** `dg webhook add` plus a relay you run yourself (`forge-relay`) turn on-chain activity into GitHub-shaped webhooks, with a durable retry queue.
 
-**Coming soon:** opening pull requests, inline review comments, forks and real merges in the browser; DPNS usernames in `dash://` addresses and `dg` (the web app already resolves them); private repositories; prebuilt releases.
+**Coming soon:** opening pull requests, inline review comments, forks and real merges in the browser; DPNS usernames in `dash://` addresses and `dg` (the web app already resolves them); prebuilt releases.
 
 ## Guides
 

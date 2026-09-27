@@ -1,6 +1,6 @@
 {
   "name": "config_non_anchor",
-  "description": "a later config of epoch 1 that is not the anchor, without tags 8/9.",
+  "description": "a later config of epoch 1 without tags 8/9 is malformed: every config of an epoch e >= 1 must be able to serve as its anchor.",
   "case": "private_doc_open",
   "rules": "v2",
   "input": {
@@ -32,9 +32,6 @@
     }
   },
   "expected": {
-    "status": "readable",
-    "fields": {
-      "defaultBranch": "refs/heads/dev"
-    }
+    "status": "malformed"
   }
 }

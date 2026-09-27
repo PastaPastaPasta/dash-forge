@@ -463,8 +463,9 @@ def doc_seal_vectors():
          "tags 8/9 are not allowed in an epoch-0 config."),
         ("anchor_epoch1_without_prev", CONFIG1, K1, {"defaultBranch": "refs/heads/main"}, True,
          "an anchor for e >= 1 must carry prevEpoch and prevEpochKey."),
-        ("prev_epoch_in_non_anchor", CONFIG1, K1, {"prevEpoch": 0, "prevEpochKey": H(K0)}, False,
-         "tags 8/9 are not allowed in a config that is not an anchor."),
+        ("non_anchor_epoch1_without_prev", CONFIG1, K1, {"defaultBranch": "refs/heads/dev"}, False,
+         "every config of an epoch e >= 1 carries prevEpoch and prevEpochKey, anchor or not: any of them may "
+         "become the anchor when an earlier one's author stops being a maintainer."),
         ("tag_not_for_kind", ISSUE, K0, {"title": "t", "refName": "refs/heads/main"}, None,
          "refName is not an issue field."),
         ("patch_base_hash_without_name", PATCH, K0, {"title": "Add the feature", "sourceRefName": "refs/heads/feature"},
@@ -583,10 +584,13 @@ def doc_open_vectors():
     v("config_version_1", "a config whose enc[0] is 0x01 is malformed.", c0, K0, None, CTX0, MALFORMED,
       enc=b"\x01" + cfg_enc[1:])
     v("config_short_v2", "a config enc under 61 bytes is malformed.", c0, K0, None, CTX0, MALFORMED, enc=cfg_enc[:60])
-    v("config_non_anchor_with_prev", "tags 8/9 in a config that is not its epoch's anchor are malformed.",
-      dict(CONFIG1, id="c1-later"), K1, CONFIG1_TLV, CTX01, MALFORMED)
-    v("config_non_anchor", "a later config of epoch 1 that is not the anchor, without tags 8/9.",
-      dict(CONFIG1, id="c1-later"), K1, tlv((6, b"refs/heads/dev")), CTX01, readable({"defaultBranch": "refs/heads/dev"}))
+    v("config_non_anchor_with_prev", "a later config of epoch 1 that is not the anchor carries tags 8/9 like its anchor.",
+      dict(CONFIG1, id="c1-later"), K1, CONFIG1_TLV, CTX01,
+      readable({"defaultBranch": "refs/heads/main", "protectedPatterns": ["refs/heads/main"], "prevEpoch": 0,
+                "prevEpochKey": H(K0)}))
+    v("config_non_anchor", "a later config of epoch 1 without tags 8/9 is malformed: every config of an epoch "
+      "e >= 1 must be able to serve as its anchor.",
+      dict(CONFIG1, id="c1-later"), K1, tlv((6, b"refs/heads/dev")), CTX01, MALFORMED)
     v("config_empty_non_anchor", "an empty plaintext is valid for a non-anchor config.", dict(CONFIG0, id="c0-later"), K0,
       b"", CTX0, readable({}))
     v("config_patterns_repeat", "tag 7 repeats, order kept; a zero-length pattern counts as absent.",

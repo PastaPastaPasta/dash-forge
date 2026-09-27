@@ -9,8 +9,9 @@ On Dash Forge, your account is a **Dash Platform identity**. No company holds it
 5. [Never paste a master key into a web page](#never-paste-a-master-key-into-a-web-page)
 6. [Rotating and disabling keys](#rotating-and-disabling-keys)
 7. [Limited keys and the web app](#limited-keys)
-8. [The browser vault and its limits](#the-browser-vault-and-its-limits)
-9. [Trust roots](#trust-roots)
+8. [Encryption key (private repositories)](#encryption-key-private-repositories)
+9. [The browser vault and its limits](#the-browser-vault-and-its-limits)
+10. [Trust roots](#trust-roots)
 
 ---
 
@@ -40,7 +41,7 @@ An identity file from the bridge, the web app or `dg auth new` has five keys, al
 | 1 | AUTHENTICATION | HIGH | Signing documents: pushes, issues, comments, reviews, releases. |
 | 2 | AUTHENTICATION | CRITICAL | What HIGH does. Forge uses it only when the file has no HIGH key. |
 | 3 | TRANSFER | CRITICAL | Moving credits to another identity, or withdrawing them. |
-| 4 | ENCRYPTION | MEDIUM | Decrypting webhook secrets addressed to a relay you run, and private repositories (coming soon). An identity without one can add it with `dg auth keys add --encryption`. |
+| 4 | ENCRYPTION | MEDIUM | Private repositories (see [Encryption key](#encryption-key-private-repositories)), and decrypting webhook secrets addressed to a relay you run. |
 | 5+ | AUTHENTICATION | HIGH | [Limited keys](#limited-keys): what `dg`, `git push` and the web app sign with day to day. |
 
 What each tool signs with:
@@ -130,6 +131,28 @@ When to rotate:
 A browser's own key is managed in the web app: **Settings → This browser's key** can top it up, renew it or revoke it ([below](#limited-keys)).
 
 If the **MASTER** key or the 12 words leak, rotating does not help: whoever has them can add keys and disable yours. The identity is lost. Move your credits out with the TRANSFER key to a new identity, and start over there with new repositories: push your clones to them. Repository ownership cannot be transferred, and the attacker now controls everything only the owner can do, such as adding and removing members.
+
+---
+
+## Encryption key (private repositories)
+
+A private repository encrypts its content under a repository key, and each member gets that key wrapped (encrypted) to their identity's **ENCRYPTION** key. Without one, nobody can add you to a private repository and you cannot create one. Identities from `dg auth new`, the bridge and the web app carry key 4 for this.
+
+**Using it from the CLI.** Reading or writing a private repository needs the ENCRYPTION key's private half, and the limited key `dg auth login` stores is a signing key only. For private repositories, point `DASH_FORGE_KEY` at your identity file, or sign in with `dg auth login --full-key <identity file>` (kept in a passphrase-sealed file, never the keychain). Without it, private-repo commands stop with [`E306`](../errors.md#e306).
+
+**An identity without one** can add it:
+
+```sh
+dg auth keys add --encryption
+```
+
+- One identity update, signed by your **MASTER** key (your identity file, or your recovery words typed when asked). The key is derived from the recovery words at the identity's key path with the next key id (`m/9'/<coin>'/5'/0'/0'/0'/<id>'`), so the words alone recover it; nothing is stored by `dg`.
+- If the identity already has an ENCRYPTION key, it says so and does nothing.
+- `dg auth keys list` shows the result.
+
+**What it can read.** This key can read every private repo you're a member of, and every key you've handed out as a maintainer. Keep it as carefully as your signing keys.
+
+**In the web app** this will be **Settings → Keys → Enable private repos**, with the web release of private repositories.
 
 ---
 

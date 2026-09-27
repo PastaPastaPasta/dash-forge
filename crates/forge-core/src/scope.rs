@@ -69,12 +69,12 @@ impl RepoRef {
         })
     }
 
-    /// Refuse to operate on a repository this client cannot read correctly yet.
-    pub fn require_readable(&self) -> Result<()> {
+    /// Refuse `what` on a private repository: the operations that do not handle one (a fork,
+    /// whose copied refs and manifests would need the parent's keys).
+    pub fn require_public(&self, what: &str) -> Result<()> {
         match self.visibility {
             Visibility::Private => Err(Error::Config(format!(
-                "{} is a private repository; private repositories are not supported by this \
-                 version of the CLI yet",
+                "{} is a private repository; {what} is not supported for private repositories",
                 self.display()
             ))),
             Visibility::Public => Ok(()),
@@ -241,11 +241,11 @@ mod tests {
     }
 
     #[test]
-    fn private_repos_are_refused_until_supported() {
+    fn public_only_operations_refuse_private_repos() {
         let mut r = repo();
         r.visibility = Visibility::Private;
-        assert!(r.require_readable().is_err());
-        assert!(repo().require_readable().is_ok());
+        assert!(r.require_public("forking").is_err());
+        assert!(repo().require_public("forking").is_ok());
     }
 
     #[test]

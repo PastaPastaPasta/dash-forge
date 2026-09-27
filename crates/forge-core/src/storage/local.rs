@@ -10,7 +10,9 @@
 //!   clone ever fetched it).
 //! - `<git dir>/objects/pack/pack-*.pack` — a fetch indexes each stored pack verbatim (it
 //!   is self-contained, so `index-pack --fix-thin` changes nothing), so any clone that
-//!   fetched the pack holds its exact bytes under git's own name for it.
+//!   fetched the pack holds its exact bytes under git's own name for it. **Not for a private
+//!   repository**: its stored packs are sealed and a fetch indexes the opened plaintext, so
+//!   only the pusher's kept copy holds the recorded bytes ([`find_kept_pack`]).
 //!
 //! Every candidate is SHA-256-verified against the manifest before it is used.
 
@@ -42,6 +44,15 @@ pub fn keep_pushed_pack(git_dir: &Path, pack_hash_hex: &str, bytes: &[u8]) -> Re
     std::fs::write(&tmp, bytes).map_err(|e| Error::Io(format!("{}: {e}", tmp.display())))?;
     std::fs::rename(&tmp, &path).map_err(|e| Error::Io(format!("{}: {e}", path.display())))?;
     Ok(path)
+}
+
+/// The kept copy of the pack whose SHA-256 is `pack_hash`, if this clone pushed it: the only
+/// local source of a private repository's (sealed) recorded bytes.
+pub fn find_kept_pack(git_dir: &Path, pack_hash: [u8; 32]) -> Result<Option<Vec<u8>>> {
+    let path = kept_packs_dir(git_dir).join(format!("{}.pack", hex::encode(pack_hash)));
+    Ok(std::fs::read(path)
+        .ok()
+        .filter(|bytes| sha256(bytes) == pack_hash))
 }
 
 /// Find the exact bytes of the pack whose SHA-256 is `pack_hash` in `git_dir`, checking

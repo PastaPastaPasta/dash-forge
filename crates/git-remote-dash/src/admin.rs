@@ -43,6 +43,10 @@ pub fn run(rt: &Runtime, args: &[String]) -> Result<()> {
                 _ => bail!("usage: git-remote-dash --dump-refs <owner> <repo>"),
             }
         }
+        Some("--dump-pack-heads") => match (args.get(1), args.get(2)) {
+            (Some(o), Some(r)) => rt.block_on(dump_pack_heads(o, r)),
+            _ => bail!("usage: git-remote-dash --dump-pack-heads <owner> <repo>"),
+        },
         Some(verb @ ("--resume-repo" | "--teardown")) => bail!(
             "{verb} is gone: repo creation is resumable (re-run --create-repo), and forge-v2 \
              packs are permanent"
@@ -132,8 +136,10 @@ async fn dump_refs(owner: &str, repo: &str) -> Result<()> {
         println!("--- {doc_type}: {} docs ---", docs.len());
         for d in &docs {
             println!(
-                "  ref={:?} new={} prev={} force={} createdAt={} id={} owner={}",
+                "  ref={:?} hash={} enc={} new={} prev={} force={} createdAt={} id={} owner={}",
                 d.field_str("refName").unwrap_or_default(),
+                d.field_hex("refNameHash").unwrap_or_default(),
+                d.field_bytes("enc").map_or(0, |e| e.len()),
                 d.field_hex("newOid").unwrap_or_default(),
                 d.field_hex("prevOid").unwrap_or_default(),
                 d.field_bool("force"),
@@ -142,6 +148,26 @@ async fn dump_refs(owner: &str, repo: &str) -> Result<()> {
                 d.owner_id,
             );
         }
+    }
+    Ok(())
+}
+
+/// Print the first bytes of every stored git pack, as stored (diagnostic: a private repo's
+/// packs are sealed and start with `DFPK`; a public repo's start with `PACK`).
+async fn dump_pack_heads(owner: &str, repo: &str) -> Result<()> {
+    let (client, bridge) = connect().await?;
+    let identity = client.fetch_identity(&bridge.identity_id).await?;
+    let repo = resolve_named(&client, owner, repo).await?;
+    let svc = RepoService::new(&client, &identity, &bridge);
+    let reader = forge_core::storage::PackReader::from_user_config();
+    for m in svc.read_pack_manifests(&repo).await? {
+        let bytes = svc.fetch_artifact(&repo, &m, &reader).await?;
+        let head = String::from_utf8_lossy(&bytes[..bytes.len().min(4)]).into_owned();
+        println!(
+            "  pack={} kind={} head={head:?}",
+            hex::encode(m.pack_hash),
+            m.kind
+        );
     }
     Ok(())
 }
