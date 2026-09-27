@@ -454,7 +454,7 @@ async fn check_identity(ctx: &Ctx) -> Vec<Check> {
         out.push(Check::warn(
             "identity",
             "none configured (reads work; writes need one)",
-            "`dg auth login --identity <file>` with the bridge identity export",
+            "`dg auth new` creates one; `dg auth login <file>` (or `--mnemonic`) signs in",
         ));
         return out;
     };
@@ -463,8 +463,12 @@ async fn check_identity(ctx: &Ctx) -> Vec<Check> {
         Err(e) => {
             out.push(Check::fail(
                 "identity",
-                format!("{}: {:#}", forge_core::keystore::describe_key_source(&path), e),
-                "pass the bridge identity export with --identity <file>, or `dg auth login --identity <file>`",
+                format!(
+                    "{}: {:#}",
+                    forge_core::keystore::describe_key_source(&path),
+                    e
+                ),
+                "sign in again: `dg auth login <file>` or `dg auth login --mnemonic`",
             ));
             return out;
         }
@@ -477,7 +481,7 @@ async fn check_identity(ctx: &Ctx) -> Vec<Check> {
             forge_core::keystore::describe_key_source(&path)
         ),
     ));
-    if !forge_core::keystore::is_inline_key(&path) {
+    if forge_core::keystore::is_file_source(&path) {
         out.push(file_mode_check(&path));
     }
     out.push(if bridge.doc_op_key().is_ok() {

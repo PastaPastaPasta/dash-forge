@@ -6,8 +6,15 @@
 //! in [`Secret`], whose `Debug`/`Display`-free surface keeps key material out of
 //! logs, journals and panic output (style guide §B: "newtype with redacted Debug").
 //!
-//! OS-keychain and agent-protocol storage land later; this module only models the
-//! import format and enforces redaction.
+//! Where a signing identity comes from (a *key source*, what `--identity` / `DASH_FORGE_KEY` /
+//! the config default hold):
+//!
+//! * a path to a bridge-format identity file (plaintext JSON);
+//! * a path to a passphrase-sealed file ([`crate::sealed`]) holding a bridge file or a `dfk1:`
+//!   key: `dg auth login` writes one where there is no OS keychain;
+//! * `keychain:dash-forge/<network>/<identityId>`: an OS keychain entry ([`crate::keychain`])
+//!   holding the same (`dg auth new` / `dg auth login` store limited keys there);
+//! * an inline `dfk1:<network>:<identityId>:<keyId>:<wif>` limited key (CI secrets).
 
 use std::fmt;
 use std::path::Path;
@@ -128,6 +135,13 @@ pub const DFK1_PREFIX: &str = "dfk1:";
 pub const INLINE_KEY_ON_ARGV: &str = "an inline dfk1: key on the command line is visible to \
     other local users (ps) and kept in shell history; set DASH_FORGE_KEY instead";
 
+/// The `dfk1:<network>:<identityId>:<keyId>:<wif>` value of one key.
+pub fn dfk1(network: &str, identity_id: &str, key_id: u32, wif: &str) -> Secret {
+    Secret::new(format!(
+        "{DFK1_PREFIX}{network}:{identity_id}:{key_id}:{wif}"
+    ))
+}
+
 /// Whether a `DASH_FORGE_KEY` / `--identity` value is an inline `dfk1:` key, not a path.
 pub fn is_inline_key(source: &Path) -> bool {
     source.to_str().is_some_and(|s| s.starts_with(DFK1_PREFIX))
@@ -148,6 +162,128 @@ pub fn describe_key_source(source: &Path) -> String {
     }
 }
 
+/// The prefix of a key source kept in the OS keychain (`keychain:<service>/<account>`).
+pub const KEYCHAIN_PREFIX: &str = "keychain:";
+
+/// Whether `source` names a file on disk (not an inline `dfk1:` key or a keychain entry).
+pub fn is_file_source(source: &Path) -> bool {
+    source
+        .to_str()
+        .is_none_or(|s| !s.starts_with(DFK1_PREFIX) && !s.starts_with(KEYCHAIN_PREFIX))
+}
+
+/// The keychain key source for an identity: `keychain:dash-forge/<network>/<identityId>`.
+pub fn keychain_source(network: &str, identity_id: &str) -> String {
+    format!(
+        "{KEYCHAIN_PREFIX}{}/{network}/{identity_id}",
+        crate::keychain::SERVICE
+    )
+}
+
+/// `(service, account)` of a `keychain:` key source.
+pub fn parse_keychain_source(source: &str) -> Option<(&str, &str)> {
+    source
+        .strip_prefix(KEYCHAIN_PREFIX)?
+        .split_once('/')
+        .filter(|(s, a)| !s.is_empty() && !a.is_empty())
+}
+
+/// Dash Forge's config directory: `$XDG_CONFIG_HOME/dash-forge`, else
+/// `~/.config/dash-forge` (ux-dx-spec §7.6).
+pub fn forge_config_dir() -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
+        })?;
+    Some(base.join("dash-forge"))
+}
+
+/// The key source `dg` recorded as the default (`default_identity` in `config.toml`), for
+/// tools without an `--identity` of their own (the remote helper). `None` when there is none.
+pub fn configured_default_source() -> Option<String> {
+    let raw = std::fs::read_to_string(forge_config_dir()?.join("config.toml")).ok()?;
+    let v: toml::Value = toml::from_str(&raw).ok()?;
+    v.get("default_identity")?
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Write `bytes` to `path` readable by the owner only, replacing it atomically: the data goes
+/// to a 0600 temporary file in the same directory (created exclusively, so no symlink is
+/// followed) that is then renamed over `path`. A parent directory under the Forge config
+/// directory is created and kept 0700.
+pub fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let io = |e: std::io::Error| Error::Io(format!("writing {}: {e}", path.display()));
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir).map_err(io)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let forge_dir = forge_config_dir();
+            // Only Forge's own directories are tightened, never one the user named.
+            if forge_dir.is_some_and(|c| dir.starts_with(c)) {
+                std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+                    .map_err(io)?;
+            }
+        }
+    }
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .ok_or_else(|| Error::Io(format!("{} names no file", path.display())))?;
+    // Unique per process, thread and call; create_new refuses any collision.
+    let mut nonce = [0u8; 8];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
+    let tmp = dir.join(format!(
+        ".{}.{}.{}.{}.tmp",
+        name.to_string_lossy(),
+        std::process::id(),
+        SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        hex::encode(nonce)
+    ));
+    if let Err(e) = create_private_file(&tmp, bytes) {
+        // Never leave a partial secret behind.
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    // rename() replaces a symlink at `path` instead of writing through it.
+    std::fs::rename(&tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp);
+        io(e)
+    })?;
+    // Make the new directory entry durable too.
+    #[cfg(unix)]
+    if let Ok(d) = std::fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+    Ok(())
+}
+
+/// Create `path` for a new export or backup, owner-only, refusing to overwrite anything or to
+/// follow a symlink planted at the name (`O_EXCL` does not follow links).
+pub fn create_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    let io = |e: std::io::Error| Error::Io(format!("writing {}: {e}", path.display()));
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
+    let mut f = opts.open(path).map_err(io)?;
+    f.write_all(bytes).map_err(io)?;
+    f.sync_all().map_err(io)
+}
+
 /// Security levels acceptable for signing a document create/delete, in preference
 /// order. Document ops accept HIGH (spike S0.7); CRITICAL also works and is the
 /// fallback when a HIGH key is absent.
@@ -166,14 +302,116 @@ impl BridgeIdentity {
     ///
     /// Never format `path` into a message yourself: use [`describe_key_source`], which keeps
     /// an inline key's WIF out of it.
+    ///
+    /// Also takes a `keychain:<service>/<account>` source (an OS keychain entry) and a
+    /// passphrase-sealed file (the passphrase comes from `DASH_FORGE_PASSPHRASE` or a hidden
+    /// prompt on the terminal); see the module docs.
     pub fn load_from_file(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         if let Some(inline) = path.to_str().filter(|s| s.starts_with(DFK1_PREFIX)) {
             return Self::from_dfk1(inline);
         }
-        let raw = std::fs::read_to_string(path)
-            .map_err(|e| Error::Io(format!("reading identity file {}: {e}", path.display())))?;
-        Self::from_json(&raw)
+        if let Some(src) = path.to_str().filter(|s| s.starts_with(KEYCHAIN_PREFIX)) {
+            let (service, account) = parse_keychain_source(src).ok_or_else(|| {
+                Error::Config(format!(
+                    "identity source {src:?} must be keychain:<service>/<account>"
+                ))
+            })?;
+            let text = crate::keychain::get(service, account)?.ok_or_else(|| {
+                Error::Io(format!(
+                    "reading identity: no key in the keychain under {service}/{account}"
+                ))
+            })?;
+            return Self::from_source_text(text.expose());
+        }
+        let raw =
+            zeroize::Zeroizing::new(std::fs::read_to_string(path).map_err(|e| {
+                Error::Io(format!("reading identity file {}: {e}", path.display()))
+            })?);
+        if crate::sealed::is_sealed(&raw) {
+            let pass = crate::sealed::passphrase(&path.display().to_string(), false)?;
+            let plain = crate::sealed::open(&raw, pass.expose())?;
+            let text = std::str::from_utf8(&plain)
+                .map_err(|_| Error::Io("the sealed identity file does not hold text".into()))?;
+            return Self::from_source_text(text);
+        }
+        if path.extension().is_some_and(|e| e == "key") {
+            tracing::warn!(
+                "{} holds an unencrypted identity key (stored with --insecure-plaintext)",
+                path.display()
+            );
+        }
+        Self::from_source_text(&raw)
+    }
+
+    /// Parse what a keychain entry or a key file holds: a `dfk1:` limited key or a
+    /// bridge-format identity JSON.
+    pub fn from_source_text(text: &str) -> Result<Self> {
+        let t = text.trim();
+        if t.starts_with(DFK1_PREFIX) {
+            Self::from_dfk1(t)
+        } else {
+            // serde_json quotes the offending text in its errors, and this text holds keys.
+            Self::from_json(t).map_err(|_| {
+                Error::Config(
+                    "the stored identity is neither a dfk1: key nor a bridge-format identity file"
+                        .into(),
+                )
+            })
+        }
+    }
+
+    /// The identity as bridge-format JSON **with its secrets** (unlike `Serialize`, which
+    /// redacts them): what a `--full-key` login stores and `dg auth export --reveal-secrets`
+    /// writes. Handle the result as a secret.
+    pub fn to_json_with_secrets(&self) -> Secret {
+        let keys: Vec<serde_json::Value> = self
+            .identity_keys
+            .iter()
+            .map(|k| {
+                serde_json::json!({
+                    "id": k.id,
+                    "name": k.name,
+                    "keyType": k.key_type,
+                    "purpose": k.purpose,
+                    "securityLevel": k.security_level,
+                    "privateKeyWif": k.private_key_wif.expose(),
+                    "privateKeyHex": k.private_key_hex.expose(),
+                    "publicKeyHex": k.public_key_hex,
+                    "derivationPath": k.derivation_path,
+                })
+            })
+            .collect();
+        let v = serde_json::json!({
+            "network": self.network,
+            "identityId": self.identity_id,
+            "identityKeys": keys,
+            "mnemonic": self.mnemonic.expose(),
+            "assetLockKey": {
+                "wif": self.asset_lock_key.wif.expose(),
+                "publicKeyHex": self.asset_lock_key.public_key_hex,
+                "derivationPath": self.asset_lock_key.derivation_path,
+            },
+        });
+        // Compact: one line, so it also fits where a line break is not allowed.
+        Secret::new(serde_json::to_string(&v).unwrap_or_default())
+    }
+
+    /// The identity's MASTER authentication key, when this source carries one.
+    pub fn master_key(&self) -> Option<&IdentityKey> {
+        self.auth_key("MASTER")
+            .filter(|k| !k.private_key_wif.expose().is_empty())
+    }
+
+    /// The `dfk1:` form of key `key_id` of this identity.
+    pub fn to_dfk1(&self, key_id: u32) -> Option<Secret> {
+        let k = self.identity_keys.iter().find(|k| k.id == key_id)?;
+        Some(dfk1(
+            &self.network,
+            &self.identity_id,
+            k.id,
+            k.private_key_wif.expose(),
+        ))
     }
 
     /// Parse an inline limited key `dfk1:<network>:<identityId>:<keyId>:<wif>` into an
@@ -198,6 +436,21 @@ impl BridgeIdentity {
         };
         if network.is_empty() || identity_id.is_empty() || wif.is_empty() {
             return Err(bad("an empty field"));
+        }
+        // The network and id end up in file names and keychain accounts: letters, digits
+        // and `-` only for the network, base58 for the id.
+        if !network
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(bad("the network is not a network name"));
+        }
+        if !(40..=44).contains(&identity_id.len())
+            || !identity_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() && !b"0OIl".contains(&b))
+        {
+            return Err(bad("the identity id is not base58"));
         }
         let id: u32 = key_id
             .parse()
@@ -355,10 +608,13 @@ mod tests {
 
     #[test]
     fn an_inline_dfk1_key_loads_as_one_high_auth_key() {
-        let v = "dfk1:devnet-moutai:FAKEid111:5:cFAKEwifDONOTUSE";
+        let v = "dfk1:devnet-moutai:FAKEid1111111111111111111111111111111111111:5:cFAKEwifDONOTUSE";
         let id = BridgeIdentity::load_from_file(v).unwrap();
         assert_eq!(id.network, "devnet-moutai");
-        assert_eq!(id.identity_id, "FAKEid111");
+        assert_eq!(
+            id.identity_id,
+            "FAKEid1111111111111111111111111111111111111"
+        );
         let key = id.doc_op_key().unwrap();
         assert_eq!(key.id, 5);
         assert_eq!(key.private_key_wif.expose(), "cFAKEwifDONOTUSE");
@@ -370,7 +626,10 @@ mod tests {
         // Nothing prints the WIF.
         assert!(!format!("{id:?}").contains("cFAKEwif"));
         let shown = super::describe_key_source(std::path::Path::new(v));
-        assert_eq!(shown, "dfk1:devnet-moutai:FAKEid111:5:[redacted]");
+        assert_eq!(
+            shown,
+            "dfk1:devnet-moutai:FAKEid1111111111111111111111111111111111111:5:[redacted]"
+        );
         assert!(super::is_inline_key(std::path::Path::new(v)));
         assert!(!super::is_inline_key(std::path::Path::new("/tmp/id.json")));
     }
@@ -382,6 +641,10 @@ mod tests {
             "dfk1:testnet:id:5",
             "dfk1:testnet:id:five:cWIFsecret",
             "dfk1::id:5:cWIFsecret",
+            // An id that is not base58, and a network that is not a name (both end up in file
+            // names and keychain accounts).
+            "dfk1:testnet:../../etc/passwd:5:cWIFsecret",
+            "dfk1:test/net:FAKEid1111111111111111111111111111111111111:5:cWIFsecret",
         ] {
             let err = BridgeIdentity::from_dfk1(bad).unwrap_err().to_string();
             assert!(err.contains("dfk1:<network>"), "{err}");

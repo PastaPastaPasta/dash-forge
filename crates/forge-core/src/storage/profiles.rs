@@ -599,10 +599,13 @@ impl StorageProfiles {
         if let Some(p) = std::env::var_os(STORAGE_CONFIG_ENV) {
             return Ok(PathBuf::from(p));
         }
-        let home = std::env::var_os("HOME").ok_or_else(|| {
-            Error::Config("HOME is not set; cannot locate ~/.config/dash-forge/storage.toml".into())
+        let dir = crate::keystore::forge_config_dir().ok_or_else(|| {
+            Error::Config(
+                "neither XDG_CONFIG_HOME nor HOME is set; cannot locate dash-forge/storage.toml"
+                    .into(),
+            )
         })?;
-        Ok(PathBuf::from(home).join(".config/dash-forge/storage.toml"))
+        Ok(dir.join("storage.toml"))
     }
 
     /// Load from the default path (empty when the file does not exist).

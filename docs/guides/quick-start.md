@@ -63,72 +63,65 @@ dg doctor
 
 A Dash Platform **identity** is your account on Forge. It holds your keys and your credit balance. Nobody issues it to you: you create it yourself by locking some Dash. [Identity and keys](identity-and-keys.md) explains what it is.
 
-**Forge never funds or creates identities for you.** On devnet moutai, free test Dash is available for trying things out:
-
-1. Open the **Dash bridge** in moutai mode: <https://bridge.thepasta.org/?network=devnet-moutai>.
-2. Choose **Create New Identity**. Fund the deposit address it shows from the moutai faucet at <https://faucet.moutai.networks.dash.org>. A little is enough: a repository costs about 0.001 DASH.
-3. **Write down the 12 words it shows you.** They are the only way to recover the identity.
-4. When the identity is registered, choose **Download Key Backup**. You get a file named `dash-identity-<id>.json`. `dg` reads your keys from it.
-
-Keep the file private. It holds every private key of the identity. Move it somewhere safe, for example:
+**Forge never funds or creates identities for you.** Create one from the terminal:
 
 ```sh
-mkdir -p -m 700 ~/.config/dash-forge
-mv ~/Downloads/dash-identity-*.json ~/.config/dash-forge/
-chmod 600 ~/.config/dash-forge/dash-identity-*.json
+dg auth new --network devnet --devnet-name moutai
 ```
 
-> **Mainnet.** Use <https://bridge.thepasta.org/?network=mainnet> (the bridge defaults to testnet) and fund the deposit address from any Dash wallet. There is no faucet on mainnet. Forge itself is not on mainnet yet.
+1. `dg` shows **12 recovery words**. Write them down, in order, and keep them offline: they are the identity, and nobody can recover it without them. It asks you to type three of them back.
+2. It shows a deposit address as a QR code and as text. Send 0.05 DASH to it from any Dash wallet; on devnet moutai use the faucet at <https://faucet.moutai.networks.dash.org>. A repository costs about 0.001 DASH.
+3. `dg` waits for the deposit, locks it, registers the identity, and stores a **limited key** for this computer in your OS keychain: it can spend at most 0.25 DASH, only on Forge, for 180 days. The master key is not stored anywhere.
 
-You can also create an identity in the web app: choose **Sign in**, then create a new identity there (see [Identity and keys](identity-and-keys.md#limited-keys-and-the-web-app)). The CLI still needs the key backup file.
+```
+✓ identity 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB created on devnet-moutai
+  key #5: limited, 0.25 DASH budget, only on Dash Forge, expires in 180 day(s)
+  stored in macOS Keychain (dash-forge/devnet-moutai/8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB)
+  balance 0.0499 DASH
+```
 
-**Coming soon:** `dg auth new`, which creates and funds an identity from the terminal (it shows a QR code for the deposit) and stores the keys in your OS keychain.
+On a devnet the deposit is proven with a chain lock, which takes a few minutes. If `dg` is interrupted, `dg auth new --resume` continues with the same deposit address.
+
+> **Mainnet.** Fund the deposit from any Dash wallet. There is no faucet on mainnet. Forge itself is not on mainnet yet.
+
+You can also create an identity in the web app (**Sign in → Create a new identity**) or with the Dash bridge (<https://bridge.thepasta.org/?network=devnet-moutai>). All three derive the same keys from the same words.
 
 ---
 
 ## 3. Sign in
 
-Point `dg` at the identity file and the network once:
+`dg auth new` signs you in. With an identity you already have (a bridge `dash-identity-<id>.json`, or the 12 words), sign in once per computer:
 
 ```sh
-dg auth login --network devnet --devnet-name moutai --identity ~/.config/dash-forge/dash-identity-<id>.json
+dg auth login --network devnet --devnet-name moutai ~/Downloads/dash-identity-<id>.json
+# or: dg auth login --network devnet --devnet-name moutai --mnemonic
 ```
 
 ```
-Logged in as 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB on devnet-moutai.
-Stored default identity at /home/you/.config/dash-forge/identities/devnet-moutai/8hJm….identity.json.
-Balance: 199980000000 credits (~1.999800 DASH).
+✓ signed in as 8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB on devnet-moutai
+  key #6: limited, 0.25 DASH budget, expires in 180 day(s)
+  stored in macOS Keychain (dash-forge/devnet-moutai/8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB)
 ```
 
-`dg` copies the file into `~/.config/dash-forge/identities/<network>/` and records the identity and the network as defaults, so later commands need neither flag. The copy is created with your default file mode, so make it private:
+The identity file's master key signs one update that registers a limited key for this computer, and `dg` stores only that key. Afterwards put the identity file somewhere offline. `dg` records the identity and the network as defaults, and `git push` reads the same stored key, so neither needs flags or environment variables.
+
+`git-remote-dash` still needs the network for a repository `dg` did not set up (`dg init` and `dg repo create --push` write it into the repository's git config). Add it to your shell profile if you clone by hand:
 
 ```sh
-dg doctor --fix      # chmod 700 the directory and 600 the copied key file
-```
-
-`dg doctor --fix` also sets `git config --global dash.costWarnThreshold 0.01` if you have no threshold yet, so that pushes ask before spending more than 0.01 DASH. Inside a git repository it can also pin `dash.network` in that repository's config to match `dg`. It never spends anything.
-
-**git needs to find the key and the network too.** `git-remote-dash` does not read `dg`'s settings. It reads the `DASH_FORGE_KEY` environment variable for the key, and `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME` (or git config `dash.network` / `dash.devnetName`) for the network. It needs an identity even to **clone**, although cloning spends nothing. Add these lines to your shell profile (`~/.zshrc`, `~/.bashrc`):
-
-```sh
-export DASH_FORGE_KEY="$HOME/.config/dash-forge/identities/devnet-moutai/<your identity id>.identity.json"
 export DASH_FORGE_NETWORK=devnet
 export DASH_FORGE_DEVNET_NAME=moutai
 ```
 
-Without the network settings the helper uses testnet, which has no Forge deployment, and stops with a "not deployed" error.
-
-Then check everything. `dg doctor` should now show no warnings for your identity:
+Then check everything:
 
 ```sh
-dg auth status
-dg auth balance
+dg auth status      # identity, key, budget left, expiry, balance, where the key is stored
 dg doctor
 ```
 
-Your identity id is the long base58 string, such as `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB`. You will use it in repository addresses.
+`dg doctor --fix` also sets `git config --global dash.costWarnThreshold 0.01` if you have no threshold yet, so that pushes ask before spending more than 0.01 DASH. It never spends anything.
 
-**Coming soon:** DPNS usernames, so you can write `dash://alice/project` instead of the identity id, keychain storage for keys, and `dg auth keys` for limited-budget keys.
+Your identity id is the long base58 string, such as `8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB`. You will use it in repository addresses. A DPNS username is optional: `dg auth name register <label>`.
 
 ---
 
@@ -251,7 +244,7 @@ https://forge.dashhq.org/repo?owner=<your identity id>&name=my-project
 
 The web app has no server behind it. Your browser reads the repository straight from Dash Platform, checks the Platform proofs, and re-hashes every file it shows. The **Assay** panel on the right says what was checked. [Verify Forge](verify-forge.md) explains it.
 
-Browsing and cloning are free and need no sign-in. To file an issue from the browser, choose **Sign in**. The web app registers a limited key for this browser (a small budget, an expiry, usable only on Forge) and keeps it encrypted; your master key is used once and not stored. [Identity and keys](identity-and-keys.md#limited-keys-and-the-web-app) explains the options.
+Browsing and cloning are free and need no sign-in. To file an issue from the browser, choose **Sign in**. The web app registers a limited key for this browser (a small budget, an expiry, usable only on Forge) and keeps it encrypted; your master key is used once and not stored. [Identity and keys](identity-and-keys.md#limited-keys) explains the options.
 
 ---
 

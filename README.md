@@ -9,19 +9,19 @@
 
 ## Try it (devnet moutai)
 
-Forge runs on devnet **moutai** today (Platform protocol 14). Build the two binaries (Rust and `protoc` 25 or newer; see [BUILDING.md](docs/BUILDING.md)). Create an identity in the [Dash bridge](https://bridge.thepasta.org/?network=devnet-moutai), fund it from the [moutai faucet](https://faucet.moutai.networks.dash.org) (a repository costs about 0.001 DASH), and download its key backup. Then, from any git repository, replacing `<id>` with your identity id:
+Forge runs on devnet **moutai** today (Platform protocol 14). Build the two binaries (Rust and `protoc` 25 or newer; see [BUILDING.md](docs/BUILDING.md)). Then, from any git repository:
 
 ```sh
 cargo install --locked --path crates/dg && cargo install --locked --path crates/git-remote-dash
-dg auth login --network devnet --devnet-name moutai --identity ~/Downloads/dash-identity-<id>.json
-export DASH_FORGE_KEY=~/.config/dash-forge/identities/devnet-moutai/<id>.identity.json
-export DASH_FORGE_NETWORK=devnet DASH_FORGE_DEVNET_NAME=moutai   # dg and git-remote-dash read these
+dg auth new --network devnet --devnet-name moutai  # 12 words, a deposit QR (fund it from the moutai faucet), then a limited key in your keychain
 dg init --name hello --storage platform # ~0.001 DASH to create; adds remote origin and pushes this branch
 ```
 
+`dg auth new` shows the words to write down and a deposit address; fund it from the [moutai faucet](https://faucet.moutai.networks.dash.org) (a repository costs about 0.001 DASH). Already have an identity (a bridge key backup, or the 12 words)? `dg auth login <file>` or `dg auth login --mnemonic` instead.
+
 `--storage platform` keeps the packs on Platform (~0.28 DASH/MiB). Run `dg storage add` first to keep them in your own bucket instead; `dg init` then uses it without `--storage`.
 
-Open `https://forge.dashhq.org/repo?owner=<id>&name=hello` to see it. The [quick start](docs/guides/quick-start.md) walks through each step.
+`dg init` prints the repository's web address (`https://forge.dashhq.org/repo?owner=<id>&name=hello`). The [quick start](docs/guides/quick-start.md) walks through each step.
 
 Prebuilt binaries and a one-line `install.sh` will come with the first tagged release ([INSTALL.md](docs/INSTALL.md)). None has been published yet.
 
