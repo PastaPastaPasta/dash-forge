@@ -1993,6 +1993,30 @@ fn minimal_uint(n: u64) -> Value {
 /// and (b) is a usable ECDSA_SECP256K1 authentication key at HIGH or CRITICAL — the
 /// levels document create/delete accept (spike S0.7).
 fn select_matching_key(identity: &Identity, signer: &SingleKeySigner) -> Result<IdentityPublicKey> {
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+    // The signer's key is on the identity but can no longer sign: say so (E305), rather than
+    // "no usable key", which sends people looking for a different file.
+    if let Some(k) = identity
+        .public_keys()
+        .values()
+        .find(|k| signer.can_sign_with(k))
+    {
+        if k.is_disabled() {
+            return Err(Error::Platform(format!(
+                "Identity public key {} is disabled and can no longer sign",
+                k.id()
+            )));
+        }
+        if let Some(exp) = k.expires_at().filter(|e| *e <= now_ms) {
+            return Err(Error::Platform(format!(
+                "Identity public key {} expired at {exp} ms and can no longer sign",
+                k.id()
+            )));
+        }
+    }
     for public_key in identity.public_keys().values() {
         if public_key.is_disabled() || !signer.can_sign_with(public_key) {
             continue;

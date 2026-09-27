@@ -140,6 +140,9 @@ const CANONICAL: [(u32, Purpose, SecurityLevel, &str); 5] = [
     (4, Purpose::ENCRYPTION, SecurityLevel::MEDIUM, "Encryption"),
 ];
 
+/// The DPNS system contract (the same id on every network).
+const DPNS_CONTRACT_ID: &str = "GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec";
+
 /// The key id a limited key created together with the identity gets (after the canonical set).
 pub const FIRST_LIMITED_KEY_ID: u32 = 5;
 
@@ -857,6 +860,9 @@ impl PlatformClient {
 
     /// Whether DPNS name `label` is free.
     pub async fn dpns_name_available(&self, label: &str) -> Result<bool> {
+        // The trusted context provider verifies proofs only for contracts it was given:
+        // fetching DPNS through `fetch_contract` registers it.
+        self.fetch_contract(DPNS_CONTRACT_ID).await?;
         self.sdk()
             .is_dpns_name_available(label)
             .await
@@ -865,6 +871,9 @@ impl PlatformClient {
 
     /// The DPNS names that resolve to `identity_id` (`alice.dash`).
     pub async fn dpns_names_of(&self, identity_id: &str) -> Result<Vec<String>> {
+        // The trusted context provider verifies proofs only for contracts it was given:
+        // fetching DPNS through `fetch_contract` registers it.
+        self.fetch_contract(DPNS_CONTRACT_ID).await?;
         let id = parse_id(identity_id, "identity id")?;
         self.sdk()
             .get_dpns_usernames_by_identity(id, Some(5))
@@ -874,8 +883,11 @@ impl PlatformClient {
     }
 
     /// Register DPNS name `label` for `identity_id`, signed by its CRITICAL (else HIGH)
-    /// unbound authentication key from `bridge`. Returns the full name (`alice.dash`).
+    /// unbound authentication key from `bridge`. Returns the name as registered (`alice.dash`).
     pub async fn register_dpns_name(&self, bridge: &BridgeIdentity, label: &str) -> Result<String> {
+        // The trusted context provider verifies proofs only for contracts it was given:
+        // fetching DPNS through `fetch_contract` registers it.
+        self.fetch_contract(DPNS_CONTRACT_ID).await?;
         let id = parse_id(&bridge.identity_id, "identity id")?;
         let identity = retry_transient_read("fetch identity", || Identity::fetch(self.sdk(), id))
             .await
@@ -919,7 +931,10 @@ impl PlatformClient {
             })
             .await
             .map_err(|e| sdk_err("registering the name", e))?;
-        Ok(result.full_domain_name)
+        // The SDK reports the homograph-safe form (`alice` → `a11ce.dash`); the name as
+        // registered and displayed is the label as given.
+        let _ = result.full_domain_name;
+        Ok(format!("{label}.dash"))
     }
 }
 

@@ -590,7 +590,10 @@ mod tests {
         let v = "dfk1:devnet-moutai:FAKEid1111111111111111111111111111111111111:5:cFAKEwifDONOTUSE";
         let id = BridgeIdentity::load_from_file(v).unwrap();
         assert_eq!(id.network, "devnet-moutai");
-        assert_eq!(id.identity_id, "FAKEid1111111111111111111111111111111111111");
+        assert_eq!(
+            id.identity_id,
+            "FAKEid1111111111111111111111111111111111111"
+        );
         let key = id.doc_op_key().unwrap();
         assert_eq!(key.id, 5);
         assert_eq!(key.private_key_wif.expose(), "cFAKEwifDONOTUSE");
@@ -602,7 +605,10 @@ mod tests {
         // Nothing prints the WIF.
         assert!(!format!("{id:?}").contains("cFAKEwif"));
         let shown = super::describe_key_source(std::path::Path::new(v));
-        assert_eq!(shown, "dfk1:devnet-moutai:FAKEid1111111111111111111111111111111111111:5:[redacted]");
+        assert_eq!(
+            shown,
+            "dfk1:devnet-moutai:FAKEid1111111111111111111111111111111111111:5:[redacted]"
+        );
         assert!(super::is_inline_key(std::path::Path::new(v)));
         assert!(!super::is_inline_key(std::path::Path::new("/tmp/id.json")));
     }

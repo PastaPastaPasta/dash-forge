@@ -707,7 +707,10 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
                 .fix("register a fresh limited key (uses your master key once): `dg auth login <identity file>` or `dg auth login --mnemonic`"),
         );
     }
-    if m.contains("disabled") && m.contains("public key") && !m.contains("contract") {
+    // PublicKeyIsDisabledError ("Identity key N is disabled"), or the same caught before signing.
+    if m.contains("is disabled")
+        && (m.contains("identity key") || m.contains("identity public key"))
+    {
         return Some(
             UserError::new(codes::KEY_EXPIRED, ctx.headline("this key was disabled"))
                 .cause(one_line(msg))
@@ -1324,6 +1327,33 @@ mod tests {
             o
         };
         assert_eq!(strip(&colored), u.render("", false));
+    }
+
+    #[test]
+    fn key_limit_rejections_have_their_own_codes() {
+        let ctx = ErrorContext {
+            goal: Some("push rejected"),
+            ..ErrorContext::default()
+        };
+        for (text, code) in [
+            (
+                "Identity public key 7 has spent its whole budget and can no longer sign",
+                codes::KEY_BUDGET_SPENT,
+            ),
+            (
+                "Identity public key 7 expired at 1700000000000 ms and can no longer sign (block time 1800000000000 ms)",
+                codes::KEY_EXPIRED,
+            ),
+            ("Identity key 7 is disabled", codes::KEY_EXPIRED),
+            (
+                "Identity public key 7 is disabled and can no longer sign",
+                codes::KEY_EXPIRED,
+            ),
+        ] {
+            let u = from_platform_text(text, &ctx).expect(text);
+            assert_eq!(u.code, code, "{text}");
+            assert!(u.fix.iter().any(|f| f.contains("dg auth login")), "{text}");
+        }
     }
 
     #[test]
