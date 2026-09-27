@@ -46,9 +46,11 @@ build-web:
 		echo "== web: skipped (no forge-web/package.json yet) =="; \
 	fi
 
-## infra-up: start e2e storage backend fixtures (kubo, minio, static-http)
+## infra-up: start e2e storage backend fixtures (kubo, RustFS + its bucket setup, static-http).
+## --remove-orphans drops containers of services no longer in the file (the old MinIO ones,
+## which would otherwise keep port 9000).
 infra-up:
-	docker compose -f $(COMPOSE_FILE) up -d
+	docker compose -f $(COMPOSE_FILE) up -d --remove-orphans
 
 ## infra-down: stop and remove e2e storage backend fixtures + volumes
 infra-down:
@@ -98,21 +100,25 @@ devnet-identities: tools/mint-identity/node_modules
 devnet-identities-verify: tools/mint-identity/node_modules
 	$(MINT) verify --dir "$(DEVNET_IDENTITY_DIR)"
 
-## storage-it: bring-your-own-storage integration tests against LOCAL MinIO + kubo
+## storage-it: bring-your-own-storage integration tests against LOCAL RustFS (S3) + kubo
 ## (infra/docker-compose.yml): SigV4-signed PUT/HEAD/GET/DELETE on a bucket that refuses
 ## anonymous writes, kubo CID == local CIDv1 derivation, N-of-M replication + gateway
 ## read-back. FORGE_IT_S3/FORGE_IT_IPFS turn an unreachable fixture into a FAILURE
 ## instead of a silent skip. No network beyond localhost; no Platform spend.
+## The wait includes s3-init having exited: the buckets exist only after it ran.
 storage-it: infra-up
-	@for i in $$(seq 1 30); do \
-		curl -fsS -o /dev/null http://127.0.0.1:9000/minio/health/live && \
-		curl -fsS -o /dev/null -X POST http://127.0.0.1:5001/api/v0/version && break; \
+	@for i in $$(seq 1 60); do \
+		curl -fsS -o /dev/null http://127.0.0.1:9000/health/ready && \
+		curl -fsS -o /dev/null -X POST http://127.0.0.1:5001/api/v0/version && \
+		curl -fsS -o /dev/null http://127.0.0.1:8082/README.txt && \
+		curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:9000/forge-byo/.probe | grep -q 404 && break; \
+		[ "$$i" = 60 ] && { echo "storage fixture not ready after 120 s (docker compose -f $(COMPOSE_FILE) ps)" >&2; exit 1; }; \
 		sleep 2; \
 	done
-	FORGE_IT_S3=1 FORGE_IT_IPFS=1 cargo test -p forge-core --lib -- backends::live_tests storage::
+	FORGE_IT_S3=1 FORGE_IT_IPFS=1 cargo test --locked -p forge-core --lib -- backends::live_tests storage::
 
 ## storage-e2e: a REAL `git push` / `git clone` through git-remote-dash with packs stored
-## on local MinIO + kubo and only the manifest + ref on devnet moutai, against the
+## on local RustFS (S3) + kubo and only the manifest + ref on devnet moutai, against the
 ## dedicated storage-e2e-a / storage-e2e-b repos (e2e/README.md; ~0.001 DASH each, once).
 ## Builds the helper with the `test-hooks` fault-injection feature. Opt-in.
 storage-e2e: infra-up

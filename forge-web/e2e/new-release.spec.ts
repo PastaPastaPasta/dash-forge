@@ -3,10 +3,10 @@ import { copyFileSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { E2E_DEVNET, idFile, runAxe, shot, signedIn, stateFile, unlock } from './helpers'
 
 /**
- * Publishing a release from the browser, live on a devnet with the local MinIO reachable at a
+ * Publishing a release from the browser, live on a devnet with the local S3 store reachable at a
  * PUBLIC https address (a release may record only addresses anyone can read):
  *
- *   docker compose -f infra/docker-compose.yml up -d minio minio-init
+ *   docker compose -f infra/docker-compose.yml up -d rustfs s3-init
  *   cloudflared tunnel --url http://127.0.0.1:9000        # prints https://<name>.trycloudflare.com
  *   E2E_DEVNET=moutai E2E_WRITE=1 E2E_PUBLIC_MINIO=https://<name>.trycloudflare.com/forge-byo \
  *     pnpm exec playwright test new-release.spec.ts

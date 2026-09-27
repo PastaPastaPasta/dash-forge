@@ -269,7 +269,7 @@ pub struct S3Profile {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub prefix: String,
     /// Access key id (literal or reference). Omit, with the secret, for an anonymous
-    /// public-write bucket (local MinIO fixture only).
+    /// public-write bucket (the local S3 fixture only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub access_key_id: Option<KeyId>,
     /// Secret access key reference.

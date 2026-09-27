@@ -2,11 +2,19 @@
 #
 # Brings up local stand-ins for the storage adapters under test:
 #   - kubo:         IPFS node (write via API, read via gateway)
-#   - minio:        S3-compatible object storage (+ one-shot bucket bootstrap):
+#   - rustfs:       S3-compatible object storage (+ one-shot bucket bootstrap, s3-init):
 #                     forge-packs — anonymous read+write (the legacy public-bucket fixture)
 #                     forge-byo   — SigV4-signed writes (minioadmin/minioadmin), anonymous
-#                                   reads: the shape of a real R2/B2/S3 bring-your-own bucket
+#                                   reads, CORS for any origin: the shape of a real
+#                                   R2/B2/S3 bring-your-own bucket
 #   - static-http:  plain HTTPS-style static file host (nginx)
+#
+# The S3 fixture was MinIO until the minio/minio and minio/mc images stopped pulling
+# ("pull access denied"; the upstream repository was archived in 2026-04). RustFS replaces
+# it because it serves anonymous requests through bucket policies, which both buckets need
+# (Garage has no anonymous S3 access, so it cannot stand in). The S3 images are pinned by
+# tag and digest so a fresh machine or CI runner pulls exactly what was tested; bump both
+# together.
 #
 # Usage: docker compose -f infra/docker-compose.yml up -d
 #        docker compose -f infra/docker-compose.yml down -v
@@ -51,40 +59,54 @@ services:
       timeout: 5s
       retries: 10
 
-  minio:
-    image: minio/minio
-    container_name: forge-e2e-minio
+  rustfs:
+    image: rustfs/rustfs:1.0.0@sha256:8cc9801755448b71a786705ce76692c77e14936cccd87cf2fc31842e58f4d1ff
+    container_name: forge-e2e-rustfs
     restart: unless-stopped
-    command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
+      # The fixture key the tests and e2e scripts sign with (the old MinIO root pair).
+      RUSTFS_ACCESS_KEY: minioadmin
+      RUSTFS_SECRET_KEY: minioadmin
     ports:
-      - "127.0.0.1:9000:9000" # S3 API
-      - "127.0.0.1:9001:9001" # Console
+      - "127.0.0.1:9000:9000" # S3 API (localhost only)
     volumes:
-      - minio-data:/data
+      - rustfs-data:/data
     healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:9000/health/ready"]
       interval: 5s
       timeout: 5s
-      retries: 10
+      retries: 20
 
-  minio-init:
-    image: minio/mc
-    container_name: forge-e2e-minio-init
+  s3-init:
+    image: amazon/aws-cli:2.37.4@sha256:fdd8d1fcbea9c371678dee5a40df8b178c7a781b4586605756ee28114c97ead6
+    container_name: forge-e2e-s3-init
     depends_on:
-      minio:
+      rustfs:
         condition: service_healthy
-    entrypoint: >
-      /bin/sh -c "
-      mc alias set local http://minio:9000 minioadmin minioadmin &&
-      mc mb --ignore-existing local/forge-packs &&
-      mc anonymous set public local/forge-packs &&
-      mc mb --ignore-existing local/forge-byo &&
-      mc anonymous set download local/forge-byo &&
-      echo 'forge-packs (public read+write) and forge-byo (SigV4 write, public read) buckets ready'
-      "
+    environment:
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_REGION: us-east-1
+      AWS_ENDPOINT_URL: http://rustfs:9000
+    # Idempotent: an existing bucket is kept, the policy and CORS puts replace what is
+    # there. CORS AllowedHeaders is ["*"], not ["Range"]: browsers send a lowercase
+    # `range`, and some stores match the list case-sensitively.
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        for b in forge-packs forge-byo; do
+          aws s3api head-bucket --bucket "$$b" 2>/dev/null || aws s3api create-bucket --bucket "$$b"
+        done
+        aws s3api put-bucket-policy --bucket forge-packs --policy '{"Version":"2012-10-17","Statement":[
+          {"Effect":"Allow","Principal":"*","Action":["s3:GetObject","s3:PutObject","s3:DeleteObject"],"Resource":["arn:aws:s3:::forge-packs/*"]},
+          {"Effect":"Allow","Principal":"*","Action":["s3:ListBucket","s3:GetBucketLocation"],"Resource":["arn:aws:s3:::forge-packs"]}]}'
+        aws s3api put-bucket-policy --bucket forge-byo --policy '{"Version":"2012-10-17","Statement":[
+          {"Effect":"Allow","Principal":"*","Action":["s3:GetObject"],"Resource":["arn:aws:s3:::forge-byo/*"]}]}'
+        aws s3api put-bucket-cors --bucket forge-byo --cors-configuration '{"CORSRules":[
+          {"AllowedOrigins":["*"],"AllowedMethods":["GET","HEAD","PUT","DELETE"],"AllowedHeaders":["*"],
+           "ExposeHeaders":["ETag","Content-Length","Content-Range"],"MaxAgeSeconds":3600}]}'
+        echo 'forge-packs (public read+write) and forge-byo (SigV4 write, public read, CORS *) buckets ready'
     restart: "no"
 
   static-http:
@@ -99,4 +121,4 @@ services:
 
 volumes:
   kubo-data:
-  minio-data:
+  rustfs-data:

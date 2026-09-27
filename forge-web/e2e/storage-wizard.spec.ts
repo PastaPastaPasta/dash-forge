@@ -3,16 +3,17 @@ import { existsSync } from 'node:fs'
 import { E2E_DEVNET, idFile, runAxe, shot, signedIn, stateFile, unlock } from './helpers'
 
 /**
- * The storage wizard (`/settings/storage`) against the local MinIO of infra/docker-compose.yml
+ * The storage wizard (`/settings/storage`) against the local S3 store of infra/docker-compose.yml
  * (`forge-byo`: SigV4-signed writes, anonymous reads, CORS for any origin), live on a devnet
  * build because a vault needs a signed-in identity:
  *
- *   docker compose -f infra/docker-compose.yml up -d minio minio-init static-http
+ *   docker compose -f infra/docker-compose.yml up -d rustfs s3-init static-http
  *   E2E_DEVNET=moutai E2E_WRITE=1 pnpm exec playwright test storage-wizard.spec.ts
  *
- * s1. on MinIO every write, read, range and CORS row passes, and the public-read row fails with
- *     the reason a loopback address cannot be published; the profile is saved into the vault,
- *     never into localStorage; it survives a reload + unlock; a default policy is set.
+ * s1. on the local S3 store (RustFS, entered through the wizard's MinIO tile) every write,
+ *     read, range and CORS row passes, and the public-read row fails with the reason a
+ *     loopback address cannot be published; the profile is saved into the vault, never into
+ *     localStorage; it survives a reload + unlock; a default policy is set.
  * s2. a reachable host with no CORS (the static nginx) fails the CORS rows and shows the
  *     copy-paste fix, prefilled with the bucket and this origin.
  * s3. a repo's own policy (its Settings → Your browser pushes).
