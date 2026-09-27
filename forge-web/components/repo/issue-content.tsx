@@ -199,7 +199,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         await updateComment(sdk, signer, home.repo, {
           id: pending.id,
           body: pending.body,
-          seal: { current: { body: timelineComment(timeline, pending.id)?.body ?? '' }, bind: { targetId: issue.id } },
+          ...(timelineComment(timeline, pending.id)?.revision !== undefined ? { expectedRevision: BigInt(timelineComment(timeline, pending.id)?.revision as number) } : {}),
+          seal: { current: { body: timelineComment(timeline, pending.id)?.body ?? '' }, bind: { targetId: issue.id }, imported: timelineComment(timeline, pending.id)?.importedRaw ?? null },
         })
         setEditingComment(null)
         break
@@ -475,7 +476,7 @@ function commentSlots({
 }
 
 /** A comment of the timeline by id (the text an edit re-seals from). */
-function timelineComment(items: readonly TimelineItem[], id: string): { body: string } | undefined {
+function timelineComment(items: readonly TimelineItem[], id: string): { body: string; revision?: number; importedRaw?: Readonly<Record<string, unknown>> | null } | undefined {
   for (const it of items) {
     if (it.kind === 'comment' && it.comment.id === id) return it.comment
   }

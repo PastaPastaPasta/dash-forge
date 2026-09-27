@@ -412,7 +412,8 @@ function PullPage({
         await updateComment(sdk, signer, repo, {
           id: p.id,
           body: p.body,
-          seal: { current: { body: c?.body ?? '', path: c?.anchor?.path }, bind: { targetId: pull.id } },
+          ...(c?.revision !== undefined ? { expectedRevision: BigInt(c.revision) } : {}),
+          seal: { current: { body: c?.body ?? '', path: c?.anchor?.path }, bind: { targetId: pull.id }, imported: c?.importedRaw ?? null },
         })
         setEditingComment(null)
         refresh((t) => t.comments.some((x) => x.id === p.id && x.body === p.body))

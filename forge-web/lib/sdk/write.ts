@@ -1464,8 +1464,21 @@ export interface ReplaceParams {
   readonly expectedRevision?: bigint | undefined
   /** The repo the document belongs to, for the ledger. */
   readonly repo?: string | null
+  /**
+   * The stored document must belong to this repo (`repoId`, base58), or nothing is signed: an
+   * edit (in a private repo, its seal binds the repo) is made against the document's own repo,
+   * never one a URL named.
+   */
+  readonly expectRepoId?: string
   readonly requiredLevel?: number
   readonly confirmTimeoutMs?: number
+}
+
+/** Refuse an edit of a document that belongs to another repo than the one the edit names. */
+export function checkOwnRepo(storedRepoId: unknown, expected: string | undefined): void {
+  if (expected === undefined) return
+  const got = typeof storedRepoId === 'string' ? storedRepoId : storedRepoId instanceof Uint8Array ? base58Encode(storedRepoId) : ''
+  if (got !== expected) throw new WriteAuthError('this document belongs to another repo than the page; reload it from its own repo')
 }
 
 /**
@@ -1530,6 +1543,7 @@ async function replaceDocumentUnlocked(
   const current = await read()
   if (current === null) throw new Error(`${documentType} ${documentId} was not found`)
   if (current.ownerId.toBase58() !== auth.identityId) throw new WriteAuthError('only the author can edit this')
+  checkOwnRepo(current.toJSON(sdk.version())['repoId'], params.expectRepoId)
   const stored = current.toObject()
   const revision = current.revision ?? 1n
   const holds = (doc: FetchedDocumentLike) => {

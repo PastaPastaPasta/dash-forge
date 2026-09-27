@@ -15,6 +15,7 @@ import {
   asIdentifierString,
   byteFieldToHex,
   issueViewOf,
+  revisionOf,
   membershipsFromDocs,
   newestLabels,
   num,
@@ -66,6 +67,10 @@ export interface CommentView {
   readonly reviewId: string | null
   /** The last edit's time; equal to `createdAt` when never edited ("edited" marker). */
   readonly updatedAt?: number
+  /** The document revision: an edit names it, so a concurrent edit is refused, not overwritten. */
+  readonly revision?: number
+  /** An imported comment's provenance as read, for re-sealing an edit. */
+  readonly importedRaw?: Readonly<Record<string, unknown>> | null
 }
 
 /** A comment document as a {@link CommentView}. */
@@ -90,6 +95,8 @@ export function toCommentView(d: PlainDocument): CommentView {
     }),
     reviewId: id('reviewId'),
     updatedAt: updatedAtOf(d),
+    revision: revisionOf(d),
+    importedRaw: typeof d['imported'] === 'object' && d['imported'] !== null ? (d['imported'] as Readonly<Record<string, unknown>>) : null,
   }
 }
 
