@@ -246,6 +246,30 @@ pub fn derive_encryption_secret(
     secret
 }
 
+/// Whether the identity file's recorded keys are the identity's own: every entry with a
+/// derivation path and a public key has the same public key on chain under its id, and the
+/// on-chain MASTER key is among them. [`derive_encryption_secret`] checks the mnemonic against
+/// those recorded keys, so both together tie the mnemonic to the identity on chain: a file
+/// whose mnemonic is not the one that created the identity never yields a derived key.
+pub fn recorded_keys_match(bridge: &BridgeIdentity, on_chain: &[super::IdentityKeyInfo]) -> bool {
+    let recorded: Vec<&IdentityKey> = bridge
+        .identity_keys
+        .iter()
+        .filter(|k| !k.derivation_path.trim().is_empty() && !k.public_key_hex.trim().is_empty())
+        .collect();
+    let matches = |k: &IdentityKey| {
+        on_chain.iter().any(|c| {
+            c.id == k.id && hex::encode(&c.public_key).eq_ignore_ascii_case(k.public_key_hex.trim())
+        })
+    };
+    let master_recorded = on_chain.iter().any(|c| {
+        c.security_level == "MASTER"
+            && c.purpose == "AUTHENTICATION"
+            && recorded.iter().any(|k| k.id == c.id)
+    });
+    master_recorded && recorded.iter().all(|k| matches(k))
+}
+
 /// The identity-file entry for a new `ENCRYPTION` key: `ECDSA_SECP256K1`, `MEDIUM`, the WIF for
 /// `network`, and `derivation_path` (empty for a random key).
 pub fn encryption_key_entry(
@@ -670,6 +694,31 @@ mod tests {
         )
         .unwrap()]);
         assert_eq!(format!("{signer:?}"), "UpdateSigner(<1 keys redacted>)");
+    }
+
+    fn on_chain(id: u32, level: &str, public: &str) -> super::super::IdentityKeyInfo {
+        super::super::IdentityKeyInfo {
+            id,
+            purpose: "AUTHENTICATION".into(),
+            security_level: level.into(),
+            key_type: "ECDSA_SECP256K1".into(),
+            public_key: hex::decode(public).unwrap(),
+            disabled: false,
+            bound_to: None,
+        }
+    }
+
+    #[test]
+    fn recorded_keys_must_be_the_identity_keys_on_chain() {
+        let b = abandon();
+        assert!(recorded_keys_match(&b, &[on_chain(0, "MASTER", PUB_0)]));
+        // The file's key 0 is not the identity's master key: its mnemonic is someone else's.
+        assert!(!recorded_keys_match(&b, &[on_chain(0, "MASTER", PUB_4)]));
+        // The on-chain master is not among the recorded keys.
+        assert!(!recorded_keys_match(
+            &b,
+            &[on_chain(0, "HIGH", PUB_0), on_chain(7, "MASTER", PUB_5)]
+        ));
     }
 
     #[test]

@@ -285,15 +285,14 @@ fn held_usable_encryption_keys<'k>(
         .collect()
 }
 
-/// The key to add and how to record it: a pending entry of an earlier run (reused when it
-/// still has the next id, moved when it is a random key and another key took its id), else a
-/// key derived from the mnemonic, else a random one.
+/// The key to add: the pending entry of an earlier run when it still has the next id (it is
+/// already in the file), else a key derived from the mnemonic, else a random one. A pending
+/// entry under another id (the identity changed since) is left in the file, unused: it was
+/// never on chain, so nothing depends on it.
 struct NewKey {
     secret: EncryptionSecret,
     derivation_path: String,
-    /// The pending entry this replaces in the identity file (it moves to the new id).
-    replaces: Option<u32>,
-    /// The file already holds the entry exactly as it will be added.
+    /// The file already holds the entry.
     already_stored: bool,
 }
 
@@ -310,52 +309,84 @@ fn choose_new_key(
     key_id: u32,
 ) -> Result<NewKey> {
     let on_chain_ids: Vec<u32> = on_chain.iter().map(|k| k.id).collect();
-    let pending = bridge.pending_encryption_key(&on_chain_ids);
-    if let Some(p) = pending {
+    let on_chain_public: Vec<String> = on_chain
+        .iter()
+        .map(|k| hex::encode(&k.public_key))
+        .collect();
+    if let Some(p) = bridge
+        .pending_encryption_key(&on_chain_ids, &on_chain_public)
+        .filter(|p| p.id == key_id)
+    {
         let secret = EncryptionSecret::from_identity_key(p).with_context(|| {
             format!(
                 "reading the pending encryption key {} of the identity file",
                 p.id
             )
         })?;
-        let random = p.derivation_path.trim().is_empty();
-        if p.id == key_id {
+        return Ok(NewKey {
+            secret,
+            derivation_path: p.derivation_path.trim().to_string(),
+            already_stored: true,
+        });
+    }
+    // Derive only when the file's recorded keys are the identity's own keys on chain, so the
+    // user's 12 words really do recreate the new key.
+    if identity_keys::recorded_keys_match(bridge, on_chain) {
+        if let (Some(secret), Some(path)) = (
+            identity_keys::derive_encryption_secret(bridge, key_id, ctx.network()),
+            identity_keys::identity_key_path(bridge, key_id),
+        ) {
             return Ok(NewKey {
                 secret,
-                derivation_path: p.derivation_path.clone(),
-                replaces: None,
-                already_stored: true,
-            });
-        }
-        if random {
-            // A random key has no other copy: keep it, under the id it will really get.
-            return Ok(NewKey {
-                secret,
-                derivation_path: String::new(),
-                replaces: Some(p.id),
+                derivation_path: path,
                 already_stored: false,
             });
         }
     }
-    let replaces = pending.map(|p| p.id);
-    let network = ctx.network();
-    if let (Some(secret), Some(path)) = (
-        identity_keys::derive_encryption_secret(bridge, key_id, network),
-        identity_keys::identity_key_path(bridge, key_id),
-    ) {
-        return Ok(NewKey {
-            secret,
-            derivation_path: path,
-            replaces,
-            already_stored: false,
-        });
-    }
     Ok(NewKey {
         secret: identity_keys::random_encryption_secret()?,
         derivation_path: String::new(),
-        replaces,
         already_stored: false,
     })
+}
+
+/// Tighten the directory of an identity file under dg's own config directory
+/// (`~/.config/dash-forge`) to 0700, as `dg auth login` does. A file elsewhere (a download, a
+/// project folder) keeps its directory's mode: that directory is the user's.
+fn tighten_config_dir(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::fs::canonicalize(path)
+            .ok()
+            .and_then(|p| p.parent().map(std::path::Path::to_path_buf));
+        let config = crate::config::config_dir()
+            .ok()
+            .and_then(|c| std::fs::canonicalize(c).ok());
+        if let (Some(dir), Some(config)) = (dir, config) {
+            if dir.starts_with(&config) {
+                let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
+/// E302 for a key source without a MASTER key (an inline limited key, a keys-only file).
+fn needs_master_key() -> anyhow::Error {
+    use forge_core::user_error::{codes, UserError};
+    UserError::new(
+        codes::KEY_CANNOT_SIGN,
+        "key not added: this key can't sign that",
+    )
+    .cause(
+        "adding a key is an identity update signed by the MASTER key, and the key source \
+             has none (an inline limited key, or a limited or keys-only identity file)",
+    )
+    .fix("pass the full identity file, the one with the MASTER key: `--identity <file>`")
+    .note("nothing was written or sent")
+    .into()
 }
 
 /// What `dg auth keys add --encryption` is about to do, its cost and the blast-radius warning.
@@ -397,14 +428,12 @@ fn print_add_preview(
 /// `ENCRYPTION` entry of the file that is not on chain yet.
 async fn keys_add_encryption(ctx: &Ctx, force: bool) -> Result<()> {
     let path = ctx.require_identity_path()?.clone();
-    if forge_core::keystore::is_inline_key(&path) {
-        anyhow::bail!(
-            "`dg auth keys add` needs the identity file: a dfk1: key has no MASTER key to sign \
-             the identity update and no file to store the new key in; nothing was sent"
-        );
-    }
     let bridge = ctx.load_bridge()?;
-    identity_keys::require_master_key(&bridge)?;
+    if forge_core::keystore::is_inline_key(&path)
+        || identity_keys::require_master_key(&bridge).is_err()
+    {
+        return Err(needs_master_key());
+    }
     let client = ctx.connect().await?;
     let identity = client
         .fetch_identity(&bridge.identity_id)
@@ -448,17 +477,19 @@ async fn keys_add_encryption(ctx: &Ctx, force: bool) -> Result<()> {
             ctx.network(),
             &new_key.derivation_path,
         );
-        forge_core::keystore::store_identity_key(&path, &entry, new_key.replaces)
+        forge_core::keystore::store_identity_key(&path, &entry)
             .with_context(|| format!("writing the new key into {}", path.display()))?;
+        tighten_config_dir(&path);
     }
 
     let before = identity.balance();
     let added = identity_keys::add_encryption_key(&client, &identity, &bridge, &new_key.secret)
         .await
         .context("adding the encryption key")?;
-    // Best effort: the measured cost from the balance difference.
+    // Best effort: the measured cost from the balance difference (none when nothing was
+    // charged in this run, or the node read has not applied the fee yet).
     let after = client.get_balance(&bridge.identity_id).await.ok();
-    let spent = after.map(|a| before.saturating_sub(a));
+    let spent = after.map(|a| before.saturating_sub(a)).filter(|c| *c > 0);
 
     ctx.emit(
         json!({
@@ -473,6 +504,7 @@ async fn keys_add_encryption(ctx: &Ctx, force: bool) -> Result<()> {
             "derived": new_key.derived(),
             "derivationPath": (new_key.derived()).then_some(&new_key.derivation_path),
             "identityFile": path.to_string_lossy(),
+            "backupRequired": !new_key.derived(),
             "estimate": cost_json(ADD_KEY_ESTIMATE_CREDITS, price),
             "cost": spent.map(|c| cost_json(c, price)),
             "warning": ENCRYPTION_KEY_BLAST_RADIUS,
