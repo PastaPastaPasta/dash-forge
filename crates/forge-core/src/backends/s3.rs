@@ -5,7 +5,7 @@
 //!   SigV4 ([`super::sigv4`]) when credentials are configured. The body's real SHA-256 is
 //!   sent as `x-amz-content-sha256`, so the store itself rejects an upload that was
 //!   corrupted in transit. With no credentials the requests go out unsigned — only useful
-//!   for a public-write bucket such as the local MinIO fixture.
+//!   for a public-write bucket such as the local S3 fixture's `forge-packs`.
 //! - **Reads** by browsers and other clients go to the profile's `public_url`, the https
 //!   origin the bucket is published at (an R2 `r2.dev`/custom domain, a B2 friendly URL,
 //!   an S3 website/CloudFront origin, or the MinIO path-style URL). Those GETs are never
@@ -107,7 +107,7 @@ pub struct S3Config {
 
 impl S3Config {
     /// A public-bucket (anonymous, path-style) config for `endpoint` + `bucket`, readable at
-    /// the path-style URL. This is the local MinIO fixture's shape.
+    /// the path-style URL. This is the local S3 fixture's `forge-packs` shape.
     pub fn public(endpoint: impl Into<String>, bucket: impl Into<String>) -> Self {
         let endpoint = endpoint.into().trim_end_matches('/').to_string();
         let bucket = bucket.into();

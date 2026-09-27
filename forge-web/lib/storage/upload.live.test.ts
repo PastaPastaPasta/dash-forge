@@ -1,7 +1,7 @@
 /**
- * Live browser-upload path — SKIPPED by default (devnet writes + a local MinIO).
+ * Live browser-upload path — SKIPPED by default (devnet writes + the local S3 store, RustFS).
  *
- *   docker compose -f infra/docker-compose.yml up -d minio minio-init
+ *   docker compose -f infra/docker-compose.yml up -d rustfs s3-init
  *   FORGE_LIVE=1 FORGE_LIVE_PUBLIC_URL=https://…/forge-byo NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=moutai \
  *     pnpm exec vitest run lib/storage/upload.live.test.ts
  *
@@ -33,7 +33,7 @@ import { sha256Hex } from './sigv4'
 
 /**
  * The bucket's PUBLIC https address: a manifest records only addresses anyone can read, so a
- * bare local MinIO does not qualify. Expose it for the run, e.g.
+ * bare local S3 store does not qualify. Expose it for the run, e.g.
  * `cloudflared tunnel --url http://127.0.0.1:9000` → FORGE_LIVE_PUBLIC_URL=https://<name>.trycloudflare.com/forge-byo
  */
 const PUBLIC_URL = (process.env['FORGE_LIVE_PUBLIC_URL'] ?? '').replace(/\/+$/, '')

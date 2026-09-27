@@ -41,7 +41,7 @@ export IDID_OWNER IDID_COLLAB IDID_CONTRIB
 # --- the CLI suite's repo ----------------------------------------------------
 # A forge-v2 repo owned by OWNER, reserved for `run.sh` (e2e/README.md): every scenario
 # pushes Platform-stored packs to fresh `e2e/<run-id>/…` refs and deletes them. An ad-hoc
-# run that stores packs anywhere else (local MinIO/kubo) must use its own repo — set
+# run that stores packs anywhere else (local RustFS/kubo) must use its own repo — set
 # E2E_REPO_NAME — so the nightly's clones never depend on someone's laptop.
 : "${E2E_REPO_NAME:=e2e-cli}"
 export E2E_REPO_NAME
@@ -50,7 +50,7 @@ export E2E_REMOTE="dash://${E2E_OWNER_ID}/${E2E_REPO_NAME}"
 
 # --- dedicated bring-your-own-storage repos (e2e/cli/storage-byo.sh) ------------
 # OWNER-owned, created by the script if absent (reserved in e2e/README.md). Their packs
-# live on the LOCAL MinIO/kubo fixtures, so no other scenario may use them.
+# live on the LOCAL RustFS/kubo fixtures, so no other scenario may use them.
 : "${STORAGE_E2E_REPO:=storage-e2e-a}"
 : "${STORAGE_E2E_REPO_B:=storage-e2e-b}"
 export STORAGE_E2E_REPO STORAGE_E2E_REPO_B
