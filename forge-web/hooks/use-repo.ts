@@ -27,7 +27,7 @@ import { forgetPrivateHome } from '@/hooks/use-private-home'
 import { repoKey } from '@/lib/repo'
 import type { Network } from '@/lib/constants'
 import type { EvoSDK } from '@dashevo/evo-sdk'
-import { evoSdkService } from '@/lib/sdk'
+import { isUnreachableError } from '@/lib/sdk'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
 export interface UseRepoResult extends AsyncState<RepoHome | null> {
@@ -110,9 +110,11 @@ export function useRepoHome(addr: RepoAddress): UseRepoResult {
         if (home === null && justCreated) homeCache.delete(key)
         return home
       }, justCreated ? 8 : 0).catch((e: unknown) => {
-        // Platform unreachable: keep what this tab already read (under the banner).
+        // Platform unreachable: keep what this tab already read (under the banner). Only an
+        // unreachable Platform qualifies; a proof or decode failure is surfaced, never hidden
+        // behind earlier content.
         const kept = lastGood.get(key)
-        if (kept !== undefined && evoSdkService.getStatus().phase === 'error') return kept.value
+        if (kept !== undefined && isUnreachableError(e)) return kept.value
         throw e
       }),
     [ready, key, recoveries],
@@ -120,8 +122,10 @@ export function useRepoHome(addr: RepoAddress): UseRepoResult {
       enabled,
       // A cached not-found seeds `null` as a REAL settled value (instant "Repo not found");
       // only a cache miss returns undefined (no seed → loading shell).
+      // During an outage, and on the re-read after one (`recoveries`), seed from what this tab
+      // already read so the page does not drop to a spinner.
       initial: () => {
-        const settled = peekRepoHome(network, addr) ?? (sdkStatus.phase === 'error' ? lastGood.get(key) : undefined)
+        const settled = peekRepoHome(network, addr) ?? (sdkStatus.phase === 'error' || recoveries > 0 ? lastGood.get(key) : undefined)
         return settled === undefined ? undefined : settled.value
       },
     },

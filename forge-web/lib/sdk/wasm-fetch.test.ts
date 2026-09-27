@@ -121,3 +121,42 @@ describe('fetchAndCompileWithRetry (L-19)', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('fetchAndCompile: a server that never answers', () => {
+  it('aborts a request that stalls before its response headers arrive', async () => {
+    const fetchImpl = vi.fn(
+      (_url: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+        }),
+    )
+    await expect(
+      fetchAndCompile('/x.wasm', 100, undefined, { fetchImpl: fetchImpl as unknown as typeof fetch, compile: drain, stallMs: 40 }),
+    ).rejects.toThrow(/stalled/)
+  })
+})
+
+describe('compileWasm', () => {
+  it('forgets a failed download, so the next call fetches again', async () => {
+    vi.resetModules()
+    const fetchMock = vi
+      .fn()
+      // A 4xx is not retried within one download, so the first call fails at once.
+      .mockResolvedValueOnce(new Response('gone', { status: 404 }))
+      .mockResolvedValueOnce(new Response(streamOf([new Uint8Array(4)]), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const compiled = {} as WebAssembly.Module
+    vi.spyOn(WebAssembly, 'compile').mockResolvedValue(compiled)
+    vi.spyOn(WebAssembly, 'compileStreaming').mockImplementation(async (r) => {
+      await (await r).arrayBuffer()
+      return compiled
+    })
+    const { compileWasm } = await import('./wasm-fetch')
+    await expect(compileWasm()).rejects.toThrow('HTTP 404')
+    await Promise.resolve()
+    await expect(compileWasm()).resolves.toBeDefined()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+})

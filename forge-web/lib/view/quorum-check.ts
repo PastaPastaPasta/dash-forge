@@ -278,25 +278,54 @@ export async function crossCheckQuorumKeys(config: NetworkConfig, deps: CrossChe
   return { state: 'unavailable', reason: 'the two key sources listed different quorums' }
 }
 
-const sessionChecks = new Map<string, Promise<QuorumCrossCheck>>()
+/** A settled cross-check is re-run once it is this old (quorums rotate; the keys are refetched). */
+export const QUORUM_CHECK_MAX_AGE_MS = 60 * 60_000
+
+interface SessionCheck {
+  /** The latest run (settled or still going). */
+  run: Promise<QuorumCrossCheck>
+  running: boolean
+  /** The latest settled outcome and when it settled (kept while a newer run goes). */
+  settled?: { readonly result: QuorumCrossCheck; readonly at: number }
+}
+
+const sessionChecks = new Map<string, SessionCheck>()
+
+/** The last settled cross-check for `config` this session, whatever its age (shown while a new one runs). */
+export function lastQuorumCheck(config: NetworkConfig): QuorumCrossCheck | undefined {
+  return sessionChecks.get(config.key)?.settled?.result
+}
 
 /**
- * {@link crossCheckQuorumKeys} once per network per SDK connection (`generation`, which
- * increments each time the service reconnects and so fetches the keys again). An outcome
- * that depends on a network hiccup (`unavailable`, or no DAPI node answering) is not kept, so
- * a later view runs the check again.
+ * {@link crossCheckQuorumKeys} once per network, and again once the result is
+ * {@link QUORUM_CHECK_MAX_AGE_MS} old; a routine reconnect does not re-run it. An outcome that
+ * depends on a network hiccup (`unavailable`, or no DAPI node answering) is re-run by the next
+ * view. {@link lastQuorumCheck} keeps the previous outcome readable while a new run goes.
  */
-export function crossCheckQuorumKeysCached(config: NetworkConfig, generation = 0): Promise<QuorumCrossCheck> {
-  const key = `${config.key}#${generation}`
-  const hit = sessionChecks.get(key)
-  if (hit !== undefined) return hit
-  // Only the current connection's check is worth keeping.
-  for (const k of sessionChecks.keys()) if (k.startsWith(`${config.key}#`)) sessionChecks.delete(k)
-  const run = crossCheckQuorumKeys(config)
-  sessionChecks.set(key, run)
-  void run.then((r) => {
-    const transient = r.state === 'unavailable' || (r.state === 'single' && r.reason === 'second-unreachable')
-    if (transient && sessionChecks.get(key) === run) sessionChecks.delete(key)
+export function crossCheckQuorumKeysCached(
+  config: NetworkConfig,
+  { now = Date.now, check = crossCheckQuorumKeys }: { now?: () => number; check?: (c: NetworkConfig) => Promise<QuorumCrossCheck> } = {},
+): Promise<QuorumCrossCheck> {
+  const entry = sessionChecks.get(config.key) ?? { run: Promise.resolve({ state: 'unavailable', reason: '' } as QuorumCrossCheck), running: false }
+  sessionChecks.set(config.key, entry)
+  const fresh = entry.settled !== undefined && now() - entry.settled.at < QUORUM_CHECK_MAX_AGE_MS && !isTransient(entry.settled.result)
+  if (entry.running || fresh) return entry.run
+  const run = check(config)
+  entry.run = run
+  entry.running = true
+  void run.then((result) => {
+    if (entry.run !== run) return
+    entry.running = false
+    entry.settled = { result, at: now() }
   })
   return run
+}
+
+function isTransient(r: QuorumCrossCheck): boolean {
+  return r.state === 'unavailable' || (r.state === 'single' && r.reason === 'second-unreachable')
+}
+
+/** Forget every cached cross-check (tests). */
+export function resetQuorumChecks(): void {
+  sessionChecks.clear()
 }

@@ -74,8 +74,12 @@ export interface TrustReport {
   readonly summary: string
 }
 
-/** Whether the Platform connection proof-checks its reads. */
-export type ConnectionTrust = 'connecting' | 'trusted' | 'untrusted'
+/**
+ * Whether the Platform connection proof-checks its reads. `offline`: a trusted connection
+ * exists but Platform is unreachable now, so what the page shows was checked earlier and is
+ * not being re-checked.
+ */
+export type ConnectionTrust = 'connecting' | 'trusted' | 'untrusted' | 'offline'
 
 export interface TrustInputs {
   readonly network: Network
@@ -142,6 +146,13 @@ function deriveChain(
       detail: 'This connection does not check proofs, so Platform data is shown as the node returned it.',
     }
   }
+  if (connection === 'offline') {
+    return {
+      state: 'partial',
+      detail: `Can't reach Dash ${label} right now. What this page shows was proven earlier in this tab and is not being re-checked.`,
+      note: `Proofs were checked against quorum keys fetched from ${host}. Nothing new is read until the connection comes back.`,
+    }
+  }
   const proven = `Refs, issues and members were proven against Dash ${label}.`
   const refetch =
     "This app fetched the key list again to compare; it cannot inspect the copy the SDK holds."
@@ -189,6 +200,12 @@ function newest(heads: readonly RefHead[]): RefHead | undefined {
 }
 
 function deriveTip(input: TrustInputs): TipLink {
+  const tip = deriveTipNow(input)
+  // Offline: the tip was proven when it was read, but a newer push may exist.
+  return input.connection === 'offline' && tip.state === 'verified' ? { ...tip, state: 'partial' } : tip
+}
+
+function deriveTipNow(input: TrustInputs): TipLink {
   const name = input.refName ?? ''
   const shown = name === '' ? 'This ref' : `\`${name}\``
   const tip = input.tip
@@ -221,7 +238,10 @@ function deriveTip(input: TrustInputs): TipLink {
       note: `Folded by ${RULES} from an update log that was read without proofs.`,
     }
   }
-  const note = `Folded by ${RULES} from the append-only, proof-checked update log.`
+  const note =
+    input.connection === 'offline'
+      ? `Folded by ${RULES} from the proof-checked update log as read earlier in this tab; not re-checked while Platform is unreachable.`
+      : `Folded by ${RULES} from the append-only, proof-checked update log.`
   if (tip === 'missing') {
     return { ...base, state: 'verified', detail: `No ref named ${shown} exists.`, note }
   }
@@ -364,7 +384,7 @@ export function deriveTrust(input: TrustInputs): TrustReport {
     content,
     source,
     overall,
-    summary: summaryOf(overall, chain, input.checks),
+    summary: input.connection === 'offline' ? 'Not re-checked · Platform unreachable' : summaryOf(overall, chain, input.checks),
   }
 }
 
@@ -377,8 +397,12 @@ export function deriveConnectionTrust(
   return deriveChain(network, connection, QUORUM_KEY_ENDPOINT[network], quorum)
 }
 
-/** Map the SDK hook's flags to a {@link ConnectionTrust}. */
-export function connectionTrust(ready: boolean, trusted: boolean): ConnectionTrust {
+/**
+ * Map the SDK hook's flags to a {@link ConnectionTrust}. `unreachable`: the service's status
+ * is `error` (Platform cannot be reached now), which degrades a trusted connection.
+ */
+export function connectionTrust(ready: boolean, trusted: boolean, unreachable = false): ConnectionTrust {
   if (!ready) return 'connecting'
-  return trusted ? 'trusted' : 'untrusted'
+  if (!trusted) return 'untrusted'
+  return unreachable ? 'offline' : 'trusted'
 }

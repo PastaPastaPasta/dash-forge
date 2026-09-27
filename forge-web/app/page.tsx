@@ -20,12 +20,12 @@ import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useQuorumCheck } from '@/hooks/use-quorum-check'
-import { connectionTrust, deriveConnectionTrust, listRecentRepos, type DiscoveredRepo } from '@/lib/view'
+import { deriveConnectionTrust, listRecentRepos, type DiscoveredRepo } from '@/lib/view'
 
 export default function LandingPage(): JSX.Element {
-  const { sdk, ready, trusted, network, status: sdkStatus, retry: retrySdk } = useSdk()
+  const { sdk, ready, trusted, connection, network, status: sdkStatus, retry: retrySdk } = useSdk()
   const quorum = useQuorumCheck(network, ready && trusted)
-  const proofs = deriveConnectionTrust(network, connectionTrust(ready, trusted), quorum)
+  const proofs = deriveConnectionTrust(network, connection, quorum)
   const deployed = isForgeDeployed()
   const feed = useAsync(
     () => listRecentRepos(sdk!, { network, limit: 24 }),

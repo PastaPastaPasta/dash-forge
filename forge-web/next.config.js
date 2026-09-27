@@ -28,6 +28,15 @@ const fs = require('node:fs');
 const pkgDir = (name) => fs.realpathSync(path.join(__dirname, 'node_modules', name));
 const evoSdkDist = path.join(pkgDir('@dashevo/evo-sdk'), 'dist');
 const WASM_FILE = path.join(pkgDir('@dashevo/wasm-sdk'), 'dist', 'raw', 'wasm_sdk_bg.wasm');
+// The shim runs evo-sdk's JS over wasm-sdk's glue and wasm, taken from forge-web's own
+// @dashevo/wasm-sdk. That copy must be the one evo-sdk was built against: a mismatch compiles
+// and then fails (or misbehaves) at runtime, so fail the build instead.
+const pkgJson = (name) => JSON.parse(fs.readFileSync(path.join(pkgDir(name), 'package.json'), 'utf8'));
+const evoWants = pkgJson('@dashevo/evo-sdk').dependencies['@dashevo/wasm-sdk'];
+const wasmHas = pkgJson('@dashevo/wasm-sdk').version;
+if (evoWants !== wasmHas) {
+  throw new Error(`@dashevo/wasm-sdk ${wasmHas} does not match the ${evoWants} @dashevo/evo-sdk depends on (lib/sdk/wasm-shim.ts); pin them to the same version`);
+}
 
 const nextConfig = {
   trailingSlash: true,

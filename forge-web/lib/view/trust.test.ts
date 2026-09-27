@@ -233,3 +233,25 @@ describe('worstOf', () => {
     expect(worstOf([])).toBe('pending')
   })
 })
+
+describe('Platform unreachable after a connect (M4)', () => {
+  it('the SDK flags map to offline while the service reports an error', () => {
+    expect(connectionTrust(true, true, true)).toBe('offline')
+    expect(connectionTrust(false, true, true)).toBe('connecting')
+    expect(connectionTrust(true, true, false)).toBe('trusted')
+  })
+
+  it('the card never says Verified next to content that is not being re-checked', () => {
+    const r = deriveTrust(inputs({ connection: 'offline', quorum: AGREED }))
+    expect(r.chain.state).toBe('partial')
+    expect(r.tip.state).not.toBe('verified')
+    expect(r.overall).not.toBe('verified')
+    expect(r.summary).not.toMatch(/^Verified/)
+    expect(r.summary).toContain('Not re-checked')
+    expect(r.chain.detail).toMatch(/not being re-checked/)
+  })
+
+  it('the landing chip is degraded, not verified', () => {
+    expect(deriveConnectionTrust('devnet', 'offline', AGREED).state).toBe('partial')
+  })
+})

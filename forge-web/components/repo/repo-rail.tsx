@@ -14,7 +14,6 @@ import { useSyncExternalStore } from 'react'
 import Link from 'next/link'
 import { GitBranch, Star, Tag, Users } from 'lucide-react'
 import {
-  connectionTrust,
   contentChecks,
   deriveTrust,
   isLive,
@@ -47,7 +46,7 @@ export function RepoRail({
   /** The ref the page is showing: the Verification card attests its tip. */
   selected: SelectedRef
 }): JSX.Element {
-  const { ready, trusted, network } = useSdk(repoContractIds(home.repo))
+  const { ready, trusted, connection, network } = useSdk(repoContractIds(home.repo))
   const quorum = useQuorumCheck(network, ready && trusted)
   const { role } = useViewerRole(home.repo)
   const isPrivate = home.repo.visibility === 'private'
@@ -60,7 +59,7 @@ export function RepoRail({
 
   const report = deriveTrust({
     network,
-    connection: connectionTrust(ready, trusted),
+    connection,
     quorum,
     refName: selected.name,
     tip: selected.pinned ? { pinned: selected.pinned } : selected.ref?.state ?? 'missing',

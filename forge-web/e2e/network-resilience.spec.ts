@@ -1,5 +1,6 @@
 import { test, expect, type Page, type Route } from '@playwright/test'
-import { collectPageErrors, repoUrl, shot } from './helpers'
+import { existsSync } from 'node:fs'
+import { EMPTY, collectPageErrors, idFile, repoUrl, shot, signedIn, unlock } from './helpers'
 
 /**
  * Network resilience, against the moutai read fixture (e2e/helpers.ts `DEMO`):
@@ -17,11 +18,26 @@ import { collectPageErrors, repoUrl, shot } from './helpers'
  *    budget already fixed the ban half; this keeps the reconnect path from reintroducing it.)
  *  - nr-4 (D-024) The quorum list the SDK prefetched goes stale (a rotation): the first read
  *    fails with "Quorum not found in cache", the service reconnects once, and the read succeeds.
+ *  - nr-5 (#80 review H1) Three repos are opened while the 5-minute refresh is in flight: the
+ *    refresh still goes live, the app never reads "Can't reach Platform", and the next refresh
+ *    is scheduled (before the fix a mount naming contracts dropped the refresh and stopped
+ *    them for good).
+ *  - nr-6 (#80 review M1, S1) A real write right after a forced refresh lands. Spends a little
+ *    (one repo create) as a freshly minted identity:
+ *      E2E_WRITE=1 E2E_IDENTITY_DIR=<dir with NRWRITER.identity.json> …
  */
 
 const QUORUMS = /^https:\/\/quorums\.[a-z0-9-]+\.networks\.dash\.org\//
 const README = (page: Page) => page.getByRole('link', { name: 'README.md' }).first()
 const BANNER = (page: Page) => page.getByTestId('platform-unreachable')
+
+/** The service's refresh period (lib/sdk/service.ts REFRESH_MS). */
+const REFRESH_MS = 5 * 60_000
+
+/** Navigate inside the app (no reload: the SDK connection and its state survive). */
+async function navigate(page: Page, url: string): Promise<void> {
+  await page.evaluate((u) => (window as unknown as { next: { router: { push(u: string): void } } }).next.router.push(u), url)
+}
 
 /** Let the quorum service answer, or fail it. Returns a switch. */
 async function quorumSwitch(page: Page): Promise<{ down: boolean; hits: number }> {
@@ -116,6 +132,11 @@ test.describe('network resilience', () => {
     await issue.click()
     const retry = page.getByRole('button', { name: 'Try again' }).first()
     await expect(retry).toBeVisible({ timeout: 90_000 })
+    // Content read earlier stays, but nothing next to the banner claims it is verified (M4).
+    await expect(page.getByTestId('verification-summary')).not.toHaveText(/^Verified/)
+    await expect(page.getByText(/^Verified/)).toHaveCount(0)
+    // The live region announces the outage, not a per-second countdown (M5).
+    await expect(BANNER(page).getByRole('status')).not.toContainText(/Trying again in/)
     await shot(page, 'nr-3-outage')
     // Before the fix the SDK kept every node banned: Try again showed "no available
     // addresses" until a full reload.
@@ -148,5 +169,83 @@ test.describe('network resilience', () => {
     await expect(page.getByText(/Quorum not found in cache/)).toHaveCount(0)
     await shot(page, 'nr-4-rotated-quorum-recovered')
     expect(errors).toEqual([])
+  })
+})
+
+test.describe('network resilience: refresh under navigation and writes', () => {
+  test('nr-5. three repos opened while a refresh is in flight: no stuck state, refreshes continue', async ({ page }) => {
+    test.setTimeout(4 * 60_000)
+    const { errors } = collectPageErrors(page)
+    await page.clock.install()
+    await page.goto(repoUrl(), { waitUntil: 'domcontentloaded' })
+    await expect(README(page)).toBeVisible({ timeout: 90_000 })
+
+    // Hold the quorum service from here on: the refresh stays in flight until released.
+    let held = true
+    let hits = 0
+    const waiting: (() => void)[] = []
+    await page.context().route(QUORUMS, async (route) => {
+      hits++
+      if (held) await new Promise<void>((r) => waiting.push(r))
+      return route.continue()
+    })
+    await page.clock.fastForward(REFRESH_MS)
+    await expect.poll(() => hits, { timeout: 30_000 }).toBeGreaterThan(0)
+
+    // Three repo pages mount (each names its contracts) while that refresh waits.
+    await navigate(page, repoUrl('', '', EMPTY))
+    await expect(page.getByRole('region', { name: 'Empty repository' })).toBeVisible({ timeout: 60_000 })
+    await navigate(page, repoUrl('issues'))
+    await expect(page.getByRole('link', { name: /README should explain/ }).first()).toBeVisible({ timeout: 60_000 })
+    await navigate(page, repoUrl('pulls'))
+    await expect(page.getByRole('main')).toContainText(/pull/i, { timeout: 60_000 })
+    await shot(page, 'nr-5-navigated-during-refresh')
+
+    held = false
+    waiting.splice(0).forEach((r) => r())
+    await navigate(page, repoUrl())
+    await expect(README(page)).toBeVisible({ timeout: 60_000 })
+    await page.waitForTimeout(5_000)
+    await expect(BANNER(page)).toHaveCount(0)
+    await expect(page.getByText(/Connecting to Platform/)).toHaveCount(0)
+
+    // The next refresh still runs: the service did not strand its config.
+    const before = hits
+    await page.clock.fastForward(REFRESH_MS)
+    await expect.poll(() => hits, { timeout: 30_000 }).toBeGreaterThan(before)
+    await expect(README(page)).toBeVisible()
+    await expect(BANNER(page)).toHaveCount(0)
+    await shot(page, 'nr-5-after-refresh')
+    expect(errors).toEqual([])
+  })
+
+  test('nr-6. a real write right after a forced refresh lands', async ({ browser }) => {
+    test.skip(process.env['E2E_WRITE'] !== '1', 'live devnet write: set E2E_WRITE=1')
+    test.skip(!existsSync(idFile('NRWRITER')), 'set E2E_IDENTITY_DIR to a directory holding NRWRITER.identity.json')
+    test.setTimeout(6 * 60_000)
+    const page = await signedIn(browser, 'NRWRITER', '/new/')
+    // Fake timers from a fresh load, so the refresh can be forced; the vault unlocks again.
+    await page.clock.install()
+    await page.reload({ waitUntil: 'domcontentloaded' })
+    await unlock(page)
+
+    let refreshed = false
+    page.on('requestfinished', (r) => {
+      if (QUORUMS.test(r.url())) refreshed = true
+    })
+    await page.clock.fastForward(REFRESH_MS)
+    await expect.poll(() => refreshed, { timeout: 60_000 }).toBe(true)
+    // The new connection warms (contract preload) before it goes live.
+    await page.waitForTimeout(8_000)
+
+    const name = `nr6-${Date.now().toString(36)}`
+    await page.getByLabel('Repository name').fill(name)
+    await page.getByRole('button', { name: 'Create repository' }).click()
+    const dialog = page.getByRole('dialog')
+    await expect(dialog.getByTestId('cost-preview')).toBeVisible()
+    await dialog.getByRole('button', { name: /sign & create/i }).click()
+    await expect(dialog).toBeHidden({ timeout: 120_000 })
+    await expect(page.getByRole('region', { name: 'Empty repository' })).toBeVisible({ timeout: 120_000 })
+    await shot(page, 'nr-6-write-after-refresh')
   })
 })
