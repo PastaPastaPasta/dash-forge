@@ -59,8 +59,10 @@ export {
 } from './discovery'
 export {
   artifactRangeFetch,
+  browseGeneration,
   buildPackSource,
   clearChunkCache,
+  subscribeBrowseGeneration,
   forgetDeadMirrors,
   invalidateBrowseContext,
   loadArtifactBytes,

@@ -49,7 +49,7 @@ export function TreeContent({
         <PathBreadcrumb addr={addr} path={path} refParam={refParam} />
       </div>
       <BrowseBoundary repo={home.repo} addr={addr}>
-        {(reader) => <DirBody reader={reader} tipOid={tipOid} path={path} addr={addr} refParam={refParam} />}
+        {(reader, retry) => <DirBody reader={reader} retry={retry} tipOid={tipOid} path={path} addr={addr} refParam={refParam} />}
       </BrowseBoundary>
     </div>
   )
@@ -57,24 +57,26 @@ export function TreeContent({
 
 function DirBody({
   reader,
+  retry,
   tipOid,
   path,
   addr,
   refParam,
 }: {
   reader: BrowseReader
+  retry: () => void
   tipOid: string
   path: string
   addr: RepoAddress
   refParam: string
 }): JSX.Element {
-  const { data, loading, error, reload } = useAsync(() => loadDir(reader, tipOid, path), [tipOid, path])
+  const { data, loading, error } = useAsync(() => loadDir(reader, tipOid, path), [tipOid, path])
   if (loading) return <LoadingBlock label="Reading tree" />
   // A missing path is deterministic (common right after a ref switch) — no point retrying.
   if (error?.includes('path not found')) {
     return <EmptyState icon={FolderOpen} title="Directory not found on this ref" body={`${path} does not exist here. Pick another branch or tag, or browse from the repo root.`} />
   }
-  if (error) return <ErrorState message={error} onRetry={reload} />
+  if (error) return <ErrorState message={error} onRetry={retry} />
   if (!data) return <LoadingBlock />
   return <FileList entries={data} addr={addr} basePath={path} refParam={refParam} />
 }

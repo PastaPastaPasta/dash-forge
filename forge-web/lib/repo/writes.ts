@@ -41,7 +41,7 @@ import {
 } from '../sdk'
 import { DOC, num, str, type RepoRef } from './contract'
 import { invalidateMembers } from './members'
-import { refNameHash } from './push'
+import { refNameHash, repoContentWritten } from './push'
 import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
 import { invalidateRepoFeed } from './issues'
@@ -616,7 +616,12 @@ export async function createRelease(
   if (input.name && input.name.length > 0) data['name'] = input.name
   if (input.notes && input.notes.length > 0) data['notes'] = input.notes
   if (input.assets && input.assets.length > 0) data['assets'] = releaseAssetsJson(input.assets)
-  return writeRepoDoc(sdk, auth, repo, DOC.release, data, input.intent)
+  try {
+    return await writeRepoDoc(sdk, auth, repo, DOC.release, data, input.intent)
+  } finally {
+    // A release names a tag just pushed, often from another client: browse it afresh.
+    repoContentWritten(repo)
+  }
 }
 
 /** The `assets` field for `assets`, refusing a list the document cannot hold (4096 bytes). */

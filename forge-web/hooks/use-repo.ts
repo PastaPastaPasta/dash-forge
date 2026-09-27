@@ -21,10 +21,11 @@ import { useCallback, useRef } from 'react'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { invalidateBrowseContext, loadRepoHome, type RepoHome } from '@/lib/view'
-import { retryWhileMissing } from '@/lib/view/retry'
+import { awaitingOwnRefMoves, showsOwnRefMoves } from '@/lib/view/own-ref-moves'
+import { retryUntil, retryWhileMissing } from '@/lib/view/retry'
 import { useParam } from '@/hooks/use-query-param'
 import { forgetPrivateHome } from '@/hooks/use-private-home'
-import { repoKey } from '@/lib/repo'
+import { onRepoContentWritten, repoKey } from '@/lib/repo'
 import type { Network } from '@/lib/constants'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { evoSdkService, isUnreachableError, type SdkStatus } from '@/lib/sdk'
@@ -71,8 +72,20 @@ export function keepLastGood(e: unknown, status: SdkStatus): boolean {
   return status.phase === 'error' && isUnreachableError(e)
 }
 
+// This tab moved a ref, stored a pack or published a release: every cached home of the repo
+// (any address form) is out of date.
+onRepoContentWritten((repo) => {
+  for (const [k, entry] of homeCache) if (entry.settled?.value?.repo.repoId === repo.repoId) homeCache.delete(k)
+})
+
+/** Read attempts (1.5 s apart) a home read gets to show a ref this tab just moved (L-09). */
+const OWN_MOVE_ATTEMPTS = 8
+
 function startLoad(sdk: EvoSDK, key: string, network: Network, addr: RepoAddress): HomeCacheEntry {
-  const entry: HomeCacheEntry = { at: Date.now(), promise: loadRepoHome(sdk, { network, ...addr }) }
+  const load = (): Promise<RepoHome | null> => loadRepoHome(sdk, { network, ...addr })
+  // Zero extra reads unless this tab is waiting for its own ref move to show.
+  const shows = (home: RepoHome | null): boolean => home === null || showsOwnRefMoves(home.repo, [...home.branches, ...home.tags])
+  const entry: HomeCacheEntry = { at: Date.now(), promise: retryUntil(load, shows, awaitingOwnRefMoves() ? OWN_MOVE_ATTEMPTS : 0) }
   homeCache.set(key, entry)
   entry.promise
     .then((value) => {

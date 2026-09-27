@@ -19,7 +19,17 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { FileDiff, Files, HardDriveDownload } from 'lucide-react'
 
 import { readRepoById, repoKey, repoRefOf, type PullView, type RepoRef } from '@/lib/repo'
-import { formatBytes, loadPullComparison, MergeBaseCancelledError, tipOidOf, type DiffSides, type ObjectReader, type PullComparison, type RepoHome } from '@/lib/view'
+import {
+  formatBytes,
+  invalidateBrowseContext,
+  loadPullComparison,
+  MergeBaseCancelledError,
+  tipOidOf,
+  type DiffSides,
+  type ObjectReader,
+  type PullComparison,
+  type RepoHome,
+} from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { useBrowseReader, type BrowseReaderState } from '@/hooks/use-browse-reader'
@@ -182,11 +192,13 @@ export interface ComparisonSides {
   readonly problems: readonly SideProblem[]
   /** A side is still resolving; its progress label. */
   readonly waiting: string | null
-  /** Changes when a side's reader does (the published index, or an in-browser clone). */
+  /** Changes when a side's reader does (a newer pack list, the index, an in-browser clone). */
   readonly sidesKey: string
   readonly crossRepo: boolean
   /** The PR's source repo when it is not the base (read once here; the page reuses it). */
   readonly source: SourceRepo
+  /** Drop both sides' browse contexts so they resolve again ("Try again"). */
+  readonly refresh: () => void
 }
 
 export function useComparisonSides(baseRepo: RepoRef, sourceId: string): ComparisonSides {
@@ -225,17 +237,25 @@ export function useComparisonSides(baseRepo: RepoRef, sourceId: string): Compari
   }, [baseReader, headReader])
 
   // Which reader serves each side. The comparison and the per-file patches are recomputed
-  // when this changes — e.g. once a source repo that was skipped is loaded into the browser.
-  const readerKey = (state: BrowseReaderState): string =>
-    state.kind === 'ready' ? (state.local ? 'local' : 'index') : 'none'
+  // when this changes — once a source repo that was skipped is loaded into the browser, or a
+  // push reached a side and its reader was replaced by a newer one.
+  const readerKey = (state: BrowseReaderState): string => (state.kind === 'ready' ? state.version : 'none')
   const sidesKey = `${readerKey(baseState)}/${readerKey(headState)}`
+  // "Try again": both sides' browse contexts are dropped and resolved afresh — a failure that
+  // came from a stale one (a head pushed after it was resolved, L-08) is then gone.
+  const baseRepoKey = repoKey(baseRepo)
+  const sourceRepoKey = source.kind === 'found' ? repoKey(source.repo) : null
+  const refresh = useCallback(() => {
+    invalidateBrowseContext(baseRepoKey)
+    if (sourceRepoKey !== null) invalidateBrowseContext(sourceRepoKey)
+  }, [baseRepoKey, sourceRepoKey])
   const waiting =
     baseState.kind === 'loading'
       ? baseState.label
       : headState.kind === 'loading'
         ? `${crossRepo ? 'Source repo: ' : ''}${headState.label}`
         : null
-  return { sides, baseOnly: baseReader, problems, waiting, sidesKey, crossRepo, source }
+  return { sides, baseOnly: baseReader, problems, waiting, sidesKey, crossRepo, source, refresh }
 }
 
 /** What a comparison diffs: the base tips and the head, as {@link loadPullComparison} takes them. */
@@ -260,6 +280,8 @@ export interface ComparisonState {
   readonly error: string | null
   readonly cause: unknown
   readonly reload: () => void
+  /** "Try again": re-resolve both repos' browse contexts, then re-run the comparison. */
+  readonly tryAgain: () => void
   readonly commitsRead: number
   readonly stop: () => void
   /** The source repo `useComparisonSides` resolved. */
@@ -272,7 +294,7 @@ export interface ComparisonState {
  * tab read it, so the merge-base walk runs once.
  */
 export function usePullComparison(baseRepo: RepoRef, sourceId: string, spec: ComparisonSpec): ComparisonState {
-  const { sides, problems, waiting, sidesKey, crossRepo, source } = useComparisonSides(baseRepo, sourceId)
+  const { sides, problems, waiting, sidesKey, crossRepo, source, refresh } = useComparisonSides(baseRepo, sourceId)
   const { baseTipOid, baseOidAtOpen } = spec
   // The merge-base search can read tens of thousands of commits on a long-lived branch: it
   // reports how far it got, and "Stop" ends it (D-040).
@@ -300,7 +322,13 @@ export function usePullComparison(baseRepo: RepoRef, sourceId: string, spec: Com
     if (!enabled) search.current?.abort()
   }, [enabled])
   const stop = useCallback(() => search.current?.abort(), [])
-  return { spec, sides, problems, waiting, sidesKey, data, loading, error, cause, reload, commitsRead, stop, source }
+  // The comparison re-runs on the readers that come back (and on the same ones, if nothing had
+  // changed).
+  const tryAgain = useCallback(() => {
+    refresh()
+    reload()
+  }, [refresh, reload])
+  return { spec, sides, problems, waiting, sidesKey, data, loading, error, cause, reload, tryAgain, commitsRead, stop, source }
 }
 
 /** The base, head and flags of a PR's comparison. */
@@ -323,14 +351,20 @@ export function ComparisonDiff({
   spec: ComparisonSpec
   noHead: string
   wrap?: (comparison: PullComparison, diff: ReactNode) => ReactNode
-  /** Told the readers the comparison uses, once both sides resolve (e.g. to read the head commit). */
-  onSides?: (sides: DiffSides | null) => void
+  /**
+   * Told the readers the comparison uses (e.g. to read the head commit), and a key that changes
+   * whenever either is replaced.
+   */
+  onSides?: (sides: DiffSides | null, key: string) => void
 }): JSX.Element {
   const state = usePullComparison(baseRepo, sourceId, spec)
-  const { sides } = state
+  const { sides, sidesKey } = state
   useEffect(() => {
-    onSides?.(sides)
-  }, [onSides, sides])
+    onSides?.(sides, sidesKey)
+    // Taken back when they change or this comparison goes (another head picked): nothing may be
+    // read for the next head through this one's readers.
+    return () => onSides?.(null, '')
+  }, [onSides, sides, sidesKey])
   return <ComparisonView state={state} noHead={noHead} {...(wrap ? { wrap } : {})} />
 }
 
@@ -347,7 +381,7 @@ export function ComparisonView({
   /** Extra controls beside the heading. */
   action?: ReactNode
 }): JSX.Element {
-  const { spec, sides, problems, waiting, sidesKey, data, loading, error, cause, reload, commitsRead } = state
+  const { spec, sides, problems, waiting, sidesKey, data, loading, error, cause, reload, tryAgain, commitsRead } = state
   const pull = { headOid: spec.headOid, imported: spec.imported, importedUrl: spec.importedUrl }
   const searching = loading && commitsRead > 0
   const searchProgress = (
@@ -439,7 +473,7 @@ export function ComparisonView({
               View original diff
             </a>
           ) : null}
-          <Button size="sm" variant="ghost" onClick={reload}>Try again</Button>
+          <Button size="sm" variant="ghost" onClick={tryAgain}>Try again</Button>
         </Unavailable>
       </Frame>
     )

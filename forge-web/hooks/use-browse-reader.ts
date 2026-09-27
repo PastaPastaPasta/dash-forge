@@ -21,6 +21,11 @@ export type BrowseReaderState =
   | {
       readonly kind: 'ready'
       readonly reader: BrowseReader
+      /**
+       * Which reader this is: it changes when the repo's pack list did and a new reader replaced
+       * this one. Work derived from a reader (a diff, a root listing) is keyed on it.
+       */
+      readonly version: string
       /** Served from an in-browser clone because the published index is missing or behind. */
       readonly local: boolean
       readonly behind: boolean
@@ -47,6 +52,18 @@ function progressLabel(p: FallbackProgress | null): string {
   return `Indexing objects — ${p.objectsIndexed} of ${p.objectsTotal}`
 }
 
+/** A stable id per reader object: readers are cached, so a new one means new content. */
+const readerIds = new WeakMap<BrowseReader, string>()
+let nextReaderId = 0
+function readerVersion(reader: BrowseReader): string {
+  let id = readerIds.get(reader)
+  if (id === undefined) {
+    id = `r${++nextReaderId}`
+    readerIds.set(reader, id)
+  }
+  return id
+}
+
 /** Resolve `repo`'s reader. `null` holds every read (the state stays `loading`). */
 export function useBrowseReader(repo: RepoRef | null): BrowseReaderState {
   const state = useBrowse(repo)
@@ -60,15 +77,18 @@ export function useBrowseReader(repo: RepoRef | null): BrowseReaderState {
   if (error) return { kind: 'error', message: error, cause: state.cause, retry: reload }
   if (data === null || data.kind === 'no-packs') return { kind: 'no-packs' }
   if (data.kind === 'ready') {
-    return { kind: 'ready', reader: data.context.reader, local: false, behind: false, unavailable: [] }
+    const reader = data.context.reader
+    return { kind: 'ready', reader, version: readerVersion(reader), local: false, behind: false, unavailable: [] }
   }
 
   // No usable published index — the in-browser fallback clone takes over.
   const behind = data.reason === 'index-behind'
   if (fallback.status === 'ready' && fallback.context !== null) {
+    const reader = fallback.context.reader
     return {
       kind: 'ready',
-      reader: fallback.context.reader,
+      reader,
+      version: readerVersion(reader),
       local: true,
       behind,
       unavailable: fallback.context.unavailable ?? [],

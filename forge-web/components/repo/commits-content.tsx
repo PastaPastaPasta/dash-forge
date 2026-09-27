@@ -37,16 +37,16 @@ export function CommitsContent({
     <div className="space-y-4">
       <RefSwitcher home={home} addr={addr} current={selected} />
       <BrowseBoundary repo={home.repo} addr={addr}>
-        {(reader) => <LogBody reader={reader} tipOid={tipOid} addr={addr} />}
+        {(reader, retry) => <LogBody reader={reader} retry={retry} tipOid={tipOid} addr={addr} />}
       </BrowseBoundary>
     </div>
   )
 }
 
-function LogBody({ reader, tipOid, addr }: { reader: BrowseReader; tipOid: string; addr: RepoAddress }): JSX.Element {
-  const { data, loading, error, reload } = useAsync(() => walkLog(reader, tipOid, 40), [tipOid])
+function LogBody({ reader, retry, tipOid, addr }: { reader: BrowseReader; retry: () => void; tipOid: string; addr: RepoAddress }): JSX.Element {
+  const { data, loading, error } = useAsync(() => walkLog(reader, tipOid, 40), [tipOid])
   if (loading) return <LoadingBlock label="Walking history" />
-  if (error) return <ErrorState message={error} onRetry={reload} />
+  if (error) return <ErrorState message={error} onRetry={retry} />
   if (!data) return <LoadingBlock />
   return (
     <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">

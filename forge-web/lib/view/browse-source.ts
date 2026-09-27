@@ -23,6 +23,7 @@ import { loadIndexArtifact } from './index-cache'
 import {
   BrowseReader,
   FlatIndex,
+  MissingObjectError,
   ObjectLocator,
   type PackSource,
 } from '../browse'
@@ -33,6 +34,7 @@ import {
   type AsOf,
   readNewestManifestOfKind,
   readRepoPackManifests,
+  onRepoContentWritten,
   repoKey,
   repoSource,
   type PackManifest,
@@ -1052,14 +1054,31 @@ export async function loadFlatIndex(sdk: EvoSDK, repo: RepoRef): Promise<FlatInd
  *  - `no-packs` — nothing stored to browse at all.
  */
 export type BrowseState =
-  | { readonly kind: 'ready'; readonly context: BrowseContext }
+  | { readonly kind: 'ready'; readonly context: BrowseContext; readonly version: string }
   | {
       readonly kind: 'unindexed'
       readonly reason: UnindexedReason
       readonly livePacks: PackManifest[]
       readonly totalSizeBytes: number
+      readonly version: string
     }
   | { readonly kind: 'no-packs' }
+
+/**
+ * The version of the pack list a state was resolved from: every manifest copy's document id.
+ * A push, a merge or an index fragment adds a manifest, so it changes; nothing else does.
+ */
+function manifestVersion(manifests: readonly PackManifest[]): string {
+  return manifests
+    .map((m) => m.documentId)
+    .sort()
+    .join(',')
+}
+
+/** {@link manifestVersion} of a resolved state (`''`: nothing stored). */
+function versionOf(state: BrowseState): string {
+  return state.kind === 'no-packs' ? '' : state.version
+}
 
 /**
  * Why the locator path is unavailable.
@@ -1102,11 +1121,13 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   const livePacks = locatorPackSpace(manifests)
   if (livePacks.length === 0) return { kind: 'no-packs' }
   const totalSizeBytes = livePacks.reduce((s, m) => s + m.sizeBytes, 0)
+  const version = manifestVersion(manifests)
   const behind = (reason: UnindexedReason): BrowseState => ({
     kind: 'unindexed',
     reason,
     livePacks,
     totalSizeBytes,
+    version,
   })
 
   const fragments = locatorFragments(manifests)
@@ -1170,8 +1191,58 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   // The packRef space is the current live pack set: the fragments cover all of it, and each
   // was built over a prefix of it, so every row's packRef means the same pack here.
   const packs = buildPackSource(sdk, repo, manifests)
-  const reader = new BrowseReader(locator, packs, { onObject: objectObserver(repoKey(repo)) })
-  return { kind: 'ready', context: { locator, packs, reader } }
+  return { kind: 'ready', context: { locator, packs, reader: repoReader(sdk, repo, locator, packs) }, version }
+}
+
+/**
+ * The error a view gets for an object an in-browser clone does not hold, when some packs were
+ * skipped: it names them and where they were looked for, instead of a bare "not in locator".
+ */
+export function missingObjectError(
+  oidHex: string,
+  unavailable: readonly UnavailablePack[],
+): MissingObjectError {
+  const where = unavailable
+    .map((p) => `${p.packHash.slice(0, 12)}… (${p.hosts.length > 0 ? p.hosts.join(', ') : 'no fetchable mirror'})`)
+    .join('; ')
+  // Name the storage that actually failed: a fork's pack is read from its parent's chunks on
+  // Platform (a `platform://` locator), not from anyone's external mirrors.
+  const onPlatform = unavailable.some((p) => p.hosts.includes('platform'))
+  const external = unavailable.some((p) => p.hosts.some((h) => h !== 'platform'))
+  const source =
+    onPlatform && !external
+      ? "the parent repo's chunks on Platform"
+      : onPlatform
+        ? "the parent repo's chunks on Platform or external storage"
+        : 'external storage'
+  const n = unavailable.length
+  return new MissingObjectError(
+    `object ${oidHex.slice(0, 12)}… is not in any pack this browser could load. ` +
+      `${n === 1 ? 'One pack' : `${n} packs`} could not be fetched from ${source} and may hold it: ${where}. ` +
+      `Cloning with dash:// reads the same ${n === 1 ? 'pack' : 'packs'}; if ${onPlatform && !external ? 'those chunks are missing' : 'the storage is down'} it will fail the same way.`,
+  )
+}
+
+/**
+ * A reader of `repo` — over its published index, or an in-browser clone. A read of an object
+ * `locator` does not index re-resolves the repo once ({@link readerAfterMiss}): the reader may
+ * predate a push or a merge (L-08, L-09). `unavailable`: packs a partial clone could not fetch,
+ * named by a miss the re-resolve does not answer. `sdk` null: no re-resolve (a restored clone
+ * opened before the SDK connected).
+ */
+export function repoReader(
+  sdk: EvoSDK | null,
+  repo: RepoRef,
+  locator: ObjectLocator,
+  packs: PackSource,
+  unavailable: readonly UnavailablePack[] = [],
+): BrowseReader {
+  const reader: BrowseReader = new BrowseReader(locator, packs, {
+    onObject: objectObserver(repoKey(repo)),
+    missingObject: unavailable.length > 0 ? (oid) => missingObjectError(oid, unavailable) : undefined,
+    onMiss: sdk === null ? undefined : (oid) => readerAfterMiss(sdk, repo, reader, oid),
+  })
+  return reader
 }
 
 // ---------------------------------------------------------------------------
@@ -1210,15 +1281,25 @@ interface BrowseCacheEntry {
   at: number
   promise: Promise<BrowseState>
   settled?: BrowseState
-  /** A background refresh is in flight for this entry (see `loadBrowseContextCached`). */
-  revalidating?: boolean
+  /** A re-resolve in flight behind this settled entry (a background revalidation, or a miss). */
+  refresh?: Promise<BrowseState>
 }
 const browseCache = new Map<string, BrowseCacheEntry>()
+
+/** The version each repo (`repoKey`) last resolved to; a different one is announced. */
+const lastVersion = new Map<string, string>()
 
 // A private repo's entries are keyed `repoId#sessionId` and hold decrypted state: they go with
 // the session, however it ends (lock, key change, retirement).
 onPrivateSessionEnded((id) => {
-  for (const m of [browseCache]) for (const k of [...m.keys()]) if (k.endsWith(`#${id}`) || k.includes(`#${id}\0`)) m.delete(k)
+  for (const m of [browseCache, lastVersion]) for (const k of [...m.keys()]) if (k.endsWith(`#${id}`) || k.includes(`#${id}\0`)) m.delete(k)
+})
+
+// This tab stored a pack or moved a ref (a browser merge, a fork) or published a release: the
+// next read of the repo resolves again. A view holding a reader keeps it; a read that reader
+// cannot answer re-resolves on its own ({@link readerAfterMiss}).
+onRepoContentWritten((repo) => {
+  for (const k of [...browseCache.keys()]) if (k === repo.repoId || k.startsWith(`${repo.repoId}#`)) browseCache.delete(k)
 })
 
 function browseEntryLive(entry: BrowseCacheEntry): boolean {
@@ -1229,9 +1310,46 @@ function browseEntryLive(entry: BrowseCacheEntry): boolean {
   return Date.now() - entry.at < ttl
 }
 
-/** Drop a repo's cached browse context, by `repoKey` (e.g. on an explicit home reload). */
+// Generations: how the views of a repo learn that its browse context changed under them.
+const generations = new Map<string, number>()
+const generationListeners = new Set<() => void>()
+
+function bump(key: string): void {
+  generations.set(key, (generations.get(key) ?? 0) + 1)
+  for (const listener of generationListeners) listener()
+}
+
+/**
+ * How often a repo's (`repoKey`) browse context was dropped, or replaced by one resolved from a
+ * newer pack list, this session. `useBrowse` reads the state again whenever it changes.
+ */
+export function browseGeneration(key: string): number {
+  return generations.get(key) ?? 0
+}
+
+/** Run `listener` whenever some repo's {@link browseGeneration} changes. */
+export function subscribeBrowseGeneration(listener: () => void): () => void {
+  generationListeners.add(listener)
+  return () => {
+    generationListeners.delete(listener)
+  }
+}
+
+/** Record what `key` resolved to; a version other than the last one is announced. */
+function noteVersion(key: string, state: BrowseState): void {
+  const version = versionOf(state)
+  const before = lastVersion.get(key)
+  lastVersion.set(key, version)
+  if (before !== undefined && before !== version) bump(key)
+}
+
+/**
+ * Drop a repo's cached browse context, by `repoKey`, and have every view of it resolve again:
+ * an explicit reload, a "Try again", or the end of a write this tab made.
+ */
 export function invalidateBrowseContext(key: string): void {
   browseCache.delete(key)
+  bump(key)
 }
 
 /** The cached settled browse state for a repo (`repoKey`), if still live — for first-paint seeding. */
@@ -1241,42 +1359,105 @@ export function peekBrowseState(key: string): BrowseState | undefined {
   return entry.settled
 }
 
-/**
- * {@link loadBrowseContext} through the session cache (in-flight loads are joined).
- *
- * Stale-while-revalidate: a hit older than {@link BROWSE_REVALIDATE_MS} is still returned
- * immediately, and a fresh resolve starts behind it so the next read sees any push since.
- */
-export function loadBrowseContextCached(sdk: EvoSDK, repo: RepoRef): Promise<BrowseState> {
-  const key = repoKey(repo)
-  const hit = browseCache.get(key)
-  if (hit !== undefined && browseEntryLive(hit)) {
-    const stale = hit.settled !== undefined && Date.now() - hit.at >= BROWSE_REVALIDATE_MS
-    if (stale && !hit.revalidating) {
-      hit.revalidating = true
-      const next = loadBrowseContext(sdk, repo)
-      next
-        .then((state) => {
-          // Only replace an entry this refresh still owns — an explicit reload may have
-          // dropped it, and a newer resolve must not be clobbered by an older one.
-          if (browseCache.get(key) !== hit) return
-          browseCache.set(key, { at: Date.now(), promise: next, settled: state })
-        })
-        .catch(() => {
-          // Keep serving the last good state; the TTL will force a fresh resolve.
-          hit.revalidating = false
-        })
-    }
-    return hit.promise
-  }
+/** Resolve `repo` into a new cache entry. */
+function startEntry(sdk: EvoSDK, repo: RepoRef, key: string): BrowseCacheEntry {
   const entry: BrowseCacheEntry = { at: Date.now(), promise: loadBrowseContext(sdk, repo) }
   browseCache.set(key, entry)
   entry.promise
     .then((state) => {
       entry.settled = state
+      if (browseCache.get(key) === entry) noteVersion(key, state)
     })
     .catch(() => {
       if (browseCache.get(key) === entry) browseCache.delete(key)
     })
-  return entry.promise
+  return entry
+}
+
+/**
+ * Resolve `repo` again behind a settled entry, joining a re-resolve already in flight. An
+ * unchanged pack list keeps the entry, and its warm reader; a new one replaces it and is
+ * announced. Resolves with the state the cache holds afterwards.
+ */
+function refreshEntry(sdk: EvoSDK, repo: RepoRef, key: string, hit: BrowseCacheEntry): Promise<BrowseState> {
+  if (hit.refresh !== undefined) return hit.refresh
+  const refresh = loadBrowseContext(sdk, repo)
+    .then((state) => {
+      // An explicit reload may have dropped the entry meanwhile: leave its successor alone.
+      if (browseCache.get(key) !== hit) return state
+      if (hit.settled !== undefined && versionOf(state) === versionOf(hit.settled)) {
+        hit.at = Date.now()
+        return hit.settled
+      }
+      browseCache.set(key, { at: Date.now(), promise: Promise.resolve(state), settled: state })
+      noteVersion(key, state)
+      return state
+    })
+    .finally(() => {
+      hit.refresh = undefined
+    })
+  hit.refresh = refresh
+  return refresh
+}
+
+/**
+ * {@link loadBrowseContext} through the session cache (in-flight loads are joined).
+ *
+ * Stale-while-revalidate: a hit older than {@link BROWSE_REVALIDATE_MS} is still returned
+ * immediately, and a fresh resolve starts behind it. When that finds a changed pack list the
+ * repo's views are told ({@link browseGeneration}) and pick the new context up.
+ */
+export function loadBrowseContextCached(sdk: EvoSDK, repo: RepoRef): Promise<BrowseState> {
+  const key = repoKey(repo)
+  const hit = browseCache.get(key)
+  if (hit === undefined || !browseEntryLive(hit)) return startEntry(sdk, repo, key).promise
+  if (hit.settled !== undefined && Date.now() - hit.at >= BROWSE_REVALIDATE_MS) {
+    // A failure keeps serving the last good state; the TTL forces a fresh resolve.
+    refreshEntry(sdk, repo, key, hit).catch(() => undefined)
+  }
+  return hit.promise
+}
+
+/**
+ * The re-resolve a stale reader's misses share: one at a time, and its answer reused for
+ * {@link BROWSE_REVALIDATE_MS}, so a walk that meets many objects the repo does not hold costs
+ * one manifest read, not one per object. A failed resolve is not kept.
+ */
+const missRefreshes = new WeakMap<BrowseReader, { readonly at: number; readonly promise: Promise<BrowseReader | null> }>()
+
+/**
+ * A read of an object `stale`'s locator does not index. The context may predate a push, a
+ * merge or a new index fragment (L-08, L-09): resolve the repo again, once, and hand back the
+ * newer reader — or null when the pack list has not changed (the object is not there) or the
+ * resolve failed. Nothing is read when the cache already holds a newer reader that has it.
+ */
+function readerAfterMiss(sdk: EvoSDK, repo: RepoRef, stale: BrowseReader, oidHex: string): Promise<BrowseReader | null> {
+  const key = repoKey(repo)
+  // The locator is immutable: a cached reader indexing the oid is not `stale`.
+  const cached = peekBrowseState(key)
+  if (cached?.kind === 'ready' && cached.context.reader.locate(oidHex) !== null) return Promise.resolve(cached.context.reader)
+  const held = missRefreshes.get(stale)
+  if (held !== undefined && Date.now() - held.at < BROWSE_REVALIDATE_MS) return held.promise
+  const resolveAgain = (): Promise<BrowseState> => {
+    const hit = browseCache.get(key)
+    if (hit === undefined || !browseEntryLive(hit)) return startEntry(sdk, repo, key).promise
+    // The first resolve is still in flight: it started after `stale` was made.
+    if (hit.settled === undefined) return hit.promise
+    return refreshEntry(sdk, repo, key, hit)
+  }
+  const promise = resolveAgain().then(
+    (state) => (state.kind === 'ready' && state.context.reader !== stale ? state.context.reader : null),
+    () => {
+      if (missRefreshes.get(stale)?.promise === promise) missRefreshes.delete(stale)
+      return null
+    },
+  )
+  missRefreshes.set(stale, { at: Date.now(), promise })
+  return promise
+}
+
+/** Test hook: forget every cached browse context and version. */
+export function resetBrowseCache(): void {
+  browseCache.clear()
+  lastVersion.clear()
 }

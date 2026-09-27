@@ -12,6 +12,19 @@ export async function retryWhileMissing<T>(read: () => Promise<T | null>, attemp
 }
 
 /**
+ * Read-after-write for a value that exists but must show a write this browser just made (a
+ * branch a merge moved): re-read until `done` holds, `attempts` more times at most, then take
+ * what the last read said.
+ */
+export async function retryUntil<T>(read: () => Promise<T>, done: (value: T) => boolean, attempts: number, delayMs = 1500): Promise<T> {
+  for (let i = 0; ; i++) {
+    const value = await read()
+    if (done(value) || i >= attempts) return value
+    await new Promise((r) => setTimeout(r, delayMs))
+  }
+}
+
+/**
  * Read, then re-read (`delayMs` apart, at most `attempts` more times) until every expectation in
  * `want` holds of the value: a page waiting for its own writes to show. A null read is returned at
  * once (not found is the caller's to handle). `signal.aborted` stops the polling early (a newer

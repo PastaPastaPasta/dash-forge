@@ -10,12 +10,13 @@
  * repo's in page memory only).
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { GitBranch } from 'lucide-react'
 
 import { createPatch, findForks, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
 import { commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
+import { preferring } from '@/lib/view/pull-diff'
 import { dropPrDraft, loadPrDraft, savePrDraft } from '@/lib/view/pr-draft'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
 import { useAuth } from '@/contexts/auth-context'
@@ -67,8 +68,13 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   // "Create draft pull request" (review-parity P6): the PR opens as a draft, marked ready later.
   const [asDraft, setAsDraft] = useState(false)
 
-  // Keep the draft for this tab (a sign-in in between must not lose it).
-  useEffect(() => savePrDraft(repo, { title, body, head: headKey, base }), [repo, title, body, headKey, base])
+  // Keep the draft for this tab (a sign-in in between must not lose it). Only a title the author
+  // typed is kept: one filled in from a head commit belongs to that head, and a draft restored
+  // later (another branch, a new push) must take its own head's subject (L-16).
+  useEffect(
+    () => savePrDraft(repo, { title: titleTouched ? title : '', body, head: headKey, base }),
+    [repo, title, titleTouched, body, headKey, base],
+  )
 
   const branches = useMemo(() => home.branches.filter((b) => tipOidOf(b) !== null), [home.branches])
   const forks = useAsync(
@@ -102,13 +108,19 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   const sameBranch = head !== null && head.repo.repoId === repo.repoId && head.refName === base
   const nothing = head !== null && head.oid === baseTip
 
-  // The head commit's subject becomes the title until the author types one.
-  const [sides, setSides] = useState<DiffSides | null>(null)
-  const subject = useAsync(async () => commitSubject((await readCommit(sides!.head, head!.oid)).message), [head?.oid ?? '', sides === null], {
-    enabled: sides !== null && head !== null,
-  })
+  // The head commit's subject becomes the title until the author types one (L-16). It is read
+  // for the head picked now, through the readers the diff below uses, and again whenever those
+  // are replaced (the source repo loaded, or a push reached it). A title filled in for another
+  // head is cleared as soon as the head changes, never left behind.
+  const [sides, setSides] = useState<{ readonly sides: DiffSides; readonly key: string } | null>(null)
+  const onSides = useCallback((s: DiffSides | null, key: string) => setSides(s === null ? null : { sides: s, key }), [])
+  const subject = useAsync(
+    async () => commitSubject((await readCommit(preferring(sides!.sides.head, sides!.sides.base), head!.oid)).message),
+    [head?.key ?? '', head?.oid ?? '', sides?.key ?? ''],
+    { enabled: sides !== null && head !== null },
+  )
   useEffect(() => {
-    if (!titleTouched && subject.data) setTitle(subject.data)
+    if (!titleTouched) setTitle(subject.data ?? '')
   }, [subject.data, titleTouched])
 
   const input =
@@ -298,7 +310,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
           sourceId={head.repo.repoId}
           spec={{ baseTipOid: baseTip, baseOidAtOpen: baseTip, headOid: head.oid, merged: false, imported: false, importedUrl: '' }}
           noHead="Pick a branch to compare."
-          onSides={setSides}
+          onSides={onSides}
         />
       ) : null}
     </div>
