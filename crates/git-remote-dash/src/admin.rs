@@ -181,29 +181,6 @@ async fn dump_collab(owner: &str, repo: &str) -> Result<()> {
             );
         }
     };
-    let by = |field: &'static str, id: String| {
-        let (client, collab) = (&client, &collab);
-        async move {
-            let id = forge_core::platform::decode_identifier(&id)?;
-            anyhow::Ok(
-                client
-                    .query_all_documents(
-                        collab,
-                        if field == "patchId" {
-                            "review"
-                        } else {
-                            "comment"
-                        },
-                        &[forge_core::platform::QueryFilter::eq(
-                            field,
-                            forge_core::platform::FieldValue::identifier(id),
-                        )],
-                        &[QueryOrder::asc(field), QueryOrder::asc("$createdAt")],
-                    )
-                    .await?,
-            )
-        }
-    };
     for doc_type in ["issue", "patch"] {
         let docs = client
             .query_all_documents(
@@ -215,13 +192,41 @@ async fn dump_collab(owner: &str, repo: &str) -> Result<()> {
             .await?;
         print(doc_type, &docs);
         for d in &docs {
-            print("comment", &by("targetId", d.id.clone()).await?);
+            print(
+                "comment",
+                &by_target(&client, &collab, "comment", "targetId", &d.id).await?,
+            );
             if doc_type == "patch" {
-                print("review", &by("patchId", d.id.clone()).await?);
+                print(
+                    "review",
+                    &by_target(&client, &collab, "review", "patchId", &d.id).await?,
+                );
             }
         }
     }
     Ok(())
+}
+
+/// Every `doc_type` document whose `field` names `id` (the `target` / `patch` indexes).
+async fn by_target(
+    client: &PlatformClient,
+    collab: &forge_core::platform::LoadedContract,
+    doc_type: &str,
+    field: &str,
+    id: &str,
+) -> Result<Vec<forge_core::platform::FetchedDocument>> {
+    let id = forge_core::platform::decode_identifier(id)?;
+    Ok(client
+        .query_all_documents(
+            collab,
+            doc_type,
+            &[forge_core::platform::QueryFilter::eq(
+                field,
+                forge_core::platform::FieldValue::identifier(id),
+            )],
+            &[QueryOrder::asc(field), QueryOrder::asc("$createdAt")],
+        )
+        .await?)
 }
 
 /// Print the first bytes of every stored git pack, as stored (diagnostic: a private repo's

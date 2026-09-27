@@ -472,7 +472,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let p = patch(&collab, handle, repo, number).await?;
     let v = collab.patch_view(handle, p).await?;
     let (approvals, reviews) = collab.approvals(handle, &v).await?;
-    let comments = collab.comments(handle, &v.patch.document_id).await?;
+    let (comments, hidden_comments) = collab
+        .comments_counted(handle, &v.patch.document_id)
+        .await?;
     let review_state = v.review_with_threads(&comments);
     let dismissed = v.dismissed();
     let source = forge_core::resolve::resolve_id(client, &v.patch.source_repo_id)
@@ -501,6 +503,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "changesRequestedBy": approvals.changes_requested,
             "reviews": reviews_json,
             "comments": comments_json(&comments),
+            "hiddenComments": hidden_comments,
         }),
         || {
             println!(
@@ -551,6 +554,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             }
             for c in &comments {
                 println!("\n— {}:\n{}", c.author, safe(&c.body));
+            }
+            if hidden_comments > 0 {
+                println!("\n{}", crate::fmt::hidden_note(handle, hidden_comments));
             }
         },
     );

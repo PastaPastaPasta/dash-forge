@@ -108,12 +108,28 @@ fn doc_kind(kind: ContentKind) -> DocKind {
     }
 }
 
+/// A well-formed document as the public codecs read it: itself when `keys` is `None` (a public
+/// repo), else decrypted, or `None` when it does not open.
+fn open_with(
+    keys: Option<&Keyring>,
+    kind: ContentKind,
+    d: FetchedDocument,
+) -> Option<FetchedDocument> {
+    match keys {
+        None => Some(d),
+        Some(kr) => {
+            let opened = kr.open(doc_kind(kind), &d);
+            super::private::open_doc(opened, d)
+        }
+    }
+}
+
 impl TargetKind {
-    /// The private-repository document kind.
-    fn doc_kind(self) -> DocKind {
+    /// The content kind of this target's document.
+    fn content_kind(self) -> ContentKind {
         match self {
-            TargetKind::Issue => DocKind::Issue,
-            TargetKind::Patch => DocKind::Patch,
+            TargetKind::Issue => ContentKind::Issue,
+            TargetKind::Patch => ContentKind::Patch,
         }
     }
 
@@ -925,16 +941,6 @@ impl<'a> Collab<'a> {
 
     /// The keys of private `repo` as the signer holds them, loaded once per `Collab`.
     pub async fn keyring(&self, repo: &RepoRef) -> Result<std::sync::Arc<Keyring>> {
-        let repo_id = repo.scope()?.repo_id;
-        let cached = self
-            .keyring
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-            .filter(|k| *k.repo_id() == repo_id);
-        if let Some(k) = cached {
-            return Ok(k);
-        }
         let (identity, bridge) = self.signer.ok_or_else(|| {
             Error::Config(format!(
                 "{} is private: reading it needs your identity (its encryption key)",
@@ -946,13 +952,12 @@ impl<'a> Collab<'a> {
             identity,
             bridge,
         };
-        let fresh = std::sync::Arc::new(signer.keyring(repo).await?);
-        *self
-            .keyring
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some(std::sync::Arc::clone(&fresh));
-        Ok(fresh)
+        crate::repo::cached_keyring(
+            &self.keyring,
+            repo,
+            || async move { signer.keyring(repo).await },
+        )
+        .await
     }
 
     /// `props` of a new `kind` document, sealed when `repo` is private (under the write epoch
@@ -960,7 +965,7 @@ impl<'a> Collab<'a> {
     pub async fn seal_if_private(
         &self,
         repo: &RepoRef,
-        kind: DocKind,
+        kind: ContentKind,
         props: BTreeMap<String, FieldValue>,
     ) -> Result<BTreeMap<String, FieldValue>> {
         if repo.visibility != Visibility::Private {
@@ -972,7 +977,7 @@ impl<'a> Collab<'a> {
             .epoch_keys(w.write_epoch())
             .expect("the write epoch's keys are held");
         let owner = platform::decode_identifier(&self.signer_id()?)?;
-        super::private::seal_props(keys, kind, owner, props, None)
+        super::private::seal_props(keys, doc_kind(kind), owner, props)
     }
 
     /// A fetched document of `kind` as the public codecs read it: itself in a public repo,
@@ -986,14 +991,32 @@ impl<'a> Collab<'a> {
         if !well_formed(kind, &d, Self::visibility(repo)) {
             return Ok(None);
         }
+        let keys = self.private_keys(repo).await?;
+        Ok(open_with(keys.as_deref(), kind, d))
+    }
+
+    /// The reader's keys when `repo` is private (`None` for a public one). A reader with no key
+    /// at all is told why (E306 / E307), rather than shown nothing with everything hidden.
+    async fn private_keys(&self, repo: &RepoRef) -> Result<Option<std::sync::Arc<Keyring>>> {
         if repo.visibility != Visibility::Private {
-            return Ok(Some(d));
+            return Ok(None);
         }
         let kr = self.keyring(repo).await?;
-        // no key at all: say why (E306 / E307), rather than list nothing with everything hidden
         kr.require_key(repo)?;
-        let opened = kr.open(doc_kind(kind), &d);
-        Ok(super::private::open_doc(opened, &d).ok())
+        Ok(Some(kr))
+    }
+
+    /// An issue or patch by number, readable (see [`Self::readable`]).
+    async fn readable_target(
+        &self,
+        repo: &RepoRef,
+        kind: TargetKind,
+        number: u32,
+    ) -> Result<Option<FetchedDocument>> {
+        match self.target_doc(repo, kind, number).await? {
+            Some(d) => self.readable(repo, kind.content_kind(), d).await,
+            None => Ok(None),
+        }
     }
 
     /// [`Self::readable`] over a list: the rows that read, and how many did not.
@@ -1003,17 +1026,14 @@ impl<'a> Collab<'a> {
         kind: ContentKind,
         docs: Vec<FetchedDocument>,
     ) -> Result<(Vec<FetchedDocument>, usize)> {
-        if repo.visibility == Visibility::Private {
-            // even for an empty page: a non-member learns why, not "no issues"
-            self.keyring(repo).await?.require_key(repo)?;
-        }
+        // resolved once, even for an empty page: a non-member learns why, not "no issues"
+        let keys = self.private_keys(repo).await?;
         let total = docs.len();
-        let mut out = Vec::with_capacity(total);
-        for d in docs {
-            if let Some(d) = self.readable(repo, kind, d).await? {
-                out.push(d);
-            }
-        }
+        let out: Vec<FetchedDocument> = docs
+            .into_iter()
+            .filter(|d| well_formed(kind, d, Self::visibility(repo)))
+            .filter_map(|d| open_with(keys.as_deref(), kind, d))
+            .collect();
         let hidden = total - out.len();
         Ok((out, hidden))
     }
@@ -1142,22 +1162,16 @@ impl<'a> Collab<'a> {
 
     /// Issue `number` of `repo`, if it exists, is well-formed and (private) opens.
     pub async fn issue(&self, repo: &RepoRef, number: u32) -> Result<Option<Issue>> {
-        let Some(d) = self.target_doc(repo, TargetKind::Issue, number).await? else {
-            return Ok(None);
-        };
         Ok(self
-            .readable(repo, ContentKind::Issue, d)
+            .readable_target(repo, TargetKind::Issue, number)
             .await?
             .map(|d| issue_from_doc(&d)))
     }
 
     /// Pull request `number` of `repo`, if it exists, is well-formed and (private) opens.
     pub async fn patch(&self, repo: &RepoRef, number: u32) -> Result<Option<Patch>> {
-        let Some(d) = self.target_doc(repo, TargetKind::Patch, number).await? else {
-            return Ok(None);
-        };
         Ok(self
-            .readable(repo, ContentKind::Patch, d)
+            .readable_target(repo, TargetKind::Patch, number)
             .await?
             .map(|d| patch_from_doc(&d)))
     }
@@ -1571,7 +1585,9 @@ impl<'a> Collab<'a> {
         props: BTreeMap<String, FieldValue>,
     ) -> Result<Numbered> {
         let collab = self.collab_contract(repo).await?;
-        let props = self.seal_if_private(repo, kind.doc_kind(), props).await?;
+        let props = self
+            .seal_if_private(repo, kind.content_kind(), props)
+            .await?;
         let props = Self::with_repo(repo, props)?;
         match self
             .engine()?
@@ -1699,7 +1715,7 @@ impl<'a> Collab<'a> {
             let number = self.next_number(repo, kind).await?.max(floor);
             // sealed per number: the AD binds it (§4.4), so a renumbered retry re-seals
             let sealed = self
-                .seal_if_private(repo, kind.doc_kind(), props(number)?)
+                .seal_if_private(repo, kind.content_kind(), props(number)?)
                 .await?;
             let all = Self::with_repo(repo, sealed)?;
             let res = engine
@@ -1803,7 +1819,7 @@ impl<'a> Collab<'a> {
             }
         }
         insert_imported(&mut p, imported)?;
-        let p = self.seal_if_private(repo, DocKind::Comment, p).await?;
+        let p = self.seal_if_private(repo, ContentKind::Comment, p).await?;
         self.write(repo, &collab, DOC_COMMENT, p).await
     }
 
@@ -1845,7 +1861,7 @@ impl<'a> Collab<'a> {
             );
         }
         insert_imported(&mut p, imported)?;
-        let p = self.seal_if_private(repo, DocKind::Review, p).await?;
+        let p = self.seal_if_private(repo, ContentKind::Review, p).await?;
         self.write(repo, &collab, DOC_REVIEW, p).await
     }
 

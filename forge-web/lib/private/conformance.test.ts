@@ -209,13 +209,13 @@ const COLLAB_SEALED: Readonly<Record<string, readonly string[]>> = {
 
 /**
  * The reference transform of `private_collab_seal` (the CLI's `collab::private::seal_props`, the
- * web's private-writes): the sealed fields leave the plaintext for `enc`, a patch's ref-name
+ * web's `lib/repo/private-writes.ts`): the sealed fields leave the plaintext for `enc`, a patch's ref-name
  * hashes become `HMAC(K_ref,e, name)`, and `epoch` + `enc` are added.
  */
 async function collabSeal(inp: Obj): Promise<Json> {
   const docType = str(inp, 'docType') as PrivateDocType
   const epoch = num(inp, 'epoch')
-  const keys = await EpochKeys.import(hex(inp, 'repoId'), epoch, hex(inp, 'key'))
+  const keys = await importKey(inp)
   const props = obj(inp, 'props')
   const sealed = COLLAB_SEALED[docType] as readonly string[]
   const out: { [k: string]: Json } = {}

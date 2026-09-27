@@ -131,7 +131,7 @@ struct CollabSealIn {
     key: String,
     epoch: u32,
     owner_id: String,
-    doc_type: String,
+    doc_type: super::DocKind,
     nonce: String,
     props: BTreeMap<String, Value>,
 }
@@ -416,25 +416,19 @@ fn run(v: &Vector) -> Value {
         "private_collab_seal" => {
             let i: CollabSealIn = input(v);
             let keys = EpochKeys::derive(&h32(&i.repo_id), i.epoch, &key(&i.key));
-            let kind = match i.doc_type.as_str() {
-                "issue" => super::DocKind::Issue,
-                "patch" => super::DocKind::Patch,
-                "comment" => super::DocKind::Comment,
-                "review" => super::DocKind::Review,
-                other => panic!("unknown docType {other}"),
-            };
+            let kind = i.doc_type;
             let props = i
                 .props
                 .iter()
                 .map(|(k, val)| (k.clone(), collab_field(k, val)))
                 .collect();
             let nonce: [u8; 12] = hex::decode(&i.nonce).unwrap().try_into().unwrap();
-            match crate::collab::private::seal_props(
+            match crate::collab::private::seal_props_with_nonce(
                 &keys,
                 kind,
                 h32(&i.owner_id),
                 props,
-                Some(nonce),
+                nonce,
             ) {
                 Ok(sealed) => json!({
                     "props": sealed

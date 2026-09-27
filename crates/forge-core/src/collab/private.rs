@@ -3,8 +3,8 @@
 //! instead of in plaintext properties.
 //!
 //! Both directions are pure over the property maps the public writer produces and a fetched
-//! document carries, so the CLI and the web app (`forge-web/lib/repo/private-writes.ts`) seal
-//! byte-for-byte alike (conformance case `private_collab_seal`):
+//! document carries, so the CLI and the web app (`forge-web/lib/repo/private-writes.ts`, web
+//! PR #67) seal byte-for-byte alike (conformance case `private_collab_seal`):
 //!
 //! * [`seal_props`] moves every present sealed field (issue `title`/`body`; patch `title`,
 //!   `body`, `baseRefName`, `sourceRefName`; comment `body`/`path`; review `body`) into the
@@ -47,14 +47,38 @@ fn id32(props: &BTreeMap<String, FieldValue>, name: &str) -> Option<[u8; 32]> {
 }
 
 /// Seal the properties of a new (or re-sealed) `kind` document owned by `owner`, under `keys`
-/// (the epoch the document is written under), with `nonce` (`None`: hedged random, the only
-/// choice outside the conformance vectors).
+/// (the epoch the document is written under), with a hedged random nonce (§3.6).
 pub fn seal_props(
     keys: &EpochKeys,
     kind: DocKind,
     owner: [u8; 32],
+    props: BTreeMap<String, FieldValue>,
+) -> Result<BTreeMap<String, FieldValue>> {
+    seal_props_inner(keys, kind, owner, props, |h, f| {
+        crate::private::doc::seal(keys, h, f)
+    })
+}
+
+/// [`seal_props`] with a caller-chosen nonce: the conformance vectors only.
+#[cfg(any(test, feature = "vectors"))]
+pub fn seal_props_with_nonce(
+    keys: &EpochKeys,
+    kind: DocKind,
+    owner: [u8; 32],
+    props: BTreeMap<String, FieldValue>,
+    nonce: [u8; 12],
+) -> Result<BTreeMap<String, FieldValue>> {
+    seal_props_inner(keys, kind, owner, props, |h, f| {
+        crate::private::doc::seal_with_nonce(keys, h, f, false, nonce)
+    })
+}
+
+fn seal_props_inner(
+    keys: &EpochKeys,
+    kind: DocKind,
+    owner: [u8; 32],
     mut props: BTreeMap<String, FieldValue>,
-    nonce: Option<[u8; 12]>,
+    seal: impl FnOnce(&DocHeader, &Fields) -> std::result::Result<Vec<u8>, PrivateError>,
 ) -> Result<BTreeMap<String, FieldValue>> {
     let epoch = keys.epoch();
     let mut header = DocHeader::new(kind, owner, epoch);
@@ -100,14 +124,7 @@ pub fn seal_props(
             )))
         }
     }
-    let sealed = match nonce {
-        None => crate::private::doc::seal(keys, &header, &fields),
-        #[cfg(any(test, feature = "vectors"))]
-        Some(n) => crate::private::doc::seal_with_nonce(keys, &header, &fields, false, n),
-        #[cfg(not(any(test, feature = "vectors")))]
-        Some(_) => unreachable!("a chosen nonce is for the conformance vectors only"),
-    };
-    let enc = sealed.map_err(|e| sealing_error(kind, &e))?;
+    let enc = seal(&header, &fields).map_err(|e| sealing_error(kind, &e))?;
     props.insert("epoch".into(), FieldValue::integer(u64::from(epoch)));
     props.insert("enc".into(), FieldValue::bytes(enc));
     Ok(props)
@@ -133,27 +150,33 @@ fn sealing_error(kind: DocKind, e: &PrivateError) -> Error {
     }
 }
 
-/// The fetched private `d` of `kind` as the public codecs read it: the decrypted fields put
-/// back in place (`None` when it does not open, with the reason in the second value).
-pub fn open_doc(
-    opened: Opened,
-    d: &FetchedDocument,
-) -> std::result::Result<FetchedDocument, Opened> {
+/// The fetched private document `d` as the public codecs read it, given what opening it gave:
+/// its decrypted fields put back in place, or `None` when it did not open.
+#[must_use]
+pub fn open_doc(opened: Opened, mut d: FetchedDocument) -> Option<FetchedDocument> {
     let Opened::Readable(f) = opened else {
-        return Err(opened);
+        return None;
     };
-    let mut out = d.clone();
-    let mut put = |name: &str, v: Option<String>| {
+    let Fields {
+        title,
+        body,
+        base_ref_name,
+        source_ref_name,
+        path,
+        ..
+    } = *f;
+    for (name, v) in [
+        ("title", title),
+        ("body", body),
+        ("baseRefName", base_ref_name),
+        ("sourceRefName", source_ref_name),
+        ("path", path),
+    ] {
         if let Some(v) = v {
-            out.fields.insert(name.into(), FieldValue::text(v));
+            d.fields.insert(name.into(), FieldValue::text(v));
         }
-    };
-    put("title", f.title.clone());
-    put("body", f.body.clone());
-    put("baseRefName", f.base_ref_name.clone());
-    put("sourceRefName", f.source_ref_name.clone());
-    put("path", f.path.clone());
-    Ok(out)
+    }
+    Some(d)
 }
 
 #[cfg(test)]
@@ -216,7 +239,7 @@ mod tests {
             ("draft".to_string(), FieldValue::boolean(true)),
         ]
         .into();
-        let sealed = seal_props(&keys(), DocKind::Patch, OWNER, public.clone(), None).unwrap();
+        let sealed = seal_props(&keys(), DocKind::Patch, OWNER, public.clone()).unwrap();
         for f in ["title", "body", "baseRefName", "sourceRefName"] {
             assert!(!sealed.contains_key(f), "{f} left in plaintext");
         }
@@ -233,7 +256,7 @@ mod tests {
         ));
         let header = header_of(DocKind::Patch, &d).unwrap();
         let opened = open_content(&ctx(), &header, &d.field_bytes("enc").unwrap());
-        let back = open_doc(opened, &d).unwrap();
+        let back = open_doc(opened, d).unwrap();
         for f in ["title", "body", "baseRefName", "sourceRefName"] {
             assert_eq!(back.fields.get(f), public.get(f), "{f}");
         }
@@ -248,7 +271,7 @@ mod tests {
             ("body".to_string(), FieldValue::text(over)),
         ]
         .into();
-        let err = seal_props(&keys(), DocKind::Review, OWNER, props, None).unwrap_err();
+        let err = seal_props(&keys(), DocKind::Review, OWNER, props).unwrap_err();
         assert!(err.to_string().contains("5088"), "{err}");
         assert_eq!(text_cap(DocKind::Patch), 5079);
         assert_eq!(text_cap(DocKind::Issue), 5085);
