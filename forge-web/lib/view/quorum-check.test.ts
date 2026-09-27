@@ -4,13 +4,19 @@
  * retry, honest single-source outcome).
  */
 
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { NetworkConfig } from '../constants'
 import fixture from './fixtures/moutai-quorums.json'
 import {
+  QUORUM_CHECK_MAX_AGE_MS,
   compareQuorumKeys,
   crossCheckQuorumKeys,
+  crossCheckQuorumKeysCached,
+  lastQuorumCheck,
+  quorumCheckDueInMs,
+  resetQuorumChecks,
+  type QuorumCrossCheck,
   decodeCurrentQuorumsInfo,
   grpcWebMessage,
   parseQuorumService,
@@ -161,5 +167,79 @@ describe('crossCheckQuorumKeys', () => {
     const { fetch } = fakeFetch({})
     const r = await crossCheckQuorumKeys(config(['https://10.0.0.1:1443']), { fetch })
     expect(r.state).toBe('unavailable')
+  })
+})
+
+describe('crossCheckQuorumKeysCached (L3)', () => {
+  const cfg = { key: 'devnet-cache-test' } as NetworkConfig
+  const agreed: QuorumCrossCheck = { state: 'agreed', primary: 'q', secondary: 'd', overlap: 4 }
+
+  it('does not re-run on a reconnect, re-runs once the result is an hour old, and keeps the previous result meanwhile', async () => {
+    resetQuorumChecks()
+    let t = 0
+    const now = () => t
+    const check = vi.fn(async (): Promise<QuorumCrossCheck> => agreed)
+    await crossCheckQuorumKeysCached(cfg, { now, check })
+    t += 5 * 60_000 // a routine 5-minute reconnect
+    await crossCheckQuorumKeysCached(cfg, { now, check })
+    expect(check).toHaveBeenCalledTimes(1)
+    t += QUORUM_CHECK_MAX_AGE_MS
+    let release: (r: QuorumCrossCheck) => void = () => undefined
+    check.mockImplementationOnce(() => new Promise((r) => (release = r)))
+    const rerun = crossCheckQuorumKeysCached(cfg, { now, check })
+    expect(check).toHaveBeenCalledTimes(2)
+    // While it re-runs the card keeps the previous answer instead of "Checking…".
+    expect(lastQuorumCheck(cfg)).toEqual(agreed)
+    release({ state: 'single', primary: 'q', reason: 'no-second-source' })
+    await expect(rerun).resolves.toMatchObject({ state: 'single' })
+    await Promise.resolve()
+    expect(lastQuorumCheck(cfg)).toMatchObject({ state: 'single' })
+  })
+
+  it('re-runs a transient outcome on the next view', async () => {
+    resetQuorumChecks()
+    const check = vi.fn(async (): Promise<QuorumCrossCheck> => ({ state: 'unavailable', reason: 'down' }))
+    await crossCheckQuorumKeysCached(cfg, { check })
+    await Promise.resolve()
+    await crossCheckQuorumKeysCached(cfg, { check })
+    expect(check).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('crossCheckQuorumKeysCached: a check that throws', () => {
+  it('reports unavailable and lets the next view run it again', async () => {
+    resetQuorumChecks()
+    const cfg = { key: 'devnet-throws' } as NetworkConfig
+    const check = vi
+      .fn<(c: NetworkConfig) => Promise<QuorumCrossCheck>>()
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ state: 'single', primary: 'q', reason: 'no-second-source' })
+    await expect(crossCheckQuorumKeysCached(cfg, { check })).resolves.toMatchObject({ state: 'unavailable' })
+    await Promise.resolve()
+    await expect(crossCheckQuorumKeysCached(cfg, { check })).resolves.toMatchObject({ state: 'single' })
+    expect(check).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('quorumCheckDueInMs', () => {
+  it('counts from when the result settled, not from when a view mounted', async () => {
+    resetQuorumChecks()
+    const cfg = { key: 'devnet-due' } as NetworkConfig
+    let t = 1_000
+    await crossCheckQuorumKeysCached(cfg, { now: () => t, check: async () => ({ state: 'single', primary: 'q', reason: 'no-second-source' }) })
+    await Promise.resolve()
+    t += 59 * 60_000 // a view mounting 59 minutes later
+    expect(quorumCheckDueInMs(cfg, t)).toBe(60_000)
+    expect(quorumCheckDueInMs({ key: 'devnet-none' } as NetworkConfig, t)).toBe(0)
+  })
+})
+
+describe('quorumCheckDueInMs: a transient outcome', () => {
+  it('is due at once, so "the comparison couldn\'t run" does not stay up for an hour', async () => {
+    resetQuorumChecks()
+    const cfg = { key: 'devnet-transient-due' } as NetworkConfig
+    await crossCheckQuorumKeysCached(cfg, { now: () => 0, check: async () => ({ state: 'unavailable', reason: 'offline' }) })
+    await Promise.resolve()
+    expect(quorumCheckDueInMs(cfg, 1_000)).toBe(0)
   })
 })

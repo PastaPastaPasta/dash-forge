@@ -421,3 +421,39 @@ describe('white text on solid fills meets WCAG AA', () => {
     expect(tokens('<b className="text-anvil-700 bg-dash/10">')).toEqual([])
   })
 })
+
+describe('non-text fills meet WCAG 1.4.11 (3:1)', () => {
+  const forge = colors['forge'] as Record<string, string>
+  const GRAPHIC = 3
+
+  /** The SDK download bar: its fill against its track and against the page around it. */
+  function progressBar(): { light: string; dark: string; lightTrack: string; darkTrack: string } {
+    const src = readFileSync(join(root, 'components/ui/platform-status.tsx'), 'utf8')
+    const bar = /role="progressbar"[\s\S]*?className="([^"]*)"[\s\S]*?<div className="([^"]*)"/.exec(src)
+    if (bar === null) throw new Error('progress bar markup not found')
+    const [track, fill] = [bar[1] as string, bar[2] as string]
+    // A class with no `dark:` fill uses its light fill in dark mode too.
+    const pick = (cls: string, dark: boolean): string => {
+      const m = (dark ? /dark:bg-([a-z]+-\d+)/.exec(cls) : null) ?? /(?<![:\w-])bg-([a-z]+-\d+)/.exec(cls)
+      const hex = m === null ? undefined : tokenHex(m[1] as string)
+      if (hex === undefined) throw new Error(`no fill in "${cls}"`)
+      return hex
+    }
+    return { light: pick(fill, false), dark: pick(fill, true), lightTrack: pick(track, false), darkTrack: pick(track, true) }
+  }
+
+  it('the SDK download bar fill, in both themes', () => {
+    const bar = progressBar()
+    for (const bg of [bar.lightTrack, ...Object.values(LIGHT_SURFACES)]) {
+      expect(contrast(rgb(bar.light), rgb(bg!)), `light fill on ${bg}`).toBeGreaterThanOrEqual(GRAPHIC)
+    }
+    for (const bg of [bar.darkTrack, ...Object.values(DARK_SURFACES)]) {
+      expect(contrast(rgb(bar.dark), rgb(bg!)), `dark fill on ${bg}`).toBeGreaterThanOrEqual(GRAPHIC)
+    }
+  })
+
+  it('catches the fill it exists for', () => {
+    // forge-500 on the anvil-200 track: the light-mode bar before the fix, 2.23:1.
+    expect(contrast(rgb(forge['500']!), rgb(anvil['200']!))).toBeLessThan(GRAPHIC)
+  })
+})

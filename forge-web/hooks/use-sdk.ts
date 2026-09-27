@@ -18,12 +18,18 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '@/lib/constants'
 import { evoSdkService, type SdkStatus } from '@/lib/sdk'
+import { connectionTrust, type ConnectionTrust } from '@/lib/view/trust'
 
 interface SdkState {
   readonly sdk: EvoSDK | null
   readonly ready: boolean
   /** The connection proof-checks its reads (see `evoSdkService.isTrusted`). */
   readonly trusted: boolean
+  /**
+   * The trust state for the verification UI: `offline` while Platform is unreachable after a
+   * connect (what is shown was checked earlier and is not being re-checked).
+   */
+  readonly connection: ConnectionTrust
   /** Why the connect failed, while it is failing; null otherwise. */
   readonly error: string | null
   readonly network: Network
@@ -77,6 +83,7 @@ export function useSdk(extraContractIds: readonly string[] = []): SdkState {
     sdk: ready ? evoSdkService.getSdk() : null,
     ready,
     trusted: ready && evoSdkService.isTrusted,
+    connection: connectionTrust(ready, ready && evoSdkService.isTrusted, status.phase === 'error'),
     error: status.phase === 'error' ? status.message : null,
     network,
     status,

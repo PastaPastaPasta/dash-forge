@@ -233,3 +233,45 @@ describe('worstOf', () => {
     expect(worstOf([])).toBe('pending')
   })
 })
+
+describe('Platform unreachable after a connect (M4)', () => {
+  it('the SDK flags map to offline while the service reports an error', () => {
+    expect(connectionTrust(true, true, true)).toBe('offline')
+    expect(connectionTrust(false, true, true)).toBe('connecting')
+    expect(connectionTrust(true, true, false)).toBe('trusted')
+  })
+
+  it('the card never says Verified next to content that is not being re-checked', () => {
+    const r = deriveTrust(inputs({ connection: 'offline', quorum: AGREED }))
+    expect(r.chain.state).toBe('partial')
+    expect(r.tip.state).not.toBe('verified')
+    expect(r.overall).not.toBe('verified')
+    expect(r.summary).not.toMatch(/^Verified/)
+    expect(r.summary).toContain('Not re-checked')
+    expect(r.chain.detail).toMatch(/not being re-checked/)
+  })
+
+  it('the landing chip is degraded, not verified', () => {
+    expect(deriveConnectionTrust('devnet', 'offline', AGREED).state).toBe('partial')
+  })
+})
+
+describe('offline never hides a known failure', () => {
+  it('a quorum-key mismatch stays Failed while Platform is unreachable', () => {
+    const mismatch: QuorumCrossCheck = { state: 'mismatch', primary: 'q', secondary: 'd', quorums: ['00ab'] }
+    const r = deriveTrust(inputs({ connection: 'offline', quorum: mismatch }))
+    expect(r.chain.state).toBe('failed')
+    expect(r.overall).toBe('failed')
+    expect(r.summary).toMatch(/^Failed · Not re-checked/)
+  })
+})
+
+describe('the offline summary names the overall state', () => {
+  it('keeps "Couldn\'t verify" for unverified content', () => {
+    const r = deriveTrust(inputs({ connection: 'offline', quorum: AGREED, checks: { ...NO_CONTENT_CHECKS, objectsUnchecked: 3 } }))
+    expect(r.overall).toBe('unverified')
+    expect(r.summary).toBe(`${TRUST_LABEL[r.overall]} · Not re-checked · Platform unreachable`)
+    const clean = deriveTrust(inputs({ connection: 'offline', quorum: AGREED }))
+    expect(clean.summary).toBe('Partly verified · Not re-checked · Platform unreachable')
+  })
+})

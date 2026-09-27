@@ -16,7 +16,7 @@
  * `reload()` bypasses the cache (and drops the repo's browse-plane cache with it).
  */
 
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
@@ -27,7 +27,7 @@ import { forgetPrivateHome } from '@/hooks/use-private-home'
 import { repoKey } from '@/lib/repo'
 import type { Network } from '@/lib/constants'
 import type { EvoSDK } from '@dashevo/evo-sdk'
-import { evoSdkService } from '@/lib/sdk'
+import { evoSdkService, isUnreachableError, type SdkStatus } from '@/lib/sdk'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
 export interface UseRepoResult extends AsyncState<RepoHome | null> {
@@ -60,6 +60,16 @@ function homeCacheKey(network: Network, addr: RepoAddress): string {
  * it was read; the banner says it is not being re-checked.
  */
 const lastGood = new Map<string, { value: RepoHome | null }>()
+
+/**
+ * Whether a failed read may show the last home this tab read instead of the error: only while
+ * the service reports Platform unreachable (the banner says the page is not re-checked), and
+ * only for an unreachable error. A one-off timeout while connected surfaces, as does a proof
+ * or decode failure, so stale content never sits under a "Verified" card.
+ */
+export function keepLastGood(e: unknown, status: SdkStatus): boolean {
+  return status.phase === 'error' && isUnreachableError(e)
+}
 
 function startLoad(sdk: EvoSDK, key: string, network: Network, addr: RepoAddress): HomeCacheEntry {
   const entry: HomeCacheEntry = { at: Date.now(), promise: loadRepoHome(sdk, { network, ...addr }) }
@@ -103,6 +113,9 @@ export function useRepoHome(addr: RepoAddress): UseRepoResult {
   const key = homeCacheKey(network, addr)
   // Just created in this tab (`/new` adds `created=1`): ride out a node one block behind.
   const justCreated = useParam('created') === '1'
+  // The recovery count the last seed saw: only the re-read right after an outage seeds from
+  // what this tab read before it, not every later navigation this session.
+  const seededRecoveries = useRef(recoveries)
   const state = useAsync<RepoHome | null>(
     () =>
       retryWhileMissing(async () => {
@@ -110,9 +123,11 @@ export function useRepoHome(addr: RepoAddress): UseRepoResult {
         if (home === null && justCreated) homeCache.delete(key)
         return home
       }, justCreated ? 8 : 0).catch((e: unknown) => {
-        // Platform unreachable: keep what this tab already read (under the banner).
+        // Platform unreachable: keep what this tab already read (under the banner). Only an
+        // unreachable Platform qualifies; a proof or decode failure is surfaced, never hidden
+        // behind earlier content.
         const kept = lastGood.get(key)
-        if (kept !== undefined && evoSdkService.getStatus().phase === 'error') return kept.value
+        if (kept !== undefined && keepLastGood(e, evoSdkService.getStatus())) return kept.value
         throw e
       }),
     [ready, key, recoveries],
@@ -120,8 +135,12 @@ export function useRepoHome(addr: RepoAddress): UseRepoResult {
       enabled,
       // A cached not-found seeds `null` as a REAL settled value (instant "Repo not found");
       // only a cache miss returns undefined (no seed → loading shell).
+      // During an outage, and on the re-read after one (`recoveries`), seed from what this tab
+      // already read so the page does not drop to a spinner.
       initial: () => {
-        const settled = peekRepoHome(network, addr) ?? (sdkStatus.phase === 'error' ? lastGood.get(key) : undefined)
+        const recovered = recoveries !== seededRecoveries.current
+        seededRecoveries.current = recoveries
+        const settled = peekRepoHome(network, addr) ?? (sdkStatus.phase === 'error' || recovered ? lastGood.get(key) : undefined)
         return settled === undefined ? undefined : settled.value
       },
     },

@@ -837,6 +837,19 @@ function crossTab<T>(identityId: string, run: () => Promise<T>, signal: AbortSig
 }
 
 /**
+ * Wraps each write while it holds the writer lock. The SDK service installs one that keeps the
+ * Platform connection from being swapped under the write (the SDK caches nonces per connection;
+ * `service.ts` `holdForWrite`).
+ */
+type WriteHold = <T>(write: () => Promise<T>) => Promise<T>
+let writeHold: WriteHold = (write) => write()
+
+/** Install the wrapper every serialized write runs in. */
+export function setWriteHold(hold: WriteHold): void {
+  writeHold = hold
+}
+
+/**
  * Run `run` as this identity's only writer. Waiting for the turn is bounded by `waitMs`
  * ({@link WriterBusyError}); `run` itself is not cut off once it holds the lock (its nonce and
  * broadcast must finish or settle), and its own steps are bounded.
@@ -855,7 +868,7 @@ export function serialized<T>(identityId: string, run: () => Promise<T>, waitMs 
     // Gave up while queued in this tab: pass the turn on without writing.
     if (waiting.signal.aborted) return Promise.reject(new WriterBusyError())
     clearTimeout(timer)
-    return run()
+    return writeHold(run)
   }
   // The chain's tail never rejects (see `tail` below).
   const prev = writeLocks.get(identityId) ?? Promise.resolve()

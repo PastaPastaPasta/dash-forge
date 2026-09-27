@@ -121,3 +121,17 @@ describe('fetchAndCompileWithRetry (L-19)', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('fetchAndCompile: a server that never answers', () => {
+  it('aborts a request that stalls before its response headers arrive', async () => {
+    const fetchImpl = vi.fn(
+      (_url: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+        }),
+    )
+    await expect(
+      fetchAndCompile('/x.wasm', 100, undefined, { fetchImpl: fetchImpl as unknown as typeof fetch, compile: drain, stallMs: 40 }),
+    ).rejects.toThrow(/stalled/)
+  })
+})
