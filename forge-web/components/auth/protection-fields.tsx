@@ -54,7 +54,7 @@ export function useProtection(opts: { readonly preferPasskey?: boolean } = {}): 
         setHasPasskey(true)
       }
     } catch (e) {
-      setPasskeyError(errorMessage(e, 'passkey setup was cancelled'))
+      setPasskeyError(`${errorMessage(e, 'Passkey setup was cancelled')} — use a passphrase below instead.`)
     } finally {
       setEnrolling(false)
     }

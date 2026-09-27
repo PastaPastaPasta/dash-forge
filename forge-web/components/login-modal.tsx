@@ -33,7 +33,8 @@ import { NotDeployedState } from '@/components/ui/network-badge'
 import { BROWSER_KEY_DEFAULTS, masterMaterialFromFile } from '@/lib/auth'
 import { walletLoginAvailable, walletSignInSupported } from '@/lib/auth/app-connect'
 import { ENCRYPTION_KEY_BLAST_RADIUS } from '@/lib/auth/encryption-key'
-import { ensureSdk } from '@/lib/sdk'
+import { PLATFORM_READ_MS, connectPlatform } from '@/lib/auth/connect'
+import { withTimeout } from '@/lib/timeout'
 import { formatDate } from '@/lib/view/format'
 import { cn, errorMessage } from '@/lib/utils'
 
@@ -180,17 +181,21 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
   )
 }
 
-/** Whether the wallet tile applies here (a wallet login contract exists on this network). */
+/**
+ * Whether the wallet tile applies here (a wallet login contract exists on this network). When
+ * Platform cannot be reached to check, the tile shows anyway: the flow behind it names what
+ * failed and offers "Try again", where hiding it would fail silently.
+ */
 function useWalletAvailability(limitedKeys: boolean): boolean {
   const [available, setAvailable] = useState(false)
   useEffect(() => {
     if (!limitedKeys) return
     let cancelled = false
-    ensureSdk(ACTIVE_NETWORK.network)
-      .then((sdk) => walletLoginAvailable(sdk, ACTIVE_NETWORK.key))
+    connectPlatform(ACTIVE_NETWORK.network)
+      .then((sdk) => withTimeout(walletLoginAvailable(sdk, ACTIVE_NETWORK.key), PLATFORM_READ_MS, 'Finding the wallet login contract'))
       .then(
         (ok) => !cancelled && setAvailable(ok),
-        () => undefined,
+        () => !cancelled && setAvailable(true),
       )
     return () => {
       cancelled = true

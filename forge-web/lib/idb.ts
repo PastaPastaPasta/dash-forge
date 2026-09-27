@@ -15,39 +15,89 @@ const DB_NAME = 'dash-forge'
 const DB_VERSION = 2
 const STORES: readonly StoreName[] = ['spend', 'journal', 'vault', 'inbox']
 
-let dbPromise: Promise<IDBDatabase> | null = null
+/** How long a caller waits for the database to open before it gets an error. */
+export const IDB_OPEN_TIMEOUT_MS = 10_000
+
+/** Another tab holds an older version of the database open, so this one cannot upgrade it. */
+export class IdbBlockedError extends Error {
+  constructor() {
+    super('Dash Forge is open in another tab running an older version, which holds this browser’s storage. Close or reload the other Dash Forge tabs, then try again.')
+    this.name = 'IdbBlockedError'
+  }
+}
+
+/**
+ * The one open request, kept until it settles. It is never abandoned while blocked: a second
+ * `indexedDB.open` queues behind a blocked upgrade and then fires no event at all, which left
+ * every later read waiting forever. The blocked request itself completes once the other tab
+ * closes or reloads, so a retry after that succeeds.
+ */
+let opening: Promise<IDBDatabase> | null = null
+let blocked = false
+const blockedWaiters = new Set<() => void>()
 const memory = new Map<StoreName, Map<string, unknown>>()
 
 function hasIndexedDb(): boolean {
   return typeof indexedDB !== 'undefined'
 }
 
-function open(): Promise<IDBDatabase> {
-  if (dbPromise) return dbPromise
-  dbPromise = new Promise((resolve, reject) => {
+function startOpen(): Promise<IDBDatabase> {
+  blocked = false
+  const p = new Promise<IDBDatabase>((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION)
     req.onupgradeneeded = () => {
       for (const name of STORES) {
         if (!req.result.objectStoreNames.contains(name)) req.result.createObjectStore(name)
       }
     }
-    // Another tab still holds the old version open: the upgrade waits on it forever.
-    req.onblocked = () => reject(new Error('Close other Dash Forge tabs to finish the update'))
+    // Another tab still holds the old version open: the upgrade waits until it lets go.
+    req.onblocked = () => {
+      blocked = true
+      for (const w of blockedWaiters) w()
+    }
     req.onsuccess = () => {
+      blocked = false
       const db = req.result
       // A newer tab wants to upgrade: let go so it is not blocked, and reopen on next use.
       db.onversionchange = () => {
         db.close()
-        dbPromise = null
+        if (opening === p) opening = null
       }
       resolve(db)
     }
-    req.onerror = () => reject(req.error ?? new Error('IndexedDB open failed'))
+    req.onerror = () => {
+      blocked = false
+      if (opening === p) opening = null
+      reject(req.error ?? new Error('IndexedDB open failed'))
+    }
   })
-  dbPromise.catch(() => {
-    dbPromise = null
+  // Settles with no caller waiting when every caller already gave up (blocked or timed out).
+  p.catch(() => undefined)
+  return p
+}
+
+/** The database, or an error within {@link IDB_OPEN_TIMEOUT_MS}: blocked, failed or stuck. */
+function open(): Promise<IDBDatabase> {
+  if (!opening) opening = startOpen()
+  if (blocked) return Promise.reject(new IdbBlockedError())
+  const request = opening
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    const onBlocked = (): void => settle(() => reject(new IdbBlockedError()))
+    const timer = setTimeout(
+      () => settle(() => reject(new Error(`This browser’s storage (IndexedDB) did not open within ${IDB_OPEN_TIMEOUT_MS / 1000} s. Reload the page and try again.`))),
+      IDB_OPEN_TIMEOUT_MS,
+    )
+    const settle = (fn: () => void): void => {
+      clearTimeout(timer)
+      blockedWaiters.delete(onBlocked)
+      fn()
+    }
+    blockedWaiters.add(onBlocked)
+    request.then(
+      (db) => settle(() => resolve(db)),
+      (e: unknown) => settle(() => reject(e)),
+    )
   })
-  return dbPromise
 }
 
 function mem(store: StoreName): Map<string, unknown> {

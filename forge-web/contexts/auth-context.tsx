@@ -26,7 +26,8 @@ import { MissingGrantError } from '../lib/auth/controller'
 import type { WalletKey } from '../lib/auth/key-registration'
 import { useUiStore } from '../hooks/use-ui-store'
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '../lib/constants'
-import { ensureSdk, type SpendEvent, type WriteAuth } from '../lib/sdk'
+import { type SpendEvent, type WriteAuth } from '../lib/sdk'
+import { connectPlatform } from '../lib/auth/connect'
 import { recordSpend } from '../lib/spend'
 import { fundsState, type FundsState, type KeyLimits } from '../lib/view/funds'
 import { toast } from '../hooks/use-toasts'
@@ -113,7 +114,9 @@ export function AuthProvider({
   children: React.ReactNode
   network?: Network
 }): JSX.Element {
-  const controller = useMemo(() => new AuthController(() => ensureSdk(network), network), [network])
+  // Bounded: a hung download or connect fails the sign-in step with a named error, never a
+  // button that spins forever.
+  const controller = useMemo(() => new AuthController(() => connectPlatform(network), network), [network])
   const [state, setState] = useState(() => controller.getState())
 
   useEffect(() => controller.subscribe(setState), [controller])
