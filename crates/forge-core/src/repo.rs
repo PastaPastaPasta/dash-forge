@@ -283,6 +283,8 @@ struct ConsolidatedPack<'a> {
     uris: Vec<String>,
     /// The resolved ref tips the pack covers (hex oids).
     tips: &'a [String],
+    /// The repository's current members (only their claims count as already superseded).
+    roles: &'a RoleMap,
 }
 
 /// The result of [`RepoService::repack`] (consolidate-only on forge-v2).
@@ -311,6 +313,9 @@ pub struct RepackReport {
     pub superseded_bytes: u64,
     /// Credits spent uploading the consolidated pack and writing its manifest(s).
     pub cost_credits: u64,
+    /// Live git packs the manifest could not name ([`MAX_SUPERSEDES`] fit); another
+    /// `dg repack` names them.
+    pub remaining: usize,
 }
 
 /// The result of [`RepoService::reseed`].
@@ -1217,6 +1222,48 @@ impl<'a> RepoService<'a> {
         Err(last)
     }
 
+    /// Every git pack of `git` (best copy, opened), with its hash, for a repack. A pack this
+    /// identity cannot open is left out (see the caller).
+    async fn open_live_packs(
+        &self,
+        repo: &RepoRef,
+        contract: &LoadedContract,
+        manifests: &[PackManifestInfo],
+        git: &[PackManifestInfo],
+        roles: &RoleMap,
+    ) -> Result<(Vec<Vec<u8>>, Vec<[u8; 32]>)> {
+        let reader = self.repo_reader(repo, manifests, roles).await;
+        let mut pack_blobs = Vec::new();
+        let mut blob_hashes = Vec::new();
+        for (hash, copies) in group_by_hash(git) {
+            let (sealed, m) = self
+                .fetch_best_copy(repo, contract, &copies, roles, &reader)
+                .await
+                .map_err(|e| {
+                    Error::Io(format!(
+                        "repack: pack {} is unreadable: {e}",
+                        hex::encode(hash)
+                    ))
+                })?;
+            // A pack this reader cannot open (late, or under an epoch it holds no key for) is
+            // left out, as reseed skips unreadable packs; the new pack is built from the tips
+            // and fails loudly if it needed objects only such a pack held.
+            match self
+                .open_artifact_of(repo, &copies, m.size_bytes, sealed)
+                .await
+            {
+                Ok(plain) => {
+                    pack_blobs.push(plain);
+                    blob_hashes.push(hash);
+                }
+                Err(e) => {
+                    tracing::warn!(pack = %hex::encode(hash), error = %e, "repack: skipping a pack this identity cannot open");
+                }
+            }
+        }
+        Ok((pack_blobs, blob_hashes))
+    }
+
     /// Consolidate a repo's live packs into **one** optimized pack and publish it with a
     /// `supersedes` list. **Deletes nothing**: on forge-v2 chunks and manifests are
     /// permanent, so the superseded packs stay readable as the fallback the reader rule
@@ -1245,42 +1292,24 @@ impl<'a> RepoService<'a> {
         }
 
         let roles = self.copy_roles(repo).await?;
-        let reader = self.repo_reader(repo, &manifests, &roles).await;
-        let mut pack_blobs = Vec::new();
-        for (hash, copies) in group_by_hash(&git) {
-            let (sealed, m) = self
-                .fetch_best_copy(repo, &contract, &copies, &roles, &reader)
-                .await
-                .map_err(|e| {
-                    Error::Io(format!(
-                        "repack: pack {} is unreadable: {e}",
-                        hex::encode(hash)
-                    ))
-                })?;
-            // A pack this reader cannot open (late, or under an epoch it holds no key for) is
-            // left out, as reseed skips unreadable packs; the new pack is built from the tips
-            // and fails loudly if it needed objects only such a pack held.
-            match self
-                .open_artifact_of(repo, &copies, m.size_bytes, sealed)
-                .await
-            {
-                Ok(plain) => pack_blobs.push(plain),
-                Err(e) => {
-                    tracing::warn!(pack = %hex::encode(hash), error = %e, "repack: skipping a pack this identity cannot open");
-                }
-            }
-        }
+        let (pack_blobs, blob_hashes) = self
+            .open_live_packs(repo, &contract, &manifests, &git, &roles)
+            .await?;
         let tip_refs: Vec<&str> = tips.iter().map(String::as_str).collect();
         let consolidated = crate::pack::repack_from_packs(&pack_blobs, &tip_refs)?;
         let object_count = consolidated.parsed.object_count() as u64;
-        // Already a single optimal pack: nothing to gain, and nothing to write. Compared on
-        // the plaintext: a private repo's stored hash is of the sealed bytes, which differ on
-        // every seal.
-        if pack_blobs.contains(&consolidated.bytes) {
-            return Err(Error::Config(
-                "repack: the repo is already a single consolidated pack (nothing to do)".into(),
-            ));
-        }
+        // Already a single consolidated pack (compared on the plaintext: a private repo's
+        // stored hash is of the sealed bytes, which differ on every seal). A manifest is
+        // unique per (repo, uploader, packHash) and permanent: if the caller recorded that
+        // pack, a repack can add nothing. If only other members did, the consolidation below
+        // records the caller's own copy on `target` (more places for the same objects).
+        refuse_own_consolidation(
+            &git,
+            &pack_blobs,
+            &blob_hashes,
+            &consolidated.bytes,
+            &caller,
+        )?;
         let new_bytes = self.pack_codec(repo).await?.seal(consolidated.bytes)?;
         let new_meta = PackMeta::for_bytes(&new_bytes);
         let new_pack_hash = new_meta.pack_hash_bytes()?;
@@ -1290,10 +1319,14 @@ impl<'a> RepoService<'a> {
             .store_consolidated(repo, &new_bytes, &new_meta, target)
             .await?;
         let new_uris = stored.uris.clone();
+        // A push that landed while this ran stored a pack the consolidation does not hold;
+        // superseding it would hide objects its refs need. Re-read just before the write.
+        let fresh = self.read_pack_manifests(repo).await?;
+        refuse_raced_push(&git, &fresh)?;
         let (supersedes, new_manifest_id) = self
             .write_consolidated_manifest(
                 repo,
-                &manifests,
+                &fresh,
                 &ConsolidatedPack {
                     pack_hash: new_pack_hash,
                     size_bytes: new_bytes.len() as u64,
@@ -1302,6 +1335,7 @@ impl<'a> RepoService<'a> {
                     storage: stored.storage,
                     uris: stored.uris,
                     tips: &tips,
+                    roles: &roles,
                 },
             )
             .await?;
@@ -1319,6 +1353,7 @@ impl<'a> RepoService<'a> {
             .filter_map(|h| manifests.iter().find(|m| m.pack_hash == *h))
             .map(|m| m.size_bytes)
             .sum();
+        let remaining = repack_remaining(&fresh, &roles, new_pack_hash);
         Ok(RepackReport {
             new_pack_hash,
             new_manifest_id,
@@ -1329,6 +1364,7 @@ impl<'a> RepoService<'a> {
             superseded_count: supersedes.len(),
             superseded_bytes,
             cost_credits: balance_start.saturating_sub(balance_end),
+            remaining,
         })
     }
 
@@ -1369,7 +1405,7 @@ impl<'a> RepoService<'a> {
         manifests: &[PackManifestInfo],
         pack: &ConsolidatedPack<'_>,
     ) -> Result<(Vec<[u8; 32]>, String)> {
-        let supersedes = repack_supersedes(manifests, pack.pack_hash);
+        let supersedes = repack_supersedes(manifests, pack.roles, pack.pack_hash);
         let tip_oids: Vec<Vec<u8>> = pack
             .tips
             .iter()
@@ -1828,37 +1864,58 @@ fn resolved_tip_oids(refs: &[(String, RefState)]) -> Vec<String> {
     out
 }
 
+/// `packManifest.supersedes` is a byteArray of at most 1024 bytes: 32 hashes.
+pub const MAX_SUPERSEDES: usize = 1024 / 32;
+
 /// Pack hashes a repack's consolidated manifest lists in `supersedes`: the git packs no
-/// manifest already names in `supersedes`, except the new one, in pack-space order.
+/// current member's manifest already names in `supersedes`, except the new one, in
+/// pack-space order.
 ///
-/// `supersedes` is a packed byteArray capped at 1024 bytes — **32 hashes**. A pack an
-/// earlier repack superseded stays superseded (the manifest that says so is permanent), so
-/// it needs no slot here. Past 32 the list is truncated and the caller warned: the repack
-/// still consolidates, and a pack it could not name is only read whole a little longer.
-fn repack_supersedes(manifests: &[PackManifestInfo], new_pack_hash: [u8; 32]) -> Vec<[u8; 32]> {
-    /// `packManifest.supersedes` is a byteArray of at most 1024 bytes.
-    const MAX_SUPERSEDES: usize = 1024 / 32;
+/// A pack an earlier repack superseded stays superseded (the manifest that says so is
+/// permanent), so it needs no slot here. Claims made by another copy of the new pack itself
+/// are named again: a copy is read on its own. A stranger's claim counts for nothing (the
+/// reader rule ranks copies by role). Past [`MAX_SUPERSEDES`] the list is truncated: the
+/// packs left over stay live, and another repack names them.
+fn repack_supersedes(
+    manifests: &[PackManifestInfo],
+    roles: &RoleMap,
+    new_pack_hash: [u8; 32],
+) -> Vec<[u8; 32]> {
+    let mut out = unclaimed_packs(manifests, roles, new_pack_hash);
+    out.truncate(MAX_SUPERSEDES);
+    out
+}
+
+/// How many live git packs a consolidated manifest for `new_pack_hash` could not name in
+/// `supersedes`.
+fn repack_remaining(
+    manifests: &[PackManifestInfo],
+    roles: &RoleMap,
+    new_pack_hash: [u8; 32],
+) -> usize {
+    unclaimed_packs(manifests, roles, new_pack_hash)
+        .len()
+        .saturating_sub(MAX_SUPERSEDES)
+}
+
+/// [`repack_supersedes`] without the cap.
+fn unclaimed_packs(
+    manifests: &[PackManifestInfo],
+    roles: &RoleMap,
+    new_pack_hash: [u8; 32],
+) -> Vec<[u8; 32]> {
     let claimed: BTreeSet<[u8; 32]> = manifests
         .iter()
+        .filter(|m| m.pack_hash != new_pack_hash && roles.contains_key(&m.owner_id))
         .flat_map(|m| m.supersedes.iter().copied())
         .collect();
     let new_hash = hex::encode(new_pack_hash);
-    let mut out: Vec<[u8; 32]> = locator_pack_space(manifests, &RoleMap::new(), None)
+    locator_pack_space(manifests, &RoleMap::new(), None)
         .iter()
         .filter(|p| p.pack_hash != new_hash)
         .filter_map(|p| hash32(&p.pack_hash))
         .filter(|h| !claimed.contains(h))
-        .collect();
-    if out.len() > MAX_SUPERSEDES {
-        tracing::warn!(
-            wanted = out.len(),
-            kept = MAX_SUPERSEDES,
-            "more packs than `supersedes` can name; the rest stay read whole until a later \
-             repack names them"
-        );
-        out.truncate(MAX_SUPERSEDES);
-    }
-    out
+        .collect()
 }
 
 /// A 64-hex pack hash as bytes.
@@ -1988,6 +2045,51 @@ pub fn locator_pack_space(
         .collect()
 }
 
+/// Refuse a repack whose manifest list changed while it ran: a git pack in `fresh` that was
+/// not in `read` (the set the consolidation was built from) came from a concurrent push.
+fn refuse_raced_push(read: &[PackManifestInfo], fresh: &[PackManifestInfo]) -> Result<()> {
+    let known: BTreeSet<[u8; 32]> = read.iter().map(|m| m.pack_hash).collect();
+    let git = u64::from(crate::pack::KIND_GIT_PACK);
+    if fresh
+        .iter()
+        .any(|m| m.kind == git && !known.contains(&m.pack_hash))
+    {
+        return Err(Error::Config(
+            "repack: a push landed during the repack; nothing was recorded, run it again \
+             (the consolidated pack already uploaded is content-addressed and is reused)"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
+/// A repack whose consolidated pack is one the caller already recorded can add nothing: its
+/// manifest is unique per (repo, uploader, packHash) and permanent. `blobs[i]` is the
+/// plaintext of the pack `hashes[i]`.
+fn refuse_own_consolidation(
+    git: &[PackManifestInfo],
+    blobs: &[Vec<u8>],
+    hashes: &[[u8; 32]],
+    consolidated: &[u8],
+    caller: &str,
+) -> Result<()> {
+    let Some(i) = blobs.iter().position(|b| b == consolidated) else {
+        return Ok(());
+    };
+    if git
+        .iter()
+        .any(|m| m.pack_hash == hashes[i] && m.owner_id == caller)
+    {
+        return Err(Error::Config(
+            "repack: the repo is already a single consolidated pack that you recorded; its \
+             manifest is permanent, so a repack cannot add copies to it (new pushes follow the \
+             storage policy)"
+                .into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Decode a `packManifest` document.
 fn manifest_info(d: &FetchedDocument) -> Result<PackManifestInfo> {
     let pack_hash = d
@@ -2081,8 +2183,8 @@ fn current_protected_patterns(configs: &[ConfigDoc]) -> Vec<String> {
 mod tests {
     use super::{
         current_protected_patterns, group_by_hash, live_locator_manifests, locator_pack_space,
-        order_copies, plan_push_index, repack_supersedes, trusted_repo_gateways, PackManifestInfo,
-        PushIndexPlan, RoleMap, MAX_LOCATOR_FRAGMENTS,
+        order_copies, plan_push_index, refuse_raced_push, repack_remaining, repack_supersedes,
+        trusted_repo_gateways, PackManifestInfo, PushIndexPlan, RoleMap, MAX_LOCATOR_FRAGMENTS,
     };
     use crate::rules::v2::{CopyKey, Role};
     use crate::rules::ConfigDoc;
@@ -2308,8 +2410,50 @@ mod tests {
         let mut prev = manifest("prev", 300, 0, 2);
         prev.supersedes = vec![[1u8; 32]];
         let new = manifest("new", 400, 0, 9);
-        let out = repack_supersedes(&[new, prev, bob], [9u8; 32]);
+        let roles: RoleMap = [("owner", Role::Maintainer), ("bob", Role::Writer)]
+            .into_iter()
+            .map(|(i, r)| (i.to_string(), r))
+            .collect();
+        let out = repack_supersedes(&[new, prev, bob], &roles, [9u8; 32]);
         assert_eq!(out, vec![[2u8; 32]], "P1 is already superseded by `prev`");
+    }
+
+    /// M-B: when another member already recorded the consolidated pack, the caller's copy
+    /// names the packs that copy supersedes again (a copy is read on its own).
+    /// M-A: a stranger's claim does not count as already claimed.
+    #[test]
+    fn repack_supersedes_renames_claims_of_the_same_pack_and_ignores_strangers() {
+        let old = manifest("old", 100, 0, 1);
+        let mut other_copy = manifest("theirs", 300, 0, 9);
+        other_copy.owner_id = "bob".into();
+        other_copy.supersedes = vec![[1u8; 32]];
+        let roles: RoleMap = [("bob".to_string(), Role::Writer)].into_iter().collect();
+        let out = repack_supersedes(&[other_copy.clone(), old.clone()], &roles, [9u8; 32]);
+        assert_eq!(out, vec![[1u8; 32]]);
+        // A stranger's claim on pack 1 (in an unrelated pack 5) is not a claim.
+        let mut stranger = manifest("s", 200, 0, 5);
+        stranger.owner_id = "mallory".into();
+        stranger.supersedes = vec![[1u8; 32]];
+        let out = repack_supersedes(&[stranger, old], &roles, [9u8; 32]);
+        assert!(out.contains(&[1u8; 32]), "{out:?}");
+    }
+
+    /// H-B: a push that lands between the pack reads and the manifest write aborts the
+    /// repack instead of superseding a pack the consolidation does not hold.
+    #[test]
+    fn a_push_during_a_repack_aborts_it() {
+        let read = vec![manifest("a", 100, 0, 1), manifest("b", 200, 0, 2)];
+        let mut fresh = read.clone();
+        assert!(refuse_raced_push(&read, &fresh).is_ok());
+        // Another uploader's copy of a known pack, or a locator fragment, is no race.
+        let mut copy = manifest("a2", 250, 0, 1);
+        copy.owner_id = "bob".into();
+        fresh.push(copy);
+        fresh.push(manifest("loc", 260, 1, 7));
+        assert!(refuse_raced_push(&read, &fresh).is_ok());
+        fresh.push(manifest("c", 300, 0, 3));
+        let err = refuse_raced_push(&read, &fresh).unwrap_err().to_string();
+        assert!(err.contains("a push landed during the repack"), "{err}");
     }
 
     #[test]
@@ -2320,8 +2464,18 @@ mod tests {
         for i in 0..40u8 {
             manifests.push(manifest(&format!("p{i}"), 100 + u64::from(i), 0, i + 10));
         }
-        let out = repack_supersedes(&manifests, [9u8; 32]);
+        let out = repack_supersedes(&manifests, &RoleMap::new(), [9u8; 32]);
         assert_eq!(out.len(), 32);
+        assert_eq!(repack_remaining(&manifests, &RoleMap::new(), [9u8; 32]), 8);
+        // A second repack names the rest (and the first consolidation).
+        let roles: RoleMap = [("owner".to_string(), Role::Maintainer)]
+            .into_iter()
+            .collect();
+        manifests[0].supersedes = out.clone();
+        let second = repack_supersedes(&manifests, &roles, [7u8; 32]);
+        assert_eq!(second.len(), 9, "{second:?}");
+        assert!(second.contains(&[9u8; 32]) && second.contains(&[49u8; 32]));
+        assert_eq!(repack_remaining(&manifests, &roles, [7u8; 32]), 0);
         assert!(!out.contains(&[9u8; 32]), "must never supersede itself");
         assert_eq!(out[0], [10u8; 32], "oldest first");
     }

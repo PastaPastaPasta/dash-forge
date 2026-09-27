@@ -66,6 +66,8 @@ public_url = "${S3}/forge-byo"
 prefix = "e2e/${RUN_ID}"
 access_key_id = "minioadmin"
 secret_access_key = "env:FORGE_E2E_S3_SECRET"
+# A loopback S3 URL: a local fixture, never readable by anyone else.
+allow_private_uri = true
 
 [profiles.kubo]
 kind = "ipfs-kubo"
@@ -77,6 +79,7 @@ kind = "s3"
 endpoint = "http://127.0.0.1:9"
 bucket = "nowhere"
 public_url = "http://127.0.0.1:9/nowhere"
+allow_private_uri = true
 EOF
 # The reader knows NO S3 credentials — only the local kubo gateway to race ipfs:// on.
 cat >"$READER_CFG" <<EOF

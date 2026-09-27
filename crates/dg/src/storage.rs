@@ -17,13 +17,18 @@ use forge_core::user_error::{codes, UserError};
 use serde_json::json;
 
 use forge_core::backends::{Health, IpfsBackend, PackBackend, PackMeta, S3Backend, Uri};
+use forge_core::storage::copies::{count_copies, policy_copies, CopyCount};
 use forge_core::storage::cors::{cors_fix, kubo_cors_fix, probe_cors, provider_of};
-use forge_core::storage::policy::{git_config_scoped, pick_scoped};
+use forge_core::storage::policy::{git_config_scoped, parse_git_bool, pick_scoped};
 use forge_core::storage::profiles::{
     valid_profile_name, KeyId, KuboProfile, PinningProfile, PlatformProfile, S3Profile,
 };
+use forge_core::storage::publish::{
+    profile_problems, refuse_unpublishable, ALLOW_PRIVATE_URI_GIT_KEY,
+};
 use forge_core::storage::{
-    PackReader, Profile, SecretRef, StoragePolicy, StorageProfiles, PLATFORM_PROFILE,
+    PackReader, Profile, ResolvedPolicy, SecretRef, StoragePolicy, StorageProfiles,
+    PLATFORM_PROFILE,
 };
 
 use crate::common::{resolve, RepoRef};
@@ -43,7 +48,7 @@ pub async fn run(ctx: &Ctx, cmd: &StorageCommand) -> Result<()> {
             replicas,
             platform_fallback,
             global,
-        } => use_profiles(ctx, profiles, *replicas, *platform_fallback, *global),
+        } => use_profiles(ctx, profiles, *replicas, *platform_fallback, *global).await,
         StorageCommand::Advertise { repo, remote } => advertise(ctx, repo, remote.as_deref()).await,
     }
 }
@@ -114,6 +119,7 @@ pub(crate) fn profile_from_args(a: &StorageAddArgs) -> Result<Profile> {
                     .context("--access-key-id")?,
                 secret_access_key: secret_ref(a.secret_access_key.as_ref(), "secret-access-key")?,
                 session_token: secret_ref(a.session_token.as_ref(), "session-token")?,
+                allow_private_uri: a.allow_private_uri,
             })
         }
         ProfileKindArg::IpfsKubo => {
@@ -124,6 +130,7 @@ pub(crate) fn profile_from_args(a: &StorageAddArgs) -> Result<Profile> {
                 gateway: a.gateway.clone(),
                 public_gateway: a.public_gateway.clone(),
                 api_auth: secret_ref(a.api_auth.as_ref(), "api-auth")?,
+                allow_private_uri: a.allow_private_uri,
             })
         }
         ProfileKindArg::IpfsPinningService => {
@@ -141,9 +148,15 @@ pub(crate) fn profile_from_args(a: &StorageAddArgs) -> Result<Profile> {
                 pinning_token: secret_ref(a.pinning_token.as_ref(), "pinning-token")?
                     .context("--pinning-token is required for an ipfs-pinning-service profile")?,
                 pin_timeout_secs: a.pin_timeout_secs,
+                allow_private_uri: a.allow_private_uri,
             })
         }
         ProfileKindArg::Platform => {
+            if a.allow_private_uri {
+                return Err(crate::errors::usage(
+                    "--allow-private-uri does not apply to a platform profile",
+                ));
+            }
             reject(&s3_only, "platform")?;
             reject(&ipfs_only, "platform")?;
             reject(&pin_only, "platform")?;
@@ -181,6 +194,7 @@ async fn add(ctx: &Ctx, args: &StorageAddArgs) -> Result<()> {
         .filter(|(_, r)| !r.is_available())
         .map(|(f, r)| format!("{f} → {r}"))
         .collect();
+    let url_warnings = publish_warnings(&profile);
     ctx.emit(
         json!({
             "status": if replaced { "replaced" } else { "added" },
@@ -188,6 +202,8 @@ async fn add(ctx: &Ctx, args: &StorageAddArgs) -> Result<()> {
             "kind": profile.kind(),
             "path": path.display().to_string(),
             "unresolvedSecrets": unresolved,
+            "warnings": url_warnings,
+            "allowPrivateUri": profile.allow_private_uri(),
         }),
         || {
             println!(
@@ -198,6 +214,9 @@ async fn add(ctx: &Ctx, args: &StorageAddArgs) -> Result<()> {
             );
             for u in &unresolved {
                 println!("  note: secret {u} does not resolve yet (set it before pushing)");
+            }
+            for w in &url_warnings {
+                println!("  warning: {w}");
             }
             println!("  next: dg storage test {name}");
         },
@@ -225,6 +244,57 @@ pub(crate) fn save_profile(
         .is_some();
     profiles.save_to(&path)?;
     Ok((profile, path, replaced))
+}
+
+/// Warnings about the addresses `profile` would record on chain, one line each, saying
+/// whether a push will refuse them.
+pub(crate) fn publish_warnings(profile: &Profile) -> Vec<String> {
+    profile_problems(profile)
+        .iter()
+        .map(|p| {
+            let consequence = if !p.problem.refused() {
+                ""
+            } else if profile.allow_private_uri() {
+                " allow_private_uri is set, so pushes record it anyway."
+            } else {
+                " `git push` refuses to record it unless you pass `-o allow-private-uri` or \
+                 re-add the profile with --allow-private-uri."
+            };
+            format!("{}: {}.{consequence}", p.field, p.describe())
+        })
+        .collect()
+}
+
+/// git config `dash.allowPrivateUri`, or `remote.<remote>.dashAllowPrivateUri` by the
+/// helper's scope rule ([`pick_scoped`]).
+pub(crate) fn allow_private_uri_config(remote: Option<&str>) -> Result<bool> {
+    let value = pick_scoped(
+        remote.and_then(|r| git_config_scoped(&format!("remote.{r}.dashAllowPrivateUri"))),
+        git_config_scoped(ALLOW_PRIVATE_URI_GIT_KEY),
+    );
+    Ok(value
+        .map(|v| parse_git_bool(ALLOW_PRIVATE_URI_GIT_KEY, &v))
+        .transpose()?
+        .unwrap_or(false))
+}
+
+/// The command-line override a `dg` command offers for a non-public address.
+pub(crate) const ALLOW_FLAG: &str = "--allow-private-uri";
+
+/// Refuse (E501) before anything is written when one of `targets` would record a read
+/// address that is not public https on chain, unless the command's own override (`flag`:
+/// its name, and whether it was given), git config `dash.allowPrivateUri` (or
+/// `remote.<remote>.dashAllowPrivateUri`, by the same scope rule as the helper) or the
+/// profile's own `allow_private_uri` allows it. The same rule `git push` applies.
+pub(crate) fn check_publishable<'a>(
+    targets: impl IntoIterator<Item = (&'a str, &'a Profile)>,
+    flag: Option<(&str, bool)>,
+    remote: Option<&str>,
+    lead: &str,
+) -> Result<()> {
+    let from_git = allow_private_uri_config(remote)?;
+    let given = flag.is_some_and(|(_, on)| on);
+    refuse_unpublishable(targets, given || from_git, lead, flag.map(|(f, _)| f)).map_err(Into::into)
 }
 
 /// A one-line, secret-free description of a profile.
@@ -328,39 +398,34 @@ pub(crate) struct Report {
 }
 
 impl Report {
-    fn record(&mut self, name: &'static str, ok: bool, detail: String) {
+    fn record(&mut self, name: &'static str, ok: bool, warn: bool, detail: String) {
         if self.live {
-            let mark = if ok { " OK " } else { "FAIL" };
+            let mark = match (ok, warn) {
+                (false, _) => "FAIL",
+                (true, true) => "WARN",
+                (true, false) => " OK ",
+            };
             println!("  [{mark}] {name:<14} {detail}");
         }
         self.steps.push(Step {
             name,
             ok,
-            warn: false,
+            warn,
             detail,
         });
     }
 
     /// A problem that does not fail the test (what works still works).
     fn warn(&mut self, name: &'static str, detail: impl Into<String>) {
-        let detail = detail.into();
-        if self.live {
-            println!("  [WARN] {name:<14} {detail}");
-        }
-        self.steps.push(Step {
-            name,
-            ok: true,
-            warn: true,
-            detail,
-        });
+        self.record(name, true, true, detail.into());
     }
 
     fn pass(&mut self, name: &'static str, detail: impl Into<String>) {
-        self.record(name, true, detail.into());
+        self.record(name, true, false, detail.into());
     }
 
     fn fail(&mut self, name: &'static str, detail: impl Into<String>) {
-        self.record(name, false, detail.into());
+        self.record(name, false, false, detail.into());
     }
 
     /// Record `res` as step `name`; `Some(value)` on success.
@@ -423,6 +488,9 @@ pub(crate) async fn run_checks(profile: &Profile, live: bool) -> Report {
         live,
         ..Report::default()
     };
+    for w in publish_warnings(profile) {
+        r.warn("public address", w);
+    }
     match profile {
         Profile::Platform(_) => r.pass(
             "platform",
@@ -466,13 +534,21 @@ async fn check_public_read(
     let ok = r.steps.last().is_some_and(|s| s.ok);
     if ok {
         let cors = probe_cors(http, url).await;
-        if cors.browser_ok() {
+        if !cors.browser_ok() {
+            r.fail("browser CORS", cors.problems.join("; "));
+        } else if cors.warnings.is_empty() {
             r.pass(
                 "browser CORS",
                 "GET + Range preflight allowed, Content-Range exposed",
             );
         } else {
-            r.fail("browser CORS", cors.problems.join("; "));
+            r.warn(
+                "browser CORS",
+                format!(
+                    "GET + Range preflight allowed; {}",
+                    cors.warnings.join("; ")
+                ),
+            );
         }
     }
     ok
@@ -782,7 +858,139 @@ pub(crate) fn git_config(global: bool, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-fn use_profiles(
+/// How the live packs of the repository behind this git repository's `dash://` remote
+/// compare with a storage policy (F-15: a policy only applies to packs pushed after it).
+pub(crate) struct ExistingCopies {
+    /// `owner/name`.
+    pub repo: String,
+    /// The copies the policy asks for.
+    pub required: usize,
+    /// What the manifests record.
+    pub count: CopyCount,
+    /// The command that stores one consolidated pack under the policy.
+    pub fix: String,
+}
+
+impl ExistingCopies {
+    /// The copies the policy asks for, in words (`1 copy`, `2 copies`).
+    pub fn required_copies(&self) -> String {
+        let noun = if self.required == 1 { "copy" } else { "copies" };
+        format!("{} {noun}", self.required)
+    }
+
+    /// One line: how many live packs have fewer copies than the policy asks for.
+    pub fn summary(&self) -> String {
+        format!(
+            "{} of {} live pack(s) of {} have fewer than {} ({} byte(s))",
+            self.count.thin.len(),
+            self.count.live,
+            self.repo,
+            self.required_copies(),
+            self.count.thin.iter().map(|t| t.size_bytes).sum::<u64>()
+        )
+    }
+}
+
+/// This git repository's forge remote, as `(name, dash:// URL)`: `origin` when it is one,
+/// else the first `dash://` remote.
+fn dash_remote_url() -> Option<(String, String)> {
+    let out = Process::new("git")
+        .args(["config", "--get-regexp", r"^remote\..*\.url$"])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let remotes: Vec<(&str, &str)> = text
+        .lines()
+        .filter_map(|l| l.split_once(' '))
+        .filter(|(_, url)| url.starts_with("dash://"))
+        .collect();
+    remotes
+        .iter()
+        .find(|(k, _)| *k == "remote.origin.url")
+        .or_else(|| remotes.first())
+        .map(|(k, url)| {
+            let name = k.trim_start_matches("remote.").trim_end_matches(".url");
+            (name.to_string(), (*url).to_string())
+        })
+}
+
+/// The name of this git repository's forge (`dash://`) remote, when it has one.
+pub(crate) fn dash_remote_name() -> Option<String> {
+    dash_remote_url().map(|(name, _)| name)
+}
+
+/// The storage policy a push through this repository's forge remote uses: its
+/// `remote.<name>.dash*` settings over `dash.*`, by the helper's scope rule.
+pub(crate) fn push_policy() -> Result<ResolvedPolicy> {
+    let remote = dash_remote_url().map(|(name, _)| name);
+    let value = |remote_key: &str, key: &str| {
+        pick_scoped(
+            remote
+                .as_deref()
+                .and_then(|r| git_config_scoped(&format!("remote.{r}.{remote_key}"))),
+            git_config_scoped(&format!("dash.{key}")),
+        )
+    };
+    Ok(StoragePolicy::from_git_values(
+        value("dashStorage", "storage").as_deref(),
+        value("dashReplicas", "replicas").as_deref(),
+        value("dashPlatformFallback", "platformFallback").as_deref(),
+    )?
+    .resolve(&StorageProfiles::load()?)?)
+}
+
+/// The command that repacks `repo` onto every target of `policy`, Platform included, each
+/// of which must confirm: the consolidated pack then has the copies the policy asks for,
+/// and so covers every pack recorded before it ([`count_copies`]).
+fn repack_command(repo: &str, policy: &ResolvedPolicy) -> String {
+    format!(
+        "dg repack {repo} --profile {}",
+        policy.target_names().join(",")
+    )
+}
+
+/// Count the copies of every live pack of this git repository's forge repo against what
+/// `policy` can make ([`policy_copies`]). `Ok(None)` when there is no `dash://` remote or
+/// the policy asks for one copy (every stored pack has one). Reads only (no spend), within
+/// 15 seconds.
+pub(crate) async fn existing_copies(
+    ctx: &Ctx,
+    policy: &ResolvedPolicy,
+) -> Result<Option<ExistingCopies>> {
+    let required = policy_copies(policy);
+    if required <= 1 {
+        return Ok(None);
+    }
+    let Some((_, url)) = dash_remote_url() else {
+        return Ok(None);
+    };
+    let (owner, name) = crate::publish::parse_dash_url(&url)
+        .with_context(|| format!("remote URL {url} is not dash://<owner>/<repo>"))?;
+    let read = async {
+        // Reads only: no identity needed.
+        let client = ctx.connect().await?;
+        let handle = match &name {
+            Some(n) => forge_core::resolve::resolve_named(&client, &owner, n).await?,
+            None => forge_core::resolve::resolve_id(&client, &owner).await?,
+        };
+        let svc = forge_core::repo::RepoService::reader(&client);
+        let manifests = svc.read_pack_manifests(&handle).await?;
+        let roles = svc.copy_roles(&handle).await?;
+        anyhow::Ok((handle.display(), manifests, roles))
+    };
+    let (repo, manifests, roles) = tokio::time::timeout(std::time::Duration::from_secs(15), read)
+        .await
+        .map_err(|_| anyhow::anyhow!("reading the pack manifests timed out after 15 s"))??;
+    Ok(Some(ExistingCopies {
+        count: count_copies(&manifests, &roles, required),
+        fix: repack_command(&repo, policy),
+        repo,
+        required,
+    }))
+}
+
+async fn use_profiles(
     ctx: &Ctx,
     list: &str,
     replicas: Option<usize>,
@@ -805,12 +1013,38 @@ fn use_profiles(
     } else {
         git_config(global, &["--unset", "dash.platformFallback"])?;
     }
+    let url_warnings: Vec<String> = resolved
+        .external
+        .iter()
+        .flat_map(|(n, p)| {
+            publish_warnings(p)
+                .into_iter()
+                .map(move |w| format!("{n}: {w}"))
+        })
+        .collect();
+    // A policy only applies to packs pushed after it: say what that leaves behind, from the
+    // repo's manifests when they can be read (free reads), else in general.
+    let existing = if global {
+        Ok(None)
+    } else {
+        existing_copies(ctx, &resolved).await
+    };
     ctx.emit(
         json!({
             "storage": names,
             "replicas": resolved.replicas,
             "platformFallback": resolved.platform_fallback,
             "scope": if global { "global" } else { "repo" },
+            "warnings": url_warnings,
+            "existingPacks": match &existing {
+                Ok(e) => e.as_ref().map(|e| json!({
+                    "repo": e.repo,
+                    "live": e.count.live,
+                    "belowPolicy": e.count.thin.len(),
+                    "fix": e.fix,
+                })),
+                Err(err) => Some(json!({ "error": format!("{err:#}") })),
+            },
         }),
         || {
             println!(
@@ -819,6 +1053,33 @@ fn use_profiles(
                 resolved.total(),
                 if resolved.platform_fallback { ", falling back to Platform" } else { "" }
             );
+            for w in &url_warnings {
+                println!("warning: {w}");
+            }
+            match &existing {
+                Ok(Some(e)) if !e.count.thin.is_empty() => {
+                    println!(
+                        "Packs already pushed keep the copies they were stored with: {}.",
+                        e.summary()
+                    );
+                    println!(
+                        "  Store them again under this policy as one consolidated pack (it asks first; one pack and one browse-index upload per target, plus two small manifest writes):\n  {}",
+                        e.fix
+                    );
+                }
+                Ok(Some(_)) => {}
+                Ok(None) | Err(_) if policy_copies(&resolved) <= 1 => {}
+                other => {
+                    if let Err(e) = other {
+                        println!("(could not count the copies of packs already pushed: {e:#})");
+                    }
+                    println!(
+                        "This applies to packs pushed from now on; packs already pushed keep the copies they were stored with. \
+                         To store them under this policy as one consolidated pack: {}",
+                        repack_command("<owner>/<repo>", &resolved)
+                    );
+                }
+            }
             if !resolved.external.is_empty() {
                 println!(
                     "Tell readers where to look: dg storage advertise <owner>/<repo>  (one small on-chain config write)"
@@ -846,6 +1107,12 @@ async fn advertise(ctx: &Ctx, repo: &str, remote: Option<&str>) -> Result<()> {
         fallback.as_deref(),
     )?;
     let resolved = policy.resolve(&StorageProfiles::load()?)?;
+    check_publishable(
+        resolved.external.iter().map(|(n, p)| (n.as_str(), p)),
+        None,
+        remote,
+        "nothing advertised",
+    )?;
     let mode = resolved.advertised_mode();
     let uris = resolved.advertised_uris();
     if !ctx.confirm(&format!(
@@ -1126,6 +1393,86 @@ pub(crate) mod tests {
         // No kind: a usage error naming --kind.
         let a = add_args(&["k"]);
         assert!(format!("{:#}", profile_from_args(&a).unwrap_err()).contains("--kind"));
+    }
+
+    #[test]
+    fn a_loopback_public_url_is_warned_about_and_the_flag_is_kept() {
+        let base = [
+            "loop",
+            "--kind",
+            "s3",
+            "--endpoint",
+            "http://127.0.0.1:9100",
+            "--bucket",
+            "forge",
+            "--public-url",
+            "http://127.0.0.1:9100/forge",
+        ];
+        let p = profile_from_args(&add_args(&base)).unwrap();
+        let w = publish_warnings(&p);
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].starts_with("public_url: 127.0.0.1:9100"), "{w:?}");
+        assert!(w[0].contains("on chain forever"), "{w:?}");
+        assert!(w[0].contains("-o allow-private-uri"), "{w:?}");
+        let mut allowed = base.to_vec();
+        allowed.push("--allow-private-uri");
+        let a = add_args(&allowed);
+        assert!(crate::storage_wizard::equivalent_command(&a).ends_with(" --allow-private-uri"));
+        let p = profile_from_args(&a).unwrap();
+        assert!(p.allow_private_uri());
+        assert!(publish_warnings(&p)[0].contains("pushes record it anyway"));
+        // A public https URL has nothing to say; --allow-private-uri is not for platform.
+        let r2 = add_args(&[
+            "r2",
+            "--kind",
+            "s3",
+            "--endpoint",
+            "https://a.r2.cloudflarestorage.com",
+            "--bucket",
+            "b",
+            "--public-url",
+            "https://files.example.org",
+        ]);
+        assert!(publish_warnings(&profile_from_args(&r2).unwrap()).is_empty());
+        let platform = add_args(&["p", "--kind", "platform", "--allow-private-uri"]);
+        assert!(profile_from_args(&platform).is_err());
+    }
+
+    #[test]
+    fn warnings_pass_and_are_listed() {
+        let mut r = Report::default();
+        r.pass("put", "ok");
+        r.warn("browser CORS", "Content-Range not exposed");
+        assert!(r.ok());
+        assert!(r.failed().is_empty());
+        assert_eq!(r.warnings(), ["browser CORS"]);
+        assert_eq!(r.steps_json()[1]["warn"], true);
+        assert_eq!(r.steps_json()[1]["ok"], true);
+        r.fail("get", "boom");
+        assert_eq!(r.failed(), ["get"]);
+    }
+
+    #[test]
+    fn the_repack_command_names_every_target_platform_included() {
+        let profiles = StorageProfiles::parse(
+            "[profiles.a]\nkind = \"ipfs-kubo\"\napi = \"http://127.0.0.1:5001\"\n\
+             [profiles.b]\nkind = \"ipfs-kubo\"\napi = \"http://127.0.0.1:5002\"\n",
+        )
+        .unwrap();
+        let policy = |s: &str| {
+            StoragePolicy::from_git_values(Some(s), None, None)
+                .unwrap()
+                .resolve(&profiles)
+                .unwrap()
+        };
+        // Every target, so the consolidated pack reaches N (Platform is one of the copies).
+        let cmd = repack_command("o/r", &policy("a,b,platform"));
+        assert_eq!(cmd, "dg repack o/r --profile a,b,platform");
+        let cli = <crate::Cli as clap::Parser>::try_parse_from(cmd.split(' ')).unwrap();
+        assert!(matches!(
+            cli.command,
+            crate::Command::Repack { profile: Some(ref p), .. } if p == "a,b,platform"
+        ));
     }
 
     #[test]

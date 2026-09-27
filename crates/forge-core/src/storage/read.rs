@@ -23,6 +23,7 @@ use crate::backends::{sha256, ByteRange, S3Backend, Uri};
 use crate::error::{Error, Result};
 
 use super::profiles::{Profile, S3Profile, StorageProfiles};
+use super::publish::is_public_https_url;
 
 /// Candidates raced concurrently (PRD 04: "≤2 parallel attempts").
 const RACE_WIDTH: usize = 2;
@@ -193,7 +194,7 @@ impl PackReader {
                     // http, this machine or a private network (parity with forge-web
                     // `externalFetchUrls`), unless it is on an origin this user configured
                     // (a profile's public URL or gateway, a read gateway: their own NAS).
-                    if is_public_https(raw) || self.is_trusted_origin(raw) {
+                    if is_public_https_url(raw) || self.is_trusted_origin(raw) {
                         http.push(Candidate::Http(raw.clone()));
                     }
                 }
@@ -504,7 +505,7 @@ pub fn repo_gateways<'a>(uris: impl IntoIterator<Item = &'a String>) -> Vec<Stri
             continue;
         };
         let base = base.trim_end_matches('/');
-        if is_public_https(base) && !out.iter().any(|g| g == base) {
+        if is_public_https_url(base) && !out.iter().any(|g| g == base) {
             out.push(base.to_string());
             if out.len() == MAX_REPO_GATEWAYS {
                 break;
@@ -522,55 +523,6 @@ pub const MAX_REPO_GATEWAYS: usize = 3;
 fn origin_of(url: &str) -> Option<String> {
     let u = reqwest::Url::parse(url).ok()?;
     Some(u.origin().ascii_serialization()).filter(|o| o != "null")
-}
-
-/// Whether `url` is a public https URL: https, no userinfo, not a private host.
-fn is_public_https(url: &str) -> bool {
-    reqwest::Url::parse(url).is_ok_and(|u| {
-        u.scheme() == "https"
-            && u.username().is_empty()
-            && u.password().is_none()
-            && u.host_str().is_some_and(|h| !is_private_host(h))
-    })
-}
-
-/// Whether `host` names this machine or a private / link-local network (literal addresses
-/// and reserved names only; parity with forge-web `lib/net.ts` `isPrivateHost`).
-fn is_private_host(host: &str) -> bool {
-    let h = host
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_ascii_lowercase();
-    // A fully qualified name (`nas.local.`) is the same host.
-    let h = h.strip_suffix('.').unwrap_or(&h);
-    if h == "localhost"
-        || [".localhost", ".local", ".internal"]
-            .iter()
-            .any(|s| h.ends_with(s))
-    {
-        return true;
-    }
-    match h.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V4(v4)) => {
-            let [a, b, ..] = v4.octets();
-            a == 0
-                || a == 10
-                || a == 127
-                || (a == 100 && (64..=127).contains(&b))
-                || (a == 169 && b == 254)
-                || (a == 172 && (16..=31).contains(&b))
-                || (a == 192 && b == 168)
-        }
-        Ok(std::net::IpAddr::V6(v6)) => {
-            let first = v6.segments()[0];
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || (first & 0xfe00) == 0xfc00
-                || (first & 0xffc0) == 0xfe80
-                || v6.to_ipv4_mapped().is_some()
-        }
-        Err(_) => false,
-    }
 }
 
 /// The CID in a path-style gateway URL (`https://gw/ipfs/<cid>[/…]`), if any.
@@ -701,6 +653,7 @@ mod tests {
 
     #[test]
     fn private_hosts_match_the_web_rules() {
+        use crate::storage::publish::is_private_host;
         for h in [
             "localhost",
             "a.localhost",

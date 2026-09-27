@@ -40,6 +40,8 @@ public_url = "${S3}/forge-byo"
 prefix = "e2e/${RUN_ID}/releases"
 access_key_id = "minioadmin"
 secret_access_key = "env:FORGE_E2E_S3_SECRET"
+# A loopback S3 URL: a local fixture, never readable by anyone else.
+allow_private_uri = true
 EOF
 printf '[read]\nipfs_gateways = []\n' >"$READER_CFG"
 head -c 20000 /dev/urandom | gzip -c >"$ASSET"

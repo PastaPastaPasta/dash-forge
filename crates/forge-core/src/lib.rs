@@ -57,6 +57,8 @@ pub mod rules;
 pub mod scope;
 pub mod sealed;
 pub mod storage;
+#[cfg(test)]
+pub(crate) mod test_http;
 pub mod user_error;
 pub mod webhooks;
 

@@ -207,6 +207,10 @@ pub async fn run(ctx: &Ctx, fix: bool) -> Result<()> {
             title: "git config",
             checks: check_git_config(ctx),
         },
+        Section {
+            title: "pack copies",
+            checks: check_pack_copies(ctx).await,
+        },
     ];
 
     let applied = if fix {
@@ -772,6 +776,13 @@ async fn check_storage() -> Vec<Check> {
     let mut out = Vec::new();
     for (name, profile) in &profiles.profiles {
         out.push(profile_check(name, profile));
+        for w in crate::storage::publish_warnings(profile) {
+            out.push(Check::warn(
+                "public address",
+                format!("{name}: {w}"),
+                format!("re-add it with a public https address: `dg storage add {name} …`"),
+            ));
+        }
         if let Some(url) = public_probe_url(profile) {
             out.push(match probe_preflight(&http, &url).await {
                 Ok(()) => Check::ok("web CORS", format!("{name}: the web app may read {url}")),
@@ -1056,6 +1067,46 @@ fn check_git_config(ctx: &Ctx) -> Vec<Check> {
         },
     });
     out
+}
+
+// --- pack copies -------------------------------------------------------------------------
+
+/// Whether this repository's live packs have the copies its storage policy asks for. A
+/// policy applies only to packs pushed after it was set, so older packs can have fewer.
+async fn check_pack_copies(ctx: &Ctx) -> Vec<Check> {
+    const NAME: &str = "copies";
+    if !in_git_repo() {
+        return Vec::new();
+    }
+    // A broken policy is reported under git config already; a Platform-only one or one
+    // asking for a single copy has nothing to check (existing_copies returns None).
+    let Ok(policy) = crate::storage::push_policy() else {
+        return Vec::new();
+    };
+    match crate::storage::existing_copies(ctx, &policy).await {
+        Ok(None) => Vec::new(),
+        Ok(Some(e)) if e.count.thin.is_empty() => vec![Check::ok(
+            NAME,
+            format!(
+                "every live pack of {} has at least {}",
+                e.repo,
+                e.required_copies()
+            ),
+        )],
+        Ok(Some(e)) => vec![Check::warn(
+            NAME,
+            format!(
+                "{}: they were pushed before this storage policy, and a storage outage can make them unreadable",
+                e.summary()
+            ),
+            format!("{} stores them again as one consolidated pack (asks first)", e.fix),
+        )],
+        Err(err) => vec![Check::warn(
+            NAME,
+            format!("could not read this repository's pack manifests: {err:#}"),
+            "run `dg doctor` again when Dash Platform is reachable",
+        )],
+    }
 }
 
 fn network_fix_command(n: &Network) -> String {
