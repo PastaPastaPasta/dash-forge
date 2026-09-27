@@ -115,6 +115,19 @@ export function applyConfigChange(current: RepoConfig, change: ConfigChange): Re
   }
 }
 
+/**
+ * Whether `config` shows `change` applied: only the edited field is compared, so a landed write
+ * confirms even when an unrelated field (another pattern, the backend) changed elsewhere.
+ */
+export function changeHolds(config: RepoConfig, change: ConfigChange): boolean {
+  return (
+    (change.defaultBranch === undefined || config.defaultBranch === shortBranch(change.defaultBranch.trim())) &&
+    (change.archived === undefined || config.archived === change.archived) &&
+    (change.addPattern === undefined || config.protectedPatterns.includes(change.addPattern)) &&
+    (change.removePattern === undefined || !config.protectedPatterns.includes(change.removePattern))
+  )
+}
+
 /** The refusal when a setting being edited changed elsewhere after the page loaded. */
 export const STALE_SETTINGS = 'These settings changed since you opened this page — reload and try again.'
 

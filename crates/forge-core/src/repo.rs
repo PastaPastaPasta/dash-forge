@@ -839,19 +839,20 @@ impl<'a> RepoService<'a> {
     /// Append a `config` carrying `backend_mode`, optionally replacing the advertised read
     /// `uris` (the public read bases of a storage policy — `dg storage advertise`; `None`
     /// keeps the newest config's). Default branch, protected patterns and the archived
-    /// flag carry over (config is append-only, newest wins). Maintainer-gated.
+    /// flag carry over (config is append-only, newest wins). Maintainer-gated. `Ok(None)` when
+    /// the config already says so: nothing is written.
     pub async fn set_backend(
         &self,
         repo: &RepoRef,
         backend_mode: u8,
         new_uris: Option<&[String]>,
-    ) -> Result<String> {
+    ) -> Result<Option<String>> {
         let change = ConfigChange {
             backend_mode: Some(backend_mode),
             backend_uris: new_uris.map(<[String]>::to_vec),
             ..ConfigChange::default()
         };
-        Ok(self.update_config(repo, &change).await?.unwrap_or_default())
+        self.update_config(repo, &change).await
     }
 
     /// The repository's current configuration (the newest well-formed `config`; a private

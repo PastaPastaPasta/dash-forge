@@ -26,6 +26,7 @@ import {
   MERGE_METHODS,
   applyConfigChange,
   branchProblem,
+  changeHolds,
   descriptionProblem,
   editRepoDoc,
   fullPattern,
@@ -39,7 +40,6 @@ import {
   readRepoById,
   repoContractIds,
   repoKey,
-  sameConfig,
   setPolicy,
   topicsProblem,
   updateConfig,
@@ -158,11 +158,12 @@ function useConfigWrite(home: RepoHome, onSaved: () => void) {
   }
   const run = async (intent: string): Promise<void> => {
     if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
-    const next = applyConfigChange(current, pending.change)
-    await updateConfig(sdk, signer, home.repo, home.config, pending.change, intent)
+    const change = pending.change
+    await updateConfig(sdk, signer, home.repo, home.config, change, intent)
+    // The write was applied to a fresh read, so confirm by the edited field alone.
     await retryWhileMissing(async () => {
       const read = await readConfig(sdk, home.repo)
-      return read !== null && sameConfig(read, next) ? true : null
+      return read !== null && changeHolds(read, change) ? true : null
     }, 8)
     onSaved()
   }

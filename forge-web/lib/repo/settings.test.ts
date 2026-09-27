@@ -12,6 +12,7 @@ import {
   DEFAULT_CONFIG,
   SealedConfigError,
   applyConfigChange,
+  changeHolds,
   branchProblem,
   configData,
   descriptionProblem,
@@ -89,6 +90,15 @@ describe('config changes', () => {
     expect(write).not.toHaveBeenCalled()
     expect(staleProblem(NOW, { ...NOW, defaultBranch: 'trunk' }, { defaultBranch: 'dev' })).not.toBeNull()
     expect(staleProblem(NOW, { ...NOW, defaultBranch: 'trunk' }, { archived: true })).toBeNull()
+  })
+
+  it('confirm a landed change by its edited field only, whatever else changed elsewhere', () => {
+    const elsewhere: RepoConfig = { ...NOW, archived: true, backendMode: 4, protectedPatterns: ['refs/heads/main', 'refs/heads/x'] }
+    expect(changeHolds(elsewhere, { defaultBranch: 'refs/heads/main' })).toBe(true)
+    expect(changeHolds(elsewhere, { addPattern: 'refs/heads/x' })).toBe(true)
+    expect(changeHolds(elsewhere, { removePattern: 'refs/heads/main' })).toBe(false)
+    expect(changeHolds(elsewhere, { archived: false })).toBe(false)
+    expect(sameConfig(elsewhere, applyConfigChange(NOW, { addPattern: 'refs/heads/x' }))).toBe(false)
   })
 
   it('add and remove one pattern as a delta', () => {

@@ -206,6 +206,7 @@ export {
   SealedConfigError,
   applyConfigChange,
   branchProblem,
+  changeHolds,
   descriptionProblem,
   editRepoDoc,
   fullPattern,

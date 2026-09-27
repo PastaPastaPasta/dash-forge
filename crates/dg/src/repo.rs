@@ -356,18 +356,22 @@ async fn backend_set(ctx: &Ctx, repo: &str, mode: u8, label: &str) -> Result<()>
 
     ctx.emit(
         json!({
-            "status": "backend_set",
+            "status": if doc_id.is_some() { "backend_set" } else { "unchanged" },
             "repoId": handle.id(),
             "backend": label,
             "mode": mode,
             "configDocumentId": doc_id,
             "network": ctx.network_label(),
         }),
-        || {
-            println!(
-                "Backend of {} set to {label} (config doc {doc_id}).",
+        || match &doc_id {
+            Some(id) => println!(
+                "Backend of {} set to {label} (config doc {id}).",
                 handle.display()
-            );
+            ),
+            None => println!(
+                "Backend of {} is already {label}; nothing was written.",
+                handle.display()
+            ),
         },
     );
     Ok(())

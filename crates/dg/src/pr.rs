@@ -944,7 +944,9 @@ async fn require_merge_rights(
     if !forge_core::collab::v2::precheck_enabled() {
         return Ok(None);
     }
-    let maintainer = collab.signer_role(handle).await.ok().flatten() == Some(Role::Maintainer);
+    // `require_role` just read it; a failure here is transient, and guessing "writer" would
+    // wrongly refuse a maintainer, so surface it.
+    let maintainer = collab.signer_role(handle).await? == Some(Role::Maintainer);
     if override_policy && !maintainer {
         return Err(UserError::new(
             codes::NOT_A_WRITER,

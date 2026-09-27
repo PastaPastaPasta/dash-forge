@@ -1129,12 +1129,21 @@ async fn advertise(ctx: &Ctx, repo: &str, remote: Option<&str>) -> Result<()> {
         .await
         .context("writing config.backend")?;
     ctx.emit(
-        json!({ "status": "advertised", "mode": mode, "uris": uris, "configDocId": doc }),
-        || {
-            println!(
-                "Advertised mode {mode} with {} read URL(s) (config doc {doc}).",
+        json!({
+            "status": if doc.is_some() { "advertised" } else { "unchanged" },
+            "mode": mode,
+            "uris": uris,
+            "configDocId": doc,
+        }),
+        || match &doc {
+            Some(id) => println!(
+                "Advertised mode {mode} with {} read URL(s) (config doc {id}).",
                 uris.len()
-            );
+            ),
+            None => println!(
+                "Mode {mode} with these {} read URL(s) is already advertised; nothing was written.",
+                uris.len()
+            ),
         },
     );
     Ok(())
