@@ -178,6 +178,9 @@ function reasonOf(e: unknown): string {
  * {@link MergeStepError} (carrying the run so far) or a {@link MergeStopped}.
  */
 export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: (e: StepEvent) => void): Promise<MergeRun> {
+  // A private repo's pack must be encrypted, which the browser merge does not do: refused
+  // here too, not only by the panel, so no caller can store a plaintext pack for one.
+  if (deps.repo.visibility !== 'public') throw new MergeStopped('Private repositories are merged with `dg pr merge` for now.')
   if (from.baseTip !== deps.input.baseTip || from.headOid !== deps.input.headOid) {
     throw new MergeStopped('the base branch or the PR head changed since this merge started; merge again')
   }

@@ -37,7 +37,7 @@ function deps(extra: Partial<MergeRunDeps> = {}): MergeRunDeps {
   return {
     sdk: {} as EvoSDK,
     auth: { identityId: 'me', network: 'devnet', getSigningKeyWif: () => '' } as WriteAuth,
-    repo: { repoId: 'R' } as RepoRef,
+    repo: { repoId: 'R', visibility: 'public' } as RepoRef,
     pull: { id: 'P', number: 7, baseRefName: 'refs/heads/main' },
     input: { baseTip: BASE, headOid: HEAD, prNumber: 7, sourceLabel: 'refs/heads/fix', author: { name: 'n', email: 'e@x' }, headInBase: false },
     merge: async (_i, onPhase) => {
@@ -75,6 +75,16 @@ beforeEach(() => {
 })
 
 describe('merge step runner', () => {
+  it('refuses a private repo before anything runs: no worker, no upload, no write', async () => {
+    // Its pack would have to be encrypted; the plaintext browser merge must never store one.
+    const d = deps({ repo: { repoId: 'R', visibility: 'private' } as RepoRef })
+    const events: StepEvent[] = []
+    await expect(runMergeSteps(d, newRun({ baseTip: BASE, headOid: HEAD }), (e) => events.push(e))).rejects.toThrow(MergeStopped)
+    await expect(runMergeSteps(d, newRun({ baseTip: BASE, headOid: HEAD }), () => undefined)).rejects.toThrow(/Private repositories are merged with `dg pr merge`/)
+    expect(calls).toEqual([])
+    expect(events).toEqual([])
+  })
+
   it('runs every step in order and writes the pack, the protected ref and the merge event', async () => {
     const events: StepEvent[] = []
     const run = await runMergeSteps(deps(), newRun({ baseTip: BASE, headOid: HEAD }), (e) => events.push(e))
