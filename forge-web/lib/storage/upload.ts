@@ -147,13 +147,13 @@ async function storeExternal(p: StorageProfile, bytes: Uint8Array, hashHex: stri
   if (s.kind === 's3') {
     const key = artifactKey(s, hashHex)
     const existing = await headObject(s, p.secrets, key).catch(() => null)
-    if (existing !== bytes.length) await putObject(s, p.secrets, key, bytes)
+    if (existing !== bytes.length) await putObject(s, p.secrets, key, bytes, undefined, { sha256Hex: hashHex })
     try {
       await verifyS3(s, p, key, bytes, hashHex)
     } catch (first) {
       // A same-size but corrupt object at a content-addressed key would fail every push:
       // re-upload once, unconditionally, and check again.
-      await putObject(s, p.secrets, key, bytes)
+      await putObject(s, p.secrets, key, bytes, undefined, { sha256Hex: hashHex })
       try {
         await verifyS3(s, p, key, bytes, hashHex)
       } catch (second) {
@@ -183,6 +183,40 @@ async function storeExternal(p: StorageProfile, bytes: Uint8Array, hashHex: stri
     return uris
   }
   throw new Error('not an external profile')
+}
+
+/** A copy on one external target: the URIs its manifest entry records. */
+interface ExternalCopy {
+  readonly target: string
+  readonly uris: string[]
+}
+
+/** Store on every named external target in parallel; outcomes in the order they settle. */
+async function storeOnExternalTargets(
+  targets: readonly string[],
+  byName: ReadonlyMap<string, StorageProfile>,
+  bytes: Uint8Array,
+  hashHex: string,
+  step: (e: UploadEvent) => void,
+): Promise<{ confirmed: ExternalCopy[]; failures: TargetFailure[] }> {
+  const confirmed: ExternalCopy[] = []
+  const failures: TargetFailure[] = []
+  await Promise.all(
+    targets.map(async (name) => {
+      step({ target: name, phase: 'start' })
+      try {
+        const profile = byName.get(name)
+        if (!profile) throw new Error('no such storage profile in this browser')
+        const uris = await storeExternal(profile, bytes, hashHex)
+        confirmed.push({ target: name, uris })
+        step({ target: name, phase: 'done', uris })
+      } catch (e) {
+        failures.push({ target: name, reason: errText(e) })
+        step({ target: name, phase: 'failed', reason: errText(e) })
+      }
+    }),
+  )
+  return { confirmed, failures }
 }
 
 /**
@@ -216,6 +250,66 @@ export function fitManifestUris(uris: readonly string[]): string[] {
   const noS3 = uris.filter((u) => !u.startsWith('s3://'))
   if (fits(noS3)) return noS3
   throw new Error("the confirmed copies' URIs do not fit a manifest (at most 8, each up to 300 bytes); use shorter public URLs or fewer targets")
+}
+
+export const NO_EXTERNAL_STORAGE =
+  'Release assets are stored on your own storage (S3 or IPFS), and no such storage is chosen for this repo. Add one in Settings → Storage.'
+
+/**
+ * The policy's targets that are external storage known to this browser (S3, IPFS), in policy
+ * order: not Platform, and not a name whose profile is missing here.
+ */
+export function externalTargets(policy: StoragePolicy | null, profiles: readonly StorageProfile[]): string[] {
+  const byName = new Map(profiles.map((p) => [p.name, p]))
+  return (policy?.targets ?? []).filter((t) => {
+    const kind = byName.get(t)?.settings.kind
+    return kind !== undefined && kind !== 'platform'
+  })
+}
+
+/** A file stored on the user's own storage (a release asset). */
+export interface StoredFile {
+  readonly sha256: string
+  readonly sizeBytes: number
+  /** Public https URLs first, then `ipfs://` / `s3://`, at most `maxUris`. */
+  readonly uris: readonly string[]
+  readonly confirmed: readonly string[]
+  readonly failures: readonly TargetFailure[]
+}
+
+/**
+ * Store a file (a release asset) on the policy's EXTERNAL targets only, verified the same way
+ * as a pack (parity with `dg release create --asset`: assets never go to Platform chunks; a
+ * policy with no external target is refused before anything is uploaded).
+ */
+export async function storeFile(
+  bytes: Uint8Array,
+  opts: {
+    readonly policy: StoragePolicy | null
+    readonly profiles: readonly StorageProfile[]
+    readonly onStep?: (e: UploadEvent) => void
+    readonly maxUris?: number
+    /** The file's hex SHA-256 when the caller has it already (it is not hashed again). */
+    readonly sha256Hex?: string
+  },
+): Promise<StoredFile> {
+  if (bytes.length === 0) throw new Error('an empty file cannot be stored as an asset')
+  const byName = new Map(opts.profiles.map((p) => [p.name, p]))
+  const external = externalTargets(opts.policy, opts.profiles)
+  if (opts.policy === null || external.length === 0) {
+    throw new Error(NO_EXTERNAL_STORAGE)
+  }
+  const required = Math.min(opts.policy.replicas, external.length)
+  const hashHex = opts.sha256Hex ?? (await sha256Hex(bytes))
+  const { confirmed, failures } = await storeOnExternalTargets(external, byName, bytes, hashHex, opts.onStep ?? (() => undefined))
+  if (confirmed.length < required) throw new ReplicationError(required, confirmed.map((c) => c.target), failures, false)
+  confirmed.sort((a, b) => external.indexOf(a.target) - external.indexOf(b.target))
+  let uris = orderUris(confirmed.map((c) => c.uris))
+  const max = opts.maxUris ?? 4
+  // Credential-less readers use the public copies: drop private s3:// first (as the CLI does).
+  if (uris.length > max) uris = uris.filter((u) => !u.startsWith('s3://'))
+  uris = fitManifestUris(uris.slice(0, max))
+  return { sha256: hashHex, sizeBytes: bytes.length, uris, confirmed: confirmed.map((c) => c.target), failures }
 }
 
 /** What {@link storeArtifact} needs besides the bytes. */
@@ -282,26 +376,15 @@ export async function storeArtifact(
     await platformCopy('platform')
   } else {
     const byName = new Map(opts.profiles.map((p) => [p.name, p]))
-    const targets = policy.targets.map((name) => ({ name, profile: byName.get(name) }))
-    const external = targets.filter((t) => t.profile?.settings.kind !== 'platform')
-    const onChain = targets.filter((t) => t.profile?.settings.kind === 'platform')
-    await Promise.all(
-      external.map(async ({ name, profile }) => {
-        step({ target: name, phase: 'start' })
-        try {
-          if (!profile) throw new Error('no such storage profile in this browser')
-          const uris = await storeExternal(profile, bytes, hashHex)
-          confirmed.push({ target: name, uris, platform: false })
-          step({ target: name, phase: 'done', uris })
-        } catch (e) {
-          fail(name, e)
-        }
-      }),
-    )
+    const isPlatform = (name: string): boolean => byName.get(name)?.settings.kind === 'platform'
+    const onChain = policy.targets.filter(isPlatform)
+    const external = await storeOnExternalTargets(policy.targets.filter((name) => !isPlatform(name)), byName, bytes, hashHex, step)
+    for (const copy of external.confirmed) confirmed.push({ ...copy, platform: false })
+    failures.push(...external.failures)
     const notMet = (): ReplicationError => new ReplicationError(policy.replicas, confirmed.map((c) => c.target), failures, platformWritten)
     // Platform targets only if they can still make up the policy: never pay for chunks whose
     // push is about to fail anyway — and never without the user's go-ahead on the price.
-    for (const [i, { name }] of onChain.entries()) {
+    for (const [i, name] of onChain.entries()) {
       if (confirmed.length + (onChain.length - i) < policy.replicas) break
       if (!(await agreePlatform(`Your storage policy for this repo includes Dash Platform (${name}).`))) {
         fail(name, new Error('storing on Platform was declined'))

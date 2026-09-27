@@ -7,6 +7,7 @@ Readers never trust your bucket. A clone accepts only bytes that hash to the SHA
 This guide covers:
 
 1. [How it fits together](#how-it-fits-together)
+   - [The quick way: `dg storage add` asks](#the-quick-way-dg-storage-add-asks)
 2. [Cloudflare R2](#cloudflare-r2)
 3. [Backblaze B2](#backblaze-b2)
 4. [AWS S3](#aws-s3)
@@ -55,6 +56,46 @@ A push works like this:
 `git push --dry-run` builds the pack, prints the plan, target and Platform-estimate lines, then stops. With `GIT_DASH_JSON=1` each line is a JSON event instead (`{"event":"plan",…}`).
 
 `git push -q` silences the progress lines; errors are always printed.
+
+### The quick way: `dg storage add` asks
+
+Run `dg storage add` with no arguments in a terminal. It asks for each value, with a one-line hint on where to find it, stores a pasted secret in your OS keychain, saves the profile, and runs the same checks as `dg storage test`:
+
+```
+$ dg storage add
+? Profile name › r2-main
+? Kind › 1) S3-compatible (Cloudflare R2, Backblaze B2, AWS S3, MinIO)
+? Provider › 1) Cloudflare R2   (region auto, path-style; recommended: free egress)
+? Account id › 7c1…
+? Bucket › forge
+? Public URL (r2.dev or custom domain) › https://pub-9a1.r2.dev
+? Access key id › …
+? Secret access key — how do you want to store it? › 1) paste it now; dg stores it in the macOS Keychain (recommended)
+? Secret access key ›                  (input is hidden)
+Testing r2-main …
+  [ OK ] put            wrote probe/… (signed PUT)
+  [ OK ] get            read back identical bytes (signed GET)
+  [ OK ] public read    anonymous GET https://pub-9a1.r2.dev/probe/… OK
+  [FAIL] browser CORS   preflight: Access-Control-Allow-Headers does not include Range
+  [ OK ] delete         probe removed
+  → Cloudflare dashboard → R2 → forge → Settings → CORS Policy → Add CORS policy, paste: …
+    then run `dg storage test r2-main`
+  note: git push and clone work without CORS; the web app cannot read this storage until it passes
+Saved ~/.config/dash-forge/storage.toml (secret stored as keychain:dash-forge/r2-main)
+Equivalent: dg storage add r2-main --kind s3 --endpoint https://7c1….r2.cloudflarestorage.com --region auto --bucket forge --public-url https://pub-9a1.r2.dev --access-key-id … --secret-access-key keychain:dash-forge/r2-main
+Use it in a repo: dg storage use r2-main
+? Make r2-main the default storage for new repos (and any repo without its own dash.storage)? [Y/n]
+```
+
+- The answers map one to one onto the flags in the provider sections below, and the `Equivalent:` line is a command you can re-run (in CI, on another machine) without the questions.
+- The secret can be **pasted** (read without echo and written to the macOS Keychain, Windows Credential Manager or the Secret Service keyring under service `dash-forge`, account = the profile name), taken from an **environment variable** (`env:NAME`), or an entry **already in the keychain** (`keychain:<service>/<account>`). It is never written to `storage.toml`, printed or logged.
+- The presets fill in what each provider needs: R2 builds the endpoint from your account id and uses region `auto`; B2 builds `s3.<region>.backblazeb2.com`; AWS uses virtual-hosted addressing; MinIO and other stores ask for the endpoint.
+- Accepting the last question sets `git config --global dash.storage <name>`, which `dg repo create` / `dg init` and every repository without its own `dash.storage` then use.
+- With `--json`, `--yes`, or no terminal, nothing is asked: `dg storage add` without a name fails with [E201](../errors.md#e201) and tells you to pass the flags.
+
+Keychain entries you created by hand (`security add-generic-password -s dash-forge -a <name> -w`, or `secret-tool store … service dash-forge account <name>`) keep resolving: a `keychain:` reference is looked up through the OS credential store first and the command-line tool second.
+
+**macOS asks once per program.** macOS lets the program that created a keychain item read it silently. The first time `git-remote-dash` reads a secret that `dg` stored, macOS asks whether to allow it. Choose **Always Allow**. A rebuilt or reinstalled binary can ask again. Over SSH nobody can answer, so the read fails: use an `env:` reference on machines you only reach that way. `DASH_FORGE_NO_KEYCHAIN=1` stops `dg` from offering or writing the keychain; `keychain:` references you wrote yourself are still read.
 
 ---
 
@@ -245,6 +286,8 @@ To let readers (and the web app) know where this repo's packs live, advertise th
 ```sh
 dg storage advertise <owner>/<repo>
 ```
+
+A **new** repository needs none of this: `dg repo create --push --storage r2-main` and `dg init --storage r2-main` write the advertised mode and read bases into the repository's first config, set `dash.storage` (and `dash.replicas` when you pass `--replicas`) in the repository's own git config, and push. Without `--storage` they use `dash.storage` from git config (this repository's, then your global one), then your only profile if you have exactly one. With none of those they stop **before creating anything** ([E508](../errors.md#e508)) and quote what Platform storage would cost for this repository; pass `--storage platform` to accept that price.
 
 ## Cost guard
 

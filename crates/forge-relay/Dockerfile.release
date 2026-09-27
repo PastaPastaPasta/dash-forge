@@ -5,5 +5,12 @@
 
 FROM gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab
 COPY --chmod=0755 forge-relay /usr/local/bin/forge-relay
+# The retry queue's state dir, owned by the runtime user (a named volume mounted here starts
+# with this ownership; the image has no shell to mkdir with, so an empty dir it already holds
+# is copied). See the README for the state-dir rules (explicit vs default, the fallback).
+COPY --from=gcr.io/distroless/static-debian12:nonroot@sha256:afa5c872c891853ca7fcf1f12c3edb23f7eeef36189728842dd51042ff57f7ab \
+     --chown=nonroot:nonroot --chmod=0700 /home/nonroot /state
+ENV FORGE_RELAY_STATE_DIR=/state
+VOLUME /state
 USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/forge-relay", "run"]

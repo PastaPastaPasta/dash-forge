@@ -15,10 +15,11 @@ Forge runs on devnet **moutai** today (Platform protocol 14). Build the two bina
 cargo install --locked --path crates/dg && cargo install --locked --path crates/git-remote-dash
 dg auth login --network devnet --devnet-name moutai --identity ~/Downloads/dash-identity-<id>.json
 export DASH_FORGE_KEY=~/.config/dash-forge/identities/devnet-moutai/<id>.identity.json
-export DASH_FORGE_NETWORK=devnet DASH_FORGE_DEVNET_NAME=moutai   # git-remote-dash reads these
-dg repo create hello                    # ~0.001 DASH: three documents in the shared contracts
-git remote add forge dash://<id>/hello && git push -u forge main
+export DASH_FORGE_NETWORK=devnet DASH_FORGE_DEVNET_NAME=moutai   # dg and git-remote-dash read these
+dg init --name hello --storage platform # ~0.001 DASH to create; adds remote origin and pushes this branch
 ```
+
+`--storage platform` keeps the packs on Platform (~0.28 DASH/MiB). Run `dg storage add` first to keep them in your own bucket instead; `dg init` then uses it without `--storage`.
 
 Open `https://forge.dashhq.org/repo?owner=<id>&name=hello` to see it. The [quick start](docs/guides/quick-start.md) walks through each step.
 

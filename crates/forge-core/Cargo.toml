@@ -32,6 +32,9 @@ aes-gcm = { version = "0.10", features = ["zeroize"] }
 hkdf = "0.12"
 subtle = "2.6"
 zeroize = { version = "1.8", features = ["derive"] }
+# OS credential store (macOS Keychain, Windows Credential Manager, Secret Service): identity
+# keys and storage secrets (`forge_core::keychain`).
+keyring = "4"
 getrandom = "0.2"
 
 # storage backends (HTTP/S3/IPFS adapters). reqwest on rustls (no system OpenSSL);

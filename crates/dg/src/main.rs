@@ -20,9 +20,12 @@ mod issue;
 mod label;
 mod maint;
 mod pr;
+mod prompt;
+mod publish;
 mod release;
 mod repo;
 mod storage;
+mod storage_wizard;
 mod webhook;
 
 use std::path::PathBuf;
@@ -169,6 +172,10 @@ pub enum Command {
         #[arg(long)]
         fix: bool,
     },
+    /// Publish the git repository in the current directory: create its forge-v2 repo if
+    /// missing, add the remote and push the current branch (`repo create --push` for the
+    /// cwd; safe to re-run).
+    Init(Box<InitArgs>),
     /// Print a shell completion script to stdout.
     ///
     /// bash: `dg completions bash > ~/.local/share/bash-completion/completions/dg`
@@ -180,6 +187,62 @@ pub enum Command {
         /// The shell to generate completions for.
         shell: clap_complete::Shell,
     },
+}
+
+/// Options `dg repo create` and `dg init` share.
+#[derive(Debug, Clone, clap::Args)]
+pub struct CreateOptions {
+    /// Where pushes store packs: comma-separated storage profile names (`platform` is built
+    /// in). Default: git config `dash.storage`, else your only profile; with neither, the
+    /// command stops before spending (E508).
+    #[arg(long, value_name = "PROFILES")]
+    pub storage: Option<String>,
+    /// Confirmations a push needs (default: every listed profile).
+    #[arg(long)]
+    pub replicas: Option<usize>,
+    /// Description.
+    #[arg(long, default_value = "")]
+    pub description: String,
+    /// Display name (defaults to none; the slug is shown).
+    #[arg(long, default_value = "")]
+    pub display_name: String,
+    /// Default branch (default: the current branch when pushing, else `main`).
+    #[arg(long)]
+    pub default_branch: Option<String>,
+    /// The git remote to add for the repo (default: origin). Pushing flows only.
+    #[arg(long, value_name = "NAME")]
+    pub remote: Option<String>,
+}
+
+impl CreateOptions {
+    /// The remote name (`origin` unless `--remote`).
+    pub fn remote(&self) -> &str {
+        self.remote.as_deref().unwrap_or("origin")
+    }
+}
+
+/// `dg repo create` arguments.
+#[derive(Debug, clap::Args)]
+pub struct RepoCreateArgs {
+    /// Repository name: the URL slug (a-z, 0-9, `.`, `_`, `-`; upper case is folded).
+    /// Default: this directory's name.
+    pub name: Option<String>,
+    /// Also add the remote (`--remote`, default origin) to the git repository here and push
+    /// the current branch with `-u`.
+    #[arg(long)]
+    pub push: bool,
+    #[command(flatten)]
+    pub opts: CreateOptions,
+}
+
+/// `dg init` arguments.
+#[derive(Debug, clap::Args)]
+pub struct InitArgs {
+    /// Repository name (default: the git repository's directory name).
+    #[arg(long)]
+    pub name: Option<String>,
+    #[command(flatten)]
+    pub opts: CreateOptions,
 }
 
 #[derive(Debug, Subcommand)]
@@ -194,23 +257,9 @@ pub enum AuthCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum RepoCommand {
-    /// Create a forge-v2 repository (repo + your maintainer membership + initial config).
-    Create {
-        /// Repository name: the URL slug (a-z, 0-9, `.`, `_`, `-`; upper case is folded).
-        name: String,
-        /// Storage backend policy.
-        #[arg(long, value_enum, default_value = "platform")]
-        storage: StorageArg,
-        /// Description.
-        #[arg(long, default_value = "")]
-        description: String,
-        /// Display name (defaults to none; the slug is shown).
-        #[arg(long, default_value = "")]
-        display_name: String,
-        /// Default branch.
-        #[arg(long, default_value = "main")]
-        default_branch: String,
-    },
+    /// Create a forge-v2 repository (repo + your maintainer membership + initial config);
+    /// with --push, also add the remote and push the current branch.
+    Create(Box<RepoCreateArgs>),
     /// Print the `git clone` command for a repo (`owner/name`).
     Clone {
         /// The repository (`owner/name`).
@@ -584,7 +633,9 @@ pub enum StorageCommand {
         /// The repository (`owner/name`).
         repo: String,
     },
-    /// Add (or replace) a storage profile in ~/.config/dash-forge/storage.toml.
+    /// Add (or replace) a storage profile in ~/.config/dash-forge/storage.toml. With no
+    /// arguments in a terminal, asks for each value, tests the storage and prints the
+    /// equivalent command.
     Add(Box<StorageAddArgs>),
     /// List storage profiles (secrets are shown as references, never values).
     List,
@@ -638,15 +689,17 @@ pub enum ProfileKindArg {
 }
 
 /// `dg storage add` arguments. Secrets are given as references (`env:VAR` or
-/// `keychain:<service>/<account>`), never values.
-#[derive(Debug, clap::Args)]
+/// `keychain:<service>/<account>`), never values. The prompt flow builds the same struct
+/// (`storage_wizard`), so its answers map 1:1 onto these flags.
+#[derive(Debug, Default, Clone, PartialEq, Eq, clap::Args)]
 #[allow(clippy::struct_field_names)]
 pub struct StorageAddArgs {
-    /// The profile name (letters, digits, `-`, `_`, `.`).
-    pub name: String,
-    /// The profile kind.
+    /// The profile name (letters, digits, `-`, `_`, `.`). Omit (with every other flag) in a
+    /// terminal for the interactive setup.
+    pub name: Option<String>,
+    /// The profile kind (required with a name).
     #[arg(long, value_enum)]
-    pub kind: ProfileKindArg,
+    pub kind: Option<ProfileKindArg>,
     /// s3: API endpoint origin (e.g. https://<account>.r2.cloudflarestorage.com).
     #[arg(long)]
     pub endpoint: Option<String>,
@@ -727,37 +780,6 @@ impl Backend {
             Backend::S3 => "s3",
             Backend::Https => "https",
             Backend::Mixed => "mixed",
-        }
-    }
-}
-
-/// The `repo create --storage` policy (platform | external | mixed).
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum StorageArg {
-    /// On-chain `chunk` documents (mode 0).
-    Platform,
-    /// An external mirror (defaults to the https tier, mode 3).
-    External,
-    /// Mixed platform + external (mode 4).
-    Mixed,
-}
-
-impl StorageArg {
-    /// The `config.backend.mode` numeric encoding.
-    pub fn mode(self) -> u8 {
-        match self {
-            StorageArg::Platform => 0,
-            StorageArg::External => 3,
-            StorageArg::Mixed => 4,
-        }
-    }
-
-    /// The lowercase label.
-    pub fn label(self) -> &'static str {
-        match self {
-            StorageArg::Platform => "platform",
-            StorageArg::External => "external",
-            StorageArg::Mixed => "mixed",
         }
     }
 }
@@ -946,6 +968,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         } => maint::reseed(ctx, repo.as_deref(), *to, profile.as_deref()).await,
         Command::Import(args) => import::import(ctx, args).await,
         Command::Doctor { fix } => doctor::run(ctx, *fix).await,
+        Command::Init(args) => repo::init(ctx, args).await,
         Command::Completions { .. } => unreachable!("handled in main before Ctx::resolve"),
     }
 }
@@ -1007,23 +1030,51 @@ mod tests {
             "repo",
             "create",
             "my-repo",
+            "--push",
             "--storage",
-            "mixed",
+            "r2-main,platform",
+            "--replicas",
+            "1",
             "--description",
             "hello",
         ]);
         match cli.command {
-            Command::Repo(RepoCommand::Create {
-                name,
-                storage,
-                description,
-                ..
-            }) => {
-                assert_eq!(name, "my-repo");
-                assert_eq!(storage.mode(), 4);
-                assert_eq!(description, "hello");
+            Command::Repo(RepoCommand::Create(a)) => {
+                assert_eq!(a.name.as_deref(), Some("my-repo"));
+                assert!(a.push);
+                assert_eq!(a.opts.storage.as_deref(), Some("r2-main,platform"));
+                assert_eq!(a.opts.replicas, Some(1));
+                assert_eq!(a.opts.description, "hello");
+                assert_eq!(a.opts.remote(), "origin");
+                assert_eq!(a.opts.default_branch, None);
             }
             _ => panic!("expected repo create"),
+        }
+        // The name is optional (the directory's name), and so is storage.
+        let cli = Cli::parse_from(["dg", "repo", "create"]);
+        assert!(matches!(cli.command, Command::Repo(RepoCommand::Create(a))
+            if a.name.is_none() && a.opts.storage.is_none() && !a.push));
+    }
+
+    #[test]
+    fn parses_init() {
+        let cli = Cli::parse_from([
+            "dg",
+            "init",
+            "--storage",
+            "minio",
+            "--name",
+            "proj",
+            "--remote",
+            "forge",
+        ]);
+        match cli.command {
+            Command::Init(a) => {
+                assert_eq!(a.name.as_deref(), Some("proj"));
+                assert_eq!(a.opts.storage.as_deref(), Some("minio"));
+                assert_eq!(a.opts.remote(), "forge");
+            }
+            _ => panic!("expected init"),
         }
     }
 
@@ -1090,6 +1141,7 @@ mod tests {
             let script = String::from_utf8(out).unwrap();
             assert!(script.contains(marker), "{name}: missing {marker}");
             assert!(script.contains("doctor"), "{name}: subcommands missing");
+            assert!(script.contains("init"), "{name}: `init` missing");
         }
         // `completion` (gh's spelling, spec §7.6) is an alias.
         let cli = Cli::parse_from(["dg", "completion", "zsh"]);
