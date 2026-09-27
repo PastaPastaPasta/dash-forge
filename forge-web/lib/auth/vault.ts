@@ -173,7 +173,7 @@ async function openBlob(key: CryptoKey, network: Network, identityId: string, bl
       await crypto.subtle.decrypt({ name: 'AES-GCM', iv: buf(blob.iv), additionalData: buf(aad(network, identityId, slot)) }, key, buf(blob.ciphertext)),
     )
   } catch {
-    throw new VaultLockedError('the stored storage settings do not open with this key')
+    throw new VaultLockedError(slot === 'extra' ? 'the stored wallet grants do not open with this key' : 'the stored storage settings do not open with this key')
   }
   try {
     return JSON.parse(new TextDecoder().decode(plain)) as unknown
@@ -409,21 +409,23 @@ export async function writeStorageBlob(network: Network, identityId: string, val
   await idbPut('vault', storageBlobKey(network, identityId), await sealBlob(k, network, identityId, value))
 }
 
-/**
- * Add (or replace, per contract) a wallet grant beside the unlocked key of (network, identity),
- * sealed at rest and live for this session. Needs the vault unlocked for that identity.
- */
 /** Whether wallet grants are sealed beside the record of (network, identity) (no secrets read). */
 export async function hasExtraKeys(network: Network, identityId: string): Promise<boolean> {
   return (await idbGet<StorageBlob>('vault', extraBlobKey(network, identityId))) !== undefined
 }
 
+/**
+ * Add a wallet grant beside the unlocked key of (network, identity), sealed at rest and live
+ * for this session. Needs the vault unlocked for that identity.
+ */
 export async function addExtraKey(network: Network, identityId: string, extra: ExtraKey): Promise<void> {
   assertDedicatedOrigin()
   const k = unlockedStorageKey(network, identityId)
   const current = unlocked
   if (k === null || current === null) throw new VaultLockedError('unlock this browser\'s key first')
-  const next = [...(current.secret.extra ?? []).filter((e) => e.contractId !== extra.contractId), extra]
+  // Newest first, deduped by key id. An older grant for the same contract is kept, not dropped:
+  // a revoke must still be able to disable it (a disabled one falls out at the next unlock).
+  const next = [extra, ...(current.secret.extra ?? []).filter((e) => e.keyId !== extra.keyId)]
   await idbPut('vault', extraBlobKey(network, identityId), await sealBlob(k, network, identityId, next, 'extra'))
   unlocked = { ...current, secret: { ...current.secret, extra: next } }
 }

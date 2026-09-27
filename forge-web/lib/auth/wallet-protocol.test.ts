@@ -5,7 +5,8 @@
  */
 
 import * as secp from '@noble/secp256k1'
-import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
+import { sha256 } from '@noble/hashes/sha2.js'
+import { bytesToHex } from '@noble/hashes/utils.js'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { describe, expect, it } from 'vitest'
 
@@ -17,6 +18,7 @@ import {
   AmbiguousWalletLogin,
   RequestExpired,
   awaitWalletAnswer,
+  sameIdentifier,
   newLoginRequest,
   type ResponseSource,
 } from './app-connect'
@@ -152,7 +154,16 @@ describe('dash-st key registration', () => {
     expect([encKey!.type, encKey!.purpose, encKey!.securityLevel]).toEqual([0, 1, 3])
     expect(bytesToHex(Uint8Array.from(atob(encKey!.data), (c) => c.charCodeAt(0)))).toBe(bytesToHex(keys.encPub))
     expect(encKey!.contractBounds).toBeNull()
-    expect(atob(encKey!.signature).length).toBe(65)
+    const sig = Uint8Array.from(atob(encKey!.signature), (c) => c.charCodeAt(0))
+    expect(sig.length).toBe(65)
+    // The proof of possession verifies: compact recoverable (27 + 4 + recid) over sha256d of the
+    // signable bytes, which exclude every signature, so recovering yields encPub.
+    const signable = evo.IdentityUpdateTransition.fromBytes(st.transitionBytes).toStateTransition().getSignableBytes()
+    const recovered = secp.recoverPublicKey(new Uint8Array([sig[0]! - 31, ...sig.slice(1)]), sha256(sha256(signable)), { prehash: false })
+    expect(bytesToHex(recovered)).toBe(bytesToHex(keys.encPub))
+    // The wallets' other framing: StateTransition with IdentityUpdate's tag (6) prepended.
+    const tagged = evo.StateTransition.fromBytes(new Uint8Array([6, ...st.transitionBytes]))
+    expect(bytesToHex(tagged.getSignableBytes())).toBe(bytesToHex(signable))
   }, 60_000)
 })
 
@@ -212,6 +223,12 @@ interface ChainKey {
   securityLevelNumber?: number
 }
 
+/** A stored contractId as rendered (base58 or base64) back to bytes. */
+function contractBytes(v: unknown): Uint8Array {
+  const s = String(v)
+  return s.length === 44 && s.endsWith('=') ? Uint8Array.from(atob(s), (c) => c.charCodeAt(0)) : base58Decode(s)
+}
+
 /** A fake SDK: identities with keys, and the two response contracts' documents. */
 function fakeChain() {
   const identities = new Map<string, ChainKey[]>()
@@ -243,10 +260,16 @@ function fakeChain() {
       },
     },
     documents: {
-      async query(q: { dataContractId: string; where: [string, string, string][] }) {
+      async query(q: { dataContractId: string; where: [string, string, string][]; limit?: number }) {
         const hash = q.where.find((w) => w[0] === 'appEphemeralPubKeyHash')?.[2]
         const contract = q.where.find((w) => w[0] === 'contractId')?.[2]
-        const rows = docs.filter((d) => d.contract === q.dataContractId && d.json['appEphemeralPubKeyHash'] === hash && (contract === undefined || d.json['contractId'] === contract))
+        const after = q.where.find((w) => w[0] === '$ownerId' && w[1] === '>')?.[2]
+        const rows = docs
+          .filter((d) => d.contract === q.dataContractId && d.json['appEphemeralPubKeyHash'] === hash)
+          .filter((d) => contract === undefined || base58Encode(contractBytes(d.json['contractId'])) === contract)
+          .filter((d) => after === undefined || String(d.json['$ownerId']) > after)
+          .sort((a, b) => String(a.json['$ownerId']).localeCompare(String(b.json['$ownerId'])))
+          .slice(0, q.limit ?? 100)
         return new Map(rows.map((r, i) => [String(i), { toJSON: () => r.json }]))
       },
     },
@@ -388,6 +411,45 @@ describe('login poll against a simulated wallet', () => {
     expect(a.keys[0]!.scope.collab).toBe(true)
   })
 
+  it('a bad answer from a stranger does not stop the login; the sole bad answer does', async () => {
+    const chain = fakeChain()
+    const req = newLoginRequest('devnet', FORGE.core)
+    await chain.answer(req.uri, MALLORY, { source: 'app-connect', chainKey: new Uint8Array(32).fill(0x22), register: { securityLevelNumber: 1 } })
+    // Alone at settle: its reason is the answer.
+    await expect(awaitWalletAnswer(chain.sdk, req, fast)).rejects.toThrow(/HIGH/)
+    // A grant listens to one identity only: that identity's refusal is final at once.
+    const chain2 = fakeChain()
+    const req2 = newLoginRequest('devnet', FORGE.collab)
+    await chain2.answer(req2.uri, ALICE, { source: 'app-connect', register: { bounds: { $type: 'singleContract', id: APP_CONNECT_CONTRACT_ID } } })
+    await expect(awaitWalletAnswer(chain2.sdk, req2, { ...fast, identityId: ALICE })).rejects.toThrow(/outside Dash Forge/)
+  })
+
+  it('reads a contractId the SDK renders base64 as well as base58', async () => {
+    const chain = fakeChain()
+    const req = newLoginRequest('devnet', FORGE.core)
+    await chain.answer(req.uri, ALICE, { source: 'legacy' })
+    chain.docs[0]!.json['contractId'] = btoa(String.fromCharCode(...base58Decode(FORGE.core)))
+    const a = await awaitWalletAnswer(chain.sdk, req, fast)
+    expect(a.identityId).toBe(ALICE)
+    expect(sameIdentifier(btoa(String.fromCharCode(...base58Decode(FORGE.collab))), FORGE.core)).toBe(false)
+  })
+
+  it('pages App Connect answers by $ownerId: junk cannot push the real answer out of reach', async () => {
+    const chain = fakeChain()
+    const req = newLoginRequest('devnet', FORGE.core)
+    const hash = btoa(String.fromCharCode(...req.appEphemeralPubKeyHash))
+    // 60 junk rows (not encrypted to us) sorting before the real answerer.
+    for (let i = 0; i < 60; i++) {
+      chain.docs.push({
+        contract: APP_CONNECT_CONTRACT_ID,
+        json: { $ownerId: `1111${String(i).padStart(3, '0')}`, appEphemeralPubKeyHash: hash, walletEphemeralPubKey: btoa(String.fromCharCode(...secp.getPublicKey(secp.utils.randomSecretKey(), true))), encryptedPayload: btoa(String.fromCharCode(...new Uint8Array(60).fill(i))) },
+      })
+    }
+    await chain.answer(req.uri, ALICE, { source: 'app-connect', register: { bounds: { $type: 'contractGroup', id: FORGE.group }, totalBudget: 5n, expiresAt: BigInt(Date.now() + 1e9) } })
+    const a = await awaitWalletAnswer(chain.sdk, req, fast)
+    expect(a.identityId).toBe(ALICE)
+  })
+
   it('expires', async () => {
     const chain = fakeChain()
     const req = newLoginRequest('devnet', FORGE.core, 'Dash Forge', Date.now() - 5 * 60 * 1000 - 1)
@@ -395,8 +457,4 @@ describe('login poll against a simulated wallet', () => {
     await expect(awaitWalletAnswer(chain.sdk, req, fast)).rejects.toBeInstanceOf(RequestExpired)
     expect(req.appEphemeralPriv.every((b) => b === 0)).toBe(true)
   })
-})
-
-it('hex helpers used by the fixtures', () => {
-  expect(bytesToHex(hexToBytes('00ff'))).toBe('00ff')
 })

@@ -159,6 +159,8 @@ export async function register({ uri, identityFile, chainKeyHex, contractId, dev
   if (!auth || auth.type !== 2 || auth.securityLevel !== 2 || !data(auth).equals(Buffer.from(d.authData))) throw new Error('auth key mismatch (forged QR?)')
   if (!encKey || encKey.type !== 0 || encKey.securityLevel !== 3 || !data(encKey).equals(Buffer.from(d.encPub))) throw new Error('encryption key mismatch (forged QR?)')
   if (auth.contractBounds?.$type === 'contractGroup') throw new Error('keyRegistrationUnexpectedMutation (iOS refuses group bounds)')
+  // iOS finds the approved app by the bound: it must be the contract the login named.
+  if (auth.contractBounds && auth.contractBounds.id !== contractId) throw new Error('noApprovedConnectionAwaitingKeyRegistration (bound to another contract)')
 
   const identity = await sdk.identities.fetch(rec.identityId)
   const next = Math.max(...identity.publicKeys.map((k) => k.keyId)) + 1

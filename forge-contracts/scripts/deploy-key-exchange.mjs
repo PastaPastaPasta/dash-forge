@@ -13,11 +13,11 @@
 //
 // On a devnet the wallets must be pointed at the copy: iOS Settings → Devnet → "DashConnect
 // login contract"; Android has no setting (it pins the testnet id), so Android is testnet-only.
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { contractId, loadEvoSdk } from './deploy-v2.mjs';
+import { contractId, loadEvoSdk, writeDep } from './deploy-v2.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
@@ -105,7 +105,7 @@ async function main() {
   };
   const fresh = existsSync(depFile) ? JSON.parse(readFileSync(depFile, 'utf8')) : {};
   fresh.keyExchange = record;
-  writeFileSync(depFile, `${JSON.stringify(fresh, null, 2)}\n`);
+  writeDep(depFile, fresh);
   log(`registered; recorded in ${depFile}`);
   console.log(JSON.stringify(record, null, 2));
 }

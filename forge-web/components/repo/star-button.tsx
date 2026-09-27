@@ -37,7 +37,7 @@ export function StarButton({
   const starred = star.on === true
   const cost = previewCreate('star')
   const onClick = (): void => {
-    if (!starred && !guard.check(cost.credits)) return
+    if (!starred && !guard.check(cost.credits, 'collab')) return
     if (!identity || !signer) return
     void star.toggle()
   }

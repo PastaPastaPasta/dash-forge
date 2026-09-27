@@ -31,7 +31,7 @@ import { evoSdkService } from '../sdk'
 import { createRepo, starRelation } from '../repo/writes'
 import { awaitRegisteredKey, awaitWalletAnswer, newLoginRequest, responseSources } from './app-connect'
 import { AuthController, MissingGrantError } from './controller'
-import { keyRegistrationUri, type WalletKey } from './key-registration'
+import { keyRegistrationUri, RevokedWalletKey, type WalletKey } from './key-registration'
 
 const DEVNET = NETWORKS.devnet.devnetName ?? ''
 const FILE = join(homedir(), '.config/dash-forge/test-identities', `devnet-${DEVNET}`, 'RELAY.identity.json')
@@ -106,6 +106,49 @@ describe.skipIf(!LIVE)('live wallet sign-in (scripted Dash Wallet, legacy key-ex
       } finally {
         // 4. Leave the identity as it was: disable what this run added.
         await wallet.disableDerived({ identityFile: FILE, chainKeyHex: CHAIN_KEY, contractIds: [forge.core, forge.collab], devnet: DEVNET })
+      }
+    },
+    20 * 60_000,
+  )
+
+  it(
+    'Android: the key lands unbounded, covers both contracts, and a revoked key is not registered again',
+    async () => {
+      const wallet: Responder = await import(pathToFileURL(resolve(__dirname, '../../e2e/wallet-responder.mjs')).href)
+      await evoSdkService.initialize({ network: 'devnet', contractIds: [], timeoutMs: 30000 })
+      const sdk = evoSdkService.getSdk()
+      const forge = NETWORKS.devnet.v2!
+      const network = 'devnet' as const
+      const sources = await responseSources(sdk, NETWORKS.devnet.key)
+      const chainKey = randomBytes(32).toString('hex')
+      const opts = { network, forge, sources, intervalMs: 2000, settleMs: 2000 }
+      try {
+        const req = newLoginRequest(network, forge.core)
+        const answering = awaitWalletAnswer(sdk, req, opts)
+        await wallet.approve({ uri: req.uri, identityFile: FILE, chainKeyHex: chainKey, devnet: DEVNET })
+        const answer = await answering
+        if (answer.kind !== 'register') throw new Error('expected a first login')
+        const uri = await keyRegistrationUri(sdk, { identityId: answer.identityId, keys: answer.keys, contractId: forge.core, network })
+        await wallet.register({ uri, identityFile: FILE, chainKeyHex: chainKey, contractId: forge.core, devnet: DEVNET, android: true })
+        const key = await awaitRegisteredKey(sdk, { identityId: answer.identityId, wif: answer.wif, network, forge, until: Date.now() + 5 * 60_000 })
+        // Android drops the bound: the key covers both contracts (and any other), no limits.
+        expect(key.scope).toEqual({ core: true, collab: true, unbounded: true })
+        expect(key.limits).toBeNull()
+
+        resetMemoryStores()
+        const controller = new AuthController(async () => sdk, network)
+        const session = await controller.adoptWalletKeys(answer.identityId, [key], { passphrase: 'live wallet e2e passphrase' })
+        expect(session.grants).toEqual({ core: true, collab: true })
+        expect(session.unbounded).toBe(true)
+
+        // Revoke it; a new login from the same wallet derives the same key: refused.
+        await wallet.disableDerived({ identityFile: FILE, chainKeyHex: chainKey, contractIds: [forge.core], devnet: DEVNET })
+        const again = newLoginRequest(network, forge.core)
+        const answering2 = awaitWalletAnswer(sdk, again, opts)
+        await wallet.approve({ uri: again.uri, identityFile: FILE, chainKeyHex: chainKey, devnet: DEVNET })
+        await expect(answering2).rejects.toBeInstanceOf(RevokedWalletKey)
+      } finally {
+        await wallet.disableDerived({ identityFile: FILE, chainKeyHex: chainKey, contractIds: [forge.core], devnet: DEVNET })
       }
     },
     20 * 60_000,

@@ -141,7 +141,7 @@ async function fetchResponses(sdk: EvoSDK, sources: readonly ResponseSource[], r
     }
     for (const j of rows) {
       // The legacy query is by contract; re-check it so a node cannot hand us another app's.
-      if (source.kind === 'legacy' && j.contractId !== req.contractId) continue
+      if (source.kind === 'legacy' && !sameIdentifier(j.contractId, req.contractId)) continue
       try {
         responses.push({ source: source.kind, ownerId: j.$ownerId, walletEphemeralPub: base64ToBytes(j.walletEphemeralPubKey), payload: base64ToBytes(j.encryptedPayload) })
       } catch {
@@ -150,6 +150,24 @@ async function fetchResponses(sdk: EvoSDK, sources: readonly ResponseSource[], r
     }
   }
   return { responses, complete }
+}
+
+/**
+ * Whether a document's identifier field (`toJSON` renders it base58; some SDK builds render
+ * byte fields base64) is `expected` (base58), compared as bytes.
+ */
+export function sameIdentifier(value: unknown, expected: string): boolean {
+  if (typeof value !== 'string') return false
+  const want = base58Decode(expected)
+  const candidates: (() => Uint8Array)[] = [() => base58Decode(value), () => base64ToBytes(value)]
+  return candidates.some((decode) => {
+    try {
+      const got = decode()
+      return got.length === 32 && got.every((b, i) => b === want[i])
+    } catch {
+      return false
+    }
+  })
 }
 
 async function query(sdk: EvoSDK, q: unknown): Promise<ResponseJson[] | null> {
@@ -250,12 +268,21 @@ async function decrypt(req: LoginRequest, r: WalletResponse): Promise<Uint8Array
 async function answerFor(sdk: EvoSDK, r: WalletResponse, loginKeysRaw: Uint8Array[], p: { network: Network; forge: ForgeIds; contractId: string }): Promise<WalletAnswer | null> {
   const found: WalletKey[] = []
   let unregistered: { keys: LoginKeys; wif: string } | null = null
+  /** A key of this answer Forge must not use; thrown only if the answer has no usable key. */
+  let refused: UnusableWalletKey | null = null
   try {
     for (const login of loginKeysRaw) {
       const auth = authKeyFromLogin(login, r.ownerId)
       const wif = encodeWif(auth, p.network)
       auth.fill(0)
-      const key = await findWalletKey(sdk, { identityId: r.ownerId, wif, forge: p.forge, network: p.network })
+      let key: WalletKey | null
+      try {
+        key = await findWalletKey(sdk, { identityId: r.ownerId, wif, forge: p.forge, network: p.network })
+      } catch (e) {
+        if (!(e instanceof UnusableWalletKey)) throw e
+        refused = e
+        continue
+      }
       if (key) found.push(key)
       else if (r.source === 'legacy') unregistered = { keys: loginKeys(login, r.ownerId), wif }
     }
@@ -270,6 +297,10 @@ async function answerFor(sdk: EvoSDK, r: WalletResponse, loginKeysRaw: Uint8Arra
     // The key for the contract asked for first.
     found.sort((a, b) => Number(scopeCovers(b.scope, p.forge, p.contractId)) - Number(scopeCovers(a.scope, p.forge, p.contractId)))
     return { kind: 'keys', identityId: r.ownerId, keys: found, source: r.source }
+  }
+  if (refused) {
+    zeroLoginKeys(unregistered?.keys)
+    throw refused
   }
   if (unregistered) return { kind: 'register', identityId: r.ownerId, ...unregistered, source: 'legacy' }
   return null
@@ -332,13 +363,19 @@ export async function awaitWalletAnswer(
         try {
           answer = await answerFor(sdk, r, keys, { network: p.network, forge: p.forge, contractId: req.contractId })
         } catch (e) {
-          if (e instanceof UnusableWalletKey) answer = e
+          if (e instanceof UnusableWalletKey) {
+            // The one identity a grant listens to: its answer is final.
+            if (p.identityId !== undefined) throw e
+            answer = e
+          }
           // Otherwise a read failed: try this response again next round.
         }
         answered.set(r.ownerId, answer)
         if (answer !== null && firstAt === 0) firstAt = now()
       }
-      if (answered.size > 1) throw new AmbiguousWalletLogin([...answered.keys()])
+      // Only decided answers count (usable or refused); one still waiting for a read does not.
+      const decided = [...answered.entries()].filter(([, a]) => a !== null)
+      if (decided.length > 1) throw new AmbiguousWalletLogin(decided.map(([id]) => id))
       const t = now()
       if (round.complete) {
         if (cleanSince === 0) cleanSince = t
@@ -346,7 +383,7 @@ export async function awaitWalletAnswer(
         cleanSince = 0
       }
       p.onStatus?.(!round.complete ? 'incomplete-read' : firstAt ? 'answered' : 'waiting')
-      const only = [...answered.values()][0]
+      const only = decided[0]?.[1]
       if (only && cleanSince !== 0 && t - Math.max(firstAt, cleanSince) >= settleMs) {
         if (only instanceof UnusableWalletKey) throw only
         result = only

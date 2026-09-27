@@ -34,6 +34,24 @@ vi.mock('../constants', async (orig) => {
   const devnet = { ...real.NETWORKS.devnet, key: 'devnet-moutai', v2: forgeV2Ids(DEPLOYMENTS['devnet-moutai']) }
   return { ...real, NETWORKS: { ...real.NETWORKS, devnet } }
 })
+// The master-key updates: recorded, not sent. What a renewal or revoke would disable.
+const chainCalls = vi.hoisted(() => ({ register: [] as unknown[], disable: [] as unknown[], revoke: [] as unknown[] }))
+vi.mock('./limited-key', async (orig) => {
+  const real = await orig<typeof import('./limited-key')>()
+  return {
+    ...real,
+    registerLimitedKey: async (_sdk: unknown, params: { disableHeld?: unknown; replaceKeyId?: number }) => {
+      chainCalls.register.push(params)
+      return { keyId: 20, wif: encodeWif(new Uint8Array(32).fill(20), 'devnet'), limits: { remaining: 5n, total: 5n, expiresAt: Date.now() + 1e9 } }
+    },
+    disableHeldKeys: async (_sdk: unknown, params: unknown) => void chainCalls.disable.push(params),
+    revokeLimitedKey: async (_sdk: unknown, params: unknown) => void chainCalls.revoke.push(params),
+  }
+})
+vi.mock('./identity-file', async (orig) => {
+  const real = await orig<typeof import('./identity-file')>()
+  return { ...real, masterMaterialFromFile: () => ({ identityId: '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD', networkKey: 'devnet-moutai', masterWif: 'MASTER', mnemonic: null }) }
+})
 vi.mock('@dashevo/evo-sdk', () => ({
   PrivateKey: { fromWIF: (wif: string) => ({ toBytes: () => new TextEncoder().encode(wif), free: () => undefined }) },
 }))
@@ -83,6 +101,9 @@ describe('wallet session', () => {
   beforeEach(() => {
     resetMemoryStores()
     lockVault()
+    chainCalls.register.length = 0
+    chainCalls.disable.length = 0
+    chainCalls.revoke.length = 0
     keys = [key(0, wifOf(1), null, { securityLevelNumber: 0 }), key(5, wifOf(5), { $type: 'singleContract', id: forge.core })]
     controller = new AuthController(async () => sdk, NET)
   })
@@ -108,7 +129,7 @@ describe('wallet session', () => {
     expect(controller.writeAuth!.getSigningKeyWif(forge.collab)).toBe(wifOf(6))
   }, 60_000)
 
-  it('drops a grant whose key was disabled on chain, and one that no longer matches its contract', async () => {
+  it('drops a grant whose key was disabled on chain', async () => {
     keys.push(key(6, wifOf(6), { $type: 'singleContract', id: forge.collab }))
     await controller.adoptWalletKeys(
       ID,
@@ -155,7 +176,64 @@ describe('wallet session', () => {
     controller.logout()
     await expect(
       controller.adoptWalletKeys(ID, [walletKey(5, wifOf(5), { core: true, collab: false, unbounded: false })], { passphrase: 'another passphrase' }),
-    ).rejects.toThrow(/Unlock it first/)
+    ).rejects.toThrow(/Unlock first/)
+  }, 30_000)
+
+  const PASS = { passphrase: 'correct horse battery' }
+  const coreKey = (): WalletKey => walletKey(5, wifOf(5), { core: true, collab: false, unbounded: false })
+
+  it('a forge-collab grant answered by a group-bound key covers collab (scope, not the contract it was filed under)', async () => {
+    await controller.adoptWalletKeys(ID, [coreKey()], PASS)
+    keys.push(key(6, wifOf(6), { $type: 'contractGroup', id: forge.group }, { totalBudget: 5n, expiresAt: BigInt(Date.now() + 1e9) }))
+    const s = await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: true, collab: true, unbounded: false }), forge.collab)
+    expect(s.grants).toEqual({ core: true, collab: true })
+    expect(controller.writeAuth!.getSigningKeyWif(forge.collab)).toBe(wifOf(6))
+    // Refuses a grant that does not cover what was asked for.
+    keys.push(key(7, wifOf(7), { $type: 'singleContract', id: forge.core }))
+    await expect(controller.addWalletGrant(ID, walletKey(7, wifOf(7), { core: true, collab: false, unbounded: false }), forge.collab)).rejects.toThrow(/does not cover/)
+  }, 30_000)
+
+  it('a returning wallet login keeps the forge-collab grant this browser already holds', async () => {
+    await controller.adoptWalletKeys(ID, [coreKey()], PASS)
+    keys.push(key(6, wifOf(6), { $type: 'singleContract', id: forge.collab }))
+    await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: false, collab: true, unbounded: false }), forge.collab)
+    const again = await controller.adoptWalletKeys(ID, [coreKey()], PASS)
+    expect(again.grants).toEqual({ core: true, collab: true })
+  }, 30_000)
+
+  it('a grant whose check fails keeps the session that was working', async () => {
+    await controller.adoptWalletKeys(ID, [coreKey()], PASS)
+    const before = controller.getState().session
+    // Key 6 is not on the identity: the re-check after storing it fails.
+    await expect(controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: false, collab: true, unbounded: false }), forge.collab)).rejects.toThrow(/approval was saved/)
+    expect(controller.getState().session).toEqual(before)
+    expect(controller.writeAuth!.getSigningKeyWif(forge.core)).toBe(wifOf(5))
+  }, 30_000)
+
+  it('renewing an unlocked wallet session disables every key this browser holds, in the same update', async () => {
+    await controller.adoptWalletKeys(ID, [coreKey()], PASS)
+    keys.push(key(6, wifOf(6), { $type: 'singleContract', id: forge.collab }))
+    await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: false, collab: true, unbounded: false }), forge.collab)
+    keys.push(key(20, encodeWif(new Uint8Array(32).fill(20), 'devnet'), { $type: 'contractGroup', id: forge.group }, { totalBudget: 5n, expiresAt: BigInt(Date.now() + 1e9) }))
+    await controller.importIdentity({ fileText: '{}' }, PASS)
+    const call = chainCalls.register[0] as { disableHeld: { keyId: number; wif: string }[] }
+    expect(call.disableHeld.map((h) => h.keyId).sort()).toEqual([5, 6])
+  }, 30_000)
+
+  it('refuses to renew or revoke a locked wallet vault (it could not disable the wallet keys)', async () => {
+    await controller.adoptWalletKeys(ID, [coreKey()], PASS)
+    controller.logout()
+    await expect(controller.importIdentity({ fileText: '{}' }, PASS)).rejects.toThrow(/Unlock first/)
+    await expect(controller.revokeStored(ID, { fileText: '{}' })).rejects.toThrow(/Unlock first/)
+    expect(chainCalls.register).toHaveLength(0)
+    expect(chainCalls.disable).toHaveLength(0)
+  }, 30_000)
+
+  it('revoking an unlocked wallet session disables its keys (not the Forge-key-only path)', async () => {
+    await controller.adoptWalletKeys(ID, [coreKey()], PASS)
+    await controller.revokeStored(ID, { fileText: '{}' })
+    expect((chainCalls.disable[0] as { keys: { keyId: number }[] }).keys.map((k) => k.keyId)).toEqual([5])
+    expect(chainCalls.revoke).toHaveLength(0)
   }, 30_000)
 
   it('refuses to open a session on a key bound to another app', async () => {

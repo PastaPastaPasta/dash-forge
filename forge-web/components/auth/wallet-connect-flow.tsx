@@ -28,7 +28,7 @@ import { Qr } from '@/components/ui/qr'
 import { ErrorBox, useProtection } from '@/components/auth/protection-fields'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { REQUEST_TTL_MS, RequestExpired, awaitRegisteredKey, awaitWalletAnswer, newLoginRequest, responseSources, type PollStatus } from '@/lib/auth/app-connect'
-import { isUnlimited, keyRegistrationUri, type WalletKey } from '@/lib/auth/key-registration'
+import { isUnlimited, keyRegistrationUri, scopeCovers, type WalletKey } from '@/lib/auth/key-registration'
 import { responderProfile, type ResponderProfile } from '@/lib/auth/responder-profile'
 import { ensureSdk } from '@/lib/sdk'
 import { isAbort } from '@/lib/sdk/facade'
@@ -61,9 +61,12 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
   const mobile = onMobile()
   const unlimited = step?.kind === 'confirm' && step.unlimited
   const { fields, protection, problem } = useProtection({ preferPasskey: unlimited })
-  // Read at request time, not effect deps: a change must not restart a request mid-flow.
-  const latest = useRef({ identity, addWalletGrant, onDone, stored: vaults.map((v) => v.identityId) })
-  latest.current = { identity, addWalletGrant, onDone, stored: vaults.map((v) => v.identityId) }
+  // Read at request time, not effect deps: a change must not restart a request mid-flow (the
+  // identity changes from null to the new one inside the login itself).
+  const latest = useRef({ addWalletGrant, onDone, stored: vaults.map((v) => v.identityId) })
+  latest.current = { addWalletGrant, onDone, stored: vaults.map((v) => v.identityId) }
+  // A grant is for the signed-in identity: a different one (or signing out) starts over.
+  const grantFor = mode === 'grant' ? identity : null
 
   useEffect(() => {
     const controller = new AbortController()
@@ -74,10 +77,10 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
     void (async () => {
       try {
         if (!forge) throw new Error('Dash Forge is not deployed here')
-        const grantFor = latest.current.identity
         if (mode === 'grant' && !grantFor) throw new Error('Sign in (or unlock) first: the approval is added to the signed-in identity.')
         const sdk = await ensureSdk(ACTIVE_NETWORK.network)
         const sources = await responseSources(sdk, ACTIVE_NETWORK.key)
+        if (signal.aborted) return
         if (sources.length === 0) throw new Error(`No wallet login contract is available on ${ACTIVE_NETWORK.key}.`)
         const req = newLoginRequest(ACTIVE_NETWORK.network, target)
         setStep({ kind: 'request', uri: req.uri, pairing: req.pairingCode, expiresAt: req.expiresAt })
@@ -94,6 +97,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
           // First login from this wallet: QR #2 registers the key, then wait for it on chain.
           const until = Date.now() + REQUEST_TTL_MS
           const uri = await keyRegistrationUri(sdk, { identityId: answer.identityId, keys: answer.keys, contractId: target, network: ACTIVE_NETWORK.network })
+          if (signal.aborted) return
           setStep({ kind: 'register', uri, expiresAt: until })
           keys = [await awaitRegisteredKey(sdk, { identityId: answer.identityId, wif: answer.wif, network: ACTIVE_NETWORK.network, forge, until, signal })]
         } else {
@@ -101,9 +105,11 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
         }
         if (signal.aborted) return
         if (mode === 'grant') {
-          const key = keys[0]
-          if (!key) throw new Error('the wallet granted no key')
+          // The key that covers what was asked for (a wallet may grant several, or the wrong one).
+          const key = keys.find((k) => scopeCovers(k.scope, forge, target))
+          if (!key) throw new Error("The wallet's answer does not cover issues and pull requests. Try again, or sign in with your identity file.")
           await latest.current.addWalletGrant(answer.identityId, key, target)
+          if (signal.aborted) return
           latest.current.onDone()
           return
         }
@@ -112,7 +118,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
         if (signal.aborted) return
         setStep({ kind: 'confirm', profile, unlimited: keys.some(isUnlimited), unbounded: keys.some((k) => k.scope.unbounded) })
       } catch (e) {
-        if (isAbort(e)) return
+        if (signal.aborted || isAbort(e)) return
         if (e instanceof RequestExpired) setStep({ kind: 'expired' })
         else setError(errorMessage(e))
       }
@@ -122,7 +128,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
       grant.current = null
     }
     // `attempt` restarts the whole request (a new ephemeral key and QR).
-  }, [attempt, forge, target, mode])
+  }, [attempt, forge, target, mode, grantFor])
 
   const restart = useCallback(() => setAttempt((a) => a + 1), [])
 

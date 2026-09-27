@@ -3,8 +3,10 @@
 /**
  * useWriteGuard — the checks every signing button runs before it signs (`ux-dx-spec.md` §4):
  * signed out opens the sign-in sheet; an empty balance, a spent or expired key, or a write
- * that does not fit either budget opens the top-up sheet with the shortfall. Returns whether
- * the write may proceed, plus a disabled-reason for buttons in the empty state.
+ * that does not fit either budget opens the top-up sheet with the shortfall. A write to a Forge
+ * contract the session holds no key for (a wallet granted forge-core only) opens the one-tap
+ * wallet grant first. Returns whether the write may proceed, plus a disabled-reason for buttons
+ * in the empty state.
  */
 
 import { useCallback } from 'react'
@@ -13,8 +15,12 @@ import { useUiStore } from '@/hooks/use-ui-store'
 import { affordability } from '@/lib/view/funds'
 
 export interface WriteGuard {
-  /** Run before signing: true when the write may go ahead (else a sheet opened). */
-  readonly check: (estimateCredits: number) => boolean
+  /**
+   * Run before signing: true when the write may go ahead (else a sheet opened). `contract`:
+   * which Forge contract the write goes to, `'collab'` for issues, comments, reviews, stars and
+   * follows (default `'core'`).
+   */
+  readonly check: (estimateCredits: number, contract?: 'core' | 'collab') => boolean
   /** Why every write button is disabled (empty state), or null. */
   readonly disabledReason: string | null
 }
@@ -26,14 +32,18 @@ const EMPTY_REASON: Readonly<Record<'balance' | 'key-budget' | 'key-expiry', str
 }
 
 export function useWriteGuard(): WriteGuard {
-  const { identity, signer, balance, funds, keyLimits } = useAuth()
+  const { identity, signer, balance, funds, keyLimits, grants } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   const openTopUp = useUiStore((s) => s.openTopUp)
 
   const check = useCallback(
-    (estimateCredits: number): boolean => {
+    (estimateCredits: number, contract: 'core' | 'collab' = 'core'): boolean => {
       if (!identity || !signer) {
         openLogin()
+        return false
+      }
+      if (grants && !grants[contract]) {
+        openLogin('grant')
         return false
       }
       if (funds?.level === 'empty') {
@@ -47,7 +57,7 @@ export function useWriteGuard(): WriteGuard {
       }
       return true
     },
-    [balance, funds, identity, keyLimits, openLogin, openTopUp, signer],
+    [balance, funds, grants, identity, keyLimits, openLogin, openTopUp, signer],
   )
 
   const disabledReason = funds?.level === 'empty' ? EMPTY_REASON[funds.reason ?? 'balance'] : null
