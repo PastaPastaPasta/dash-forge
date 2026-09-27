@@ -51,7 +51,12 @@ export interface ThreadActions {
 
 /** The viewer's pending review, as the diff needs it. */
 export interface PendingReview {
+  /** The pending comments anchored to the current head: shown on their lines. */
   readonly comments: readonly DraftComment[]
+  /** Pending comments anchored to another head: their line numbers name other lines now. */
+  readonly elsewhere: readonly DraftComment[]
+  /** Every pending comment. */
+  readonly count: number
   /** Frozen: a submit began (only retry or discard). */
   readonly frozen: boolean
   readonly onAdd: (anchor: AnchorInput, body: string) => void
@@ -89,6 +94,10 @@ export function InlineCommentsProvider({
   onLinesKnown?: (lines: ReadonlyMap<string, ReadonlySet<string>>) => void
   children: ReactNode
 }): JSX.Element {
+  // The page passes a fresh set each render: keep one per distinct list of paths.
+  const pathsKey = [...changedPaths].sort().join('\n')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const paths = useMemo(() => changedPaths, [pathsKey])
   const [shownLines, setShownLines] = useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map())
   const [selection, setSelection] = useState<LineSelection | null>(null)
 
@@ -103,13 +112,13 @@ export function InlineCommentsProvider({
         comments,
         headOid,
         (path, side, line) => {
-          if (!changedPaths.has(path)) return false
+          if (!paths.has(path)) return false
           const keys = loadedPaths.get(path)
           return keys === undefined || keys.has(lineKey(path, side, line))
         },
-        (path) => changedPaths.has(path),
+        (path) => paths.has(path),
       ),
-    [comments, headOid, changedPaths, loadedPaths],
+    [comments, headOid, paths, loadedPaths],
   )
   const ranges = useMemo(() => rangeKeys(placed.current), [placed])
   useEffect(() => {
@@ -227,6 +236,30 @@ export function InlineCommentsProvider({
           <div className="space-y-2 border-t border-anvil-200 px-3 py-2 dark:border-anvil-800">
             {unshown.map((t) => (
               <AnchoredThread key={t.root.id} thread={t} {...threadProps} />
+            ))}
+          </div>
+        </details>
+      ) : null}
+      {pending !== undefined && pending.elsewhere.length > 0 ? (
+        <details open className="mb-3 rounded-lg border border-caution/40 dark:border-caution/40" data-testid="pending-elsewhere">
+          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 dark:text-anvil-300">
+            <MessageSquare className="mr-1.5 inline h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
+            {pending.elsewhere.length} pending comment{pending.elsewhere.length === 1 ? '' : 's'} on an older version
+          </summary>
+          <div className="space-y-2 border-t border-anvil-200 px-3 py-2 dark:border-anvil-800">
+            {pending.elsewhere.map((d) => (
+              <div key={d.localId}>
+                <p className="mb-1 font-mono text-[12px] text-anvil-600 dark:text-anvil-400">
+                  {anchorLabel({ path: d.anchor.path, line: d.anchor.line ?? null, startLine: d.anchor.startLine ?? null, side: d.anchor.side ?? null, commitOid: d.anchor.commitOid ?? '' })}
+                  {d.anchor.commitOid ? (
+                    <>
+                      {' '}
+                      on <Oid value={d.anchor.commitOid} chars={7} copyable={false} />
+                    </>
+                  ) : null}
+                </p>
+                <PendingComment draft={d} pending={pending} />
+              </div>
             ))}
           </div>
         </details>
@@ -507,7 +540,7 @@ function Composer({
           </Button>
           {reviewing ? (
             <Button size="sm" variant="primary" onClick={addToReview} disabled={body.trim() === '' || tooLong || posting}>
-              {pending.comments.length === 0 ? 'Start a review' : 'Add review comment'}
+              {pending.count === 0 ? 'Start a review' : 'Add review comment'}
             </Button>
           ) : null}
         </div>

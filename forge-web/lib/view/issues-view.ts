@@ -135,7 +135,13 @@ export async function readComments(
 
 /** A merged timeline item: a comment or a state event. */
 export type TimelineItem =
-  | { readonly kind: 'comment'; readonly at: number; readonly comment: CommentView }
+  | {
+      readonly kind: 'comment'
+      readonly at: number
+      readonly comment: CommentView
+      /** It replies to a comment that is no longer there (its author deleted it). */
+      readonly orphaned?: boolean
+    }
   | {
       readonly kind: 'event'
       readonly at: number
@@ -470,7 +476,9 @@ export function mergeTimeline(
     return { kind: 'review' as const, at: r.createdAt, id: r.id, review: r, comments: group.comments.flatMap((id) => byId.get(id) ?? []), expected: group.expected }
   })
   const items: (TimelineItem & { readonly id: string })[] = [
-    ...comments.filter((c) => !grouped.has(c.id)).map((c) => ({ kind: 'comment' as const, at: c.createdAt, id: c.id, comment: c })),
+    ...comments
+      .filter((c) => !grouped.has(c.id))
+      .map((c) => ({ kind: 'comment' as const, at: c.createdAt, id: c.id, comment: c, ...(c.replyTo !== null && !byId.has(c.replyTo) ? { orphaned: true } : {}) })),
     ...events.map((e) => eventItem(e, false)),
     ...authorEvents.map((e) => eventItem(e, true)),
     ...reviewItems,

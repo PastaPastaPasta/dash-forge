@@ -112,7 +112,7 @@ export function Timeline({
               <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
                 <Author identityId={item.comment.author} />
                 <span className="text-anvil-500 dark:text-anvil-400">
-                  commented{item.comment.anchor ? (
+                  {item.orphaned ? 'replied to a deleted comment' : 'commented'}{item.comment.anchor ? (
                     <>
                       {' '}
                       on <span className="font-mono text-[12px]">{anchorLabel(item.comment.anchor)}</span>
@@ -163,7 +163,7 @@ export function Timeline({
                   {/* A submit writes the review first, then its comments: say when some have not landed (yet). */}
                   {item.expected > item.comments.length ? (
                     <p className="text-[12px] text-anvil-600 dark:text-anvil-400">
-                      {item.comments.length} of {item.expected} comments have landed.
+                      {item.comments.length} of {item.expected} comments shown: the rest are still landing or were deleted.
                     </p>
                   ) : null}
                 </div>

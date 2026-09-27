@@ -315,20 +315,31 @@ function PullPage({
   const reviewDraft = useReviewDraft(repo, pull.id, pull.headOid)
   // The diff's lines, as the inline comments saw them load (re-anchoring a pending review).
   const knownLines = useRef<ReadonlyMap<string, ReadonlySet<string>>>(new Map())
+  const refreshRef = useRef(refresh)
+  refreshRef.current = refresh
+  const onInlinePosted = useCallback((id?: string) => refreshRef.current(id === undefined ? undefined : (t) => t.comments.some((x) => x.id === id)), [])
   const rememberLines = useCallback((lines: ReadonlyMap<string, ReadonlySet<string>>) => {
     knownLines.current = lines
   }, [])
   const canResolve = identity !== null && (isAuthor || isMember) && !writeBlocked && guard.disabledReason === null
-  const threadActions: ThreadActions = {
-    canResolve,
-    resolved: new Set(review.resolvedThreads),
-    onResolve: (root, resolve) => {
-      if (guard.check(eventCost.credits, 'collab')) setPending({ kind: 'resolve', root, resolve })
-    },
-    viewer: identity,
-    onEdit: (c, body) => setPending({ kind: 'edit-comment', id: c.id, body }),
-    onDelete: (c) => setPending({ kind: 'delete-comment', id: c.id }),
-  }
+  // Stable across renders (the diff's lines re-render only when these change): the handlers
+  // read the latest cost and guard through a ref.
+  const resolveCheck = useRef<() => boolean>(() => true)
+  resolveCheck.current = () => guard.check(eventCost.credits, 'collab')
+  const resolvedKey = review.resolvedThreads.join(',')
+  const threadActions = useMemo<ThreadActions>(
+    () => ({
+      canResolve,
+      resolved: new Set(resolvedKey === '' ? [] : resolvedKey.split(',')),
+      onResolve: (root, resolve) => {
+        if (resolveCheck.current()) setPending({ kind: 'resolve', root, resolve })
+      },
+      viewer: identity,
+      onEdit: (c, body) => setPending({ kind: 'edit-comment', id: c.id, body }),
+      onDelete: (c) => setPending({ kind: 'delete-comment', id: c.id }),
+    }),
+    [canResolve, resolvedKey, identity],
+  )
   const commentCost = composeCost(repo, 'comment', { body: comment.trim() }, commentFirst)
   const commentTooLong = composeTooLong(repo, 'comment', { body: comment.trim() })
 
@@ -836,7 +847,9 @@ function PullPage({
                     pullId={pull.id}
                     headOid={pull.headOid}
                     draft={reviewDraft.draft}
+                    loaded={reviewDraft.loaded}
                     update={reviewDraft.update}
+                    ensure={reviewDraft.ensure}
                     isMember={isMember}
                     lineExists={(path, side, line) => knownLines.current.get(path)?.has(lineKey(path, side, line)) ?? false}
                     onSubmitted={(id) => refresh((t) => t.reviews.some((r) => r.id === id))}
@@ -851,7 +864,7 @@ function PullPage({
                   headOid={pull.headOid}
                   comments={thread.comments}
                   changedPaths={new Set(c.changes.map((x) => x.path))}
-                  onPosted={(id) => refresh(id === undefined ? undefined : (t) => t.comments.some((x) => x.id === id))}
+                  onPosted={onInlinePosted}
                   actions={threadActions}
                   onLinesKnown={rememberLines}
                   {...(identity !== null && open && !writeBlocked && reviewDraft.pending ? { pending: reviewDraft.pending } : {})}

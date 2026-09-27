@@ -10,7 +10,7 @@
  * says so and offers to re-anchor the comments whose lines still exist.
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, MessageSquareDashed } from 'lucide-react'
 
 import {
@@ -28,12 +28,14 @@ import { anchorLabel } from '@/lib/view/inline-threads'
 import {
   addDraftComment,
   draftCost,
+  draftIsEmpty,
   editDraftComment,
   newReviewDraft,
   partialSubmitMessage,
   reanchorDraft,
   removeDraftComment,
   setDraftVerdict,
+  splitDraftComments,
   submitStarted,
 } from '@/lib/view/pending-review'
 import { useAuth } from '@/contexts/auth-context'
@@ -55,25 +57,35 @@ const VERDICTS: readonly { value: VerdictInput; label: string; help: string }[] 
 /** The verdict's words in messages. */
 export const VERDICT_WORDS: Readonly<Record<VerdictInput, string>> = { comment: 'Comment', approve: 'Approval', requestChanges: 'Request changes' }
 
-/** The viewer's pending review on a PR: loaded, edited and submitted in this browser. */
+/**
+ * The viewer's pending review on a PR: loaded, edited and submitted in this browser. Nothing is
+ * offered until the stored draft has loaded (adding a comment earlier would start a second
+ * draft over it), and every change reads the latest draft, never a render's stale copy.
+ */
 export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string): {
   draft: ReviewDraft | null
   loaded: boolean
   pending: PendingReview | undefined
   update: (d: ReviewDraft | null) => void
+  /** The draft to edit: the stored one, or a new one on the current head. */
+  ensure: () => ReviewDraft | null
 } {
   const { identity } = useAuth()
   const { network } = useSdk()
   const [draft, setDraft] = useState<ReviewDraft | null>(null)
   const [loaded, setLoaded] = useState(false)
+  const latest = useRef<ReviewDraft | null>(null)
   useEffect(() => {
     let live = true
     setLoaded(false)
     setDraft(null)
+    latest.current = null
     if (identity === null) return
     loadReviewDraft(network, identity, pullId)
       .then((d) => {
-        if (live) setDraft(d ?? null)
+        if (!live) return
+        latest.current = d ?? null
+        setDraft(d ?? null)
       })
       .catch(() => undefined)
       .finally(() => {
@@ -86,9 +98,10 @@ export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string): 
 
   const update = useCallback(
     (d: ReviewDraft | null) => {
+      latest.current = d
       setDraft(d)
       if (identity === null) return
-      if (d === null || (d.comments.length === 0 && d.summary === '' && !submitStarted(d))) void discardReviewDraft(network, identity, pullId)
+      if (d === null || draftIsEmpty(d)) void discardReviewDraft(network, identity, pullId)
       else void saveReviewDraft(d, repo)
     },
     [identity, network, pullId, repo],
@@ -98,29 +111,33 @@ export function useReviewDraft(repo: RepoRef, pullId: string, headOid: string): 
     (): ReviewDraft | null =>
       identity === null
         ? null
-        : draft ??
+        : latest.current ??
           newReviewDraft({ draftId: newIntent(), network, identity, repoId: repo.repoId, prId: pullId, headOid, private: repo.visibility === 'private', now: Date.now() }),
-    [draft, identity, network, repo, pullId, headOid],
+    [identity, network, repo, pullId, headOid],
   )
 
-  const pending: PendingReview | undefined =
-    identity === null
-      ? undefined
-      : {
-          comments: draft?.comments ?? [],
-          frozen: draft !== null && submitStarted(draft),
-          onAdd: (anchor: AnchorInput, body: string) => {
-            const d = ensure()
-            if (d !== null) update(addDraftComment(d, newIntent(), anchor, body))
+  const pending = useMemo<PendingReview | undefined>(
+    () =>
+      identity === null || !loaded
+        ? undefined
+        : {
+            ...(({ onLines, elsewhere }) => ({ comments: onLines, elsewhere }))(splitDraftComments(draft, headOid)),
+            count: draft?.comments.length ?? 0,
+            frozen: draft !== null && submitStarted(draft),
+            onAdd: (anchor: AnchorInput, body: string) => {
+              const d = ensure()
+              if (d !== null) update(addDraftComment(d, newIntent(), anchor, body))
+            },
+            onEdit: (localId, body) => {
+              if (latest.current !== null) update(editDraftComment(latest.current, localId, body))
+            },
+            onRemove: (localId) => {
+              if (latest.current !== null) update(removeDraftComment(latest.current, localId))
+            },
           },
-          onEdit: (localId, body) => {
-            if (draft !== null) update(editDraftComment(draft, localId, body))
-          },
-          onRemove: (localId) => {
-            if (draft !== null) update(removeDraftComment(draft, localId))
-          },
-        }
-  return { draft, loaded, pending, update }
+    [identity, loaded, draft, headOid, ensure, update],
+  )
+  return { draft, loaded, pending, update, ensure }
 }
 
 export function ReviewDrawer({
@@ -128,7 +145,9 @@ export function ReviewDrawer({
   pullId,
   headOid,
   draft,
+  loaded,
   update,
+  ensure,
   isMember,
   lineExists,
   onSubmitted,
@@ -137,7 +156,10 @@ export function ReviewDrawer({
   pullId: string
   headOid: string
   draft: ReviewDraft | null
+  /** The stored draft has loaded: until then nothing is saved over it. */
+  loaded: boolean
   update: (d: ReviewDraft | null) => void
+  ensure: () => ReviewDraft | null
   isMember: boolean
   /** Whether the current diff shows a line (for re-anchoring after the head moved). */
   lineExists: (path: string, side: 0 | 1, line: number) => boolean
@@ -159,6 +181,20 @@ export function ReviewDrawer({
     }
   }, [draft?.draftId]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // The summary and verdict are part of the draft: kept in this browser as they change (shortly
+  // after typing stops), so closing the panel or reloading the page loses neither.
+  const frozenNow = draft !== null && submitStarted(draft)
+  useEffect(() => {
+    if (!loaded || frozenNow) return
+    const same = draft === null ? summary === '' && verdict === 'comment' : draft.summary === summary && draft.verdict === verdict
+    if (same) return
+    const t = setTimeout(() => {
+      const d = ensure()
+      if (d !== null && !submitStarted(d)) update(setDraftVerdict(d, verdict, summary))
+    }, 250)
+    return () => clearTimeout(t)
+  }, [summary, verdict, draft, loaded, frozenNow, ensure, update])
+
   const count = draft?.comments.length ?? 0
   const frozen = draft !== null && submitStarted(draft)
   const headMoved = draft !== null && draft.headOid !== headOid && !frozen
@@ -177,7 +213,9 @@ export function ReviewDrawer({
       return
     }
     // The draft as it will be written: with a real id and the chosen verdict and summary.
-    const toSubmit: ReviewDraft = frozen ? planned : setDraftVerdict(draft ?? { ...planned, draftId: newIntent(), startedAt: Date.now() }, verdict, summary.trim())
+    const base = frozen ? null : ensure()
+    if (!frozen && base === null) return
+    const toSubmit: ReviewDraft = frozen ? planned : setDraftVerdict(base!, verdict, summary.trim())
     if (!frozen) update(toSubmit)
     setError(null)
     setProgress({ done: 0, total: documents })
@@ -207,7 +245,7 @@ export function ReviewDrawer({
 
   return (
     <div className="relative" data-testid="review-drawer">
-      <Button variant={count > 0 ? 'primary' : 'outline'} size="sm" onClick={() => setOpen((o) => !o)} aria-expanded={open} disabled={identity === null}>
+      <Button variant={count > 0 ? 'primary' : 'outline'} size="sm" onClick={() => setOpen((o) => !o)} aria-expanded={open} disabled={identity === null || !loaded}>
         <MessageSquareDashed className="h-3.5 w-3.5" aria-hidden />
         Review changes
         {count > 0 ? (
@@ -283,6 +321,8 @@ export function ReviewDrawer({
                   disabled={progress !== null}
                   onClick={() => {
                     update(null)
+                    setSummary('')
+                    setVerdict('comment')
                     setError(null)
                     setOpen(false)
                   }}

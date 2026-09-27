@@ -79,6 +79,31 @@ export function reanchorDraft(d: ReviewDraft, headOid: string, exists: (path: st
   return { draft: { ...d, headOid, comments }, stranded }
 }
 
+/**
+ * Whether a draft holds nothing worth keeping: no comments, no summary, the default verdict and
+ * no submit on record. Anything else (a summary alone, a chosen verdict) stays in this browser.
+ */
+export function draftIsEmpty(d: ReviewDraft): boolean {
+  return d.comments.length === 0 && d.summary.trim() === '' && d.verdict === 'comment' && !submitStarted(d)
+}
+
+/** The head a pending comment is anchored to: its own (stranded by a re-anchor) or the draft's. */
+export function draftCommentHead(d: ReviewDraft, c: DraftComment): string {
+  return c.anchor.commitOid ?? d.headOid
+}
+
+/**
+ * Split the pending comments into those that belong on the current diff's lines and those
+ * anchored to another head (the PR moved since the draft began, or a re-anchor stranded them):
+ * a line number on an older head names a different line now, so those are listed apart.
+ */
+export function splitDraftComments(d: ReviewDraft | null, headOid: string): { onLines: DraftComment[]; elsewhere: DraftComment[] } {
+  const onLines: DraftComment[] = []
+  const elsewhere: DraftComment[] = []
+  for (const c of d?.comments ?? []) (draftCommentHead(d!, c) === headOid ? onLines : elsewhere).push(c)
+  return { onLines, elsewhere }
+}
+
 /** What the submit will write: the review and each comment, priced as the composers do. */
 export function draftCost(d: ReviewDraft): { documents: number; cost: CostPreview } {
   const review = previewCreate('review', { body: d.summary })

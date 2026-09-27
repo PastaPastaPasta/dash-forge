@@ -92,6 +92,16 @@ describe('review comments are grouped under their review (groupReviewComments)',
     const placed = placeThreads(cs, HEAD, () => true)
     expect(placed.current.get('1:3:a.ts')?.map((t) => [t.root.id, t.replies.map((x) => x.id)])).toEqual([['c11', ['c12']]])
   })
+
+  it('a reply whose parent was deleted says so; a reply to a present comment does not', () => {
+    const cs = [comment('c1'), comment('c2', { replyTo: 'c1' }), comment('c3', { replyTo: 'gone' })]
+    const items = mergeTimeline(cs, [], [], [])
+    expect(items.map((i) => (i.kind === 'comment' ? [i.comment.id, i.orphaned === true] : null))).toEqual([
+      ['c1', false],
+      ['c2', false],
+      ['c3', true],
+    ])
+  })
 })
 
 function comment(id: string, extra: Partial<CommentView> = {}): CommentView {
