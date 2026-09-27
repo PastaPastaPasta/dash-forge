@@ -842,7 +842,7 @@ function PullPage({
                 <ul className="space-y-1" data-testid="linked-issues">
                   {linked.map((n) => (
                     <li key={n}>
-                      <Link href={repoHref('/repo/issue', addr, { number: String(n) })} className="text-forge-700 underline-offset-2 hover:underline dark:text-forge-400">
+                      <Link href={repoHref('/repo/issue', addr, { number: String(n) })} className="text-forge-700 underline underline-offset-2 dark:text-forge-400">
                         #{n}
                       </Link>
                     </li>
@@ -868,7 +868,7 @@ function PullPage({
                 ) : sourceRef && sourceAddr ? (
                   <>
                     Objects live in{' '}
-                    <Link href={repoHref('/repo', sourceAddr)} className="text-forge-700 underline-offset-2 hover:underline dark:text-forge-400">
+                    <Link href={repoHref('/repo', sourceAddr)} className="text-forge-700 underline underline-offset-2 dark:text-forge-400">
                       {sourceRef.name}
                     </Link>
                   </>

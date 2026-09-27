@@ -141,7 +141,6 @@ test('i1. the contributor opens a draft PR from the fork; tabs, counts and the r
   await page.getByRole('button', { name: 'Create draft pull request' }).click()
   await page.waitForURL(/\/repo\/pull\/\?.*number=\d+/, { timeout: 180_000 })
   prNumber = Number(new URL(page.url()).searchParams.get('number'))
-  await unlock(page).catch(() => undefined)
   await expect(page.getByTestId('pr-state')).toHaveText('Draft', { timeout: 90_000 })
   await expect(page.getByTestId('draft-box')).toBeVisible()
   await expect(page.getByTestId('merge-panel')).toHaveCount(0)

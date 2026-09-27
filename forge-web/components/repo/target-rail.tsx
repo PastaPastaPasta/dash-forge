@@ -118,7 +118,7 @@ export function LabelPicker({
   return (
     <div>
       {applied.length === 0 ? <p className="text-anvil-500 dark:text-anvil-400">None yet</p> : null}
-      <div className="flex flex-wrap gap-1.5" aria-label="Applied labels">
+      <div className="flex flex-wrap gap-1.5" role="group" aria-label="Applied labels">
         {applied.map((l) => (
           <LabelChip key={l} name={l} def={byName.get(l)}>
             {canEdit ? (
