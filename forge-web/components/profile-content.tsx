@@ -6,19 +6,28 @@
  * `name` address is an identity id (what authors + search resolve to).
  *
  * The follow toggle reads whether the viewer already follows this identity before offering an
- * action, and shows read/write failures instead of swallowing them.
+ * action, and shows read/write failures instead of swallowing them. A follow is a signed, paid
+ * write, so it goes through the standard write flow (D-048, `ux-dx-spec.md` §4): its cost on the
+ * button, the write guard (sign-in, grant, the funds check with the top-up sheet), then the
+ * confirm dialog; an unfollow confirms its refund the same way.
  */
+
+import { useState } from 'react'
 
 import { GitBranch, UserPlus, Users } from 'lucide-react'
 import type { DiscoveredRepo } from '@/lib/view'
 import { listReposByOwner, resolveDpnsName } from '@/lib/view'
-import { followRelation, readFollowCounts, resolveOwner } from '@/lib/repo'
+import { followFirsts, followRelation, readFollowCounts, resolveOwner } from '@/lib/repo'
+import { previewCreate, previewDelete } from '@/lib/sdk'
+import { creditsAsDash } from '@/lib/view/format'
 import { NETWORKS } from '@/lib/constants'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useRelationToggle } from '@/hooks/use-relation-toggle'
 import { useAuth } from '@/contexts/auth-context'
-import { useUiStore } from '@/hooks/use-ui-store'
+import { useFirstWrite } from '@/hooks/use-first-write'
+import { useWriteGuard } from '@/hooks/use-write-guard'
+import { ConfirmDialog } from '@/components/confirm-dialog'
 import { IdentityPill } from '@/components/ui/identity-pill'
 import { RepoCard } from '@/components/repo-card'
 import { Button } from '@/components/ui/button'
@@ -49,7 +58,10 @@ function Count({ value }: { value: number | null }): JSX.Element {
 export function ProfileContent({ identityId: address }: { identityId: string }): JSX.Element {
   const { sdk, ready, network } = useSdk()
   const { identity, signer } = useAuth()
-  const openLogin = useUiStore((s) => s.openLogin)
+  const guard = useWriteGuard()
+  const [confirming, setConfirming] = useState(false)
+  // First-write reads only once the viewer points at Follow (a page view costs no reads).
+  const [interested, setInterested] = useState(false)
 
   const { data, loading, error, reload } = useAsync<ProfileData | null>(
     async () => {
@@ -79,16 +91,22 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
     enabled: canFollow && ready && sdk !== null && identity !== null && identityId !== '' && !isSelf,
     key: `${network}:${identity ?? ''}:${identityId}`,
     ...followRelation(sdk!, signer, identity ?? '', forge, identityId),
+    onError: guard.failed,
   })
 
-  const toggleFollow = (): void => {
-    if (!identity || !signer) {
-      openLogin()
-      return
-    }
-    void follow.toggle()
-  }
   const following = follow.on === true
+  const first = useFirstWrite(
+    () => followFirsts(sdk!, forge!.collab, identity!),
+    [identity ?? '', network],
+    interested && canFollow && ready && sdk !== null && identity !== null && !following,
+  )
+  const followCost = previewCreate('follow', {}, first)
+  const unfollowRefund = previewDelete('follow')
+  const toggleFollow = (): void => {
+    // Unfollowing refunds, so only a follow needs the funds check; both sign in first.
+    if (!guard.check(following ? 0 : followCost, 'collab')) return
+    setConfirming(true)
+  }
   // Signed in but whether you already follow is not known yet (or unreadable): no action.
   const followUnknown = identity !== null && signer !== null && follow.on === null
 
@@ -118,14 +136,36 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
             <Button
               variant={following ? 'subtle' : 'primary'}
               onClick={toggleFollow}
+              onPointerEnter={() => setInterested(true)}
+              onFocus={() => setInterested(true)}
               loading={follow.busy || (followUnknown && follow.error === null)}
               disabled={followUnknown && follow.error !== null}
             >
               <UserPlus className="h-3.5 w-3.5" aria-hidden />
               {following ? 'Following' : 'Follow'}
+              {identity !== null && follow.on !== null ? (
+                <span className="ml-1 font-mono text-[11px] opacity-80" data-testid="follow-cost">
+                  {following ? `+${creditsAsDash(-unfollowRefund.credits)}` : `~${creditsAsDash(followCost.credits)}`} DASH
+                </span>
+              ) : null}
             </Button>
           </div>
         ) : null}
+        <ConfirmDialog
+          open={confirming}
+          onClose={() => setConfirming(false)}
+          title={following ? 'Unfollow this identity?' : 'Follow this identity?'}
+          description={
+            following
+              ? 'Removes your follow from Platform and returns part of its storage fee.'
+              : 'Your follow is a public document on Platform, signed by this browser\'s key.'
+          }
+          cost={following ? unfollowRefund : followCost}
+          refund={following}
+          confirmLabel={following ? 'Sign & unfollow' : 'Sign & follow'}
+          successNote={following ? 'Unfollowed' : 'Following'}
+          onConfirm={follow.run}
+        />
       </div>
 
       <div>

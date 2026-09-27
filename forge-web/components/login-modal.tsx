@@ -38,7 +38,8 @@ import { walletLoginAvailable, walletSignInSupported } from '@/lib/auth/app-conn
 import { ENCRYPTION_KEY_BLAST_RADIUS } from '@/lib/auth/encryption-key'
 import { PLATFORM_READ_MS, connectPlatform } from '@/lib/auth/connect'
 import { withTimeout } from '@/lib/timeout'
-import { formatDate } from '@/lib/view/format'
+import { KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, TYPICAL_WRITE_CREDITS } from '@/lib/sdk'
+import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { cn, errorMessage } from '@/lib/utils'
 
 type View = 'choose' | 'unlock' | 'advanced' | LoginView
@@ -175,7 +176,7 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
   return (
     <div className="space-y-2">
       {walletFirst ? walletTile : null}
-      <Tile testId="tile-create" icon={Plus} title="Create a new identity" body="12 words you write down, then fund it from any Dash wallet. ~0.0005 DASH per issue or push." onClick={() => onPick('create')} />
+      <Tile testId="tile-create" icon={Plus} title="Create a new identity" body={`12 words you write down, then fund it from any Dash wallet. About ${creditsAsDash(TYPICAL_WRITE_CREDITS)} DASH per issue or push.`} onClick={() => onPick('create')} />
       <Tile
         testId="tile-import"
         icon={Upload}
@@ -390,6 +391,8 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
   // Offer Unlock for a key this device already holds, unless this is a renewal of the
   // signed-in identity (then the old key is disabled in the same update).
   const alreadyStored = who !== '' && who !== identity && vaults.some((v) => v.identityId === who)
+  // A key this device holds for the identity is replaced (renew), which costs less than a new one.
+  const renewing = who !== '' && vaults.some((v) => v.identityId === who)
 
   const onFile = async (file: File): Promise<void> => {
     setError(null)
@@ -494,7 +497,10 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
         </span>
       </label>
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-        Registers a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for {BROWSER_KEY_DEFAULTS.days} days (~0.0005 DASH, one master-key signature).
+        Registers a key that can spend at most {BROWSER_KEY_DEFAULTS.budgetDash} DASH, only on Forge, for {BROWSER_KEY_DEFAULTS.days} days
+        {renewing
+          ? ` (renewing: ~${creditsAsDash(KEY_RENEW_CREDITS)} DASH, one master-key signature; the old key is disabled in the same update).`
+          : ` (~${creditsAsDash(KEY_REGISTER_CREDITS)} DASH, one master-key signature).`}
       </p>
       {controller.supportsLimitedKeys() ? <GroupNotice check={() => controller.checkGroup()} /> : null}
       <Button variant="primary" className="w-full" onClick={submit} loading={isLoading} disabled={!ready}>

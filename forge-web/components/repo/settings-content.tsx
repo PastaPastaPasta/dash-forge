@@ -169,7 +169,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
                 variant="primary"
                 disabled={memberId.trim() === '' || idError !== null || guard.disabledReason !== null}
                 onClick={() => {
-                  if (guard.check(previewCreate(role).credits)) setAction({ kind: 'grant', member: memberId.trim(), role })
+                  if (guard.check(previewCreate(role))) setAction({ kind: 'grant', member: memberId.trim(), role })
                 }}
               >
                 Add

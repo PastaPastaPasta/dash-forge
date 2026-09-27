@@ -17,13 +17,13 @@ import { GitBranch } from 'lucide-react'
 import { createPatch, findForks, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
 import { commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
 import { dropPrDraft, loadPrDraft, savePrDraft } from '@/lib/view/pr-draft'
-import { PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
-import { writeErrorMessage } from '@/lib/view/write-errors'
+import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useIntent } from '@/hooks/use-intent'
+import { SupersededWriteError } from '@/lib/sdk'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { ComparisonDiff } from '@/components/repo/pull-diff'
 import { MarkdownView } from '@/components/markdown-view'
@@ -115,11 +115,12 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       : { title: title.trim(), body, baseRefName: base, sourceRepoId: head.repo.repoId, sourceRefName: head.refName, headOid: head.oid }
   const cost = composeCost(repo, 'patch', input ?? { title: title.trim(), body })
   const composeBlock = privateComposeBlock(home)
-  const blocked = input === null || title.trim() === '' || noBase || sameBranch || nothing || composeBlock !== null
+  const tooLong = composeTooLong(repo, 'patch', input ?? { title: title.trim(), body })
+  const blocked = input === null || title.trim() === '' || noBase || sameBranch || nothing || composeBlock !== null || tooLong
 
   const submit = async (): Promise<void> => {
     if (pending || blocked || input === null) return
-    if (!guard.check(cost.credits)) return
+    if (!guard.check(cost, 'collab')) return
     if (!sdk || !signer) return
     setPending(true)
     setError(null)
@@ -131,7 +132,14 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       dropPrDraft(repo)
       router.push(repoHref('/repo/pull', addr, { number: String(created.number), created: '1' }))
     } catch (e) {
-      setError(writeErrorMessage(e).message)
+      if (e instanceof SupersededWriteError) {
+        // The earlier version of this PR was posted: this draft is done (never post it twice).
+        dropPrDraft(repo)
+        draftIntent.renew()
+        router.push(repoHref('/repo/pulls', addr))
+        return
+      }
+      setError(guard.failed(e))
       setPending(false)
     }
   }
@@ -251,6 +259,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
               {body.trim() ? <MarkdownView source={body} /> : <p className="italic text-anvil-600 dark:text-anvil-400">Nothing to preview.</p>}
             </div>
           ) : null}
+          <BodyCounter repo={home.repo} text={body} field="description" />
           <SealedLimit repo={home.repo} kind="patch" text={title.trim() + body + (input?.baseRefName ?? '') + (input?.sourceRefName ?? '')} />
         </div>
         {composeBlock !== null ? <PrivateComposeNote reason={composeBlock} /> : null}

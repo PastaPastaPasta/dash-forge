@@ -14,7 +14,6 @@ import { Check, GitFork, Loader2 } from 'lucide-react'
 
 import { checkForkName, forkRepoV2, normalizeRepoName, planFork, type ForkNameCheck, type ForkStep, type RepoRef } from '@/lib/repo'
 import { previewCreate, sumPreviews } from '@/lib/sdk'
-import { writeErrorMessage } from '@/lib/view/write-errors'
 import { errorMessage } from '@/lib/utils'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
@@ -117,7 +116,7 @@ function ForkDialog({ parent, owner, onClose }: { parent: RepoRef; owner: string
 
   const run = async (): Promise<void> => {
     if (!sdk || !signer || pending || nameError !== null || check?.kind === 'taken') return
-    if (!guard.check(cost.credits)) return
+    if (!guard.check(cost)) return
     setPending(true)
     setError(null)
     setProgress({})
@@ -137,7 +136,7 @@ function ForkDialog({ parent, owner, onClose }: { parent: RepoRef; owner: string
       }
       router.push(`/repo?owner=${encodeURIComponent(owner)}&name=${encodeURIComponent(result.name)}&created=1`)
     } catch (e) {
-      setError(writeErrorMessage(e).message)
+      setError(guard.failed(e))
       setPending(false)
     }
   }

@@ -18,12 +18,12 @@ import { useEffect, useState } from 'react'
 import { newIntent, type CostPreview as Cost } from '@/lib/sdk'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
+import { useWriteGuard } from '@/hooks/use-write-guard'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { Dialog } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { affordability } from '@/lib/view/funds'
 import { creditsAsDash } from '@/lib/view/format'
-import { writeErrorMessage } from '@/lib/view/write-errors'
 
 export interface ConfirmDialogProps {
   open: boolean
@@ -53,6 +53,7 @@ export function ConfirmDialog({
 }: ConfirmDialogProps): JSX.Element {
   const { identity, balance, keyLimits } = useAuth()
   const openTopUp = useUiStore((s) => s.openTopUp)
+  const guard = useWriteGuard()
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [done, setDone] = useState(false)
@@ -65,7 +66,7 @@ export function ConfirmDialog({
 
   const check =
     identity !== null && cost !== null && !isRefund
-      ? affordability(cost.credits, BigInt(balance ?? '0'), keyLimits)
+      ? affordability(cost, BigInt(balance ?? '0'), keyLimits)
       : ({ ok: true } as const)
 
   const run = async (): Promise<void> => {
@@ -84,9 +85,7 @@ export function ConfirmDialog({
         onClose()
       }, 900)
     } catch (e) {
-      const { message, keyLimit } = writeErrorMessage(e)
-      if (keyLimit) openTopUp({ blocker: 'key-budget' })
-      setError(message)
+      setError(guard.failed(e))
     } finally {
       setPending(false)
     }
@@ -125,8 +124,8 @@ export function ConfirmDialog({
         {!check.ok ? (
           <div className="rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-caution-700 dark:text-caution-400">
             {check.blocker === 'key-budget'
-              ? `This browser's key has ${creditsAsDash(Number(keyLimits?.remaining ?? 0n))} DASH of budget left; this write needs ${creditsAsDash(cost?.credits ?? 0)}. Renew the key to continue.`
-              : `Not enough credits: short by ${creditsAsDash(Number(check.shortfall))} DASH.`}
+              ? `This browser's key has ${creditsAsDash(Number(keyLimits?.remaining ?? 0n))} DASH of budget left; Platform needs ${creditsAsDash(cost?.admit.budget ?? 0)} DASH available to accept this write (it then charges about ${creditsAsDash(cost?.credits ?? 0)}). Top up or renew the key to continue.`
+              : `Not enough credits: Platform needs ${creditsAsDash(cost?.admit.balance ?? 0)} DASH available to accept this write, ${creditsAsDash(Number(check.shortfall))} DASH more than your balance.`}
           </div>
         ) : null}
 

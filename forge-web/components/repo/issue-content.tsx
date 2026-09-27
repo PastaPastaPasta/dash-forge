@@ -21,8 +21,10 @@ import { CheckCircle2, CircleDot, Pencil, Plus, Settings2, Tag, UserPlus, X } fr
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, loadIssueThread, timeAgo } from '@/lib/view'
 import {
+  commentFirsts,
   createComment,
   defineLabel,
+  eventFirsts,
   LABEL_COLORS,
   LABEL_LIMITS,
   readViewerPermissions,
@@ -36,11 +38,11 @@ import {
   type LabelDef,
 } from '@/lib/repo'
 import type { Holdings } from '@/lib/rules'
-import { previewCreate, previewReplace, type CostPreview as Cost } from '@/lib/sdk'
+import { SupersededWriteError, previewCreate, previewReplace, sumPreviews, type CostPreview as Cost } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useIntent } from '@/hooks/use-intent'
-import { writeErrorMessage } from '@/lib/view/write-errors'
+import { useFirstWrite } from '@/hooks/use-first-write'
 import { useParam, repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { retryWhileMissing } from '@/lib/view/retry'
@@ -56,7 +58,7 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { AssigneeAvatars, EditedMarker, LabelChip, MarkdownEditor } from '@/components/repo/issue-bits'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
-import { PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
+import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { cn } from '@/lib/utils'
 import { BODY_MAX, isIdentityId, utf8Length } from '@/lib/view/issue-query'
 
@@ -106,6 +108,17 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     [addr],
   )
 
+  // Which subtrees this viewer's comment or event would create, for tight previews (D-011).
+  // Read only once the viewer turns to a write (typing a comment, or a confirm opening): the
+  // previews are upper bounds meanwhile, and a page view costs no reads.
+  const issueId = data?.issue.id ?? ''
+  const hasComments = data ? data.timeline.some((t) => t.kind === 'comment') : undefined
+  const viewerMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
+  const firstsReady = (comment !== '' || pending !== null) && ready && sdk !== null && identity !== null && issueId !== ''
+  const commentFirst = useFirstWrite(() => commentFirsts(sdk!, home.repo, issueId, identity!, hasComments), [issueId, identity ?? '', hasComments ?? ''], firstsReady)
+  const stateType = viewerMember ? 'event' : 'authorEvent'
+  const eventFirst = useFirstWrite(() => eventFirsts(sdk!, home.repo, stateType, issueId, identity!), [issueId, identity ?? '', stateType], firstsReady)
+
   if (!Number.isFinite(number)) return <EmptyState icon={CircleDot} title="No issue addressed" body="Add &number= to the URL." />
   if (loading && !data) return <LoadingBlock label="Folding issue" />
   if (error) return <ErrorState message={error} onRetry={reload} />
@@ -127,13 +140,13 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       ? `Couldn't read this repo's ${ACL_NAME}, so close/reopen permission is unknown.`
       : null
   const target = { id: issue.id, number: issue.number }
-  const commentCost = composeCost(home.repo, 'comment', { body: comment.trim() })
+  const commentCost = composeCost(home.repo, 'comment', { body: comment.trim() }, commentFirst)
   // A member's close is an `event`; the author who is not a member uses `authorEvent`.
-  const stateCost = previewCreate(isMember ? 'event' : 'authorEvent')
+  const stateCost = previewCreate(isMember ? 'event' : 'authorEvent', {}, eventFirst)
   const labelDefs = new Map(labels.map((l) => [l.name, l]))
 
   const postComment = async (): Promise<void> => {
-    if (posting || comment.trim() === '' || !guard.check(commentCost.credits, 'collab')) return
+    if (posting || comment.trim() === '' || utf8Length(comment) > BODY_MAX || !guard.check(commentCost, 'collab')) return
     if (!sdk || !signer) return
     setPosting(true)
     setCommentError(null)
@@ -143,7 +156,13 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       draft.renew()
       reload()
     } catch (e) {
-      setCommentError(writeErrorMessage(e).message)
+      if (e instanceof SupersededWriteError) {
+        // The earlier version was posted: show it, and never post this draft a second time.
+        setComment('')
+        draft.renew()
+        reload()
+      }
+      setCommentError(guard.failed(e))
     } finally {
       setPosting(false)
     }
@@ -194,13 +213,13 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const pendingCost = ((): Cost => {
     switch (pending?.kind) {
       case 'label':
-        return composeCost(home.repo, 'event', { value: pending.label })
+        return composeCost(home.repo, 'event', { value: pending.label }, eventFirst)
       case 'assign':
-        return composeCost(home.repo, 'event', { value: pending.who })
+        return composeCost(home.repo, 'event', { value: pending.who }, eventFirst)
       case 'defineLabel': {
         const def = previewCreate('label', { name: pending.name, color: pending.color, description: pending.description })
-        const apply = composeCost(home.repo, 'event', { value: pending.name })
-        return pending.apply ? { ...def, credits: def.credits + apply.credits } : def
+        const apply = composeCost(home.repo, 'event', { value: pending.name }, eventFirst)
+        return pending.apply ? sumPreviews([def, apply]) : def
       }
       case 'editIssue':
         return previewReplace('issue', { title: pending.title, body: pending.body })
@@ -338,7 +357,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
               </Button>
             </div>
           </div>
-          {utf8Length(comment) > BODY_MAX ? <p className="mt-2 text-dense text-danger-700 dark:text-danger-400">A comment holds 5,120 bytes; this one is {utf8Length(comment)}.</p> : null}
+          <BodyCounter repo={home.repo} text={comment} field="comment" />
           {toggleHint !== null ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{toggleHint}</p> : null}
           {commentError ? (
             <div role="alert" className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">{commentError}</div>

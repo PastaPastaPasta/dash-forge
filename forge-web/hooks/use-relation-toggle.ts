@@ -24,6 +24,11 @@ export interface RelationToggle {
   /** Net change in the relation's public count caused by this session's writes. */
   readonly delta: number
   readonly toggle: () => Promise<void>
+  /**
+   * The same write, for a confirm dialog: it throws what failed (the dialog words it and opens
+   * its fix) instead of keeping it in `error`.
+   */
+  readonly run: () => Promise<void>
 }
 
 /**
@@ -43,8 +48,13 @@ export function useRelationToggle(params: {
   readonly add: () => Promise<boolean>
   /** Remove the relation; resolve `false` if it broadcast but was not confirmed in time. */
   readonly remove: () => Promise<boolean>
+  /**
+   * How to word a failed write (and open its fix: renew, top up). `useWriteGuard().failed`;
+   * without it the raw message is shown.
+   */
+  readonly onError?: (e: unknown) => string
 }): RelationToggle {
-  const { enabled, key, read, add, remove } = params
+  const { enabled, key, read, add, remove, onError } = params
   const initial = useAsync<boolean>(
     async () => {
       const value = await read()
@@ -65,8 +75,12 @@ export function useRelationToggle(params: {
 
   const on = !enabled ? null : mine.on ?? (initial.settled && initial.error === null ? initial.data : null)
 
-  const toggle = useCallback(async (): Promise<void> => {
-    if (on === null) return
+  const write = useCallback(async (rethrow: boolean): Promise<void> => {
+    if (on === null) {
+      // Not known yet whether it is on: nothing to write, and a confirm dialog must not say done.
+      if (rethrow) throw new Error("Couldn't read your current state yet. Try again in a moment.")
+      return
+    }
     const at = key
     const record = (patch: { on?: boolean; delta?: number; error: string | null }): void =>
       setWrites((w) => {
@@ -78,18 +92,23 @@ export function useRelationToggle(params: {
     try {
       const confirmed = on ? await remove() : await add()
       if (!confirmed) {
-        record({ error: 'Sent, but not yet visible on Platform. Reload in a moment to check.' })
+        const unconfirmed = 'Sent, but not yet visible on Platform. Reload in a moment to check.'
+        if (rethrow) throw new Error(unconfirmed)
+        record({ error: unconfirmed })
         return
       }
       known.set(at, !on)
       record({ on: !on, delta: on ? -1 : 1, error: null })
     } catch (e) {
-      record({ error: errorMessage(e, 'the write failed') })
+      if (rethrow) throw e
+      record({ error: onError ? onError(e) : errorMessage(e, 'the write failed') })
     } finally {
       setBusy(false)
     }
-  }, [on, key, add, remove])
+  }, [on, key, add, remove, onError])
+  const toggle = useCallback(() => write(false), [write])
+  const run = useCallback(() => write(true), [write])
 
   const readError = enabled && initial.error !== null ? `Couldn't read your current state: ${initial.error}` : null
-  return { on, busy, error: mine.error ?? readError, delta: mine.delta, toggle }
+  return { on, busy, error: mine.error ?? readError, delta: mine.delta, toggle, run }
 }
