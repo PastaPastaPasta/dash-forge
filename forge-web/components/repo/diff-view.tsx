@@ -25,6 +25,7 @@ import {
   type TextDiffLine,
 } from '@/lib/view'
 import { splitRows } from '@/lib/view/text-diff'
+import { createBatcher } from '@/lib/view/batcher'
 import { DIFF_PALETTES, type DiffPalette } from '@/lib/view/prefs'
 import { lineKey } from '@/lib/view/inline-threads'
 import { useMinWidth, usePrefs } from '@/hooks/use-prefs'
@@ -92,31 +93,23 @@ export function DiffView({
   const current = changes.map((c) => loaded.get(keyOf(c.path))).filter((p): p is FilePatch => p !== undefined)
   const [scrollTo, setScrollTo] = useState<number | null>(null)
   const requested = useRef(new Set<string>())
-  // Patches land one by one; committing each would re-render the whole list per file.
-  const pending = useRef(new Map<string, FilePatch>())
-  const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  useEffect(
-    () => () => {
-      if (flushTimer.current !== null) clearTimeout(flushTimer.current)
-    },
-    [],
+  // Patches land one by one; committing each would re-render the whole list per file. The
+  // batcher owns its pending map, so a patch that lands after a flush is never written into
+  // an already-committed batch (D-005: files stuck on "Reading file…" with nothing in flight).
+  const [batcher] = useState(() =>
+    createBatcher<string, FilePatch>(PATCH_FLUSH_MS, (batch) => setPatches((prev) => new Map([...prev, ...batch]))),
   )
+  useEffect(() => () => batcher.cancel(), [batcher])
 
   useEffect(() => {
-    const flush = (): void => {
-      flushTimer.current = null
-      const batch = pending.current
-      pending.current = new Map()
-      setPatches((prev) => new Map([...prev, ...batch]))
-    }
     const key = (path: string): string => `${ignoreWhitespace ? 'w' : 'x'}:${path}`
     const todo = changes.slice(0, shown).filter((c) => !requested.current.has(key(c.path)))
     for (const c of todo) requested.current.add(key(c.path))
     void mapPooled(todo, PATCH_CONCURRENCY, async (change) => {
-      pending.current.set(key(change.path), await loadFilePatch(sides, change, { ignoreWhitespace }))
-      flushTimer.current ??= setTimeout(flush, PATCH_FLUSH_MS)
+      const patch = await loadFilePatch(sides, change, { ignoreWhitespace })
+      batcher.add(key(change.path), patch)
     })
-  }, [changes, shown, sides, ignoreWhitespace])
+  }, [changes, shown, sides, ignoreWhitespace, batcher])
 
   // Jump to a file picked from the list once it has rendered (it may be past `shown`).
   useEffect(() => {
