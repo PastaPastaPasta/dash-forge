@@ -142,7 +142,7 @@ export class IdentityNotCreatedError extends Error {
     const partly =
       lock.kind !== 'partly'
         ? ''
-        : ` An earlier attempt with this deposit was rejected and Platform kept a fee${remaining === null ? '' : `; ${creditsText(remaining)} remains`}.`
+        : ` An attempt with this deposit was rejected and Platform kept a fee${remaining === null ? '' : `; ${creditsText(remaining)} remains`}.`
     const next = !retryable
       ? ` That is less than the ${creditsText(CREATE_MIN_LOCK_CREDITS)} Platform needs to process a creation, so trying again with this deposit cannot succeed.`
       : lock.kind === 'partly'
@@ -171,9 +171,10 @@ export function createOutcomeUnknown(e: unknown): boolean {
 
 /**
  * Errors that came with an answer from Platform (a proof it could not check, or "already
- * done"): the block is committed, so the identity is readable at once if it landed.
+ * done"): the block is committed, so the identity is readable at once if it landed. Everything
+ * else (transport errors, timeouts, no usable node) gets the longer probe.
  */
-const PROOF_OR_DONE = /proof verification|context provider|invalid quorum|already completely used|already exists/i
+const PROOF_OR_DONE = /quorum not found|proof verification|context provider|invalid quorum|already completely used|already exists/i
 
 /** Reads of the identity after an error that came with Platform's answer ({@link PROOF_OR_DONE}). */
 const LANDED_CHECKS_ANSWERED = 4
@@ -263,15 +264,22 @@ async function probeCreate(
 }
 
 /**
- * Whether key 5 on the identity is provably not the key this run stored (an earlier attempt's,
- * or none): only then may the master key replace it. A read that fails rethrows, so the user
- * retries the check rather than paying for a renewal.
+ * Whether key `keyId` on the identity is provably not controlled by `wif` (another attempt's
+ * key, or none): only then may the master key replace it. A read that fails rethrows, so the
+ * user retries the check rather than paying for a renewal.
  */
-async function browserKeyIsNotOurs(sdk: EvoSDK, identityId: string, wif: string, network: Network): Promise<boolean> {
+async function keyIsNotOurs(sdk: EvoSDK, identityId: string, keyId: number, wif: string, network: Network): Promise<boolean> {
   const identity = await authSdk(sdk).identities.fetch(identityId)
   if (identity === undefined) return false
-  const k = identity.publicKeys.find((x) => x.keyId === BROWSER_KEY_ID)
+  const k = identity.publicKeys.find((x) => x.keyId === keyId)
   return k === undefined || !controlsKey(k, wif, network)
+}
+
+/** The identity exists, but its browser key could not be checked: "Try again" checks it again. */
+function keyUncheckedError(identityId: string, cause: unknown): Error {
+  return new Error(
+    `Identity ${identityId} was created, but its browser key could not be checked (${errorMessage(cause)}). "Try again" checks it again; nothing is paid twice.`,
+  )
 }
 
 /**
@@ -310,6 +318,12 @@ export async function createIdentityFromMnemonic(
     readonly freshen?: (maxAgeMs?: number) => Promise<unknown>
     /** Between reads of an identity whose create reported an error (default {@link LANDED_CHECK_MS}). */
     readonly landedCheckMs?: number
+    /**
+     * The browser key an earlier run of this creation stored (`persistKey`), if the caller can
+     * still read it. When the identity already exists and holds that key, the run checks it and
+     * finishes instead of paying for a renewal.
+     */
+    readonly heldKey?: (identityId: string) => Promise<{ keyId: number; wif: string } | null>
   },
 ): Promise<{ identityId: string; key: LimitedKey }> {
   const { network, group } = params
@@ -390,8 +404,17 @@ export async function createIdentityFromMnemonic(
     .catch((e: unknown) => {
       throw new Error(`Could not check whether identity ${identityId} already exists (${errorMessage(e)}). Try again in a moment.`)
     })
-  // Created by an earlier run whose browser key was lost.
-  if (existingBalance !== undefined) return renewBrowserKey(existingBalance)
+  if (existingBalance !== undefined) {
+    // Created by an earlier run. Its browser key, when this browser still holds it and the
+    // identity carries it, is checked and kept; only a key that is gone is renewed (paid).
+    const held = (await params.heldKey?.(identityId).catch(() => null)) ?? null
+    if (held === null || (await keyIsNotOurs(sdk, identityId, held.keyId, held.wif, network))) return renewBrowserKey(existingBalance)
+    params.onStage?.('verifying')
+    const verified = await verifyLimitedKey(sdk, identityId, held.keyId, group, network, held.wif).catch((e: unknown) => {
+      throw isAbort(e) ? e : keyUncheckedError(identityId, e)
+    })
+    return { identityId, key: { keyId: held.keyId, wif: held.wif, limits: verified } }
+  }
 
   // 4: the browser key goes to the vault first, then IdentityCreate registers it.
   params.onStage?.('registering')
@@ -444,7 +467,8 @@ export async function createIdentityFromMnemonic(
       params.onStage?.('registering', 'Checking whether Platform recorded your identity…')
       // Stale keys would fail the reads too: renew them first.
       if (isStaleConnectionError(e)) await freshen(0)
-      const answered = PROOF_OR_DONE.test(errorMessage(e, '')) || isStaleConnectionError(e)
+      // "No available addresses" is a transport failure: it gets the long probe.
+      const answered = PROOF_OR_DONE.test(errorMessage(e, ''))
       const outcome = await probeCreate(sdk, identityId, outPoint, {
         checks: answered ? LANDED_CHECKS_ANSWERED : LANDED_CHECKS_UNANSWERED,
         delayMs: params.landedCheckMs ?? LANDED_CHECK_MS,
@@ -470,8 +494,11 @@ export async function createIdentityFromMnemonic(
   } catch (e) {
     // The identity found after an unverified create may be an earlier attempt's, with that
     // attempt's key 5 (this one was refused as a duplicate): the master key renews it. Only
-    // then: a key 5 this run stored, or a read that fails, keeps the error (the user retries).
-    if (!landedAfterError || isAbort(e) || !(await browserKeyIsNotOurs(sdk, identityId, wif, network))) throw e
+    // then: a key 5 this run stored, or a read that fails, is reported and "Try again" checks
+    // it again (the `heldKey` path above), never a renewal.
+    if (!landedAfterError || isAbort(e)) throw e
+    const notOurs = await keyIsNotOurs(sdk, identityId, BROWSER_KEY_ID, wif, network).catch(() => false)
+    if (!notOurs) throw keyUncheckedError(identityId, e)
     return renewBrowserKey((await authSdk(sdk).identities.balance(identityId).catch(() => undefined)) ?? null)
   }
 }

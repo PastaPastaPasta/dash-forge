@@ -114,11 +114,11 @@ const chain = vi.hoisted(() => ({
   exists: false,
   /** Whose key 5 the identity carries once created. */
   key5: 'ours' as 'ours' | 'earlier',
-  lock: 'unused' as 'unused' | 'fully' | 'partly' | 'tree' | 'throws',
+  lock: 'unused' as 'unused' | 'fully' | 'partly' | 'tree' | 'throws' | 'two',
   /** Credits left in a partly used lock. */
   remaining: 0n,
   /** What `identities.create` does before it throws (or not). */
-  create: 'lands-then-stale' as 'lands-then-stale' | 'refused-then-stale' | 'timeout' | 'refused' | 'ok',
+  create: 'lands-then-stale' as 'lands-then-stale' | 'refused-then-stale' | 'timeout' | 'no-addresses' | 'refused' | 'ok',
   /** Reads of the identity that answer "not found" after it exists (a lagging node). */
   lag: 0,
   fetchFails: false,
@@ -135,10 +135,19 @@ const chain = vi.hoisted(() => ({
 /** bincode 2 varint, big-endian (a u64 marker for anything past one byte). */
 function varint(n: bigint): number[] {
   if (n <= 250n) return [Number(n)]
-  const out = [253]
-  for (let i = 7; i >= 0; i--) out.push(Number((n >> BigInt(i * 8)) & 0xffn))
+  const [marker, width] = n <= 0xffffn ? [251, 2] : n <= 0xffffffffn ? [252, 4] : [253, 8]
+  const out = [marker]
+  for (let i = width - 1; i >= 0; i--) out.push(Number((n >> BigInt(i * 8)) & 0xffn))
   return out
 }
+
+/**
+ * Golden vector: rs-dpp 6c95cd8 `AssetLockValue::new(3_000_000_000, <P2PKH script>, 2_900_000_000,
+ * vec![Bytes32([7; 32])], PlatformVersion::latest()).serialize_to_bytes()`, printed by a scratch
+ * Rust test against the workspace's dash-sdk (v4.2.0-beta.5).
+ */
+const GOLDEN_ASSET_LOCK_VALUE =
+  '00fcb2d05e001976a914111111111111111111111111111111111111111188acfcacda7d00010707070707070707070707070707070707070707070707070707070707070707'
 
 /** rs-dpp `AssetLockValue::V0` bytes, as Platform stores a partly used lock. */
 function assetLockValue(initial: bigint, remaining: bigint): Uint8Array {
@@ -175,6 +184,7 @@ function fakeSdk(): EvoSDK {
         }
         if (chain.create === 'refused') throw new Error('Failed to create identity: invalid signature')
         if (chain.create === 'timeout') throw new Error('Failed to create identity: Dapi client error: transport error: deadline exceeded')
+        if (chain.create === 'no-addresses') throw new Error('Failed to create identity: no available addresses to retry, last error: x')
         if (chain.create === 'lands-then-stale') {
           chain.exists = true
           chain.lock = 'fully'
@@ -191,6 +201,7 @@ function fakeSdk(): EvoSDK {
         if (chain.lock === 'throws') throw new Error('no available addresses to retry')
         if (chain.lock === 'unused') return [{}]
         if (chain.lock === 'tree') return [{ elementType: 'tree' }]
+        if (chain.lock === 'two') return [{}, {}]
         if (chain.lock === 'partly') return [{ elementType: 'item', valueBytes: assetLockValue(3_000_000_000n, chain.remaining) }]
         return [{ elementType: 'item', valueBytes: new Uint8Array(0) }]
       },
@@ -209,7 +220,13 @@ const JOURNAL: CreationJournal = {
   startHeight: 1,
 }
 
-function run(overrides: { freshen?: () => Promise<unknown>; signal?: AbortSignal } = {}) {
+function run(
+  overrides: {
+    freshen?: () => Promise<unknown>
+    signal?: AbortSignal
+    heldKey?: (id: string) => Promise<{ keyId: number; wif: string } | null>
+  } = {},
+) {
   const persisted: { keyId: number; wif: string }[] = []
   const charges: string[] = []
   const stages: string[] = []
@@ -232,6 +249,7 @@ function run(overrides: { freshen?: () => Promise<unknown>; signal?: AbortSignal
     freshen,
     landedCheckMs: 1,
     signal: overrides.signal,
+    heldKey: overrides.heldKey,
   })
   return { promise, persisted, charges, stages }
 }
@@ -290,16 +308,47 @@ describe('IdentityCreate with a stale quorum after the broadcast (L-06)', () => 
     expect(persisted.at(-1)).toEqual(expect.objectContaining({ keyId: 6, wif: 'RENEWED-WIF' }))
   })
 
-  it('M1: landed, but the key check fails transiently: no paid renewal, the error stands', async () => {
+  it('M1: landed, but the key check fails transiently: no paid renewal, a named error', async () => {
     chain.verifyFails = 'no available addresses to retry, last error: x'
-    await expect(run().promise).rejects.toThrow(/no available addresses/)
+    await expect(run().promise).rejects.toThrow(/was created, but its browser key could not be checked \(no available addresses/)
     expect(renewed.calls).toEqual([])
   })
 
   it('M1: landed, the key check fails, and the identity cannot be read again: no renewal', async () => {
     chain.verifyFails = 'key 5 is not on identity x'
     chain.readsFailAfterVerify = true
-    await expect(run().promise).rejects.toThrow(/no available addresses/)
+    await expect(run().promise).rejects.toThrow(/browser key could not be checked/)
+    expect(renewed.calls).toEqual([])
+  })
+
+  it('M1: "Try again" after a transient key-check failure keeps the stored key, no renewal', async () => {
+    chain.verifyFails = 'no available addresses to retry, last error: x'
+    const first = run()
+    await expect(first.promise).rejects.toThrow(/could not be checked/)
+    const stored = first.persisted.at(-1)!
+    // The retry: the identity exists now; the key this browser stored is on it.
+    chain.verifyFails = ''
+    chain.create = 'ok'
+    chain.events = []
+    const second = run({ heldKey: async (id) => (id === IDENTITY ? stored : null) })
+    const out = await second.promise
+    expect(out.key).toEqual({ keyId: 5, wif: BROWSER_WIF.value, limits: expect.anything() })
+    expect(renewed.calls).toEqual([])
+    expect(chain.events).not.toContain('create')
+  })
+
+  it('M1: "Try again" when the identity exists but holds another key 5: renews it', async () => {
+    chain.exists = true
+    chain.key5 = 'earlier'
+    const out = await run({ heldKey: async () => ({ keyId: 5, wif: BROWSER_WIF.value }) }).promise
+    expect(out.key.keyId).toBe(6)
+    expect(renewed.calls).toHaveLength(1)
+  })
+
+  it('M1: "Try again" with a held key whose check fails transiently: a named error, no renewal', async () => {
+    chain.exists = true
+    chain.verifyFails = 'no available addresses to retry, last error: x'
+    await expect(run({ heldKey: async () => ({ keyId: 5, wif: BROWSER_WIF.value }) }).promise).rejects.toThrow(/could not be checked/)
     expect(renewed.calls).toEqual([])
   })
 
@@ -350,6 +399,24 @@ describe('IdentityCreate with a stale quorum after the broadcast (L-06)', () => 
     expect((err as Error).message).toMatch(/^Could not confirm/)
   })
 
+  it('the lock read returns other than one element: unknown', async () => {
+    chain.create = 'refused-then-stale'
+    chain.lock = 'two'
+    const err = await run().promise.catch((e: unknown) => e)
+    expect(err).not.toBeInstanceOf(IdentityNotCreatedError)
+    expect((err as Error).message).toMatch(/^Could not confirm/)
+  })
+
+  it('"no available addresses" gets the long probe, like a transport error', async () => {
+    chain.create = 'refused-then-stale'
+    await run().promise.catch(() => undefined)
+    const answered = chain.events.filter((e) => e === 'fetch').length
+    chain.events = []
+    chain.create = 'no-addresses'
+    await run().promise.catch(() => undefined)
+    expect(chain.events.filter((e) => e === 'fetch').length).toBeGreaterThan(answered)
+  })
+
   it('the lock element is not an item: unknown', async () => {
     chain.create = 'refused-then-stale'
     chain.lock = 'tree'
@@ -364,7 +431,7 @@ describe('IdentityCreate with a stale quorum after the broadcast (L-06)', () => 
     const err = (await run().promise.catch((e: unknown) => e)) as IdentityNotCreatedError
     expect(err).toBeInstanceOf(IdentityNotCreatedError)
     expect(err.retryable).toBe(true)
-    expect(err.message).toMatch(/earlier attempt with this deposit was rejected and Platform kept a fee; 0\.02900 DASH remains/)
+    expect(err.message).toMatch(/An attempt with this deposit was rejected and Platform kept a fee; 0\.02900 DASH remains/)
     expect(err.message).toMatch(/keeps another fee/)
   })
 
@@ -437,6 +504,15 @@ describe('IdentityCreate with a stale quorum after the broadcast (L-06)', () => 
 })
 
 describe('remainingLockCredits', () => {
+  it('matches the bytes rs-dpp writes (golden vector, u32 varints)', () => {
+    const bytes = Uint8Array.from(Buffer.from(GOLDEN_ASSET_LOCK_VALUE, 'hex'))
+    expect(remainingLockCredits(bytes)).toBe(2_900_000_000n)
+    // The helper this suite builds values with writes the same bytes.
+    const script = [0x76, 0xa9, 0x14, ...new Array(20).fill(0x11), 0x88, 0xac]
+    const built = Uint8Array.from([0, ...varint(3_000_000_000n), ...varint(25n), ...script, ...varint(2_900_000_000n), 1, ...new Array(32).fill(7)])
+    expect(Buffer.from(built).toString('hex')).toBe(GOLDEN_ASSET_LOCK_VALUE)
+  })
+
   it('reads remaining_credit_value from AssetLockValue::V0', () => {
     expect(remainingLockCredits(assetLockValue(3_000_000_000n, 2_900_000_000n))).toBe(2_900_000_000n)
     expect(remainingLockCredits(assetLockValue(200n, 7n))).toBe(7n)
