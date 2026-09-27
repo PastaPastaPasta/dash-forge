@@ -16,6 +16,7 @@ use crate::config::Config;
 use crate::Cli;
 
 /// The resolved runtime context for one `dg` invocation.
+#[allow(clippy::struct_excessive_bools)] // independent CLI flags
 pub struct Ctx {
     /// Emit machine-readable JSON instead of human output.
     pub json: bool,
@@ -29,6 +30,8 @@ pub struct Ctx {
     pub cli_identity: Option<PathBuf>,
     /// Whether stdin is a terminal (a prompt can be answered).
     pub stdin_tty: bool,
+    /// `--allow-archived`: write to an archived repository anyway (E606 otherwise).
+    pub allow_archived: bool,
 }
 
 /// Why a confirmation prompt cannot be asked, or `None` when it can (or `--yes` answers it).
@@ -103,6 +106,7 @@ impl Ctx {
             identity_path,
             cli_identity: cli.identity.clone(),
             stdin_tty: std::io::stdin().is_terminal(),
+            allow_archived: cli.allow_archived,
         })
     }
 
@@ -263,6 +267,7 @@ impl Ctx {
             identity_path,
             cli_identity: None,
             stdin_tty,
+            allow_archived: false,
         }
     }
 }

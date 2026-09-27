@@ -79,7 +79,7 @@ const MAX_NUMBER_ATTEMPTS: usize = 8;
 /// remote helper's push pre-check.
 pub const SKIP_PRECHECK_ENV: &str = "DASH_FORGE_SKIP_WRITE_PRECHECK";
 
-fn precheck_enabled() -> bool {
+pub fn precheck_enabled() -> bool {
     !std::env::var(SKIP_PRECHECK_ENV).is_ok_and(|v| !v.is_empty() && v != "0")
 }
 

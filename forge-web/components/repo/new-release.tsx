@@ -16,7 +16,7 @@ import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, CheckCircle2, FilePlus2, Loader2, Plus, XCircle } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { formatBytes } from '@/lib/view'
+import { ARCHIVED_REASON, formatBytes } from '@/lib/view'
 import type { ReleaseList } from '@/lib/repo'
 import type { ReleaseAsset } from '@/lib/repo/writes'
 import {
@@ -77,9 +77,10 @@ export function NewReleaseButton({ home, releases, onPublished }: { home: RepoHo
   const draft = useIntent()
   // A settled marker (no visible output): tests can tell "no button" from "not decided yet".
   if (role !== 'maintainer') return known ? <span hidden data-testid="new-release-role" data-role={role ?? 'none'} /> : null
+  const archived = home.config?.archived === true
   return (
     <>
-      <Button variant="primary" size="sm" onClick={() => setOpen(true)}>
+      <Button variant="primary" size="sm" onClick={() => setOpen(true)} disabled={archived} title={archived ? ARCHIVED_REASON : undefined}>
         <Plus className="h-3.5 w-3.5" aria-hidden /> New release
       </Button>
       {open ? (

@@ -116,6 +116,12 @@ pub(crate) trait RefDocSource {
     }
 }
 
+/// Whether a public repository's `config` row is well-formed (forge-v2 §5): readers skip one
+/// that is not, so a writer must not build on it either.
+pub(crate) fn config_well_formed(d: &FetchedDocument) -> bool {
+    well_formed_in(ContentKind::Config, d)
+}
+
 /// Whether `d` is well-formed for a PUBLIC repository (forge-v2 §5); private repositories
 /// read through [`read_private_refs`], which checks the private form.
 fn well_formed_in(kind: ContentKind, d: &FetchedDocument) -> bool {

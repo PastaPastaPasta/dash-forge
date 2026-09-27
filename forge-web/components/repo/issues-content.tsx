@@ -17,7 +17,7 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import { useIntent } from '@/hooks/use-intent'
 import { writeErrorMessage } from '@/lib/view/write-errors'
-import { timeAgo } from '@/lib/view'
+import { ARCHIVED_REASON, timeAgo } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
@@ -39,6 +39,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const { sdk, ready } = useSdk(repoContractIds(home.repo))
   const [filter, setFilter] = useState<Filter>('open')
   const [composing, setComposing] = useState(false)
+  const archived = home.config?.archived === true
   const router = useRouter()
   const generation = useRepoWriteGeneration(home.repo)
   // A private repo's issues are sealed on write (`lib/repo/private-writes.ts`); only a member
@@ -80,7 +81,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           </FilterTab>
         </div>
         {canCompose ? (
-          <Button variant="primary" size="sm" onClick={() => setComposing(true)}>
+          <Button variant="primary" size="sm" onClick={() => setComposing(true)} disabled={archived} title={archived ? ARCHIVED_REASON : undefined}>
             <MessageSquarePlus className="h-3.5 w-3.5" aria-hidden /> New issue
           </Button>
         ) : null}
@@ -95,7 +96,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           icon={CircleDot}
           title={filter === 'closed' ? 'No closed issues' : 'No open issues'}
           body={filter === 'closed' ? 'Nothing has been closed yet.' : 'Everything is quiet. Open the first issue to start the conversation.'}
-          action={canCompose ? <Button variant="primary" onClick={() => setComposing(true)}><MessageSquarePlus className="h-4 w-4" aria-hidden /> New issue</Button> : undefined}
+          action={canCompose && !archived ? <Button variant="primary" onClick={() => setComposing(true)}><MessageSquarePlus className="h-4 w-4" aria-hidden /> New issue</Button> : undefined}
         />
       ) : (
         <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
