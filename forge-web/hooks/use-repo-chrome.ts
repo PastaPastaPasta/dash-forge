@@ -74,7 +74,7 @@ export function useTargetCounts(repo: RepoRef): TargetTotals {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   // Re-render whenever a list page settles or a write drops them, on this page or another.
   useSyncExternalStore(subscribeRepoLists, () => repoListVersion(repo), () => 0)
-  const generation = repoWriteGeneration(repo)
+  const generation = useRepoWriteGeneration(repo)
   // The last totals this repo resolved: shown while a write's generation re-reads them, so the
   // badge keeps its number instead of blanking (a mismatched total refolds, never misleads).
   const lastTotals = useRef<{ key: string; totals: TargetTotals } | null>(null)
@@ -93,6 +93,15 @@ export function useTargetCounts(repo: RepoRef): TargetTotals {
   if (data !== null) lastTotals.current = { key, totals: data }
   const totals = data ?? (lastTotals.current?.key === key ? lastTotals.current.totals : null)
   return openCounts(repo, totals)
+}
+
+/**
+ * How many count-changing writes to `repo` landed this session, re-rendering on each. The
+ * Issues and Pull requests lists put it in their read's deps, so they re-read after a write
+ * alongside the header's counts, and the tab and the list keep agreeing.
+ */
+export function useRepoWriteGeneration(repo: RepoRef): number {
+  return useSyncExternalStore(subscribeRepoLists, () => repoWriteGeneration(repo), () => 0)
 }
 
 export function useReleases(repo: RepoRef): AsyncState<ReleaseList> {

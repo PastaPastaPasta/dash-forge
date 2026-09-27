@@ -21,6 +21,7 @@ import { listPullsCached, repoContractIds, repoKey } from '@/lib/repo'
 import { timeAgo } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
+import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import { Author } from '@/components/author'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
@@ -41,10 +42,12 @@ function pullStatus(p: PullView): { label: string; icon: JSX.Element; klass: str
 export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const { sdk, ready } = useSdk(repoContractIds(home.repo))
   const [filter, setFilter] = useState<Filter>('open')
+  const generation = useRepoWriteGeneration(home.repo)
   const { data, loading, error, reload } = useAsync<Listed<PullView>>(
-    // Through the session cache the header's open count reads, so the two agree.
+    // Through the session cache the header's open count reads, and re-read after each
+    // count-changing write the header refolds on, so the two agree.
     () => listPullsCached(sdk!, home.repo),
-    [ready, repoKey(home.repo)],
+    [ready, repoKey(home.repo), generation],
     { enabled: ready && sdk !== null },
   )
 
