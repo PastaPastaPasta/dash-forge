@@ -26,7 +26,7 @@ import { base58CheckEncode } from './base58'
 import { encodeWif } from './wif'
 import { purgeLegacyKeystore } from './controller'
 
-const ID = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
+const ID = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
 const WIF = encodeWif(new Uint8Array(32).fill(7), 'devnet')
 const SECRET = { identityId: ID, keyId: 5, wif: WIF }
 
@@ -66,7 +66,7 @@ describe('vault', () => {
     await storeInVault('devnet', SECRET, { passphrase: 'correct horse battery' })
     const [[, record]] = (await idbEntries<Record<string, unknown>>('vault')) as [[string, Record<string, unknown>]]
     const { idbPut } = await import('../idb')
-    const other = '6jAyDGGcc6fgA7bsraQPriTAZ73Lkq5QgnenaRhqteHd'
+    const other = 'Bq2aZ3xzfN46kruWXhGWHzFBUQrRpnBauHAAfUD5g4W9'
     await idbPut('vault', `vault:devnet:${other}`, { ...record, identityId: other })
     await expect(unlockWithPassphrase('devnet', other, 'correct horse battery')).rejects.toBeInstanceOf(VaultLockedError)
   }, 60_000)

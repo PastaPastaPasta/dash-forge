@@ -31,7 +31,7 @@ import {
 } from './vault'
 import { encodeWif } from './wif'
 
-const ID = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
+const ID = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
 const SECRET = { identityId: ID, keyId: 5, wif: encodeWif(new Uint8Array(32).fill(7), 'devnet') }
 const ENC = new Uint8Array(32).fill(0x42)
 const PASS = 'correct horse battery'

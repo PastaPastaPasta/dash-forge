@@ -49,11 +49,11 @@ import {
 
 const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', group: 'GROUP' }
 // Real-shaped base58 ids (32 bytes): the resolver tells ids from DPNS names by decoding them.
-const OWNER = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
-const MAINT = 'GKBTXUdo3MpRYAUqgZvTZGTav9mXGqfJfR5822K2tp79'
-const WRITER = '6jAyDGGcc6fgA7bsraQPriTAZ73Lkq5QgnenaRhqteHd'
-const AUTHOR = 'Dd1m1JJM3M5DjBaXaCbC5hXBsU6248KHpGcBAtaHsqc7'
-const STRANGER = 'A15PpcywDNf4KdQ5rmAqcYUHPJddahyXR33in5PsCE7j'
+const OWNER = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
+const MAINT = 'AFbkc2KjmmGFvKUDTXqu94XU5BVrD3p7QQu19TSCqeHb'
+const WRITER = 'Bq2aZ3xzfN46kruWXhGWHzFBUQrRpnBauHAAfUD5g4W9'
+const AUTHOR = '8unje8KNimvQ15NJeNTM15m7Dc4o7QJs4ZstWrbXdGxv'
+const STRANGER = '7EfFSd2GNTzUV9LgqVLXZrGJdJ51oJpNY6QwP3X6Tk6G'
 const REPO = 'C8XSf6R4shR1kqFKUZQnuaEZ5DkW7uoe9qtQYZpS5SRd'
 const OTHER_REPO = 'Ad88NKGHimxUgGHrTGpBJjKpnzrQe8Zh4V5q13mRh85h'
 const HEAD = 'ab'.repeat(20)

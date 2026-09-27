@@ -3033,7 +3033,7 @@ mod tests {
     fn target(author: &str) -> Target {
         Target {
             kind: TargetKind::Issue,
-            id: "GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL".into(),
+            id: "6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux".into(),
             number: 3,
             author: author.into(),
         }
@@ -3078,7 +3078,7 @@ mod tests {
 
     #[test]
     fn assign_events_name_the_assignee_in_value_and_ref_id() {
-        let who = "GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL";
+        let who = "6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux";
         let pay = |value, ref_id| EventPayload {
             value,
             oid: None,
@@ -3128,7 +3128,7 @@ mod tests {
             &EventPayload {
                 value: Some(""),
                 oid: None,
-                ref_id: Some("GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL"),
+                ref_id: Some("6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux"),
             },
         )
         .unwrap();
@@ -3138,7 +3138,7 @@ mod tests {
     #[test]
     fn review_events_carry_their_payload_and_route_by_kind() {
         let t = target("alice");
-        let root = "GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL";
+        let root = "6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux";
         let p = event_payload_props(
             &t,
             EventKind::ThreadResolve,
@@ -3216,7 +3216,7 @@ mod tests {
             title: "t".into(),
             body: String::new(),
             base_ref_name: "refs/heads/main".into(),
-            source_repo_id: "GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL".into(),
+            source_repo_id: "6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux".into(),
             source_ref_name: Some("refs/heads/feature".into()),
             head_oid: vec![0xab; 20],
             patch_manifest_hash: None,
@@ -3427,7 +3427,7 @@ mod tests {
             title: "t".into(),
             body: String::new(),
             base_ref_name: "refs/heads/main".into(),
-            source_repo_id: "GM7ozWV1MNuAxyMnrf4JngAyGSDickvLznGi72WMp8EL".into(),
+            source_repo_id: "6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux".into(),
             source_ref_name: Some("refs/heads/feature".into()),
             head_oid: vec![0xab; 20],
             patch_manifest_hash: None,

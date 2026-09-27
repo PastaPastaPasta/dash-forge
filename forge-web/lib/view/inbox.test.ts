@@ -30,8 +30,8 @@ import { assignedTargets, mentions } from './mine'
 import { parseJump } from './jump'
 import { idbPut } from '../idb'
 
-const ME = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
-const OTHER = 'Dd1m1JJM3M5DjBaXaCbC5hXBsU6248KHpGcBAtaHsqc7'
+const ME = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
+const OTHER = '8unje8KNimvQ15NJeNTM15m7Dc4o7QJs4ZstWrbXdGxv'
 const REPO = { id: '8H5JaQm8Z765UunuttoUuVsVMCmDoy2EBKgmGKYpdB2z', ownerId: ME, name: 'demo', private: false }
 const FORGE = { core: 'CORE', collab: 'COLLAB', group: 'GROUP' }
 

@@ -48,9 +48,9 @@ import { readTargetCounts } from './social'
 
 const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet'
 
-const OWNER = '9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD'
-const MAINTAINER = 'GKBTXUdo3MpRYAUqgZvTZGTav9mXGqfJfR5822K2tp79'
-const COLLAB = '6jAyDGGcc6fgA7bsraQPriTAZ73Lkq5QgnenaRhqteHd'
+const OWNER = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
+const MAINTAINER = 'AFbkc2KjmmGFvKUDTXqu94XU5BVrD3p7QQu19TSCqeHb'
+const COLLAB = 'Bq2aZ3xzfN46kruWXhGWHzFBUQrRpnBauHAAfUD5g4W9'
 const MAIN_TIP = 'b35c50122cd51b2cc0345760721e6398fa0c31f5'
 const ID_DIR = join(homedir(), '.config/dash-forge/test-identities/devnet-moutai')
 const C2 = 'b35c50122cd51b2cc0345760721e6398fa0c31f5'
