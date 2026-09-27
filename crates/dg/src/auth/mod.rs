@@ -640,11 +640,8 @@ async fn login_source(
                     master.network
                 ))
                 .fix(format!(
-                    "add {}",
-                    match master.network.strip_prefix("devnet-") {
-                        Some(name) => format!("`--network devnet --devnet-name {name}`"),
-                        None => format!("`--network {}`", master.network),
-                    }
+                    "add `{}`",
+                    forge_core::platform::Network::from_key(&master.network).dg_flags()
                 ))
                 .into(),
         );

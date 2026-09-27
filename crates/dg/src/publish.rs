@@ -1006,8 +1006,8 @@ impl Report {
     }
 
     /// The `(variable, path)` that tells a `git` child's helper to write here.
-    pub(crate) fn env(&self) -> (&'static str, &Path) {
-        (REPORT_FILE_ENV, &self.0)
+    pub(crate) fn env(&self) -> [(&'static str, &Path); 1] {
+        [(REPORT_FILE_ENV, &self.0)]
     }
 
     pub(crate) fn events(&self) -> Vec<Value> {
@@ -1021,17 +1021,11 @@ impl Report {
     /// The helper's last error: its catalogue code (E001 for one this `dg` does not know)
     /// and, under `--json` (where the helper's own block was not shown), its
     /// `message: cause`; in human mode a pointer to the block git already printed.
-    pub(crate) fn helper_error(&self, json: bool) -> Option<(&'static str, String)> {
-        let events = self.events();
+    pub(crate) fn helper_error(events: &[Value], json: bool) -> Option<(&'static str, String)> {
         let e = events.iter().rev().find(|e| e["event"] == "error")?;
         let code = e["error"]["code"]
             .as_str()
-            .and_then(|c| {
-                forge_core::user_error::CATALOGUE
-                    .iter()
-                    .find(|(k, _)| *k == c)
-                    .map(|(k, _)| *k)
-            })
+            .and_then(forge_core::user_error::catalogued)
             .unwrap_or(codes::UNEXPECTED);
         // The helper's own error block is on the terminal just above.
         if !json {
@@ -1075,10 +1069,9 @@ fn run_push(
             forge_core::storage::publish::ALLOW_PRIVATE_URI_PUSH_OPTION,
         ]);
     }
-    let (report_var, report_path) = report.env();
     cmd.args([remote, spec.as_str()])
         .envs(dash_env(ctx))
-        .env(report_var, report_path)
+        .envs(report.env())
         .stdin(Stdio::inherit());
     if ctx.json {
         cmd.stdout(Stdio::null()).stderr(Stdio::null());
@@ -1096,7 +1089,7 @@ fn run_push(
         return Ok(PushOutcome { charged });
     }
     let rejected = events.iter().rev().find(|e| e["event"] == "rejected");
-    let (code, cause) = report.helper_error(ctx.json).unwrap_or_else(|| {
+    let (code, cause) = Report::helper_error(&events, ctx.json).unwrap_or_else(|| {
         let cause = match rejected {
             Some(r) => format!(
                 "{} was rejected: {}",

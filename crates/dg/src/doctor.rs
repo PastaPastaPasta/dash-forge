@@ -23,7 +23,10 @@ use std::process::Command;
 use anyhow::Result;
 use serde_json::{json, Value};
 
-use forge_core::network::{NetworkSettings, NetworkTarget};
+use forge_core::network::{
+    NetworkSettings, NetworkTarget, ENV_DAPI_ADDRESSES, ENV_DEVNET_NAME, ENV_NETWORK,
+    GIT_NETWORK_KEYS,
+};
 use forge_core::platform::{Network, PlatformClient};
 use forge_core::storage::cors::probe_preflight;
 use forge_core::storage::policy::git_config_scoped;
@@ -186,7 +189,7 @@ pub async fn run(ctx: &Ctx, fix: bool) -> Result<()> {
         },
         Section {
             title: "contracts",
-            checks: vec![check_contracts(&ctx.target, !ctx.network_is_default)],
+            checks: vec![check_contracts(&ctx.target, unchosen_undeployed(ctx))],
         },
         Section {
             title: "storage",
@@ -771,10 +774,10 @@ fn deployed_network_flags() -> String {
 }
 
 /// The forge-v2 contracts this invocation will use and where they came from. A network with
-/// no deployment fails here with the same actionable message the commands give, unless no
-/// network was chosen at all (`chosen` false: a fresh install), which only warns.
-fn check_contracts(target: &NetworkTarget, chosen: bool) -> Check {
-    if !chosen && target.v2.is_none() {
+/// no deployment fails here with the same actionable message the commands give, unless this
+/// is a fresh install ([`unchosen_undeployed`]), which only warns.
+fn check_contracts(target: &NetworkTarget, fresh_install: bool) -> Check {
+    if fresh_install {
         return Check::warn(
             "forge-v2",
             format!("none on {}, the default network", target.network),
@@ -1020,7 +1023,7 @@ fn check_git_config(ctx: &Ctx) -> Vec<Check> {
     // What a `git` command resolves (env > git config > dg's config.toml, as the helper
     // does) against what dg uses. dg's own choice is the reference: a mismatch is fixed on
     // git's side, in the scope that holds the conflicting value.
-    let helper_net = NetworkSettings::for_git_helper(|k| get(k))
+    let helper_net = NetworkSettings::for_git_helper(get)
         .and_then(NetworkSettings::resolve)
         .map(|t| t.network.key());
     let dg_net = ctx.network_label();
@@ -1147,7 +1150,6 @@ async fn check_pack_copies(ctx: &Ctx) -> Vec<Check> {
 }
 
 /// Where git's conflicting network setting comes from.
-#[derive(Debug, Default, PartialEq, Eq)]
 struct GitNetworkSource {
     /// `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME` are set: the helper reads them before
     /// any config.
@@ -1159,11 +1161,11 @@ struct GitNetworkSource {
 
 impl GitNetworkSource {
     fn detect() -> Self {
-        let set = |k: &str| std::env::var(k).is_ok_and(|v| !v.trim().is_empty());
+        let [kind, name] = GIT_NETWORK_KEYS;
         Self {
-            env: set(forge_core::network::ENV_NETWORK) || set(forge_core::network::ENV_DEVNET_NAME),
-            scope: git_config_scoped("dash.network")
-                .or_else(|| git_config_scoped("dash.devnetName"))
+            env: !NetworkSettings::from_env().is_unset(),
+            scope: git_config_scoped(kind)
+                .or_else(|| git_config_scoped(name))
                 .map(|(scope, _)| scope),
         }
     }
@@ -1176,10 +1178,7 @@ impl GitNetworkSource {
 fn network_fix_command(n: &Network, from: &GitNetworkSource, in_repo: bool) -> String {
     if from.env {
         return format!(
-            "unset {} {} {} (git reads them before any config)",
-            forge_core::network::ENV_NETWORK,
-            forge_core::network::ENV_DEVNET_NAME,
-            forge_core::network::ENV_DAPI_ADDRESSES
+            "unset {ENV_NETWORK} {ENV_DEVNET_NAME} {ENV_DAPI_ADDRESSES} (git reads them before any config)"
         );
     }
     let local = in_repo && matches!(from.scope.as_deref(), Some("local" | "worktree"));
@@ -1323,7 +1322,7 @@ mod tests {
         }
         .resolve()
         .unwrap();
-        let c = check_contracts(&target, true);
+        let c = check_contracts(&target, false);
         assert_eq!(c.status, Status::Ok, "{}", c.detail);
         assert!(
             c.detail
@@ -1342,7 +1341,7 @@ mod tests {
         }
         .resolve()
         .unwrap();
-        let c = check_contracts(&target, true);
+        let c = check_contracts(&target, false);
         assert_eq!(c.status, Status::Fail);
         assert!(
             c.detail
@@ -1357,7 +1356,7 @@ mod tests {
     fn a_fresh_install_warns_instead_of_failing_on_testnet() {
         // L-33: the quick start's first `dg doctor` (nothing configured) exited 1 with E104.
         let testnet = NetworkSettings::default().resolve().unwrap();
-        let c = check_contracts(&testnet, false);
+        let c = check_contracts(&testnet, true);
         assert_eq!(c.status, Status::Warn, "{}", c.detail);
         assert!(
             c.fix
@@ -1368,7 +1367,7 @@ mod tests {
             c.fix
         );
         // Chosen explicitly (`--network testnet`), it is still the failure it was.
-        assert_eq!(check_contracts(&testnet, true).status, Status::Fail);
+        assert_eq!(check_contracts(&testnet, false).status, Status::Fail);
     }
 
     #[test]

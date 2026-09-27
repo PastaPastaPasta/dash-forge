@@ -562,10 +562,10 @@ fn copy_symlink(from: &Path, to: &Path) -> std::io::Result<()> {
 /// is an error (E204 naming the line and column), not "no default": `dg` refuses the same
 /// file, and signing as nobody would hide the typo behind an E301.
 pub fn configured_default_source() -> Result<Option<String>> {
-    let Some(dir) = forge_config_dir() else {
+    let Some(path) = crate::config_file::dg_config_path() else {
         return Ok(None);
     };
-    configured_default_source_in(&dir.join("config.toml"))
+    configured_default_source_in(&path)
 }
 
 fn configured_default_source_in(path: &Path) -> Result<Option<String>> {

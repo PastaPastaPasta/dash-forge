@@ -99,6 +99,53 @@ impl Network {
         }
     }
 
+    /// The network a deployment key names (`testnet`, `mainnet`, `devnet-<name>`), with no
+    /// devnet addresses: they come from the deployment when it is selected.
+    pub fn from_key(key: &str) -> Self {
+        match key {
+            "mainnet" => Network::Mainnet,
+            "testnet" => Network::Testnet,
+            key => Network::Devnet {
+                name: key.strip_prefix("devnet-").unwrap_or(key).to_string(),
+                dapi_addresses: Vec::new(),
+                quorum_base_url: None,
+            },
+        }
+    }
+
+    /// The `(key, value)` pairs that select this network, given the kind and devnet-name keys
+    /// of one layer (`["dash.network", "dash.devnetName"]`, the env var names, …).
+    pub fn selection<'k>(&self, [kind_key, name_key]: [&'k str; 2]) -> Vec<(&'k str, String)> {
+        let mut pairs = vec![(kind_key, self.kind().to_string())];
+        if let Some(name) = self.devnet_name() {
+            pairs.push((name_key, name.to_string()));
+        }
+        pairs
+    }
+
+    /// The `dg` flags that select this network: `--network devnet --devnet-name moutai`.
+    pub fn dg_flags(&self) -> String {
+        join(&self.selection(["--network", "--devnet-name"]), " ", " ")
+    }
+
+    /// The git config that selects this network for the remote helper, in `scope` (`""` for
+    /// this repository, `"--global "` for every one).
+    pub fn git_config_command(&self, scope: &str) -> String {
+        let git = format!("git config {scope}");
+        let pairs = join(
+            &self.selection(GIT_NETWORK_KEYS),
+            " ",
+            &format!(" && {git}"),
+        );
+        format!("{git}{pairs}")
+    }
+
+    /// The environment that selects this network for one command:
+    /// `DASH_FORGE_NETWORK=devnet DASH_FORGE_DEVNET_NAME=moutai`.
+    pub fn env_assignments(&self) -> String {
+        join(&self.selection([ENV_NETWORK, ENV_DEVNET_NAME]), "=", " ")
+    }
+
     /// The env vars that select this network in a child process (`git` → git-remote-dash).
     /// Every var is always present so a stale inherited value cannot leak through.
     pub fn env_vars(&self) -> Vec<(&'static str, String)> {
@@ -356,57 +403,19 @@ pub fn deployment_keys() -> impl Iterator<Item = &'static str> {
 }
 
 /// The network a "not deployed here" message points to: the first embedded deployment with
-/// forge-v2 contracts, mainnet first, then testnet, then the devnets by name. Only its kind
-/// and name matter (addresses come from the deployment when it is selected). `None` when
-/// no network has a deployment.
+/// forge-v2 contracts, mainnet first, then testnet, then the devnets by name. `None` when no
+/// network has a deployment.
 pub fn suggested_v2_network() -> Option<Network> {
     let rank = |k: &str| match k {
         "mainnet" => 0,
         "testnet" => 1,
         _ => 2,
     };
-    let key = deployment_keys()
+    // deployment_keys() is sorted, so ties on rank keep name order.
+    deployment_keys()
         .filter(|k| deployment(k).ok().flatten().is_some_and(|d| d.v2.is_some()))
-        .min_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.cmp(b)))?;
-    Some(match key {
-        "mainnet" => Network::Mainnet,
-        "testnet" => Network::Testnet,
-        key => Network::Devnet {
-            name: key.strip_prefix("devnet-").unwrap_or(key).to_string(),
-            dapi_addresses: Vec::new(),
-            quorum_base_url: None,
-        },
-    })
-}
-
-impl Network {
-    /// The `dg` flags that select this network: `--network devnet --devnet-name moutai`.
-    pub fn dg_flags(&self) -> String {
-        match self.devnet_name() {
-            Some(name) => format!("--network devnet --devnet-name {name}"),
-            None => format!("--network {}", self.kind()),
-        }
-    }
-
-    /// The git config that selects this network for `git` (the remote helper), in `scope`
-    /// (`""` for this repository, `"--global "` for every one): `git config dash.network
-    /// devnet && git config dash.devnetName moutai`.
-    pub fn git_config_command(&self, scope: &str) -> String {
-        let git = format!("git config {scope}");
-        match self.devnet_name() {
-            Some(name) => format!("{git}dash.network devnet && {git}dash.devnetName {name}"),
-            None => format!("{git}dash.network {}", self.kind()),
-        }
-    }
-
-    /// The environment that selects this network for one command:
-    /// `DASH_FORGE_NETWORK=devnet DASH_FORGE_DEVNET_NAME=moutai`.
-    pub fn env_assignments(&self) -> String {
-        match self.devnet_name() {
-            Some(name) => format!("{ENV_NETWORK}=devnet {ENV_DEVNET_NAME}={name}"),
-            None => format!("{ENV_NETWORK}={}", self.kind()),
-        }
-    }
+        .min_by_key(|k| rank(k))
+        .map(Network::from_key)
 }
 
 /// The embedded deployment for `key`, or `None` when no file exists for it.
@@ -487,6 +496,18 @@ const ENV_KEYS: [&str; 4] = [
     ENV_QUORUM_URL,
 ];
 
+/// `k<sep>v` for each pair, joined by `between`.
+fn join(pairs: &[(&str, String)], sep: &str, between: &str) -> String {
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{k}{sep}{v}"))
+        .collect::<Vec<_>>()
+        .join(between)
+}
+
+/// The git config keys that pick the network kind and devnet name.
+pub const GIT_NETWORK_KEYS: [&str; 2] = ["dash.network", "dash.devnetName"];
+
 /// The git config keys, in [`NetworkSettings::from_lookup`] order.
 const GIT_CONFIG_KEYS: [&str; 4] = [
     "dash.network",
@@ -541,8 +562,8 @@ impl NetworkSettings {
     /// network flag of their own (the remote helper). Empty when there is no config file; a
     /// file that cannot be read or does not parse is E204, as it is in `dg`.
     pub fn from_dg_config() -> Result<Self> {
-        match crate::keystore::forge_config_dir() {
-            Some(dir) => Self::from_dg_config_file(&dir.join("config.toml")),
+        match crate::config_file::dg_config_path() {
+            Some(path) => Self::from_dg_config_file(&path),
             None => Ok(Self::default()),
         }
     }
@@ -556,11 +577,8 @@ impl NetworkSettings {
         Ok(Self::from_lookup(key, DG_CONFIG_KEYS))
     }
 
-    /// What `git push` / `git clone` of a `dash://` URL resolve: the environment (what `dg`
-    /// and forge-import pass the helper) > git config `dash.*` (read through `git_get`) >
-    /// the network `dg` recorded in `config.toml` > (in [`Self::resolve`]) testnet. Without
-    /// the `config.toml` layer, `dg auth new --devnet-name moutai` followed by a plain
-    /// `git push` went to testnet (L-03). See [`Self::git_helper_layers`].
+    /// The remote helper's network layers: env > git config (read through `git_get`) >
+    /// dg's config.toml > (in [`Self::resolve`]) testnet (L-03).
     pub fn for_git_helper(git_get: impl Fn(&str) -> Option<String>) -> Result<Self> {
         Self::git_helper_layers(
             Self::from_env(),
@@ -584,9 +602,14 @@ impl NetworkSettings {
         Ok(upper.overlay(dg()?))
     }
 
+    /// Whether no layer chose a network, so [`Self::resolve`] falls back to testnet.
+    pub fn is_unset(&self) -> bool {
+        self.network.is_none() && self.devnet_name.is_none()
+    }
+
     /// Whether this layer picks one network by itself: a devnet name, or `testnet` /
     /// `mainnet`. A bare `devnet` still needs a name from a lower layer.
-    pub fn names_a_network(&self) -> bool {
+    fn names_a_network(&self) -> bool {
         self.devnet_name.is_some()
             || self
                 .network
@@ -1079,6 +1102,28 @@ mod tests {
 
     const DG_MOUTAI: &str = "network = \"devnet\"\ndevnet_name = \"moutai\"\n\
                              default_identity = \"keychain:dash-forge/devnet-moutai/X\"\n";
+
+    #[test]
+    fn a_network_renders_as_flags_git_config_and_env() {
+        let moutai = Network::from_key("devnet-moutai");
+        assert_eq!(moutai.dg_flags(), "--network devnet --devnet-name moutai");
+        assert_eq!(
+            moutai.git_config_command("--global "),
+            "git config --global dash.network devnet && git config --global dash.devnetName moutai"
+        );
+        assert_eq!(
+            moutai.env_assignments(),
+            "DASH_FORGE_NETWORK=devnet DASH_FORGE_DEVNET_NAME=moutai"
+        );
+        let main = Network::from_key("mainnet");
+        assert_eq!(main.dg_flags(), "--network mainnet");
+        assert_eq!(
+            main.git_config_command(""),
+            "git config dash.network mainnet"
+        );
+        assert_eq!(main.env_assignments(), "DASH_FORGE_NETWORK=mainnet");
+        assert_eq!(suggested_v2_network().unwrap().key(), "devnet-moutai");
+    }
 
     #[test]
     fn the_helper_falls_back_to_the_network_dg_saved() {

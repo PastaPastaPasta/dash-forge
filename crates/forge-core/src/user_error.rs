@@ -65,6 +65,11 @@ pub const TOP_UP_URL: &str = "https://bridge.thepasta.org";
 /// failed.
 pub const NOTE_PLATFORM_CHUNKS_JOURNALED: &str = "Platform chunks that uploaded are journaled and reused by the next push; no packManifest and no ref was written";
 
+/// `code` as its `'static` catalogue entry, when it is one (a code another binary reported).
+pub fn catalogued(code: &str) -> Option<&'static str> {
+    CATALOGUE.iter().find(|(c, _)| *c == code).map(|(c, _)| *c)
+}
+
 /// The stable code catalogue: `(code, one-line title)`. `docs/errors.md` has one section per
 /// entry, in this order.
 pub const CATALOGUE: &[(&str, &str)] = &[

@@ -226,8 +226,10 @@ const DEFAULT_ADMISSION_FACTOR: Admission = { budget: 2, balance: 5 }
  * pushes to S3-compatible storage were charged 0.0021, 0.0022, 0.0023, 0.0028, 0.0028, 0.0029,
  * 0.0029 and 0.0029 DASH. The same size of push with Platform-stored packs came to 0.0042–0.0055
  * DASH, and a tag-only push to 0.00066. Earlier copy said ~0.0003, the manifest-plus-ref estimate
- * without the per-document base fees (ledger D-009/D-010). Re-measure when fees change (moutai
- * moved to beta.5 on 2026-09-27).
+ * without the per-document base fees (ledger D-009/D-010).
+ *
+ * PLACEHOLDER: moutai moved to beta.5 on 2026-09-27, which changes fees. This keeps the beta.4
+ * figure until the calibrated beta.5 per-push cost (P-6) replaces it here, the only place.
  */
 export const BYO_PUSH_DASH = 0.003
 

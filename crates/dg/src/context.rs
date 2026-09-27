@@ -80,7 +80,7 @@ impl Ctx {
             cli.dapi_addresses.clone(),
         );
         let layers = stack(flags, config, NetworkSettings::from_env());
-        let network_is_default = layers.network.is_none() && layers.devnet_name.is_none();
+        let network_is_default = layers.is_unset();
         let target = layers
             .resolve()
             .context("resolving the network (--network / --devnet-name / config.toml)")?;

@@ -1,16 +1,14 @@
 /**
- * The copy-paste commands a repository page shows (clone box, empty-repository state). Each
- * one names this build's network, so it works pasted verbatim on a machine where nothing
- * else chose one: `git-remote-dash` otherwise takes `DASH_FORGE_NETWORK`, then git config
- * `dash.network`, then the network `dg auth` saved, then testnet (L-03). The network rides in
- * git config (`git clone -c …` persists it into the clone; `git config` in an existing
- * repository), never in the `dash://` URL, which names only the repository.
+ * The repository page's copy-paste commands. Each names this build's network, so it works
+ * pasted verbatim where nothing else chose one (else git-remote-dash falls back to testnet:
+ * L-03). The network goes into git config (`git clone -c …` keeps it in the clone), never
+ * into the `dash://` URL, which names only the repository.
  */
 
 import { ACTIVE_NETWORK, type NetworkConfig } from '@/lib/constants'
 
 /** The `git config` keys and values that select `config`'s network for git-remote-dash. */
-export function gitNetworkConfig(config: NetworkConfig = ACTIVE_NETWORK): readonly (readonly [string, string])[] {
+function gitNetworkConfig(config: NetworkConfig): [string, string][] {
   return config.devnetName !== null
     ? [
         ['dash.network', 'devnet'],
@@ -20,7 +18,7 @@ export function gitNetworkConfig(config: NetworkConfig = ACTIVE_NETWORK): readon
 }
 
 /** The `dg` flags that select `config`'s network. */
-export function dgNetworkFlags(config: NetworkConfig = ACTIVE_NETWORK): string {
+function dgNetworkFlags(config: NetworkConfig): string {
   return config.devnetName !== null ? `--network devnet --devnet-name ${config.devnetName}` : `--network ${config.network}`
 }
 
@@ -43,7 +41,7 @@ export function repoCommands(owner: string, name: string, config: NetworkConfig 
   const pairs = gitNetworkConfig(config)
   return {
     remote,
-    gitClone: `git clone ${pairs.map(([k, v]) => `-c ${k}=${v} `).join('')}${remote}`,
+    gitClone: ['git clone', ...pairs.map(([k, v]) => `-c ${k}=${v}`), remote].join(' '),
     dgClone: `dg repo clone ${owner}/${name} ${dgNetworkFlags(config)}`,
     remoteAdd: `git remote add origin ${remote}`,
     setNetwork: pairs.map(([k, v]) => `git config ${k} ${v}`).join(' && '),

@@ -48,6 +48,11 @@ pub fn config_toml_error(path: &Path, raw: &str, e: &toml::de::Error) -> UserErr
     .fix("or move it aside and sign in again with `dg auth login`, which writes a new one")
 }
 
+/// `dg`'s `config.toml`: `<forge config dir>/config.toml`, or `None` with no config dir.
+pub fn dg_config_path() -> Option<std::path::PathBuf> {
+    crate::keystore::forge_config_dir().map(|d| d.join("config.toml"))
+}
+
 /// `dg`'s `config.toml` at `path` as a TOML table, for the tools that only read a key or two
 /// of it (the remote helper's default identity and network). `Ok(None)` when the file does
 /// not exist; a file that cannot be read or does not parse is E204, as it is in `dg`.

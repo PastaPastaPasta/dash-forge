@@ -8,23 +8,24 @@
 //! Repositories cannot be deleted.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use serde_json::json;
-
-use forge_core::user_error::{codes, UserError};
 
 use forge_core::create::{default_journal_dir, CreateRepoOpts};
 use forge_core::members::MemberReader;
 use forge_core::repo::RepoService;
 use forge_core::resolve::{list_owned, repo_slug};
+use forge_core::user_error::{codes, UserError};
 
 use crate::common::{resolve, RepoRef, Session};
 use crate::context::Ctx;
 use crate::fmt::{
     cost_json, cost_line, dash_usd_price, FORK_PER_DOC_CREDITS, REPO_CREATE_ESTIMATE_CREDITS,
 };
+use crate::publish::Report;
 
 pub use crate::publish::init;
 use crate::{RepoBackendCommand, RepoCommand};
@@ -62,7 +63,7 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
 /// the cloning; its progress and errors go to the terminal as with a plain `git clone`.
 fn clone(ctx: &Ctx, repo: &str, dir: Option<&Path>) -> Result<()> {
     let repo_ref = RepoRef::parse(repo)?;
-    let Some(owner) = repo_ref.owner.clone() else {
+    let Some(owner) = &repo_ref.owner else {
         return Err(crate::errors::usage(
             "clone needs an explicit owner: `dg repo clone <owner>/<name>`",
         ));
@@ -70,49 +71,42 @@ fn clone(ctx: &Ctx, repo: &str, dir: Option<&Path>) -> Result<()> {
     // E702 with dg's own fix (flags) before git runs, rather than the helper's git-shaped one.
     ctx.target.require_v2()?;
     let url = format!("dash://{owner}/{}", repo_ref.name);
-    let dest = dir.map_or_else(
-        || PathBuf::from(clone_dir_name(&repo_ref.name)),
-        Path::to_path_buf,
-    );
-    let (_report_dir, report) = crate::publish::Report::new()?;
-    let (report_var, report_path) = report.env();
-    let mut cmd = std::process::Command::new("git");
+    let dest = dir.unwrap_or_else(|| Path::new(clone_dir_name(&repo_ref.name)));
+    let (_report_dir, report) = Report::new()?;
+    let mut cmd = Command::new("git");
     cmd.arg("clone")
         .arg(&url)
-        .arg(&dest)
+        .arg(dest)
         .envs(crate::git::dash_env(ctx))
-        .env(report_var, report_path)
-        .stdin(std::process::Stdio::null());
+        .envs(report.env())
+        .stdin(Stdio::null());
     if ctx.json {
-        cmd.stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null());
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
     }
     let status = cmd.status().context("running git clone")?;
     if !status.success() {
-        let (code, cause) = report
-            .helper_error(ctx.json)
+        let (code, cause) = Report::helper_error(&report.events(), ctx.json)
             .unwrap_or((codes::UNEXPECTED, format!("git clone exited with {status}")));
         return Err(UserError::new(code, format!("could not clone {url}"))
             .cause(cause)
             .fix("fix what the clone reported, then run the same command again")
             .into());
     }
-    let pinned = crate::git::pin_network(ctx, &dest)?;
-    let shown = dest.display();
+    let pinned = crate::git::pin_network(ctx, dest)?;
+    let (shown, network) = (dest.display(), ctx.network_label());
     ctx.emit(
         json!({
             "remoteUrl": url,
             "directory": shown.to_string(),
-            "network": ctx.network_label(),
+            "network": network,
             "gitConfig": pinned,
         }),
         || {
-            println!("✓ cloned {url} into {shown} ({})", ctx.network_label());
+            println!("✓ cloned {url} into {shown} ({network})");
             if !pinned.is_empty() {
                 println!(
-                    "✓ git config {} (so `git push` there uses {})",
-                    pinned.join(", "),
-                    ctx.network_label()
+                    "✓ git config {} (so `git push` there uses {network})",
+                    pinned.join(", ")
                 );
             }
         },

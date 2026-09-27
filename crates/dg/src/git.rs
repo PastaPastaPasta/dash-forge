@@ -8,7 +8,7 @@ use std::path::Path;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
-use forge_core::network::NetworkSettings;
+use forge_core::network::{NetworkSettings, GIT_NETWORK_KEYS};
 use forge_core::platform::Network;
 
 use crate::context::Ctx;
@@ -41,39 +41,32 @@ pub fn dash_env(ctx: &Ctx) -> Vec<(String, String)> {
 /// Pin `dg`'s network in the repository at `root` (its own git config) unless its git config
 /// already resolves it. A `dash://` repository lives on one network, so its clone keeps
 /// using that network in a shell without `DASH_FORGE_NETWORK` and after `dg auth` saves
-/// another default. Returns the keys set.
+/// another default. Returns what it set, as `key=value` (the DAPI list as its key only).
 pub fn pin_network(ctx: &Ctx, root: &Path) -> Result<Vec<String>> {
     let set = |k: &str, v: &str| git(root, &["config", k, v], &[]).map(drop);
     let want = ctx.network();
-    let git_config = || {
-        NetworkSettings::from_git_config(|k| {
-            git(root, &["config", "--get", k], &[])
-                .ok()
-                .filter(|v| !v.is_empty())
-        })
-    };
+    let git_config = || NetworkSettings::from_git_config(|k| config_get(root, k));
     let pinned = || git_config().resolve().is_ok_and(|t| t.network == *want);
     let mut out = Vec::new();
     if !pinned() {
-        set("dash.network", want.kind())?;
-        out.push(format!("dash.network={}", want.kind()));
-        if let Some(name) = want.devnet_name() {
-            set("dash.devnetName", name)?;
-            out.push(format!("dash.devnetName={name}"));
+        for (k, v) in want.selection(GIT_NETWORK_KEYS) {
+            set(k, &v)?;
+            out.push(format!("{k}={v}"));
         }
-    }
-    if !pinned() {
-        if let Network::Devnet {
-            dapi_addresses,
-            quorum_base_url,
-            ..
-        } = want
-        {
-            set("dash.dapiAddresses", &dapi_addresses.join(","))?;
-            out.push("dash.dapiAddresses".into());
-            if let Some(q) = quorum_base_url {
-                set("dash.quorumUrl", q)?;
-                out.push(format!("dash.quorumUrl={q}"));
+        // A devnet whose addresses differ from its deployment file needs them too.
+        if !pinned() {
+            if let Network::Devnet {
+                dapi_addresses,
+                quorum_base_url,
+                ..
+            } = want
+            {
+                set("dash.dapiAddresses", &dapi_addresses.join(","))?;
+                out.push("dash.dapiAddresses".into());
+                if let Some(q) = quorum_base_url {
+                    set("dash.quorumUrl", q)?;
+                    out.push(format!("dash.quorumUrl={q}"));
+                }
             }
         }
     }
@@ -84,6 +77,13 @@ pub fn pin_network(ctx: &Ctx, root: &Path) -> Result<Vec<String>> {
         );
     }
     Ok(out)
+}
+
+/// `git config --get <key>` in `dir`: `None` when unset or empty.
+pub fn config_get(dir: &Path, key: &str) -> Option<String> {
+    git(dir, &["config", "--get", key], &[])
+        .ok()
+        .filter(|v| !v.is_empty())
 }
 
 /// `git <args>` in `dir`, returning trimmed stdout; stderr goes into the error.
@@ -372,11 +372,7 @@ pub fn authors(dir: &Path, base: Option<&str>, head: &str) -> Result<Vec<String>
 /// Author / committer for a merge commit: the user's git identity, else one naming the
 /// signing identity (a commit needs some author; this says who made it).
 pub fn merge_author(cwd: &Path, identity_id: &str) -> Vec<(String, String)> {
-    let get = |key: &str| {
-        git(cwd, &["config", "--get", key], &[])
-            .ok()
-            .filter(|v| !v.is_empty())
-    };
+    let get = |key: &str| config_get(cwd, key);
     let name = get("user.name")
         .unwrap_or_else(|| format!("dg {}", &identity_id[..8.min(identity_id.len())]));
     let email = get("user.email").unwrap_or_else(|| format!("{identity_id}@dash-forge.invalid"));
@@ -402,12 +398,7 @@ pub fn merge_author_here(identity_id: &str) -> Vec<(String, String)> {
 pub fn storage_overrides(cwd: &Path) -> Vec<String> {
     ["dash.storage", "dash.replicas", "dash.platformFallback"]
         .iter()
-        .filter_map(|key| {
-            git(cwd, &["config", "--get", key], &[])
-                .ok()
-                .filter(|v| !v.is_empty())
-                .map(|v| format!("{key}={v}"))
-        })
+        .filter_map(|key| config_get(cwd, key).map(|v| format!("{key}={v}")))
         .collect()
 }
 

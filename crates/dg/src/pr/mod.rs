@@ -1803,10 +1803,7 @@ pub(crate) fn push_to(
             .replace(&format!("[{code}]"), "")
             .trim()
             .to_string();
-        let code: &'static str = forge_core::user_error::CATALOGUE
-            .iter()
-            .find(|(c, _)| *c == code)
-            .map_or(codes::REJECTED, |(c, _)| c);
+        let code = forge_core::user_error::catalogued(code).unwrap_or(codes::REJECTED);
         return Err(UserError::new(code, format!("{goal}: {headline}"))
             .cause(text.replace("dash: ", ""))
             .into());
