@@ -218,22 +218,27 @@ const ADMISSION_MARGIN = 1.05
 const DEFAULT_ADMISSION_FACTOR: Admission = { budget: 2, balance: 5 }
 
 /**
- * What one small `git push` whose packs go to the pusher's own storage (a bucket, IPFS) costs
- * on Platform, in DASH: the pack manifest, the ref update and the browse-index publish. The one
- * place the web quotes it (repository page, storage settings, cost card).
- *
- * Measured on moutai (drive 4.2.0-beta.4, 2026-09-27, live journeys J3/J4/J6): eight 3–7 object
- * pushes to S3-compatible storage were charged 0.0021, 0.0022, 0.0023, 0.0028, 0.0028, 0.0029,
- * 0.0029 and 0.0029 DASH. The same size of push with Platform-stored packs came to 0.0042–0.0055
- * DASH, and a tag-only push to 0.00066. Earlier copy said ~0.0003, the manifest-plus-ref estimate
+ * What a small `git push` costs on Platform, in DASH, by where its packs go: the web's single
+ * source for push costs (repository page, storage settings, cost card). `byo`: the pack
+ * manifest, the ref update and the browse-index publish, packs in the pusher's own storage.
+ * `platform`: the same plus the packs as Platform chunks, which add about `perMib` for each
+ * MiB stored (0.0047 DASH per 15 KB). Earlier copy said ~0.0003, the manifest-plus-ref estimate
  * without the per-document base fees (ledger D-009/D-010).
  *
- * On beta.5 (2026-09-27, the G7 quick-start walkthrough) a 3-object push to S3 storage was
- * charged 0.0021 DASH, consistent with this figure.
- *
- * PLACEHOLDER until the calibrated beta.5 per-push cost (P-6) replaces it here, the only place.
+ * Measured on moutai beta.5, 2026-09-27, see PR #98/P-6 (per-write balance deltas): a small push
+ * 0.0021–0.0028 DASH with own storage, 0.0040–0.0046 with Platform storage; 15 KB on Platform
+ * 0.0047 DASH. The G7 quick-start walkthrough agrees (0.0021 own storage; 0.0033–0.0044 Platform).
  */
-export const BYO_PUSH_DASH = 0.003
+export const PUSH_COST_DASH = {
+  byo: { min: 0.002, max: 0.003 },
+  platform: { min: 0.003, max: 0.005 },
+  perMib: 0.31,
+} as const
+
+/** A `min–max` DASH range for copy: `0.002–0.003`. */
+export function dashRange({ min, max }: { readonly min: number; readonly max: number }): string {
+  return `${min}–${max}`
+}
 
 /** A pre-sign cost preview for the confirm UI. */
 export interface CostPreview {

@@ -14,6 +14,7 @@ import { choiceOf, policyFor, policyForRepo, policyProblem, withRepoPolicy, type
 import { errText } from '@/lib/storage/util'
 import { useStorageConfig } from '@/hooks/use-storage-config'
 import { Button } from '@/components/ui/button'
+import { PUSH_COST_DASH } from '@/lib/sdk/cost'
 
 export function RepoStoragePolicy({ repoId }: { repoId: string }): JSX.Element {
   const { config, storable, save, error } = useStorageConfig()
@@ -34,7 +35,7 @@ export function RepoStoragePolicy({ repoId }: { repoId: string }): JSX.Element {
   if (config.profiles.length === 0) {
     return (
       <p className="text-dense text-anvil-600 dark:text-anvil-300">
-        No storage set up in this browser: browser pushes here would store packs on Platform at ~0.28 DASH/MiB, asking first.{' '}
+        No storage set up in this browser: browser pushes here would store packs on Platform at ~{PUSH_COST_DASH.perMib} DASH/MiB, asking first.{' '}
         <Link href="/settings/storage" className="text-forge-700 underline dark:text-forge-400">Set up storage →</Link>
       </p>
     )

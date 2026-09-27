@@ -35,6 +35,7 @@ import { StorageTest, profileSnapshot } from '@/components/storage/storage-test'
 import { CostCard } from '@/components/storage/cost-card'
 import { cn } from '@/lib/utils'
 import { formatDate } from '@/lib/view/format'
+import { PUSH_COST_DASH } from '@/lib/sdk/cost'
 
 const TILE_ICON: Readonly<Record<ProviderId, typeof Cloud>> = {
   r2: Cloud,
@@ -191,7 +192,7 @@ function AddProfile({
       <section className="space-y-3 rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-750 dark:bg-anvil-900" aria-label="Dash Platform storage">
         <h3 className="text-prose">Dash Platform</h3>
         <p className="text-dense text-anvil-600 dark:text-anvil-300">
-          Packs stored as Platform documents: permanent, readable by anyone, nothing to run. Priced at about 0.28 DASH per MiB, charged when you push, and never refunded (Platform storage cannot be deleted, so nobody can break a repo others depend on). Every Platform write asks first, with its price.
+          Packs stored as Platform documents: permanent, readable by anyone, nothing to run. Priced at about {PUSH_COST_DASH.perMib} DASH per MiB, charged when you push, and never refunded (Platform storage cannot be deleted, so nobody can break a repo others depend on). Every Platform write asks first, with its price.
         </p>
         <div className="flex gap-2">
           <Button
@@ -299,7 +300,7 @@ function Profiles({ config, storable, save, onEdit }: { config: StorageConfig; s
       </h2>
       {config.profiles.length === 0 ? (
         <p className="rounded-lg border border-dashed border-anvil-300 px-4 py-5 text-center text-dense text-anvil-500 dark:border-anvil-700 dark:text-anvil-400">
-          No storage yet. Browser pushes (merges, forks) would store packs on Platform at ~0.28 DASH/MiB, asking first.
+          No storage yet. Browser pushes (merges, forks) would store packs on Platform at ~{PUSH_COST_DASH.perMib} DASH/MiB, asking first.
         </p>
       ) : (
         <ul className="divide-y divide-anvil-100 overflow-hidden rounded-lg border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800" data-testid="profile-list">

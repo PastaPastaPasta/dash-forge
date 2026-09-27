@@ -192,8 +192,10 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     ])
     await expect(empty.getByTestId('empty-repo-network')).toContainText(`devnet-${E2E_DEVNET}`)
     await expect(empty.getByText(/Storage: packs go to/)).toBeVisible()
-    // L-11: the ~0.0003 DASH per push copy was 5-10x low.
+    // L-11: the ~0.0003 DASH per push copy was 5-10x low; the calibrated beta.5 figures show instead.
     await expect(empty.getByText(/0\.0003 DASH/)).toHaveCount(0)
+    await expect(empty.getByText(/a small push ≈ 0\.003–0\.005 DASH/)).toBeVisible()
+    await expect(empty.getByText(/~0\.31 DASH\/MiB/)).toBeVisible()
     await expect(empty.getByRole('link', { name: 'Install →' })).toBeVisible()
     // With no storage configured, the amber note links to the storage settings.
     const note = empty.getByRole('note')
