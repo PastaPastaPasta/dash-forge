@@ -4,7 +4,8 @@
  * The flow, journaled in IndexedDB so a closed tab resumes rather than stranding the deposit:
  *   1. a fresh 12-word mnemonic; the user proves they wrote it down (three words);
  *   2. the deposit address (the mnemonic's BIP-44 asset-lock key) and QR; funds arrive from
- *      any wallet (or the faucet on dev networks);
+ *      any wallet (or the faucet on dev networks) and are seen on a DAPI transaction feed
+ *      that replays from the Core height recorded when the creation started;
  *   3. the asset lock is built, saved to the journal, broadcast, and proven (InstantSend or
  *      chain lock);
  *   4. this browser's limited key is generated and **stored in the vault first**, then one
@@ -31,7 +32,8 @@ import {
   broadcastTx,
   buildAssetLock,
   coreEndpoints,
-  getUtxos,
+  currentHeight,
+  depositHeld,
   obtainLockProof,
   waitForDeposit,
   wifBytes,
@@ -53,6 +55,8 @@ export interface CreationJournal {
   /** The signed asset-lock transaction, saved before it is broadcast (hex). */
   readonly lockRaw: string | null
   readonly startedAt: number
+  /** The Core height when the creation started: the deposit watch replays from here. */
+  readonly startHeight?: number | null
 }
 
 function journalKey(network: Network): string {
@@ -68,9 +72,8 @@ export function clearCreationJournal(network: Network): Promise<void> {
 }
 
 /** What an unfinished creation's deposit address holds (duffs), to warn before discarding. */
-export async function depositBalance(network: Network, address: string, endpoints = coreEndpoints(network)): Promise<number> {
-  const utxos = await getUtxos(endpoints, address)
-  return utxos.reduce((s, u) => s + u.satoshis, 0)
+export async function depositBalance(network: Network, journal: CreationJournal, endpoints = coreEndpoints(network)): Promise<number> {
+  return depositHeld(endpoints, journal.depositAddress, journal.startHeight ?? { startedAt: journal.startedAt })
 }
 
 /** The deposit address a mnemonic funds (its BIP-44 asset-lock key). */
@@ -135,10 +138,15 @@ export async function createIdentityFromMnemonic(
 
   // 1-3: deposit → asset lock (saved before broadcast) → proof.
   if (journal.lockTxid === null || journal.lockRaw === null) {
+    // A fresh creation records the tip before the address is shown: nothing can pay it earlier.
+    // An older journal without one is left alone, so the watch rewinds past its start.
+    const fresh = Date.now() - journal.startedAt < 10 * 60 * 1000
+    if (journal.startHeight == null && fresh) await save({ startHeight: await currentHeight(ep) })
     params.onStage?.('waiting-deposit')
     const utxos = await waitForDeposit(ep, lockKey.address, params.minDepositDuffs ?? MIN_DEPOSIT_DUFFS, {
       signal: params.signal,
       onSeen: params.onDeposit,
+      from: journal.startHeight ?? { startedAt: journal.startedAt },
     })
     params.onStage?.('locking')
     const priv = wifBytes(lockKey.wif)
@@ -148,7 +156,7 @@ export async function createIdentityFromMnemonic(
   }
   const lockTxid = journal.lockTxid as string
   const lockRaw = hexToBytes(journal.lockRaw as string)
-  // Idempotent: re-sending an accepted transaction is a no-op the explorer tolerates.
+  // Idempotent: re-sending an accepted transaction is harmless (DAPI, else the explorer).
   await broadcastTx(ep, bytesToHex(lockRaw), lockTxid)
   params.onStage?.('proving')
   const proof: LockProof = await obtainLockProof(ep, { txid: lockTxid, raw: lockRaw }, () => platformClh(sdk), {

@@ -139,7 +139,7 @@ export function KeysPanel(): JSX.Element {
       </p>
       {revokeError ? <p role="alert" className="text-[12px] text-danger">{revokeError}</p> : null}
       <Field
-        label="Block explorer (used only to watch identity deposits)"
+        label="Fallback block explorer (asked only if the network's nodes cannot see an identity deposit)"
         htmlFor="explorer-url"
         hint="Insight API base URL. Leave empty for the network default. It can delay you but cannot take funds or keys."
       >
