@@ -201,7 +201,11 @@ export function privateGate(repo: RepoRef, ctx: OpenContext): ContentGate {
       const stored = storedPrivateDoc(type, doc)
       if (stored === null) return { ok: false, reason: 'notEncrypted' }
       const opened = await openContent(stored, ctx)
-      if (opened.status === 'readable') return { ok: true, doc: asPlaintext(doc, opened.fields) }
+      if (opened.status === 'readable') {
+        // An anchor's prevEpochKey is an older epoch's raw key: never kept past the open.
+        opened.fields.prevEpochKey?.fill(0)
+        return { ok: true, doc: asPlaintext(doc, opened.fields) }
+      }
       if (opened.status === 'malformed') return { ok: false, reason: 'notEncrypted' }
       switch (opened.reason) {
         case 'late':

@@ -92,7 +92,7 @@ async function publicKeyHex(secret: Uint8Array, network: Network): Promise<strin
  * Check `secret` against the identity's keys and seal it into the vault: it must be the private
  * half of an enabled ENCRYPTION key on the identity. Returns that key's id. `secret` is wiped.
  */
-export async function adoptEncryptionKey(sdk: EvoSDK, network: Network, identityId: string, secret: Uint8Array): Promise<number> {
+export async function adoptEncryptionKey(sdk: EvoSDK, network: Network, identityId: string, coreId: string, secret: Uint8Array): Promise<number> {
   try {
     if (secret.length !== 32) throw new Error('an encryption private key is 32 bytes')
     const pub = await publicKeyHex(secret, network)
@@ -100,6 +100,7 @@ export async function adoptEncryptionKey(sdk: EvoSDK, network: Network, identity
       (k) => k.purposeNumber === PURPOSE_ENCRYPTION && k.keyTypeNumber === KEY_TYPE_ECDSA_SECP256K1 && k.disabledAt === undefined && k.data.toLowerCase() === pub,
     )
     if (match === undefined) throw new Error("that key is not an enabled encryption key of this identity")
+    if (!isUsableEncryptionKey(match, coreId)) throw new Error('that encryption key is bound to another contract, so it cannot be used for Forge private repos')
     await storeEncryptionKey(network, identityId, match.keyId, secret)
     return match.keyId
   } finally {
@@ -204,7 +205,7 @@ export async function importEncryptionKey(
   for (const k of candidates) {
     const fromFile = fileKeys.get(k.keyId)
     if (fromFile !== undefined && (await publicKeyHex(fromFile, network)) === k.data.toLowerCase()) {
-      return adoptEncryptionKey(sdk, network, identityId, new Uint8Array(fromFile))
+      return adoptEncryptionKey(sdk, network, identityId, coreId, new Uint8Array(fromFile))
     }
   }
   const mnemonic = source.mnemonic
@@ -212,7 +213,7 @@ export async function importEncryptionKey(
   if (!(await isValidMnemonic(mnemonic))) throw new Error('those words are not a valid recovery phrase')
   for (const k of candidates) {
     const secret = await deriveSecret(normalizeMnemonic(mnemonic), network, k.keyId, source.identityIndex ?? 0)
-    if ((await publicKeyHex(secret, network)) === k.data.toLowerCase()) return adoptEncryptionKey(sdk, network, identityId, secret)
+    if ((await publicKeyHex(secret, network)) === k.data.toLowerCase()) return adoptEncryptionKey(sdk, network, identityId, coreId, secret)
     secret.fill(0)
   }
   return null
@@ -298,7 +299,7 @@ export async function registerEncryptionKey(
   try {
     for (let i = 0; ; i++) {
       try {
-        return { keyId: await adoptEncryptionKey(sdk, network, identityId, new Uint8Array(secret)), registered: true }
+        return { keyId: await adoptEncryptionKey(sdk, network, identityId, coreId, new Uint8Array(secret)), registered: true }
       } catch (e) {
         if (i >= 6 || e instanceof VaultLockedError) throw e
         await sleep(1500)
@@ -359,7 +360,9 @@ export async function encryptionOps(sdk: EvoSDK, network: Network, identityId: s
   const version = (sdk as unknown as { version(): number }).version()
   const net = wasmNetwork(network)
   const withPrivate = <T>(use: (pk: WasmPrivateKey) => Promise<T>): Promise<T> =>
-    withEncryptionKey(network, identityId, async (_keyId, secret) => {
+    withEncryptionKey(network, identityId, async (heldId, secret) => {
+      // The stored key was replaced since these ops were made: their key id no longer matches.
+      if (heldId !== keyId) throw new VaultLockedError('the encryption key in this browser changed; reload')
       const pk = PrivateKey.fromBytes(secret, net)
       try {
         return await use(pk)

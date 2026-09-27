@@ -35,7 +35,7 @@ import {
   WrapError,
 } from '../private'
 import { compareKey, type ConfigDoc, type RefUpdate } from '../rules'
-import type { Membership } from '../rules/v2'
+import type { Membership, Role } from '../rules/v2'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { DOC, asIdentifierString, num, str, stringArray, type RepoRef } from './contract'
 import type { RepoConfig } from './config'
@@ -258,12 +258,20 @@ export async function loadPrivateSession(input: {
   readonly reader: string
   readonly source: SessionSource
   readonly unwrapper: SessionUnwrapper | null
+  /**
+   * Memberships this writer has just deleted (`role` absent: every role of the identity), dropped
+   * even if a lagging node still lists them: a rotation must never count a removed maintainer's
+   * pre-posted anchor or wrap as current (§5.4 C1).
+   */
+  readonly drop?: readonly { readonly identity: string; readonly role?: Role }[]
 }): Promise<PrivateSession> {
   const { repo, network, reader, source, unwrapper } = input
   const generation = closeGeneration
   const repoId = decodeIdentifier(repo.repoId)
   const readerId = decodeIdentifier(reader)
-  const [members, configDocs, wrapDocs] = await Promise.all([source.memberships(), source.configs(), source.repoKeys()])
+  const [read, configDocs, wrapDocs] = await Promise.all([source.memberships(), source.configs(), source.repoKeys()])
+  const drop = input.drop ?? []
+  const members = read.filter((m) => !drop.some((d) => d.identity === m.identity && (d.role === undefined || d.role === m.role)))
   const maintainers = new IdSet(members.filter((m) => m.role === 'maintainer').map((m) => decodeIdentifier(m.identity)))
 
   const memberIds = [...new Set(members.map((m) => m.identity))]
@@ -474,8 +482,9 @@ export function loadPrivateSessionUncached(
   network: Network,
   reader: string,
   unwrapper: SessionUnwrapper | null,
+  drop?: readonly { readonly identity: string; readonly role?: Role }[],
 ): Promise<PrivateSession> {
-  return loadPrivateSession({ repo, network, reader, source: sdkSessionSource(sdk, repo), unwrapper })
+  return loadPrivateSession({ repo, network, reader, source: sdkSessionSource(sdk, repo), unwrapper, ...(drop ? { drop } : {}) })
 }
 
 /** Drop the cached session of a repo (after a membership or key change). */

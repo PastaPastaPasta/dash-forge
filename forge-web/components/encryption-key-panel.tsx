@@ -106,7 +106,7 @@ export function EncryptionKeyPanel(): JSX.Element | null {
 
   const fromPaste = (): void => {
     const value = pasted.current?.value ?? ''
-    void run(() => adoptEncryptionKey(sdk!, network, identity, parseEncryptionKeyInput(value)))
+    void run(() => adoptEncryptionKey(sdk!, network, identity, core, parseEncryptionKeyInput(value)))
   }
 
   const register = (): void => {

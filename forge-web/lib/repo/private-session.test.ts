@@ -29,7 +29,7 @@ import { openPrivateArtifact, readPrivateRange } from '../view/private-packs'
 import { readConfigBundle } from './config'
 import { readAllRefUpdates, readRefs } from './refs'
 import { listIssues, readReviews } from './issues'
-import { epochsAnchoredBy, needsKeepWrap, planRepair, planRotation, removalEffect, rotationCost } from './private-members'
+import { anchorVerdict, epochsAnchoredBy, needsKeepWrap, planRepair, planRotation, removalEffect, rotationCost, wrapOutcome } from './private-members'
 import { privateGate, sealedGate } from './private-content'
 import { loadPrivateSession, closePrivateSessions, type SessionSource, type SessionUnwrapper } from './private-session'
 import { assertNoPlaintext } from './writes'
@@ -476,6 +476,48 @@ describe('rotation and repair planning', () => {
     // With a second wrap from another current maintainer (BOB's own), no keep-wrap is needed.
     w.wraps.push(wrapDoc(BOB, BOB, 0, 70))
     expect(needsKeepWrap(await sessionFor(w, BOB), b58(BOB), b58(ALICE))).toBe(false)
+  })
+
+  it('a rotation session drops the removed membership even when a node still lists it', async () => {
+    const w = await world()
+    await rotate(w) // CAROL's writer row is gone from `w.members` here
+    // A lagging node still lists CAROL, now as a maintainer who pre-posted a config and a wrap for
+    // epoch 2 (the §5.4 C1 threat).
+    const stale = [...w.members, { identity: b58(CAROL), role: 'maintainer' as const, createdAt: 3 }]
+    const kEvil = await EpochKeys.import(REPO, 2, new Uint8Array(32).fill(0x66))
+    w.configs.push(await sealed('config', kEvil, CAROL, {}, { defaultBranch: 'main', prevEpoch: 1, prevEpochKey: new Uint8Array(K1) }, {}, 105, { anchor: true }))
+    const src = { ...source(w), memberships: async () => stale }
+    const naive = await loadPrivateSession({ repo: REPO_REF, network: 'devnet', reader: b58(ALICE), source: src, unwrapper: unwrapper(w) })
+    expect(naive.resolution.currentEpoch).toBe(2)
+    const dropped = await loadPrivateSession({
+      repo: REPO_REF,
+      network: 'devnet',
+      reader: b58(ALICE),
+      source: src,
+      unwrapper: unwrapper(w),
+      drop: [{ identity: b58(CAROL) }],
+    })
+    expect(dropped.resolution.currentEpoch).toBe(1)
+    expect(dropped.members.some((m) => m.identity === b58(CAROL))).toBe(false)
+  })
+
+  it('step 4 confirms only an anchor with our key, readable as the write epoch', async () => {
+    const w = await world()
+    const k1 = await rotate(w)
+    const s = await sessionFor(w, ALICE)
+    expect(anchorVerdict(s, 1, k1.commit, b58(ALICE))).toBe('ours')
+    // Same owner, another key (a replayed anchor): never "ours".
+    expect(anchorVerdict(s, 1, new Uint8Array(32).fill(1), b58(ALICE))).toBe('mismatch')
+    expect(anchorVerdict(s, 1, k1.commit, b58(BOB))).toBe('lost')
+    expect(anchorVerdict(s, 5, k1.commit, b58(ALICE))).toBe('pending')
+  })
+
+  it('a standing wrap counts only with the same key to the same recipient key', () => {
+    const c = new Uint8Array(32).fill(7)
+    expect(wrapOutcome(null, { commit: c, keyId: 4 })).toEqual({ kind: 'unreadable' })
+    expect(wrapOutcome({ commit: c, recipientKeyId: 4 }, { commit: c, keyId: 4 })).toEqual({ kind: 'same' })
+    expect(wrapOutcome({ commit: c, recipientKeyId: 3 }, { commit: c, keyId: 4 })).toEqual({ kind: 'different' })
+    expect(wrapOutcome({ commit: new Uint8Array(32), recipientKeyId: 4 }, { commit: c, keyId: 4 })).toEqual({ kind: 'different' })
   })
 
   it('needs the current epoch to be readable, and a maintainer', async () => {

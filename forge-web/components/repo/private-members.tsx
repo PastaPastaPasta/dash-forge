@@ -261,6 +261,12 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         }}
       />
       {removing !== null && removalPlan.error !== null ? <p className="text-[12px] text-danger">{removalPlan.error}</p> : null}
+      {removing !== null && removalPlan.plan !== null && write.context !== null && removalPlan.plan.recipients[0]?.keyId !== write.context.ops.keyId ? (
+        <p className="text-[12px] text-caution">
+          Your identity has a newer encryption key (key {removalPlan.plan.recipients[0]?.keyId}) than the one in this browser, and the new repo
+          key goes to it: add that key here (Settings → Keys) to keep reading this repo after the rotation.
+        </p>
+      ) : null}
       {removing !== null && removalPlan.plan !== null && removalPlan.plan.unreachable.length > 0 ? (
         <p className="text-[12px] text-caution">
           {removalPlan.plan.unreachable.length} remaining {removalPlan.plan.unreachable.length === 1 ? 'member has' : 'members have'} no
