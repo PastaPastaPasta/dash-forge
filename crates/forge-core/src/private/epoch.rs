@@ -102,7 +102,18 @@ pub enum Alert {
         #[serde(with = "hex32")]
         author: [u8; 32],
     },
-    /// The current epoch is wrapped to identities that are not members: rotate (H2).
+    /// A current maintainer's config for an epoch that does not exist: above the first missing
+    /// epoch number, or posted before the epoch below it was anchored (§5.3).
+    #[serde(rename_all = "camelCase")]
+    EpochGap {
+        /// The epoch it names.
+        epoch: u32,
+        /// Its author.
+        #[serde(with = "hex32")]
+        author: [u8; 32],
+    },
+    /// The current epoch is wrapped to identities that are not members, or is burned: rotate
+    /// (H2, §5.3). `members` is empty for a burned epoch with no wrapped non-member.
     #[serde(rename_all = "camelCase")]
     RotationRequired {
         /// The current epoch.
@@ -118,7 +129,8 @@ impl Alert {
         match self {
             Self::KeyMismatch { epoch, author } => (*epoch, 0, *author),
             Self::ChainBroken { epoch, author } => (*epoch, 1, *author),
-            Self::RotationRequired { epoch, .. } => (*epoch, 2, [0; 32]),
+            Self::EpochGap { epoch, author } => (*epoch, 2, *author),
+            Self::RotationRequired { epoch, .. } => (*epoch, 3, [0; 32]),
         }
     }
 }
@@ -127,7 +139,7 @@ impl Alert {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Repair {
-    /// Rotate (§5.5 steps 1–4): the current epoch is wrapped to a non-member.
+    /// Rotate (§5.5 steps 1–4): the current epoch is wrapped to a non-member, or is burned.
     pub rotate: bool,
     /// Wrapped identities that are not members.
     #[serde(with = "hex32_vec")]
@@ -149,19 +161,26 @@ pub struct Anchor {
     /// The commitment its `enc` carries (`None` for an `enc` that is not v0x02: it matches no
     /// key).
     pub commit: Option<[u8; 32]>,
+    /// The block height of stated(e): the first config (by anyone) carrying this commitment,
+    /// when the epoch's key was first stated on chain (§5.3). A re-anchor keeps it.
+    pub stated_height: u64,
 }
 
 /// Everything [`resolve_epochs`] decides.
 #[derive(Clone, Default)]
 pub struct EpochResolution {
-    /// The highest existing epoch.
+    /// The highest existing epoch (epochs exist contiguously from 0).
     pub current_epoch: Option<u32>,
     /// The anchor of every existing epoch.
     pub anchors: BTreeMap<u32, Anchor>,
     /// The key of every epoch the reader can read.
     pub keys: BTreeMap<u32, EpochKey>,
-    /// The epoch the reader writes under: the current epoch, if readable (§5.3).
+    /// The epoch the reader writes under: the current epoch, if readable, not burned (§5.3)
+    /// and not wrapped to a non-member (§5.6).
     pub write_epoch: Option<u32>,
+    /// Readable epochs whose anchor is burned (§5.3): chain links only, never written under;
+    /// content under one is late unless its author is a current member.
+    pub burned: BTreeSet<u32>,
     /// Epochs that appear in configs or wraps but have no anchor (not epochs; §5.3).
     pub unanchored: Vec<u32>,
     /// Alerts, deduplicated and ordered by `(epoch, kind, author)`.
@@ -178,6 +197,7 @@ impl std::fmt::Debug for EpochResolution {
             .field("current_epoch", &self.current_epoch)
             .field("readable", &self.keys.keys().collect::<Vec<_>>())
             .field("write_epoch", &self.write_epoch)
+            .field("burned", &self.burned)
             .field("unanchored", &self.unanchored)
             .field("alerts", &self.alerts)
             .field("repair", &self.repair)
@@ -189,8 +209,8 @@ impl std::fmt::Debug for EpochResolution {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ManifestStanding {
-    /// Its sealed header's epoch is older than the epoch current at its block height: shown to
-    /// maintainers as "uploaded under an old key".
+    /// Its sealed header's epoch is older than the epoch current at its block height, or is
+    /// burned: shown to maintainers as "uploaded under an old key".
     pub suspect: bool,
     /// Whether to read it: always for a current member's upload, else only when neither suspect
     /// nor late.
@@ -225,6 +245,7 @@ impl EpochResolution {
                 .collect(),
             anchors: self.anchor_refs(),
             members: self.members.clone(),
+            burned: self.burned.clone(),
         }
     }
 
@@ -233,6 +254,7 @@ impl EpochResolution {
     pub fn is_late(&self, epoch: u32, height: u64, owner: &[u8; 32]) -> bool {
         is_late(
             &self.anchor_refs(),
+            &self.burned,
             epoch,
             height,
             self.members.contains(owner),
@@ -254,7 +276,8 @@ impl EpochResolution {
             .filter(|(_, a)| a.height <= height)
             .map(|(&e, _)| e)
             .max();
-        let suspect = current_at.is_some_and(|c| header_epoch < c);
+        let suspect =
+            current_at.is_some_and(|c| header_epoch < c) || self.burned.contains(&header_epoch);
         let member = self.members.contains(owner);
         let late = self.is_late(header_epoch, height, owner);
         ManifestStanding {
@@ -265,19 +288,53 @@ impl EpochResolution {
 }
 
 /// anchor(e) for every epoch (§5.3): the first config for `e` by `($createdAtBlockHeight, $id)`
-/// whose author is a current maintainer, whether or not the reader can open it.
+/// whose author is a current maintainer, whether or not the reader can open it, and, for
+/// `e ≥ 1`, strictly after **stated(e − 1)** in that order: the first config for `e − 1` (itself
+/// after stated(e − 2)) that carries anchor(e − 1)'s commitment, by anyone, i.e. when that
+/// epoch's key was first stated on chain. `config` is maintainer-gated and non-deletable, so
+/// this is fixed history: a config posted before the epoch below it had its key is never an
+/// anchor (no honest flow pre-posts), while a re-anchor after a maintainer's removal repeats the
+/// commitment and so leaves the epochs above it intact. Epochs are kept only for the contiguous
+/// run from 0. Returns the anchors and, for every other epoch a current maintainer named, its
+/// first config (each an `EpochGap`).
 fn select_anchors<'c>(
     configs: &'c [ConfigRow],
     maintainers: &BTreeSet<[u8; 32]>,
-) -> BTreeMap<u32, &'c ConfigRow> {
-    let mut first: BTreeMap<u32, &ConfigRow> = BTreeMap::new();
-    for c in configs.iter().filter(|c| maintainers.contains(&c.owner)) {
-        let slot = first.entry(c.epoch).or_insert(c);
-        if (c.created_at_block_height, &c.id) < (slot.created_at_block_height, &slot.id) {
-            *slot = c;
-        }
+) -> (BTreeMap<u32, (&'c ConfigRow, u64)>, Vec<&'c ConfigRow>) {
+    let order = |c: &ConfigRow| (c.created_at_block_height, c.id);
+    let mut by_epoch: BTreeMap<u32, Vec<&ConfigRow>> = BTreeMap::new();
+    for c in configs {
+        by_epoch.entry(c.epoch).or_default().push(c);
     }
-    first
+    for cs in by_epoch.values_mut() {
+        cs.sort_by_key(|c| order(c));
+    }
+    let mut anchors: BTreeMap<u32, (&ConfigRow, u64)> = BTreeMap::new();
+    let mut stated: Option<(u64, [u8; 32])> = None;
+    for e in 0..=u32::MAX {
+        let Some(cs) = by_epoch.get(&e) else { break };
+        let valid: Vec<&ConfigRow> = cs
+            .iter()
+            .copied()
+            .filter(|c| stated.is_none_or(|b| order(c) > b))
+            .collect();
+        let Some(&anchor) = valid.iter().find(|c| maintainers.contains(&c.owner)) else {
+            break;
+        };
+        let commit = anchor_of(anchor).commit;
+        let first = valid
+            .iter()
+            .find(|c| commit.is_some() && anchor_of(c).commit == commit)
+            .map_or(anchor, |c| *c);
+        anchors.insert(e, (anchor, first.created_at_block_height));
+        stated = Some(order(first));
+    }
+    let gaps = by_epoch
+        .iter()
+        .filter(|(e, _)| !anchors.contains_key(e))
+        .filter_map(|(_, cs)| cs.iter().find(|c| maintainers.contains(&c.owner)).copied())
+        .collect();
+    (anchors, gaps)
 }
 
 fn anchor_of(c: &ConfigRow) -> Anchor {
@@ -288,11 +345,17 @@ fn anchor_of(c: &ConfigRow) -> Anchor {
         owner: c.owner,
         height: c.created_at_block_height,
         commit,
+        stated_height: c.created_at_block_height,
     }
 }
 
 /// Walk the `prevEpochKey` chain down from `start` (§5.3, L2), adding every epoch it reaches to
-/// `keys`, and raising `ChainBroken` where it stops early.
+/// `keys`, and raising `ChainBroken` where it stops early. Each anchor links to exactly the
+/// epoch below it (`prevEpoch = e − 1`). A burned anchor carries no `prevEpochKey`, so a walk
+/// that reaches one stops there; the anchor above a burned run carries `skipEpochKey`, the key of
+/// the nearest epoch below the run that is not burned, and the walk continues from that epoch
+/// (the burned epochs in between stay unreadable through this walk: nothing is sealed under
+/// them).
 fn walk_chain(
     repo_id: &[u8; 32],
     start: u32,
@@ -301,43 +364,89 @@ fn walk_chain(
     keys: &mut BTreeMap<u32, EpochKey>,
     alerts: &mut BTreeSet<Alert>,
 ) {
+    let open = |e: u32, key: &EpochKey| -> Option<Box<super::Fields>> {
+        let c = first[&e];
+        let header = DocHeader::new(DocKind::Config, c.owner, e);
+        match open_with(&EpochKeys::derive(repo_id, e, key), &header, &c.enc, true) {
+            Opened::Readable(f) => Some(f),
+            _ => None,
+        }
+    };
     let mut e = start;
     while e > 0 {
-        let config = first[&e];
         let broken = Alert::ChainBroken {
             epoch: e,
-            author: config.owner,
+            author: first[&e].owner,
         };
-        let header = DocHeader::new(DocKind::Config, config.owner, e);
-        let opened = open_with(
-            &EpochKeys::derive(repo_id, e, &keys[&e]),
-            &header,
-            &config.enc,
-            true,
-        );
-        let Opened::Readable(fields) = opened else {
+        let Some(fields) = open(e, &keys[&e]) else {
             alerts.insert(broken);
             return;
         };
+        if fields.burned {
+            return; // a chain link only from above (its skipEpochKey)
+        }
         let (Some(p), Some(pk)) = (fields.prev_epoch, fields.prev_epoch_key.clone()) else {
             alerts.insert(broken);
             return;
         };
-        if p >= e || !commits_to(p, &pk) {
+        if p != e - 1 || !commits_to(p, &pk) {
             alerts.insert(broken);
             return;
         }
-        if keys.contains_key(&p) {
+        let below_burned = open(p, &pk).is_some_and(|f| f.burned);
+        if !below_burned {
+            if keys.contains_key(&p) {
+                return;
+            }
+            keys.insert(p, pk);
+            e = p;
+            continue;
+        }
+        // the burned epoch's own key (readable, and judged burned, like any epoch)
+        keys.entry(p).or_insert(pk);
+        // step over the burned run with the skip key: the nearest lower epoch it commits to
+        let target = fields.skip_epoch_key.as_ref().and_then(|sk| {
+            (0..p)
+                .rev()
+                .find(|&s| commits_to(s, sk))
+                .map(|s| (s, sk.clone()))
+        });
+        let Some((s, sk)) = target.filter(|(s, sk)| open(*s, sk).is_some_and(|f| !f.burned)) else {
+            alerts.insert(broken);
+            return;
+        };
+        if keys.contains_key(&s) {
             return;
         }
-        keys.insert(p, pk);
-        e = p;
+        keys.insert(s, sk);
+        e = s;
     }
 }
 
-/// The repair check of §5.6 for the current epoch `n`.
+/// The readable epochs (`keys`) whose anchor's sealed config carries the burned flag (§5.3): only the
+/// anchor's flag counts, and only an epoch the reader holds the key of can be judged.
+fn burned_epochs(
+    repo_id: &[u8; 32],
+    anchors: &BTreeMap<u32, &ConfigRow>,
+    keys: &BTreeMap<u32, EpochKey>,
+) -> BTreeSet<u32> {
+    keys.iter()
+        .filter(|(&e, k)| {
+            let c = anchors[&e];
+            let header = DocHeader::new(DocKind::Config, c.owner, e);
+            matches!(
+                open_with(&EpochKeys::derive(repo_id, e, k), &header, &c.enc, true),
+                Opened::Readable(f) if f.burned
+            )
+        })
+        .map(|(&e, _)| e)
+        .collect()
+}
+
+/// The repair check of §5.6 for the current epoch `n`; a burned `n` always rotates.
 fn repair_check(
     n: u32,
+    burned: bool,
     wraps: &[WrapRow],
     maintainers: &BTreeSet<[u8; 32]>,
     members: &BTreeSet<[u8; 32]>,
@@ -357,7 +466,7 @@ fn repair_check(
     let non_members: Vec<[u8; 32]> = wrapped.difference(members).copied().collect();
     let missing_wraps: Vec<[u8; 32]> = members.difference(&enabled).copied().collect();
     Repair {
-        rotate: !non_members.is_empty(),
+        rotate: burned || !non_members.is_empty(),
         non_members,
         missing_wraps,
     }
@@ -380,8 +489,20 @@ pub fn resolve_epochs(
         .collect();
     let members: BTreeSet<[u8; 32]> = memberships.iter().map(|m| m.identity).collect();
 
-    let first = select_anchors(configs, &maintainers);
-    let anchors: BTreeMap<u32, Anchor> = first.iter().map(|(&e, c)| (e, anchor_of(c))).collect();
+    let (selected, gaps) = select_anchors(configs, &maintainers);
+    let first: BTreeMap<u32, &ConfigRow> = selected.iter().map(|(&e, (c, _))| (e, *c)).collect();
+    let anchors: BTreeMap<u32, Anchor> = selected
+        .iter()
+        .map(|(&e, (c, stated))| {
+            (
+                e,
+                Anchor {
+                    stated_height: *stated,
+                    ..anchor_of(c)
+                },
+            )
+        })
+        .collect();
     let current_epoch = anchors.keys().next_back().copied();
     let unanchored: Vec<u32> = configs
         .iter()
@@ -400,7 +521,13 @@ pub fn resolve_epochs(
 
     // accepted wraps (§5.4): to the reader, from a current maintainer, for an existing epoch; a
     // key that does not commit to the anchor is a KeyMismatch, never a reason to look elsewhere
-    let mut alerts: BTreeSet<Alert> = BTreeSet::new();
+    let mut alerts: BTreeSet<Alert> = gaps
+        .iter()
+        .map(|c| Alert::EpochGap {
+            epoch: c.epoch,
+            author: c.owner,
+        })
+        .collect();
     let mut keys: BTreeMap<u32, EpochKey> = BTreeMap::new();
     let mut starts: Vec<u32> = Vec::new();
     for w in wraps {
@@ -425,7 +552,9 @@ pub fn resolve_epochs(
         walk_chain(repo_id, start, &first, &commits_to, &mut keys, &mut alerts);
     }
 
-    let repair = current_epoch.map(|n| repair_check(n, wraps, &maintainers, &members));
+    let burned = burned_epochs(repo_id, &first, &keys);
+    let repair =
+        current_epoch.map(|n| repair_check(n, burned.contains(&n), wraps, &maintainers, &members));
     if let (Some(r), Some(n)) = (&repair, current_epoch) {
         if r.rotate && maintainers.contains(reader) {
             alerts.insert(Alert::RotationRequired {
@@ -437,12 +566,16 @@ pub fn resolve_epochs(
     let mut alerts: Vec<Alert> = alerts.into_iter().collect();
     alerts.sort_by_key(Alert::sort_key);
 
-    let write_epoch = current_epoch.filter(|n| keys.contains_key(n));
+    // nothing is written under an epoch a non-member holds (§5.6): it waits for the rotation
+    let leaked = repair.as_ref().is_some_and(|r| !r.non_members.is_empty());
+    let write_epoch =
+        current_epoch.filter(|n| keys.contains_key(n) && !burned.contains(n) && !leaked);
     EpochResolution {
         current_epoch,
         anchors,
         keys,
         write_epoch,
+        burned,
         unanchored,
         alerts,
         repair,

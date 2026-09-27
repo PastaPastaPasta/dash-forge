@@ -142,6 +142,8 @@ struct OpenCtxIn {
     keys: BTreeMap<String, String>,
     anchors: BTreeMap<String, AnchorRef>,
     members: Vec<String>,
+    #[serde(default)]
+    burned: Vec<u32>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -372,6 +374,7 @@ fn run(v: &Vector) -> Value {
                     .map(|(e, a)| (e.parse().unwrap(), a.clone()))
                     .collect(),
                 members: i.context.members.iter().map(|m| h32(m)).collect(),
+                burned: i.context.burned.iter().copied().collect(),
             };
             opened_json(&doc::open_content(&ctx, &header, &enc))
         }
@@ -648,6 +651,6 @@ fn private_conformance_vectors() {
         assert_eq!(got, v.expected, "vector `{}` ({})", v.name, v.case);
         ran += 1;
     }
-    assert!(ran >= 146, "ran {ran} private vectors, expected 146+");
+    assert!(ran >= 181, "ran {ran} private vectors, expected 181+");
     println!("private conformance: {ran} vectors green");
 }

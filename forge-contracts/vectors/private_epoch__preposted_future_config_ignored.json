@@ -1,6 +1,6 @@
 {
-  "name": "chain_with_skipped_epoch_number",
-  "description": "epoch 2's anchor names prevEpoch 0 and there is no epoch 1: epoch 2 is above a gap, so it is not an epoch (EpochGap), and the reader's wrap for it is ignored.",
+  "name": "preposted_future_config_ignored",
+  "description": "a current maintainer's config for epoch 2 at block 500, before epoch 1 was anchored (block 1000), is never epoch 2's anchor, though it is first by block height: the later config is, and the reader's wrap of its key is accepted.",
   "case": "private_epoch",
   "rules": "v2",
   "input": {
@@ -28,32 +28,31 @@
         "enc": "022ae6cfc9c4d7f570f56f946332e8d950b2f39d4d3c8c60b7a33d8275ebf3e584000102030405060708090a0be865803eb55e1e48135cb129a2939da9"
       },
       {
+        "id": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 1,
+        "createdAtBlockHeight": 1000,
+        "createdAt": 1000000,
+        "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bdeb9c75e14c4d636c56685caeceeecdb547100e1a898d77528a21e475b3a216dc3cd05ddc3b02036a2f4898659d397f967261d56c0a0c8d07b86"
+      },
+      {
+        "id": "f11dba2967ee4cbef67005ebb5ffd3bdf6e53d630da772c3b25893d96af8d7d4",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 2,
+        "createdAtBlockHeight": 500,
+        "createdAt": 500000,
+        "enc": "02f781f8e774c46a401f1c345fe887ce858927b806142c3df2769587eafc71500a000102030405060708090a0be0087f2ddfcb76ce187248c423346f1b0cd8ff134ba2dbb96bb042f9241b2a4cb36eddc4e0137d2a1c327ded9ec1aa253cb47017f87261281c28"
+      },
+      {
         "id": "aab674ed5245d21e30ac84a5de4ee1a84e165d8721041a55e160ab2fbe6bdfed",
         "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "epoch": 2,
         "createdAtBlockHeight": 2000,
         "createdAt": 2000000,
-        "enc": "02500055791b2a9fd291768167be8345a4c5c95d20e2a8d2083ec8d5e53e0330bb000102030405060708090a0b64f2ee7abf08a161cf79628b0ee0559b841fc86f0952795b2fda797a3eaa65528269011695868260a39293e0370f6ed02cfc7fb945c063b68624"
+        "enc": "02500055791b2a9fd291768167be8345a4c5c95d20e2a8d2083ec8d5e53e0330bb000102030405060708090a0b64f2ee7abf08a061cf7942ab2ec075bba43fe84f2972597b0ffa595a1e8a4572a2492136b5a6a24083b217d0612174a25d133153b61d4c19522e"
       }
     ],
     "wraps": [
-      {
-        "id": "7821e4726b0b9f2404421149c8c00bf6a74b8619a6c02256c04febd587703ea1",
-        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-        "memberId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-        "epoch": 0,
-        "recipientKeyId": 4,
-        "keyEnabled": true
-      },
-      {
-        "id": "cd824834ae1415564fb0e0699c445a2dc71f190baa00d7bcd74a6907c6707c36",
-        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-        "memberId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
-        "epoch": 0,
-        "recipientKeyId": 4,
-        "keyEnabled": true,
-        "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
-      },
       {
         "id": "48fe6ff2e3153b73f766b77224bcbd7acf944ecdd77993b75c1cf926ecd6321e",
         "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
@@ -74,24 +73,20 @@
     ]
   },
   "expected": {
-    "currentEpoch": 0,
+    "currentEpoch": 2,
     "anchors": {
-      "0": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926"
+      "0": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+      "1": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
+      "2": "aab674ed5245d21e30ac84a5de4ee1a84e165d8721041a55e160ab2fbe6bdfed"
     },
     "readable": [
-      0
-    ],
-    "writeEpoch": 0,
-    "unanchored": [
+      0,
+      1,
       2
     ],
-    "alerts": [
-      {
-        "kind": "epochGap",
-        "epoch": 2,
-        "author": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
-      }
-    ],
+    "writeEpoch": 2,
+    "unanchored": [],
+    "alerts": [],
     "repair": {
       "rotate": false,
       "nonMembers": [],

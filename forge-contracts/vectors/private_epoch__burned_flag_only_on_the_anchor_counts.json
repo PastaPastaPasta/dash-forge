@@ -1,6 +1,6 @@
 {
-  "name": "rotation_alert_only_for_maintainers",
-  "description": "the repair check finds a wrapped non-member, but only a maintainer's client is asked to rotate.",
+  "name": "burned_flag_only_on_the_anchor_counts",
+  "description": "a later config of epoch 1 carries the burned flag, but the anchor does not: epoch 1 is not burned.",
   "case": "private_epoch",
   "rules": "v2",
   "input": {
@@ -34,6 +34,14 @@
         "createdAtBlockHeight": 1000,
         "createdAt": 1000000,
         "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bdeb9c75e14c4d636c56685caeceeecdb547100e1a898d77528a21e475b3a216dc3cd05ddc3b02036a2f4898659d397f967261d56c0a0c8d07b86"
+      },
+      {
+        "id": "3d7d24a833036a7ffe964620b0831cd4bbd7f642dfaf5ea0254e63c35bf04406",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 1,
+        "createdAtBlockHeight": 1100,
+        "createdAt": 1100000,
+        "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bdeb9c75e14c4d634c5478482a608c2a8f8b1b6d791adbb0322ede8"
       }
     ],
     "wraps": [
@@ -53,14 +61,6 @@
         "recipientKeyId": 4,
         "keyEnabled": true,
         "key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
-      },
-      {
-        "id": "335d0e7b9ebe45ab6356129306af0a7aaef75c675be1eb8aeda191baf5f02321",
-        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-        "memberId": "9999999999999999999999999999999999999999999999999999999999999999",
-        "epoch": 1,
-        "recipientKeyId": 4,
-        "keyEnabled": true
       }
     ]
   },
@@ -74,14 +74,12 @@
       0,
       1
     ],
-    "writeEpoch": null,
+    "writeEpoch": 1,
     "unanchored": [],
     "alerts": [],
     "repair": {
-      "rotate": true,
-      "nonMembers": [
-        "9999999999999999999999999999999999999999999999999999999999999999"
-      ],
+      "rotate": false,
+      "nonMembers": [],
       "missingWraps": []
     }
   }

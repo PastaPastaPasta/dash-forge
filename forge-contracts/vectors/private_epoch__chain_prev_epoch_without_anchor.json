@@ -1,6 +1,6 @@
 {
   "name": "chain_prev_epoch_without_anchor",
-  "description": "prevEpoch names an epoch with no anchor: ChainBroken.",
+  "description": "prevEpoch names epoch 0, which has no anchor: without epoch 0 no epoch exists, so epoch 1 is a gap (EpochGap) and nothing is readable.",
   "case": "private_epoch",
   "rules": "v2",
   "input": {
@@ -49,26 +49,20 @@
     ]
   },
   "expected": {
-    "currentEpoch": 1,
-    "anchors": {
-      "1": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86"
-    },
-    "readable": [
+    "currentEpoch": null,
+    "anchors": {},
+    "readable": [],
+    "writeEpoch": null,
+    "unanchored": [
       1
     ],
-    "writeEpoch": 1,
-    "unanchored": [],
     "alerts": [
       {
-        "kind": "chainBroken",
+        "kind": "epochGap",
         "epoch": 1,
         "author": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
       }
     ],
-    "repair": {
-      "rotate": false,
-      "nonMembers": [],
-      "missingWraps": []
-    }
+    "repair": null
   }
 }

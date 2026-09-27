@@ -46,6 +46,7 @@ SCENARIOS=(
   "12-star-unstar"
   "13-init-push"
   "15-private-repo"
+  "16-private-burn-repair"
 )
 
 # Optional subset filter (match by leading number or substring).

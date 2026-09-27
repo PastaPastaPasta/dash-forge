@@ -1,6 +1,6 @@
 {
-  "name": "chain_with_skipped_epoch_number",
-  "description": "epoch 2's anchor names prevEpoch 0 and there is no epoch 1: epoch 2 is above a gap, so it is not an epoch (EpochGap), and the reader's wrap for it is ignored.",
+  "name": "anchor_tie_at_same_height_after_prev_by_id",
+  "description": "epoch 1's only config shares epoch 0's anchor block height: it counts only if its $id is greater (raw bytes); here it is smaller, so epoch 1 does not exist.",
   "case": "private_epoch",
   "rules": "v2",
   "input": {
@@ -20,7 +20,7 @@
     ],
     "configs": [
       {
-        "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+        "id": "9090909090909090909090909090909090909090909090909090909090909090",
         "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "epoch": 0,
         "createdAtBlockHeight": 10,
@@ -28,12 +28,12 @@
         "enc": "022ae6cfc9c4d7f570f56f946332e8d950b2f39d4d3c8c60b7a33d8275ebf3e584000102030405060708090a0be865803eb55e1e48135cb129a2939da9"
       },
       {
-        "id": "aab674ed5245d21e30ac84a5de4ee1a84e165d8721041a55e160ab2fbe6bdfed",
+        "id": "1010101010101010101010101010101010101010101010101010101010101010",
         "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-        "epoch": 2,
-        "createdAtBlockHeight": 2000,
-        "createdAt": 2000000,
-        "enc": "02500055791b2a9fd291768167be8345a4c5c95d20e2a8d2083ec8d5e53e0330bb000102030405060708090a0b64f2ee7abf08a161cf79628b0ee0559b841fc86f0952795b2fda797a3eaa65528269011695868260a39293e0370f6ed02cfc7fb945c063b68624"
+        "epoch": 1,
+        "createdAtBlockHeight": 10,
+        "createdAt": 10000,
+        "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bdeb9c75e14c4d636c56685caeceeecdb547100e1a898d77528a21e475b3a216dc3cd05ddc3b02036a2f4898659d397f967261d56c0a0c8d07b86"
       }
     ],
     "wraps": [
@@ -55,40 +55,32 @@
         "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
       },
       {
-        "id": "48fe6ff2e3153b73f766b77224bcbd7acf944ecdd77993b75c1cf926ecd6321e",
-        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-        "memberId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
-        "epoch": 2,
-        "recipientKeyId": 4,
-        "keyEnabled": true
-      },
-      {
-        "id": "fbec50da08f360ac6928c6c4fcb63585f959f0411d9ca8c7688e96e72b108b63",
+        "id": "de3a6739d8d6278298377c211a7a2117e7fd3ec305d1e77c8cc777689f9eb9a7",
         "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
         "memberId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
-        "epoch": 2,
+        "epoch": 1,
         "recipientKeyId": 4,
         "keyEnabled": true,
-        "key": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f"
+        "key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
       }
     ]
   },
   "expected": {
     "currentEpoch": 0,
     "anchors": {
-      "0": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926"
+      "0": "9090909090909090909090909090909090909090909090909090909090909090"
     },
     "readable": [
       0
     ],
     "writeEpoch": 0,
     "unanchored": [
-      2
+      1
     ],
     "alerts": [
       {
         "kind": "epochGap",
-        "epoch": 2,
+        "epoch": 1,
         "author": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
       }
     ],

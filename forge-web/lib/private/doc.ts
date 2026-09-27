@@ -210,7 +210,10 @@ export async function sealDoc(
   options: SealDocOptions = {},
 ): Promise<Bytes> {
   const hedged: NonceOf = async (ad, tlv) => hedgeNonce(keys, randomBytes(32), ad, await sha256(tlv))
-  return (await sealDocWith(keys, doc, fields, options, hedged)).enc
+  const sealed = await sealDocWith(keys, doc, fields, options, hedged)
+  // The plaintext may hold a raw key (an anchor's prevEpochKey).
+  sealed.tlv.fill(0)
+  return sealed.enc
 }
 
 /**
@@ -257,6 +260,8 @@ export interface OpenContext {
   readonly anchors: ReadonlyMap<number, AnchorRef>
   /** Current members. */
   readonly members: IdentitySet
+  /** Burned epochs (§5.3): their content is late unless its author is a current member. */
+  readonly burned?: ReadonlySet<number>
 }
 
 /** Whether `enc` has the shape its type demands (§8.1 step 1). */
@@ -327,9 +332,13 @@ export function isLate(
   epoch: number,
   height: number,
   owner: PrivateId,
+  burned?: ReadonlySet<number>,
 ): boolean {
+  if (members.has(owner)) return false
+  // Nothing is ever sealed under a burned epoch (§5.3): whatever is, whenever, is late.
+  if (burned?.has(epoch) === true) return true
   const next = nextAnchor(anchors, epoch)
-  return next !== undefined && height > next.height + GRACE_BLOCKS && !members.has(owner)
+  return next !== undefined && height > next.height + GRACE_BLOCKS
 }
 
 function isHeight(h: number | undefined): h is number {
@@ -347,6 +356,6 @@ export async function openContent(doc: StoredPrivateDoc, ctx: OpenContext): Prom
   const result = await openWithKey(doc, keys, isAnchor)
   if (result.status !== 'readable') return result
   if (!isHeight(doc.createdAtBlockHeight)) return MALFORMED
-  if (isLate(ctx.anchors, ctx.members, doc.epoch, doc.createdAtBlockHeight, doc.ownerId)) return unreadable('late')
+  if (isLate(ctx.anchors, ctx.members, doc.epoch, doc.createdAtBlockHeight, doc.ownerId, ctx.burned)) return unreadable('late')
   return result
 }

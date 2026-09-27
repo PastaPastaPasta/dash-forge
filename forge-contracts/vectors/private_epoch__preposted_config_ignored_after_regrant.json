@@ -1,0 +1,138 @@
+{
+  "name": "preposted_config_ignored_after_regrant",
+  "description": "dave pre-posted configs for epochs 1 and 2 (blocks 5 and 500) while an earlier maintainer, lost the role, and was granted it again: neither comes after the anchor below it, so alice's configs stay the anchors; an epoch whose only config is pre-posted does not exist (EpochGap).",
+  "case": "private_epoch",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "reader": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+    "memberships": [
+      {
+        "identity": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "role": "maintainer",
+        "createdAt": 1
+      },
+      {
+        "identity": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "role": "writer",
+        "createdAt": 1
+      },
+      {
+        "identity": "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0",
+        "role": "maintainer",
+        "createdAt": 1
+      }
+    ],
+    "configs": [
+      {
+        "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 0,
+        "createdAtBlockHeight": 10,
+        "createdAt": 10000,
+        "enc": "022ae6cfc9c4d7f570f56f946332e8d950b2f39d4d3c8c60b7a33d8275ebf3e584000102030405060708090a0be865803eb55e1e48135cb129a2939da9"
+      },
+      {
+        "id": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 1,
+        "createdAtBlockHeight": 1000,
+        "createdAt": 1000000,
+        "enc": "02307277ccb5bcfa7871f82e43c6e58515464a5065460b829def44e1cc32521c33000102030405060708090a0bdeb9c75e14c4d636c56685caeceeecdb547100e1a898d77528a21e475b3a216dc3cd05ddc3b02036a2f4898659d397f967261d56c0a0c8d07b86"
+      },
+      {
+        "id": "3b6dddf9699422f7f4f60e52637f3c6f9501d1d88dcbc03bc386963c912b2c2a",
+        "owner": "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0",
+        "epoch": 1,
+        "createdAtBlockHeight": 5,
+        "createdAt": 5000,
+        "enc": "021ecbf4ea78765243d245004c59952f11e91cd2ff0fc6dc3129a4fe6b331f0ca3000102030405060708090a0baa1b0d92b9bb942ffdd80ee15856206ae1694d0b02990c78dd5fc41f1d2da0f883970a7f5b45c4a0d550629e88e21de5c1cc1de8fbe67f1c3e50"
+      },
+      {
+        "id": "97097e1942c800d03868b90a1281cddd748cd0286beb1b67f695b6dd7c8b76d1",
+        "owner": "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0",
+        "epoch": 2,
+        "createdAtBlockHeight": 500,
+        "createdAt": 500000,
+        "enc": "02f781f8e774c46a401f1c345fe887ce858927b806142c3df2769587eafc71500a000102030405060708090a0be0087f2ddfcb76ce187248c423346f1b0cd8ff134ba2dbb96bb042f9241b2a4cb36eddc4e0137d2a1c322e5e2060d098371a689a211cb1411432"
+      },
+      {
+        "id": "9fa84d2d7c42fc3564c0fef71078e85f2c1eb608a46d07f968e672f23e2101ab",
+        "owner": "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0",
+        "epoch": 3,
+        "createdAtBlockHeight": 600,
+        "createdAt": 600000,
+        "enc": "023d671b6cb2df1f575d36d5f71a5929c4c112c5d09ac19b396735284f8740e7c9000102030405060708090a0be88938e5a016fc0933b60a5f515c28b73c1c8f8153631b0764d31ca0ae536ee81ad04b5dd73507184c1e251b2f6ad57e1be6c39a3f7f03ad9e53"
+      }
+    ],
+    "wraps": [
+      {
+        "id": "b265e93eb6376543dcf2ffc99affdc444badbba0dd7da46faebb69367b77c24c",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "memberId": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "epoch": 1,
+        "recipientKeyId": 4,
+        "keyEnabled": true
+      },
+      {
+        "id": "de3a6739d8d6278298377c211a7a2117e7fd3ec305d1e77c8cc777689f9eb9a7",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "memberId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "epoch": 1,
+        "recipientKeyId": 4,
+        "keyEnabled": true,
+        "key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      },
+      {
+        "id": "2db50e98e2978ae5b5805c2705fe29d350ade703c92202242386d4357b6c9012",
+        "owner": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "memberId": "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0",
+        "epoch": 1,
+        "recipientKeyId": 4,
+        "keyEnabled": true
+      },
+      {
+        "id": "0e28ae1445cf148c4b95c1d3db608ef2bc4a6184b6ba7093f59fdf5ce22855af",
+        "owner": "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0",
+        "memberId": "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0",
+        "epoch": 2,
+        "recipientKeyId": 4,
+        "keyEnabled": true,
+        "key": "8888888888888888888888888888888888888888888888888888888888888888"
+      }
+    ]
+  },
+  "expected": {
+    "currentEpoch": 1,
+    "anchors": {
+      "0": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+      "1": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86"
+    },
+    "readable": [
+      0,
+      1
+    ],
+    "writeEpoch": 1,
+    "unanchored": [
+      2,
+      3
+    ],
+    "alerts": [
+      {
+        "kind": "epochGap",
+        "epoch": 2,
+        "author": "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0"
+      },
+      {
+        "kind": "epochGap",
+        "epoch": 3,
+        "author": "d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0"
+      }
+    ],
+    "repair": {
+      "rotate": false,
+      "nonMembers": [],
+      "missingWraps": []
+    }
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "name": "content_under_burned_epoch_late",
+  "description": "an issue sealed under burned epoch 1 by a non-member is Unreadable(Late) at any height: nothing is written under a burned epoch.",
+  "case": "private_doc_open",
+  "rules": "v2",
+  "input": {
+    "repoId": "1111111111111111111111111111111111111111111111111111111111111111",
+    "context": {
+      "keys": {
+        "0": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "1": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f"
+      },
+      "anchors": {
+        "0": {
+          "id": "d8789e13d97af4e288d46cadf47488315539d063487e8855778ef2c990068926",
+          "height": 10
+        },
+        "1": {
+          "id": "723e4415b140d11aae49ab4d7cbf0e3f418bb90092a5ab040d47602af4ba5a86",
+          "height": 1000
+        }
+      },
+      "members": [],
+      "burned": [
+        1
+      ]
+    },
+    "doc": {
+      "type": "issue",
+      "ownerId": "2222222222222222222222222222222222222222222222222222222222222222",
+      "epoch": 1,
+      "number": 7,
+      "enc": "01000102030405060708090a0bd7b9d50c7bb0b74ba066f1a38bcd9bb735186186c5b3b01d5faf0e461a4c5058a1b278e4abde5249d384dd50c65417f7dfebd1dd321c326a695d39d8",
+      "createdAtBlockHeight": 1001
+    }
+  },
+  "expected": {
+    "status": "unreadable",
+    "reason": "late"
+  }
+}

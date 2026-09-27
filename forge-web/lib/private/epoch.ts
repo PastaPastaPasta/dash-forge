@@ -9,6 +9,7 @@
 
 import { constantTimeEqual, isU32, type Bytes } from './bytes'
 import { isLate, openWithKey, type AnchorRef, type OpenContext } from './doc'
+import type { DocFields } from './tlv'
 import { IdSet, bytesEqual, compareBytes, type PrivateId } from './ids'
 import { EpochKeys, importEpochKeyAndWipe } from './keys'
 
@@ -59,6 +60,8 @@ export interface Anchor extends AnchorRef {
 export type EpochAlert =
   | { readonly kind: 'keyMismatch'; readonly epoch: number; readonly author: PrivateId }
   | { readonly kind: 'chainBroken'; readonly epoch: number; readonly author: PrivateId }
+  /** A candidate anchor above the first gap in the epoch numbers: not an anchor (§5.3 contiguity). */
+  | { readonly kind: 'epochGap'; readonly epoch: number; readonly author: PrivateId }
   | { readonly kind: 'rotationRequired'; readonly epoch: number; readonly members: readonly PrivateId[] }
 
 /** The repair check's findings for the current epoch (§5.6); ids in byte order. */
@@ -83,6 +86,11 @@ export interface EpochResolution {
   readonly repair: Repair | null
   /** Current members. */
   readonly members: IdSet
+  /**
+   * Readable epochs whose anchor is burned (§5.3): chain-only, never a write epoch; content
+   * sealed under one is late unless its author is a current member.
+   */
+  readonly burned: ReadonlySet<number>
 }
 
 const MIN_CONFIG_ENC = 61
@@ -91,30 +99,71 @@ function anchorCommit(enc: Uint8Array): Bytes | null {
   return enc.length >= MIN_CONFIG_ENC && enc[0] === 0x02 ? enc.slice(1, 33) : null
 }
 
-/** Anchor of each epoch: the first current-maintainer config by (block height, id bytes) (§5.3). */
-export function selectAnchors(configs: readonly ConfigRow[], maintainers: IdSet): Map<number, Anchor> {
+/** Whether `a` comes strictly after `b` in anchor order: (block height, id bytes). */
+function after(a: ConfigRow, b: ConfigRow): boolean {
+  return a.createdAtBlockHeight > b.createdAtBlockHeight || (a.createdAtBlockHeight === b.createdAtBlockHeight && compareBytes(a.id, b.id) > 0)
+}
+
+function anchorOf(c: ConfigRow): Anchor {
+  return { id: c.id, height: c.createdAtBlockHeight, owner: c.owner, commit: anchorCommit(c.enc), config: c }
+}
+
+/** Every config by epoch (any author), each list in anchor order (block height, id bytes). */
+function configsByEpoch(configs: readonly ConfigRow[]): Map<number, ConfigRow[]> {
   const ordered = configs
-    .filter((c) => maintainers.has(c.owner) && isU32(c.epoch))
+    .filter((c) => isU32(c.epoch))
     .sort((a, b) => a.createdAtBlockHeight - b.createdAtBlockHeight || compareBytes(a.id, b.id))
+  const byEpoch = new Map<number, ConfigRow[]>()
+  for (const c of ordered) byEpoch.set(c.epoch, [...(byEpoch.get(c.epoch) ?? []), c])
+  return byEpoch
+}
+
+/**
+ * Anchor of each epoch (§5.3): the first current-maintainer config by (block height, id bytes)
+ * and, for `e >= 1`, strictly after stated(e - 1) in that order: the first config for `e - 1`
+ * (itself after stated(e - 2)), by anyone, carrying anchor(e - 1)'s commitment, i.e. when that
+ * epoch's key was first stated on chain. Config history is fixed (maintainer-gated,
+ * non-deletable), so a config posted before the epoch below it had its key is never an anchor,
+ * and a re-anchor after a maintainer's removal (same commitment) leaves the epochs above it
+ * intact. Kept only for the contiguous run from 0; every other epoch a current maintainer named
+ * is a gap ({@link gapCandidates}).
+ */
+export function selectAnchors(configs: readonly ConfigRow[], maintainers: IdSet): Map<number, Anchor> {
+  const byEpoch = configsByEpoch(configs)
   const anchors = new Map<number, Anchor>()
-  for (const c of ordered) {
-    if (anchors.has(c.epoch)) continue
-    anchors.set(c.epoch, {
-      id: c.id,
-      height: c.createdAtBlockHeight,
-      owner: c.owner,
-      commit: anchorCommit(c.enc),
-      config: c,
-    })
+  let stated: ConfigRow | null = null
+  for (let e = 0; e <= 0xffff_ffff; e++) {
+    const below: ConfigRow | null = stated
+    const valid: ConfigRow[] = (byEpoch.get(e) ?? []).filter((x: ConfigRow) => below === null || after(x, below))
+    const anchor = valid.find((x: ConfigRow) => maintainers.has(x.owner))
+    if (anchor === undefined) break
+    const commit = anchorCommit(anchor.enc)
+    const same = (x: ConfigRow): boolean => {
+      const c = anchorCommit(x.enc)
+      return commit !== null && c !== null && bytesEqual(c, commit)
+    }
+    anchors.set(e, anchorOf(anchor))
+    stated = valid.find(same) ?? anchor
   }
   return anchors
+}
+
+/** The first current-maintainer config of every epoch that is not an epoch (each an `epochGap` alert), by epoch. */
+export function gapCandidates(configs: readonly ConfigRow[], maintainers: IdSet): Anchor[] {
+  const kept = selectAnchors(configs, maintainers)
+  const out: Anchor[] = []
+  for (const [e, cs] of [...configsByEpoch(configs)].sort(([a], [b]) => a - b)) {
+    const first = cs.find((c) => maintainers.has(c.owner))
+    if (!kept.has(e) && first !== undefined) out.push(anchorOf(first))
+  }
+  return out
 }
 
 function matchesAnchor(keys: EpochKeys, anchor: Anchor): boolean {
   return anchor.commit !== null && constantTimeEqual(keys.commit, anchor.commit)
 }
 
-const KIND_ORDER = { keyMismatch: 0, chainBroken: 1, rotationRequired: 2 } as const
+const KIND_ORDER = { keyMismatch: 0, chainBroken: 1, epochGap: 2, rotationRequired: 3 } as const
 const EMPTY = new Uint8Array(0)
 
 function alertKey(a: EpochAlert): string {
@@ -131,35 +180,71 @@ function sortAlerts(alerts: readonly EpochAlert[]): EpochAlert[] {
   )
 }
 
-/** One step of the chain walk: the previous epoch and its keys, or null when broken. */
-async function chainStep(
-  repoId: Uint8Array,
-  config: ConfigRow,
-  keys: EpochKeys,
-  anchors: ReadonlyMap<number, Anchor>,
-): Promise<{ epoch: number; keys: EpochKeys } | null> {
+/** Open `anchor` (a config) with `keys`: its fields, or null when it does not open. */
+async function openAnchor(anchor: Anchor, keys: EpochKeys): Promise<DocFields | null> {
+  const c = anchor.config
   const opened = await openWithKey(
-    {
-      type: 'config',
-      ownerId: config.owner,
-      epoch: config.epoch,
-      id: config.id,
-      createdAtBlockHeight: config.createdAtBlockHeight,
-      enc: config.enc,
-    },
+    { type: 'config', ownerId: c.owner, epoch: c.epoch, id: c.id, createdAtBlockHeight: c.createdAtBlockHeight, enc: c.enc },
     keys,
     true,
   )
-  if (opened.status !== 'readable') return null
-  const { prevEpoch, prevEpochKey } = opened.fields
-  if (prevEpoch === undefined || prevEpochKey === undefined) return null
-  const prevAnchor = anchors.get(prevEpoch)
-  if (prevEpoch >= config.epoch || prevAnchor === undefined) {
-    prevEpochKey.fill(0)
-    return null
+  return opened.status === 'readable' ? opened.fields : null
+}
+
+function wipe(f: DocFields | null): void {
+  f?.prevEpochKey?.fill(0)
+  f?.skipEpochKey?.fill(0)
+}
+
+/**
+ * One step of the chain walk from epoch `e` (§5.3): the epochs it reaches, the one to walk on from
+ * (null: stop here), and whether the chain breaks at `e`. A burned anchor carries no
+ * `prevEpochKey`, so the walk stops at it; the anchor above a burned run carries `skipEpochKey`,
+ * the key of the nearest epoch below the run that is not burned, and the walk steps over the run
+ * (a missing or wrong skip key still yields the burned epoch below, from `prevEpochKey`).
+ */
+async function chainStep(
+  repoId: Uint8Array,
+  anchor: Anchor,
+  keys: EpochKeys,
+  anchors: ReadonlyMap<number, Anchor>,
+): Promise<{ links: { epoch: number; keys: EpochKeys }[]; next: number | null; broken: boolean }> {
+  const e = anchor.config.epoch
+  const fields = await openAnchor(anchor, keys)
+  try {
+    const broken = { links: [], next: null, broken: true }
+    if (fields === null) return broken
+    if (fields.burned === true) return { links: [], next: null, broken: false }
+    const { prevEpoch, prevEpochKey } = fields
+    if (prevEpoch === undefined || prevEpochKey === undefined) return broken
+    const prevAnchor = anchors.get(prevEpoch)
+    // Contiguity (§5.3): an anchor at e chains to exactly e - 1.
+    if (prevEpoch !== e - 1 || prevAnchor === undefined) return broken
+    const prevKeys = await importEpochKeyAndWipe(repoId, prevEpoch, prevEpochKey.slice())
+    if (!matchesAnchor(prevKeys, prevAnchor)) return broken
+    const prev = { epoch: prevEpoch, keys: prevKeys }
+    const prevFields = await openAnchor(prevAnchor, prevKeys)
+    const prevBurned = prevFields?.burned === true
+    wipe(prevFields)
+    if (!prevBurned) return { links: [prev], next: prevEpoch, broken: false }
+    // Step over the burned run: the nearest lower epoch the skip key commits to, not burned itself.
+    const skip = fields.skipEpochKey
+    if (skip !== undefined) {
+      for (let s = prevEpoch - 1; s >= 0; s--) {
+        const sAnchor = anchors.get(s) as Anchor
+        const sKeys = await importEpochKeyAndWipe(repoId, s, skip.slice())
+        if (!matchesAnchor(sKeys, sAnchor)) continue
+        const sFields = await openAnchor(sAnchor, sKeys)
+        const ok = sFields !== null && sFields.burned !== true
+        wipe(sFields)
+        if (ok) return { links: [prev, { epoch: s, keys: sKeys }], next: s, broken: false }
+        break
+      }
+    }
+    return { links: [prev], next: null, broken: true }
+  } finally {
+    wipe(fields)
   }
-  const prevKeys = await importEpochKeyAndWipe(repoId, prevEpoch, prevEpochKey)
-  return matchesAnchor(prevKeys, prevAnchor) ? { epoch: prevEpoch, keys: prevKeys } : null
 }
 
 /**
@@ -180,7 +265,7 @@ export async function resolveEpochs(input: {
   const anchors = selectAnchors(configs, maintainers)
   const epochs = [...anchors.keys()].sort((a, b) => a - b)
   const currentEpoch = epochs.length > 0 ? (epochs[epochs.length - 1] as number) : null
-  const alerts: EpochAlert[] = []
+  const alerts: EpochAlert[] = gapCandidates(configs, maintainers).map((a) => ({ kind: 'epochGap', epoch: a.config.epoch, author: a.owner }))
 
   // §5.4: accepted wraps
   const keys = new Map<number, EpochKeys>()
@@ -202,12 +287,25 @@ export async function resolveEpochs(input: {
     if (walked.has(e) || e === 0) continue
     walked.add(e)
     const anchor = anchors.get(e) as Anchor
-    const step = await chainStep(repoId, anchor.config, keys.get(e) as EpochKeys, anchors)
-    if (step === null) {
-      alerts.push({ kind: 'chainBroken', epoch: e, author: anchor.owner })
-    } else if (!keys.has(step.epoch)) {
-      keys.set(step.epoch, step.keys)
-      pending.push(step.epoch)
+    const step = await chainStep(repoId, anchor, keys.get(e) as EpochKeys, anchors)
+    if (step.broken) alerts.push({ kind: 'chainBroken', epoch: e, author: anchor.owner })
+    const fresh = step.next !== null && !keys.has(step.next)
+    for (const l of step.links) if (!keys.has(l.epoch)) keys.set(l.epoch, l.keys)
+    if (fresh && step.next !== null) pending.push(step.next)
+  }
+
+  // §5.3 burned epochs: the flag of each readable epoch's anchor (only the anchor's counts).
+  const burned = new Set<number>()
+  for (const [e, k] of keys) {
+    const a = anchors.get(e) as Anchor
+    const opened = await openWithKey(
+      { type: 'config', ownerId: a.owner, epoch: e, id: a.id, createdAtBlockHeight: a.height, enc: a.config.enc },
+      k,
+      true,
+    )
+    if (opened.status === 'readable') {
+      opened.fields.prevEpochKey?.fill(0)
+      if (opened.fields.burned === true) burned.add(e)
     }
   }
 
@@ -222,7 +320,8 @@ export async function resolveEpochs(input: {
     const nonMembers = new IdSet(current.map((w) => w.memberId).filter((m) => !members.has(m))).sorted()
     const covered = new IdSet(current.filter((w) => w.keyEnabled).map((w) => w.memberId))
     const missingWraps = members.sorted().filter((m) => !covered.has(m))
-    repair = { rotate: nonMembers.length > 0, nonMembers, missingWraps }
+    // A burned current epoch needs a rotation too (§5.3: any maintainer finishes a burn).
+    repair = { rotate: nonMembers.length > 0 || burned.has(currentEpoch), nonMembers, missingWraps }
     if (repair.rotate && maintainers.has(reader)) {
       alerts.push({ kind: 'rotationRequired', epoch: currentEpoch, members: nonMembers })
     }
@@ -232,22 +331,27 @@ export async function resolveEpochs(input: {
     currentEpoch,
     anchors,
     keys,
-    writeEpoch: currentEpoch !== null && keys.has(currentEpoch) ? currentEpoch : null,
+    // Nothing is written under an epoch a non-member holds (§5.6): it waits for the rotation.
+    writeEpoch:
+      currentEpoch !== null && keys.has(currentEpoch) && !burned.has(currentEpoch) && (repair?.nonMembers.length ?? 0) === 0
+        ? currentEpoch
+        : null,
     unanchored,
     alerts: sortAlerts(alerts),
     repair,
     members,
+    burned,
   }
 }
 
 /** The {@link OpenContext} of a resolution, for `openContent` and pack reads. */
 export function openContextOf(r: EpochResolution): OpenContext {
-  return { keys: r.keys, anchors: r.anchors, members: r.members }
+  return { keys: r.keys, anchors: r.anchors, members: r.members, burned: r.burned }
 }
 
 /** Whether content under `epoch` at `height` by `owner` is hidden as late (§8.2). */
 export function contentIsLate(r: EpochResolution, epoch: number, height: number, owner: PrivateId): boolean {
-  return isLate(r.anchors, r.members, epoch, height, owner)
+  return isLate(r.anchors, r.members, epoch, height, owner, r.burned)
 }
 
 /** A manifest's standing under §8.2. */
@@ -267,7 +371,7 @@ export function manifestStanding(
 ): ManifestStanding {
   let currentAt: number | null = null
   for (const [e, a] of r.anchors) if (a.height <= height && (currentAt === null || e > currentAt)) currentAt = e
-  const suspect = currentAt !== null && headerEpoch < currentAt
+  const suspect = (currentAt !== null && headerEpoch < currentAt) || r.burned.has(headerEpoch)
   const late = contentIsLate(r, headerEpoch, height, owner)
   return { suspect, readable: r.members.has(owner) || (!suspect && !late) }
 }

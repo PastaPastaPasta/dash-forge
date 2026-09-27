@@ -18,7 +18,9 @@ const PROTECTED_PATTERN: u8 = 7;
 const PREV_EPOCH: u8 = 8;
 const PREV_EPOCH_KEY: u8 = 9;
 const PATH: u8 = 10;
-/// Tags 11..=63 are reserved (malformed); 64..=255 are extensions (skipped).
+const BURNED: u8 = 11;
+const SKIP_EPOCH_KEY: u8 = 12;
+/// Tags 13..=63 are reserved (malformed); 64..=255 are extensions (skipped).
 const FIRST_EXTENSION: u8 = 64;
 const MAX_PATTERNS: usize = 8;
 
@@ -51,7 +53,8 @@ pub struct Fields {
     /// Tag 8: an anchor's `prevEpoch`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prev_epoch: Option<u32>,
-    /// Tag 9: an anchor's `prevEpochKey`, the previous epoch's key.
+    /// Tag 9: an anchor's `prevEpochKey`, the previous epoch's key. Never in a burned config
+    /// (§5.3): the burned epoch's key may sit with someone who never held the one below.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -61,6 +64,19 @@ pub struct Fields {
     /// Tag 10: an inline comment's `path`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    /// Tag 11 (config, `e ≥ 1`, the single byte `0x01`): the epoch is burned (§5.3): its key
+    /// may have reached someone it must not, so nothing is written under it; it only links the
+    /// chain.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub burned: bool,
+    /// Tag 12 (config, `e ≥ 1`, not burned): `skipEpochKey`, the key of the nearest epoch below a
+    /// burned run that is not burned, so the chain steps over the run (§5.3).
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "super::keys::opt_key_serde"
+    )]
+    pub skip_epoch_key: Option<EpochKey>,
 }
 
 /// Decrypted content is private: `Debug` shows only which fields are present and their byte
@@ -79,6 +95,8 @@ impl std::fmt::Debug for Fields {
             .field("prev_epoch", &self.prev_epoch)
             .field("prev_epoch_key", &self.prev_epoch_key)
             .field("path_len", &len(&self.path))
+            .field("burned", &self.burned)
+            .field("skip_epoch_key", &self.skip_epoch_key)
             .finish()
     }
 }
@@ -120,7 +138,8 @@ fn cap(tag: u8) -> Cap {
             bytes: 400,
         },
         PREV_EPOCH => Cap::Fixed(4),
-        PREV_EPOCH_KEY => Cap::Fixed(32),
+        PREV_EPOCH_KEY | SKIP_EPOCH_KEY => Cap::Fixed(32),
+        BURNED => Cap::Fixed(1),
         PATH => Cap::Text {
             min: 0,
             chars: 500,
@@ -130,8 +149,8 @@ fn cap(tag: u8) -> Cap {
     }
 }
 
-/// The tags a kind may carry. `anchor` is whether a config is its epoch's anchor with `e ≥ 1`
-/// (only such a config carries tags 8 and 9).
+/// The tags a kind may carry. `anchor_with_prev` is whether a config is for an epoch `e ≥ 1`
+/// (only such a config carries tags 8, 9, 11 and 12).
 fn allowed(kind: DocKind, tag: u8, anchor_with_prev: bool) -> bool {
     match kind {
         DocKind::Issue => matches!(tag, TITLE | BODY),
@@ -141,14 +160,16 @@ fn allowed(kind: DocKind, tag: u8, anchor_with_prev: bool) -> bool {
         DocKind::RefUpdate | DocKind::ProtectedRefUpdate => tag == REF_NAME,
         DocKind::Config => {
             matches!(tag, DEFAULT_BRANCH | PROTECTED_PATTERN)
-                || (anchor_with_prev && matches!(tag, PREV_EPOCH | PREV_EPOCH_KEY))
+                || (anchor_with_prev
+                    && matches!(tag, PREV_EPOCH | PREV_EPOCH_KEY | BURNED | SKIP_EPOCH_KEY))
         }
     }
 }
 
-/// Parse `pt` as the TLV plaintext of a `kind` document. `anchor_with_prev` is true for the
-/// anchor of an epoch `e ≥ 1` (which must carry tags 8 and 9) and false otherwise (where they
-/// are refused). `None` is `Malformed`.
+/// Parse `pt` as the TLV plaintext of a `kind` document. `anchor_with_prev` is true for a
+/// config of an epoch `e ≥ 1` and false otherwise (where tags 8, 9, 11 and 12 are refused). Such
+/// a config carries tag 8; a burned one (tag 11) carries neither 9 nor 12, any other carries 9
+/// and may carry 12. `None` is `Malformed`.
 #[must_use]
 pub fn parse(pt: &[u8], kind: DocKind, anchor_with_prev: bool) -> Option<Fields> {
     let mut f = Fields::default();
@@ -175,7 +196,7 @@ pub fn parse(pt: &[u8], kind: DocKind, anchor_with_prev: bool) -> Option<Fields>
             continue; // forward compatibility: skipped, never interpreted
         }
         if !allowed(kind, tag, anchor_with_prev) {
-            return None; // reserved 11..=63, tag 0, or not a field of this kind
+            return None; // reserved 13..=63, tag 0, or not a field of this kind
         }
         if tag == PROTECTED_PATTERN {
             patterns += 1;
@@ -188,10 +209,13 @@ pub fn parse(pt: &[u8], kind: DocKind, anchor_with_prev: bool) -> Option<Fields>
                 if value.len() != n {
                     return None;
                 }
-                if tag == PREV_EPOCH {
-                    f.prev_epoch = Some(u32::from_be_bytes(value.try_into().ok()?));
-                } else {
-                    f.prev_epoch_key = EpochKey::from_slice(value);
+                match tag {
+                    PREV_EPOCH => f.prev_epoch = Some(u32::from_be_bytes(value.try_into().ok()?)),
+                    PREV_EPOCH_KEY => f.prev_epoch_key = EpochKey::from_slice(value),
+                    SKIP_EPOCH_KEY => f.skip_epoch_key = EpochKey::from_slice(value),
+                    // the flag has one value; any other byte is malformed
+                    BURNED if value == [0x01] => f.burned = true,
+                    _ => return None,
                 }
             }
             Cap::Text { min, chars, bytes } => {
@@ -222,7 +246,13 @@ pub fn parse(pt: &[u8], kind: DocKind, anchor_with_prev: bool) -> Option<Fields>
         DocKind::Comment => f.body.as_deref().is_some_and(|b| !b.is_empty()),
         DocKind::RefUpdate | DocKind::ProtectedRefUpdate => f.ref_name.is_some(),
         DocKind::Config => {
-            !anchor_with_prev || (f.prev_epoch.is_some() && f.prev_epoch_key.is_some())
+            !anchor_with_prev
+                || (f.prev_epoch.is_some()
+                    && if f.burned {
+                        f.prev_epoch_key.is_none() && f.skip_epoch_key.is_none()
+                    } else {
+                        f.prev_epoch_key.is_some()
+                    })
         }
         DocKind::Review => true,
     };
@@ -266,6 +296,12 @@ pub fn encode(f: &Fields) -> Zeroizing<Vec<u8>> {
     }
     if let Some(p) = &f.path {
         rec(PATH, p.as_bytes());
+    }
+    if f.burned {
+        rec(BURNED, &[0x01]);
+    }
+    if let Some(k) = &f.skip_epoch_key {
+        rec(SKIP_EPOCH_KEY, k.expose());
     }
     out
 }
