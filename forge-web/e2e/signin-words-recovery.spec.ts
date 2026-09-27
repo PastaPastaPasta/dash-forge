@@ -46,7 +46,7 @@ test('w1. the 12 words alone sign in: the identity is found, a limited key lands
     const w = window as unknown as { sawTiles: boolean }
     w.sawTiles = false
     new MutationObserver(() => {
-      if (document.querySelector('[data-testid="tile-create"]')) w.sawTiles = true
+      if (document.querySelector('[data-testid^="tile-"]')) w.sawTiles = true
     }).observe(document, { childList: true, subtree: true })
   })
   await page.reload({ waitUntil: 'domcontentloaded' })
@@ -54,4 +54,21 @@ test('w1. the 12 words alone sign in: the identity is found, a limited key lands
   await expect(page.getByText('This browser holds a key for')).toBeVisible({ timeout: 30_000 })
   expect(await page.evaluate(() => (window as unknown as { sawTiles: boolean }).sawTiles)).toBe(false)
   await shot(page, 'signin-w1-reopen-unlock')
+
+  // The same words again on this device: it already holds a key for the identity found, so the
+  // sheet offers Unlock instead of a paid renewal, and nothing is written.
+  const writes: string[] = []
+  page.on('request', (r) => {
+    if (/broadcastStateTransition/.test(r.url())) writes.push(r.url())
+  })
+  await page.getByRole('button', { name: /other sign-in options/i }).click()
+  await page.getByTestId('tile-import').click()
+  await page.getByRole('tab', { name: 'Recovery phrase' }).click()
+  await page.getByLabel('Recovery phrase (12 or 24 words)').fill(mnemonic)
+  await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
+  await page.getByLabel('Repeat passphrase').fill(PASSPHRASE)
+  await page.getByRole('button', { name: /create this browser's key/i }).click()
+  await expect(page.getByText('This browser holds a key for')).toBeVisible({ timeout: 60_000 })
+  expect(writes).toEqual([])
+  expect((await sdk.identities.fetch(identityId)).publicKeys.length).toBe(after)
 })

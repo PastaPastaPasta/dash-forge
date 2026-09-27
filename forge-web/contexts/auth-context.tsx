@@ -90,7 +90,7 @@ interface AuthContextValue {
     input: { fileText: string } | { mnemonic: string; identityId: string },
     protection: Protection,
     request?: LimitedKeyRequest,
-    options?: { readonly enablePrivateRepos?: boolean },
+    options?: { readonly enablePrivateRepos?: boolean; readonly renew?: boolean },
   ) => Promise<void>
   adoptLimitedKey: (identityId: string, key: LimitedKey, protection: Protection) => Promise<void>
   /** Store the keys a wallet granted (verified on chain) and open the session. */
@@ -151,7 +151,8 @@ export function AuthProvider({
   // Why the stored-key list could not be read (storage blocked by another tab, say): the last
   // list read stays, so a stored key never silently turns into "no key here".
   const [vaultsError, setVaultsError] = useState<string | null>(null)
-  // The list has been read at least once (the sheet waits for it before choosing a view).
+  // The list has been read successfully at least once. The sheet also proceeds on `vaultsError`:
+  // a caller waiting on this flag alone would wait forever while storage is blocked.
   const [vaultsLoaded, setVaultsLoaded] = useState(false)
   const reloadVaults = useCallback(() => {
     controller.storedVaults().then(

@@ -38,6 +38,8 @@ import { normalizeToWif } from './wif'
 import { identityFileMatchesNetwork, masterMaterialFromFile } from './identity-file'
 import { deriveMasterKey, isValidMnemonic } from './hd'
 import { identityOfMasterKey } from './identity-lookup'
+import { PLATFORM_READ_MS } from './connect'
+import { withTimeout } from '../timeout'
 import { checkWalletKey, hasNoLimits, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
 import { encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
 import {
@@ -480,10 +482,15 @@ export class AuthController {
     input: { fileText: string } | { mnemonic: string; identityId: string },
     protection: Protection,
     request?: LimitedKeyRequest,
-    options: { readonly enablePrivateRepos?: boolean } = {},
+    options: {
+      readonly enablePrivateRepos?: boolean
+      /** Replace the key this browser holds for the identity (renewal), even when found by words. */
+      readonly renew?: boolean
+    } = {},
   ): Promise<AuthSession> {
     return this.run(async () => {
       let identityId: string
+      let foundByWords = false
       let masterWif: string | null
       // Opt-in (`ux-dx-spec.md` §2.3): the identity's ENCRYPTION key from the same file or
       // phrase, checked against the identity and sealed beside the limited key.
@@ -506,12 +513,20 @@ export class AuthController {
         // The words alone: the identity is the one holding their master key.
         if (identityId === '') {
           this.step('Finding the identity of these words')
-          identityId = await identityOfMasterKey(await this.getSdk(), master.publicKeyHex, this.network)
+          identityId = await withTimeout(
+            identityOfMasterKey(await this.getSdk(), master.publicKeyHex, this.network),
+            PLATFORM_READ_MS,
+            'Finding the identity of these words',
+          )
+          foundByWords = true
         }
       }
       if (!masterWif) throw new Error('no master key found')
       this.step("Checking this browser's stored keys")
       const previous = (await listVaults(this.network)).find((v) => v.identityId === identityId)
+      // Found from the words, and this browser already holds a key for it: the user never saw
+      // the "Unlock it instead" choice, so don't turn signing back in into a paid renewal.
+      if (foundByWords && previous && options.renew !== true) throw new AlreadyStoredError(identityId)
       this.step('Connecting to Dash Platform')
       const sdk = await this.getSdk()
       // Renewing also disables the wallet keys this browser holds for the identity (a shipped
@@ -852,6 +867,14 @@ export class AuthController {
 }
 
 /** The key opened no longer controls a usable key on the identity (disabled, expired, wrong). */
+/** Signing in from the words found an identity this browser already holds a key for. */
+export class AlreadyStoredError extends Error {
+  constructor(readonly identityId: string) {
+    super(`This browser already holds a key for ${identityId}. Unlock it instead, or renew it from Settings.`)
+    this.name = 'AlreadyStoredError'
+  }
+}
+
 export class KeyNotUsableError extends WriteAuthError {
   constructor(message = "this browser's key is no longer usable on the identity (disabled or expired) — renew it") {
     super(message)

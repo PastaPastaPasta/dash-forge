@@ -32,6 +32,8 @@ import { FORGET_CONFIRM } from '@/components/keys-panel'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { NotDeployedState } from '@/components/ui/network-badge'
 import { BROWSER_KEY_DEFAULTS, masterMaterialFromFile } from '@/lib/auth'
+import { AlreadyStoredError } from '@/lib/auth/controller'
+import { Spinner } from '@/components/ui/states'
 import { walletLoginAvailable, walletSignInSupported } from '@/lib/auth/app-connect'
 import { ENCRYPTION_KEY_BLAST_RADIUS } from '@/lib/auth/encryption-key'
 import { PLATFORM_READ_MS, connectPlatform } from '@/lib/auth/connect'
@@ -63,8 +65,9 @@ export function LoginModal(): JSX.Element {
     }
     if (opened.current === null) {
       if (requested === null && !vaultsLoaded && !vaultsError) return
-      // Read the stored keys again: another tab may have added one, or storage was blocked.
-      reloadVaults()
+      // Read the stored keys again (another tab may have added one), unless storage failed:
+      // then the sheet's Try again does it.
+      if (!vaultsError) reloadVaults()
       opened.current = { hasVault }
       setView(requested ?? (hasVault ? 'unlock' : 'choose'))
       setUnlockFor(null)
@@ -93,6 +96,7 @@ export function LoginModal(): JSX.Element {
           <ArrowLeft className="h-3.5 w-3.5" aria-hidden /> All options
         </button>
       ) : null}
+      {view === null && !vaultsError ? <Spinner label="Checking this browser for a stored key" /> : null}
       {view === 'unlock' ? <UnlockView initial={unlockFor} onDone={close} onOther={() => setView('choose')} onRenew={() => setView('import')} /> : null}
       {view === 'choose' ? <ChooseView onPick={setView} /> : null}
       {view === 'import' ? (
@@ -411,12 +415,19 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
       if (mode === 'file' && text === null) return
       await importIdentity(mode === 'file' ? { fileText: text as string } : { mnemonic, identityId }, protection, undefined, {
         enablePrivateRepos: enablePrivate,
+        // Signed in as the identity being imported: this is a renewal of its key.
+        renew: identity !== null,
       })
       fileRef.current = null
       if (mnemonicRef.current) mnemonicRef.current.value = ''
       setMnemonic('')
       onDone()
     } catch (e) {
+      // Found from the words, and already held here: offer Unlock, as a typed ID would have.
+      if (e instanceof AlreadyStoredError) {
+        onStored(e.identityId)
+        return
+      }
       setError(errorMessage(e))
     }
   }
@@ -448,7 +459,7 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
           <Field
             label="Identity ID (optional)"
             htmlFor="import-id"
-            hint="Leave empty: Forge finds the identity these words created. Enter it only for an identity made with other software."
+            hint="Leave empty: Forge finds the identity these words created. Enter it to check the words against a known identity."
           >
             <Input id="import-id" value={identityId} onChange={(e) => setIdentityId(e.target.value)} className="font-mono" spellCheck={false} autoComplete="off" />
           </Field>

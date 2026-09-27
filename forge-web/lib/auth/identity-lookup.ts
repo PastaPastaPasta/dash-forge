@@ -22,8 +22,12 @@ export async function identityOfMasterKey(sdk: EvoSDK, publicKeyHex: string, net
   const identity = await authSdk(sdk).identities.byPublicKeyHash(publicKeyHash(publicKeyHex))
   if (!identity) {
     throw new Error(
-      `No identity on ${network} uses these words' master key. Check the words, or enter the identity ID (an identity created with other software may use a different key path).`,
+      `No identity on ${network} uses these words' master key. Check the words; an identity made with other software (another key path) can't be signed in from its words here: use its identity file.`,
     )
   }
-  return identity.id.toBase58()
+  try {
+    return identity.id.toBase58()
+  } finally {
+    ;(identity as { free?: () => void }).free?.()
+  }
 }

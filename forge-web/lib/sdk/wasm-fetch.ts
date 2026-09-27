@@ -102,7 +102,11 @@ export async function fetchAndCompileWithRetry(
     try {
       return await fetchAndCompile(url, total, onProgress, options)
     } catch (e) {
-      const permanent = e instanceof Error && /HTTP 4\d\d/.test(e.message)
+      // Not worth another download: a client error (except timeout / too many requests), or a
+      // body that is not wasm (a stale deploy serving HTML), which fails the same way again.
+      const permanent =
+        (typeof WebAssembly !== 'undefined' && e instanceof WebAssembly.CompileError) ||
+        (e instanceof Error && /HTTP 4(?!08|29)\d\d/.test(e.message))
       const wait = waits[attempt]
       if (permanent || wait === undefined) throw e
       await new Promise((r) => setTimeout(r, wait))
