@@ -27,6 +27,7 @@ import {
   bytesEqual,
   compareBytes,
   generateEpochKey,
+  openContent,
   sealDoc,
 } from '../private'
 import type { Membership, Role } from '../rules/v2'
@@ -118,10 +119,9 @@ export function planRotation(
   if (resume !== null) {
     epoch = resume.row.epoch
   } else {
-    // The smallest epoch above n with no wrap by self (and no anchor, above n by definition).
-    const taken = new Set(mine.map((w) => w.row.epoch))
-    epoch = n + 1
-    while (taken.has(epoch)) epoch += 1
+    // A new epoch is above every epoch number seen on any config or wrap, by anyone: numbers are
+    // never reused (§5.3), so a removed maintainer's pre-posted wraps or configs can never name it.
+    epoch = Math.max(n, ...session.seenEpochs) + 1
     if (epoch > 0xffff_ffff) throw new PrivateMembersError('no key epoch number is left')
   }
 
@@ -202,6 +202,7 @@ export type RotationStep =
   | { readonly kind: 'waiting'; readonly what: string }
   | { readonly kind: 'wrapped'; readonly identity: string; readonly epoch: number }
   | { readonly kind: 'anchored'; readonly epoch: number }
+  | { readonly kind: 'reanchored'; readonly epoch: number }
 
 /** A fresh session (§5.3: anchors are re-read before every write). */
 async function withFreshSession<T>(c: PrivateWriteContext, use: (s: PrivateSession) => Promise<T>): Promise<T> {
@@ -431,13 +432,92 @@ export async function removePrivateMember(
   intent: string,
   onStep?: (s: RotationStep) => void,
 ): Promise<number | null> {
+  // §5.3: a maintainer's anchors stop counting when their role goes. Re-anchor each of their
+  // epochs first (refused when this browser cannot read one), so no epoch vanishes or falls back.
+  if (role === 'maintainer') await withFreshSession(c, (s) => reanchorEpochsOf(c, s, memberId, intent, onStep))
   await revokeMember(c.sdk, c.auth, c.repo, memberId, role)
   onStep?.({ kind: 'deleted' })
   onStep?.({ kind: 'waiting', what: 'the member list to drop them' })
   const rows = await waitForMembers(c, (r) => !holds(r, memberId, role))
   const effect = removalEffect([...rows, { identity: memberId, role, createdAt: 0 }], memberId, role)
   if (effect === 'none') return null
-  return rotateRepoKey(c, effect === 'rotate-exclude' ? [memberId] : [], intent, onStep)
+  const epoch = await rotateRepoKey(c, effect === 'rotate-exclude' ? [memberId] : [], intent, onStep)
+  // Once more, the repair check (§5.6): a concurrent rotation that lost, or one by a maintainer
+  // who did not exclude this member, shows up here and is fixed now.
+  await runRepair(c, `${intent}:repair`, onStep)
+  return epoch
+}
+
+/**
+ * The cost shown before removing `role` from `memberId`: re-anchoring their epochs (a maintainer),
+ * then the rotation when there is one (the delete itself refunds, and is not counted).
+ */
+export function removalCost(session: PrivateSession, memberId: string, role: Role, plan: RotationPlan | null): CostPreview {
+  const reanchors = role === 'maintainer' ? epochsAnchoredBy(session, memberId).map(() => previewCreate('config')) : []
+  return sumPreviews([...reanchors, ...(plan !== null ? [rotationCost(plan)] : [])])
+}
+
+/** The epochs whose anchor `memberId` wrote (the ones that go when their maintainer role does). */
+export function epochsAnchoredBy(session: PrivateSession, memberId: string): number[] {
+  return [...session.anchors.values()].filter((a) => a.owner === memberId).map((a) => a.epoch).sort((a, b) => a - b)
+}
+
+/**
+ * Before a maintainer's role is deleted (§5.3): for every epoch they anchored, post a config under
+ * the same key with the same `prevEpoch` / `prevEpochKey` and the current config fields, so the
+ * next anchor among the remaining maintainers carries the same commitment and still chains.
+ * Refuses (nothing written) when this browser cannot read one of those epochs.
+ */
+async function reanchorEpochsOf(
+  c: PrivateWriteContext,
+  session: PrivateSession,
+  memberId: string,
+  intent: string,
+  onStep?: (s: RotationStep) => void,
+): Promise<void> {
+  const epochs = epochsAnchoredBy(session, memberId)
+  const unreadable = epochs.filter((e) => !session.resolution.keys.has(e))
+  if (unreadable.length > 0) {
+    throw new PrivateMembersError(
+      `this maintainer anchored key epoch ${unreadable.join(', ')}, which you can't read, so their role can't be removed from this browser without losing it`,
+      'E309',
+    )
+  }
+  const self = decodeIdentifier(c.auth.identityId)
+  for (const e of epochs) {
+    const keys = session.resolution.keys.get(e) as EpochKeys
+    const anchor = session.resolution.anchors.get(e)
+    if (anchor === undefined) continue
+    // The anchor's own chain pair (an epoch-0 anchor has none).
+    const opened = await openContent(
+      { type: 'config', ownerId: anchor.owner, epoch: e, id: anchor.id, createdAtBlockHeight: anchor.height, enc: anchor.config.enc },
+      session.ctx,
+    )
+    if (opened.status !== 'readable') throw new PrivateMembersError(`the anchor of epoch ${e} does not open; repair the repo first`, 'E309')
+    const { prevEpoch, prevEpochKey } = opened.fields
+    try {
+      const fields = {
+        ...(session.config !== null ? { defaultBranch: session.config.defaultBranch, protectedPatterns: [...session.config.protectedPatterns] } : {}),
+        ...(prevEpoch !== undefined && prevEpochKey !== undefined ? { prevEpoch, prevEpochKey } : {}),
+      }
+      const enc = await sealDoc(keys, { type: 'config', ownerId: self, epoch: e }, fields, { anchor: true })
+      await createDocumentIdempotent(c.sdk, c.auth, {
+        contractId: c.repo.forge.core,
+        documentType: DOC.config,
+        data: {
+          repoId: decodeIdentifier(c.repo.repoId),
+          epoch: e,
+          enc,
+          backend: session.configPlain?.backend ?? { mode: 0 },
+          archived: session.configPlain?.archived ?? false,
+        },
+        intent: `${intent}:reanchor:${e}`,
+      })
+    } finally {
+      prevEpochKey?.fill(0)
+    }
+    onStep?.({ kind: 'reanchored', epoch: e })
+  }
 }
 
 /**

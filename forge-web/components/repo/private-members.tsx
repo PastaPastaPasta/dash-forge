@@ -29,7 +29,7 @@ import {
   planRotation,
   removalEffect,
   type RemovalEffect,
-  rotationCost,
+  removalCost,
   removePrivateMember,
   type RotationPlan,
   type RotationStep,
@@ -74,6 +74,8 @@ function stepText(s: RotationStep): string {
       return `Key for epoch ${s.epoch} handed to ${shortId(s.identity)}.`
     case 'anchored':
       return `Key epoch ${s.epoch} is in effect.`
+    case 'reanchored':
+      return `Key epoch ${s.epoch} re-anchored under your name.`
   }
 }
 
@@ -240,7 +242,13 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
         onClose={() => setRemoving(null)}
         title={`Remove ${removing?.role ?? 'member'}`}
         description={removing === null ? '' : removalText(removalEffect(session.members, removing.member, removing.role), shortId(removing.member), removing.role)}
-        cost={removalPlan.plan !== null ? rotationCost(removalPlan.plan) : removing !== null ? previewDelete(removing.role) : null}
+        cost={
+          removing === null
+            ? null
+            : removalPlan.plan === null && removing.role === 'writer'
+              ? previewDelete(removing.role)
+              : removalCost(session, removing.member, removing.role, removalPlan.plan)
+        }
         confirmLabel="Sign & remove"
         onConfirm={async (intent) => {
           if (write.context === null || removing === null) throw new Error('unlock with your encryption key first')

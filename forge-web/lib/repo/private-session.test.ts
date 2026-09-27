@@ -29,7 +29,7 @@ import { openPrivateArtifact, readPrivateRange } from '../view/private-packs'
 import { readConfigBundle } from './config'
 import { readAllRefUpdates, readRefs } from './refs'
 import { listIssues, readReviews } from './issues'
-import { planRepair, planRotation, rotationCost } from './private-members'
+import { epochsAnchoredBy, planRepair, planRotation, removalEffect, rotationCost } from './private-members'
 import { privateGate, sealedGate } from './private-content'
 import { loadPrivateSession, closePrivateSessions, type SessionSource, type SessionUnwrapper } from './private-session'
 import { assertNoPlaintext } from './writes'
@@ -445,6 +445,26 @@ describe('rotation and repair planning', () => {
     const plan = planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4)
     expect(plan.resume).toBeNull()
     expect(plan.epoch).toBe(2)
+  })
+
+  it('a new epoch goes above every epoch number seen, even one pre-posted by someone else', async () => {
+    const w = await world()
+    // A wrap for epoch 7 from CAROL (never a maintainer): inert, but its number is never reused.
+    w.wraps.push(wrapDoc(CAROL, CAROL, 7, 60))
+    const s = await sessionFor(w, ALICE)
+    expect(planRotation(s, b58(ALICE), [b58(CAROL)], FORGE.core, 4).epoch).toBe(8)
+  })
+
+  it('removing a role: who is excluded, and what re-anchoring costs', async () => {
+    const w = await world()
+    await rotate(w)
+    w.members.push({ identity: b58(BOB), role: 'maintainer', createdAt: 50 })
+    const s = await sessionFor(w, ALICE)
+    expect(removalEffect(s.members, b58(BOB), 'maintainer')).toBe('rotate-keep')
+    expect(removalEffect(s.members, b58(BOB), 'writer')).toBe('none')
+    expect(removalEffect(s.members, b58(ALICE), 'maintainer')).toBe('rotate-exclude')
+    expect(epochsAnchoredBy(s, b58(ALICE))).toEqual([0, 1])
+    expect(epochsAnchoredBy(s, b58(BOB))).toEqual([])
   })
 
   it('needs the current epoch to be readable, and a maintainer', async () => {
