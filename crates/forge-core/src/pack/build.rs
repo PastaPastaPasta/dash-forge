@@ -164,13 +164,20 @@ pub fn build_pack(repo: &Path, want_tips: &[&str], have_bases: &[&str]) -> Resul
 }
 
 /// Candidate 1: the push delta packed non-thin, so no external base is ever referenced.
+///
+/// Its every object is checked as the helper checks a fetch ([`super::fsck::push_checks`]):
+/// a history no clone would take (a `.git` look-alike, a hostile `.gitmodules`, a corrupt tree)
+/// is refused here, as E511, before anything is stored or paid for. This candidate is always
+/// built, and is indexed in `repo` itself, so every blob a check reads (a `.gitmodules` the
+/// push does not change) is at hand. Candidate 2 holds the same new objects plus bases the
+/// remote already has.
 fn build_direct(repo: &Path, revs: &str) -> Result<Pack> {
     let bytes = git_capture(
         repo,
         &["pack-objects", "--revs", "--stdout", "--delta-base-offset"],
         Some(revs.as_bytes()),
     )?;
-    index_pack_bytes(repo, &bytes)
+    index_pack_bytes(repo, &bytes, super::fsck::push_checks())
 }
 
 /// Candidate 2: thin pack → `--fix-thin` completion → re-emit the completed object set
@@ -228,26 +235,22 @@ fn build_completed_reordered(repo: &Path, revs: &str) -> Result<Pack> {
         &["pack-objects", "--stdout", "--delta-base-offset"],
         Some(oids.as_bytes()),
     )?;
-    index_pack_bytes(&odb, &bytes)
+    index_pack_bytes(&odb, &bytes, None)
 }
 
 /// Index a packfile into a scratch `.pack`/`.idx` pair and parse it. `repo` is only the cwd
-/// `index-pack` needs for the object-format config; the repo's odb is untouched.
-fn index_pack_bytes(repo: &Path, bytes: &[u8]) -> Result<Pack> {
+/// `index-pack` needs for the object-format config (and, with `checks`, the odb its object
+/// checks read blobs the pack does not carry from); the repo's odb is untouched. `checks`: an
+/// `index-pack` object-check argument.
+fn index_pack_bytes(repo: &Path, bytes: &[u8], checks: Option<&str>) -> Result<Pack> {
     let scratch = Scratch::new()?;
     let pack_path = scratch.dir.join("out.pack");
     let idx_path = scratch.dir.join("out.idx");
-    git_capture(
-        repo,
-        &[
-            "index-pack",
-            "--stdin",
-            "-o",
-            &idx_path.to_string_lossy(),
-            &pack_path.to_string_lossy(),
-        ],
-        Some(bytes),
-    )?;
+    let (idx, pack) = (idx_path.to_string_lossy(), pack_path.to_string_lossy());
+    let mut args = vec!["index-pack", "--stdin"];
+    args.extend(checks);
+    args.extend(["-o", &idx, &pack]);
+    git_capture(repo, &args, Some(bytes))?;
     Pack::from_files(&pack_path, &idx_path)
 }
 
@@ -396,24 +399,32 @@ pub(super) fn git_capture(cwd: &Path, args: &[&str], stdin: Option<&[u8]>) -> Re
     let mut child = cmd
         .spawn()
         .map_err(|e| Error::Io(format!("spawn git: {e}")))?;
-    if let Some(data) = stdin {
-        child
+    // A git that stops reading early (index-pack refusing an object) breaks the pipe: its exit
+    // status and stderr are the real answer, so they are read before a write error is.
+    let written = match stdin {
+        Some(data) => child
             .stdin
             .take()
             .ok_or_else(|| Error::Io("git stdin unavailable".into()))?
-            .write_all(data)
-            .map_err(|e| Error::Io(format!("write git stdin: {e}")))?;
-    }
+            .write_all(data),
+        None => Ok(()),
+    };
     let out = child
         .wait_with_output()
         .map_err(|e| Error::Io(format!("wait git: {e}")))?;
     if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        // Only an object-checking index-pack reports refused objects, and here that is a push.
+        if let Some(refused) = super::fsck::refused(&stderr, true) {
+            return Err(refused.into());
+        }
         return Err(Error::Io(format!(
             "git {} failed: {}",
             args.first().copied().unwrap_or_default(),
-            String::from_utf8_lossy(&out.stderr).trim()
+            stderr.trim()
         )));
     }
+    written.map_err(|e| Error::Io(format!("write git stdin: {e}")))?;
     Ok(out.stdout)
 }
 
@@ -425,10 +436,15 @@ struct Scratch {
 
 impl Scratch {
     fn new() -> Result<Self> {
+        // The clock alone is not unique: macOS ticks in microseconds, and two threads (tests
+        // run in parallel) can ask in the same tick.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
-        let dir = std::env::temp_dir().join(format!("forge-pack-{}-{}", std::process::id(), nanos));
+        let dir =
+            std::env::temp_dir().join(format!("forge-pack-{}-{nanos}-{seq}", std::process::id()));
         fs::create_dir_all(&dir).map_err(|e| Error::Io(e.to_string()))?;
         // Transient packfile bytes should not be world-readable.
         #[cfg(unix)]

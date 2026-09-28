@@ -15,7 +15,6 @@ use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, bail, Result};
 use forge_core::pack::{ensure_safe_rev, fsck};
-use forge_core::user_error::{codes, UserError};
 use std::io::Write as _;
 
 /// How every downloaded pack is checked as it is indexed: git's own object checks, at the
@@ -23,18 +22,14 @@ use std::io::Write as _;
 /// fatal stays fatal, except the author/committer-line checks real histories fail — see that
 /// module), so a hostile pack is refused before a ref can point at it, even with
 /// `transfer.fsckObjects` off. A git older than 2.44 cannot take severities, and gets every
-/// check at its default ([`fsck::index_pack_checks`]).
+/// check at its default.
 ///
 /// Not `--strict`: that also requires every object a pack's commits and trees name to be in
 /// this pack or already in the odb, and a repo's history is split across packs indexed one
 /// at a time in no guaranteed order, so a valid multi-pack fetch would fail. Connectivity is
 /// checked by git itself once the fetch completes.
 fn index_pack_checks() -> &'static str {
-    static CHECKS: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-    CHECKS.get_or_init(|| {
-        let version = run_git(&["version"], None, true, None).unwrap_or_default();
-        fsck::index_pack_checks(&String::from_utf8_lossy(&version))
-    })
+    fsck::index_pack_checks()
 }
 
 /// Run `git <args>`, optionally in `cwd`, optionally with the ambient `GIT_DIR`/
@@ -80,7 +75,7 @@ fn run_git(
         .map_err(|e| anyhow!("wait git: {e}"))?;
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr);
-        if let Some(refused) = object_refused(&stderr) {
+        if let Some(refused) = fsck::refused(&stderr, false) {
             return Err(refused.into());
         }
         bail!(
@@ -91,35 +86,6 @@ fn run_git(
     }
     written.map_err(|e| anyhow!("write git stdin: {e}"))?;
     Ok(out.stdout)
-}
-
-/// E511 when git's object checks refused something (`error: object <oid>: <msgId>: …` on
-/// its stderr), naming the objects and the checks; `None` for any other failure.
-fn object_refused(stderr: &str) -> Option<UserError> {
-    const SHOWN: usize = 3;
-    let refusals = fsck::refusals(stderr);
-    let first = refusals.first()?;
-    let mut cause: Vec<String> = refusals
-        .iter()
-        .take(SHOWN)
-        .map(|r| format!("object {}: {}: {}", r.oid, r.msg_id, r.message))
-        .collect();
-    if refusals.len() > SHOWN {
-        cause.push(format!("and {} more", refusals.len() - SHOWN));
-    }
-    Some(
-        UserError::new(
-            codes::OBJECT_REFUSED,
-            format!(
-                "git refused object {} ({}) in this repository's history",
-                &first.oid[..first.oid.len().min(12)],
-                first.msg_id
-            ),
-        )
-        .cause(cause.join("; "))
-        .fix("the history holds an object git's checks refuse (a path git treats as the repository, a hostile .gitmodules, or a corrupt tree or commit); ask a maintainer to push history without it")
-        .note("nothing from this pack was written to your repository's refs"),
-    )
 }
 
 /// `git config --get <key>` in the helper's environment (the repo git spawned it for, then

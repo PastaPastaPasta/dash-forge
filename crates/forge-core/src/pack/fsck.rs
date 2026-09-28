@@ -33,6 +33,8 @@
 //! `badFilemode` (a `100664` mode) is only a warning in git's own `index-pack` checks and stays
 //! so here; the web refuses it (it is stricter than git in places, never looser).
 
+use crate::user_error::{codes, UserError};
+
 /// The author/committer/tagger-line checks demoted to `warn` (see the module docs), as git
 /// spells their msg-ids. Every other check keeps git's severity.
 pub const RELAXED: &[&str] = &[
@@ -58,11 +60,34 @@ missingSpaceBeforeDate=warn,missingSpaceBeforeEmail=warn,zeroPaddedDate=warn";
 /// The first git version whose `index-pack` takes severities after `--fsck-objects`.
 pub const MIN_GIT_FOR_SEVERITIES: (u32, u32) = (2, 44);
 
+/// The `index-pack` object-check argument for the `git` on PATH ([`index_pack_checks_for`]
+/// its `git version`), asked once per process.
+pub fn index_pack_checks() -> &'static str {
+    static CHECKS: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    CHECKS.get_or_init(|| {
+        let version = std::process::Command::new("git")
+            .arg("version")
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        index_pack_checks_for(&version)
+    })
+}
+
+/// The object checks a push's pack gets before anything is stored: [`INDEX_PACK_FSCK`], the
+/// same classification a clone applies, so what a push stores every reader can clone. `None`
+/// on a git older than 2.44, which could only check with the author-line ids fatal and so
+/// would refuse histories a clone accepts; readers still check what they fetch.
+pub fn push_checks() -> Option<&'static str> {
+    let checks = index_pack_checks();
+    (checks == INDEX_PACK_FSCK).then_some(checks)
+}
+
 /// The `index-pack` object-check argument for the git that printed `version`
 /// (`git version 2.50.1 (Apple Git-155)`): [`INDEX_PACK_FSCK`] from 2.44, else plain
 /// `--fsck-objects` (an older git refuses the severities as an unknown option; it then checks
 /// everything at git's defaults, which is stricter, never looser).
-pub fn index_pack_checks(version: &str) -> &'static str {
+pub fn index_pack_checks_for(version: &str) -> &'static str {
     let parsed = version.split_whitespace().nth(2).and_then(|v| {
         let mut it = v.split('.');
         Some((
@@ -106,6 +131,44 @@ pub fn refusals(stderr: &str) -> Vec<Refusal> {
         .collect()
 }
 
+/// E511 when git's object checks refused something (its stderr has
+/// `error: object <oid>: <msgId>: …` lines), naming the objects and the checks; `None` for
+/// any other failure. `pushing`: the history is the caller's own (a push or an import), so
+/// the fix is to rewrite it, not to ask a maintainer.
+pub fn refused(stderr: &str, pushing: bool) -> Option<UserError> {
+    const SHOWN: usize = 3;
+    let all = refusals(stderr);
+    let first = all.first()?;
+    let mut cause: Vec<String> = all
+        .iter()
+        .take(SHOWN)
+        .map(|r| format!("object {}: {}: {}", r.oid, r.msg_id, r.message))
+        .collect();
+    if all.len() > SHOWN {
+        cause.push(format!("and {} more", all.len() - SHOWN));
+    }
+    let short = &first.oid[..first.oid.len().min(12)];
+    let (message, fix, note) = if pushing {
+        (
+            format!("push refused: git refuses object {short} ({}) in the pushed history", first.msg_id),
+            "rewrite the history so no commit holds that object (a path git treats as the repository, a hostile .gitmodules, or a corrupt tree or commit), then push again",
+            "nothing was stored or paid for",
+        )
+    } else {
+        (
+            format!("git refused object {short} ({}) in this repository's history", first.msg_id),
+            "the history holds an object git's checks refuse (a path git treats as the repository, a hostile .gitmodules, or a corrupt tree or commit); ask a maintainer to push history without it",
+            "no ref was moved to that history",
+        )
+    };
+    Some(
+        UserError::new(codes::OBJECT_REFUSED, message)
+            .cause(cause.join("; "))
+            .fix(fix)
+            .note(note),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,17 +185,17 @@ mod tests {
 
     #[test]
     fn severities_only_for_a_git_that_takes_them() {
-        assert_eq!(index_pack_checks("git version 2.52.0"), INDEX_PACK_FSCK);
+        assert_eq!(index_pack_checks_for("git version 2.52.0"), INDEX_PACK_FSCK);
         assert_eq!(
-            index_pack_checks("git version 2.44.0.windows.1"),
+            index_pack_checks_for("git version 2.44.0.windows.1"),
             INDEX_PACK_FSCK
         );
         assert_eq!(
-            index_pack_checks("git version 2.39.3 (Apple Git-146)"),
+            index_pack_checks_for("git version 2.39.3 (Apple Git-146)"),
             "--fsck-objects"
         );
         // Unreadable: try the severities (git names the problem if it cannot take them).
-        assert_eq!(index_pack_checks(""), INDEX_PACK_FSCK);
+        assert_eq!(index_pack_checks_for(""), INDEX_PACK_FSCK);
     }
 
     #[test]
