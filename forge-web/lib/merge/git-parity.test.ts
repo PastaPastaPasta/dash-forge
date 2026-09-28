@@ -10,7 +10,8 @@
  *    `git merge-tree --write-tree` is clean too and writes the identical tree;
  *  - property (b): random mutations of well-formed commits and trees, and trees naming git's
  *    special files in every mode — the web's checks never accept one `git fsck --strict`
- *    rejects.
+ *    rejects, judged with the author/committer-line checks ignored (`RELAXED_FSCK_IDS`, as
+ *    `git clone` and the helper's index-pack treat them).
  *
  * `FORGE_PARITY_CASES` sets the cases per property (300 by default; the local gate runs a few
  * thousand), `FORGE_PARITY_SEED` the seed.
@@ -22,7 +23,7 @@ import { gitOidHex, MODE_GITLINK, MODE_TREE, type GitObject } from '../browse'
 import { indexPacks, memoryPackSource, serializeLocator } from '../browse/indexer'
 import { BrowseReader, ObjectLocator } from '../browse'
 import { Store } from '../view/diff-fixtures'
-import { checkCommit, checkTree, parseCommit } from '../view/git-objects'
+import { checkCommit, checkTree, parseCommit, RELAXED_FSCK_IDS } from '../view/git-objects'
 import { runMerge, type MergeInput } from './engine'
 import { gitAcceptsHistory, gitMergeTrees, gitStrictRejects, HAVE_GIT, scratchRepo, writeLiterally } from './git-oracle'
 
@@ -62,6 +63,40 @@ describe.skipIf(!HAVE_GIT)('what the browser merge produces, git accepts', () =>
     if (out.kind !== 'merge') throw new Error(out.kind)
     const verdict = gitAcceptsHistory([...s.objects.values(), ...(await packed(out.pack))], out.newTip)
     expect(verdict).toEqual({ fsck: true, log: true, clone: true })
+  }, 60_000)
+
+  it('history with malformed author lines (psf/requests-style) fast-forwards and merges; the merge commit is strict', async () => {
+    const s = new Store()
+    const enc = (t: string): Uint8Array => new TextEncoder().encode(t)
+    const raw = (text: string): string => {
+      const bytes = enc(text)
+      const oid = gitOidHex('commit', bytes)
+      s.objects.set(oid, { type: 'commit', bytes })
+      return oid
+    }
+    const ok = 'A <a@b> 1313584730 +0000'
+    const root = s.commit(s.files({ 'a.txt': 'a\n', 'b.txt': 'b\n' }))
+    // psf/requests 5e6ecdad's zone, then an ident without a space before the date.
+    const bad1 = raw(`tree ${s.files({ 'a.txt': 'a2\n', 'b.txt': 'b\n' })}\nparent ${root}\nauthor Shrikant <s@k> 1313584730 +051800\ncommitter Shrikant <s@k> 1313584730 +051800\n\nbad tz\n`)
+    const bad2 = raw(`tree ${s.files({ 'a.txt': 'a3\n', 'b.txt': 'b\n' })}\nparent ${bad1}\nauthor A <a@b>1313584731 +0000\ncommitter ${ok}\n\nno space\n`)
+    // A fast-forward over them.
+    const ff = await runMerge(s.reader(), input(root, bad2))
+    if (ff.kind !== 'fast-forward') throw new Error(ff.kind)
+    // A merge commit: the base moved on b.txt, the head (over the bad commits) changed a.txt.
+    const base = s.commit(s.files({ 'a.txt': 'a\n', 'b.txt': 'B\n' }), [root])
+    const out = await runMerge(s.reader(), input(base, bad2))
+    if (out.kind !== 'merge') throw new Error(out.kind)
+    const objects = [...s.objects.values(), ...(await packed(out.pack))]
+    // git clones it (the default, transfer.fsckObjects off) and its checks with the relaxed
+    // ids as warnings accept it; strict fsck names only the two historical commits.
+    expect(gitAcceptsHistory(objects, out.newTip, RELAXED_FSCK_IDS)).toEqual({ fsck: true, log: true, clone: true })
+    const { dir, done } = scratchRepo()
+    try {
+      writeLiterally(dir, objects)
+      expect([...(gitStrictRejects(dir) ?? [])].sort()).toEqual([bad1, bad2].sort())
+    } finally {
+      done()
+    }
   }, 60_000)
 
   it('a fast-forward', async () => {
@@ -339,7 +374,7 @@ const NAMES = [
 ]
 const MODES = ['100644', '100755', '120000', '40000', '160000', '100664']
 
-describe.skipIf(!HAVE_GIT)('property (b): the web never accepts an object git fsck --strict rejects', () => {
+describe.skipIf(!HAVE_GIT)('property (b): the web never accepts an object git fsck --strict rejects (author-line checks relaxed)', () => {
   const { dir, done } = scratchRepo()
   afterAll(done)
 
@@ -378,7 +413,7 @@ describe.skipIf(!HAVE_GIT)('property (b): the web never accepts an object git fs
     // The objects the trees name are written too, so fsck judges every entry (a .gitmodules
     // blob included), not only the tree bytes.
     writeLiterally(dir, [...s.objects.values(), ...accepted.values(), canary])
-    const rejected = gitStrictRejects(dir) ?? new Set<string>()
+    const rejected = gitStrictRejects(dir, RELAXED_FSCK_IDS) ?? new Set<string>()
     const disagreements = [...accepted.keys()].filter((oid) => rejected.has(oid)).map((oid) => Buffer.from((accepted.get(oid) as GitObject).bytes).toString('hex'))
     expect(disagreements).toEqual([])
     // Not vacuous: fsck judged the canary, and enough mutants reached it.

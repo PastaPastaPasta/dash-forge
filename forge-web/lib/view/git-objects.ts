@@ -113,18 +113,40 @@ export class MalformedObjectError extends Error {
 }
 
 const OID_HEX = /^[0-9a-f]{40}$/
-/** `name <email> <date> <tz>`, as fsck_ident: no `<`/`>` stray, no zero-padded date. */
-const IDENT = /^[^<>\n]* <[^<>\n]*> (0|[1-9]\d*) [+-]\d{4}$/
-/** The latest date git reads (`date_overflows`: a timestamp must fit a signed 64-bit time_t). */
-const MAX_GIT_DATE = 2n ** 63n - 1n
+
+/**
+ * git's author/committer/tagger-line checks, demoted to warnings wherever Dash Forge checks
+ * objects (the same list as `RELAXED` in `crates/forge-core/src/pack/fsck.rs`, which gives the
+ * reason for each). {@link checkCommit} does not judge that text; the parity tests judge it
+ * with `git -c fsck.<id>=warn fsck --strict`.
+ */
+export const RELAXED_FSCK_IDS: readonly string[] = [
+  'badDate',
+  'badDateOverflow',
+  'badEmail',
+  'badName',
+  'badTimezone',
+  'missingEmail',
+  'missingNameBeforeEmail',
+  'missingSpaceBeforeDate',
+  'missingSpaceBeforeEmail',
+  'zeroPaddedDate',
+]
 
 /**
  * Refuse a commit `git fsck --strict` would refuse, or one git and this client could read
  * differently: no NUL byte anywhere (`nulInCommit`); exactly one `tree` (first), then only
- * contiguous `parent` lines, then `author`, then `committer`, each well-formed with a date git
- * can hold, every oid 40 lowercase hex; later headers (encoding, gpgsig and its continuation
- * lines, mergetag) may not repeat any of those four. Stricter than git in places (a single
- * space before the date, a blank line after the header), never looser.
+ * contiguous `parent` lines, then one `author` line, then one `committer` line, every oid 40
+ * lowercase hex; later headers (encoding, gpgsig and its continuation lines, mergetag) may not
+ * repeat any of those four. Stricter than git in places (a blank line after the header), never
+ * looser.
+ *
+ * The TEXT of the author and committer lines is not judged: git's checks of it (`badTimezone`,
+ * `missingSpaceBeforeDate`, `badEmail`, `badDate` and the rest of `RELAXED` in
+ * `crates/forge-core/src/pack/fsck.rs`) are warnings wherever Dash Forge checks objects, as a
+ * plain `git clone` accepts them and real histories fail them (psf/requests' 5e6ecdad has the
+ * time zone `+051800`). The line is display metadata: git reads it leniently, never as a path,
+ * a URL or an object, and so does {@link parseIdent}.
  */
 export function checkCommit(oid: string, bytes: Uint8Array): void {
   const bad = (why: string): never => {
@@ -154,13 +176,8 @@ export function checkCommit(oid: string, bytes: Uint8Array): void {
   const tree = take('tree')
   if (tree === null || !OID_HEX.test(tree)) bad('the first header line must be "tree <oid>"')
   for (let p = take('parent'); p !== null; p = take('parent')) if (!OID_HEX.test(p)) bad('bad parent oid')
-  const identOk = (ident: string | null): boolean => {
-    if (ident === null || !IDENT.test(ident)) return false
-    const date = ident.split(' ').at(-2) as string
-    return BigInt(date) <= MAX_GIT_DATE
-  }
-  if (!identOk(take('author'))) bad('"author" must follow the parents, well-formed, with a date git can hold')
-  if (!identOk(take('committer'))) bad('"committer" must follow the author, well-formed, with a date git can hold')
+  if (take('author') === null) bad('"author" must follow the parents')
+  if (take('committer') === null) bad('"committer" must follow the author')
   for (; i < lines.length; i++) {
     const line = lines[i] as string
     if (line.startsWith(' ')) continue // a continuation of a multi-line header (gpgsig)

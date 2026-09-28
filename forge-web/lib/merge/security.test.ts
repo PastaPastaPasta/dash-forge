@@ -261,13 +261,13 @@ describe("C1-e: the check and the merge agree on git's byte order", () => {
 })
 
 describe('C1-f: fsck parity on headers and names', () => {
-  it('refuses NUL in a header, zero-padded dates, a .gitmodules symlink and .git look-alikes', async () => {
+  it('refuses NUL in a header, a missing author, a .gitmodules symlink and .git look-alikes', async () => {
     const s = new Store()
     const base = s.commit(s.files({ 'a.txt': 'a\n' }))
     const t = s.files({ 'a.txt': 'b\n' })
     for (const text of [
       `tree ${t}\nparent ${base}\nauthor ${ID}\ncommitter ${ID}\nencoding x\0y\n\nm\n`,
-      `tree ${t}\nparent ${base}\nauthor A <a@b> 01700000100 +0000\ncommitter ${ID}\n\nm\n`,
+      `tree ${t}\nparent ${base}\ncommitter ${ID}\n\nm\n`,
     ]) {
       expect((await runMerge(s.reader(), input(base, rawCommit(s, text)))).kind).toBe('malformed')
     }
