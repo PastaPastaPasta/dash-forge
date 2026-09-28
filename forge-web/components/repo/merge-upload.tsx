@@ -18,7 +18,7 @@ import { estimateChunkCredits } from '@/lib/sdk/cost'
 import { policyForRepo, storeArtifact, type PlatformQuestion } from '@/lib/storage'
 import { fragmentBytes, remainingPreAgreement, storageChoice, type PackEstimate, type StorageChoice } from '@/lib/storage/merge-choice'
 import type { UploadPack } from '@/lib/merge/runner'
-import { formatBytes } from '@/lib/view'
+import { formatBytes, plural } from '@/lib/view'
 import { useStorageConfig } from '@/hooks/use-storage-config'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAuth } from '@/contexts/auth-context'
@@ -144,7 +144,7 @@ function StorageQuestion({
       <div className="flex flex-wrap items-center gap-2">
         <CostPreview cost={previewCredits(question.estimateCredits + (fragment ? 0 : estimateChunkCredits(indexBytes)))} />
         <span className="text-[12px] text-anvil-600 dark:text-anvil-400">
-          {fragment ? `the index of the ${objects} objects just stored` : `${objects} objects, and a browse index of about ${formatBytes(indexBytes)}`}
+          {fragment ? `the index of the ${plural(objects, 'object')} just stored` : `${plural(objects, 'object')}, and a browse index of about ${formatBytes(indexBytes)}`}
         </span>
         <span className="flex-1" />
         <Button size="sm" variant="ghost" onClick={() => onAnswer(false)}>
