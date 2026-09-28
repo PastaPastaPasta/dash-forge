@@ -338,20 +338,14 @@ export function stateFile(name: string): string {
 }
 
 /**
- * Open the sign-in sheet until `ready` shows in it. A click that lands before the page hydrates
- * opens nothing (the static button has no handler yet), so the click is repeated.
+ * Open the sign-in sheet and wait for `ready` in it. One click: a tap before hydration is caught
+ * and replayed by the app itself (#115), so a click that opens nothing is a product bug, not
+ * something to retry here.
  */
 async function openSignIn(page: Page, ready: Locator): Promise<void> {
-  for (let i = 0; ; i++) {
-    // "Sign in", or "Session locked — Unlock" when this browser holds a locked key.
-    await page.getByRole('banner').getByRole('button', { name: /^sign in$|unlock$/i }).first().click()
-    try {
-      await ready.waitFor({ state: 'visible', timeout: 10_000 })
-      return
-    } catch (e) {
-      if (i >= 4) throw e
-    }
-  }
+  // "Sign in", or "Session locked — Unlock" when this browser holds a locked key.
+  await page.getByRole('banner').getByRole('button', { name: /^sign in$|unlock$/i }).first().click()
+  await ready.waitFor({ state: 'visible', timeout: 30_000 })
 }
 
 /** Import the identity file once: the master key registers a limited key for this browser. */
