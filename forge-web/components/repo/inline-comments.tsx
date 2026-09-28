@@ -1,20 +1,28 @@
 'use client'
 
 /**
- * Inline review comments on a PR diff (`ux-dx-spec.md` §5.7). Clicking a line number opens a
- * composer under that line; the comment is written with its anchor in the contract fields
- * (`path`, `line`, `side`, `commitOid` = the PR head; read back by `anchorOf`). Threads on the
- * current head show under their line with their replies (`replyTo`); file-level threads are
- * listed as "File comments"; threads on an older head, or on a line the diff no longer shows,
- * collapse under "n comments on an older version".
+ * Inline review comments on a PR diff (`ux-dx-spec.md` §5.7, review-parity R1–R4, R7, R15).
+ *
+ * - Clicking a line number opens a composer under it; shift-clicking another line of the same
+ *   file and side makes it a range (`startLine..line`, the range tinted). The composer offers
+ *   GitHub's two buttons: "Add single comment" (posts now) and "Start a review" / "Add review
+ *   comment" (goes into the pending review, kept in this browser until it is submitted).
+ * - Threads on the current head show under their last line with their replies; a resolved thread
+ *   collapses to "resolved · Show". Members and the PR author resolve and unresolve (a
+ *   `threadResolve` / `threadUnresolve` event naming the root).
+ * - Authors edit and delete their own comments ("edited" marker).
+ * - Pending comments of the viewer's review render in place, tagged "Pending".
+ * - File-level threads are listed as "File comments"; threads on an older head, or on a line the
+ *   diff no longer shows, collapse under "n comments on an older version".
  */
 
-import { useCallback, useMemo, useState, type ReactNode } from 'react'
-import { MessageSquare } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { CheckCircle2, MessageSquare, Pencil, Trash2 } from 'lucide-react'
 
 import { postComment, type AnchorInput, type RepoRef } from '@/lib/repo'
+import type { DraftComment } from '@/lib/repo'
 import { timeAgo, type CommentView } from '@/lib/view'
-import { anchorLabel, lineKey, placeThreads, type InlineThread } from '@/lib/view/inline-threads'
+import { anchorLabel, extendSelection, lineKey, placeThreads, rangeKeys, type InlineThread, type LineSelection } from '@/lib/view/inline-threads'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
@@ -26,7 +34,35 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong } from '@/components/repo/private-compose'
+import { EditedMarker } from '@/components/repo/issue-bits'
 import { Oid } from '@/components/ui/oid'
+
+/** What the page lets the threads do: resolve, edit and delete (it confirms and signs). */
+export interface ThreadActions {
+  /** The viewer may resolve and unresolve threads (a member or the PR author). */
+  readonly canResolve: boolean
+  readonly resolved: ReadonlySet<string>
+  readonly onResolve: (rootId: string, resolve: boolean) => void
+  /** The viewer's identity: their own comments get Edit and Delete. */
+  readonly viewer: string | null
+  readonly onEdit: (comment: CommentView, body: string) => void
+  readonly onDelete: (comment: CommentView) => void
+}
+
+/** The viewer's pending review, as the diff needs it. */
+export interface PendingReview {
+  /** The pending comments anchored to the current head: shown on their lines. */
+  readonly comments: readonly DraftComment[]
+  /** Pending comments anchored to another head: their line numbers name other lines now. */
+  readonly elsewhere: readonly DraftComment[]
+  /** Every pending comment. */
+  readonly count: number
+  /** Frozen: a submit began (only retry or discard). */
+  readonly frozen: boolean
+  readonly onAdd: (anchor: AnchorInput, body: string) => void
+  readonly onEdit: (localId: string, body: string) => void
+  readonly onRemove: (localId: string) => void
+}
 
 export function InlineCommentsProvider({
   repo,
@@ -36,6 +72,9 @@ export function InlineCommentsProvider({
   changedPaths,
   onPosted,
   writeBlock = null,
+  actions,
+  pending,
+  onLinesKnown,
   children,
 }: {
   repo: RepoRef
@@ -46,11 +85,21 @@ export function InlineCommentsProvider({
   comments: readonly CommentView[]
   /** The paths the comparison changed: a thread on any other path is outdated. */
   changedPaths: ReadonlySet<string>
-  onPosted: () => void
+  /** A comment landed (its id): the page re-reads until it shows. */
+  onPosted: (id?: string) => void
+  actions?: ThreadActions
+  /** The viewer's pending review; absent: no "Start a review". */
+  pending?: PendingReview
+  /** Told which lines each loaded file's patch shows (`lineKey`s): re-anchoring a pending review uses it. */
+  onLinesKnown?: (lines: ReadonlyMap<string, ReadonlySet<string>>) => void
   children: ReactNode
 }): JSX.Element {
+  // The page passes a fresh set each render: keep one per distinct list of paths.
+  const pathsKey = [...changedPaths].sort().join('\n')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const paths = useMemo(() => changedPaths, [pathsKey])
   const [shownLines, setShownLines] = useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map())
-  const [composing, setComposing] = useState<string | null>(null)
+  const [selection, setSelection] = useState<LineSelection | null>(null)
 
   // A path whose lines have ever been reported: its patch loaded, so a line missing from it
   // is really gone (outdated). An unreported path (collapsed, a placeholder, not paged in yet)
@@ -63,14 +112,29 @@ export function InlineCommentsProvider({
         comments,
         headOid,
         (path, side, line) => {
-          if (!changedPaths.has(path)) return false
+          if (!paths.has(path)) return false
           const keys = loadedPaths.get(path)
           return keys === undefined || keys.has(lineKey(path, side, line))
         },
-        (path) => changedPaths.has(path),
+        (path) => paths.has(path),
       ),
-    [comments, headOid, changedPaths, loadedPaths],
+    [comments, headOid, paths, loadedPaths],
   )
+  const ranges = useMemo(() => rangeKeys(placed.current), [placed])
+  useEffect(() => {
+    onLinesKnown?.(loadedPaths)
+  }, [onLinesKnown, loadedPaths])
+  // Pending comments by the key of their last line.
+  const pendingAt = useMemo(() => {
+    const m = new Map<string, DraftComment[]>()
+    for (const c of pending?.comments ?? []) {
+      const a = c.anchor
+      if (a.line === undefined || a.side === undefined) continue
+      const key = lineKey(a.path, a.side, a.line)
+      m.set(key, [...(m.get(key) ?? []), c])
+    }
+    return m
+  }, [pending?.comments])
   // Current threads whose line is not on screen right now: listed above the diff, never lost.
   const unshown = [...placed.current.entries()]
     .filter(([key]) => {
@@ -98,80 +162,117 @@ export function InlineCommentsProvider({
     }
   }, [])
 
+  const threadProps = { repo, pullId, onPosted, writeBlock, ...(actions ? { actions } : {}) }
   const value = useMemo<InlineComments>(
     () => ({
       canComment: writeBlock === null,
-      start: (path, side, line) => {
-        if (writeBlock === null) setComposing(lineKey(path, side, line))
+      start: (path, side, line, extend = false) => {
+        if (writeBlock === null) setSelection((prev) => extendSelection(prev, path, side, line, extend))
+      },
+      mark: (path, side, line) => {
+        if (selection !== null && selection.path === path && selection.side === side && line >= selection.startLine && line <= selection.line) return 'selected'
+        return ranges.has(lineKey(path, side, line)) ? 'range' : null
       },
       report,
       render: (path, side, line) => {
         const key = lineKey(path, side, line)
         const threads = placed.current.get(key) ?? []
-        const open = composing === key
-        if (threads.length === 0 && !open) return null
+        const drafts = pendingAt.get(key) ?? []
+        const open = selection !== null && lineKey(selection.path, selection.side, selection.line) === key
+        if (threads.length === 0 && drafts.length === 0 && !open) return null
+        const range = selection !== null && selection.startLine !== selection.line ? `lines ${selection.startLine}–${selection.line}` : `line ${line}`
         return (
           <div key={key} className="space-y-2" data-testid="inline-thread">
             {threads.map((t) => (
-              <Thread key={t.root.id} thread={t} repo={repo} pullId={pullId} onPosted={onPosted} writeBlock={writeBlock} />
+              <Thread key={t.root.id} thread={t} {...threadProps} />
             ))}
-            {open ? (
+            {drafts.map((d) => (
+              <PendingComment key={d.localId} draft={d} pending={pending} />
+            ))}
+            {open && selection !== null ? (
               <Composer
                 repo={repo}
                 pullId={pullId}
-                anchor={{ path, line, side, commitOid: headOid }}
-                label={`Your comment on ${path} line ${line} (${side === 1 ? 'new' : 'old'})`}
-                onDone={() => {
-                  setComposing(null)
-                  onPosted()
+                anchor={{ path, line: selection.line, ...(selection.startLine !== selection.line ? { startLine: selection.startLine } : {}), side, commitOid: headOid }}
+                label={`Your comment on ${path} ${range} (${side === 1 ? 'new' : 'old'})`}
+                pending={pending}
+                onDone={(id) => {
+                  setSelection(null)
+                  onPosted(id)
                 }}
-                onCancel={() => setComposing(null)}
+                onCancel={() => setSelection(null)}
               />
             ) : null}
           </div>
         )
       },
     }),
-    [placed, composing, repo, pullId, headOid, onPosted, report, writeBlock],
+    // threadProps is rebuilt from the listed values.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [placed, selection, ranges, pendingAt, pending, repo, pullId, headOid, onPosted, report, writeBlock, actions],
   )
 
   return (
     <InlineCommentsContext.Provider value={value}>
       {placed.fileLevel.length > 0 ? (
         <details open className="mb-3 rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="file-comments">
-          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 coarse:py-3 dark:text-anvil-300">
+          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 dark:text-anvil-300">
             <MessageSquare className="mr-1.5 inline h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
             File comments ({placed.fileLevel.length})
           </summary>
           <div className="space-y-2 border-t border-anvil-200 px-3 py-2 dark:border-anvil-800">
             {placed.fileLevel.map((t) => (
-              <AnchoredThread key={t.root.id} thread={t} repo={repo} pullId={pullId} onPosted={onPosted} writeBlock={writeBlock} />
+              <AnchoredThread key={t.root.id} thread={t} {...threadProps} />
             ))}
           </div>
         </details>
       ) : null}
       {unshown.length > 0 ? (
         <details className="mb-3 rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="unshown-comments">
-          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 coarse:py-3 dark:text-anvil-300">
+          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 dark:text-anvil-300">
             <MessageSquare className="mr-1.5 inline h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
             {unshown.length} comment thread{unshown.length === 1 ? '' : 's'} on lines not shown below
           </summary>
           <div className="space-y-2 border-t border-anvil-200 px-3 py-2 dark:border-anvil-800">
             {unshown.map((t) => (
-              <AnchoredThread key={t.root.id} thread={t} repo={repo} pullId={pullId} onPosted={onPosted} writeBlock={writeBlock} />
+              <AnchoredThread key={t.root.id} thread={t} {...threadProps} />
+            ))}
+          </div>
+        </details>
+      ) : null}
+      {pending !== undefined && pending.elsewhere.length > 0 ? (
+        <details open className="mb-3 rounded-lg border border-caution/40 dark:border-caution/40" data-testid="pending-elsewhere">
+          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 dark:text-anvil-300">
+            <MessageSquare className="mr-1.5 inline h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
+            {pending.elsewhere.length} pending comment{pending.elsewhere.length === 1 ? '' : 's'} on an older version
+          </summary>
+          <div className="space-y-2 border-t border-anvil-200 px-3 py-2 dark:border-anvil-800">
+            {pending.elsewhere.map((d) => (
+              <div key={d.localId}>
+                <p className="mb-1 font-mono text-[12px] text-anvil-600 dark:text-anvil-400">
+                  {anchorLabel({ path: d.anchor.path, line: d.anchor.line ?? null, startLine: d.anchor.startLine ?? null, side: d.anchor.side ?? null, commitOid: d.anchor.commitOid ?? '' })}
+                  {d.anchor.commitOid ? (
+                    <>
+                      {' '}
+                      on <Oid value={d.anchor.commitOid} chars={7} copyable={false} />
+                    </>
+                  ) : null}
+                </p>
+                <PendingComment draft={d} pending={pending} />
+              </div>
             ))}
           </div>
         </details>
       ) : null}
       {placed.outdatedCount > 0 ? (
         <details className="mb-3 rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="outdated-comments">
-          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 coarse:py-3 dark:text-anvil-300">
+          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 dark:text-anvil-300">
             <MessageSquare className="mr-1.5 inline h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
             {placed.outdatedCount} comment{placed.outdatedCount === 1 ? '' : 's'} on an older version
           </summary>
           <div className="space-y-2 border-t border-anvil-200 px-3 py-2 dark:border-anvil-800">
             {placed.outdated.map((t) => (
-              <AnchoredThread key={t.root.id} thread={t} repo={repo} pullId={pullId} onPosted={onPosted} writeBlock={writeBlock} />
+              <AnchoredThread key={t.root.id} thread={t} {...threadProps} />
             ))}
           </div>
         </details>
@@ -181,20 +282,16 @@ export function InlineCommentsProvider({
   )
 }
 
-/** A thread shown away from its line, headed by where it points. */
-function AnchoredThread({
-  thread,
-  repo,
-  pullId,
-  onPosted,
-  writeBlock,
-}: {
-  thread: InlineThread
+interface ThreadProps {
   repo: RepoRef
   pullId: string
-  onPosted: () => void
+  onPosted: (id?: string) => void
   writeBlock: string | null
-}): JSX.Element {
+  actions?: ThreadActions
+}
+
+/** A thread shown away from its line, headed by where it points. */
+function AnchoredThread({ thread, ...rest }: ThreadProps & { thread: InlineThread }): JSX.Element {
   const a = thread.root.anchor
   return (
     <div>
@@ -207,51 +304,46 @@ function AnchoredThread({
           </>
         ) : null}
       </p>
-      <Thread thread={thread} repo={repo} pullId={pullId} onPosted={onPosted} writeBlock={writeBlock} />
+      <Thread thread={thread} {...rest} />
     </div>
   )
 }
 
-function Thread({
-  thread,
-  repo,
-  pullId,
-  onPosted,
-  writeBlock,
-}: {
-  thread: InlineThread
-  repo: RepoRef
-  pullId: string
-  onPosted: () => void
-  writeBlock: string | null
-}): JSX.Element {
+function Thread({ thread, repo, pullId, onPosted, writeBlock, actions }: ThreadProps & { thread: InlineThread }): JSX.Element {
   const [replying, setReplying] = useState(false)
+  const resolved = actions?.resolved.has(thread.root.id) ?? false
+  const [expanded, setExpanded] = useState(false)
+  if (resolved && !expanded) {
+    return (
+      <div className="flex flex-wrap items-center gap-2 rounded-md border border-anvil-200 bg-white px-3 py-1.5 text-[12px] text-anvil-600 dark:border-anvil-750 dark:bg-anvil-950 dark:text-anvil-400" data-testid="thread-collapsed" data-root={thread.root.id}>
+        <CheckCircle2 className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />
+        <span>Resolved conversation ({1 + thread.replies.length} comment{thread.replies.length === 0 ? '' : 's'})</span>
+        <Button size="sm" variant="ghost" onClick={() => setExpanded(true)}>
+          Show
+        </Button>
+      </div>
+    )
+  }
   return (
-    <div className="rounded-md border border-anvil-200 bg-white dark:border-anvil-750 dark:bg-anvil-950">
+    <div className="rounded-md border border-anvil-200 bg-white dark:border-anvil-750 dark:bg-anvil-950" data-testid="thread" data-root={thread.root.id} data-resolved={resolved ? 'true' : 'false'}>
       {[thread.root, ...thread.replies].map((c) => (
-        <div key={c.id} className="border-b border-anvil-100 px-3 py-2 last:border-b-0 dark:border-anvil-850">
-          <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
-            <Author identityId={c.author} link={false} />
-            <span>{timeAgo(c.createdAt)}</span>
-          </div>
-          <div className="mt-1">
-            <MarkdownView source={c.body} />
-          </div>
-        </div>
+        <CommentBlock key={c.id} comment={c} actions={actions} writeBlock={writeBlock} />
       ))}
-      <div className="px-3 py-1.5">
+      <div className="flex flex-wrap items-center gap-2 px-3 py-1.5">
         {replying ? (
-          <Composer
-            repo={repo}
-            pullId={pullId}
-            replyTo={thread.root.id}
-            label="Reply"
-            onDone={() => {
-              setReplying(false)
-              onPosted()
-            }}
-            onCancel={() => setReplying(false)}
-          />
+          <div className="w-full">
+            <Composer
+              repo={repo}
+              pullId={pullId}
+              replyTo={thread.root.id}
+              label="Reply"
+              onDone={(id) => {
+                setReplying(false)
+                onPosted(id)
+              }}
+              onCancel={() => setReplying(false)}
+            />
+          </div>
         ) : writeBlock !== null ? (
           <PrivateComposeNote reason={writeBlock} />
         ) : (
@@ -259,7 +351,115 @@ function Thread({
             Reply
           </Button>
         )}
+        {actions?.canResolve && !replying ? (
+          <Button size="sm" variant="outline" onClick={() => actions.onResolve(thread.root.id, !resolved)} title="≈ 0.0005 DASH (one event)">
+            {resolved ? 'Unresolve conversation' : 'Resolve conversation'}
+          </Button>
+        ) : null}
+        {resolved ? (
+          <Button size="sm" variant="ghost" onClick={() => setExpanded(false)}>
+            Hide
+          </Button>
+        ) : null}
       </div>
+    </div>
+  )
+}
+
+/** One comment of a thread, with its author's Edit and Delete. */
+function CommentBlock({ comment: c, actions, writeBlock }: { comment: CommentView; actions?: ThreadActions; writeBlock: string | null }): JSX.Element {
+  const [editing, setEditing] = useState<string | null>(null)
+  const own = actions !== undefined && actions.viewer !== null && actions.viewer === c.author && writeBlock === null
+  return (
+    <div className="border-b border-anvil-100 px-3 py-2 last:border-b-0 dark:border-anvil-850" data-testid="thread-comment" data-id={c.id}>
+      <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
+        <Author identityId={c.author} link={false} />
+        <span>{timeAgo(c.createdAt)}</span>
+        <EditedMarker createdAt={c.createdAt} updatedAt={c.updatedAt} />
+        {own && editing === null ? (
+          <span className="ml-auto flex items-center gap-2">
+            <button type="button" onClick={() => setEditing(c.body)} className="inline-flex items-center gap-1 hover:text-forge-700 dark:hover:text-forge-400" aria-label="Edit comment">
+              <Pencil className="h-3 w-3" aria-hidden /> Edit
+            </button>
+            <button type="button" onClick={() => actions.onDelete(c)} className="inline-flex items-center gap-1 hover:text-danger-700 dark:hover:text-danger-400" aria-label="Delete comment">
+              <Trash2 className="h-3 w-3" aria-hidden /> Delete
+            </button>
+          </span>
+        ) : null}
+      </div>
+      {editing !== null && actions ? (
+        <div className="mt-1 space-y-2">
+          <Textarea aria-label="Edit comment" value={editing} onChange={(e) => setEditing(e.target.value)} className="min-h-[72px]" autoFocus />
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={editing.trim() === '' || editing === c.body}
+              onClick={() => {
+                actions.onEdit(c, editing)
+                setEditing(null)
+              }}
+            >
+              Save
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-1">
+          <MarkdownView source={c.body} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** A comment of the viewer's pending review, shown in place. */
+function PendingComment({ draft, pending }: { draft: DraftComment; pending: PendingReview | undefined }): JSX.Element {
+  const [editing, setEditing] = useState<string | null>(null)
+  return (
+    <div className="rounded-md border border-dashed border-caution/60 bg-caution/5 px-3 py-2" data-testid="pending-comment" data-local={draft.localId}>
+      <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
+        <span className="rounded-full bg-caution/20 px-2 py-0.5 text-[11px] font-medium text-caution-800 dark:text-caution-300">Pending</span>
+        {draft.anchor.startLine !== undefined ? <span className="font-mono">lines {draft.anchor.startLine}–{draft.anchor.line}</span> : null}
+        {pending && !pending.frozen && editing === null ? (
+          <span className="ml-auto flex items-center gap-2">
+            <button type="button" onClick={() => setEditing(draft.body)} className="inline-flex items-center gap-1 hover:text-forge-700 dark:hover:text-forge-400" aria-label="Edit pending comment">
+              <Pencil className="h-3 w-3" aria-hidden /> Edit
+            </button>
+            <button type="button" onClick={() => pending.onRemove(draft.localId)} className="inline-flex items-center gap-1 hover:text-danger-700 dark:hover:text-danger-400" aria-label="Delete pending comment">
+              <Trash2 className="h-3 w-3" aria-hidden /> Delete
+            </button>
+          </span>
+        ) : null}
+      </div>
+      {editing !== null && pending ? (
+        <div className="mt-1 space-y-2">
+          <Textarea aria-label="Edit pending comment" value={editing} onChange={(e) => setEditing(e.target.value)} className="min-h-[72px]" autoFocus />
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={editing.trim() === ''}
+              onClick={() => {
+                pending.onEdit(draft.localId, editing)
+                setEditing(null)
+              }}
+            >
+              Save
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-1">
+          <MarkdownView source={draft.body} />
+        </div>
+      )}
     </div>
   )
 }
@@ -270,6 +470,7 @@ function Composer({
   anchor,
   replyTo,
   label,
+  pending,
   onDone,
   onCancel,
 }: {
@@ -278,7 +479,9 @@ function Composer({
   anchor?: AnchorInput
   replyTo?: string
   label: string
-  onDone: () => void
+  /** The pending review (a line comment only): offers "Start a review" / "Add review comment". */
+  pending?: PendingReview | undefined
+  onDone: (id?: string) => void
   onCancel: () => void
 }): JSX.Element {
   const { sdk } = useSdk()
@@ -298,7 +501,7 @@ function Composer({
     setPosting(true)
     setError(null)
     try {
-      await postComment(sdk, signer, repo, {
+      const r = await postComment(sdk, signer, repo, {
         targetId: pullId,
         body: body.trim(),
         ...(anchor ? { anchor } : {}),
@@ -307,12 +510,19 @@ function Composer({
       })
       draft.renew()
       setBody('')
-      onDone()
+      onDone(r.documentId)
     } catch (e) {
       setError(guard.failed(e))
     } finally {
       setPosting(false)
     }
+  }
+  const reviewing = pending !== undefined && anchor !== undefined && !pending.frozen
+  const addToReview = (): void => {
+    if (!reviewing || body.trim() === '' || anchor === undefined) return
+    pending.onAdd(anchor, body)
+    setBody('')
+    onDone()
   }
   return (
     <div className="space-y-2 font-sans">
@@ -321,15 +531,21 @@ function Composer({
       <BodyCounter repo={repo} text={body.trim()} field="comment" />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <CostPreview cost={cost} />
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="ghost" onClick={onCancel} disabled={posting}>
             Cancel
           </Button>
-          <Button size="sm" variant="primary" onClick={submit} loading={posting} disabled={body.trim() === '' || tooLong || guard.disabledReason !== null}>
-            {replyTo ? 'Reply' : 'Add comment'}
+          <Button size="sm" variant={reviewing ? 'outline' : 'primary'} onClick={submit} loading={posting} disabled={body.trim() === '' || tooLong || guard.disabledReason !== null}>
+            {replyTo ? 'Reply' : reviewing ? 'Add single comment' : 'Add comment'}
           </Button>
+          {reviewing ? (
+            <Button size="sm" variant="primary" onClick={addToReview} disabled={body.trim() === '' || tooLong || posting}>
+              {pending.count === 0 ? 'Start a review' : 'Add review comment'}
+            </Button>
+          ) : null}
         </div>
       </div>
+      {reviewing ? <p className="text-[11px] text-anvil-500 dark:text-anvil-400">A review comment is saved in this browser only (not on your account), unpublished and free, until you submit the review.</p> : null}
       {error ? (
         <p role="alert" className="text-dense text-danger-700 dark:text-danger-400">
           {error}

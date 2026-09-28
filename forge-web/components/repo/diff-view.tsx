@@ -42,7 +42,13 @@ export interface InlineComments {
   render(path: string, side: 0 | 1, line: number): ReactNode | null
   /** Whether this reader may start a comment (a private repo it cannot write to: no). */
   readonly canComment: boolean
-  start(path: string, side: 0 | 1, line: number): void
+  /**
+   * Start a comment on a line; `extend` (shift-click) makes it a range from the line picked
+   * before, on the same file and side (review-parity §4.2).
+   */
+  start(path: string, side: 0 | 1, line: number, extend?: boolean): void
+  /** How a line is marked: the selected range, a commented range, or nothing. */
+  mark?(path: string, side: 0 | 1, line: number): 'selected' | 'range' | null
   /** Told which lines a file's patch shows (`lineKey`s), or null once it shows none. */
   report(path: string, keys: ReadonlySet<string> | null): void
 }
@@ -387,15 +393,18 @@ function LineText({ line }: { line: TextDiffLine }): JSX.Element {
 function LineNumber({ path, side, line }: { path: string; side: 0 | 1; line: number | null }): JSX.Element {
   const inline = useContext(InlineCommentsContext)
   if (line === null) return <td className={GUTTER} />
-  if (inline === null || !inline.canComment) return <td className={GUTTER}>{line}</td>
+  const mark = inline?.mark?.(path, side, line) ?? null
+  const tint = mark === 'selected' ? 'bg-forge-500/25' : mark === 'range' ? 'bg-caution/15' : ''
+  if (inline === null || !inline.canComment) return <td className={cn(GUTTER, tint)}>{line}</td>
   return (
-    <td className={cn(GUTTER, 'p-0')}>
+    <td className={cn(GUTTER, 'p-0', tint)} data-mark={mark ?? undefined}>
       {/* One per code line, so as tall as the line: 44px rows would halve what a phone shows of
           the diff. The whole gutter cell is the target (e2e/mobile.spec.ts exempts it). */}
       <button
         type="button"
-        onClick={() => inline.start(path, side, line)}
+        onClick={(e) => inline.start(path, side, line, e.shiftKey)}
         aria-label={`Comment on ${side === 1 ? 'new' : 'old'} line ${line} of ${path}`}
+        title="Click to comment; shift-click another line to comment on the range"
         data-tap-exempt="code-line"
         className="w-full px-2 text-right hover:bg-forge-500/15 hover:text-anvil-900 dark:hover:text-anvil-50"
       >

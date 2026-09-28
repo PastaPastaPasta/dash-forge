@@ -52,6 +52,7 @@ vi.mock('./private-writes', async (importOriginal) => {
 })
 
 import { resetMemoryStores } from '../idb'
+import { clearSignedWrites, lockVault } from '../auth/vault'
 import type { RepoRef } from './contract'
 import {
   anchorData,
@@ -245,6 +246,32 @@ describe('private repos', () => {
     // Events are plaintext by design, and still allowed.
     await postTargetEvent(sdk, auth(ALICE), PRIVATE, { target, kind: 'ready', author: ALICE, isMember: false })
     expect(writes[0]?.documentType).toBe('authorEvent')
+  })
+})
+
+describe('where a pending review is kept', () => {
+  const d = (identity: string): ReviewDraft => ({
+    draftId: `d-${identity}`,
+    network: 'devnet',
+    identity,
+    repoId: REPO.repoId,
+    prId: PR,
+    headOid: 'ab'.repeat(20),
+    verdict: 'comment',
+    summary: 'kept',
+    comments: [{ localId: 'c1', anchor: { path: 'a.rs', line: 3, side: 1 }, body: 'one' }],
+    startedAt: 1,
+  })
+
+  it('is keyed by network, identity and PR: a sign-out and sign-in (a new session) finds it', async () => {
+    await saveReviewDraft(d(BOB))
+    // Signing out locks the vault and clears the pending signed writes; it never touches drafts.
+    lockVault()
+    clearSignedWrites()
+    expect((await loadReviewDraft('devnet', BOB, PR))?.summary).toBe('kept')
+    // Another identity in the same browser has its own (none), and never sees BOB's.
+    expect(await loadReviewDraft('devnet', ALICE, PR)).toBeUndefined()
+    expect(await loadReviewDraft('testnet', BOB, PR)).toBeUndefined()
   })
 })
 

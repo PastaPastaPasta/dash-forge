@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest'
 import { base58Decode } from '../auth/base58'
 import { RoleOracle, type Review } from '../rules/v2'
 import { mergeTimeline, toCommentView, type CommentView } from '../view/issues-view'
-import { anchorLabel, placeThreads } from '../view/inline-threads'
+import { anchorLabel, extendSelection, placeThreads, rangeKeys } from '../view/inline-threads'
 import { approverPhrase, summarizeReviews } from '../view/review-fold'
 import type { ReviewView } from './issues'
 import { refUpdateData, refUpdateType } from './push'
@@ -92,6 +92,19 @@ describe('review comments are grouped under their review (groupReviewComments)',
     const placed = placeThreads(cs, HEAD, () => true)
     expect(placed.current.get('1:3:a.ts')?.map((t) => [t.root.id, t.replies.map((x) => x.id)])).toEqual([['c11', ['c12']]])
   })
+
+  it('a reply whose parent was deleted says so; a reply to a present comment does not', () => {
+    const cs = [comment('c1'), comment('c2', { replyTo: 'c1' }), comment('c3', { replyTo: 'gone' })]
+    const items = mergeTimeline(cs, [], [], [])
+    expect(items.map((i) => (i.kind === 'comment' ? [i.comment.id, i.orphaned ?? null] : null))).toEqual([
+      ['c1', null],
+      ['c2', null],
+      ['c3', 'deleted'],
+    ])
+    // A private repo where some comment could not be opened: the parent may be that one.
+    const hidden = mergeTimeline(cs, [], [], [], true)
+    expect(hidden.map((i) => (i.kind === 'comment' ? i.orphaned ?? null : null))).toEqual([null, null, 'hidden'])
+  })
 })
 
 function comment(id: string, extra: Partial<CommentView> = {}): CommentView {
@@ -140,6 +153,24 @@ describe('inline thread placement', () => {
     const placed = placeThreads(cs, HEAD, null)
     expect([...placed.current.keys()].sort()).toEqual(['0:3:a.ts', '1:3:a.ts'])
     expect(placed.general.map((c) => c.id)).toEqual(['c3', 'c4'])
+  })
+
+  it('tints every line a range covers (rangeKeys), one-line threads none', () => {
+    const cs = [comment('c1', { anchor: { path: 'a.ts', line: 5, startLine: 3, side: 1, commitOid: HEAD } }), comment('c2', on('a.ts', 9))]
+    const placed = placeThreads(cs, HEAD, () => true)
+    expect([...rangeKeys(placed.current)].sort()).toEqual(['1:3:a.ts', '1:4:a.ts', '1:5:a.ts'])
+  })
+})
+
+describe('line selection (drag or shift-click)', () => {
+  it('extends on the same file and side, in order; anything else starts over', () => {
+    const one = extendSelection(null, 'a.ts', 1, 7, false)
+    expect(one).toEqual({ path: 'a.ts', side: 1, startLine: 7, line: 7 })
+    expect(extendSelection(one, 'a.ts', 1, 3, true)).toEqual({ path: 'a.ts', side: 1, startLine: 3, line: 7 })
+    expect(extendSelection(one, 'a.ts', 1, 9, true)).toEqual({ path: 'a.ts', side: 1, startLine: 7, line: 9 })
+    expect(extendSelection(one, 'a.ts', 0, 9, true)).toEqual({ path: 'a.ts', side: 0, startLine: 9, line: 9 })
+    expect(extendSelection(one, 'b.ts', 1, 9, true)).toEqual({ path: 'b.ts', side: 1, startLine: 9, line: 9 })
+    expect(extendSelection(one, 'a.ts', 1, 9, false)).toEqual({ path: 'a.ts', side: 1, startLine: 9, line: 9 })
   })
 })
 
