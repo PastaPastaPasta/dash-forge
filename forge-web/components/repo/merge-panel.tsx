@@ -177,7 +177,9 @@ export function MergePanel({
   const [stopped, setStopped] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [newTip, setNewTip] = useState<string | null>(null)
-  const [deleted, setDeleted] = useState<string | null>(null)
+  // The branch deletion's outcome, with the label it was run for: the page stops offering the
+  // option once the PR reads merged, which is exactly when this is shown.
+  const [deleted, setDeleted] = useState<{ label: string; error: string | null } | null>(null)
 
   // Upload estimate unknown until the pack exists; the documents are known (and the branch
   // deletion's ref update when it is ticked).
@@ -240,9 +242,9 @@ export function MergePanel({
       if (deletable !== null && alsoDelete) {
         try {
           await deletable.run()
-          setDeleted('done')
+          setDeleted({ label: deletable.label, error: null })
         } catch (e) {
-          setDeleted(e instanceof Error ? e.message : String(e))
+          setDeleted({ label: deletable.label, error: e instanceof Error ? e.message : String(e) })
         }
       }
     } catch (e) {
@@ -418,13 +420,13 @@ export function MergePanel({
           Base branch moved to <Oid value={newTip} chars={9} />. The PR shows as merged once the fold sees the merge event.
         </p>
       ) : null}
-      {deleted === 'done' && deleteBranch !== null ? (
+      {deleted !== null && deleted.error === null ? (
         <p className="mt-1 text-dense text-anvil-700 dark:text-anvil-200" data-testid="branch-deleted">
-          Deleted {deleteBranch.label}.
+          Deleted {deleted.label}.
         </p>
       ) : deleted !== null ? (
         <p role="alert" className="mt-1 text-dense text-caution-700 dark:text-caution-400">
-          The merge stands; deleting the branch failed: {deleted}
+          The merge stands; deleting {deleted.label} failed: {deleted.error}
         </p>
       ) : null}
       {uploadDialog}
