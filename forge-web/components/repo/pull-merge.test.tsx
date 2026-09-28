@@ -29,8 +29,12 @@ vi.mock('@/hooks/use-prefs', () => ({
   useMinWidth: () => true,
 }))
 vi.mock('@/components/repo/merge-upload', () => ({ useMergeUpload: () => ({ upload: null, dialog: null, storageLabel: '', begin: () => undefined }) }))
+// A check after the merge compares the head with a base that already holds it: seen live as a
+// conflict on '/'. The first check says "merge"; any later one says what that live one did.
+let checkCount = 0
+const checks = vi.fn(async () => (++checkCount === 1 ? { check: 'merge', conflictPaths: [] as string[] } : { check: 'conflict', conflictPaths: ['/'] }))
 vi.mock('@/lib/merge/client', () => ({
-  checkMergeInWorker: async () => ({ check: 'merge', conflictPaths: [] }),
+  checkMergeInWorker: () => checks(),
   runMergeInWorker: vi.fn(),
 }))
 vi.mock('@/lib/merge/runner', async (importOriginal) => {
@@ -52,7 +56,9 @@ vi.mock('@/components/repo/pull-diff', () => ({
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 const repo = { repoId: 'R', name: 'repo', visibility: 'public' } as unknown as RepoRef
-const home = { repo, branches: [{ refName: 'refs/heads/main', state: { state: 'resolved', oid: BASE } }], config: { protectedPatterns: [] } } as unknown as RepoHome
+/** The repo home: after the merge the page reloads it, and main is at the new tip. */
+const homeAt = (tip: string): RepoHome =>
+  ({ repo, branches: [{ refName: 'refs/heads/main', state: { state: 'resolved', oid: tip } }], config: { protectedPatterns: [] } }) as unknown as RepoHome
 const pullOf = (merged: boolean): PullView =>
   ({
     id: 'P',
@@ -86,7 +92,7 @@ function Page({ onDelete }: { onDelete: () => Promise<void> }): JSX.Element {
   return (
     <PullMerge
       repo={repo}
-      home={home}
+      home={homeAt(merged ? NEW_TIP : BASE)}
       pull={pullOf(merged)}
       canMerge={!merged}
       isMaintainer
@@ -117,5 +123,9 @@ describe('the merge box through its own merge', () => {
     expect(onDelete).toHaveBeenCalledTimes(1)
     expect(host.querySelector('[data-testid="branch-deleted"]')?.textContent).toBe('Deleted fork:feature.')
     expect(host.textContent).not.toMatch(/deleting .* failed/)
+    // The merge is not checked again against the base it just moved (it would report conflicts).
+    expect(checks).toHaveBeenCalledTimes(1)
+    expect(host.querySelector('[data-testid="conflict-paths"]')).toBeNull()
+    expect(host.textContent).not.toMatch(/Conflicts or overlapping changes/)
   })
 })

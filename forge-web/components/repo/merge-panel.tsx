@@ -135,7 +135,10 @@ export function MergePanel({
   // unmounted, so a stale check never keeps reading objects.
   const [check, setCheck] = useState<MergeCheck | { error: string } | null>(null)
   const [conflictPaths, setConflictPaths] = useState<readonly string[]>([])
-  const checkable = canMerge && repo.visibility === 'public' && refProblem === null && reader !== null && wide
+  const [mergedHere, setMergedHere] = useState(false)
+  // Nothing to check once the PR is merged (this panel's own merge included: the base then holds
+  // it, and a check against the new tip would only report the merge against itself).
+  const checkable = canMerge && !pull.state.merged && !mergedHere && repo.visibility === 'public' && refProblem === null && reader !== null && wide
   // The check reads the latest input without re-running when only the merger's name changes.
   const inputRef = useRef(input)
   inputRef.current = input
@@ -237,6 +240,7 @@ export function MergePanel({
         },
       )
       setRun(done)
+      setMergedHere(true)
       setNewTip(done.result?.newTip ?? null)
       onMerged()
       if (deletable !== null && alsoDelete) {
@@ -316,7 +320,7 @@ export function MergePanel({
         </div>
       </div>
 
-      {button.kind === 'conflicts' ? (
+      {button.kind === 'conflicts' && !mergedHere ? (
         <div className="mt-3">
           <p className="mb-1.5 text-[12px] text-anvil-600 dark:text-anvil-400">Both sides changed the same files or folders. Check the PR out, merge it with the CLI, and push:</p>
           {conflictPaths.length > 0 ? (
