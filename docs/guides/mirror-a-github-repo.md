@@ -251,7 +251,7 @@ If the page says **Not indexed for browsing yet**, the import stored the code bu
 dg repo reindex <owner>/<repo>   # shows the price first; the index is 36 bytes per object
 ```
 
-It reads the stored packs, builds their index locally and uploads only that, about a thirtieth of what the code cost: 3.3 DASH for dashpay/dash's 268,015 objects, whose code upload was 91 DASH.
+It reads the stored packs, builds their index locally and uploads only that, about a thirtieth of what the code cost: 3.3 DASH for dashpay/dash's 268,015 objects, whose code upload was 91 DASH. The index goes to Platform when the packs are there. When the packs live on your own storage, name it with `--profile <name>[,<name>…]` (as for `dg repack`); the index then costs only its manifest on chain. If the warning names `dg repack` instead, the index cannot be extended as it stands, and a repack rebuilds it.
 
 To check that a branch's history on the mirror matches GitHub, compare its tip on both:
 

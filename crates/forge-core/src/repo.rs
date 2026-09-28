@@ -273,8 +273,48 @@ pub enum PushIndexOutcome {
         /// How many fragments it superseded.
         folded: usize,
     },
-    /// Nothing was published; the string says why, in terms a user can act on.
-    Skipped(String),
+    /// Nothing was published: why, and what repairs it.
+    Skipped(IndexSkip),
+}
+
+/// Why a push's browse index was not published, and the command that repairs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexSkip {
+    /// What happened, in terms a user can act on.
+    pub reason: String,
+    /// What repairs it.
+    pub remedy: IndexRemedy,
+}
+
+/// The command that repairs a missing browse index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexRemedy {
+    /// `dg repo reindex`: the pack is fine, only its index is missing (the manifest was not
+    /// visible yet, or the index upload failed).
+    Reindex,
+    /// `dg repack`: the index cannot be extended as it stands (the pack space outgrew the
+    /// 16-bit `packRef`, or a fragment was built over another pack space).
+    Repack,
+    /// Nothing a user runs fixes it (the pushed hash is listed under another kind).
+    None,
+}
+
+impl IndexSkip {
+    fn new(reason: impl Into<String>, remedy: IndexRemedy) -> Self {
+        Self {
+            reason: reason.into(),
+            remedy,
+        }
+    }
+
+    /// The command that repairs `repo` (`owner/name`), if any.
+    pub fn fix(&self, repo: &str) -> Option<String> {
+        match self.remedy {
+            IndexRemedy::Reindex => Some(format!("dg repo reindex {repo}")),
+            IndexRemedy::Repack => Some(format!("dg repack {repo}")),
+            IndexRemedy::None => None,
+        }
+    }
 }
 
 /// The stored facts about a repack's consolidated pack, as its `packManifest` records them.
@@ -325,43 +365,157 @@ pub struct RepackReport {
 /// What [`RepoService::reindex`] would publish ([`RepoService::plan_reindex`]).
 #[derive(Debug)]
 pub struct ReindexPlan {
-    /// The stored git packs with objects that no live index fragment covers, in `packRef`
-    /// order. Empty: the repository is fully indexed.
+    /// The stored git packs with objects that no index fragment covers, in `packRef` order.
+    /// Empty: the repository is fully indexed.
     pub missing: Vec<V2Pack>,
-    live: Vec<PackManifestInfo>,
-    fragments: Vec<crate::pack::ObjectLocator>,
+    /// The live fragments the new one folds in (and supersedes), with their rows: empty
+    /// unless the live fragments are at [`MAX_LOCATOR_FRAGMENTS`].
+    fold: Vec<(PackManifestInfo, crate::pack::ObjectLocator)>,
+    /// Every index fragment hash the plan read (or tried to): one that appears later was
+    /// published concurrently.
+    known: BTreeSet<[u8; 32]>,
+    /// Fragments that could not be read (their packs count as unindexed).
+    pub unreadable_fragments: usize,
     manifests: Vec<PackManifestInfo>,
     roles: RoleMap,
 }
 
 impl ReindexPlan {
-    /// Whether the new fragment also folds the live ones in (they are at the cap).
+    /// Whether the new fragment also folds the live ones in.
     pub fn fold(&self) -> bool {
-        !self.missing.is_empty() && self.live.len() >= MAX_LOCATOR_FRAGMENTS
+        !self.fold.is_empty()
+    }
+
+    /// Whether any copy of a missing pack is stored as Platform chunks: then the index may go
+    /// there too. A repository whose packs live only on the owner's storage never gets an
+    /// index on Platform it did not ask for.
+    pub fn packs_on_platform(&self) -> bool {
+        let git = u64::from(crate::pack::KIND_GIT_PACK);
+        self.missing.iter().any(|p| {
+            self.manifests
+                .iter()
+                .any(|m| m.kind == git && m.storage == 0 && hex::encode(m.pack_hash) == p.pack_hash)
+        })
     }
 
     /// Objects the published fragment will index (what its size, and price, follow).
     pub fn index_objects(&self) -> u64 {
-        let folded: u64 = if self.fold() {
-            self.fragments.iter().map(|f| f.object_count() as u64).sum()
-        } else {
-            0
-        };
-        self.missing.iter().map(|p| p.object_count).sum::<u64>() + folded
+        self.missing.iter().map(|p| p.object_count).sum::<u64>()
+            + self
+                .fold
+                .iter()
+                .map(|(_, f)| f.object_count() as u64)
+                .sum::<u64>()
+    }
+}
+
+/// What [`RepoService::reindex`] did.
+#[derive(Debug, Default)]
+pub struct ReindexReport {
+    /// The index manifest published; `None` when nothing was left to index (every pack was
+    /// skipped, or an index published meanwhile covers them).
+    pub manifest_id: Option<String>,
+    /// The packs (hex) the published fragment indexes.
+    pub indexed: Vec<String>,
+    /// Objects it indexes (folded fragments included).
+    pub index_objects: u64,
+    /// Packs (hex) not indexed, and why.
+    pub skipped: Vec<(String, String)>,
+}
+
+/// The index fragments a reader merges, as forge-web's `loadBrowseContext` does: every kind-1
+/// pack of the pack list, superseded or not (the web lists copies unverified, so it honours no
+/// `supersedes`), one representative copy each, keyed by the pack's first upload.
+fn index_fragments(manifests: &[PackManifestInfo], roles: &RoleMap) -> Vec<PackManifestInfo> {
+    let kind = u64::from(crate::pack::KIND_OBJECT_LOCATOR);
+    pack_list(manifests, roles, None)
+        .into_iter()
+        .filter(|p| p.kind == kind)
+        .filter_map(|p| {
+            let rep = manifests
+                .iter()
+                .find(|m| Some(&m.document_id) == p.copies.first())?;
+            Some(PackManifestInfo {
+                created_at: p.first.created_at,
+                document_id: p.first.id.clone(),
+                ..rep.clone()
+            })
+        })
+        .collect()
+}
+
+/// The live fragments a new index folds in, when they are at [`MAX_LOCATOR_FRAGMENTS`]: the
+/// newest [`fold_limit`] (a manifest's `supersedes` names at most that many; the rest stay
+/// live, merged by readers, and fold on a later publish). `None`: publish a plain fragment.
+fn fold_set(live: &[PackManifestInfo]) -> Option<Vec<PackManifestInfo>> {
+    (live.len() >= MAX_LOCATOR_FRAGMENTS).then(|| live.iter().take(fold_limit()).cloned().collect())
+}
+
+/// The re-check a reindex makes on the manifests read just before its write (`fresh`): every
+/// pack it indexed (`planned`) must still sit at its `packRef`, and every fragment readers
+/// merge must still index a prefix of the space. Returns the fragments published since the
+/// plan (not in `known`), whose coverage the caller subtracts.
+fn recheck_reindex(
+    fresh: &[PackManifestInfo],
+    roles: &RoleMap,
+    planned: &[V2Pack],
+    known: &BTreeSet<[u8; 32]>,
+    fold: &[PackManifestInfo],
+) -> Result<Vec<PackManifestInfo>> {
+    let space = locator_pack_space(fresh, roles, None);
+    let merged = index_fragments(fresh, roles);
+    let moved = planned
+        .iter()
+        .any(|p| space.get(p.pack_ref).map(|s| &s.pack_hash) != Some(&p.pack_hash));
+    if moved || !fragments_index_prefixes(fresh, roles, &space, &merged) {
+        return Err(Error::Config(format!(
+            "{FRAGMENT_MISMATCH}; nothing was published — run `dg repack`"
+        )));
+    }
+    // A folded fragment superseded meanwhile (another fold) must not be folded again.
+    let superseded: BTreeSet<[u8; 32]> = fresh
+        .iter()
+        .flat_map(|m| m.supersedes.iter().copied())
+        .collect();
+    if fold.iter().any(|f| superseded.contains(&f.pack_hash)) {
+        return Err(Error::Config(
+            "the index fragments were folded while this ran; nothing was published — run \
+             `dg repo reindex` again"
+                .into(),
+        ));
+    }
+    Ok(merged
+        .into_iter()
+        .filter(|m| !known.contains(&m.pack_hash))
+        .collect())
+}
+
+/// Why a stored pack cannot be given index rows: an older client's `--fix-thin` pack (its
+/// `REF_DELTA` bases come after the deltas), which only a repack can rebuild.
+fn unindexable_reason(e: &Error) -> String {
+    let text = e.to_string();
+    if text.contains("REF_DELTA") {
+        "stored by an older client in a shape the browse index cannot describe (REF_DELTA / \
+         --fix-thin); run `dg repack` to rebuild it and its index"
+            .into()
+    } else {
+        text
     }
 }
 
 /// Why an index is not published or folded when a fragment's rows name a pack past the end of
 /// the pack space: it was built over another space.
-const FRAGMENT_OUTSIDE_SPACE: &str = "a published index fragment addresses a pack outside the \
-     pack set — run `dg repack` to rebuild the index";
+const FRAGMENT_OUTSIDE_SPACE: &str =
+    "a published index fragment addresses a pack outside the pack set";
 
 /// The packs of `space` that hold objects but have no row in the live fragments (`covered`
 /// is the set of `packRef`s they index). An index row naming a pack past the end of the
 /// space means a fragment was built over another space: refused, like a push would.
 fn uncovered_packs(space: &[V2Pack], covered: &BTreeSet<u16>) -> Result<Vec<V2Pack>> {
     if covered.iter().any(|&r| usize::from(r) >= space.len()) {
-        return Err(Error::Config(FRAGMENT_OUTSIDE_SPACE.into()));
+        return Err(Error::Config(format!(
+            "{FRAGMENT_OUTSIDE_SPACE}; run `dg repack`"
+        )));
     }
     Ok(space
         .iter()
@@ -1816,8 +1970,11 @@ impl<'a> RepoService<'a> {
             ))
         })?;
         let locator = crate::pack::ObjectLocator::build(pack, pack_ref)?;
+        // A manifest names at most MAX_SUPERSEDES packs: past that, the newest ones. The rest
+        // stay live, and readers still merge them (they index a prefix of the space).
         let supersedes = live_locator_manifests(&manifests)
             .iter()
+            .take(fold_limit())
             .map(|m| m.pack_hash)
             .collect();
         self.store_locator(repo, &locator, supersedes, target).await
@@ -1861,9 +2018,10 @@ impl<'a> RepoService<'a> {
         let space_len = locator_pack_space(&manifests, &roles, None).len();
         let (pack_ref, live_locators, fold) = match plan {
             PushIndexPlan::NotListed => {
-                return Ok(PushIndexOutcome::Skipped(
-                    "the pack's manifest is not listed yet by the nodes read".into(),
-                ))
+                return Ok(PushIndexOutcome::Skipped(IndexSkip::new(
+                    "the pack's manifest is not listed yet by the nodes read",
+                    IndexRemedy::Reindex,
+                )))
             }
             PushIndexPlan::Skip(why) => return Ok(PushIndexOutcome::Skipped(why)),
             PushIndexPlan::Publish {
@@ -1892,7 +2050,10 @@ impl<'a> RepoService<'a> {
             .max_pack_ref()
             .is_some_and(|r| usize::from(r) >= space_len)
         {
-            return Ok(PushIndexOutcome::Skipped(FRAGMENT_OUTSIDE_SPACE.into()));
+            return Ok(PushIndexOutcome::Skipped(IndexSkip::new(
+                FRAGMENT_OUTSIDE_SPACE,
+                IndexRemedy::Repack,
+            )));
         }
         let supersedes = if fold {
             live_locators.iter().map(|m| m.pack_hash).collect()
@@ -1936,95 +2097,184 @@ impl<'a> RepoService<'a> {
         Ok(parts)
     }
 
-    /// What [`Self::reindex`] would publish: the stored git packs (with objects) that no live
-    /// index fragment covers. Reads the live fragments (at most [`MAX_LOCATOR_FRAGMENTS`]
-    /// small artifacts) to learn what they cover; stores nothing.
+    /// What [`Self::reindex`] would publish: the stored git packs (with objects) that no index
+    /// fragment a reader merges covers. Reads those fragments (small artifacts) to learn what
+    /// they cover; stores nothing.
+    ///
+    /// Coverage is decided over the fragments the WEB merges ([`index_fragments`]: every
+    /// kind-1 pack of the pack list, superseded or not), so a repository the web already reads
+    /// as indexed is never indexed again. A fragment that cannot be read covers nothing (the
+    /// web falls back for it too). Only the fold decision uses the live set.
     pub async fn plan_reindex(&self, repo: &RepoRef) -> Result<ReindexPlan> {
         let manifests = self.read_pack_manifests(repo).await?;
         let roles = self.copy_roles(repo).await?;
         let space = locator_pack_space(&manifests, &roles, None);
-        let live = live_locator_manifests(&manifests);
-        if !fragments_index_prefixes(&manifests, &roles, &space, &live) {
-            return Err(Error::Config(FRAGMENT_MISMATCH.into()));
+        let merged = index_fragments(&manifests, &roles);
+        if !fragments_index_prefixes(&manifests, &roles, &space, &merged) {
+            return Err(Error::Config(format!(
+                "{FRAGMENT_MISMATCH}; run `dg repack`"
+            )));
         }
-        let fragments = self
-            .read_live_fragments(repo, &manifests, &roles, &live)
+        let read = self
+            .read_fragments(repo, &manifests, &roles, &merged)
             .await?;
-        let covered = fragments
-            .iter()
-            .flat_map(crate::pack::ObjectLocator::pack_ref_iter)
-            .collect();
+        let covered: BTreeSet<u16> = read.iter().flat_map(|(_, f)| f.pack_ref_iter()).collect();
         let missing = uncovered_packs(&space, &covered)?;
+        if let Some(p) = missing.iter().find(|p| u16::try_from(p.pack_ref).is_err()) {
+            return Err(Error::Config(format!(
+                "{} (pack {} sits at position {}); run `dg repack` to consolidate",
+                pack_ref_overflow(space.len()),
+                p.pack_hash,
+                p.pack_ref
+            )));
+        }
+        // Folded only when a push would fold: the live fragments at the cap, those read.
+        let unreadable_fragments = merged.len() - read.len();
+        let live = if missing.is_empty() {
+            Vec::new()
+        } else {
+            fold_set(&live_locator_manifests(&manifests)).unwrap_or_default()
+        };
+        let fold = read
+            .into_iter()
+            .filter(|(m, _)| live.iter().any(|l| l.pack_hash == m.pack_hash))
+            .collect();
         Ok(ReindexPlan {
             missing,
-            live,
-            fragments,
+            fold,
+            known: merged.iter().map(|m| m.pack_hash).collect(),
+            unreadable_fragments,
             manifests,
             roles,
         })
+    }
+
+    /// Download and parse the index fragments `fragments` (one representative copy each, as
+    /// [`index_fragments`] lists them; the best verifying copy is read). One that cannot be
+    /// read or parsed is left out and logged: it covers nothing.
+    async fn read_fragments(
+        &self,
+        repo: &RepoRef,
+        manifests: &[PackManifestInfo],
+        roles: &RoleMap,
+        fragments: &[PackManifestInfo],
+    ) -> Result<Vec<(PackManifestInfo, crate::pack::ObjectLocator)>> {
+        let contract = self.repo_contract(repo).await?;
+        let reader = self.repo_reader(repo, manifests, roles).await;
+        let locator = u64::from(crate::pack::KIND_OBJECT_LOCATOR);
+        let mut out = Vec::with_capacity(fragments.len());
+        for f in fragments {
+            let copies: Vec<&PackManifestInfo> = manifests
+                .iter()
+                .filter(|m| m.kind == locator && m.pack_hash == f.pack_hash)
+                .collect();
+            let parsed = match self
+                .fetch_best_copy(repo, &contract, &copies, roles, &reader)
+                .await
+            {
+                Ok((sealed, m)) => match self
+                    .open_artifact_of(repo, &copies, m.size_bytes, sealed)
+                    .await
+                {
+                    Ok(bytes) => crate::pack::ObjectLocator::parse(&bytes),
+                    Err(e) => Err(e),
+                },
+                Err(e) => Err(e),
+            };
+            match parsed {
+                Ok(l) => out.push((f.clone(), l)),
+                Err(e) => tracing::warn!(
+                    fragment = %hex::encode(f.pack_hash),
+                    error = %e,
+                    "an index fragment is unreadable; the packs it covers count as unindexed"
+                ),
+            }
+        }
+        Ok(out)
     }
 
     /// Publish the browse index for the packs `plan` found unindexed (`plan.missing` must not
     /// be empty): download each (its best verifying copy), index it at its `packRef`, and
     /// store ONE index fragment over them all, folding the live fragments in when they are at
     /// [`MAX_LOCATOR_FRAGMENTS`]. Only the index is written: the packs are read, never stored
-    /// again. Returns the index manifest's id.
+    /// again. A pack that cannot be read, or that an older client stored in a shape the index
+    /// cannot describe, is reported in [`ReindexReport::skipped`] and the rest are indexed.
     pub async fn reindex(
         &self,
         repo: &RepoRef,
         plan: &ReindexPlan,
         target: RepackTarget<'_>,
-    ) -> Result<String> {
+    ) -> Result<ReindexReport> {
         let contract = self.repo_contract(repo).await?;
         let reader = self.repo_reader(repo, &plan.manifests, &plan.roles).await;
         let git = u64::from(crate::pack::KIND_GIT_PACK);
+        let mut report = ReindexReport::default();
         let mut built = Vec::with_capacity(plan.missing.len());
         for p in &plan.missing {
-            let hash = <[u8; 32] as hex::FromHex>::from_hex(&p.pack_hash)
-                .map_err(|_| Error::Config(format!("pack hash {} is not hex", p.pack_hash)))?;
+            let hash = hash32(&p.pack_hash)
+                .ok_or_else(|| Error::Config(format!("pack hash {} is not hex", p.pack_hash)))?;
             let copies: Vec<&PackManifestInfo> = plan
                 .manifests
                 .iter()
                 .filter(|m| m.kind == git && m.pack_hash == hash)
                 .collect();
-            let (sealed, m) = self
-                .fetch_best_copy(repo, &contract, &copies, &plan.roles, &reader)
-                .await
-                .map_err(|e| Error::Io(format!("pack {} is unreadable: {e}", p.pack_hash)))?;
-            let bytes = self
-                .open_artifact_of(repo, &copies, m.size_bytes, sealed)
-                .await?;
-            let pack_ref = u16::try_from(p.pack_ref).map_err(|_| {
-                Error::Config(format!(
-                    "pack {} sits at position {} — past the locator's 16-bit packRef; run \
-                     `dg repack` to consolidate",
-                    p.pack_hash, p.pack_ref
-                ))
-            })?;
-            let parsed = crate::pack::index_stored_pack(&bytes)?.parsed;
-            built.push(crate::pack::ObjectLocator::build(&parsed, pack_ref)?);
+            let indexed = async {
+                let (sealed, m) = self
+                    .fetch_best_copy(repo, &contract, &copies, &plan.roles, &reader)
+                    .await
+                    .map_err(|e| format!("unreadable: {e}"))?;
+                let bytes = self
+                    .open_artifact_of(repo, &copies, m.size_bytes, sealed)
+                    .await
+                    .map_err(|e| format!("unreadable: {e}"))?;
+                let parsed = crate::pack::index_stored_pack(&bytes)
+                    .map_err(|e| unindexable_reason(&e))?
+                    .parsed;
+                let pack_ref =
+                    u16::try_from(p.pack_ref).map_err(|_| pack_ref_overflow(p.pack_ref))?;
+                crate::pack::ObjectLocator::build(&parsed, pack_ref)
+                    .map_err(|e| unindexable_reason(&e))
+            }
+            .await;
+            match indexed {
+                Ok(l) => built.push((p.clone(), l)),
+                Err(why) => report.skipped.push((p.pack_hash.clone(), why)),
+            }
         }
-        let mut parts: Vec<&crate::pack::ObjectLocator> = built.iter().collect();
-        let mut supersedes = Vec::new();
-        if plan.fold() {
-            parts.extend(&plan.fragments);
-            supersedes = plan.live.iter().map(|m| m.pack_hash).collect();
-        }
-        let locator = crate::pack::ObjectLocator::merge(&parts);
-        // A pack or fragment that landed while this ran changes nothing already built: new
-        // packs only append to the space, so every packRef above still means the same pack.
-        // A repack in between does not, and is caught the way a push catches it.
+
+        // Re-read just before the write. A pack that landed since only appends to the space,
+        // so every row built above still means the same pack; a repack (or a role change that
+        // re-ranks a copy's kind) moves packs, and is refused. An index published meanwhile by
+        // a push or another reindex is read, and the packs it covers are dropped from this one.
         let fresh = self.read_pack_manifests(repo).await?;
-        let space = locator_pack_space(&fresh, &plan.roles, None);
-        if !fragments_index_prefixes(&fresh, &plan.roles, &space, &plan.live)
-            || plan
-                .missing
+        let roles = self.copy_roles(repo).await?;
+        let planned: Vec<V2Pack> = built.iter().map(|(p, _)| p.clone()).collect();
+        let fold_live: Vec<PackManifestInfo> = plan.fold.iter().map(|(m, _)| m.clone()).collect();
+        let arrived = recheck_reindex(&fresh, &roles, &planned, &plan.known, &fold_live)?;
+        if !arrived.is_empty() {
+            let covered: BTreeSet<u16> = self
+                .read_fragments(repo, &fresh, &roles, &arrived)
+                .await?
                 .iter()
-                .any(|p| space.get(p.pack_ref).map(|s| &s.pack_hash) != Some(&p.pack_hash))
-        {
-            return Err(Error::Config(FRAGMENT_MISMATCH.into()));
+                .flat_map(|(_, f)| f.pack_ref_iter())
+                .collect();
+            built.retain(|(p, _)| u16::try_from(p.pack_ref).is_ok_and(|r| !covered.contains(&r)));
         }
-        self.store_locator(repo, &locator, supersedes, target).await
+        if built.is_empty() {
+            return Ok(report);
+        }
+
+        let mut parts: Vec<&crate::pack::ObjectLocator> = built.iter().map(|(_, l)| l).collect();
+        parts.extend(plan.fold.iter().map(|(_, l)| l));
+        let locator = crate::pack::ObjectLocator::merge(&parts);
+        let supersedes = plan.fold.iter().map(|(m, _)| m.pack_hash).collect();
+        report.index_objects = locator.object_count() as u64;
+        report.indexed = built.into_iter().map(|(p, _)| p.pack_hash).collect();
+        report.manifest_id = Some(
+            self.store_locator(repo, &locator, supersedes, target)
+                .await?,
+        );
+        Ok(report)
     }
 
     /// Upload a locator artifact and record its `packManifest` (kind 1).
@@ -2517,8 +2767,8 @@ enum PushIndexPlan {
     /// The pushed pack's manifest is not in the list yet: the node that answered is behind
     /// the one that confirmed the write. Read again ([`MANIFEST_VISIBLE_ATTEMPTS`]).
     NotListed,
-    /// Publish nothing; the string says why, in terms a user can act on.
-    Skip(String),
+    /// Publish nothing: why, and what repairs it.
+    Skip(IndexSkip),
 }
 
 /// Reads of the manifest list a push makes before it gives up on seeing its own manifest.
@@ -2547,24 +2797,45 @@ where
     let mut delay = MANIFEST_VISIBLE_DELAY;
     let mut attempt = 1;
     loop {
-        let manifests = read().await?;
-        let plan = plan_push_index(&manifests, roles, pack_hash);
-        if !matches!(plan, PushIndexPlan::NotListed) || attempt >= MANIFEST_VISIBLE_ATTEMPTS {
-            return Ok((manifests, plan));
+        // A failed read spends an attempt like a lagging one: the push is already stored, so
+        // one flaky node must not cost it its index, but the budget stays bounded.
+        let last = attempt >= MANIFEST_VISIBLE_ATTEMPTS;
+        match read().await {
+            Ok(manifests) => {
+                let plan = plan_push_index(&manifests, roles, pack_hash);
+                if !matches!(plan, PushIndexPlan::NotListed) || last {
+                    return Ok((manifests, plan));
+                }
+                tracing::info!(
+                    attempt,
+                    "the pushed pack's manifest is not listed yet; reading again"
+                );
+            }
+            Err(e) if last => return Err(e),
+            Err(e) => {
+                tracing::info!(attempt, error = %e, "reading the manifest list failed; reading again");
+            }
         }
-        tracing::info!(
-            attempt,
-            "the pushed pack's manifest is not listed yet; reading again"
-        );
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(MANIFEST_VISIBLE_MAX_DELAY);
         attempt += 1;
     }
 }
 
-/// Why an index is not extended when a live fragment was built over another pack space.
-const FRAGMENT_MISMATCH: &str = "a published index fragment no longer matches the pack set \
-     (a repack landed concurrently) — run `dg repack` to rebuild it";
+/// Why an index is not extended when a live fragment was built over another pack space
+/// (remedy: `dg repack`).
+const FRAGMENT_MISMATCH: &str =
+    "a published index fragment no longer matches the pack set (a repack landed concurrently)";
+
+/// The most live fragments one index manifest can fold (its `supersedes` names them all).
+fn fold_limit() -> usize {
+    MAX_SUPERSEDES
+}
+
+/// The skip reason when the pack space outgrew the locator's 16-bit `packRef`.
+fn pack_ref_overflow(packs: usize) -> String {
+    format!("the pack set has {packs} packs — past the locator's 16-bit packRef")
+}
 
 /// Whether every live fragment indexes a PREFIX of `space` (the pack space as of its first
 /// upload), so the `packRef`s merged from them all mean the same packs. The space only grows
@@ -2615,26 +2886,27 @@ fn plan_push_index(
     let space = locator_pack_space(manifests, roles, None);
     let hash = hex::encode(pack_hash);
     let Some(idx) = space.iter().position(|p| p.pack_hash == hash) else {
-        return PushIndexPlan::Skip(
+        return PushIndexPlan::Skip(IndexSkip::new(
             "the pushed pack is not in the git pack space — its index would address the \
-             wrong bytes"
-                .into(),
-        );
+             wrong bytes",
+            IndexRemedy::None,
+        ));
     };
     let Ok(pack_ref) = u16::try_from(idx) else {
-        return PushIndexPlan::Skip(format!(
-            "the pack set has {} packs — past the locator's 16-bit packRef; \
-             run `dg repack` to consolidate",
-            space.len()
+        return PushIndexPlan::Skip(IndexSkip::new(
+            pack_ref_overflow(space.len()),
+            IndexRemedy::Repack,
         ));
     };
 
     let live_locators = live_locator_manifests(manifests);
     if !fragments_index_prefixes(manifests, roles, &space, &live_locators) {
-        return PushIndexPlan::Skip(FRAGMENT_MISMATCH.into());
+        return PushIndexPlan::Skip(IndexSkip::new(FRAGMENT_MISMATCH, IndexRemedy::Repack));
     }
-
-    let fold = live_locators.len() >= MAX_LOCATOR_FRAGMENTS;
+    let (fold, live_locators) = match fold_set(&live_locators) {
+        Some(set) => (true, set),
+        None => (false, live_locators),
+    };
     PushIndexPlan::Publish {
         pack_ref,
         live_locators,
@@ -2888,6 +3160,11 @@ mod tests {
         RoleMap, MANIFEST_VISIBLE_ATTEMPTS, MANIFEST_VISIBLE_DELAY, MANIFEST_VISIBLE_MAX_DELAY,
         MAX_LOCATOR_FRAGMENTS,
     };
+    use super::{
+        fold_limit, fold_set, index_fragments, recheck_reindex, unindexable_reason, IndexRemedy,
+        IndexSkip, FRAGMENT_MISMATCH, MAX_SUPERSEDES,
+    };
+    use crate::error::Error;
     use crate::rules::v2::{CopyKey, Role};
     use crate::rules::ConfigDoc;
 
@@ -3062,7 +3339,7 @@ mod tests {
                 live_locators,
             } => Ok((pack_ref, fold, live_locators.len())),
             PushIndexPlan::NotListed => Err("not listed".into()),
-            PushIndexPlan::Skip(why) => Err(why),
+            PushIndexPlan::Skip(skip) => Err(skip.reason),
         }
     }
 
@@ -3128,7 +3405,8 @@ mod tests {
             .collect();
         let got = plan_push_index(&manifests, &roles, [3; 32]);
         assert!(
-            matches!(&got, PushIndexPlan::Skip(why) if why.contains("not in the git pack space")),
+            matches!(&got, PushIndexPlan::Skip(s)
+                if s.reason.contains("not in the git pack space") && s.remedy == IndexRemedy::None),
             "{got:?}"
         );
     }
@@ -3351,6 +3629,183 @@ mod tests {
         // 1 + 2 + 4 + 8 + 8: capped, and bounded.
         assert_eq!(started.elapsed(), std::time::Duration::from_secs(23));
         assert!(MANIFEST_VISIBLE_MAX_DELAY >= MANIFEST_VISIBLE_DELAY);
+    }
+
+    /// A read that fails spends one attempt and is retried; the push still reaches its plan.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_manifest_read_is_retried_within_the_budget() {
+        let reads = std::cell::Cell::new(0u32);
+        let (_, plan) = read_push_index_plan(&RoleMap::new(), [2; 32], || {
+            reads.set(reads.get() + 1);
+            let n = reads.get();
+            async move {
+                if n == 1 {
+                    Err(Error::Platform("node unreachable".into()))
+                } else {
+                    Ok(vec![manifest("p2", 200, 0, 2)])
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            matches!(plan, PushIndexPlan::Publish { pack_ref: 0, .. }),
+            "{plan:?}"
+        );
+        assert_eq!(reads.get(), 2);
+
+        // Failing every time: bounded, and the last error is returned.
+        reads.set(0);
+        let err = read_push_index_plan(&RoleMap::new(), [2; 32], || {
+            reads.set(reads.get() + 1);
+            async { Err::<Vec<PackManifestInfo>, _>(Error::Platform("down".into())) }
+        })
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("down"), "{err}");
+        assert_eq!(reads.get(), MANIFEST_VISIBLE_ATTEMPTS);
+    }
+
+    /// Each reason a push leaves its index behind names the command that actually repairs
+    /// it: a missing index `dg repo reindex`, a pack space the index cannot extend `dg repack`.
+    #[test]
+    fn a_skipped_index_names_the_right_remedy() {
+        assert_eq!(
+            IndexSkip::new("x", IndexRemedy::Reindex)
+                .fix("o/r")
+                .as_deref(),
+            Some("dg repo reindex o/r")
+        );
+        assert_eq!(
+            IndexSkip::new("x", IndexRemedy::Repack)
+                .fix("o/r")
+                .as_deref(),
+            Some("dg repack o/r")
+        );
+        assert_eq!(IndexSkip::new("x", IndexRemedy::None).fix("o/r"), None);
+        // A fragment that indexes a space the current one does not extend (its pack moved
+        // under a later maintainer copy of another kind): the push's skip names `dg repack`.
+        let mut relabel = manifest("m1", 300, 1, 1);
+        relabel.owner_id = "alice".into();
+        let ms = vec![
+            relabel,
+            manifest("f0", 150, 1, 8), // indexed the space [p1]
+            manifest("p2", 200, 0, 2),
+            manifest("p1", 100, 0, 1),
+        ];
+        let roles: RoleMap = [("alice".to_string(), Role::Maintainer)]
+            .into_iter()
+            .collect();
+        let got = plan_push_index(&ms, &roles, [2; 32]);
+        assert!(
+            matches!(&got, PushIndexPlan::Skip(s) if s.remedy == IndexRemedy::Repack),
+            "{got:?}"
+        );
+        // An older client's --fix-thin pack: repack, said plainly.
+        let why = unindexable_reason(&Error::Config(
+            "found 3 REF_DELTA + 0 non-contiguous".into(),
+        ));
+        assert!(
+            why.contains("older client") && why.contains("dg repack"),
+            "{why}"
+        );
+    }
+
+    /// A fold names at most MAX_SUPERSEDES fragments in its `supersedes` (the schema's
+    /// maxItems): past that the newest are folded and the rest stay live.
+    #[test]
+    fn a_fold_supersedes_at_most_a_manifests_worth_of_fragments() {
+        assert_eq!(fold_limit(), MAX_SUPERSEDES);
+        let many: Vec<PackManifestInfo> = (0..40u8)
+            .map(|i| manifest(&format!("f{i}"), 1_000 - u64::from(i), 1, 100 + i))
+            .collect(); // newest first
+        let set = fold_set(&many).unwrap();
+        assert_eq!(set.len(), MAX_SUPERSEDES);
+        assert_eq!(set[0].document_id, "f0", "the newest are folded");
+        assert!(
+            fold_set(&many[..MAX_LOCATOR_FRAGMENTS - 1]).is_none(),
+            "under the cap: no fold"
+        );
+        let at_cap = fold_set(&many[..MAX_LOCATOR_FRAGMENTS]).unwrap();
+        assert_eq!(at_cap.len(), MAX_LOCATOR_FRAGMENTS);
+    }
+
+    /// Review finding (High): the web merges EVERY kind-1 fragment (it honours no
+    /// `supersedes`), so a repacked repository the web reads as fully indexed must read the
+    /// same to `dg repo reindex`: p0 and p1, a repack pc superseding both, fragments over p0
+    /// and p1, and the repack's locator over pc superseding them. Nothing is missing.
+    #[test]
+    fn reindex_counts_coverage_over_the_fragments_the_web_merges() {
+        let mut ms = vec![manifest("p0", 100, 0, 1), manifest("f0", 110, 1, 11)];
+        ms.push(manifest("p1", 200, 0, 2));
+        ms.push(manifest("f1", 210, 1, 12));
+        let mut pc = manifest("pc", 300, 0, 3);
+        pc.supersedes = vec![[1; 32], [2; 32]];
+        ms.push(pc);
+        let mut lc = manifest("lc", 310, 1, 13);
+        lc.supersedes = vec![[11; 32], [12; 32]];
+        ms.push(lc);
+        for m in &mut ms {
+            m.object_count = 5;
+        }
+        let roles = RoleMap::new();
+        let space = locator_pack_space(&ms, &roles, None);
+        assert_eq!(space.len(), 3);
+        // Rust's live set drops the superseded fragments; the web's merged set keeps them.
+        assert_eq!(live_locator_manifests(&ms).len(), 1);
+        let merged = index_fragments(&ms, &roles);
+        assert_eq!(
+            merged
+                .iter()
+                .map(|m| m.document_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["f0", "f1", "lc"]
+        );
+        // What those fragments cover: f0 → 0, f1 → 1, lc → 2.
+        let covered = [0u16, 1, 2].into_iter().collect();
+        assert!(uncovered_packs(&space, &covered).unwrap().is_empty());
+        // Had only the live fragment (lc) been read, p0 and p1 would read as missing: the
+        // 3.3 DASH re-index of dashpay/dash the review caught.
+        let live_only = [2u16].into_iter().collect();
+        assert_eq!(uncovered_packs(&space, &live_only).unwrap().len(), 2);
+    }
+
+    /// The re-check just before a reindex's write: a pack that landed since is fine (the space
+    /// only grew), a fragment published since is returned so its coverage is subtracted, a
+    /// repack that moved an indexed pack refuses, and a fold whose fragments were folded
+    /// meanwhile refuses.
+    #[test]
+    fn reindex_rechecks_the_pack_space_before_writing() {
+        let roles = RoleMap::new();
+        let base = vec![manifest("p0", 100, 0, 1), manifest("p1", 200, 0, 2)];
+        let planned = locator_pack_space(&base, &roles, None);
+        let known = std::collections::BTreeSet::new();
+        // A later push: the space grew at the end.
+        let mut grew = base.clone();
+        grew.push(manifest("p2", 300, 0, 3));
+        assert!(recheck_reindex(&grew, &roles, &planned, &known, &[])
+            .unwrap()
+            .is_empty());
+        // A fragment published meanwhile comes back as new.
+        let mut indexed = grew.clone();
+        indexed.push(manifest("f9", 310, 1, 9));
+        let arrived = recheck_reindex(&indexed, &roles, &planned, &known, &[]).unwrap();
+        assert_eq!(arrived.len(), 1);
+        assert_eq!(arrived[0].document_id, "f9");
+        // A pack the plan indexed now sits elsewhere: refused.
+        let moved = vec![manifest("p1", 50, 0, 2), manifest("p0", 100, 0, 1)];
+        let err = recheck_reindex(&moved, &roles, &planned, &known, &[]).unwrap_err();
+        assert!(err.to_string().contains(FRAGMENT_MISMATCH), "{err}");
+        // The fragments this reindex folds were superseded by another fold meanwhile.
+        let f = manifest("f1", 150, 1, 7);
+        let mut folded = base.clone();
+        folded.push(f.clone());
+        let mut other = manifest("fx", 400, 1, 8);
+        other.supersedes = vec![[7; 32]];
+        folded.push(other);
+        let known: std::collections::BTreeSet<[u8; 32]> = [[7; 32]].into_iter().collect();
+        let err = recheck_reindex(&folded, &roles, &planned, &known, &[f]).unwrap_err();
+        assert!(err.to_string().contains("folded while this ran"), "{err}");
     }
 
     /// `dg repo reindex` indexes exactly the stored packs no live fragment covers: an empty

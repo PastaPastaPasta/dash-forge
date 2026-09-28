@@ -286,11 +286,12 @@ pub fn recorded_line(pack_hash: &str) -> (String, Value) {
 /// Printed whatever the verbosity and recorded in the report file, like an error, because a
 /// repository nobody can browse is not something a quiet push may hide. forge-import reads it
 /// from the event stream (`indexSkipped`) and puts it in its summary's warnings.
-pub fn index_skipped_line(repo: &str, why: &str) -> (String, Value) {
-    let fix = format!("dg repo reindex {repo}");
+/// `fix` is the command that repairs it (`dg repo reindex …` or `dg repack …`), when one does.
+pub fn index_skipped_line(why: &str, fix: Option<&str>) -> (String, Value) {
+    let until = fix.map_or_else(String::new, |fix| format!(" until `{fix}` publishes it"));
     let message = format!(
         "the push landed but its browse index was not published ({why}); the web cannot \
-         browse the new commits until `{fix}` publishes it"
+         browse the new commits{until}"
     );
     (
         format!("dash: warning: {message}"),
@@ -403,7 +404,8 @@ mod tests {
     /// the command that fixes it, in text and as the `indexSkipped` event forge-import reads.
     #[test]
     fn a_skipped_index_is_a_warning_naming_the_fix() {
-        let (text, event) = index_skipped_line("OwnerId/dash", "not listed yet");
+        let (text, event) =
+            index_skipped_line("not listed yet", Some("dg repo reindex OwnerId/dash"));
         assert!(text.starts_with("dash: warning: the push landed"), "{text}");
         assert!(text.contains("`dg repo reindex OwnerId/dash`"), "{text}");
         assert_eq!(event["event"], "indexSkipped");
@@ -413,6 +415,10 @@ mod tests {
             format!("dash: warning: {}", event["message"].as_str().unwrap()),
             text
         );
+        // No command repairs it: none is named.
+        let (text, event) = index_skipped_line("listed under another kind", None);
+        assert!(!text.contains("dg "), "{text}");
+        assert!(event["fix"].is_null());
     }
 
     /// The spec §7.4 sample, line for line.

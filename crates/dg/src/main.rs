@@ -332,6 +332,11 @@ pub enum RepoCommand {
     Reindex {
         /// The repository (`owner/name`).
         repo: String,
+        /// Storage profile(s) for the index (from `dg storage add`, or `platform`); every one
+        /// must confirm. Default: this clone's storage policy (dash.storage) inside a clone of
+        /// the repository, else Platform when the packs are stored there.
+        #[arg(long)]
+        profile: Option<String>,
     },
     /// Mark a repo archived (maintainers): every Forge client refuses writes to it. A client
     /// rule; consensus still admits a member's writes.

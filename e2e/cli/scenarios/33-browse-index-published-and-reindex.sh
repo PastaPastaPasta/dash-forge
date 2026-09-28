@@ -94,15 +94,17 @@ check "…with the fix" assert_file_contains "$LOG-2.err" "dg repo reindex $OWNE
 check "one git pack, no index" assert_eq "1 0" "$(kinds "$OWNER_ID/$LAG")"
 
 step "3. dg repo reindex publishes the missing index only"
-before="$(node "$MINT_DIR/mint.mjs" balance --identity "$ID" 2>/dev/null | grep -o '"balance": [0-9]*' | grep -o '[0-9]*$')"
 reindex "$LOG-3" "$OWNER_ID/$LAG" || { cat "$LOG-3.err" "$LOG-3.json" >&2; bad "reindex failed"; finish_scenario; }
 check "status reindexed" assert_eq "reindexed" "$(jq_py "$LOG-3.json" 'd["status"]')"
-check "one pack was missing" assert_eq "1" "$(jq_py "$LOG-3.json" 'd["missingPacks"]')"
+check "one pack indexed, none skipped" assert_eq "1 0" \
+  "$(jq_py "$LOG-3.json" 'str(d["indexedPacks"]) + " " + str(len(d["skipped"]))')"
 check "one git pack and one live index" assert_eq "1 1" "$(kinds "$OWNER_ID/$LAG")"
-spent="$(jq_py "$LOG-3.json" 'd["cost"]["credits"]')"
-# One tiny pack's index: a fanout, a few rows and a manifest, well under 0.01 DASH.
+# The spend must be MEASURED (a number, not null) and positive: an index was paid for. One tiny
+# pack's index is a fanout, a few rows and a manifest, well under 0.01 DASH.
+spent="$(jq_py "$LOG-3.json" '"" if d["cost"] is None else d["cost"]["credits"]')"
+check "the spend was measured" test -n "$spent"
+check "the spend is positive (${spent} credits)" test "${spent:-0}" -gt 0
 check "the spend is the index only (${spent} credits)" test "${spent:-0}" -lt 1000000000
-[[ -n "$before" ]] && info "balance before reindex: $before"
 reindex "$LOG-3b" "$OWNER_ID/$LAG" || { cat "$LOG-3b.err" >&2; bad "second reindex failed"; }
 check "a second reindex finds nothing to do" assert_eq "indexed" "$(jq_py "$LOG-3b.json" 'd["status"]')"
 

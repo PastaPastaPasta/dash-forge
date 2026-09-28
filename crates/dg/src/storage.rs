@@ -1027,6 +1027,24 @@ fn dash_remote_url() -> Option<(String, String)> {
         })
 }
 
+/// Whether this git repository's forge remote names `repo`: its id, or its owner (id or DPNS
+/// name, as the URL gives it) and name. What a command that follows the clone's storage
+/// policy checks first, so a policy is never applied to another repository.
+pub(crate) fn dash_remote_is(repo: &forge_core::scope::RepoRef, owner_label: &str) -> bool {
+    let Some((owner, name)) =
+        dash_remote_url().and_then(|(_, url)| crate::publish::parse_dash_url(&url))
+    else {
+        return false;
+    };
+    match name {
+        None => owner == repo.id(),
+        Some(name) => {
+            name == repo.name()
+                && (owner == repo.owner_id() || owner.eq_ignore_ascii_case(owner_label))
+        }
+    }
+}
+
 /// The name of this git repository's forge (`dash://`) remote, when it has one.
 pub(crate) fn dash_remote_name() -> Option<String> {
     dash_remote_url().map(|(name, _)| name)

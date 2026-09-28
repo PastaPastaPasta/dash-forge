@@ -171,7 +171,19 @@ pub fn parse_landed(stderr: &str) -> PushReport {
             // The push left its browse index unpublished (D-920): the helper's own message,
             // which names the fix.
             Some("indexSkipped") => {
-                r.index_skipped = v.get("message").and_then(Value::as_str).map(str::to_string);
+                let text = |k: &str| v.get(k).and_then(Value::as_str);
+                r.index_skipped = text("message").map(str::to_string).or_else(|| {
+                    // An older helper sent no `message`: build one from its parts.
+                    text("reason").map(|why| match text("fix") {
+                        Some(fix) => format!(
+                            "the push landed but its browse index was not published ({why}); \
+                             run `{fix}`"
+                        ),
+                        None => format!(
+                            "the push landed but its browse index was not published ({why})"
+                        ),
+                    })
+                });
             }
             _ => {}
         }
@@ -628,6 +640,16 @@ dash: some human line"#;
         assert!(w.contains("browse index was not published"), "{w}");
         assert!(w.contains("not listed yet"), "{w}");
         assert!(w.contains("`dg repo reindex o/r`"), "{w}");
+        // Without `message` (an older helper), the reason and fix still reach the report.
+        let w = parse_landed(
+            r#"{"event":"indexSkipped","reason":"lagging node","fix":"dg repo reindex o/r"}"#,
+        )
+        .index_skipped
+        .expect("reported");
+        assert!(
+            w.contains("lagging node") && w.contains("`dg repo reindex o/r`"),
+            "{w}"
+        );
         // A push that published its index says nothing.
         assert_eq!(
             parse_landed(r#"{"event":"stored","packHash":"cd","bytes":9,"objects":1}"#)

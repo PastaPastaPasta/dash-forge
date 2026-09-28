@@ -492,8 +492,9 @@ impl Helper {
             .filter_map(|p| p.new_oid.clone())
             .collect();
         let mut sealed_cache = None;
-        if let (false, Some(push_policy)) = (want_tips.is_empty(), push_policy.as_ref()) {
-            let ctx = PushContext {
+        let mut pending_index = None;
+        let ctx = match (want_tips.is_empty(), push_policy.as_ref()) {
+            (false, Some(push_policy)) => Some(PushContext {
                 svc: &svc,
                 repo: &conn.repo,
                 repo_label,
@@ -508,13 +509,17 @@ impl Helper {
                 dry_run,
                 identity: conn.identity().id(),
                 sealed: std::cell::RefCell::default(),
-            };
+            }),
+            _ => None,
+        };
+        if let Some(ctx) = &ctx {
             // Storage first. Any error here — the policy's N not met, the cost guard
             // refusing, the manifest write failing — returns before a single ref update
             // is written, so no ref can point at history the policy did not store. A dry
             // run builds the pack and prints the plan, then stops.
-            if let Some(est) = upload_push_pack(&ctx, &want_tips, &remote_refs).await? {
-                est_credits = est;
+            if let Some(up) = upload_push_pack(ctx, &want_tips, &remote_refs).await? {
+                est_credits = up.est_credits;
+                pending_index = up.index;
             }
             sealed_cache = ctx.sealed.take();
             // Test affordance, compiled only with `--features test-hooks`: stop after the
@@ -531,6 +536,11 @@ impl Helper {
         if !dry_run {
             write_ref_updates(&svc, &conn.repo, &mut planned, progress).await?;
             forget_sealed(sealed_cache.as_deref());
+        }
+        // The browse index goes last: waiting for a lagging node to list the pack's manifest
+        // (D-920) must never hold the refs back, and a push is complete without its index.
+        if let (Some(ctx), Some(index)) = (&ctx, pending_index) {
+            publish_browse_index(ctx, index).await;
         }
 
         // Post-push re-read: a same-prevOid race lost to a concurrent pusher surfaces here
@@ -1208,7 +1218,7 @@ async fn upload_push_pack(
     ctx: &PushContext<'_>,
     want_tips: &[String],
     remote_refs: &[(String, RefState)],
-) -> Result<Option<u64>> {
+) -> Result<Option<Uploaded>> {
     let have_bases: Vec<String> = remote_refs
         .iter()
         .filter_map(|(_, s)| tip_oid(s))
@@ -1282,7 +1292,10 @@ async fn upload_push_pack(
     // here, not after a "y" at the cost prompt.
     let externals = external_targets(ctx)?;
     if let Some(refs_only) = reuse_recorded(ctx, &job).await? {
-        return Ok(Some(refs_only));
+        return Ok(Some(Uploaded {
+            est_credits: refs_only,
+            index: None,
+        }));
     }
     policy::enforce(
         estimate.total(),
@@ -1319,14 +1332,27 @@ async fn upload_push_pack(
     // This clone holds the pack's objects: a later fetch need not download it.
     crate::fetched::FetchedPacks::record(ctx.git_dir, ctx.repo.id(), job.pack_hash);
 
-    // Push fully landed (copies + manifest). The chunk journal is the only record of
-    // chunks an interrupted Platform upload wrote; retire it only when this manifest
-    // references those chunks. Otherwise keep it and say so — those chunks are paid for,
-    // referenced by nothing, and reclaimable only while the journal names them.
-    // The kept sealed bytes stay until the refs land ([`forget_sealed`]): a push that fails
-    // at its refs is retried with the same sealed pack, found recorded, and not paid twice.
+    retire_journal(ctx, &jpath, &replication);
+    Ok(Some(Uploaded {
+        est_credits: actual_estimate.total(),
+        index: Some(PendingIndex {
+            pack_hash: job.pack_hash,
+            parsed: pack.parsed,
+            replication,
+            externals,
+        }),
+    }))
+}
+
+/// Push fully landed (copies + manifest). The chunk journal is the only record of chunks an
+/// interrupted Platform upload wrote; retire it only when this manifest references those
+/// chunks. Otherwise keep it and say so — those chunks are paid for, referenced by nothing,
+/// and reclaimable only while the journal names them. The kept sealed bytes stay until the
+/// refs land ([`forget_sealed`]): a push that fails at its refs is retried with the same
+/// sealed pack, found recorded, and not paid twice.
+fn retire_journal(ctx: &PushContext<'_>, jpath: &std::path::Path, replication: &Replication) {
     if replication.has_platform() {
-        let _ = std::fs::remove_file(&jpath);
+        let _ = std::fs::remove_file(jpath);
     } else if jpath.exists() {
         ctx.say(&format!(
             "note: an earlier interrupted push left Platform chunks for this pack that \
@@ -1335,8 +1361,23 @@ async fn upload_push_pack(
             jpath.display()
         ));
     }
-    publish_browse_index(ctx, &pack.parsed, job.pack_hash, &replication, &externals).await;
-    Ok(Some(actual_estimate.total()))
+}
+
+/// What [`upload_push_pack`] stored.
+struct Uploaded {
+    /// The on-chain estimate for it (the summary line's fallback).
+    est_credits: u64,
+    /// The browse index to publish once the refs have landed (none when the pack was already
+    /// recorded by an earlier push).
+    index: Option<PendingIndex>,
+}
+
+/// A stored pack whose browse index is still to be published ([`publish_browse_index`]).
+struct PendingIndex {
+    parsed: forge_core::pack::ParsedPack,
+    pack_hash: [u8; 32],
+    replication: Replication,
+    externals: Vec<ExternalTarget>,
 }
 
 /// The bytes a push stores for `plain`: itself in a public repository; in a private one the
@@ -1855,13 +1896,13 @@ async fn confirm_existing_manifest(
 /// Best-effort and reported, never fatal: the push is already stored and paid for by this
 /// point, and a repo whose index is behind still clones, fetches and pushes — it just falls
 /// back to the whole-pack path until the next push or repack refreshes the index.
-async fn publish_browse_index(
-    ctx: &PushContext<'_>,
-    parsed: &forge_core::pack::ParsedPack,
-    pack_hash: [u8; 32],
-    replication: &Replication,
-    externals: &[ExternalTarget],
-) {
+async fn publish_browse_index(ctx: &PushContext<'_>, index: PendingIndex) {
+    let PendingIndex {
+        parsed,
+        pack_hash,
+        replication,
+        externals,
+    } = index;
     // `DASH_FORGE_NO_BROWSE_INDEX=1` skips it on purpose, for a test repo that must stay
     // unindexed so the web app's in-browser fallback clone is what gets exercised.
     if matches!(
@@ -1894,7 +1935,7 @@ async fn publish_browse_index(
     };
     match ctx
         .svc
-        .publish_push_locator(ctx.repo, parsed, pack_hash, target)
+        .publish_push_locator(ctx.repo, &parsed, pack_hash, target)
         .await
     {
         Ok(forge_core::repo::PushIndexOutcome::Fragment { pack_ref, .. }) => {
@@ -1903,8 +1944,15 @@ async fn publish_browse_index(
         Ok(forge_core::repo::PushIndexOutcome::Consolidated { folded, .. }) => {
             tracing::info!(folded, "folded browse-index fragments into one locator");
         }
-        Ok(forge_core::repo::PushIndexOutcome::Skipped(why)) => index_skipped(ctx, &why),
-        Err(e) => index_skipped(ctx, &format!("{e:#}")),
+        Ok(forge_core::repo::PushIndexOutcome::Skipped(skip)) => index_skipped(ctx, &skip),
+        // The pack is stored and fine: only its index is missing.
+        Err(e) => index_skipped(
+            ctx,
+            &forge_core::repo::IndexSkip {
+                reason: format!("{e:#}"),
+                remedy: forge_core::repo::IndexRemedy::Reindex,
+            },
+        ),
     }
 }
 
@@ -1912,8 +1960,9 @@ async fn publish_browse_index(
 /// mode (a `-q` push too) and in the report file: the dashpay/dash import only ever logged it,
 /// so an 18,452-chunk repository landed unbrowsable and nobody knew. forge-import turns the
 /// event into a summary warning; `dg init` prints it.
-fn index_skipped(ctx: &PushContext<'_>, why: &str) {
-    let (text, event) = progress::index_skipped_line(&ctx.repo_label, why);
+fn index_skipped(ctx: &PushContext<'_>, skip: &forge_core::repo::IndexSkip) {
+    let fix = skip.fix(&ctx.repo_label);
+    let (text, event) = progress::index_skipped_line(&skip.reason, fix.as_deref());
     Progress {
         enabled: true,
         ..ctx.progress
