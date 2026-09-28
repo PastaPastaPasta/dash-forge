@@ -927,16 +927,17 @@ pub enum ReleaseCommand {
         /// The repository (`owner/name`).
         repo: String,
     },
-    /// Download a release asset.
+    /// Download a release's assets (every one, or `--asset`). Needs no identity.
     Download {
         /// The repository (`owner/name`).
         repo: String,
         /// The release tag.
         tag: String,
-        /// Asset name (defaults to the first asset).
+        /// Only this asset (default: every asset of the release).
         #[arg(long)]
         asset: Option<String>,
-        /// Output path (defaults to the asset name in the cwd).
+        /// A directory to save the assets in, by name (default: the current directory), or a
+        /// file name for a single asset.
         #[arg(long)]
         output: Option<PathBuf>,
     },

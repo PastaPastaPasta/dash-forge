@@ -11,6 +11,8 @@ Everything a team does on Forge is a signed document on Dash Platform: who may p
 
 The commands below take a repository as `<owner>/<name>`, where `<owner>` is the owner's **identity id** (base58) or **DPNS username** (`alice` or `alice.dash`, resolved with a proof-verified DPNS read). A bare `<name>` means one of your own repositories.
 
+Reading a public repository needs no identity: `dg repo view`, `dg issue list` / `view`, `dg pr list` / `view` / `diff` / `checks`, `dg label list`, `dg collab list` and `dg release list` / `download` work signed out, and never open a key you have configured, so a passphrase-sealed key file is not unlocked just to read. A private repository's content is encrypted to its members, so reading one uses your identity, and without one it stops with [`E301`](../errors.md#e301).
+
 ---
 
 ## Collaborators
@@ -278,10 +280,12 @@ git tag v1.0.0 && git push dash://<owner>/<repo> v1.0.0
 dg release create <owner>/<repo> --tag v1.0.0 --name "1.0.0" --notes "First stable release" \
   --asset ./dist/app-linux.tar.gz --asset ./dist/app-macos.tar.gz [--storage <profiles>]
 dg release list   <owner>/<repo>
-dg release download <owner>/<repo> v1.0.0 [--asset <name>] [--output <path>]
+dg release download <owner>/<repo> v1.0.0 [--asset <name>] [--output <dir | file>]
 ```
 
-`--asset` uploads each file to your own storage and records its SHA-256, size and URLs in the release. The storage is the repository's `dash.storage` profiles, or `--storage`, and each copy is read back and verified. Platform stores packs, not arbitrary files, so publishing an asset needs an S3 or IPFS profile ([bring your own storage](bring-your-own-storage.md)). `dg release download` accepts only bytes that hash to the recorded SHA-256, and it needs no credentials when the storage has a public URL.
+`--asset` uploads each file to your own storage and records its SHA-256, size and URLs in the release. The storage is the repository's `dash.storage` profiles, or `--storage`, and each copy is read back and verified. Platform stores packs, not arbitrary files, so publishing an asset needs an S3 or IPFS profile ([bring your own storage](bring-your-own-storage.md)).
+
+`dg release download` fetches every asset of the release, or only `--asset <name>`, and saves each under its own name in the current directory or in the `--output` directory. `--output <file>` names the file for a single asset. It never replaces a file of the same name that is already there. It accepts only bytes that hash to the recorded SHA-256. It needs no identity, and no credentials when the storage has a public URL.
 
 `dg release list` always names who published each release. A maintainer who is later removed can still delete, but not edit, the releases they published.
 

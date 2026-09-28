@@ -298,15 +298,7 @@ fn report_json(ctx: &Ctx, sections: &[Section], applied: &[Value], counts: &Coun
 /// The human report on stdout.
 fn print_report(ctx: &Ctx, sections: &[Section], counts: &Counts, fix: bool) {
     println!("dg doctor ({})", ctx.network_label());
-    for s in sections {
-        println!("\n{}", s.title);
-        for c in &s.checks {
-            println!("  {} {:<16} {}", c.status.mark(), c.name, c.detail);
-            if let Some(f) = &c.fix {
-                println!("    {:<16} → {f}", "");
-            }
-        }
-    }
+    print!("{}", render_sections(sections));
     println!(
         "\n{}",
         match (counts.failed, counts.warned) {
@@ -321,6 +313,23 @@ fn print_report(ctx: &Ctx, sections: &[Section], counts: &Counts, fix: bool) {
             counts.fixable
         );
     }
+}
+
+/// The sections' rows, each under its heading. A section with nothing to check here (pack
+/// copies outside a repository) has no heading either (L-35: an empty "pack copies").
+fn render_sections(sections: &[Section]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    for s in sections.iter().filter(|s| !s.checks.is_empty()) {
+        let _ = writeln!(out, "\n{}", s.title);
+        for c in &s.checks {
+            let _ = writeln!(out, "  {} {:<16} {}", c.status.mark(), c.name, c.detail);
+            if let Some(f) = &c.fix {
+                let _ = writeln!(out, "    {:<16} → {f}", "");
+            }
+        }
+    }
+    out
 }
 
 /// Apply every failing row's safe fix, marking the rows that it fixed.
@@ -1249,6 +1258,23 @@ fn in_git_repo() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_section_with_no_rows_has_no_heading() {
+        let sections = [
+            Section {
+                title: "git config",
+                checks: vec![Check::ok("dash.network", "devnet-moutai")],
+            },
+            Section {
+                title: "pack copies",
+                checks: Vec::new(),
+            },
+        ];
+        let out = render_sections(&sections);
+        assert!(out.contains("git config"), "{out}");
+        assert!(!out.contains("pack copies"), "L-35: {out}");
+    }
 
     #[test]
     fn a_config_toml_that_does_not_parse_is_a_failing_row() {

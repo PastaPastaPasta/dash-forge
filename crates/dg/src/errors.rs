@@ -183,9 +183,10 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
             ("suggestions not applied", Some(repo))
         }
         Command::Release(R::Create(args)) => ("release not created", Some(&args.repo)),
-        Command::Release(R::List { repo } | R::Download { repo, .. }) => {
-            ("could not read releases", Some(repo))
-        }
+        Command::Release(R::List { repo }) => ("could not read releases", Some(repo)),
+        // A download also fetches from storage and writes local files: "read" was wrong
+        // for those failures (L-22).
+        Command::Release(R::Download { repo, .. }) => ("release not downloaded", Some(repo)),
         Command::Label(LabelCommand::List { repo, .. }) => ("could not list labels", Some(repo)),
         Command::Issue(I::Label { repo, .. })
         | Command::Label(

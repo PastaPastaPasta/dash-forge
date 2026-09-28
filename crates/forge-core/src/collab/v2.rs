@@ -393,6 +393,21 @@ pub struct IssueView {
     pub hidden_values: usize,
     /// Events whose value is in plaintext ([`TargetLog::plaintext_values`]).
     pub plaintext_values: usize,
+    /// The issue's `event` and `authorEvent` documents.
+    pub log: TargetLog,
+}
+
+impl IssueView {
+    /// The events that applied to the issue (every member `event`, and the author's own
+    /// close / reopen), in fold order: its history as the web's timeline shows it.
+    #[must_use]
+    pub fn events(&self) -> Vec<&Event> {
+        rules::review::merged_log(
+            &self.log.events,
+            &self.log.author_events,
+            &self.issue.author,
+        )
+    }
 }
 
 /// A pull request with its folded state and approvals.
@@ -1404,16 +1419,7 @@ impl<'a> Collab<'a> {
     /// The keys of private `repo` as the signer holds them, loaded once per `Collab`.
     pub async fn keyring(&self, repo: &RepoRef) -> Result<Arc<Keyring>> {
         let (identity, bridge) = self.signer.ok_or_else(|| {
-            let e = crate::user_error::UserError::new(
-                crate::user_error::codes::NO_IDENTITY,
-                format!(
-                    "{} is private: reading it needs your identity",
-                    repo.display()
-                ),
-            )
-            .cause("its issues, pull requests and comments are encrypted to members' keys")
-            .fix("`dg auth login <file>` (or export DASH_FORGE_KEY=<identity file>)");
-            Error::from(e)
+            Error::from(crate::user_error::private_needs_identity(&repo.display()))
         })?;
         let signer = crate::keyring::PrivateSigner {
             client: self.client,
@@ -1907,6 +1913,7 @@ impl<'a> Collab<'a> {
                     issue,
                     hidden_values: log.hidden_values,
                     plaintext_values: log.plaintext_values,
+                    log,
                 }
             })
             .collect();
@@ -2051,6 +2058,7 @@ impl<'a> Collab<'a> {
             issue,
             hidden_values: log.hidden_values,
             plaintext_values: log.plaintext_values,
+            log,
         }))
     }
 

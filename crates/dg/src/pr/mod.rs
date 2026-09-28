@@ -43,7 +43,7 @@ use forge_core::rules::{EventKind, RefState};
 use forge_core::scope::RepoRef as Repo;
 use forge_core::user_error::{codes, UserError};
 
-use crate::common::{number_arg, resolve, RepoRef, Session};
+use crate::common::{number_arg, resolve, Reader, RepoRef, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, dash_usd_price, route_text, safe, short};
 use crate::git::{self, MergePlan};
@@ -202,16 +202,17 @@ pub(crate) async fn patch(
         .ok_or_else(|| not_found(repo, number))
 }
 
-/// A PR read for a command that signs: the session and the PR's view.
-pub(crate) struct Pr {
-    pub(crate) s: Session,
+/// A PR and the connection it was read over: a signing [`Session`] for a command that writes,
+/// a [`Reader`] (no key for a public repository, L-12) for one that only reads.
+pub(crate) struct Pr<S = Session> {
+    pub(crate) s: S,
     pub(crate) view: PatchView,
 }
 
-/// Open a session on `repo` and read PR `number`'s view, for a command that only reads (an
-/// archived repository is readable).
-pub(crate) async fn open_pr_read(ctx: &Ctx, repo: &str, number: u64) -> Result<Pr> {
-    let s = Session::open(ctx, repo).await?;
+/// Open `repo` to read (an archived repository is readable; a public one needs no identity)
+/// and read PR `number`'s view.
+pub(crate) async fn open_pr_read(ctx: &Ctx, repo: &str, number: u64) -> Result<Pr<Reader>> {
+    let s = Reader::open(ctx, repo).await?;
     let collab = s.collab();
     let p = patch(&collab, &s.repo, repo, number).await?;
     let view = collab.patch_view(&s.repo, p).await?;
@@ -481,7 +482,7 @@ fn require_base_branch(target: &Repo, base: &str, refs: &[(String, RefState)]) -
 // ---------------------------------------------------------------------------
 
 async fn list(ctx: &Ctx, repo: &str, limit: u32, state: crate::StateArg) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
+    let s = Reader::open(ctx, repo).await?;
     let handle = &s.repo;
     let collab = s.collab();
     // A fixed number of requests for the whole page (D-500: it was about 9 per PR).
@@ -614,31 +615,11 @@ fn comments_json(comments: &[forge_core::collab::v2::Comment]) -> Vec<serde_json
 /// it adds "new commits since your review", and opens a private repo's sealed documents.
 #[allow(clippy::too_many_lines)]
 async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result<()> {
-    // A signed session opens a private repo's sealed documents and names the viewer. A
-    // configured identity that cannot be used (missing file, locked keychain, not found on
-    // this network) must not stop a read of a public PR: fall back to an anonymous reader,
-    // which still refuses a private repo with its own error.
-    let session = if ctx.identity_path.is_some() {
-        match Session::open(ctx, repo).await {
-            Ok(s) => Some(s),
-            Err(e) => {
-                tracing::warn!(error = %format!("{e:#}"), "reading without the configured identity");
-                None
-            }
-        }
-    } else {
-        None
-    };
-    let anon;
-    let (client, handle, collab) = if let Some(s) = &session {
-        (&s.client, s.repo.clone(), s.collab())
-    } else {
-        anon = ctx.connect().await?;
-        let h = crate::common::resolve_for(&anon, None, &RepoRef::parse(repo)?).await?;
-        (&anon, h, Collab::reader(&anon))
-    };
-    let viewer = session.as_ref().map(|s| s.identity.id());
-    let handle = &handle;
+    // A public PR is read without opening any key (a sealed one would ask for its
+    // passphrase); a private repo's sealed documents open with the identity's keys. The
+    // viewer ("new commits since your review") is named when the key source says who it is.
+    let s = Reader::open(ctx, repo).await?;
+    let (client, handle, collab) = (&s.client, &s.repo, s.collab());
     let p = patch(&collab, handle, repo, number).await?;
     let v = collab.patch_view(handle, p).await?;
     let oracle = collab.member_oracle(handle).await?;
@@ -649,8 +630,8 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
     let review_state = v.review_with_threads(&comments);
     let conv = threads::threads(&comments, &v.head, &review_state.resolved_threads);
     let rows = threads::reviewer_rows(&reviews, &review_state, &approvals, &oracle, &v.head);
-    let since = viewer
-        .as_deref()
+    let since = s
+        .viewer()
         .and_then(|me| threads::since_your_review(&reviews, &review_state, me));
     let policy = collab.policy(handle).await?;
     let policy_status = policy
@@ -1839,7 +1820,7 @@ struct Located {
 }
 
 async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<Located> {
-    let s = Session::open(ctx, repo).await?;
+    let s = Reader::open(ctx, repo).await?;
     let target = s.repo.id().to_string();
     let collab = s.collab();
     let p = patch(&collab, &s.repo, repo, number).await?;

@@ -123,7 +123,7 @@ Fix: none within the private repository in this release. Publish releases from a
 
 ## E301
 
-**No identity configured.** The command needs to sign (a push, a `dg` write) or to open a private repository, and no identity or key was found. Cloning and fetching a public repository never need one: `git clone dash://<owner>/<repo>` works anonymously.
+**No identity configured.** The command needs to sign (a push, a `dg` write) or to open a private repository, and no identity or key was found. Reading a public repository never needs one: `git clone dash://<owner>/<repo>` works anonymously, and so do `dg repo view`, `dg issue list` / `view`, `dg pr list` / `view` and `dg release list` / `download`.
 
 Fix: `dg auth new` creates an identity and stores a limited key for this computer; `dg auth login <file>` (or `dg auth login --mnemonic`) signs in with an existing one. For a single command pass `--identity <file>`, or set `DASH_FORGE_KEY` to a file, a `keychain:dash-forge/<network>/<id>` entry, or a `dfk1:` key (this is also how `git-remote-dash` finds the key; without it the helper uses the default `dg auth` recorded, then `~/.config/dash-forge/identities/<owner>.identity.json`).
 

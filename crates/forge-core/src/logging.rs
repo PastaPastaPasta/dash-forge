@@ -37,8 +37,12 @@ const RECOVERED: [&str; 7] = [
 pub fn is_recovered_sdk_noise(target: &str, message: &str, error: &str) -> bool {
     let recovered = || RECOVERED.iter().any(|m| error.contains(m));
     if target.starts_with("rs_dapi_client") {
-        // A retry the client makes itself; if they run out, the error reaches forge-core.
+        // A retry the client makes itself, and the node it failed on set aside for a while
+        // ("ban address …": a rate limit, ResourceExhausted, or a transport error): the
+        // request moves to another node, and if every node fails the error reaches
+        // forge-core (L-32).
         return message.starts_with("retrying error")
+            || message.starts_with("ban address ")
             || (message == "request failed" && recovered());
     }
     if target.starts_with("dash_sdk::platform::transition::broadcast") {
@@ -171,6 +175,8 @@ mod tests {
     const NOT_A_MEMBER: &str = r#"ExecutionError { inner: Transport(Grpc(Status { code: InvalidArgument, metadata: MetadataMap { headers: {"code": "40120"} } })) }"#;
     const UNAVAILABLE: &str =
         "ExecutionError { inner: Transport(Grpc(Status { code: Unavailable, message: \"no healthy upstream\" })) }";
+    /// L-32: the line `git push` and `dg pr merge` showed when a node rate-limited them.
+    const RATE_LIMITED: &str = "status: ResourceExhausted, message: \"429\"";
 
     fn run(spec: Option<&str>) -> String {
         let buf = Buf::default();
@@ -180,6 +186,7 @@ mod tests {
             tracing::warn!(target: "dash_sdk::platform::transition::broadcast", error = NONCE_SDK, "broadcast: request failed");
             tracing::warn!(target: "dash_sdk::platform::transition::broadcast", error = NONCE_SDK, "broadcast: failed after retries");
             tracing::warn!(target: "rs_dapi_client::dapi_client", error = UNAVAILABLE, "retrying error with sleeping 0.01 secs");
+            tracing::warn!(target: "rs_dapi_client::dapi_client", address = "https://68.67.122.3:443", error = RATE_LIMITED, "ban address https://68.67.122.3:443 due to error: {RATE_LIMITED}");
             tracing::error!(target: "rs_dapi_client::dapi_client", error = NOT_A_MEMBER, "request failed");
             tracing::error!(target: "rs_dapi_client::dapi_client", error = UNAVAILABLE, "request failed");
             tracing::warn!(target: "forge_import", "a warning of our own");
@@ -196,6 +203,7 @@ mod tests {
         assert!(!out.contains("40204"), "{out}");
         assert!(!out.contains("InvalidIdentityNonceError"), "{out}");
         assert!(!out.contains("retrying error"), "{out}");
+        assert!(!out.contains("ban address"), "L-32: {out}");
         assert!(out.contains("40120"), "a real refusal must stay: {out}");
         assert!(
             out.contains("no healthy upstream"),
@@ -212,7 +220,8 @@ mod tests {
             out.contains("InvalidIdentityNonceError") && out.contains("40204"),
             "{out}"
         );
-        assert_eq!(out.lines().count(), 7, "{out}");
+        assert!(out.contains("ban address"), "{out}");
+        assert_eq!(out.lines().count(), 8, "{out}");
         // A bad RUST_LOG falls back to warn, as before.
         assert_eq!(run(Some("=[")).lines().count(), 3);
     }

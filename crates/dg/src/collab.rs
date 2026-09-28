@@ -20,7 +20,7 @@ use forge_core::user_error::{codes, UserError};
 
 use crate::fmt::{cost_line, dash_usd_price};
 
-use crate::common::{resolve, RepoRef, Session};
+use crate::common::{Reader, Session};
 use crate::context::Ctx;
 use crate::{CollabCommand, RoleArg};
 
@@ -387,12 +387,11 @@ async fn rotate_after_removal(
 }
 
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, _bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
+    let r = Reader::open(ctx, repo).await?;
+    let (client, handle) = (&r.client, &r.repo);
 
-    let members = MemberReader::new(&client)
-        .list(&handle)
+    let members = MemberReader::new(client)
+        .list(handle)
         .await
         .context("listing members")?;
     let rows: Vec<_> = members
