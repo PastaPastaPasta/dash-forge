@@ -26,7 +26,12 @@ pub struct DashEnv<'a> {
     key: Option<&'a Secret>,
 }
 
-impl DashEnv<'_> {
+impl<'a> DashEnv<'a> {
+    fn with_key(mut self, key: Option<&'a Secret>) -> Self {
+        self.key = key;
+        self
+    }
+
     /// A new `git` command with the variables set and the key attached. Built here, never
     /// applied to an existing command: attaching twice would leave a second inheritable pipe
     /// holding the key.
@@ -44,8 +49,8 @@ impl DashEnv<'_> {
     }
 }
 
-/// The [`DashEnv`] for `ctx`: the network, the identity source, and the unlocked key if this
-/// run has unlocked it.
+/// The [`DashEnv`] for `ctx` without the key: the network and the identity source. For a
+/// fetch or clone of a public repository, which needs no key, so none is handed over.
 pub fn dash_env(ctx: &Ctx) -> DashEnv<'_> {
     let mut vars: Vec<(String, String)> = ctx
         .target
@@ -72,20 +77,31 @@ pub fn dash_env(ctx: &Ctx) -> DashEnv<'_> {
     if !forge_core::sealed::prompts_allowed() {
         vars.push(("GIT_TERMINAL_PROMPT".into(), "0".into()));
     }
-    DashEnv {
-        vars,
-        key: ctx.unlocked_key(),
-    }
+    DashEnv { vars, key: None }
 }
 
-/// Before anything is paid for: check that the `git-remote-dash` a `git push` will run takes
-/// the key this `dg` hands it and reads it as `identity_id`. An older helper, or none on PATH,
-/// would otherwise only fail after the create was paid for.
-pub fn check_helper_key(ctx: &Ctx, identity_id: &str) -> Result<()> {
-    if !cfg!(unix) {
-        // No handoff here: the helper asks for a sealed key's passphrase on the console.
-        return Ok(());
+/// [`dash_env`] plus the key this run unlocked, for a `dash://` git command that signs (a
+/// push) or opens a private repository. The key is handed over only once this run's
+/// [`check_helper_key`] has passed: a `git-remote-dash` that would not read it (an older
+/// release) never gets it, and asks for the passphrase itself instead.
+pub fn dash_env_signing(ctx: &Ctx) -> Result<DashEnv<'_>> {
+    let mut env = dash_env(ctx);
+    if let Some(key) = ctx.unlocked_key() {
+        let identity_id =
+            forge_core::keystore::BridgeIdentity::from_source_text(key.expose())?.identity_id;
+        if ctx.helper_checked(|| check_helper_key(ctx, &identity_id).is_ok()) {
+            env.key = Some(key);
+        }
     }
+    Ok(env)
+}
+
+/// Before anything is paid for: check that the `git-remote-dash` a `git push` will run gets
+/// the key and reads it as `identity_id`. On Unix `dg` hands it the key it unlocked (an
+/// older helper, or none on PATH, fails here); on Windows there is no handoff, and the helper
+/// must be able to ask for a sealed key's passphrase on the console. Otherwise the push would
+/// only fail after the create was paid for.
+pub fn check_helper_key(ctx: &Ctx, identity_id: &str) -> Result<()> {
     let refuse = |cause: String| -> anyhow::Error {
         UserError::new(
             codes::IDENTITY_UNREADABLE,
@@ -97,7 +113,20 @@ pub fn check_helper_key(ctx: &Ctx, identity_id: &str) -> Result<()> {
         .note("checked before anything was paid for; nothing was written")
         .into()
     };
+    if !cfg!(unix) {
+        // No handoff: the helper opens the key source itself, and a sealed file needs its
+        // passphrase from the environment or the console.
+        let sealed = ctx
+            .identity_path
+            .as_deref()
+            .is_some_and(forge_core::keystore::is_sealed_file);
+        return match no_handoff_blocker(sealed, forge_core::sealed::passphrase_available()) {
+            Some(cause) => Err(refuse(cause.into())),
+            None => Ok(()),
+        };
+    }
     let out = dash_env(ctx)
+        .with_key(ctx.unlocked_key())
         .git_command()?
         .args(["remote-dash", "--check-key"])
         .stdin(std::process::Stdio::null())
@@ -120,6 +149,16 @@ pub fn check_helper_key(ctx: &Ctx, identity_id: &str) -> Result<()> {
             "git-remote-dash did not report the identity it would push as".into(),
         )),
     }
+}
+
+/// Where there is no handoff (Windows): why the helper could not open the key, if it could
+/// not. A `sealed` key needs a passphrase the helper can get (`passphrase_available`: the
+/// variable, or a console).
+fn no_handoff_blocker(sealed: bool, passphrase_available: bool) -> Option<&'static str> {
+    (sealed && !passphrase_available).then_some(
+        "your key is passphrase-sealed, and git-remote-dash will have no console to ask for \
+         the passphrase on (and DASH_FORGE_PASSPHRASE is not set)",
+    )
 }
 
 /// Pin `dg`'s network in the repository at `root` (its own git config) unless its git config
@@ -548,6 +587,15 @@ pub fn full_ref(b: &str) -> String {
 mod tests {
     use super::*;
 
+    /// Windows (no handoff): a sealed key with no passphrase source is refused before the
+    /// create is paid for; anything the helper can open passes.
+    #[test]
+    fn without_a_handoff_a_sealed_key_needs_a_passphrase_source() {
+        assert!(no_handoff_blocker(true, false).is_some_and(|c| c.contains("no console")));
+        assert_eq!(no_handoff_blocker(true, true), None);
+        assert_eq!(no_handoff_blocker(false, false), None);
+    }
+
     /// The `git` a `dash://` command runs inherits exactly one open descriptor besides stdio:
     /// the one handoff pipe, holding the key once.
     #[cfg(unix)]
@@ -565,7 +613,7 @@ mod tests {
         // The same construction with a shell in git's place: count the pipes it inherits above
         // stdio, then read the one the variable names. The baseline is the same shell with no
         // key (cargo may pass a jobserver pipe to every test process).
-        let script = r#"n=0; for f in /dev/fd/*; do d=${f#/dev/fd/}; [ "$d" -gt 2 ] && [ -p "$f" ] && n=$((n+1)); done; echo "$n"; if [ -n "$DASH_FORGE_KEY_FD" ]; then cat <&"$DASH_FORGE_KEY_FD" | wc -c; fi"#;
+        let script = r#"n=0; for f in /dev/fd/*; do d=${f#/dev/fd/}; [ "$d" -gt 2 ] && [ -p "$f" ] && n=$((n+1)); done; echo "$n"; if [ -n "$DASH_FORGE_KEY_FD" ]; then cat <&"${DASH_FORGE_KEY_FD%%:*}" | wc -c; fi"#;
         let run = |env: &DashEnv<'_>| {
             let out = env
                 .command("/bin/sh")

@@ -186,6 +186,15 @@ pub fn is_file_source(source: &Path) -> bool {
         .is_none_or(|s| !s.starts_with(DFK1_PREFIX) && !s.starts_with(KEYCHAIN_PREFIX))
 }
 
+/// Whether `source` is a passphrase-sealed key file. Read into a buffer that is wiped (an
+/// unencrypted `.key` holds the key in the clear).
+pub fn is_sealed_file(source: &Path) -> bool {
+    is_file_source(source)
+        && std::fs::read_to_string(source)
+            .map(Secret::new)
+            .is_ok_and(|raw| crate::sealed::is_sealed(raw.expose()))
+}
+
 /// The keychain key source for an identity: `keychain:dash-forge/<network>/<identityId>`.
 pub fn keychain_source(network: &str, identity_id: &str) -> String {
     format!(

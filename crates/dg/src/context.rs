@@ -38,6 +38,9 @@ pub struct Ctx {
     /// The identity source's contents, once unlocked (a sealed file's passphrase is asked
     /// once per run). Handed to `git-remote-dash` over a pipe ([`crate::git::DashEnv`]).
     unlocked: std::sync::OnceLock<Secret>,
+    /// Whether this run's `git-remote-dash` takes the handed key (`git remote-dash
+    /// --check-key`, run once, before the first handoff).
+    helper_ok: std::sync::OnceLock<bool>,
 }
 
 /// Why a confirmation prompt cannot be asked, or `None` when it can (or `--yes` answers it).
@@ -111,6 +114,7 @@ impl Ctx {
             stdin_tty: std::io::stdin().is_terminal(),
             allow_archived: cli.allow_archived,
             unlocked: std::sync::OnceLock::new(),
+            helper_ok: std::sync::OnceLock::new(),
         })
     }
 
@@ -161,6 +165,12 @@ impl Ctx {
     /// The key this run already unlocked, if any: what a `dash://` git command is handed.
     pub fn unlocked_key(&self) -> Option<&Secret> {
         self.unlocked.get()
+    }
+
+    /// Whether `git-remote-dash` takes the handed key: `check` runs once per run, and its
+    /// answer is kept.
+    pub fn helper_checked(&self, check: impl FnOnce() -> bool) -> bool {
+        *self.helper_ok.get_or_init(check)
     }
 
     /// Connect to the resolved network.
@@ -293,6 +303,7 @@ impl Ctx {
             stdin_tty,
             allow_archived: false,
             unlocked: std::sync::OnceLock::new(),
+            helper_ok: std::sync::OnceLock::new(),
         }
     }
 }

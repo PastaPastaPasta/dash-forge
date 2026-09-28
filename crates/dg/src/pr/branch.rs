@@ -191,7 +191,7 @@ async fn commit_push_move(
         push_to(
             dir,
             &argv,
-            &git::dash_env(ctx),
+            &git::dash_env_signing(ctx)?,
             "push to the PR branch failed",
         )
         .with_context(|| format!("pushing to {} in {}", src.ref_name, src.repo_display))?;
@@ -717,7 +717,12 @@ pub fn delete_source_branch(ctx: &Ctx, src: &SourceBranch) -> Result<()> {
         src.url.clone(),
         format!(":{}", src.ref_name),
     ]);
-    push_to(dir, &argv, &git::dash_env(ctx), "branch not deleted")
+    push_to(
+        dir,
+        &argv,
+        &git::dash_env_signing(ctx)?,
+        "branch not deleted",
+    )
 }
 
 #[cfg(test)]

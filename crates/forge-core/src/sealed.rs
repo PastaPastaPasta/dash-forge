@@ -16,8 +16,8 @@
 //! modified file both fail the same way.
 //!
 //! Where the passphrase comes from: the `DASH_FORGE_PASSPHRASE` environment variable (CI,
-//! scripts), else a hidden prompt on the terminal (`/dev/tty`, so it also works in
-//! `git-remote-dash`, whose stdin and stdout belong to git). A `git push` that `dg` runs never
+//! scripts), else a hidden prompt on the terminal (`/dev/tty`, or the Windows console
+//! `CONIN$`, so it also works in `git-remote-dash`, whose stdin and stdout belong to git). A `git push` that `dg` runs never
 //! asks: `dg` hands the helper the key it already unlocked ([`crate::key_handoff`]).
 
 use argon2::{Algorithm, Argon2, Params, Version};
@@ -57,21 +57,16 @@ pub fn passphrase_available() -> bool {
         || (prompts_allowed() && have_terminal())
 }
 
-/// Whether the prompt has a terminal: `/dev/tty` opens (rpassword reads and writes there).
-#[cfg(unix)]
-fn have_terminal() -> bool {
+/// Whether the prompt has a terminal to ask on: the device rpassword reads and writes,
+/// `/dev/tty` on Unix and the console `CONIN$` on Windows. Not stdin: under git a helper's
+/// stdin is git's pipe, while the terminal is still there to ask on.
+pub fn have_terminal() -> bool {
+    const TERMINAL: &str = if cfg!(windows) { "CONIN$" } else { "/dev/tty" };
     std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open("/dev/tty")
+        .open(TERMINAL)
         .is_ok()
-}
-
-/// Windows: the console, when stdin is one.
-#[cfg(not(unix))]
-fn have_terminal() -> bool {
-    use std::io::IsTerminal as _;
-    std::io::stdin().is_terminal()
 }
 
 /// The shortest passphrase accepted when sealing.

@@ -2132,13 +2132,8 @@ fn handed_or_load(resolve: impl FnOnce() -> Result<PathBuf>) -> Result<BridgeIde
 /// "this command does not prompt".
 pub fn load_identity(key_path: &Path) -> Result<BridgeIdentity> {
     let shown = forge_core::keystore::describe_key_source(key_path);
-    // Only when no passphrase could be had does the file's kind matter; read it into a buffer
-    // that is wiped (an unencrypted `.key` holds the key in the clear).
-    if !forge_core::sealed::passphrase_available()
-        && forge_core::keystore::is_file_source(key_path)
-        && std::fs::read_to_string(key_path)
-            .map(forge_core::keystore::Secret::new)
-            .is_ok_and(|raw| forge_core::sealed::is_sealed(raw.expose()))
+    // Only when no passphrase could be had does the file's kind matter.
+    if !forge_core::sealed::passphrase_available() && forge_core::keystore::is_sealed_file(key_path)
     {
         return Err(sealed_key_needs_passphrase(&shown).into());
     }

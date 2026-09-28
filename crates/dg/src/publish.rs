@@ -33,7 +33,7 @@ use forge_core::user_error::{codes, dash, web_url, UserError};
 
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, dash_usd_price, REPO_CREATE_ESTIMATE_CREDITS};
-use crate::git::{current_branch, dash_env, git, git_ok, pin_network};
+use crate::git::{current_branch, dash_env_signing, git, git_ok, pin_network};
 use crate::storage_wizard::shell_word;
 use crate::{CreateOptions, InitArgs, RepoCreateArgs};
 
@@ -619,6 +619,7 @@ async fn plan(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -
         // The push after the create signs through git-remote-dash: check it gets the key this
         // run unlocked (the passphrase was asked above, once) before anything is paid for.
         crate::git::check_helper_key(ctx, &owner)?;
+        ctx.helper_checked(|| true);
     }
     Ok(Plan {
         slug,
@@ -661,6 +662,26 @@ fn check_local(l: &Local, remote: &str, owner: &str, slug: &str) -> Result<Optio
         };
         if urls.is_empty() || !urls.iter().all(fits) {
             return Err(remote_in_use(remote, &urls, owner, slug));
+        }
+        // git runs one helper per push URL, and the key is handed to the first only: a second
+        // would ask for the passphrase (or, without a terminal, fail after the first had
+        // pushed). Refused up front instead.
+        let push_urls = git(
+            &l.root,
+            &["remote", "get-url", "--push", "--all", remote],
+            &[],
+        )
+        .unwrap_or_default();
+        if push_urls.lines().filter(|u| !u.trim().is_empty()).count() > 1 {
+            return Err(git_repo_error(
+                format!("not published: remote '{remote}' has more than one push URL"),
+                "git pushes to each push URL in turn, and dg hands your key to one push only",
+            )
+            .fix(format!(
+                "keep one: `git remote set-url --push {remote} <url>` (or `git config --unset-all remote.{remote}.pushurl`)"
+            ))
+            .note("nothing was written")
+            .into());
         }
     }
     if l.has_commits && l.branch.is_none() {
@@ -1061,7 +1082,7 @@ fn run_push(
 ) -> Result<PushOutcome> {
     let (_dir, report) = Report::new()?;
     let spec = format!("refs/heads/{branch}:refs/heads/{branch}");
-    let mut cmd = dash_env(ctx).git_command()?;
+    let mut cmd = dash_env_signing(ctx)?.git_command()?;
     cmd.current_dir(root);
     if ctx.yes {
         cmd.args(["-c", "dash.confirm=never"]);
@@ -1186,6 +1207,55 @@ mod tests {
             Some(("REPOID".into(), None))
         );
         assert_eq!(parse_dash_url("dash://"), None);
+    }
+
+    /// A remote with two push URLs would run two helpers, and only the first gets the key:
+    /// refused before anything is written, with the fix.
+    #[test]
+    fn a_remote_with_two_push_urls_is_refused_up_front() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let g = |args: &[&str]| git(&root, args, &[]).unwrap();
+        g(&["init", "-q", "-b", "main"]);
+        g(&["remote", "add", "origin", "dash://O/proj"]);
+        let l = Local {
+            root: root.clone(),
+            branch: Some("main".into()),
+            has_commits: false,
+        };
+        assert!(
+            check_local(&l, "origin", "O", "proj").is_ok(),
+            "one URL is fine"
+        );
+        g(&[
+            "remote",
+            "set-url",
+            "--add",
+            "--push",
+            "origin",
+            "dash://O/proj",
+        ]);
+        g(&[
+            "remote",
+            "set-url",
+            "--add",
+            "--push",
+            "origin",
+            "dash://O/proj.git",
+        ]);
+        let err = check_local(&l, "origin", "O", "proj").unwrap_err();
+        let u = forge_core::user_error::classify(
+            err.chain(),
+            &forge_core::user_error::ErrorContext::default(),
+        );
+        assert_eq!(u.code, "E206");
+        assert!(
+            u.message.contains("more than one push URL"),
+            "{}",
+            u.message
+        );
+        assert!(u.fix[0].contains("set-url --push origin"), "{:?}", u.fix);
+        assert_eq!(u.note.as_deref(), Some("nothing was written"));
     }
 
     #[test]
