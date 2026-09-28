@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { collectPageErrors, countDapi, countDocumentQueries, DEMO, nodeSdk, repoUrl, runAxe, shot } from './helpers'
+import { collectPageErrors, countDapi, countDocumentQueries, DEMO, deployment, nodeSdk, repoUrl, runAxe, shot } from './helpers'
 
 /**
  * G14 (L-25, L-27, L-40): Explore search, the jump box, GitHub-style short URLs and the
@@ -100,15 +100,44 @@ test('g2. Explore: most starred (labelled with its bound), recently updated, and
   expect(errors, errors.join('\n')).toEqual([])
 })
 
+/** Every owner of a repo called `name` on the devnet, read in Node (the `repo.name` index). */
+async function ownersOf(name: string): Promise<string[]> {
+  const sdk = await nodeSdk()
+  const r: Map<string, { toJSON(v: number): Record<string, unknown> } | undefined> = await sdk.documents.query({
+    dataContractId: deployment().v2.forgeCore.contractId,
+    documentTypeName: 'repo',
+    where: [['name', '==', name]],
+    orderBy: [['name', 'asc']],
+    limit: 20,
+  })
+  return [...r.values()].filter((d) => d !== undefined).map((d) => String(d!.toJSON(14)['$ownerId']))
+}
+
 test('g3. the jump box: a bare repo name opens the repo, not "No such identity"', async ({ page }) => {
   const { errors } = collectPageErrors(page)
   await page.goto('/', { waitUntil: 'domcontentloaded' })
   const jump = page.getByLabel(/jump to a repo/i).first()
+
+  // A name several owners use: a choice listing each, the fixture's among them.
+  const demoOwners = await ownersOf(DEMO.name)
+  expect(demoOwners).toContain(DEMO.owner)
   await jump.fill(DEMO.name)
   await jump.press('Enter')
-  // forge-v2-demo is one repo (no DPNS name of that label): straight there.
+  if (demoOwners.length > 1) {
+    const choices = page.getByTestId('jump-choices')
+    await expect(choices.getByRole('link', { name: new RegExp(`^repo ${DEMO.name} by`) })).toHaveCount(demoOwners.length, { timeout: 60_000 })
+    await shot(page, 'g14-jump-choices')
+    await choices.getByRole('link', { name: `repo ${DEMO.name} by ${DEMO.owner}` }).click()
+  }
   await expect(page).toHaveURL(new RegExp(`/repo/?\\?owner=${DEMO.owner}&name=${DEMO.name}`), { timeout: 60_000 })
   await expect(page.getByText('No such identity')).toHaveCount(0)
+
+  // A name one owner uses (the paging fixture): straight there.
+  const [pagingOwner, ...others] = await ownersOf('issues-paging')
+  test.skip(pagingOwner === undefined || others.length > 0, 'issues-paging is not a unique repo name on this devnet')
+  await jump.fill('issues-paging')
+  await jump.press('Enter')
+  await expect(page).toHaveURL(new RegExp(`/repo/?\\?owner=${pagingOwner}&name=issues-paging`), { timeout: 60_000 })
 
   // A word that is neither: says so, and offers the Explore search.
   await jump.fill('zz-nothing-called-this')
