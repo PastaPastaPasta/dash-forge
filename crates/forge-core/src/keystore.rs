@@ -663,9 +663,19 @@ impl BridgeIdentity {
     /// passphrase-sealed file (the passphrase comes from `DASH_FORGE_PASSPHRASE` or a hidden
     /// prompt on the terminal); see the module docs.
     pub fn load_from_file(path: impl AsRef<Path>) -> Result<Self> {
+        Self::from_source_text(Self::unlock_source(path)?.expose())
+    }
+
+    /// What the key source `path` holds, unlocked: a `dfk1:` key or a bridge-format identity
+    /// JSON, read from the keychain or a file (a sealed file is opened here, asking for its
+    /// passphrase once). [`Self::from_source_text`] parses it; `dg` also hands it to
+    /// `git-remote-dash` ([`crate::key_handoff`]) so the helper never asks again.
+    pub fn unlock_source(path: impl AsRef<Path>) -> Result<Secret> {
         let path = path.as_ref();
         if let Some(inline) = path.to_str().filter(|s| s.starts_with(DFK1_PREFIX)) {
-            return Self::from_dfk1(inline);
+            // Refused here, with the format's own message, rather than later.
+            Self::from_dfk1(inline)?;
+            return Ok(Secret::new(inline));
         }
         if let Some(src) = path.to_str().filter(|s| s.starts_with(KEYCHAIN_PREFIX)) {
             let (service, account) = parse_keychain_source(src).ok_or_else(|| {
@@ -673,12 +683,11 @@ impl BridgeIdentity {
                     "identity source {src:?} must be keychain:<service>/<account>"
                 ))
             })?;
-            let text = crate::keychain::get(service, account)?.ok_or_else(|| {
+            return crate::keychain::get(service, account)?.ok_or_else(|| {
                 Error::Io(format!(
                     "reading identity: no key in the keychain under {service}/{account}"
                 ))
-            })?;
-            return Self::from_source_text(text.expose());
+            });
         }
         if looks_like_pasted_key(path) {
             // The value is the identity itself where a path was expected (a CI variable of
@@ -699,14 +708,14 @@ impl BridgeIdentity {
             let plain = crate::sealed::open(&raw, pass.expose())?;
             let text = std::str::from_utf8(&plain)
                 .map_err(|_| Error::Io("the sealed identity file does not hold text".into()))?;
-            return Self::from_source_text(text);
+            return Ok(Secret::new(text));
         }
         if path.extension().is_some_and(|e| e == "key") {
             tracing::warn!(
                 "{shown} holds an unencrypted identity key (stored with --insecure-plaintext)"
             );
         }
-        Self::from_source_text(&raw)
+        Ok(Secret::new(raw.as_str()))
     }
 
     /// Parse what a keychain entry or a key file holds: a `dfk1:` limited key or a

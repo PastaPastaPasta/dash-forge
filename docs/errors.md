@@ -139,6 +139,17 @@ Fix: pass the identity file with `--master <file>`, or type the recovery words w
 
 Fix: `dg auth status` shows which key source is in use. Sign in again with `dg auth login <file>` or `dg auth login --mnemonic`. For a sealed file, set `DASH_FORGE_PASSPHRASE` or type the passphrase when asked.
 
+Two cases have their own message:
+
+- **A sealed key, and no terminal to ask for the passphrase on.** For example, a `git push` from a GUI client or a cron job, or `GIT_TERMINAL_PROMPT=0`. Any of these works:
+  - run the same command in a terminal;
+  - keep the key in the OS keychain (`dg auth login` without `DASH_FORGE_NO_KEYCHAIN`);
+  - push through `dg init`, which asks once and hands the key to git;
+  - in scripts, set `DASH_FORGE_PASSPHRASE`, or set `DASH_FORGE_KEY` to a `dfk1:` key.
+
+  Nothing was written.
+- **`dg init` / `dg repo create --push`: "`git push` could not use your key".** Before it pays for the repository, `dg` checks that the `git-remote-dash` on `PATH` accepts the key it unlocked. An older helper, or none on `PATH`, fails this check. Install `dg` and `git-remote-dash` from the same release; `dg doctor` compares their versions. Nothing was paid for.
+
 ## E304
 
 **Identity not found on this network.** Platform has no identity with the id in your identity file, usually because the identity was created on a different network.

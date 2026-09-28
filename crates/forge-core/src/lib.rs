@@ -44,6 +44,7 @@ pub mod error;
 pub mod fork;
 pub mod funding;
 pub mod history;
+pub mod key_handoff;
 pub mod keychain;
 pub mod keyring;
 pub mod keystore;

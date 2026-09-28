@@ -6,7 +6,9 @@
 //! the local repository and its remote, then the storage — `--storage` > git config
 //! `dash.storage` (this repo's, then the global one) > the user's only storage profile > a
 //! picker (in a terminal) > stop with E508, pricing what Platform storage would cost — and,
-//! for a push, that every storage secret resolves.
+//! for a push, that every storage secret resolves and that `git-remote-dash` gets the key this
+//! run unlocked (a sealed key's passphrase is asked once; the key reaches the helper over an
+//! inherited pipe, never the environment).
 //!
 //! With `--push`, after the create: the remote (`origin` unless `--remote`) is added or
 //! checked, the repo-local git config gets `dash.storage` + `dash.replicas`, and — when the
@@ -17,7 +19,7 @@
 //! remote is left alone, and a push of an up-to-date branch writes nothing.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use anyhow::{Context as _, Result};
 use serde_json::{json, Value};
@@ -613,6 +615,11 @@ async fn plan(ctx: &Ctx, name: Option<&str>, opts: &CreateOptions, flow: Flow) -
     if local.is_some() {
         storage.require_secrets()?;
     }
+    if local.as_ref().is_some_and(|l| l.has_commits) {
+        // The push after the create signs through git-remote-dash: check it gets the key this
+        // run unlocked (the passphrase was asked above, once) before anything is paid for.
+        crate::git::check_helper_key(ctx, &owner)?;
+    }
     Ok(Plan {
         slug,
         owner,
@@ -1054,7 +1061,7 @@ fn run_push(
 ) -> Result<PushOutcome> {
     let (_dir, report) = Report::new()?;
     let spec = format!("refs/heads/{branch}:refs/heads/{branch}");
-    let mut cmd = Command::new("git");
+    let mut cmd = dash_env(ctx).git_command()?;
     cmd.current_dir(root);
     if ctx.yes {
         cmd.args(["-c", "dash.confirm=never"]);
@@ -1070,7 +1077,6 @@ fn run_push(
         ]);
     }
     cmd.args([remote, spec.as_str()])
-        .envs(dash_env(ctx))
         .envs(report.env())
         .stdin(Stdio::inherit());
     if ctx.json {

@@ -1544,13 +1544,13 @@ pub(crate) fn fetch_base_and_head(
     dir: &Path,
     handle: &Repo,
     view: &PatchView,
-    env: &[(String, String)],
+    env: &git::DashEnv<'_>,
 ) -> Result<()> {
     require_git_safe(view)?;
     let base_ref = &view.patch.base_ref_name;
     let head = &view.head;
     if view.base_tip.is_some() {
-        git::git(
+        git::git_dash(
             dir,
             &[
                 "fetch",
@@ -1566,7 +1566,7 @@ pub(crate) fn fetch_base_and_head(
         let source_url = format!("dash://{}", view.patch.source_repo_id);
         // Refspec fixed by us: the PR's `sourceRefName` is attacker-chosen and never used
         // as a refspec. The helper downloads the repo's packs whatever is asked for.
-        git::git(
+        git::git_dash(
             dir,
             &[
                 "fetch",
@@ -1766,13 +1766,13 @@ pub(crate) fn squash_message(
 pub(crate) fn push_to(
     dir: &Path,
     argv: &[String],
-    env: &[(String, String)],
+    env: &git::DashEnv<'_>,
     goal: &str,
 ) -> Result<()> {
-    let out = std::process::Command::new("git")
+    let out = env
+        .git_command()?
         .current_dir(dir)
         .args(argv)
-        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(std::process::Stdio::null())
         .output()
         .context("running git push")?;
@@ -1856,7 +1856,7 @@ fn fetch_head(ctx: &Ctx, cwd: &Path, source: &str, head: &str) -> Result<bool> {
         return Ok(false);
     }
     let url = format!("dash://{source}");
-    git::git(
+    git::git_dash(
         cwd,
         &[
             "fetch",
@@ -1917,7 +1917,7 @@ async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     fetch_head(ctx, &cwd, &source, &head)?;
     // The base as the target repo has it now, fetched fresh.
     let base_local = format!("refs/remotes/dash-pr/base-{number}");
-    git::git(
+    git::git_dash(
         &cwd,
         &[
             "fetch",
@@ -1992,8 +1992,13 @@ mod tests {
         ] {
             assert!(require_git_safe(&view_with(bad, &ok)).is_err(), "{bad:?}");
             let dir = tempfile::tempdir().unwrap();
-            let err = fetch_base_and_head(dir.path(), &dummy_repo(), &view_with(bad, &ok), &[])
-                .unwrap_err();
+            let err = fetch_base_and_head(
+                dir.path(),
+                &dummy_repo(),
+                &view_with(bad, &ok),
+                &git::DashEnv::default(),
+            )
+            .unwrap_err();
             assert!(
                 format!("{err:#}").contains("not a plain branch"),
                 "{bad:?}: {err:#}"

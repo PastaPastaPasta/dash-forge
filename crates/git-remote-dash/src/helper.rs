@@ -19,7 +19,7 @@
 //!   lost-race late non-fast-forward. Refs are written ONLY after the storage policy is
 //!   met and the manifest has landed.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use forge_core::backends::PackMeta;
@@ -2109,30 +2109,102 @@ fn write_denied(repo: &str, me: &str) -> Denied {
     }
 }
 
-/// Load the signing identity for `repo` ([`resolve_key_path`]) and fetch it: E301 naming
-/// `why` an identity is needed when no key source is configured.
+/// The key `dg` handed over ([`forge_core::key_handoff`]), read once at startup.
+static HANDED_KEY: std::sync::OnceLock<forge_core::keystore::Secret> = std::sync::OnceLock::new();
+
+/// Record the key [`forge_core::key_handoff::take`] read (`main` does, before anything else).
+pub fn set_handed_key(key: forge_core::keystore::Secret) {
+    let _ = HANDED_KEY.set(key);
+}
+
+/// The identity `dg` handed over, else the one at the key source `resolve` names (called
+/// only when nothing was handed over).
+fn handed_or_load(resolve: impl FnOnce() -> Result<PathBuf>) -> Result<BridgeIdentity> {
+    match HANDED_KEY.get() {
+        Some(key) => BridgeIdentity::from_source_text(key.expose())
+            .context("loading the identity dg handed over"),
+        None => load_identity(&resolve()?),
+    }
+}
+
+/// Load the identity at `key_path`. A sealed key file with no way to get its passphrase (no
+/// terminal, no DASH_FORGE_PASSPHRASE) is refused with the ways out, instead of the generic
+/// "this command does not prompt".
+pub fn load_identity(key_path: &Path) -> Result<BridgeIdentity> {
+    let shown = forge_core::keystore::describe_key_source(key_path);
+    // Only when no passphrase could be had does the file's kind matter; read it into a buffer
+    // that is wiped (an unencrypted `.key` holds the key in the clear).
+    if !forge_core::sealed::passphrase_available()
+        && forge_core::keystore::is_file_source(key_path)
+        && std::fs::read_to_string(key_path)
+            .map(forge_core::keystore::Secret::new)
+            .is_ok_and(|raw| forge_core::sealed::is_sealed(raw.expose()))
+    {
+        return Err(sealed_key_needs_passphrase(&shown).into());
+    }
+    BridgeIdentity::load_from_file(key_path)
+        .with_context(|| format!("loading identity from {shown}"))
+}
+
+/// E303: a sealed key file, and no terminal to ask for its passphrase on.
+fn sealed_key_needs_passphrase(shown: &str) -> UserError {
+    UserError::new(
+        codes::IDENTITY_UNREADABLE,
+        "your key is sealed with a passphrase, and there is no terminal to ask for it on",
+    )
+    .cause(format!(
+        "{shown} is passphrase-sealed; git-remote-dash asks for the passphrase on the terminal \
+         (/dev/tty), and this git has none (or GIT_TERMINAL_PROMPT=0)"
+    ))
+    .fix("run the same git command in a terminal: it asks for the passphrase once")
+    .fix("keep the key in the OS keychain, which needs no passphrase: `dg auth login` where a keychain is available (without DASH_FORGE_NO_KEYCHAIN)")
+    .fix("push through dg, which asks once and hands the key to git: `dg init` pushes the current branch to this repository's remote (an existing repository is not paid for again)")
+    .fix("scripts and CI: set DASH_FORGE_PASSPHRASE, or DASH_FORGE_KEY to a `dg auth export --format dfk1` key")
+    .note("nothing was written")
+}
+
+/// `git-remote-dash --check-key`: load the signing key the way a push would (the handed key,
+/// else `DASH_FORGE_KEY`, else the recorded default) and print `{"identityId": …}`. `dg` runs
+/// it before it pays for a repository, so a push that could not sign is refused first.
+pub fn check_key() -> Result<()> {
+    // Without a handoff this has no repository, so no owner: it skips the per-owner
+    // `identities/<owner>.identity.json` that `resolve_key_path` would try for a named URL.
+    // `dg` always hands the key over, so its pre-flight never reaches this fallback.
+    let bridge = handed_or_load(|| {
+        std::env::var_os("DASH_FORGE_KEY")
+            .map(PathBuf::from)
+            .or(forge_core::keystore::configured_default_source()?.map(PathBuf::from))
+            .ok_or_else(|| no_identity("neither DASH_FORGE_KEY nor a default identity is set"))
+    })?;
+    bridge.doc_op_key()?;
+    println!(
+        "{}",
+        serde_json::json!({ "identityId": bridge.identity_id })
+    );
+    Ok(())
+}
+
+/// Load the signing identity for `repo` (the key `dg` handed over, else [`resolve_key_path`])
+/// and fetch it: E301 naming `why` an identity is needed when no key source is configured.
 async fn load_signer(
     url: &DashUrl,
     client: &PlatformClient,
     repo: &RepoRef,
     why: &str,
 ) -> Result<Signer> {
-    let key_path =
-        resolve_key_path(url, repo.owner_id()).map_err(|e| e.context(why.to_string()))?;
-    if std::env::var_os("DASH_FORGE_KEY").is_none()
-        && forge_core::keystore::is_file_source(&key_path)
-        && !key_path.exists()
-    {
-        return Err(no_identity(format!(
-            "{why}; DASH_FORGE_KEY is not set and {} does not exist",
-            key_path.display()
-        )));
-    }
-    let bridge = BridgeIdentity::load_from_file(&key_path).with_context(|| {
-        format!(
-            "loading identity from {} (set DASH_FORGE_KEY)",
-            forge_core::keystore::describe_key_source(&key_path)
-        )
+    let bridge = handed_or_load(|| {
+        let key_path =
+            resolve_key_path(url, repo.owner_id()).map_err(|e| e.context(why.to_string()))?;
+        if std::env::var_os("DASH_FORGE_KEY").is_none()
+            && forge_core::keystore::is_file_source(&key_path)
+            && !key_path.exists()
+        {
+            return Err(no_identity(format!(
+                "{why}; DASH_FORGE_KEY is not set and {} does not exist",
+                key_path.display()
+            )));
+        }
+        Ok(key_path)
     })?;
     let identity = client
         .fetch_identity(&bridge.identity_id)

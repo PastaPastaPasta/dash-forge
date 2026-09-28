@@ -16,7 +16,9 @@
 //! modified file both fail the same way.
 //!
 //! Where the passphrase comes from: the `DASH_FORGE_PASSPHRASE` environment variable (CI,
-//! scripts), else a hidden prompt on the terminal.
+//! scripts), else a hidden prompt on the terminal (`/dev/tty`, so it also works in
+//! `git-remote-dash`, whose stdin and stdout belong to git). A `git push` that `dg` runs never
+//! asks: `dg` hands the helper the key it already unlocked ([`crate::key_handoff`]).
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
@@ -31,8 +33,9 @@ use crate::keystore::Secret;
 /// Environment variable a passphrase is read from before prompting.
 pub const PASSPHRASE_ENV: &str = "DASH_FORGE_PASSPHRASE";
 
-/// Set by a program that must never read from the terminal (the git remote helper, the
-/// importer, `dg --json`): a sealed file then needs [`PASSPHRASE_ENV`], and no prompt appears.
+/// Set by a program that must never read from the terminal (the importer, `dg --json`): a
+/// sealed file then needs [`PASSPHRASE_ENV`], and no prompt appears. `GIT_TERMINAL_PROMPT=0`
+/// has the same effect, so the helper does not ask when git was told not to.
 static NO_PROMPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Never prompt for a passphrase in this process (see [`NO_PROMPT`]).
@@ -44,6 +47,31 @@ pub fn forbid_prompts() {
 pub fn prompts_allowed() -> bool {
     !NO_PROMPT.load(std::sync::atomic::Ordering::Relaxed)
         && std::env::var_os("GIT_TERMINAL_PROMPT").is_none_or(|v| v != "0")
+}
+
+/// Whether [`passphrase`] can get a passphrase without failing: [`PASSPHRASE_ENV`] is set, or
+/// prompts are allowed and there is a terminal to ask on. Checked before a step that must not
+/// fail halfway for want of one.
+pub fn passphrase_available() -> bool {
+    std::env::var_os(PASSPHRASE_ENV).is_some_and(|v| !v.is_empty())
+        || (prompts_allowed() && have_terminal())
+}
+
+/// Whether the prompt has a terminal: `/dev/tty` opens (rpassword reads and writes there).
+#[cfg(unix)]
+fn have_terminal() -> bool {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .is_ok()
+}
+
+/// Windows: the console, when stdin is one.
+#[cfg(not(unix))]
+fn have_terminal() -> bool {
+    use std::io::IsTerminal as _;
+    std::io::stdin().is_terminal()
 }
 
 /// The shortest passphrase accepted when sealing.

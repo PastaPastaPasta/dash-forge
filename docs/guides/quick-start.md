@@ -111,6 +111,12 @@ dg auth login --network devnet --devnet-name moutai ~/Downloads/dash-identity-<i
 
 The identity file's master key signs one update that registers a limited key for this computer, and `dg` stores only that key. Afterwards put the identity file somewhere offline. `dg` records the identity and the network as defaults, and `git push` reads the same stored key, so neither needs flags or `DASH_FORGE_KEY`. Where there is no OS keychain (a container, Linux without Secret Service), the key goes to a passphrase-sealed file instead; over SSH, set `DASH_FORGE_NO_KEYCHAIN=1` to get the same.
 
+With a sealed key file, each command that signs asks for the passphrase once:
+
+- `dg init` and the other `dg` commands that push ask once, then hand the unlocked key to the `git push` they run. The key goes through a private pipe, never an environment variable or the command line.
+- A plain `git push` asks on the terminal, once per push.
+- Without a terminal (a GUI git client, a cron job) the push stops with [`E303`](../errors.md#e303) before anything is written. Its message names the ways out: run it in a terminal, keep the key in the OS keychain, or set `DASH_FORGE_PASSPHRASE` (or a [`dfk1:` key](identity-and-keys.md)) for scripts.
+
 `git push` and `git clone` use the same network: `git-remote-dash` reads the one `dg` recorded, so plain git commands need no flags or environment either. A repository's own git config (`dash.network`, which `dg init` and `dg repo clone` write) wins over it, and `DASH_FORGE_NETWORK` wins over both.
 
 Then check everything:
@@ -207,6 +213,8 @@ After `dg init`, pushing is plain git:
 ```sh
 git push
 ```
+
+With a passphrase-sealed key (no keychain), `git push` asks for the passphrase on the terminal ([§3](#3-sign-in)).
 
 To push to a repository someone created without `dg init` (or from another clone), add the remote yourself:
 

@@ -15,7 +15,14 @@
 //!   (`dash.storage` / `dash.replicas`), write the manifest, then the ref updates.
 //!
 //! A `--`-prefixed first argument switches to admin mode (`--create-repo`, `--dump-refs`,
-//! `--balance`, `--version`) used to provision/inspect repos outside the git protocol.
+//! `--balance`, `--version`, `--check-key`) used to provision/inspect repos outside the git
+//! protocol.
+//!
+//! **The signing key.** A key `dg` handed over on an inherited pipe
+//! ([`forge_core::key_handoff`]) is read first thing. Otherwise the key source is
+//! `DASH_FORGE_KEY` or the default `dg` recorded; a passphrase-sealed file asks for its
+//! passphrase on `/dev/tty` (git owns stdin and stdout), or reads `DASH_FORGE_PASSPHRASE`, and
+//! with neither (no terminal, or `GIT_TERMINAL_PROMPT=0`) fails with E303 naming the ways out.
 //!
 //! **Errors.** Any failure is rendered once, as the `dash: error: … [Ennn]` block of
 //! [`forge_core::user_error`] on stderr (git shows it verbatim), and the process exits with
@@ -54,8 +61,6 @@ use url::DashUrl;
 const CAPABILITIES: &str = "fetch\npush\noption\n\n";
 
 fn main() {
-    // git owns the terminal; a sealed key file needs DASH_FORGE_PASSPHRASE here.
-    forge_core::sealed::forbid_prompts();
     let mut goal = Goal::default();
     if let Err(err) = run(&mut goal) {
         let ctx = ErrorContext {
@@ -109,22 +114,30 @@ impl Goal {
 
 fn run(goal: &mut Goal) -> Result<()> {
     forge_core::logging::init_cli();
+    // Next, before any thread starts (it edits the environment): the key `dg` handed over on
+    // an inherited pipe, if any. A sealed key file is otherwise opened with a passphrase
+    // asked on /dev/tty (git owns stdin and stdout), or DASH_FORGE_PASSPHRASE.
+    if let Some(key) = forge_core::key_handoff::take()? {
+        helper::set_handed_key(key);
+    }
 
     let args: Vec<String> = std::env::args().collect();
 
-    // `--version` / `-V`: what `dg doctor` compares against its own version. Checked before
-    // admin mode, whose `--` prefix it shares.
-    if matches!(args.get(1).map(String::as_str), Some("--version" | "-V")) {
-        println!("{}", version_line());
-        return Ok(());
-    }
-
-    // Admin mode: `git-remote-dash --create-repo <name>` etc. (outside the git protocol).
-    if let Some(first) = args.get(1) {
-        if first.starts_with("--") {
+    match args.get(1).map(String::as_str) {
+        // `--version` / `-V`: what `dg doctor` compares against its own version. Checked
+        // before admin mode, whose `--` prefix it shares.
+        Some("--version" | "-V") => {
+            println!("{}", version_line());
+            return Ok(());
+        }
+        // `--check-key`: `dg`'s check, before it pays for a repository, that a push can sign.
+        Some("--check-key") => return helper::check_key(),
+        // Admin mode: `git-remote-dash --create-repo <name>` etc. (outside the git protocol).
+        Some(first) if first.starts_with("--") => {
             let rt = runtime()?;
             return admin::run(&rt, &args[1..]);
         }
+        _ => {}
     }
 
     // Remote-helper mode: git passes `<remote-name> <url>`. When a bare URL is used

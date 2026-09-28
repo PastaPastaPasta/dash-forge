@@ -67,12 +67,7 @@ pub fn run(rt: &Runtime, args: &[String]) -> Result<()> {
 async fn connect() -> Result<(PlatformClient, BridgeIdentity)> {
     let key_path = std::env::var_os("DASH_FORGE_KEY")
         .ok_or_else(|| anyhow!("DASH_FORGE_KEY must point at the identity JSON for admin ops"))?;
-    let bridge = BridgeIdentity::load_from_file(&key_path).with_context(|| {
-        format!(
-            "loading identity from {}",
-            forge_core::keystore::describe_key_source(key_path.as_ref())
-        )
-    })?;
+    let bridge = crate::helper::load_identity(key_path.as_ref())?;
     let client = PlatformClient::connect(network_target()?)
         .await
         .context("connecting to Dash Platform")?;

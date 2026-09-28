@@ -56,6 +56,7 @@ SCENARIOS=(
   "22-issue-parity"
   "23-request-budgets"
   "24-fresh-home-network"
+  "25-sealed-key-push"
   "30-release-yank-keeps-assets"
   "31-import-merged-and-hashed"
   "32-import-failed-push-reports-landed"
