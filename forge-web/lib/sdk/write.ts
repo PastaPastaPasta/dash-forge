@@ -280,7 +280,7 @@ function loadPendingST(key: string): PendingST | null {
     const raw = window.localStorage.getItem(key)
     if (!raw) return null
     const parsed = JSON.parse(raw) as CachedST
-    if (typeof parsed.data !== 'string' && typeof parsed.documentId !== 'string') return null
+    if (typeof parsed.documentId !== 'string') return null
     if (Date.now() - parsed.cachedAt > ST_CACHE_MAX_AGE_MS || !parsed.documentId) {
       window.localStorage.removeItem(key)
       return null
