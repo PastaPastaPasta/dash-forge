@@ -53,17 +53,19 @@ describe.skipIf(!LIVE)('live issue numbering (moutai)', () => {
     const resolved = await resolveAnyRepo(sdk, { network: 'devnet', owner: 'unofficial-dashpay-dash-mirror', name: 'dash' })
     if (resolved === null) throw new Error('the dash showcase mirror does not resolve on moutai')
     const repo = resolved.repo
-    const { documents } = await queryDocumentsWithProof(sdk, {
-      ...repoSource(repo).targetQuery(DOC.issue),
-      where: [['$ownerId', '==', repo.ownerId], ['repoId', '==', repo.repoId]],
-      orderBy: [['number', 'desc']],
-      limit: 1,
-    })
-    const ownersMax = Number(documents[0]?.['number'] ?? 0)
-    expect(ownersMax).toBeGreaterThan(1000)
-    const next = await nextNumber(sdk, repo, 'issue')
-    console.log(`dash mirror ${repo.repoId}: owner's largest issue #${ownersMax}, next #${next}`)
-    expect(next).toBe(ownersMax + 1)
+    // Issues and PRs number independently; both continue after the owner's largest.
+    for (const type of ['issue', 'patch'] as const) {
+      const { documents } = await queryDocumentsWithProof(sdk, {
+        ...repoSource(repo).targetQuery(DOC[type]),
+        where: [['$ownerId', '==', repo.ownerId], ['repoId', '==', repo.repoId]],
+        orderBy: [['number', 'desc']],
+        limit: 1,
+      })
+      const ownersMax = Number(documents[0]?.['number'] ?? 0)
+      expect(ownersMax).toBeGreaterThan(1000)
+      const next = await nextNumber(sdk, repo, type)
+      expect(next, `dash mirror ${repo.repoId}: the owner's largest ${type} is #${ownersMax}`).toBe(ownersMax + 1)
+    }
   }, 120_000)
 
   it.skipIf(OWNER_FILE === '' || STRANGER_FILE === '')(
@@ -85,8 +87,7 @@ describe.skipIf(!LIVE)('live issue numbering (moutai)', () => {
       await issueAt(STRANGER, 5001, 'squatter right above the base')
       // Count 3 → ceiling 106: without trust every number is a squatter and the next is #1.
       const { number } = await createIssue(sdk, STRANGER, repo, { title: 'a new issue after the import', body: '' })
-      console.log(`throwaway ${name} ${repo.repoId}: new issue #${number}`)
-      expect(number).toBe(5002)
+      expect(number, `throwaway ${name} (${repo.repoId})`).toBe(5002)
     },
     300_000,
   )
