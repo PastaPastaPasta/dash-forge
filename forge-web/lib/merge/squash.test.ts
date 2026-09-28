@@ -76,6 +76,21 @@ describe('squash and merge', () => {
     if (HAVE_GIT) expect(gitAcceptsHistory([...s.objects.values(), ...objects], out.newTip)).toEqual({ fsck: true, log: true, clone: true })
   }, 60_000)
 
+  it('the check sizes the pack before it is built: an upper bound on what the merge stores', async () => {
+    const s = new Store()
+    const root = s.commit(s.files({ 'a.txt': 'a\n', 'b.txt': 'b\n' }), [], 'root')
+    const base = s.commit(s.files({ 'a.txt': 'A\n', 'b.txt': 'b\n' }), [root], 'on main')
+    const head = s.commit(s.files({ 'a.txt': 'a\n', 'b.txt': 'B'.repeat(4000) + '\n' }), [root], 'feature')
+    for (const squash of [undefined, squashMessage('Feature', '', 7, [], 'M <m@x>')]) {
+      const checked = await checkMergeDetailed(s.reader(), input(base, head, squash))
+      const built = await runMerge(s.reader(), input(base, head, squash))
+      if (built.kind !== 'merge' && built.kind !== 'squash') throw new Error(built.kind)
+      expect(checked.packEstimate).not.toBeNull()
+      expect(checked.packEstimate!.bytes).toBeGreaterThanOrEqual(built.pack.length)
+      expect(checked.packEstimate!.objectCount).toBeGreaterThanOrEqual(built.objectCount)
+    }
+  })
+
   it("squashes a head that descends from the base to the head's own tree", async () => {
     const s = new Store()
     const base = s.commit(s.files({ 'a.txt': 'a\n' }), [], 'base')

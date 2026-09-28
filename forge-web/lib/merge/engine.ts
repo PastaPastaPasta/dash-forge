@@ -338,14 +338,26 @@ export type MergeCheck = MergePlan['kind']
 export interface MergeCheckResult {
   readonly check: MergeCheck
   readonly conflictPaths: readonly string[]
+  /**
+   * An upper bound on the pack the merge will store: its objects' raw bytes (a pack is zlib-
+   * compressed, so never larger in practice) plus the pack framing, and its object count. The
+   * check walks exactly these objects; null when it did not reach the pack step. Priced before
+   * the merge starts, so its storage question is asked up front.
+   */
+  readonly packEstimate: { readonly bytes: number; readonly objectCount: number } | null
+}
+
+/** A pack's framing: the 12-byte header and 20-byte trailer, plus up to 10 bytes of entry header per object. */
+export function packSizeBound(objects: readonly { readonly bytes: Uint8Array }[]): number {
+  return 32 + objects.reduce((n, o) => n + o.bytes.length + 10, 0)
 }
 
 /** {@link checkMerge} with the conflicting paths (the merge box lists them, review-parity F7). */
 export async function checkMergeDetailed(raw: ObjectReader, input: MergeInput, budget = MERGE_READ_BUDGET): Promise<MergeCheckResult> {
   const out = await refusing(() => build(strictReader(raw, budget), input, false))
-  if (out.kind === 'checked') return { check: out.check, conflictPaths: [] }
-  if (out.kind === 'squash' || out.kind === 'fast-forward' || out.kind === 'merge') return { check: out.kind === 'squash' ? 'merge' : out.kind, conflictPaths: [] }
-  return { check: out.kind, conflictPaths: out.kind === 'conflict' ? out.paths : [] }
+  if (out.kind === 'checked') return { check: out.check, conflictPaths: [], packEstimate: out.packEstimate }
+  if (out.kind === 'squash' || out.kind === 'fast-forward' || out.kind === 'merge') return { check: out.kind === 'squash' ? 'merge' : out.kind, conflictPaths: [], packEstimate: { bytes: out.pack.length, objectCount: out.objectCount } }
+  return { check: out.kind, conflictPaths: out.kind === 'conflict' ? out.paths : [], packEstimate: null }
 }
 
 /**
@@ -379,7 +391,11 @@ async function build(
   input: MergeInput,
   pack: boolean,
   onProgress?: MergeProgress,
-): Promise<MergeOutcome | { kind: 'checked'; check: 'fast-forward' | 'merge' } | Exclude<MergePlan, { kind: 'fast-forward' | 'merge' | 'malformed' | 'too-large' }>> {
+): Promise<
+  | MergeOutcome
+  | { kind: 'checked'; check: 'fast-forward' | 'merge'; packEstimate: { bytes: number; objectCount: number } }
+  | Exclude<MergePlan, { kind: 'fast-forward' | 'merge' | 'malformed' | 'too-large' }>
+> {
   onProgress?.('analyse')
   const plan = await planMerge(reader, input)
   if (plan.kind === 'up-to-date' || plan.kind === 'unrelated' || plan.kind === 'conflict') return plan
@@ -418,7 +434,9 @@ async function build(
   // same-repo head's commits are new to the branch even though the repo's packs hold them.
   const baseHave = input.baseTip === '' ? [] : [input.baseTip]
   let objects = await objectsToPack(source, await newCommits(source, tip, baseHave))
-  if (!pack) return { kind: 'checked', check: plan.kind }
+  // The check sizes what it walked: at least what the merge packs (a same-repo head's history is
+  // then left out of the pack), so an upper bound.
+  if (!pack) return { kind: 'checked', check: plan.kind, packEstimate: { bytes: packSizeBound(objects), objectCount: objects.length } }
   // A squash commit's only parent is the base tip: nothing of the head's history is pushed.
   // What the base repo's packs already hold is not packed again: for a same-repo PR the head's
   // history (a fast-forward to it packs nothing).

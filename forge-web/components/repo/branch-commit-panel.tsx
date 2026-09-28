@@ -89,13 +89,12 @@ export function useBranchCommit({
   run: (key: string, label: string, build: () => Promise<BranchCommit>) => Promise<void>
   busy: boolean
   view: JSX.Element | null
-  uploadDialog: JSX.Element | null
 } {
   const { sdk } = useSdk()
   const { signer } = useAuth()
   const guard = useWriteGuard()
   const uploadRepo = source ?? repo
-  const { upload, dialog, begin } = useMergeUpload(uploadRepo)
+  const { upload, question, waiting, begin } = useMergeUpload(uploadRepo)
   const [label, setLabel] = useState<string | null>(null)
   const [steps, setSteps] = useState<Partial<Record<BranchStepId | 'build', StepState>>>({})
   const [details, setDetails] = useState<Partial<Record<BranchStepId | 'build', string>>>({})
@@ -193,10 +192,17 @@ export function useBranchCommit({
           {[{ id: 'build' as const, label: 'Build the commit' }, ...BRANCH_STEPS].map(({ id, label: l }) => {
             const s = steps[id] ?? 'todo'
             return (
-              <li key={id} className={cn('flex items-center gap-2 text-dense', s === 'todo' && 'text-anvil-500 dark:text-anvil-400')} data-step={id} data-state={s}>
-                <StepIcon state={s} />
-                {l}
-                {details[id] ? <span className="text-[12px] text-anvil-600 dark:text-anvil-400">({details[id]})</span> : null}
+              <li key={id} className={cn('text-dense', s === 'todo' && 'text-anvil-500 dark:text-anvil-400')} data-step={id} data-state={id === 'upload' && waiting ? 'waiting' : s}>
+                <span className="flex items-center gap-2">
+                  <StepIcon state={s} />
+                  {l}
+                  {id === 'upload' && waiting ? (
+                    <span className="text-[12px] font-medium text-caution-700 dark:text-caution-400">Waiting for your choice</span>
+                  ) : details[id] ? (
+                    <span className="text-[12px] text-anvil-600 dark:text-anvil-400">({details[id]})</span>
+                  ) : null}
+                </span>
+                {id === 'upload' ? question : null}
               </li>
             )
           })}
@@ -214,7 +220,7 @@ export function useBranchCommit({
         ) : null}
       </div>
     )
-  return { run, busy, view, uploadDialog: dialog }
+  return { run, busy, view }
 }
 
 function StepIcon({ state }: { state: StepState }): JSX.Element {

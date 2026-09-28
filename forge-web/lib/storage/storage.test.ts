@@ -490,6 +490,17 @@ describe('storeArtifact', () => {
     expect(stored.uris).toEqual([`https://ipfs.example/ipfs/${cid}`, `ipfs://${cid}`])
   })
 
+  it('does not ask again when Platform storage was allowed up front, within the allowed amount', async () => {
+    const { estimateChunkCredits } = await import('../sdk/cost')
+    const confirm = vi.fn(async () => false)
+    // Allowed up to exactly what it costs: no question (the copy then runs against the fake SDK).
+    await storeArtifact(SDK, AUTH, REPO, bytes, { policy: null, profiles: [], confirmPlatform: confirm, preAgreedCredits: estimateChunkCredits(bytes.length) }).catch(() => undefined)
+    expect(confirm).not.toHaveBeenCalled()
+    // Allowed less than it costs (the real pack came out larger than the estimate): it asks.
+    await storeArtifact(SDK, AUTH, REPO, bytes, { policy: null, profiles: [], confirmPlatform: confirm, preAgreedCredits: estimateChunkCredits(bytes.length) - 1 }).catch(() => undefined)
+    expect(confirm).toHaveBeenCalledTimes(1)
+  })
+
   it('asks before storing on Platform when nothing is configured, and stops when declined', async () => {
     const confirm = vi.fn(async () => false)
     await expect(storeArtifact(SDK, AUTH, REPO, bytes, { policy: null, profiles: [], confirmPlatform: confirm })).rejects.toBeInstanceOf(PlatformDeclinedError)

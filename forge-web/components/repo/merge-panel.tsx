@@ -32,7 +32,7 @@ import { checkMergeInWorker, runMergeInWorker } from '@/lib/merge/client'
 import { MERGE_STEPS, MergeStepError, retryLabel, runFor, runMergeSteps, type MergeRun, type MergeStepId } from '@/lib/merge/runner'
 import { mergeButton, mergeRefProblem } from '@/lib/view/pull-actions'
 import { publishMergeIndex } from '@/lib/merge/locator'
-import { useMergeUpload } from '@/components/repo/merge-upload'
+import { StorageRow, useMergeUpload } from '@/components/repo/merge-upload'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { mergeIdentityValid } from '@/lib/view/prefs'
 import { branchName, tipOidOf, type DiffSides, type ObjectReader } from '@/lib/view'
@@ -97,7 +97,13 @@ export function MergePanel({
   const guard = useWriteGuard()
   const [prefs] = usePrefs()
   const wide = useMinWidth(1024)
-  const { upload, dialog: uploadDialog, storageLabel, begin, storageNeedsUnlock } = useMergeUpload(repo)
+  const { upload, question: storageQuestion, waiting: storageWaiting, choiceFor, begin, storageNeedsUnlock } = useMergeUpload(repo)
+  // The check sizes the pack (an upper bound): the Storage row prices it before the merge starts.
+  const [packEstimate, setPackEstimate] = useState<{ bytes: number; objectCount: number } | null>(null)
+  const storage = choiceFor(packEstimate)
+  // "Allow storing on Platform": until the merger touches it, its default follows the policy.
+  const [allowTouched, setAllowTouched] = useState<boolean | null>(null)
+  const allowPlatform = allowTouched ?? storage?.allowByDefault ?? false
   const baseRefName = pull.state.baseRef ?? pull.baseRefName
   const baseProtected = matchesProtected(baseRefName, protectedPatterns)
   const refProblem = mergeRefProblem(baseRefName, baseTipOid, pull.headOid, pull.baseRefName)
@@ -152,6 +158,7 @@ export function MergePanel({
         if (abort.signal.aborted) return
         setCheck(c.check)
         setConflictPaths(c.conflictPaths)
+        setPackEstimate(c.packEstimate)
       },
       (e: unknown) => {
         if (!abort.signal.aborted) setCheck({ error: e instanceof Error ? e.message : String(e) })
@@ -210,7 +217,8 @@ export function MergePanel({
     setBusy(true)
     setFailure(null)
     setStopped(null)
-    begin()
+    // The pre-answer: what the Storage row allowed on Platform, priced from the check's estimate.
+    begin(allowPlatform && storage !== null && storage.platformCredits !== null ? storage.platformCredits : null)
     const intent = `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}${input.squash ? `:squash:${bytesToHex(sha256(new TextEncoder().encode(input.squash.message))).slice(0, 16)}` : ''}`
     try {
       const done = await runMergeSteps(
@@ -263,7 +271,7 @@ export function MergePanel({
     } finally {
       setBusy(false)
     }
-  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, deletable, alsoDelete])
+  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, allowPlatform, storage, deletable, alsoDelete])
 
   // A run in this panel keeps it on screen to the end (the PR reads Merged meanwhile).
   const started = Object.keys(steps).length > 0
@@ -390,11 +398,12 @@ export function MergePanel({
         </div>
       ) : null}
       {mergeable ? (
-        <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
-          <CostPreview cost={cost} />
-          <span>
-            plus the pack&apos;s storage{storageLabel ? ` on ${storageLabel}` : ''}
-          </span>
+        <div className="mt-3">
+          <div className="flex flex-wrap items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
+            <CostPreview cost={cost} />
+            <span>plus the pack&apos;s storage (below)</span>
+          </div>
+          <StorageRow choice={storage} allowed={allowPlatform} onAllow={setAllowTouched} />
         </div>
       ) : null}
 
@@ -403,10 +412,17 @@ export function MergePanel({
           {MERGE_STEPS.map(({ id, label }) => {
             const s = steps[id] ?? 'todo'
             return (
-              <li key={id} className={cn('flex items-center gap-2 text-dense', s === 'todo' && 'text-anvil-500 dark:text-anvil-400')} data-step={id} data-state={s}>
-                <StepIcon state={s} />
-                {label}
-                {details[id] ? <span className="text-[12px] text-anvil-600 dark:text-anvil-400">({details[id]})</span> : null}
+              <li key={id} className={cn('text-dense', s === 'todo' && 'text-anvil-500 dark:text-anvil-400')} data-step={id} data-state={id === 'upload' && storageWaiting ? 'waiting' : s}>
+                <span className="flex items-center gap-2">
+                  <StepIcon state={s} />
+                  {label}
+                  {id === 'upload' && storageWaiting ? (
+                    <span className="text-[12px] font-medium text-caution-700 dark:text-caution-400">Waiting for your choice</span>
+                  ) : details[id] ? (
+                    <span className="text-[12px] text-anvil-600 dark:text-anvil-400">({details[id]})</span>
+                  ) : null}
+                </span>
+                {id === 'upload' ? storageQuestion : null}
               </li>
             )
           })}
@@ -436,7 +452,6 @@ export function MergePanel({
           The merge stands; deleting {deleted.label} failed: {deleted.error}
         </p>
       ) : null}
-      {uploadDialog}
     </section>
   )
 }

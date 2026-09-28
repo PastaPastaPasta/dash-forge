@@ -1143,7 +1143,6 @@ function PullPage({
         ) : null}
       </div>
 
-      {suggest.runner.uploadDialog}
       <ConfirmDialog open={pending !== null} onClose={() => setPending(null)} title={confirm.title} description={confirm.description} cost={pendingCost} confirmLabel={confirm.label} onConfirm={runPending} />
     </div>
   )
