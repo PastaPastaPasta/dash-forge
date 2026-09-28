@@ -121,15 +121,16 @@ export function useBranchCommit({
       setLabel(what)
       begin()
       const refName = pull.sourceRefName
-      if (!saved.current.has(key)) {
-        setSteps({ build: 'running' })
-        setDetails({})
-      }
       try {
         const commit = await runKeyedBranchCommit(
           saved.current,
           key,
-          build,
+          async () => {
+            // Runs only when the runner builds (not on a resume).
+            setSteps({ build: 'running' })
+            setDetails({})
+            return build()
+          },
           (built) => {
             const intent = `branch:${source.repoId}:${pull.number}:${built.commit}`
             return {
@@ -370,7 +371,6 @@ export function useSuggestions({
     [pull.headOid, paths.join('\n'), headReader === null],
     { enabled: headReader !== null && paths.length > 0 },
   )
-  const texts_ = texts.data
   const privateRepo = repo.visibility === 'private' || target?.visibility === 'private'
   const why = !signedIn
     ? 'Sign in to apply suggestions.'
@@ -396,21 +396,20 @@ export function useSuggestions({
     const key = `suggest:${pull.headOid}:${chosen.map((c) => c.id).sort().join(',')}`
     void runner.run(key, `Apply ${chosen.length} suggestion${chosen.length === 1 ? '' : 's'}`, () => buildSuggestionCommit(sdk, network, headReader, pull.headOid, chosen, who))
   }
-  const headOid = pull.headOid
   const actions = useMemo<SuggestionActions>(
     () => ({
       canApply,
       why,
       original: (c) => {
         const a = c.anchor
-        if (a === null || a.line === null || a.side !== 1 || a.commitOid.toLowerCase() !== headOid.toLowerCase()) return null
-        const text = texts_?.get(a.path)
+        if (a === null || a.line === null || a.side !== 1 || a.commitOid.toLowerCase() !== pull.headOid.toLowerCase()) return null
+        const text = texts.data?.get(a.path)
         if (typeof text !== 'string') return null
         const lines = text.replace(/\r\n/g, '\n').split('\n')
         const start = a.startLine ?? a.line
         return start >= 1 && a.line <= lines.length ? lines.slice(start - 1, a.line) : null
       },
-      unapplicable: (c) => unapplicable(asSuggestion(c), headOid),
+      unapplicable: (c) => unapplicable(asSuggestion(c), pull.headOid),
       applied,
       batch,
       onToggleBatch: (c) =>
@@ -422,9 +421,8 @@ export function useSuggestions({
         }),
       onApply: (c) => applyRef.current([c.id]),
     }),
-    [canApply, why, headOid, texts_, applied, batch],
+    [canApply, why, pull.headOid, texts.data, applied, batch],
   )
-  const apply = (ids: readonly string[]): void => applyRef.current(ids)
   const bar =
     batch.size === 0 ? null : (
       <div className="sticky bottom-3 z-20 flex flex-wrap items-center gap-3 rounded-lg border border-forge-500/50 bg-white px-4 py-2 shadow-lg dark:bg-anvil-950" data-testid="suggestion-batch">
@@ -436,7 +434,7 @@ export function useSuggestions({
         <Button size="sm" variant="ghost" onClick={() => setBatch(new Set())}>
           Clear
         </Button>
-        <Button size="sm" variant="primary" onClick={() => apply([...batch])} loading={runner.busy} disabled={!canApply}>
+        <Button size="sm" variant="primary" onClick={() => applyRef.current([...batch])} loading={runner.busy} disabled={!canApply}>
           Apply {batch.size} suggestion{batch.size === 1 ? '' : 's'} in one commit
         </Button>
       </div>

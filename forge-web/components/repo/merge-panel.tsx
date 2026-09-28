@@ -324,7 +324,7 @@ export function MergePanel({
         <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="squash-problem">
           {squash.problem}
         </p>
-      ) : mergeable && !methodAllowed && !(method === 'squash' && policyAllows(4)) ? (
+      ) : mergeable && !methodAllowed ? (
         <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400">The branch policy does not allow this merge method; pick another.</p>
       ) : null}
       {mergeable && method === 'squash' && newTip === null ? (

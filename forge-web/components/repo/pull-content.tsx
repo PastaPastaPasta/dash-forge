@@ -840,9 +840,10 @@ function PullPage({
                       deleteBranch: (() => {
                         const src = sourceRef ?? (crossRepo ? null : repo)
                         // Offered only once the source's default branch is known (a failed read never is).
-                        if (!sourceWrite.can || pull.sourceRefName === null || src === null || src.visibility !== 'public' || !sourceDefault.settled || sourceDefault.error || sourceDefault.data === null) return null
-                        const name = pull.sourceRefName
+                        // `data` is null until the default branch has been read (and after a failed read).
                         const dflt = sourceDefault.data
+                        if (!sourceWrite.can || pull.sourceRefName === null || src === null || src.visibility !== 'public' || dflt === null) return null
+                        const name = pull.sourceRefName
                         // The fixed refusals are known before merging: the option is not offered.
                         if (deleteBranchProblem({ refName: name, sameRepo: src.repoId === repo.repoId, baseRefName: pull.baseRefName, defaultBranch: dflt, headOid: pull.headOid }) !== null) return null
                         const head = pull.headOid

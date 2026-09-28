@@ -52,19 +52,50 @@ export class SuggestionRefused extends Error {
 
 const short = (id: string): string => id.slice(0, 8)
 
+type Refusal =
+  | { kind: 'noLine' }
+  | { kind: 'wholeFile' }
+  | { kind: 'oldSide' }
+  | { kind: 'outdated'; at: string }
+  | { kind: 'noBlock' }
+  | { kind: 'many'; n: number }
+
+/** Why a comment's suggestion cannot be applied on `head` (the one check both wordings share), or its plan. */
+function check(c: SuggestionComment, head: string): { refused: Refusal } | { plan: PlannedSuggestion } {
+  const a = anchorOf(c.anchor)
+  if (a === null) return { refused: { kind: 'noLine' } }
+  if (a.line === null || a.side === null) return { refused: { kind: 'wholeFile' } }
+  if (a.side !== 1) return { refused: { kind: 'oldSide' } }
+  if (a.commitOid.toLowerCase() !== head.toLowerCase()) return { refused: { kind: 'outdated', at: a.commitOid } }
+  const s = parseSuggestions(c.body)
+  if (s.length === 0) return { refused: { kind: 'noBlock' } }
+  if (s.length > 1) return { refused: { kind: 'many', n: s.length } }
+  return { plan: { commentId: c.id, reviewer: c.author, path: a.path, start: a.startLine ?? a.line, end: a.line, text: (s[0] as { text: string }).text } }
+}
+
+/** `dg`'s words for a refusal (E107). */
+function dgWords(r: Refusal, id: string, head: string): string {
+  switch (r.kind) {
+    case 'noLine':
+      return `comment ${short(id)} is not on a line of the diff`
+    case 'wholeFile':
+      return `comment ${short(id)} is on a whole file, not on lines`
+    case 'oldSide':
+      return `comment ${short(id)} is on the old side of the diff; a suggestion replaces new lines`
+    case 'outdated':
+      return `comment ${short(id)} was made on ${r.at.slice(0, 7)}, not on the PR head ${head.slice(0, 7)}`
+    case 'noBlock':
+      return `comment ${short(id)} has no \`\`\`suggestion block`
+    case 'many':
+      return `comment ${short(id)} has ${r.n} suggestion blocks; apply it by hand`
+  }
+}
+
 /** The plan of one comment's suggestion on `head`, or why it cannot be applied. Parity: `dg`'s `plan_suggestion`. */
 export function planSuggestion(c: SuggestionComment, head: string): PlannedSuggestion {
-  const a = anchorOf(c.anchor)
-  if (a === null) throw new SuggestionRefused(`comment ${short(c.id)} is not on a line of the diff`)
-  if (a.line === null || a.side === null) throw new SuggestionRefused(`comment ${short(c.id)} is on a whole file, not on lines`)
-  if (a.side !== 1) throw new SuggestionRefused(`comment ${short(c.id)} is on the old side of the diff; a suggestion replaces new lines`)
-  if (a.commitOid.toLowerCase() !== head.toLowerCase()) {
-    throw new SuggestionRefused(`comment ${short(c.id)} was made on ${a.commitOid.slice(0, 7)}, not on the PR head ${head.slice(0, 7)}`)
-  }
-  const s = parseSuggestions(c.body)
-  if (s.length === 0) throw new SuggestionRefused(`comment ${short(c.id)} has no \`\`\`suggestion block`)
-  if (s.length > 1) throw new SuggestionRefused(`comment ${short(c.id)} has ${s.length} suggestion blocks; apply it by hand`)
-  return { commentId: c.id, reviewer: c.author, path: a.path, start: a.startLine ?? a.line, end: a.line, text: (s[0] as { text: string }).text }
+  const r = check(c, head)
+  if ('refused' in r) throw new SuggestionRefused(dgWords(r.refused, c.id, head))
+  return r.plan
 }
 
 /**
@@ -72,18 +103,21 @@ export function planSuggestion(c: SuggestionComment, head: string): PlannedSugge
  * shows, or null when it can be.
  */
 export function unapplicable(c: SuggestionComment, head: string): string | null {
-  const a = anchorOf(c.anchor)
-  if (a === null) return 'This suggestion is not on a line of the diff.'
-  if (a.line === null || a.side === null) return 'This suggestion is on a whole file, not on lines: apply it by hand.'
-  if (a.side !== 1) return 'This suggestion is on the old side of the diff.'
-  if (a.commitOid.toLowerCase() !== head.toLowerCase()) return "Outdated: this suggestion is not on the current head's lines."
-  const n = parseSuggestions(c.body).length
-  if (n > 1) return `This comment holds ${n} suggestion blocks: apply it by hand.`
-  try {
-    planSuggestion(c, head)
-    return null
-  } catch (e) {
-    return e instanceof Error ? e.message : String(e)
+  const r = check(c, head)
+  if ('plan' in r) return null
+  switch (r.refused.kind) {
+    case 'noLine':
+      return 'This suggestion is not on a line of the diff.'
+    case 'wholeFile':
+      return 'This suggestion is on a whole file, not on lines: apply it by hand.'
+    case 'oldSide':
+      return 'This suggestion is on the old side of the diff.'
+    case 'outdated':
+      return "Outdated: this suggestion is not on the current head's lines."
+    case 'many':
+      return `This comment holds ${r.refused.n} suggestion blocks: apply it by hand.`
+    case 'noBlock':
+      return dgWords(r.refused, c.id, head)
   }
 }
 
