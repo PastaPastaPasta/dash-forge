@@ -14,11 +14,22 @@ import { mapPooled } from './pool'
 /** The largest ref the browser zips (uncompressed bytes). Above it: clone instead. */
 export const ZIP_MAX_BYTES = 100 * 1024 * 1024
 
-/** A file to put in the zip. */
+/** A file under a tree: its path, blob, mode and stored size (the locator's; 0 when it cannot tell). */
 export interface ZipFile {
   readonly path: string
   readonly oid: string
   readonly mode: number
+  readonly size: number
+}
+
+/** The file walk's bounds for Go to file and the language bar (tree reads only; no blob is read). */
+export const FILE_WALK_TREES = 300
+export const FILE_WALK_FILES = 5000
+
+/** The files a walk found, and whether a bound stopped it before it saw every file. */
+export interface FileWalk {
+  readonly files: ZipFile[]
+  readonly truncated: boolean
 }
 
 export interface ZipProgress {
@@ -42,28 +53,35 @@ export function isSafeName(name: string): boolean {
 }
 
 /**
- * Every blob (and symlink) under a tree, gitlinks skipped, sorted by path. Stops after `max`
- * files (`truncated`), so Go to file can list a large repo without walking all of it.
+ * Every blob (and symlink) under a tree, gitlinks and unsafe names skipped, breadth first, sorted
+ * by path, each with its stored size from the locator (tree reads only). Stops after `maxTrees`
+ * trees or `maxFiles` files (`truncated`, also when one tree alone holds more than the bound), so
+ * Go to file and the language bar can list a large repo without walking all of it.
  */
 export async function walkFiles(
   reader: ObjectReader,
   treeOid: string,
-  max = Infinity,
-): Promise<{ files: ZipFile[]; truncated: boolean }> {
+  { maxTrees = Infinity, maxFiles = Infinity }: { readonly maxTrees?: number; readonly maxFiles?: number } = {},
+): Promise<FileWalk> {
   const files: ZipFile[] = []
   const queue: [string, string][] = [[treeOid, '']]
-  while (queue.length > 0 && files.length < max) {
+  let trees = 0
+  let dropped = false
+  while (queue.length > 0 && trees < maxTrees && files.length < maxFiles) {
     const [oid, prefix] = queue.shift() as [string, string]
+    trees += 1
     for (const e of await readTree(reader, oid)) {
       // A tree is hash-checked, not sane: a hostile pusher can name an entry `..` (zip-slip).
       if (!isSafeName(e.name)) continue
       const path = prefix ? `${prefix}/${e.name}` : e.name
       if (e.mode === MODE_TREE) queue.push([e.oid, path])
-      else if (e.mode !== MODE_GITLINK) files.push({ path, oid: e.oid, mode: e.mode })
+      else if (e.mode === MODE_GITLINK) continue
+      else if (files.length < maxFiles) files.push({ path, oid: e.oid, mode: e.mode, size: reader.locate?.(e.oid)?.length ?? 0 })
+      else dropped = true
     }
   }
   files.sort((a, b) => (a.path < b.path ? -1 : 1))
-  return { files, truncated: queue.length > 0 }
+  return { files, truncated: dropped || queue.length > 0 }
 }
 
 /** Every file of a commit (for the zip). */
@@ -72,10 +90,8 @@ export async function listFiles(reader: ObjectReader, commitOid: string): Promis
 }
 
 /** Stored (compressed-on-disk) sizes from the locator: a lower bound, cheap to sum. */
-export function storedSize(reader: ObjectReader, files: readonly ZipFile[]): number {
-  let total = 0
-  for (const f of files) total += reader.locate?.(f.oid)?.length ?? 0
-  return total
+export function storedSize(files: readonly ZipFile[]): number {
+  return files.reduce((total, f) => total + f.size, 0)
 }
 
 /** Read every file's bytes (hash-checked by the reader), refusing past the size cap. */

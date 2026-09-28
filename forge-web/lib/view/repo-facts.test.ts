@@ -34,7 +34,7 @@ describe('loadRepoFacts', () => {
     await loadRepoFacts('r', tip, reader, root, await readTree(reader, root))
     off()
     const facts = repoFacts('r', tip)
-    expect(facts.license).toEqual({ ids: ['MIT'], file: 'LICENSE', other: false })
+    expect(facts.license).toEqual({ ids: ['MIT'], file: 'LICENSE' })
     expect(facts.languages?.languages.map((l) => l.name)).toEqual(['Rust', 'Shell'])
     expect(facts.languages?.truncated).toBe(false)
     expect(told).toBe(2)

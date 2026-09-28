@@ -34,12 +34,12 @@ describe('identifyLicense on the showcase repos', () => {
       ['LICENSE-MIT', text('ripgrep-LICENSE-MIT')],
       ['UNLICENSE', text('ripgrep-UNLICENSE')],
     ])
-    expect(got).toEqual({ ids: ['MIT', 'Unlicense'], file: 'LICENSE-MIT', other: false })
+    expect(got).toEqual({ ids: ['MIT', 'Unlicense'], file: 'LICENSE-MIT' })
   })
 
   it('jq: a COPYING bundling several licenses is Other (GitHub: NOASSERTION)', () => {
     expect(identifyLicense(text('jq-COPYING'))).toBeNull()
-    expect(detectLicense([['COPYING', text('jq-COPYING')]])).toEqual({ ids: [], file: 'COPYING', other: true })
+    expect(detectLicense([['COPYING', text('jq-COPYING')]])).toEqual({ ids: [], file: 'COPYING' })
   })
 
   it('no license file: nothing to show', () => {

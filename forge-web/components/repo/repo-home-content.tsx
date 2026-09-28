@@ -283,7 +283,6 @@ function CommitCell({
  * Go to file: a filename filter over the bounded walk of the shown tree (never `flatIndex`, which
  * home must not load), shared with the language bar. It starts on first focus if not already run.
  */
-
 function GoToFile({
   reader,
   repoKey: key,

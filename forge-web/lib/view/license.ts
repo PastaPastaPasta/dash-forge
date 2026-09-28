@@ -73,30 +73,30 @@ export function identifyLicense(text: string): string | null {
 
 /** What the About card shows. */
 export interface RepoLicense {
-  /** SPDX ids found, in file order, each once (`['MIT', 'Unlicense']` for a dual-licensed repo). */
+  /**
+   * SPDX ids found, in file order, each once (`['MIT', 'Unlicense']` for a dual-licensed repo).
+   * Empty: license files exist but none names a known license ("Other").
+   */
   readonly ids: readonly string[]
-  /** The license file to link to (the first one found). */
+  /** The license file to link to: the first that names a known license, else the first. */
   readonly file: string
-  /** Some license file matched no known license. */
-  readonly other: boolean
 }
 
 /**
  * The repo's license from its root license files (`files`: name → text, in listing order), or null
- * when there are none. A file naming no known license adds "Other".
+ * when there are none. A COPYING that only says "dual-licensed under MIT or Unlicense" beside the
+ * real texts adds nothing; "Other" only when no file names a known license.
  */
 export function detectLicense(files: readonly (readonly [name: string, text: string | null])[]): RepoLicense | null {
-  if (files.length === 0) return null
+  const first = files[0]
+  if (first === undefined) return null
   const ids: string[] = []
-  let other = false
-  for (const [, text] of files) {
+  let file: string | null = null
+  for (const [name, text] of files) {
     const id = text === null ? null : identifyLicense(text)
-    if (id === null) other = true
-    else if (!ids.includes(id)) ids.push(id)
+    if (id === null) continue
+    file ??= name
+    if (!ids.includes(id)) ids.push(id)
   }
-  // A COPYING that only says "dual-licensed under MIT or Unlicense" beside the real texts is not
-  // another license: "Other" only when no file names a known one. The link goes to the first file
-  // that names one.
-  const file = files.find(([, text]) => text !== null && identifyLicense(text) !== null) ?? files[0]
-  return { ids, file: (file as readonly [string, string | null])[0], other: other && ids.length === 0 }
+  return { ids, file: file ?? first[0] }
 }

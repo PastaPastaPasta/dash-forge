@@ -12,7 +12,8 @@ import { historyWalker } from './commit-log'
 import { readBlob, type ObjectReader } from './tree-nav'
 import { decodeTextBlob, type TreeEntry } from './git-objects'
 import { detectLicense, isLicenseFile, LICENSE_MAX_BYTES, type RepoLicense } from './license'
-import { languageStats, walkRepoFiles, type LanguageStats, type RepoFiles } from './languages'
+import { languageStats, type LanguageStats } from './languages'
+import { FILE_WALK_FILES, FILE_WALK_TREES, walkFiles, type FileWalk } from './zip'
 
 export interface RepoFacts {
   /** null: no license file (or unreadable); undefined: not known yet. */
@@ -23,7 +24,7 @@ export interface RepoFacts {
 const UNKNOWN: RepoFacts = { license: undefined, languages: undefined }
 const facts = new Map<string, RepoFacts>()
 const listeners = new Set<() => void>()
-const walks = new Map<string, Promise<RepoFiles>>()
+const walks = new Map<string, Promise<FileWalk>>()
 /** Tips kept (a long session visiting many repos keeps only the recent ones). */
 const KEEP = 50
 
@@ -55,14 +56,18 @@ export function subscribeRepoFacts(listener: () => void): () => void {
  * The walk of the repo's files at this tip, started once per tip and shared, through a read-ahead
  * walker (a pack keeps its trees together). Not cancellable: the next caller wants the same walk.
  */
-export function repoFilesWalk(repoKey: string, tipOid: string, reader: ObjectReader, rootTree: string): Promise<RepoFiles> {
+export function repoFilesWalk(repoKey: string, tipOid: string, reader: ObjectReader, rootTree: string): Promise<FileWalk> {
   const key = keyOf(repoKey, tipOid)
   let walk = walks.get(key)
   if (walk === undefined) {
     const walker = historyWalker(reader)
-    walk = walkRepoFiles(walker, rootTree).finally(() => walker.flush?.())
-    walks.set(key, walk)
-    walk.catch(() => walks.delete(key))
+    const started = walkFiles(walker, rootTree, { maxTrees: FILE_WALK_TREES, maxFiles: FILE_WALK_FILES }).finally(() => walker.flush?.())
+    walk = started
+    walks.set(key, started)
+    // A failed walk is forgotten (the next caller tries again), unless a newer one took the key.
+    started.catch(() => {
+      if (walks.get(key) === started) walks.delete(key)
+    })
     trim(walks)
   }
   return walk

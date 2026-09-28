@@ -7,7 +7,8 @@ import { describe, expect, it } from 'vitest'
 
 import { MODE_TREE } from '../browse'
 import { Store } from './diff-fixtures'
-import { languageOf, languageShares, languageStats, walkRepoFiles } from './languages'
+import { languageOf, languageShares, languageStats } from './languages'
+import { walkFiles } from './zip'
 
 describe('languageOf', () => {
   it('maps extensions and whole names, case-insensitively', () => {
@@ -52,7 +53,7 @@ describe('languageShares', () => {
   })
 })
 
-describe('walkRepoFiles and languageStats', () => {
+describe('walkFiles and languageStats', () => {
   function repo(): { s: Store; root: string } {
     const s = new Store()
     const root = s.files({
@@ -72,7 +73,7 @@ describe('walkRepoFiles and languageStats', () => {
 
   it('sizes files from the locator, reads trees only, and leaves vendored files out of the bar (Go to file still lists them)', async () => {
     const { s, root } = repo()
-    const walk = await walkRepoFiles(s.reader(undefined, locateBy(s)), root)
+    const walk = await walkFiles(s.reader(undefined, locateBy(s)), root)
     expect(walk.files.map((f) => f.path)).toEqual(['README.md', 'scripts/build.sh', 'src/lib/util.rs', 'src/main.rs', 'vendor/big/huge.c'])
     const stats = languageStats(walk)
     expect(stats.languages.map((l) => l.name)).toEqual(['Rust', 'Shell'])
@@ -82,18 +83,27 @@ describe('walkRepoFiles and languageStats', () => {
 
   it('stops at its bounds and says so', async () => {
     const { s, root } = repo()
-    const byTrees = await walkRepoFiles(s.reader(undefined, locateBy(s)), root, { maxTrees: 1 })
+    const byTrees = await walkFiles(s.reader(undefined, locateBy(s)), root, { maxTrees: 1 })
     expect(byTrees.truncated).toBe(true)
-    expect(byTrees.trees).toBe(1)
-    const byFiles = await walkRepoFiles(s.reader(undefined, locateBy(s)), root, { maxFiles: 1 })
+    const byFiles = await walkFiles(s.reader(undefined, locateBy(s)), root, { maxFiles: 1 })
     expect(byFiles.files).toHaveLength(1)
     expect(byFiles.truncated).toBe(true)
+  })
+
+  it('a single tree with more files than the bound is truncated, not complete', async () => {
+    const s = new Store()
+    const files: Record<string, string> = {}
+    for (let i = 0; i < 12; i++) files[`f${i}.rs`] = String(i)
+    const root = s.files(files)
+    const walk = await walkFiles(s.reader(undefined, locateBy(s)), root, { maxFiles: 5 })
+    expect(walk.files).toHaveLength(5)
+    expect(walk.truncated).toBe(true)
   })
 
   it('treats a tree entry as a directory only by its mode', async () => {
     const s = new Store()
     const sub = s.files({ 'x.go': 'package x\n' })
     const root = s.tree([{ name: 'pkg', oid: sub, mode: MODE_TREE }])
-    expect(languageStats(await walkRepoFiles(s.reader(undefined, locateBy(s)), root)).languages.map((l) => l.name)).toEqual(['Go'])
+    expect(languageStats(await walkFiles(s.reader(undefined, locateBy(s)), root)).languages.map((l) => l.name)).toEqual(['Go'])
   })
 })
