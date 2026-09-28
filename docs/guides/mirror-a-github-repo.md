@@ -112,11 +112,14 @@ The [Forge Mirror Action](../../action/README.md) runs `forge-import` from GitHu
 
 The Action signs with the `DASH_FORGE_KEY` repository secret (Settings → Secrets and variables → Actions → New repository secret). **Do not give CI your main identity file.** The file from the bridge holds your 12 words and your MASTER key, which is everything. Use one of these:
 
-- **A limited runner key** (best): one pasteable value, `dfk1:<network>:<identity id>:<key id>:<wif>`. It can spend at most its budget, only on Forge, and only until it expires, and Platform enforces that at consensus. Make one with your master key (the identity file or the 12 words, once):
+- **A limited runner key** (best): one pasteable value, `dfk1:<network>:<identity id>:<key id>:<wif>`. It can spend at most its budget, only on Forge, and only until it expires, and Platform enforces that at consensus. Making one needs your master key once. If you signed in with the identity file from the bridge, pass that file with `--master`:
 
   ```sh
-  dg auth export --new-key --budget 0.5 --expires 365d --format dfk1 --reveal-secrets -o runner.dfk1
+  dg auth export --new-key --master dash-identity-<id>.json \
+    --budget 0.5 --expires 365d --format dfk1 --reveal-secrets -o runner.dfk1
   ```
+
+  Without `--master`, `dg` asks for your 12 recovery words instead. `dg` only reads the master key from the file: the key is not stored and CI never sees it.
 
   The file's one line is the secret. Paste it, then delete the file. `dg auth keys list` shows the key, and `dg auth keys disable <id>` retires it.
 - **A CI-only identity file**, stripped to the one signing key a push needs, the HIGH authentication key. The fields the tools need are kept, and every other secret is blanked:

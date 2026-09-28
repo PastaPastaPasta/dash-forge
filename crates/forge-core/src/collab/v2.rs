@@ -393,6 +393,21 @@ pub struct IssueView {
     pub hidden_values: usize,
     /// Events whose value is in plaintext ([`TargetLog::plaintext_values`]).
     pub plaintext_values: usize,
+    /// The issue's `event` and `authorEvent` documents.
+    pub log: TargetLog,
+}
+
+impl IssueView {
+    /// The events that applied to the issue (every member `event`, and the author's own
+    /// close / reopen), in fold order: its history as the web's timeline shows it.
+    #[must_use]
+    pub fn events(&self) -> Vec<&Event> {
+        rules::review::merged_log(
+            &self.log.events,
+            &self.log.author_events,
+            &self.issue.author,
+        )
+    }
 }
 
 /// A pull request with its folded state and approvals.
@@ -1907,6 +1922,7 @@ impl<'a> Collab<'a> {
                     issue,
                     hidden_values: log.hidden_values,
                     plaintext_values: log.plaintext_values,
+                    log,
                 }
             })
             .collect();
@@ -2051,6 +2067,7 @@ impl<'a> Collab<'a> {
             issue,
             hidden_values: log.hidden_values,
             plaintext_values: log.plaintext_values,
+            log,
         }))
     }
 

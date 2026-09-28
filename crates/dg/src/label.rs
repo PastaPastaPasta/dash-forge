@@ -5,7 +5,7 @@
 use anyhow::Result;
 use serde_json::json;
 
-use crate::common::Session;
+use crate::common::{Reader, Session};
 use crate::context::Ctx;
 use crate::LabelCommand;
 use forge_core::rules::v2::Visibility;
@@ -61,7 +61,7 @@ async fn delete(ctx: &Ctx, repo: &str, name: &str) -> Result<()> {
 }
 
 async fn list(ctx: &Ctx, repo: &str, all: bool) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
+    let s = Reader::open(ctx, repo).await?;
     let labels = s.collab().labels(&s.repo).await?;
     let shown: Vec<_> = labels.iter().filter(|l| all || !l.retired).collect();
     ctx.emit(

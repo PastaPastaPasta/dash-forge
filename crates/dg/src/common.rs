@@ -3,6 +3,7 @@
 use anyhow::{Context as _, Result};
 
 use forge_core::platform::{LoadedIdentity, PlatformClient};
+use forge_core::rules::v2::Visibility;
 use forge_core::scope::RepoRef as Repo;
 use forge_core::user_error::{codes, UserError};
 
@@ -202,6 +203,105 @@ impl Session {
             .await
             .unwrap_or(0)
     }
+}
+
+/// A connection and the repository a command READS (L-12). No key is loaded for a public
+/// repository: anyone can read it, and a configured key that cannot be opened here (a sealed
+/// file with no terminal, a locked keychain) is never touched. A private repository's
+/// documents are sealed to its members' keys, so only then is the identity loaded, and without
+/// one the read stops with E301 saying why.
+pub struct Reader {
+    /// The connection.
+    pub client: PlatformClient,
+    /// The resolved repository.
+    pub repo: Repo,
+    /// The identity, loaded only for a private repository.
+    signer: Option<(forge_core::keystore::BridgeIdentity, LoadedIdentity)>,
+    /// Who is reading, when it is known without unsealing a key (see [`Ctx::identity_id_hint`]).
+    viewer: Option<String>,
+}
+
+impl Reader {
+    /// Parse `repo`, connect and resolve it; load the identity only if it is private.
+    pub async fn open(ctx: &crate::context::Ctx, repo: &str) -> Result<Self> {
+        let repo_ref = RepoRef::parse(repo)?;
+        let client = ctx.connect().await?;
+        let mut signer = None;
+        let mut viewer = ctx.identity_id_hint();
+        // A bare `name` is one of the reader's own repositories: when the key source does not
+        // say whose it is without opening it, open it.
+        if viewer.is_none()
+            && repo_ref.owner.is_none()
+            && repo_ref.repo_id().is_none()
+            && ctx.identity_path.is_some()
+        {
+            let (bridge, identity) = ctx.signer_on(&client).await?;
+            viewer = Some(identity.id());
+            signer = Some((bridge, identity));
+        }
+        let repo = resolve_for(&client, viewer.as_deref(), &repo_ref).await?;
+        if repo.visibility == Visibility::Private && signer.is_none() {
+            if ctx.identity_path.is_none() {
+                return Err(private_needs_identity(&repo.display()));
+            }
+            let (bridge, identity) = ctx.signer_on(&client).await?;
+            viewer = Some(identity.id());
+            signer = Some((bridge, identity));
+        }
+        Ok(Self {
+            client,
+            repo,
+            signer,
+            viewer,
+        })
+    }
+
+    /// The forge-v2 collaboration service: with the identity's keys for a private repository,
+    /// an anonymous reader otherwise.
+    pub fn collab(&self) -> forge_core::collab::v2::Collab<'_> {
+        match &self.signer {
+            Some((bridge, identity)) => {
+                forge_core::collab::v2::Collab::new(&self.client, identity, bridge)
+            }
+            None => forge_core::collab::v2::Collab::reader(&self.client),
+        }
+    }
+
+    /// The git data-plane service, keyed like [`Self::collab`].
+    pub fn service(&self) -> forge_core::repo::RepoService<'_> {
+        match &self.signer {
+            Some((bridge, identity)) => {
+                forge_core::repo::RepoService::new(&self.client, identity, bridge)
+            }
+            None => forge_core::repo::RepoService::reader(&self.client),
+        }
+    }
+
+    /// Who is reading, when known without opening a key (`None` signed out).
+    pub fn viewer(&self) -> Option<&str> {
+        self.viewer.as_deref()
+    }
+
+    /// The reader's identity id for a filter that names `me`: known without the key when the
+    /// key source says it, else read from the key (which may ask for its passphrase).
+    pub fn me(&self, ctx: &crate::context::Ctx) -> Result<String> {
+        match &self.viewer {
+            Some(id) => Ok(id.clone()),
+            None => Ok(ctx.load_bridge()?.identity_id),
+        }
+    }
+}
+
+/// E301 for a private repository read with no identity configured.
+fn private_needs_identity(repo: &str) -> anyhow::Error {
+    UserError::new(
+        codes::NO_IDENTITY,
+        format!("{repo} is private: reading it needs your identity"),
+    )
+    .cause("its content is encrypted to its members' keys, and no identity is configured here")
+    .fix("`dg auth login <file>` signs in as a member; or pass --identity <file>, or set DASH_FORGE_KEY=<file>")
+    .note("public repositories are read without an identity")
+    .into()
 }
 
 /// An issue / PR number as the contract stores it (1..=2^32-1), or a usage error.

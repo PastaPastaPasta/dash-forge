@@ -60,6 +60,7 @@ SCENARIOS=(
   "30-release-yank-keeps-assets"
   "31-import-merged-and-hashed"
   "32-import-failed-push-reports-landed"
+  "25-anonymous-reads"
 )
 
 # Optional subset filter (match by leading number or substring).

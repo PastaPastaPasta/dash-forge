@@ -12,7 +12,7 @@ use forge_core::rules::EventKind;
 use forge_core::scope::RepoRef as Repo;
 use forge_core::user_error::{codes, UserError};
 
-use super::{estimate, event_estimate, open_pr, open_pr_read, Est, Pr};
+use super::{estimate, event_estimate, open_pr, open_pr_read, Est, Pr, PrRead};
 use crate::common::Session;
 use crate::context::Ctx;
 use crate::fmt::{cost_line, dash_usd_price, route_text, safe, short};
@@ -633,7 +633,7 @@ pub async fn checks(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
 
 /// `dg pr commits`: the commits in `base..head`, newest first, from a scratch clone.
 pub async fn commits(ctx: &Ctx, repo: &str, number: u64, limit: usize) -> Result<()> {
-    let Pr { s, view } = open_pr_read(ctx, repo, number).await?;
+    let PrRead { s, view } = open_pr_read(ctx, repo, number).await?;
     let scratch = super::scratch_with_pr(ctx, &s.repo, &view)?;
     let dir = scratch.path();
     let range = match &view.base_tip {

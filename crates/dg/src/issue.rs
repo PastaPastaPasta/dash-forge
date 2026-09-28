@@ -8,11 +8,11 @@
 use anyhow::Result;
 use serde_json::json;
 
-use forge_core::collab::v2::{IssueView, Target};
+use forge_core::collab::v2::{Comment, IssueView, Target};
 use forge_core::create::default_journal_dir;
-use forge_core::rules::{EventKind, IssueState};
+use forge_core::rules::{Event, EventKind, IssueState};
 
-use crate::common::{number_arg, Session};
+use crate::common::{number_arg, Reader, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, dash_usd_price, route_text, safe};
 use crate::{IssueCommand, IssueListArgs};
@@ -112,12 +112,17 @@ fn labels_of(state: &IssueState) -> String {
     state.labels.iter().cloned().collect::<Vec<_>>().join(", ")
 }
 
-/// `me`, a DPNS name or an identity id, as a base58 identity id.
-async fn identity_arg(s: &Session, who: &str) -> Result<String> {
+/// `me`, a DPNS name or an identity id, as a base58 identity id. `me` is the signer's id, or
+/// `None` for a read with no identity.
+async fn identity_arg(
+    client: &forge_core::platform::PlatformClient,
+    me: impl FnOnce() -> Result<String>,
+    who: &str,
+) -> Result<String> {
     if who == "me" || who == "@me" {
-        return Ok(s.identity.id());
+        return me();
     }
-    Ok(forge_core::resolve::resolve_owner(&s.client, who.trim_start_matches('@')).await?)
+    Ok(forge_core::resolve::resolve_owner(client, who.trim_start_matches('@')).await?)
 }
 
 /// Whether `title` (or `#number`) holds every word of `search`, case-insensitively.
@@ -161,19 +166,19 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
     if args.page == 0 {
         return Err(crate::errors::usage("--page starts at 1"));
     }
-    let s = Session::open(ctx, &args.repo).await?;
+    let s = Reader::open(ctx, &args.repo).await?;
     let author = match &args.author {
-        Some(a) => Some(identity_arg(&s, a).await?),
+        Some(a) => Some(identity_arg(&s.client, || s.me(ctx), a).await?),
         None => None,
     };
     let assignee = match args.assignee.as_deref() {
         Some("none") => Some(None),
-        Some(a) => Some(Some(identity_arg(&s, a).await?)),
+        Some(a) => Some(Some(identity_arg(&s.client, || s.me(ctx), a).await?)),
         None => None,
     };
     // Every issue and the whole feed, folded once: the filters see the whole repo, not the
-    // newest page (SR-04), and there is no per-row read.
-    // The session's signer, not a bare reader: a private repo's issues open with its keys.
+    // newest page (SR-04), and there is no per-row read. A private repo's issues open with
+    // the reader's keys.
     let (all, hidden) = s.collab().issues_with_state(&s.repo).await?;
     let matching: Vec<Row> = all
         .into_iter()
@@ -250,7 +255,7 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
 }
 
 async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
+    let s = Reader::open(ctx, repo).await?;
 
     let collab = s.collab();
     let view = collab
@@ -262,6 +267,8 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         .await?;
     let values_note = crate::fmt::event_values_note(view.hidden_values, view.plaintext_values);
     let (hidden_values, plaintext_values) = (view.hidden_values, view.plaintext_values);
+    let events: Vec<Event> = view.events().into_iter().cloned().collect();
+    let timeline = timeline(&comments, &events);
     let state = view.state;
     let i = view.issue;
     let (id, title, body, author) = (i.document_id, i.title, i.body, i.author);
@@ -275,6 +282,13 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "documentId": id,
             "state": { "open": state.open, "labels": state.labels, "assignees": state.assignees },
             "comments": comments.iter().map(|c| json!({"id": c.document_id, "author": c.author, "body": c.body})).collect::<Vec<_>>(),
+            "events": events.iter().map(|e| json!({
+                "id": e.id,
+                "kind": e.kind,
+                "actor": e.actor,
+                "value": e.value,
+                "createdAt": e.created_at,
+            })).collect::<Vec<_>>(),
             "hiddenComments": hidden,
             "hiddenEventValues": hidden_values,
             "plaintextEventValues": plaintext_values,
@@ -289,8 +303,13 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             if !body.is_empty() {
                 println!("\n{}", safe(&body));
             }
-            for c in &comments {
-                println!("\n— {} ({}):\n{}", c.author, c.document_id, safe(&c.body));
+            for item in &timeline {
+                match item {
+                    Item::Comment(c) => {
+                        println!("\n— {} ({}):\n{}", c.author, c.document_id, safe(&c.body));
+                    }
+                    Item::Event(e) => println!("\n· {} {}", e.actor, safe(&event_phrase(e))),
+                }
             }
             if hidden > 0 {
                 println!("\n{}", crate::fmt::hidden_note(&s.repo, hidden));
@@ -301,6 +320,49 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         },
     );
     Ok(())
+}
+
+/// One entry of an issue's timeline.
+enum Item<'a> {
+    Comment(&'a Comment),
+    Event(&'a Event),
+}
+
+/// Comments and events in one `(createdAt, id)` order, as the web's issue timeline has them.
+fn timeline<'a>(comments: &'a [Comment], events: &'a [Event]) -> Vec<Item<'a>> {
+    let mut items: Vec<(u64, &str, Item<'a>)> = comments
+        .iter()
+        .map(|c| (c.created_at, c.document_id.as_str(), Item::Comment(c)))
+        .chain(
+            events
+                .iter()
+                .map(|e| (e.created_at, e.id.as_str(), Item::Event(e))),
+        )
+        .collect();
+    items.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    items.into_iter().map(|(_, _, i)| i).collect()
+}
+
+/// What an issue event did, in the web timeline's words.
+fn event_phrase(e: &Event) -> String {
+    let value = e.value.as_deref().unwrap_or("");
+    match e.kind {
+        EventKind::Close => "closed this".into(),
+        EventKind::Reopen => "reopened this".into(),
+        EventKind::LabelAdd => format!("added the {value} label"),
+        EventKind::LabelRemove => format!("removed the {value} label"),
+        EventKind::Assign if value.is_empty() => "assigned this".into(),
+        EventKind::Assign => format!("assigned {value}"),
+        EventKind::Unassign if value.is_empty() => "unassigned this".into(),
+        EventKind::Unassign => format!("unassigned {value}"),
+        EventKind::MilestoneSet => format!("set the milestone to {value}"),
+        EventKind::MilestoneClear => "cleared the milestone".into(),
+        // PR-only kinds do nothing to an issue; name them as the contract does.
+        other => serde_json::to_value(other)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default(),
+    }
 }
 
 /// Edit one of the signer's comments (issue or PR): its body, re-sealed in a private repo.
@@ -450,14 +512,19 @@ async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
     Ok(())
 }
 
+/// `(past tense, prompt verb)` of a close or a reopen ("reopend" was L-35).
+fn open_words(close: bool) -> (&'static str, &'static str) {
+    if close {
+        ("closed", "Close")
+    } else {
+        ("reopened", "Reopen")
+    }
+}
+
 async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "state not changed").await?;
     let target = target(&s, repo, number).await?;
-    let (verb, prompt) = if close {
-        ("close", "Close")
-    } else {
-        ("reopen", "Reopen")
-    };
+    let (done, prompt) = open_words(close);
     ctx.confirm_or_cancel(&format!("{prompt} issue #{number}? (one small document)"))?;
     let collab = s.collab();
     let (route, id) = collab.set_open(&s.repo, &target, close).await?;
@@ -467,14 +534,14 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
         .map(|v| v.state.open);
     ctx.emit(
         json!({
-            "status": if close { "closed" } else { "reopened" },
+            "status": done,
             "issue": number,
             "via": route,
             "eventId": id,
             "open": open_now,
         }),
         || {
-            println!("✓ {verb}d issue #{number} {}", route_text(route));
+            println!("✓ {done} issue #{number} {}", route_text(route));
             if open_now == Some(close) {
                 println!(
                     "  note: it does not read as {} yet (the read may lag a block)",
@@ -535,7 +602,7 @@ async fn assign(ctx: &Ctx, repo: &str, number: u64, who: &[String], add: bool) -
     let target = target(&s, repo, number).await?;
     let mut ids = Vec::new();
     for w in who {
-        ids.push(identity_arg(&s, w).await?);
+        ids.push(identity_arg(&s.client, || Ok(s.identity.id()), w).await?);
     }
     ctx.confirm_or_cancel(&format!(
         "{} {} on issue #{number}? (one small document each; members only)",
@@ -564,7 +631,72 @@ async fn assign(ctx: &Ctx, repo: &str, number: u64, who: &[String], add: bool) -
 
 #[cfg(test)]
 mod tests {
-    use super::{label_args, title_matches};
+    use super::{event_phrase, label_args, open_words, timeline, title_matches, Item};
+    use forge_core::collab::v2::Comment;
+    use forge_core::rules::{Event, EventKind};
+
+    #[test]
+    fn close_and_reopen_read_as_english() {
+        assert_eq!(open_words(true), ("closed", "Close"));
+        assert_eq!(open_words(false), ("reopened", "Reopen"));
+    }
+
+    fn event(id: &str, at: u64, kind: EventKind, value: Option<&str>) -> Event {
+        Event {
+            id: id.into(),
+            target_id: "t".into(),
+            kind,
+            actor: "A".into(),
+            value: value.map(str::to_string),
+            oid: None,
+            ref_id: None,
+            created_at: at,
+        }
+    }
+
+    fn comment(id: &str, at: u64) -> Comment {
+        Comment {
+            document_id: id.into(),
+            author: "B".into(),
+            body: "hi".into(),
+            reply_to: None,
+            review_id: None,
+            anchor: forge_core::rules::v2::AnchorFields::default(),
+            created_at: at,
+            imported: None,
+        }
+    }
+
+    /// L-35: `dg issue view` shows label and close events among the comments, in time order,
+    /// in the web timeline's words.
+    #[test]
+    fn issue_view_interleaves_events_with_comments() {
+        let events = [
+            event("e1", 10, EventKind::LabelAdd, Some("bug")),
+            event("e3", 30, EventKind::Close, None),
+            event("e4", 40, EventKind::Reopen, None),
+        ];
+        let comments = [comment("c2", 20)];
+        let order: Vec<String> = timeline(&comments, &events)
+            .iter()
+            .map(|i| match i {
+                Item::Comment(c) => c.document_id.clone(),
+                Item::Event(e) => event_phrase(e),
+            })
+            .collect();
+        assert_eq!(
+            order,
+            ["added the bug label", "c2", "closed this", "reopened this"]
+        );
+        assert_eq!(
+            event_phrase(&event("e", 1, EventKind::LabelRemove, Some("docs"))),
+            "removed the docs label"
+        );
+        assert_eq!(
+            event_phrase(&event("e", 1, EventKind::Assign, Some("X"))),
+            "assigned X"
+        );
+    }
 
     #[test]
     fn label_takes_add_remove_words_or_the_old_flags() {

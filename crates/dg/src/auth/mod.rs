@@ -173,7 +173,8 @@ pub struct ExportArgs {
     /// --expires 365d`), instead of this computer's key. Needs the master key once.
     #[arg(long)]
     pub new_key: bool,
-    /// With --new-key: the identity file or recovery words (see `dg auth login`).
+    /// With --new-key: the identity file holding the master key (without it you are asked for
+    /// the 12 recovery words).
     #[arg(long, value_name = "FILE", requires = "new_key")]
     pub master: Option<PathBuf>,
     #[command(flatten)]
@@ -293,6 +294,14 @@ pub fn read_mnemonic() -> Result<Secret> {
     identity::normalize_mnemonic(&words).map_err(Into::into)
 }
 
+/// What [`master_identity`] says before it asks for the recovery words: a user who signed in
+/// with an identity file has no words at hand, and `--master <file>` takes that file instead
+/// (L-34).
+const MASTER_PROMPT: &str =
+    "This needs your master key once. It is used for this one signature and not stored.\n\
+     Type your 12 recovery words below, or press Ctrl-C and run the command again with \
+     --master <identity file> (the file from the bridge, or a `dg auth new --backup-file`).";
+
 /// The master identity for a ceremony: `--master <file>` (or the file given to login), else the
 /// stored full identity if it has a master key, else the recovery words typed now.
 pub fn master_identity(
@@ -307,9 +316,7 @@ pub fn master_identity(
     } else if let Some(b) = ctx.load_bridge().ok().filter(|b| b.master_key().is_some()) {
         b
     } else {
-        eprintln!(
-            "This needs your master key once. It is used for this one signature and not stored."
-        );
+        eprintln!("{MASTER_PROMPT}");
         let words = read_mnemonic()?;
         NewIdentityKeys::from_mnemonic(&words, ctx.network())?.to_bridge(identity_id)
     };
@@ -1248,6 +1255,13 @@ async fn logout(ctx: &Ctx, disable: bool, master: Option<&std::path::Path>) -> R
 mod tests {
     use super::*;
     use forge_core::network::NetworkSettings;
+
+    /// L-34: the recovery-words prompt names the way out for an identity-file user.
+    #[test]
+    fn the_master_key_prompt_offers_master_file() {
+        assert!(MASTER_PROMPT.contains("--master <identity file>"));
+        assert!(MASTER_PROMPT.contains("recovery words"));
+    }
 
     fn moutai(dapi: Option<&str>) -> forge_core::platform::Network {
         NetworkSettings {

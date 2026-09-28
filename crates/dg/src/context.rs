@@ -41,6 +41,9 @@ pub struct Ctx {
     /// Whether this run's `git-remote-dash` takes the handed key (`git remote-dash
     /// --check-key`, run once, before the first handoff).
     helper_ok: std::sync::OnceLock<bool>,
+    /// The identity id config.toml records next to `default_identity`, when that default is
+    /// the key source in use: it names the identity without unsealing its key.
+    pub config_identity_id: Option<String>,
 }
 
 /// Why a confirmation prompt cannot be asked, or `None` when it can (or `--yes` answers it).
@@ -61,6 +64,33 @@ fn confirmation_required(cause: String) -> UserError {
     UserError::new(codes::CONFIRMATION_REQUIRED, "confirmation required")
         .cause(cause)
         .note("nothing was written")
+}
+
+async fn fetch_signer(client: &PlatformClient, bridge: &BridgeIdentity) -> Result<LoadedIdentity> {
+    client
+        .fetch_identity(&bridge.identity_id)
+        .await
+        .context("fetching the signing identity")
+}
+
+/// The identity id a key source names without opening it (see [`Ctx::identity_id_hint`]).
+fn identity_id_of_source(source: &std::path::Path) -> Option<String> {
+    use forge_core::keystore::{parse_keychain_source, DFK1_PREFIX};
+    let s = source.to_str()?;
+    if let Some(rest) = s.strip_prefix(DFK1_PREFIX) {
+        // dfk1:<network>:<identityId>:<keyId>:<wif>
+        return rest.split(':').nth(1).map(str::to_string);
+    }
+    if let Some((_, account)) = parse_keychain_source(s) {
+        // keychain:dash-forge/<network>/<identityId>
+        return account.rsplit('/').next().map(str::to_string);
+    }
+    let raw = zeroize::Zeroizing::new(std::fs::read_to_string(source).ok()?);
+    if forge_core::sealed::is_sealed(&raw) {
+        return None;
+    }
+    let v: Value = serde_json::from_str(&raw).ok()?;
+    v.get("identityId")?.as_str().map(str::to_string)
 }
 
 /// Stack the network layers in `dg`'s precedence order, for [`NetworkSettings::resolve`].
@@ -98,11 +128,17 @@ impl Ctx {
         {
             tracing::warn!("{}", forge_core::keystore::INLINE_KEY_ON_ARGV);
         }
-        let identity_path = cli
+        let explicit = cli
             .identity
             .clone()
-            .or_else(|| std::env::var_os("DASH_FORGE_KEY").map(PathBuf::from))
-            .or_else(|| config.default_identity.as_deref().map(PathBuf::from));
+            .or_else(|| std::env::var_os("DASH_FORGE_KEY").map(PathBuf::from));
+        // The recorded id names the recorded default only.
+        let config_identity_id = explicit
+            .is_none()
+            .then(|| config.default_identity_id.clone())
+            .flatten();
+        let identity_path =
+            explicit.or_else(|| config.default_identity.as_deref().map(PathBuf::from));
 
         Ok(Self {
             json: cli.json,
@@ -115,6 +151,7 @@ impl Ctx {
             allow_archived: cli.allow_archived,
             unlocked: std::sync::OnceLock::new(),
             helper_ok: std::sync::OnceLock::new(),
+            config_identity_id,
         })
     }
 
@@ -137,6 +174,18 @@ impl Ctx {
                 .fix("or pass --identity <file>, or set DASH_FORGE_KEY=<file>")
                 .into()
         })
+    }
+
+    /// The configured identity's id, read without unsealing its key: an inline `dfk1:` key
+    /// and a `keychain:` source name it, config.toml records it for the default, and a
+    /// plaintext identity file holds it. `None` when it cannot be told without the key (a
+    /// sealed file given by path) or no identity is configured.
+    pub fn identity_id_hint(&self) -> Option<String> {
+        let source = self.identity_path.as_deref()?;
+        self.config_identity_id
+            .clone()
+            .or_else(|| identity_id_of_source(source))
+            .filter(|id| forge_core::resolve::looks_like_identity_id(id))
     }
 
     /// Load the signing identity (bridge-format key material) from the resolved path.
@@ -187,11 +236,19 @@ impl Ctx {
     ) -> Result<(PlatformClient, BridgeIdentity, LoadedIdentity)> {
         let bridge = self.load_bridge()?;
         let client = self.connect().await?;
-        let identity = client
-            .fetch_identity(&bridge.identity_id)
-            .await
-            .context("fetching the signing identity")?;
+        let identity = fetch_signer(&client, &bridge).await?;
         Ok((client, bridge, identity))
+    }
+
+    /// Load the signing identity and fetch it over `client`, already connected (a read that
+    /// found it needs keys after all: a private repository).
+    pub async fn signer_on(
+        &self,
+        client: &PlatformClient,
+    ) -> Result<(BridgeIdentity, LoadedIdentity)> {
+        let bridge = self.load_bridge()?;
+        let identity = fetch_signer(client, &bridge).await?;
+        Ok((bridge, identity))
     }
 
     /// Ask the user to confirm a cost-bearing / destructive action.
@@ -304,6 +361,7 @@ impl Ctx {
             allow_archived: false,
             unlocked: std::sync::OnceLock::new(),
             helper_ok: std::sync::OnceLock::new(),
+            config_identity_id: None,
         }
     }
 }
@@ -399,6 +457,47 @@ mod tests {
             .contains("stdin is not a terminal"));
         assert!(u.fix[0].contains("--yes"), "{:?}", u.fix);
         assert_eq!(u.note.as_deref(), Some("nothing was written"));
+    }
+
+    /// L-12: a read names its viewer without opening the key: a sealed file is never unsealed
+    /// (no passphrase prompt), and its id comes from config.toml when it is the default.
+    #[test]
+    fn the_identity_id_is_read_without_opening_a_key() {
+        const ID: &str = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB";
+        let dir = tempfile::tempdir().unwrap();
+        let hint = |source: &str, recorded: Option<&str>| {
+            let mut ctx = Ctx::scripted(false, false, false, Some(PathBuf::from(source)));
+            ctx.config_identity_id = recorded.map(str::to_string);
+            ctx.identity_id_hint()
+        };
+        assert_eq!(
+            hint(&format!("dfk1:devnet:{ID}:5:cWIFWIFWIF"), None).as_deref(),
+            Some(ID)
+        );
+        assert_eq!(
+            hint(&format!("keychain:dash-forge/devnet/{ID}"), None).as_deref(),
+            Some(ID)
+        );
+        let plain = dir.path().join("id.json");
+        std::fs::write(
+            &plain,
+            format!(r#"{{"identityId":"{ID}","network":"devnet"}}"#),
+        )
+        .unwrap();
+        assert_eq!(hint(plain.to_str().unwrap(), None).as_deref(), Some(ID));
+        // A sealed file does not say whose it is without its passphrase…
+        let sealed_path = dir.path().join("id.key");
+        let sealed = forge_core::sealed::seal(b"{}", "a long passphrase").unwrap();
+        std::fs::write(&sealed_path, sealed).unwrap();
+        assert_eq!(hint(sealed_path.to_str().unwrap(), None), None);
+        // …unless config.toml recorded the id next to it as the default.
+        assert_eq!(
+            hint(sealed_path.to_str().unwrap(), Some(ID)).as_deref(),
+            Some(ID)
+        );
+        // No identity at all: nobody.
+        let anon = Ctx::scripted(false, false, false, None);
+        assert_eq!(anon.identity_id_hint(), None);
     }
 
     #[test]

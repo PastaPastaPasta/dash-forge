@@ -1179,7 +1179,10 @@ fn redact_key_values(s: &str) -> String {
             // A `dfk1:` value is left to `redact_tokens`, which keeps its non-secret
             // network/identity/key-id prefix and drops only the WIF.
             let dfk1 = chars[val_start..i].starts_with(&['d', 'f', 'k', '1', ':']);
-            if i > val_start && is_secret_key(&key) && !dfk1 {
+            // `DASH_FORGE_KEY=<identity file>` in a fix line is a placeholder, not a value: no
+            // credential format (base64, hex, WIF, a token) starts with `<`.
+            let placeholder = chars.get(val_start) == Some(&'<');
+            if i > val_start && is_secret_key(&key) && !dfk1 && !placeholder {
                 out.push_str(REDACTED);
             } else {
                 out.extend(&chars[val_start..i]);
@@ -1279,10 +1282,13 @@ fn redact_token(t: &str) -> String {
     }
     if let Some(pos) = t.find("dfk1:") {
         let (lead, rest) = t.split_at(pos);
-        if lead
-            .chars()
-            .last()
-            .is_none_or(|c| !c.is_ascii_alphanumeric())
+        // `dfk1:…` / `dfk1:<network>:…` in a fix line is a placeholder: no key starts so.
+        let placeholder = rest["dfk1:".len()..].starts_with(['<', '…']);
+        if !placeholder
+            && lead
+                .chars()
+                .last()
+                .is_none_or(|c| !c.is_ascii_alphanumeric())
         {
             let parts: Vec<&str> = rest["dfk1:".len()..].splitn(4, ':').collect();
             if parts.len() == 4 {
@@ -2060,6 +2066,15 @@ mod tests {
             redact("WIF=cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy"),
             "WIF=[redacted]"
         );
+        // L-12: a `<placeholder>` in a fix line is shown as written, not as `[redacted]>`.
+        for fix in [
+            "or pass --identity <file>, or set DASH_FORGE_KEY=<file>",
+            "export DASH_FORGE_KEY=<identity file | keychain:… | dfk1:…>",
+            "set token=<your token>",
+            "an inline dfk1:<network>:<identityId>:<keyId>:<wif> key",
+        ] {
+            assert_eq!(redact(fix), fix);
+        }
         // Rendering applies it.
         let u = UserError::new(codes::UNEXPECTED, "x").cause("https://a:b@h/");
         assert!(!u.render("", false).contains("a:b"));

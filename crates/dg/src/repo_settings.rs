@@ -25,7 +25,7 @@ use forge_core::rules::review::Policy;
 use forge_core::rules::v2::Role;
 use forge_core::user_error::{codes, UserError};
 
-use crate::common::Session;
+use crate::common::{Reader, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, dash_usd_price, safe};
 use crate::{RepoEditArgs, RepoPolicyCommand, RepoPolicySetArgs, RepoProtectCommand};
@@ -234,9 +234,8 @@ fn owner_only(repo: &str) -> anyhow::Error {
 pub async fn protect(ctx: &Ctx, cmd: &RepoProtectCommand) -> Result<()> {
     match cmd {
         RepoProtectCommand::List { repo } => {
-            let s = Session::open(ctx, repo).await?;
-            let svc = RepoService::new(&s.client, &s.identity, &s.bridge);
-            let cfg = svc.current_config(&s.repo).await?;
+            let s = Reader::open(ctx, repo).await?;
+            let cfg = s.service().current_config(&s.repo).await?;
             ctx.emit(
                 json!({
                     "repo": s.repo.display(),
@@ -412,7 +411,7 @@ const POLICY_NOTE: &str = "a client rule: Forge clients apply it to their merge 
 pub async fn policy(ctx: &Ctx, cmd: &RepoPolicyCommand) -> Result<()> {
     match cmd {
         RepoPolicyCommand::Show { repo } => {
-            let s = Session::open(ctx, repo).await?;
+            let s = Reader::open(ctx, repo).await?;
             let p = s.collab().policy(&s.repo).await?;
             ctx.emit(
                 json!({

@@ -20,7 +20,7 @@ use forge_core::repo::RepoService;
 use forge_core::resolve::{list_owned, repo_slug};
 use forge_core::user_error::{codes, UserError};
 
-use crate::common::{resolve, RepoRef, Session};
+use crate::common::{resolve, Reader, RepoRef, Session};
 use crate::context::Ctx;
 use crate::fmt::{
     cost_json, cost_line, dash_usd_price, FORK_PER_DOC_CREDITS, REPO_CREATE_ESTIMATE_CREDITS,
@@ -357,21 +357,19 @@ async fn star(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
 
 /// View a repo: resolved refs, default branch, pack manifests, members.
 async fn view(ctx: &Ctx, repo: &str) -> Result<()> {
-    let repo_ref = RepoRef::parse(repo)?;
-    let (client, bridge, identity) = ctx.connect_with_identity().await?;
-    let handle = resolve(&client, &identity, &repo_ref).await?;
-
-    let svc = RepoService::new(&client, &identity, &bridge);
+    let r = Reader::open(ctx, repo).await?;
+    let (client, handle) = (&r.client, &r.repo);
+    let svc = r.service();
     // A private repo this identity cannot read (no encryption key, not a member, …): say
     // why, rather than show an empty repo (E306 / E307 and their fixes).
     if handle.visibility == Visibility::Private {
-        svc.keyring(&handle).await?.require_key(&handle)?;
+        svc.keyring(handle).await?.require_key(handle)?;
     }
-    let default_branch = svc.read_default_branch(&handle).await.unwrap_or(None);
-    let refs = svc.read_refs(&handle).await.unwrap_or_default();
-    let manifests = svc.read_pack_manifests(&handle).await.unwrap_or_default();
-    let members = MemberReader::new(&client)
-        .list(&handle)
+    let default_branch = svc.read_default_branch(handle).await.unwrap_or(None);
+    let refs = svc.read_refs(handle).await.unwrap_or_default();
+    let manifests = svc.read_pack_manifests(handle).await.unwrap_or_default();
+    let members = MemberReader::new(client)
+        .list(handle)
         .await
         .map_or(0, |m| m.len());
 
@@ -429,12 +427,16 @@ fn ref_state_short(state: &forge_core::rules::RefState) -> String {
 
 /// List an owner's repositories.
 async fn list(ctx: &Ctx, owner: Option<&str>) -> Result<()> {
-    let (client, _bridge, identity) = ctx.connect_with_identity().await?;
+    // Another owner's list is public: no key is opened for it (L-12).
+    let client = ctx.connect().await?;
     let owner_id = match owner {
         Some(o) => forge_core::resolve::resolve_owner(&client, o)
             .await
             .with_context(|| format!("resolving owner {o}"))?,
-        None => identity.id(),
+        None => match ctx.identity_id_hint() {
+            Some(id) => id,
+            None => ctx.signer_on(&client).await?.1.id(),
+        },
     };
     let repos = list_owned(&client, &owner_id)
         .await

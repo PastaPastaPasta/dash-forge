@@ -22,7 +22,7 @@ use forge_core::storage::{
 };
 use forge_core::user_error::{codes, UserError};
 
-use crate::common::Session;
+use crate::common::{Reader, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, dash_usd_price, short};
 use crate::{ReleaseCommand, ReleaseCreateArgs};
@@ -81,12 +81,14 @@ fn asset_targets(storage: Option<&str>) -> Result<(Vec<ExternalTarget>, usize)> 
     Ok((targets, required))
 }
 
-/// Upload one asset file and describe it.
+/// Upload one asset file and describe it, with how many copies were stored: one per storage
+/// profile that confirmed it, however many URIs each records (an S3 copy has an `https` and an
+/// `s3` one: "2 cop(ies)" for one profile was L-35).
 async fn upload_asset(
     path: &Path,
     targets: &[ExternalTarget],
     required: usize,
-) -> Result<ReleaseAsset> {
+) -> Result<(ReleaseAsset, usize)> {
     let name = upload_name(path)
         .context("an asset path needs a file name")?
         .to_string();
@@ -103,13 +105,19 @@ async fn upload_asset(
         uris.retain(|u| !u.starts_with("s3://"));
     }
     uris.truncate(MAX_ASSET_URIS);
-    Ok(ReleaseAsset {
+    let asset = ReleaseAsset {
         name,
         sha256: meta.pack_hash,
         size_bytes: bytes.len() as u64,
         uris,
         uri: None,
-    })
+    };
+    Ok((asset, rep.replicas.len()))
+}
+
+/// `2 copies`, `1 copy`.
+fn copies(n: usize) -> String {
+    format!("{n} cop{}", if n == 1 { "y" } else { "ies" })
 }
 
 async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
@@ -168,14 +176,14 @@ async fn create(ctx: &Ctx, args: &ReleaseCreateArgs) -> Result<()> {
     let mut uploaded = Vec::new();
     if let Some((targets, required)) = &targets {
         for p in &args.assets {
-            let a = upload_asset(p, targets, *required).await?;
+            let (a, stored) = upload_asset(p, targets, *required).await?;
             if !ctx.json {
                 eprintln!(
-                    "  ✓ {} ({}) sha256 {} → {} cop(ies)",
+                    "  ✓ {} ({}) sha256 {} → {}",
                     a.name,
                     forge_core::storage::human_bytes(a.size_bytes),
                     short(&a.sha256),
-                    a.uris.len()
+                    copies(stored)
                 );
             }
             uploaded.push(a);
@@ -286,7 +294,8 @@ fn asset_json(a: &ReleaseAsset) -> serde_json::Value {
 
 /// The releases of `repo` (newest per tag, newest first) and the superseded revisions.
 async fn read_releases(ctx: &Ctx, repo: &str) -> Result<(Vec<Release>, Vec<Release>)> {
-    let s = Session::open(ctx, repo).await?;
+    // Releases are public documents: no key is opened to read them (L-12).
+    let s = Reader::open(ctx, repo).await?;
     Ok(Collab::reader(&s.client).releases(&s.repo).await?)
 }
 
@@ -354,7 +363,104 @@ fn no_readable_copy(asset: &ReleaseAsset) -> UserError {
     .fix("if you trust that host (your own storage), add a storage profile whose public_url is it; for an ipfs:// copy, set `[read] ipfs_gateways`; then retry")
 }
 
-/// Download a release asset, accepting only bytes that hash to the recorded sha256.
+/// Where one downloaded asset is saved.
+#[derive(Debug, PartialEq, Eq)]
+struct Dest {
+    path: PathBuf,
+    /// `--output` named this file: an existing one is replaced. Otherwise the file name came
+    /// from the release (someone else's data), and an existing file or symlink is kept.
+    replace: bool,
+}
+
+/// Where each of the assets `names` goes (L-22). No `--output`: the current directory. An
+/// `--output` that is a directory (or ends in `/`): one file per asset, by its name. Any other
+/// `--output`: that file, for exactly one asset. Every destination is checked before anything
+/// is downloaded.
+fn plan_outputs(names: &[&str], output: Option<&Path>) -> Result<Vec<Dest>> {
+    let dir = match output {
+        None => Some(PathBuf::new()),
+        Some(p) if p.is_dir() || p.as_os_str().to_string_lossy().ends_with('/') => {
+            Some(p.to_path_buf())
+        }
+        Some(_) => None,
+    };
+    let Some(dir) = dir else {
+        let [_] = names else {
+            return Err(crate::errors::usage(format!(
+                "--output names one file, and the release has {} assets: pass an --output directory, or --asset <name>",
+                names.len()
+            )));
+        };
+        let path = output.expect("a file output").to_path_buf();
+        return Ok(vec![Dest {
+            path,
+            replace: true,
+        }]);
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    names
+        .iter()
+        .map(|name| {
+            // A recorded name is data anyone with the maintainer role wrote: never let it
+            // choose a path outside the directory.
+            let file = Path::new(name)
+                .file_name()
+                .map_or_else(|| PathBuf::from("asset"), PathBuf::from);
+            let path = dir.join(&file);
+            if !seen.insert(file) || path.symlink_metadata().is_ok() {
+                return Err(crate::errors::usage(format!(
+                    "{} already exists; pass --output <directory or file> to choose where the assets go",
+                    path.display()
+                )));
+            }
+            Ok(Dest {
+                path,
+                replace: false,
+            })
+        })
+        .collect()
+}
+
+/// A local failure to save a downloaded asset: the release WAS read and the bytes verified,
+/// so this is not "could not read releases" (L-22).
+fn save_failed(path: &Path, e: &std::io::Error) -> anyhow::Error {
+    if e.kind() == std::io::ErrorKind::AlreadyExists {
+        return crate::errors::usage(format!(
+            "{} already exists; pass --output <directory or file> to choose where the assets go",
+            path.display()
+        ));
+    }
+    UserError::new(
+        codes::USAGE,
+        format!(
+            "release asset not saved: could not write {}",
+            path.display()
+        ),
+    )
+    .cause(format!(
+        "the asset was downloaded and its sha256 verified, but saving it failed: {e}"
+    ))
+    .fix("pass --output <directory or file> naming a place you can write")
+    .into()
+}
+
+/// Write `bytes` to `dest` ([`Dest::replace`] decides whether an existing file may go).
+fn save(dest: &Dest, bytes: &[u8]) -> Result<()> {
+    let mut open = std::fs::OpenOptions::new();
+    open.write(true);
+    if dest.replace {
+        open.create(true).truncate(true);
+    } else {
+        open.create_new(true);
+    }
+    let mut f = open
+        .open(&dest.path)
+        .map_err(|e| save_failed(&dest.path, &e))?;
+    std::io::Write::write_all(&mut f, bytes).map_err(|e| save_failed(&dest.path, &e))
+}
+
+/// Download a release's assets (every one, or `--asset`), accepting only bytes that hash to
+/// the recorded sha256.
 async fn download(
     ctx: &Ctx,
     repo: &str,
@@ -372,87 +478,165 @@ async fn download(
                 format!("`dg release list {repo}` lists its releases"),
             )
         })?;
-    let asset = match asset_name {
-        Some(n) => release.assets.into_iter().find(|a| a.name == n),
-        None => release.assets.into_iter().next(),
+    let assets: Vec<ReleaseAsset> = release
+        .assets
+        .into_iter()
+        .filter(|a| asset_name.is_none_or(|n| a.name == n))
+        .collect();
+    if assets.is_empty() {
+        return Err(crate::errors::not_found(
+            match asset_name {
+                Some(n) => format!("release {tag:?} has no asset {n:?}"),
+                None => format!("release {tag:?} has no assets"),
+            },
+            "omit --asset to download every asset, or check the names with `dg release list`",
+        ));
     }
-    .ok_or_else(|| {
-        crate::errors::not_found(
-            format!("no matching asset in release {tag:?}"),
-            "omit --asset to download the first asset, or check the name with `dg release list`",
-        )
-    })?;
-    if asset.uris.is_empty() {
-        bail!("asset {:?} records no URI to download from", asset.name);
-    }
-    if let Some(e) = unverifiable(&asset, repo, tag) {
-        return Err(e.into());
-    }
-    // The gateway the uploader recorded reaches its node: try it before the shared list.
-    let reader = PackReader::from_user_config()
-        .prefer_gateways(forge_core::storage::read::repo_gateways(&asset.uris));
-    // Every recorded copy may be one this reader will not follow (plain http, this machine, a
-    // private network, a bucket with no profile here). Say that, rather than let the empty
-    // candidate list surface as "not found" on Platform (the release itself was read).
-    if !reader.has_candidates(&asset.uris) {
-        return Err(no_readable_copy(&asset).into());
-    }
-    let bytes = reader
-        .fetch_verified(
-            &asset.uris,
-            &asset.sha256.to_ascii_lowercase(),
-            (asset.size_bytes > 0).then_some(asset.size_bytes),
-            None,
-        )
-        .await
-        .context("downloading and verifying the asset")?;
-    // A recorded name is data anyone with the maintainer role wrote: never let it choose a
-    // path outside the current directory.
-    let safe_name = Path::new(&asset.name)
-        .file_name()
-        .map_or_else(|| PathBuf::from("asset"), PathBuf::from);
-    // Without --output the file is new: an existing file (or a symlink) of that name is not
-    // overwritten, since the name came from someone else.
-    let explicit = output.is_some();
-    let out_path = output.unwrap_or(safe_name);
-    let mut open = std::fs::OpenOptions::new();
-    open.write(true);
-    if explicit {
-        open.create(true).truncate(true);
-    } else {
-        open.create_new(true);
-    }
-    let mut f = open.open(&out_path).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::AlreadyExists {
-            crate::errors::usage(format!(
-                "{} already exists; pass --output <path> to choose where the asset goes",
-                out_path.display()
-            ))
-        } else {
-            anyhow::Error::from(e).context(format!("writing {}", out_path.display()))
+    // The gateways the uploaders recorded reach their nodes: try them before the shared list.
+    let reader = PackReader::from_user_config().prefer_gateways(
+        forge_core::storage::read::repo_gateways(assets.iter().flat_map(|a| a.uris.iter())),
+    );
+    // Before anything is downloaded: every asset has a copy this reader follows (not plain
+    // http, this machine, a private network, a bucket with no profile here: say that rather
+    // than let an empty candidate list read as "not found"), and every destination is free.
+    for a in &assets {
+        if a.uris.is_empty() {
+            bail!("asset {:?} records no URI to download from", a.name);
         }
-    })?;
-    std::io::Write::write_all(&mut f, &bytes)
-        .with_context(|| format!("writing {}", out_path.display()))?;
-    ctx.emit(
-        json!({
-            "status": "downloaded",
-            "tag": tag,
-            "asset": asset.name,
-            "sha256": asset.sha256,
-            "bytes": bytes.len(),
-            "output": out_path.to_string_lossy(),
-        }),
-        || {
+        if let Some(e) = unverifiable(a, repo, tag) {
+            return Err(e.into());
+        }
+        if !reader.has_candidates(&a.uris) {
+            return Err(no_readable_copy(a).into());
+        }
+    }
+    let names: Vec<&str> = assets.iter().map(|a| a.name.as_str()).collect();
+    let dests = plan_outputs(&names, output.as_deref())?;
+    if let Some(dir) = dests.first().and_then(|d| d.path.parent()) {
+        if !dir.as_os_str().is_empty() && !dir.exists() {
+            std::fs::create_dir_all(dir).map_err(|e| save_failed(dir, &e))?;
+        }
+    }
+    let mut saved = Vec::new();
+    for (asset, dest) in assets.iter().zip(&dests) {
+        let bytes = reader
+            .fetch_verified(
+                &asset.uris,
+                &asset.sha256.to_ascii_lowercase(),
+                (asset.size_bytes > 0).then_some(asset.size_bytes),
+                None,
+            )
+            .await
+            .with_context(|| format!("downloading and verifying {}", asset.name))?;
+        save(dest, &bytes)?;
+        if !ctx.json {
             println!(
                 "✓ {} ({} bytes, sha256 verified) → {}",
                 crate::fmt::safe(&asset.name),
                 bytes.len(),
-                out_path.display()
+                dest.path.display()
             );
-        },
-    );
+        }
+        saved.push(json!({
+            "name": asset.name,
+            "sha256": asset.sha256,
+            "bytes": bytes.len(),
+            "output": dest.path.to_string_lossy(),
+        }));
+    }
+    if ctx.json {
+        crate::errors::print_json(&json!({
+            "status": "downloaded",
+            "tag": tag,
+            "count": saved.len(),
+            "assets": saved,
+        }));
+    }
     Ok(())
+}
+
+#[cfg(test)]
+mod download_tests {
+    use super::*;
+
+    fn dests(names: &[&str], output: Option<&Path>) -> Result<Vec<(PathBuf, bool)>> {
+        Ok(plan_outputs(names, output)?
+            .into_iter()
+            .map(|d| (d.path, d.replace))
+            .collect())
+    }
+
+    /// L-22: `--output <dir>` saves every asset in it by name (it was "Is a directory").
+    #[test]
+    fn an_output_directory_takes_every_asset_by_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let got = dests(&["a.tar.gz", "../../etc/b.zip"], Some(dir.path())).unwrap();
+        assert_eq!(
+            got,
+            [
+                (dir.path().join("a.tar.gz"), false),
+                (dir.path().join("b.zip"), false)
+            ]
+        );
+        // A directory that does not exist yet, named with a trailing slash.
+        let new = format!("{}/new/", dir.path().display());
+        assert_eq!(
+            dests(&["a"], Some(Path::new(&new))).unwrap()[0].0,
+            Path::new(&new).join("a")
+        );
+        // No --output: the current directory.
+        assert_eq!(
+            dests(&["x", "y"], None).unwrap(),
+            [(PathBuf::from("x"), false), (PathBuf::from("y"), false)]
+        );
+    }
+
+    #[test]
+    fn a_file_output_takes_one_asset_and_existing_files_stay() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("out.bin");
+        assert_eq!(dests(&["a"], Some(&file)).unwrap(), [(file.clone(), true)]);
+        let two = plan_outputs(&["a", "b"], Some(&file)).unwrap_err();
+        assert!(format!("{two:#}").contains("--output directory"), "{two:#}");
+        std::fs::write(dir.path().join("a"), b"mine").unwrap();
+        let exists = plan_outputs(&["a"], Some(dir.path())).unwrap_err();
+        assert!(
+            format!("{exists:#}").contains("already exists"),
+            "{exists:#}"
+        );
+        // Two recorded names that land on one file.
+        assert!(plan_outputs(&["x/c", "y/c"], Some(dir.path())).is_err());
+    }
+
+    /// A local write failure is its own error, not "could not read releases".
+    #[test]
+    fn a_failed_save_says_the_asset_was_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = save(
+            &Dest {
+                path: dir.path().to_path_buf(),
+                replace: true,
+            },
+            b"x",
+        )
+        .unwrap_err();
+        let u = forge_core::user_error::classify(
+            err.chain(),
+            &forge_core::user_error::ErrorContext {
+                goal: Some("release not downloaded"),
+                ..Default::default()
+            },
+        );
+        assert_eq!(u.code, "E201", "{u:?}");
+        assert!(u.message.starts_with("release asset not saved"), "{u:?}");
+        assert!(u.cause.unwrap().contains("sha256 verified"));
+    }
+
+    #[test]
+    fn copies_counts_profiles() {
+        assert_eq!(copies(1), "1 copy");
+        assert_eq!(copies(2), "2 copies");
+    }
 }
 
 #[cfg(test)]
