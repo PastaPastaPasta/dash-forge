@@ -17,13 +17,16 @@ const DEMO_OWNER = DEMO.owner
  */
 
 
-test('x1. explore lists recent repos and says what it cannot know', async ({ page }) => {
+test('x1. explore lists recent repos, trending and most starred, and says what it cannot know', async ({ page }) => {
   const { errors } = collectPageErrors(page)
   await page.goto('/explore/', { waitUntil: 'domcontentloaded' })
   await expect(page.getByRole('heading', { name: 'Explore', level: 1 })).toBeVisible()
   const recent = page.getByTestId('explore-recent-repos')
   await expect(recent.locator('a[href*="/repo"]').first()).toBeVisible({ timeout: 60_000 })
-  await expect(page.getByTestId('trending-note')).toHaveText("Trending needs an indexer. Forge doesn't run one; you can (docs).")
+  // Trending and Most starred are proved ranked reads (C-1); no "needs an indexer" note.
+  await expect(page.getByTestId('trending-note')).toHaveCount(0)
+  await expect(page.getByTestId('explore-trending').getByRole('heading', { name: /Trending (this week|today)/ })).toBeVisible()
+  await expect(page.getByTestId('explore-most-starred').getByRole('heading', { name: 'Most starred' })).toBeVisible()
   const released = page.getByTestId('explore-recently-released')
   await expect(released).toContainText('no cross-repo index')
   await expect(released.locator('[data-empty], li').first()).toBeVisible({ timeout: 60_000 })
