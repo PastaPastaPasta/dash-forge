@@ -298,18 +298,25 @@ export class RequestBudget implements DapiBudget {
   /** @internal Count one gated request sent (the base of the hedge share). */
   noteSent(now = Date.now()): void {
     this.sent.push(now)
+    // Kept to the window here too, so a tab that reads a lot but never hedges stays bounded.
+    if (this.sent.length > 64 && (this.sent[0] as number) <= now - FAILOVER_WINDOW_MS) this.trimHedgeWindow(now)
+  }
+
+  private trimHedgeWindow(now: number): void {
+    const since = now - FAILOVER_WINDOW_MS
+    this.sent = this.sent.filter((t) => t > since && t <= now)
+    this.hedges = this.hedges.filter((t) => t > since && t <= now)
   }
 
   /**
    * @internal A node to hedge a slow read to, taking one hedge from the budget, or null: at most
-   * {@link HEDGE_MAX_IN_FLIGHT} at once, about {@link HEDGE_SHARE} of the requests sent in the
-   * window, and none while {@link FAILOVER_MAX_HELD} or more nodes are held or down (a busy or
-   * failing network is not helped by more requests). Pair with {@link hedgeDone}.
+   * {@link HEDGE_MAX_IN_FLIGHT} at once; per window, {@link HEDGE_FLOOR} or {@link HEDGE_SHARE} of
+   * the requests sent, whichever is more; and none while {@link FAILOVER_MAX_HELD} or more nodes
+   * are held or down (a busy or failing network is not helped by more requests). Pair with
+   * {@link hedgeDone}.
    */
   startHedge(node: string, now = Date.now()): string | null {
-    const since = now - FAILOVER_WINDOW_MS
-    this.sent = this.sent.filter((t) => t > since && t <= now)
-    this.hedges = this.hedges.filter((t) => t > since && t <= now)
+    this.trimHedgeWindow(now)
     if (this.hedgesInFlight >= HEDGE_MAX_IN_FLIGHT) return null
     if (this.hedges.length >= Math.max(HEDGE_FLOOR, Math.floor(this.sent.length * HEDGE_SHARE))) return null
     let impaired = 0
@@ -565,6 +572,24 @@ function delay<T>(ms: number, value: T): { readonly promise: Promise<T>; readonl
 }
 
 /**
+ * A signal that aborts when either does: `AbortSignal.any` where the browser has it (Safari 17.4,
+ * Chrome 116, Firefox 124), else a controller that follows both. The fallback's listeners stay on
+ * `a` until it aborts or is collected; it only serves hedged document reads on older browsers.
+ */
+export function anyOf(a: AbortSignal, b: AbortSignal): AbortSignal {
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any([a, b])
+  const c = new AbortController()
+  for (const s of [a, b]) {
+    if (s.aborted) {
+      c.abort(s.reason)
+      break
+    }
+    s.addEventListener('abort', () => c.abort(s.reason), { once: true })
+  }
+  return c.signal
+}
+
+/**
  * Send `request` to `node`. A document read with no answer after {@link HEDGE_AFTER_MS} also goes
  * to one other free node, within the hedge budget ({@link RequestBudget.startHedge}), and the
  * first usable answer wins (the other is aborted). Resolves with that answer and the node it came
@@ -587,7 +612,7 @@ async function sendHedged(
 
   const send = (to: string): { readonly outcome: Promise<Outcome>; readonly controller: AbortController } => {
     const controller = new AbortController()
-    const signal = AbortSignal.any([request.signal, controller.signal])
+    const signal = anyOf(request.signal, controller.signal)
     const sent =
       to === node
         ? new Request(request, { body, signal })

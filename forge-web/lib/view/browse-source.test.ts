@@ -259,6 +259,25 @@ describe('whole-artifact load', () => {
     await new Promise((r) => setTimeout(r, 100))
     expect(w.queries()).toBeLessThanOrEqual(8)
   })
+
+  it('does not try the next copy once the load is cancelled', async () => {
+    const w = windowed(12)
+    const cancel = new AbortController()
+    const copies = [
+      { ...w.manifest, documentId: 'copy-a' },
+      { ...w.manifest, documentId: 'copy-b' },
+    ]
+    const manifest = { ...w.manifest, copies }
+    const load = loadArtifactBytesProgress(w.sdk, REPO, manifest, (done) => {
+      if (done > 0) cancel.abort()
+    }, cancel.signal)
+    expect(await load.then(() => 'resolved', (e: unknown) => String(e))).toMatch(/cancelled/)
+    const afterFirst = w.queries()
+    await new Promise((r) => setTimeout(r, 100))
+    // One copy's windows in flight at the abort, and none of the second copy's.
+    expect(w.queries()).toBe(afterFirst)
+    expect(w.queries()).toBeLessThanOrEqual(8)
+  })
 })
 
 describe('packRef ordering (assumption a)', () => {

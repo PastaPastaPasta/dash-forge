@@ -270,6 +270,18 @@ describe('readRefs keyset scan on a large repo (L-15)', () => {
     }
   })
 
+  it('abandons a split scan when a range comes back out of range', async () => {
+    // 700 refs: the first page reaches about 1/7 of the key space, so the rest is split; a node
+    // ignoring `refNameHash >` answers every range with the first page again.
+    const { sdk, seen } = mockDrive(manyRefs(700), { ignoreRange: true })
+    const refs = await readRefs(sdk, REPO)
+    const keyset = seen.filter(isKeysetPage).filter((q) => q.documentTypeName === DOC.refUpdate)
+    // The first page, then one page per range, each refused at once: no range reads on.
+    expect(keyset).toHaveLength(1 + 4)
+    // The scan is discarded and the answer comes from the reflog read alone, still whole.
+    expect(refs).toHaveLength(700)
+  })
+
   it('sizes the split from how far the first page reached', () => {
     // A first page reaching 1/8 of the key space: ~7 pages left, the cap of 4 ranges.
     expect(keysetSplits('2' + '0'.repeat(63))).toBe(4)

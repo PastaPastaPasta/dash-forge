@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { countCommits, historyWalker, lastCommitsForDir } from './commit-log'
+import { countCommits, historyWalker, lastCommitsForDir, walkCommitColumn, type LastCommitColumn } from './commit-log'
 import { Store } from './diff-fixtures'
 
 describe('lastCommitsForDir', () => {
@@ -101,5 +101,57 @@ describe('countCommits', () => {
     for (let i = 1; i < 5; i++) tip = s.commit(s.files({ a: String(i) }), [tip])
     expect(await countCommits(s.reader(), tip)).toEqual({ count: 5, capped: false })
     expect(await countCommits(s.reader(), tip, 3)).toEqual({ count: 3, capped: true })
+  })
+})
+
+describe('walkCommitColumn (the repo home’s commit column)', () => {
+  /** A history where `a` changes at the tip, `b` 30 commits down, and the read breaks at 10. */
+  function history() {
+    const st = new Store()
+    let tip = st.commit(st.files({ a: '0', b: '0' }), [], 'root')
+    tip = st.commit(st.files({ a: '0', b: '1' }), [tip], 'b changed')
+    for (let i = 1; i <= 30; i++) tip = st.commit(st.files({ a: '0', b: '1', c: String(i) }), [tip], `c${i}`)
+    tip = st.commit(st.files({ a: '1', b: '1', c: '30' }), [tip], 'a changed')
+    return { st, tip }
+  }
+
+  it('keeps what the walk found when it fails later', async () => {
+    const { st, tip } = history()
+    const base = st.reader()
+    let reads = 0
+    const reader = {
+      readObject: (oid: string) => {
+        if (++reads > 12) return Promise.reject(new Error('node went away'))
+        return base.readObject(oid)
+      },
+    }
+    const states: LastCommitColumn[] = []
+    await walkCommitColumn(reader, tip, ['a', 'b'], (s) => states.push(s))
+    const last = states[states.length - 1] as LastCommitColumn
+    expect(last.done).toBe(true)
+    expect(last.failed).toBe(true)
+    expect(last.found.get('a')?.subject).toBe('a changed')
+    expect(last.found.has('b')).toBe(false)
+    expect(states[0]).toEqual({ found: new Map(), done: false, failed: false })
+  })
+
+  it('reports nothing once aborted', async () => {
+    const { st, tip } = history()
+    const stop = new AbortController()
+    const states: LastCommitColumn[] = []
+    await walkCommitColumn(st.reader(), tip, ['a', 'b'], (s) => {
+      states.push(s)
+      if (s.found.size > 0) stop.abort()
+    }, { signal: stop.signal })
+    expect(states.every((s) => !s.done)).toBe(true)
+  })
+
+  it('finishes with every name it found and done set', async () => {
+    const { st, tip } = history()
+    const states: LastCommitColumn[] = []
+    await walkCommitColumn(st.reader(), tip, ['a', 'b'], (s) => states.push(s))
+    const last = states[states.length - 1] as LastCommitColumn
+    expect(last).toMatchObject({ done: true, failed: false })
+    expect([...last.found.keys()].sort()).toEqual(['a', 'b'])
   })
 })

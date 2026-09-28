@@ -31,9 +31,15 @@ import {
   selectedTip,
   type TreeEntry,
 } from '@/lib/view'
-import { countCommits, historyWalker, LAST_COMMIT_WALK, lastCommitsForDir, type LastCommit } from '@/lib/view/commit-log'
-
-type HistoryWalker = ReturnType<typeof historyWalker>
+import {
+  countCommits,
+  historyWalker,
+  LAST_COMMIT_WALK,
+  walkCommitColumn,
+  type LastCommit,
+  type LastCommitColumn,
+  type WalkOptions,
+} from '@/lib/view/commit-log'
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
@@ -72,41 +78,21 @@ async function loadReadme(reader: BrowseReader, entries: readonly TreeEntry[]): 
   }
 }
 
-/**
- * The commit column of the root listing (L-41): filled in as the walk finds each entry's last
- * commit, and `done` once it has stopped, so an entry still without one reads as older than the
- * walked window rather than as a failed load.
- */
-interface LastCommits {
-  readonly found: ReadonlyMap<string, LastCommit>
-  readonly done: boolean
-  readonly failed: boolean
-}
+const WALKING: LastCommitColumn = { found: new Map(), done: false, failed: false }
 
-const WALKING: LastCommits = { found: new Map(), done: false, failed: false }
-
+/** The root listing's commit column ({@link walkCommitColumn}), walked again for a new tip or listing. */
 function useLastCommits(
   reader: BrowseReader,
-  walker: HistoryWalker,
+  walker: NonNullable<WalkOptions['walker']>,
   tipOid: string,
   names: readonly string[] | null,
-): LastCommits {
-  const [state, setState] = useState<LastCommits & { readonly key: string }>({ key: '', ...WALKING })
+): LastCommitColumn {
+  const [state, setState] = useState<LastCommitColumn & { readonly key: string }>({ key: '', ...WALKING })
   const key = names === null ? '' : `${tipOid}\0${names.join('\0')}`
   useEffect(() => {
     if (names === null) return
     const stop = new AbortController()
-    let found: ReadonlyMap<string, LastCommit> = new Map()
-    const set = (next: ReadonlyMap<string, LastCommit>, done: boolean, failed = false): void => {
-      found = next
-      if (!stop.signal.aborted) setState({ key, found: next, done, failed })
-    }
-    set(new Map(), false)
-    lastCommitsForDir(reader, tipOid, '', names, { walker, signal: stop.signal, onFound: (next) => set(next, false) }).then(
-      (next) => set(next, true),
-      // What the walk found before it failed stays; the rest read as not loaded.
-      () => set(found, true, true),
-    )
+    void walkCommitColumn(reader, tipOid, names, (column) => setState({ key, ...column }), { walker, signal: stop.signal })
     return () => stop.abort()
     // `key` covers `tipOid` and `names`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -169,7 +155,9 @@ function RootBody({
   const names = useMemo(() => (data === null ? null : data.entries.map((e) => e.name)), [data])
   const readme = useAsync(() => loadReadme(reader, data?.entries ?? []), [data?.tree ?? ''], { enabled: data !== null })
   // One read-ahead walker for both walks of the history, so they share its blocks.
-  const walker = useMemo(() => historyWalker(reader), [reader])
+  // Keyed to the tip too: a new tip's walk starts with an empty read-ahead cache.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const walker = useMemo(() => historyWalker(reader), [reader, tipOid])
   const lastCommits = useLastCommits(reader, walker, tipOid, names)
   const commits = useAsync(() => countCommits(reader, tipOid, HOME_COMMIT_COUNT_CAP, { walker }), [tipOid], { enabled: data !== null })
   const readmeRepo = useMemo<MarkdownRepoContext>(() => ({ addr, refParam, dir: '', reader, tipOid }), [addr, refParam, reader, tipOid])

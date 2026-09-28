@@ -355,6 +355,41 @@ export async function lastCommitsForDir(
 }
 
 /**
+ * The commit column of a listing (L-41): each entry's last commit as the walk finds it, `done`
+ * once it has stopped, and `failed` when it stopped on an error. An entry still without one reads
+ * as older than the walked window when the walk finished, and as not loaded when it failed.
+ */
+export interface LastCommitColumn {
+  readonly found: ReadonlyMap<string, LastCommit>
+  readonly done: boolean
+  readonly failed: boolean
+}
+
+/**
+ * Runs {@link lastCommitsForDir} for the root listing and reports each state of its column to
+ * `onState`, starting empty. A failed walk keeps what it found before the failure. Nothing is
+ * reported once `signal` aborts.
+ */
+export function walkCommitColumn(
+  reader: ObjectReader,
+  tipOid: string,
+  names: readonly string[],
+  onState: (state: LastCommitColumn) => void,
+  { walker, signal, limit }: WalkOptions & { readonly limit?: number } = {},
+): Promise<void> {
+  let found: ReadonlyMap<string, LastCommit> = new Map()
+  const report = (next: ReadonlyMap<string, LastCommit>, done: boolean, failed = false): void => {
+    found = next
+    if (signal?.aborted !== true) onState({ found: next, done, failed })
+  }
+  report(new Map(), false)
+  return lastCommitsForDir(reader, tipOid, '', names, { walker, signal, limit, onFound: (next) => report(next, false) }).then(
+    (next) => report(next, true),
+    () => report(found, true, true),
+  )
+}
+
+/**
  * First-parent commits reachable from `tipOid`, counting at most `cap` (the ref bar's
  * `n commits`; `capped` means there are at least that many).
  */

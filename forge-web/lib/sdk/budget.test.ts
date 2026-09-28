@@ -12,6 +12,7 @@ import {
   LOW_WATER,
   RequestBudget,
   SHORT_WAIT_MS,
+  anyOf,
   dapiNodeOf,
   gatedFetch,
   rateLimitWaitMs,
@@ -523,11 +524,7 @@ describe('gatedFetch', () => {
 
     it('keeps hedges within budget: two in flight, about a tenth of requests, none while nodes are impaired', async () => {
       const budget = withNodes()
-      const never = vi.fn(async (req: Request) =>
-        new URL(req.url).origin === NODE
-          ? new Promise<Response>(() => undefined)
-          : new Promise<Response>(() => undefined),
-      )
+      const never = vi.fn(async (_req: Request) => new Promise<Response>(() => undefined))
       const gated = gatedFetch(never as unknown as typeof fetch, budget)
       for (let i = 0; i < 40; i++) void gated(METHOD, { method: 'POST' })
       await vi.advanceTimersByTimeAsync(HEDGE_AFTER_MS)
@@ -556,6 +553,44 @@ describe('gatedFetch', () => {
       expect(hedgesAllowed(100)).toBe(10)
     })
 
+    it('does not hedge a read the caller aborted during the wait', async () => {
+      const budget = withNodes()
+      const base = slowFrom(NODE, null)
+      const caller = new AbortController()
+      const pending = gatedFetch(base as unknown as typeof fetch, budget)(METHOD, { method: 'POST', signal: caller.signal })
+      void pending.catch(() => undefined)
+      await vi.advanceTimersByTimeAsync(HEDGE_AFTER_MS / 2)
+      caller.abort()
+      await vi.advanceTimersByTimeAsync(HEDGE_AFTER_MS * 2)
+      await expect(pending).rejects.toThrow()
+      expect(base).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not mark the slow node down when the hedge wins (its cancelled request is not booked)', async () => {
+      const budget = withNodes()
+      const base = slowFrom(NODE, null)
+      const pending = gatedFetch(base as unknown as typeof fetch, budget)(METHOD, { method: 'POST' })
+      await vi.advanceTimersByTimeAsync(HEDGE_AFTER_MS)
+      expect((await pending).headers.get('grpc-status')).toBe('0')
+      await vi.advanceTimersByTimeAsync(0)
+      expect((base.mock.calls[0]?.[0] as Request).signal.aborted).toBe(true)
+      expect(budget.isDown(NODE)).toBe(false)
+    })
+
+    it('keeps the hedge window bounded when requests are noted but none hedge', () => {
+      const budget = withNodes()
+      for (let i = 0; i < 1000; i++) budget.noteSent(1_000_000 + i * 1000)
+      // Without a single hedge the record stays about a window's worth, not all 1000 requests.
+      expect((budget as unknown as { sent: number[] }).sent.length).toBeLessThanOrEqual(60 + 65)
+      // And only the last minute's requests count: 60 of them, so six hedges, not a hundred.
+      let n = 0
+      while (budget.startHedge(NODE, 1_000_000 + 999 * 1000) !== null && n < 200) {
+        budget.hedgeDone()
+        n++
+      }
+      expect(n).toBe(6)
+    })
+
     it('does not hedge when no other node is free', async () => {
       const budget = withNodes()
       for (const n of [OTHER, THIRD, FOURTH]) budget.hold(n, Date.now() + 60_000)
@@ -564,6 +599,43 @@ describe('gatedFetch', () => {
       await vi.advanceTimersByTimeAsync(5000)
       expect((await pending).headers.get('grpc-status')).toBe('0')
       expect(base).toHaveBeenCalledTimes(1)
+    })
+  })
+
+  describe('anyOf without AbortSignal.any (Safari before 17.4, Chrome before 116)', () => {
+    const native = AbortSignal.any
+    beforeEach(() => {
+      ;(AbortSignal as unknown as { any?: unknown }).any = undefined
+    })
+    afterEach(() => {
+      ;(AbortSignal as unknown as { any?: unknown }).any = native
+    })
+
+    it('aborts when either signal does, with its reason', () => {
+      const a = new AbortController()
+      const b = new AbortController()
+      const both = anyOf(a.signal, b.signal)
+      expect(both.aborted).toBe(false)
+      b.abort('b went')
+      expect(both.aborted).toBe(true)
+      expect(both.reason).toBe('b went')
+    })
+
+    it('is aborted at once when a signal already is', () => {
+      const a = new AbortController()
+      a.abort('early')
+      expect(anyOf(a.signal, new AbortController().signal).reason).toBe('early')
+    })
+
+    it('still passes the caller’s abort to a hedged read', async () => {
+      const budget = withNodes()
+      const base = vi.fn(async (_req: Request) => ok())
+      const caller = new AbortController()
+      await gatedFetch(base as unknown as typeof fetch, budget)(METHOD, { method: 'POST', signal: caller.signal })
+      const sent = base.mock.calls[0]?.[0] as unknown as Request
+      expect(sent.signal.aborted).toBe(false)
+      caller.abort()
+      expect(sent.signal.aborted).toBe(true)
     })
   })
 
