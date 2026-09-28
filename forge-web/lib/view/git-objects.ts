@@ -57,21 +57,27 @@ export interface GitIdent {
   readonly when: number
 }
 
+/** The latest commit time a JS `Date` holds (ms); later is shown as unknown. */
+const MAX_DATE_MS = 8.64e15
+
 /**
- * "Name <email> 1700000000 +0000". Located with indexOf/lastIndexOf rather than a lazy
- * `^(.*?) <(.*?)> …$` regex, which backtracks quadratically on a hostile author line (a
- * pushed commit object can be any size): the name ends at the first " <", the email at the
- * last ">", and only the short timestamp tail is matched by a regex.
+ * "Name <email> 1700000000 +0000", read as git reads it. Located with indexOf/lastIndexOf
+ * rather than a lazy `^(.*?) <(.*?)> …$` regex, which backtracks quadratically on a hostile
+ * author line (a pushed commit object can be any size): the name ends at the first " <", the
+ * email at the last ">". The date is git's `parse_commit_date`: after the last `>`, whitespace
+ * skipped, the leading digits (so `+051800`, a missing space or a zero-padded date still date
+ * the commit); none, or past what a `Date` holds, is 0 (unknown).
  */
 function parseIdent(line: string): GitIdent {
   const open = line.indexOf(' <')
   const close = line.lastIndexOf('>')
-  const tail = close > open + 1 && open !== -1 ? /^ (\d+) [+-]\d{4}$/.exec(line.slice(close + 1)) : null
-  if (!tail) return { name: line, email: '', when: 0 }
+  if (open === -1 || close <= open + 1) return { name: line, email: '', when: 0 }
+  const digits = /^\s*(\d+)/.exec(line.slice(close + 1))?.[1]
+  const ms = digits === undefined ? 0 : Number(digits) * 1000
   return {
     name: line.slice(0, open),
     email: line.slice(open + 2, close),
-    when: Number(tail[1] ?? '0') * 1000,
+    when: Number.isSafeInteger(ms) && ms <= MAX_DATE_MS ? ms : 0,
   }
 }
 
@@ -115,9 +121,9 @@ export class MalformedObjectError extends Error {
 const OID_HEX = /^[0-9a-f]{40}$/
 
 /**
- * git's author/committer/tagger-line checks, demoted to warnings wherever Dash Forge checks
- * objects (the same list as `RELAXED` in `crates/forge-core/src/pack/fsck.rs`, which gives the
- * reason for each). {@link checkCommit} does not judge that text; the parity tests judge it
+ * git's author/committer/tagger-line checks, ignored wherever Dash Forge checks objects (the
+ * same list as `RELAXED` in `crates/forge-core/src/pack/fsck.rs`, which gives the reason for
+ * each; `fsck-parity.test.ts` holds the two lists equal). {@link checkCommit} does not judge that text; the parity tests judge it
  * with `git -c fsck.<id>=ignore fsck --strict`.
  */
 export const RELAXED_FSCK_IDS: readonly string[] = [
