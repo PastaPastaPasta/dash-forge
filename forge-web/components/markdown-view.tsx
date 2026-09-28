@@ -556,7 +556,6 @@ function renderBlock(b: Block, key: string, slugs: Map<string, number>): ReactNo
   }
 }
 
-/** An allowlisted HTML container. Only its tag, alignment, `open` and a checked `href` survive. */
 /**
  * A table's children, with bare `<tr>` rows put in a `<tbody>` (as a browser's parser would),
  * so React never nests a row directly in a table.
@@ -581,6 +580,7 @@ function wrapRows(blocks: readonly Block[], kids: readonly ReactNode[]): ReactNo
   return out
 }
 
+/** An allowlisted HTML container. Only its tag, alignment, `open`, an `id` and a checked `href` survive. */
 function renderElement(b: Extract<Block, { t: 'element' }>, key: string, slugs: Map<string, number>): ReactNode {
   const kids = b.c.map((inner, i) => renderBlock(inner, `${key}-${i}`, slugs))
   const align = b.align === null ? undefined : tableAlignClass(b.align)

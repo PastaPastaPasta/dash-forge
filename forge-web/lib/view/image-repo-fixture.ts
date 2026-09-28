@@ -19,10 +19,21 @@ export function png(size: number): Uint8Array {
   return bytes
 }
 
-/** A delta that repeats `base` (or its first 64 KiB) until the result is `targetLen` bytes. */
-function repeatingDelta(base: Uint8Array, targetLen: number): Uint8Array {
+/**
+ * A delta that repeats `base` (or its first 64 KiB) until the result is `targetLen` bytes.
+ * With `inserts`, it starts by inserting that many bytes (noise, or zeros with `zeros`).
+ */
+function repeatingDelta(base: Uint8Array, targetLen: number, inserts = 0, zeros = false): Uint8Array {
   const ops: number[] = [...deltaSize(base.length), ...deltaSize(targetLen)]
-  for (let left = targetLen; left > 0; ) {
+  let left = targetLen
+  for (let done = 0; done < inserts && left > 0; ) {
+    const n = Math.min(127, inserts - done, left)
+    const bytes = new Uint8Array(n)
+    ops.push(n, ...(zeros ? bytes : crypto.getRandomValues(bytes)))
+    done += n
+    left -= n
+  }
+  while (left > 0) {
     const n = Math.min(left, base.length, 0xffff)
     ops.push(0x80 | 0x10 | 0x20, n & 0xff, (n >> 8) & 0xff) // copy base[0, n)
     left -= n
@@ -38,7 +49,13 @@ export interface ImageRepoFile {
    * Stored as a delta that repeats `base` to `size` bytes (the blob is that result). `base` is
    * a blob stored whole, or the name of an earlier file; `ref` makes it a REF_DELTA.
    */
-  readonly delta?: { readonly base: Uint8Array | string; readonly size: number; readonly ref?: boolean }
+  readonly delta?: {
+    readonly base: Uint8Array | string
+    readonly size: number
+    readonly ref?: boolean
+    readonly inserts?: number
+    readonly zeros?: boolean
+  }
   /**
    * A zip bomb: the entry's header says `claimed` bytes (the tree names `png(claimed)`'s oid),
    * but its zlib stream inflates to `inflates` bytes of zeros.
@@ -87,7 +104,7 @@ export function imageRepo(files: readonly ImageRepoFile[], source?: (pack: Uint8
         whole('blob', PACK_TYPE.BLOB, f.delta.base)
         base = { bytes: f.delta.base, at: offset - (stored[stored.length - 1] as Uint8Array).length, depth: 0 }
       }
-      const delta = repeatingDelta(base.bytes, size)
+      const delta = repeatingDelta(base.bytes, size, f.delta.inserts, f.delta.zeros)
       const bytes = applyDelta(base.bytes, delta)
       oids[f.name] = gitOidHex('blob', bytes)
       const link = ref ? hexToBytes(gitOidHex('blob', base.bytes)) : ofsBase(offset - base.at)

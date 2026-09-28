@@ -23,6 +23,7 @@ import {
   PACK_TYPE,
   gitOidHex,
   baseMaxBytes,
+  deltaMaxBytes,
   inflateDelta,
   inflateZlib,
   ObjectTooLargeError,
@@ -349,8 +350,10 @@ export class BrowseReader {
     if (maxBytes !== Infinity && e.length > maxBytes * 1.001 + 64) {
       const head = await this.packs.fetchRange(e.packRef, e.offset, e.offset + Math.min(ENTRY_HEAD_BYTES, e.length), copy)
       const { type, size } = parseObjHeader(head, 0)
+      // A delta's header gives the delta's own size, which is bounded differently.
       const isDelta = type === PACK_TYPE.OFS_DELTA || type === PACK_TYPE.REF_DELTA
-      if (!isDelta && size > maxBytes) throw new ObjectTooLargeError(size, maxBytes)
+      const limit = isDelta ? deltaMaxBytes(maxBytes) : maxBytes
+      if (size > limit) throw new ObjectTooLargeError(size, limit)
     }
     return this.packs.fetchRange(e.packRef, e.offset, e.offset + e.length, copy)
   }
@@ -397,7 +400,7 @@ export class BrowseReader {
 
   /** The default path: memoized decode through the pack's current copy. */
   private reconstruct(entry: LocatorEntry, limits: Limits): Promise<GitObject> {
-    return singleReadAdvised(entry) ? this.readSpan(entry, limits.item) : this.decodeEntry(entry, limits.item, limits)
+    return singleReadAdvised(entry) ? this.readSpan(entry, limits) : this.decodeEntry(entry, limits.item, limits)
   }
 
   /**
@@ -409,7 +412,7 @@ export class BrowseReader {
     if (singleReadAdvised(entry)) {
       const end = entry.offset + entry.length
       const slice = await this.packs.fetchRange(entry.packRef, end - entry.deltaChainSpan, end, copy)
-      return reconstructFromSpan(entry, slice, limits.item)
+      return reconstructFromSpan(entry, slice, limits.item, limits.base)
     }
     const walk = async (e: LocatorEntry, limit: number): Promise<GitObject> => {
       const self = await this.fetchEntry(e, limit, copy)
@@ -440,11 +443,11 @@ export class BrowseReader {
   }
 
   /** Single contiguous span read (blob path): one ranged fetch, then reconstruct. */
-  private async readSpan(entry: LocatorEntry, maxBytes: number): Promise<GitObject> {
+  private async readSpan(entry: LocatorEntry, limits: Limits): Promise<GitObject> {
     const end = entry.offset + entry.length
     const start = end - entry.deltaChainSpan
     const slice = await this.packs.fetchRange(entry.packRef, start, end, this.copyOf.get(entry.packRef))
-    return reconstructFromSpan(entry, slice, maxBytes)
+    return reconstructFromSpan(entry, slice, limits.item, limits.base)
   }
 
   /**

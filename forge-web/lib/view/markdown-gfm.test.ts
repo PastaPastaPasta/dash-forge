@@ -392,6 +392,16 @@ describe('post-merge review of #82', () => {
     ])
   })
 
+  it('leaves fill-in-the-blank lines and snake_case alone, and nests emphasis', () => {
+    expect(para('Name: ___ Date: ___')).toEqual([{ t: 'text', v: 'Name: ___ Date: ___' }])
+    expect(para('_a _____ b_')).toEqual([{ t: 'em', c: [{ t: 'text', v: 'a _____ b' }] }])
+    expect(para('**a *b* c**')).toEqual([{ t: 'strong', c: [{ t: 'text', v: 'a ' }, { t: 'em', c: [{ t: 'text', v: 'b' }] }, { t: 'text', v: ' c' }] }])
+    expect(para('__a _b_ c__')).toEqual([{ t: 'strong', c: [{ t: 'text', v: 'a ' }, { t: 'em', c: [{ t: 'text', v: 'b' }] }, { t: 'text', v: ' c' }] }])
+    expect(para('_a_b_')).toEqual([{ t: 'em', c: [{ t: 'text', v: 'a_b' }] }])
+    expect(para('*a **b** c*')).toEqual([{ t: 'em', c: [{ t: 'text', v: 'a ' }, { t: 'strong', c: [{ t: 'text', v: 'b' }] }, { t: 'text', v: ' c' }] }])
+    expect(para('use my_var_name and __init__')).toEqual([{ t: 'text', v: 'use my_var_name and ' }, { t: 'strong', c: [{ t: 'text', v: 'init' }] }])
+  })
+
   it('reads ___x___ and ***x*** as strong emphasis, and mismatched runs as GitHub does', () => {
     const strongEm = [{ t: 'em', c: [{ t: 'strong', c: [{ t: 'text', v: 'a' }] }] }]
     expect(para('___a___')).toEqual(strongEm)

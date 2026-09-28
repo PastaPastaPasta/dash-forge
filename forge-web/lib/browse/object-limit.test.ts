@@ -8,7 +8,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { zlibSync } from 'fflate'
+import { gzipSync, zlibSync } from 'fflate'
 
 import { imageRepo, png } from '../view/image-repo-fixture'
 import { memoryPackSource } from './indexer'
@@ -168,6 +168,33 @@ describe('object size limit', () => {
     const ranges = fetched.slice(before)
     expect(ranges.length).toBeGreaterThan(0)
     expect(ranges.every(([start, end]) => end - start <= 32 && end - start < length)).toBe(true)
+  })
+
+  it('reads only zlib (not gzip), and refuses a stream that ends in an error', () => {
+    const data = new Uint8Array(1000).fill(3)
+    expect(() => inflateZlib(gzipSync(data), 0, 1000, CAP)).toThrow(/inflate size mismatch/)
+    const z = zlibSync(data)
+    const corrupt = z.slice()
+    corrupt[corrupt.length - 1] = (corrupt[corrupt.length - 1] as number) ^ 0xff // bad adler-32
+    expect(() => inflateZlib(corrupt, 0, 1000, CAP)).toThrow(/inflate size mismatch/)
+    expect(inflateZlib(z, 0, 1000, CAP)).toEqual(data)
+  })
+
+  it('refuses a delta whose header already says more than a capped read allows', async () => {
+    // Under a 1 KiB cap a delta may be at most 8 KiB (+32). This one declares ~1 MiB (inserted
+    // zeros, so it stores in about 4 KiB: long enough to be read header-first, short enough to
+    // pass the stored-length check).
+    const base = png(1024)
+    crypto.getRandomValues(base.subarray(8))
+    const { reader, oids, fetched } = imageRepo([{ name: 'd.png', delta: { base, size: 1024 * 1024, inserts: 1024 * 1024, zeros: true } }])
+    const entry = reader.locate(oids['d.png'] as string)
+    expect(entry?.length).toBeGreaterThan(1024 * 1.001 + 64)
+    const before = fetched.length
+    await expect(reader.readObject(oids['d.png'] as string, { maxBytes: 1024 })).rejects.toBeInstanceOf(ObjectTooLargeError)
+    // The delta's entry was read for its header only, never whole.
+    const ofDelta = fetched.slice(before).filter(([a]) => a === entry?.offset)
+    expect(ofDelta.length).toBeGreaterThan(0)
+    expect(ofDelta.every(([a, b]) => b - a <= 32)).toBe(true)
   })
 
   it('refuses a declared size the input could not inflate to, without inflating', () => {

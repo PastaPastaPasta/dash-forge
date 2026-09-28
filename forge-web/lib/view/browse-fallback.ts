@@ -6,8 +6,8 @@
  * consensus-proven `packManifest.packHash`, mirroring `git-remote-dash::fetch`: platform
  * packs from `chunk` documents, external packs from any of their mirrors or IPFS gateways —
  * an external pack none serves is skipped and reported, never silently), indexes
- * them client-side (`lib/browse/indexer` — dynamically imported so pako stays out of the
- * main bundles), and assembles the same {@link BrowseContext} the locator path produces,
+ * them client-side (`lib/browse/indexer`, dynamically imported: only a repo without a locator
+ * needs it), and assembles the same {@link BrowseContext} the locator path produces,
  * so every downstream view works unchanged.
  *
  * One in-flight/completed context is cached per repo (`repoKey`) for the session, while completed

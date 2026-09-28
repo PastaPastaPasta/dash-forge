@@ -347,8 +347,10 @@ function parseInline(src: string, htmlOnly = false): Inline[] {
  * so a pass is linear in the range (nested spans re-scan only the text they consumed, at most
  * {@link MAX_INLINE_DEPTH} deep).
  *
- * The span grammar is the original regex one: `![alt](src …)`, `[text](href …)`,
- * `` `code` ``, `**x**` / `__x__`, `~~x~~`, `*x*` / `_x_`. On top of it:
+ * Spans: `![alt](src …)`, `[text](href …)`, `` `code` ``, `~~x~~`, and emphasis, which is
+ * CommonMark's (§6.4): `*` and `_` runs are classified by the flanking rules as they are
+ * scanned, then paired by {@link processEmphasis} (so `***x***`, `_a **b** c_`, the rule of 3
+ * and intraword `_` all behave as on GitHub). On top of it:
  * - `\*` and friends are literal characters, and `&amp;`-style references decode;
  * - a link's text is scanned for its closing `]` with nesting, so a badge
  *   `[![alt](img)](href)` is an image inside a link;
@@ -393,53 +395,27 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
   /** The character at `k`, or undefined outside this span (as if the span were its own string). */
   const at = (k: number): string | undefined => (k >= start && k < end ? src[k] : undefined)
   const find = (needle: string, from: number): number => doc.find(needle, from, end)
-  /**
-   * Whether a `_` at `k` may open a span: its run of `_` does not start inside a word (so
-   * neither `_` of `my__var` opens one, but `___x___` still can). Each run is measured once.
-   */
-  let run = { start: -1, end: -1, opens: false }
-  const underscoreOpens = (k: number): boolean => {
-    if (k < run.start || k >= run.end) {
-      let a = k
-      let b = k
-      while (at(a - 1) === '_') a -= 1
-      while (at(b) === '_') b += 1
-      run = { start: a, end: b, opens: !isWordChar(at(a - 1)) }
-    }
-    return run.opens
+  /** `*` and `_` runs seen in this span, in order, paired by {@link processEmphasis} at the end. */
+  const delims: Delim[] = []
+  /** A `*` / `_` run at `src[from..to)`: a text node for now, classified as CommonMark says (§6.2). */
+  const pushDelimiter = (ch: '*' | '_', from: number, to: number): void => {
+    const before = at(from - 1)
+    const after = at(to)
+    const left = leftFlanking(before, after)
+    const right = leftFlanking(after, before)
+    flush()
+    delims.push({
+      item: out.length,
+      ch,
+      orig: to - from,
+      count: to - from,
+      // `_` also may not open or close inside a word (`snake_case_name`).
+      canOpen: ch === '*' ? left : left && (!right || isPunctuation(before)),
+      canClose: ch === '*' ? right : right && (!left || isPunctuation(after)),
+    })
+    // Not counted against the node budget: an unpaired run is merged back into its text.
+    out.push({ t: 'text', v: src.slice(from, to) })
   }
-  /**
-   * The `_` closing an em opened before `from`. A lone `_` closes it. A run of `_` closes it
-   * too (`_a__` is em `a` then `_`) unless it closes a run opened inside the em first (the
-   * `__…__` of `_a __b__ c_` is a strong span within it). At most a few runs are looked at, so
-   * a line of `_a __` stays linear.
-   */
-  const emUnderscoreClose = (from: number): number => {
-    let open = 0 // `__` runs opened inside the em and not yet closed
-    let u = find('_', from)
-    for (let runs = 0; u !== -1 && at(u + 1) === '_'; runs++) {
-      if (runs >= 4) return -1
-      let past = u
-      while (at(past) === '_' && past - u <= MAX_DELIMITER_RUN) past += 1
-      if (past - u > MAX_DELIMITER_RUN) {
-        u = find('_', past) // a long run is text, not a delimiter
-        continue
-      }
-      // A run after a word character can only close; before one it can only open; between
-      // two (`a__b`) it does neither.
-      const opens = !isWordChar(at(u - 1))
-      const closes = !isWordChar(at(past))
-      if (opens && !closes) open += 1
-      else if (closes && !opens) {
-        if (open === 0) return u // closes the em
-        open -= 1 // closes a run opened inside it
-      }
-      u = find('_', past)
-    }
-    return u
-  }
-  /** Whether a `_` closer ending just before `k` may close: its run ends there, not inside a word. */
-  const underscoreCloses = (k: number): boolean => at(k) !== '_' && !isWordChar(at(k))
   /**
    * Whether `src[from..to)` holds a `[` that is not backslash-escaped. Each step is a binary
    * search, and escaped ones are skipped at most {@link MAX_LABEL} times (a label's length).
@@ -612,42 +588,20 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
         }
       }
     }
-    // a run of more `_` than any delimiter uses is text, taken whole (so it is measured once)
-    if (ch === '_' && at(i - 1) !== '_') {
-      let past = i
-      while (at(past) === '_') past += 1
-      if (past - i > MAX_DELIMITER_RUN) {
-        add(src.slice(i, past))
-        i = past
-        continue
-      }
+    // `*` / `_` runs: emphasis delimiters, paired once the span is scanned
+    if (ch === '*' || ch === '_') {
+      let past = i + 1
+      while (at(past) === ch) past += 1
+      pushDelimiter(ch, i, past)
+      i = past
+      continue
     }
-    // strong emphasis ***x*** / ___x___: em around strong, as CommonMark nests them
-    if ((ch === '*' || ch === '_') && next === ch && at(i + 2) === ch && depth + 1 < MAX_INLINE_DEPTH && (ch !== '_' || underscoreOpens(i))) {
-      const close = find(ch.repeat(3), i + 3)
-      if (close > i + 3 && (ch !== '_' || underscoreCloses(close + 3))) {
-        push({ t: 'em', c: [{ t: 'strong', c: parseSpan(doc, i + 3, close, depth + 2, false) }] })
-        nodesLeft -= 1
-        i = close + 3
-        continue
-      }
-    }
-    // strong **x** / __x__, strikethrough ~~x~~ (an intraword `__` is literal: my__var__name)
-    if ((ch === '*' || ch === '_' || ch === '~') && next === ch && depth < MAX_INLINE_DEPTH && (ch !== '_' || underscoreOpens(i))) {
-      const close = find(ch, i + 2)
-      if (close > i + 2 && at(close + 1) === ch && (ch !== '_' || underscoreCloses(close + 2))) {
-        const c = parseSpan(doc, i + 2, close, depth + 1, false)
-        push(ch === '~' ? { t: 'del', c } : { t: 'strong', c })
+    // strikethrough ~~x~~
+    if (ch === '~' && next === '~' && depth < MAX_INLINE_DEPTH) {
+      const close = find('~~', i + 2)
+      if (close > i + 2) {
+        push({ t: 'del', c: parseSpan(doc, i + 2, close, depth + 1, false) })
         i = close + 2
-        continue
-      }
-    }
-    // em *x* / _x_ (an intraword `_` is literal: snake_case_names)
-    if ((ch === '*' || (ch === '_' && underscoreOpens(i))) && depth < MAX_INLINE_DEPTH) {
-      const close = ch === '*' ? find('*', i + 1) : emUnderscoreClose(i + 1)
-      if (close > i + 1 && (ch === '*' || !isWordChar(at(close + 1)))) {
-        push({ t: 'em', c: parseSpan(doc, i + 1, close, depth + 1, false) })
-        i = close + 1
         continue
       }
     }
@@ -667,11 +621,156 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
   }
   if (depth === 0) pendingSpaces = 0 // a paragraph's trailing spaces go; a span's (`<b>Note: </b>x`) stay
   flush()
-  return out
+  return delims.length === 0 ? out : processEmphasis(out, delims, MAX_INLINE_DEPTH - depth)
 }
 
-/** The longest `_` run read as emphasis delimiters (`___x___`); a longer one is text. */
-const MAX_DELIMITER_RUN = 3
+/** A `*` / `_` delimiter run, as CommonMark's emphasis algorithm tracks it. */
+interface Delim {
+  /** Its text node's index in the span's node list. */
+  readonly item: number
+  readonly ch: '*' | '_'
+  /** The run's length as written (the rule of 3 looks at it). */
+  readonly orig: number
+  /** Characters not yet used by an emphasis. */
+  count: number
+  readonly canOpen: boolean
+  readonly canClose: boolean
+}
+
+/** Unicode whitespace, as CommonMark reads it; outside the span (undefined) counts too. */
+const isWhitespace = (ch: string | undefined): boolean => ch === undefined || /\s/.test(ch)
+
+/** ASCII or Unicode punctuation (CommonMark 0.29, which GitHub's cmark-gfm follows). */
+const isPunctuation = (ch: string | undefined): boolean => ch !== undefined && (ESCAPABLE.has(ch) || /\p{P}/u.test(ch))
+
+/**
+ * Whether a run between `before` and `after` is left-flanking (CommonMark §6.2): not followed
+ * by whitespace, and not followed by punctuation unless preceded by whitespace or punctuation.
+ * Swapping the arguments asks whether it is right-flanking.
+ */
+function leftFlanking(before: string | undefined, after: string | undefined): boolean {
+  return !isWhitespace(after) && (!isPunctuation(after) || isWhitespace(before) || isPunctuation(before))
+}
+
+/**
+ * CommonMark's "process emphasis" (appendix A of the spec): pair `*` / `_` runs into em and
+ * strong nodes, closers left to right, each looking back for the nearest opener it may pair
+ * with (the rule of 3). `openers_bottom` remembers, per kind of closer, how far back a failed
+ * search already looked, so the whole pass is linear. Nodes are kept in a linked list, and a
+ * pairing moves what lies between into the new node once.
+ *
+ * Emphasis nests at most `maxNest` deep: past that (a hostile `****…x****…`), pairing stops
+ * and the remaining runs stay text.
+ */
+function processEmphasis(items: Inline[], delims: readonly Delim[], maxNest: number): Inline[] {
+  const nodes: Inline[] = items.slice()
+  const next: number[] = items.map((_, k) => (k + 1 < items.length ? k + 1 : -1))
+  const prev: number[] = items.map((_, k) => k - 1)
+  let head = items.length > 0 ? 0 : -1
+  const unlink = (k: number): void => {
+    if (prev[k] === -1) head = next[k] as number
+    else next[prev[k] as number] = next[k] as number
+    if (next[k] !== -1) prev[next[k] as number] = prev[k] as number
+  }
+  const dNext: number[] = delims.map((_, k) => (k + 1 < delims.length ? k + 1 : -1))
+  const dPrev: number[] = delims.map((_, k) => k - 1)
+  const dropDelim = (d: number): void => {
+    if (dPrev[d] !== -1) dNext[dPrev[d] as number] = dNext[d] as number
+    if (dNext[d] !== -1) dPrev[dNext[d] as number] = dPrev[d] as number
+  }
+  /** Emphasis nesting of the nodes this pass made (other nodes count as 0). */
+  const nest = new Map<Inline, number>()
+  /** openers_bottom: per closer kind, the delimiter index a search need not go below. */
+  const bottoms = new Map<string, number>()
+
+  let closer = delims.length > 0 ? 0 : -1
+  while (closer !== -1 && nodesLeft > 0) {
+    const c = delims[closer] as Delim
+    if (!c.canClose) {
+      closer = dNext[closer] as number
+      continue
+    }
+    const kind = `${c.ch}${c.canOpen ? 1 : 0}${c.orig % 3}`
+    const bottom = bottoms.get(kind) ?? -1
+    let opener = dPrev[closer] as number
+    for (; opener > bottom; opener = dPrev[opener] as number) {
+      const o = delims[opener] as Delim
+      // The rule of 3: a run that can both open and close pairs only if the lengths' sum is
+      // not a multiple of 3, unless both lengths are.
+      const oddMatch = (c.canOpen || o.canClose) && c.orig % 3 !== 0 && (o.orig + c.orig) % 3 === 0
+      if (o.ch === c.ch && o.canOpen && !oddMatch) break
+    }
+    if (opener <= bottom) {
+      bottoms.set(kind, dPrev[closer] as number)
+      const after = dNext[closer] as number
+      if (!c.canOpen) dropDelim(closer)
+      closer = after
+      continue
+    }
+    const o = delims[opener] as Delim
+    const use = c.count >= 2 && o.count >= 2 ? 2 : 1
+    // What lies between the two runs becomes the new node's children.
+    const children: Inline[] = []
+    let depthIn = 0
+    for (let k = next[o.item] as number; k !== c.item; k = next[k] as number) {
+      const node = nodes[k] as Inline
+      children.push(node)
+      depthIn = Math.max(depthIn, nest.get(node) ?? 0)
+    }
+    if (depthIn + 1 > maxNest) break // too deep: the rest stays text
+    o.count -= use
+    c.count -= use
+    nodes[o.item] = { t: 'text', v: o.ch.repeat(o.count) }
+    nodes[c.item] = { t: 'text', v: c.ch.repeat(c.count) }
+    // GitHub's cmark-gfm does not nest strong directly in strong (`****foo****` is one strong).
+    const flat = use === 2 ? children.flatMap((n) => (n.t === 'strong' ? n.c : [n])) : children
+    const emph: Inline = { t: use === 2 ? 'strong' : 'em', c: mergeText(flat) }
+    nest.set(emph, depthIn + 1)
+    nodesLeft -= 1
+    const k = nodes.length
+    nodes.push(emph)
+    next.push(c.item)
+    prev.push(o.item)
+    next[o.item] = k
+    prev[c.item] = k
+    // Runs between the two can no longer pair.
+    dNext[opener] = closer
+    dPrev[closer] = opener
+    if (o.count === 0) {
+      unlink(o.item)
+      dropDelim(opener)
+    }
+    if (c.count === 0) {
+      const after = dNext[closer] as number
+      unlink(c.item)
+      dropDelim(closer)
+      closer = after
+    }
+  }
+  const result: Inline[] = []
+  for (let k = head; k !== -1; k = next[k] as number) result.push(nodes[k] as Inline)
+  return mergeText(result)
+}
+
+/** `nodes` with adjacent text nodes joined and empty ones dropped. */
+function mergeText(nodes: readonly Inline[]): Inline[] {
+  const out: Inline[] = []
+  let text: string[] = []
+  const flushText = (): void => {
+    const v = text.join('')
+    if (v !== '') out.push({ t: 'text', v })
+    text = []
+  }
+  for (const n of nodes) {
+    if (n.t === 'text') text.push(n.v)
+    else {
+      flushText()
+      out.push(n)
+    }
+  }
+  flushText()
+  return out
+}
 
 /** Nesting cap for spans inside spans (a hostile `[[[[…](x)](x)…` stays shallow). */
 const MAX_INLINE_DEPTH = 32
@@ -877,8 +976,8 @@ const MAX_QUOTE_DEPTH = 16
 
 const HEADING = /^(#{1,6})\s+([\s\S]*)$/
 const HR = /^(\s*[-*_]){3,}\s*$/
-const UL_ITEM = /^\s*[-*+]\s+([\s\S]*)$/
-const OL_ITEM = /^\s*\d+\.\s+([\s\S]*)$/
+const UL_ITEM = /^[ \t]*[-*+][ \t]+([\s\S]*)$/
+const OL_ITEM = /^[ \t]*\d+\.[ \t]+([\s\S]*)$/
 
 /** Parse a markdown document into a block AST. */
 export function parseMarkdown(src: string): Block[] {

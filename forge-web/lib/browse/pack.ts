@@ -13,7 +13,6 @@
 
 import { sha1 } from '@noble/hashes/legacy.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
-import { unzlibSync } from 'fflate'
 import { Inflate } from 'pako'
 
 /** Final git object type, after any delta chain is resolved to its base. */
@@ -121,40 +120,28 @@ export class ObjectTooLargeError extends Error {
 /** Deflate cannot expand input by more than this factor (a 258-byte match per ~2 bits). */
 const DEFLATE_MAX_RATIO = 1032
 
+/** Output chunk: how far a stream may overrun its declared size before it is stopped. */
+const INFLATE_CHUNK = 64 * 1024
+
 /**
- * Inflate one zlib stream at `buf[from..]`, asserting it yields exactly `expected` bytes (the
- * size its pack header declares). A declared size over `maxBytes`, or one the input could not
- * inflate to, is refused before inflating.
+ * Inflate one zlib stream at `buf[from..]` into exactly `expected` bytes (the size its pack
+ * header declares), failing as soon as it yields more. A declared size over `maxBytes`, or one
+ * the input could not inflate to, is refused before inflating.
  *
- * With a finite `maxBytes` the stream is inflated a slice at a time and abandoned as soon as it
- * yields more than it declared: a zip bomb whose header claims 1 KiB costs about that much, not
- * the gigabyte it would inflate to (a pack header is the pusher's claim, nothing checks it).
+ * pako hands over output a chunk at a time while it inflates, and stops at the end of the zlib
+ * stream, ignoring the bytes after it (a pack slice goes on). So a zip bomb whose header claims
+ * 1 KiB costs about that much, not the gigabyte it would inflate to (a pack header is the
+ * pusher's claim, nothing checks it), and a short stream followed by megabytes of other
+ * entries costs only the stream.
  */
 export function inflateZlib(buf: Uint8Array, from: number, expected: number, maxBytes = Infinity): Uint8Array {
   if (expected > maxBytes) throw new ObjectTooLargeError(expected, maxBytes)
   const input = buf.subarray(from)
   if (expected > input.length * DEFLATE_MAX_RATIO + 64) throw new Error('inflate size mismatch')
-  if (maxBytes === Infinity) {
-    const out = unzlibSync(input)
-    if (out.length !== expected) throw new Error('inflate size mismatch')
-    return out
-  }
-  return inflateBounded(input, expected)
-}
-
-/** Output chunk for {@link inflateBounded}: how far a stream may overrun before it is stopped. */
-const BOUNDED_CHUNK = 16 * 1024
-
-/**
- * Inflate `input` into exactly `expected` bytes, failing as soon as the stream yields more.
- * pako hands over output a chunk at a time while it inflates, and stops at the end of the zlib
- * stream, ignoring the bytes after it (a pack slice goes on), so the cost is linear in what is
- * actually inflated, never in the input's tail.
- */
-function inflateBounded(input: Uint8Array, expected: number): Uint8Array {
   const out = new Uint8Array(expected)
   let got = 0
-  const inflater = new Inflate({ chunkSize: BOUNDED_CHUNK })
+  // windowBits 15: zlib only (no gzip or raw-deflate detection).
+  const inflater = new Inflate({ chunkSize: INFLATE_CHUNK, windowBits: 15 })
   inflater.onData = (chunk: Uint8Array) => {
     if (got + chunk.length > expected) throw new Error('inflate size mismatch')
     out.set(chunk, got)
@@ -162,7 +149,7 @@ function inflateBounded(input: Uint8Array, expected: number): Uint8Array {
   }
   inflater.onEnd = () => {}
   inflater.push(input, true)
-  if ((inflater.err !== 0 && !inflater.ended) || got !== expected) throw new Error('inflate size mismatch')
+  if (inflater.err !== 0 || got !== expected) throw new Error('inflate size mismatch')
   return out
 }
 
@@ -170,7 +157,7 @@ function inflateBounded(input: Uint8Array, expected: number): Uint8Array {
  * The most bytes a delta producing at most `maxBytes` can hold: a copy instruction is at most
  * 8 bytes (opcode, 4 offset bytes, 3 size bytes) and yields at least one, plus the size varints.
  */
-function deltaMaxBytes(maxBytes: number): number {
+export function deltaMaxBytes(maxBytes: number): number {
   return maxBytes * 8 + 32
 }
 
@@ -279,11 +266,12 @@ export function reconstructFromSpan(
   loc: { offset: number; length: number; deltaChainSpan: number },
   spanSlice: Uint8Array,
   maxBytes = Infinity,
+  baseMax = baseMaxBytes(maxBytes),
 ): GitObject {
   const end = loc.offset + loc.length
   const baseAddr = end - loc.deltaChainSpan
   if (spanSlice.length !== loc.deltaChainSpan) throw new Error('span slice length mismatch')
-  return decodeAt(spanSlice, baseAddr, loc.offset, null, maxBytes, baseMaxBytes(maxBytes))
+  return decodeAt(spanSlice, baseAddr, loc.offset, null, maxBytes, baseMax)
 }
 
 /** A resolver for REF_DELTA bases / per-base fetches, keyed by OID (hex). */

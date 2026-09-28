@@ -155,11 +155,19 @@ describe('renderers terminate quickly on hostile input', () => {
       // Each outer bracket used to normalize its (under 999-character) text as a label.
       ['[a]: b\n\n' + fill(MIB - 8, '[ '.repeat(333) + ' ]'.repeat(333))],
       ['[a]: b\n\n' + fill(MIB - 8, '[' + '\\['.repeat(300) + ']')],
-      // Emphasis runs: each `_` run is classified once.
+      // Emphasis: delimiter runs are paired in one pass (openers_bottom keeps it linear).
       [fill(MIB, ' _a __')],
       [fill(MIB, ' ___x')],
       [fill(MIB, '_'.repeat(50) + ' a ')],
       ['a ' + '_'.repeat(MIB)],
+      [fill(MIB, '_a ')],
+      ['*'.repeat(MIB)],
+      [fill(MIB, '*a ')],
+      [fill(MIB, 'a* ')],
+      ['*'.repeat(MIB / 2) + 'x' + '*'.repeat(MIB / 2)],
+      [fill(MIB, '*_')],
+      [fill(MIB, 'a***b**c*')],
+      [fill(MIB, 'Name: ___ Date: ___\n')],
     ]
     await expectFast(markdownUrl, 'parseMarkdown', calls, 'parseMarkdown nested brackets', MIB_CALL_MS)
   }, 120_000)
