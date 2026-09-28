@@ -156,6 +156,29 @@ describe('loadRepoFacts', () => {
     expect(most).toBeLessThanOrEqual(8)
   })
 
+  it('reads at most 16 license files in all, however many the root names', async () => {
+    const s = new Store()
+    const files: Record<string, string> = {}
+    // Distinct texts, so each file is its own blob and every read can be counted.
+    for (let i = 0; i < 40; i++) files[`LICENSE-${String(i).padStart(2, '0')}`] = `${MIT}\nCopyright ${i}\n`
+    const root = s.files(files)
+    const tip = s.commit(root)
+    const base = s.reader(undefined, locateBy(s))
+    const entries = await readTree(base, root)
+    const blobs = new Set(entries.map((e) => e.oid))
+    const read = new Set<string>()
+    const reader = {
+      ...base,
+      readObject: (oid: string, o?: { maxBytes?: number }) => {
+        if (blobs.has(oid)) read.add(oid)
+        return base.readObject(oid, o)
+      },
+    }
+    await loadRepoFacts('r', tip, reader, root, entries)
+    expect(repoFacts('r', tip).license?.ids).toEqual(['MIT'])
+    expect(read.size).toBe(16)
+  })
+
   it('no license file: null, not unknown', async () => {
     const s = new Store()
     const root = s.files({ 'a.go': 'package a\n' })

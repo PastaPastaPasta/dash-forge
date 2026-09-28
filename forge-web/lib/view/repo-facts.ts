@@ -36,6 +36,8 @@ const KEEP_FACTS = 50
 const KEEP_WALKS = 10
 /** License files read at once. */
 const LICENSE_READ_POOL = 8
+/** License files read in all (a real repo has one to three; a root of hundreds is not read whole). */
+const LICENSE_FILES_MAX = 16
 
 const keyOf = (repoKey: string, tipOid: string): string => `${repoKey}\0${tipOid}`
 
@@ -122,7 +124,7 @@ export async function loadRepoFacts(
   const known = facts.get(key) ?? UNKNOWN
   if (known.license === undefined) {
     // Files only: a directory named `license/` is not a license.
-    const files = rootEntries.filter((e) => isLicenseFile(e.name) && e.mode !== MODE_TREE && e.mode !== MODE_GITLINK)
+    const files = rootEntries.filter((e) => isLicenseFile(e.name) && e.mode !== MODE_TREE && e.mode !== MODE_GITLINK).slice(0, LICENSE_FILES_MAX)
     // A few files at a time: a root of many LICENSE-* files must not fire every read at once. A
     // file too large is not placed; any other failure fails the load, so the next visit tries again.
     const texts = await mapPooled(files, LICENSE_READ_POOL, async (e): Promise<readonly [string, string | null]> => {
