@@ -1419,16 +1419,7 @@ impl<'a> Collab<'a> {
     /// The keys of private `repo` as the signer holds them, loaded once per `Collab`.
     pub async fn keyring(&self, repo: &RepoRef) -> Result<Arc<Keyring>> {
         let (identity, bridge) = self.signer.ok_or_else(|| {
-            let e = crate::user_error::UserError::new(
-                crate::user_error::codes::NO_IDENTITY,
-                format!(
-                    "{} is private: reading it needs your identity",
-                    repo.display()
-                ),
-            )
-            .cause("its issues, pull requests and comments are encrypted to members' keys")
-            .fix("`dg auth login <file>` (or export DASH_FORGE_KEY=<identity file>)");
-            Error::from(e)
+            Error::from(crate::user_error::private_needs_identity(&repo.display()))
         })?;
         let signer = crate::keyring::PrivateSigner {
             client: self.client,

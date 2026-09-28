@@ -133,10 +133,10 @@ impl Ctx {
             .clone()
             .or_else(|| std::env::var_os("DASH_FORGE_KEY").map(PathBuf::from));
         // The recorded id names the recorded default only.
-        let config_identity_id = explicit
-            .is_none()
-            .then(|| config.default_identity_id.clone())
-            .flatten();
+        let config_identity_id = match explicit {
+            None => config.default_identity_id.clone(),
+            Some(_) => None,
+        };
         let identity_path =
             explicit.or_else(|| config.default_identity.as_deref().map(PathBuf::from));
 

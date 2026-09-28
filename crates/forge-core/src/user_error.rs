@@ -990,6 +990,18 @@ fn unreachable(ctx: &ErrorContext<'_>, detail: &str) -> UserError {
     .fix("`dg doctor` tests DAPI reachability; on a devnet check `--dapi-addresses` / git config dash.dapiAddresses")
 }
 
+/// E301 for a read of private `repo` (its `owner/name`) with no identity: its content is
+/// encrypted to members' keys. Public repositories are read without one.
+pub fn private_needs_identity(repo: &str) -> UserError {
+    UserError::new(
+        codes::NO_IDENTITY,
+        format!("{repo} is private: reading it needs your identity"),
+    )
+    .cause("its issues, pull requests and comments are encrypted to its members' keys")
+    .fix("`dg auth login <file>` signs in as a member; or pass --identity <file>, or set DASH_FORGE_KEY=<file>")
+    .note("public repositories are read without an identity")
+}
+
 fn identity_unreadable(msg: &str) -> UserError {
     UserError::new(
         codes::IDENTITY_UNREADABLE,

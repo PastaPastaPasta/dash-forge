@@ -112,8 +112,9 @@ fn labels_of(state: &IssueState) -> String {
     state.labels.iter().cloned().collect::<Vec<_>>().join(", ")
 }
 
-/// `me`, a DPNS name or an identity id, as a base58 identity id. `me` is the signer's id, or
-/// `None` for a read with no identity.
+/// `me`, a DPNS name or an identity id (`who`), as a base58 identity id. The `me` closure
+/// gives the caller's own id; it is called only when `who` is `me`, so a read that names
+/// nobody never opens the key.
 async fn identity_arg(
     client: &forge_core::platform::PlatformClient,
     me: impl FnOnce() -> Result<String>,
@@ -339,7 +340,7 @@ fn timeline<'a>(comments: &'a [Comment], events: &'a [Event]) -> Vec<Item<'a>> {
                 .map(|e| (e.created_at, e.id.as_str(), Item::Event(e))),
         )
         .collect();
-    items.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    items.sort_by_key(|&(at, id, _)| (at, id));
     items.into_iter().map(|(_, _, i)| i).collect()
 }
 

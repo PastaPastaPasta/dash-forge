@@ -13,7 +13,6 @@ use anyhow::{bail, Context, Result};
 use serde_json::json;
 
 use forge_core::backends::PackMeta;
-use forge_core::collab::v2::Collab;
 use forge_core::collab::{Release, ReleaseAsset, ReleaseInput};
 use forge_core::rules::v2::Role;
 use forge_core::storage::policy::git_config_scoped;
@@ -294,9 +293,9 @@ fn asset_json(a: &ReleaseAsset) -> serde_json::Value {
 
 /// The releases of `repo` (newest per tag, newest first) and the superseded revisions.
 async fn read_releases(ctx: &Ctx, repo: &str) -> Result<(Vec<Release>, Vec<Release>)> {
-    // Releases are public documents: no key is opened to read them (L-12).
+    // No key is opened to read them for a public repository (L-12).
     let s = Reader::open(ctx, repo).await?;
-    Ok(Collab::reader(&s.client).releases(&s.repo).await?)
+    Ok(s.collab().releases(&s.repo).await?)
 }
 
 async fn list(ctx: &Ctx, repo: &str) -> Result<()> {
@@ -378,24 +377,20 @@ struct Dest {
 /// is downloaded.
 fn plan_outputs(names: &[&str], output: Option<&Path>) -> Result<Vec<Dest>> {
     let dir = match output {
-        None => Some(PathBuf::new()),
-        Some(p) if p.is_dir() || p.as_os_str().to_string_lossy().ends_with('/') => {
-            Some(p.to_path_buf())
+        None => PathBuf::new(),
+        Some(p) if p.is_dir() || p.as_os_str().to_string_lossy().ends_with('/') => p.to_path_buf(),
+        Some(file) if names.len() == 1 => {
+            return Ok(vec![Dest {
+                path: file.to_path_buf(),
+                replace: true,
+            }]);
         }
-        Some(_) => None,
-    };
-    let Some(dir) = dir else {
-        let [_] = names else {
+        Some(_) => {
             return Err(crate::errors::usage(format!(
                 "--output names one file, and the release has {} assets: pass an --output directory, or --asset <name>",
                 names.len()
             )));
-        };
-        let path = output.expect("a file output").to_path_buf();
-        return Ok(vec![Dest {
-            path,
-            replace: true,
-        }]);
+        }
     };
     let mut seen = std::collections::BTreeSet::new();
     names
@@ -408,10 +403,7 @@ fn plan_outputs(names: &[&str], output: Option<&Path>) -> Result<Vec<Dest>> {
                 .map_or_else(|| PathBuf::from("asset"), PathBuf::from);
             let path = dir.join(&file);
             if !seen.insert(file) || path.symlink_metadata().is_ok() {
-                return Err(crate::errors::usage(format!(
-                    "{} already exists; pass --output <directory or file> to choose where the assets go",
-                    path.display()
-                )));
+                return Err(already_exists(&path));
             }
             Ok(Dest {
                 path,
@@ -421,14 +413,19 @@ fn plan_outputs(names: &[&str], output: Option<&Path>) -> Result<Vec<Dest>> {
         .collect()
 }
 
+/// E201: `path` is taken, and a name that came from the release never replaces a file.
+fn already_exists(path: &Path) -> anyhow::Error {
+    crate::errors::usage(format!(
+        "{} already exists; pass --output <directory or file> to choose where the assets go",
+        path.display()
+    ))
+}
+
 /// A local failure to save a downloaded asset: the release WAS read and the bytes verified,
 /// so this is not "could not read releases" (L-22).
 fn save_failed(path: &Path, e: &std::io::Error) -> anyhow::Error {
     if e.kind() == std::io::ErrorKind::AlreadyExists {
-        return crate::errors::usage(format!(
-            "{} already exists; pass --output <directory or file> to choose where the assets go",
-            path.display()
-        ));
+        return already_exists(path);
     }
     UserError::new(
         codes::USAGE,

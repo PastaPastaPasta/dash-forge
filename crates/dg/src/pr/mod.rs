@@ -202,26 +202,21 @@ pub(crate) async fn patch(
         .ok_or_else(|| not_found(repo, number))
 }
 
-/// A PR read for a command that signs: the session and the PR's view.
-pub(crate) struct Pr {
-    pub(crate) s: Session,
-    pub(crate) view: PatchView,
-}
-
-/// A PR read for a command that only reads: no key for a public repository (L-12).
-pub(crate) struct PrRead {
-    pub(crate) s: Reader,
+/// A PR and the connection it was read over: a signing [`Session`] for a command that writes,
+/// a [`Reader`] (no key for a public repository, L-12) for one that only reads.
+pub(crate) struct Pr<S = Session> {
+    pub(crate) s: S,
     pub(crate) view: PatchView,
 }
 
 /// Open `repo` to read (an archived repository is readable; a public one needs no identity)
 /// and read PR `number`'s view.
-pub(crate) async fn open_pr_read(ctx: &Ctx, repo: &str, number: u64) -> Result<PrRead> {
+pub(crate) async fn open_pr_read(ctx: &Ctx, repo: &str, number: u64) -> Result<Pr<Reader>> {
     let s = Reader::open(ctx, repo).await?;
     let collab = s.collab();
     let p = patch(&collab, &s.repo, repo, number).await?;
     let view = collab.patch_view(&s.repo, p).await?;
-    Ok(PrRead { s, view })
+    Ok(Pr { s, view })
 }
 
 /// Open a session on `repo` to write (`action` names what is refused when it is archived,
@@ -625,7 +620,6 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
     // viewer ("new commits since your review") is named when the key source says who it is.
     let s = Reader::open(ctx, repo).await?;
     let (client, handle, collab) = (&s.client, &s.repo, s.collab());
-    let viewer = s.viewer().map(str::to_string);
     let p = patch(&collab, handle, repo, number).await?;
     let v = collab.patch_view(handle, p).await?;
     let oracle = collab.member_oracle(handle).await?;
@@ -636,8 +630,8 @@ async fn view(ctx: &Ctx, repo: &str, number: u64, show_comments: bool) -> Result
     let review_state = v.review_with_threads(&comments);
     let conv = threads::threads(&comments, &v.head, &review_state.resolved_threads);
     let rows = threads::reviewer_rows(&reviews, &review_state, &approvals, &oracle, &v.head);
-    let since = viewer
-        .as_deref()
+    let since = s
+        .viewer()
         .and_then(|me| threads::since_your_review(&reviews, &review_state, me));
     let policy = collab.policy(handle).await?;
     let policy_status = policy
