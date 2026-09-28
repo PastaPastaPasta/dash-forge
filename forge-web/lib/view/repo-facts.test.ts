@@ -94,6 +94,16 @@ describe('loadRepoFacts', () => {
     expect(s.reads.length).toBeGreaterThan(reads)
   })
 
+  it('the shared walk stops at its tree budget however few files it found (a push of empty trees)', async () => {
+    const s = new Store()
+    let tree = s.files({ 'leaf.rs': 'x' })
+    for (let i = 0; i < 40; i++) tree = s.tree([{ name: `d${i}`, oid: tree, mode: 0o040000 }])
+    const tip = s.commit(tree)
+    const walk = await repoFilesWalk('r', tip, s.reader(undefined, locateBy(s)), tree, { maxTrees: 10 })
+    expect(walk.truncated).toBe(true)
+    expect(walk.files).toHaveLength(0)
+  })
+
   it('Go to file reaches files under more than 300 directories', async () => {
     const s = new Store()
     const files: Record<string, string> = {}
@@ -103,6 +113,47 @@ describe('loadRepoFacts', () => {
     const walk = await repoFilesWalk('r', tip, s.reader(undefined, locateBy(s)), root)
     expect(walk.files).toHaveLength(320)
     expect(walk.truncated).toBe(false)
+  })
+
+  it('a license file that cannot be read now stays unknown (tried again), only too large is not placed', async () => {
+    const { s, tip, root } = repo()
+    const good = s.reader(undefined, locateBy(s))
+    const entries = await readTree(good, root)
+    const licenseOid = entries.find((e) => e.name === 'LICENSE')?.oid
+    let fail = true
+    const flaky = { ...good, readObject: (oid: string, o?: { maxBytes?: number }) => (fail && oid === licenseOid ? Promise.reject(new Error('offline')) : good.readObject(oid, o)) }
+    await expect(loadRepoFacts('r', tip, flaky, root, entries)).rejects.toThrow('offline')
+    expect(repoFacts('r', tip).license).toBeUndefined()
+    fail = false
+    await loadRepoFacts('r', tip, flaky, root, entries)
+    expect(repoFacts('r', tip).license).toEqual({ ids: ['MIT'], file: 'LICENSE' })
+  })
+
+  it('reads at most 8 license files at once', async () => {
+    const s = new Store()
+    const files: Record<string, string> = { 'a.go': 'package a\n' }
+    for (let i = 0; i < 30; i++) files[`LICENSE-${i}`] = MIT
+    const root = s.files(files)
+    const tip = s.commit(root)
+    const base = s.reader(undefined, locateBy(s))
+    let inFlight = 0
+    let most = 0
+    const reader = {
+      ...base,
+      readObject: async (oid: string, o?: { maxBytes?: number }) => {
+        inFlight++
+        most = Math.max(most, inFlight)
+        await new Promise((r) => setTimeout(r, 1))
+        try {
+          return await base.readObject(oid, o)
+        } finally {
+          inFlight--
+        }
+      },
+    }
+    await loadRepoFacts('r', tip, reader, root, await readTree(base, root))
+    expect(repoFacts('r', tip).license?.ids).toEqual(['MIT'])
+    expect(most).toBeLessThanOrEqual(8)
   })
 
   it('no license file: null, not unknown', async () => {

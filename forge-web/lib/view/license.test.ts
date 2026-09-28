@@ -72,6 +72,11 @@ describe('identifyLicense on the full canonical texts (SPDX license-list-data)',
     expect(identifyLicense(text(file))).toBe(id)
   })
 
+  it('a titled license with another whole license appended is bundled, not the first one', () => {
+    expect(identifyLicense(`${text('spdx-GPL-3.0-only.txt')}\n\n${text('spdx-MIT.txt')}`)).toBeNull()
+    expect(identifyLicense(`${text('spdx-Apache-2.0.txt')}\n\n${text('spdx-BSD-3-Clause.txt')}`)).toBeNull()
+  })
+
   it('does not take a relative for a license it does not know: 0BSD is not ISC, BSD-4-Clause is not BSD-3-Clause', () => {
     expect(identifyLicense(text('spdx-0BSD.txt'))).toBeNull()
     expect(identifyLicense(text('spdx-BSD-4-Clause.txt'))).toBeNull()

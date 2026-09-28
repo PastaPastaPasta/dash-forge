@@ -11,14 +11,15 @@
  * decrypted paths: they go when the session ends, as the browse caches do.
  */
 
-import { MODE_GITLINK, MODE_TREE } from '../browse'
+import { MODE_GITLINK, MODE_TREE, ObjectTooLargeError } from '../browse'
 import { onPrivateSessionEnded } from '../repo/private-session'
 import { historyWalker } from './commit-log'
 import { readBlob, type ObjectReader } from './tree-nav'
 import { decodeTextBlob, type TreeEntry } from './git-objects'
 import { detectLicense, isLicenseFile, LICENSE_MAX_BYTES, type RepoLicense } from './license'
 import { languageStats, type LanguageStats } from './languages'
-import { FILE_WALK_FILES, walkFiles, type FileWalk } from './zip'
+import { mapPooled } from './pool'
+import { FILE_WALK_FILES, FILE_WALK_TREES, walkFiles, type FileWalk } from './zip'
 
 export interface RepoFacts {
   /** null: no license file; undefined: not known yet (a failed read stays unknown and is tried again). */
@@ -33,6 +34,8 @@ const walks = new Map<string, Promise<FileWalk>>()
 /** Tips whose facts are kept (small), and whose file walks are (up to 5,000 paths each). */
 const KEEP_FACTS = 50
 const KEEP_WALKS = 10
+/** License files read at once. */
+const LICENSE_READ_POOL = 8
 
 const keyOf = (repoKey: string, tipOid: string): string => `${repoKey}\0${tipOid}`
 
@@ -72,17 +75,24 @@ export function subscribeRepoFacts(listener: () => void): () => void {
 }
 
 /**
- * The walk of the repo's files at this tip (up to {@link FILE_WALK_FILES} files, however many
- * directories hold them, so Go to file reaches as far as it always did), started once per tip and
+ * The walk of the repo's files at this tip (up to {@link FILE_WALK_FILES} files, and a safety cap of
+ * {@link FILE_WALK_TREES} trees so a push of many empty directories cannot make it read without
+ * end; no real repo reaches it before the file bound, so Go to file keeps its reach), started once per tip and
  * shared with the language bar, through a read-ahead walker (a pack keeps its trees together). Not
  * cancellable: the next caller wants the same walk.
  */
-export function repoFilesWalk(repoKey: string, tipOid: string, reader: ObjectReader, rootTree: string): Promise<FileWalk> {
+export function repoFilesWalk(
+  repoKey: string,
+  tipOid: string,
+  reader: ObjectReader,
+  rootTree: string,
+  { maxTrees = FILE_WALK_TREES }: { readonly maxTrees?: number } = {},
+): Promise<FileWalk> {
   const key = keyOf(repoKey, tipOid)
   let walk = walks.get(key)
   if (walk === undefined) {
     const walker = historyWalker(reader)
-    const started = walkFiles(walker, rootTree, { maxFiles: FILE_WALK_FILES }).finally(() => walker.flush?.())
+    const started = walkFiles(walker, rootTree, { maxTrees, maxFiles: FILE_WALK_FILES }).finally(() => walker.flush?.())
     walk = started
     walks.set(key, started)
     // A failed walk is forgotten (the next caller tries again), unless a newer one took the key.
@@ -113,15 +123,16 @@ export async function loadRepoFacts(
   if (known.license === undefined) {
     // Files only: a directory named `license/` is not a license.
     const files = rootEntries.filter((e) => isLicenseFile(e.name) && e.mode !== MODE_TREE && e.mode !== MODE_GITLINK)
-    const texts = await Promise.all(
-      files.map(async (e): Promise<readonly [string, string | null]> => {
-        try {
-          return [e.name, decodeTextBlob(await readBlob(reader, e.oid, LICENSE_MAX_BYTES))]
-        } catch {
-          return [e.name, null] // too large or not text: not placed
-        }
-      }),
-    )
+    // A few files at a time: a root of many LICENSE-* files must not fire every read at once. A
+    // file too large is not placed; any other failure fails the load, so the next visit tries again.
+    const texts = await mapPooled(files, LICENSE_READ_POOL, async (e): Promise<readonly [string, string | null]> => {
+      try {
+        return [e.name, decodeTextBlob(await readBlob(reader, e.oid, LICENSE_MAX_BYTES))]
+      } catch (err) {
+        if (err instanceof ObjectTooLargeError) return [e.name, null]
+        throw err
+      }
+    })
     signal?.throwIfAborted()
     publish(key, { license: detectLicense(texts) })
   }

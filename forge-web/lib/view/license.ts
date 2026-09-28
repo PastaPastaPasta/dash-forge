@@ -85,9 +85,11 @@ const FINGERPRINTS: readonly Fingerprint[] = [
  */
 export function identifyLicense(text: string): string | null {
   const t = normaliseLicense(text).trimStart()
-  const titled = TITLES.find(([title]) => t.startsWith(title))
-  if (titled !== undefined) return titled[1]
   const hits = FINGERPRINTS.filter((f) => f.all.every((p) => t.includes(p)) && !(f.none ?? []).some((p) => t.includes(p)))
+  const titled = TITLES.find(([title]) => t.startsWith(title))
+  // A titled license with another whole license after it (GPL-3 then MIT) is a bundle, as a
+  // file with two untitled ones is. The titled texts contain none of the untitled fingerprints.
+  if (titled !== undefined) return hits.length === 0 ? titled[1] : null
   return hits.length === 1 ? (hits[0] as Fingerprint).id : null
 }
 
