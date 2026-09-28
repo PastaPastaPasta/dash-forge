@@ -686,35 +686,51 @@ impl<'a> RepoService<'a> {
     /// Write several ref updates as one step of a push (P-6): the config is read ONCE, now
     /// (it routes each update to `refUpdate` or `protectedRefUpdate`), and the writes of a
     /// public repository go in parallel, each with its own nonce, up to the chunk pipeline's
-    /// window; every one is attempted, and each result comes back in order. A private
+    /// window; every one is attempted, so a ref after a failed one can still land. A private
     /// repository writes them one by one ([`Self::write_ref_update`]: each re-reads the
-    /// anchors before it seals, §5.3) and stops at the first failure, so the list is shorter
-    /// than `updates` when one failed. `Err` only when nothing could be attempted (reading
-    /// the repository or its config failed).
+    /// anchors before it seals, §5.3) and stops at the first failure. Every name is checked
+    /// before anything is written. `on_landed(i)` is called for `updates[i]` as it lands (in
+    /// order), so a caller can report it at once. Returns each attempted update's result, in
+    /// order (shorter than `updates` when a sequential write failed); `Err` only when nothing
+    /// was written (an illegal name, or reading the repository or its config failed).
     pub async fn write_ref_updates(
         &self,
         repo: &RepoRef,
         updates: &[RefWrite],
+        mut on_landed: impl FnMut(usize),
     ) -> Result<Vec<Result<String>>> {
+        for u in updates {
+            check_ref_name(&u.ref_name)?;
+        }
+        let mut results = Vec::with_capacity(updates.len());
         if repo.visibility == Visibility::Private || updates.len() < 2 {
-            return Ok(until_first_err(updates, |u| {
-                self.write_ref_update(
-                    repo,
-                    &u.ref_name,
-                    &u.new_oid,
-                    u.prev_oid.as_deref(),
-                    u.force,
-                )
-            })
-            .await);
+            for (i, u) in updates.iter().enumerate() {
+                let r = self
+                    .write_ref_update(
+                        repo,
+                        &u.ref_name,
+                        &u.new_oid,
+                        u.prev_oid.as_deref(),
+                        u.force,
+                    )
+                    .await;
+                let failed = r.is_err();
+                if !failed {
+                    on_landed(i);
+                }
+                results.push(r);
+                if failed {
+                    break;
+                }
+            }
+            return Ok(results);
         }
         let (scope, contract) = self.writable(repo).await?;
         let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
         let patterns = current_protected_patterns(&configs);
         let engine = self.doc_engine()?;
         let (scope, contract, patterns, engine) = (&scope, &contract, &patterns, &engine);
-        Ok(futures::stream::iter(updates.iter().map(|u| async move {
-            check_ref_name(&u.ref_name)?;
+        let mut landed = futures::stream::iter(updates.iter().map(|u| async move {
             let props = public_ref_props(
                 scope,
                 &u.ref_name,
@@ -726,9 +742,14 @@ impl<'a> RepoService<'a> {
                 .create_document(contract, ref_doc_type(&u.ref_name, patterns), props)
                 .await
         }))
-        .buffered(crate::backends::platform::PIPELINE_WINDOW)
-        .collect()
-        .await)
+        .buffered(crate::backends::platform::pipeline_window());
+        while let Some(r) = landed.next().await {
+            if r.is_ok() {
+                on_landed(results.len());
+            }
+            results.push(r);
+        }
+        Ok(results)
     }
 
     /// A private ref update (§4.5): `refNameHash = HMAC(K_ref,e, refName)` under the write
@@ -1113,7 +1134,7 @@ impl<'a> RepoService<'a> {
         journal: &mut PushJournal,
         store: &(dyn JournalStore + Sync),
     ) -> Result<Vec<Uri>> {
-        use crate::backends::platform::{chunk_documents, CHUNK_DOC_TYPE, PIPELINE_WINDOW};
+        use crate::backends::platform::{chunk_documents, pipeline_window, CHUNK_DOC_TYPE};
 
         let (scope, contract) = self.writable(repo).await?;
         let engine = self.doc_engine()?;
@@ -1153,7 +1174,7 @@ impl<'a> RepoService<'a> {
                 .await
                 .map(|prepared| (seq, prepared))
         }))
-        .buffer_unordered(PIPELINE_WINDOW);
+        .buffer_unordered(pipeline_window());
         while let Some(done) = landed.next().await {
             let (seq, prepared) = done?;
             journal.record(&WriteIntent::for_prepared(seq, &prepared));
@@ -2508,6 +2529,19 @@ fn manifest_info(d: &FetchedDocument) -> Result<PackManifestInfo> {
     })
 }
 
+/// The objects the browse index a push of `objects` objects publishes will cover, from the
+/// repository's manifests: the push's own fragment, or, when the live fragments have
+/// reached [`MAX_LOCATOR_FRAGMENTS`] (the push folds them into one index), every object they
+/// index as well. For pricing the push before it is made.
+pub fn push_index_objects(manifests: &[PackManifestInfo], objects: u64) -> u64 {
+    let live = live_locator_manifests(manifests);
+    if live.len() >= MAX_LOCATOR_FRAGMENTS {
+        objects + live.iter().map(|m| m.object_count).sum::<u64>()
+    } else {
+        objects
+    }
+}
+
 /// The live (non-superseded) `objectLocator` manifests, newest-first — the index fragments a
 /// reader must merge, and the set a consolidation supersedes.
 fn live_locator_manifests(manifests: &[PackManifestInfo]) -> Vec<PackManifestInfo> {
@@ -2546,7 +2580,6 @@ pub fn credits_to_dash(credits: u64) -> f64 {
     credits as f64 / 1e11
 }
 
-/// The protected-ref globs in force per the newest `config` (`(createdAt, id)` order).
 /// Injection defense (write-side guard, defense-in-depth with rules::is_update_valid):
 /// `refName` is an arbitrary Platform string that never passed `git check-ref-format`, so a
 /// control char / newline could inject a spoofed ref-advertisement line into every clone.
@@ -2595,25 +2628,7 @@ fn public_ref_props(
     Ok(props)
 }
 
-/// Run `write` over `items` in order and stop at the first failure: the results so far,
-/// that failure last.
-async fn until_first_err<'a, T, W, F>(items: &'a [T], mut write: W) -> Vec<Result<String>>
-where
-    W: FnMut(&'a T) -> F,
-    F: std::future::Future<Output = Result<String>>,
-{
-    let mut out = Vec::with_capacity(items.len());
-    for item in items {
-        let r = write(item).await;
-        let failed = r.is_err();
-        out.push(r);
-        if failed {
-            break;
-        }
-    }
-    out
-}
-
+/// The protected-ref globs in force per the newest `config` (`(createdAt, id)` order).
 fn current_protected_patterns(configs: &[ConfigDoc]) -> Vec<String> {
     configs
         .iter()
@@ -2722,6 +2737,34 @@ mod tests {
         assert_eq!(space(&manifests, Some((250, "ll"))), vec![1, 2]);
     }
 
+    /// A push that will fold the browse index is priced for the whole folded index; one that
+    /// adds a fragment, for its own objects.
+    #[test]
+    fn a_folding_push_prices_every_object_it_indexes() {
+        let fragments = |n: usize| -> Vec<PackManifestInfo> {
+            (0..n)
+                .map(|i| {
+                    let mut m = manifest(
+                        &format!("{:02x}", i + 1),
+                        100 + i as u64,
+                        crate::pack::KIND_OBJECT_LOCATOR,
+                        u8::try_from(i + 1).unwrap(),
+                    );
+                    m.object_count = 1_000;
+                    m
+                })
+                .collect()
+        };
+        assert_eq!(
+            super::push_index_objects(&fragments(MAX_LOCATOR_FRAGMENTS - 1), 7),
+            7
+        );
+        assert_eq!(
+            super::push_index_objects(&fragments(MAX_LOCATOR_FRAGMENTS), 7),
+            7 + 1_000 * MAX_LOCATOR_FRAGMENTS as u64
+        );
+    }
+
     #[test]
     fn live_locator_manifests_drops_superseded_fragments_newest_first() {
         let mut folded = manifest("ff", 300, 1, 9);
@@ -2733,27 +2776,6 @@ mod tests {
             manifest("aa", 100, 0, 1), // a git pack is not a fragment
         ];
         assert_eq!(hashes(&live_locator_manifests(&manifests)), vec![9, 8]);
-    }
-
-    #[tokio::test]
-    async fn sequential_ref_writes_stop_at_the_first_failure() {
-        let calls = std::cell::Cell::new(0);
-        let out = super::until_first_err(&["a", "b", "c"], |x| {
-            calls.set(calls.get() + 1);
-            let x = *x;
-            async move {
-                if x == "b" {
-                    Err(crate::Error::Platform("refused".into()))
-                } else {
-                    Ok(x.to_string())
-                }
-            }
-        })
-        .await;
-        assert_eq!(calls.get(), 2, "nothing is written after the failure");
-        assert_eq!(out.len(), 2);
-        assert_eq!(out[0].as_deref().ok(), Some("a"));
-        assert!(out[1].is_err());
     }
 
     #[test]

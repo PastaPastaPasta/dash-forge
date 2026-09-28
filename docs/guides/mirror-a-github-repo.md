@@ -51,7 +51,7 @@ You need:
 dg storage use r2-main --global
 ```
 
-The estimate follows the same policy. With your own storage, the git part costs only the manifests and ref updates on Platform (about 0.004–0.005 DASH for a push of two or three refs; see [Costs](costs.md)), not the pack's bytes, so a `--max-spend` sized for that is not refused. A policy that includes `platform`, or sets `dash.platformFallback`, is priced as Platform storage, because the pack may land there.
+The estimate follows the same policy. With your own storage, the git part costs only the manifests and ref updates on Platform (measured at 0.0035–0.0041 DASH for a push of two or three refs; see [Costs](costs.md)), not the pack's bytes, so a `--max-spend` sized for that is not refused. A policy that includes `platform`, or sets `dash.platformFallback`, is priced as Platform storage, because the pack may land there.
 
 **Log output.** The importer prints its own warnings. The Platform SDK's reports of a failure forge-core recovers from (a write whose nonce another write by the same identity took, a transport retry) are not printed. A failure still ends the run with an error. To see every retry, set `RUST_LOG=debug`.
 

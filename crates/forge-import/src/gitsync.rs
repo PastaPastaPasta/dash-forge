@@ -90,6 +90,10 @@ pub struct PushReport {
     pub ref_updates: u64,
     /// Objects in the packs.
     pub objects: u64,
+    /// Of [`Self::est_credits`], the Platform chunks an armed `dash.platformFallback` would
+    /// store: the helper's guard weighs them itself when it falls back, so they are not taken
+    /// off its threshold.
+    pub fallback_credits: u64,
 }
 
 impl PushReport {
@@ -100,9 +104,12 @@ impl PushReport {
         self.objects += objects;
     }
 
-    /// What [`Self::est_credits`] adds on top of the helper's price.
+    /// What [`Self::est_credits`] adds on top of the helper's price that the helper's guard
+    /// does not weigh (the fallback chunks excluded: it weighs those when it falls back).
     pub fn overhead(&self) -> u64 {
-        self.est_credits.saturating_sub(self.helper_credits)
+        self.est_credits
+            .saturating_sub(self.helper_credits)
+            .saturating_sub(self.fallback_credits)
     }
 }
 
@@ -198,19 +205,13 @@ pub struct GitPusher {
     pub fallback: bool,
 }
 
-/// `bytes` as a private repository stores them: a header plus a tag per 16 KiB segment
-/// (`forge_core::private::pack`, `36 + n + 16·nSeg`). Public packs are `bytes` exactly.
-fn sealed_upper_bound(bytes: u64) -> u64 {
-    use forge_core::private::pack::{HEADER_LEN, WRITE_SEG_LOG2};
-    let segments = bytes.div_ceil(1 << WRITE_SEG_LOG2).max(1);
-    bytes + HEADER_LEN as u64 + 16 * segments
-}
-
 /// Turn the helper's dry-run price into the estimate charged to the budget. The helper
 /// prices what it will write with the measured fees ([`push_fees::estimate_push`], an upper
-/// bound), so its price stands, with two additions for what it did not price: refs moving
-/// alone (no pack, so no `platform` event), and, with `fallback` armed and no chunks priced,
-/// the pack's Platform chunks (a push whose storage fails stores them).
+/// bound), so its price stands, with additions for what it did not price: refs moving alone
+/// (no pack, so no `platform` event); a pack from a helper that reports no `platform` event
+/// (priced as the worst case, sealed on Platform); and, with `fallback` armed and no chunks
+/// priced, the pack's Platform chunks (a push whose storage fails stores them, and the
+/// helper's own guard weighs them then: [`PushReport::fallback_credits`]).
 pub fn price_helper_estimate(mut r: PushReport, fallback: bool) -> PushReport {
     if r.docs == 0 && r.packs == 0 {
         // Only refs move (a branch or tag at a commit already stored): each ref update is
@@ -220,14 +221,28 @@ pub fn price_helper_estimate(mut r: PushReport, fallback: bool) -> PushReport {
             .saturating_add(push_fees::estimate_ref_updates(r.refs));
         return r;
     }
+    // Sealed and on Platform: the most a pack of this size can cost (a private repository
+    // seals it; a fallback or a Platform policy stores it as chunks).
+    let worst = |r: &PushReport| {
+        push_fees::estimate_push(&push_fees::PushShape {
+            pack_bytes: r.pack_bytes,
+            objects: r.objects,
+            index_objects: r.objects,
+            refs: r.refs,
+            external_targets: 0,
+            platform_bytes: true,
+            sealed: true,
+        })
+    };
+    if r.docs == 0 {
+        // A helper that reported the pack but no `platform` event: price the worst case.
+        r.est_credits = r.est_credits.max(worst(&r).total());
+        return r;
+    }
     if fallback && r.chunks == 0 && r.pack_bytes > 0 {
-        // Chunks of the pack and of its browse-index fragment, each as a private repo would
-        // store it (sealed, a little larger), so the price holds for either kind.
-        let locator = push_fees::locator_bytes(r.objects);
-        r.est_credits = r.est_credits.saturating_add(
-            push_fees::chunks(sealed_upper_bound(r.pack_bytes))
-                + push_fees::chunks(sealed_upper_bound(locator)),
-        );
+        let chunks = worst(&r).chunk_credits;
+        r.est_credits = r.est_credits.saturating_add(chunks);
+        r.fallback_credits = chunks;
     }
     r
 }
@@ -343,7 +358,11 @@ fn local_tips(git_dir: &Path, patterns: &[String]) -> Result<Vec<String>> {
 pub enum PackStorage {
     /// Platform `chunk` documents hold the pack (and its browse index): the default, and
     /// also the price of a policy that lists `platform` or may fall back to it.
-    Platform,
+    Platform {
+        /// External targets the manifests also name (a mixed policy, or a fallback's own
+        /// storage): each adds its URIs.
+        external_targets: u64,
+    },
     /// Only your own storage holds it: the chain gets the manifests and ref updates.
     External {
         /// External targets the manifests name (each adds its URIs to them).
@@ -352,6 +371,11 @@ pub enum PackStorage {
 }
 
 impl PackStorage {
+    /// Platform alone: `dash.storage` unset or `platform`.
+    pub const PLATFORM: Self = Self::Platform {
+        external_targets: 0,
+    };
+
     /// `policy` (read with [`storage_policy`]) resolved against `profiles`. An unknown
     /// profile or a bad value is an error here, as it would be for the push.
     pub fn resolve(
@@ -359,13 +383,14 @@ impl PackStorage {
         profiles: &forge_core::storage::StorageProfiles,
     ) -> Result<Self> {
         let resolved = policy.resolve(profiles)?;
+        let external_targets = resolved.external.len() as u64;
         Ok(if resolved.platform || resolved.platform_fallback {
             // A fallback may store the pack on Platform: price that, so the estimate stays
             // an upper bound.
-            Self::Platform
+            Self::Platform { external_targets }
         } else {
             Self::External {
-                targets: resolved.external.len() as u64,
+                targets: external_targets,
             }
         })
     }
@@ -432,11 +457,22 @@ pub fn estimate_fresh(git_dir: &Path, refs: &Refs, storage: PackStorage) -> Resu
 /// the refs; with your own storage, only the manifests (carrying each target's URIs) and
 /// the refs.
 pub fn fresh_push_credits(bytes: u64, objects: u64, refs: u64, storage: PackStorage) -> u64 {
-    let (targets, platform) = match storage {
-        PackStorage::Platform => (0, true),
+    let (external_targets, platform_bytes) = match storage {
+        PackStorage::Platform { external_targets } => (external_targets, true),
         PackStorage::External { targets } => (targets, false),
     };
-    push_fees::estimate_push(bytes, objects, refs, targets, platform).total()
+    push_fees::estimate_push(&push_fees::PushShape {
+        pack_bytes: bytes,
+        objects,
+        index_objects: objects,
+        refs,
+        external_targets,
+        platform_bytes,
+        // forge-import creates public repositories; an existing private one is priced by
+        // its helper, which seals.
+        sealed: false,
+    })
+    .total()
 }
 
 impl GitPusher {
@@ -565,6 +601,7 @@ dash: some human line"#;
                 manifests: 2,
                 ref_updates: 2,
                 objects: 3,
+                fallback_credits: 0,
             }
         );
     }
@@ -746,7 +783,7 @@ dash: push failed: ref did not converge to pushed tip"#;
         git(d, &["config", "dash.platformFallback", "false"]);
         assert_eq!(storage().unwrap(), PackStorage::External { targets: 1 });
 
-        let platform = estimate_fresh(d, &Refs::Code, PackStorage::Platform).unwrap();
+        let platform = estimate_fresh(d, &Refs::Code, PackStorage::PLATFORM).unwrap();
         let byo = estimate_fresh(d, &Refs::Code, storage().unwrap()).unwrap();
         assert_eq!(
             (byo.refs, byo.pack_bytes),
@@ -765,11 +802,21 @@ dash: push failed: ref did not converge to pushed tip"#;
         );
         // A fallback to Platform keeps the Platform price (an upper bound).
         git(d, &["config", "dash.platformFallback", "true"]);
-        assert_eq!(storage().unwrap(), PackStorage::Platform);
+        assert_eq!(
+            storage().unwrap(),
+            PackStorage::Platform {
+                external_targets: 1
+            }
+        );
         // A policy listing platform too.
         git(d, &["config", "dash.platformFallback", "false"]);
         git(d, &["config", "dash.storage", "bucket,platform"]);
-        assert_eq!(storage().unwrap(), PackStorage::Platform);
+        assert_eq!(
+            storage().unwrap(),
+            PackStorage::Platform {
+                external_targets: 1
+            }
+        );
         // An unknown profile fails here, as the push would.
         git(d, &["config", "dash.storage", "nope"]);
         assert!(storage().is_err());
@@ -794,7 +841,7 @@ dash: push failed: ref did not converge to pushed tip"#;
         ];
         for &(refs, paid, first) in RUNS {
             let fresh = fresh_push_credits(0, 0, refs, PackStorage::External { targets: 1 });
-            let helper = push_fees::estimate_push(4_000, 3, refs, 1, false).total();
+            let helper = fresh_push_credits(4_000, 3, refs, PackStorage::External { targets: 1 });
             let priced = price_helper_estimate(
                 PushReport {
                     refs,
@@ -807,6 +854,7 @@ dash: push failed: ref did not converge to pushed tip"#;
                     manifests: 2,
                     ref_updates: refs,
                     chunks: 0,
+                    fallback_credits: 0,
                 },
                 false,
             )
@@ -839,12 +887,12 @@ dash: push failed: ref did not converge to pushed tip"#;
     fn import_estimates_cover_scenario_32() {
         // Push 1: a 19,066-byte pack, failing before any ref. Charged at most 1,316,787,700
         // (the run's spend, the repository's creation included).
-        let first = fresh_push_credits(19_066, 0, 10, PackStorage::Platform);
+        let first = fresh_push_credits(19_066, 0, 10, PackStorage::PLATFORM);
         assert!(first >= 1_316_787_700, "{first}");
         // Push 2: the pack already recorded, so the refs alone; one landed for 89,014,700.
         assert!(push_fees::estimate_ref_updates(1) >= 89_014_700);
         // Push 3: the other 9 refs and a 1,183-byte pack: the balance fell 942,227,520.
-        let last = fresh_push_credits(1_183, 0, 9, PackStorage::Platform);
+        let last = fresh_push_credits(1_183, 0, 9, PackStorage::PLATFORM);
         assert!(last >= 942_227_520, "{last}");
     }
 
@@ -858,18 +906,64 @@ dash: push failed: ref did not converge to pushed tip"#;
             packs: 1,
             pack_bytes: 200_000,
             objects: 50,
-            est_credits: 27_466_000,
-            helper_credits: 27_466_000,
+            est_credits: 320_000_000,
+            helper_credits: 320_000_000,
             docs: 3,
             manifests: 2,
             ref_updates: 1,
             chunks: 0,
+            fallback_credits: 0,
         };
-        let plain = price_helper_estimate(r.clone(), false).est_credits;
-        let armed = price_helper_estimate(r, true).est_credits;
+        let plain = price_helper_estimate(r.clone(), false);
+        let armed = price_helper_estimate(r, true);
         assert!(
-            armed >= plain + push_fees::chunks(200_000),
-            "{armed} vs {plain}"
+            armed.est_credits >= plain.est_credits + push_fees::chunks(200_000),
+            "{} vs {}",
+            armed.est_credits,
+            plain.est_credits
+        );
+        // Review M6: the helper's guard weighs the fallback chunks itself when it falls
+        // back, so they are not taken off its threshold (the threshold is the budget left).
+        assert_eq!(plain.overhead(), 0);
+        assert_eq!(armed.overhead(), 0);
+    }
+
+    /// Review M5: a pack from a helper that reports no `platform` event is priced as the
+    /// worst case (sealed, on Platform), never left at the helper's own figure.
+    #[test]
+    fn a_pack_without_a_platform_event_is_priced_as_the_worst_case() {
+        let r = PushReport {
+            refs: 2,
+            packs: 1,
+            pack_bytes: 50_000,
+            objects: 40,
+            ..PushReport::default()
+        };
+        let priced = price_helper_estimate(r, false);
+        let public_platform = fresh_push_credits(50_000, 40, 2, PackStorage::PLATFORM);
+        assert!(
+            priced.est_credits > public_platform,
+            "{}",
+            priced.est_credits
+        );
+    }
+
+    /// Review L5: a mixed policy (Platform and a bucket) names the bucket's URIs in its
+    /// manifests too.
+    #[test]
+    fn a_mixed_policy_prices_its_external_uris() {
+        let mixed = fresh_push_credits(
+            1_000,
+            3,
+            1,
+            PackStorage::Platform {
+                external_targets: 2,
+            },
+        );
+        assert_eq!(
+            mixed,
+            fresh_push_credits(1_000, 3, 1, PackStorage::PLATFORM)
+                + 2 * 2 * push_fees::URIS_PER_TARGET
         );
     }
 

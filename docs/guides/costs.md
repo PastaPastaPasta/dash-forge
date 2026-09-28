@@ -44,7 +44,7 @@ Every byte you store on Platform costs about **27,700 credits**. On top of that,
 
 The per-document fee is why a small write costs about 0.001 DASH, not the few hundred thousand credits its bytes alone would cost.
 
-Rule of thumb for packs on Platform: **1 MiB ≈ 0.33 DASH**, about 0.0047 DASH for each 14.7 KB chunk document. About 85% of that is the deposit.
+Rule of thumb for packs on Platform: **1 MiB ≈ 0.33 DASH** measured, about 0.0046 DASH for each 14.7 KB chunk document; `dg` and `git push` quote ~0.36 DASH/MiB, an upper bound that also covers a new repository's first chunks. About 85% of it is the deposit.
 
 ```sh
 dg cost estimate --bytes 1048576
@@ -52,12 +52,12 @@ dg cost estimate --bytes 1048576
 
 ```
 Estimate for 1048576 bytes (platform tier):
-  total:      ~0.34488827 DASH ≈ $10.35
+  total:      ~0.36072827 DASH ≈ $10.82
   storage:    ~0.28311552 DASH ≈ $8.49 (deposit; Platform packs are permanent, not refunded)
-  fees:       ~0.06177275 DASH ≈ $1.85 (per-document and processing)
+  fees:       ~0.07761275 DASH ≈ $2.33 (per-document and processing)
 ```
 
-This is the price `git push` quotes: an upper bound, a few percent over what Platform charges.
+This is the price `git push` quotes: an upper bound, about 1.06–1.09x what Platform charges for a large push.
 
 A deposit only comes back when the document is deleted. Some documents can never be deleted, by design (see [Refunds](#refunds)). For those, the deposit is effectively a one-time cost.
 
@@ -74,8 +74,9 @@ A write that is the first of its kind somewhere (a repository's first push or fi
 | Create a repository | **~0.0013 DASH**: three small documents (`repo`, your `maintainer` membership, the first `config`). A private one: ~0.0020 DASH (it adds your key and the first anchor) |
 | Push to **your own bucket** | **~0.002–0.003 DASH**: two pack manifests (the pack's and its browse index's) and one ref update. Measured: 0.0028 DASH for the first push to a repository, 0.0021 DASH after |
 | Push with packs **on Platform** | **~0.004–0.005 DASH** for a tiny push (0.0046 first, 0.0040 after), plus **~0.33 DASH per MiB** of packed data; the storage is permanent. Measured: 200 KiB 0.070 DASH, 1.5 MiB 0.50 DASH |
-| Push to a **private** repository, packs on Platform | 20 KiB: 0.0112 DASH (first push); a tiny follow-up: 0.0022 DASH. The packs are sealed, so they are a little larger |
-| Each extra branch or tag in a push | ~0.0006–0.0009 DASH (one ref update). A push that only adds a branch at a commit already stored measured 0.00066 DASH |
+| Push to a **private** repository, packs on Platform | 20 KiB: 0.0112 DASH (first push); a tiny follow-up: 0.0022 DASH; three new branches at once: 0.0078 DASH. The packs are sealed, so they are a little larger |
+| Each extra branch or tag in a push | ~0.0006–0.0009 DASH (one ref update; the same for a protected branch, public or private). A push that only adds a branch at a commit already stored measured 0.00066 DASH |
+| Each extra storage target (a second bucket) | ~0.00014 DASH a push: the two manifests carry its URIs |
 | Issue | ~0.0006 DASH with a short body in a busy repository, ~0.001 DASH for a repository's first; ~0.0017 DASH with a 4 KB body |
 | Comment | ~0.0005 DASH short, ~0.0007 DASH as a thread's first, ~0.0016 DASH at 4 KB |
 | Pull request | ~0.0007–0.0013 DASH |
@@ -104,7 +105,7 @@ Per-operation cost reference (no live spend tracking yet):
   repo create                ~0.002 DASH ≈ $0.06
   ref update                 ~0.00092 DASH ≈ $0.03
   pack manifest              ~0.00112 DASH ≈ $0.03
-  pack chunk (14.7 KB)       ~0.00482791 DASH ≈ $0.14
+  pack chunk (14.7 KB)       ~0.00504791 DASH ≈ $0.15
   issue (~500 B)             ~0.00108658 DASH ≈ $0.03
   comment (~500 B)           ~0.00070658 DASH ≈ $0.02
 ```
@@ -156,7 +157,7 @@ The audit trail grows forever: each ref update costs about 0.0006–0.0009 DASH 
 ## Seeing costs before you pay
 
 - **`dg` asks first.** Every command that writes asks before it writes (`[y/N]`; `dg init` and `dg repo create` ask `Proceed? [Y/n]` after showing the price) unless you pass `--yes`. `dg repo create` and `dg repack` show their price before the question. For other commands, use `dg cost estimate` and `dg cost audit`. With `--json` or no terminal, `dg` refuses to write without `--yes` ([`E802`](../errors.md#e802)).
-- **`git push` prints its estimate** before it writes to Platform, and what Platform actually charged when it is done. The estimate prices every write as the first of its kind, so it is an upper bound: 1.00–1.03x the charge on a repository's first push, up to about 1.3x on a small later one. To make it ask:
+- **`git push` prints its estimate** before it writes to Platform, and what Platform actually charged when it is done. The estimate prices every write as the first of its kind, so it is an upper bound: 1.01–1.2x the charge on a first push, up to about 1.6x on a small later one. To make it ask:
   ```sh
   git config --global dash.costWarnThreshold 0.01   # ask above 0.01 DASH
   git config --global dash.confirm auto             # auto | always | never | refuse

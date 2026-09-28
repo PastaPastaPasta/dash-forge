@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   STEADY,
+  estimateChunkCredits,
   estimateCreateCredits,
   previewCreate,
   previewDelete,
@@ -140,5 +141,25 @@ describe('admission (D-012)', () => {
     const b = previewCreate('follow', {}, STEADY)
     const sum = sumPreviews([a, b])
     expect(sum.admit.budget).toBe(Math.max(a.admit.budget, a.credits + b.admit.budget))
+  })
+})
+
+describe('chunk storage (review M7)', () => {
+  // forge-core `cost::push_fees::chunks`, and chunks measured on moutai beta.5 (PR #127).
+  it('matches the CLI and covers every measured chunk', () => {
+    expect(estimateChunkCredits(1 << 20)).toBe(36_072_827_200)
+    expect(estimateChunkCredits(0)).toBe(0)
+    const measured: ReadonlyArray<readonly [number, number]> = [
+      [15_023, 478_722_620],
+      [6_627, 255_326_420],
+      [1_617, 99_148_140],
+      [525, 80_268_140],
+    ]
+    for (const [bytes, paid] of measured) {
+      // A document's payload is at most 14,700 bytes; its transition carries the rest.
+      expect(estimateChunkCredits(Math.min(bytes, 14_700))).toBeGreaterThanOrEqual(paid - 27_700 * Math.max(0, bytes - 14_700))
+    }
+    // 1 MiB measured ≈0.33 DASH; the quote stays above it.
+    expect(estimateChunkCredits(1 << 20) / 1e11).toBeGreaterThan(0.33)
   })
 })

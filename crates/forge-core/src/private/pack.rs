@@ -24,6 +24,13 @@ pub const VERSION: u8 = 0x01;
 pub const HEADER_LEN: usize = 36;
 /// The segment size writers use: `L = 14`, 16 KiB.
 pub const WRITE_SEG_LOG2: u8 = 14;
+
+/// The size `plain` bytes take sealed (the header plus a 16-byte tag per segment of
+/// `2^WRITE_SEG_LOG2` bytes, `36 + n + 16·nSeg`): what a private repository stores, and prices.
+pub fn sealed_upper_bound(plain: u64) -> u64 {
+    let segments = plain.div_ceil(1 << WRITE_SEG_LOG2).max(1);
+    plain + HEADER_LEN as u64 + 16 * segments
+}
 const MIN_SEG_LOG2: u8 = 10;
 const MAX_SEG_LOG2: u8 = 20;
 const TAG_LEN: u64 = 16;

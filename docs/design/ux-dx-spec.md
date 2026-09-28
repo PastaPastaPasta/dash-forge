@@ -1,4 +1,4 @@
-> Cost figures here are pre-calibration; see forge-web/lib/sdk/cost.ts and PR #98/P-6 for measured beta.5 fees.
+> Cost figures here are pre-calibration; see forge-web/lib/sdk/cost.ts and PR #127 (P-6) for measured beta.5 fees.
 
 # Dash Forge — UX / DX Specification (forge-v2, PV14)
 

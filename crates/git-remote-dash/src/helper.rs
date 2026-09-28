@@ -941,9 +941,9 @@ fn packs_to_fetch(
     wanted
 }
 
-/// Write the `refUpdate` of every accepted spec, in plan order. Each one that lands is
-/// reported (`dash: updated …` / a `refUpdate` event), even when another fails: a failure (a
-/// ref's write, the read-back) must not hide what is already on chain (D-601).
+/// Write the `refUpdate` of every accepted spec. Each one is reported (`dash: updated …` / a
+/// `refUpdate` event) the moment it lands, even when another fails: a failure (a ref's
+/// write, the read-back) must not hide what is already on chain (D-601).
 async fn write_ref_updates(
     svc: &RepoService<'_>,
     repo: &RepoRef,
@@ -965,49 +965,46 @@ async fn write_ref_updates(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    // Test affordance (`--features test-hooks` only): fail after `n` ref updates landed,
-    // the state a push that dies part-way leaves behind (e2e scenario 32).
-    let fail_after = if cfg!(feature = "test-hooks") {
-        std::env::var("DASH_FORGE_FAIL_AFTER_REFS")
-            .ok()
-            .and_then(|n| n.parse::<usize>().ok())
-            .filter(|n| *n < writes.len())
-    } else {
-        None
-    };
+    // Test affordance, compiled only with `--features test-hooks`: fail after `n` ref updates
+    // landed, the state a push that dies part-way leaves behind (e2e scenario 32).
+    #[cfg(feature = "test-hooks")]
+    let fail_after = std::env::var("DASH_FORGE_FAIL_AFTER_REFS")
+        .ok()
+        .and_then(|n| n.parse::<usize>().ok())
+        .filter(|n| *n < writes.len());
+    #[cfg(feature = "test-hooks")]
     let batch = &writes[..fail_after.unwrap_or(writes.len())];
+    #[cfg(not(feature = "test-hooks"))]
+    let batch = &writes[..];
     // One config read for the whole push; a public repository's updates go in parallel
-    // (P-6). Results come back in order.
-    let results = svc.write_ref_updates(repo, batch).await?;
-    report_ref_writes(&accepted, results, |p| {
-        let (text, event) = progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
-        progress.emit(&text, &event);
-    })?;
+    // (P-6). Each is reported as it lands.
+    let results = svc
+        .write_ref_updates(repo, batch, |i| {
+            let p = accepted[i];
+            let (text, event) = progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
+            progress.emit(&text, &event);
+        })
+        .await?;
+    first_ref_error(&accepted, results)?;
+    #[cfg(feature = "test-hooks")]
     if let Some(written) = fail_after {
         bail!("simulated failure after {written} ref update(s) (DASH_FORGE_FAIL_AFTER_REFS)");
     }
     Ok(())
 }
 
-/// Report (`landed`) every ref update that landed (`results` are in `accepted` order, and
-/// may stop short), then fail with the first one that did not.
-fn report_ref_writes(
-    accepted: &[&Planned],
-    results: Vec<forge_core::Result<String>>,
-    mut landed: impl FnMut(&Planned),
-) -> Result<()> {
-    let mut first_err = None;
-    for (p, result) in accepted.iter().zip(results) {
-        match result {
-            Ok(_) => landed(p),
-            Err(e) => {
-                first_err.get_or_insert_with(|| {
-                    anyhow::Error::new(e).context(format!("writing ref update for {}", p.spec.dst))
-                });
-            }
+/// The first failed ref update of `results` (in `accepted` order), as the push's error.
+fn first_ref_error(accepted: &[&Planned], results: Vec<forge_core::Result<String>>) -> Result<()> {
+    match accepted
+        .iter()
+        .zip(results)
+        .find_map(|(p, r)| r.err().map(|e| (p, e)))
+    {
+        Some((p, e)) => {
+            Err(anyhow::Error::new(e).context(format!("writing ref update for {}", p.spec.dst)))
         }
+        None => Ok(()),
     }
-    first_err.map_or(Ok(()), Err)
 }
 
 /// The provisional tip oid of a resolved (or diverged, newest-head) ref; `None` for an
@@ -1224,7 +1221,7 @@ async fn upload_push_pack(
     // now (§5.3: anchors re-read before every write). Every artifact is sealed (§3); the
     // browse index still indexes the plaintext pack (its offsets are plaintext offsets).
     let stored = seal_for_push(ctx, &pack.bytes).await?;
-    let job = PackJob::new(&stored, pack.parsed.object_count() as u64)?;
+    let job = PackJob::for_push(ctx, &stored, &pack).await?;
     let resolved = &ctx.policy.resolved;
     tracing::info!(
         pack_hash = %job.meta.pack_hash,
@@ -1405,10 +1402,31 @@ struct PackJob<'a> {
     pack_hash: [u8; 32],
     object_count: u64,
     chunk_count: u32,
+    /// The plaintext pack's size (`bytes` is sealed in a private repository; a dry run seals
+    /// nothing): what the estimate seals itself, so a dry run and a push price the same.
+    plain_bytes: u64,
+    /// Objects the browse index this push publishes covers ([`folded_index_objects`]).
+    index_objects: u64,
 }
 
 impl<'a> PackJob<'a> {
-    fn new(bytes: &'a [u8], object_count: u64) -> Result<Self> {
+    /// The job for `pack`, stored as `stored` (sealed in a private repository).
+    async fn for_push(
+        ctx: &PushContext<'_>,
+        stored: &'a [u8],
+        pack: &forge_core::pack::Pack,
+    ) -> Result<Self> {
+        let objects = pack.parsed.object_count() as u64;
+        let index_objects = folded_index_objects(ctx, objects).await;
+        Self::new(stored, pack.bytes.len() as u64, objects, index_objects)
+    }
+
+    fn new(
+        bytes: &'a [u8],
+        plain_bytes: u64,
+        object_count: u64,
+        index_objects: u64,
+    ) -> Result<Self> {
         let meta = PackMeta::for_bytes(bytes);
         let pack_hash = meta.pack_hash_bytes()?;
         let chunks = split(bytes).len();
@@ -1420,19 +1438,40 @@ impl<'a> PackJob<'a> {
             pack_hash,
             object_count,
             chunk_count,
+            plain_bytes,
+            index_objects,
         })
     }
 
     /// The on-chain cost of this push with (or without) Platform storing the bytes.
     fn estimate(&self, ctx: &PushContext<'_>, platform_bytes: bool) -> push_fees::PushEstimate {
-        push_fees::estimate_push(
-            self.bytes.len() as u64,
-            self.object_count,
-            ctx.refs.len() as u64,
-            ctx.policy.resolved.external.len() as u64,
+        push_fees::estimate_push(&push_fees::PushShape {
+            pack_bytes: self.plain_bytes,
+            objects: self.object_count,
+            index_objects: self.index_objects,
+            refs: ctx.refs.len() as u64,
+            external_targets: ctx.policy.resolved.external.len() as u64,
             platform_bytes,
-        )
+            sealed: ctx.repo.visibility == forge_core::rules::v2::Visibility::Private,
+        })
     }
+}
+
+/// The objects the browse index this push publishes will cover: the pack's own, or, when
+/// the push folds the live fragments into one index (every 16th push,
+/// `RepoService::publish_push_locator`), theirs too, which a Platform-stored index pays
+/// for in chunks. A policy that stores nothing on Platform (and cannot fall back to it)
+/// pays nothing for the index's size, so it is not read. Unreadable counts as a fold of what
+/// could be read, never less than the pack.
+async fn folded_index_objects(ctx: &PushContext<'_>, objects: u64) -> u64 {
+    let resolved = &ctx.policy.resolved;
+    if !(resolved.platform || resolved.platform_fallback) {
+        return objects;
+    }
+    let Ok(manifests) = ctx.svc.read_pack_manifests(ctx.repo).await else {
+        return objects;
+    };
+    forge_core::repo::push_index_objects(&manifests, objects)
 }
 
 /// The policy's external targets, built from the user's profiles (secrets resolved here,
@@ -2278,8 +2317,8 @@ fn resolve_key_path(url: &DashUrl, owner_id: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        archived_refusal, blames_set_aside_packs, forget_sealed, head_outcome, hidden_packs_needed,
-        is_head, list_lines, oid_to_bytes, packs_unreadable, protected_denied, report_ref_writes,
+        archived_refusal, blames_set_aside_packs, first_ref_error, forget_sealed, head_outcome,
+        hidden_packs_needed, is_head, list_lines, oid_to_bytes, packs_unreadable, protected_denied,
         resolve_network, write_denied, Planned, PushOutcome, PushSpec, Unreadable,
     };
 
@@ -2296,12 +2335,10 @@ mod tests {
         }
     }
 
-    /// A batch where one ref update fails still reports every one that landed (a public
-    /// repository's parallel writes: results after the failure), and one that stopped short
-    /// (a private repository's sequential writes) reports those before it; either way the
-    /// first failure is the error (D-601).
+    /// A batch where one ref update fails returns that failure, naming its ref, and the first
+    /// one when several fail (D-601; the landed ones were already reported as they landed).
     #[test]
-    fn every_landed_ref_is_reported_and_the_first_failure_returned() {
+    fn the_first_failed_ref_update_is_the_error() {
         let (a, b, c) = (
             planned("refs/heads/a"),
             planned("refs/heads/b"),
@@ -2309,38 +2346,19 @@ mod tests {
         );
         let accepted = [&a, &b, &c];
         let fail = || Err(forge_core::Error::Platform("refused".into()));
-
-        let mut seen = Vec::new();
-        let err = report_ref_writes(
-            &accepted,
-            vec![Ok("1".into()), fail(), Ok("3".into())],
-            |p| {
-                seen.push(p.spec.dst.clone());
-            },
-        )
-        .unwrap_err();
-        assert_eq!(seen, ["refs/heads/a", "refs/heads/c"]);
+        let err = first_ref_error(&accepted, vec![Ok("1".into()), fail(), fail()]).unwrap_err();
         assert!(
             format!("{err:#}").contains("writing ref update for refs/heads/b"),
             "{err:#}"
         );
-
-        let mut seen = Vec::new();
-        let err = report_ref_writes(&accepted, vec![Ok("1".into()), fail()], |p| {
-            seen.push(p.spec.dst.clone());
-        })
-        .unwrap_err();
-        assert_eq!(seen, ["refs/heads/a"]);
-        assert!(format!("{err:#}").contains("refs/heads/b"));
-
-        let mut n = 0;
-        report_ref_writes(
+        // A sequential write that stopped short at its failure.
+        let err = first_ref_error(&accepted, vec![fail()]).unwrap_err();
+        assert!(format!("{err:#}").contains("refs/heads/a"));
+        assert!(first_ref_error(
             &accepted,
-            vec![Ok("1".into()), Ok("2".into()), Ok("3".into())],
-            |_| n += 1,
+            vec![Ok("1".into()), Ok("2".into()), Ok("3".into())]
         )
-        .unwrap();
-        assert_eq!(n, 3);
+        .is_ok());
     }
     use forge_core::network::NetworkSettings;
     use forge_core::user_error::{codes, UserError};

@@ -149,11 +149,11 @@ async fn run_inner<'a>(
     let create = dest.existing.is_none();
     // Where the helper will put the packs: the same git config it reads.
     let (storage, fallback) = if pushes.is_empty() {
-        (PackStorage::Platform, false)
+        (PackStorage::PLATFORM, false)
     } else {
         let policy = crate::gitsync::storage_policy(&work).context("reading the storage policy")?;
         let storage = if policy.is_platform_only() {
-            PackStorage::Platform
+            PackStorage::PLATFORM
         } else {
             let profiles = forge_core::storage::StorageProfiles::load()
                 .context("reading the storage profiles")?;

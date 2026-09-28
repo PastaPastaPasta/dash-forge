@@ -46,7 +46,7 @@ fn estimate_cmd(
     // split into the storage deposit and the rest (per-document and processing fees).
     let deposit = estimate(bytes).deposit;
     let total = push_fees::chunks(bytes);
-    let burn = total - deposit;
+    let burn = total.saturating_sub(deposit);
     let price = dash_usd_price();
     let backend_label = backend.map_or("platform", Backend::label);
 

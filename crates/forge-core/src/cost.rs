@@ -70,36 +70,33 @@ pub fn estimate_document_storage(bytes: u64) -> CostEstimate {
 }
 
 /// What a `git push` writes on Platform, priced from fees measured on devnet moutai (drive
-/// 4.2.0-beta.5, protocol 14; balance deltas per write, 2026-09-27; the table and method are
-/// in `docs/guides/costs.md` and PR #98 / P-6). The byte formula above prices storage alone:
-/// forge-v2 documents also pay for their index entries (`repoId`, the uploader, counts), a
-/// fixed cost per document that dominates small writes, and was the 6-10x gap of D-311 /
-/// D-514 / D-700 / L-11.
+/// 4.2.0-beta.5, protocol 14; per-write and per-push balance deltas, 2026-09-27/28; the table
+/// and method are in `docs/guides/costs.md` and PR #127). The byte formula above prices
+/// storage alone: forge-v2 documents also pay for their index entries (`repoId`, the
+/// uploader, counts), a fixed cost per document that dominates small writes, and was the
+/// 6-10x gap of D-311 / D-514 / D-700 / L-11.
 ///
 /// Every figure is at or above what the calibration paid, so the estimate is an upper bound:
-/// a push's estimate lands between 1.00x and about 1.25x its charge.
+/// 1.01-1.2x the charge on a first push, up to about 1.6x on a small later one.
 pub mod push_fees {
     /// Credits per byte of a `chunk` document's signed transition (storage, its processing,
     /// and the chunk's own index entries growing with it). Measured 27,450-27,650.
     pub const CHUNK_PER_BYTE: u64 = 27_700;
-    /// A `chunk`'s cost beyond its bytes. Measured 60-70M.
-    pub const CHUNK_FLAT: u64 = 72_000_000;
+    /// A `chunk`'s cost beyond its bytes. Measured 60-70M for a later chunk, more for a
+    /// repository's first (new index subtrees): whole pushes into new repositories need 94M.
+    pub const CHUNK_FLAT: u64 = 94_000_000;
     /// Bytes a chunk document's transition carries beyond its payload (ids, the pack hash,
     /// `seq`, field headers, the signature). Measured 116-128.
     pub const CHUNK_OVERHEAD_BYTES: u64 = 130;
     /// A `packManifest`, the first of a push into a repository or ref that has none of its
-    /// kind yet (its index subtrees are created). Measured 109.3-109.6M.
+    /// kind yet (its index subtrees are created). Measured 109.3-110.2M.
     pub const MANIFEST_FIRST: u64 = 112_000_000;
-    /// A `packManifest` into existing index subtrees. Measured 77.2-83.8M.
-    pub const MANIFEST: u64 = 86_000_000;
-    /// A `refUpdate` creating a ref's history. Measured 88.3-89.3M.
+    /// A `refUpdate` or `protectedRefUpdate` creating a ref's history, public or private.
+    /// Measured 88.3-90.0M (a later one 56.8-67.3M).
     pub const REF_FIRST: u64 = 92_000_000;
-    /// A `refUpdate` of an existing ref (or a new ref at an existing commit). Measured
-    /// 58.2-65.8M.
-    pub const REF: u64 = 68_000_000;
-    /// What the byte count of each external target's URIs adds to a manifest. Measured: a
-    /// one-target manifest cost the same as a Platform one within 0.3%.
-    pub const URIS_PER_TARGET: u64 = 1_000_000;
+    /// What each external target's URIs add to a manifest: a second target's 239 bytes
+    /// measured +6.4-7.1M; a URI is at most 300 bytes (`MANIFEST_URIS_V2`).
+    pub const URIS_PER_TARGET: u64 = 9_000_000;
 
     /// The credits of storing `bytes` as `chunk` documents.
     pub fn chunks(bytes: u64) -> u64 {
@@ -111,11 +108,31 @@ pub mod push_fees {
         full.saturating_mul(doc(payload)).saturating_add(tail)
     }
 
-    /// The size of the browse-index fragment a push of `objects` objects publishes: the
-    /// fanout, a header, and one row per object.
+    /// The size of a browse-index fragment over `objects` objects: the fanout, a header, and
+    /// one row per object.
     pub fn locator_bytes(objects: u64) -> u64 {
         const HEADER: u64 = crate::pack::FANOUT_LEN as u64 + 76;
         HEADER + crate::pack::LOCATOR_ROW_LEN as u64 * objects
+    }
+
+    /// What a push writes, as far as its price depends on it.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct PushShape {
+        /// The pack's (plaintext) size.
+        pub pack_bytes: u64,
+        /// Objects in the pack.
+        pub objects: u64,
+        /// Objects the browse index published with it covers: the pack's, or, when this push
+        /// folds the live fragments into one index, every object they and the pack index.
+        pub index_objects: u64,
+        /// Ref updates.
+        pub refs: u64,
+        /// External targets the manifests name (each adds its URIs).
+        pub external_targets: u64,
+        /// Platform stores the pack and the index as chunks.
+        pub platform_bytes: bool,
+        /// A private repository: both are stored sealed (a little larger).
+        pub sealed: bool,
     }
 
     /// A push's estimate, split by what is written on chain.
@@ -134,26 +151,27 @@ pub mod push_fees {
         }
     }
 
-    /// What a push writes on chain: two manifests (the pack's and its browse-index
-    /// fragment's), a ref update per ref, and, only when Platform stores the bytes, the
-    /// chunk documents of the pack AND of its browse index (D-311: the index chunks were left
-    /// out). `external_targets` adds each target's URIs to the manifests. A push that creates
-    /// anything new pays first-write fees (a repository's first manifest, a ref's first
-    /// update: new index subtrees, up to +40%); this prices every push as a first write, so
-    /// the estimate is an upper bound for all of them. git-remote-dash's guard and
-    /// forge-import's cap both use it.
-    pub fn estimate_push(
-        pack_bytes: u64,
-        object_count: u64,
-        ref_count: u64,
-        external_targets: u64,
-        platform_bytes: bool,
-    ) -> PushEstimate {
-        let manifest = MANIFEST_FIRST + URIS_PER_TARGET * external_targets;
+    /// What a push writes on chain: two manifests (the pack's and its browse index's), a
+    /// ref update per ref, and, only when Platform stores the bytes, the chunk documents of
+    /// the pack AND of its browse index (D-311: the index chunks were left out), sealed for
+    /// a private repository. A push that creates anything new pays first-write fees (a
+    /// repository's first manifest, a ref's first update: new index subtrees, up to +40%);
+    /// this prices every push as a first write, so the estimate is an upper bound for all of
+    /// them. git-remote-dash's guard and forge-import's cap both use it.
+    pub fn estimate_push(shape: &PushShape) -> PushEstimate {
+        let stored = |bytes: u64| {
+            if shape.sealed {
+                crate::private::pack::sealed_upper_bound(bytes)
+            } else {
+                bytes
+            }
+        };
+        let manifest = MANIFEST_FIRST + URIS_PER_TARGET * shape.external_targets;
+        let index_objects = shape.index_objects.max(shape.objects);
         PushEstimate {
-            metadata_credits: manifest * 2 + estimate_ref_updates(ref_count),
-            chunk_credits: if platform_bytes {
-                chunks(pack_bytes) + chunks(locator_bytes(object_count))
+            metadata_credits: manifest * 2 + estimate_ref_updates(shape.refs),
+            chunk_credits: if shape.platform_bytes {
+                chunks(stored(shape.pack_bytes)) + chunks(stored(locator_bytes(index_objects)))
             } else {
                 0
             },
@@ -189,60 +207,122 @@ pub fn prompt_delete_refund(bytes: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::push_fees::{estimate_push, estimate_ref_updates};
+    use super::push_fees::{chunks, estimate_push, estimate_ref_updates, PushShape};
     use super::{
         estimate_document_storage, BASE_ST_PROCESSING, CREDITS_PER_DASH, PROCESSING_PER_BYTE, SEEK,
         STORAGE_CREDIT_PER_BYTE, STORAGE_PROCESSING_PER_BYTE, WRITE_BASE,
     };
 
+    fn shape(bytes: u64, objects: u64, refs: u64, targets: u64, platform: bool) -> PushShape {
+        PushShape {
+            pack_bytes: bytes,
+            objects,
+            index_objects: objects,
+            refs,
+            external_targets: targets,
+            platform_bytes: platform,
+            sealed: false,
+        }
+    }
+
     #[test]
     fn external_policy_bills_metadata_only() {
-        let ext = estimate_push(1_258_291, 300, 1, 1, false);
+        let ext = estimate_push(&shape(1_258_291, 300, 1, 1, false));
         assert_eq!(ext.chunk_credits, 0);
-        let chain = estimate_push(1_258_291, 300, 1, 0, true);
+        let chain = estimate_push(&shape(1_258_291, 300, 1, 0, true));
         assert!(
             chain.chunk_credits > 100 * ext.metadata_credits,
             "{chain:?} vs {ext:?}"
         );
-        // ~1.2 MiB of chunks is ~0.37 DASH (measured ≈0.31 DASH/MiB, plus the index).
+        // ~1.2 MiB of chunks is ~0.43 DASH (measured ≈0.33 DASH/MiB, plus the index).
         #[allow(clippy::cast_precision_loss)]
         let d = chain.total() as f64 / CREDITS_PER_DASH as f64;
-        assert!((0.34..0.45).contains(&d), "{d}");
+        assert!((0.40..0.48).contains(&d), "{d}");
     }
 
-    /// L-11 / D-311 / D-700: every push recorded on moutai (drive 4.2.0-beta.5, 2026-09-27,
-    /// per-write balance deltas, an identity nothing else spent from) with its estimate. The
-    /// estimate must be an upper bound, and within +25% of the charge on a push into a new
-    /// repository or ref (the case the first-write fees price exactly). A follow-up push into
-    /// existing index subtrees pays less, and stays an upper bound.
+    /// L-11 / D-311 / D-700: every push recorded on moutai (drive 4.2.0-beta.5, 2026-09-27/28,
+    /// an identity nothing else spent from) with what it paid: the sum of its writes'
+    /// balance deltas, or its balance change rounded up. The estimate must be an upper bound;
+    /// within +25% of the charge on a push into a new repository or ref (the case the
+    /// first-write fees price), within +60% on a later one (existing index subtrees pay less).
     #[test]
     fn estimates_cover_recorded_beta5_pushes() {
-        // (pack bytes, objects, refs, external targets, platform, paid credits, first write)
-        const RUNS: &[(u64, u64, u64, u64, bool, u64, bool)] = &[
-            (218, 3, 1, 0, true, 460_467_580, true),  // tiny, new repo
-            (247, 3, 1, 0, true, 402_038_960, false), // tiny, same ref again
-            (207_108, 4, 2, 0, true, 7_074_540_000, true), // 202 KiB, 2 refs, new repo
-            (410_023, 3, 1, 0, true, 13_809_300_000, false), // 400 KiB follow-up
-            (62_312, 4, 1, 1, false, 281_865_480, true), // own storage (S3), new repo
-            (278, 3, 1, 1, false, 213_867_380, false), // own storage, follow-up
-            (21_011, 4, 1, 0, true, 1_123_946_960, true), // private (sealed), new repo
+        // (pack bytes, objects, refs, external targets, platform, private, paid, first write)
+        type Run = (u64, u64, u64, u64, bool, bool, u64, bool);
+        #[rustfmt::skip]
+        const RUNS: &[Run] = &[
+            (218, 3, 1, 0, true, false, 460_467_580, true),         // tiny, new repo
+            (247, 3, 1, 0, true, false, 402_038_960, false),        // tiny, same ref again
+            (207_108, 4, 2, 0, true, false, 7_074_537_480, true),   // 202 KiB, 2 refs, new repo
+            (410_023, 3, 1, 0, true, false, 13_809_268_400, false), // 400 KiB follow-up
+            (62_312, 4, 1, 1, false, false, 281_865_480, true),     // own storage, new repo
+            (278, 3, 1, 1, false, false, 213_867_380, false),       // own storage, follow-up
+            (2_347, 4, 1, 1, false, false, 285_000_000, true),      // one external target
+            (2_345, 4, 1, 2, false, false, 305_000_000, true),      // two external targets
+            (21_011, 4, 1, 0, true, true, 1_123_943_560, true),     // private 20 KiB, new repo
+            (4_466, 4, 3, 0, true, true, 785_000_000, true),        // private, 3 new refs
+            (332, 3, 3, 0, true, true, 595_000_000, false),         // private, the 3 refs again
+            (1_318, 4, 1, 0, true, false, 575_000_000, true),       // public, new repo
+            (279, 3, 1, 0, true, false, 445_000_000, false),        // protected main, first
+            (286, 3, 1, 0, true, false, 445_000_000, false),        // protected main, again
+            (205_126, 4, 1, 0, true, false, 7_025_000_000, true),   // 200 KiB, new repo
+            (1_536_767, 3, 1, 0, true, false, 50_125_000_000, false), // 1.5 MiB (105 chunks)
         ];
-        for &(bytes, objects, refs, targets, platform, paid, first) in RUNS {
-            let est = estimate_push(bytes, objects, refs, targets, platform).total();
+        for &(bytes, objects, refs, targets, platform, sealed, paid, first) in RUNS {
+            let est = estimate_push(&PushShape {
+                sealed,
+                ..shape(bytes, objects, refs, targets, platform)
+            })
+            .total();
             #[allow(clippy::cast_precision_loss)]
             let ratio = est as f64 / paid as f64;
-            assert!(
-                est >= paid,
-                "{bytes} B: estimate {est} under paid {paid} ({ratio:.3})"
-            );
             let cap = if first { 1.25 } else { 1.6 };
             assert!(
-                ratio <= cap,
+                est >= paid && ratio <= cap,
                 "{bytes} B: estimate {est} vs paid {paid} ({ratio:.3})"
             );
         }
-        // A new ref at a stored commit (no pack): paid 65,783,120.
-        assert!(estimate_ref_updates(1) >= 65_783_120);
+        // A new ref at a stored commit (no pack): paid 65,783,120; a first protected ref
+        // update 87,714,300; the first of a private push's refs 90,039,140.
+        for paid in [65_783_120, 87_714_300, 90_039_140] {
+            assert!(estimate_ref_updates(1) >= paid);
+        }
+    }
+
+    /// A private push stores its pack and its index sealed, so both are priced sealed; a push
+    /// that folds the browse index prices the whole folded index.
+    #[test]
+    fn sealed_and_folding_pushes_price_what_they_store() {
+        let public = shape(16_300, 50_000, 1, 0, true);
+        let private = PushShape {
+            sealed: true,
+            ..public
+        };
+        // Sealing adds a header and a tag per 16 KiB to the pack and to the index.
+        assert!(estimate_push(&private).chunk_credits > estimate_push(&public).chunk_credits);
+        // A fold's index covers 100,000 more objects: 3.6 MB more of chunks.
+        let folding = PushShape {
+            index_objects: 150_000,
+            ..public
+        };
+        let (plain, folded) = (estimate_push(&public), estimate_push(&folding));
+        assert!(
+            folded.chunk_credits >= plain.chunk_credits + chunks(36 * 100_000) - chunks(14_700),
+            "{plain:?} vs {folded:?}"
+        );
+        // The index never covers fewer objects than the pack.
+        let fewer = PushShape {
+            index_objects: 1,
+            ..public
+        };
+        assert_eq!(estimate_push(&fewer), estimate_push(&public));
+    }
+
+    /// forge-web's `estimateChunkCredits` mirrors [`chunks`]; its test pins the same figure.
+    #[test]
+    fn a_mib_of_chunks_is_what_the_web_quotes() {
+        assert_eq!(chunks(1 << 20), 36_072_827_200);
+        assert_eq!(chunks(0), 0);
     }
 
     const FLAT_BURN: u64 = BASE_ST_PROCESSING + WRITE_BASE + SEEK;

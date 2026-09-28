@@ -243,17 +243,17 @@ const DEFAULT_ADMISSION_FACTOR: Admission = { budget: 2, balance: 5 }
  * source for push costs (repository page, storage settings, cost card). `byo`: the pack
  * manifest, the ref update and the browse-index publish, packs in the pusher's own storage.
  * `platform`: the same plus the packs as Platform chunks, which add about `perMib` for each
- * MiB stored (0.0047 DASH per 15 KB). Earlier copy said ~0.0003, the manifest-plus-ref estimate
+ * MiB stored (≈0.0046 DASH per 15 KB measured, 0.0050 quoted). Earlier copy said ~0.0003, the manifest-plus-ref estimate
  * without the per-document base fees (ledger D-009/D-010).
  *
- * Measured on moutai beta.5, 2026-09-27, see PR #98/P-6 (per-write balance deltas): a small push
+ * Measured on moutai beta.5, 2026-09-27, see PR #127 (P-6; per-write balance deltas): a small push
  * 0.0021–0.0028 DASH with own storage, 0.0040–0.0046 with Platform storage; 15 KB on Platform
  * 0.0047 DASH. The G7 quick-start walkthrough agrees (0.0021 own storage; 0.0033–0.0044 Platform).
  */
 export const PUSH_COST_DASH = {
   byo: { min: 0.002, max: 0.003 },
   platform: { min: 0.003, max: 0.005 },
-  perMib: 0.34,
+  perMib: 0.36,
 } as const
 
 /** A `min–max` DASH range for copy: `0.002–0.003`. */
@@ -353,14 +353,29 @@ export function estimateBytesCredits(
   return estimateCreateCredits(documentType, data, first) + Math.ceil(CREDITS_PER_TEXT_BYTE * byteLen * HEADROOM)
 }
 
+/** The measured `chunk` fees, forge-core `cost::push_fees` (moutai beta.5, PR #127). */
+export const CHUNK_FEES = {
+  /** Credits per byte of a chunk's signed transition. */
+  perByte: 27_700,
+  /** A chunk's cost beyond its bytes (a repository's first chunks included). */
+  flat: 94_000_000,
+  /** Bytes a chunk's transition carries beyond its payload. */
+  overheadBytes: 130,
+  /** Payload bytes per chunk document (three 4,900-byte fields, forge-core `pack::split`). */
+  payload: 4900 * 3,
+} as const
+
 /**
- * Estimated credits to store `bytes` as Platform `chunk` documents (three 4,900-byte fields
- * each, forge-core `pack::split`): every chunk's fixed cost plus the storage of its bytes.
- * Roughly 0.33 DASH per MiB (`PUSH_COST_DASH.perMib` quotes the upper bound) — Platform storage is permanent.
+ * Estimated credits to store `bytes` as Platform `chunk` documents: forge-core
+ * `cost::push_fees::chunks`, so the web and `git push` quote the same upper bound (≈0.36 DASH
+ * per MiB; measured ≈0.33). Platform storage is permanent.
  */
 export function estimateChunkCredits(bytes: number): number {
-  const chunks = Math.max(1, Math.ceil(bytes / (4900 * 3)))
-  return chunks * (BASE_CREDITS['chunk'] ?? DEFAULT_BASE_CREDITS) + CREDITS_PER_TEXT_BYTE * bytes
+  const { perByte, flat, overheadBytes, payload } = CHUNK_FEES
+  const doc = (b: number) => perByte * (b + overheadBytes) + flat
+  const full = Math.floor(bytes / payload)
+  const rest = bytes % payload
+  return full * doc(payload) + (rest > 0 ? doc(rest) : 0)
 }
 
 /**
