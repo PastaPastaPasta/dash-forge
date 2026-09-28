@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use super::v2::{Collab, Target, DOC_EVENT, DOC_MILESTONE, DOC_WATCH};
 use crate::error::{Error, Result};
-use crate::platform::{self, FieldValue, QueryFilter, QueryOrder};
+use crate::platform::{FieldValue, QueryFilter, QueryOrder};
 use crate::rules::v2::Role;
 use crate::rules::v2::{
     fold_milestones_v2, fold_thread_meta_v2, MilestoneDoc, MilestoneItem, ThreadMeta,
@@ -42,17 +42,23 @@ impl Collab<'_> {
 
     /// Whether the signer watches `repo`.
     pub async fn is_watching(&self, repo: &RepoRef) -> Result<bool> {
-        Ok(self.own_index_only(repo, DOC_WATCH).await?.is_some())
+        let collab = self.collab_contract(repo).await?;
+        Ok(self
+            .own_index_only(&collab, repo, DOC_WATCH)
+            .await?
+            .is_some())
     }
 
     /// Watch `repo`. `false` when already watching (nothing written).
     pub async fn watch(&self, repo: &RepoRef) -> Result<bool> {
-        self.create_own_index_only(repo, DOC_WATCH).await
+        let collab = self.collab_contract(repo).await?;
+        self.create_own_index_only(&collab, repo, DOC_WATCH).await
     }
 
     /// Stop watching `repo` (the values-carrying indexOnly delete). `false` when not watching.
     pub async fn unwatch(&self, repo: &RepoRef) -> Result<bool> {
-        self.delete_own_index_only(repo, DOC_WATCH).await
+        let collab = self.collab_contract(repo).await?;
+        self.delete_own_index_only(&collab, repo, DOC_WATCH).await
     }
 
     /// How many identities watch `repo` (the countable `byRepo` index).
@@ -306,84 +312,6 @@ impl Collab<'_> {
             )
             .await?;
         Ok(docs.iter().filter_map(super::v2::event_from_doc).collect())
-    }
-
-    // --- the viewer's own indexOnly row (watch; star has its own, for trending) ----------
-
-    async fn own_index_only(
-        &self,
-        repo: &RepoRef,
-        doc_type: &str,
-    ) -> Result<Option<platform::FetchedDocument>> {
-        let collab = self.collab_contract(repo).await?;
-        let me = platform::decode_identifier(&self.signer_id()?)?;
-        let docs = self
-            .client()
-            .query_documents(
-                &collab,
-                doc_type,
-                &[
-                    QueryFilter::eq("$ownerId", FieldValue::identifier(me)),
-                    Self::repo_filter(repo)?,
-                ],
-                &[],
-                1,
-                None,
-            )
-            .await?;
-        Ok(docs.into_iter().next())
-    }
-
-    async fn create_own_index_only(&self, repo: &RepoRef, doc_type: &str) -> Result<bool> {
-        if self.own_index_only(repo, doc_type).await?.is_some() {
-            return Ok(false);
-        }
-        let collab = self.collab_contract(repo).await?;
-        let probe = || async { Ok(self.own_index_only(repo, doc_type).await?.is_some()) };
-        match self
-            .engine()?
-            .create_index_only(
-                &collab,
-                doc_type,
-                Self::with_repo(repo, BTreeMap::new())?,
-                probe,
-            )
-            .await
-        {
-            Ok(_) => Ok(true),
-            Err(Error::DuplicateUniqueIndex(_)) => Ok(false),
-            Err(e) => Err(e),
-        }
-    }
-
-    async fn delete_own_index_only(&self, repo: &RepoRef, doc_type: &str) -> Result<bool> {
-        let collab = self.collab_contract(repo).await?;
-        let Some(doc) = self.own_index_only(repo, doc_type).await? else {
-            return Ok(false);
-        };
-        let engine = self.engine()?;
-        for _ in 0..2 {
-            match engine
-                .delete_with_values(
-                    &collab,
-                    doc_type,
-                    &doc.id,
-                    Self::with_repo(repo, BTreeMap::new())?,
-                    None,
-                )
-                .await
-            {
-                Ok(platform::BroadcastOutcome::NonceConsumed) => {
-                    if self.own_index_only(repo, doc_type).await?.is_none() {
-                        return Ok(true);
-                    }
-                }
-                Ok(_) => return Ok(true),
-                Err(Error::NotFound) => return Ok(false),
-                Err(e) => return Err(e),
-            }
-        }
-        Err(Error::Nonce)
     }
 }
 

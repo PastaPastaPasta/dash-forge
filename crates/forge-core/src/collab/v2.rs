@@ -3435,26 +3435,39 @@ impl<'a> Collab<'a> {
     /// not starred.
     pub async fn unstar(&self, repo: &RepoRef) -> Result<bool> {
         let collab = self.collab_contract(repo).await?;
-        let Some(star) = self.own_star(&collab, repo).await? else {
+        self.delete_own_index_only(&collab, repo, DOC_STAR).await
+    }
+
+    /// Delete the signer's row of an indexOnly `doc_type` for `repo` (the values-carrying
+    /// delete). `false` when there was none, or another process deleted it first.
+    pub(super) async fn delete_own_index_only(
+        &self,
+        collab: &LoadedContract,
+        repo: &RepoRef,
+        doc_type: &str,
+    ) -> Result<bool> {
+        let Some(row) = self.own_index_only(collab, repo, doc_type).await? else {
             return Ok(false);
         };
         let engine = self.engine()?;
         for _ in 0..2 {
             let values = Self::with_repo(repo, BTreeMap::new())?;
             match engine
-                .delete_with_values(&collab, DOC_STAR, &star.id, values, None)
+                .delete_with_values(collab, doc_type, &row.id, values, None)
                 .await
             {
                 Ok(BroadcastOutcome::NonceConsumed) => {
                     // Our delete landed earlier, or another write by this identity took the
-                    // nonce: the star's presence says which.
-                    if self.own_star(&collab, repo).await?.is_none() {
+                    // nonce: the row's presence says which.
+                    if self.own_index_only(collab, repo, doc_type).await?.is_none() {
                         return Ok(true);
                     }
-                    tracing::debug!("another write took the unstar's nonce; re-preparing");
+                    tracing::debug!(
+                        doc_type,
+                        "another write took the delete's nonce; re-preparing"
+                    );
                 }
                 Ok(_) => return Ok(true),
-                // Already gone (another process unstarred it first).
                 Err(Error::NotFound) => return Ok(false),
                 Err(e) => return Err(e),
             }
