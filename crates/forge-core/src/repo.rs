@@ -23,6 +23,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
+use futures::StreamExt as _;
+
 use crate::backends::{PackBackend, PackMeta, PlatformBackend, Uri};
 use crate::error::{Error, Result};
 use crate::keyring::{sealed_error, Keyring, PrivateSigner};
@@ -364,6 +366,19 @@ pub struct LocalReseed {
     pub restored_recorded_uri: bool,
 }
 
+/// One ref update of a push ([`RepoService::write_ref_updates`]).
+#[derive(Debug, Clone)]
+pub struct RefWrite {
+    /// The full ref name (`refs/heads/main`).
+    pub ref_name: String,
+    /// The new tip (20 raw bytes; all zero deletes the ref).
+    pub new_oid: Vec<u8>,
+    /// The tip the pusher saw (divergence detection).
+    pub prev_oid: Option<Vec<u8>>,
+    /// A forced update.
+    pub force: bool,
+}
+
 /// A repository's current members as the pack reader rule needs them (maintainers'
 /// copies first).
 pub type RoleMap = BTreeMap<String, Role>;
@@ -650,15 +665,7 @@ impl<'a> RepoService<'a> {
         prev_oid: Option<&[u8]>,
         force: bool,
     ) -> Result<String> {
-        // Injection defense (write-side guard, defense-in-depth with rules::is_update_valid):
-        // `refName` is an arbitrary Platform string that never passed `git check-ref-format`,
-        // so a control char / newline could inject a spoofed ref-advertisement line into every
-        // clone. Reject illegal names before writing.
-        if !rules::is_legal_ref_name(ref_name) {
-            return Err(Error::Config(format!(
-                "illegal ref name {ref_name:?}: must be non-empty, no leading '-', no whitespace/control characters"
-            )));
-        }
+        check_ref_name(ref_name)?;
         let (scope, contract) = self.writable(repo).await?;
         if repo.visibility == Visibility::Private {
             return self
@@ -667,30 +674,61 @@ impl<'a> RepoService<'a> {
                 )
                 .await;
         }
-        let hasher = crate::private::Public;
-        let ref_name_hash = hasher.hash(0, ref_name)?; // public: the epoch is unused
-
         // The config in force now: this write is routed by it.
         let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
-        let protected = rules::matches_protected(ref_name, &current_protected_patterns(&configs));
-        let doc_type = if protected {
-            DOC_PROTECTED_REF_UPDATE
-        } else {
-            DOC_REF_UPDATE
-        };
-
-        let mut props = scope.props([
-            ("refNameHash", FieldValue::bytes32(ref_name_hash)),
-            ("refName", FieldValue::text(ref_name)),
-            ("newOid", FieldValue::bytes(new_oid.to_vec())),
-            ("force", FieldValue::boolean(force)),
-        ]);
-        if let Some(prev) = prev_oid {
-            props.insert("prevOid".into(), FieldValue::bytes(prev.to_vec()));
-        }
+        let doc_type = ref_doc_type(ref_name, &current_protected_patterns(&configs));
+        let props = public_ref_props(&scope, ref_name, new_oid, prev_oid, force)?;
         self.doc_engine()?
             .create_document(&contract, doc_type, props)
             .await
+    }
+
+    /// Write several ref updates as one step of a push (P-6): the config is read ONCE, now
+    /// (it routes each update to `refUpdate` or `protectedRefUpdate`), and the writes of a
+    /// public repository go in parallel, each with its own nonce, up to the chunk pipeline's
+    /// window; every one is attempted, and each result comes back in order. A private
+    /// repository writes them one by one ([`Self::write_ref_update`]: each re-reads the
+    /// anchors before it seals, §5.3) and stops at the first failure, so the list is shorter
+    /// than `updates` when one failed. `Err` only when nothing could be attempted (reading
+    /// the repository or its config failed).
+    pub async fn write_ref_updates(
+        &self,
+        repo: &RepoRef,
+        updates: &[RefWrite],
+    ) -> Result<Vec<Result<String>>> {
+        if repo.visibility == Visibility::Private || updates.len() < 2 {
+            return Ok(until_first_err(updates, |u| {
+                self.write_ref_update(
+                    repo,
+                    &u.ref_name,
+                    &u.new_oid,
+                    u.prev_oid.as_deref(),
+                    u.force,
+                )
+            })
+            .await);
+        }
+        let (scope, contract) = self.writable(repo).await?;
+        let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
+        let patterns = current_protected_patterns(&configs);
+        let engine = self.doc_engine()?;
+        let (scope, contract, patterns, engine) = (&scope, &contract, &patterns, &engine);
+        Ok(futures::stream::iter(updates.iter().map(|u| async move {
+            check_ref_name(&u.ref_name)?;
+            let props = public_ref_props(
+                scope,
+                &u.ref_name,
+                &u.new_oid,
+                u.prev_oid.as_deref(),
+                u.force,
+            )?;
+            engine
+                .create_document(contract, ref_doc_type(&u.ref_name, patterns), props)
+                .await
+        }))
+        .buffered(crate::backends::platform::PIPELINE_WINDOW)
+        .collect()
+        .await)
     }
 
     /// A private ref update (§4.5): `refNameHash = HMAC(K_ref,e, refName)` under the write
@@ -1075,7 +1113,7 @@ impl<'a> RepoService<'a> {
         journal: &mut PushJournal,
         store: &(dyn JournalStore + Sync),
     ) -> Result<Vec<Uri>> {
-        use crate::backends::platform::{chunk_documents, CHUNK_DOC_TYPE};
+        use crate::backends::platform::{chunk_documents, CHUNK_DOC_TYPE, PIPELINE_WINDOW};
 
         let (scope, contract) = self.writable(repo).await?;
         let engine = self.doc_engine()?;
@@ -1092,14 +1130,32 @@ impl<'a> RepoService<'a> {
         let kill_after: Option<usize> = None;
         let mut uploaded_now = 0usize;
 
-        for (seq, props) in chunk_documents(bytes, pack_hash) {
-            if journal.has(seq) {
-                tracing::debug!(seq, "chunk already journaled; skipping");
-                continue;
-            }
-            let prepared = engine
-                .create_landed(&contract, CHUNK_DOC_TYPE, scope.scoped(props))
-                .await?;
+        // Pipelined (P-6, D-910): up to `PIPELINE_WINDOW` chunk creates in flight, each signed
+        // once with its own nonce from the SDK's nonce cache, as `PlatformBackend::put` does.
+        // The proof wait (~1-2 s a write) is what bounded a sequential upload to ~0.6 chunk/s;
+        // in flight together the chunks land at the rate blocks accept them. A chunk is
+        // journaled the moment it lands, in any order, so an interrupted push resumes by
+        // skipping exactly the chunks that landed. A nonce another in-flight write took is
+        // recovered inside `create_landed` (confirmed by a proved read, else re-signed).
+        let (done, todo): (Vec<_>, Vec<_>) = chunk_documents(bytes, pack_hash)
+            .into_iter()
+            .partition(|(seq, _)| journal.has(*seq));
+        if !done.is_empty() {
+            tracing::debug!(
+                skipped = done.len(),
+                "chunks already journaled; skipping them"
+            );
+        }
+        let (engine, contract, scope) = (&engine, &contract, &scope);
+        let mut landed = futures::stream::iter(todo.into_iter().map(|(seq, props)| async move {
+            engine
+                .create_landed(contract, CHUNK_DOC_TYPE, scope.scoped(props))
+                .await
+                .map(|prepared| (seq, prepared))
+        }))
+        .buffer_unordered(PIPELINE_WINDOW);
+        while let Some(done) = landed.next().await {
+            let (seq, prepared) = done?;
             journal.record(&WriteIntent::for_prepared(seq, &prepared));
             store.checkpoint(journal)?;
 
@@ -2491,6 +2547,73 @@ pub fn credits_to_dash(credits: u64) -> f64 {
 }
 
 /// The protected-ref globs in force per the newest `config` (`(createdAt, id)` order).
+/// Injection defense (write-side guard, defense-in-depth with rules::is_update_valid):
+/// `refName` is an arbitrary Platform string that never passed `git check-ref-format`, so a
+/// control char / newline could inject a spoofed ref-advertisement line into every clone.
+/// Illegal names are refused before anything is written.
+fn check_ref_name(ref_name: &str) -> Result<()> {
+    if rules::is_legal_ref_name(ref_name) {
+        Ok(())
+    } else {
+        Err(Error::Config(format!(
+            "illegal ref name {ref_name:?}: must be non-empty, no leading '-', no whitespace/control characters"
+        )))
+    }
+}
+
+/// The document type a public ref update is written as: `protectedRefUpdate` for a ref the
+/// current config protects, else `refUpdate`.
+fn ref_doc_type(ref_name: &str, protected_patterns: &[String]) -> &'static str {
+    if rules::matches_protected(ref_name, protected_patterns) {
+        DOC_PROTECTED_REF_UPDATE
+    } else {
+        DOC_REF_UPDATE
+    }
+}
+
+/// A public ref update's properties: the plain `refName`, its hash (the epoch is unused for
+/// a public repository), the oids and `force`.
+fn public_ref_props(
+    scope: &DocScope,
+    ref_name: &str,
+    new_oid: &[u8],
+    prev_oid: Option<&[u8]>,
+    force: bool,
+) -> Result<BTreeMap<String, FieldValue>> {
+    let mut props = scope.props([
+        (
+            "refNameHash",
+            FieldValue::bytes32(crate::private::Public.hash(0, ref_name)?),
+        ),
+        ("refName", FieldValue::text(ref_name)),
+        ("newOid", FieldValue::bytes(new_oid.to_vec())),
+        ("force", FieldValue::boolean(force)),
+    ]);
+    if let Some(prev) = prev_oid {
+        props.insert("prevOid".into(), FieldValue::bytes(prev.to_vec()));
+    }
+    Ok(props)
+}
+
+/// Run `write` over `items` in order and stop at the first failure: the results so far,
+/// that failure last.
+async fn until_first_err<'a, T, W, F>(items: &'a [T], mut write: W) -> Vec<Result<String>>
+where
+    W: FnMut(&'a T) -> F,
+    F: std::future::Future<Output = Result<String>>,
+{
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let r = write(item).await;
+        let failed = r.is_err();
+        out.push(r);
+        if failed {
+            break;
+        }
+    }
+    out
+}
+
 fn current_protected_patterns(configs: &[ConfigDoc]) -> Vec<String> {
     configs
         .iter()
@@ -2610,6 +2733,41 @@ mod tests {
             manifest("aa", 100, 0, 1), // a git pack is not a fragment
         ];
         assert_eq!(hashes(&live_locator_manifests(&manifests)), vec![9, 8]);
+    }
+
+    #[tokio::test]
+    async fn sequential_ref_writes_stop_at_the_first_failure() {
+        let calls = std::cell::Cell::new(0);
+        let out = super::until_first_err(&["a", "b", "c"], |x| {
+            calls.set(calls.get() + 1);
+            let x = *x;
+            async move {
+                if x == "b" {
+                    Err(crate::Error::Platform("refused".into()))
+                } else {
+                    Ok(x.to_string())
+                }
+            }
+        })
+        .await;
+        assert_eq!(calls.get(), 2, "nothing is written after the failure");
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[0].as_deref().ok(), Some("a"));
+        assert!(out[1].is_err());
+    }
+
+    #[test]
+    fn a_ref_update_is_routed_and_checked_like_the_single_write() {
+        assert_eq!(
+            super::ref_doc_type("refs/heads/main", &["refs/heads/main".into()]),
+            crate::refs::DOC_PROTECTED_REF_UPDATE
+        );
+        assert_eq!(
+            super::ref_doc_type("refs/heads/dev", &["refs/heads/main".into()]),
+            crate::refs::DOC_REF_UPDATE
+        );
+        assert!(super::check_ref_name("refs/heads/ok").is_ok());
+        assert!(super::check_ref_name("refs/heads/bad\nname").is_err());
     }
 
     #[test]
