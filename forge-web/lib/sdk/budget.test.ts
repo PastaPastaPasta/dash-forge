@@ -4,6 +4,7 @@ import {
   BURST,
   CALL_DEADLINE_MS,
   DOWN_MS,
+  HEDGE_AFTER_MS,
   INTERVAL_MS,
   LOW_WATER,
   RequestBudget,
@@ -375,6 +376,81 @@ describe('gatedFetch', () => {
     expect(await settled(pending)).toBe(false)
     await vi.advanceTimersByTimeAsync(SHORT_WAIT_MS)
     expect((await pending).headers.get('grpc-status')).toBe('0')
+  })
+
+  // L-15: one slow node held a cold repo home for 10–39 s while the others were idle.
+  describe('a slow document read (hedge)', () => {
+    /** A reply from `node` after `ms`, or never. */
+    function slowFrom(slowNode: string, ms: number | null, reply: () => Response = ok) {
+      return vi.fn(async (req: Request) => {
+        const from = new URL(req.url).origin
+        if (from !== slowNode) return reply()
+        return new Promise<Response>((resolve, reject) => {
+          if (ms !== null) setTimeout(() => resolve(ok()), ms)
+          req.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+        })
+      })
+    }
+
+    it('asks another free node after HEDGE_AFTER_MS and answers with the first reply', async () => {
+      const budget = withNodes()
+      const base = slowFrom(NODE, 15_000)
+      const pending = gatedFetch(base as unknown as typeof fetch, budget)(METHOD, { method: 'POST', body: new Uint8Array([1, 2, 3]) })
+      expect(await settled(pending)).toBe(false)
+      await vi.advanceTimersByTimeAsync(HEDGE_AFTER_MS)
+      expect(await settled(pending)).toBe(true)
+      expect((await pending).headers.get('grpc-status')).toBe('0')
+      expect(base).toHaveBeenCalledTimes(2)
+      const hedged = base.mock.calls[1]?.[0] as Request
+      expect(new URL(hedged.url).origin).not.toBe(NODE)
+      expect(new URL(hedged.url).pathname).toBe('//org.dash.platform.dapi.v0.Platform/getDocuments')
+      expect(new Uint8Array(await hedged.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]))
+      // The slow request is cancelled once the hedge answered.
+      expect((base.mock.calls[0]?.[0] as Request).signal.aborted).toBe(true)
+    })
+
+    it('does not hedge a read that answers in time', async () => {
+      const budget = withNodes()
+      const base = slowFrom(NODE, 500)
+      const pending = gatedFetch(base as unknown as typeof fetch, budget)(METHOD, { method: 'POST' })
+      await vi.advanceTimersByTimeAsync(500)
+      expect((await pending).headers.get('grpc-status')).toBe('0')
+      await vi.advanceTimersByTimeAsync(HEDGE_AFTER_MS)
+      expect(base).toHaveBeenCalledTimes(1)
+    })
+
+    it('never sends a state transition twice', async () => {
+      const budget = withNodes()
+      const base = slowFrom(NODE, 15_000)
+      const broadcast = `${NODE}//org.dash.platform.dapi.v0.Platform/broadcastStateTransition`
+      const pending = gatedFetch(base as unknown as typeof fetch, budget)(broadcast, { method: 'POST' })
+      await vi.advanceTimersByTimeAsync(HEDGE_AFTER_MS * 2)
+      expect(base).toHaveBeenCalledTimes(1)
+      await vi.advanceTimersByTimeAsync(15_000)
+      expect((await pending).headers.get('grpc-status')).toBe('0')
+    })
+
+    it('keeps waiting for the slow node when the hedge node refuses, and holds the hedge node', async () => {
+      const budget = withNodes()
+      const base = slowFrom(NODE, 5000, () => overLimit(30))
+      const pending = gatedFetch(base as unknown as typeof fetch, budget)(METHOD, { method: 'POST' })
+      await vi.advanceTimersByTimeAsync(HEDGE_AFTER_MS)
+      expect(await settled(pending)).toBe(false)
+      const hedgeNode = new URL((base.mock.calls[1]?.[0] as Request).url).origin
+      expect(budget.waitFor(hedgeNode).ms).toBeGreaterThanOrEqual(29_000)
+      await vi.advanceTimersByTimeAsync(5000)
+      expect((await pending).headers.get('grpc-status')).toBe('0')
+    })
+
+    it('does not hedge when no other node is free', async () => {
+      const budget = withNodes()
+      for (const n of [OTHER, THIRD, FOURTH]) budget.hold(n, Date.now() + 60_000)
+      const base = slowFrom(NODE, 5000)
+      const pending = gatedFetch(base as unknown as typeof fetch, budget)(METHOD, { method: 'POST' })
+      await vi.advanceTimersByTimeAsync(5000)
+      expect((await pending).headers.get('grpc-status')).toBe('0')
+      expect(base).toHaveBeenCalledTimes(1)
+    })
   })
 
   it('passes other requests straight through', async () => {

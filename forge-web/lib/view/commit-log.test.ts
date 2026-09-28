@@ -27,6 +27,44 @@ describe('lastCommitsForDir', () => {
     const got = await lastCommitsForDir(s.reader(), c3, 'src', ['b.rs'], 2)
     expect(got.has('b.rs')).toBe(false)
   })
+
+  // L-41: the column fills in as the walk goes instead of all at once at the end.
+  it('reports each step that settles more entries, newest first', async () => {
+    const seen: string[][] = []
+    await lastCommitsForDir(s.reader(), c3, '', ['README.md', 'src'], undefined, (found) => seen.push([...found.keys()].sort()))
+    expect(seen).toEqual([['README.md'], ['README.md', 'src']])
+  })
+
+  // An older entry on a real repo sits hundreds of commits back (dashpay/dash): 60 left most
+  // of the root blank. The default window reaches it.
+  it('looks back hundreds of commits by default', async () => {
+    const big = new Store()
+    let tip = big.commit(big.files({ 'old.txt': 'x', 'hot.txt': '0' }), [], 'add old')
+    for (let i = 1; i <= 300; i++) tip = big.commit(big.files({ 'old.txt': 'x', 'hot.txt': String(i) }), [tip], `hot ${i}`)
+    const got = await lastCommitsForDir(big.reader(), tip, '', ['old.txt', 'hot.txt'])
+    expect(got.get('hot.txt')?.subject).toBe('hot 300')
+    expect(got.get('old.txt')?.subject).toBe('add old')
+  })
+
+  it('walks through the reader’s read-ahead walker and flushes it', async () => {
+    const base = s.reader()
+    let flushed = 0
+    let walked = 0
+    const reader = {
+      ...base,
+      forHistoryWalk: () => ({
+        readObject: (oid: string) => {
+          walked++
+          return base.readObject(oid)
+        },
+        flush: () => void flushed++,
+      }),
+    }
+    await lastCommitsForDir(reader, c3, '', ['README.md'])
+    await countCommits(reader, c3)
+    expect(walked).toBeGreaterThan(0)
+    expect(flushed).toBe(2)
+  })
 })
 
 describe('countCommits', () => {

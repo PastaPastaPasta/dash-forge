@@ -105,15 +105,19 @@ export async function loadPrivateHome(sdk: EvoSDK, home: RepoHome, session: Priv
 
 /**
  * Resolve + compose a repo home view-model from its route address (`owner`, `name`, and an
- * optional `?repo=` pin). Returns null if nothing resolves.
+ * optional `?repo=` pin). Returns null if nothing resolves. `onResolved` is told the repo as
+ * soon as its document is read, before the refs: a code page starts its browse index then, so
+ * the two run side by side instead of one after the other (L-15).
  */
 export async function loadRepoHome(
   sdk: EvoSDK,
   params: RepoAddressParams & { readonly network: Network },
+  onResolved?: (repo: RepoRef) => void,
 ): Promise<RepoHome | null> {
   const resolved = await resolveAnyRepo(sdk, params)
   if (resolved === null) return null
   const { repo, doc: v2 } = resolved
+  onResolved?.(repo)
 
   // One config query serves both the current config and the history readRefs folds with.
   const bundlePromise = readConfigBundle(sdk, repo)

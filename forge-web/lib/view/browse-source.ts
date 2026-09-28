@@ -54,6 +54,7 @@ import {
   resetGatewayHealth,
   resetRepoGateways,
 } from './storage-status'
+import { mapPooled } from './pool'
 import { openPrivateArtifact, readPrivateRange } from './private-packs'
 import { onPrivateSessionEnded } from '../repo/private-session'
 
@@ -872,7 +873,14 @@ async function loadOneCopy(
   return out
 }
 
-/** A whole platform-stored artifact, in {@link DOWNLOAD_WINDOW} strides. */
+/**
+ * {@link DOWNLOAD_WINDOW}s of one whole artifact in flight at once. One window is a single
+ * 100-row chunk query, so this is also the query concurrency of a whole-artifact load (L-15:
+ * a 10 MB locator fetched one window at a time was ~2 s of serial round trips on a cold home).
+ */
+const WINDOW_POOL = 4
+
+/** A whole platform-stored artifact, in {@link DOWNLOAD_WINDOW} strides, {@link WINDOW_POOL} at a time. */
 async function loadPlatformWhole(
   sdk: EvoSDK,
   repo: RepoRef,
@@ -882,12 +890,16 @@ async function loadPlatformWhole(
 ): Promise<Uint8Array> {
   const total = manifest.sizeBytes
   const out = new Uint8Array(total)
-  for (let at = 0; at < total; at += DOWNLOAD_WINDOW) {
+  const starts: number[] = []
+  for (let at = 0; at < total; at += DOWNLOAD_WINDOW) starts.push(at)
+  let fetched = 0
+  await mapPooled(starts, WINDOW_POOL, async (at) => {
     if (cancel?.aborted) throw new Error('the in-browser clone was cancelled')
     const end = Math.min(at + DOWNLOAD_WINDOW, total)
     out.set(await fetchPlatformRange(sdk, repo, manifest, at, end), at)
-    onProgress?.(end, total)
-  }
+    fetched += end - at
+    onProgress?.(fetched, total)
+  })
   return out
 }
 

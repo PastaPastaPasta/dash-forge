@@ -51,6 +51,7 @@ import {
 } from '../rules'
 import {
   base64ToHex,
+  hexToBase64,
   IncompleteReadError,
   queryAllDocuments,
   queryDocumentsWithProof,
@@ -131,25 +132,69 @@ function dedupeById(rows: readonly PlainDocument[]): PlainDocument[] {
   })
 }
 
+/** A `refNameHash` bound: lowercase hex (for comparisons) and base64 (the query operand). */
+interface HashKey {
+  readonly hex: string
+  readonly b64: string
+}
+
+function hashKey(hex: string): HashKey {
+  return { hex, b64: hexToBase64(hex) }
+}
+
 /**
- * Page one type by key (see the module doc). `null` when the node did not honor the query —
- * a page out of order, a row at or below the `> last` bound, or a round that would not
- * advance `last` — and the caller then discards the scan entirely.
+ * Ranges the rest of a scan is split into once its first page comes back full. A large repo's
+ * refs (dashpay/dash: hundreds of tags) took about seven serial pages, ~1.5 s before anything
+ * else on the repo home could start (L-15). Split, the pages run side by side.
+ */
+const KEYSET_SPLITS = 4
+
+const HASH_MAX = 2n ** 256n - 1n
+
+/**
+ * `KEYSET_SPLITS - 1` ceilings splitting `(afterHex, max]` into ranges of equal width, each a
+ * 32-byte hex key strictly above `afterHex`. `refNameHash` is a sha256, so equal widths hold
+ * roughly equal numbers of refs.
+ */
+export function splitHashRange(afterHex: string, splits = KEYSET_SPLITS): string[] {
+  const floor = BigInt(`0x${afterHex}`)
+  const width = (HASH_MAX - floor) / BigInt(splits)
+  const out: string[] = []
+  if (width === 0n) return out
+  for (let i = 1; i < splits; i++) out.push((floor + width * BigInt(i)).toString(16).padStart(64, '0'))
+  return out
+}
+
+/**
+ * Page one type by key over `(after, upTo]` (see the module doc; absent bounds are open). `null`
+ * when the node did not honor the query — a page out of order, a row outside the bounds, or a
+ * round that would not advance `after` — and the caller then discards the scan entirely.
+ *
+ * A scan over the whole key space reads its first page on its own; when that page is full, the
+ * rest `(last complete ref, max]` is split into {@link KEYSET_SPLITS} ranges scanned in
+ * parallel (`>` and `<=` on the same field, an allowed pair in Drive's `group_clauses`). The
+ * ranges are disjoint and cover the rest exactly, so the rows are those of one serial scan.
  */
 async function keysetScan(
   sdk: EvoSDK,
   repo: RepoRef,
   documentTypeName: string,
+  after: HashKey | null = null,
+  upTo: HashKey | null = null,
 ): Promise<PlainDocument[] | null> {
   const source = repoSource(repo)
   const rows: PlainDocument[] = []
-  let after = null as { hex: string; b64: string } | null
+  const whole = after === null && upTo === null
   for (let round = 0; round < MAX_KEYSET_ROUNDS; round++) {
     const floorHex = after?.hex
+    const ceilHex = upTo?.hex
     const { documents: page } = await queryDocumentsWithProof(
       sdk,
       source.repoQuery(documentTypeName, {
-        where: after === null ? [] : [['refNameHash', '>', after.b64]],
+        where: [
+          ...(after === null ? [] : [['refNameHash', '>', after.b64] as const]),
+          ...(upTo === null ? [] : [['refNameHash', '<=', upTo.b64] as const]),
+        ],
         orderBy: [
           ['refNameHash', 'asc'],
           ['$createdAt', 'asc'],
@@ -159,7 +204,7 @@ async function keysetScan(
     )
     const hashes = page.map((d) => refHashHexOf(d, documentTypeName))
     const inOrder = hashes.every((h, i) => i === 0 || (hashes[i - 1] as string) <= h)
-    const inRange = floorHex === undefined || hashes.every((h) => h > floorHex)
+    const inRange = hashes.every((h) => (floorHex === undefined || h > floorHex) && (ceilHex === undefined || h <= ceilHex))
     if (!inOrder || !inRange) return null
 
     if (page.length < PAGE) {
@@ -183,6 +228,15 @@ async function keysetScan(
     // In-range pages already imply progress; this guards the invariant termination rests on.
     if (floorHex !== undefined && next.hex <= floorHex) return null
     after = next
+    if (whole && round === 0) {
+      // The first page was full: scan what is left as parallel ranges ending at `upTo`.
+      const ceilings = [...splitHashRange(next.hex).map(hashKey), null]
+      const parts = await Promise.all(
+        ceilings.map((ceil, i) => keysetScan(sdk, repo, documentTypeName, i === 0 ? next : (ceilings[i - 1] as HashKey), ceil)),
+      )
+      if (parts.some((p) => p === null)) return null
+      return dedupeById([...rows, ...parts.flatMap((p) => p as PlainDocument[])])
+    }
   }
   throw new IncompleteReadError(
     documentTypeName,

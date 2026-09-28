@@ -9,7 +9,7 @@
  * {@link BrowseBoundary}.
  */
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, FileText, GitCommit, Rocket, Search } from 'lucide-react'
 import { CopyRow } from '@/components/ui/copy-row'
@@ -31,7 +31,7 @@ import {
   selectedTip,
   type TreeEntry,
 } from '@/lib/view'
-import { countCommits, lastCommitsForDir, type LastCommit } from '@/lib/view/commit-log'
+import { countCommits, LAST_COMMIT_WALK, lastCommitsForDir, type LastCommit } from '@/lib/view/commit-log'
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
@@ -50,25 +50,61 @@ const HOME_COMMIT_COUNT_CAP = 100
 interface RootView {
   readonly tree: string
   readonly entries: TreeEntry[]
-  readonly readme: string | null
-  readonly readmeName: string | null
 }
 
+/** The root listing: the list paints as soon as it is read, before the README and the commit column. */
 async function loadRoot(reader: BrowseReader, tipOid: string): Promise<RootView> {
   const { tree } = await commitRootTree(reader, tipOid)
-  const entries = await readTree(reader, tree)
-  const readmeEntry = pickReadme(entries)
-  let readme: string | null = null
-  let readmeName: string | null = null
-  if (readmeEntry) {
-    try {
-      readme = decodeTextBlob(await readBlob(reader, readmeEntry.oid))
-      readmeName = readmeEntry.name
-    } catch {
-      readme = null
-    }
+  return { tree, entries: await readTree(reader, tree) }
+}
+
+/** The README shown under the list, or null (none, or unreadable: the list still stands). */
+async function loadReadme(reader: BrowseReader, entries: readonly TreeEntry[]): Promise<{ name: string; text: string } | null> {
+  const entry = pickReadme(entries)
+  if (!entry) return null
+  try {
+    const text = decodeTextBlob(await readBlob(reader, entry.oid))
+    return text === null ? null : { name: entry.name, text }
+  } catch {
+    return null
   }
-  return { tree, entries, readme, readmeName }
+}
+
+/**
+ * The commit column of the root listing (L-41): filled in as the walk finds each entry's last
+ * commit, and `done` once it has stopped, so an entry still without one reads as older than the
+ * walked window rather than as a failed load.
+ */
+function useLastCommits(
+  reader: BrowseReader,
+  tipOid: string,
+  names: readonly string[] | null,
+): { readonly found: ReadonlyMap<string, LastCommit>; readonly done: boolean; readonly failed: boolean } {
+  const [state, setState] = useState<{ key: string; found: ReadonlyMap<string, LastCommit>; done: boolean; failed: boolean }>({
+    key: '',
+    found: new Map(),
+    done: false,
+    failed: false,
+  })
+  const key = names === null ? '' : `${tipOid}\0${names.join('\0')}`
+  useEffect(() => {
+    if (names === null) return
+    let live = true
+    const set = (found: ReadonlyMap<string, LastCommit>, done: boolean, failed = false): void => {
+      if (live) setState({ key, found, done, failed })
+    }
+    set(new Map(), false)
+    lastCommitsForDir(reader, tipOid, '', names, LAST_COMMIT_WALK, (found) => set(found, false)).then(
+      (found) => set(found, true),
+      () => set(new Map(), true, true),
+    )
+    return () => {
+      live = false
+    }
+    // `key` covers `tipOid` and `names`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reader, key])
+  return state.key === key ? state : { found: new Map(), done: false, failed: false }
 }
 
 export function RepoHomeContent({
@@ -122,11 +158,10 @@ function RootBody({
   refParam: string
 }): JSX.Element {
   const { data, loading, error, cause, reload } = useAsync(() => loadRoot(reader, tipOid), [tipOid])
-  // Both load after the list paints and never block it.
-  const names = useMemo(() => (data?.entries ?? []).map((e) => e.name), [data])
-  const lastCommits = useAsync(() => lastCommitsForDir(reader, tipOid, '', names), [tipOid, names.join('\0')], {
-    enabled: data !== null,
-  })
+  // The README, the commit column and the count load after the list paints and never block it.
+  const names = useMemo(() => (data === null ? null : data.entries.map((e) => e.name)), [data])
+  const readme = useAsync(() => loadReadme(reader, data?.entries ?? []), [data?.tree ?? ''], { enabled: data !== null })
+  const lastCommits = useLastCommits(reader, tipOid, names)
   const commits = useAsync(() => countCommits(reader, tipOid, HOME_COMMIT_COUNT_CAP), [tipOid], { enabled: data !== null })
   const readmeRepo = useMemo<MarkdownRepoContext>(() => ({ addr, refParam, dir: '', reader, tipOid }), [addr, refParam, reader, tipOid])
 
@@ -161,33 +196,57 @@ function RootBody({
         addr={addr}
         basePath=""
         refParam={refParam}
-        commitColumn={(name) => <CommitCell commit={lastCommits.data?.get(name)} loading={lastCommits.loading} addr={addr} />}
+        commitColumn={(name) => (
+          <CommitCell commit={lastCommits.found.get(name)} done={lastCommits.done} failed={lastCommits.failed} addr={addr} />
+        )}
       />
 
-      {data.readme ? (
+      {readme.data ? (
         <section aria-label="README" className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
           <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense font-medium dark:border-anvil-800 dark:bg-anvil-900">
             <FileText className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
-            {data.readmeName}
+            {readme.data.name}
           </div>
           <div className="px-5 py-4">
-            {/\.(md|markdown)$/i.test(data.readmeName ?? '') ? (
-              <MarkdownView source={data.readme} images="auto" repo={readmeRepo} />
+            {/\.(md|markdown)$/i.test(readme.data.name) ? (
+              <MarkdownView source={readme.data.text} images="auto" repo={readmeRepo} />
             ) : (
               <pre className="whitespace-pre-wrap font-mono text-[13px] leading-relaxed text-anvil-700 dark:text-anvil-200">
-                {data.readme}
+                {readme.data.text}
               </pre>
             )}
           </div>
         </section>
+      ) : readme.loading ? (
+        <LoadingBlock label="Reading README" />
       ) : null}
     </div>
   )
 }
 
-function CommitCell({ commit, loading, addr }: { commit: LastCommit | undefined; loading: boolean; addr: RepoAddress }): JSX.Element {
+function CommitCell({
+  commit,
+  done,
+  failed,
+  addr,
+}: {
+  commit: LastCommit | undefined
+  /** The walk has stopped: no commit now means none in the walked window. */
+  done: boolean
+  failed: boolean
+  addr: RepoAddress
+}): JSX.Element {
   if (commit === undefined) {
-    return <span className="text-anvil-500 dark:text-anvil-400">{loading ? '…' : ''}</span>
+    const [text, title] = !done
+      ? ['…', 'Finding the last commit that changed this']
+      : failed
+        ? ['not loaded', 'The commit history could not be read']
+        : [`older than ${LAST_COMMIT_WALK} commits`, `Not changed in the last ${LAST_COMMIT_WALK} commits; older history is not searched here`]
+    return (
+      <span className="truncate text-anvil-500 dark:text-anvil-400" title={title} data-testid="commit-cell-pending">
+        {text}
+      </span>
+    )
   }
   return (
     <>

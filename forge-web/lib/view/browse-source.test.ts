@@ -189,6 +189,37 @@ describe('chunk LRU', () => {
   })
 })
 
+// L-15: a 10 MB locator is ~7 windows of 100 chunks; read one after another they were ~2 s of
+// serial round trips before the repo home could show anything.
+describe('whole-artifact load', () => {
+  it('reads its windows several at a time and reassembles them exactly', async () => {
+    const total = CHUNK_PAYLOAD_MAX * 100 * 6 + 999
+    const full = new Uint8Array(total)
+    for (let i = 0; i < total; i++) full[i] = (i * 13 + 5) % 251
+    const hash = bytesToHex(sha256(full))
+    const inner = mockSdk(() => full) as unknown as { documents: { query: (q: unknown) => Promise<Map<string, unknown>> } }
+    let inFlight = 0
+    let peak = 0
+    const sdk = {
+      documents: {
+        query: async (q: unknown): Promise<Map<string, unknown>> => {
+          inFlight++
+          peak = Math.max(peak, inFlight)
+          await new Promise((r) => setTimeout(r, 5))
+          inFlight--
+          return inner.documents.query(q)
+        },
+      },
+    } as unknown as EvoSDK
+    const progress: number[] = []
+    const manifest = { ...gitPack(hash, 0, 'w1'), sizeBytes: total }
+    const got = await loadArtifactBytesProgress(sdk, REPO, manifest, (done) => progress.push(done))
+    expect(bytesToHex(sha256(got))).toBe(hash)
+    expect(peak).toBeGreaterThanOrEqual(4)
+    expect(progress[progress.length - 1]).toBe(total)
+  })
+})
+
 describe('packRef ordering (assumption a)', () => {
   // Each pack's "bytes" are a single identifying byte, so fetchRange(packRef, 0, 1) reveals
   // which manifest packRef resolved to.

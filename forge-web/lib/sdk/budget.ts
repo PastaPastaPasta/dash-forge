@@ -77,6 +77,14 @@ export const RESET_JITTER_MS = 1000
 export const WAITER_JITTER_MS = 250
 /** How long an unreachable node stays out of rotation. */
 export const DOWN_MS = 15_000
+/**
+ * A document read not answering within this long is also sent to another free node, and the
+ * first good answer is used (L-15). A read answers in 60–400 ms; the slow tail seen live was
+ * one node taking 4–15 s while the others were idle, and the SDK only retries elsewhere after
+ * its own 15 s timeout. Every answer is proof-checked by the SDK, so which node served it
+ * does not matter.
+ */
+export const HEDGE_AFTER_MS = 2000
 
 /** The gateway's window: no reset is longer. */
 const MAX_RESET_MS = 60_000
@@ -257,6 +265,14 @@ export class RequestBudget implements DapiBudget {
       if (other !== node && state.downUntil <= now && this.waitFor(other, now).ms <= SHORT_WAIT_MS) free = true
     }
     return free && held < FAILOVER_MAX_HELD
+  }
+
+  /** @internal A node other than `node` that is up and may take a request now (random among them), or null. */
+  freeNode(node: string, now = Date.now()): string | null {
+    const free = [...new Set([...this.known, ...this.nodes.keys()])].filter(
+      (other) => other !== node && this.state(other, now).downUntil <= now && this.waitFor(other, now).ms === 0,
+    )
+    return free[Math.floor(Math.random() * free.length)] ?? null
   }
 
   /** @internal Record a fail-over handed to the caller. */
@@ -451,6 +467,101 @@ function isAbort(e: unknown): boolean {
   return e instanceof DOMException && e.name === 'AbortError'
 }
 
+/** The reads {@link sendHedged} may send twice: proof-verified document queries (idempotent). */
+const HEDGED_PATH = /\/org\.dash\.platform\.dapi\.v0\.Platform\/getDocuments$/
+
+/** A reply the caller can use as is: not a rate limit, not an unavailable node. */
+function usable(response: Response): boolean {
+  return !nodeUnavailable(response) && rateLimitWaitMs(response) === null
+}
+
+interface Outcome {
+  readonly from: string
+  readonly response?: Response
+  readonly error?: unknown
+}
+
+function unwrap(o: Outcome): { readonly response: Response; readonly from: string } {
+  if (o.response === undefined) throw o.error
+  return { response: o.response, from: o.from }
+}
+
+/**
+ * Send `request` to `node`. A document read with no answer after {@link HEDGE_AFTER_MS} also
+ * goes to one free node, and the first usable answer wins (the other is aborted). Resolves with
+ * that answer and the node it came from. When neither is usable, `node`'s own answer (or error)
+ * is what the caller gets, so its rate-limit and down-node handling sees what that node said;
+ * the hedge node's refusal or failure is booked here.
+ */
+async function sendHedged(
+  base: typeof fetch,
+  budget: RequestBudget,
+  request: Request,
+  body: ArrayBuffer | undefined,
+  node: string,
+): Promise<{ readonly response: Response; readonly from: string }> {
+  const url = new URL(request.url)
+  const controllers: AbortController[] = []
+  const abortAll = (): void => controllers.forEach((c) => c.abort())
+  request.signal.addEventListener('abort', abortAll, { once: true })
+  const send = (to: string): { readonly outcome: Promise<Outcome>; readonly controller: AbortController } => {
+    const controller = new AbortController()
+    controllers.push(controller)
+    const sent =
+      to === node
+        ? new Request(request, { body, signal: controller.signal })
+        : new Request(`${to}${url.pathname}${url.search}`, {
+            method: request.method,
+            headers: request.headers,
+            mode: request.mode,
+            credentials: request.credentials,
+            body,
+            signal: controller.signal,
+          })
+    const outcome = base(sent).then(
+      (response): Outcome => ({ from: to, response }),
+      (error: unknown): Outcome => ({ from: to, error }),
+    )
+    return { outcome, controller }
+  }
+  try {
+    const own = send(node)
+    if (!HEDGED_PATH.test(url.pathname)) return unwrap(await own.outcome)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const slow = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), HEDGE_AFTER_MS)
+    })
+    const early = await Promise.race([own.outcome, slow])
+    clearTimeout(timer)
+    if (early !== null) return unwrap(early)
+    // Slow: ask one other node too, if one is free right now.
+    const other = budget.freeNode(node)
+    if (other === null) return unwrap(await own.outcome)
+    budget.take(other)
+    const hedge = send(other)
+    // The hedge node's own refusal or failure keeps it out of rotation like any other reply.
+    void hedge.outcome.then((o) => {
+      if (hedge.controller.signal.aborted) return
+      const limit = o.response === undefined ? null : rateLimitWaitMs(o.response)
+      if (limit !== null) budget.hold(other, Date.now() + limit + Math.floor(Math.random() * RESET_JITTER_MS))
+      else if (o.response === undefined || nodeUnavailable(o.response)) budget.markDown(other, Date.now() + DOWN_MS)
+    })
+    const usableOnly = (o: Outcome): Promise<Outcome> =>
+      o.response !== undefined && usable(o.response) ? Promise.resolve(o) : Promise.reject(o)
+    try {
+      const win = await Promise.any([own.outcome.then(usableOnly), hedge.outcome.then(usableOnly)])
+      ;(win.from === node ? hedge : own).controller.abort()
+      return unwrap(win)
+    } catch {
+      // Neither is usable: drop the hedge's answer, pass on the node's own.
+      await (await hedge.outcome).response?.body?.cancel().catch(() => undefined)
+      return unwrap(await own.outcome)
+    }
+  } finally {
+    request.signal.removeEventListener('abort', abortAll)
+  }
+}
+
 /**
  * `base` with every DAPI request routed through `budget` (see the module comment for the
  * rules). Other requests pass straight through.
@@ -482,8 +593,9 @@ export function gatedFetch(base: typeof fetch, budget: RequestBudget): typeof fe
       }
       budget.take(node, now)
       let response: Response
+      let from: string
       try {
-        response = await base(new Request(request, { body }))
+        ;({ response, from } = await sendHedged(base, budget, request, body, node))
       } catch (e) {
         if (!request.signal.aborted && !isAbort(e)) budget.markDown(node, Date.now() + DOWN_MS)
         throw e
@@ -492,8 +604,9 @@ export function gatedFetch(base: typeof fetch, budget: RequestBudget): typeof fe
       if (nodeUnavailable(response)) budget.markDown(node, after + DOWN_MS)
       const limit = rateLimitWaitMs(response)
       if (limit === null) {
+        // The node that answered: a hedge's reply reports that node's window.
         const until = lowWaterUntil(response, after)
-        if (until !== null) budget.hold(node, until)
+        if (until !== null) budget.hold(from, until)
         return response
       }
       budget.hold(node, after + limit + Math.floor(Math.random() * RESET_JITTER_MS))

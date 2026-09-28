@@ -8,7 +8,7 @@ export function CommitClient(): JSX.Element {
   const addr = useRepoAddress()
   const oid = useParam('oid')
   return (
-    <RepoScaffold addr={addr}>
+    <RepoScaffold addr={addr} browse>
       {(home) => <CommitContent home={home} addr={addr} oid={oid} />}
     </RepoScaffold>
   )
