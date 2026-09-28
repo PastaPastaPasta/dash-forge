@@ -141,12 +141,15 @@ export async function waitForRepoResolved(page: Page, timeout = 60_000): Promise
 export async function runAxe(page: import('@playwright/test').Page, label: string) {
   // axe reads computed colours: mid-way through a fade-in (the sign-in modal's 150 ms) text is
   // blended with the backdrop and fails contrast it passes once shown. Let finite animations end
-  // first (infinite ones, such as a spinner, never do and are not waited for).
-  await page.waitForFunction(
-    () => document.getAnimations().every((a) => a.playState !== 'running' || (a.effect?.getComputedTiming().endTime ?? Infinity) === Infinity),
-    undefined,
-    { timeout: 5_000 },
-  )
+  // first (infinite ones, such as a spinner, never do and are not waited for). Best effort: WebKit
+  // can report a repeating skeleton pulse with a finite end, so give up after 5 s rather than fail.
+  await page
+    .waitForFunction(
+      () => document.getAnimations().every((a) => a.playState !== 'running' || (a.effect?.getComputedTiming().endTime ?? Infinity) === Infinity),
+      undefined,
+      { timeout: 5_000 },
+    )
+    .catch(() => undefined)
   const results = await new AxeBuilder({ page })
     .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'])
     .analyze()
