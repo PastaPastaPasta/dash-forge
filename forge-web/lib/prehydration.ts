@@ -1,14 +1,25 @@
 /**
- * Clicks before hydration (the static page shows its buttons a second or more before React
- * attaches their handlers, longer on a slow phone). Without this a tap on "Sign in" in that
- * window does nothing, and the site looks broken.
+ * Taps before hydration. The static page shows its buttons a second or more before React
+ * attaches their handlers (longer on a slow phone); without this, a tap on "Sign in" in that
+ * window does nothing and the site looks broken.
  *
  * {@link prehydrationScript} runs inline in <head>, before the body is parsed. It catches a
- * click on a button (not one inside a link: a link navigates on its own), keeps the newest as
- * the pending intent, and marks that button busy (`aria-busy`, `data-prehydrate-pending`: a
- * progress cursor and a dimmed look). Once the app has hydrated, {@link replayPrehydrationClick}
- * stops catching and clicks the pending button again, now with its handler, if it is still on
- * the page. Everything is plain DOM: the nodes React hydrates are the same ones.
+ * click on a button that names an intent (`data-replay="sign-in"`) and keeps the newest intent,
+ * marking that button busy (`aria-busy`, a progress cursor). The component that owns the button
+ * consumes the intent in its own mount effect ({@link consumePrehydrationIntent}) and acts on it
+ * (the header opens the sign-in sheet). The intent is a name, not a node: it does not depend on
+ * which DOM node React keeps, nor on the order effects run in.
+ *
+ * - Only buttons with `data-replay` are caught; any other tap before hydration does what it did
+ *   before (nothing for a button, navigation for a link). An intent is only for a button whose
+ *   action is safe to do a moment later: it opens something, it never writes.
+ * - After {@link STOP_AFTER_MS}, or when a script fails to load, the catcher stops and the busy
+ *   state clears, so a page that never hydrates does not keep a spinner forever.
+ * - The replayed action runs in an effect, without the user's click: browser APIs that need a
+ *   fresh user activation (a popup, the clipboard, a passkey prompt) may refuse it. The sign-in
+ *   sheet needs none; it asks for any of those on the user's next click inside it.
+ * - A capture-phase click handler added later (`onClickCapture`) on an ancestor of a replay
+ *   button would never see a caught tap: this listener stops it first, on the document.
  *
  * CSP: it runs under `script-src 'unsafe-inline'`, which the layout's meta CSP grants for Next's
  * own inline bootstrap scripts (`self.__next_f.push(…)`). A `'sha256-…'` source for this script
@@ -20,8 +31,15 @@
 /** The window property the inline script keeps its state on. */
 export const PREHYDRATION_KEY = '__forgePrehydration'
 
+/** How long the catcher waits for the app before giving up (and clearing the busy look). */
+export const STOP_AFTER_MS = 12_000
+
+/** The intents a button can carry (`data-replay`). */
+export type PrehydrationIntent = 'sign-in'
+
 interface PrehydrationState {
-  pending: Element | null
+  intent: string | null
+  consumed: boolean
   stop: () => void
 }
 
@@ -30,38 +48,58 @@ export function prehydrationScript(): string {
   return `(function(){
   var KEY=${JSON.stringify(PREHYDRATION_KEY)};
   if (window[KEY]) return;
-  var state = { pending: null, stop: function(){} };
+  var busy = null, prior = null;
+  function clearBusy(){
+    if (!busy) return;
+    if (prior === null) busy.removeAttribute('aria-busy'); else busy.setAttribute('aria-busy', prior);
+    busy.removeAttribute('data-prehydrate-pending');
+    busy = null; prior = null;
+  }
+  var state = { intent: null, consumed: false, stop: function(){} };
   function onClick(e){
     var t = e.target;
-    var b = t && t.closest ? t.closest('button') : null;
-    if (!b || b.disabled || b.closest('a')) return;
+    var b = t && t.closest ? t.closest('button[data-replay]') : null;
+    if (!b || b.disabled) return;
     e.preventDefault();
     e.stopPropagation();
-    if (state.pending && state.pending !== b) { state.pending.removeAttribute('aria-busy'); state.pending.removeAttribute('data-prehydrate-pending'); }
-    state.pending = b;
+    clearBusy();
+    state.intent = b.getAttribute('data-replay');
+    busy = b; prior = b.getAttribute('aria-busy');
     b.setAttribute('aria-busy','true');
     b.setAttribute('data-prehydrate-pending','');
   }
+  function onError(e){ if (e.target && e.target.tagName === 'SCRIPT') state.stop(); }
+  var timer = setTimeout(function(){ state.stop(); }, ${STOP_AFTER_MS});
   document.addEventListener('click', onClick, true);
-  state.stop = function(){ document.removeEventListener('click', onClick, true); };
+  window.addEventListener('error', onError, true);
+  state.stop = function(){
+    clearTimeout(timer);
+    document.removeEventListener('click', onClick, true);
+    window.removeEventListener('error', onError, true);
+    clearBusy();
+    if (!state.consumed) state.intent = null;
+  };
   window[KEY] = state;
 })();`
 }
 
+type WithState = Window & { [PREHYDRATION_KEY]?: PrehydrationState }
+
 /**
- * Called once the app has hydrated: stop catching clicks, and replay the pending one (if its
- * button is still on the page and enabled). Returns the button it clicked, or null.
+ * Whether a tap before hydration asked for `intent`; true at most once per page load (the first
+ * caller takes it). Also stops the catcher: from now on a tap reaches the button's own handler.
+ * Call it from the owning component's mount effect.
  */
-export function replayPrehydrationClick(win: Window & { [PREHYDRATION_KEY]?: PrehydrationState } = window as never): Element | null {
+export function consumePrehydrationIntent(intent: PrehydrationIntent, win: WithState = window as WithState): boolean {
   const state = win[PREHYDRATION_KEY]
-  if (state === undefined) return null
+  if (state === undefined) return false
+  const wanted = state.intent === intent && !state.consumed
+  if (wanted) state.consumed = true
   state.stop()
-  const b = state.pending
-  state.pending = null
-  if (b === null) return null
-  b.removeAttribute('aria-busy')
-  b.removeAttribute('data-prehydrate-pending')
-  if (!b.isConnected || (b as HTMLButtonElement).disabled) return null
-  ;(b as HTMLElement).click()
-  return b
+  return wanted
+}
+
+/** Stop catching (the app is up): a tap now reaches the buttons' handlers. The busy look clears. */
+export function stopPrehydrationCatcher(win: WithState = window as WithState): void {
+  win[PREHYDRATION_KEY]?.stop()
 }

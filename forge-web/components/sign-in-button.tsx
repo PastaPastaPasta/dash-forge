@@ -24,13 +24,16 @@ export function SignInButton({
   const common = { size, variant, className }
   // Until it is known whether this browser holds a key (a few ms), neither label.
   if (resuming || (!vaultsLoaded && vaultsError === null)) {
-    return <Button {...common} loading aria-label="Checking this browser's session" />
+    // In the static page this is what shows before the app hydrates: a tap on it is kept and
+    // opens the sheet once the app is up (lib/prehydration.ts, consumed in AppHeader).
+    return <Button {...common} loading aria-label="Checking this browser's session" data-replay="sign-in" />
   }
   if (locked) {
     return (
       <Button
         {...common}
         onClick={() => openLogin()}
+        data-replay="sign-in"
         data-testid="session-unlock"
         aria-label="Session locked — Unlock"
         title="This browser holds your key, but the session is locked. Unlock to write."
@@ -41,7 +44,7 @@ export function SignInButton({
     )
   }
   return (
-    <Button {...common} onClick={() => openLogin()}>
+    <Button {...common} onClick={() => openLogin()} data-replay="sign-in">
       Sign in
     </Button>
   )

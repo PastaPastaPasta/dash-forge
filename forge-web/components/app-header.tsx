@@ -25,6 +25,7 @@ import { errorMessage } from '@/lib/utils'
 import { numberTargets, parseJump } from '@/lib/view/jump'
 import { balanceToDash, dashToUsd } from '@/lib/view/format'
 import { FundsPill } from '@/components/funds-pill'
+import { consumePrehydrationIntent } from '@/lib/prehydration'
 
 /** The mirror guide (the `/mirror` wizard does not exist yet). */
 export const MIRROR_GUIDE_URL = 'https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/guides/mirror-a-github-repo.md'
@@ -58,6 +59,13 @@ function useSlashToSearch(): void {
 export function AppHeader(): JSX.Element {
   const { identity, balance, logout } = useAuth()
   useSlashToSearch()
+  // "Sign in" tapped before the app hydrated (lib/prehydration.ts): open the sheet now. Only
+  // while nobody is signed in: a session restored meanwhile needs no sheet.
+  useEffect(() => {
+    if (consumePrehydrationIntent('sign-in') && identity === null) openLogin()
+    // Once, on mount: a later sign-out must not reopen it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <header className="sticky top-0 z-40 border-b border-anvil-200 bg-anvil-50/85 backdrop-blur dark:border-anvil-800 dark:bg-anvil-950/85">
