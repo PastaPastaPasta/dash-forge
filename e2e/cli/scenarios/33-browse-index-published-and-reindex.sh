@@ -14,7 +14,7 @@
 #   3. `dg repo reindex` on it prices one index fragment (no pack upload), publishes it, and a
 #      second run finds nothing to do. The spend is the index only: far below the pack's price.
 #   4. A push stopped after its manifest and before its refs (DASH_FORGE_FAIL_BEFORE_REFS)
-#      reports `indexSkipped`; the retry stores nothing again, and `dg repo reindex` repairs it.
+#      reports `indexSkipped`; the retry stores no pack again and publishes the missing index.
 #
 # Needs a test-hooks git-remote-dash (SKIPs otherwise; `cargo build -p git-remote-dash
 # --features test-hooks`), GitHub access, and an identity minted for the run (the moutai funding
@@ -127,8 +127,9 @@ if ! git_dash "$ID" "$LOG-4b" -C "$SRC4" push "dash://$OWNER_ID/$FB" main:main; 
   cat "$LOG-4b.err" >&2; is_flake "$LOG-4b.err" && skip_scenario "push flaked"
   bad "the retry failed"; finish_scenario
 fi
-check "one git pack, no index yet (the retry stored nothing)" assert_eq "1 0" "$(kinds "$OWNER_ID/$FB")"
+# The retry stores no pack again, and publishes the index the stopped push left behind.
+check "one git pack and one index (the retry indexed the recorded pack)" assert_eq "1 1" "$(kinds "$OWNER_ID/$FB")"
 reindex "$LOG-4r" "$OWNER_ID/$FB" || { cat "$LOG-4r.err" >&2; bad "reindex failed"; }
-check "reindex repairs it" assert_eq "1 1" "$(kinds "$OWNER_ID/$FB")"
+check "reindex finds nothing left to do" assert_eq "indexed" "$(jq_py "$LOG-4r.json" 'd["status"]')"
 
 finish_scenario
