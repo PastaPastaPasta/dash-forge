@@ -68,10 +68,10 @@ export async function readTargetCounts(
       await new Promise((r) => setTimeout(r, retryMs))
       n = await read()
     }
-    if (n !== null) {
-      lastCount.set(`${key}:${type}`, n)
-      if (n >= floor) createdFloor.delete(`${key}:${type}`)
-    }
+    if (n !== null) lastCount.set(`${key}:${type}`, n)
+    // Seen, or given up on (a replayed write that was already counted cannot be seen twice): the
+    // floor is spent either way, so later reads never wait on it again.
+    createdFloor.delete(`${key}:${type}`)
     return n
   }
   const [issues, pulls] = await Promise.all([count('issue'), count('patch')])
@@ -91,7 +91,7 @@ const createdFloor = new Map<string, number>()
  */
 export function noteTargetCreated(repo: RepoRef, type: 'issue' | 'patch'): void {
   const key = `${repo.forge.collab}:${repo.repoId}:${type}`
-  createdFloor.set(key, Math.max(createdFloor.get(key) ?? 0, (lastCount.get(key) ?? 0) + 1))
+  createdFloor.set(key, Math.max(createdFloor.get(key) ?? 0, lastCount.get(key) ?? 0) + 1)
 }
 
 /**

@@ -134,7 +134,7 @@ export default function NotificationsPage(): JSX.Element {
                 {plural(subs.threads.length, 'issue or pull request', 'issues and pull requests')} you opened or commented on: comments, state changes, and reviews
                 on your pull requests.
               </li>
-              {prefs?.stars ? <li>{subs.repos.filter((r) => r.reason === 'starred').length} starred repos: new issues and pull requests.</li> : null}
+              {prefs?.stars ? <li>{plural(subs.repos.filter((r) => r.reason === 'starred').length, 'starred repo')}: new issues and pull requests.</li> : null}
               {subs.droppedRepos > 0 ? (
                 <li>
                   Capped at {MAX_REPOS} repos: {subs.droppedRepos} more are not watched.

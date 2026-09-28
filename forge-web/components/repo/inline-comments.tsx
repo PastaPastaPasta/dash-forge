@@ -555,12 +555,15 @@ function Composer({
   const [posting, setPosting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // Which subtrees this comment would create, read once the viewer starts typing, so the price
-  // shown before "Add comment" is as tight as the conversation composer's (L-38, D-011).
-  const first = useFirstWrite(
+  // shown before "Add comment" is as tight as the conversation composer's (L-38, D-011). A reply
+  // may be its root's first, which opens the `reply` subtree no surcharge measures: keep the
+  // thread surcharge in for it, so the preview stays an upper bound.
+  const read = useFirstWrite(
     () => commentFirsts(sdk!, repo, pullId, identity!),
     [pullId, identity ?? ''],
     body !== '' && ready && sdk !== null && identity !== null,
   )
+  const first = replyTo ? { ...read, target: true } : read
   const cost = composeCost(
     repo,
     'comment',

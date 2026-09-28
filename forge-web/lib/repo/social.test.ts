@@ -84,6 +84,19 @@ describe('readTargetCounts after a create (L-37)', () => {
     const stuck = countingSdk([5])
     expect((await readTargetCounts(stuck.sdk, FORGE, 'R', { retryMs: 0 })).issues).toBe(5)
     expect(stuck.reads()).toBe(5)
+    // The floor is spent: the next read does not wait again.
+    const next = countingSdk([5])
+    await readTargetCounts(next.sdk, FORGE, 'R', { retryMs: 0 })
+    expect(next.reads()).toBe(1)
+  })
+
+  it('two creates raise the floor by two', async () => {
+    await readTargetCounts(countingSdk([7]).sdk, FORGE, 'R', { retryMs: 0 })
+    noteTargetCreated(REPO, 'issue')
+    noteTargetCreated(REPO, 'issue')
+    const lagging = countingSdk([8, 9])
+    expect((await readTargetCounts(lagging.sdk, FORGE, 'R', { retryMs: 0 })).issues).toBe(9)
+    expect(lagging.reads()).toBe(2)
   })
 })
 

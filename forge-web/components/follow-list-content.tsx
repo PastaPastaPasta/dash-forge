@@ -50,7 +50,9 @@ export function FollowListContent({ address, side }: { address: string; side: Fo
   const key = `${network}:${address}`
   const [stored, setMore] = useState<More>({ key, pages: [], error: null })
   const more: More = stored.key === key ? stored : { key, pages: [], error: null }
-  const [loadingMore, setLoadingMore] = useState(false)
+  // The key a "Load more" is reading for: a read for another address never blocks this one.
+  const [loadingKey, setLoadingKey] = useState<string | null>(null)
+  const loadingMore = loadingKey === key
 
   const withNames = async (page: FollowPage): Promise<FollowPage> => {
     await prefetchDpnsNames(sdk!, page.ids, network)
@@ -76,14 +78,14 @@ export function FollowListContent({ address, side }: { address: string; side: Fo
   const next = more.pages.length > 0 ? more.pages[more.pages.length - 1]!.next : data?.next ?? null
   const loadMore = async (): Promise<void> => {
     if (!data || next === null || loadingMore) return
-    setLoadingMore(true)
+    setLoadingKey(key)
     try {
       const page = await withNames(await readFollowPage(sdk!, forge!, data.identityId, side, next))
       setMore({ key, pages: [...more.pages, page], error: null })
     } catch (e) {
       setMore({ ...more, error: errorMessage(e) })
     } finally {
-      setLoadingMore(false)
+      setLoadingKey((k) => (k === key ? null : k))
     }
   }
 

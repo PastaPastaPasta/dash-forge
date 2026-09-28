@@ -6,7 +6,8 @@
  * shells and client components can call them.
  */
 
-import { creditsToDash } from '../sdk'
+// `../sdk/cost` has no imports: the merge worker loads this module and must not pull the SDK in.
+import { creditsToDash } from '../sdk/cost'
 
 /** Abbreviate an OID / hash to a struck-metal serial (default 7 chars, git convention). */
 export function shortOid(oid: string, chars = 7): string {

@@ -180,7 +180,7 @@ export function DiffView({
           <ChevronRight className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400 transition-transform group-open:rotate-90" aria-hidden />
           <FileDiff className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
           <span className="font-medium">
-            {plural(truncated ? `${changes.length}+` : changes.length, 'file')} changed
+            {plural(truncated ? `${changes.length.toLocaleString('en-US')}+` : changes.length, 'file')} changed
           </span>
           <DiffStat added={added} deleted={deleted} />
           {counted < textFiles ? (
@@ -232,10 +232,10 @@ export function DiffView({
       {shown < changes.length ? (
         <div className="flex items-center justify-center gap-3 py-2">
           <span className="text-dense text-anvil-500 dark:text-anvil-400">
-            Showing {shown} of {plural(changes.length, 'file')}
+            Showing {shown.toLocaleString('en-US')} of {plural(changes.length, 'file')}
           </span>
           <Button size="sm" onClick={() => setShown((n) => Math.min(changes.length, n + FILE_PAGE))}>
-            Show {Math.min(FILE_PAGE, changes.length - shown)} more files
+            Show {plural(Math.min(FILE_PAGE, changes.length - shown), 'more file')}
           </Button>
         </div>
       ) : null}

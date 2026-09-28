@@ -88,7 +88,7 @@ export function StarButton({
       </Button>
       {/* The price in view before the one-click write (D-098, style guide rule 2), as Follow shows it. */}
       {signedIn && star.on !== null ? (
-        <span className="font-mono text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="star-cost">
+        <span className="hidden font-mono text-[11px] text-anvil-500 dark:text-anvil-400 sm:inline" data-testid="star-cost" aria-hidden>
           {starred ? `+${creditsAsDash(-refund.credits)}` : `~${creditsAsDash(cost.credits)}`} DASH
         </span>
       ) : null}
