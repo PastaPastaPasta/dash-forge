@@ -9,11 +9,12 @@
  * local memory. The state machine itself is {@link useBrowseReader}.
  */
 
-import { Fragment, useCallback, type ReactNode } from 'react'
+import { Fragment, useCallback, useMemo, type ReactNode } from 'react'
 import { AlertTriangle, HardDriveDownload, PackageOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { useBrowseReader } from '@/hooks/use-browse-reader'
+import { useTrustView } from '@/hooks/use-trust-view'
 import type { BrowseReader } from '@/lib/browse'
 import { repoKey, type RepoRef } from '@/lib/repo'
 import { formatBytes, invalidateBrowseContext, plural, StorageUnreachableError, type UnavailablePack } from '@/lib/view'
@@ -74,6 +75,10 @@ export function BrowseBoundary({
   const state = useBrowseReader(repo)
   const key = repoKey(repo)
   const retry = useCallback(() => invalidateBrowseContext(key), [key])
+  // The page reads for its own view, so the Verification summary names what served IT (L-18).
+  const view = useTrustView()
+  const shared = state.kind === 'ready' ? state.reader : null
+  const reader = useMemo(() => shared?.forView(view) ?? null, [shared, view])
 
   switch (state.kind) {
     case 'loading':
@@ -94,8 +99,8 @@ export function BrowseBoundary({
     case 'ready': {
       // Keyed by the reader: one resolved from a newer pack list (a push, a merge) replaces the
       // view, whose reads then run against it, instead of keeping what the old one showed.
-      const view = <Fragment key={state.version}>{children(state.reader, retry)}</Fragment>
-      if (!state.local) return view
+      const body = <Fragment key={state.version}>{children(reader ?? state.reader, retry)}</Fragment>
+      if (!state.local) return body
       return (
         <div>
           <p className="mb-3 text-dense text-anvil-500 dark:text-anvil-400">
@@ -103,7 +108,7 @@ export function BrowseBoundary({
             {state.behind ? "doesn't cover everything stored" : "hasn't been published"} yet.
           </p>
           {state.unavailable.length > 0 ? <UnavailablePacksNotice packs={state.unavailable} /> : null}
-          {view}
+          {body}
         </div>
       )
     }

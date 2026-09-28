@@ -27,6 +27,7 @@ import {
 } from './profiles'
 import {
   EMPTY_STORAGE_CONFIG,
+  defaultPolicyDraft,
   discardStorageConfig,
   loadStorageConfig,
   policyForRepo,
@@ -34,6 +35,7 @@ import {
   saveStorageConfig,
   withProfile,
   withRenamedProfile,
+  withFirstDefault,
   withRepoPolicy,
   withoutProfile,
 } from './store'
@@ -172,6 +174,42 @@ describe('the stored configuration', () => {
     expect(policyProblem(c, policyFor(['nope'], 'one'))).toMatch(/no storage profile/)
     expect(policyProblem(c, { targets: ['r2-main'], replicas: 2, platformFallback: false })).toMatch(/copies/)
     expect(policyProblem(c, { targets: [], replicas: 1, platformFallback: false })).toMatch(/at least one/)
+  })
+
+  it('makes a newly added profile the default when there is none yet, and never replaces one (L-10)', () => {
+    const first = withFirstDefault(withProfile(EMPTY_STORAGE_CONFIG, S3), 'r2-main')
+    expect(first.defaultPolicy).toEqual({ targets: ['r2-main'], replicas: 1, platformFallback: false })
+    const second = withFirstDefault(withProfile(first, KUBO), 'kubo')
+    expect(second.defaultPolicy).toBe(first.defaultPolicy)
+  })
+
+  it('puts the first storage of your own in front of a Platform-only default, and nothing later (L-10)', () => {
+    const platform: StorageProfile = { name: PLATFORM_PROFILE, settings: { kind: 'platform', provider: 'platform' }, secrets: {} }
+    const onlyPlatform = withFirstDefault(withProfile(EMPTY_STORAGE_CONFIG, platform), PLATFORM_PROFILE)
+    expect(onlyPlatform.defaultPolicy).toEqual(policyFor([PLATFORM_PROFILE], 'one'))
+    const withS3 = withFirstDefault(withProfile(onlyPlatform, S3), 'r2-main')
+    expect(withS3.defaultPolicy).toEqual({ targets: ['r2-main', PLATFORM_PROFILE], replicas: 1, platformFallback: false })
+    // A second storage of one's own is the user's to add.
+    expect(withFirstDefault(withProfile(withS3, KUBO), 'kubo').defaultPolicy).toBe(withS3.defaultPolicy)
+    // A Platform-only default with a storage of one's own already there was a choice: kept.
+    const chosen = { ...withProfile(withProfile(EMPTY_STORAGE_CONFIG, platform), S3), defaultPolicy: policyFor([PLATFORM_PROFILE], 'one') }
+    expect(withFirstDefault(withProfile(chosen, KUBO), 'kubo').defaultPolicy).toBe(chosen.defaultPolicy)
+  })
+
+  it('lets the default form save only a real, changed policy (L-10)', () => {
+    const c = withProfile(withProfile(EMPTY_STORAGE_CONFIG, S3), KUBO)
+    // Nothing ticked: nothing to save, and it says why (the old form saved a null policy, "Saved.").
+    const empty = defaultPolicyDraft(c, [], 'one')
+    expect(empty).toMatchObject({ state: 'empty', policy: null, targets: [] })
+    expect(empty.state === 'empty' && empty.reason).toMatch(/at least one/)
+    // A removed profile is not a target.
+    expect(defaultPolicyDraft(c, ['gone'], 'one').state).toBe('empty')
+    expect(defaultPolicyDraft(c, ['r2-main'], 'one')).toMatchObject({ state: 'changed', policy: policyFor(['r2-main'], 'one') })
+    // The saved default, unchanged: Save has nothing to do.
+    const saved = { ...c, defaultPolicy: policyFor(['r2-main'], 'one') }
+    expect(defaultPolicyDraft(saved, ['r2-main'], 'one').state).toBe('unchanged')
+    expect(defaultPolicyDraft(saved, ['r2-main'], 'fallback').state).toBe('changed')
+    expect(defaultPolicyDraft(saved, ['r2-main', 'kubo'], 'one').state).toBe('changed')
   })
 })
 
@@ -382,6 +420,16 @@ describe('storeArtifact', () => {
     const pub = net.fetchMock.mock.calls.find(([u]) => String(u).startsWith('https://pub-9a1.r2.dev/'))
     expect(pub).toBeDefined()
     expect(new Headers(pub?.[1]?.headers).get('authorization')).toBeNull()
+  })
+
+  it('"one place": your own storage confirmed, a Platform target after it is neither asked for nor charged', async () => {
+    const net = fakeNetwork()
+    vi.stubGlobal('fetch', net.fetchMock)
+    const platform: StorageProfile = { name: PLATFORM_PROFILE, settings: { kind: 'platform', provider: 'platform' }, secrets: {} }
+    const confirm = vi.fn(async () => true)
+    const stored = await storeArtifact(SDK, AUTH, REPO, bytes, { policy: policyFor(['r2-main', PLATFORM_PROFILE], 'one'), profiles: [S3, platform], confirmPlatform: confirm })
+    expect(confirm).not.toHaveBeenCalled()
+    expect(stored.storage).toBe(1)
   })
 
   it("never uploads a private repo's unsealed bytes; a sealed pack goes through", async () => {

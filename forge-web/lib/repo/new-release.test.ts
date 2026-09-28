@@ -9,12 +9,13 @@ import {
   carriedAssets,
   plannedAsset,
   releaseIntent,
+  releaseStorageGap,
   releaseTextProblem,
   tagProblem,
 } from './new-release'
 import { parseReleaseAssets } from './releases'
 import { releaseAssetsJson } from './writes'
-import { externalTargets, policyFor, storeFile, type StorageProfile } from '../storage'
+import { EMPTY_STORAGE_CONFIG, externalTargets, policyFor, storeFile, type StorageConfig, type StorageProfile } from '../storage'
 import { sha256Hex } from '../storage/sigv4'
 
 const S3: StorageProfile = {
@@ -85,6 +86,21 @@ describe('release input rules', () => {
     expect(assetPlanProblem(many, policy, [S3])).toMatch(/4096/)
     expect(assetPlanProblem([{ name: 'a', size: 1 }], policyFor(['platform'], 'one'), [PLATFORM])).toMatch(/never go to Platform/)
     expect(assetPlanProblem([], null, [])).toBeNull()
+  })
+
+  it('says why no storage of your own applies, and where to fix it (L-10)', () => {
+    const cfg = (over: Partial<StorageConfig> = {}): StorageConfig => ({ ...EMPTY_STORAGE_CONFIG, ...over })
+    expect(releaseStorageGap(cfg(), 'R')).toMatchObject({ reason: 'no-profiles', fix: 'account' })
+    // The trap: a profile saved, no default chosen.
+    const gap = releaseStorageGap(cfg({ profiles: [S3] }), 'R')
+    expect(gap).toMatchObject({ reason: 'no-default', fix: 'account' })
+    expect(gap?.message).toMatch(/r2/)
+    expect(gap?.message).toMatch(/default/)
+    expect(releaseStorageGap(cfg({ profiles: [S3, PLATFORM], defaultPolicy: policyFor(['platform'], 'one') }), 'R')).toMatchObject({ reason: 'platform-only', fix: 'account' })
+    // The repo's own choice wins, and is fixed in the repo's settings.
+    const override = cfg({ profiles: [S3, PLATFORM], defaultPolicy: policyFor(['r2'], 'one'), repoPolicies: { R: policyFor(['platform'], 'one') } })
+    expect(releaseStorageGap(override, 'R')).toMatchObject({ reason: 'platform-only', fix: 'repo' })
+    expect(releaseStorageGap(cfg({ profiles: [S3], defaultPolicy: policyFor(['r2'], 'one') }), 'R')).toBeNull()
   })
 
   it('writes the CLI asset shape, which the reader parses back', () => {

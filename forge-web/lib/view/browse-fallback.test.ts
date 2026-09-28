@@ -28,7 +28,7 @@ import type { PackManifest, RepoRef } from '../repo'
 import { base64ToHex, bytesToBase64 } from '../sdk'
 import { cachedFallback, startFallback, type FallbackProgress } from './browse-fallback'
 import { externalFetchUrls, resetExternalFetchState, StorageUnreachableError } from './browse-source'
-import { contentChecks, resetContentChecks } from './content-checks'
+import { beginView, contentChecks, resetContentChecks } from './content-checks'
 import { describeUnavailable, noteRepoGateways, overrideDefaultGateways, readGateways } from './storage-status'
 import { deriveTrust } from './trust'
 
@@ -232,6 +232,48 @@ describe('startFallback with external-storage packs', () => {
     await expect(read).rejects.not.toThrow(/external storage/)
     expect(describeUnavailable(ctx.unavailable ?? [], [])).toEqual(["the parent repo's chunks on Platform (missing)"])
     expect(contentChecks('FORK').unreachable).toEqual(["the parent repo's chunks on Platform (missing)"])
+  })
+
+  it('the summary names the place that served the file on view, not the session\'s first (L-18)', async () => {
+    const plat = blobPack('README, pushed to Platform\n')
+    const s3 = blobPack('a file pushed to S3\n')
+    const platform = manifestFor(plat.pack, 1, { createdAt: 1, documentId: 'a' })
+    const external = manifestFor(s3.pack, 1, { storage: 1, chunkCount: 0, uris: ['https://files.example/forge-byo/p.pack'], createdAt: 2, documentId: 'b' })
+    stubFetch({ 'https://files.example/forge-byo/p.pack': () => s3.pack })
+    const repo = testRepo('fallback-l18')
+    const ctx = await startFallback(mockSdk(new Map([[platform.packHash, plat.pack]])), repo, [platform, external])
+    const summary = (): string =>
+      deriveTrust({
+        network: 'devnet',
+        connection: 'trusted',
+        quorum: { state: 'agreed', primary: 'q', secondary: 'n', overlap: 4 },
+        tip: 'missing',
+        checks: contentChecks(repo.repoId),
+        configuredBackend: 'platform',
+      }).summary
+
+    // Each page reads through a reader for its view, as BrowseBoundary gives it.
+    // (The rail starts each view when its route commits.)
+    const visit = (route: string) => {
+      beginView(repo.repoId, route)
+      return ctx.reader.forView(route)
+    }
+    // The repo home read the README (Platform), then the viewer opened the S3 file.
+    const home = visit('/repo')
+    await home.readObject(plat.oid)
+    expect(summary()).toMatch(/· from Platform$/)
+    const file = visit('/repo/blob?path=s3')
+    await file.readObject(s3.oid)
+    expect(summary()).toMatch(/· from files\.example$/)
+    // The home page's walk, still reading after the viewer left it, is not counted.
+    await home.readObject(plat.oid)
+    expect(summary()).toMatch(/· from files\.example$/)
+    // A memo hit still names its place: the next visit reads nothing new.
+    await visit('/repo?again').readObject(plat.oid)
+    expect(summary()).toMatch(/· from Platform$/)
+    // The shared reader (no view) reports nothing: only a page's own reads name places.
+    await ctx.reader.readObject(s3.oid)
+    expect(summary()).toMatch(/· from Platform$/)
   })
 
   it('reports a pack named by several manifests once', async () => {

@@ -19,13 +19,16 @@ import type { RepoHome } from '@/lib/view'
 import { ARCHIVED_REASON, formatBytes, plural } from '@/lib/view'
 import type { ReleaseList } from '@/lib/repo'
 import {
+  NO_STORAGE_GAP,
   ReleaseWriteError,
+  type ReleaseStorageGap,
   type ResolvedRelease,
   assetFilesProblem,
   assetPlanProblem,
   carriedAssets,
   plannedAsset,
   publishRelease,
+  releaseStorageGap,
   releaseTextProblem,
   tagProblem,
 } from '@/lib/repo/new-release'
@@ -36,6 +39,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { useIntent } from '@/hooks/use-intent'
 import { useStorageConfig } from '@/hooks/use-storage-config'
+import { repoHref, useRepoAddress } from '@/hooks/use-query-param'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Button } from '@/components/ui/button'
@@ -62,6 +66,12 @@ function AssetStateIcon({ state }: { state: AssetState | undefined }): JSX.Eleme
     default:
       return null
   }
+}
+
+/** The link that fixes a {@link ReleaseStorageGap}, in words. */
+function gapLinkLabel(gap: ReleaseStorageGap): string {
+  if (gap.reason === 'no-profiles') return 'Set up storage'
+  return gap.fix === 'repo' ? "Open this repo's storage settings" : 'Choose your default storage'
 }
 
 function stateText(s: AssetState | undefined): string {
@@ -113,6 +123,7 @@ function NewReleaseDialog({
   onPublished: () => void
 }): JSX.Element {
   const repo = home.repo
+  const addr = useRepoAddress()
   const { sdk, network } = useSdk()
   const { signer } = useAuth()
   const guard = useWriteGuard()
@@ -133,6 +144,10 @@ function NewReleaseDialog({
   const policy = config && repo ? policyForRepo(config, repo.repoId) : null
   const profiles = useMemo(() => config?.profiles ?? [], [config])
   const targets = externalTargets(policy, profiles)
+  // Why assets have nowhere to go, and the page that fixes it (L-10).
+  const gap = config && repo ? releaseStorageGap(config, repo.repoId) : null
+  const shownGap = gap ?? NO_STORAGE_GAP
+  const fixHref = shownGap.fix === 'repo' ? `${repoHref('/repo/settings', addr)}#storage` : shownGap.reason === 'no-profiles' ? '/settings/storage/' : '/settings/storage/#policy-title'
   const trimmedTag = tag.trim()
   // A new revision of an existing tag supersedes it (newest per tag wins): what the form leaves
   // blank is kept, so a yank or a notes edit never drops the files (D-504).
@@ -141,7 +156,11 @@ function NewReleaseDialog({
   const finalName = title.trim() || existing?.name || ''
   const finalNotes = notes.trimEnd() || existing?.notes || ''
   const problem =
-    tagProblem(trimmedTag) ?? releaseTextProblem({ name: finalName, notes: finalNotes }) ?? assetFilesProblem(files) ?? assetPlanProblem(files, policy, profiles, kept)
+    tagProblem(trimmedTag) ??
+    releaseTextProblem({ name: finalName, notes: finalNotes }) ??
+    assetFilesProblem(files) ??
+    (files.length > 0 && gap !== null ? gap.message : null) ??
+    assetPlanProblem(files, policy, profiles, kept)
   // The release document as it will be written, with placeholder hashes: sizes the cost.
   const cost = useMemo(
     () =>
@@ -306,10 +325,12 @@ function NewReleaseDialog({
             ) : targets.length > 0 ? (
               <>Uploaded to {targets.join(', ')} and verified before the release is written. Up to 256 MiB per file.</>
             ) : (
-              <>
-                No storage of your own chosen for this repo (release assets never go to Platform).{' '}
-                <Link href="/settings/storage/" className="text-forge-700 underline dark:text-forge-400">Set up storage</Link> to attach assets.
-              </>
+              <span data-testid="release-storage-gap" data-reason={shownGap.reason}>
+                {shownGap.message}{' '}
+                <Link href={fixHref} className="text-forge-700 underline dark:text-forge-400">
+                  {gapLinkLabel(shownGap)}
+                </Link>
+              </span>
             )}
           </p>
           {files.length > 0 ? (

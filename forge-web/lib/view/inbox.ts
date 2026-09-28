@@ -57,6 +57,11 @@ export const MAX_THREADS = 30
 export const ROUND_BUDGET = 12
 /** Rows per feed query. */
 export const PAGE = 20
+/**
+ * Backfill queries per poll at most (L-17): a thread newly watched in a repo whose state feed
+ * already read past its events costs one query per state feed, once. More wait for the next poll.
+ */
+export const BACKFILL_BUDGET = 4
 /** On first sight a feed reaches back this far, so a new inbox is not empty for no reason. */
 export const BACKFILL_MS = 7 * 24 * 60 * 60_000
 /** Items kept; the oldest read ones go first. */
@@ -218,6 +223,46 @@ export function feedQuery(forge: ForgeIds, f: Feed, cursor: Cursor): DocumentQue
     case 'reviews':
       return { dataContractId: forge.collab, documentTypeName: DOC.review, where: [['patchId', '==', f.thread.id], after], ...shape }
   }
+}
+
+/**
+ * The one query that reads `thread`'s state events a repo's shared state feed already moved past
+ * before the thread was watched (L-17): on the thread's own `target` index, from when I joined it
+ * (or the feed's floor, whichever is later) up to where the feed has read, newest first, one page.
+ * A thread with more than {@link PAGE} unseen state changes gets the newest; older ones are not
+ * news. Null when the feed has not read past the thread's start: its next read covers it.
+ */
+export function backfillQuery(forge: ForgeIds, f: Extract<Feed, { kind: 'state' }>, thread: ThreadSub, cursor: Cursor, floor: number): DocumentQuery | null {
+  const from = Math.max(thread.since, floor)
+  if (cursor.at <= from) return null
+  return {
+    dataContractId: forge.collab,
+    documentTypeName: f.type,
+    // `<= at`: a page that stopped inside a block at `at` read part of it; the rest comes here or
+    // with the feed's next read (an item is stored once, by document id).
+    where: [['targetId', '==', thread.id], ['$createdAt', '>', from], ['$createdAt', '<=', cursor.at]],
+    orderBy: [['$createdAt', 'desc']],
+    limit: PAGE,
+  }
+}
+
+/** Failed backfill attempts of one thread before it is given up (its future events still come). */
+export const BACKFILL_TRIES = 3
+/** Covered threads kept per state feed: the newest (a feed watches at most MAX_THREADS). */
+const COVERED_MAX = 4 * MAX_THREADS
+
+/**
+ * A state feed's covered record, bounded: thread id → when it was covered (ms; `0` for a thread
+ * covered before records existed), or a failure count below zero. Threads the feed watches now
+ * are always kept; of the others (watched before), the most recently covered.
+ */
+function pruneCovered(covered: Record<string, number>, watched: readonly ThreadSub[]): Record<string, number> {
+  const rows = Object.entries(covered)
+  if (rows.length <= COVERED_MAX) return covered
+  const now = new Set(watched.map((t) => t.id))
+  const kept = rows.filter(([id]) => now.has(id))
+  const others = rows.filter(([id]) => !now.has(id)).sort((a, b) => b[1] - a[1])
+  return Object.fromEntries([...kept, ...others.slice(0, Math.max(0, COVERED_MAX - kept.length))])
 }
 
 /** A stored cursor (an earlier build stored a bare timestamp). */
@@ -497,9 +542,58 @@ export async function pollOnce(
   const existing = new Set((await loadItems(network, me)).map((i) => i.id))
   let added = 0
   let failed = 0
+  let backfills = 0
+  let backfillsFailed = 0
+  const store = async (items: readonly InboxItem[]): Promise<void> => {
+    for (const it of items) {
+      if (existing.has(it.id)) continue
+      existing.add(it.id)
+      await idbPut('inbox', `${p}item:${it.id}`, it)
+      added++
+    }
+  }
   for (const f of round) {
-    const key = `${p}cursor:${feedKey(f)}`
-    const cursor = asCursor(await idbGet<unknown>('inbox', key)) ?? initialCursor(f, seen[feedKey(f)] ?? now)
+    const fk = feedKey(f)
+    const key = `${p}cursor:${fk}`
+    const start = initialCursor(f, seen[fk] ?? now)
+    const cursor = asCursor(await idbGet<unknown>('inbox', key)) ?? start
+    // A repo's state feed is shared by its threads: a thread that joined it after the cursor
+    // moved past its events is read once from its own history (L-17).
+    if (f.kind === 'state') {
+      const coverKey = `${p}covered:${fk}`
+      // The threads this feed has answered for, kept after a thread leaves the watch set (it is
+      // not re-read when it returns). A feed read by an earlier build has no record: its current
+      // threads are taken as covered, so an upgrade re-reads nothing and never brings back pruned
+      // notifications as unread. The price: a thread that joined just before the upgrade, after
+      // the feed passed its events, is not backfilled (as before this fix).
+      const record = await idbGet<Record<string, number>>('inbox', coverKey)
+      const covered: Record<string, number> = record ?? (cursor === start ? {} : Object.fromEntries(f.threads.map((t) => [t.id, 0])))
+      let changed = record === undefined && Object.keys(covered).length > 0
+      for (const t of f.threads) {
+        if (covered[t.id] === undefined || covered[t.id]! < 0) {
+          // Null when the feed has not read past the thread's start (always so before its
+          // first read): the read below answers for it.
+          const q = backfillQuery(forge, f, t, cursor, start.at)
+          if (q !== null) {
+            if (backfills >= BACKFILL_BUDGET) continue
+            backfills++
+            try {
+              await store(toItems({ ...f, threads: [t] }, (await queryDocumentsWithProof(sdk, q)).documents, me))
+            } catch {
+              // Retried next poll; given up after BACKFILL_TRIES (a count below zero).
+              backfillsFailed++
+              const tries = (covered[t.id] ?? 0) - 1
+              covered[t.id] = tries <= -BACKFILL_TRIES ? now : tries
+              changed = true
+              continue
+            }
+          }
+          covered[t.id] = now
+          changed = true
+        }
+      }
+      if (changed) await idbPut('inbox', coverKey, pruneCovered(covered, f.threads))
+    }
     let docs: PlainDocument[]
     try {
       docs = (await queryDocumentsWithProof(sdk, feedQuery(forge, f, cursor))).documents
@@ -507,17 +601,12 @@ export async function pollOnce(
       failed++
       continue
     }
-    for (const it of toItems(f, docs, me)) {
-      if (existing.has(it.id)) continue
-      existing.add(it.id)
-      await idbPut('inbox', `${p}item:${it.id}`, it)
-      added++
-    }
+    await store(toItems(f, docs, me))
     const page = parseDocs(baseDoc, docs).map((d) => ({ at: d.$createdAt, id: d.$id }))
     await idbPut('inbox', key, advanceCursor(cursor, page))
   }
   if (added > 0) {
     for (const id of itemsToDrop(await loadItems(network, me))) await idbDelete('inbox', `${p}item:${id}`)
   }
-  return { added, feedsRead: round.length - failed, feedsTotal: feeds.length, failed, subs }
+  return { added, feedsRead: round.length - failed, feedsTotal: feeds.length, failed: failed + backfillsFailed, subs }
 }

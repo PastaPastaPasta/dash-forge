@@ -21,7 +21,7 @@
 
 import { NETWORKS, QUORUM_KEY_ENDPOINT, type Network } from '../constants'
 import type { RefHead, RefState } from '../rules'
-import type { ContentChecks } from './content-checks'
+import { viewSources, type ContentChecks } from './content-checks'
 import type { QuorumCrossCheck } from './quorum-check'
 import { plural, shortOid, timeAgo, urlHost } from './format'
 import { readGateways } from './storage-status'
@@ -358,8 +358,10 @@ function summaryOf(overall: TrustState, chain: TrustLink, checks: ContentChecks)
   const parts = [TRUST_LABEL[overall]]
   if (chain.state === 'verified' || chain.state === 'partial') parts.push('refs by proof')
   if (checks.objectsVerified > 0) parts.push(`${plural(checks.objectsVerified, 'object')} by hash`)
-  const first = checks.sources[0]
-  if (first !== undefined) parts.push(`from ${first === 'platform' ? 'Platform' : first}`)
+  // The places that served THIS view's objects: the session's first source named Platform for
+  // a file an S3 mirror served (L-18).
+  const served = viewSources(checks)
+  if (served.length > 0) parts.push(`from ${served.map((s) => (s === 'platform' ? 'Platform' : s)).join(', ')}`)
   return parts.join(' · ')
 }
 

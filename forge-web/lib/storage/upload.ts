@@ -403,6 +403,8 @@ export async function storeArtifact(
     // Platform targets only if they can still make up the policy: never pay for chunks whose
     // push is about to fail anyway — and never without the user's go-ahead on the price.
     for (const [i, name] of onChain.entries()) {
+      // Met already (one place of your own confirmed, policy "one"): no Platform charge.
+      if (confirmed.length >= policy.replicas) break
       if (confirmed.length + (onChain.length - i) < policy.replicas) break
       if (!(await agreePlatform(`Your storage policy for this repo includes Dash Platform (${name}).`))) {
         fail(name, new Error('storing on Platform was declined'))

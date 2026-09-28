@@ -16,10 +16,12 @@ import { z } from 'zod'
 import type { Network } from '../constants'
 import { discardStorageBlob, readStorageBlob, writeStorageBlob } from '../auth/vault'
 import {
+  policyFor,
   policySchema,
   renameInPolicy,
   profilePublicSchema,
   profileSecretsSchema,
+  type ReplicationChoice,
   type StoragePolicy,
   type StorageProfile,
 } from './profiles'
@@ -152,4 +154,59 @@ export function policyProblem(config: StorageConfig, policy: StoragePolicy): str
   if (missing.length > 0) return `no storage profile named ${missing.join(', ')}`
   if (policy.replicas > policy.targets.length) return `${policy.replicas} copies are required but only ${policy.targets.length} places are chosen`
   return null
+}
+
+/**
+ * `config` with profile `name` as the default for browser pushes when there is no default yet
+ * (L-10): a first profile that is not the default leaves every browser push, and every release
+ * asset, with nowhere to go. Likewise the first storage of one's OWN joins a default that is
+ * only Platform (added first), in front of it: release assets never go to Platform. Any other
+ * default is the user's choice and is never changed.
+ */
+export function withFirstDefault(config: StorageConfig, name: string): StorageConfig {
+  const kindOf = (n: string): string | undefined => config.profiles.find((p) => p.name === n)?.settings.kind
+  const kind = kindOf(name)
+  const current = config.defaultPolicy
+  if (kind === undefined) return config
+  if (current === null) return { ...config, defaultPolicy: policyFor([name], 'one') }
+  const platformOnly = current.targets.length > 0 && current.targets.every((t) => kindOf(t) === 'platform')
+  const firstOwn = kind !== 'platform' && config.profiles.every((p) => p.name === name || p.settings.kind === 'platform')
+  if (!platformOnly || !firstOwn) return config
+  return { ...config, defaultPolicy: { ...current, targets: [name, ...current.targets] } }
+}
+
+/**
+ * What the "Where browser pushes go" form would save, for the ticked `picked` and `choice`:
+ * nothing ticked (`empty`: Save stays disabled and says why), the saved default as it is
+ * (`unchanged`), or a new policy (`changed`). Profiles removed since they were ticked drop out.
+ */
+export type DefaultPolicyDraft =
+  | { readonly state: 'empty' | 'invalid'; readonly targets: readonly string[]; readonly policy: StoragePolicy | null; readonly reason: string }
+  | { readonly state: 'unchanged' | 'changed'; readonly targets: readonly string[]; readonly policy: StoragePolicy }
+
+export function defaultPolicyDraft(config: StorageConfig, picked: readonly string[], choice: ReplicationChoice): DefaultPolicyDraft {
+  const targets = picked.filter((t) => config.profiles.some((p) => p.name === t))
+  if (targets.length === 0) {
+    return {
+      state: 'empty',
+      targets,
+      policy: null,
+      reason: 'Tick at least one place: with none, browser pushes have nowhere of yours to go and release assets cannot be attached.',
+    }
+  }
+  const policy = policyFor(targets, choice)
+  const problem = policyProblem(config, policy)
+  if (problem !== null) return { state: 'invalid', targets, policy, reason: problem }
+  const same = config.defaultPolicy !== null && samePolicy(config.defaultPolicy, policy)
+  return { state: same ? 'unchanged' : 'changed', targets, policy }
+}
+
+/** Whether two policies store the same way (targets in order, copies, fallback). */
+export function samePolicy(a: StoragePolicy, b: StoragePolicy): boolean {
+  return (
+    a.replicas === b.replicas &&
+    a.platformFallback === b.platformFallback &&
+    a.targets.length === b.targets.length &&
+    a.targets.every((t, i) => t === b.targets[i])
+  )
 }

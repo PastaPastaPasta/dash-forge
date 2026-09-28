@@ -91,6 +91,7 @@ export {
   type FallbackProgress,
 } from './browse-fallback'
 export {
+  beginView,
   contentChecks,
   NO_CONTENT_CHECKS,
   subscribeContentChecks,
