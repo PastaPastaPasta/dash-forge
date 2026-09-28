@@ -62,6 +62,17 @@ export function readMostStarred(sdk: EvoSDK, forge: ForgeIds, limit = 25): Promi
   return rankedDocuments(sdk, { dataContractId: forge.collab, documentTypeName: DOC.star, groupBy: 'repoId', limit })
 }
 
+/**
+ * The most forked repos: forge-core `repo.forkOf`, ranked (beta.6 fresh core). Repos that are
+ * not forks form a real null group (the index is null-searchable, as ranking requires), which
+ * the query returns like any other group: it is dropped here, and one more row is asked for so
+ * `limit` forked repos still come back.
+ */
+export async function readMostForked(sdk: EvoSDK, forge: ForgeIds, limit = 25): Promise<RankedPage> {
+  const page = await rankedDocuments(sdk, { dataContractId: forge.core, documentTypeName: DOC.repo, groupBy: 'forkOf', limit: limit + 1 })
+  return { entries: page.entries.filter((e) => e.group !== '' && e.keyHex !== '').slice(0, limit) }
+}
+
 /** The most followed identities: `follow.byTarget`, proved. */
 export function readMostFollowed(sdk: EvoSDK, forge: ForgeIds, limit = 25): Promise<RankedPage> {
   return rankedDocuments(sdk, { dataContractId: forge.collab, documentTypeName: DOC.follow, groupBy: 'identityId', limit })

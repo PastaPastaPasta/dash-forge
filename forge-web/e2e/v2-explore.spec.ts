@@ -17,7 +17,7 @@ const DEMO_OWNER = DEMO.owner
  */
 
 
-test('x1. explore lists recent repos, trending and most starred, and says what it cannot know', async ({ page }) => {
+test('x1. explore lists recent repos, trending, most starred and most forked, and says what it cannot know', async ({ page }) => {
   const { errors } = collectPageErrors(page)
   await page.goto('/explore/', { waitUntil: 'domcontentloaded' })
   await expect(page.getByRole('heading', { name: 'Explore', level: 1 })).toBeVisible()
@@ -27,6 +27,12 @@ test('x1. explore lists recent repos, trending and most starred, and says what i
   await expect(page.getByTestId('trending-note')).toHaveCount(0)
   await expect(page.getByTestId('explore-trending').getByRole('heading', { name: /Trending (this week|today)/ })).toBeVisible()
   await expect(page.getByTestId('explore-most-starred').getByRole('heading', { name: 'Most starred' })).toBeVisible()
+  // Most forked (ranked repo.forkOf, fresh core): the repos that are not forks form the index's
+  // null group, which is never shown as a row.
+  const forked = page.getByTestId('explore-most-forked')
+  await expect(forked.getByRole('heading', { name: 'Most forked' })).toBeVisible()
+  await expect(forked.getByTestId('ranked-row').first().or(forked.getByText('No repo on this network has been forked yet.'))).toBeVisible({ timeout: 60_000 })
+  expect(await forked.getByTestId('ranked-row').evaluateAll((els) => els.filter((el) => !el.getAttribute('data-repo-id')).length)).toBe(0)
   const released = page.getByTestId('explore-recently-released')
   await expect(released).toContainText('no cross-repo index')
   await expect(released.locator('[data-empty], li').first()).toBeVisible({ timeout: 60_000 })

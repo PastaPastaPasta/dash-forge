@@ -8,15 +8,15 @@
  * section reads an index that answers it; where none exists the section says so rather than
  * implying it saw everything.
  *
- * Request budget, signed out: search 1 composite per page; trending and most starred 2 each (a
- * proved ranked read over every star, then the ranked repos in one composite); recent 1
+ * Request budget, signed out: search 1 composite per page; trending, most starred and most forked
+ * 2 each (a proved ranked read, then the ranked repos in one composite); recent 1
  * composite per page (its pushes feed "Recently updated", its first 24 repos "Recently released").
  */
 
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Suspense, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { CircleDot, Compass, Flame, Info, GitBranch, GitPullRequest, History, Package, Search, Star, UserCheck } from 'lucide-react'
+import { CircleDot, Compass, Flame, Info, GitBranch, GitFork, GitPullRequest, History, Package, Search, Star, UserCheck } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { SignInButton } from '@/components/sign-in-button'
 import { RepoCard } from '@/components/repo-card'
@@ -62,10 +62,11 @@ export function ExploreClient(): JSX.Element {
   const [trendWindow, setTrendWindow] = useState<TrendingWindow>('week')
   const trending = useAsync(() => rankedRepos(sdk!, trendWindow, { network, limit: TOP_N }), [ready, network, trendWindow], { enabled: on })
   const starred = useAsync(() => rankedRepos(sdk!, 'most-starred', { network, limit: TOP_N }), [ready, network], { enabled: on })
+  const forked = useAsync(() => rankedRepos(sdk!, 'most-forked', { network, limit: TOP_N }), [ready, network], { enabled: on })
   // Pushes rode along with the repos already read; rank those (the section says so).
   const updated = useMemo(
-    () => recentlyUpdated([recent.repos, starred.data?.repos ?? [], trending.data?.repos ?? []], TOP_N),
-    [recent.repos, starred.data, trending.data],
+    () => recentlyUpdated([recent.repos, starred.data?.repos ?? [], trending.data?.repos ?? [], forked.data?.repos ?? []], TOP_N),
+    [recent.repos, starred.data, trending.data, forked.data],
   )
   const recentRepos = recent.repos.slice(0, 24)
   const releases = useAsync(() => latestReleases(sdk!, forge!, recentRepos.map(repoLite)), [recentRepos.map((r) => r.key).join(',')], {
@@ -161,16 +162,29 @@ export function ExploreClient(): JSX.Element {
         </Section>
 
         <Section
+          title="Most forked"
+          testId="explore-most-forked"
+          icon={GitFork}
+          state={forked}
+          empty="No repo on this network has been forked yet."
+          note="All time, over every fork on the network, proved by the ranked fork index."
+          partial={missingNote}
+        >
+          {(d) => <RankedGrid repos={d.repos} unit="fork" />}
+          {(d) => d.repos.length === 0}
+        </Section>
+
+        <Section
           title="Recently updated, among the repos on this page"
           testId="explore-recently-updated"
           icon={History}
-          state={updatedState(recent, [starred, trending], updated)}
+          state={updatedState(recent, [starred, trending, forked], updated)}
           empty="None of the repos shown here was pushed to in the last week."
-          note={`Pushes have no cross-repo index, so this ranks the recent, trending and most-starred repos above by their newest push that uploaded objects in the last ${Math.round(PUSH_WINDOW_MS / 86_400_000)} days. Load more recent repos to widen it.`}
+          note={`Pushes have no cross-repo index, so this ranks the recent, trending, most-starred and most-forked repos above by their newest push that uploaded objects in the last ${Math.round(PUSH_WINDOW_MS / 86_400_000)} days. Load more recent repos to widen it.`}
           partial={() =>
             recent.fallback
               ? 'This node refused the combined read, so recent repos came without their pushes and are not ranked here.'
-              : recent.pushesComplete && (starred.data?.pushesComplete ?? true) && (trending.data?.pushesComplete ?? true)
+              : recent.pushesComplete && (starred.data?.pushesComplete ?? true) && (trending.data?.pushesComplete ?? true) && (forked.data?.pushesComplete ?? true)
                 ? null
                 : 'Each read looks at the newest 100 pushes of its repos; repos whose pushes fell past those 100 are not ranked here.'
           }

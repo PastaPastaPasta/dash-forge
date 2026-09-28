@@ -489,6 +489,7 @@ How the clients carry the C-1 types (PR (b)):
 - **Watch**: the inbox reads `watch.byOwner` as a subscription source (reason `watched`, whatever the star preference), so a watch follows the viewer to every device.
 - **Pin**: the Issues tab shows the repo's pinned issues above the list (folded from the feed it already reads, `pinnedTargets`); `dg issue list` lists them first.
 - **Lock**: a client rule, like archiving. The web composer and `dg issue comment` refuse a non-member's comment on a locked thread before signing; consensus still admits one, and the web marks it "posted while locked".
+- **Most forked**: Explore ranks `repo.forkOf` in one proved read (the fresh core's ranked index). Repos that are not forks form the index's null group (empty key, null value), which the reader drops, asking for one more row (`readMostForked`).
 - **Milestones**: `dg issue milestone` accepts only an open milestone the repo defines (the web picker offers the same list); the web reads milestones for members only.
 
 **forge-collab's size is a lifetime budget:** every future additive change to forge-collab must fit the ≈ 1 KB left (an update carries the whole contract), or go in a new contract.

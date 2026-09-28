@@ -133,11 +133,12 @@ function mockSdk(store: Record<string, Record<string, Doc[]>>, seen: Seen, opts:
       ranked: async (q: { dataContractId: string; documentTypeName: string; groupBy: string; limit: number }) => {
         seen.ranked.push(q as unknown as Record<string, unknown>)
         const counts = new Map<string, number>()
-        for (const d of rows(q.dataContractId, q.documentTypeName)) counts.set(String(d[q.groupBy]), (counts.get(String(d[q.groupBy])) ?? 0) + 1)
+        // A document without the grouped property falls in the null group (key "", value null), as on chain.
+        for (const d of rows(q.dataContractId, q.documentTypeName)) counts.set(String(d[q.groupBy] ?? ''), (counts.get(String(d[q.groupBy] ?? '')) ?? 0) + 1)
         const entries = [...counts.entries()]
           .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? 1 : a[0] > b[0] ? -1 : 0))
           .slice(0, q.limit)
-          .map(([g, n], i) => ({ groupKeyHex: Buffer.from(g).toString('hex'), groupValue: g, value: BigInt(n), rank: BigInt(i) }))
+          .map(([g, n], i) => ({ groupKeyHex: Buffer.from(g).toString('hex'), groupValue: g === '' ? null : g, value: BigInt(n), rank: BigInt(i) }))
         return { startingRank: 0n, entries }
       },
       ...(opts.noComposite ? {} : { composite }),
@@ -347,6 +348,19 @@ describe('rankedRepos (C-1: proved ranked reads)', () => {
       ['starBeat', 'oldest'],
       ['starBeat', 'newest'],
     ])
+  })
+
+  it('most forked ranks repo.forkOf and drops the null group of repos that are not forks', async () => {
+    const s = store()
+    const fork = (name: string, of: string) => ({ $id: id(`F${name}`), $ownerId: OWNER_B, $createdAt: NOW - 1000, name, visibility: 'public', description: '', forkOf: id(of) })
+    // Every stored repo without forkOf is the (largest) null group; jq has 2 forks, ripgrep 1.
+    s[FORGE.core]!['repo'] = [...s[FORGE.core]!['repo']!, fork('jq-a', 'Rjq'), fork('jq-b', 'Rjq'), fork('rg-a', 'RripgrepB')]
+    const seen = fresh()
+    const r = await rankedRepos(mockSdk(s, seen), 'most-forked', { network: NET, limit: 2 })
+    expect(names(r.repos)).toEqual(['jq', 'ripgrep'])
+    expect(r.repos.map((x) => x.rankCount)).toEqual([2, 1])
+    expect(seen.ranked[0]).toMatchObject({ documentTypeName: 'repo', groupBy: 'forkOf', limit: 3 })
+    expect(requests(seen)).toBe(2)
   })
 
   it('an empty ranking costs one request and shows nothing', async () => {

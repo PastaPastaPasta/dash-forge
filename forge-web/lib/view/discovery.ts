@@ -32,7 +32,7 @@ import type { Role } from '../rules/v2'
 import { queryDocumentsWithProof, type PlainDocument, type WhereClause } from '../sdk'
 import { countsAt, docsAt, queryComposite, type CompositeSub, type CompositeResult } from '../sdk/composite'
 import { DOC, readMemberRepoIds, toRepoDoc, type RepoDoc } from '../repo'
-import { readMostStarred, readTrending, type TrendingWindow } from '../repo/trending'
+import { readMostForked, readMostStarred, readTrending, type TrendingWindow } from '../repo/trending'
 import { seedFromDomains } from './dpns'
 
 /** A repo row for the discovery feeds and profiles. */
@@ -338,14 +338,14 @@ export interface RankedRepos {
 }
 
 /**
- * Trending (new stargazers in the week or today, `starBeat`) or Most starred (all time,
- * `star.byRepo`): one proved ranked read, then the ranked repos by id in one composite with
+ * Trending (new stargazers in the week or today, `starBeat`), Most starred (all time,
+ * `star.byRepo`) or Most forked (`repo.forkOf`, its non-fork null group dropped): one proved ranked read, then the ranked repos by id in one composite with
  * their star and issue counts, owners' names and pushes. Two requests, whatever the star count
  * (this replaces the bounded 100-star read that ranked only the repos those stars named).
  */
 export async function rankedRepos(
   sdk: EvoSDK,
-  kind: TrendingWindow | 'most-starred',
+  kind: TrendingWindow | 'most-starred' | 'most-forked',
   opts: { network?: Network; limit?: number } = {},
 ): Promise<RankedRepos> {
   const network = opts.network ?? DEFAULT_NETWORK
@@ -355,7 +355,9 @@ export async function rankedRepos(
   const page =
     kind === 'most-starred'
       ? await readMostStarred(sdk, forge, limit)
-      : await readTrending(sdk, forge, kind, limit)
+      : kind === 'most-forked'
+        ? await readMostForked(sdk, forge, limit)
+        : await readTrending(sdk, forge, kind, limit)
   const ids = page.entries.map((e) => e.group).filter((id) => id !== '')
   if (ids.length === 0) return { repos: [], missing: 0, pushesComplete: true }
   let rows: DiscoveredRepo[]
