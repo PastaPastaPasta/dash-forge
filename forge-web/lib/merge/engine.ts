@@ -26,6 +26,7 @@ import { findMergeBases, MergeBaseSearchLimitError } from '../view/pull-diff'
 import type { ObjectReader } from '../view/tree-nav'
 import { newCommits, objectsToPack, UnsupportedChangeError, WalkLimitError } from './objects'
 import { writePack } from './pack-writer'
+import type { PackEstimate } from '../storage/merge-choice'
 
 /** Who the merge commit is by (the merger's Settings name and email). */
 export interface MergeIdentity {
@@ -338,14 +339,34 @@ export type MergeCheck = MergePlan['kind']
 export interface MergeCheckResult {
   readonly check: MergeCheck
   readonly conflictPaths: readonly string[]
+  /**
+   * An upper bound on the pack the merge will store: its objects' raw bytes (a pack is zlib-
+   * compressed, so never larger in practice) plus the pack framing, and its object count. The
+   * check walks exactly these objects; null when it did not reach the pack step. Priced before
+   * the merge starts, so its storage question is asked up front.
+   */
+  readonly packEstimate: PackEstimate | null
+}
+
+/** zlib's `deflateBound`: the most a zlib stream (with its 6-byte wrapper) can be for `n` input bytes. */
+function zlibBound(n: number): number {
+  return n + (n >>> 12) + (n >>> 14) + (n >>> 25) + 13 + 6
+}
+
+/**
+ * A pack's size, bounded: the 12-byte header and 20-byte trailer, and per object up to 10 bytes
+ * of entry header plus its zlib stream at its worst (incompressible blobs included).
+ */
+export function packSizeBound(objects: readonly { readonly bytes: Uint8Array }[]): number {
+  return 32 + objects.reduce((n, o) => n + 10 + zlibBound(o.bytes.length), 0)
 }
 
 /** {@link checkMerge} with the conflicting paths (the merge box lists them, review-parity F7). */
 export async function checkMergeDetailed(raw: ObjectReader, input: MergeInput, budget = MERGE_READ_BUDGET): Promise<MergeCheckResult> {
   const out = await refusing(() => build(strictReader(raw, budget), input, false))
-  if (out.kind === 'checked') return { check: out.check, conflictPaths: [] }
-  if (out.kind === 'squash' || out.kind === 'fast-forward' || out.kind === 'merge') return { check: out.kind === 'squash' ? 'merge' : out.kind, conflictPaths: [] }
-  return { check: out.kind, conflictPaths: out.kind === 'conflict' ? out.paths : [] }
+  if (out.kind === 'checked') return { check: out.check, conflictPaths: [], packEstimate: out.packEstimate }
+  if (out.kind === 'squash' || out.kind === 'fast-forward' || out.kind === 'merge') return { check: out.kind === 'squash' ? 'merge' : out.kind, conflictPaths: [], packEstimate: { bytes: out.pack.length, objectCount: out.objectCount } }
+  return { check: out.kind, conflictPaths: out.kind === 'conflict' ? out.paths : [], packEstimate: null }
 }
 
 /**
@@ -379,7 +400,11 @@ async function build(
   input: MergeInput,
   pack: boolean,
   onProgress?: MergeProgress,
-): Promise<MergeOutcome | { kind: 'checked'; check: 'fast-forward' | 'merge' } | Exclude<MergePlan, { kind: 'fast-forward' | 'merge' | 'malformed' | 'too-large' }>> {
+): Promise<
+  | MergeOutcome
+  | { kind: 'checked'; check: 'fast-forward' | 'merge'; packEstimate: PackEstimate }
+  | Exclude<MergePlan, { kind: 'fast-forward' | 'merge' | 'malformed' | 'too-large' }>
+> {
   onProgress?.('analyse')
   const plan = await planMerge(reader, input)
   if (plan.kind === 'up-to-date' || plan.kind === 'unrelated' || plan.kind === 'conflict') return plan
@@ -418,7 +443,9 @@ async function build(
   // same-repo head's commits are new to the branch even though the repo's packs hold them.
   const baseHave = input.baseTip === '' ? [] : [input.baseTip]
   let objects = await objectsToPack(source, await newCommits(source, tip, baseHave))
-  if (!pack) return { kind: 'checked', check: plan.kind }
+  // The check sizes what it walked: at least what the merge packs (a same-repo head's history is
+  // then left out of the pack), so an upper bound.
+  if (!pack) return { kind: 'checked', check: plan.kind, packEstimate: { bytes: packSizeBound(objects), objectCount: objects.length } }
   // A squash commit's only parent is the base tip: nothing of the head's history is pushed.
   // What the base repo's packs already hold is not packed again: for a same-repo PR the head's
   // history (a fast-forward to it packs nothing).

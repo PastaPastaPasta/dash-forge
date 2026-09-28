@@ -21,7 +21,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { Check, GitMerge, Loader2, Minus, X } from 'lucide-react'
+import { GitMerge, Loader2 } from 'lucide-react'
 
 import { readConfigHistory, refNameHash, resolveRefByHash, type PullView, type RepoRef } from '@/lib/repo'
 import { isLegalRefName, matchesProtected } from '@/lib/rules'
@@ -32,7 +32,9 @@ import { checkMergeInWorker, runMergeInWorker } from '@/lib/merge/client'
 import { MERGE_STEPS, MergeStepError, retryLabel, runFor, runMergeSteps, type MergeRun, type MergeStepId } from '@/lib/merge/runner'
 import { mergeButton, mergeRefProblem } from '@/lib/view/pull-actions'
 import { publishMergeIndex } from '@/lib/merge/locator'
-import { useMergeUpload } from '@/components/repo/merge-upload'
+import { StorageRow, useMergeUpload } from '@/components/repo/merge-upload'
+import { StepRow, type StepState } from '@/components/repo/step-list'
+import { widenEstimate, type PackEstimate } from '@/lib/storage/merge-choice'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { mergeIdentityValid } from '@/lib/view/prefs'
 import { branchName, tipOidOf, type DiffSides, type ObjectReader } from '@/lib/view'
@@ -45,11 +47,9 @@ import { CopyRow } from '@/components/ui/copy-row'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { Oid } from '@/components/ui/oid'
 import { Textarea } from '@/components/ui/input'
-import { cn } from '@/lib/utils'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
-type StepState = 'todo' | 'running' | 'done' | 'skipped' | 'failed'
 
 /** "Delete the branch after merging": runnable, or shown disabled with why. */
 export type DeleteBranchOption = { readonly label: string; readonly run: () => Promise<void> } | { readonly label: string; readonly disabled: string }
@@ -97,7 +97,13 @@ export function MergePanel({
   const guard = useWriteGuard()
   const [prefs] = usePrefs()
   const wide = useMinWidth(1024)
-  const { upload, dialog: uploadDialog, storageLabel, begin, storageNeedsUnlock } = useMergeUpload(repo)
+  const { upload, question: storageQuestion, questionStep, choiceFor, begin, storageNeedsUnlock } = useMergeUpload(repo)
+  // The check sizes the pack (an upper bound): the Storage row prices it before the merge starts.
+  // With the method it was sized for (a squash packs none of the head's history): an estimate for
+  // another method is no price for this one, and is sized again.
+  const [sized, setSized] = useState<{ readonly estimate: PackEstimate | null; readonly method: 'merge' | 'squash' } | null>(null)
+  // "Allow storing on Platform": until the merger touches it, its default follows the policy.
+  const [allowTouched, setAllowTouched] = useState<boolean | null>(null)
   const baseRefName = pull.state.baseRef ?? pull.baseRefName
   const baseProtected = matchesProtected(baseRefName, protectedPatterns)
   const refProblem = mergeRefProblem(baseRefName, baseTipOid, pull.headOid, pull.baseRefName)
@@ -130,6 +136,13 @@ export function MergePanel({
     }),
     [baseTipOid, pull.headOid, pull.number, pull.sourceRefName, pull.title, prefs.mergeName, prefs.mergeEmail, sameRepo, method, squashMsg],
   )
+  // Widened for the real commit's identity (author and committer) and the squash message as it
+  // is now: the check used a placeholder identity and the message of the moment.
+  const packEstimate = sized !== null && sized.method === method ? sized.estimate : null
+  const storage = choiceFor(widenEstimate(packEstimate, `${input.author.name}${input.author.email}`.repeat(2) + (input.squash?.message ?? '')))
+  const allowPlatform = allowTouched ?? storage?.allowByDefault ?? false
+  // The pre-answer the run starts with: credits allowed on Platform (null: none, it asks).
+  const preAgreedCredits = allowPlatform ? (storage?.platformCredits ?? null) : null
 
   // The worker's verdict. Each check owns its worker and aborts it when superseded or
   // unmounted, so a stale check never keeps reading objects.
@@ -146,12 +159,15 @@ export function MergePanel({
     if (!checkable || reader === null) return
     const abort = new AbortController()
     setCheck(null)
+    setSized(null)
+    const sizing = inputRef.current.squash !== undefined ? 'squash' : 'merge'
     // The check needs a name for the trial merge commit; the real one is written on click.
     checkMergeInWorker(reader, { ...inputRef.current, author: { name: 'check', email: 'check@forge' } }, abort.signal).then(
       (c) => {
         if (abort.signal.aborted) return
         setCheck(c.check)
         setConflictPaths(c.conflictPaths)
+        setSized({ estimate: c.packEstimate, method: sizing })
       },
       (e: unknown) => {
         if (!abort.signal.aborted) setCheck({ error: e instanceof Error ? e.message : String(e) })
@@ -159,6 +175,20 @@ export function MergePanel({
     )
     return () => abort.abort()
   }, [checkable, reader, sidesKey, baseTipOid, pull.headOid])
+  // A method switch re-sizes the pack only: the verdict and the controls stay (the menu keeps
+  // focus); the Storage row shows no price until the size for this method is in.
+  const sizedMethod = sized?.method ?? null
+  useEffect(() => {
+    if (!checkable || reader === null || sizedMethod === null || sizedMethod === method) return
+    const abort = new AbortController()
+    checkMergeInWorker(reader, { ...inputRef.current, author: { name: 'check', email: 'check@forge' } }, abort.signal).then(
+      (c) => {
+        if (!abort.signal.aborted) setSized({ estimate: c.packEstimate, method })
+      },
+      () => undefined,
+    )
+    return () => abort.abort()
+  }, [checkable, reader, method, sizedMethod])
   const button = mergeButton({
     canMerge,
     isPublic: repo.visibility === 'public',
@@ -210,7 +240,7 @@ export function MergePanel({
     setBusy(true)
     setFailure(null)
     setStopped(null)
-    begin()
+    begin(preAgreedCredits)
     const intent = `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}${input.squash ? `:squash:${bytesToHex(sha256(new TextEncoder().encode(input.squash.message))).slice(0, 16)}` : ''}`
     try {
       const done = await runMergeSteps(
@@ -263,7 +293,7 @@ export function MergePanel({
     } finally {
       setBusy(false)
     }
-  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, deletable, alsoDelete])
+  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete])
 
   // A run in this panel keeps it on screen to the end (the PR reads Merged meanwhile).
   const started = Object.keys(steps).length > 0
@@ -390,26 +420,20 @@ export function MergePanel({
         </div>
       ) : null}
       {mergeable ? (
-        <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
-          <CostPreview cost={cost} />
-          <span>
-            plus the pack&apos;s storage{storageLabel ? ` on ${storageLabel}` : ''}
-          </span>
+        <div className="mt-3">
+          <div className="flex flex-wrap items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
+            <CostPreview cost={cost} />
+            <span>plus the pack&apos;s storage (below)</span>
+          </div>
+          <StorageRow choice={storage} allowed={allowPlatform} onAllow={setAllowTouched} disabled={busy} />
         </div>
       ) : null}
 
       {started ? (
         <ol aria-label="Merge steps" className="mt-3 space-y-1 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
-          {MERGE_STEPS.map(({ id, label }) => {
-            const s = steps[id] ?? 'todo'
-            return (
-              <li key={id} className={cn('flex items-center gap-2 text-dense', s === 'todo' && 'text-anvil-500 dark:text-anvil-400')} data-step={id} data-state={s}>
-                <StepIcon state={s} />
-                {label}
-                {details[id] ? <span className="text-[12px] text-anvil-600 dark:text-anvil-400">({details[id]})</span> : null}
-              </li>
-            )
-          })}
+          {MERGE_STEPS.map(({ id, label }) => (
+            <StepRow key={id} id={id} label={label} state={steps[id] ?? 'todo'} detail={details[id]} question={id === questionStep ? storageQuestion : null} />
+          ))}
         </ol>
       ) : null}
       {failure ? (
@@ -436,22 +460,6 @@ export function MergePanel({
           The merge stands; deleting {deleted.label} failed: {deleted.error}
         </p>
       ) : null}
-      {uploadDialog}
     </section>
   )
-}
-
-function StepIcon({ state }: { state: StepState }): JSX.Element {
-  switch (state) {
-    case 'done':
-      return <Check className="h-4 w-4 text-verify-700 dark:text-verify-400" aria-hidden />
-    case 'running':
-      return <Loader2 className="h-4 w-4 animate-spin text-anvil-500 dark:text-anvil-400" aria-hidden />
-    case 'skipped':
-      return <Minus className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
-    case 'failed':
-      return <X className="h-4 w-4 text-danger-700 dark:text-danger-400" aria-hidden />
-    default:
-      return <span className="h-4 w-4 rounded-full border border-anvil-300 dark:border-anvil-700" aria-hidden />
-  }
 }

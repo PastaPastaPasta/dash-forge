@@ -10,7 +10,7 @@
 
 import { useCallback, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { Check, GitCommit, Loader2, Minus, X } from 'lucide-react'
+import { GitCommit } from 'lucide-react'
 
 import { holdingsOfRole, readConfigBundle, readRoleOracle, repoKey, type PullView, type RepoRef } from '@/lib/repo'
 import { readBranchTip } from '@/lib/repo/source-branch'
@@ -28,6 +28,7 @@ import { mergeIdentityValid } from '@/lib/view/prefs'
 import { resolveDpnsNames } from '@/lib/view'
 import type { ObjectReader } from '@/lib/view'
 import { useMergeUpload } from '@/components/repo/merge-upload'
+import { StepRow, type StepState } from '@/components/repo/step-list'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { usePrefs } from '@/hooks/use-prefs'
@@ -35,9 +36,7 @@ import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Button } from '@/components/ui/button'
 import { CostPreview } from '@/components/ui/cost-preview'
-import { cn } from '@/lib/utils'
 
-type StepState = 'todo' | 'running' | 'done' | 'skipped' | 'failed'
 
 /**
  * Whether the viewer can move the PR's branch in `source`: a maintainer, or a writer when the
@@ -89,13 +88,12 @@ export function useBranchCommit({
   run: (key: string, label: string, build: () => Promise<BranchCommit>) => Promise<void>
   busy: boolean
   view: JSX.Element | null
-  uploadDialog: JSX.Element | null
 } {
   const { sdk } = useSdk()
   const { signer } = useAuth()
   const guard = useWriteGuard()
   const uploadRepo = source ?? repo
-  const { upload, dialog, begin } = useMergeUpload(uploadRepo)
+  const { upload, question, questionStep, begin } = useMergeUpload(uploadRepo)
   const [label, setLabel] = useState<string | null>(null)
   const [steps, setSteps] = useState<Partial<Record<BranchStepId | 'build', StepState>>>({})
   const [details, setDetails] = useState<Partial<Record<BranchStepId | 'build', string>>>({})
@@ -190,16 +188,9 @@ export function useBranchCommit({
     label === null ? null : (
       <div className="space-y-2" data-testid="branch-commit">
         <ol aria-label={`${label}: steps`} className="space-y-1 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
-          {[{ id: 'build' as const, label: 'Build the commit' }, ...BRANCH_STEPS].map(({ id, label: l }) => {
-            const s = steps[id] ?? 'todo'
-            return (
-              <li key={id} className={cn('flex items-center gap-2 text-dense', s === 'todo' && 'text-anvil-500 dark:text-anvil-400')} data-step={id} data-state={s}>
-                <StepIcon state={s} />
-                {l}
-                {details[id] ? <span className="text-[12px] text-anvil-600 dark:text-anvil-400">({details[id]})</span> : null}
-              </li>
-            )
-          })}
+          {[{ id: 'build' as const, label: 'Build the commit' }, ...BRANCH_STEPS].map(({ id, label: l }) => (
+            <StepRow key={id} id={id} label={l} state={steps[id] ?? 'todo'} detail={details[id]} question={id === questionStep ? question : null} />
+          ))}
         </ol>
         {error ? (
           <p role="alert" className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400">
@@ -214,22 +205,7 @@ export function useBranchCommit({
         ) : null}
       </div>
     )
-  return { run, busy, view, uploadDialog: dialog }
-}
-
-function StepIcon({ state }: { state: StepState }): JSX.Element {
-  switch (state) {
-    case 'done':
-      return <Check className="h-4 w-4 text-verify-700 dark:text-verify-400" aria-hidden />
-    case 'running':
-      return <Loader2 className="h-4 w-4 animate-spin text-anvil-500 dark:text-anvil-400" aria-hidden />
-    case 'skipped':
-      return <Minus className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
-    case 'failed':
-      return <X className="h-4 w-4 text-danger-700 dark:text-danger-400" aria-hidden />
-    default:
-      return <span className="h-4 w-4 rounded-full border border-anvil-300 dark:border-anvil-700" aria-hidden />
-  }
+  return { run, busy, view }
 }
 
 /** The merge identity a browser commit is authored with, or null when not set (Settings). */

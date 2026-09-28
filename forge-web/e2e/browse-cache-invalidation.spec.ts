@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { countDocumentQueries, idFile, idOrEmpty, shot, signedIn, waitForRepoResolved } from './helpers'
+import { countDocumentQueries, expectPlatformPreAllowed, idFile, idOrEmpty, shot, signedIn, waitForRepoResolved } from './helpers'
 
 /**
  * G4 — the browse cache after a push or merge it did not see (L-08, L-09, L-16), live on a
@@ -215,10 +215,8 @@ test('g3. a merge commit built in the browser (a new pack), then the Code tab re
   await page.waitForURL(/\/repo\/pull\/\?.*number=\d+/, { timeout: 180_000 })
 
   await expect(page.getByTestId('merge-button-state')).toHaveAttribute('data-state', 'merge-commit', { timeout: 180_000 })
+  await expectPlatformPreAllowed(page.getByTestId('merge-panel'))
   await page.getByRole('button', { name: 'Create merge commit and merge' }).click()
-  const ask = page.getByRole('dialog', { name: /Store the merge pack .* on Platform\?/ })
-  await expect(ask).toBeVisible({ timeout: 120_000 })
-  await ask.getByRole('button', { name: /sign & store on platform/i }).click()
   const steps = page.getByRole('list', { name: 'Merge steps' })
   await expect(steps.locator('[data-step="ref"]')).toHaveAttribute('data-state', 'done', { timeout: 300_000 })
   await page.getByTestId('merge-panel').scrollIntoViewIfNeeded()

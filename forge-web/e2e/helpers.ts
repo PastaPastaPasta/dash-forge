@@ -182,6 +182,31 @@ export async function expectLanded(page: Page, success: Locator, timeout = 45_00
 }
 
 /**
+ * Answer the run's inline storage question ("Waiting for your choice: store the pack … on Dash
+ * Platform?") if the upload step asks before `done` shows. It asks only after the pack is built
+ * (seconds in), so this waits for either; `isVisible` alone would not wait.
+ */
+export async function answerStorageQuestion(page: Page, done: Locator, timeout = 180_000): Promise<void> {
+  const ask = page.getByTestId('storage-question')
+  await expect(ask.or(done)).toBeVisible({ timeout })
+  if (await ask.isVisible()) {
+    await expect(ask.locator('xpath=ancestor::li[1]')).toHaveAttribute('data-state', 'waiting')
+    await ask.getByRole('button', { name: /sign & store on platform/i }).click()
+  }
+}
+
+/**
+ * The merge box's Storage row, before the merge: the spec identities configure no storage, so the
+ * pack goes to Platform and "Allow storing on Platform" is pre-checked with a DASH price.
+ */
+export async function expectPlatformPreAllowed(panel: Locator): Promise<void> {
+  const row = panel.getByTestId('storage-row')
+  await expect(row).toContainText('Dash Platform (no storage configured)', { timeout: 120_000 })
+  await expect(row.getByTestId('allow-platform')).toBeChecked()
+  await expect(row.getByTestId('cost-preview')).toContainText('DASH')
+}
+
+/**
  * Wait until the repo scaffold has finished the "Connecting to Platform" / "Resolving …"
  * loading shell — i.e. the WASM SDK connected and the forge-v2 `repo` document resolved.
  * Resolves when either real content or an explicit terminal state (error / not-found) is on

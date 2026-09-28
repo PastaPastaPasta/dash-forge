@@ -756,6 +756,9 @@ function PullPage({
 
       <div className={cn('grid gap-6', tab !== 'files' && 'lg:grid-cols-[minmax(0,1fr)_16rem]')}>
         <div role="tabpanel" aria-label={tab} className="min-w-0 space-y-4">
+          {/* A commit to the PR branch that is running (it may be waiting for a storage choice)
+              stays on screen on every tab, not only where it was started. */}
+          {suggest.runner.busy && !(tab === 'files' || (tab === 'conversation' && !(open && pull.state.draft))) ? suggest.runner.view : null}
           {tab === 'conversation' ? (
             <>
               {/* Description */}
@@ -1143,7 +1146,6 @@ function PullPage({
         ) : null}
       </div>
 
-      {suggest.runner.uploadDialog}
       <ConfirmDialog open={pending !== null} onClose={() => setPending(null)} title={confirm.title} description={confirm.description} cost={pendingCost} confirmLabel={confirm.label} onConfirm={runPending} />
     </div>
   )

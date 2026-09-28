@@ -30,6 +30,7 @@ import { manifestUrisProblem, putPlatformChunks } from '../repo/push'
 import { parseHeader, sealedLength } from '../private'
 import { addVerified, gatewayUrl, remotePin } from './ipfs'
 import { artifactKey, profileProblem, publishProblem, type StoragePolicy, type StorageProfile } from './profiles'
+import { withinPreAgreement } from './merge-choice'
 import { getObject, getPublic, headObject, putObject, publicObjectUrl, s3Uri, type S3Settings } from './s3'
 import { sha256Hex } from './sigv4'
 import { bytesEqual, errText, timedFetch } from './util'
@@ -323,6 +324,12 @@ export interface StoreOptions {
   readonly profiles: readonly StorageProfile[]
   /** Asked once, with the price, before anything is written to Platform. False stops it. */
   readonly confirmPlatform: (q: PlatformQuestion) => Promise<boolean>
+  /**
+   * Platform storage the user allowed before the run started, in credits (the merge box's
+   * "Allow storing on Platform, up to ≈X"): a Platform copy that costs no more is not asked about
+   * again. Absent or null: always ask.
+   */
+  readonly preAgreedCredits?: number | null
   readonly onStep?: (e: UploadEvent) => void
 }
 
@@ -356,10 +363,11 @@ export async function storeArtifact(
     failures.push({ target, reason: errText(e) })
     step({ target, phase: 'failed', reason: errText(e) })
   }
-  /** Ask once per push; every Platform write goes through this first. */
+  /** Ask once per push (unless allowed up front); every Platform write goes through this first. */
   const agreePlatform = async (reason: string): Promise<boolean> => {
     if (platformAgreed === null) {
-      platformAgreed = await opts.confirmPlatform({ bytes: bytes.length, estimateCredits: estimateChunkCredits(bytes.length), reason })
+      const estimateCredits = estimateChunkCredits(bytes.length)
+      platformAgreed = withinPreAgreement(opts.preAgreedCredits ?? null, estimateCredits) || (await opts.confirmPlatform({ bytes: bytes.length, estimateCredits, reason }))
     }
     return platformAgreed
   }

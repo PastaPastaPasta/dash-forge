@@ -28,11 +28,31 @@ vi.mock('@/hooks/use-prefs', () => ({
   usePrefs: () => [{ mergeName: 'Merger', mergeEmail: 'm@example.invalid', diffLayout: 'split' }, () => undefined],
   useMinWidth: () => true,
 }))
-vi.mock('@/components/repo/merge-upload', () => ({ useMergeUpload: () => ({ upload: null, dialog: null, storageLabel: '', begin: () => undefined }) }))
+// The storage answer the run was started with (what "Allow storing on Platform" passed).
+const begun: (number | null | undefined)[] = []
+vi.mock('@/components/repo/merge-upload', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@/components/repo/merge-upload')>()
+  const { storageChoice } = await import('@/lib/storage/merge-choice')
+  return {
+    ...real,
+    useMergeUpload: () => ({
+      upload: null,
+      // A repo whose storage policy lists Platform: allowed up front by default.
+      choiceFor: (estimate: { bytes: number; objectCount: number } | null) =>
+        storageChoice({ targets: ['chain'], replicas: 1, platformFallback: false }, [{ name: 'chain', settings: { kind: 'platform', provider: 'platform' }, secrets: {} } as never], estimate),
+      question: null,
+      questionStep: 'upload',
+      begin: (credits?: number | null) => void begun.push(credits),
+      storageNeedsUnlock: false,
+    }),
+  }
+})
 // A check after the merge compares the head with a base that already holds it: seen live as a
 // conflict on '/'. The first check says "merge"; any later one says what that live one did.
 let checkCount = 0
-const checks = vi.fn(async () => (++checkCount === 1 ? { check: 'merge', conflictPaths: [] as string[] } : { check: 'conflict', conflictPaths: ['/'] }))
+const checks = vi.fn(async () =>
+  ++checkCount === 1 ? { check: 'merge', conflictPaths: [] as string[], packEstimate: { bytes: 4000, objectCount: 4 } } : { check: 'conflict', conflictPaths: ['/'], packEstimate: null },
+)
 vi.mock('@/lib/merge/client', () => ({
   checkMergeInWorker: () => checks(),
   runMergeInWorker: vi.fn(),
@@ -111,9 +131,15 @@ describe('the merge box through its own merge', () => {
     await act(async () => undefined)
     const button = [...host.querySelectorAll('button')].find((b) => /merge/i.test(b.textContent ?? '') && !b.disabled)
     expect(button, host.querySelector('[data-testid="merge-button-state"]')?.outerHTML ?? host.textContent ?? '').toBeDefined()
+    // Before the merge: the Storage row names where the pack goes and allows Platform up front
+    // (the policy lists it), priced from the check's estimate.
+    expect(host.querySelector('[data-testid="storage-row"]')?.textContent).toMatch(/Storage: chain/)
+    expect((host.querySelector('[data-testid="allow-platform"]') as HTMLInputElement).checked).toBe(true)
     await act(async () => {
       button!.click()
     })
+    // The run started with that pre-answer: a positive credit cap, so it asks nothing mid-run.
+    expect(begun.at(-1)).toBeGreaterThan(0)
     await act(async () => undefined)
     // The PR now reads merged (canMerge false): the box is still there, with its last step done.
     const panel = host.querySelector('[data-testid="merge-panel"]')
@@ -131,5 +157,66 @@ describe('the merge box through its own merge', () => {
     expect(host.querySelector('[data-testid="merge-done"]')?.textContent).toBe('Merged')
     expect(host.querySelector('#merge-method')).toBeNull()
     expect([...host.querySelectorAll('button')].some((b) => /merge/i.test(b.textContent ?? ''))).toBe(false)
+  })
+
+  it('a method switch re-sizes the pack without taking the controls away (the menu keeps focus)', async () => {
+    checkCount = 0
+    checks.mockClear()
+    // Every check says "merge"; the squash one sizes a smaller pack, and answers only when told.
+    let answer: () => void = () => undefined
+    const later = new Promise<void>((r) => (answer = r))
+    checks.mockImplementation(async () => {
+      const first = checks.mock.calls.length === 1
+      if (!first) await later
+      return { check: 'merge', conflictPaths: [] as string[], packEstimate: { bytes: first ? 4000 : 1000, objectCount: 4 } }
+    })
+    await act(async () => root.render(<Page onDelete={async () => undefined} />))
+    await act(async () => undefined)
+    const select = host.querySelector('#merge-method') as HTMLSelectElement
+    expect(select).not.toBeNull()
+    select.focus()
+    const price = (): string => host.querySelector('[data-testid="storage-row"] [data-testid="cost-preview"]')?.textContent ?? ''
+    const before = price()
+    await act(async () => {
+      select.value = 'squash'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    // The same select is still mounted and focused; no "Checking the merge…" in between.
+    expect(host.querySelector('#merge-method')).toBe(select)
+    expect(document.activeElement).toBe(select)
+    expect(host.textContent).not.toMatch(/Checking the merge/)
+    await act(async () => answer())
+    // Sized again, for the squash.
+    expect(checks).toHaveBeenCalledTimes(2)
+    expect(price()).not.toBe(before)
+    expect(price()).toMatch(/DASH/)
+  })
+
+  it('switching away and back before the new size is in keeps a price for the method shown', async () => {
+    checkCount = 0
+    checks.mockClear()
+    const never = new Promise<never>(() => undefined)
+    checks.mockImplementation(async () => {
+      if (checks.mock.calls.length > 1) return never
+      return { check: 'merge', conflictPaths: [] as string[], packEstimate: { bytes: 4000, objectCount: 4 } }
+    })
+    await act(async () => root.render(<Page onDelete={async () => undefined} />))
+    await act(async () => undefined)
+    const select = host.querySelector('#merge-method') as HTMLSelectElement
+    const price = (): string => host.querySelector('[data-testid="storage-row"] [data-testid="cost-preview"]')?.textContent ?? ''
+    const before = price()
+    expect(before).toMatch(/DASH/)
+    const pick = async (v: string): Promise<void> => {
+      await act(async () => {
+        select.value = v
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+    }
+    await pick('squash')
+    // Not sized for squash yet: no price rather than the merge's.
+    expect(price()).toBe('')
+    await pick('merge')
+    // Back on merge: its own size still stands.
+    expect(price()).toBe(before)
   })
 })
