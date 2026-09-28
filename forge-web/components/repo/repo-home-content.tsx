@@ -75,17 +75,16 @@ async function loadReadme(reader: BrowseReader, entries: readonly TreeEntry[]): 
  * commit, and `done` once it has stopped, so an entry still without one reads as older than the
  * walked window rather than as a failed load.
  */
-function useLastCommits(
-  reader: BrowseReader,
-  tipOid: string,
-  names: readonly string[] | null,
-): { readonly found: ReadonlyMap<string, LastCommit>; readonly done: boolean; readonly failed: boolean } {
-  const [state, setState] = useState<{ key: string; found: ReadonlyMap<string, LastCommit>; done: boolean; failed: boolean }>({
-    key: '',
-    found: new Map(),
-    done: false,
-    failed: false,
-  })
+interface LastCommits {
+  readonly found: ReadonlyMap<string, LastCommit>
+  readonly done: boolean
+  readonly failed: boolean
+}
+
+const WALKING: LastCommits = { found: new Map(), done: false, failed: false }
+
+function useLastCommits(reader: BrowseReader, tipOid: string, names: readonly string[] | null): LastCommits {
+  const [state, setState] = useState<LastCommits & { readonly key: string }>({ key: '', ...WALKING })
   const key = names === null ? '' : `${tipOid}\0${names.join('\0')}`
   useEffect(() => {
     if (names === null) return
@@ -104,7 +103,7 @@ function useLastCommits(
     // `key` covers `tipOid` and `names`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reader, key])
-  return state.key === key ? state : { found: new Map(), done: false, failed: false }
+  return state.key === key ? state : WALKING
 }
 
 export function RepoHomeContent({
@@ -224,6 +223,13 @@ function RootBody({
   )
 }
 
+/** What a commit cell with no commit says, and its tooltip. */
+function missingCommitLabel(done: boolean, failed: boolean): [text: string, title: string] {
+  if (!done) return ['…', 'Finding the last commit that changed this']
+  if (failed) return ['not loaded', 'The commit history could not be read']
+  return [`older than ${LAST_COMMIT_WALK} commits`, `Not changed in the last ${LAST_COMMIT_WALK} commits; older history is not searched here`]
+}
+
 function CommitCell({
   commit,
   done,
@@ -237,11 +243,7 @@ function CommitCell({
   addr: RepoAddress
 }): JSX.Element {
   if (commit === undefined) {
-    const [text, title] = !done
-      ? ['…', 'Finding the last commit that changed this']
-      : failed
-        ? ['not loaded', 'The commit history could not be read']
-        : [`older than ${LAST_COMMIT_WALK} commits`, `Not changed in the last ${LAST_COMMIT_WALK} commits; older history is not searched here`]
+    const [text, title] = missingCommitLabel(done, failed)
     return (
       <span className="truncate text-anvil-500 dark:text-anvil-400" title={title} data-testid="commit-cell-pending">
         {text}

@@ -219,7 +219,7 @@ async function keysetScan(
     }
     const last = hashes[hashes.length - 1] as string
     const cut = hashes.indexOf(last)
-    let next: { hex: string; b64: string }
+    let next: HashKey
     if (cut === 0) {
       // One ref filled the page: read it on its own, then move past it.
       const b64 = (page[0] as PlainDocument)['refNameHash'] as string

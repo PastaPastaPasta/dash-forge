@@ -481,7 +481,13 @@ interface Outcome {
   readonly error?: unknown
 }
 
-function unwrap(o: Outcome): { readonly response: Response; readonly from: string } {
+/** A reply and the node it came from. */
+interface Answer {
+  readonly response: Response
+  readonly from: string
+}
+
+function unwrap(o: Outcome): Answer {
   if (o.response === undefined) throw o.error
   return { response: o.response, from: o.from }
 }
@@ -499,7 +505,7 @@ async function sendHedged(
   request: Request,
   body: ArrayBuffer | undefined,
   node: string,
-): Promise<{ readonly response: Response; readonly from: string }> {
+): Promise<Answer> {
   const url = new URL(request.url)
   const controllers: AbortController[] = []
   const abortAll = (): void => controllers.forEach((c) => c.abort())
