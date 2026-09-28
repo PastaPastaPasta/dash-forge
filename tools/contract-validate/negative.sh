@@ -10,7 +10,7 @@ contracts="$here/../../forge-contracts/contracts"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$HOME/.cache/dash-forge-target-contract-validate}"
-# Pinned like the rs-dpp tag it builds against (platform v4.2.0-beta.5's rust-toolchain.toml)
+# Pinned like the rs-dpp tag it builds against (platform v4.2.0-beta.6's rust-toolchain.toml)
 cargo +1.98.1 build -q --locked --manifest-path "$here/Cargo.toml"
 bin="$CARGO_TARGET_DIR/debug/contract-validate"
 
@@ -74,21 +74,25 @@ expect_reject rule-const-outside-enum collab '.documentSchemas.checkRun.property
 # indexed strings are at most 63 characters
 expect_reject topic-name-too-long-for-an-index core '.documentSchemas.topic.properties.name.maxLength = 64'
 
-# forge-core only ever changes by an in-place update: a change the update rules refuse (here an
-# index flag on a registered type) must fail --expect-update against the registered schema.
+# A later forge-core change ships as an in-place update of the registered schema
+# (registered/forge-core.v1.json, registered fresh on moutai after the beta.6 reset): a change the
+# update rules refuse (here an index flag or a rule of a registered type) must fail
+# --expect-update against it.
 expect_update_refused() {
   local label="$1" filter="$2" dir="$work/$1"
   mkdir -p "$dir"
   jq "$filter" "$contracts/forge-core.json" > "$dir/forge-core.json"
-  if "$bin" "$dir/forge-core.json" --expect-update "$contracts/registered/forge-core.v1.json" > "$dir/out" 2>&1; then
+  # Refused by the update rules themselves, not by a sample or a parse error
+  if "$bin" "$dir/forge-core.json" --expect-update "$contracts/registered/forge-core.v1.json" > "$dir/out" 2>&1 \
+    || ! grep -q 'REFUSED by validate_update' "$dir/out"; then
     echo "NOT REJECTED: $label"
     fails=$((fails + 1))
   else
-    echo "rejected: $label -> $(grep -m1 -E 'FAIL|REFUSED' "$dir/out" | sed 's/^ *//' | cut -c1-160)"
+    echo "rejected: $label -> $(grep -m1 -A1 'REFUSED' "$dir/out" | tail -1 | sed 's/^ *//' | cut -c1-160)"
   fi
 }
-expect_update_refused update-changes-a-registered-index '.documentSchemas.repo.indices[2].rangeCountable = true'
-expect_update_refused update-adds-dependent-required '.documentSchemas.release.dependentRequired = {"enc": ["epoch"]}'
+expect_update_refused update-changes-a-registered-index '.documentSchemas.repo.indices[1].rangeCountable = true'
+expect_update_refused update-changes-a-rule '.documentSchemas.label.propertyConstraints.noPlain.anyOf[1].allOf[1].absent = "retired"'
 
 if [ "$fails" -ne 0 ]; then
   echo "$fails mutation(s) were NOT rejected"

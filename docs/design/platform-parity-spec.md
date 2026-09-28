@@ -423,6 +423,14 @@ Allowed by `validate_update` v1: new document types and new optional properties;
 
 `topic` needs no rule (its `name` pattern covers it); nor does `runner`. The update's cost and size are in §6.4.
 
+**Closed by the fresh registration after the beta.6 reset (2026-09-28).** moutai was wiped again and restarted on drive 4.2.0-beta.6, so forge-core was registered fresh (§6.4). That registration carries the first four gaps below:
+- `repo` `documentsCountable`;
+- the sealed-presence rules: `noPlain` on `refUpdate`, `protectedRefUpdate`, `config`, `release` and `label`, and `hasName` on the ref types; `config.backend` stays plaintext, as private configs need it;
+- `dependentRequired {enc: [epoch]}` on `release` and `label`;
+- ranked `forkOf` (`rangeCountable` + `rankedCountable`, without `nullSearchable: false`, which a ranked index refuses). Every repo that is not a fork is then indexed under the null `forkOf`, a real group that ranks first by far, so a "most forked" reader must drop the null key from the ranking.
+
+`packManifest.kind` stays: forge-web's `readNewestManifestOfKind` (`lib/repo/packs.ts`, the browse flat index) queries it, so the "no reader" below was wrong. The paragraph below is the record of what the in-place update had to accept.
+
 **Accepted gaps for mainnet v1** (each needs a forge-core re-registration, which the owner declined on 2026-09-28): no provable repository total (`documentsCountable`); no consensus sealed-presence rules on `refUpdate`, `protectedRefUpdate`, `config`, `release` and `label` (clients enforce them, `is_well_formed`; consensus cannot see `visibility` anyway); no `dependentRequired {enc: [epoch]}` on `release` / `label`; no ranked `forkOf` ("most forked" stays a client ranking over the top most-starred, P2); `packManifest.kind` kept although no reader queries it (≈ 3 M credits a manifest). (BETA5-ANALYSIS §4.4's `storage = 1 ⇒ chunkCount > 0` rule would have been wrong anyway: a fork's manifest is `storage = 1, chunkCount = 0`, §4 of forge-v2.md.)
 
 ### 6.2 forge-collab (re-registration)
@@ -460,6 +468,20 @@ No `$updatedAt` sort index on issues (activity sort is a fold); no `assignee` in
 | Group `FtHLFE1xLqn7s6FzS56GbY6Hh6KgLjCezNJ8HLUNJ3mc` | still a whole-contract member (proved read after the update; a group-bound key registered before the update pushed after it) | enrolled |
 
 The live acceptance checks of §7 C-1 (`forge-contracts/scripts/verify-c1.mjs`, two identities minted for the run) passed 8 / 8: forge-core is version 2 with `runner` and `topic`; a runner's `checkRun` is accepted and, once the runner membership is deleted, the same identity's next one is refused at consensus (40120); a `completed` run without a conclusion is refused by `conclusionIfDone`; a `policy` with `requiredChecks` is accepted; a `watch` is created and deleted by values; `count` on `topic.byName` counts the tagged repo; `ranked(starBeat, oldest)` returns the seeded order.
+
+**Re-registered fresh after the beta.6 reset (2026-09-28).** That chain was wiped, and with it the ids above. Both contracts were registered fresh on drive 4.2.0-beta.6:
+
+| | forge-core | forge-collab |
+|---|---|---|
+| Id | `A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1` (version 1) | `C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS` |
+| Transition | `DataContractCreate` v1, nonce 1, registers the group | `DataContractCreate` v1, nonce 2, enrols in the same group |
+| Signed size | 14,515 B (the closed gaps above) | 19,461 B of 20,480 B (schema unchanged) |
+| Cost | 0.686679 DASH | 0.738022 DASH |
+| Group | `6dV3kMBWHGR7pLKrHToMBQgbTpjqeE2VAyCEWmLbrkWC` | enrolled |
+
+`verify-c1.mjs` then passed 7 of its 8 checks:
+- **Passed:** `runner` and `topic` are present; the runner check-run passes and is refused after revocation (40120); `requiredChecks`; `watch`; the topic count; the ranked starBeat order.
+- **Failed on the client side only: the `conclusionIfDone` check.** The node refused the run as it should, but the beta.5 JS SDK decoded the reason as a `maxBytes` error ("over its maxBytes"), because platform#5053 moved the basic consensus errors one place. The check matches the rule name, so it failed. It passes once the SDK is on beta.6.
 
 **forge-collab's size is a lifetime budget:** every future additive change to forge-collab must fit the ≈ 1 KB left (an update carries the whole contract), or go in a new contract.
 

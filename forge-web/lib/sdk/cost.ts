@@ -34,6 +34,10 @@
  *   follow: 28.3M; author's first 38.4M; author's first and first forge-collab write 50.2M.
  *     Unfollow refunds 23.5M (34.1M for the last).
  *   repo + maintainer + config: 132.7M; the owner's first repo (first forge-core write) 159.7M.
+ *     After the fresh forge-core of the beta.6 reset (repo documentsCountable, ranked forkOf:
+ *     every repo also writes the null forkOf entry and the type-wide count), measured on moutai
+ *     drive 4.2.0-beta.6, 2026-09-28, with dg: 136.9M, the owner's first 166.3M; the
+ *     +4.2M is repo's, within the estimate's headroom.
  *   writer / maintainer grant: 38.9M–39.7M; the member's first 46.8M.
  *   patch (10 B title): 72.3M; new source branch 82.1M; repo's first 116.2M; author's first
  *     patch anywhere as well 125.8M. review: 35.9M; the PR's first 40.2M / 41.9M.

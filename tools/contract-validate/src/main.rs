@@ -43,6 +43,7 @@ use dpp::data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Set
 use dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
 use dpp::data_contract::document_type::accessors::{DocumentTypeV0Getters, DocumentTypeV2Getters};
+use dpp::data_contract::document_type::property_constraints::DocumentSystemValues;
 use dpp::data_contract::document_type::{
     is_referenced_system_agreement_property, is_referring_system_agreement_property, is_transient,
     DocumentPropertyReferenceTarget, DocumentPropertyType, DocumentTypeRef, PropertyReference,
@@ -272,10 +273,13 @@ fn validate_one(
     );
 
     // (5) sample documents: every good one accepted, every bad one refused
+    // Judged as a client pre-check judges them: the owner is the deployer, and a rule reading a
+    // time, a height or a total is not judged (it needs the block or state).
+    let system = DocumentSystemValues::owned_by(owner);
     let check = |doc_type: &str, props: &Json| -> Result<bool> {
         let value: dpp::platform_value::Value = props.clone().into();
         let result = contract
-            .validate_document_properties(doc_type, value, pv)
+            .validate_document_properties(doc_type, value, &system, pv)
             .map_err(|e| anyhow!("{e}"))?;
         Ok(result.is_valid())
     };
@@ -284,7 +288,7 @@ fn validate_one(
         if !check(doc_type, props)? {
             let value: dpp::platform_value::Value = props.clone().into();
             let errors = contract
-                .validate_document_properties(doc_type, value, pv)
+                .validate_document_properties(doc_type, value, &system, pv)
                 .map_err(|e| anyhow!("{e}"))?
                 .errors;
             bail!("sample {doc_type} rejected: {errors:?}");
@@ -779,6 +783,25 @@ fn sample_documents(contract: &str) -> Vec<(&'static str, Json)> {
                 serde_json::json!({ "repoId": id(1), "memberId": id(2) }),
             ),
             ("topic", serde_json::json!({ "repoId": id(1), "name": "rust-cli" })),
+            // The shapes the sealed-presence rules must keep accepting: a private ref, a private
+            // config (backend and archived stay plaintext), a fork's manifest (storage 1 with no
+            // chunks of its own) and a branch delete
+            (
+                "refUpdate",
+                serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "newOid": bytes(1, 20), "prevOid": bytes(2, 20), "enc": bytes(1, 64), "epoch": 1 }),
+            ),
+            (
+                "config",
+                serde_json::json!({ "repoId": id(1), "backend": { "mode": 2, "uris": ["s3://bucket/prefix"] }, "archived": false, "enc": bytes(1, 64), "epoch": 0 }),
+            ),
+            (
+                "packManifest",
+                serde_json::json!({ "repoId": id(1), "packHash": bytes(4, 32), "kind": 0, "sizeBytes": 1234, "objectCount": 10, "chunkCount": 0, "storage": 1, "uris": ["platform://c/r/u/h"], "supersedes": bytes(3, 64), "offsetIndexParts": 0 }),
+            ),
+            (
+                "refUpdate",
+                serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "refName": "refs/heads/gone", "newOid": bytes(0, 20) }),
+            ),
         ],
         "forge-collab" => vec![
             (
@@ -1010,6 +1033,47 @@ fn bad_documents(contract: &str) -> Vec<(&'static str, &'static str, Json)> {
                 "repo",
                 "language over 30",
                 serde_json::json!({ "name": "x", "visibility": "public", "language": "a".repeat(31) }),
+            ),
+            // The sealed-presence rules of the fresh registration: plaintext or enc, never both
+            (
+                "refUpdate",
+                "sealed ref with a plaintext refName",
+                serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "refName": "refs/heads/x", "newOid": bytes(1, 20), "enc": bytes(1, 64), "epoch": 0 }),
+            ),
+            (
+                "refUpdate",
+                "neither refName nor enc",
+                serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "newOid": bytes(1, 20) }),
+            ),
+            (
+                "label",
+                "enc without epoch",
+                serde_json::json!({ "repoId": id(1), "name": "x", "enc": bytes(1, 64) }),
+            ),
+            (
+                "protectedRefUpdate",
+                "neither refName nor enc",
+                serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "newOid": bytes(1, 20) }),
+            ),
+            (
+                "config",
+                "sealed config with a plaintext defaultBranch",
+                serde_json::json!({ "repoId": id(1), "defaultBranch": "main", "enc": bytes(1, 64), "epoch": 0 }),
+            ),
+            (
+                "release",
+                "enc without epoch",
+                serde_json::json!({ "repoId": id(1), "tagName": "v1", "enc": bytes(1, 64) }),
+            ),
+            (
+                "release",
+                "sealed release with plaintext notes",
+                serde_json::json!({ "repoId": id(1), "tagName": "v1", "notes": "n", "enc": bytes(1, 64), "epoch": 0 }),
+            ),
+            (
+                "label",
+                "sealed label with a plaintext color",
+                serde_json::json!({ "repoId": id(1), "name": "x", "color": "#ff0000", "enc": bytes(1, 64), "epoch": 0 }),
             ),
         ],
         "forge-collab" => vec![

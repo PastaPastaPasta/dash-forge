@@ -37,7 +37,7 @@ test.skip(ID_FILE === '' || !existsSync(ID_FILE), 'set E2E_REFUSAL_IDENTITY to a
 test.describe.configure({ mode: 'serial', timeout: 6 * 60_000 })
 
 const ROOT = resolve(__dirname, '../..')
-const DEMO_OWNER = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
+const DEMO_OWNER = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 /** The scratch repo: made by s0, or an earlier run's (`E2E_REFUSAL_REPO`) to rerun one test. */
 const SCRATCH = process.env['E2E_REFUSAL_REPO'] || `refusal-${Date.now().toString(36)}`
 const DAY = 86_400_000

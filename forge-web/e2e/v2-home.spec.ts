@@ -13,7 +13,7 @@ import { collectPageErrors, E2E_DEVNET, EMPTY, readErrorBanner, runAxe, SCREENSH
  */
 
 
-const OWNER = process.env['E2E_V2_OWNER'] ?? '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
+const OWNER = process.env['E2E_V2_OWNER'] ?? 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const MAINTAINER = EMPTY.owner
 const NAME = process.env['E2E_V2_NAME'] ?? 'forge-v2-demo'
 

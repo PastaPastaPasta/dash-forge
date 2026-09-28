@@ -25,7 +25,7 @@ harness_init
 
 : "${MOUTAI_FUNDING:=/Users/pasta/workspace/dash-forge-qa/secrets/moutai-funding.wif}"
 : "${MINT_DIR:=${E2E_REPO_ROOT}/tools/mint-identity}"
-: "${E2E_V2_OWNER:=5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp}"
+: "${E2E_V2_OWNER:=HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr}"
 : "${E2E_V2_NAME:=forge-v2-demo}"
 DEVNET="${DASH_FORGE_DEVNET_NAME:-moutai}"
 DEMO="${E2E_V2_OWNER}/${E2E_V2_NAME}"

@@ -15,40 +15,37 @@
   ],
   "v2": {
     "forgeCore": {
-      "contractId": "6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux",
-      "ownerId": "7mRv16E77y5dPzhNhBBhUMqFNMoBNTNsBeEYCAtpLnTu",
+      "contractId": "A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1",
+      "ownerId": "E24SPCssqYzFQmjcQ1hNmiLXrzz1o9AqTv54tuWNkgHz",
       "identityNonce": "1",
-      "contractGroupId": "FtHLFE1xLqn7s6FzS56GbY6Hh6KgLjCezNJ8HLUNJ3mc",
+      "contractGroupId": "6dV3kMBWHGR7pLKrHToMBQgbTpjqeE2VAyCEWmLbrkWC",
       "status": "registered",
-      "sizeBytes": 12039,
-      "schemaHash": "0634311f0d534d25d6cd7fa175edf0dd782a2061ad80abc4ea306c2ea90222ec",
-      "balanceBefore": "4999870677160",
-      "deployedAt": "2026-09-27T20:37:28.837Z",
-      "costCredits": "60573813820",
-      "costDash": 0.6057381382,
-      "updates": [
-        {
-          "version": 2,
-          "identityNonce": "2",
-          "sizeBytes": 13716,
-          "schemaHash": "0634311f0d534d25d6cd7fa175edf0dd782a2061ad80abc4ea306c2ea90222ec",
-          "previousSchemaHash": "b317f788eb906546be39180347351776876df71879afd8990fa54fd62e35fcf0",
-          "balanceBefore": "4863588375340",
-          "status": "updated",
-          "costCredits": "68082572660",
-          "costDash": 0.6808257266,
-          "confirmedAt": "2026-09-28T11:09:35.916Z",
-          "costNote": "balance delta since the recorded pre-broadcast balance"
-        }
-      ],
-      "version": 2
+      "sizeBytes": 14515,
+      "schemaHash": "d940a84b712da9859fe46484992c1e51993cb016a101ee42a56a8bb922724c12",
+      "balanceBefore": "4999870896020",
+      "deployedAt": "2026-09-28T15:13:51.541Z",
+      "costCredits": "68667940500",
+      "costDash": 0.686679405
     },
-    "contractGroupId": "FtHLFE1xLqn7s6FzS56GbY6Hh6KgLjCezNJ8HLUNJ3mc",
+    "forgeCollab": {
+      "contractId": "C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS",
+      "ownerId": "E24SPCssqYzFQmjcQ1hNmiLXrzz1o9AqTv54tuWNkgHz",
+      "identityNonce": "2",
+      "contractGroupId": "6dV3kMBWHGR7pLKrHToMBQgbTpjqeE2VAyCEWmLbrkWC",
+      "status": "registered",
+      "sizeBytes": 19461,
+      "schemaHash": "10d32a847409870776103c6c83c642bd9bd4322efec3d04b501908d666eb70f3",
+      "balanceBefore": "4931202955520",
+      "deployedAt": "2026-09-28T15:13:55.371Z",
+      "costCredits": "73802158420",
+      "costDash": 0.7380215842
+    },
+    "contractGroupId": "6dV3kMBWHGR7pLKrHToMBQgbTpjqeE2VAyCEWmLbrkWC",
     "contractGroup": {
-      "id": "FtHLFE1xLqn7s6FzS56GbY6Hh6KgLjCezNJ8HLUNJ3mc",
+      "id": "6dV3kMBWHGR7pLKrHToMBQgbTpjqeE2VAyCEWmLbrkWC",
       "name": "dash-forge",
-      "owner": "7mRv16E77y5dPzhNhBBhUMqFNMoBNTNsBeEYCAtpLnTu",
-      "verifiedAt": "2026-09-28T11:11:42.749Z"
+      "owner": "E24SPCssqYzFQmjcQ1hNmiLXrzz1o9AqTv54tuWNkgHz",
+      "verifiedAt": "2026-09-28T15:13:55.599Z"
     },
     "protocolVersion": 14,
     "sdk": "@dashevo/evo-sdk@4.2.0-beta.5",
@@ -66,43 +63,14 @@
         "https://68.67.122.199:1443",
         "https://68.67.122.84:1443"
       ]
-    },
-    "forgeCollabSuperseded": [
-      {
-        "contractId": "6BbENuf3uZhkntw9DSsxQcTu9a5fATxQoSe6Ph1JxHkS",
-        "ownerId": "7mRv16E77y5dPzhNhBBhUMqFNMoBNTNsBeEYCAtpLnTu",
-        "identityNonce": "2",
-        "contractGroupId": "FtHLFE1xLqn7s6FzS56GbY6Hh6KgLjCezNJ8HLUNJ3mc",
-        "status": "registered",
-        "sizeBytes": 14287,
-        "schemaHash": "d8110c49aa8ff3b0455754dbe4fbe9c47550bb5bae2ebaa595cc8d09b6b321eb",
-        "balanceBefore": "4939296863340",
-        "deployedAt": "2026-09-27T20:37:30.470Z",
-        "costCredits": "61629243280",
-        "costDash": 0.6162924328,
-        "supersededAt": "2026-09-28T11:11:39.101Z"
-      }
-    ],
-    "forgeCollab": {
-      "contractId": "8QRpVzGbGaGTxUKp2Z7eRDfyWxs9HRGXWX9N8KREZgsJ",
-      "ownerId": "7mRv16E77y5dPzhNhBBhUMqFNMoBNTNsBeEYCAtpLnTu",
-      "identityNonce": "4",
-      "contractGroupId": "FtHLFE1xLqn7s6FzS56GbY6Hh6KgLjCezNJ8HLUNJ3mc",
-      "status": "registered",
-      "sizeBytes": 19461,
-      "schemaHash": "161b82d228225758aaa1599d7e8b50b1cb549043a2731187c22ab8912d50e73a",
-      "balanceBefore": "4795505802680",
-      "deployedAt": "2026-09-28T11:11:42.556Z",
-      "costCredits": "73803037720",
-      "costDash": 0.7380303772
     }
   },
   "keyExchange": {
-    "contractId": "CErHv5FHjnXJ1Zv6TNmtWirzELYbz8H7rinvn4UtQFZQ",
-    "ownerId": "7mRv16E77y5dPzhNhBBhUMqFNMoBNTNsBeEYCAtpLnTu",
+    "contractId": "7LUEWxUydSA1DPjvZzwRJCza99qFdz5uMk7ryCkSFAk7",
+    "ownerId": "E24SPCssqYzFQmjcQ1hNmiLXrzz1o9AqTv54tuWNkgHz",
     "identityNonce": "3",
     "copyOf": "7UaqHGBJBbRLJ4fUWS45cnud8PPUugJWoGTt1SKwHJ2P",
-    "deployedAt": "2026-09-27T20:37:39.487Z",
-    "costDash": 0.1407924472
+    "deployedAt": "2026-09-28T15:14:02.601Z",
+    "costDash": 0.1407924608
   }
 }

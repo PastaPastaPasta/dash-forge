@@ -3,7 +3,7 @@
 Two shared data contracts, **forge-core** and **forge-collab**, registered once per network and joined by a PV14 contract group. Every repository is a set of documents in these two contracts, keyed by the `repo` document's id (`repoId`). This is the only data model Dash Forge implements.
 
 - Schemas: `forge-contracts/contracts/forge-core.json`, `forge-contracts/contracts/forge-collab.json`
-- Offline validation: `tools/contract-validate` (rs-dpp `v4.2.0-beta.5`, `PlatformVersion` 14)
+- Offline validation: `tools/contract-validate` (rs-dpp `v4.2.0-beta.6`, `PlatformVersion` 14)
 - Registration: `forge-contracts/scripts/deploy-v2.mjs` (evo-sdk `4.2.0-beta.5`)
 - Decision record: roadmap D-A (owner decision of 2026-09-24, reviewed by a protocol architect)
 
@@ -43,7 +43,7 @@ The per-repo "sovereign" tier is dropped. Anyone who wants different rules can r
 | `runner` | repo owner only (as `maintainer`) | no | yes (= revoke) | CI membership (C-1, platform-parity-spec §2.2): unique `(repoId, memberId)`, index `memberId`; a runner may post `checkRun` and nothing else |
 | `topic` | repo owner only (as `maintainer`) | no | yes (untag) | C-1: unique `(repoId, name)`; `byName (name, $createdAt)` countable and ranked at `name` (repos per topic, popular topics); `name` `^[a-z0-9][a-z0-9-]{0,29}$`; the owner tags, so an untag is always possible |
 
-forge-core changes only by an in-place `DataContractUpdate` (C-1 took it to version 2): new types and new optional properties. `repo` gained `renamedTo` (a permanent `repo` reference: where the repository moved) and `language` (≤ 30 characters). CI (`.github/workflows/contracts.yml`) validates it with `contract-validate --expect-update forge-contracts/contracts/registered/forge-core.v1.json`.
+forge-core was registered fresh on moutai after the beta.6 reset (2026-09-28), with the C-1 types and optional properties and the gaps an in-place update could not close. Later changes ship as an in-place `DataContractUpdate`: new types and new optional properties. C-1 added `renamedTo` (a permanent `repo` reference: where the repository moved) and `language` (≤ 30 characters). CI (`.github/workflows/contracts.yml`) validates it with `contract-validate --expect-update forge-contracts/contracts/registered/forge-core.v1.json`, the schema registered fresh after the beta.6 reset.
 
 ### forge-collab
 
@@ -303,12 +303,18 @@ cargo +1.98.1 run -q --locked --manifest-path tools/contract-validate/Cargo.toml
 - `--force-new` without `--only` supersedes the pair when the recorded forge-core was registered from a different schema: forge-core's record moves to `v2.forgeCoreSuperseded`, the group to `v2.contractGroupSuperseded`, forge-collab (whose schema names forge-core's id) to `v2.forgeCollabSuperseded`, and a new forge-core (registering a new group) and forge-collab are registered. A rerun after success registers nothing.
 - `--only collab` registers forge-collab alone, against the forge-core and group already recorded and found on chain; it never registers forge-core. With `--force-new` it registers a new forge-collab when the recorded one is registered from a different schema (its `schemaHash` differs, or it predates the field): the old record moves to `v2.forgeCollabSuperseded`, and the new one takes the next nonce and so a new id. A recorded contract from the current schema, or one still `broadcasting` (an interrupted run, which is completed or retried instead), is never superseded, so rerunning the same command registers nothing. This is how a schema change the update rules refuse ships. Documents written under the old contract stay under its id.
 - The script refuses a CRITICAL key that is missing, different from the identity file, or disabled on chain.
-- **Registered on devnet moutai** (protocol 14, drive 4.2.0-beta.5) by the moutai DEPLOYER `7mRv16E77y5dPzhNhBBhUMqFNMoBNTNsBeEYCAtpLnTu`. moutai's Platform chain was wiped and restarted on drive 4.2.0-beta.5 on 2026-09-27, taking every contract, identity, name and document with it. The pair was then registered fresh from the same schemas as before the reset: the private-repository changes of `docs/security/private-repos.md` §13 and the review-parity forge-collab (`docs/design/review-parity-spec.md` §3, §3.9). The ids are recorded in `deployments/devnet-moutai.json`, and the script checked on chain that the group exists, that the deployer owns it, and that both contracts are enrolled. The read fixtures were re-seeded under the new ids (`forge-contracts/scripts/seed-v2-fixture.mjs`, `seed-issues-paging.mjs`):
-  - forge-core `6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux` (nonce 1), 12,039 B signed, 0.605738 DASH; **updated in place to version 2 by C-1** on 2026-09-28 (`deploy-v2.mjs --update core`, identity-contract nonce 2, 13,716 B, 0.680826 DASH). After the update the group still lists forge-core (proved read), and a group-bound limited key registered before it pushed to forge-core after it
-  - forge-collab **`8QRpVzGbGaGTxUKp2Z7eRDfyWxs9HRGXWX9N8KREZgsJ`** (C-1, nonce 4, 19,461 B signed, 0.738030 DASH, `--only collab --force-new --same-group`), superseding `6BbENuf3uZhkntw9DSsxQcTu9a5fATxQoSe6Ph1JxHkS` (nonce 2, 14,287 B, 0.616292 DASH), whose documents stay under its id
-  - contract group `FtHLFE1xLqn7s6FzS56GbY6Hh6KgLjCezNJ8HLUNJ3mc` (`dash-forge`)
-  - the key-exchange copy for wallet sign-in (`deploy-key-exchange.mjs`) `CErHv5FHjnXJ1Zv6TNmtWirzELYbz8H7rinvn4UtQFZQ` (nonce 3)
-  - Before the reset, the pair went through several registrations on the old chain. Each one was needed because the update rules refuse the schema change: adding a `required` system field, an index, or an `enum`, or removing `ownerRefersTo` operands. None of those contracts exists any more. The history is in git (this section before 2026-09-27).
+- **Registered on devnet moutai** (protocol 14, drive 4.2.0-beta.6) by the moutai DEPLOYER `E24SPCssqYzFQmjcQ1hNmiLXrzz1o9AqTv54tuWNkgHz` on 2026-09-28. moutai's Platform chain was wiped and restarted on drive 4.2.0-beta.6 that day (the second reset, after the one to beta.5 on 2026-09-27), taking every contract, identity, name and document with it. With the chain empty, forge-core was registered **fresh** rather than updated in place, which closes the gaps the in-place C-1 update had to accept:
+  - `repo` is `documentsCountable`;
+  - `repo.forkOf` is ranked (`rangeCountable` + `rankedCountable`);
+  - `release` and `label` have `dependentRequired` `enc`→`epoch`;
+  - `refUpdate`, `protectedRefUpdate`, `config`, `release` and `label` carry the sealed-presence `propertyConstraints`: `noPlain` on all five, and `hasName` on the two ref types.
+
+  forge-collab was registered from the schema on master. The ids are recorded in `deployments/devnet-moutai.json`, and the script checked on chain that the group exists, that the deployer owns it, and that both contracts are enrolled. The read fixtures were re-seeded under the new ids (`forge-contracts/scripts/seed-v2-fixture.mjs`, `seed-issues-paging.mjs`):
+  - forge-core `A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1` (nonce 1, version 1), 14,515 B signed, 0.686679 DASH
+  - forge-collab `C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS` (nonce 2), 19,461 B signed, 0.738022 DASH
+  - contract group `6dV3kMBWHGR7pLKrHToMBQgbTpjqeE2VAyCEWmLbrkWC` (`dash-forge`)
+  - the key-exchange copy for wallet sign-in (`deploy-key-exchange.mjs`) `7LUEWxUydSA1DPjvZzwRJCza99qFdz5uMk7ryCkSFAk7` (nonce 3)
+  - Before the resets, the pair went through several registrations and one in-place update on the old chains. None of those contracts exists any more. The history is in git (this section before 2026-09-28).
 - For mainnet (roadmap D-D, D-J), decide on `config.readonly` before registering, since it cannot be added afterwards (§4).
 
 What the offline validator cannot check, and registration will: that forge-core exists in state when forge-collab registers (the validator uses the in-memory contract), the deployer's identity and balance, and the contract-group state rules (the group is new; the signer owns the group a membership names).

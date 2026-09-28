@@ -7,7 +7,7 @@
 //
 // Needs two identities minted for the run (never the shared fixtures): OWNER creates a scratch
 // repo, and MEMBER is enrolled as its runner, then revoked. Checks, each printed PASS / FAIL:
-//   1. forge-core is the updated contract (version 2) and knows `runner` and `topic`;
+//   1. forge-core knows `runner` and `topic`;
 //   2. a runner's `checkRun` is accepted; after the runner membership is deleted, the same
 //      identity's next `checkRun` is refused at consensus (40120);
 //   3. a `checkRun` that says `completed` with no conclusion is refused (the beta.5 rule);
@@ -86,10 +86,10 @@ const until = async (f, tries = 12) => {
 };
 
 const run = Date.now().toString(36);
-// 1. forge-core updated in place
+// 1. forge-core knows the C-1 types (version 1 when registered fresh, as on moutai after the beta.6 reset)
 const coreContract = await sdk.contracts.fetch(core);
 const types = coreContract.getDocumentTypes ? Object.keys(coreContract.getDocumentTypes()) : Object.keys(coreContract.toJSON().documentSchemas);
-check('forge-core is version 2 with runner and topic', Number(coreContract.version) >= 2 && types.includes('runner') && types.includes('topic'), `version ${coreContract.version}`);
+check('forge-core knows runner and topic', types.includes('runner') && types.includes('topic'), `version ${coreContract.version}`);
 
 // scratch repos + membership
 const repo = await create(OWNER, core, 'repo', { name: `c1-verify-${run}`, visibility: 'public' });

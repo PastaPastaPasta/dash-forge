@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import { NEW_IDENTITY_MS, responderWarnings } from './responder-profile'
 
-const ALICE = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
-const MALLORY = 'Bq2aZ3xzfN46kruWXhGWHzFBUQrRpnBauHAAfUD5g4W9'
+const ALICE = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
+const MALLORY = 'CJao2MVHL4x3f2Ko2xTUibnZ8G1t9exTPtvJnCbHAgDH'
 const now = 1_000_000_000_000
 
 describe('who answered: the confirmation warnings', () => {

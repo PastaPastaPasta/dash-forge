@@ -183,7 +183,7 @@ mod tests {
     use crate::platform::QueryOp;
 
     const REPO: &str = "GdZYaEntYPiW9dvUGCHyeqN7H7qEocbSkuj81n341i3L";
-    const OWNER: &str = "5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp";
+    const OWNER: &str = "HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr";
 
     fn repo() -> RepoRef {
         RepoRef {
