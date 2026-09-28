@@ -29,6 +29,8 @@ const CORE_TYPES: ReadonlySet<string> = new Set([
   DOC.chunk,
   DOC.release,
   DOC.label,
+  DOC.runner,
+  DOC.topic,
 ])
 
 /** The clauses a caller adds to a scoped query. */

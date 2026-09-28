@@ -27,6 +27,60 @@ export function SidebarSection({ title, icon: Icon, children }: { title: string;
   )
 }
 
+/** The milestone, and for members a picker of the repo's open milestones (set / clear). */
+export function MilestonePicker({
+  current,
+  choices,
+  canEdit,
+  onChoose,
+}: {
+  current: string | null
+  choices: readonly { title: string; closed: boolean; open: number; closedItems: number }[]
+  canEdit: boolean
+  onChoose: (title: string | null) => void
+}): JSX.Element {
+  const [open, setOpen] = useState(false)
+  const shown = choices.find((c) => c.title === current)
+  return (
+    <div data-testid="milestone">
+      {current === null ? (
+        <p className="text-anvil-500 dark:text-anvil-400">No milestone</p>
+      ) : (
+        <p className="font-medium text-anvil-800 dark:text-anvil-100">
+          {current}
+          {shown ? <span className="ml-1 text-[12px] font-normal text-anvil-500 dark:text-anvil-400">{shown.closedItems} of {shown.open + shown.closedItems} done</span> : null}
+        </p>
+      )}
+      {canEdit ? (
+        <div className="mt-2">
+          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400">
+            <Settings2 className="h-3.5 w-3.5" aria-hidden /> Set milestone
+          </button>
+          {open ? (
+            <ul className="mt-1 space-y-1" aria-label="Milestones">
+              {choices.filter((c) => !c.closed).map((c) => (
+                <li key={c.title}>
+                  <button type="button" className="hit-area text-left hover:underline" onClick={() => { setOpen(false); onChoose(c.title) }} disabled={c.title === current}>
+                    {c.title}
+                  </button>
+                </li>
+              ))}
+              {choices.every((c) => c.closed) ? <li className="text-[12px] text-anvil-500 dark:text-anvil-400">No open milestones (`dg milestone create`)</li> : null}
+              {current !== null ? (
+                <li>
+                  <button type="button" className="hit-area text-left text-danger-700 hover:underline dark:text-danger-400" onClick={() => { setOpen(false); onChoose(null) }}>
+                    Clear the milestone
+                  </button>
+                </li>
+              ) : null}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 /** The assignees, and for members a picker of the repo’s members (assign / unassign). */
 export function AssigneePicker({
   assignees,

@@ -217,6 +217,8 @@ export {
   saveReviewDraft,
   setAssignee,
   setLabel,
+  setMilestone,
+  setThreadFlag,
   setPolicy,
   submitReviewDraft,
   targetEventData,
