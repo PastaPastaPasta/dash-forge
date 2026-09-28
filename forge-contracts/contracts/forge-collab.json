@@ -198,6 +198,12 @@
                 },
                 {
                   "absent": "body"
+                },
+                {
+                  "absent": "imported.author"
+                },
+                {
+                  "absent": "imported.url"
                 }
               ]
             }
@@ -407,6 +413,12 @@
                 },
                 {
                   "absent": "sourceRefName"
+                },
+                {
+                  "absent": "imported.author"
+                },
+                {
+                  "absent": "imported.url"
                 }
               ]
             }
@@ -600,6 +612,12 @@
                 },
                 {
                   "absent": "path"
+                },
+                {
+                  "absent": "imported.author"
+                },
+                {
+                  "absent": "imported.url"
                 }
               ]
             }
@@ -708,7 +726,17 @@
               "absent": "enc"
             },
             {
-              "absent": "body"
+              "allOf": [
+                {
+                  "absent": "body"
+                },
+                {
+                  "absent": "imported.author"
+                },
+                {
+                  "absent": "imported.url"
+                }
+              ]
             }
           ]
         }
@@ -850,6 +878,9 @@
           "properties": [
             {
               "refId": "asc"
+            },
+            {
+              "$createdAt": "asc"
             }
           ],
           "nullSearchable": false
@@ -1103,6 +1134,9 @@
           "properties": [
             {
               "refId": "asc"
+            },
+            {
+              "$createdAt": "asc"
             }
           ],
           "nullSearchable": false
@@ -1115,7 +1149,42 @@
         "targetNumber",
         "kind"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "propertyConstraints": {
+        "needRefId": {
+          "anyOf": [
+            {
+              "not": {
+                "in": [
+                  "kind",
+                  [
+                    11,
+                    12,
+                    13,
+                    14
+                  ]
+                ]
+              }
+            },
+            {
+              "present": "refId"
+            }
+          ]
+        },
+        "needOid": {
+          "anyOf": [
+            {
+              "notEqual": [
+                "kind",
+                16
+              ]
+            },
+            {
+              "present": "oid"
+            }
+          ]
+        }
+      }
     },
     "checkRun": {
       "type": "object",
@@ -1126,6 +1195,18 @@
       ],
       "ownerRefersTo": {
         "anyOf": [
+          {
+            "type": "deletableDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "runner",
+            "lookup": {
+              "index": "byRepoMember",
+              "keys": {
+                "repoId": "repoId",
+                "memberId": "."
+              }
+            }
+          },
           {
             "type": "deletableDocument",
             "contractId": "FORGE_CORE_CONTRACT_ID",
@@ -1142,18 +1223,6 @@
             "type": "deletableDocument",
             "contractId": "FORGE_CORE_CONTRACT_ID",
             "documentType": "writer",
-            "lookup": {
-              "index": "byRepoMember",
-              "keys": {
-                "repoId": "repoId",
-                "memberId": "."
-              }
-            }
-          },
-          {
-            "type": "deletableDocument",
-            "contractId": "FORGE_CORE_CONTRACT_ID",
-            "documentType": "runner",
             "lookup": {
               "index": "byRepoMember",
               "keys": {
@@ -1198,7 +1267,8 @@
             "cancelled",
             "skipped",
             "timed_out",
-            "action_required"
+            "action_required",
+            "stale"
           ],
           "position": 4
         },
@@ -1653,7 +1723,6 @@
               "repoId": "asc"
             }
           ],
-          "countable": "countable",
           "rangeCountable": true,
           "rankedCountable": true
         },
@@ -1698,7 +1767,6 @@
               "identityId": "asc"
             }
           ],
-          "countable": "countable",
           "rangeCountable": true,
           "rankedCountable": true
         },
@@ -1764,7 +1832,6 @@
             "step": 86400,
             "ttl": 604800
           },
-          "countable": "countable",
           "rangeCountable": true,
           "rankedCountable": true
         }

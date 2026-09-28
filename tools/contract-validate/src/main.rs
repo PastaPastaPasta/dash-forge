@@ -891,6 +891,14 @@ fn sample_documents(contract: &str) -> Vec<(&'static str, Json)> {
             ),
             (
                 "checkRun",
+                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "lint", "status": "completed", "conclusion": "stale" }),
+            ),
+            (
+                "issue",
+                serde_json::json!({ "repoId": id(1), "number": 6, "enc": bytes(1, 64), "epoch": 0, "imported": { "createdAt": 1 } }),
+            ),
+            (
+                "checkRun",
                 serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 32), "name": "build", "status": "completed", "conclusion": "timed_out", "startedAt": 1_790_000_000_000u64, "completedAt": 1_790_000_060_000u64, "artifacts": "[]", "logUrl": "https://logs.example/1.txt", "logSha256": bytes(3, 32) }),
             ),
             (
@@ -1196,6 +1204,26 @@ fn bad_documents(contract: &str) -> Vec<(&'static str, &'static str, Json)> {
                 "starBeat",
                 "extra property",
                 serde_json::json!({ "repoId": id(1), "note": "x" }),
+            ),
+            (
+                "authorEvent",
+                "author review request without refId (needRefId)",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 13 }),
+            ),
+            (
+                "authorEvent",
+                "author head update without an oid (needOid)",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 16 }),
+            ),
+            (
+                "issue",
+                "sealed issue with the plaintext imported author (noPlain)",
+                serde_json::json!({ "repoId": id(1), "number": 5, "enc": bytes(1, 64), "epoch": 0, "imported": { "author": "octocat" } }),
+            ),
+            (
+                "comment",
+                "sealed comment with the plaintext imported url (noPlain)",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "enc": bytes(1, 64), "epoch": 0, "imported": { "url": "https://github.com/o/r/issues/1#c" } }),
             ),
         ],
         _ => vec![],

@@ -1327,20 +1327,20 @@
       "type": "object",
       "documentsMutable": false,
       "canBeDeleted": true,
-      "ownerRefersTo": {
-        "type": "deletableDocument",
-        "documentType": "maintainer",
-        "lookup": {
-          "index": "byRepoMember",
-          "keys": {
-            "repoId": "repoId",
-            "memberId": "."
-          }
-        }
-      },
       "properties": {
         "repoId": {
-          "$ref": "#/$defs/id",
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "type": "permanentDocument",
+            "documentType": "repo",
+            "propertyAgreement": {
+              "$ownerId": "$ownerId"
+            }
+          },
           "position": 0
         },
         "name": {
@@ -1375,8 +1375,10 @@
               "$createdAt": "asc"
             }
           ],
-          "countable": "countable",
-          "rangeCountable": true
+          "rangeCountable": true,
+          "rankedCountable": {
+            "at": "name"
+          }
         }
       ],
       "required": [

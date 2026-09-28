@@ -416,7 +416,10 @@ async function main() {
     }
     const version = chainVersion + 1;
     const contract = DataContract.fromJSON(contractJson(json, coreRec.contractId, version), true, PROTOCOL_VERSION);
-    const nonce = (await chainNonce()) + 1n;
+    // A contract update is checked against the identity-CONTRACT nonce (drive-abci
+    // data_contract_update/identity_contract_nonce), not the identity nonce registration uses: a
+    // deployer with more than 23 transitions would be refused with the wrong one.
+    const nonce = ((BigInt((await sdk.identities.contractNonce(ownerId, coreRec.contractId)) ?? 0n)) & NONCE_MASK) + 1n;
     const st = new DataContractUpdateTransition(contract, nonce, PROTOCOL_VERSION).toStateTransition();
     st.sign(privateKey, publicKey);
     const size = st.toBytes().length;

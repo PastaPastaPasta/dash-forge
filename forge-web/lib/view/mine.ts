@@ -385,14 +385,15 @@ export async function scanAssignedAndMentions(
     }
   })
   const repoOf = new Map(scanned.map((r) => [r.repo.id, r.repo]))
-  // Assignments in ANY repo, from the sparse `event.addressee (refId)` index: an assign names
-  // the assignee in `refId` since F-1 (platform-parity-spec §1.2). Only member events can be
-  // assign kinds, and only those carrying `refId` are indexed, so this is a small read.
+  // Assignments in ANY repo, from the sparse `event.addressee (refId, $createdAt)` index: an
+  // assign names the assignee in `refId` since F-1 (platform-parity-spec §1.2). Only member
+  // events can be assign kinds, and only those carrying `refId` are indexed. Newest first, so
+  // past 100 addressed events the newest 100 are the ones read.
   const addressed = await read(sdk, {
     dataContractId: forge.collab,
     documentTypeName: DOC.event,
     where: [['refId', '==', me]],
-    orderBy: [['refId', 'asc']],
+    orderBy: [['refId', 'desc'], ['$createdAt', 'desc']],
     limit: 100,
   }).catch(() => [] as PlainDocument[])
   const indexed = parseDocs(eventDoc, addressed).filter((e) => e.kind === ASSIGN || e.kind === UNASSIGN)

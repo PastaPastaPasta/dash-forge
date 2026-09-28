@@ -66,13 +66,29 @@ expect_reject beat-ttl-over-a-week collab '.documentSchemas.starBeat.indices[1].
 # ranked needs the range axis
 expect_reject ranked-without-range collab 'del(.documentSchemas.star.indices[0].rangeCountable)'
 # a runner is granted by the repo owner only, exactly like maintainer / writer
-expect_reject runner-gate-permanent-on-deletable collab '.documentSchemas.checkRun.ownerRefersTo.anyOf[2].type = "permanentDocument"'
+expect_reject runner-gate-permanent-on-deletable collab '.documentSchemas.checkRun.ownerRefersTo.anyOf[0].type = "permanentDocument"'
 # a rule may only read properties the type has
 expect_reject rule-reads-unknown-property collab '.documentSchemas.checkRun.propertyConstraints.conclusionIfDone.anyOf[1].present = "nope"'
 # a string constant must be one of the property's enum values
 expect_reject rule-const-outside-enum collab '.documentSchemas.checkRun.propertyConstraints.conclusionIfDone.anyOf[0].notEqual[1].const = "done"'
 # indexed strings are at most 63 characters
 expect_reject topic-name-too-long-for-an-index core '.documentSchemas.topic.properties.name.maxLength = 64'
+
+# forge-core only ever changes by an in-place update: a change the update rules refuse (here an
+# index flag on a registered type) must fail --expect-update against the registered schema.
+expect_update_refused() {
+  local label="$1" filter="$2" dir="$work/$1"
+  mkdir -p "$dir"
+  jq "$filter" "$contracts/forge-core.json" > "$dir/forge-core.json"
+  if "$bin" "$dir/forge-core.json" --expect-update "$contracts/registered/forge-core.v1.json" > "$dir/out" 2>&1; then
+    echo "NOT REJECTED: $label"
+    fails=$((fails + 1))
+  else
+    echo "rejected: $label -> $(grep -m1 -E 'FAIL|REFUSED' "$dir/out" | sed 's/^ *//' | cut -c1-160)"
+  fi
+}
+expect_update_refused update-changes-a-registered-index '.documentSchemas.repo.indices[2].rangeCountable = true'
+expect_update_refused update-adds-dependent-required '.documentSchemas.release.dependentRequired = {"enc": ["epoch"]}'
 
 if [ "$fails" -ne 0 ]; then
   echo "$fails mutation(s) were NOT rejected"
