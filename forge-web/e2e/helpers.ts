@@ -402,3 +402,45 @@ export async function unlock(page: Page): Promise<void> {
   await page.getByRole('button', { name: /^unlock$/i }).click()
   await expect(pill).toBeVisible({ timeout: 60_000 })
 }
+
+/** The header's funds pill (signed in) and its "Session locked — Unlock" button. */
+export const FUNDS_PILL = 'funds-pill'
+export const SESSION_UNLOCK = 'session-unlock'
+
+/** Signed in: the funds pill, and no Unlock in the header, after the page settles. */
+export async function expectSignedIn(page: Page): Promise<void> {
+  await expect(page.getByTestId(FUNDS_PILL)).toBeVisible({ timeout: 60_000 })
+  await expect(page.getByRole('banner').getByTestId(SESSION_UNLOCK)).toHaveCount(0)
+}
+
+/** Locked: the header's Unlock, and no funds pill, after the page settles. */
+export async function expectLocked(page: Page): Promise<void> {
+  await expect(page.getByRole('banner').getByTestId(SESSION_UNLOCK)).toBeVisible({ timeout: 60_000 })
+  await expect(page.getByTestId(FUNDS_PILL)).toHaveCount(0)
+}
+
+/**
+ * The kept session record this origin holds for devnet (the IndexedDB row a reload picks up;
+ * lib/auth/session-resume.ts), or null when nothing is kept. Rejects on an IndexedDB error.
+ */
+export function readKeptSession(page: Page): Promise<Record<string, unknown> | null> {
+  return page.evaluate(
+    () =>
+      new Promise<Record<string, unknown> | null>((resolve, reject) => {
+        const req = indexedDB.open('dash-forge')
+        req.onerror = () => reject(req.error)
+        req.onsuccess = () => {
+          const db = req.result
+          const get = db.transaction('vault').objectStore('vault').get('session:devnet')
+          get.onerror = () => {
+            db.close()
+            reject(get.error)
+          }
+          get.onsuccess = () => {
+            db.close()
+            resolve((get.result as Record<string, unknown> | undefined) ?? null)
+          }
+        }
+      }),
+  )
+}

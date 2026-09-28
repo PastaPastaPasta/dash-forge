@@ -10,21 +10,15 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ReleaseAssetView } from '@/lib/repo'
+import { AssetRow } from './releases-content'
 
-const download = vi.fn<(...args: unknown[]) => Promise<Uint8Array>>()
-vi.mock('@/lib/view/release-download', async (importOriginal) => {
-  const real = await importOriginal<typeof import('@/lib/view/release-download')>()
-  return { ...real, downloadVerifiedAsset: (...args: unknown[]) => download(...args), saveBytes: vi.fn() }
-})
-vi.mock('next/link', () => ({
-  default: ({ href, children, ...rest }: { href: string; children: React.ReactNode }) => (
-    <a href={href} {...rest}>
-      {children}
-    </a>
-  ),
+const { download } = vi.hoisted(() => ({ download: vi.fn<() => Promise<Uint8Array>>() }))
+vi.mock('@/lib/view/release-download', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/view/release-download')>()),
+  downloadVerifiedAsset: download,
+  saveBytes: vi.fn(),
 }))
-
-const { AssetRow } = await import('./releases-content')
+vi.mock('next/link', () => ({ default: (props: React.ComponentProps<'a'>) => <a {...props} /> }))
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -50,28 +44,27 @@ afterEach(() => {
 })
 
 const row = (): HTMLElement => host.querySelector<HTMLElement>('[data-testid="release-asset"]')!
+const downloadButton = (): HTMLButtonElement | null => row().querySelector<HTMLButtonElement>('button[aria-label^="Download "]')
+const direct = (): HTMLElement | null => row().querySelector<HTMLElement>('[data-testid="direct-download"]')
 
 describe('a browser-readable release asset (D-056)', () => {
   it('offers a verified in-tab Download and no origin fallback until one fails', () => {
     act(() => root.render(<AssetRow asset={ASSET} />))
     expect(row().dataset['state']).toBe('idle')
-    expect(host.querySelector('button[aria-label^="Download "]')).not.toBeNull()
-    expect(host.querySelector('[data-testid="direct-download"]')).toBeNull()
+    expect(downloadButton()).not.toBeNull()
+    expect(direct()).toBeNull()
   })
 
   it('a failed download falls back to the origin link and the local SHA-256 check', async () => {
     download.mockRejectedValue(new TypeError('Failed to fetch'))
     act(() => root.render(<AssetRow asset={ASSET} />))
-    await act(async () => {
-      host.querySelector<HTMLButtonElement>('button[aria-label^="Download "]')!.click()
-    })
+    await act(async () => downloadButton()!.click())
     expect(download).toHaveBeenCalledTimes(1)
     expect(row().dataset['state']).toBe('error')
     expect(row().textContent).toContain("Couldn't download in the browser: Failed to fetch")
-    const direct = host.querySelector<HTMLElement>('[data-testid="direct-download"]')
-    expect(direct).not.toBeNull()
-    expect(direct!.textContent).toContain('Download from the origin instead')
-    expect(direct!.querySelector('a')!.getAttribute('href')).toBe(ASSET.uris[0])
-    expect(direct!.textContent).toContain('Check a downloaded file')
+    const fallback = direct()!
+    expect(fallback.textContent).toContain('Download from the origin instead')
+    expect(fallback.querySelector('a')!.getAttribute('href')).toBe(ASSET.uris[0])
+    expect(fallback.textContent).toContain('Check a downloaded file')
   })
 })

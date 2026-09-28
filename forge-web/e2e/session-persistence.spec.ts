@@ -1,6 +1,6 @@
 import { test, expect, type BrowserContext, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
-import { PASSPHRASE, idFile, repoUrl, shot, waitForRepoResolved } from './helpers'
+import { FUNDS_PILL, PASSPHRASE, SESSION_UNLOCK, expectLocked, expectSignedIn, idFile, readKeptSession, repoUrl, shot, waitForRepoResolved } from './helpers'
 
 /**
  * The session lasts until it locks (G1, L-04, L-05; G19), live on moutai:
@@ -31,38 +31,14 @@ test.skip(!process.env['E2E_IDENTITY_DIR'], 'use a fresh identity: set E2E_IDENT
 test.skip(!existsSync(idFile(NAME)), `no identity file ${idFile(NAME)}`)
 test.describe.configure({ mode: 'serial', timeout: 10 * 60_000 })
 
-const PILL = 'funds-pill'
-const LOCKED = 'session-unlock'
-
 let context: BrowserContext
 
-/** Signed in (funds pill), or locked (the header's Unlock), after the page settles. */
-async function expectSignedIn(page: Page): Promise<void> {
-  await expect(page.getByTestId(PILL)).toBeVisible({ timeout: 60_000 })
-  await expect(page.getByTestId(LOCKED)).toHaveCount(0)
-}
-async function expectLocked(page: Page): Promise<void> {
-  await expect(page.getByRole('banner').getByTestId(LOCKED)).toBeVisible({ timeout: 60_000 })
-  await expect(page.getByTestId(PILL)).toHaveCount(0)
-}
-
 /** Whether the page's origin holds a kept session (the IndexedDB record reloads pick up). */
-function hasKept(page: Page): Promise<boolean> {
-  return page.evaluate(
-    () =>
-      new Promise<boolean>((resolve) => {
-        const req = indexedDB.open('dash-forge')
-        req.onsuccess = () => {
-          const get = req.result.transaction('vault').objectStore('vault').get('session:devnet')
-          get.onsuccess = () => resolve(get.result !== undefined)
-        }
-      }),
-  )
-}
+const hasKept = async (page: Page): Promise<boolean> => (await readKeptSession(page)) !== null
 
 /** Unlock from the header with the passphrase. */
 async function unlockFromHeader(page: Page): Promise<void> {
-  await page.getByRole('banner').getByTestId(LOCKED).click()
+  await page.getByRole('banner').getByTestId(SESSION_UNLOCK).click()
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByRole('button', { name: /^unlock$/i }).click()
   await expectSignedIn(page)
@@ -87,7 +63,7 @@ test('p1. import once, then a reload and a new tab stay signed in', async () => 
   // p5 creates a private repo as this identity: keep its encryption key too.
   await page.getByTestId('enable-private-repos').check()
   await page.getByRole('button', { name: /create this browser's key/i }).click()
-  await expect(page.getByTestId(PILL)).toBeVisible({ timeout: 180_000 })
+  await expect(page.getByTestId(FUNDS_PILL)).toBeVisible({ timeout: 180_000 })
   await expect(page.getByRole('dialog')).toBeHidden({ timeout: 60_000 })
   await expect.poll(() => hasKept(page)).toBe(true)
 
@@ -96,16 +72,7 @@ test('p1. import once, then a reload and a new tab stay signed in', async () => 
   await expect(page.getByRole('dialog')).toHaveCount(0)
   await shot(page, 'session-p1-after-reload')
   // The kept record: one sealed signing key, nothing else of the vault (no encryption key).
-  const row = await page.evaluate(
-    () =>
-      new Promise<string[]>((resolve) => {
-        const req = indexedDB.open('dash-forge')
-        req.onsuccess = () => {
-          const get = req.result.transaction('vault').objectStore('vault').get('session:devnet')
-          get.onsuccess = () => resolve(Object.keys(get.result ?? {}).sort())
-        }
-      }),
-  )
+  const row = Object.keys((await readKeptSession(page)) ?? {}).sort()
   expect(row).toEqual(['expiresAt', 'hint', 'identityId', 'iv', 'keyId', 'network', 'savedAt', 'usedAt', 'version', 'wrapKey', 'wrapped'])
 
   // A public write right after a reload signs with no prompt: Star, then Unstar.
@@ -145,7 +112,7 @@ test('p2. Lock in one tab locks the others; pages offer Unlock; write buttons op
   await expectLocked(a!)
   // Tab B locks at once, with no reload.
   await expectLocked(b)
-  await expect(b.getByRole('banner').getByTestId(LOCKED)).toContainText('Unlock')
+  await expect(b.getByRole('banner').getByTestId(SESSION_UNLOCK)).toContainText('Unlock')
   await shot(b, 'session-p2-other-tab-locked')
 
   // Star opens Unlock directly (the stored key), not the sign-in tiles.
@@ -190,8 +157,8 @@ test('p4. the locked OWNER of a private repo is offered Unlock, not "You\'re not
   const name = `g1-private-${Date.now().toString(36)}`
   const owner = (JSON.parse(readFileSync(idFile(NAME), 'utf8')) as { identityId: string }).identityId
   await page.goto('/new/', { waitUntil: 'domcontentloaded' })
-  await page.getByRole('banner').getByTestId(LOCKED).or(page.getByTestId(PILL)).first().waitFor({ timeout: 60_000 })
-  if (await page.getByRole('banner').getByTestId(LOCKED).isVisible()) await unlockFromHeader(page)
+  await page.getByRole('banner').getByTestId(SESSION_UNLOCK).or(page.getByTestId(FUNDS_PILL)).first().waitFor({ timeout: 60_000 })
+  if (await page.getByRole('banner').getByTestId(SESSION_UNLOCK).isVisible()) await unlockFromHeader(page)
   await page.locator('#repo-name').fill(name)
   await page.getByTestId('visibility-private').click()
   // This tab resumed after a reload (p3): the encryption key asks for an inline unlock first.
@@ -253,7 +220,7 @@ test('p5. the fixed in-app links navigate without a document load', async () => 
   await page.goto('/', { waitUntil: 'domcontentloaded' })
   // Hydrated (the header's session control is up: signed in, locked, or Sign in).
   const banner = page.getByRole('banner')
-  await banner.getByTestId(LOCKED).or(page.getByTestId(PILL)).or(banner.getByRole('button', { name: /^sign in$/i })).first().waitFor({ timeout: 60_000 })
+  await banner.getByTestId(SESSION_UNLOCK).or(page.getByTestId(FUNDS_PILL)).or(banner.getByRole('button', { name: /^sign in$/i })).first().waitFor({ timeout: 60_000 })
   const documents: string[] = []
   page.on('request', (r) => {
     if (r.resourceType() === 'document') documents.push(r.url())
@@ -272,7 +239,7 @@ test('p5. the fixed in-app links navigate without a document load', async () => 
   await clickTo(() => tabs.getByRole('link', { name: /^issues/i }).click(), /\/repo\/issues\/\?/)
   await clickTo(() => tabs.getByRole('link', { name: /^code/i }).click(), /\/repo\/\?/)
   // The account menu's Settings link (was `/settings`, a 301) when signed in.
-  if (await page.getByTestId(PILL).isVisible()) {
+  if (await page.getByTestId(FUNDS_PILL).isVisible()) {
     await page.getByRole('button', { name: 'Account menu' }).click()
     await clickTo(() => page.getByRole('link', { name: /settings/i }).click(), /\/settings\/$/)
     await clickTo(() => page.getByRole('link', { name: /storage settings/i }).click(), /\/settings\/storage\/$/)

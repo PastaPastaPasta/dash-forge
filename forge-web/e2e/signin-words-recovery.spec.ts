@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
-import { PASSPHRASE, nodeSdk, shot } from './helpers'
+import { PASSPHRASE, SESSION_UNLOCK, expectLocked, expectSignedIn, nodeSdk, readKeptSession, shot } from './helpers'
 
 /**
  * L-07: signing in on a new device from the 12 words alone. Import → Recovery phrase, no
@@ -18,36 +18,16 @@ test.skip(process.env['E2E_WRITE'] !== '1', 'live devnet write: set E2E_WRITE=1'
 test.skip(FILE === '' || !existsSync(FILE), 'set E2E_WORDS_IDENTITY to an identity file with a mnemonic')
 test.describe.configure({ timeout: 5 * 60_000 })
 
-/**
- * The kept session's `savedAt` (the IndexedDB record a reload picks up), or null when nothing is
- * kept. Every successful keep writes a new record, so a later value means the session was kept
- * again (lib/auth/session-resume.ts `saveResume`).
- */
-function keptSavedAt(page: Page): Promise<number | null> {
-  return page.evaluate(
-    () =>
-      new Promise<number | null>((resolve, reject) => {
-        const req = indexedDB.open('dash-forge')
-        req.onerror = () => reject(req.error)
-        req.onsuccess = () => {
-          const db = req.result
-          const get = db.transaction('vault').objectStore('vault').get('session:devnet')
-          get.onerror = () => {
-            db.close()
-            reject(get.error)
-          }
-          get.onsuccess = () => {
-            db.close()
-            const v = get.result as { savedAt?: unknown } | undefined
-            resolve(typeof v?.savedAt === 'number' ? v.savedAt : null)
-          }
-        }
-      }),
-  )
+/** The kept session's `savedAt`, or null: every successful keep writes a newer one. */
+async function keptSavedAt(page: Page): Promise<number | null> {
+  const v = (await readKeptSession(page))?.['savedAt']
+  return typeof v === 'number' ? v : null
 }
 
 /** The cross-tab lock marker (`forge:session-locked-at`): a lock anywhere moves it. */
-const lockMarker = (page: Page): Promise<string | null> => page.evaluate(() => localStorage.getItem('forge:session-locked-at'))
+function lockMarker(page: Page): Promise<string | null> {
+  return page.evaluate(() => localStorage.getItem('forge:session-locked-at'))
+}
 
 test('w1. the 12 words alone sign in: the identity is found, a limited key lands on it', async ({ page, browserName }) => {
   // One live write per run: the engine E2E_WORDS_ENGINE names (default Chromium; WebKit keeps
@@ -81,10 +61,8 @@ test('w1. the 12 words alone sign in: the identity is found, a limited key lands
   await expect.poll(() => keptSavedAt(page)).not.toBeNull()
   const keptAt = (await keptSavedAt(page))!
   const marker = await lockMarker(page)
-  const banner = page.getByRole('banner')
   await page.reload({ waitUntil: 'domcontentloaded' })
-  await expect(page.getByTestId('funds-pill')).toBeVisible({ timeout: 60_000 })
-  await expect(banner.getByTestId('session-unlock')).toHaveCount(0)
+  await expectSignedIn(page)
   await expect(page.getByRole('dialog')).toHaveCount(0)
   // Then the resumed key is re-verified on chain in the background; only a key it accepts is kept
   // again, so a newer savedAt is the check finishing, and an unmoved lock marker shows it locked
@@ -92,15 +70,14 @@ test('w1. the 12 words alone sign in: the identity is found, a limited key lands
   // here, never a false pass.)
   await expect.poll(() => keptSavedAt(page), { timeout: 90_000 }).toBeGreaterThan(keptAt)
   expect(await lockMarker(page)).toBe(marker)
-  await expect(page.getByTestId('funds-pill')).toBeVisible()
-  await expect(banner.getByTestId('session-unlock')).toHaveCount(0)
+  await expectSignedIn(page)
   await shot(page, 'signin-w1-reload-stays-signed-in')
 
   // L-29: once locked, nothing is kept, a reload stays locked, and the sheet opens straight on
   // Unlock: the tile list is never rendered first, not even for a frame.
   await page.getByRole('button', { name: 'Account menu' }).click()
   await page.getByRole('button', { name: /lock & sign out/i }).click()
-  await expect(banner.getByTestId('session-unlock')).toBeVisible({ timeout: 30_000 })
+  await expectLocked(page)
   await expect.poll(() => keptSavedAt(page)).toBeNull()
   await page.addInitScript(() => {
     const w = window as unknown as { sawTiles: boolean }
@@ -110,7 +87,7 @@ test('w1. the 12 words alone sign in: the identity is found, a limited key lands
     }).observe(document, { childList: true, subtree: true })
   })
   await page.reload({ waitUntil: 'domcontentloaded' })
-  await banner.getByTestId('session-unlock').click({ timeout: 60_000 })
+  await page.getByRole('banner').getByTestId(SESSION_UNLOCK).click({ timeout: 60_000 })
   await expect(page.getByText('This browser holds a key for')).toBeVisible({ timeout: 30_000 })
   expect(await page.evaluate(() => (window as unknown as { sawTiles: boolean }).sawTiles)).toBe(false)
   await shot(page, 'signin-w1-reopen-unlock')
