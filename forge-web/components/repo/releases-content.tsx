@@ -221,7 +221,8 @@ type AssetState =
   | { readonly kind: 'mismatch'; readonly message: string }
   | { readonly kind: 'error'; readonly message: string }
 
-function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
+/** One asset of a release: how this page can offer it, and the download or its fallback. */
+export function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
   const [state, setState] = useState<AssetState>({ kind: 'idle' })
   const run = async (): Promise<void> => {
     setState({ kind: 'working', progress: null })

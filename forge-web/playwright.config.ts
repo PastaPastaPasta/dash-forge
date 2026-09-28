@@ -51,7 +51,7 @@ export default defineConfig({
     {
       // Safari's engine, for the flows whose storage and passkey behaviour differ there.
       name: 'webkit',
-      testMatch: /(signin-resilience|prehydration)\.spec\.ts/,
+      testMatch: /(signin-resilience|signin-words-recovery|prehydration)\.spec\.ts/,
       use: { ...devices['Desktop Safari'], viewport: { width: 1280, height: 900 } },
     },
     {

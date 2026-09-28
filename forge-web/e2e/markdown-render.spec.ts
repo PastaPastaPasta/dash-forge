@@ -82,15 +82,24 @@ test.describe('markdown rendering (showcase repos)', () => {
     await expect.poll(() => external.length).toBeGreaterThan(0)
   })
 
-  test('md-4. an imported asset the browser cannot fetch offers the origin link (D-056)', async ({ page }) => {
+  test('md-4. an imported GitHub asset is an origin link with a local hash check (L-13)', async ({ page }) => {
     await page.goto(repoUrl('release', '&tag=15.0.0', RIPGREP), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     const asset = page.getByTestId('release-asset').filter({ hasText: 'aarch64-apple-darwin.tar.gz' }).filter({ hasNotText: '.sha256' }).first()
     await expect(asset).toBeVisible({ timeout: 60_000 })
-    await asset.getByRole('button', { name: /Download/ }).click()
+    // GitHub's release downloads send no CORS header: the page never tries to read the file, it
+    // links to it as the main action and says the download is not checked (L-13). The D-056
+    // fallback (a readable asset whose download fails) is covered in release-asset.test.tsx.
+    await expect(asset).toHaveAttribute('data-state', 'origin')
+    const origin = asset.getByRole('link', { name: /^Download .* from github\.com$/ })
+    await expect(origin).toHaveAttribute('href', /^https:\/\/github\.com\/BurntSushi\/ripgrep\/releases\/download\/15\.0\.0\//)
+    await expect(asset.getByRole('button', { name: /^Download/ })).toHaveCount(0)
+    await expect(asset.getByRole('status')).toContainText('not checked yet')
+    // The downloaded file can be checked here against the published SHA-256.
     const direct = asset.getByTestId('direct-download')
-    await expect(direct).toBeVisible({ timeout: 60_000 })
-    await expect(direct.locator('a[href^="https://github.com/BurntSushi/ripgrep/releases/download/15.0.0/"]')).toHaveCount(1)
     await expect(direct).toContainText('Check a downloaded file')
+    await direct.locator('input[type="file"]').setInputFiles({ name: 'not-ripgrep.tar.gz', mimeType: 'application/gzip', buffer: Buffer.from('not the asset') })
+    await expect(direct).toContainText(/Does not match: it is 13 bytes/)
+    await shot(page, 'md-04-ripgrep-origin-download')
   })
 })
