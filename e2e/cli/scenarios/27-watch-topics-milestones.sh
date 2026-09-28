@@ -8,9 +8,12 @@
 #   3. OWNER defines a milestone, opens an issue, puts it in the milestone, lists the
 #      milestones (1 open); closes the issue (0 open, 1 closed); closes the milestone
 #                                                                    -> `dg milestone`, `dg issue milestone`
-#   4. OWNER pins and locks the issue; `dg issue view --json` shows it pinned and locked; unlocks
-#                                                                    -> `dg issue pin|lock`
+#   4. OWNER pins and locks the issue; `dg issue view --json` shows it pinned and locked, and
+#      `dg issue list` lists it first; CONTRIB's comment on the locked issue is refused; unlocks
+#      and unpins it
+#                                                                    -> `dg issue pin|lock|list|comment`
 #   5. CONTRIB (not a member) cannot pin, lock or set a milestone    -> E601 before signing
+#   6. OWNER cannot put the issue in a milestone the repo does not define -> E102 before signing
 #
 # Written by OWNER (a maintainer of the suite repo) and CONTRIB (a stranger to it).
 SCENARIO_NAME="27 watch, topics, milestones, pin and lock (C-1)"
@@ -77,8 +80,16 @@ step "OWNER pins and locks the issue, then unlocks it"
 dg_write "$ID_OWNER" "$LOG-pin" issue pin "$REPO" "$N" || must "$LOG-pin" "pin"
 dg_write "$ID_OWNER" "$LOG-lock" issue lock "$REPO" "$N" || must "$LOG-lock" "lock"
 check "view shows it pinned and locked" until_read "$LOG-view" "d.get('pinned') is True and d.get('locked') is True and d.get('milestone') == '$MILESTONE'" issue view "$REPO" "$N"
+# Earlier runs may leave pinned issues in the suite repo: every pinned row comes first, this one among them.
+check "the list shows pinned issues first" until_read "$LOG-listpin" "$N in [i['number'] for i in d['issues'] if i['pinned']] and [i['pinned'] for i in d['issues']] == sorted([i['pinned'] for i in d['issues']], reverse=True)" issue list "$REPO" --state all
+if dg_as "$ID_CONTRIB" --yes --json issue comment "$REPO" "$N" --body "after the lock" >"$LOG-lockedc.json" 2>"$LOG-lockedc.err"; then
+  bad "CONTRIB could comment on a locked issue"
+else
+  check "a locked issue refuses CONTRIB's comment" assert_contains "$(cat "$LOG-lockedc.json" "$LOG-lockedc.err")" "locked to members"
+fi
 dg_write "$ID_OWNER" "$LOG-unlock" issue lock "$REPO" "$N" --off || must "$LOG-unlock" "unlock"
 check "view shows it unlocked" until_read "$LOG-view2" "d.get('locked') is False" issue view "$REPO" "$N"
+dg_write "$ID_OWNER" "$LOG-unpin" issue pin "$REPO" "$N" --off || must "$LOG-unpin" "unpin"
 
 step "CONTRIB (not a member) is refused before signing"
 for cmd in "issue pin $REPO $N" "issue lock $REPO $N" "issue milestone $REPO $N x"; do
@@ -89,5 +100,12 @@ for cmd in "issue pin $REPO $N" "issue lock $REPO $N" "issue milestone $REPO $N 
     check "refused: $cmd" assert_contains "$(cat "$LOG-refuse.json" "$LOG-refuse.err")" "E601"
   fi
 done
+
+step "OWNER cannot use a milestone the repo does not define"
+if dg_as "$ID_OWNER" --yes --json issue milestone "$REPO" "$N" "no such milestone" >"$LOG-nomilestone.json" 2>"$LOG-nomilestone.err"; then
+  bad "an undefined milestone was accepted"
+else
+  check "refused: an undefined milestone" assert_contains "$(cat "$LOG-nomilestone.json" "$LOG-nomilestone.err")" "E102"
+fi
 
 finish_scenario

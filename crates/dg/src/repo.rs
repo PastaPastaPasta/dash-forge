@@ -367,7 +367,7 @@ async fn star(ctx: &Ctx, repo: &str, on: bool, trending: bool) -> Result<()> {
 
 /// Watch or stop watching `repo` (forge-collab `watch`, indexOnly).
 async fn watch(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
+    let s = Session::open_for_write(ctx, repo, "watch not changed").await?;
     let verb = if on { "Watch" } else { "Stop watching" };
     ctx.confirm_or_cancel(&format!(
         "{verb} {}? (one small document{})",
@@ -399,10 +399,11 @@ async fn watch(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
     Ok(())
 }
 
-/// List `repo`'s topics, or add / remove some (maintainers; a topic is its own document).
+/// List `repo`'s topics, or add / remove some (its owner; a topic is its own document, and
+/// the repo document's `topics`, which pages display, follows).
 async fn topic(ctx: &Ctx, repo: &str, add: &[String], remove: &[String]) -> Result<()> {
     if add.is_empty() && remove.is_empty() {
-        let r = crate::common::Reader::open(ctx, repo).await?;
+        let r = Reader::open(ctx, repo).await?;
         let topics = r.collab().topics(&r.repo).await?;
         ctx.emit(
             json!({ "repo": r.repo.display(), "topics": topics }),
@@ -417,9 +418,9 @@ async fn topic(ctx: &Ctx, repo: &str, add: &[String], remove: &[String]) -> Resu
         );
         return Ok(());
     }
-    let s = Session::open(ctx, repo).await?;
+    let s = Session::open_for_write(ctx, repo, "topics not changed").await?;
     ctx.confirm_or_cancel(&format!(
-        "Change the topics of {}? (+{} / -{}: one small document each; maintainers only)",
+        "Change the topics of {}? (+{} / -{}: one small document each, then the repo's topic list; owner only)",
         s.repo.display(),
         add.len(),
         remove.len()
@@ -435,6 +436,9 @@ async fn topic(ctx: &Ctx, repo: &str, add: &[String], remove: &[String]) -> Resu
         if collab.remove_topic(&s.repo, t).await? {
             removed.push(t.clone());
         }
+    }
+    if !added.is_empty() || !removed.is_empty() {
+        collab.sync_repo_topics(&s.repo).await?;
     }
     let topics = collab.topics(&s.repo).await.unwrap_or_default();
     ctx.emit(

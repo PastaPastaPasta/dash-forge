@@ -38,8 +38,15 @@ fn parse_day(s: &str) -> Result<u64> {
         bail!("a due date is YYYY-MM-DD, got {s:?}");
     };
     let (y, m, d): (i64, i64, i64) = (y.parse()?, m.parse()?, d.parse()?);
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || y < 1970 {
-        bail!("a due date is YYYY-MM-DD, got {s:?}");
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let month_days = match m {
+        2 if leap => 29,
+        2 => 28,
+        4 | 6 | 9 | 11 => 30,
+        _ => 31,
+    };
+    if !(1..=12).contains(&m) || !(1..=month_days).contains(&d) || y < 1970 {
+        bail!("a due date is a real YYYY-MM-DD day, got {s:?}");
     }
     // Days from the civil date (Howard Hinnant's algorithm), exact for the proleptic Gregorian
     // calendar.
@@ -153,6 +160,9 @@ mod tests {
         assert_eq!(parse_day("2026-12-01").unwrap(), 1_796_083_200_000);
         assert_eq!(parse_day("2024-02-29").unwrap(), 1_709_164_800_000);
         assert!(parse_day("2026-13-01").is_err());
+        assert!(parse_day("2026-02-31").is_err(), "no 31 February");
+        assert!(parse_day("2025-02-29").is_err(), "2025 is not a leap year");
+        assert!(parse_day("2026-04-31").is_err());
         assert!(parse_day("26-1-1x").is_err());
     }
 }

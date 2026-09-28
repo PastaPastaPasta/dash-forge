@@ -92,8 +92,35 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
 
 /// Put issue `number` in milestone `title` (`None`: take it out).
 async fn milestone(ctx: &Ctx, repo: &str, number: u64, title: Option<&str>) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
+    let s = Session::open_for_write(ctx, repo, "milestone not changed").await?;
     let target = target(&s, repo, number).await?;
+    // Only an open milestone the repo defines: the fold would otherwise show a title that
+    // exists nowhere (the web picker offers the same list).
+    if let Some(t) = title {
+        // Members only (E601 first, as for a clear): then the title must name an open one.
+        s.collab()
+            .require_role(
+                &s.repo,
+                forge_core::rules::v2::Role::Writer,
+                &format!("put issue #{number} in a milestone"),
+            )
+            .await?;
+        let defined = s.collab().milestones(&s.repo, &[]).await?;
+        match defined.iter().find(|m| m.title == t) {
+            Some(m) if !m.closed => {}
+            Some(_) => {
+                return Err(crate::errors::usage(format!(
+                    "milestone {t:?} is closed: reopen it first (`dg milestone close {repo} {t:?} --reopen`)"
+                )))
+            }
+            None => {
+                return Err(crate::errors::not_found(
+                    format!("no milestone {t:?} in {}", s.repo.display()),
+                    format!("`dg milestone list {repo}` lists them; `dg milestone create` defines one"),
+                ))
+            }
+        }
+    }
     let what = title.map_or_else(
         || format!("Take issue #{number} out of its milestone"),
         |t| format!("Put issue #{number} in milestone {t:?}"),
@@ -119,22 +146,20 @@ enum Flag {
 
 /// Pin / unpin or lock / unlock issue `number`.
 async fn thread_flag(ctx: &Ctx, repo: &str, number: u64, flag: Flag, on: bool) -> Result<()> {
-    let s = Session::open(ctx, repo).await?;
+    let s = Session::open_for_write(ctx, repo, "issue not changed").await?;
     let target = target(&s, repo, number).await?;
-    let verb = match (flag, on) {
-        (Flag::Pin, true) => ("pin", "pinned"),
-        (Flag::Pin, false) => ("unpin", "unpinned"),
-        (Flag::Lock, true) => ("lock", "locked"),
-        (Flag::Lock, false) => ("unlock", "unlocked"),
+    let (verb, done) = match (flag, on) {
+        (Flag::Pin, true) => ("Pin", "pinned"),
+        (Flag::Pin, false) => ("Unpin", "unpinned"),
+        (Flag::Lock, true) => ("Lock", "locked"),
+        (Flag::Lock, false) => ("Unlock", "unlocked"),
     };
-    let (verb, done) = verb;
     let note = match (flag, on) {
         (Flag::Lock, true) => "; clients then offer the comment box to members only",
         _ => "",
     };
     ctx.confirm_or_cancel(&format!(
-        "{} issue #{number}? (one small document; members only{note})",
-        capitalize(verb)
+        "{verb} issue #{number}? (one small document; members only{note})"
     ))?;
     let collab = s.collab();
     let id = match flag {
@@ -146,13 +171,6 @@ async fn thread_flag(ctx: &Ctx, repo: &str, number: u64, flag: Flag, on: bool) -
         || println!("✓ {done} issue #{number}"),
     );
     Ok(())
-}
-
-fn capitalize(s: &str) -> String {
-    let mut c = s.chars();
-    c.next()
-        .map(|f| f.to_uppercase().chain(c).collect())
-        .unwrap_or_default()
 }
 
 /// Label names as the web writes them: trimmed (the fold compares them exactly).
@@ -191,7 +209,7 @@ fn not_found(repo: &str, number: u64) -> anyhow::Error {
 }
 
 /// One listed issue: number, title, author, state.
-type Row = (u64, String, String, IssueState);
+type Row = (u64, String, String, IssueState, bool);
 
 fn labels_of(state: &IssueState) -> String {
     state.labels.iter().cloned().collect::<Vec<_>>().join(", ")
@@ -266,18 +284,22 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
     // newest page (SR-04), and there is no per-row read. A private repo's issues open with
     // the reader's keys.
     let (all, hidden) = s.collab().issues_with_state(&s.repo).await?;
-    let matching: Vec<Row> = all
+    let mut matching: Vec<Row> = all
         .into_iter()
         .filter(|v| issue_matches(args, author.as_deref(), assignee.as_ref(), v))
         .map(|v| {
+            let pinned = forge_core::rules::v2::fold_thread_meta_v2(&v.log.events).pinned;
             (
                 u64::from(v.issue.number),
                 v.issue.title,
                 v.issue.author,
                 v.state,
+                pinned,
             )
         })
         .collect();
+    // Pinned issues first (a member's pin, kinds 19/20), each group newest first as read.
+    matching.sort_by_key(|r| !r.4);
     let total = matching.len();
     let per = args.limit as usize;
     let pages = total.div_ceil(per).max(1);
@@ -286,7 +308,7 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
 
     let json_rows: Vec<_> = rows
         .iter()
-        .map(|(n, title, author, st)| {
+        .map(|(n, title, author, st, pinned)| {
             json!({
                 "number": n,
                 "title": title,
@@ -294,6 +316,7 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
                 "open": st.open,
                 "labels": st.labels,
                 "assignees": st.assignees,
+                "pinned": pinned,
             })
         })
         .collect();
@@ -311,8 +334,13 @@ async fn list(ctx: &Ctx, args: &IssueListArgs) -> Result<()> {
             if rows.is_empty() {
                 println!("no issues");
             }
-            for (n, title, _, st) in &rows {
+            for (n, title, _, st, pinned) in &rows {
                 let mark = if st.open { "open" } else { "closed" };
+                let mark = if *pinned {
+                    format!("{mark}, pinned")
+                } else {
+                    mark.to_string()
+                };
                 let labels = if st.labels.is_empty() {
                     String::new()
                 } else {
@@ -599,6 +627,7 @@ async fn edit(
 async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
     let s = Session::open_for_write(ctx, repo, "comment not posted").await?;
     let target = target(&s, repo, number).await?;
+    refuse_if_locked(&s, number, &target.id).await?;
     ctx.confirm_or_cancel(&format!("Comment on issue #{number}? (one small document)"))?;
     let id = s
         .collab()
@@ -609,6 +638,27 @@ async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
         || println!("✓ commented on issue #{number}"),
     );
     Ok(())
+}
+
+/// A locked thread takes comments from members only (a client rule: consensus cannot refuse
+/// anyone's comment, so every Forge client refuses it instead, before anything is signed).
+async fn refuse_if_locked(s: &Session, number: u64, target_id: &str) -> Result<()> {
+    let collab = s.collab();
+    let log = collab.target_log(&s.repo, target_id).await?;
+    if !forge_core::rules::v2::fold_thread_meta_v2(&log.events).locked {
+        return Ok(());
+    }
+    if collab.signer_role(&s.repo).await?.is_some() {
+        return Ok(());
+    }
+    Err(forge_core::user_error::UserError::new(
+        forge_core::user_error::codes::NOT_A_WRITER,
+        format!("comment not posted: issue #{number} is locked to members"),
+    )
+    .cause("a maintainer or writer locked the conversation")
+    .fix("ask a maintainer to unlock it")
+    .note("checked before anything was signed; nothing was written or paid")
+    .into())
 }
 
 /// `(past tense, prompt verb)` of a close or a reopen ("reopend" was L-35).

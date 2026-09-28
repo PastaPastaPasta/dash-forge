@@ -304,7 +304,7 @@ pub enum RepoCommand {
         /// The repository (`owner/name`).
         repo: String,
     },
-    /// Watch a repo: `dg`'s and the web app's inboxes follow it, on every device.
+    /// Watch a repo: the web app's inbox follows it, on every device you sign in on.
     Watch {
         /// The repository (`owner/name`).
         repo: String,
@@ -314,14 +314,14 @@ pub enum RepoCommand {
         /// The repository (`owner/name`).
         repo: String,
     },
-    /// A repository's topics: list them, or (maintainers) add and remove.
+    /// A repository's topics: list them, or (its owner) add and remove.
     Topic {
         /// The repository (`owner/name`).
         repo: String,
         /// Topics to add.
         #[arg(long = "add", value_name = "NAME")]
         add: Vec<String>,
-        /// Topics to remove (your own tags).
+        /// Topics to remove.
         #[arg(long = "remove", value_name = "NAME")]
         remove: Vec<String>,
     },

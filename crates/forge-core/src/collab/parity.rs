@@ -3,24 +3,22 @@
 //! [`super::v2::Collab`], so each stays next to its reads and folds.
 //!
 //! * `watch` (forge-collab, indexOnly): the signer's watched repos, on every device.
-//! * `topic` (forge-core, maintainer-gated): a repo's tags, countable per name.
+//! * `topic` (forge-core, owner-granted): a repo's tags, countable per name.
 //! * `milestone` (forge-collab, maintainer- or writer-gated): newest definition per title;
 //!   an issue or PR joins one by a member event (kind 17, the title as its value).
-//! * pin / unpin / lock / unlock: member events, kinds 19–22 ([`fold_thread_meta_v2`]).
+//! * pin / unpin / lock / unlock: member events, kinds 19–22 ([`crate::rules::v2::fold_thread_meta_v2`]).
 
 use std::collections::BTreeMap;
 
-use super::v2::{Collab, Target, DOC_EVENT, DOC_MILESTONE, DOC_WATCH};
+use super::v2::{Collab, Target, DOC_MILESTONE, DOC_WATCH};
 use crate::error::{Error, Result};
 use crate::platform::{FieldValue, QueryFilter, QueryOrder};
 use crate::rules::v2::Role;
-use crate::rules::v2::{
-    fold_milestones_v2, fold_thread_meta_v2, MilestoneDoc, MilestoneItem, ThreadMeta,
-};
+use crate::rules::v2::{fold_milestones_v2, MilestoneDoc, MilestoneItem};
 use crate::rules::EventKind;
 use crate::scope::RepoRef;
 
-/// forge-core: a repo's topic (maintainer-gated).
+/// forge-core: a repo's topic (owner-granted).
 pub const DOC_TOPIC: &str = "topic";
 
 /// A topic name: what the contract's pattern admits (`^[a-z0-9][a-z0-9-]{0,29}$`).
@@ -39,15 +37,6 @@ pub use crate::rules::v2::Milestone;
 
 impl Collab<'_> {
     // --- watch -----------------------------------------------------------------------
-
-    /// Whether the signer watches `repo`.
-    pub async fn is_watching(&self, repo: &RepoRef) -> Result<bool> {
-        let collab = self.collab_contract(repo).await?;
-        Ok(self
-            .own_index_only(&collab, repo, DOC_WATCH)
-            .await?
-            .is_some())
-    }
 
     /// Watch `repo`. `false` when already watching (nothing written).
     pub async fn watch(&self, repo: &RepoRef) -> Result<bool> {
@@ -71,7 +60,7 @@ impl Collab<'_> {
 
     // --- topics ----------------------------------------------------------------------
 
-    /// `repo`'s topics (every maintainer's tags; unique per name), sorted.
+    /// `repo`'s topics (the `topic` documents; unique per name), sorted.
     pub async fn topics(&self, repo: &RepoRef) -> Result<Vec<String>> {
         let core = self.core_contract(repo).await?;
         let docs = self
@@ -93,7 +82,8 @@ impl Collab<'_> {
         Ok(names)
     }
 
-    /// Tag `repo` with `name` (maintainers). `false` when it already carries the topic.
+    /// Tag `repo` with `name` (its owner only: `topic` is owner-granted). `false` when it
+    /// already carries the topic. The caller keeps `repo.topics` (what pages display) in step.
     pub async fn add_topic(&self, repo: &RepoRef, name: &str) -> Result<bool> {
         if !is_valid_topic(name) {
             return Err(Error::Config(format!(
@@ -103,26 +93,20 @@ impl Collab<'_> {
         if self.topics(repo).await?.iter().any(|t| t == name) {
             return Ok(false);
         }
-        self.require_role(
-            repo,
-            Role::Maintainer,
-            &format!("tag the repository {name}"),
-        )
-        .await?;
+        self.require_owner(repo, &format!("tag the repository {name}"))?;
         let core = self.core_contract(repo).await?;
         let props = BTreeMap::from([("name".to_string(), FieldValue::text(name))]);
         match self.write(repo, &core, DOC_TOPIC, props).await {
             Ok(_) => Ok(true),
-            // Another maintainer tagged it in between: the (repoId, name) index is unique.
+            // Tagged in between (another device): the (repoId, name) index is unique.
             Err(Error::DuplicateUniqueIndex(_)) => Ok(false),
             Err(e) => Err(e),
         }
     }
 
-    /// Remove topic `name` from `repo`: deletes the signer's tag. A tag another maintainer
-    /// wrote can only be deleted by them (Platform rule); the error says so.
+    /// Remove topic `name` from `repo` (its owner only). `false` when it does not carry it.
     pub async fn remove_topic(&self, repo: &RepoRef, name: &str) -> Result<bool> {
-        let me = self.signer_id()?;
+        self.require_owner(repo, &format!("remove topic {name}"))?;
         let core = self.core_contract(repo).await?;
         let docs = self
             .client()
@@ -141,32 +125,40 @@ impl Collab<'_> {
         let Some(doc) = docs.into_iter().next() else {
             return Ok(false);
         };
-        if doc.owner_id != me {
-            return Err(Error::NotPermitted {
-                action: format!("remove topic {name}"),
-                reason: format!(
-                    "maintainer {} tagged it, and only they can delete their tag",
-                    doc.owner_id
-                ),
-                needs: "the tag's author".into(),
-            });
-        }
         self.engine()?
             .delete_document(&core, DOC_TOPIC, &doc.id)
             .await?;
         Ok(true)
     }
 
-    /// How many repos carry topic `name` (`topic.byName`, countable over the name prefix).
-    pub async fn topic_repo_count(&self, repo_for_contracts: &RepoRef, name: &str) -> Result<u64> {
-        let core = self.core_contract(repo_for_contracts).await?;
-        self.client()
-            .count_documents(
-                &core,
-                DOC_TOPIC,
-                &[QueryFilter::eq("name", FieldValue::text(name))],
-            )
+    /// Make the `repo` document's `topics` (what repo pages and Explore display) the topic
+    /// documents' names, the first [`crate::repo::MAX_TOPICS`] of them. Both are the owner's to
+    /// write, so the owner's tagging keeps them in step. `false` when they already match
+    /// (nothing signed).
+    pub async fn sync_repo_topics(&self, repo: &RepoRef) -> Result<bool> {
+        self.require_owner(repo, "update the repository's topics")?;
+        let mut names = self.topics(repo).await?;
+        names.truncate(crate::repo::MAX_TOPICS);
+        let core = self.core_contract(repo).await?;
+        let changes = BTreeMap::from([(
+            "topics".to_string(),
+            (!names.is_empty()).then(|| FieldValue::text_list(names)),
+        )]);
+        self.engine()?
+            .replace_document(&core, "repo", repo.id(), &changes)
             .await
+    }
+
+    /// Refuse before signing unless the signer owns `repo` (the owner-granted types).
+    fn require_owner(&self, repo: &RepoRef, action: &str) -> Result<()> {
+        if self.signer_id()? == repo.owner_id() {
+            return Ok(());
+        }
+        Err(Error::NotPermitted {
+            action: action.to_string(),
+            reason: format!("only the owner of {} can change its topics", repo.display()),
+            needs: "the repository's owner".into(),
+        })
     }
 
     // --- milestones --------------------------------------------------------------------
@@ -184,8 +176,8 @@ impl Collab<'_> {
         if title.is_empty() {
             return Err(Error::Config("a milestone needs a title".into()));
         }
-        super::check_len("milestone title", title, 63)?;
-        super::check_len("milestone description", description, 1000)?;
+        super::check_text("milestone title", title, 63, 252)?;
+        super::check_text("milestone description", description, 1000, 2000)?;
         if repo.visibility == crate::rules::v2::Visibility::Private {
             return Err(Error::Config(
                 "milestones in a private repository are sealed; this build does not seal them yet (use the web app)".into(),
@@ -247,16 +239,12 @@ impl Collab<'_> {
         target: &Target,
         title: Option<&str>,
     ) -> Result<String> {
-        match title {
-            Some(t) => {
-                self.post_event(repo, target, EventKind::MilestoneSet, Some(t), None)
-                    .await
-            }
-            None => {
-                self.post_event(repo, target, EventKind::MilestoneClear, None, None)
-                    .await
-            }
-        }
+        let kind = if title.is_some() {
+            EventKind::MilestoneSet
+        } else {
+            EventKind::MilestoneClear
+        };
+        self.post_event(repo, target, kind, title, None).await
     }
 
     // --- pin / lock --------------------------------------------------------------------
@@ -291,27 +279,6 @@ impl Collab<'_> {
             EventKind::Unlock
         };
         self.post_event(repo, target, kind, None, None).await
-    }
-
-    /// `target`'s milestone, pin and lock (the member events, folded).
-    pub async fn thread_meta(&self, repo: &RepoRef, target_id: &str) -> Result<ThreadMeta> {
-        let log = self.target_log(repo, target_id).await?;
-        Ok(fold_thread_meta_v2(&log.events))
-    }
-
-    /// The repo's member events of `kinds` (its `feed`), for the pinned list.
-    pub async fn feed_events(&self, repo: &RepoRef) -> Result<Vec<crate::rules::Event>> {
-        let collab = self.collab_contract(repo).await?;
-        let docs = self
-            .client()
-            .query_all_documents(
-                &collab,
-                DOC_EVENT,
-                &[Self::repo_filter(repo)?],
-                &[QueryOrder::asc("repoId"), QueryOrder::asc("$createdAt")],
-            )
-            .await?;
-        Ok(docs.iter().filter_map(super::v2::event_from_doc).collect())
     }
 }
 
