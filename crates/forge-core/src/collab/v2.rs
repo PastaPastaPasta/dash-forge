@@ -1419,6 +1419,11 @@ impl<'a> Collab<'a> {
     }
 
     /// Reads only. A private repository needs a signer (its keys are the signer's).
+    /// The client this reads and writes through.
+    pub(super) fn client(&self) -> &'a PlatformClient {
+        self.client
+    }
+
     pub fn reader(client: &'a PlatformClient) -> Self {
         Self {
             client,
@@ -1581,27 +1586,27 @@ impl<'a> Collab<'a> {
             .ok_or_else(|| Error::Config("this operation signs; no identity was given".into()))
     }
 
-    fn engine(&self) -> Result<WriteEngine<'a>> {
+    pub(super) fn engine(&self) -> Result<WriteEngine<'a>> {
         let (identity, bridge) = self.signer()?;
         doc_engine(self.client, identity, bridge)
     }
 
-    async fn collab_contract(&self, repo: &RepoRef) -> Result<LoadedContract> {
+    pub(super) async fn collab_contract(&self, repo: &RepoRef) -> Result<LoadedContract> {
         self.client.fetch_contract(&repo.forge().collab).await
     }
 
-    async fn core_contract(&self, repo: &RepoRef) -> Result<LoadedContract> {
+    pub(super) async fn core_contract(&self, repo: &RepoRef) -> Result<LoadedContract> {
         self.client.fetch_contract(&repo.forge().core).await
     }
 
-    fn repo_filter(repo: &RepoRef) -> Result<QueryFilter> {
+    pub(super) fn repo_filter(repo: &RepoRef) -> Result<QueryFilter> {
         Ok(QueryFilter::eq(
             "repoId",
             FieldValue::identifier(platform::decode_identifier(repo.id())?),
         ))
     }
 
-    fn with_repo(
+    pub(super) fn with_repo(
         repo: &RepoRef,
         mut props: BTreeMap<String, FieldValue>,
     ) -> Result<BTreeMap<String, FieldValue>> {
@@ -1613,7 +1618,7 @@ impl<'a> Collab<'a> {
     }
 
     /// Create one document of `repo` (its `repoId` added) in `contract`, as the signer.
-    async fn write(
+    pub(super) async fn write(
         &self,
         repo: &RepoRef,
         contract: &LoadedContract,
