@@ -5,23 +5,21 @@
 import Link from 'next/link'
 import { HardDrive, MonitorSmartphone } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
-import { Button } from '@/components/ui/button'
+import { SignInButton } from '@/components/sign-in-button'
 import { EmptyState } from '@/components/ui/states'
 import { StorageWizard } from '@/components/storage/storage-wizard'
 import { useAuth } from '@/contexts/auth-context'
-import { useUiStore } from '@/hooks/use-ui-store'
 import { dashRange, PUSH_COST_DASH } from '@/lib/sdk/cost'
 
 export default function StorageSettingsPage(): JSX.Element {
   const { identity } = useAuth()
-  const openLogin = useUiStore((s) => s.openLogin)
 
   return (
     <AppShell>
       <div className="mx-auto max-w-4xl space-y-5">
         <div>
           <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
-            <Link href="/settings" className="hit-area hover:underline">Settings</Link> / Storage
+            <Link href="/settings/" className="hit-area hover:underline">Settings</Link> / Storage
           </p>
           <h1 className="mt-1 text-xl">Storage</h1>
           <p className="mt-1 max-w-2xl text-dense text-anvil-600 dark:text-anvil-300">
@@ -38,7 +36,7 @@ export default function StorageSettingsPage(): JSX.Element {
             icon={HardDrive}
             title="Sign in to set up storage"
             body="Storage credentials are kept encrypted with this browser’s key, so they need a signed-in session."
-            action={<Button variant="primary" onClick={() => openLogin()}>Sign in</Button>}
+            action={<SignInButton />}
           />
         )}
       </div>

@@ -424,7 +424,7 @@ function ComposeIssueDialog({
 }): JSX.Element {
   const repo = home.repo
   const { sdk } = useSdk(repoContractIds(repo))
-  const { identity, signer } = useAuth()
+  const { identity, signer, locked } = useAuth()
   const guard = useWriteGuard()
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
@@ -494,7 +494,7 @@ function ComposeIssueDialog({
             disabled={title.trim() === '' || bodyBytes > BODY_MAX || guard.disabledReason !== null}
             title={guard.disabledReason ?? undefined}
           >
-            {identity ? 'Submit issue' : 'Sign in to submit'}
+            {identity ? 'Submit issue' : locked ? 'Unlock to submit' : 'Sign in to submit'}
           </Button>
         </>
       }

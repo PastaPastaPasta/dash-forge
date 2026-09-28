@@ -66,5 +66,14 @@ export function repoHref(
   if (addr.repoId) q.set('repo', addr.repoId)
   // A private repo's decrypted names never go into a URL (`private-nav.ts`).
   for (const [k, v] of Object.entries(sealParams(addr, extra))) q.set(k, v)
-  return `${path}?${q.toString()}`
+  return `${withTrailingSlash(path)}?${q.toString()}`
+}
+
+/**
+ * `/repo/issue` → `/repo/issue/`. The static export serves every route as `<route>/index.html`
+ * (`trailingSlash: true`), and a host answers the slashless path with a 301: a full page load in
+ * place of a client-side navigation.
+ */
+export function withTrailingSlash(path: string): string {
+  return path.endsWith('/') ? path : `${path}/`
 }

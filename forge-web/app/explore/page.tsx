@@ -11,8 +11,8 @@ import Link from 'next/link'
 import type { ReactNode } from 'react'
 import { CircleDot, Compass, GitBranch, GitPullRequest, Info, Package, Star, UserCheck } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
+import { SignInButton } from '@/components/sign-in-button'
 import { RepoCard } from '@/components/repo-card'
-import { Button } from '@/components/ui/button'
 import { ErrorState, Spinner } from '@/components/ui/states'
 import { DownloadProgressBar, UnreachableBanner } from '@/components/ui/platform-status'
 import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
@@ -20,7 +20,6 @@ import { useAuth } from '@/contexts/auth-context'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { repoHref } from '@/hooks/use-query-param'
 import { useSdk } from '@/hooks/use-sdk'
-import { useUiStore } from '@/hooks/use-ui-store'
 import { NETWORKS } from '@/lib/constants'
 import { listRecentRepos, listReposByOwner, resolveDpnsName, timeAgo, type DiscoveredRepo } from '@/lib/view'
 import {
@@ -45,7 +44,6 @@ const INDEXER_DOCS = 'https://github.com/PastaPastaPasta/dash-forge/blob/master/
 export default function ExplorePage(): JSX.Element {
   const { sdk, ready, network, status: sdkStatus, retry: retrySdk } = useSdk()
   const { identity } = useAuth()
-  const openLogin = useUiStore((s) => s.openLogin)
   const forge = NETWORKS[network].v2
   const on = ready && sdk !== null && forge !== null
 
@@ -169,9 +167,7 @@ export default function ExplorePage(): JSX.Element {
         ) : on ? (
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-dashed border-anvil-300 px-4 py-3 text-dense dark:border-anvil-700">
             <span>Sign in to see your repos, issues, pull requests and stars.</span>
-            <Button variant="primary" size="sm" onClick={() => openLogin()}>
-              Sign in
-            </Button>
+            <SignInButton size="sm" />
           </div>
         ) : null}
 
@@ -211,7 +207,7 @@ export default function ExplorePage(): JSX.Element {
 
 function NewRepoLink(): JSX.Element {
   return (
-    <Link href="/new" className="hit-area text-dense text-forge-700 underline dark:text-forge-300">
+    <Link href="/new/" className="hit-area text-dense text-forge-700 underline dark:text-forge-300">
       Create a repository
     </Link>
   )

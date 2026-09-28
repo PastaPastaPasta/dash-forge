@@ -157,7 +157,7 @@ export function RepoScaffold({
         {offline}
         <RepoHeader home={home} addr={addr} />
         <PrivateBanner home={home} />
-        <PrivateRepoState repo={home.repo} addr={addr} member={home.private?.access === 'no-key'} />
+        <PrivateRepoState repo={home.repo} addr={addr} access={home.private?.access ?? 'outsider'} />
       </AppShell>
     )
   }

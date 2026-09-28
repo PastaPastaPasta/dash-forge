@@ -94,7 +94,7 @@ function AutolinkedText({ text }: { text: string }): JSX.Element {
             </Link>
           )
         }
-        const href = (links.profileHref ?? ((n: string) => `/u?name=${encodeURIComponent(n)}`))(p.name)
+        const href = (links.profileHref ?? ((n: string) => `/u/?name=${encodeURIComponent(n)}`))(p.name)
         return (
           <Link key={i} href={href} className={cn(LINK, 'font-medium')} data-autolink="mention">
             @{p.name}

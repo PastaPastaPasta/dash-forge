@@ -322,7 +322,7 @@ function EmptyRepoState({ home, addr, branch }: { home: RepoHome; addr: RepoAddr
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
           <span>
             No storage configured: pushes will be stored on Platform at ~{PUSH_COST_DASH.perMib} DASH/MiB.{' '}
-            <Link href="/settings/storage" className="font-medium text-forge-700 underline dark:text-forge-400">
+            <Link href="/settings/storage/" className="font-medium text-forge-700 underline dark:text-forge-400">
               Configure storage →
             </Link>
           </span>

@@ -39,6 +39,7 @@ import { useStorageConfig } from '@/hooks/use-storage-config'
 import { useViewerRole } from '@/hooks/use-repo-chrome'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Button } from '@/components/ui/button'
+import { UnlockMore } from '@/components/auth/unlock-more'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
@@ -115,7 +116,7 @@ function NewReleaseDialog({
   const { sdk, network } = useSdk()
   const { signer } = useAuth()
   const guard = useWriteGuard()
-  const { config } = useStorageConfig()
+  const { config, needsUnlock: storageNeedsUnlock } = useStorageConfig()
   const [tag, setTag] = useState('')
   const [title, setTitle] = useState('')
   const [notes, setNotes] = useState('')
@@ -298,13 +299,16 @@ function NewReleaseDialog({
             onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
             className="block w-full text-dense text-anvil-700 file:mr-3 file:rounded-md file:border file:border-anvil-300 file:bg-transparent file:px-3 file:py-1.5 file:text-dense dark:text-anvil-200 dark:file:border-anvil-700"
           />
+          {storageNeedsUnlock ? <UnlockMore title="Unlock to attach assets with your storage settings" testId="release-storage-unlock" /> : null}
           <p id="release-assets-hint" className="text-[12px] text-anvil-500 dark:text-anvil-400">
-            {targets.length > 0 ? (
+            {storageNeedsUnlock ? (
+              <>Your storage settings open after you unlock this tab.</>
+            ) : targets.length > 0 ? (
               <>Uploaded to {targets.join(', ')} and verified before the release is written. Up to 256 MiB per file.</>
             ) : (
               <>
                 No storage of your own chosen for this repo (release assets never go to Platform).{' '}
-                <Link href="/settings/storage" className="text-forge-700 underline dark:text-forge-400">Set up storage</Link> to attach assets.
+                <Link href="/settings/storage/" className="text-forge-700 underline dark:text-forge-400">Set up storage</Link> to attach assets.
               </>
             )}
           </p>

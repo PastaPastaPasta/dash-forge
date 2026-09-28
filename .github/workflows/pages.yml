@@ -47,6 +47,88 @@ jobs:
           NEXT_PUBLIC_NETWORK: ${{ vars.PAGES_NETWORK || 'devnet' }}
           NEXT_PUBLIC_DEVNET_NAME: ${{ (vars.PAGES_NETWORK || 'devnet') == 'devnet' && (vars.PAGES_DEVNET_NAME || 'moutai') || '' }}
         run: pnpm build
+      # Deploy skew: a tab opened before this deploy still runs the previous build and lazily
+      # loads that build's chunks (the Platform SDK, the sign-in flows). Those files must stay
+      # up or the tab breaks mid-session. So the chunks of the last two builds are merged into
+      # this artifact (hashed names: nothing is overwritten), kept between runs in the Actions
+      # cache (master-scoped; pages-static-keepalive.yml restores it weekly so a quiet week
+      # does not let GitHub evict it). Bounded: a generation is skipped when the merged site
+      # would pass MAX_SITE_MB (Pages publishes at most 1 GB). A tab on an older build still does
+      # one full page load on its next navigation (Next compares build ids), which keeps the
+      # signed-in session.
+      - name: Restore the previous builds' static chunks
+        uses: actions/cache/restore@v4
+        with:
+          path: forge-web/.pages-static
+          key: pages-static-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: pages-static-
+      - name: Keep the previous builds' static chunks
+        env:
+          MAX_SITE_MB: 700
+        run: |
+          set -euo pipefail
+          own="$(mktemp -d)"
+          cp -R out/_next/static/. "$own/"
+          # A cached generation is merged into the served origin, so only what a Next build emits
+          # is accepted: regular files (no symlinks, devices or fifos), under chunks/, css/,
+          # media/, wasm/ or one <buildId>/ holding only its manifests, with plain names. Any
+          # other shape skips that generation (the deploy goes on without it).
+          valid_gen() {
+            local d="$1"
+            # The generation itself must be a real directory (find does not descend a symlink).
+            if [ -L "$d" ] || [ ! -d "$d" ]; then echo "not a plain directory"; return 1; fi
+            if [ -n "$(find "$d/" -mindepth 1 ! -type f ! -type d -print -quit)" ]; then echo "non-regular file"; return 1; fi
+            if [ -n "$(find "$d/" -mindepth 1 -name '.*' -print -quit)" ]; then echo "hidden entry"; return 1; fi
+            if [ -n "$(find "$d/" -mindepth 1 -print | LC_ALL=C grep -Ev '/[A-Za-z0-9_@~-][A-Za-z0-9._@~-]*$' | head -1)" ]; then echo "unexpected name"; return 1; fi
+            local top
+            for top in "$d"/*; do
+              local name; name="$(basename "$top")"
+              case "$name" in
+                chunks|css|media|wasm) [ -d "$top" ] || { echo "$name is not a directory"; return 1; } ;;
+                *)
+                  [ -d "$top" ] || { echo "stray file $name"; return 1; }
+                  if [ -n "$(find "$top/" -mindepth 1 ! -name _buildManifest.js ! -name _ssgManifest.js -print -quit)" ]; then echo "unexpected content in $name/"; return 1; fi
+                  ;;
+              esac
+            done
+            if [ -n "$(find "$d/" -type f ! -name '*.js' ! -name '*.css' ! -name '*.wasm' ! -name '*.woff' ! -name '*.woff2' -print -quit)" ]; then echo "unexpected file type"; return 1; fi
+          }
+          # Nothing restored from the cache may be a symlink, anywhere.
+          if [ -e .pages-static ] && { [ -L .pages-static ] || [ -n "$(find .pages-static/ -type l -print -quit)" ]; }; then
+            echo "::warning::the cached static chunks hold a symlink; not keeping any"
+            rm -rf .pages-static
+          fi
+          for gen in 1 2; do
+            src=".pages-static/gen$gen"
+            [ -e "$src" ] || continue
+            if ! why="$(valid_gen "$src")"; then
+              echo "::warning::not keeping build gen$gen's chunks: $why"
+              rm -rf "$src"
+              continue
+            fi
+            site_mb=$(du -sm out | cut -f1)
+            gen_mb=$(du -sm "$src" | cut -f1)
+            if [ $((site_mb + gen_mb)) -gt "$MAX_SITE_MB" ]; then
+              echo "::warning::not keeping build gen$gen's chunks: ${site_mb} MB + ${gen_mb} MB passes ${MAX_SITE_MB} MB"
+              continue
+            fi
+            cp -R "$src/." out/_next/static/
+            echo "kept build gen$gen's chunks (${gen_mb} MB)"
+          done
+          # Hashed names never collide with different content; re-copy this build's own files
+          # last anyway, so nothing of it is ever replaced by an older copy.
+          cp -R "$own/." out/_next/static/
+          # Next run: this build becomes gen1, the previous one gen2 (older ones drop out).
+          rm -rf .pages-static/gen2
+          if [ -d .pages-static/gen1 ]; then mv .pages-static/gen1 .pages-static/gen2; fi
+          mkdir -p .pages-static
+          mv "$own" .pages-static/gen1
+          du -sh out .pages-static
+      - name: Save this build's static chunks
+        uses: actions/cache/save@v4
+        with:
+          path: forge-web/.pages-static
+          key: pages-static-${{ github.run_id }}-${{ github.run_attempt }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

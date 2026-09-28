@@ -12,10 +12,9 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Bell, ChevronDown, Compass, GitFork, Hammer, LogOut, Plus, Search, Wallet } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
-import { useUiStore } from '@/hooks/use-ui-store'
 import { useUnreadCount } from '@/hooks/use-inbox'
 import { addressFromParams, repoHref } from '@/hooks/use-query-param'
-import { Button } from '@/components/ui/button'
+import { SignInButton } from '@/components/sign-in-button'
 import { IdentityPill } from '@/components/ui/identity-pill'
 import { ThemeToggle } from '@/components/theme-toggle'
 import { NetworkBadge } from '@/components/ui/network-badge'
@@ -57,7 +56,6 @@ function useSlashToSearch(): void {
 }
 
 export function AppHeader(): JSX.Element {
-  const openLogin = useUiStore((s) => s.openLogin)
   const { identity, balance, logout } = useAuth()
   useSlashToSearch()
 
@@ -82,7 +80,7 @@ export function AppHeader(): JSX.Element {
 
         <div className="ml-auto flex items-center sm:gap-1">
           <Link
-            href="/explore"
+            href="/explore/"
             className="hidden h-8 items-center gap-1.5 rounded-md px-2 text-dense text-anvil-700 hover:bg-anvil-100 dark:text-anvil-200 dark:hover:bg-anvil-800 lg:inline-flex"
           >
             <Compass className="h-4 w-4" aria-hidden /> Explore
@@ -96,9 +94,7 @@ export function AppHeader(): JSX.Element {
               <AccountMenu identity={identity} balance={balance} onLogout={logout} />
             </>
           ) : (
-            <Button variant="primary" size="sm" onClick={() => openLogin()}>
-              Sign in
-            </Button>
+            <SignInButton size="sm" label="long" />
           )}
         </div>
       </div>
@@ -189,7 +185,7 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
       case 'profile':
         setQuery('')
         setNote(null)
-        router.push(`/u?name=${encodeURIComponent(jump.name)}`)
+        router.push(`/u/?name=${encodeURIComponent(jump.name)}`)
     }
   }
 
@@ -296,7 +292,7 @@ function NewMenu(): JSX.Element | null {
       </button>
       {open ? (
         <nav id="new-panel" aria-label="New" className="absolute right-0 z-50 mt-2 w-64 animate-fade-in rounded-lg border border-anvil-200 bg-white p-1 shadow-xl dark:border-anvil-750 dark:bg-anvil-900">
-          <Link href="/new" className={MENU_ITEM} onClick={() => setOpen(false)}>
+          <Link href="/new/" className={MENU_ITEM} onClick={() => setOpen(false)}>
             <Plus className="mt-0.5 h-4 w-4 shrink-0 text-forge-500" aria-hidden />
             <span>
               Repository
@@ -321,7 +317,7 @@ function NotificationsBell(): JSX.Element {
   const label = unread === 0 ? 'Notifications, none unread' : `Notifications, ${unread} unread`
   return (
     <Link
-      href="/notifications"
+      href="/notifications/"
       aria-label={label}
       title={label}
       data-testid="notifications-bell"
@@ -374,16 +370,16 @@ function AccountMenu({
               {credits.toLocaleString()} credits · ≈ {dashToUsd(creditsToDash(credits))}
             </div>
           </div>
-          <Link href="/notifications" className={MENU_ITEM} onClick={() => setOpen(false)}>
+          <Link href="/notifications/" className={MENU_ITEM} onClick={() => setOpen(false)}>
             Notifications
           </Link>
-          <Link href="/explore" className={MENU_ITEM} onClick={() => setOpen(false)}>
+          <Link href="/explore/" className={MENU_ITEM} onClick={() => setOpen(false)}>
             Explore
           </Link>
-          <Link href="/settings" className={MENU_ITEM} onClick={() => setOpen(false)}>
+          <Link href="/settings/" className={MENU_ITEM} onClick={() => setOpen(false)}>
             Settings &amp; spend
           </Link>
-          <Link href={`/u?name=${encodeURIComponent(identity)}`} className={MENU_ITEM} onClick={() => setOpen(false)}>
+          <Link href={`/u/?name=${encodeURIComponent(identity)}`} className={MENU_ITEM} onClick={() => setOpen(false)}>
             Your profile
           </Link>
           <button

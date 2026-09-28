@@ -14,6 +14,10 @@
  *   record cannot be replayed under another identity.
  * - In memory: the unlocked record lives only in this module (never React state, never
  *   localStorage), for at most {@link AUTO_LOCK_MS} (12 h) or until {@link lockVault}.
+ * - Across reloads and tabs (`./session-resume.ts`): ONLY the limited signing key is kept (it is
+ *   capped by its on-chain budget and expiry), until 12 h after the unlock or 4 h without use. A
+ *   resumed tab signs public-repo writes at once; the encryption key, the storage credentials
+ *   and wallet grants stay sealed until an interactive unlock in that tab ({@link resumeVault}).
  * - Storage credentials (`ux-dx-spec.md` §3.1: bucket keys, pinning tokens) are a second
  *   AES-GCM blob beside the record (`vault-storage:<network>:<identity>`), sealed under a key
  *   HKDF-derived from the same data key. While unlocked, only that derived key is held, as a
@@ -38,6 +42,21 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import type { Network } from '../constants'
 import { idbDelete, idbEntries, idbGet, idbPut, idbUpdate } from '../idb'
 import { withTimeout } from '../timeout'
+import {
+  KEPT_TTL_MS,
+  LOCKED_AT_KEY,
+  SAVED_AT_KEY,
+  askToUnlockEveryVisit,
+  framed,
+  keptExpired,
+  loadResume,
+  lockMarker,
+  markLocked,
+  openResume,
+  saveResume,
+  touchResume,
+  wipeResume,
+} from './session-resume'
 
 /** Unlocked vaults lock themselves after this long (spec §2.3). */
 export const AUTO_LOCK_MS = 12 * 60 * 60 * 1000
@@ -686,6 +705,7 @@ export async function recoverStaged(
   state: (secret: VaultSecret) => Promise<StagedKeyState>,
 ): Promise<RecoverResult> {
   assertDedicatedOrigin()
+  const lockMarkerAt = lockMarker()
   const at = stagedKey(network, identityId)
   const record = await idbGet<VaultRecord>('vault', at)
   // Gone since the caller checked: another tab finished or discarded it. Not proof it never
@@ -742,7 +762,9 @@ export async function recoverStaged(
     [key(network, identityId)],
   )
   if (raced) return { status: 'conflict' }
-  setUnlocked(network, opened.secret, opened.blobKeys)
+  // Adopted over an interactive unlock of this tab: its 12-hour lock carries over.
+  const unlockedAt = unlockedFor(network, identityId)?.at
+  setUnlocked(network, opened.secret, opened.blobKeys, { lockMarkerAt, ...(unlockedAt !== undefined ? { at: unlockedAt } : {}) })
   return {
     status: 'adopted',
     secret: opened.secret,
@@ -818,11 +840,13 @@ export function forgetPasskeyOutputs(): void {
  */
 export async function unlockWithProtection(network: Network, identityId: string, protection: Protection): Promise<VaultSecret | null> {
   assertDedicatedOrigin()
+  const lockMarkerAt = lockMarker()
   const record = await idbGet<VaultRecord>('vault', key(network, identityId))
   if (record === undefined) return null
   const opened = await openWith(network, record, protection, true)
   if (opened === null) return null
-  setUnlocked(network, opened.secret, opened.blobKeys)
+  const at = unlockedFor(network, identityId)?.at
+  setUnlocked(network, opened.secret, opened.blobKeys, { lockMarkerAt, ...(at !== undefined ? { at } : {}) })
   return opened.secret
 }
 
@@ -850,6 +874,7 @@ export async function storeInVault(
     readonly dropStagedKeyId?: number
   } = {},
 ): Promise<StoreOutcome> {
+  const lockMarkerAt = lockMarker()
   assertDedicatedOrigin()
   assertProtection(protection)
   const { identityId } = secret
@@ -899,7 +924,7 @@ export async function storeInVault(
   } finally {
     dataKey.fill(0)
   }
-  setUnlocked(network, secret, { storage: storageKey, encryption: encryptionKey })
+  setUnlocked(network, secret, { storage: storageKey, encryption: encryptionKey }, { lockMarkerAt })
   return {
     storageSettingsDropped: hadBlob && carried === null,
     encryptionKeyDropped: hadEnc && carriedEnc === null,
@@ -932,8 +957,13 @@ export async function readStorageBlob(network: Network, identityId: string): Pro
 export async function writeStorageBlob(network: Network, identityId: string, value: unknown): Promise<void> {
   assertDedicatedOrigin()
   const k = unlockedStorageKey(network, identityId)
-  if (k === null) throw new VaultLockedError('unlock with a stored key to save storage settings')
+  if (k === null) throw new VaultLockedError(unlockScope(network, identityId) === 'signing' ? 'unlock this tab to save storage settings' : 'unlock with a stored key to save storage settings')
   await idbPut('vault', storageBlobKey(network, identityId), await sealBlob(k, network, identityId, value))
+}
+
+/** Whether storage settings are sealed beside the record of (network, identity) (no secrets read). */
+export async function hasStorageBlob(network: Network, identityId: string): Promise<boolean> {
+  return (await idbGet<StorageBlob>('vault', storageBlobKey(network, identityId))) !== undefined
 }
 
 /** Whether wallet grants are sealed beside the record of (network, identity) (no secrets read). */
@@ -949,7 +979,9 @@ export async function addExtraKey(network: Network, identityId: string, extra: E
   assertDedicatedOrigin()
   const k = unlockedStorageKey(network, identityId)
   const current = unlocked
-  if (k === null || current === null) throw new VaultLockedError('unlock this browser\'s key first')
+  if (k === null || current === null) {
+    throw new VaultLockedError(unlockScope(network, identityId) === 'signing' ? 'unlock this tab first (Sign in → Unlock): wallet grants are not kept across reloads' : 'unlock this browser\'s key first')
+  }
   // Newest first, deduped by key id. An older grant for the same contract is kept, not dropped:
   // a revoke must still be able to disable it (a disabled one falls out at the next unlock).
   const next = [extra, ...(current.secret.extra ?? []).filter((e) => e.keyId !== extra.keyId)]
@@ -970,6 +1002,7 @@ async function readExtraKeys(network: Network, identityId: string, storageKey: C
 
 function unlockedStorageKey(network: Network, identityId: string): CryptoKey | null {
   if (unlockedSecret(network, identityId) === null) return null
+  // A resumed session holds the signing key only: storage settings need an interactive unlock.
   return unlocked?.blobKeys?.storage ?? null
 }
 
@@ -1033,6 +1066,7 @@ export async function unlockWithPasskey(network: Network, identityId: string, no
  */
 async function unlockWith(network: Network, identityId: string, method: { passphrase: string } | 'passkey', note?: PasskeyPromptNote): Promise<VaultSecret> {
   assertDedicatedOrigin()
+  const lockMarkerAt = lockMarker()
   const main = await idbGet<VaultRecord>('vault', key(network, identityId))
   const staged = await idbGet<VaultRecord>('vault', stagedKey(network, identityId))
   const kind = method === 'passkey' ? 'passkey' : 'passphrase'
@@ -1049,7 +1083,9 @@ async function unlockWith(network: Network, identityId: string, method: { passph
     }
     const opened = await openRecord(network, record, method, record === main)
     if (opened !== null) {
-      setUnlocked(network, opened.secret, opened.blobKeys)
+      // An interactive unlock over a resumed session keeps its first unlock's 12-hour lock.
+      const at = unlockedFor(network, identityId)?.at
+      setUnlocked(network, opened.secret, opened.blobKeys, { lockMarkerAt, ...(at !== undefined ? { at } : {}) })
       return opened.secret
     }
   }
@@ -1111,16 +1147,33 @@ interface BlobKeys {
  * The unlocked secret and, for a vault-stored key, its blob keys; for a tab-only session, the
  * encryption key sealed under a random per-session key. Module memory only.
  */
-let unlocked: {
+interface Unlocked {
   network: Network
   secret: VaultSecret
   at: number
   blobKeys: BlobKeys | null
   /** Tab-only sessions: the encryption key, sealed under a random per-session key. */
   sessionEnc?: { key: CryptoKey; blob: EncryptionBlob | null }
-} | null = null
+  /**
+   * `signing`: picked up from a kept session. Only the limited signing key is here; the
+   * encryption key, storage settings and wallet grants need an interactive unlock
+   * ({@link unlockScope}). `full`: an interactive unlock (or a pasted key).
+   */
+  scope: 'full' | 'signing'
+  /** The lock marker when this unlock began: a lock anywhere since refuses to keep it. */
+  lockMarkerAt: number
+}
+let unlocked: Unlocked | null = null
+
+/** This tab's unlock when it is for (network, identity), else null (no expiry check). */
+function unlockedFor(network: Network, identityId: string): Unlocked | null {
+  return unlocked?.network === network && unlocked.secret.identityId === identityId ? unlocked : null
+}
 let lockTimer: ReturnType<typeof setTimeout> | null = null
+/** Bumped on every lock: work that started before one must not open a session after it. */
+let lockGeneration = 0
 const lockListeners = new Set<() => void>()
+const keptListeners = new Set<() => void>()
 
 /** Be told when the vault locks (auto-lock, sign-out). Returns an unsubscribe function. */
 export function onVaultLock(listener: () => void): () => void {
@@ -1130,13 +1183,36 @@ export function onVaultLock(listener: () => void): () => void {
   }
 }
 
-function setUnlocked(network: Network, secret: VaultSecret, blobKeys: BlobKeys | null = null): void {
+/** Be told when another tab kept an unlocked session (a locked tab can pick it up). */
+export function onSessionKept(listener: () => void): () => void {
+  keptListeners.add(listener)
+  return () => {
+    keptListeners.delete(listener)
+  }
+}
+
+/** The current lock generation: compare before and after async work to spot a lock in between. */
+export function vaultLockGeneration(): number {
+  return lockGeneration
+}
+
+/**
+ * `at`: when the unlock happened (a resumed session keeps its first unlock's: one 12-hour lock).
+ * `lockMarkerAt`: the lock marker read when the unlock began (a lock since refuses the keep).
+ */
+function setUnlocked(
+  network: Network,
+  secret: VaultSecret,
+  blobKeys: BlobKeys | null = null,
+  opts: { scope?: 'full' | 'signing'; at?: number; lockMarkerAt?: number } = {},
+): void {
   // Another identity (or network) takes over: the previous one's private-repo sessions end.
   const switched = unlocked !== null && (unlocked.network !== network || unlocked.secret.identityId !== secret.identityId)
-  unlocked = { network, secret, at: Date.now(), blobKeys }
+  const at = opts.at ?? Date.now()
+  unlocked = { network, secret, at, blobKeys, scope: opts.scope ?? 'full', lockMarkerAt: opts.lockMarkerAt ?? lockMarker() }
   if (switched) notifyEncryptionKeyChange()
   if (lockTimer) clearTimeout(lockTimer)
-  lockTimer = setTimeout(lockVault, AUTO_LOCK_MS)
+  lockTimer = setTimeout(() => expire(network), Math.max(0, at + AUTO_LOCK_MS - Date.now()))
 }
 
 /**
@@ -1149,12 +1225,159 @@ export function holdForSession(network: Network, secret: VaultSecret): void {
 
 /** The unlocked secret for (network, identity), or null when locked or expired. */
 export function unlockedSecret(network: Network, identityId: string): VaultSecret | null {
-  if (!unlocked || unlocked.network !== network || unlocked.secret.identityId !== identityId) return null
-  if (Date.now() - unlocked.at > AUTO_LOCK_MS) {
-    lockVault()
+  const u = unlockedFor(network, identityId)
+  if (u === null) return null
+  if (Date.now() - u.at >= AUTO_LOCK_MS) {
+    expire(network)
     return null
   }
-  return unlocked.secret
+  return u.secret
+}
+
+/**
+ * How much of the vault this tab holds open for (network, identity): `full` after an
+ * interactive unlock, `signing` for a session picked up from a kept one (the limited key only),
+ * null when locked.
+ */
+export function unlockScope(network: Network, identityId: string): 'full' | 'signing' | null {
+  return unlockedSecret(network, identityId) === null ? null : unlocked!.scope
+}
+
+// ---------------------------------------------------------------------------
+// Keeping the signing key across reloads and tabs (`./session-resume.ts`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Keep this tab's limited signing key of (network, identity) for later page loads and other
+ * tabs, with the public session facts `hint`. Only the main limited key is kept, and only when it
+ * has a budget and an expiry on chain (`limited`): never a wallet's unlimited key, the encryption
+ * key, the storage settings or wallet grants. Nothing is kept for a pasted key, when "Stay signed
+ * in for public repos" is off, in a framed page, on a shared origin, or when a lock happened
+ * anywhere since this unlock began. The absolute expiry stays the one of the first unlock.
+ */
+export async function keepUnlocked(network: Network, identityId: string, limited: boolean, hint: unknown): Promise<void> {
+  const u = unlockedFor(network, identityId)
+  if (u === null || u.secret.keyId < 0) return
+  if (!limited || askToUnlockEveryVisit() || framed() || sharedOriginProblem() !== null) return
+  // A pasted key has no vault record; only a key this vault stores is kept.
+  if ((await storedKeyId(network, identityId)) !== u.secret.keyId) return
+  const generation = lockGeneration
+  const ok = await saveResume(network, { identityId, keyId: u.secret.keyId, wif: u.secret.wif }, u.at + KEPT_TTL_MS, hint, u.lockMarkerAt)
+  // A lock landed while it was written: it must not survive (the lock's own wipe may have run first).
+  if (ok && generation !== lockGeneration) await wipeResume()
+}
+
+/**
+ * Pick up the signing key an earlier page load kept (a reload, a new tab), unlocked until the
+ * ORIGINAL 12-hour lock with scope `signing`. Null (and nothing kept any more) when there is
+ * nothing to pick up: nothing kept, expired (absolute, or 4 h idle), locked since, "Stay signed in"
+ * off, a record replaced since (renewed, forgotten), a copy that does not open, or a staged key
+ * renewal waiting for recovery (D-016: only an interactive unlock can adopt it). The expiry is
+ * checked before anything is unwrapped.
+ */
+export async function resumeVault(network: Network): Promise<{ secret: VaultSecret; hint: unknown } | null> {
+  if (sharedOriginProblem() !== null || framed()) return null
+  if (askToUnlockEveryVisit()) {
+    await wipeResume()
+    return null
+  }
+  const generation = lockGeneration
+  const markerAtStart = lockMarker()
+  const kept = await loadResume(network)
+  if (kept === null) return null
+  const current = (await storedKeyId(network, kept.identityId)) === kept.keyId && !(await hasStaged(network, kept.identityId))
+  const opened = current ? await openResume(kept) : null
+  if (opened === null) {
+    await wipeResume()
+    return null
+  }
+  // Locked (here or in another tab), or unlocked some other way, while this ran: that wins.
+  if (generation !== lockGeneration || lockMarker() !== markerAtStart || unlocked !== null || keptExpired(kept)) return null
+  const secret: VaultSecret = opened
+  setUnlocked(network, secret, null, { scope: 'signing', at: kept.expiresAt - KEPT_TTL_MS, lockMarkerAt: markerAtStart })
+  noteSessionUse(network)
+  return { secret, hint: kept.hint }
+}
+
+/** The key id a kept session holds for `network`, or null (none, or not usable any more). */
+export async function keptKeyId(network: Network): Promise<{ identityId: string; keyId: number } | null> {
+  const kept = await loadResume(network)
+  return kept === null ? null : { identityId: kept.identityId, keyId: kept.keyId }
+}
+
+/** The key id of the stored (main) record of (network, identity), or null when none. */
+export async function storedKeyId(network: Network, identityId: string): Promise<number | null> {
+  return (await idbGet<VaultRecord>('vault', key(network, identityId)))?.keyId ?? null
+}
+
+/** The kept session was used (a signature, the user active): its idle limit counts from now. */
+export function noteSessionUse(network: Network): void {
+  if (unlocked !== null) void touchResume(network).catch(() => undefined)
+}
+
+export { askToUnlockEveryVisit, setAskToUnlockEveryVisit } from './session-resume'
+
+let watching = false
+
+/**
+ * Follow the other tabs of this origin (once per page): a lock in any of them locks this one; a
+ * session kept in another one is announced to {@link onSessionKept}.
+ */
+export function watchOtherTabs(network: Network): void {
+  if (watching || typeof window === 'undefined') return
+  watching = true
+  window.addEventListener('storage', (e) => applyOtherTabEvent(e.key))
+  // The user coming back to a tab is use: the kept session's idle limit counts from then.
+  let lastTouch = 0
+  window.addEventListener('focus', () => {
+    if (Date.now() - lastTouch < 5 * 60_000) return
+    lastTouch = Date.now()
+    noteSessionUse(network)
+  })
+}
+
+/** React to another tab's localStorage change (`changed`: its key; null when storage was cleared). */
+export function applyOtherTabEvent(changed: string | null): void {
+  if (changed === LOCKED_AT_KEY || changed === null) {
+    releaseUnlocked()
+    // A copy this tab was writing as the lock landed must go too (the locking tab's wipe may
+    // have run before it).
+    void wipeResume().catch(() => undefined)
+  } else if (changed === SAVED_AT_KEY) {
+    for (const l of keptListeners) l()
+  }
+}
+
+/**
+ * The 12 hours are up: this tab locks, and the kept copy goes when it has expired too. When
+ * another tab unlocked since (a newer copy, not expired), the listeners pick that one up.
+ */
+function expire(network: Network): void {
+  releaseUnlocked()
+  void loadResume(network)
+    .then((kept) => {
+      if (kept !== null) for (const l of keptListeners) l()
+    })
+    .catch(() => undefined)
+}
+
+/**
+ * Forget the unlocked secret in THIS tab only: the kept session and the other tabs stay. Used
+ * after a sign-in step that did not finish (a failed read, an abandoned identity creation), for
+ * a key superseded by another tab's renewal, and by every lock ({@link lockVault}, another tab's
+ * lock, expiry).
+ */
+export function releaseUnlocked(): void {
+  // A recent passkey PRF output reopens the whole vault with no gesture: it goes with the unlock.
+  wipePrfCache()
+  const wasUnlocked = unlocked !== null
+  unlocked = null
+  lockGeneration++
+  if (lockTimer) clearTimeout(lockTimer)
+  lockTimer = null
+  if (wasUnlocked) for (const l of lockListeners) l()
+  // Every private-repo session ends with the vault (its keys were opened with this unlock).
+  if (wasUnlocked) notifyEncryptionKeyChange()
 }
 
 // ---------------------------------------------------------------------------
@@ -1228,7 +1451,7 @@ function notifyEncryptionKeyChange(): void {
 /** The tab-only session's encryption slot for (network, identity), or undefined. */
 function sessionEncFor(network: Network, identityId: string): { key: CryptoKey; blob: EncryptionBlob | null } | undefined {
   // Not `unlockedSecret()`: that one auto-locks an expired session, which a read must not do.
-  return unlocked?.network === network && unlocked.secret.identityId === identityId ? unlocked.sessionEnc : undefined
+  return unlockedFor(network, identityId)?.sessionEnc
 }
 
 /**
@@ -1239,7 +1462,10 @@ export async function storedEncryptionKeyId(network: Network, identityId: string
   const session = sessionEncFor(network, identityId)
   if (session !== undefined) return session.blob?.keyId ?? null
   // Unlocked for this identity by a tab-only key: a vault blob it cannot open does not count.
-  if (unlocked?.network === network && unlocked.secret.identityId === identityId && unlocked.blobKeys === null) return null
+  // (A resumed signing-only session has no blob keys either, but the blob is its own: it counts,
+  // and using it asks for an interactive unlock.)
+  const u = unlockedFor(network, identityId)
+  if (u !== null && u.blobKeys === null && u.scope === 'full') return null
   const blob = await idbGet<EncryptionBlob>('vault', encryptionBlobKey(network, identityId))
   return blob?.keyId ?? null
 }
@@ -1252,6 +1478,9 @@ export async function storedEncryptionKeyId(network: Network, identityId: string
 export async function storeEncryptionKey(network: Network, identityId: string, keyId: number, secret: Uint8Array): Promise<void> {
   assertDedicatedOrigin()
   if (unlockedSecret(network, identityId) === null || unlocked === null) throw new VaultLockedError('unlock this browser first')
+  // A resumed signing-only tab has no blob keys either, but its vault does: seal there after an
+  // interactive unlock, never into this tab's memory (it would be lost on reload).
+  if (unlocked.scope === 'signing') throw new VaultLockedError('unlock this tab first: your encryption key is stored with the rest of the vault')
   if (unlocked.blobKeys === null) {
     // A tab-only session: sealed under a random key that lives as long as the session.
     const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
@@ -1278,7 +1507,10 @@ export async function removeEncryptionKey(network: Network, identityId: string):
 export async function withEncryptionKey<T>(network: Network, identityId: string, use: (keyId: number, secret: Uint8Array) => Promise<T>): Promise<T> {
   const src = await encryptionSource(network, identityId)
   if (src === null) {
-    throw new VaultLockedError(unlockedSecret(network, identityId) === null ? 'unlock this browser to read private repos' : 'no encryption key is stored in this browser')
+    const scope = unlockScope(network, identityId)
+    throw new VaultLockedError(
+      scope === null ? 'unlock this browser to read private repos' : scope === 'signing' ? 'unlock to use your encryption key in this tab' : 'no encryption key is stored in this browser',
+    )
   }
   const secret = await openEncryptionBlob(src.key, network, identityId, src.blob)
   try {
@@ -1288,14 +1520,15 @@ export async function withEncryptionKey<T>(network: Network, identityId: string,
   }
 }
 
-/** Forget the unlocked secret (sign-out, auto-lock). The stored record stays. */
+/**
+ * Lock (sign-out, Lock, forget, revoke, a key found disabled on chain): forget the unlocked
+ * secret here, delete the kept session, and lock every other tab. The stored record stays.
+ */
 export function lockVault(): void {
+  // First and synchronous: a reload racing the wipe below still refuses the kept session, and
+  // the storage event reaches the other tabs.
+  markLocked()
   wipePrfCache()
-  const wasUnlocked = unlocked !== null
-  unlocked = null
-  if (lockTimer) clearTimeout(lockTimer)
-  lockTimer = null
-  if (wasUnlocked) for (const l of lockListeners) l()
-  // Every private-repo session ends with the vault (its keys were opened with this unlock).
-  if (wasUnlocked) notifyEncryptionKeyChange()
+  releaseUnlocked()
+  void wipeResume().catch(() => undefined)
 }

@@ -27,8 +27,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertTriangle, RefreshCw, Smartphone } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
-import { PendingRenewalChoiceError, PendingRenewalLockedError } from '@/lib/auth/controller'
+import { PendingRenewalChoiceError, PendingRenewalLockedError, UnlockNeededError } from '@/lib/auth/controller'
 import { Button } from '@/components/ui/button'
+import { UnlockMore } from '@/components/auth/unlock-more'
 import { Field, Input } from '@/components/ui/input'
 import { Qr } from '@/components/ui/qr'
 import { ErrorBox, useProtection } from '@/components/auth/protection-fields'
@@ -60,7 +61,10 @@ function onMobile(): boolean {
 }
 
 export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDone: () => void; mode?: 'login' | 'grant'; contractId?: string }): JSX.Element {
-  const { adoptWalletKeys, addWalletGrant, identity, isLoading, vaults } = useAuth()
+  const { adoptWalletKeys, addWalletGrant, identity, isLoading, vaults, unlockScope } = useAuth()
+  // Read when the request starts (a scope change must not restart a running request).
+  const scopeRef = useRef(unlockScope)
+  scopeRef.current = unlockScope
   const forge = ACTIVE_NETWORK.v2
   const target = contractId ?? forge?.core ?? ''
   const [step, setStep] = useState<Step | null>(null)
@@ -96,6 +100,9 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
    * keeping its key (opened with `renewalUnlock` when given) for the next revoke to disable;
    * `drop`: give it up without its key.
    */
+  // A reloaded tab holds the signing key only: storing the wallet's keys over the stored key
+  // (carrying its grants and settings across) needs the vault open. Unlock, then carry on.
+  const [unlockFirst, setUnlockFirst] = useState<(() => void) | null>(null)
   const finish = async (discard: boolean, renewalUnlock?: { passphrase: string } | 'passkey', drop = false): Promise<void> => {
     const g = grant.current
     if (!protection || !g) return
@@ -114,6 +121,10 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
     } catch (e) {
       if (e instanceof PendingRenewalChoiceError) setPendingRenewal(e.message)
       else if (e instanceof PendingRenewalLockedError) setRenewalLocked({ message: e.message, methods: e.methods })
+      else if (e instanceof UnlockNeededError) setUnlockFirst(() => () => {
+        setUnlockFirst(null)
+        void finish(discard, renewalUnlock, drop)
+      })
       else setError(errorMessage(e))
     }
   }
@@ -128,6 +139,8 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
       try {
         if (!forge) throw new Error('Dash Forge is not deployed here')
         if (mode === 'grant' && !grantFor) throw new Error('Sign in (or unlock) first: the approval is added to the signed-in identity.')
+        // A grant is sealed with the vault: a reloaded (signing-only) tab unlocks first (below).
+        if (mode === 'grant' && scopeRef.current === 'signing') return
         const sdk = await connectPlatform(ACTIVE_NETWORK.network, (p) => !signal.aborted && setPreparing(PHASE_TEXT[p]))
         if (signal.aborted) return
         setPreparing('Finding the wallet login contract')
@@ -184,6 +197,10 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
 
   const restart = useCallback(() => setAttempt((a) => a + 1), [])
 
+  // A reloaded tab holds the signing key only; an approval is stored with the rest of the vault.
+  if (mode === 'grant' && unlockScope === 'signing') {
+    return <UnlockMore title="Unlock this tab to add the approval" testId="grant-unlock" />
+  }
   if (step?.kind === 'confirm') {
     const { profile } = step
     return (
@@ -269,6 +286,7 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
           </div>
         ) : null}
         {problem ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{problem}</p> : null}
+        {unlockFirst ? <UnlockMore title="Unlock this tab to finish signing in with your wallet" testId="wallet-unlock" then={unlockFirst} /> : null}
         <ErrorBox error={error} />
       </div>
     )

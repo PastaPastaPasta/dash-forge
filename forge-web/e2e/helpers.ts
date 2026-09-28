@@ -276,7 +276,8 @@ export function stateFile(name: string): string {
  */
 async function openSignIn(page: Page, ready: Locator): Promise<void> {
   for (let i = 0; ; i++) {
-    await page.getByRole('button', { name: /^sign in$/i }).first().click()
+    // "Sign in", or "Session locked — Unlock" when this browser holds a locked key.
+    await page.getByRole('banner').getByRole('button', { name: /^sign in$|unlock$/i }).first().click()
     try {
       await ready.waitFor({ state: 'visible', timeout: 10_000 })
       return
@@ -324,11 +325,19 @@ export async function signedIn(browser: Browser, name: string, path = '/'): Prom
   return page
 }
 
-/** After a reload: unlock the vault this context already holds. */
+/**
+ * After a page load: be signed in with the vault this context holds. The session an earlier
+ * page load kept is picked up by itself (no prompt); a locked one (a context restored from a
+ * saved state, whose wrapping key does not survive the copy) is unlocked with the passphrase.
+ */
 export async function unlock(page: Page): Promise<void> {
+  const pill = page.getByTestId('funds-pill')
+  const locked = page.getByRole('banner').getByTestId('session-unlock')
+  await expect(pill.or(locked).or(page.getByRole('banner').getByRole('button', { name: /^sign in$/i }))).toBeVisible({ timeout: 60_000 })
+  if (await pill.isVisible()) return
   const passphrase = page.getByLabel('Passphrase', { exact: true })
   await openSignIn(page, passphrase)
   await passphrase.fill(PASSPHRASE)
   await page.getByRole('button', { name: /^unlock$/i }).click()
-  await expect(page.getByTestId('funds-pill')).toBeVisible({ timeout: 60_000 })
+  await expect(pill).toBeVisible({ timeout: 60_000 })
 }

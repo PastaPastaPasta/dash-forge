@@ -14,10 +14,11 @@ import { choiceOf, policyFor, policyForRepo, policyProblem, withRepoPolicy, type
 import { errText } from '@/lib/storage/util'
 import { useStorageConfig } from '@/hooks/use-storage-config'
 import { Button } from '@/components/ui/button'
+import { UnlockMore } from '@/components/auth/unlock-more'
 import { PUSH_COST_DASH } from '@/lib/sdk/cost'
 
 export function RepoStoragePolicy({ repoId }: { repoId: string }): JSX.Element {
-  const { config, storable, save, error } = useStorageConfig()
+  const { config, storable, save, error, needsUnlock } = useStorageConfig()
   const override = config?.repoPolicies[repoId] ?? null
   const effective = config ? policyForRepo(config, repoId) : null
   const [targets, setTargets] = useState<string[] | null>(null)
@@ -25,6 +26,7 @@ export function RepoStoragePolicy({ repoId }: { repoId: string }): JSX.Element {
   const [msg, setMsg] = useState<string | null>(null)
 
   if (error) return <p className="text-dense text-danger-700 dark:text-danger-400">{error}</p>
+  if (needsUnlock) return <UnlockMore title="Unlock to use your storage settings" testId="storage-unlock" />
   if (!config) {
     return (
       <p className="text-dense text-anvil-500 dark:text-anvil-400">
@@ -36,7 +38,7 @@ export function RepoStoragePolicy({ repoId }: { repoId: string }): JSX.Element {
     return (
       <p className="text-dense text-anvil-600 dark:text-anvil-300">
         No storage set up in this browser: browser pushes here would store packs on Platform at ~{PUSH_COST_DASH.perMib} DASH/MiB, asking first.{' '}
-        <Link href="/settings/storage" className="text-forge-700 underline dark:text-forge-400">Set up storage →</Link>
+        <Link href="/settings/storage/" className="text-forge-700 underline dark:text-forge-400">Set up storage →</Link>
       </p>
     )
   }

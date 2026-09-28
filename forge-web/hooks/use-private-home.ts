@@ -76,7 +76,7 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
   const repo = home?.repo ?? null
   const isPrivate = repo?.visibility === 'private'
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
-  const { identity } = useAuth()
+  const { identity, resuming, controller, unlockScope } = useAuth()
   // Re-resolve once every session closed (the vault locked, or the encryption key changed).
   const [epoch, setEpoch] = useState(0)
   useEffect(() => onPrivateSessionsClosed(() => setEpoch((n) => n + 1)), [])
@@ -104,6 +104,9 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
       if (!members.some((m) => m.identity === identity)) return { ...base, private: { access: 'outsider' } }
       const ops = await encryptionOps(sdk!, network, identity, base.repo.forge.core)
       if (ops === null) return { ...base, private: { access: 'no-key' } }
+      // A session picked up after a reload holds the signing key only: the encryption key needs
+      // an interactive unlock in this tab first.
+      if (controller.unlockScope() === 'signing') return { ...base, private: { access: 'locked' } }
       const session = await loadPrivateSessionCached(sdk!, base.repo, network, identity, sessionUnwrapper(ops))
       const decrypted = await loadPrivateHome(sdk!, base, session)
       // A lock while this ran ended the session: nothing decrypted may be kept or shown.
@@ -113,9 +116,11 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
       warm.set(key, decrypted)
       return decrypted
     },
-    [key, ready, epoch, revision],
+    // An unlock in this tab (inline, or from the sign-in sheet) re-resolves the repo.
+    [key, ready, epoch, revision, unlockScope],
     {
-      enabled: isPrivate && ready && sdk !== null && home !== null,
+      // A kept session is still being picked up: wait, rather than show the signed-out state.
+      enabled: isPrivate && ready && sdk !== null && home !== null && !resuming,
       initial: () => {
         const hit = warm.get(key)
         return hit !== undefined && hit.private?.access === 'member' && !hit.private.session.closed ? hit : undefined

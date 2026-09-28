@@ -48,7 +48,7 @@ const short = (refName: string): string => refName.replace(/^refs\/heads\//, '')
 export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const repo = home.repo
   const { sdk, ready } = useSdk()
-  const { identity, signer } = useAuth()
+  const { identity, signer, locked } = useAuth()
   const guard = useWriteGuard()
   const router = useRouter()
   const draftIntent = useIntent()
@@ -297,7 +297,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
               disabled={blocked || guard.disabledReason !== null}
               title={guard.disabledReason ?? undefined}
             >
-              {identity ? (asDraft ? 'Create draft pull request' : 'Create pull request') : 'Sign in to create'}
+              {identity ? (asDraft ? 'Create draft pull request' : 'Create pull request') : locked ? 'Unlock to create' : 'Sign in to create'}
             </Button>
           </div>
         </div>

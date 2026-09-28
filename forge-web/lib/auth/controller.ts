@@ -63,9 +63,20 @@ import {
   forgetVault,
   hasExtraKeys,
   holdForSession,
+  keepUnlocked,
   listVaults,
   lockVault,
+  onSessionKept,
   onVaultLock,
+  keptKeyId,
+  noteSessionUse,
+  releaseUnlocked,
+  resumeVault,
+  setAskToUnlockEveryVisit,
+  storedKeyId,
+  unlockScope,
+  vaultLockGeneration,
+  watchOtherTabs,
   clearSignedWrites,
   storeInVault,
   stageInVault,
@@ -120,6 +131,22 @@ export interface AuthSession {
   readonly heldOnly?: readonly number[]
 }
 
+/**
+ * A write needs something a resumed (signing-only) tab does not hold: a wallet grant. The UI
+ * opens Unlock; after it the write can be retried.
+ */
+export class UnlockNeededError extends WriteAuthError {
+  constructor(message = 'Unlock this tab to use your wallet approvals: after a reload only the spend-capped key is kept.') {
+    super(message)
+    this.name = 'UnlockNeededError'
+  }
+}
+
+/** What a master-key action says when this tab resumed a signing-only session. */
+const FULL_UNLOCK_NEEDED =
+  "Unlock this tab first: after a reload only the spend-capped key is kept, and this change must also carry over (or disable) your wallet approvals, storage settings and encryption key."
+
+
 /** A write to a Forge contract no key of this session covers: ask the wallet for that grant. */
 export class MissingGrantError extends WriteAuthError {
   constructor(readonly contractId: string) {
@@ -137,6 +164,13 @@ export interface AuthState {
   readonly notice?: string | null
   /** The step a running sign-in is on ("Registering the key on Platform"), for the sheet. */
   readonly step?: string | null
+  /** A session kept by an earlier page load may still be picked up (see `resume()`). */
+  readonly resuming: boolean
+  /**
+   * How much of the vault this tab holds open: `signing` after a reload picked up a kept session
+   * (public-repo writes only), `full` after an interactive unlock; null when signed out.
+   */
+  readonly scope?: 'full' | 'signing' | null
 }
 
 type Listener = (state: AuthState) => void
@@ -190,8 +224,42 @@ export function purgeLegacyKeystore(): void {
   }
 }
 
+/** The verified scopes of a session's keys: the main key, and extra grants by key id. */
+type Scopes = { readonly main: KeyScope | null; readonly extra: Map<number, KeyScope> }
+
+/** A kept session's public facts: the session and its keys' verified scopes. */
+interface SessionHint {
+  readonly session: AuthSession
+  readonly scopes: { readonly main: KeyScope | null; readonly extra: readonly (readonly [number, KeyScope])[] }
+}
+
+function isScope(v: unknown): v is KeyScope {
+  const s = v as Partial<KeyScope> | null
+  return typeof s === 'object' && s !== null && typeof s.core === 'boolean' && typeof s.collab === 'boolean' && typeof s.unbounded === 'boolean'
+}
+
+/**
+ * A kept session's hint, when it is well formed and belongs to the key it was kept with (else
+ * null: the session is re-verified before it shows).
+ */
+function parseHint(v: unknown, secret: VaultSecret, network: Network): { session: AuthSession; scopes: Scopes } | null {
+  const h = v as Partial<SessionHint> | null
+  const s = h?.session
+  if (typeof s !== 'object' || s === null || s.identityId !== secret.identityId || s.network !== network || s.storage !== 'vault' || s.keyId !== secret.keyId) return null
+  if (typeof s.balance !== 'string' || !/^\d+$/.test(s.balance)) return null
+  const main = h?.scopes?.main ?? null
+  const extra = h?.scopes?.extra
+  if ((main !== null && !isScope(main)) || !Array.isArray(extra)) return null
+  const pairs = extra.filter((e): e is [number, KeyScope] => Array.isArray(e) && typeof e[0] === 'number' && isScope(e[1]))
+  // An expired key opens no session: wait for the on-chain check (it signs out).
+  if (s.keyLimits?.expiresAt != null && s.keyLimits.expiresAt <= Date.now()) return null
+  return { session: s, scopes: { main, extra: new Map(pairs) } }
+}
+
 export class AuthController {
-  private state: AuthState = { session: null, isLoading: false, error: null }
+  // `resuming` until the first resume() settles: the header and write buttons wait for it
+  // instead of flashing "Sign in" to someone whose session is being picked up.
+  private state: AuthState = { session: null, isLoading: false, error: null, resuming: true }
   private readonly listeners = new Set<Listener>()
 
   constructor(
@@ -199,13 +267,56 @@ export class AuthController {
     private readonly network: Network = DEFAULT_NETWORK,
   ) {
     purgeLegacyKeystore()
-    // The 12-hour auto-lock ends the session too, so the UI offers Unlock instead of a
-    // signed-in header whose every write fails.
-    onVaultLock(() => {
+  }
+
+  /**
+   * Follow the vault's locks and the other tabs (call from an effect; returns the unsubscribe,
+   * so a discarded instance, as React StrictMode makes, holds no listener):
+   * - the 12-hour auto-lock or a lock in another tab ends the session, so the UI offers Unlock
+   *   instead of a signed-in header whose every write fails;
+   * - another tab kept a session: a locked tab picks it up; a tab still on a key that tab's
+   *   renewal replaced (same identity, another key id) drops its stale key and picks up the new
+   *   one, rather than finding the old key disabled and locking every tab (H3).
+   */
+  attach(): () => void {
+    const offLock = onVaultLock(() => {
       if (this.state.session?.storage === 'vault' || this.state.session?.storage === 'session') {
-        this.setState({ session: null })
+        this.setState({ session: null, scope: null })
       }
     })
+    const offKept = onSessionKept(() => {
+      void (async () => {
+        const session = this.state.session
+        if (session === null) {
+          if (!this.state.isLoading) await this.resume()
+          return
+        }
+        if (session.storage !== 'vault') return
+        const kept = await keptKeyId(this.network).catch(() => null)
+        if (kept !== null && kept.identityId === session.identityId && kept.keyId !== session.keyId) await this.supersede()
+      })()
+    })
+    watchOtherTabs(this.network)
+    return () => {
+      offLock()
+      offKept()
+    }
+  }
+
+  /** This tab's key was replaced by another tab's renewal: drop it here and pick up the new one. */
+  private async supersede(): Promise<void> {
+    this.abandonSignIn()
+    await this.resume()
+  }
+
+  /**
+   * Whether this tab's key for `identityId` is no longer the one this browser stores (another
+   * tab renewed it): then its failure on chain is expected, and no reason to lock other tabs.
+   */
+  private async superseded(identityId: string, keyId: number | undefined): Promise<boolean> {
+    if (keyId === undefined) return false
+    const stored = await storedKeyId(this.network, identityId).catch(() => null)
+    return stored !== null && stored !== keyId
   }
 
   getState(): AuthState {
@@ -345,13 +456,18 @@ export class AuthController {
       if (forge === null || (contractId !== forge.core && contractId !== forge.collab)) {
         throw new WriteAuthError(`this browser's key signs only Dash Forge writes${contractId ? ` (not ${contractId})` : ''}`)
       }
-      if (this.scopes.main && scopeCovers(this.scopes.main, forge, contractId)) return secret.wif
+      if (this.scopes.main && scopeCovers(this.scopes.main, forge, contractId)) {
+        noteSessionUse(network)
+        return secret.wif
+      }
       const extra = secret.extra?.find((e) => {
         if (e.holdOnly) return false
         const scope = this.scopes.extra.get(e.keyId)
         return scope !== undefined && scopeCovers(scope, forge, contractId)
       })
       if (extra) return extra.wif
+      // A resumed tab holds the limited key only: wallet grants open with an interactive unlock.
+      if (unlockScope(network, identityId) === 'signing') throw new UnlockNeededError()
       throw new MissingGrantError(contractId)
     }
     return { identityId, network, getSigningKeyWif: pick }
@@ -361,7 +477,7 @@ export class AuthController {
   private stepTimer = stepClock('sign-in')
 
   /** The verified scopes of the open session's keys (main, and extra grants by key id). */
-  private scopes: { main: KeyScope | null; extra: Map<number, KeyScope> } = { main: null, extra: new Map() }
+  private scopes: Scopes = { main: null, extra: new Map() }
 
   /** Vaults stored on this device for this network (for the unlock chooser). */
   storedVaults(): Promise<VaultInfo[]> {
@@ -393,13 +509,14 @@ export class AuthController {
    * Open a session for an unlocked secret: re-verify the key on chain, load balance + limits.
    * On failure the unlocked key is dropped again, so no key sits in memory without a session.
    */
-  private async open(secret: VaultSecret, storage: AuthSession['storage'], knownLimits?: KeyLimits, lockOnFailure = true): Promise<AuthSession> {
+  private async open(secret: VaultSecret, storage: AuthSession['storage'], knownLimits?: KeyLimits, releaseOnFailure = true): Promise<AuthSession> {
+    const generation = vaultLockGeneration()
     try {
       const sdk = await this.getSdk()
       const identity = await authSdk(sdk).identities.fetch(secret.identityId)
       if (!identity) throw new WriteAuthError(`identity ${secret.identityId} not found on ${this.network}`)
       const match = await findSigningKey(identity, secret.wif, this.network, SECURITY_LEVEL.HIGH)
-      if (!match) throw new KeyNotUsableError()
+      if (!match) throw keyFailure(identity, secret.keyId)
       const keyLimits = knownLimits ?? (await readKeyLimits(sdk, secret.identityId, match.keyId).catch(() => null))
       let extra: Pick<AuthSession, 'grants' | 'unlimited' | 'unbounded'> = {}
       if (storage === 'vault') {
@@ -421,12 +538,116 @@ export class AuthController {
         ...extra,
         ...(heldOnly.length ? { heldOnly } : {}),
       }
-      this.setState({ session })
+      // Locked (here or in another tab) while this ran: the lock wins.
+      if (generation !== vaultLockGeneration()) throw new VaultLockedError('this browser locked while signing in — unlock to continue')
+      this.setState({ session, scope: unlockScope(this.network, secret.identityId) })
+      if (storage === 'vault') void this.keep(session).catch(() => undefined)
       return session
     } catch (e) {
-      if (lockOnFailure) lockVault()
+      // Only positive evidence that the key is disabled or expired on chain ends the session in
+      // every tab (M1: a key a lagging node does not show yet is unknown), and not when another
+      // tab's renewal replaced it (H3). Anything else only drops what this attempt unlocked.
+      if (e instanceof KeyNotUsableError && e.definite && !(await this.superseded(secret.identityId, secret.keyId))) lockVault()
+      else if (releaseOnFailure) releaseUnlocked()
       throw e
     }
+  }
+
+  /**
+   * Keep the signing key for later page loads ("Stay signed in for public repos"): only a main
+   * key with a budget and an expiry on chain, never a wallet's unlimited key.
+   */
+  private async keep(session: AuthSession): Promise<void> {
+    // Only a key bounded to Forge's contracts: an unbounded one could sign on any contract.
+    const limited = session.keyLimits?.total != null && session.keyLimits.expiresAt != null && session.unlimited !== true && session.unbounded !== true
+    await keepUnlocked(this.network, session.identityId, limited, this.sessionHint(session))
+  }
+
+  /** What a later page load shows at once for a kept session (no key material). */
+  private sessionHint(session: AuthSession): SessionHint {
+    return { session, scopes: { main: this.scopes.main, extra: [...this.scopes.extra] } }
+  }
+
+  /**
+   * Pick up the session an earlier page load or another tab kept (see `vault.ts`
+   * {@link resumeVault}): shown at once from its hint, then re-verified on chain in the
+   * background. A key found disabled or expired locks every tab; a read that fails keeps the
+   * session (every write checks the key again before it signs). Resolves once the session shows,
+   * or with false when there was nothing to pick up.
+   */
+  resume(): Promise<boolean> {
+    // One at a time (StrictMode runs effects twice; a kept-session event can race the first).
+    this.resumeInFlight ??= this.resumeOnce().finally(() => {
+      this.resumeInFlight = null
+      if (this.state.resuming) this.setState({ resuming: false })
+    })
+    return this.resumeInFlight
+  }
+
+  private resumeInFlight: Promise<boolean> | null = null
+
+  private async resumeOnce(): Promise<boolean> {
+    if (this.state.session !== null) return false
+    // Bounded: a blocked or slow IndexedDB must not leave the header spinning (L4).
+    const kept = await withTimeout(resumeVault(this.network), PLATFORM_READ_MS, 'Reading the kept session').catch(() => null)
+    if (kept === null) return false
+    const { secret } = kept
+    const hint = parseHint(kept.hint, secret, this.network)
+    // No usable hint: show nothing signed in until the key is verified (bounded, as above).
+    if (hint === null) {
+      this.setState({ resuming: false })
+      return this.open(secret, 'vault').then(() => true, () => false)
+    }
+    // One update: the header never shows "Sign in" between the two. The background check
+    // replaces the hint's facts (balance, scopes) with what the chain says.
+    this.scopes = hint.scopes
+    this.setState({ session: hint.session, resuming: false, scope: 'signing' })
+    void this.open(secret, 'vault', undefined, false).catch(async (e: unknown) => {
+      if (!(e instanceof KeyNotUsableError)) return
+      // Replaced by another tab's renewal meanwhile: pick up the new key.
+      if (await this.superseded(secret.identityId, secret.keyId)) return this.supersede()
+      if (!e.definite) return
+      // open() already locked every tab; drop what is shown.
+      this.setState({ session: null, scope: null, notice: `Signed out: ${errorMessage(e)}.` })
+    })
+    return true
+  }
+
+  /**
+   * How much of the vault this tab holds open: `signing` after a reload picked up a kept session
+   * (public-repo writes only; private repos, storage settings and wallet grants need
+   * {@link unlockMore}), `full` after an interactive unlock, null when signed out or locked.
+   */
+  unlockScope(): 'full' | 'signing' | null {
+    const session = this.state.session
+    return session === null ? null : unlockScope(this.network, session.identityId)
+  }
+
+  /**
+   * Open the rest of the vault in this tab (the encryption key, storage settings, wallet grants)
+   * after a reload picked up a signing-only session: one passkey gesture, or the passphrase. The
+   * result stays in this tab's memory only.
+   */
+  async unlockMore(method: { passphrase: string } | 'passkey'): Promise<AuthSession> {
+    const session = this.state.session
+    if (session === null) throw new VaultLockedError('sign in first')
+    return this.unlock(session.identityId, method)
+  }
+
+  /** Turn "Stay signed in for public repos" off (`on`: ask on every visit) or on (keeps now). */
+  async setAskToUnlockEveryVisit(on: boolean): Promise<void> {
+    await setAskToUnlockEveryVisit(on)
+    const session = this.state.session
+    if (!on && session?.storage === 'vault') await this.keep(session)
+  }
+
+  /**
+   * A sign-in that did not finish (an identity creation that failed or was cancelled): drop the
+   * key it unlocked in this tab. Other tabs keep their sessions.
+   */
+  abandonSignIn(): void {
+    releaseUnlocked()
+    this.setState({ session: null })
   }
 
   /**
@@ -449,6 +670,7 @@ export class AuthController {
         bounds?.$type === 'contractGroup'
           ? "this browser's key is bound to an old dash-forge contract group — renew it"
           : "this browser's key is bound to contracts outside Dash Forge",
+        true,
       )
     }
     const extraScopes = new Map<number, KeyScope>()
@@ -574,6 +796,7 @@ export class AuthController {
         }
       }
       if (!masterWif) throw new Error('no master key found')
+      this.requireFullUnlock(identityId)
       this.step("Checking this browser's stored keys")
       const previous = (await listVaults(this.network)).find((v) => v.identityId === identityId)
       // Found from the words, and this browser already holds a key for it: the user never saw
@@ -695,6 +918,7 @@ export class AuthController {
       if (!main) throw new Error('the wallet granted no key')
       const forge = NETWORKS[this.network].v2
       if (!forge) throw new Error(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
+      this.requireFullUnlock(identityId)
       const previous = (await listVaults(this.network)).find((v) => v.identityId === identityId && v.staged !== true)
       if (previous) await this.assertUnlockedIfWalletKeys(await this.getSdk(), identityId, previous.keyId)
       // An unfinished renewal here (D-016): the user chooses to finish it (unlock) or to carry
@@ -762,6 +986,7 @@ export class AuthController {
         throw new Error('sign in with this identity first')
       }
       if (!scopeCovers(key.scope, forge, requested)) throw new Error('the wallet granted a key that does not cover what was asked for; try again')
+      this.requireFullUnlock(identityId)
       await addExtraKey(this.network, identityId, toExtraKey(key, forge, requested))
       const secret = unlockedSecret(this.network, identityId)
       if (!secret) throw new VaultLockedError('unlock to continue')
@@ -771,8 +996,9 @@ export class AuthController {
         if (!opened.grants?.[want]) throw new Error('the granted key is not live on the identity yet')
         return opened
       } catch (e) {
-        // The grant is stored; keep the session that was working and say what failed.
-        this.setState({ session })
+        // The grant is stored; keep the session that was working (unless it locked meanwhile:
+        // never bring back a session whose key is gone) and say what failed.
+        if (unlockedSecret(this.network, identityId) !== null) this.setState({ session })
         throw new Error(`The approval was saved, but checking it on Platform failed (${errorMessage(e)}). It will be checked again when you next unlock.`)
       }
     })
@@ -814,8 +1040,9 @@ export class AuthController {
       if (finished) return this.open(finished, 'vault')
       const main = (await listVaults(this.network)).find((v) => v.identityId === identityId && v.staged !== true)
       if (main === undefined || secret.keyId !== main.keyId) {
-        // What opened is the staged key, not adopted: no session to open with it. Say why.
-        lockVault()
+        // What opened is the staged key, not adopted: no session to open with it. Say why. (Only
+        // this tab's attempt is dropped: another tab's session stays.)
+        releaseUnlocked()
         throw new VaultLockedError(stagedUnlockMessage(status, main !== undefined))
       }
       return this.open(secret, 'vault')
@@ -869,6 +1096,7 @@ export class AuthController {
    * on chain, unused, until it expires.
    */
   async abandonPendingRenewal(identityId: string, unlockWith?: { passphrase: string } | 'passkey'): Promise<void> {
+    if (unlockWith !== undefined) this.requireFullUnlock(identityId)
     await serialized(identityId, async () => {
       const pending = await stagedInfo(this.network, identityId)
       if (pending === null) return
@@ -961,13 +1189,30 @@ export class AuthController {
     const session = this.state.session
     if (!session) return
     const sdk = await this.getSdk()
-    const [balance, keyLimits] = await Promise.all([
-      readIdentityBalance(sdk, session.identityId),
+    const [identity, keyLimits] = await Promise.all([
+      authSdk(sdk).identities.fetch(session.identityId),
       session.keyId === undefined ? Promise.resolve(null) : readKeyLimits(sdk, session.identityId, session.keyId).catch(() => session.keyLimits ?? null),
     ])
     const current = this.state.session
     if (current?.identityId !== session.identityId) return
-    this.setState({ session: { ...current, balance: balance.toString(), keyLimits } })
+    // The same read shows whether this browser's key is still live. Disabled (revoked from
+    // another device) or expired on chain: the session ends in every tab, with the kept copy.
+    // Replaced by another tab's renewal: this tab picks up the new key (H3). Not shown by this
+    // node (it may lag): unknown, nothing changes (M1).
+    const secret = current.storage === 'vault' ? unlockedSecret(this.network, current.identityId) : null
+    if (identity && secret && !(await findSigningKey(identity, secret.wif, this.network, SECURITY_LEVEL.HIGH))) {
+      if (await this.superseded(current.identityId, current.keyId)) {
+        await this.supersede()
+        return
+      }
+      const failure = keyFailure(identity, secret.keyId)
+      if (failure.definite) {
+        lockVault()
+        this.setState({ session: null, notice: `Signed out: ${failure.message}.` })
+        return
+      }
+    }
+    this.setState({ session: { ...current, balance: (identity?.balance ?? 0n).toString(), keyLimits } })
   }
 
   /** Lock (keep the stored key; unlock to continue). The session ends with it. */
@@ -985,6 +1230,7 @@ export class AuthController {
     return this.run(async () => {
       const stored = (await listVaults(this.network)).find((v) => v.identityId === identityId)
       if (!stored) throw new Error('no key for this identity is stored here')
+      this.requireFullUnlock(identityId)
       const sdk = await this.getSdk()
       await this.assertUnlockedIfWalletKeys(sdk, identityId, stored.keyId)
       const masterWif = await this.masterWifFor(identityId, input)
@@ -1043,8 +1289,21 @@ export class AuthController {
   private unlockedVaultSecret(identityId: string): VaultSecret | null {
     const session = this.state.session
     if (session?.identityId !== identityId || session.storage !== 'vault') return null
+    // A resumed signing-only tab holds the main key without its wallet grants or blob keys: it
+    // must never stand in for an unlocked vault (a renewal would forget keys it cannot disable).
+    if (unlockScope(this.network, identityId) !== 'full') return null
     const secret = unlockedSecret(this.network, identityId)
     return secret && secret.keyId >= 0 ? secret : null
+  }
+
+  /**
+   * A master-key action on `identityId` (renew, revoke, a wallet login over the stored key,
+   * giving up a pending renewal) needs the whole vault open in this tab: a signing-only resumed
+   * session asks for the interactive unlock first ({@link UnlockNeededError}; the UI unlocks
+   * inline and carries on).
+   */
+  private requireFullUnlock(identityId: string): void {
+    if (unlockScope(this.network, identityId) === 'signing') throw new UnlockNeededError(FULL_UNLOCK_NEEDED)
   }
 
   /**
@@ -1150,10 +1409,29 @@ export class AlreadyStoredError extends Error {
 }
 
 export class KeyNotUsableError extends WriteAuthError {
-  constructor(message = "this browser's key is no longer usable on the identity (disabled or expired) — renew it") {
+  /**
+   * `definite`: the chain positively shows the key disabled or expired (every tab locks). False
+   * when the key is simply not shown (a node that has not seen a fresh registration yet), or when
+   * no usable key was found for another reason.
+   */
+  constructor(
+    message = "this browser's key is no longer usable on the identity (disabled or expired) — renew it",
+    readonly definite = false,
+  ) {
     super(message)
     this.name = 'KeyNotUsableError'
   }
+}
+
+/**
+ * Why `keyId` signs nothing on `identity`: disabled or expired on chain (definite), or not shown
+ * at all (unknown: a node behind).
+ */
+function keyFailure(identity: WasmIdentity, keyId: number): KeyNotUsableError {
+  const k = identity.publicKeys.find((x) => x.keyId === keyId)
+  if (k === undefined) return new KeyNotUsableError("this browser's key does not show on the identity yet — try again in a moment", false)
+  const expired = k.expiresAt !== undefined && k.expiresAt <= BigInt(Date.now())
+  return new KeyNotUsableError(undefined, k.disabledAt !== undefined || expired)
 }
 
 /**

@@ -4,7 +4,9 @@
  * useStorageConfig — the signed-in identity's storage configuration, read from and written to
  * the vault. Null while signed out or locked (the settings are sealed with the key; there is
  * nothing to show without it). A tab-only pasted key has no vault record, so it cannot store
- * settings; `storable` says so.
+ * settings; `storable` says so. After a reload picked up a signing-only session, stored settings
+ * stay sealed until an interactive unlock in this tab: `needsUnlock` says so (and writes that
+ * need them fall back to asking, never to "no storage set up").
  */
 
 import { useCallback } from 'react'
@@ -12,6 +14,7 @@ import { useCallback } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
 import { DEFAULT_NETWORK } from '@/lib/constants'
+import { hasStorageBlob } from '@/lib/auth/vault'
 import { EMPTY_STORAGE_CONFIG, discardStorageConfig, loadStorageConfig, saveStorageConfig, type StorageConfig } from '@/lib/storage'
 
 export interface StorageConfigState {
@@ -20,18 +23,28 @@ export interface StorageConfigState {
   readonly error: string | null
   /** Whether this session can store settings (a vault-stored key). */
   readonly storable: boolean
+  /** Settings are stored, but this tab resumed a signing-only session: unlock to use them. */
+  readonly needsUnlock: boolean
   save: (next: StorageConfig) => Promise<void>
   reload: () => void
   /** Delete stored settings this key cannot open, then reload (empty). */
   discard: () => Promise<void>
 }
 
+const NEEDS_UNLOCK = Symbol('needs-unlock')
+
 export function useStorageConfig(): StorageConfigState {
-  const { identity, storage } = useAuth()
+  const { identity, storage, controller, unlockScope } = useAuth()
   const storable = identity !== null && storage === 'vault'
-  const state = useAsync<StorageConfig>(
-    () => (storable ? loadStorageConfig(DEFAULT_NETWORK, identity) : Promise.resolve(EMPTY_STORAGE_CONFIG)),
-    [identity ?? '', storage ?? ''],
+  const state = useAsync<StorageConfig | typeof NEEDS_UNLOCK>(
+    async () => {
+      if (!storable) return EMPTY_STORAGE_CONFIG
+      if (controller.unlockScope() === 'signing') {
+        return (await hasStorageBlob(DEFAULT_NETWORK, identity)) ? NEEDS_UNLOCK : EMPTY_STORAGE_CONFIG
+      }
+      return loadStorageConfig(DEFAULT_NETWORK, identity)
+    },
+    [identity ?? '', storage ?? '', unlockScope ?? ''],
     { enabled: identity !== null },
   )
   const { reload } = state
@@ -48,5 +61,7 @@ export function useStorageConfig(): StorageConfigState {
     await discardStorageConfig(DEFAULT_NETWORK, identity)
     reload()
   }, [identity, reload])
-  return { config: identity === null ? null : state.data, loading: state.loading, error: state.error, storable, save, reload, discard }
+  const needsUnlock = state.data === NEEDS_UNLOCK
+  const config = identity === null || state.data === NEEDS_UNLOCK ? null : state.data
+  return { config, loading: state.loading, error: state.error, storable, needsUnlock, save, reload, discard }
 }

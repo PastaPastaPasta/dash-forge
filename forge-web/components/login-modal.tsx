@@ -32,7 +32,8 @@ import { FORGET_CONFIRM } from '@/components/keys-panel'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { NotDeployedState } from '@/components/ui/network-badge'
 import { BROWSER_KEY_DEFAULTS, masterMaterialFromFile } from '@/lib/auth'
-import { AlreadyStoredError } from '@/lib/auth/controller'
+import { AlreadyStoredError, UnlockNeededError } from '@/lib/auth/controller'
+import { UnlockMore } from '@/components/auth/unlock-more'
 import { Spinner } from '@/components/ui/states'
 import { walletLoginAvailable, walletSignInSupported } from '@/lib/auth/app-connect'
 import { ENCRYPTION_KEY_BLAST_RADIUS } from '@/lib/auth/encryption-key'
@@ -440,9 +441,16 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
         onStored(e.identityId)
         return
       }
+      // A reloaded tab holds the signing key only: a renewal must carry over (or disable) every
+      // key and setting this vault holds, so unlock it here first, then carry on.
+      if (e instanceof UnlockNeededError) {
+        setUnlockFirst(true)
+        return
+      }
       setError(errorMessage(e))
     }
   }
+  const [unlockFirst, setUnlockFirst] = useState(false)
 
   return (
     <div className="space-y-3">
@@ -513,6 +521,16 @@ function ImportView({ onDone, onStored }: { onDone: () => void; onStored: (ident
         {isLoading && step ? `${step}…` : <>Create this browser&apos;s key</>}
       </Button>
       {problem && (fileChosen || mnemonic !== '') ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{problem}</p> : null}
+      {unlockFirst ? (
+        <UnlockMore
+          title="Unlock this tab to renew its key"
+          testId="renew-unlock"
+          then={() => {
+            setUnlockFirst(false)
+            void submit()
+          }}
+        />
+      ) : null}
       <ErrorBox error={error} />
     </div>
   )

@@ -73,7 +73,7 @@ type Pending =
 
 export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: RepoAddress; number: number }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
-  const { identity, signer } = useAuth()
+  const { identity, signer, locked } = useAuth()
   const guard = useWriteGuard()
 
   // Just created here: a node that has not applied the block yet answers "not found", so keep
@@ -351,7 +351,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 disabled={composeBlock !== null || comment.trim() === '' || utf8Length(comment) > BODY_MAX || guard.disabledReason !== null}
                 title={guard.disabledReason ?? undefined}
               >
-                {identity ? 'Comment' : 'Sign in to comment'}
+                {identity ? 'Comment' : locked ? 'Unlock to comment' : 'Sign in to comment'}
               </Button>
             </div>
           </div>

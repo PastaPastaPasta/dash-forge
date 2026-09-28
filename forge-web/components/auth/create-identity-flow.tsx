@@ -226,8 +226,9 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
       storedKey.current = null
       onDone()
     } catch (e) {
-      // Never leave an unlocked key in memory without a session.
-      controller.logout()
+      // Drop the key this attempt unlocked in this tab (other tabs keep their sessions). A
+      // session already opened and kept by an earlier step stays kept: a reload picks it up.
+      controller.abandonSignIn()
       if (!isAbort(e)) {
         setError(errorMessage(e))
         setNotCreated(e instanceof IdentityNotCreatedError ? (e.retryable ? 'retry' : 'final') : null)

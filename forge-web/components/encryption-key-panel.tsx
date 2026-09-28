@@ -29,6 +29,7 @@ import {
 import { onEncryptionKeyChange, removeEncryptionKey, storedEncryptionKeyId } from '@/lib/auth/vault'
 import { errorMessage } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
+import { UnlockMore } from '@/components/auth/unlock-more'
 import { Field, Input, Textarea } from '@/components/ui/input'
 
 type Mode = 'file' | 'paste' | 'register'
@@ -37,7 +38,7 @@ type Mode = 'file' | 'paste' | 'register'
 const REGISTER_COST = '~0.0005 DASH'
 
 export function EncryptionKeyPanel(): JSX.Element | null {
-  const { identity, storage, controller } = useAuth()
+  const { identity, storage, controller, unlockScope } = useAuth()
   const { sdk, ready, network } = useSdk()
   const core = NETWORKS[network].v2?.core ?? null
   const [keyId, setKeyId] = useState<number | null | undefined>(undefined)
@@ -130,7 +131,11 @@ export function EncryptionKeyPanel(): JSX.Element | null {
         <KeyRound className="h-3.5 w-3.5" aria-hidden /> Private repos
       </h2>
       <p className="text-[12px] text-anvil-600 dark:text-anvil-300">{ENCRYPTION_KEY_BLAST_RADIUS}</p>
-      {keyId !== null && keyId !== undefined ? (
+      {unlockScope === 'signing' ? (
+        <div className="mt-3">
+          <UnlockMore title="Unlock this tab to manage your encryption key" testId="encryption-unlock" />
+        </div>
+      ) : keyId !== null && keyId !== undefined ? (
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
           <span className="text-dense" data-testid="encryption-key-stored">
             {storage === 'session'
