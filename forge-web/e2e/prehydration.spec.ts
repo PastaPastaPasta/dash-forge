@@ -44,7 +44,11 @@ async function countSheetOpens(page: Page): Promise<() => Promise<number>> {
   return () => page.evaluate(() => (window as unknown as { __sheetOpens: number }).__sheetOpens)
 }
 
-const signInButton = (page: Page) => page.getByRole('banner').getByRole('button', { name: /^sign in$/i })
+/**
+ * The header's sign-in button: before hydration the static page shows the session-check
+ * placeholder, then "Sign in" (or "Unlock"); each carries the sign-in intent.
+ */
+const signInButton = (page: Page) => page.getByRole('banner').locator('button[data-replay="sign-in"]')
 const sheet = (page: Page) => page.getByRole('dialog', { name: /sign in to dash forge/i })
 
 /** Tap Sign in before hydration on `path`, then let the app load: the sheet opens exactly once. */
@@ -56,13 +60,14 @@ async function tapBeforeHydration(page: Page, path: string): Promise<void> {
   await expect(signIn).toBeVisible()
   // The button itself is not hydrated: this is the click that used to be lost.
   expect(await signIn.evaluate((el) => Object.keys(el).some((k) => k.startsWith('__reactProps')))).toBe(false)
-  await signIn.click()
-  await expect(signIn).toHaveAttribute('aria-busy', 'true')
+  // A finger taps what it sees: the placeholder is inert (aria-disabled), not disabled, so the tap lands.
+  await signIn.click({ force: true })
+  await expect(signIn).toHaveAttribute('data-prehydrate-pending', '')
   release()
   await expect(sheet(page)).toBeVisible({ timeout: 60_000 })
   await page.waitForTimeout(1500)
   expect(await opens()).toBe(1)
-  await expect(signInButton(page)).not.toHaveAttribute('aria-busy', 'true')
+  await expect(signInButton(page)).not.toHaveAttribute('data-prehydrate-pending', '')
 }
 
 test.describe('a tap before hydration', () => {
@@ -118,12 +123,13 @@ test.describe('a tap before hydration', () => {
     })
     await page.goto('/explore/', { waitUntil: 'domcontentloaded' })
     const signIn = signInButton(page)
-    await signIn.click()
-    await expect(signIn).toHaveAttribute('aria-busy', 'true')
+    await signIn.click({ force: true })
+    await expect(signIn).toHaveAttribute('data-prehydrate-pending', '')
     fail()
-    // Well inside the 12 s timer: it is the load error that stops the catcher.
-    await expect(signIn).not.toHaveAttribute('aria-busy', 'true', { timeout: 3_000 })
-    expect(await signIn.getAttribute('data-prehydrate-pending')).toBeNull()
+    // Well inside the 12 s timer: it is the load error that stops the catcher, and the button's
+    // own busy state (the session check) is what remains.
+    await expect(signIn).not.toHaveAttribute('data-prehydrate-pending', '', { timeout: 3_000 })
+    expect(await signIn.getAttribute('aria-busy')).toBe('true')
   })
 
   test('a link is never caught: it navigates on its own', async ({ page }) => {

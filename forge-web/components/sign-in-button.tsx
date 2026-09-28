@@ -8,10 +8,11 @@
  * clickable, so a signed-in user never sees "Sign in" flash.
  */
 
-import { Lock } from 'lucide-react'
+import { Loader2, Lock } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { Button, type ButtonProps } from '@/components/ui/button'
+import { cn } from '@/lib/utils'
 
 export function SignInButton({
   size,
@@ -24,9 +25,15 @@ export function SignInButton({
   const common = { size, variant, className }
   // Until it is known whether this browser holds a key (a few ms), neither label.
   if (resuming || (!vaultsLoaded && vaultsError === null)) {
-    // In the static page this is what shows before the app hydrates: a tap on it is kept and
-    // opens the sheet once the app is up (lib/prehydration.ts, consumed in AppHeader).
-    return <Button {...common} loading aria-label="Checking this browser's session" data-replay="sign-in" />
+    // In the static page this is what shows before the app hydrates. It is inert rather than
+    // `disabled` (a disabled button fires no click at all): a tap on it is kept by the
+    // pre-hydration catcher and opens the sheet once the app knows the session
+    // (lib/prehydration.ts, acted on in AppHeader).
+    return (
+      <Button {...common} aria-disabled="true" aria-busy="true" aria-label="Checking this browser's session" data-replay="sign-in" className={cn(common.className, 'cursor-progress opacity-70')}>
+        <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
+      </Button>
+    )
   }
   if (locked) {
     return (

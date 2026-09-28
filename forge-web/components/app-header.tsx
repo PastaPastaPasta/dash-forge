@@ -12,6 +12,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Bell, ChevronDown, Compass, GitFork, Hammer, LogOut, Plus, Search, Wallet } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
+import { useUiStore } from '@/hooks/use-ui-store'
 import { useUnreadCount } from '@/hooks/use-inbox'
 import { addressFromParams, repoHref } from '@/hooks/use-query-param'
 import { SignInButton } from '@/components/sign-in-button'
@@ -57,15 +58,22 @@ function useSlashToSearch(): void {
 }
 
 export function AppHeader(): JSX.Element {
-  const { identity, balance, logout } = useAuth()
+  const { identity, balance, logout, resuming, vaultsLoaded, vaultsError } = useAuth()
+  const openLogin = useUiStore((s) => s.openLogin)
   useSlashToSearch()
-  // "Sign in" tapped before the app hydrated (lib/prehydration.ts): open the sheet now. Only
-  // while nobody is signed in: a session restored meanwhile needs no sheet.
+  // "Sign in" tapped before the app hydrated (lib/prehydration.ts): open the sheet once it is
+  // known whether this browser's kept session resumes. Taken on mount (so a later sign-out never
+  // reopens it) and acted on once the session check settles: a session that resumed needs no sheet.
+  const tapped = useRef<boolean | null>(null)
   useEffect(() => {
-    if (consumePrehydrationIntent('sign-in') && identity === null) openLogin()
-    // Once, on mount: a later sign-out must not reopen it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    tapped.current = consumePrehydrationIntent('sign-in')
   }, [])
+  const settled = !resuming && (vaultsLoaded || vaultsError !== null)
+  useEffect(() => {
+    if (!settled || tapped.current !== true) return
+    tapped.current = false
+    if (identity === null) openLogin()
+  }, [settled, identity, openLogin])
 
   return (
     <header className="sticky top-0 z-40 border-b border-anvil-200 bg-anvil-50/85 backdrop-blur dark:border-anvil-800 dark:bg-anvil-950/85">
