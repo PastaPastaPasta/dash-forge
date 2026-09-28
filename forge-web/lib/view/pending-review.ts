@@ -135,6 +135,18 @@ export function splitDraftComments(d: ReviewDraft | null, headOid: string): { on
  * wrote. A node can return the review a block before its last comments, so the page keeps
  * re-reading until all of them show (seen live: one of two threads, until a reload).
  */
+/**
+ * The wait after a submit before the page stops re-reading and says what is still missing:
+ * 1.5 s, growing ×1.5 to 10 s at most, 9 times (about 60 s in all).
+ */
+export const SUBMIT_WAIT = { attempts: 9, delayMs: 1500, backoff: 1.5, maxDelayMs: 10_000 } as const
+
+/** How many of a submit's comments the page shows (the review itself aside). */
+export function commentsShown(thread: { readonly comments: readonly { readonly id: string }[] }, commentIds: readonly string[]): number {
+  const ids = new Set(thread.comments.map((c) => c.id))
+  return commentIds.filter((id) => ids.has(id)).length
+}
+
 export function reviewShows(
   thread: { readonly reviews: readonly { readonly id: string }[]; readonly comments: readonly { readonly id: string }[] },
   submitted: { readonly reviewId: string; readonly commentIds: readonly string[] },

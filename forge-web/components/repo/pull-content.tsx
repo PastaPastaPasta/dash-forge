@@ -84,7 +84,7 @@ import { headUpdatePhrases } from '@/lib/view/head-updates'
 import { inlineCommentIds, lineKey, repliesByRoot } from '@/lib/view/inline-threads'
 import { appliedSuggestions, prCommits, prHaveSet } from '@/lib/view/pr-commits'
 import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
-import { draftIsEmpty, draftWhereabouts, reviewShows } from '@/lib/view/pending-review'
+import { commentsShown, draftIsEmpty, draftWhereabouts, reviewShows, SUBMIT_WAIT } from '@/lib/view/pending-review'
 import { tipOidOf } from '@/lib/view/refs'
 import type { ReviewerCardRow } from '@/lib/view/review-fold'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
@@ -172,6 +172,8 @@ export function PullContent({
   // accumulate until one read satisfies them all, so two quick writes are both waited for; a newer
   // read aborts the older one's polling (useAsync discards its result anyway).
   const expectations = useRef<((t: PullThread) => boolean)[]>([])
+  // A longer wait asked for by the newest write (a submitted review), used for its reads.
+  const waitFor = useRef<{ attempts: number; delayMs: number; backoff: number; maxDelayMs: number } | null>(null)
   const current = useRef<{ aborted: boolean }>({ aborted: false })
   const { data, loading, error, reload } = useAsync<PullThread | null>(
     async () => {
@@ -181,16 +183,20 @@ export function PullContent({
       const want = [...expectations.current]
       const load = () => loadPullThread(sdk!, home.repo, number, network)
       const first = await retryWhileMissing(load, justCreated ? 8 : 0)
-      const t = first === null ? null : await readUntil(async () => (signal.aborted ? first : load()), want, { signal })
-      if (!signal.aborted && t !== null) expectations.current = expectations.current.filter((w) => !w(t))
+      const t = first === null ? null : await readUntil(async () => (signal.aborted ? first : load()), want, { ...(waitFor.current ?? {}), signal })
+      if (!signal.aborted && t !== null) {
+        expectations.current = expectations.current.filter((w) => !w(t))
+        if (expectations.current.length === 0) waitFor.current = null
+      }
       return t
     },
     [ready, repoKey(home.repo), number, network],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
   const refresh = useCallback(
-    (want?: (t: PullThread) => boolean) => {
+    (want?: (t: PullThread) => boolean, wait?: { attempts: number; delayMs: number; backoff: number; maxDelayMs: number }) => {
       if (want) expectations.current.push(want)
+      if (wait) waitFor.current = wait
       reload()
     },
     [reload],
@@ -214,7 +220,7 @@ function PullPage({
   home: RepoHome
   addr: RepoAddress
   thread: PullThread
-  refresh: (want?: (t: PullThread) => boolean) => void
+  refresh: (want?: (t: PullThread) => boolean, wait?: { attempts: number; delayMs: number; backoff: number; maxDelayMs: number }) => void
   refreshing: boolean
   reloadHome?: () => void
 }): JSX.Element {
@@ -314,6 +320,11 @@ function PullPage({
   const authorOrMember = identity !== null && (isAuthor || isMember)
   const canMoveHead = authorOrMember && open && !writeBlocked
   const since = pullSinceYourReview(thread, identity)
+  // A review this page just submitted: until every comment it wrote shows, say how many have.
+  const [arriving, setArriving] = useState<{ reviewId: string; commentIds: readonly string[] } | null>(null)
+  const arrivedAll = arriving !== null && reviewShows(thread, arriving)
+  if (arrivedAll) setArriving(null)
+  const stillArriving = arriving !== null && !arrivedAll && !refreshing ? { shown: commentsShown(thread, arriving.commentIds), total: arriving.commentIds.length } : null
 
   // ---- controls ---------------------------------------------------------------------------------
   const rules = policyOf(thread.approvals)
@@ -693,6 +704,16 @@ function PullPage({
           ) : null}
         </div>
       ) : null}
+      {stillArriving !== null ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-caution/40 bg-caution/5 px-4 py-2 text-dense" role="status" data-testid="review-arriving">
+          <span className="min-w-0 flex-1">
+            Your review is on Platform; {stillArriving.total - stillArriving.shown} of {stillArriving.total} of its comments are still arriving at the node this page reads.
+          </span>
+          <Button size="sm" variant="outline" onClick={() => arriving !== null && refresh((t) => reviewShows(t, arriving), SUBMIT_WAIT)}>
+            Refresh
+          </Button>
+        </div>
+      ) : null}
       {since !== null && open ? (
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-300 bg-anvil-50 px-4 py-3 text-dense dark:border-anvil-700 dark:bg-anvil-900" data-testid="since-your-review">
           <Eye className="h-4 w-4 text-anvil-600 dark:text-anvil-300" aria-hidden />
@@ -979,7 +1000,10 @@ function PullPage({
                     ensure={reviewDraft.ensure}
                     isMember={isMember}
                     lineExists={(path, side, line) => knownLines.current.get(path)?.has(lineKey(path, side, line)) ?? false}
-                    onSubmitted={(s) => refresh((t) => reviewShows(t, s))}
+                    onSubmitted={(s) => {
+                      setArriving(s)
+                      refresh((t) => reviewShows(t, s), SUBMIT_WAIT)
+                    }}
                   />
                 ) : null
               }

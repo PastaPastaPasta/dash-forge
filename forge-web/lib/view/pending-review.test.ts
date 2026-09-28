@@ -9,7 +9,9 @@ import {
   partialSubmitMessage,
   reanchorDraft,
   removeDraftComment,
+  commentsShown,
   reviewShows,
+  SUBMIT_WAIT,
   setDraftVerdict,
   splitDraftComments,
   startSubmit,
@@ -107,5 +109,17 @@ describe('after a submit', () => {
     expect(reviewShows({ reviews: [{ id: 'R' }], comments: [{ id: 'c1' }] }, submitted)).toBe(false)
     expect(reviewShows({ reviews: [{ id: 'R' }], comments: [{ id: 'c2' }, { id: 'c1' }, { id: 'x' }] }, submitted)).toBe(true)
     expect(reviewShows({ reviews: [{ id: 'R' }], comments: [] }, { reviewId: 'R', commentIds: [] })).toBe(true)
+    expect(commentsShown({ comments: [{ id: 'c2' }, { id: 'x' }] }, ['c1', 'c2'])).toBe(1)
+  })
+
+  it('waits about a minute in all, backing off', () => {
+    let total = 0
+    let wait: number = SUBMIT_WAIT.delayMs
+    for (let i = 0; i < SUBMIT_WAIT.attempts; i++) {
+      total += wait
+      wait = Math.min(SUBMIT_WAIT.maxDelayMs, wait * SUBMIT_WAIT.backoff)
+    }
+    expect(total).toBeGreaterThanOrEqual(50_000)
+    expect(total).toBeLessThanOrEqual(70_000)
   })
 })
