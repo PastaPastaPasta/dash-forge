@@ -14,7 +14,7 @@ Platform → write a bridge-format identity JSON
 
 It is a Node ≥ 20 ESM tool. The crypto/transaction/proof logic is ported from the
 `mainnet-bridge` browser app (`src/crypto`, `src/transaction`, `src/proof`,
-`src/api`, `src/platform`); Platform operations use `@dashevo/evo-sdk@4.2.0-beta.4`,
+`src/api`, `src/platform`); Platform operations use `@dashevo/evo-sdk@4.2.0-beta.5`,
 which runs natively under Node. The 4.2 SDK talks protocol 14 to devnet moutai
 and still negotiates protocol 13 with testnet, so one install serves both.
 

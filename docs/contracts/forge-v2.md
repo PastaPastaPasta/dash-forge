@@ -4,7 +4,7 @@ Two shared data contracts, **forge-core** and **forge-collab**, registered once 
 
 - Schemas: `forge-contracts/contracts/forge-core.json`, `forge-contracts/contracts/forge-collab.json`
 - Offline validation: `tools/contract-validate` (rs-dpp `v4.2.0-beta.5`, `PlatformVersion` 14)
-- Registration: `forge-contracts/scripts/deploy-v2.mjs` (evo-sdk `4.2.0-beta.4`)
+- Registration: `forge-contracts/scripts/deploy-v2.mjs` (evo-sdk `4.2.0-beta.5`)
 - Decision record: roadmap D-A (owner decision of 2026-09-24, reviewed by a protocol architect)
 
 ## 1. Why shared contracts
