@@ -46,8 +46,9 @@ import {
   MessageSquareDashed,
 } from 'lucide-react'
 
-import type { CommentView, PullThread, RepoHome, TimelineItem } from '@/lib/view'
-import { ACL_NAME, ARCHIVED_REASON, loadPullThread, policyOf, pullActions, timeAgo } from '@/lib/view'
+import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, loadPullThread, plural, policyOf, pullActions, timeAgo } from '@/lib/view'
+import { deleteBranchOffer, deleteBranchProblem } from '@/lib/view/pull-actions'
 import {
   addEvent,
   createComment,
@@ -56,6 +57,10 @@ import {
   eventFirsts,
   reviewFirsts,
   deleteComment,
+  readDefaultBranch,
+  shortBranch,
+  MERGE_METHODS,
+  writeRefUpdate,
   defineLabel,
   postTargetEvent,
   readViewerPermissions,
@@ -66,19 +71,20 @@ import {
   setTargetState,
   updateComment,
   updateTarget,
+  type RepoRef,
   type VerdictInput,
 } from '@/lib/repo'
 import { checksPhrase, newestCheckRuns, readCheckRunDocs, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
-import { headSync, readBranchState } from '@/lib/repo/source-branch'
-import type { EventKind, Holdings, RefState } from '@/lib/rules'
+import { headSync, readBranchState, readBranchTip } from '@/lib/repo/source-branch'
+import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
 import { linkedIssues, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview as Cost } from '@/lib/sdk'
 import { pullSinceYourReview } from '@/lib/view/issues-view'
 import { headUpdatePhrases } from '@/lib/view/head-updates'
-import { inlineCommentIds, lineKey } from '@/lib/view/inline-threads'
-import { prCommits, prHaveSet } from '@/lib/view/pr-commits'
+import { inlineCommentIds, lineKey, repliesByRoot } from '@/lib/view/inline-threads'
+import { appliedSuggestions, prCommits, prHaveSet } from '@/lib/view/pr-commits'
 import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
-import { draftIsEmpty, draftWhereabouts } from '@/lib/view/pending-review'
+import { commentsShown, draftIsEmpty, draftWhereabouts, reviewShows, SUBMIT_WAIT } from '@/lib/view/pending-review'
 import { tipOidOf } from '@/lib/view/refs'
 import type { ReviewerCardRow } from '@/lib/view/review-fold'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
@@ -105,6 +111,7 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { InlineCommentsProvider, type ThreadActions } from '@/components/repo/inline-comments'
 import { ReviewDrawer, useReviewDraft } from '@/components/repo/review-drawer'
+import { BranchCommitCost, IdentityNote, buildUpdateBranch, useSuggestions } from '@/components/repo/branch-commit-panel'
 import { PullMerge } from '@/components/repo/pull-merge'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
@@ -127,6 +134,13 @@ const VERDICT_TEXT: Readonly<Record<VerdictInput, string>> = {
   approve: 'Approve',
   requestChanges: 'Request changes',
   comment: 'Comment only',
+}
+
+/** What the confirm dialog says each verdict records: "Records an approval on …". */
+const VERDICT_RECORDS: Readonly<Record<VerdictInput, string>> = {
+  approve: 'an approval',
+  requestChanges: 'a request for changes',
+  comment: 'a comment-only review',
 }
 
 /** The write the confirm dialog is about to sign. */
@@ -165,6 +179,8 @@ export function PullContent({
   // accumulate until one read satisfies them all, so two quick writes are both waited for; a newer
   // read aborts the older one's polling (useAsync discards its result anyway).
   const expectations = useRef<((t: PullThread) => boolean)[]>([])
+  // A longer wait asked for by the newest write (a submitted review), used for its reads.
+  const waitFor = useRef<{ attempts: number; delayMs: number; backoff: number; maxDelayMs: number } | null>(null)
   const current = useRef<{ aborted: boolean }>({ aborted: false })
   const { data, loading, error, reload } = useAsync<PullThread | null>(
     async () => {
@@ -174,16 +190,20 @@ export function PullContent({
       const want = [...expectations.current]
       const load = () => loadPullThread(sdk!, home.repo, number, network)
       const first = await retryWhileMissing(load, justCreated ? 8 : 0)
-      const t = first === null ? null : await readUntil(async () => (signal.aborted ? first : load()), want, { signal })
-      if (!signal.aborted && t !== null) expectations.current = expectations.current.filter((w) => !w(t))
+      const t = first === null ? null : await readUntil(async () => (signal.aborted ? first : load()), want, { ...(waitFor.current ?? {}), signal })
+      if (!signal.aborted && t !== null) {
+        expectations.current = expectations.current.filter((w) => !w(t))
+        if (expectations.current.length === 0) waitFor.current = null
+      }
       return t
     },
     [ready, repoKey(home.repo), number, network],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
   const refresh = useCallback(
-    (want?: (t: PullThread) => boolean) => {
+    (want?: (t: PullThread) => boolean, wait?: { attempts: number; delayMs: number; backoff: number; maxDelayMs: number }) => {
       if (want) expectations.current.push(want)
+      if (wait) waitFor.current = wait
       reload()
     },
     [reload],
@@ -207,7 +227,7 @@ function PullPage({
   home: RepoHome
   addr: RepoAddress
   thread: PullThread
-  refresh: (want?: (t: PullThread) => boolean) => void
+  refresh: (want?: (t: PullThread) => boolean, wait?: { attempts: number; delayMs: number; backoff: number; maxDelayMs: number }) => void
   refreshing: boolean
   reloadHome?: () => void
 }): JSX.Element {
@@ -240,6 +260,21 @@ function PullPage({
   const open = pull.state.open
   const merged = pull.state.merged
   const target = { id: pull.id, number: pull.number }
+  /**
+   * Delete the PR's source branch in its repo (M7): a ref update to the null oid from the merged
+   * head. Refused (`deleteBranchProblem`) for the base or default branch, and when the branch
+   * moved past the head that was merged.
+   */
+  const deleteSourceBranch = async (src: RepoRef, refName: string, headOid: string): Promise<void> => {
+    if (!sdk || !signer) throw new Error('sign in to continue')
+    // Read again now (the config may have changed since the page loaded); a failed read refuses.
+    const defaultBranch = await readDefaultBranch(sdk, src).catch(() => null)
+    const tip = await readBranchTip(sdk, src, refName)
+    const problem = deleteBranchProblem({ refName, sameRepo: src.repoId === repo.repoId, baseRefName: pull.baseRefName, defaultBranch, headOid, tip })
+    if (problem !== null) throw new Error(problem)
+    if (tip === null) return
+    await writeRefUpdate(sdk, signer, src, { refName, newOid: '0'.repeat(headOid.length), prevOid: headOid }, { intent: `delete-branch:${src.repoId}:${refName}:${headOid}` })
+  }
 
   // ---- the comparison (Files changed, the tab counts, the commit list) -----------------------
   const spec = pullSpec(pull, home)
@@ -288,20 +323,31 @@ function PullPage({
     { enabled: ready && sdk !== null && open && pull.sourceRefName !== null && (!crossRepo || sourceRef !== null) },
   )
   const sync = sourceState.settled && !sourceState.error && pull.sourceRefName !== null ? headSync(pull.headOid, sourceState.data) : null
-  const canMoveHead = identity !== null && (isAuthor || isMember) && open && !writeBlocked
+  // The PR's author or a maintainer/writer: who may move the head, mark draft/ready, resolve and request.
+  const authorOrMember = identity !== null && (isAuthor || isMember)
+  const canMoveHead = authorOrMember && open && !writeBlocked
   const since = pullSinceYourReview(thread, identity)
+  // A review this page just submitted: until every comment it wrote shows, say how many have.
+  const [arriving, setArriving] = useState<{ reviewId: string; commentIds: readonly string[] } | null>(null)
+  const arrivedAll = arriving !== null && reviewShows(thread, arriving)
+  if (arrivedAll) setArriving(null)
+  const stillArriving = arriving !== null && !arrivedAll && !refreshing ? { shown: commentsShown(thread, arriving.commentIds), total: arriving.commentIds.length } : null
 
   // ---- controls ---------------------------------------------------------------------------------
   const rules = policyOf(thread.approvals)
+  const policyNow = rules.policy === 'unknown' ? null : rules.policy
+  // `requireChecks`: every trusted run on the head passed, and at least one reported.
+  const checksBlocking = policyNow?.requireChecks === true && (checkSummary === null || checkSummary.total === 0 || checkSummary.passed < checkSummary.total)
   const actions = pullActions({
     pull,
     viewer: identity,
     holdings: identity !== null && !holdings.settled ? 'loading' : holdings.data,
     protectedPatterns: home.config?.protectedPatterns ?? [],
     policy: rules.status,
+    checksBlocking,
   })
-  const base = pull.baseRefName || 'the base branch'
-  const canAuthorOrMember = identity !== null && (isAuthor || isMember) && !archived
+  const base = shortBranch(pull.baseRefName) || 'the base branch'
+  const canAuthorOrMember = authorOrMember && !archived
   const canMember = identity !== null && isMember && !archived && guard.disabledReason === null
 
   const [comment, setComment] = useState('')
@@ -327,6 +373,10 @@ function PullPage({
   const links: MarkdownLinks = useMemo(() => ({ issueHref: (n: number) => repoHref('/repo/issue', addr, { number: String(n) }) }), [addr])
 
   const eventCost = previewCreate(stateType, {}, eventFirst)
+  /** Confirm an event write (the route's price checked against the balance first). */
+  const confirmEvent = (p: Pending, cost: Cost = eventCost): void => {
+    if (guard.check(cost, 'collab')) setPending(p)
+  }
   const reviewDraft = useReviewDraft(repo, pull.id, pull.headOid)
   // The diff's lines, as the inline comments saw them load (re-anchoring a pending review).
   const knownLines = useRef<ReadonlyMap<string, ReadonlySet<string>>>(new Map())
@@ -336,18 +386,41 @@ function PullPage({
   const rememberLines = useCallback((lines: ReadonlyMap<string, ReadonlySet<string>>) => {
     knownLines.current = lines
   }, [])
-  const canResolve = identity !== null && (isAuthor || isMember) && !writeBlocked && guard.disabledReason === null
-  // Stable across renders (the diff's lines re-render only when these change): the handlers
-  // read the latest cost and guard through a ref.
-  const resolveCheck = useRef<() => boolean>(() => true)
-  resolveCheck.current = () => guard.check(eventCost.credits, 'collab')
+  // Suggestions and "Update branch": commits to the PR's source branch (the fork).
+  const applied = useMemo(() => appliedSuggestions(commits.data?.commits ?? []), [commits.data])
+  const suggest = useSuggestions({
+    repo,
+    source: sourceRef,
+    pull,
+    comments: thread.comments,
+    headReader,
+    headOnly: comparison.headOnly,
+    applied,
+    isMember,
+    isAuthor,
+    signedIn: identity !== null && guard.disabledReason === null && !archived,
+    onCommitted: (c) => refresh((t) => t.pull.headOid === c),
+  })
+  const sourceWrite = suggest.branchWrite
+  // The source repo's default branch (never deleted after a merge): the base repo's own config
+  // for a same-repo PR, else read once the merger could delete there.
+  const sourceDefault = useAsync(
+    async () => (sourceRef === null ? home.config?.defaultBranch ?? 'main' : await readDefaultBranch(sdk!, sourceRef)),
+    [ready, sourceRef?.repoId ?? '', home.config?.defaultBranch ?? '', sourceWrite.can],
+    { enabled: ready && sdk !== null && open && sourceWrite.can },
+  )
+  const canResolve = authorOrMember && !writeBlocked && guard.disabledReason === null
+  // Stable across renders (the diff's lines re-render only when these change): the handler
+  // reads the latest confirm (cost and guard) through a ref.
+  const confirmResolve = useRef(confirmEvent)
+  confirmResolve.current = confirmEvent
   const resolvedKey = review.resolvedThreads.join(',')
   const threadActions = useMemo<ThreadActions>(
     () => ({
       canResolve,
       resolved: new Set(resolvedKey === '' ? [] : resolvedKey.split(',')),
       onResolve: (root, resolve) => {
-        if (resolveCheck.current()) setPending({ kind: 'resolve', root, resolve })
+        confirmResolve.current({ kind: 'resolve', root, resolve })
       },
       viewer: identity,
       onEdit: (c, body) => setPending({ kind: 'edit-comment', id: c.id, body }),
@@ -486,9 +559,11 @@ function PullPage({
       case 'review':
         return composeCost(repo, 'review', { body: pending.body }, reviewFirst)
       case 'mark-merged':
+        return previewCreate('event')
       case 'label':
+        return previewCreate('event', { value: pending.label })
       case 'assign':
-        return previewCreate('event', pending.kind === 'label' ? { value: pending.label } : {})
+        return previewCreate('event', { value: pending.who })
       case 'dismiss':
         return previewCreate('event', { value: pending.reason })
       case 'define-label':
@@ -510,32 +585,11 @@ function PullPage({
   // ---- conversation ------------------------------------------------------------------------------
   // Replies to an inline thread show under its root, not on their own.
   const inlineIds = useMemo(() => new Set(inlineCommentIds(thread.comments)), [thread.comments])
-  const repliesOf = useMemo(() => {
-    // Under the thread's ROOT (a reply to a reply belongs to the same thread).
-    const byId = new Map(thread.comments.map((c) => [c.id, c]))
-    const rootOf = (id: string): string => {
-      let cur = byId.get(id)
-      const seen = new Set<string>()
-      while (cur !== undefined && cur.replyTo !== null && !seen.has(cur.id)) {
-        seen.add(cur.id)
-        const parent = byId.get(cur.replyTo)
-        if (parent === undefined) break
-        cur = parent
-      }
-      return cur?.id ?? id
-    }
-    const m = new Map<string, CommentView[]>()
-    for (const c of thread.comments) {
-      if (c.replyTo === null || !inlineIds.has(c.id)) continue
-      const root = rootOf(c.id)
-      m.set(root, [...(m.get(root) ?? []), c])
-    }
-    return m
-  }, [thread.comments, inlineIds])
+  // Under the thread's root (a reply to a reply belongs to the same thread).
+  const repliesOf = useMemo(() => repliesByRoot(thread.comments), [thread.comments])
   const conversation = timeline.filter((t) => !(t.kind === 'comment' && t.comment.replyTo !== null && inlineIds.has(t.comment.id)))
   const resolved = new Set(review.resolvedThreads)
-  const headWords = phrases.data
-  const eventText = (e: TimelineItem & { kind: 'event' }): string | null => (e.event.kind === 'headUpdate' && e.event.id ? headWords?.get(e.event.id) ?? null : null)
+  const eventText = (e: Event): string | null => (e.kind === 'headUpdate' && e.id ? phrases.data?.get(e.id) ?? null : null)
 
   const counts = {
     conversation: thread.comments.length + thread.reviews.length,
@@ -553,9 +607,12 @@ function PullPage({
         ? { label: 'Draft', icon: <GitPullRequestDraft className="h-4 w-4" aria-hidden />, bg: 'bg-anvil-600' }
         : { label: 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: 'bg-verify-700' }
   const linked = linkedIssues(pull.body)
+  // D-104: a merged PR's header says what happened ("2 commits merged into main"), not "wants to".
+  // Who signed the merge is in the timeline: the fold may have passed over earlier claims. A
+  // count only from a real comparison (not the first-parent fallback).
+  const mergedLead = counts.commits === null || cmp?.fellBack === true ? 'Merged' : `${plural(counts.commits, 'commit')} merged`
   const checkout = checkoutCommand(repo, pull.number)
   const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
-  const shortRef = (r: string): string => r.replace(/^refs\/heads\//, '')
 
   return (
     <div className="mx-auto max-w-6xl space-y-4" data-testid="pull-page">
@@ -598,14 +655,21 @@ function PullPage({
             {status.label}
           </span>
           <span className="text-anvil-500 dark:text-anvil-400">
-            <Author identityId={pull.author} link={false} /> wants to merge into <span className="font-mono">{shortRef(pull.state.baseRef ?? pull.baseRefName) || '?'}</span>
+            {merged ? (
+              `${mergedLead} into`
+            ) : (
+              <>
+                <Author identityId={pull.author} link={false} /> wants to merge into
+              </>
+            )}{' '}
+            <span className="font-mono">{shortBranch(pull.state.baseRef ?? pull.baseRefName) || '?'}</span>
             {pull.sourceRefName ? (
               <>
                 {' '}
-                from <span className="font-mono">{crossRepo && sourceRef ? `${sourceRef.name}:` : ''}{shortRef(pull.sourceRefName)}</span>
+                from <span className="font-mono">{crossRepo && sourceRef ? `${sourceRef.name}:` : ''}{shortBranch(pull.sourceRefName)}</span>
               </>
             ) : null}{' '}
-            · {timeAgo(pull.createdAt)}
+            · {merged ? `opened ${timeAgo(pull.createdAt)}` : timeAgo(pull.createdAt)}
           </span>
           {pull.headOid ? (
             <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400" data-testid="pr-head">
@@ -622,7 +686,7 @@ function PullPage({
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-forge-500/40 bg-forge-500/5 px-4 py-3 text-dense" data-testid="head-sync-banner">
           <RefreshCw className="h-4 w-4 text-forge-700 dark:text-forge-400" aria-hidden />
           <span className="min-w-0 flex-1">
-            {isAuthor ? 'Your branch' : 'The source branch'} <span className="font-mono">{shortRef(pull.sourceRefName ?? '')}</span> is at{' '}
+            {isAuthor ? 'Your branch' : 'The source branch'} <span className="font-mono">{shortBranch(pull.sourceRefName ?? '')}</span> is at{' '}
             <Oid value={sync.tip} chars={7} copyable={false} />, but this PR is at <Oid value={pull.headOid} chars={7} copyable={false} />.
           </span>
           <CostPreview cost={eventCost} />
@@ -631,7 +695,7 @@ function PullPage({
             size="sm"
             disabled={guard.disabledReason !== null}
             onClick={() => {
-              if (guard.check(eventCost, 'collab')) setPending({ kind: 'head', oid: sync.tip })
+              confirmEvent({ kind: 'head', oid: sync.tip })
             }}
           >
             Update PR head
@@ -641,14 +705,14 @@ function PullPage({
       {open && sync?.kind === 'deleted' && pull.sourceRefName ? (
         <p className="rounded-lg border border-caution/40 bg-caution/5 px-4 py-2 text-dense text-anvil-700 dark:text-anvil-200" data-testid="source-deleted">
           <AlertTriangle className="mr-1.5 inline h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
-          The source branch <span className="font-mono">{shortRef(pull.sourceRefName)}</span> no longer exists; the PR keeps its head.
+          The source branch <span className="font-mono">{shortBranch(pull.sourceRefName)}</span> no longer exists; the PR keeps its head.
         </p>
       ) : null}
       {open && reviewDraft.draft !== null && !draftIsEmpty(reviewDraft.draft) ? (
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-caution/40 bg-caution/5 px-4 py-2 text-dense" data-testid="pending-review-banner">
           <MessageSquareDashed className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
           <span className="min-w-0 flex-1">
-            You have a pending review ({reviewDraft.draft.comments.length} comment{reviewDraft.draft.comments.length === 1 ? '' : 's'}), not yet submitted.{' '}
+            You have a pending review ({plural(reviewDraft.draft.comments.length, 'comment')}), not yet submitted.{' '}
             <span className="text-anvil-600 dark:text-anvil-400">{draftWhereabouts(repo.visibility === 'private')}</span>
           </span>
           {tab !== 'files' ? (
@@ -658,12 +722,22 @@ function PullPage({
           ) : null}
         </div>
       ) : null}
+      {stillArriving !== null ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-caution/40 bg-caution/5 px-4 py-2 text-dense" role="status" data-testid="review-arriving">
+          <span className="min-w-0 flex-1">
+            Your review is on Platform; {stillArriving.total - stillArriving.shown} of {stillArriving.total} of its comments are still arriving at the node this page reads.
+          </span>
+          <Button size="sm" variant="outline" onClick={() => arriving !== null && refresh((t) => reviewShows(t, arriving), SUBMIT_WAIT)}>
+            Refresh
+          </Button>
+        </div>
+      ) : null}
       {since !== null && open ? (
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-300 bg-anvil-50 px-4 py-3 text-dense dark:border-anvil-700 dark:bg-anvil-900" data-testid="since-your-review">
           <Eye className="h-4 w-4 text-anvil-600 dark:text-anvil-300" aria-hidden />
           <span className="min-w-0 flex-1">
             New commits since your review: you reviewed <Oid value={since.reviewedOid} chars={7} copyable={false} />
-            {since.headUpdates > 0 ? `, and the head moved ${since.headUpdates} time${since.headUpdates === 1 ? '' : 's'} since` : ''}; it is now{' '}
+            {since.headUpdates > 0 ? `, and the head moved ${plural(since.headUpdates, 'time')} since` : ''}; it is now{' '}
             <Oid value={since.headOid} chars={7} copyable={false} />.
           </span>
           <Button size="sm" variant="outline" onClick={() => setTab('files')}>
@@ -706,7 +780,7 @@ function PullPage({
                 <Timeline
                   items={conversation}
                   links={links}
-                  eventText={(e) => eventText({ kind: 'event', at: e.createdAt, event: e })}
+                  eventText={eventText}
                   renderComment={(item) =>
                     commentSlots({
                       item,
@@ -741,7 +815,7 @@ function PullPage({
                       size="sm"
                       disabled={guard.disabledReason !== null}
                       onClick={() => {
-                        if (guard.check(eventCost, 'collab')) setPending({ kind: 'draft', to: 'ready' })
+                        confirmEvent({ kind: 'draft', to: 'ready' })
                       }}
                     >
                       Ready for review
@@ -752,6 +826,36 @@ function PullPage({
                 <>
                   {thread.approvals !== null ? <Approvals approvals={thread.approvals} headOid={pull.headOid} /> : null}
                   <ChecksRow summary={checkSummary} headOid={pull.headOid} onOpen={() => setTab('checks')} />
+                  {open && baseTipOid !== '' && cmp !== null && cmp.comparedBaseOid !== baseTipOid && (suggest.write.can || isAuthor) ? (
+                    <section aria-label="Update branch" className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 px-4 py-2 text-dense dark:border-anvil-800" data-testid="update-branch">
+                      <RefreshCw className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
+                      <span className="min-w-0 flex-1">
+                        This branch is behind <span className="font-mono">{base.replace(/^refs\/heads\//, '')}</span>. Merge the latest changes into it.
+                      </span>
+                      {suggest.write.can && suggest.who !== null && repo.visibility === 'public' ? (
+                        <>
+                          <BranchCommitCost isMember={isMember} storage="" />
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            loading={suggest.runner.busy}
+                            disabled={headReader === null || comparison.headOnly === null || guard.disabledReason !== null}
+                            onClick={() => {
+                              const who = suggest.who
+                              if (headReader !== null && who !== null) void suggest.runner.run(`update:${pull.headOid}:${baseTipOid}`, 'Update branch', () => buildUpdateBranch(headReader, pull, baseTipOid, who))
+                            }}
+                          >
+                            Update branch
+                          </Button>
+                        </>
+                      ) : suggest.write.can && suggest.who === null ? (
+                        <IdentityNote />
+                      ) : (
+                        <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{repo.visibility === 'private' ? 'Use `dg pr update-branch` for a private repo.' : 'Only the PR author or a maintainer, with write access to the source branch, can update it.'}</span>
+                      )}
+                    </section>
+                  ) : null}
+                  {tab === 'conversation' ? suggest.runner.view : null}
                   <PullMerge
                     repo={repo}
                     home={home}
@@ -765,9 +869,35 @@ function PullPage({
                       // browse context are out of date too (L-09).
                       reloadHome?.()
                     }}
+                    extras={{
+                      allowedMethods: policyNow?.mergeMethods ?? 0,
+                      squashAuthors: commits.error
+                        ? { error: commits.error }
+                        : commits.data === null
+                          ? null
+                          : { authors: commitAuthors(commits.data.commits), complete: !commits.data.truncated },
+                      deleteBranch: (() => {
+                        const src = sourceRef ?? (crossRepo ? null : repo)
+                        const name = pull.sourceRefName
+                        // `sourceDefault.data` is null until the default branch has been read (and after a failed read).
+                        const offer = deleteBranchOffer({
+                          refName: name,
+                          source: src === null ? null : { visibility: src.visibility, sameRepo: src.repoId === repo.repoId },
+                          canWrite: sourceWrite.known ? sourceWrite.can : null,
+                          baseRefName: pull.baseRefName,
+                          defaultBranch: sourceDefault.data,
+                          headOid: pull.headOid,
+                        })
+                        if (offer.kind === 'hide' || src === null || name === null) return null
+                        const label = `${crossRepo ? `${src.name}:` : ''}${name.replace(/^refs\/heads\//, '')}`
+                        if (offer.kind === 'explain') return { label, disabled: offer.reason }
+                        const head = pull.headOid
+                        return { label, run: () => deleteSourceBranch(src, name, head) }
+                      })(),
+                    }}
                   />
                   {open && (actions.baseProtected || rules.status !== null) ? (
-                    <BranchRules base={pull.baseRefName} baseProtected={actions.baseProtected} policy={rules.policy} status={rules.status} />
+                    <BranchRules base={pull.baseRefName} baseProtected={actions.baseProtected} policy={rules.policy} status={rules.status} checksBlocking={checksBlocking} />
                   ) : null}
                 </>
               )}
@@ -871,6 +1001,8 @@ function PullPage({
           ) : tab === 'checks' ? (
             <ChecksTab runs={checks.data} summary={checkSummary} headOid={pull.headOid} error={checks.error} onRetry={checks.reload} />
           ) : (
+            <>
+            {suggest.runner.view}
             <ComparisonView
               state={comparison}
               noHead="This PR does not record a head commit."
@@ -886,7 +1018,10 @@ function PullPage({
                     ensure={reviewDraft.ensure}
                     isMember={isMember}
                     lineExists={(path, side, line) => knownLines.current.get(path)?.has(lineKey(path, side, line)) ?? false}
-                    onSubmitted={(id) => refresh((t) => t.reviews.some((r) => r.id === id))}
+                    onSubmitted={(s) => {
+                      setArriving(s)
+                      refresh((t) => reviewShows(t, s), SUBMIT_WAIT)
+                    }}
                   />
                 ) : null
               }
@@ -901,12 +1036,15 @@ function PullPage({
                   onPosted={onInlinePosted}
                   actions={threadActions}
                   onLinesKnown={rememberLines}
+                  suggestions={suggest.actions}
                   {...(identity !== null && open && !writeBlocked && reviewDraft.pending ? { pending: reviewDraft.pending } : {})}
                 >
                   {diff}
                 </InlineCommentsProvider>
               )}
             />
+            {suggest.bar}
+            </>
           )}
         </div>
 
@@ -922,10 +1060,10 @@ function PullPage({
                 canRequest={canAuthorOrMember && open && guard.disabledReason === null}
                 canDismiss={canMember && open}
                 onRequest={(who, remove) => {
-                  if (guard.check(eventCost, 'collab')) setPending({ kind: 'request', who, remove })
+                  confirmEvent({ kind: 'request', who, remove })
                 }}
                 onDismiss={(row, reason) => {
-                  if (guard.check(previewCreate('event', { value: reason }, eventFirst), 'collab')) setPending({ kind: 'dismiss', row, reason })
+                  confirmEvent({ kind: 'dismiss', row, reason }, previewCreate('event', { value: reason }, eventFirst))
                 }}
               />
             </SidebarSection>
@@ -966,7 +1104,7 @@ function PullPage({
               <button
                 type="button"
                 onClick={() => {
-                  if (guard.check(eventCost, 'collab')) setPending({ kind: 'draft', to: 'draft' })
+                  confirmEvent({ kind: 'draft', to: 'draft' })
                 }}
                 className="text-[12px] text-anvil-500 underline-offset-2 hover:text-forge-700 hover:underline dark:text-anvil-400 dark:hover:text-forge-400"
               >
@@ -992,7 +1130,7 @@ function PullPage({
                 {pull.sourceRefName ? (
                   <>
                     {' '}
-                    on <span className="font-mono">{shortRef(pull.sourceRefName)}</span>
+                    on <span className="font-mono">{shortBranch(pull.sourceRefName)}</span>
                   </>
                 ) : null}
               </p>
@@ -1005,6 +1143,7 @@ function PullPage({
         ) : null}
       </div>
 
+      {suggest.runner.uploadDialog}
       <ConfirmDialog open={pending !== null} onClose={() => setPending(null)} title={confirm.title} description={confirm.description} cost={pendingCost} confirmLabel={confirm.label} onConfirm={runPending} />
     </div>
   )
@@ -1100,7 +1239,7 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
     case 'review':
       return {
         title: `${VERDICT_TEXT[pending.verdict]} PR #${number}`,
-        description: `Records a ${VERDICT_TEXT[pending.verdict].toLowerCase()} review on ${head.slice(0, 9)}${pending.body ? ', with your comment as its body' : ''}. New commits make it stale. Reviews can't be edited; a maintainer can dismiss one.`,
+        description: `Records ${VERDICT_RECORDS[pending.verdict]} on ${head.slice(0, 9)}${pending.body ? ', with your comment as its body' : ''}. New commits make it stale. Reviews can't be edited; a maintainer can dismiss one.`,
         label: 'Sign & submit review',
       }
     case 'draft':
@@ -1259,13 +1398,15 @@ function BranchRules({
   baseProtected,
   policy,
   status,
+  checksBlocking,
 }: {
   base: string
   baseProtected: boolean
   policy: Policy | null | 'unknown'
   status: PolicyStatus | null | 'unknown'
+  checksBlocking: boolean
 }): JSX.Element {
-  const short = base.startsWith('refs/heads/') ? base.slice('refs/heads/'.length) : base
+  const short = shortBranch(base)
   return (
     <section aria-label="Branch rules" className="rounded-lg border border-anvil-200 px-4 py-3 text-dense dark:border-anvil-800">
       {baseProtected ? (
@@ -1286,12 +1427,37 @@ function BranchRules({
         <p className="mt-1 flex items-center gap-2" data-testid="policy-status">
           {status.met ? <Check className="h-4 w-4 text-verify" aria-hidden /> : <X className="h-4 w-4 text-danger" aria-hidden />}
           <span>
-            {status.have} of {status.need} required approval{status.need === 1 ? '' : 's'}
+            {status.have} of {plural(status.need, 'required approval')}
             {policy.approverRole === 1 ? ' (maintainers)' : ''}
           </span>
+        </p>
+      ) : null}
+      {policy !== null && policy !== 'unknown' && policy.requireChecks ? (
+        <p className="mt-1 flex items-center gap-2" data-testid="policy-checks">
+          {checksBlocking ? <X className="h-4 w-4 text-danger" aria-hidden /> : <Check className="h-4 w-4 text-verify" aria-hidden />}
+          <span>{checksBlocking ? 'Required checks are not all passing on the head' : 'Required checks pass'}</span>
+        </p>
+      ) : null}
+      {policy !== null && policy !== 'unknown' && (policy.mergeMethods ?? 0) !== 0 ? (
+        <p className="mt-1 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="policy-methods">
+          Allowed merge methods: {MERGE_METHODS.filter((m) => ((policy.mergeMethods ?? 0) & m.bit) !== 0).map((m) => m.label).join(', ')}
         </p>
       ) : null}
       {policy !== null ? <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-400">Policy is a client rule; a maintainer can override it. Nothing at consensus requires approvals.</p> : null}
     </section>
   )
+}
+
+/** `Name <email>` of each commit's author, oldest first, each once (the squash's Co-authored-by, as `dg`'s `git::authors`). */
+function commitAuthors(commits: readonly { readonly commit: { readonly author: { readonly name: string; readonly email: string } } }[]): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const c of [...commits].reverse()) {
+    const a = `${c.commit.author.name} <${c.commit.author.email}>`
+    if (!seen.has(a)) {
+      seen.add(a)
+      out.push(a)
+    }
+  }
+  return out
 }

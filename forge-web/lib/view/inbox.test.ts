@@ -33,7 +33,6 @@ import {
   type ThreadSub,
 } from './inbox'
 import { assignedTargets, mentions } from './mine'
-import { parseJump } from './jump'
 import { idbPut } from '../idb'
 
 const ME = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
@@ -235,22 +234,6 @@ describe('mentions and assignments (bounded scans)', () => {
     // Same block: ($createdAt, $id) decides, whatever the input order.
     expect([...assignedTargets([ev('t4', 7, ME, 9, 'B'), ev('t4', 6, ME, 9, 'A')], ME)]).toEqual([])
     expect([...assignedTargets([ev('t4', 6, ME, 9, 'B'), ev('t4', 7, ME, 9, 'A')], ME)]).toEqual(['t4'])
-  })
-})
-
-describe('parseJump', () => {
-  it('reads owner/name, owner/name#n, @name and #n', () => {
-    expect(parseJump('alice/project', false)).toEqual({ kind: 'repo', owner: 'alice', name: 'project' })
-    expect(parseJump('@alice/project#12', false)).toEqual({ kind: 'repo', owner: 'alice', name: 'project', number: 12 })
-    expect(parseJump('@alice', false)).toEqual({ kind: 'profile', name: 'alice' })
-    expect(parseJump(ME, false)).toEqual({ kind: 'profile', name: ME })
-    expect(parseJump(' #42 ', true)).toEqual({ kind: 'number', number: 42 })
-    expect(parseJump('', true)).toBeNull()
-  })
-  it('explains #n outside a repo and junk', () => {
-    expect(parseJump('#3', false)).toMatchObject({ kind: 'invalid' })
-    expect(parseJump('a b', false)).toMatchObject({ kind: 'invalid' })
-    expect(parseJump('a/b/c', false)).toMatchObject({ kind: 'invalid' })
   })
 })
 

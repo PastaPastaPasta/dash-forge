@@ -25,6 +25,7 @@ import {
 } from '@/lib/repo'
 import { newIntent } from '@/lib/sdk'
 import { anchorLabel } from '@/lib/view/inline-threads'
+import { plural } from '@/lib/view/format'
 import {
   addDraftComment,
   draftCost,
@@ -165,7 +166,8 @@ export function ReviewDrawer({
   isMember: boolean
   /** Whether the current diff shows a line (for re-anchoring after the head moved). */
   lineExists: (path: string, side: 0 | 1, line: number) => boolean
-  onSubmitted: (reviewId: string) => void
+  /** The submitted review and every comment it wrote (the page re-reads until all show). */
+  onSubmitted: (submitted: { reviewId: string; commentIds: readonly string[] }) => void
 }): JSX.Element {
   const { sdk, network } = useSdk()
   const { identity, signer } = useAuth()
@@ -232,7 +234,7 @@ export function ReviewDrawer({
       update(null)
       setOpen(false)
       setProgress(null)
-      onSubmitted(r.reviewId)
+      onSubmitted(r)
     } catch (e) {
       // What landed is saved in the draft (IndexedDB or memory): read it back to say so.
       const saved = (await loadReviewDraft(network, identity, pullId).catch(() => undefined)) ?? toSubmit
@@ -246,7 +248,7 @@ export function ReviewDrawer({
     if (draft === null) return
     const { draft: moved, stranded } = reanchorDraft(draft, headOid, lineExists)
     update(moved)
-    setNote(stranded === 0 ? 'Every pending comment moved to the new head.' : `${stranded} comment${stranded === 1 ? '' : 's'} stay on the old head and will show as outdated.`)
+    setNote(stranded === 0 ? 'Every pending comment moved to the new head.' : `${plural(stranded, 'comment')} ${stranded === 1 ? 'stays' : 'stay'} on the old head and will show as outdated.`)
   }
 
   return (
@@ -284,7 +286,7 @@ export function ReviewDrawer({
           {note ? <p className="text-[12px] text-anvil-600 dark:text-anvil-300">{note}</p> : null}
           {frozen ? (
             <p className="text-dense">
-              Submitting your {VERDICT_WORDS[draft!.verdict]}: {draft!.reviewId ? `the review and ${draft!.comments.filter((c) => c.landedId).length} of ${count} comments have landed.` : 'nothing has landed yet.'}
+              Submitting your {VERDICT_WORDS[draft!.verdict]}: {draft!.reviewId ? `the review and ${draft!.comments.filter((c) => c.landedId).length} of ${plural(count, 'comment')} have landed.` : 'nothing has landed yet.'}
             </p>
           ) : (
             <>
@@ -319,7 +321,7 @@ export function ReviewDrawer({
           ) : null}
           <div className="flex flex-wrap items-center justify-between gap-2 border-t border-anvil-100 pt-3 dark:border-anvil-850">
             <span className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400" data-testid="review-documents">
-              {documents} document{documents === 1 ? '' : 's'} ·{cost !== null ? <CostPreview cost={cost} /> : null}
+              {plural(documents, 'document')} ·{cost !== null ? <CostPreview cost={cost} /> : null}
             </span>
             <div className="flex gap-2">
               {draft !== null ? (
@@ -343,7 +345,7 @@ export function ReviewDrawer({
           </div>
           {progress !== null ? (
             <p className="text-[12px] text-anvil-600 dark:text-anvil-300" role="status" data-testid="review-progress">
-              Submitting review · {progress.done} of {progress.total} documents
+              Submitting review · {progress.done} of {plural(progress.total, 'document')}
             </p>
           ) : null}
           {error ? (

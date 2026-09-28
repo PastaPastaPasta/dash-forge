@@ -77,6 +77,29 @@ export const RESET_JITTER_MS = 1000
 export const WAITER_JITTER_MS = 250
 /** How long an unreachable node stays out of rotation. */
 export const DOWN_MS = 15_000
+/**
+ * A document read not answering within this long is also sent to another free node, and the
+ * first good answer is used (L-15). A read answers in 60–400 ms; the slow tail seen live was
+ * one node taking 4–15 s while the others were idle, and the SDK only retries elsewhere after
+ * its own 15 s timeout. Every answer is proof-checked by the SDK, so which node served it
+ * does not matter.
+ */
+export const HEDGE_AFTER_MS = 2000
+/** Hedges in flight at once, so a slow network cannot double the load. */
+export const HEDGE_MAX_IN_FLIGHT = 2
+/** Hedges as a share of this tab's gated requests over {@link FAILOVER_WINDOW_MS}, beyond {@link HEDGE_FLOOR}. */
+export const HEDGE_SHARE = 0.1
+/**
+ * Hedges a window allows whatever the share: a cold page makes its first reads before the share
+ * has anything to go on, and those are the ones a slow node holds up (L-15).
+ */
+export const HEDGE_FLOOR = 3
+/**
+ * Once the node's own reply came back unusable (a rate limit, an unavailable node) while the
+ * hedge is still out, how long the hedge gets before that reply is passed on, so the SDK's
+ * fail-over is not held up by a hedge that is slow too.
+ */
+export const HEDGE_GRACE_MS = 500
 
 /** The gateway's window: no reset is longer. */
 const MAX_RESET_MS = 60_000
@@ -257,6 +280,62 @@ export class RequestBudget implements DapiBudget {
       if (other !== node && state.downUntil <= now && this.waitFor(other, now).ms <= SHORT_WAIT_MS) free = true
     }
     return free && held < FAILOVER_MAX_HELD
+  }
+
+  /** @internal A node other than `node` that is up and may take a request now (random among them), or null. */
+  freeNode(node: string, now = Date.now()): string | null {
+    const free = [...new Set([...this.known, ...this.nodes.keys()])].filter(
+      (other) => other !== node && this.state(other, now).downUntil <= now && this.waitFor(other, now).ms === 0,
+    )
+    return free[Math.floor(Math.random() * free.length)] ?? null
+  }
+
+  /** When this tab sent gated requests, and hedges, in the last {@link FAILOVER_WINDOW_MS}. */
+  private sent: number[] = []
+  private hedges: number[] = []
+  private hedgesInFlight = 0
+
+  /** @internal Count one gated request sent (the base of the hedge share). */
+  noteSent(now = Date.now()): void {
+    this.sent.push(now)
+    // Kept to the window here too, so a tab that reads a lot but never hedges stays bounded.
+    if (this.sent.length > 64 && (this.sent[0] as number) <= now - FAILOVER_WINDOW_MS) this.trimHedgeWindow(now)
+  }
+
+  private trimHedgeWindow(now: number): void {
+    const since = now - FAILOVER_WINDOW_MS
+    this.sent = this.sent.filter((t) => t > since && t <= now)
+    this.hedges = this.hedges.filter((t) => t > since && t <= now)
+  }
+
+  /**
+   * @internal A node to hedge a slow read to, taking one hedge from the budget, or null: at most
+   * {@link HEDGE_MAX_IN_FLIGHT} at once; per window, {@link HEDGE_FLOOR} or {@link HEDGE_SHARE} of
+   * the requests sent, whichever is more; and none while {@link FAILOVER_MAX_HELD} or more nodes
+   * are held or down (a busy or failing network is not helped by more requests). Pair with
+   * {@link hedgeDone}.
+   */
+  startHedge(node: string, now = Date.now()): string | null {
+    this.trimHedgeWindow(now)
+    if (this.hedgesInFlight >= HEDGE_MAX_IN_FLIGHT) return null
+    if (this.hedges.length >= Math.max(HEDGE_FLOOR, Math.floor(this.sent.length * HEDGE_SHARE))) return null
+    let impaired = 0
+    for (const n of new Set([...this.known, ...this.nodes.keys()])) {
+      const state = this.state(n, now)
+      if (state.holdUntil > now || state.downUntil > now) impaired++
+    }
+    if (impaired >= FAILOVER_MAX_HELD) return null
+    const other = this.freeNode(node, now)
+    if (other === null) return null
+    this.hedges.push(now)
+    this.hedgesInFlight++
+    this.take(other, now)
+    return other
+  }
+
+  /** @internal A hedge from {@link startHedge} settled. */
+  hedgeDone(): void {
+    this.hedgesInFlight = Math.max(0, this.hedgesInFlight - 1)
   }
 
   /** @internal Record a fail-over handed to the caller. */
@@ -451,6 +530,153 @@ function isAbort(e: unknown): boolean {
   return e instanceof DOMException && e.name === 'AbortError'
 }
 
+/** The reads {@link sendHedged} may send twice: proof-verified document queries (idempotent). */
+const HEDGED_PATH = /\/org\.dash\.platform\.dapi\.v0\.Platform\/getDocuments$/
+
+/** A reply the caller can use as is: not a rate limit, not an unavailable node. */
+function usable(response: Response): boolean {
+  return !nodeUnavailable(response) && rateLimitWaitMs(response) === null
+}
+
+interface Outcome {
+  readonly from: string
+  readonly response?: Response
+  readonly error?: unknown
+}
+
+/** A reply and the node it came from. */
+interface Answer {
+  readonly response: Response
+  readonly from: string
+}
+
+function unwrap(o: Outcome): Answer {
+  if (o.response === undefined) throw o.error
+  return { response: o.response, from: o.from }
+}
+
+/** Book an unusable reply (or a failure) against the node that sent it, like the gate does. */
+function book(budget: RequestBudget, o: Outcome): void {
+  const now = Date.now()
+  const limit = o.response === undefined ? null : rateLimitWaitMs(o.response)
+  if (limit !== null) budget.hold(o.from, now + limit + Math.floor(Math.random() * RESET_JITTER_MS))
+  else if (o.response === undefined ? !isAbort(o.error) : nodeUnavailable(o.response)) budget.markDown(o.from, now + DOWN_MS)
+}
+
+function delay<T>(ms: number, value: T): { readonly promise: Promise<T>; readonly cancel: () => void } {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const promise = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(value), ms)
+  })
+  return { promise, cancel: () => clearTimeout(timer) }
+}
+
+/**
+ * A signal that aborts when either does: `AbortSignal.any` where the browser has it (Safari 17.4,
+ * Chrome 116, Firefox 124), else a controller that follows both. The fallback's listeners stay on
+ * `a` until it aborts or is collected; it only serves hedged document reads on older browsers.
+ */
+export function anyOf(a: AbortSignal, b: AbortSignal): AbortSignal {
+  if (typeof AbortSignal.any === 'function') return AbortSignal.any([a, b])
+  const c = new AbortController()
+  for (const s of [a, b]) {
+    if (s.aborted) {
+      c.abort(s.reason)
+      break
+    }
+    s.addEventListener('abort', () => c.abort(s.reason), { once: true })
+  }
+  return c.signal
+}
+
+/**
+ * Send `request` to `node`. A document read with no answer after {@link HEDGE_AFTER_MS} also goes
+ * to one other free node, within the hedge budget ({@link RequestBudget.startHedge}), and the
+ * first usable answer wins (the other is aborted). Resolves with that answer and the node it came
+ * from. When neither is usable, `node`'s own answer (or error) is what the caller gets, so its
+ * rate-limit and down-node handling sees what that node said. Once a hedge is out, whichever reply
+ * is not passed back is booked here.
+ *
+ * Every request carries the caller's signal, so an abort reaches it for as long as it runs,
+ * streamed replies included. A non-hedged request is sent exactly as the gate sent it before.
+ */
+async function sendHedged(
+  base: typeof fetch,
+  budget: RequestBudget,
+  request: Request,
+  body: ArrayBuffer | undefined,
+  node: string,
+): Promise<Answer> {
+  const url = new URL(request.url)
+  if (!HEDGED_PATH.test(url.pathname)) return { response: await base(new Request(request, { body })), from: node }
+
+  const send = (to: string): { readonly outcome: Promise<Outcome>; readonly controller: AbortController } => {
+    const controller = new AbortController()
+    const signal = anyOf(request.signal, controller.signal)
+    const sent =
+      to === node
+        ? new Request(request, { body, signal })
+        : new Request(`${to}${url.pathname}${url.search}`, {
+            method: request.method,
+            headers: request.headers,
+            mode: request.mode,
+            credentials: request.credentials,
+            body,
+            signal,
+          })
+    const outcome = base(sent).then(
+      (response): Outcome => ({ from: to, response }),
+      (error: unknown): Outcome => ({ from: to, error }),
+    )
+    return { outcome, controller }
+  }
+
+  const own = send(node)
+  const slow = delay(HEDGE_AFTER_MS, null)
+  const early = await Promise.race([own.outcome, slow.promise])
+  slow.cancel()
+  if (early !== null || request.signal.aborted) return unwrap(early ?? (await own.outcome))
+  const other = budget.startHedge(node)
+  if (other === null) return unwrap(await own.outcome)
+  const hedge = send(other)
+  void hedge.outcome.finally(() => budget.hedgeDone())
+
+  const isUsable = (o: Outcome): boolean => o.response !== undefined && usable(o.response)
+  // The reply that is not passed back: book it (unless it was cancelled) and drop its body.
+  const discard = (sent: typeof own, o: Outcome): void => {
+    if (!sent.controller.signal.aborted && !request.signal.aborted) book(budget, o)
+    void o.response?.body?.cancel().catch(() => undefined)
+  }
+  const first = await Promise.race([own.outcome, hedge.outcome])
+  if (isUsable(first)) {
+    const loser = first.from === node ? hedge : own
+    loser.controller.abort()
+    void loser.outcome.then((o) => discard(loser, o))
+    return unwrap(first)
+  }
+  if (first.from !== node) {
+    // The hedge could not serve: book it now and wait for the node's own reply.
+    discard(hedge, first)
+    return unwrap(await own.outcome)
+  }
+  // The node's own reply is unusable: the hedge gets a short grace, then the node's reply goes
+  // back so the SDK fails over at once.
+  const grace = delay(HEDGE_GRACE_MS, null)
+  const second = await Promise.race([hedge.outcome, grace.promise])
+  grace.cancel()
+  if (second !== null && isUsable(second)) {
+    discard(own, first)
+    return unwrap(second)
+  }
+  if (second !== null) discard(hedge, second)
+  else {
+    // Still out after the grace: cancel it (a cancelled request is not booked).
+    hedge.controller.abort()
+    void hedge.outcome.then((o) => discard(hedge, o))
+  }
+  return unwrap(first)
+}
+
 /**
  * `base` with every DAPI request routed through `budget` (see the module comment for the
  * rules). Other requests pass straight through.
@@ -481,9 +707,11 @@ export function gatedFetch(base: typeof fetch, budget: RequestBudget): typeof fe
         continue
       }
       budget.take(node, now)
+      budget.noteSent(now)
       let response: Response
+      let from: string
       try {
-        response = await base(new Request(request, { body }))
+        ;({ response, from } = await sendHedged(base, budget, request, body, node))
       } catch (e) {
         if (!request.signal.aborted && !isAbort(e)) budget.markDown(node, Date.now() + DOWN_MS)
         throw e
@@ -492,8 +720,9 @@ export function gatedFetch(base: typeof fetch, budget: RequestBudget): typeof fe
       if (nodeUnavailable(response)) budget.markDown(node, after + DOWN_MS)
       const limit = rateLimitWaitMs(response)
       if (limit === null) {
+        // The node that answered: a hedge's reply reports that node's window.
         const until = lowWaterUntil(response, after)
-        if (until !== null) budget.hold(node, until)
+        if (until !== null) budget.hold(from, until)
         return response
       }
       budget.hold(node, after + limit + Math.floor(Math.random() * RESET_JITTER_MS))

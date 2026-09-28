@@ -21,6 +21,7 @@
 
 import { gitOidHex, MODE_TREE, type GitObject } from '../browse'
 import { checkCommit, checkTree, MalformedObjectError, MAX_TREE_DEPTH, parseCommit, parseTree, serializeTree, treeTooDeep, type TreeEntry } from '../view/git-objects'
+import { plural } from '../view/format'
 import { findMergeBases, MergeBaseSearchLimitError } from '../view/pull-diff'
 import type { ObjectReader } from '../view/tree-nav'
 import { newCommits, objectsToPack, UnsupportedChangeError, WalkLimitError } from './objects'
@@ -52,6 +53,12 @@ export interface MergeInput {
    * the head, like the base tip, is something the base repo "has".
    */
   readonly headInBase: boolean
+  /**
+   * Squash (review-parity M1): one commit on the base tip whose tree is the merged tree (the
+   * head's own when the base is behind it), message {@link squashMessage} — parity with
+   * `dg pr merge --squash`. Absent: fast-forward when possible, else a merge commit.
+   */
+  readonly squash?: { readonly message: string }
 }
 
 /** A merge the engine can make, before its pack is built. */
@@ -69,7 +76,7 @@ export type MergePlan =
 
 /** A merge ready to push. */
 export interface MergeOutcome {
-  readonly kind: 'fast-forward' | 'merge'
+  readonly kind: 'fast-forward' | 'merge' | 'squash'
   readonly newTip: string
   readonly pack: Uint8Array
   readonly packHash: string
@@ -211,6 +218,57 @@ function identLine(who: MergeIdentity): string {
   return `${who.name} <${who.email}> ${when} ${tz}`
 }
 
+/**
+ * A squash commit's message (review-parity M1), as `dg pr merge --squash` writes it: the PR title
+ * with its number, the body, and a `Co-authored-by` trailer for each commit author other than the
+ * committer (`authors`: `Name <email>` of the PR's commits, oldest first, each once).
+ */
+export function squashMessage(title: string, body: string, number: number, authors: readonly string[], committer: string): string {
+  // One line of title: the PR author wrote it (it cannot forge trailers or headers). dg uses the
+  // raw title; a title holding a newline is the only case where the two differ, deliberately.
+  let m = `${title.replace(/[\r\n\0]+/g, ' ').trim()} (#${number})`
+  if (body.trim() !== '') m += `\n\n${body.replace(/\s+$/, '')}`
+  const co = authors.filter((a) => a !== committer)
+  if (co.length > 0) m += `\n\n${co.map((a) => `Co-authored-by: ${a}`).join('\n')}`
+  return m
+}
+
+/** The PR's commit authors for a squash: loading (null), read (`complete` false: the list was capped), or unreadable. */
+export type SquashAuthors = { readonly authors: readonly string[]; readonly complete: boolean } | { readonly error: string } | null
+
+/**
+ * The squash message box's state. The default waits for the authors (a squash made before would
+ * drop their credit); a commit list that cannot be read gives a default without them, with a
+ * warning, instead of waiting forever. `edited` (the merger's text) wins once typed. `problem`
+ * says why "Squash and merge" is disabled, or null.
+ */
+export function squashDraft(
+  pr: { readonly title: string; readonly body: string; readonly number: number },
+  authors: SquashAuthors,
+  committer: string,
+  edited: string | null,
+): { message: string; ready: boolean; warning: string | null; problem: string | null } {
+  const fallback = authors === null ? null : squashMessage(pr.title, pr.body, pr.number, 'error' in authors ? [] : authors.authors, committer)
+  const ready = edited !== null || fallback !== null
+  const message = edited ?? fallback ?? ''
+  const warning =
+    authors !== null && 'error' in authors
+      ? `The PR's commits could not be read (${authors.error}), so the message has no Co-authored-by lines: add them by hand if you want the authors credited.`
+      : authors !== null && !authors.complete
+        ? 'This PR has more commits than the page lists: add any missing Co-authored-by lines (or squash with `dg pr merge --squash`).'
+        : null
+  const problem = !ready ? "Reading the PR's commits for the Co-authored-by lines…" : message.trim() === '' ? 'Write a commit message to squash and merge.' : null
+  return { message, ready, warning, problem }
+}
+
+/** The squash commit's bytes: the tree, the base tip as its only parent, the merger as author and committer. */
+export function squashCommitBytes(tree: string, input: MergeInput): Uint8Array {
+  const ident = identLine(input.author)
+  const parents = input.baseTip === '' ? '' : `parent ${input.baseTip}\n`
+  const message = (input.squash?.message ?? '').replace(/\0/g, '')
+  return new TextEncoder().encode(`tree ${tree}\n${parents}author ${ident}\ncommitter ${ident}\n\n${message.endsWith('\n') ? message : `${message}\n`}`)
+}
+
 /** The merge commit's bytes: the merged tree, parents base tip then head, the merger as author and committer. */
 export function mergeCommitBytes(tree: string, input: MergeInput): Uint8Array {
   const ident = identLine(input.author)
@@ -276,13 +334,26 @@ export function strictReader(reader: ObjectReader, budget = MERGE_READ_BUDGET): 
 /** What the merge button can offer. */
 export type MergeCheck = MergePlan['kind']
 
+/** What a check found: the plan's kind, and the conflicting paths when it is a conflict. */
+export interface MergeCheckResult {
+  readonly check: MergeCheck
+  readonly conflictPaths: readonly string[]
+}
+
+/** {@link checkMerge} with the conflicting paths (the merge box lists them, review-parity F7). */
+export async function checkMergeDetailed(raw: ObjectReader, input: MergeInput, budget = MERGE_READ_BUDGET): Promise<MergeCheckResult> {
+  const out = await refusing(() => build(strictReader(raw, budget), input, false))
+  if (out.kind === 'checked') return { check: out.check, conflictPaths: [] }
+  if (out.kind === 'squash' || out.kind === 'fast-forward' || out.kind === 'merge') return { check: out.kind === 'squash' ? 'merge' : out.kind, conflictPaths: [] }
+  return { check: out.kind, conflictPaths: out.kind === 'conflict' ? out.paths : [] }
+}
+
 /**
  * Whether (and how) the PR merges: the whole merge and pack walk, without building the pack,
  * so a check that says "merge" is one {@link runMerge} completes.
  */
 export async function checkMerge(raw: ObjectReader, input: MergeInput, budget = MERGE_READ_BUDGET): Promise<MergeCheck> {
-  const out = await refusing(() => build(strictReader(raw, budget), input, false))
-  return out.kind === 'checked' ? out.check : out.kind
+  return (await checkMergeDetailed(raw, input, budget)).check
 }
 
 /** Run the whole merge: classify, merge when needed, and build the pack. */
@@ -314,7 +385,25 @@ async function build(
   if (plan.kind === 'up-to-date' || plan.kind === 'unrelated' || plan.kind === 'conflict') return plan
   let tip: string
   let source = reader
-  if (plan.kind === 'fast-forward') {
+  if (input.squash !== undefined) {
+    // One commit on the base tip with the merged tree (the head's own when it descends).
+    onProgress?.('merge')
+    let tree: string
+    let extra: GitObject[] = []
+    if (plan.kind === 'fast-forward') tree = parseCommit((await reader.readObject(input.headOid)).bytes).tree
+    else {
+      const t = async (c: string): Promise<string> => parseCommit((await reader.readObject(c)).bytes).tree
+      const [b, o, h] = await Promise.all([t(plan.mergeBase), t(input.baseTip), t(input.headOid)])
+      const merged = await mergeTrees(reader, b, o, h)
+      if (merged.kind === 'conflict') return merged
+      tree = merged.oid
+      extra = merged.written
+    }
+    const bytes = squashCommitBytes(tree, input)
+    tip = gitOidHex('commit', bytes)
+    checkCommit(tip, bytes)
+    source = withObjects(reader, [...extra, { type: 'commit', bytes }])
+  } else if (plan.kind === 'fast-forward') {
     tip = plan.newTip
   } else {
     onProgress?.('merge')
@@ -330,10 +419,11 @@ async function build(
   const baseHave = input.baseTip === '' ? [] : [input.baseTip]
   let objects = await objectsToPack(source, await newCommits(source, tip, baseHave))
   if (!pack) return { kind: 'checked', check: plan.kind }
+  // A squash commit's only parent is the base tip: nothing of the head's history is pushed.
   // What the base repo's packs already hold is not packed again: for a same-repo PR the head's
   // history (a fast-forward to it packs nothing).
-  if (input.headInBase) objects = await objectsToPack(source, await newCommits(source, tip, [...baseHave, input.headOid]))
+  if (input.headInBase && input.squash === undefined) objects = await objectsToPack(source, await newCommits(source, tip, [...baseHave, input.headOid]))
   const built = writePack(objects)
-  onProgress?.('pack', `${built.objectCount} objects`)
-  return { kind: plan.kind, newTip: tip, pack: built.bytes, packHash: built.packHash, objectCount: built.objectCount }
+  onProgress?.('pack', plural(built.objectCount, 'object'))
+  return { kind: input.squash !== undefined ? 'squash' : plan.kind, newTip: tip, pack: built.bytes, packHash: built.packHash, objectCount: built.objectCount }
 }

@@ -25,6 +25,21 @@ describe('readUntil: re-read after a write until it shows', () => {
     expect(n).toBe(2)
   })
 
+  it('backs off between re-reads, up to a cap', async () => {
+    const waits: number[] = []
+    const real = globalThis.setTimeout
+    globalThis.setTimeout = ((f: () => void, ms: number) => {
+      waits.push(ms)
+      return real(f, 0)
+    }) as typeof setTimeout
+    try {
+      await readUntil(async () => 1, [() => false], { attempts: 5, delayMs: 1000, backoff: 2, maxDelayMs: 5000 })
+    } finally {
+      globalThis.setTimeout = real
+    }
+    expect(waits).toEqual([1000, 2000, 4000, 5000, 5000])
+  })
+
   it('gives up after the attempts, and a null read is returned at once', async () => {
     let n = 0
     expect(await readUntil(async () => ++n, [() => false], { attempts: 3, delayMs: 0 })).toBe(4)

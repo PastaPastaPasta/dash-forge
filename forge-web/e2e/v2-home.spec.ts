@@ -89,7 +89,7 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     await expect(card.getByText(/fetched the key list again to compare/)).toBeVisible()
     await expect(card.getByText(/^`?main`? =|main =/).first()).toBeVisible()
     await expect(card.getByText(/FORGE_RULES_V2/)).toBeVisible()
-    await expect(card.getByText(/of \d+ objects? read this session matched their git hash/)).toBeVisible({ timeout: 45_000 })
+    await expect(card.getByText(/of [\d,]+ objects? read this session matched their git hash/)).toBeVisible({ timeout: 45_000 })
     await expect(card.getByText(/This app is served by GitHub Pages/)).toBeVisible()
     await expect(card).toHaveAttribute('data-state', 'verified')
     await card.screenshot({ path: join(SCREENSHOT_DIR, 'b-verification-expanded.png') })

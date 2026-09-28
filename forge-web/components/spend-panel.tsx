@@ -29,7 +29,7 @@ import {
   summarize,
   type SpendRow,
 } from '@/lib/spend'
-import { creditsAsDash, timeAgo } from '@/lib/view/format'
+import { creditsAsDash, plural, timeAgo } from '@/lib/view/format'
 import { LoadingBlock } from '@/components/ui/states'
 import { cn } from '@/lib/utils'
 
@@ -40,10 +40,6 @@ function Dash({ credits }: { credits: number }): JSX.Element {
       {creditsAsDash(Math.abs(credits))} DASH
     </span>
   )
-}
-
-function writes(n: number): string {
-  return `${n} ${n === 1 ? 'write' : 'writes'}`
 }
 
 /** The repos a ledger names, read once each by id (null when one does not resolve). */
@@ -131,7 +127,7 @@ export function SpendPanel(): JSX.Element {
           <Dash credits={s.thisMonth} />
         </div>
         <div>
-          <div className="text-[12px] text-anvil-500 dark:text-anvil-400">All time ({writes(rows.length)})</div>
+          <div className="text-[12px] text-anvil-500 dark:text-anvil-400">All time ({plural(rows.length, 'write')})</div>
           <Dash credits={s.allTime} />
         </div>
       </div>
@@ -143,7 +139,7 @@ export function SpendPanel(): JSX.Element {
       ) : null}
       {s.missed > 0 ? (
         <p className="flex items-center gap-1 text-[12px] text-caution-700 dark:text-caution-400">
-          <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden /> {s.missed} estimate{s.missed === 1 ? '' : 's'} missed by more than 25 %.
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden /> {plural(s.missed, 'estimate')} missed by more than 25 %.
         </p>
       ) : null}
 
@@ -157,7 +153,7 @@ export function SpendPanel(): JSX.Element {
               <span className="min-w-0 max-w-full">{repoLabel(r.repo)}</span>
               <span className="flex items-baseline gap-2 text-[12px]">
                 <span className="text-anvil-500 dark:text-anvil-400">
-                  {writes(r.writes)}
+                  {plural(r.writes, 'write')}
                 </span>
                 <Dash credits={r.credits} />
               </span>

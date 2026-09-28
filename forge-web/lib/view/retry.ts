@@ -25,20 +25,29 @@ export async function retryUntil<T>(read: () => Promise<T>, done: (value: T) => 
 }
 
 /**
- * Read, then re-read (`delayMs` apart, at most `attempts` more times) until every expectation in
- * `want` holds of the value: a page waiting for its own writes to show. A null read is returned at
- * once (not found is the caller's to handle). `signal.aborted` stops the polling early (a newer
- * read took over), returning the latest value.
+ * Read, then re-read (at most `attempts` more times) until every expectation in `want` holds of
+ * the value: a page waiting for its own writes to show. The waits start at `delayMs` and grow by
+ * `backoff` each time, up to `maxDelayMs`. A null read is returned at once (not found is the
+ * caller's to handle). `signal.aborted` stops the polling early (a newer read took over),
+ * returning the latest value. Always bounded: the caller says what to show when it gives up.
  */
 export async function readUntil<T>(
   read: () => Promise<T | null>,
   want: readonly ((v: T) => boolean)[],
-  { attempts = 8, delayMs = 1500, signal }: { attempts?: number; delayMs?: number; signal?: { readonly aborted: boolean } } = {},
+  {
+    attempts = 8,
+    delayMs = 1500,
+    backoff = 1,
+    maxDelayMs = 10_000,
+    signal,
+  }: { attempts?: number; delayMs?: number; backoff?: number; maxDelayMs?: number; signal?: { readonly aborted: boolean } } = {},
 ): Promise<T | null> {
   const stopped = (): boolean => signal?.aborted === true
   let v = await read()
+  let wait = delayMs
   for (let i = 0; v !== null && !want.every((w) => w(v as T)) && i < attempts && !stopped(); i++) {
-    await new Promise((r) => setTimeout(r, delayMs))
+    await new Promise((r) => setTimeout(r, wait))
+    wait = Math.min(maxDelayMs, wait * backoff)
     if (stopped()) break
     v = await read()
   }

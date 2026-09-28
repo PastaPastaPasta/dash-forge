@@ -8,7 +8,7 @@
 import Link from 'next/link'
 import { GitBranch, Lock, MessageSquare, Star } from 'lucide-react'
 import type { DiscoveredRepo } from '@/lib/view'
-import { timeAgo } from '@/lib/view'
+import { plural, timeAgo } from '@/lib/view'
 import { repoHref } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
 
@@ -40,7 +40,11 @@ export function RepoCard({ repo }: { repo: DiscoveredRepo }): JSX.Element {
       )}
       <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
         <Author identityId={repo.ownerId} />
-        {repo.createdAt ? <span>· {timeAgo(repo.createdAt)}</span> : null}
+        {typeof repo.pushedAt === 'number' ? (
+          <span title="Newest push">· pushed {timeAgo(repo.pushedAt)}</span>
+        ) : repo.createdAt ? (
+          <span>· {timeAgo(repo.createdAt)}</span>
+        ) : null}
         {typeof repo.stars === 'number' ? (
           <span className="inline-flex items-center gap-1" title="Stars (provable count)">
             <Star className="h-3 w-3" aria-hidden /> {repo.stars}
@@ -52,7 +56,7 @@ export function RepoCard({ repo }: { repo: DiscoveredRepo }): JSX.Element {
             the open count. */}
         {typeof repo.issues === 'number' ? (
           <span className="inline-flex items-center gap-1" title="Issues ever opened, open or closed (provable count)">
-            <MessageSquare className="h-3 w-3" aria-hidden /> {repo.issues} {repo.issues === 1 ? 'issue' : 'issues'}
+            <MessageSquare className="h-3 w-3" aria-hidden /> {plural(repo.issues, 'issue')}
             <span className="sr-only">in total</span>
           </span>
         ) : null}

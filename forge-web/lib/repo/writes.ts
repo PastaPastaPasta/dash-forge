@@ -45,6 +45,7 @@ import { refNameHash, repoContentWritten } from './push'
 import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
 import { invalidateRepoFeed } from './issues'
+import { noteTargetCreated } from './social'
 import { repoSource } from './source'
 
 // ---------------------------------------------------------------------------
@@ -414,6 +415,7 @@ async function createNumbered(
       writeTriedNumber(triedKey, number)
       const result = await writeRepoDoc(sdk, auth, repo, DOC[type], { number, ...fields }, intent, writer)
       writeTriedNumber(triedKey, null)
+      if (result.confirmed) noteTargetCreated(repo, type)
       return { ...result, number }
     } catch (e) {
       // Refused for good (not a duplicate, which is renumbered below): nothing under this

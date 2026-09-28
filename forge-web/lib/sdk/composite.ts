@@ -154,10 +154,13 @@ function check(q: CompositeQuery): void {
 /**
  * Run a composite read: one proved round trip, or (when unsupported) the same question as
  * plain queries. Documents come back normalized ({@link normalizeDocument}); counts as numbers.
+ * `plainFallback: false` throws instead of falling back, for a caller whose plain equivalent
+ * would cost one request per bound value (counts over a whole page).
  */
-export async function queryComposite(sdk: EvoSDK, q: CompositeQuery): Promise<CompositeResult> {
+export async function queryComposite(sdk: EvoSDK, q: CompositeQuery, opts: { readonly plainFallback?: boolean } = {}): Promise<CompositeResult> {
   check(q)
   const facade = (sdk as unknown as { documents: CompositeFacadeLike }).documents
+  if (typeof facade.composite !== 'function' && opts.plainFallback === false) throw new Error('composite queries are not available in this SDK')
   if (typeof facade.composite === 'function') {
     try {
       const raw = await facade.composite({
@@ -185,7 +188,7 @@ export async function queryComposite(sdk: EvoSDK, q: CompositeQuery): Promise<Co
         ),
       }
     } catch (e) {
-      if (!isUnsupported(e)) throw e
+      if (!isUnsupported(e) || opts.plainFallback === false) throw e
     }
   }
   return plainComposite(sdk, q)

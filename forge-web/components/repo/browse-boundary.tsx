@@ -17,7 +17,7 @@ import { useBrowseReader } from '@/hooks/use-browse-reader'
 import { useTrustView } from '@/hooks/use-trust-view'
 import type { BrowseReader } from '@/lib/browse'
 import { repoKey, type RepoRef } from '@/lib/repo'
-import { formatBytes, invalidateBrowseContext, StorageUnreachableError, type UnavailablePack } from '@/lib/view'
+import { formatBytes, invalidateBrowseContext, plural, StorageUnreachableError, type UnavailablePack } from '@/lib/view'
 import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
@@ -36,13 +36,12 @@ function UnavailablePacksNotice({ packs }: { packs: readonly UnavailablePack[] }
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
       <div>
         <p>
-          {n} {n === 1 ? 'pack' : 'packs'} could not be fetched from {n === 1 ? 'its' : 'their'} storage; some
+          {plural(n, 'pack')} could not be fetched from {n === 1 ? 'its' : 'their'} storage; some
           objects may be missing. Everything shown was still hash-checked.
         </p>
         {corrupt > 0 ? (
           <p className="mt-1 font-medium text-danger-700 dark:text-danger-400">
-            {corrupt === 1 ? 'A mirror' : 'Mirrors'} served bad data for {corrupt}{' '}
-            {corrupt === 1 ? 'pack' : 'packs'}: bytes that do not match the sha256 in the proof-checked
+            {corrupt === 1 ? 'A mirror' : 'Mirrors'} served bad data for {plural(corrupt, 'pack')}: bytes that do not match the sha256 in the proof-checked
             manifest. They were refused.
           </p>
         ) : null}

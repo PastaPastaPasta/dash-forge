@@ -16,7 +16,7 @@ import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, CheckCircle2, FilePlus2, Loader2, Plus, XCircle } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { ARCHIVED_REASON, formatBytes } from '@/lib/view'
+import { ARCHIVED_REASON, formatBytes, plural } from '@/lib/view'
 import type { ReleaseList } from '@/lib/repo'
 import {
   NO_STORAGE_GAP,
@@ -76,7 +76,7 @@ function gapLinkLabel(gap: ReleaseStorageGap): string {
 
 function stateText(s: AssetState | undefined): string {
   if (s === undefined) return ''
-  if (s.state === 'done') return s.copies < s.of ? `stored, verified (${s.copies} of ${s.of} copies)` : `stored, verified (${s.copies} ${s.copies === 1 ? 'copy' : 'copies'})`
+  if (s.state === 'done') return s.copies < s.of ? `stored, verified (${s.copies} of ${s.of} copies)` : `stored, verified (${plural(s.copies, 'copy', 'copies')})`
   return s.state
 }
 
@@ -221,7 +221,7 @@ function NewReleaseDialog({
         e instanceof ReleaseWriteError && e.assetsStored > 0
           ? ` The ${e.assetsStored === 1 ? 'asset was' : `${e.assetsStored} assets were`} uploaded and verified (content-addressed): publishing again reuses them.`
           : stored > 0
-            ? ` ${stored} ${stored === 1 ? 'asset was' : 'assets were'} stored before this; publishing again reuses them.`
+            ? ` ${plural(stored, 'asset')} ${stored === 1 ? 'was' : 'were'} stored before this; publishing again reuses them.`
             : ''
       if (inner instanceof UnconfirmedWriteError && e instanceof ReleaseWriteError) {
         // The write may still land: keep the content AND its stored assets fixed, so a retry
@@ -287,7 +287,7 @@ function NewReleaseDialog({
           <p role="note" className="flex items-start gap-1.5 text-[12px] text-caution-700 dark:text-caution-400">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
             {trimmedTag} already has a release{existing.name ? ` (“${existing.name}”)` : ''}. This one replaces it as the current release and keeps its{' '}
-            {kept.length === 1 ? '1 asset' : `${kept.length} assets`}
+            {plural(kept.length, 'asset')}
             {existing.assets.length > kept.length ? ` (a new file of the same name replaces ${existing.assets.length - kept.length})` : ''}, and its title and notes where you leave them blank. The old one is listed as previous.
             {existing.yanked && !yanked ? ' It is yanked now: publishing without "Yanked" ticked un-yanks it.' : ''}
           </p>

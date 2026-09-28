@@ -49,6 +49,9 @@ export {
 } from './members'
 export {
   readFollowCounts,
+  readFollowPage,
+  type FollowPage,
+  type FollowSide,
   readStarCount,
   readStargazers,
   readTargetCounts,
@@ -265,6 +268,7 @@ export {
   editRepoDoc,
   fullPattern,
   newestPolicy,
+  policyFromDocs,
   parseTopics,
   patternMatches,
   patternsProblem,

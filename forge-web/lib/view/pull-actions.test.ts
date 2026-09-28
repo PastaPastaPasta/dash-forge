@@ -12,7 +12,7 @@ import type { PullView } from '../repo'
 import { historicalTipsPredicate } from '../repo'
 import type { Event, Holdings } from '../rules'
 import { foldPrStateV2 } from '../rules/v2'
-import { mergeBaseTip, mergeButton, mergeRefProblem, policyOf, pullActions, type PullActionInputs } from './pull-actions'
+import { deleteBranchOffer, deleteBranchProblem, mergeBaseTip, mergeBoxShown, mergeButton, mergeRefProblem, policyOf, pullActions, type PullActionInputs } from './pull-actions'
 
 const AUTHOR = 'author'
 const WRITER = 'writer'
@@ -153,6 +153,16 @@ describe('pullActions — protected base and branch policy (D-503)', () => {
     expect(a.canMarkMerged).toBe(true)
     expect(a.policyOverride).toBe(false)
   })
+
+  it('withholds a writer merge while required checks are not passing; a maintainer overrides', () => {
+    const met = { met: true, have: 1, need: 1 }
+    const w = pullActions({ pull: pull(), viewer: WRITER, holdings: WRITE, policy: met, checksBlocking: true })
+    expect(w.canMarkMerged).toBe(false)
+    expect(w.mergeHint).toMatch(/requires passing checks/)
+    const m = pullActions({ pull: pull(), viewer: MAINTAINER, holdings: MAINTAIN, policy: met, checksBlocking: true })
+    expect(m.canMarkMerged).toBe(true)
+    expect(m.policyOverride).toBe(true)
+  })
 })
 
 describe('pullActions agrees with the fold', () => {
@@ -242,4 +252,68 @@ describe('mergeBaseTip — the browser merge builds only on a base it may merge 
     expect(mergeRefProblem('refs/heads/next', NOW, HEAD, MAIN)).toMatch(/retargeted.*open a new PR against the new base/)
     expect(mergeRefProblem(MAIN, NOW, HEAD, MAIN)).toBeNull()
   })
+})
+
+describe('deleting the source branch after a merge (dg deletable_source, and the tip must be the merged head)', () => {
+  const H = 'ab'.repeat(20)
+  const base = { refName: 'refs/heads/feature', sameRepo: true, baseRefName: 'refs/heads/main', defaultBranch: 'main', headOid: H }
+  it('deletes a feature branch still at the merged head, or one already gone', () => {
+    expect(deleteBranchProblem(base)).toBeNull()
+    expect(deleteBranchProblem({ ...base, tip: H.toUpperCase() })).toBeNull()
+    expect(deleteBranchProblem({ ...base, tip: null })).toBeNull()
+  })
+  it('refuses the base branch and the default branch before anything is read', () => {
+    expect(deleteBranchProblem({ ...base, refName: 'refs/heads/main', baseRefName: 'refs/heads/main' })).toMatch(/its base branch/)
+    expect(deleteBranchProblem({ ...base, refName: 'refs/heads/main', sameRepo: false })).toMatch(/default branch/)
+    expect(deleteBranchProblem({ ...base, defaultBranch: 'refs/heads/feature' })).toMatch(/default branch/)
+  })
+  it("fails closed when the source repo's default branch could not be read", () => {
+    expect(deleteBranchProblem({ ...base, defaultBranch: null })).toMatch(/default branch could not be read/)
+    expect(deleteBranchProblem({ ...base, defaultBranch: null, tip: H })).toMatch(/default branch could not be read/)
+  })
+
+  it('refuses a branch that moved past the merged head', () => {
+    expect(deleteBranchProblem({ ...base, tip: 'cd'.repeat(20) })).toMatch(/moved to cdcdcdcdc after the merged head/)
+  })
+})
+
+describe('"Delete the branch after merging" in the merge box', () => {
+  const H = 'ab'.repeat(20)
+  const fork = { visibility: 'public', sameRepo: false }
+  const base = { refName: 'refs/heads/feature', source: fork, canWrite: true, baseRefName: 'refs/heads/main', defaultBranch: 'main', headOid: H }
+  it('is offered to a writer of the source branch', () => {
+    expect(deleteBranchOffer(base)).toEqual({ kind: 'offer' })
+  })
+  it("is shown disabled, with why, to a merger who can't write the contributor's fork", () => {
+    expect(deleteBranchOffer({ ...base, canWrite: false })).toEqual({
+      kind: 'explain',
+      reason: "You can't write the contributor's fork; ask them to allow edits by maintainers, or delete it from the fork.",
+    })
+    expect(deleteBranchOffer({ ...base, canWrite: false, source: { visibility: 'public', sameRepo: true } })).toMatchObject({ kind: 'explain', reason: expect.stringMatching(/can't write this branch here/) })
+  })
+  it('is hidden when it must never be deleted, or while unknown', () => {
+    expect(deleteBranchOffer({ ...base, canWrite: null })).toEqual({ kind: 'hide' })
+    expect(deleteBranchOffer({ ...base, defaultBranch: null })).toEqual({ kind: 'hide' })
+    expect(deleteBranchOffer({ ...base, refName: 'refs/heads/main', defaultBranch: 'main' })).toEqual({ kind: 'hide' })
+    expect(deleteBranchOffer({ ...base, source: { visibility: 'private', sameRepo: false } })).toEqual({ kind: 'hide' })
+    expect(deleteBranchOffer({ ...base, refName: null })).toEqual({ kind: 'hide' })
+    expect(deleteBranchOffer({ ...base, source: { visibility: 'public', sameRepo: true }, refName: 'refs/heads/main' })).toEqual({ kind: 'hide' })
+  })
+})
+
+describe('the merge box through its own merge', () => {
+  it('stays mounted after onMerged flips the PR to merged, so it can finish (report, delete the branch)', () => {
+    // A page view: the viewer can merge, merges; the refresh reads the PR as merged.
+    const canMerge = [true, true, false, false]
+    let shownBefore = false
+    const seen = canMerge.map((can) => {
+      const shown = mergeBoxShown(can, shownBefore)
+      shownBefore = shownBefore || shown
+      return shown
+    })
+    expect(seen).toEqual([true, true, true, true])
+    // It never appears for a viewer who could not merge in this page view.
+    expect(mergeBoxShown(false, false)).toBe(false)
+  })
+
 })

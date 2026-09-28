@@ -189,6 +189,11 @@ export interface ComparisonSides {
    * use this and never the fallback.
    */
   readonly baseOnly: ObjectReader | null
+  /**
+   * The head repo's OWN reader (the source repo's; the base repo's for a same-repo PR), or null
+   * while it is not loaded: what proves a browser commit to the PR branch complete.
+   */
+  readonly headOnly: ObjectReader | null
   readonly problems: readonly SideProblem[]
   /** A side is still resolving; its progress label. */
   readonly waiting: string | null
@@ -255,7 +260,8 @@ export function useComparisonSides(baseRepo: RepoRef, sourceId: string): Compari
       : headState.kind === 'loading'
         ? `${crossRepo ? 'Source repo: ' : ''}${headState.label}`
         : null
-  return { sides, baseOnly: baseReader, problems, waiting, sidesKey, crossRepo, source, refresh }
+  const headOnly = crossRepo && source.kind !== 'found' ? null : headReader
+  return { sides, baseOnly: baseReader, headOnly, problems, waiting, sidesKey, crossRepo, source, refresh }
 }
 
 /** What a comparison diffs: the base tips and the head, as {@link loadPullComparison} takes them. */
@@ -272,6 +278,8 @@ export interface ComparisonSpec {
 export interface ComparisonState {
   readonly spec: ComparisonSpec
   readonly sides: DiffSides | null
+  /** The head repo's own reader (see {@link ComparisonSides.headOnly}). */
+  readonly headOnly: ObjectReader | null
   readonly problems: readonly SideProblem[]
   readonly waiting: string | null
   readonly sidesKey: string
@@ -294,7 +302,7 @@ export interface ComparisonState {
  * tab read it, so the merge-base walk runs once.
  */
 export function usePullComparison(baseRepo: RepoRef, sourceId: string, spec: ComparisonSpec): ComparisonState {
-  const { sides, problems, waiting, sidesKey, crossRepo, source, refresh } = useComparisonSides(baseRepo, sourceId)
+  const { sides, headOnly, problems, waiting, sidesKey, crossRepo, source, refresh } = useComparisonSides(baseRepo, sourceId)
   const { baseTipOid, baseOidAtOpen } = spec
   // The merge-base search can read tens of thousands of commits on a long-lived branch: it
   // reports how far it got, and "Stop" ends it (D-040).
@@ -328,7 +336,7 @@ export function usePullComparison(baseRepo: RepoRef, sourceId: string, spec: Com
     refresh()
     reload()
   }, [refresh, reload])
-  return { spec, sides, problems, waiting, sidesKey, data, loading, error, cause, reload, tryAgain, commitsRead, stop, source }
+  return { spec, sides, headOnly, problems, waiting, sidesKey, data, loading, error, cause, reload, tryAgain, commitsRead, stop, source }
 }
 
 /** The base, head and flags of a PR's comparison. */

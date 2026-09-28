@@ -62,13 +62,53 @@ export interface MarkdownLinks {
   readonly profileHref?: (name: string) => string
 }
 
+/**
+ * A review comment's ```` ```suggestion ```` blocks (review-parity R5, §4.5): the lines they
+ * would replace, so each block renders as a diff (the lines removed, then the suggested ones).
+ * Null: the lines are not known (another head, an old side), and the block shows as suggested
+ * text only.
+ */
+export interface SuggestionContext {
+  readonly original: readonly string[] | null
+}
+
 interface RenderContext {
   readonly repo: MarkdownRepoContext | null
   readonly images: 'auto' | 'ask'
   readonly links: MarkdownLinks | null
+  readonly suggestion: SuggestionContext | null
 }
 
-const Ctx = createContext<RenderContext>({ repo: null, images: 'ask', links: null })
+const Ctx = createContext<RenderContext>({ repo: null, images: 'ask', links: null, suggestion: null })
+
+/** A suggestion block as a diff: the replaced lines, then the suggested ones. */
+function SuggestionBlock({ text }: { text: string }): JSX.Element {
+  const { suggestion } = useContext(Ctx)
+  const added = text === '' ? [] : text.split('\n')
+  const removed = suggestion?.original ?? null
+  return (
+    <div className="my-3 overflow-hidden rounded-md border border-anvil-200 text-[13px] dark:border-anvil-800" data-testid="suggestion">
+      <div className="border-b border-anvil-200 bg-anvil-50 px-3 py-1 text-[12px] font-medium text-anvil-600 dark:border-anvil-800 dark:bg-anvil-900 dark:text-anvil-300">
+        Suggested change
+      </div>
+      <pre className="overflow-x-auto font-mono">
+        {removed?.map((l, i) => (
+          <div key={`r${i}`} className="bg-danger/10 px-3 text-danger-800 dark:text-danger-300" data-kind="removed">
+            <span aria-hidden className="select-none">- </span>
+            {l || ' '}
+          </div>
+        ))}
+        {added.map((l, i) => (
+          <div key={`a${i}`} className="bg-verify/10 px-3 text-verify-800 dark:text-verify-300" data-kind="added">
+            <span aria-hidden className="select-none">+ </span>
+            {l || ' '}
+          </div>
+        ))}
+        {added.length === 0 ? <div className="px-3 italic text-anvil-500 dark:text-anvil-400">(deletes the lines)</div> : null}
+      </pre>
+    </div>
+  )
+}
 
 function tableAlignClass(align: TableAlignment | 'left' | 'center' | 'right'): string {
   if (align === 'center') return 'text-center'
@@ -477,6 +517,7 @@ function renderBlock(b: Block, key: string, slugs: Map<string, number>): ReactNo
     case 'inline':
       return <Fragment key={key}>{renderInline(b.c, key)}</Fragment>
     case 'code':
+      if (b.lang === 'suggestion') return <SuggestionBlock key={key} text={b.v} />
       return (
         <ScrollRegion as="pre" key={key} label="Code block" className="my-3 overflow-x-auto rounded-md border border-anvil-200 bg-anvil-50 p-3 text-[13px] dark:border-anvil-800 dark:bg-anvil-950">
           <code>{b.v}</code>
@@ -655,6 +696,7 @@ export const MarkdownView = memo(function MarkdownView({
   repo = null,
   images = 'ask',
   links = null,
+  suggestion = null,
 }: {
   source: string
   className?: string
@@ -664,8 +706,10 @@ export const MarkdownView = memo(function MarkdownView({
   images?: 'auto' | 'ask'
   /** Link `#n` / `@name` (issue and PR pages); keep it referentially stable (memo). */
   links?: MarkdownLinks | null
+  /** Render ```suggestion blocks as diffs (review comments); keep it referentially stable. */
+  suggestion?: SuggestionContext | null
 }): JSX.Element {
-  const ctx = useMemo<RenderContext>(() => ({ repo, images, links }), [repo, images, links])
+  const ctx = useMemo<RenderContext>(() => ({ repo, images, links, suggestion }), [repo, images, links, suggestion])
   const blocks = useMemo(() => (source.length > MARKDOWN_MAX_CHARS ? null : parseMarkdown(source)), [source])
   if (blocks === null) {
     return (

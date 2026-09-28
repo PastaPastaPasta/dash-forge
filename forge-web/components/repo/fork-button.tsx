@@ -15,6 +15,7 @@ import { Check, GitFork, Loader2 } from 'lucide-react'
 import { checkForkName, forkRepoV2, normalizeRepoName, planFork, type ForkNameCheck, type ForkStep, type RepoRef } from '@/lib/repo'
 import { previewCreate, sumPreviews } from '@/lib/sdk'
 import { errorMessage } from '@/lib/utils'
+import { plural } from '@/lib/view/format'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -182,12 +183,11 @@ function ForkDialog({ parent, owner, onClose }: { parent: RepoRef; owner: string
         ) : (
           <>
             <p className="text-dense text-anvil-700 dark:text-anvil-200" data-testid="fork-plan">
-              Repository, maintainer and config, {p.manifests.length} pack manifest{p.manifests.length === 1 ? '' : 's'} by reference, and {p.refs.length} ref
-              {p.refs.length === 1 ? '' : 's'} (branches and tags) copied.
+              Repository, maintainer and config, {plural(p.manifests.length, 'pack manifest')} by reference, and {plural(p.refs.length, 'ref')} (branches and tags) copied.
             </p>
             {p.unreferenceable.length > 0 ? (
               <p className="text-[12px] text-caution-700 dark:text-caution-400">
-                {p.unreferenceable.length} pack{p.unreferenceable.length === 1 ? ' has' : 's have'} no copy a fork can point at, so branches will not be copied.
+                {plural(p.unreferenceable.length, 'pack')} {p.unreferenceable.length === 1 ? 'has' : 'have'} no copy a fork can point at, so branches will not be copied.
               </p>
             ) : null}
             <CostPreview cost={cost} />

@@ -6,7 +6,7 @@
 
 import type { GitObject } from '../browse'
 import type { ObjectReader } from '../view/tree-nav'
-import { checkMerge, runMerge } from './engine'
+import { checkMergeDetailed, runMerge } from './engine'
 import type { FromWorker, ToWorker } from './protocol'
 
 const scope = self as unknown as DedicatedWorkerGlobalScope
@@ -37,7 +37,7 @@ scope.onmessage = (e: MessageEvent<ToWorker>) => {
   const run = async (): Promise<void> => {
     try {
       if (m.type === 'check') {
-        post({ type: 'checked', check: await checkMerge(reader, m.input) })
+        post({ type: 'checked', check: await checkMergeDetailed(reader, m.input) })
       } else {
         const result = await runMerge(reader, m.input, (phase, detail) => post({ type: 'progress', phase, ...(detail ? { detail } : {}) }))
         post({ type: 'done', result }, 'pack' in result ? [result.pack.buffer] : [])

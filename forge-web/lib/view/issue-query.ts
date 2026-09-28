@@ -17,6 +17,8 @@
  * lifts into the structured query; what is left is the free text.
  */
 
+import { plural } from './format'
+
 export type IssueStateFilter = 'open' | 'closed' | 'all'
 export type IssueSort = 'newest' | 'oldest' | 'comments'
 
@@ -79,7 +81,7 @@ export function parseIssueQuery(params: { get(name: string): string | null; getA
   const sort = params.get('sort')
   const page = Number.parseInt(params.get('page') ?? '', 10)
   const labels = [...new Set(params.getAll('label').map((l) => l.trim()).filter((l) => l !== '' && [...l].length <= LABEL_MAX))]
-  return {
+  const parsed: IssueListQuery = {
     state: STATES.includes(state as IssueStateFilter) ? (state as IssueStateFilter) : 'open',
     labels,
     author: identityParam(params.get('author'), ['me']),
@@ -89,6 +91,9 @@ export function parseIssueQuery(params: { get(name: string): string | null; getA
     q: (params.get('q') ?? '').slice(0, 200),
     page: Number.isInteger(page) && page >= 1 && page <= 10_000 ? page : 1,
   }
+  // A GitHub link carries its qualifiers inside `q` (`/issues?q=is:closed+label:bug`): lift
+  // them out. The app writes only free text to `q`, so this leaves its own URLs as they are.
+  return parsed.q.includes(':') ? { ...parseSearchText(parsed.q, parsed), page: parsed.page } : parsed
 }
 
 /** The URL params of a query, defaults omitted, in a stable order (so equal queries share a URL). */
@@ -116,6 +121,19 @@ export function hasFilters(q: IssueListQuery): boolean {
   return q.labels.length > 0 || q.author !== null || q.assignee !== null || q.mentions || q.q.trim() !== ''
 }
 
+/**
+ * The empty issue list's line. "Open the first issue" only when the repo has none at all: when
+ * the open list is empty but issues were closed (or the closed count is unknown), it says so
+ * rather than inviting the first issue (L-37).
+ */
+export function emptyIssuesBody(filtered: boolean, state: IssueStateFilter, closedCount: number | null): string {
+  if (filtered) return 'Try fewer filters.'
+  if (state === 'closed') return 'Nothing has been closed yet.'
+  if (state === 'all' || closedCount === 0) return 'Everything is quiet. Open the first issue to start the conversation.'
+  if (closedCount === null) return 'No issue is open right now.'
+  return `No issue is open right now; ${plural(closedCount, 'issue')} ${closedCount === 1 ? 'is' : 'are'} closed.`
+}
+
 /** Split `text` into tokens, keeping `"quoted phrases"` (and `label:"two words"`) whole. */
 function tokens(text: string): string[] {
   const out: string[] = []
@@ -126,13 +144,27 @@ function tokens(text: string): string[] {
 
 const unquote = (s: string): string => s.replace(/"/g, '')
 
+/** A qualifier this parser knows: a known key whose value is (or is not) one it can use. */
+const KNOWN_KEYS = new Set(['is', 'state', 'label', 'author', 'assignee', 'no', 'mentions', 'sort'])
+
 /**
  * Lift GitHub-style qualifiers out of search-box text into `base` (the rest of the query is
  * kept): `is:open|closed`, `state:…`, `label:x` (repeatable, quotes for spaces), `author:x`,
  * `assignee:x`, `no:assignee`, `mentions:@me`, `sort:created-desc|created-asc|comments-desc`.
- * `@me` means the viewer. An unknown or malformed qualifier stays in the free text.
+ * `@me` means the viewer. A qualifier with a known key overrides `base` only when its value
+ * resolves; one that does not (`author:alice`: only ids and `@me` work) is dropped from the
+ * free text and reported by {@link unresolvedQualifiers}. An unknown key stays free text.
  */
 export function parseSearchText(text: string, base: IssueListQuery = DEFAULT_ISSUE_QUERY): IssueListQuery {
+  return liftQualifiers(text, base).query
+}
+
+/** The known qualifiers in `text` whose values could not be used (for a note under the box). */
+export function unresolvedQualifiers(text: string): string[] {
+  return liftQualifiers(text, DEFAULT_ISSUE_QUERY).unresolved
+}
+
+function liftQualifiers(text: string, base: IssueListQuery): { query: IssueListQuery; unresolved: string[] } {
   let state = base.state
   const labels = [...base.labels]
   let author = base.author
@@ -140,6 +172,7 @@ export function parseSearchText(text: string, base: IssueListQuery = DEFAULT_ISS
   let mentions = base.mentions
   let sort = base.sort
   const free: string[] = []
+  const unresolved: string[] = []
   const who = (v: string, extra: readonly string[] = []): string | null => identityParam(v === '@me' ? 'me' : v.replace(/^@/, ''), ['me', ...extra])
   for (const tok of tokens(text)) {
     const at = tok.indexOf(':')
@@ -153,24 +186,29 @@ export function parseSearchText(text: string, base: IssueListQuery = DEFAULT_ISS
         else if (value !== 'issue') used = false
         break
       case 'label':
-        if (value !== '' && [...value].length <= LABEL_MAX && !labels.includes(value)) labels.push(value)
-        else used = value !== '' && labels.includes(value)
+        if (value !== '' && [...value].length <= LABEL_MAX) {
+          if (!labels.includes(value)) labels.push(value)
+        } else used = false
         break
-      case 'author':
-        author = who(value)
-        used = author !== null
+      case 'author': {
+        const id = who(value)
+        if (id !== null) author = id
+        else used = false
         break
-      case 'assignee':
-        assignee = who(value)
-        used = assignee !== null
+      }
+      case 'assignee': {
+        const id = who(value)
+        if (id !== null) assignee = id
+        else used = false
         break
+      }
       case 'no':
         if (value === 'assignee') assignee = 'none'
         else used = false
         break
       case 'mentions':
-        mentions = value === '@me' || value === 'me'
-        used = mentions
+        if (value === '@me' || value === 'me') mentions = true
+        else used = false
         break
       case 'sort':
         if (value === 'created-desc') sort = 'newest'
@@ -181,9 +219,11 @@ export function parseSearchText(text: string, base: IssueListQuery = DEFAULT_ISS
       default:
         used = false
     }
-    if (!used) free.push(tok)
+    if (used) continue
+    if (KNOWN_KEYS.has(key)) unresolved.push(tok)
+    else free.push(tok)
   }
-  return { ...base, state, labels, author, assignee, mentions, sort, q: free.join(' '), page: 1 }
+  return { query: { ...base, state, labels, author, assignee, mentions, sort, q: free.join(' '), page: 1 }, unresolved }
 }
 
 /** The query as search-box text, qualifiers first (the inverse of {@link parseSearchText}). */

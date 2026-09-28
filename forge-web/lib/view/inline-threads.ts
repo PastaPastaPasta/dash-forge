@@ -35,6 +35,19 @@ export interface PlacedThreads {
   readonly general: readonly CommentView[]
 }
 
+/** The replies of every inline thread, by the thread's root id (a reply to a reply included), oldest first. */
+export function repliesByRoot(comments: readonly CommentView[]): Map<string, CommentView[]> {
+  const byId = new Map(comments.map((c) => [c.id, c]))
+  const out = new Map<string, CommentView[]>()
+  for (const c of comments) {
+    if (c.replyTo === null) continue
+    const root = rootOf(c, byId)
+    if (root.anchor === null || root.id === c.id) continue
+    out.set(root.id, [...(out.get(root.id) ?? []), c])
+  }
+  return out
+}
+
 /** The ids of every comment that belongs to an inline thread (anchored roots and their replies). */
 export function inlineCommentIds(comments: readonly CommentView[]): string[] {
   const byId = new Map(comments.map((c) => [c.id, c]))

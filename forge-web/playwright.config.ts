@@ -23,6 +23,8 @@ const BUILD_ENV = `NEXT_PUBLIC_NETWORK=devnet NEXT_PUBLIC_DEVNET_NAME=${DEVNET} 
 
 export default defineConfig({
   testDir: './e2e',
+  // A spec's own identities start each run with fresh browser keys (full budget).
+  globalSetup: './e2e/global-setup.ts',
   // Real devnet round-trips (SDK connect + proof-verified reads) are slow; be generous.
   timeout: 90_000,
   expect: { timeout: 30_000 },
@@ -49,7 +51,7 @@ export default defineConfig({
     {
       // Safari's engine, for the flows whose storage and passkey behaviour differ there.
       name: 'webkit',
-      testMatch: /signin-resilience\.spec\.ts/,
+      testMatch: /(signin-resilience|prehydration)\.spec\.ts/,
       use: { ...devices['Desktop Safari'], viewport: { width: 1280, height: 900 } },
     },
     {

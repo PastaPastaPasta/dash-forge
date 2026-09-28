@@ -19,14 +19,15 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { CheckCircle2, MessageSquare, Pencil, Trash2 } from 'lucide-react'
 
-import { postComment, type AnchorInput, type RepoRef } from '@/lib/repo'
+import { commentFirsts, postComment, type AnchorInput, type RepoRef } from '@/lib/repo'
 import type { DraftComment } from '@/lib/repo'
-import { timeAgo, type CommentView } from '@/lib/view'
+import { plural, timeAgo, type CommentView } from '@/lib/view'
 import { anchorLabel, extendSelection, lineKey, placeThreads, rangeKeys, type InlineThread, type LineSelection } from '@/lib/view/inline-threads'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useIntent } from '@/hooks/use-intent'
+import { useFirstWrite } from '@/hooks/use-first-write'
 import { InlineCommentsContext, type InlineComments } from '@/components/repo/diff-view'
 import { Author } from '@/components/author'
 import { MarkdownView } from '@/components/markdown-view'
@@ -47,6 +48,26 @@ export interface ThreadActions {
   readonly viewer: string | null
   readonly onEdit: (comment: CommentView, body: string) => void
   readonly onDelete: (comment: CommentView) => void
+}
+
+/**
+ * Suggestions on the diff (review-parity R5, §4.5): which comments' suggestions this viewer can
+ * apply, the batch they collected, and what was already applied (by commit trailers).
+ */
+export interface SuggestionActions {
+  /** The viewer can move the PR branch (a writer of the source repo); else why not. */
+  readonly canApply: boolean
+  readonly why: string | null
+  /** The file lines a comment's suggestion would replace (the head's text), or null when unknown. */
+  readonly original: (c: CommentView) => readonly string[] | null
+  /** Whether `c`'s suggestion applies on the head (one block, the new side, this head). */
+  /** Why the comment's suggestion cannot be applied on the head, or null when it can. */
+  readonly unapplicable: (c: CommentView) => string | null
+  /** Comment id → the commit that applied it. */
+  readonly applied: ReadonlyMap<string, string>
+  readonly batch: ReadonlySet<string>
+  readonly onToggleBatch: (c: CommentView) => void
+  readonly onApply: (c: CommentView) => void
 }
 
 /** The viewer's pending review, as the diff needs it. */
@@ -74,6 +95,7 @@ export function InlineCommentsProvider({
   writeBlock = null,
   actions,
   pending,
+  suggestions,
   onLinesKnown,
   children,
 }: {
@@ -90,6 +112,8 @@ export function InlineCommentsProvider({
   actions?: ThreadActions
   /** The viewer's pending review; absent: no "Start a review". */
   pending?: PendingReview
+  /** Apply and batch suggestions; absent: suggestions render as diffs only. */
+  suggestions?: SuggestionActions
   /** Told which lines each loaded file's patch shows (`lineKey`s): re-anchoring a pending review uses it. */
   onLinesKnown?: (lines: ReadonlyMap<string, ReadonlySet<string>>) => void
   children: ReactNode
@@ -162,7 +186,7 @@ export function InlineCommentsProvider({
     }
   }, [])
 
-  const threadProps = { repo, pullId, onPosted, writeBlock, ...(actions ? { actions } : {}) }
+  const threadProps = { repo, pullId, onPosted, writeBlock, ...(actions ? { actions } : {}), ...(suggestions ? { suggestions } : {}) }
   const value = useMemo<InlineComments>(
     () => ({
       canComment: writeBlock === null,
@@ -209,14 +233,14 @@ export function InlineCommentsProvider({
     }),
     // threadProps is rebuilt from the listed values.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [placed, selection, ranges, pendingAt, pending, repo, pullId, headOid, onPosted, report, writeBlock, actions],
+    [placed, selection, ranges, pendingAt, pending, repo, pullId, headOid, onPosted, report, writeBlock, actions, suggestions],
   )
 
   return (
     <InlineCommentsContext.Provider value={value}>
       {placed.fileLevel.length > 0 ? (
         <details open className="mb-3 rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="file-comments">
-          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 dark:text-anvil-300">
+          <summary className="flex cursor-pointer items-center px-3 py-2 text-dense text-anvil-700 coarse:min-h-11 dark:text-anvil-300">
             <MessageSquare className="mr-1.5 inline h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
             File comments ({placed.fileLevel.length})
           </summary>
@@ -229,9 +253,9 @@ export function InlineCommentsProvider({
       ) : null}
       {unshown.length > 0 ? (
         <details className="mb-3 rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="unshown-comments">
-          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 dark:text-anvil-300">
+          <summary className="flex cursor-pointer items-center px-3 py-2 text-dense text-anvil-700 coarse:min-h-11 dark:text-anvil-300">
             <MessageSquare className="mr-1.5 inline h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
-            {unshown.length} comment thread{unshown.length === 1 ? '' : 's'} on lines not shown below
+            {plural(unshown.length, 'comment thread')} on lines not shown below
           </summary>
           <div className="space-y-2 border-t border-anvil-200 px-3 py-2 dark:border-anvil-800">
             {unshown.map((t) => (
@@ -242,9 +266,9 @@ export function InlineCommentsProvider({
       ) : null}
       {pending !== undefined && pending.elsewhere.length > 0 ? (
         <details open className="mb-3 rounded-lg border border-caution/40 dark:border-caution/40" data-testid="pending-elsewhere">
-          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 dark:text-anvil-300">
+          <summary className="flex cursor-pointer items-center px-3 py-2 text-dense text-anvil-700 coarse:min-h-11 dark:text-anvil-300">
             <MessageSquare className="mr-1.5 inline h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
-            {pending.elsewhere.length} pending comment{pending.elsewhere.length === 1 ? '' : 's'} on an older version
+            {plural(pending.elsewhere.length, 'pending comment')} on an older version
           </summary>
           <div className="space-y-2 border-t border-anvil-200 px-3 py-2 dark:border-anvil-800">
             {pending.elsewhere.map((d) => (
@@ -266,9 +290,9 @@ export function InlineCommentsProvider({
       ) : null}
       {placed.outdatedCount > 0 ? (
         <details className="mb-3 rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="outdated-comments">
-          <summary className="cursor-pointer px-3 py-2 text-dense text-anvil-700 dark:text-anvil-300">
+          <summary className="flex cursor-pointer items-center px-3 py-2 text-dense text-anvil-700 coarse:min-h-11 dark:text-anvil-300">
             <MessageSquare className="mr-1.5 inline h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
-            {placed.outdatedCount} comment{placed.outdatedCount === 1 ? '' : 's'} on an older version
+            {plural(placed.outdatedCount, 'comment')} on an older version
           </summary>
           <div className="space-y-2 border-t border-anvil-200 px-3 py-2 dark:border-anvil-800">
             {placed.outdated.map((t) => (
@@ -288,6 +312,7 @@ interface ThreadProps {
   onPosted: (id?: string) => void
   writeBlock: string | null
   actions?: ThreadActions
+  suggestions?: SuggestionActions
 }
 
 /** A thread shown away from its line, headed by where it points. */
@@ -309,7 +334,7 @@ function AnchoredThread({ thread, ...rest }: ThreadProps & { thread: InlineThrea
   )
 }
 
-function Thread({ thread, repo, pullId, onPosted, writeBlock, actions }: ThreadProps & { thread: InlineThread }): JSX.Element {
+function Thread({ thread, repo, pullId, onPosted, writeBlock, actions, suggestions }: ThreadProps & { thread: InlineThread }): JSX.Element {
   const [replying, setReplying] = useState(false)
   const resolved = actions?.resolved.has(thread.root.id) ?? false
   const [expanded, setExpanded] = useState(false)
@@ -317,7 +342,7 @@ function Thread({ thread, repo, pullId, onPosted, writeBlock, actions }: ThreadP
     return (
       <div className="flex flex-wrap items-center gap-2 rounded-md border border-anvil-200 bg-white px-3 py-1.5 text-[12px] text-anvil-600 dark:border-anvil-750 dark:bg-anvil-950 dark:text-anvil-400" data-testid="thread-collapsed" data-root={thread.root.id}>
         <CheckCircle2 className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />
-        <span>Resolved conversation ({1 + thread.replies.length} comment{thread.replies.length === 0 ? '' : 's'})</span>
+        <span>Resolved conversation ({plural(1 + thread.replies.length, 'comment')})</span>
         <Button size="sm" variant="ghost" onClick={() => setExpanded(true)}>
           Show
         </Button>
@@ -327,7 +352,7 @@ function Thread({ thread, repo, pullId, onPosted, writeBlock, actions }: ThreadP
   return (
     <div className="rounded-md border border-anvil-200 bg-white dark:border-anvil-750 dark:bg-anvil-950" data-testid="thread" data-root={thread.root.id} data-resolved={resolved ? 'true' : 'false'}>
       {[thread.root, ...thread.replies].map((c) => (
-        <CommentBlock key={c.id} comment={c} actions={actions} writeBlock={writeBlock} />
+        <CommentBlock key={c.id} comment={c} actions={actions} writeBlock={writeBlock} {...(suggestions ? { suggestions } : {})} />
       ))}
       <div className="flex flex-wrap items-center gap-2 px-3 py-1.5">
         {replying ? (
@@ -367,7 +392,7 @@ function Thread({ thread, repo, pullId, onPosted, writeBlock, actions }: ThreadP
 }
 
 /** One comment of a thread, with its author's Edit and Delete. */
-function CommentBlock({ comment: c, actions, writeBlock }: { comment: CommentView; actions?: ThreadActions; writeBlock: string | null }): JSX.Element {
+function CommentBlock({ comment: c, actions, writeBlock, suggestions }: { comment: CommentView; actions?: ThreadActions; writeBlock: string | null; suggestions?: SuggestionActions }): JSX.Element {
   const [editing, setEditing] = useState<string | null>(null)
   const own = actions !== undefined && actions.viewer !== null && actions.viewer === c.author && writeBlock === null
   return (
@@ -409,10 +434,48 @@ function CommentBlock({ comment: c, actions, writeBlock }: { comment: CommentVie
         </div>
       ) : (
         <div className="mt-1">
-          <MarkdownView source={c.body} />
+          <SuggestedBody comment={c} suggestions={suggestions} />
         </div>
       )}
     </div>
+  )
+}
+
+/** A comment body: its ```suggestion blocks as diffs, with Apply / Add to batch / "Applied in". */
+function SuggestedBody({ comment: c, suggestions }: { comment: CommentView; suggestions?: SuggestionActions | undefined }): JSX.Element {
+  const has = c.body.includes('```suggestion') || c.body.includes('~~~suggestion')
+  const original = has && suggestions ? suggestions.original(c) : null
+  const ctx = useMemo(() => (has ? { original } : null), [has, original])
+  if (!has || !suggestions) return <MarkdownView source={c.body} suggestion={ctx} />
+  const applied = suggestions.applied.get(c.id)
+  const refused = suggestions.unapplicable(c)
+  const inBatch = suggestions.batch.has(c.id)
+  return (
+    <>
+      <MarkdownView source={c.body} suggestion={ctx} />
+      <div className="mt-1 flex flex-wrap items-center gap-2 text-[12px]" data-testid="suggestion-actions" data-comment={c.id}>
+        {applied ? (
+          <span className="inline-flex items-center gap-1 text-verify-700 dark:text-verify-400" data-testid="suggestion-applied">
+            <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> Applied in <Oid value={applied} chars={7} copyable={false} />
+          </span>
+        ) : refused !== null ? (
+          <span className="text-anvil-500 dark:text-anvil-400">{refused}</span>
+        ) : suggestions.canApply ? (
+          <>
+            <Button size="sm" variant="primary" onClick={() => suggestions.onApply(c)}>
+              Apply suggestion
+            </Button>
+            <Button size="sm" variant="outline" aria-pressed={inBatch} onClick={() => suggestions.onToggleBatch(c)}>
+              {inBatch ? 'Remove from batch' : 'Add to batch'}
+            </Button>
+          </>
+        ) : (
+          <span className="text-anvil-500 dark:text-anvil-400" title={suggestions.why ?? undefined}>
+            {suggestions.why}
+          </span>
+        )}
+      </div>
+    </>
   )
 }
 
@@ -484,17 +547,32 @@ function Composer({
   onDone: (id?: string) => void
   onCancel: () => void
 }): JSX.Element {
-  const { sdk } = useSdk()
-  const { signer } = useAuth()
+  const { sdk, ready } = useSdk()
+  const { identity, signer } = useAuth()
   const guard = useWriteGuard()
   const draft = useIntent()
   const [body, setBody] = useState('')
   const [posting, setPosting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const cost = composeCost(repo, 'comment', {
-    body: body.trim(),
-    ...(anchor ? { path: anchor.path } : {}),
-  })
+  // Which subtrees this comment would create, read once the viewer starts typing, so the price
+  // shown before "Add comment" is as tight as the conversation composer's (L-38, D-011). A reply
+  // may be its root's first, which opens the `reply` subtree no surcharge measures: keep the
+  // thread surcharge in for it, so the preview stays an upper bound.
+  const read = useFirstWrite(
+    () => commentFirsts(sdk!, repo, pullId, identity!),
+    [pullId, identity ?? ''],
+    body !== '' && ready && sdk !== null && identity !== null,
+  )
+  const first = replyTo ? { ...read, target: true } : read
+  const cost = composeCost(
+    repo,
+    'comment',
+    {
+      body: body.trim(),
+      ...(anchor ? { path: anchor.path } : {}),
+    },
+    first,
+  )
   const tooLong = composeTooLong(repo, 'comment', { body: body.trim(), ...(anchor ? { path: anchor.path } : {}) })
   const submit = async (): Promise<void> => {
     if (posting || body.trim() === '' || tooLong || !guard.check(cost, 'collab') || !sdk || !signer) return

@@ -10,11 +10,11 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import { base64ToHex, bytesToBase64 } from '../sdk'
+import { base64ToHex, bytesToBase64, hexToBase64 } from '../sdk'
 import { DOC, type RepoRef } from './contract'
-import { hasMissingParent, readRefs } from './refs'
+import { hasMissingParent, keysetScan, keysetSplits, readRefs, splitHashRange } from './refs'
 
 const REPO: RepoRef = {
   forge: { core: 'CORE', collab: 'COLLAB', group: 'G' },
@@ -72,7 +72,7 @@ const hexOf = (d: Doc): string => base64ToHex(d['refNameHash'] as string)
  * (`refNameHash`, then `$id` — `$createdAt` being absent). `dropOnKeyset` removes one `$id`
  * from keyset pages only, standing in for a node answering a correct query incompletely.
  */
-function mockDrive(rows: Doc[], opts: { dropOnKeyset?: string; ignoreRange?: boolean } = {}) {
+function mockDrive(rows: Doc[], opts: { dropOnKeyset?: string; ignoreRange?: boolean; latencyMs?: number } = {}) {
   const sorted = [...rows].sort((a, b) =>
     hexOf(a) < hexOf(b) ? -1 : hexOf(a) > hexOf(b) ? 1 : String(a['$id']) < String(b['$id']) ? -1 : 1,
   )
@@ -101,6 +101,11 @@ function mockDrive(rows: Doc[], opts: { dropOnKeyset?: string; ignoreRange?: boo
         else if (q.documentTypeName === DOC.refUpdate) {
           const where = q.where ?? []
           const gt = where.find((w) => w[1] === '>')
+          // Drive checks a `>`/`<=` pair's bounds as base64 text (not byte order) and refuses
+          // pairs that compare backwards: a reader must never send one.
+          if (where.filter((w) => w[0] === 'refNameHash' && w[1] !== '==').length > 1) {
+            return Promise.reject(new Error('query: multiple range clauses error: lower bounds must be under upper bounds'))
+          }
           // Every query is scoped `repoId ==` (one repo here); the ref equality is the other `==`.
           const eq = where.find((w) => w[1] === '==' && w[0] === 'refNameHash')
           let docs = sorted
@@ -115,7 +120,11 @@ function mockDrive(rows: Doc[], opts: { dropOnKeyset?: string; ignoreRange?: boo
           }
           out = page(docs, q)
         }
-        return Promise.resolve(new Map(out.map((d) => [String(d['$id']), d])))
+        const result = new Map(out.map((d) => [String(d['$id']), d]))
+        // `latencyMs`: every query takes that long, so a test can count serial round trips.
+        return opts.latencyMs === undefined
+          ? Promise.resolve(result)
+          : new Promise((resolve) => setTimeout(() => resolve(result), opts.latencyMs))
       },
     },
   } as unknown as EvoSDK
@@ -169,7 +178,8 @@ describe('readRefs keyset scan', () => {
     }
     const pages = seen.filter(isKeysetPage)
     expect(pages.every((q) => q.startAfter === undefined)).toBe(true)
-    expect(pages.length).toBeLessThanOrEqual(3)
+    // The first page, then the rest as parallel ranges (one short page each here).
+    expect(pages.length).toBeLessThanOrEqual(1 + 4)
     // A consistent scan never falls back to the reflog read.
     expect(seen.some((q) => q.documentTypeName === DOC.refUpdate && q.orderBy?.[0]?.[0] === '$createdAt' && !q.where?.length)).toBe(false)
   })
@@ -214,6 +224,8 @@ describe('readRefs keyset scan', () => {
     // A node ignoring `refNameHash > last` serves the first page again: stop at once.
     const { sdk, seen } = mockDrive(nightlyLike(), { ignoreRange: true })
     const refs = await readRefs(sdk, REPO)
+    // The first page reached past half the key space, so the rest is read on, not split: the
+    // second page comes back out of range and the scan stops there.
     expect(seen.filter(isKeysetPage).filter((q) => q.documentTypeName === DOC.refUpdate)).toHaveLength(2)
     expect(refs).toHaveLength(60)
     for (let r = 1; r <= 60; r++) {
@@ -222,6 +234,116 @@ describe('readRefs keyset scan', () => {
         oid: oidHex(1 + (r % 4)),
       })
     }
+  })
+})
+
+describe('readRefs keyset scan on a large repo (L-15)', () => {
+  /** `n` refs of one update each, `$id`s in hash order. */
+  const manyRefs = (n: number): Doc[] => Array.from({ length: n }, (_, r) => updateDoc(`id${String(r).padStart(6, '0')}`, r + 1, 1))
+
+  it('reads the rest of the key space in parallel ranges: a few serial rounds, not one per page', async () => {
+    vi.useFakeTimers()
+    try {
+      const { sdk, seen } = mockDrive(manyRefs(700), { latencyMs: 100 })
+      let done = false
+      const reading = readRefs(sdk, REPO).then((refs) => {
+        done = true
+        return refs
+      })
+      let rounds = 0
+      while (!done && rounds < 50) {
+        await vi.advanceTimersByTimeAsync(100)
+        rounds++
+      }
+      const refs = await reading
+      expect(refs).toHaveLength(700)
+      // Serially this is 8 keyset pages; split four ways it is the first page, then about two
+      // pages per range (the config read runs alongside).
+      expect(rounds).toBeLessThanOrEqual(4)
+      // The ranges' queries overlap by up to a page (each reads past its ceiling), but each keeps
+      // only the rows in its own range: 700 refs, none twice, and never a cursor.
+      const keyset = seen.filter(isKeysetPage)
+      expect(keyset.every((q) => q.startAfter === undefined)).toBe(true)
+      expect(keyset.every((q) => (q.where ?? []).filter((w) => w[0] === 'refNameHash').length <= 1)).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('abandons a split scan when a range comes back out of range', async () => {
+    // 700 refs: the first page reaches about 1/7 of the key space, so the rest is split; a node
+    // ignoring `refNameHash >` answers every range with the first page again.
+    const { sdk, seen } = mockDrive(manyRefs(700), { ignoreRange: true })
+    const refs = await readRefs(sdk, REPO)
+    const keyset = seen.filter(isKeysetPage).filter((q) => q.documentTypeName === DOC.refUpdate)
+    // The first page, then one page per range, each refused at once: no range reads on.
+    expect(keyset).toHaveLength(1 + 4)
+    // The scan is discarded and the answer comes from the reflog read alone, still whole.
+    expect(refs).toHaveLength(700)
+  })
+
+  it('sizes the split from how far the first page reached', () => {
+    // A first page reaching 1/8 of the key space: ~7 pages left, the cap of 4 ranges.
+    expect(keysetSplits('2' + '0'.repeat(63))).toBe(4)
+    // Reaching 40%: ~1.5 pages left, 2 ranges.
+    expect(keysetSplits('66' + '0'.repeat(62))).toBe(2)
+    // Reaching 60% or more: under a page left, no split.
+    expect(keysetSplits('a' + '0'.repeat(63))).toBe(1)
+  })
+
+  it('covers the whole key space: every hash falls in exactly one range', () => {
+    const after = '0'.repeat(64)
+    const ceilings = splitHashRange(after, 4)
+    const bounds = [after, ...ceilings, 'f'.repeat(64)]
+    for (let r = 1; r <= 200; r++) {
+      const h = refHashHex(r)
+      const inRanges = bounds.slice(1).filter((ceil, i) => h > (bounds[i] as string) && h <= ceil)
+      expect(inRanges).toHaveLength(1)
+    }
+  })
+
+  it('keeps a ref exactly at the ceiling in its range and leaves the next one to the next range', async () => {
+    let n = 0
+    const nextId = (): string => `id${String(n++).padStart(6, '0')}`
+    const rows = Array.from({ length: 30 }, (_, r) => chain(r + 1, 2, nextId)).flat()
+    const { sdk } = mockDrive(rows)
+    const hexes = [...new Set(rows.map(hexOf))].sort()
+    const ceiling = hexes[12] as string
+    const got = await keysetScan(sdk, REPO, DOC.refUpdate, { hex: hexes[3] as string, b64: hexToBase64(hexes[3] as string) }, ceiling)
+    const refsGot = [...new Set((got ?? []).map(hexOf))].sort()
+    expect(refsGot).toEqual(hexes.slice(4, 13))
+    expect(got).toHaveLength(9 * 2)
+  })
+
+  it('reads a page-filling ref inside a bounded range on its own, and skips one above the ceiling', async () => {
+    let n = 0
+    const nextId = (): string => `id${String(n++).padStart(6, '0')}`
+    const seeds = [1, 2, 3, 4, 5, 6]
+    const byHex = new Map(seeds.map((s) => [refHashHex(s), s]))
+    const sorted = [...byHex.keys()].sort()
+    // In hash order: a, BIG (150 updates), b, | ceiling | BIG2 (150 updates), c, d.
+    const [a, big, b, big2, c, d] = sorted.map((h) => byHex.get(h) as number) as [number, number, number, number, number, number]
+    const rows = [...chain(a, 1, nextId), ...chain(big, 150, nextId), ...chain(b, 2, nextId), ...chain(big2, 150, nextId), ...chain(c, 1, nextId), ...chain(d, 1, nextId)]
+    const { sdk, seen } = mockDrive(rows)
+    const got = await keysetScan(sdk, REPO, DOC.refUpdate, { hex: '0'.repeat(64), b64: hexToBase64('0'.repeat(64)) }, sorted[2] as string)
+    expect(got).toHaveLength(1 + 150 + 2)
+    const eqReads = seen.filter((q) => q.where?.some((w) => w[0] === 'refNameHash' && w[1] === '=='))
+    // BIG is read by equality (two pages of it); BIG2, above the ceiling, never is.
+    const eqRefs = new Set(eqReads.map((q) => base64ToHex(q.where?.find((w) => w[1] === '==' && w[0] === 'refNameHash')?.[2] as string)))
+    expect([...eqRefs]).toEqual([refHashHex(big)])
+    expect(big2).not.toBe(big)
+  })
+
+  it('splits the key space above a bound into ranges that are increasing 32-byte keys', () => {
+    const after = refHashHex(3)
+    const ceilings = splitHashRange(after, 4)
+    expect(ceilings).toHaveLength(3)
+    const all = [after, ...ceilings]
+    for (let i = 1; i < all.length; i++) {
+      expect(all[i]).toHaveLength(64)
+      expect((all[i] as string) > (all[i - 1] as string)).toBe(true)
+    }
+    expect(splitHashRange('f'.repeat(64), 4)).toEqual([])
   })
 })
 

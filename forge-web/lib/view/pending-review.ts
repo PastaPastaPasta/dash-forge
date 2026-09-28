@@ -9,6 +9,7 @@
 
 import type { AnchorInput, DraftComment, ReviewDraft, VerdictInput } from '../repo'
 import { previewCreate, previewCredits, type CostPreview } from '../sdk'
+import { plural } from './format'
 
 /**
  * Where a pending review lives, said wherever one is shown: unlike a GitHub pending review it is
@@ -130,6 +131,32 @@ export function splitDraftComments(d: ReviewDraft | null, headOid: string): { on
   return { onLines, elsewhere }
 }
 
+/**
+ * Whether a read of the PR shows a submitted review whole: the review and every comment it
+ * wrote. A node can return the review a block before its last comments, so the page keeps
+ * re-reading until all of them show (seen live: one of two threads, until a reload).
+ */
+/**
+ * The wait after a submit before the page stops re-reading and says what is still missing:
+ * 1.5 s, growing ×1.5 to 10 s at most, 9 times (about 60 s in all).
+ */
+export const SUBMIT_WAIT = { attempts: 9, delayMs: 1500, backoff: 1.5, maxDelayMs: 10_000 } as const
+
+/** How many of a submit's comments the page shows (the review itself aside). */
+export function commentsShown(thread: { readonly comments: readonly { readonly id: string }[] }, commentIds: readonly string[]): number {
+  const ids = new Set(thread.comments.map((c) => c.id))
+  return commentIds.filter((id) => ids.has(id)).length
+}
+
+export function reviewShows(
+  thread: { readonly reviews: readonly { readonly id: string }[]; readonly comments: readonly { readonly id: string }[] },
+  submitted: { readonly reviewId: string; readonly commentIds: readonly string[] },
+): boolean {
+  if (!thread.reviews.some((r) => r.id === submitted.reviewId)) return false
+  const ids = new Set(thread.comments.map((c) => c.id))
+  return submitted.commentIds.every((id) => ids.has(id))
+}
+
 /** What the submit will write: the review and each comment, priced as the composers do. */
 export function draftCost(d: ReviewDraft): { documents: number; cost: CostPreview } {
   const review = previewCreate('review', { body: d.summary })
@@ -143,6 +170,6 @@ export function draftCost(d: ReviewDraft): { documents: number; cost: CostPrevie
 export function partialSubmitMessage(d: ReviewDraft, verdictLabel: string): string {
   const landed = d.comments.filter((c) => c.landedId !== undefined).length
   const total = d.comments.length
-  if (d.reviewId === undefined) return `Nothing was written yet; your ${verdictLabel} and its ${total} comment${total === 1 ? '' : 's'} are still pending in this browser.`
-  return `Your ${verdictLabel} is recorded with ${landed} of ${total} comment${total === 1 ? '' : 's'}; ${total - landed} ${total - landed === 1 ? 'is' : 'are'} still pending in this browser. Retry to finish it: nothing is written twice.`
+  if (d.reviewId === undefined) return `Nothing was written yet; your ${verdictLabel} and its ${plural(total, 'comment')} are still pending in this browser.`
+  return `Your ${verdictLabel} is recorded with ${landed} of ${plural(total, 'comment')}; ${total - landed} ${total - landed === 1 ? 'is' : 'are'} still pending in this browser. Retry to finish it: nothing is written twice.`
 }

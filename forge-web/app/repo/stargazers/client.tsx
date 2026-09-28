@@ -8,7 +8,7 @@ export function StargazersClient(): JSX.Element {
   const addr = useRepoAddress()
   return (
     <RepoScaffold addr={addr}>
-      {(home) => <StargazersContent home={home} />}
+      {(home) => <StargazersContent home={home} addr={addr} />}
     </RepoScaffold>
   )
 }

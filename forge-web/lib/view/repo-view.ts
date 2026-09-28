@@ -105,27 +105,33 @@ export async function loadPrivateHome(sdk: EvoSDK, home: RepoHome, session: Priv
 
 /**
  * Resolve + compose a repo home view-model from its route address (`owner`, `name`, and an
- * optional `?repo=` pin). Returns null if nothing resolves.
+ * optional `?repo=` pin). Returns null if nothing resolves. `onResolved` is told the repo as
+ * soon as its document is read, before the refs: a code page starts its browse index then, so
+ * the two run side by side instead of one after the other (L-15).
  */
 export async function loadRepoHome(
   sdk: EvoSDK,
   params: RepoAddressParams & { readonly network: Network },
+  onResolved?: (repo: RepoRef) => void,
 ): Promise<RepoHome | null> {
   const resolved = await resolveAnyRepo(sdk, params)
   if (resolved === null) return null
   const { repo, doc: v2 } = resolved
+  onResolved?.(repo)
 
-  // One config query serves both the current config and the history readRefs folds with.
-  const bundlePromise = readConfigBundle(sdk, repo)
+  // One config query serves both the current config and the history readRefs folds with. The
+  // public gateway the owner advertises (`config.backend.uris`, `https://<gw>/ipfs/`) reaches the
+  // node holding this repo's IPFS content: noted the moment the config lands, so a browse index
+  // prefetched alongside (`onResolved`) tries it first too.
+  const bundlePromise = readConfigBundle(sdk, repo).then((bundle) => {
+    noteRepoGateways(repoKey(repo), 'config', bundle.config?.backendUris ?? [])
+    return bundle
+  })
   const [{ config }, refs, starCount] = await Promise.all([
     bundlePromise,
     readRefs(sdk, repo, undefined, bundlePromise.then((b) => b.history)),
     readStarCount(sdk, repo.forge, repo.repoId).catch(() => null),
   ])
-  // The public gateway the owner advertises (`config.backend.uris`, `https://<gw>/ipfs/`)
-  // reaches the node holding this repo's IPFS content: every read of it tries that first.
-  noteRepoGateways(repoKey(repo), 'config', config?.backendUris ?? [])
-
   return {
     repo,
     v2,

@@ -9,7 +9,6 @@
 import type { ReactNode } from 'react'
 import { GitBranch } from 'lucide-react'
 import Link from 'next/link'
-import { AppShell } from '@/components/app-shell'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
 import { Button } from '@/components/ui/button'
@@ -30,6 +29,7 @@ export function RepoScaffold({
   rail = true,
   refParam = '',
   sealedOk = false,
+  browse = false,
 }: {
   addr: RepoAddress
   /** The page body; `reload` re-reads the repo home (after a write that changes it). */
@@ -42,8 +42,10 @@ export function RepoScaffold({
    * public). Every other page shows the private state instead of its content (§6.3).
    */
   sealedOk?: boolean
+  /** The page reads code (home, tree, blob, commits): start the browse index with the refs. */
+  browse?: boolean
 }): JSX.Element {
-  const { data, loading, error, settled, ready, reload } = useRepoHome(addr)
+  const { data, loading, error, settled, ready, reload } = useRepoHome(addr, { browse })
   const { status: sdkStatus, retry: retrySdk } = useSdk()
   // A private repo is re-read through the viewer's decryption session (or shown as sealed).
   const privateHome = usePrivateHome(data ?? null, addr)
@@ -51,22 +53,22 @@ export function RepoScaffold({
 
   if (!addr.owner || (!addr.name && !addr.repoId)) {
     return (
-      <AppShell wide>
+      <>
         <EmptyState
           icon={GitBranch}
           title="No repo addressed"
           body="This page needs ?owner= and &name= in the URL."
           action={<Link href="/"><Button variant="primary">Discover repos</Button></Link>}
         />
-      </AppShell>
+      </>
     )
   }
 
   if (!isForgeDeployed()) {
     return (
-      <AppShell wide>
+      <>
         <NotDeployedState />
-      </AppShell>
+      </>
     )
   }
 
@@ -75,7 +77,7 @@ export function RepoScaffold({
   // way the connection retries with backoff, and "Try again" reconnects now.
   const offline = sdkStatus.phase === 'error' ? <UnreachableBanner status={sdkStatus} onRetry={retrySdk} cached={data != null} /> : null
   if (offline !== null && data == null) {
-    return <AppShell wide>{offline}</AppShell>
+    return offline
   }
 
   // While the SDK connects (or a cold resolve is in flight) show the shell — never flash
@@ -84,45 +86,45 @@ export function RepoScaffold({
   // its real state immediately, even while a background revalidation is still loading.
   if (offline === null && (!ready || (loading && !settled))) {
     return (
-      <AppShell wide>
+      <>
         {ready ? <LoadingBlock label={`Resolving ${addr.name}`} /> : <ConnectingBlock status={sdkStatus} />}
-      </AppShell>
+      </>
     )
   }
 
   if (error) {
     return (
-      <AppShell wide>
+      <>
         <ErrorState message={error} onRetry={reload} />
-      </AppShell>
+      </>
     )
   }
 
   if (data === null) {
     return (
-      <AppShell wide>
+      <>
         <EmptyState
           icon={GitBranch}
           title="Repo not found"
           body={`No repo ${addr.owner}/${addr.name} exists on this network.`}
           action={<Link href="/"><Button variant="primary">Discover repos</Button></Link>}
         />
-      </AppShell>
+      </>
     )
   }
 
   if (privateHome?.error) {
     return (
-      <AppShell wide>
+      <>
         <ErrorState title="Couldn't open this private repo" message={privateHome.error} onRetry={privateHome.retry} />
-      </AppShell>
+      </>
     )
   }
   if (privateHome === null || privateHome.pending) {
     return (
-      <AppShell wide>
+      <>
         <LoadingBlock label="Checking membership and keys" />
-      </AppShell>
+      </>
     )
   }
   const home = privateHome.home
@@ -131,7 +133,7 @@ export function RepoScaffold({
   // that made them (`lib/view/private-nav.ts`).
   if (expiredLink) {
     return (
-      <AppShell wide>
+      <>
         {offline}
         <RepoHeader home={home} addr={addr} />
         <EmptyState
@@ -140,7 +142,7 @@ export function RepoScaffold({
           body="File and branch names of a private repo are kept out of links. Open the repo and browse to it again."
           action={<Link href={repoHref('/repo', addr)}><Button variant="primary">Open the repo</Button></Link>}
         />
-      </AppShell>
+      </>
     )
   }
 
@@ -153,17 +155,17 @@ export function RepoScaffold({
   const sealed = home.repo.visibility === 'private' && home.private?.access !== 'member'
   if (sealed && !sealedOk) {
     return (
-      <AppShell wide>
+      <>
         {offline}
         <RepoHeader home={home} addr={addr} />
         <PrivateBanner home={home} />
         <PrivateRepoState repo={home.repo} addr={addr} access={home.private?.access ?? 'outsider'} />
-      </AppShell>
+      </>
     )
   }
 
   return (
-    <AppShell wide>
+    <>
       {offline}
       <RepoHeader home={home} addr={addr} />
       <PrivateBanner home={home} />
@@ -175,6 +177,6 @@ export function RepoScaffold({
       ) : (
         <div className="min-w-0">{children(home, reload)}</div>
       )}
-    </AppShell>
+    </>
   )
 }

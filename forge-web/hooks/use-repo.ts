@@ -20,12 +20,12 @@ import { useCallback, useRef } from 'react'
 
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
-import { invalidateBrowseContext, loadRepoHome, type RepoHome } from '@/lib/view'
+import { invalidateBrowseContext, loadBrowseContextCached, loadRepoHome, type RepoHome } from '@/lib/view'
 import { awaitingOwnRefMoves, forgetOwnRefMoves, showsOwnRefMoves } from '@/lib/view/own-ref-moves'
 import { retryUntil, retryWhileMissing } from '@/lib/view/retry'
 import { useParam } from '@/hooks/use-query-param'
 import { forgetPrivateHome } from '@/hooks/use-private-home'
-import { onRepoContentWritten, repoKey } from '@/lib/repo'
+import { onRepoContentWritten, repoKey, type RepoRef } from '@/lib/repo'
 import type { Network } from '@/lib/constants'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { evoSdkService, isUnreachableError, type SdkStatus } from '@/lib/sdk'
@@ -85,8 +85,19 @@ onRepoContentWritten((repo) => {
 /** Read attempts (1.5 s apart) a home read gets to show a ref this tab just moved (L-09). */
 const OWN_MOVE_ATTEMPTS = 8
 
-function startLoad(sdk: EvoSDK, key: string, network: Network, addr: RepoAddress): HomeCacheEntry {
-  const load = (): Promise<RepoHome | null> => loadRepoHome(sdk, { network, ...addr })
+/**
+ * Start a public repo's browse context the moment its document is read, alongside the refs
+ * (L-15): a code page needs both, and one after the other was the cold home's longest chain.
+ * The session browse cache keeps it for the page's reader. A private repo's needs its session.
+ */
+function prefetchBrowse(sdk: EvoSDK): (repo: RepoRef) => void {
+  return (repo) => {
+    if (repo.visibility !== 'private') loadBrowseContextCached(sdk, repo).catch(() => undefined)
+  }
+}
+
+function startLoad(sdk: EvoSDK, key: string, network: Network, addr: RepoAddress, browse: boolean): HomeCacheEntry {
+  const load = (): Promise<RepoHome | null> => loadRepoHome(sdk, { network, ...addr }, browse ? prefetchBrowse(sdk) : undefined)
   // Zero extra reads unless this tab is waiting for its own ref move to show.
   const shows = (home: RepoHome | null): boolean => home === null || showsOwnRefMoves(home.repo, [...home.branches, ...home.tags])
   const attempts = awaitingOwnRefMoves() ? OWN_MOVE_ATTEMPTS : 0
@@ -110,7 +121,7 @@ function startLoad(sdk: EvoSDK, key: string, network: Network, addr: RepoAddress
   return entry
 }
 
-function loadRepoHomeCached(sdk: EvoSDK, network: Network, addr: RepoAddress): Promise<RepoHome | null> {
+function loadRepoHomeCached(sdk: EvoSDK, network: Network, addr: RepoAddress, browse: boolean): Promise<RepoHome | null> {
   const key = homeCacheKey(network, addr)
   const hit = homeCache.get(key)
   if (hit !== undefined && Date.now() - hit.at < HOME_CACHE_TTL_MS) {
@@ -119,7 +130,7 @@ function loadRepoHomeCached(sdk: EvoSDK, network: Network, addr: RepoAddress): P
     // caller's data was already seeded synchronously from the stale value.
     if (fresh || hit.settled === undefined) return hit.promise
   }
-  return startLoad(sdk, key, network, addr).promise
+  return startLoad(sdk, key, network, addr, browse).promise
 }
 
 /** The cached settled home for an address, if any — wrapper disambiguates a cached
@@ -131,7 +142,8 @@ function peekRepoHome(network: Network, addr: RepoAddress): { value: RepoHome | 
   return hit.settled
 }
 
-export function useRepoHome(addr: RepoAddress): UseRepoResult {
+/** `browse`: the page reads code, so the repo's browse index starts loading with the refs. */
+export function useRepoHome(addr: RepoAddress, { browse = false }: { readonly browse?: boolean } = {}): UseRepoResult {
   const { sdk, ready, network, status: sdkStatus, recoveries } = useSdk()
   const enabled = ready && sdk !== null && addr.owner !== '' && (addr.name !== '' || !!addr.repoId)
   const key = homeCacheKey(network, addr)
@@ -143,7 +155,7 @@ export function useRepoHome(addr: RepoAddress): UseRepoResult {
   const state = useAsync<RepoHome | null>(
     () =>
       retryWhileMissing(async () => {
-        const home = await loadRepoHomeCached(sdk!, network, addr)
+        const home = await loadRepoHomeCached(sdk!, network, addr, browse)
         if (home === null && justCreated) homeCache.delete(key)
         return home
       }, justCreated ? 8 : 0).catch((e: unknown) => {
