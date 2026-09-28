@@ -73,8 +73,9 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   protectedRefUpdate: 45_000_000,
   // Not yet measured from the browser: forge-core's per-byte model (fixed shape plus the
   // storage of its byte fields, which `textBytes` does not count — see `estimateBytesCredits`).
+  // A chunk's fixed cost is `CHUNK_FEES.flat`; `estimateChunkCredits` prices its bytes too.
   packManifest: 60_000_000,
-  chunk: 20_000_000,
+  chunk: 94_000_000,
   // forge-collab
   issue: 59_000_000,
   patch: 72_000_000,

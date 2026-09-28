@@ -1461,8 +1461,9 @@ impl<'a> PackJob<'a> {
 /// the push folds the live fragments into one index (every 16th push,
 /// `RepoService::publish_push_locator`), theirs too, which a Platform-stored index pays
 /// for in chunks. A policy that stores nothing on Platform (and cannot fall back to it)
-/// pays nothing for the index's size, so it is not read. Unreadable counts as a fold of what
-/// could be read, never less than the pack.
+/// pays nothing for the index's size, so it is not read. When the manifests cannot be read,
+/// the pack's own objects (a fold then goes unpriced; the push's own manifest read, which
+/// follows, fails it in that case).
 async fn folded_index_objects(ctx: &PushContext<'_>, objects: u64) -> u64 {
     let resolved = &ctx.policy.resolved;
     if !(resolved.platform || resolved.platform_fallback) {

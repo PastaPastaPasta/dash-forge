@@ -57,7 +57,7 @@ Estimate for 1048576 bytes (platform tier):
   fees:       ~0.07761275 DASH ≈ $2.33 (per-document and processing)
 ```
 
-This is the price `git push` quotes: an upper bound, about 1.06–1.09x what Platform charges for a large push.
+This is the price `git push` quotes: an upper bound, about 1.05–1.09x what Platform charges for a large push.
 
 A deposit only comes back when the document is deleted. Some documents can never be deleted, by design (see [Refunds](#refunds)). For those, the deposit is effectively a one-time cost.
 
