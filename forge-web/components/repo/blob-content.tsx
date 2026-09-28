@@ -39,6 +39,7 @@ import {
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
+import { PathActions } from '@/components/repo/path-actions'
 import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { Oid } from '@/components/ui/oid'
 import { ScrollRegion } from '@/components/ui/scroll-region'
@@ -96,6 +97,7 @@ export function BlobContent({
       <div className="flex flex-wrap items-center gap-3">
         <RefSwitcher home={home} addr={addr} current={selected} path={path} />
         <PathBreadcrumb addr={addr} path={path} refParam={refParam} />
+        {path ? <PathActions addr={addr} path={path} refParam={refParam} show={['blame', 'history']} /> : null}
       </div>
       <BrowseBoundary repo={home.repo} addr={addr}>
         {(reader, retry) => (

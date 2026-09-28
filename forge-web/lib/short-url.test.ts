@@ -26,6 +26,10 @@ describe('shortRepoPath → shim → canonical route', () => {
     ],
     [{ kind: 'commits' }, '/alice/project/commits', '/repo/commits/?owner=alice&name=project'],
     [{ kind: 'commits', ref: 'dev' }, '/alice/project/commits/dev', '/repo/commits/?owner=alice&name=project&ref=dev'],
+    // F-5: a path's History and Blame, as GitHub writes them.
+    [{ kind: 'commits', ref: 'dev', path: 'src/a.rs' }, '/alice/project/commits/dev/src/a.rs', '/repo/commits/?owner=alice&name=project&ref=dev&path=src%2Fa.rs'],
+    [{ kind: 'commits', path: 'src' }, '/alice/project/commits/HEAD/src', '/repo/commits/?owner=alice&name=project&path=src'],
+    [{ kind: 'blame', ref: 'main', path: 'src/a.rs' }, '/alice/project/blame/main/src/a.rs', '/repo/blame/?owner=alice&name=project&ref=main&path=src%2Fa.rs'],
     [{ kind: 'issues' }, '/alice/project/issues', '/repo/issues/?owner=alice&name=project'],
     [{ kind: 'issue', number: 42 }, '/alice/project/issues/42', '/repo/issue/?owner=alice&name=project&number=42'],
     [{ kind: 'pulls' }, '/alice/project/pulls', '/repo/pulls/?owner=alice&name=project'],

@@ -24,6 +24,8 @@ export interface ObjectReader {
    * ({@link BrowseReader.forHistoryWalk}); `flush` passes on its batched hash-check verdicts.
    */
   forHistoryWalk?(): ObjectReader & { flush(): void }
+  /** Shared by readers of the same objects and memos ({@link BrowseReader.memoScope}). */
+  readonly memoScope?: object
 }
 
 /** Read a commit object, failing clearly when the oid names something else. */

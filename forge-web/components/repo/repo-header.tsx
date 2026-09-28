@@ -52,7 +52,7 @@ function ForkedFrom({ forge, parentId }: { forge: ForgeIds; parentId: string }):
  * Settings. Commits live under Code (the ref bar's `n commits`). Settings is a maintainer's
  * tab; a writer sees the same page as a read-only Members list.
  */
-export const CODE_ROUTES = ['/repo', '/repo/tree', '/repo/blob', '/repo/branches', '/repo/tags', '/repo/commits', '/repo/commit']
+export const CODE_ROUTES = ['/repo', '/repo/tree', '/repo/blob', '/repo/blame', '/repo/branches', '/repo/tags', '/repo/commits', '/repo/commit']
 
 /** The tab a repo route belongs to (`null`: none, e.g. Stargazers, as on GitHub). */
 export function activeRepoTab(pathname: string): 'code' | 'issues' | 'pulls' | 'releases' | 'settings' | null {

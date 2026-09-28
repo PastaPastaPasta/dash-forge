@@ -81,6 +81,7 @@ export const SHOWCASE_OWNERS = {
   JQLANG: 'unofficial-jqlang-mirror',
   PREACTJS: 'unofficial-preactjs-mirror',
   CHARMBRACELET: 'unofficial-charmbracelet-mirror',
+  JUNEGUNN: 'unofficial-junegunn-mirror',
   BURNTSUSHI: 'unofficial-burntsushi-mirror',
 } as const
 

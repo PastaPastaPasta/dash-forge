@@ -7,9 +7,10 @@ import { useParam, useRepoAddress } from '@/hooks/use-query-param'
 export function CommitsClient(): JSX.Element {
   const addr = useRepoAddress()
   const refParam = useParam('ref')
+  const path = useParam('path')
   return (
     <RepoScaffold addr={addr} browse refParam={refParam}>
-      {(home) => <CommitsContent home={home} addr={addr} refParam={refParam} />}
+      {(home) => <CommitsContent home={home} addr={addr} refParam={refParam} path={path} />}
     </RepoScaffold>
   )
 }
