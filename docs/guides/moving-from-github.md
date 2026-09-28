@@ -226,7 +226,7 @@ Forge takes nothing. You pay Platform fees from your identity's credits, and you
 - **Later pushes** cost the per-push figure in [Costs](costs.md#what-each-action-costs) for where your packs live.
 - **A Mirror Action re-run** with nothing new costs nothing.
 
-For example, the dry run of a repository with about 800 KiB of packs, 36 PRs, 205 comments and 81 reviews, with packs on the owner's own storage, was priced at 0.44 DASH. Almost all of that was the discussion history; the git part was 0.02 DASH. The same packs on Platform would have added about 0.22 DASH.
+For example, the dry run of a repository with about 800 KiB of packs, 36 PRs, 205 comments and 81 reviews, with packs on the owner's own storage, was priced at 0.44 DASH. Almost all of that was the discussion history; the git part was 0.02 DASH. The same packs on Platform would have added about 0.27 DASH (see [Costs](costs.md)).
 
 ## 10. GitHub features with no Forge equivalent
 

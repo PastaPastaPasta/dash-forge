@@ -23,6 +23,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
+use futures::StreamExt as _;
+
 use crate::backends::{PackBackend, PackMeta, PlatformBackend, Uri};
 use crate::error::{Error, Result};
 use crate::keyring::{sealed_error, Keyring, PrivateSigner};
@@ -364,6 +366,19 @@ pub struct LocalReseed {
     pub restored_recorded_uri: bool,
 }
 
+/// One ref update of a push ([`RepoService::write_ref_updates`]).
+#[derive(Debug, Clone)]
+pub struct RefWrite {
+    /// The full ref name (`refs/heads/main`).
+    pub ref_name: String,
+    /// The new tip (20 raw bytes; all zero deletes the ref).
+    pub new_oid: Vec<u8>,
+    /// The tip the pusher saw (divergence detection).
+    pub prev_oid: Option<Vec<u8>>,
+    /// A forced update.
+    pub force: bool,
+}
+
 /// A repository's current members as the pack reader rule needs them (maintainers'
 /// copies first).
 pub type RoleMap = BTreeMap<String, Role>;
@@ -650,15 +665,7 @@ impl<'a> RepoService<'a> {
         prev_oid: Option<&[u8]>,
         force: bool,
     ) -> Result<String> {
-        // Injection defense (write-side guard, defense-in-depth with rules::is_update_valid):
-        // `refName` is an arbitrary Platform string that never passed `git check-ref-format`,
-        // so a control char / newline could inject a spoofed ref-advertisement line into every
-        // clone. Reject illegal names before writing.
-        if !rules::is_legal_ref_name(ref_name) {
-            return Err(Error::Config(format!(
-                "illegal ref name {ref_name:?}: must be non-empty, no leading '-', no whitespace/control characters"
-            )));
-        }
+        check_ref_name(ref_name)?;
         let (scope, contract) = self.writable(repo).await?;
         if repo.visibility == Visibility::Private {
             return self
@@ -667,30 +674,82 @@ impl<'a> RepoService<'a> {
                 )
                 .await;
         }
-        let hasher = crate::private::Public;
-        let ref_name_hash = hasher.hash(0, ref_name)?; // public: the epoch is unused
-
         // The config in force now: this write is routed by it.
         let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
-        let protected = rules::matches_protected(ref_name, &current_protected_patterns(&configs));
-        let doc_type = if protected {
-            DOC_PROTECTED_REF_UPDATE
-        } else {
-            DOC_REF_UPDATE
-        };
-
-        let mut props = scope.props([
-            ("refNameHash", FieldValue::bytes32(ref_name_hash)),
-            ("refName", FieldValue::text(ref_name)),
-            ("newOid", FieldValue::bytes(new_oid.to_vec())),
-            ("force", FieldValue::boolean(force)),
-        ]);
-        if let Some(prev) = prev_oid {
-            props.insert("prevOid".into(), FieldValue::bytes(prev.to_vec()));
-        }
+        let doc_type = ref_doc_type(ref_name, &current_protected_patterns(&configs));
+        let props = public_ref_props(&scope, ref_name, new_oid, prev_oid, force)?;
         self.doc_engine()?
             .create_document(&contract, doc_type, props)
             .await
+    }
+
+    /// Write several ref updates as one step of a push (P-6): the config is read ONCE, now
+    /// (it routes each update to `refUpdate` or `protectedRefUpdate`), and the writes of a
+    /// public repository go in parallel, each with its own nonce, up to the chunk pipeline's
+    /// window; every one is attempted, so a ref after a failed one can still land. A private
+    /// repository writes them one by one ([`Self::write_ref_update`]: each re-reads the
+    /// anchors before it seals, §5.3) and stops at the first failure. Every name is checked
+    /// before anything is written. `on_landed(i)` is called for `updates[i]` as it lands (in
+    /// order), so a caller can report it at once. Returns each attempted update's result, in
+    /// order (shorter than `updates` when a sequential write failed); `Err` only when nothing
+    /// was written (an illegal name, or reading the repository or its config failed).
+    pub async fn write_ref_updates(
+        &self,
+        repo: &RepoRef,
+        updates: &[RefWrite],
+        mut on_landed: impl FnMut(usize),
+    ) -> Result<Vec<Result<String>>> {
+        for u in updates {
+            check_ref_name(&u.ref_name)?;
+        }
+        let mut results = Vec::with_capacity(updates.len());
+        if repo.visibility == Visibility::Private || updates.len() < 2 {
+            for (i, u) in updates.iter().enumerate() {
+                let r = self
+                    .write_ref_update(
+                        repo,
+                        &u.ref_name,
+                        &u.new_oid,
+                        u.prev_oid.as_deref(),
+                        u.force,
+                    )
+                    .await;
+                let failed = r.is_err();
+                if !failed {
+                    on_landed(i);
+                }
+                results.push(r);
+                if failed {
+                    break;
+                }
+            }
+            return Ok(results);
+        }
+        let (scope, contract) = self.writable(repo).await?;
+        let configs = crate::refs::read_config_history(self.client, &contract, &scope).await?;
+        let patterns = current_protected_patterns(&configs);
+        let engine = self.doc_engine()?;
+        let (scope, contract, patterns, engine) = (&scope, &contract, &patterns, &engine);
+        let mut landed = futures::stream::iter(updates.iter().map(|u| async move {
+            let props = public_ref_props(
+                scope,
+                &u.ref_name,
+                &u.new_oid,
+                u.prev_oid.as_deref(),
+                u.force,
+            )?;
+            engine
+                .create_document(contract, ref_doc_type(&u.ref_name, patterns), props)
+                .await
+        }))
+        .buffered(crate::backends::platform::pipeline_window());
+        while let Some(r) = landed.next().await {
+            if r.is_ok() {
+                on_landed(results.len());
+            }
+            results.push(r);
+        }
+        Ok(results)
     }
 
     /// A private ref update (§4.5): `refNameHash = HMAC(K_ref,e, refName)` under the write
@@ -1075,7 +1134,7 @@ impl<'a> RepoService<'a> {
         journal: &mut PushJournal,
         store: &(dyn JournalStore + Sync),
     ) -> Result<Vec<Uri>> {
-        use crate::backends::platform::{chunk_documents, CHUNK_DOC_TYPE};
+        use crate::backends::platform::{chunk_documents, pipeline_window, CHUNK_DOC_TYPE};
 
         let (scope, contract) = self.writable(repo).await?;
         let engine = self.doc_engine()?;
@@ -1092,14 +1151,32 @@ impl<'a> RepoService<'a> {
         let kill_after: Option<usize> = None;
         let mut uploaded_now = 0usize;
 
-        for (seq, props) in chunk_documents(bytes, pack_hash) {
-            if journal.has(seq) {
-                tracing::debug!(seq, "chunk already journaled; skipping");
-                continue;
-            }
-            let prepared = engine
-                .create_landed(&contract, CHUNK_DOC_TYPE, scope.scoped(props))
-                .await?;
+        // Pipelined (P-6, D-910): up to `PIPELINE_WINDOW` chunk creates in flight, each signed
+        // once with its own nonce from the SDK's nonce cache, as `PlatformBackend::put` does.
+        // The proof wait (~1-2 s a write) is what bounded a sequential upload to ~0.6 chunk/s;
+        // in flight together the chunks land at the rate blocks accept them. A chunk is
+        // journaled the moment it lands, in any order, so an interrupted push resumes by
+        // skipping exactly the chunks that landed. A nonce another in-flight write took is
+        // recovered inside `create_landed` (confirmed by a proved read, else re-signed).
+        let (done, todo): (Vec<_>, Vec<_>) = chunk_documents(bytes, pack_hash)
+            .into_iter()
+            .partition(|(seq, _)| journal.has(*seq));
+        if !done.is_empty() {
+            tracing::debug!(
+                skipped = done.len(),
+                "chunks already journaled; skipping them"
+            );
+        }
+        let (engine, contract, scope) = (&engine, &contract, &scope);
+        let mut landed = futures::stream::iter(todo.into_iter().map(|(seq, props)| async move {
+            engine
+                .create_landed(contract, CHUNK_DOC_TYPE, scope.scoped(props))
+                .await
+                .map(|prepared| (seq, prepared))
+        }))
+        .buffer_unordered(pipeline_window());
+        while let Some(done) = landed.next().await {
+            let (seq, prepared) = done?;
             journal.record(&WriteIntent::for_prepared(seq, &prepared));
             store.checkpoint(journal)?;
 
@@ -2452,6 +2529,19 @@ fn manifest_info(d: &FetchedDocument) -> Result<PackManifestInfo> {
     })
 }
 
+/// The objects the browse index a push of `objects` objects publishes will cover, from the
+/// repository's manifests: the push's own fragment, or, when the live fragments have
+/// reached [`MAX_LOCATOR_FRAGMENTS`] (the push folds them into one index), every object they
+/// index as well. For pricing the push before it is made.
+pub fn push_index_objects(manifests: &[PackManifestInfo], objects: u64) -> u64 {
+    let live = live_locator_manifests(manifests);
+    if live.len() >= MAX_LOCATOR_FRAGMENTS {
+        objects + live.iter().map(|m| m.object_count).sum::<u64>()
+    } else {
+        objects
+    }
+}
+
 /// The live (non-superseded) `objectLocator` manifests, newest-first — the index fragments a
 /// reader must merge, and the set a consolidation supersedes.
 fn live_locator_manifests(manifests: &[PackManifestInfo]) -> Vec<PackManifestInfo> {
@@ -2488,6 +2578,54 @@ fn git_pack_manifests(manifests: &[PackManifestInfo]) -> Vec<PackManifestInfo> {
 #[allow(clippy::cast_precision_loss)]
 pub fn credits_to_dash(credits: u64) -> f64 {
     credits as f64 / 1e11
+}
+
+/// Injection defense (write-side guard, defense-in-depth with rules::is_update_valid):
+/// `refName` is an arbitrary Platform string that never passed `git check-ref-format`, so a
+/// control char / newline could inject a spoofed ref-advertisement line into every clone.
+/// Illegal names are refused before anything is written.
+fn check_ref_name(ref_name: &str) -> Result<()> {
+    if rules::is_legal_ref_name(ref_name) {
+        Ok(())
+    } else {
+        Err(Error::Config(format!(
+            "illegal ref name {ref_name:?}: must be non-empty, no leading '-', no whitespace/control characters"
+        )))
+    }
+}
+
+/// The document type a public ref update is written as: `protectedRefUpdate` for a ref the
+/// current config protects, else `refUpdate`.
+fn ref_doc_type(ref_name: &str, protected_patterns: &[String]) -> &'static str {
+    if rules::matches_protected(ref_name, protected_patterns) {
+        DOC_PROTECTED_REF_UPDATE
+    } else {
+        DOC_REF_UPDATE
+    }
+}
+
+/// A public ref update's properties: the plain `refName`, its hash (the epoch is unused for
+/// a public repository), the oids and `force`.
+fn public_ref_props(
+    scope: &DocScope,
+    ref_name: &str,
+    new_oid: &[u8],
+    prev_oid: Option<&[u8]>,
+    force: bool,
+) -> Result<BTreeMap<String, FieldValue>> {
+    let mut props = scope.props([
+        (
+            "refNameHash",
+            FieldValue::bytes32(crate::private::Public.hash(0, ref_name)?),
+        ),
+        ("refName", FieldValue::text(ref_name)),
+        ("newOid", FieldValue::bytes(new_oid.to_vec())),
+        ("force", FieldValue::boolean(force)),
+    ]);
+    if let Some(prev) = prev_oid {
+        props.insert("prevOid".into(), FieldValue::bytes(prev.to_vec()));
+    }
+    Ok(props)
 }
 
 /// The protected-ref globs in force per the newest `config` (`(createdAt, id)` order).
@@ -2599,6 +2737,34 @@ mod tests {
         assert_eq!(space(&manifests, Some((250, "ll"))), vec![1, 2]);
     }
 
+    /// A push that will fold the browse index is priced for the whole folded index; one that
+    /// adds a fragment, for its own objects.
+    #[test]
+    fn a_folding_push_prices_every_object_it_indexes() {
+        let fragments = |n: usize| -> Vec<PackManifestInfo> {
+            (0..n)
+                .map(|i| {
+                    let mut m = manifest(
+                        &format!("{:02x}", i + 1),
+                        100 + i as u64,
+                        crate::pack::KIND_OBJECT_LOCATOR,
+                        u8::try_from(i + 1).unwrap(),
+                    );
+                    m.object_count = 1_000;
+                    m
+                })
+                .collect()
+        };
+        assert_eq!(
+            super::push_index_objects(&fragments(MAX_LOCATOR_FRAGMENTS - 1), 7),
+            7
+        );
+        assert_eq!(
+            super::push_index_objects(&fragments(MAX_LOCATOR_FRAGMENTS), 7),
+            7 + 1_000 * MAX_LOCATOR_FRAGMENTS as u64
+        );
+    }
+
     #[test]
     fn live_locator_manifests_drops_superseded_fragments_newest_first() {
         let mut folded = manifest("ff", 300, 1, 9);
@@ -2610,6 +2776,20 @@ mod tests {
             manifest("aa", 100, 0, 1), // a git pack is not a fragment
         ];
         assert_eq!(hashes(&live_locator_manifests(&manifests)), vec![9, 8]);
+    }
+
+    #[test]
+    fn a_ref_update_is_routed_and_checked_like_the_single_write() {
+        assert_eq!(
+            super::ref_doc_type("refs/heads/main", &["refs/heads/main".into()]),
+            crate::refs::DOC_PROTECTED_REF_UPDATE
+        );
+        assert_eq!(
+            super::ref_doc_type("refs/heads/dev", &["refs/heads/main".into()]),
+            crate::refs::DOC_REF_UPDATE
+        );
+        assert!(super::check_ref_name("refs/heads/ok").is_ok());
+        assert!(super::check_ref_name("refs/heads/bad\nname").is_err());
     }
 
     #[test]

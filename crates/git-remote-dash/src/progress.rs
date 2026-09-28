@@ -246,6 +246,7 @@ pub fn platform_line(w: &PlatformWrites) -> (String, Value) {
             "chunks": w.chunks,
             "manifests": w.manifests,
             "refUpdates": w.ref_updates,
+            // Every document's full fee (`forge_core::cost::push_fees`, an upper bound).
             "estCredits": w.est_credits,
         }),
     )

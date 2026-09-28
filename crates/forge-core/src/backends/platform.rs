@@ -33,6 +33,17 @@ pub const CHUNK_DOC_TYPE: &str = "chunk";
 /// ~4 docs/sec landing; look-ahead caps ~24).
 pub const PIPELINE_WINDOW: usize = 8;
 
+/// The window a push's writes use: [`PIPELINE_WINDOW`], or 1 under `DASH_FORGE_COST_TRACE=1`,
+/// where each write's cost is read as the balance change around it, which writes in flight
+/// together would blur.
+pub fn pipeline_window() -> usize {
+    if std::env::var_os("DASH_FORGE_COST_TRACE").is_some_and(|v| v == "1") {
+        1
+    } else {
+        PIPELINE_WINDOW
+    }
+}
+
 /// The document field carrying a chunk's packHash (32-byte `byteArray`).
 pub const FIELD_PACK_HASH: &str = "packHash";
 /// The document field carrying a chunk's zero-based sequence.
@@ -306,7 +317,7 @@ impl PackBackend for PlatformBackend<'_> {
             self.engine
                 .create_document(self.contract, CHUNK_DOC_TYPE, self.scope.scoped(props))
         }))
-        .buffered(PIPELINE_WINDOW)
+        .buffered(pipeline_window())
         .try_collect::<Vec<_>>()
         .await?;
 

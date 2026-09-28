@@ -73,7 +73,7 @@ Two shared contracts, registered once per network by one deployer identity and j
 
 | Backend | Pack bytes | Cost profile | Trust |
 |---|---|---|---|
-| `platform` (default) | `chunk` docs, ~14.4 KiB payload each (3 × 4.8 KiB fields), one ST per chunk | ~0.283 DASH/MiB (~$9/MiB @ $34), **permanent**: `chunk` and `packManifest` are non-deletable, so the deposit is never refunded | Fully on-chain |
+| `platform` (default) | `chunk` docs, ~14.4 KiB payload each (3 × 4.8 KiB fields), one ST per chunk | ~0.33 DASH/MiB (~$10/MiB @ $30; [costs.md](guides/costs.md)), **permanent**: `chunk` and `packManifest` are non-deletable, so the deposit is never refunded | Fully on-chain |
 | `ipfs` | CID in manifest; pin via Storacha/Pinata/self-host Kubo | Pinning costs only | Hash-verified cache |
 | `s3` / `https` | URL in manifest | Hosting costs only | Hash-verified cache |
 | **mixed** | Recent packs on Platform, archival packs external | Best of both | — |
@@ -114,8 +114,8 @@ Client-side rules are versioned (`FORGE_RULES_V2`: `forge-core::rules::v2`, `for
 ## 8. Economics (full model: [economics.md](economics.md))
 
 - 27,000 credits/byte storage deposit (refundable on delete, 50-era amortization; the non-deletable types never refund); 1 DASH = 10¹¹ credits.
-- On-Platform data ≈ **$9/MiB @ $34/DASH** (DASH-primary display; USD secondary; fee-multiplier governance lever flagged).
-- Social artifacts are noise (2 KiB issue ≈ 2¢). Ref update ≈ 0.00008 DASH. Creating a repository ≈ **0.001 DASH** (three documents; the v1 per-repo contract was ~1.18 DASH).
+- On-Platform data ≈ **0.33 DASH/MiB**, ≈ $10/MiB @ $30/DASH ([costs.md](guides/costs.md); DASH-primary display; USD secondary; fee-multiplier governance lever flagged).
+- Social artifacts are noise (2 KiB issue ≈ 2¢). Ref update ≈ 0.0006–0.0009 DASH (its index entries, not its bytes, dominate). Creating a repository ≈ **0.0013 DASH** (three documents; the v1 per-repo contract was ~1.18 DASH).
 - forge-v2 registration: forge-core 0.60 + forge-collab 0.55 DASH in fees (1.161234 DASH measured on devnet moutai), paid once per network by the deployer ([forge-v2.md §7](contracts/forge-v2.md#7-measured-size-and-cost)).
 - Cost engine (forge-core) quotes every write batch pre-broadcast and tracks running spend (`dg cost`, web settings).
 

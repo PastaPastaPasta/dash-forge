@@ -1,3 +1,5 @@
+> Cost figures here are pre-calibration; see forge-web/lib/sdk/cost.ts and PR #127 (P-6) for measured beta.5 fees.
+
 # Dash Forge — UX / DX Specification (forge-v2, PV14)
 
 Status: proposed, 2026-09-25. Companion to `roadmap.md`, `contracts/forge-v2.md`, `design/style-guide.md`; where an older PRD disagrees, this spec wins.

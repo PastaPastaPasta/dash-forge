@@ -15,21 +15,6 @@ use forge_core::repo::credits_to_dash;
 /// Serialized system fields + CBOR framing added to a document's own property bytes.
 const DOC_SYSTEM_OVERHEAD: u64 = 180;
 
-/// Index storage a forge-v2 git-data document (`chunk`, `packManifest`, `refUpdate`) pays
-/// beyond its bytes, credits (v2 indexes carry `repoId` and the uploader). Calibrated on
-/// moutai against per-push balance drops (see `tests::estimates_cover_a_recorded_run`):
-/// the helper's byte price plus 68M per document it reports is 1.5–5% over.
-pub const GIT_DOC_INDEX_OVERHEAD: u64 = 68_000_000;
-
-/// Index storage a `packManifest` pays beyond its bytes when no chunks are written with it
-/// (its pack is on your own storage). Measured on moutai 2026-09-27 at about 97M per
-/// manifest (see `gitsync::tests::own_storage_estimates_cover_recorded_pushes`).
-pub const MANIFEST_INDEX_OVERHEAD: u64 = 100_000_000;
-
-/// Index storage a `refUpdate` pays beyond its bytes in such a push, or alone (a push that
-/// only moves or creates refs). Measured at about 61M.
-pub const REF_UPDATE_INDEX_OVERHEAD: u64 = 64_000_000;
-
 /// The kinds of forge-collab document the importer writes. Each pays a different index and
 /// count-tree cost beyond its bytes: a document type with more indexes (an issue or PR:
 /// number, state, author, updated) pays more than a label.
@@ -67,38 +52,6 @@ impl CollabDoc {
             CollabDoc::Label => 35_000_000,
         }
     }
-}
-
-/// The estimated credits of one forge-v2 git-data document of `bytes` bytes.
-pub fn git_doc_credits(bytes: u64) -> u64 {
-    forge_core::cost::estimate(bytes).total() + GIT_DOC_INDEX_OVERHEAD
-}
-
-/// The estimated credits of a `packManifest` of `bytes` bytes written without chunks.
-pub fn manifest_credits_external(bytes: u64) -> u64 {
-    forge_core::cost::estimate(bytes).total() + MANIFEST_INDEX_OVERHEAD
-}
-
-/// The estimated credits of one `refUpdate` written without chunks.
-pub fn ref_update_credits_external() -> u64 {
-    forge_core::cost::estimate(REF_UPDATE_BYTES).total() + REF_UPDATE_INDEX_OVERHEAD
-}
-
-/// Per-`chunk` document overhead on top of its payload bytes.
-pub const CHUNK_OVERHEAD: u64 = 120;
-/// Serialized size of a `refUpdate`.
-pub use forge_core::cost::git_doc_sizes::REF_UPDATE_BYTES;
-
-/// The estimated credits of storing `bytes` as Platform `chunk` documents.
-pub fn chunked_credits(bytes: u64) -> u64 {
-    let payload = forge_core::pack::DOC_PAYLOAD_MAX as u64;
-    let full = (bytes / payload).saturating_mul(git_doc_credits(payload + CHUNK_OVERHEAD));
-    let tail = if bytes.is_multiple_of(payload) {
-        0
-    } else {
-        git_doc_credits(bytes % payload + CHUNK_OVERHEAD)
-    };
-    full.saturating_add(tail)
 }
 
 /// The estimated credits of one collaboration document of `kind` whose properties total
@@ -313,10 +266,10 @@ mod tests {
 
     /// A clean, traced import of `PastaPastaPasta/dash-faucet` into moutai (2026-09-26,
     /// `RUST_LOG=forge_import::cost=debug`, an identity nothing else was using): every
-    /// write's properties size (bytes) and measured balance drop, and each git push's
-    /// helper price and document count. The Mirror Action's CI run of the same import paid
-    /// 0.0781 DASH against a 0.0649 estimate (20% under); the estimate must stay an upper
-    /// bound, 0–10% over.
+    /// collaboration write's properties size (bytes) and measured balance drop. The Mirror
+    /// Action's CI run of the same import paid 0.0781 DASH against a 0.0649 estimate (20%
+    /// under); the estimate must stay an upper bound, 0–10% over. (Its git pushes are priced
+    /// by `forge_core::cost::push_fees`, tested in `gitsync` and `forge_core::cost`.)
     #[test]
     fn estimates_cover_a_recorded_run() {
         const COLLAB: &[(CollabDoc, u64, u64)] = &[
@@ -354,38 +307,16 @@ mod tests {
             (CollabDoc::Review, 1287, 60_499_720),
             (CollabDoc::Review, 4072, 136_509_040),
         ];
-        const GIT: &[(u64, u64, u64)] = &[
-            (1_698_161_516, 9, 2_267_023_180),
-            (735_380_076, 5, 1_040_705_540),
-        ];
-        let collab_est: u64 = COLLAB
+        let est: u64 = COLLAB
             .iter()
             .map(|&(kind, bytes, _)| collab_doc_credits(kind, bytes))
             .sum();
-        let collab_paid: u64 = COLLAB.iter().map(|&(_, _, paid)| paid).sum();
-        let git_est: u64 = GIT
-            .iter()
-            .map(|&(helper, docs, _)| helper + docs * GIT_DOC_INDEX_OVERHEAD)
-            .sum();
-        let git_paid: u64 = GIT.iter().map(|&(_, _, paid)| paid).sum();
-        let (est, paid) = (collab_est + git_est, collab_paid + git_paid);
-        #[allow(clippy::cast_precision_loss)] // ratios for the assertion messages only
-        let ratio = |e: u64, p: u64| e as f64 / p as f64;
+        let paid: u64 = COLLAB.iter().map(|&(_, _, paid)| paid).sum();
+        #[allow(clippy::cast_precision_loss)] // the ratio for the assertion message only
+        let ratio = est as f64 / paid as f64;
         assert!(
             est >= paid && est <= paid + paid / 10,
-            "whole run: estimate {est} vs paid {paid} ({:.3})",
-            ratio(est, paid)
+            "collab: estimate {est} vs paid {paid} ({ratio:.3})"
         );
-        // Each part is an upper bound too, within 10%.
-        for (what, e, p) in [
-            ("collab", collab_est, collab_paid),
-            ("git", git_est, git_paid),
-        ] {
-            assert!(
-                e >= p && e <= p + p / 10,
-                "{what}: estimate {e} vs paid {p} ({:.3})",
-                ratio(e, p)
-            );
-        }
     }
 }

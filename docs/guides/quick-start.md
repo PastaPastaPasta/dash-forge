@@ -134,13 +134,13 @@ Your identity id is the long base58 string, such as `8hJmcHWTsdvkHyCrk4UgjbyugDA
 
 ## 4. Choose where your code is stored
 
-Forge hosts nothing, so you decide where the pack bytes (the git objects) live. Platform always keeps the small signed pieces: the manifest with each pack's SHA-256, and the ref updates.
+Forge hosts nothing, so you decide where the pack bytes (the git objects) live. Platform always keeps the small signed pieces: the manifest with each pack's SHA-256, and the ref updates. [Costs](costs.md) has the measured figures.
 
 | Option | Cost | |
 |---|---|---|
-| Your S3-compatible bucket (Cloudflare R2, Backblaze B2, AWS S3, Storj, or a store on [your own NAS](home-nas-storage.md)) | about 0.0003–0.004 DASH per push on Platform, plus your provider's bill | recommended; R2 has no egress fees |
+| Your S3-compatible bucket (Cloudflare R2, Backblaze B2, AWS S3, Storj, or a store on [your own NAS](home-nas-storage.md)) | about 0.002–0.003 DASH per push on Platform, plus your provider's bill | recommended; R2 has no egress fees |
 | Your IPFS node (kubo) or a pinning service | the same on Platform | |
-| Dash Platform | about **0.28 DASH per MiB**, permanently | no account needed; fine for tiny repositories |
+| Dash Platform | about **0.33 DASH per MiB**, permanently | no account needed; fine for tiny repositories |
 
 **From the terminal**, `dg storage add` with no arguments asks for each value, stores a pasted secret in your OS keychain, and tests the storage as it goes, printing the fix for anything that fails (usually CORS):
 
@@ -174,16 +174,16 @@ Proceed? [Y/n] y
 ✓ remote 'origin' → dash://8hJm…/my-project
 ✓ git config dash.storage=r2-main
 dash: 8hJm…/my-project ← main (8f3e2a1, 312 objects, 1.2 MiB)
-dash: storage      → r2-main · Platform stores manifest + refs only, est 0.000275 DASH
+dash: storage      → r2-main · Platform stores manifest + refs only, est 0.0032 DASH
 dash: r2-main      ████████████████ 1.2 MiB  verified   0.4 s
-dash: platform     manifest 2 · refUpdate 1     est 0.000275 DASH
-dash: done · Platform charged ≈0.00028 DASH · remaining 0.4812 DASH · https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
-✓ main → 8f3e2a1   this push ~0.00028 DASH ≈ $0.01
-  total ~0.0016 DASH ≈ $0.05 (create ~0.0013 DASH ≈ $0.04 + push ~0.00028 DASH ≈ $0.01) · balance 0.4812 DASH
+dash: platform     manifest 2 · refUpdate 1     est 0.0032 DASH
+dash: done · Platform charged ≈0.0028 DASH · remaining 0.4786 DASH · https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
+✓ main → 8f3e2a1   this push ~0.0028 DASH ≈ $0.08
+  total ~0.0041 DASH ≈ $0.12 (create ~0.0013 DASH ≈ $0.04 + push ~0.0028 DASH ≈ $0.08) · balance 0.4786 DASH
 Open it: https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
 ```
 
-(The numbers are illustrative. A first push of a real project usually costs more than this: `dg init`'s live test measured 0.0028 DASH for its push; see [Costs](costs.md).)
+(The numbers are illustrative; the push line is a first push to your own bucket as measured on devnet moutai. See [Costs](costs.md).)
 
 A repository is three small documents in Forge's shared contracts: the `repo` itself, your `maintainer` membership, and the first `config`. The quote before you confirm is an upper bound; the measured cost, about **0.0013 DASH**, is printed afterwards. See [Costs](costs.md).
 
@@ -247,15 +247,15 @@ The helper prints what it will store, and where, before it pays for anything. It
 
 ```
 dash: 8hJm…/my-project ← main (8f3e2a1, 3 objects, 245 B)
-dash: storage      → r2-main · Platform stores manifest + refs only, est 0.000275 DASH
+dash: storage      → r2-main · Platform stores manifest + refs only, est 0.0032 DASH
 dash: r2-main      ████████████████ 245 B  verified   0.2 s
-dash: platform     manifest 2 · refUpdate 1     est 0.000275 DASH
-dash: done · Platform charged ≈0.00028 DASH · remaining 0.4809 DASH · https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
+dash: platform     manifest 2 · refUpdate 1     est 0.0032 DASH
+dash: done · Platform charged ≈0.0021 DASH · remaining 0.4765 DASH · https://forge.dashhq.org/repo?owner=8hJm…&name=my-project
 ```
 
-(The numbers are illustrative. Yours depend on the size of the push.)
+(The numbers are illustrative. Yours depend on the size of the push; a later push costs a little less than the first, and the estimate is an upper bound. See [Costs](costs.md).)
 
-A repository without `dash.storage` stores its pack bytes on Dash Platform, which costs about **0.28 DASH per MiB**. If you set a cost guard (`dg doctor --fix` does), a push asks before it spends more than 0.01 DASH. To choose another threshold:
+A repository without `dash.storage` stores its pack bytes on Dash Platform, which costs about **0.33 DASH per MiB** ([Costs](costs.md)). If you set a cost guard (`dg doctor --fix` does), a push asks before it spends more than 0.01 DASH. To choose another threshold:
 
 ```sh
 git config --global dash.costWarnThreshold 0.05

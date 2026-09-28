@@ -33,7 +33,7 @@ You need:
   ```
 - A funded identity, signed in with `dg auth new` or `dg auth login` ([quick start, steps 2–3](quick-start.md#2-get-an-identity)). `dg import` uses that stored key. The standalone `forge-import` does not read `dg`'s default: give it `--identity <source>` or `DASH_FORGE_KEY`, for example `DASH_FORGE_KEY=keychain:dash-forge/devnet-moutai/<identity id>` for the key `dg auth` keeps in the keychain ([key sources](identity-and-keys.md#where-keys-live-today)).
 - The [GitHub CLI](https://cli.github.com), logged in with `gh auth login` (or `GH_TOKEN` / `GITHUB_TOKEN` in the environment). The importer reads issues, PRs and releases through it.
-- Optional but recommended: a storage profile for your own bucket (`dg storage add`; see [Bring your own storage](bring-your-own-storage.md)), so that pack bytes do not go on Platform at ~0.28 DASH/MiB.
+- Optional but recommended: a storage profile for your own bucket (`dg storage add`; see [Bring your own storage](bring-your-own-storage.md)), so that pack bytes do not go on Platform at ~0.33 DASH/MiB ([Costs](costs.md)).
 
 > **Network.** The importer writes **forge-v2** repositories (about **0.0013 DASH** to create). They exist on devnet moutai today (`--network devnet --devnet-name moutai`), come to testnet when Platform protocol 14 reaches it, and to mainnet after protocol 14 activates there and the contracts are registered.
 
@@ -51,7 +51,7 @@ You need:
 dg storage use r2-main --global
 ```
 
-The estimate follows the same policy. With your own storage, the git part costs only the manifests and ref updates on Platform (about 0.004 DASH for a push of two or three refs, measured on devnet moutai), not the pack's bytes, so a `--max-spend` sized for that is not refused. A policy that includes `platform`, or sets `dash.platformFallback`, is priced as Platform storage, because the pack may land there.
+The estimate follows the same policy. With your own storage, the git part costs only the manifests and ref updates on Platform (measured at 0.0035–0.0041 DASH for a push of two or three refs; see [Costs](costs.md)), not the pack's bytes, so a `--max-spend` sized for that is not refused. A policy that includes `platform`, or sets `dash.platformFallback`, is priced as Platform storage, because the pack may land there.
 
 **Log output.** The importer prints its own warnings. The Platform SDK's reports of a failure forge-core recovers from (a write whose nonce another write by the same identity took, a transport retry) are not printed. A failure still ends the run with an error. To see every retry, set `RUST_LOG=debug`.
 

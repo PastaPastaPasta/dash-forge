@@ -555,7 +555,9 @@ fn show_deposit(ctx: &Ctx, endpoints: &CoreEndpoints, address: &str, duffs: u64)
     eprintln!("{}", qr(address, duffs));
     eprintln!("  {address}");
     eprintln!();
-    eprintln!("It becomes your Platform credits (~0.0005 DASH per issue or push).");
+    eprintln!(
+        "It becomes your Platform credits (about 0.001 DASH per issue, 0.005 per small push)."
+    );
     eprintln!(
         "dg watches for the deposit through the Dash network's own nodes (DAPI), and asks a \
          block explorer ({}) only if they cannot answer. Neither can take funds or keys.",
