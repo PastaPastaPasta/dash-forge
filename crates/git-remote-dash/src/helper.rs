@@ -478,7 +478,7 @@ impl Helper {
             specs
         };
 
-        let planned = plan_pushes(specs, &remote_refs);
+        let mut planned = plan_pushes(specs, &remote_refs);
         let progress = Progress::new(options.verbosity);
         let balance_before = conn.identity().balance();
         let mut est_credits = push_fees::estimate_ref_updates(
@@ -529,7 +529,7 @@ impl Helper {
 
         // Apply ref updates for accepted specs.
         if !dry_run {
-            write_ref_updates(&svc, &conn.repo, &planned, progress).await?;
+            write_ref_updates(&svc, &conn.repo, &mut planned, progress).await?;
             forget_sealed(sealed_cache.as_deref());
         }
 
@@ -943,17 +943,23 @@ fn packs_to_fetch(
 
 /// Write the `refUpdate` of every accepted spec. Each one is reported (`dash: updated …` / a
 /// `refUpdate` event) the moment it lands, even when another fails: a failure (a ref's
-/// write, the read-back) must not hide what is already on chain (D-601).
+/// write, the read-back) must not hide what is already on chain (D-601). When some refs
+/// landed and others did not, the ones that did not are rejected in `planned`, so the push
+/// goes on to its read-back, reports each ref to git and syncs the PRs of the refs that
+/// moved; when none landed, the first failure is the push's error.
 async fn write_ref_updates(
     svc: &RepoService<'_>,
     repo: &RepoRef,
-    planned: &[Planned],
+    planned: &mut [Planned],
     progress: Progress,
 ) -> Result<()> {
-    let accepted: Vec<&Planned> = planned.iter().filter(|p| p.reject.is_none()).collect();
+    let accepted: Vec<usize> = (0..planned.len())
+        .filter(|&i| planned[i].reject.is_none())
+        .collect();
     let writes = accepted
         .iter()
-        .map(|p| {
+        .map(|&i| {
+            let p = &planned[i];
             Ok(forge_core::repo::RefWrite {
                 ref_name: p.spec.dst.clone(),
                 new_oid: match &p.new_oid {
@@ -978,33 +984,55 @@ async fn write_ref_updates(
     let batch = &writes[..];
     // One config read for the whole push; a public repository's updates go in parallel
     // (P-6). Each is reported as it lands.
-    let results = svc
-        .write_ref_updates(repo, batch, |i| {
-            let p = accepted[i];
+    let results = {
+        let planned = &*planned;
+        svc.write_ref_updates(repo, batch, |i| {
+            let p = &planned[accepted[i]];
             let (text, event) = progress::ref_update_line(&p.spec.dst, p.new_oid.as_deref());
             progress.emit(&text, &event);
         })
-        .await?;
-    first_ref_error(&accepted, results)?;
+        .await?
+    };
     #[cfg(feature = "test-hooks")]
     if let Some(written) = fail_after {
         bail!("simulated failure after {written} ref update(s) (DASH_FORGE_FAIL_AFTER_REFS)");
     }
-    Ok(())
+    settle_ref_writes(planned, &accepted, results)
 }
 
-/// The first failed ref update of `results` (in `accepted` order), as the push's error.
-fn first_ref_error(accepted: &[&Planned], results: Vec<forge_core::Result<String>>) -> Result<()> {
-    match accepted
-        .iter()
-        .zip(results)
-        .find_map(|(p, r)| r.err().map(|e| (p, e)))
-    {
-        Some((p, e)) => {
-            Err(anyhow::Error::new(e).context(format!("writing ref update for {}", p.spec.dst)))
-        }
-        None => Ok(()),
+/// Fold a batch's per-ref `results` (for `planned[accepted[i]]`, in order; shorter when a
+/// sequential write stopped at its failure) into the plan. Nothing landed: the first failure
+/// is the error (a whole-push failure, classified for the user as before). Some landed: each
+/// ref that failed, or was not attempted after a failure, is rejected with its reason, and
+/// the push goes on for the rest.
+fn settle_ref_writes(
+    planned: &mut [Planned],
+    accepted: &[usize],
+    results: Vec<forge_core::Result<String>>,
+) -> Result<()> {
+    if !results.iter().any(Result::is_ok) {
+        let failed = accepted
+            .iter()
+            .zip(results)
+            .find_map(|(&i, r)| r.err().map(|e| (i, e)));
+        return match failed {
+            Some((i, e)) => Err(anyhow::Error::new(e)
+                .context(format!("writing ref update for {}", planned[i].spec.dst))),
+            None => Ok(()),
+        };
     }
+    let mut results = results.into_iter();
+    for &i in accepted {
+        match results.next() {
+            Some(Ok(_)) => {}
+            Some(Err(e)) => planned[i].reject = Some(format!("ref update failed: {e}")),
+            None => {
+                planned[i].reject =
+                    Some("not written: an earlier ref update of this push failed".into());
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The provisional tip oid of a resolved (or diverged, newest-head) ref; `None` for an
@@ -2318,9 +2346,9 @@ fn resolve_key_path(url: &DashUrl, owner_id: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        archived_refusal, blames_set_aside_packs, first_ref_error, forget_sealed, head_outcome,
-        hidden_packs_needed, is_head, list_lines, oid_to_bytes, packs_unreadable, protected_denied,
-        resolve_network, write_denied, Planned, PushOutcome, PushSpec, Unreadable,
+        archived_refusal, blames_set_aside_packs, forget_sealed, head_outcome, hidden_packs_needed,
+        is_head, list_lines, oid_to_bytes, packs_unreadable, protected_denied, resolve_network,
+        settle_ref_writes, write_denied, Planned, PushOutcome, PushSpec, Unreadable,
     };
 
     fn planned(dst: &str) -> Planned {
@@ -2336,30 +2364,71 @@ mod tests {
         }
     }
 
-    /// A batch where one ref update fails returns that failure, naming its ref, and the first
-    /// one when several fail (D-601; the landed ones were already reported as they landed).
+    /// CodeRabbit (PR #127): a batch where some refs landed and one failed rejects only the
+    /// failed ref (and any not attempted after a sequential failure), so the push still reads
+    /// back, reports and syncs the refs that landed; a batch where nothing landed is the
+    /// push's error, as before (D-601).
     #[test]
-    fn the_first_failed_ref_update_is_the_error() {
-        let (a, b, c) = (
-            planned("refs/heads/a"),
-            planned("refs/heads/b"),
-            planned("refs/heads/c"),
-        );
-        let accepted = [&a, &b, &c];
+    fn a_partly_landed_batch_rejects_only_the_refs_that_did_not_land() {
         let fail = || Err(forge_core::Error::Platform("refused".into()));
-        let err = first_ref_error(&accepted, vec![Ok("1".into()), fail(), fail()]).unwrap_err();
+        let three = || {
+            vec![
+                planned("refs/heads/a"),
+                planned("refs/heads/b"),
+                planned("refs/heads/c"),
+            ]
+        };
+        let rejects = |p: &[Planned]| p.iter().map(|p| p.reject.clone()).collect::<Vec<_>>();
+
+        // Parallel (public): b failed, a and c landed.
+        let mut p = three();
+        settle_ref_writes(
+            &mut p,
+            &[0, 1, 2],
+            vec![Ok("1".into()), fail(), Ok("3".into())],
+        )
+        .unwrap();
+        let r = rejects(&p);
+        assert!(r[0].is_none() && r[2].is_none(), "{r:?}");
         assert!(
-            format!("{err:#}").contains("writing ref update for refs/heads/b"),
+            r[1].as_deref().is_some_and(|w| w.contains("refused")),
+            "{r:?}"
+        );
+
+        // Sequential (private): a landed, b failed, c never attempted.
+        let mut p = three();
+        settle_ref_writes(&mut p, &[0, 1, 2], vec![Ok("1".into()), fail()]).unwrap();
+        let r = rejects(&p);
+        assert!(r[0].is_none(), "{r:?}");
+        assert!(r[1].as_deref().is_some_and(|w| w.contains("refused")));
+        assert!(r[2]
+            .as_deref()
+            .is_some_and(|w| w.contains("earlier ref update")));
+
+        // Nothing landed: the first failure is the push's error, naming its ref.
+        let mut p = three();
+        let err = settle_ref_writes(&mut p, &[0, 1, 2], vec![fail()]).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("writing ref update for refs/heads/a"),
             "{err:#}"
         );
-        // A sequential write that stopped short at its failure.
-        let err = first_ref_error(&accepted, vec![fail()]).unwrap_err();
-        assert!(format!("{err:#}").contains("refs/heads/a"));
-        assert!(first_ref_error(
-            &accepted,
-            vec![Ok("1".into()), Ok("2".into()), Ok("3".into())]
+
+        // An already-rejected spec is not in `accepted` and keeps its own reason.
+        let mut p = three();
+        p[0].reject = Some("non-fast-forward".into());
+        settle_ref_writes(&mut p, &[1, 2], vec![Ok("2".into()), fail()]).unwrap();
+        assert_eq!(p[0].reject.as_deref(), Some("non-fast-forward"));
+        assert!(p[1].reject.is_none() && p[2].reject.is_some());
+
+        // Everything landed: nothing rejected.
+        let mut p = three();
+        settle_ref_writes(
+            &mut p,
+            &[0, 1, 2],
+            vec![Ok("1".into()), Ok("2".into()), Ok("3".into())],
         )
-        .is_ok());
+        .unwrap();
+        assert!(rejects(&p).iter().all(Option::is_none));
     }
     use forge_core::network::NetworkSettings;
     use forge_core::user_error::{codes, UserError};
