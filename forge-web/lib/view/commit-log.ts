@@ -5,8 +5,8 @@
  * can't runaway-fetch. Line-level patches over the resulting change set live in `file-diff.ts`.
  */
 
-import { MissingObjectError, MODE_GITLINK, MODE_TREE, type BrowseReader, type GitObject } from '../browse'
-import { commitSubject, parseCommit, type CommitObject, type TreeEntry } from './git-objects'
+import { MissingObjectError, MODE_GITLINK, MODE_TREE, type GitObject } from '../browse'
+import { commitSubject, type CommitObject, type TreeEntry } from './git-objects'
 import { mapPooled } from './pool'
 import { readCommit, readTree, type ObjectReader } from './tree-nav'
 
@@ -25,22 +25,6 @@ export interface LogEntry {
   readonly oid: string
   readonly subject: string
   readonly commit: CommitObject
-}
-
-/** Walk the first-parent history from `tipOid`, up to `limit` commits. */
-export async function walkLog(reader: BrowseReader, tipOid: string, limit = 30): Promise<LogEntry[]> {
-  const out: LogEntry[] = []
-  let oid: string | undefined = tipOid
-  const seen = new Set<string>()
-  while (oid && out.length < limit && !seen.has(oid)) {
-    seen.add(oid)
-    const obj = await reader.readObject(oid)
-    if (obj.type !== 'commit') break
-    const commit = parseCommit(obj.bytes)
-    out.push({ oid, subject: commitSubject(commit.message), commit })
-    oid = commit.parents[0]
-  }
-  return out
 }
 
 /** A single file change between two trees. */
@@ -189,7 +173,7 @@ export class CommitIdError extends Error {
 
 const AMBIGUOUS_SHOWN = 5
 
-/** The slice of a reader short-id resolution needs (a {@link BrowseReader}). */
+/** The slice of a reader short-id resolution needs (a `BrowseReader`). */
 export interface PrefixReader extends ObjectReader {
   findByPrefix?(prefix: string, limit?: number): string[]
   /** An object's type from its entry header, or null for a delta entry. */

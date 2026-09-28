@@ -9,7 +9,7 @@
  * subtrees off the path are never read.
  */
 
-import { MODE_TREE } from '../browse'
+import { MODE_GITLINK, MODE_TREE } from '../browse'
 import { commitSubject, type CommitObject } from './git-objects'
 import { historyWalker, type LogEntry, type WalkOptions } from './commit-log'
 import { readCommit, readTree, type ObjectReader } from './tree-nav'
@@ -23,8 +23,18 @@ export const LOG_PAGE = 40
  */
 export const PATH_WALK_CAP = 2000
 
-/** A path's entry at a commit: `mode:oid`, or null when the path is absent. */
-type PathEntry = string | null
+/**
+ * A path's entry at a commit as `mode:oid` (one string, so two entries compare with `===`), or
+ * null when the path is absent. Read it with {@link entryMode} and {@link entryOid}.
+ */
+export type PathEntry = string | null
+
+/** The mode of a `mode:oid` entry. */
+export const entryMode = (entry: string): number => Number(entry.slice(0, entry.indexOf(':')))
+/** The oid of a `mode:oid` entry. */
+export const entryOid = (entry: string): string => entry.slice(entry.indexOf(':') + 1)
+/** A blob mode (a file or a symlink), not a directory or a submodule. */
+export const isFileMode = (mode: number): boolean => mode !== MODE_TREE && mode !== MODE_GITLINK
 
 /** Memo per reader: `commitOid\0path` → the path's entry; `commitOid` → the parsed commit. */
 interface WalkMemo {

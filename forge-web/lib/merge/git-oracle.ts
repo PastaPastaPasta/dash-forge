@@ -47,7 +47,9 @@ export function writeBatched(dir: string, objects: Iterable<GitObject>): void {
   for (const o of objects) {
     const file = join(dir, `.obj-${n++}`)
     writeFileSync(file, o.bytes)
-    byType.set(o.type, [...(byType.get(o.type) ?? []), file])
+    const list = byType.get(o.type)
+    if (list === undefined) byType.set(o.type, [file])
+    else list.push(file)
   }
   for (const [type, files] of byType) {
     const r = spawnSync('git', ['hash-object', '-w', '-t', type, '--stdin-paths'], { cwd: dir, input: files.join('\n'), maxBuffer: 1 << 28 })

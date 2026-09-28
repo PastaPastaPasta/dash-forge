@@ -74,6 +74,17 @@ describe.skipIf(!HAVE_GIT)('blame matches git blame --first-parent', () => {
     expect([...got.commits.keys()].sort()).toEqual([c1, c2, c3].sort())
   })
 
+  it('names only the commits that own lines (an edit overwritten later is not counted)', async () => {
+    // c1 writes the line, c2 edits it, c3 edits it again: git blame names c3 alone.
+    const s = new Store()
+    const c1 = s.commit(s.files({ f: 'one\n' }), [], 'one')
+    const c2 = s.commit(s.files({ f: 'two\n' }), [c1], 'two')
+    const c3 = s.commit(s.files({ f: 'three\n' }), [c2], 'three')
+    const got = await blameFile(s.reader(), c3, 'f')
+    expect(owners(got)).toEqual(gitBlame(s.objects.values(), c3, 'f'))
+    expect([...got.commits.keys()]).toEqual([c3])
+  })
+
   it('a merge commit: blame follows the first parent, as --first-parent does', async () => {
     const s = new Store()
     const base = s.commit(s.files({ f: 'a\nb\nc\n' }), [], 'base')

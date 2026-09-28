@@ -13,10 +13,11 @@ import { FileText, History, X } from 'lucide-react'
 import { PathActions } from '@/components/repo/path-actions'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
-import { commitSubject, parseLineHash, selectedTip, selectRef, timeAgo, visibleRows, VIRTUALIZE_LINES } from '@/lib/view'
-import { historyWalker } from '@/lib/view/commit-log'
+import { commitSubject, parseLineHash, selectedTip, selectRef, timeAgo } from '@/lib/view'
+import { ROW_PX, scrollToRow, useRowWindow } from '@/hooks/use-row-window'
 import { BLAME_MAX_VERSIONS, BlameRefusedError, blameFile, type BlameProgress, type BlameResult } from '@/lib/view/blame'
 import { plural } from '@/lib/view/format'
+import { PATH_WALK_CAP } from '@/lib/view/path-history'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
 import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
@@ -65,7 +66,8 @@ type RunState =
   | { readonly kind: 'cancelled'; readonly progress: BlameProgress | null }
   | { readonly kind: 'failed'; readonly error: unknown }
 
-function BlameBody({ reader, tipOid, path, addr }: { reader: BrowseReader; tipOid: string; path: string; addr: RepoAddress }): JSX.Element {
+/** One blame run over a reader (exported for its StrictMode test). */
+export function BlameBody({ reader, tipOid, path, addr }: { reader: BrowseReader; tipOid: string; path: string; addr: RepoAddress }): JSX.Element {
   const [run, setRun] = useState<RunState>({ kind: 'running', progress: null })
   const [attempt, setAttempt] = useState(0)
   const stopRef = useRef<AbortController | null>(null)
@@ -75,18 +77,24 @@ function BlameBody({ reader, tipOid, path, addr }: { reader: BrowseReader; tipOi
     stopRef.current = stop
     let last: BlameProgress | null = null
     setRun({ kind: 'running', progress: null })
+    // Only the current run reports: a run its effect cleaned up (a new file, StrictMode's replay)
+    // settles into nothing, and never shows "Blame stopped" over the run that replaced it.
+    const current = (): boolean => stopRef.current === stop
     blameFile(reader, tipOid, path, {
-      walker: historyWalker(reader),
       signal: stop.signal,
       onProgress: (p) => {
         last = p
-        if (!stop.signal.aborted) setRun({ kind: 'running', progress: p })
+        if (current() && !stop.signal.aborted) setRun({ kind: 'running', progress: p })
       },
     }).then(
-      (result) => !stop.signal.aborted && setRun({ kind: 'done', result }),
-      (error: unknown) => setRun(stop.signal.aborted ? { kind: 'cancelled', progress: last } : { kind: 'failed', error }),
+      (result) => current() && setRun({ kind: 'done', result }),
+      (error: unknown) => current() && setRun(stop.signal.aborted ? { kind: 'cancelled', progress: last } : { kind: 'failed', error }),
     )
-    return () => stop.abort()
+    return () => {
+      // Unmount or a new run: stop this one without it reporting (Cancel aborts while it is current).
+      if (stopRef.current === stop) stopRef.current = null
+      stop.abort()
+    }
   }, [reader, tipOid, path, attempt])
 
   if (run.kind === 'failed') {
@@ -125,8 +133,6 @@ function BlameBody({ reader, tipOid, path, addr }: { reader: BrowseReader; tipOi
   return <BlameTable result={run.result} addr={addr} />
 }
 
-const ROW_PX = 20
-
 function BlameTable({ result, addr }: { result: BlameResult; addr: RepoAddress }): JSX.Element {
   const { lines, hunks, commits } = result
   // The hunk each line is in, and whether it starts one (where the commit cell is drawn).
@@ -136,39 +142,11 @@ function BlameTable({ result, addr }: { result: BlameResult; addr: RepoAddress }
     return at
   }, [lines.length, hunks])
   const tableRef = useRef<HTMLTableElement>(null)
-  const virtual = lines.length > VIRTUALIZE_LINES
-  const [win, setWin] = useState({ from: 0, to: 200 })
-  const { from, to } = virtual ? win : { from: 0, to: lines.length }
+  const { from, to } = useRowWindow(tableRef, lines.length)
   const [range] = useState(() => (typeof window === 'undefined' ? null : parseLineHash(window.location.hash, lines.length)))
-
   useLayoutEffect(() => {
-    if (range !== null && tableRef.current !== null) {
-      const top = tableRef.current.getBoundingClientRect().top + window.scrollY + (range.start - 1) * ROW_PX
-      window.scrollTo({ top: Math.max(0, top - window.innerHeight / 3) })
-    }
+    if (range !== null) scrollToRow(tableRef.current, range.start)
   }, [range])
-  useLayoutEffect(() => {
-    if (!virtual) return
-    let frame = 0
-    const update = (): void => {
-      frame = 0
-      const el = tableRef.current
-      if (el === null) return
-      const next = visibleRows(lines.length, ROW_PX, el.getBoundingClientRect().top, window.innerHeight)
-      setWin((w) => (w.from === next.from && w.to === next.to ? w : next))
-    }
-    const schedule = (): void => {
-      if (frame === 0) frame = requestAnimationFrame(update)
-    }
-    update()
-    window.addEventListener('scroll', schedule, { passive: true })
-    window.addEventListener('resize', schedule)
-    return () => {
-      if (frame !== 0) cancelAnimationFrame(frame)
-      window.removeEventListener('scroll', schedule)
-      window.removeEventListener('resize', schedule)
-    }
-  }, [virtual, lines.length])
 
   const rows: JSX.Element[] = []
   for (let i = from; i < to; i++) {
@@ -204,7 +182,9 @@ function BlameTable({ result, addr }: { result: BlameResult; addr: RepoAddress }
           {plural(lines.length, 'line')} · {plural(commits.size, 'commit')} · {plural(result.versions, 'version')} compared
         </span>
         {result.partial ? (
-          <span className="text-caution-700 dark:text-caution-400">Partial: the oldest lines are attributed to the oldest version compared ({BLAME_MAX_VERSIONS} at most).</span>
+          <span className="text-caution-700 dark:text-caution-400">
+            Partial: a limit stopped the walk (at most {BLAME_MAX_VERSIONS} versions, {PATH_WALK_CAP} commits a lookup, or a rename too large to trace), so the oldest lines may be older than shown.
+          </span>
         ) : null}
         {result.approximate ? <span className="text-caution-700 dark:text-caution-400">Some changes were too large to align line by line.</span> : null}
         {result.renames.map((r) => (

@@ -4,22 +4,15 @@
  * lines are compared with the version before it, and a line both have is passed back).
  *
  * The line alignment is `diffTextLines` (Myers over lines, terminators included, as git's xdiff
- * compares records), so a line that only gained its final newline is a change, as in git.
- *
- * Loaded by plain Node (type stripping) in the blame worker test: keep imports relative and the
- * syntax erasable.
+ * compares records), so a line that only gained its final newline is a change, as in git; then
+ * git's change compaction ({@link compactChanges}) places ambiguous hunks where git does.
  */
 
-import { diffTextLines, DEFAULT_DIFF_LIMITS, type DiffLimits } from './text-diff'
+import { diffTextLines, DEFAULT_DIFF_LIMITS, splitLines, type DiffLimits } from './text-diff'
 import { compactChanges } from './xdiff-compact'
 
-/** For each line of `after` (0-based), the line of `before` it is unchanged from, or -1 (added). Null: too large to compare. */
+/** For each line of `after` (0-based), the line of `before` it is unchanged from, or -1 (added there). */
 export type LineMap = Int32Array
-
-/** Split into lines keeping each terminator (the records git compares). */
-export function blameLines(text: string): string[] {
-  return text.match(/[^\n]*\n|[^\n]+$/g) ?? []
-}
 
 /**
  * {@link LineMap} of `after` against `before`, or null when the change is too large for the
@@ -29,8 +22,8 @@ export function blameLines(text: string): string[] {
 export function lineMap(before: string, after: string, limits: DiffLimits = DEFAULT_DIFF_LIMITS): LineMap | null {
   const diff = diffTextLines(before, after, limits)
   if (diff === null) return null
-  const oldRecs = blameLines(before)
-  const newRecs = blameLines(after)
+  const oldRecs = splitLines(before)
+  const newRecs = splitLines(after)
   const oldChanged = new Uint8Array(oldRecs.length)
   const newChanged = new Uint8Array(newRecs.length)
   for (const l of diff) {
@@ -60,7 +53,7 @@ export class BlameState {
   private open: number
 
   constructor(text: string) {
-    this.lines = blameLines(text)
+    this.lines = splitLines(text)
     this.owner = new Array<string | null>(this.lines.length).fill(null)
     this.at = Int32Array.from(this.lines, (_, i) => i)
     this.open = this.lines.length

@@ -43,7 +43,7 @@ export interface DiffLimits {
 export const DEFAULT_DIFF_LIMITS: DiffLimits = { maxEdits: 2000, maxWork: 20_000_000 }
 
 /** Split into lines keeping each terminator, so "no newline at EOF" compares as a difference. */
-function splitLines(text: string): string[] {
+export function splitLines(text: string): string[] {
   return text.match(/[^\n]*\n|[^\n]+$/g) ?? []
 }
 
