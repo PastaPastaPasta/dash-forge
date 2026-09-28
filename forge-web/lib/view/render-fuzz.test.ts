@@ -16,18 +16,26 @@ const CASES = Number(process.env.FORGE_FUZZ_CASES ?? 400)
 /** Inputs up to 20 KB (UTF-16 units). */
 const MAX_LEN = 20_000
 /**
- * Per-input budget for inputs up to 20 KB. Locally the slowest is a few ms; the slack absorbs
- * GC pauses and slow shared CI runners. A regression back to polynomial time costs seconds.
+ * Per-input budget for inputs up to 20 KB, in CPU ms of the worker thread (not wall time: a
+ * runner loaded by other test files deschedules the worker without charging it). Locally the
+ * slowest is a few ms; the slack absorbs GC pauses and slower CPUs. A regression back to
+ * polynomial time costs seconds.
  */
 const PER_CALL_MS = 250
-/** Budget for a 1 MiB worst case (the largest document that is parsed at all): ~50 ms locally. */
+/**
+ * Budget for a 1 MiB worst case (the largest document that is parsed at all), in CPU ms:
+ * ~50 ms locally. Quadratic work at 1 MiB costs far more than this on any CPU.
+ */
 const MIB_CALL_MS = 3_000
 /**
  * Heap for the deep-nesting case: a 1 MiB document nested 31 spans deep parses in
  * ~50 MB. Re-deriving per-span tables at every level took several hundred.
  */
 const NESTING_HEAP_MB = 160
-/** Hard wall clock for a whole batch (real batches take ~2 s), under vitest's own timeout. */
+/**
+ * Wall clock with no call finishing before a batch counts as hung (`runWithDeadline`'s stall
+ * deadline; a whole batch takes ~2 s), under vitest's own timeout.
+ */
 const BATCH_DEADLINE_MS = 60_000
 const MIB = 1 << 20
 
@@ -49,7 +57,8 @@ async function expectFast(
   expect(result.timedOut, `${label}: batch did not finish (hang)`).toBe(false)
   if (result.timedOut) return
   const worst = JSON.stringify(calls[result.slowestIndex])?.slice(0, 300)
-  expect(result.slowest, `${label}: slowest input ${result.slowest.toFixed(1)} ms: ${worst}`).toBeLessThan(budgetMs)
+  const unit = result.cpu ? 'CPU ms' : 'ms'
+  expect(result.slowest, `${label}: slowest input ${result.slowest.toFixed(1)} ${unit}: ${worst}`).toBeLessThan(budgetMs)
 }
 
 /** `count` random nasty strings from a fixed seed, so a failure reproduces. */

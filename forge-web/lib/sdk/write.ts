@@ -704,6 +704,24 @@ async function settleUnanswered(
   return (await landed(confirmTimeoutMs)) ? 'landed' : 'unknown'
 }
 
+/** The time source for the engine's polls: {@link pollUntil} and {@link balanceAfter}. */
+export interface WriteClock {
+  now(): number
+  sleep(ms: number): Promise<void>
+}
+
+const REAL_CLOCK: WriteClock = { now: () => Date.now(), sleep: (ms) => new Promise((r) => setTimeout(r, ms)) }
+let clock: WriteClock = REAL_CLOCK
+
+/**
+ * Tests only: run the polls on a virtual clock, so a poll's budget passes in no wall time.
+ * `null` restores the real one (the default).
+ * @internal
+ */
+export function setWriteClock(c: WriteClock | null): void {
+  clock = c ?? REAL_CLOCK
+}
+
 /** Read a balance until it moves off `before` (a write's fee settles a block later). */
 async function balanceAfter(sdk: EvoSDK, identityId: string, before: bigint): Promise<bigint | null> {
   for (let i = 0; i < 8; i++) {
@@ -713,7 +731,7 @@ async function balanceAfter(sdk: EvoSDK, identityId: string, before: bigint): Pr
     } catch {
       /* transient read failure: try again */
     }
-    await new Promise((r) => setTimeout(r, 1000))
+    await clock.sleep(1000)
   }
   return null
 }
@@ -1238,15 +1256,15 @@ async function createDocumentUnlocked(
 
 /** Poll `check` until it holds or the budget elapses (one immediate check). */
 async function pollUntil(check: () => Promise<boolean>, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs
+  const deadline = clock.now() + timeoutMs
   for (;;) {
     try {
       if (await check()) return true
     } catch {
       /* a failed read is "not yet" */
     }
-    if (Date.now() >= deadline) return false
-    await new Promise((r) => setTimeout(r, 1500))
+    if (clock.now() >= deadline) return false
+    await clock.sleep(1500)
   }
 }
 

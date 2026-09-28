@@ -6,28 +6,55 @@
  * deadline. A synchronous infinite loop blocks the test's own thread, so vitest's timeout can
  * never fire and CI just hangs; in a worker, a hang regression fails fast instead. Plain Node
  * loads the module (type stripping, Node >= 22.18), so it must not use `@/` path aliases.
+ *
+ * Timing tolerates a loaded runner: each call is measured in the worker thread's own CPU time,
+ * which a runner busy with other test files does not inflate, and the deadline is on progress
+ * (no call finishing for that long), so the delays of a loaded runner do not add up across a
+ * batch. A whole batch still has a generous ceiling ({@link BATCH_CEILING_MS}).
  */
 
 import { Worker } from 'node:worker_threads'
 
+/**
+ * Wall time for the worker to start and load the module (type stripping included) before the
+ * first call. Not what is under test, and a loaded runner can take seconds over it.
+ */
+const LOAD_DEADLINE_MS = 60_000
+/**
+ * Wall time for a whole batch, whatever its progress: a regression that makes every call slow
+ * (each under the stall deadline) still fails here, under vitest's 120 s test timeout, rather
+ * than as a vitest timeout that leaves the worker running.
+ */
+const BATCH_CEILING_MS = 100_000
+
 const WORKER = `
 const { parentPort, workerData } = require('node:worker_threads')
+// This thread's CPU time, in ms: a runner that is busy elsewhere (other test files, other jobs)
+// deschedules the worker, which stretches wall time but not this. Wall time only on a Node
+// without threadCpuUsage.
+const cpuMs = typeof process.threadCpuUsage === 'function'
+  ? () => { const u = process.threadCpuUsage(); return (u.user + u.system) / 1000 }
+  : () => performance.now()
 import(workerData.url).then(
   (m) => {
     const f = m[workerData.fn]
     const results = []
     let slowest = 0
     let slowestIndex = -1
+    // Loaded: from here on the parent's deadline is per call.
+    parentPort.postMessage({ progress: true })
     // One unmeasured warm-up call, so JIT tiering does not land on whichever case runs first.
     if (workerData.calls.length > 0) f(...workerData.calls[0])
     workerData.calls.forEach((args, i) => {
-      const t = performance.now()
+      const t = cpuMs()
       const value = f(...args)
-      const ms = performance.now() - t
+      const ms = cpuMs() - t
       if (ms > slowest) { slowest = ms; slowestIndex = i }
       if (workerData.keep) results.push(value)
+      // Progress, for the parent's stall deadline.
+      parentPort.postMessage({ progress: true })
     })
-    parentPort.postMessage({ ok: true, results, slowest, slowestIndex })
+    parentPort.postMessage({ ok: true, results, slowest, slowestIndex, cpu: typeof process.threadCpuUsage === 'function' })
   },
   (e) => parentPort.postMessage({ ok: false, error: String(e && e.stack || e) }),
 )
@@ -39,15 +66,23 @@ export type DeadlineResult =
       readonly timedOut: false
       /** Each call's return value (structured-cloned), when `keep` was set. */
       readonly results: unknown[]
-      /** The slowest single call, in ms, and its index in `calls`. */
+      /**
+       * The slowest single call, in ms of the worker thread's CPU time (so a loaded runner does
+       * not inflate it; see `WORKER`), and its index in `calls`.
+       */
       readonly slowest: number
       readonly slowestIndex: number
+      /** Whether `slowest` is CPU time; wall time on a Node without `process.threadCpuUsage`. */
+      readonly cpu: boolean
     }
 
 /**
- * Run `module[fn](...args)` for each entry of `calls` in one worker. `timedOut` if the whole
- * batch has not finished within `ms` (the worker is then terminated). `heapMb` caps the
- * worker's heap: a call that needs more crashes the worker, which rejects.
+ * Run `module[fn](...args)` for each entry of `calls` in one worker. `timedOut` if `ms` of wall
+ * time pass with no call finishing (the worker is then terminated): a call that never returns
+ * is caught within `ms`, and a batch that is only slow because the runner is loaded is not.
+ * Starting the worker and loading the module have their own deadline ({@link LOAD_DEADLINE_MS}),
+ * and the whole batch a ceiling ({@link BATCH_CEILING_MS}).
+ * `heapMb` caps the worker's heap: a call that needs more crashes the worker, which rejects.
  */
 export async function runWithDeadline(
   moduleUrl: URL,
@@ -67,21 +102,31 @@ export async function runWithDeadline(
   })
   try {
     return await new Promise<DeadlineResult>((resolve, reject) => {
-      const timer = setTimeout(() => resolve({ timedOut: true }), ms)
-      worker.once('error', (e) => {
+      const ceiling = setTimeout(() => resolve({ timedOut: true }), Math.max(ms, BATCH_CEILING_MS))
+      let timer = setTimeout(() => resolve({ timedOut: true }), Math.max(ms, LOAD_DEADLINE_MS))
+      const stop = (): void => {
+        clearTimeout(ceiling)
         clearTimeout(timer)
+      }
+      worker.once('error', (e) => {
+        stop()
         reject(e)
       })
       // A worker that dies without answering (OOM, native crash) is a failure, not a hang.
       worker.once('exit', (code) => {
-        clearTimeout(timer)
+        stop()
         reject(new Error(`fuzz worker exited with code ${code} before answering`))
       })
-      worker.once(
+      worker.on(
         'message',
-        (msg: { ok: boolean; error?: string; results: unknown[]; slowest: number; slowestIndex: number }) => {
+        (msg: { progress?: true; ok: boolean; error?: string; results: unknown[]; slowest: number; slowestIndex: number; cpu: boolean }) => {
           clearTimeout(timer)
-          if (msg.ok) resolve({ timedOut: false, results: msg.results, slowest: msg.slowest, slowestIndex: msg.slowestIndex })
+          if (msg.progress) {
+            timer = setTimeout(() => resolve({ timedOut: true }), ms)
+            return
+          }
+          stop()
+          if (msg.ok) resolve({ timedOut: false, results: msg.results, slowest: msg.slowest, slowestIndex: msg.slowestIndex, cpu: msg.cpu })
           else reject(new Error(msg.error))
         },
       )

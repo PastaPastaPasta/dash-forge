@@ -4,7 +4,7 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('@dashevo/evo-sdk', () => {
   class Doc {
@@ -18,9 +18,10 @@ vi.mock('@dashevo/evo-sdk', () => {
       return { $id: this.id.toBase58() }
     }
     static generateId(_t: string, _o: string, _c: string, entropy: Uint8Array, nonce: bigint): Uint8Array {
-      // Like Platform's: the nonce and the entropy (two writes at one nonce get two ids).
-      const id = new Uint8Array(32).fill(Number(nonce % 250n) + 1)
-      id[31] = entropy[0] ?? 0
+      // Like Platform's: the nonce and the entropy (two writes at one nonce get two ids). All of
+      // the entropy: one byte of it made two writes at one nonce share an id 1 run in 256.
+      const id = Uint8Array.from(entropy)
+      id[0] = Number(nonce % 250n) + 1
       return id
     }
     static fromObject(o: { $id: string; title?: unknown }): Doc {
@@ -82,6 +83,7 @@ import {
   createDocumentIdempotent,
   deleteDocumentIdempotent,
   isNonceSpent,
+  setWriteClock,
   type SpendEvent,
   type WriteAuth,
 } from './write'
@@ -133,9 +135,28 @@ function auth(spends: SpendEvent[]): WriteAuth {
 
 const write = { contractId: 'C', documentType: 'comment', data: { body: 'hi' }, confirmTimeoutMs: 0 }
 
+/**
+ * The engine's polls (the landed / gone checks, the balance read after a write) run on a
+ * virtual clock: each sleep moves it on at once, so a poll spends its whole budget, as it would
+ * against a chain that never shows the write, in no wall time and whatever the runner's load.
+ */
 beforeEach(() => {
-  vi.useRealTimers()
+  let now = 0
+  setWriteClock({
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms
+    },
+  })
 })
+afterEach(() => setWriteClock(null))
+
+/**
+ * Let the spend report finish (it runs after the write resolves). Its balance reads and sleeps
+ * are all promise jobs on the virtual clock, so one macrotask turn runs them to the end. (A real
+ * timer: under vi.useFakeTimers this would never fire.)
+ */
+const reported = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
 describe('write engine', () => {
   it('never reuses a nonce when the node answers a block behind', async () => {
@@ -177,6 +198,7 @@ describe('write engine', () => {
       exists: async () => undefined,
     }
     await expect(createDocumentIdempotent(sdkOf(script, []), auth(spends), { ...write, contractId: 'N3' })).rejects.toBeInstanceOf(UnconfirmedWriteError)
+    await reported()
     expect(spends).toEqual([])
   })
 
@@ -191,7 +213,8 @@ describe('write engine', () => {
       exists: async () => undefined,
     }
     await expect(createDocumentIdempotent(sdkOf(script, []), auth(spends), { ...write, contractId: 'N4' })).rejects.toBeInstanceOf(ConsensusRefusal)
-    await vi.waitFor(() => expect(spends.map((s) => s.kind)).toEqual(['refused:comment']), { timeout: 3000 })
+    await reported()
+    expect(spends.map((s) => s.kind)).toEqual(['refused:comment'])
     expect(spends[0]?.balanceBefore).toBe(1_000_000_000n)
   })
 
@@ -379,7 +402,7 @@ describe('refusals at broadcast (D-007)', () => {
       expect(err).not.toBeInstanceOf(UnconfirmedWriteError)
       expect((err as ConsensusRefusal).code).toBe(40218)
       expect((err as ConsensusRefusal).figures.required).toBe(100_224_000n)
-      await new Promise((r) => setTimeout(r, 50))
+      await reported()
       expect(spends).toEqual([])
     } finally {
       restore()
@@ -424,7 +447,7 @@ describe('refusals at broadcast (D-007)', () => {
       exists: async () => undefined,
     }
     await expect(createDocumentIdempotent(sdkOf(script, []), auth(spends), { ...write, contractId: 'R3' })).rejects.toBeInstanceOf(ConsensusRefusal)
-    await new Promise((r) => setTimeout(r, 50))
+    await reported()
     expect(spends).toEqual([])
   })
 })
@@ -570,8 +593,7 @@ describe('a nonce refusal is never a "refused, try again" (review C1)', () => {
     } finally {
       restore()
     }
-    // Two creates, each waiting up to its 3 s confirm: past vitest's 5 s default on a slow runner.
-  }, 15_000)
+  })
 
   it('in settleUnanswered, a rebroadcast answered with the nonce text is not thrown as a refusal', async () => {
     const signed: bigint[] = []
@@ -708,7 +730,7 @@ describe('after "your earlier attempt was posted" (review N1, N4)', () => {
     } finally {
       restore()
     }
-  }, 60_000)
+  })
 
   it('a refusal from the result wait is a block verdict: its fee goes to the ledger (N3)', async () => {
     const spends: SpendEvent[] = []
@@ -721,7 +743,8 @@ describe('after "your earlier attempt was posted" (review N1, N4)', () => {
       exists: async () => undefined,
     }
     await expect(createDocumentIdempotent(sdkOf(script, []), auth(spends), { ...write, contractId: 'N3' })).rejects.toBeInstanceOf(ConsensusRefusal)
-    await vi.waitFor(() => expect(spends.map((s) => s.kind)).toEqual(['refused:comment']), { timeout: 3000 })
+    await reported()
+    expect(spends.map((s) => s.kind)).toEqual(['refused:comment'])
   })
 })
 
