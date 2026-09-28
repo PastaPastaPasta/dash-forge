@@ -5,6 +5,7 @@ import {
   CALL_DEADLINE_MS,
   DOWN_MS,
   HEDGE_AFTER_MS,
+  HEDGE_FLOOR,
   HEDGE_GRACE_MS,
   HEDGE_MAX_IN_FLIGHT,
   INTERVAL_MS,
@@ -540,14 +541,19 @@ describe('gatedFetch', () => {
       impaired.hold(THIRD, Date.now() + 60_000)
       impaired.hold(NODE, Date.now() + 60_000)
       expect(impaired.startHedge(NODE)).toBeNull()
-      // A healthy one with the same traffic does hedge, to the free node, up to the share.
-      const healthy = withNodes()
-      for (let i = 0; i < 20; i++) healthy.noteSent()
-      expect(healthy.startHedge(NODE)).not.toBeNull()
-      healthy.hedgeDone()
-      expect(healthy.startHedge(NODE)).not.toBeNull()
-      healthy.hedgeDone()
-      expect(healthy.startHedge(NODE)).toBeNull()
+      // A healthy network hedges a cold page's first slow reads (the floor), then about a tenth.
+      const hedgesAllowed = (sent: number): number => {
+        const b = withNodes()
+        for (let i = 0; i < sent; i++) b.noteSent()
+        let n = 0
+        while (b.startHedge(NODE) !== null && n < 100) {
+          b.hedgeDone()
+          n++
+        }
+        return n
+      }
+      expect(hedgesAllowed(5)).toBe(HEDGE_FLOOR)
+      expect(hedgesAllowed(100)).toBe(10)
     })
 
     it('does not hedge when no other node is free', async () => {

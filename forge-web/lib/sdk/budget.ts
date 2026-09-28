@@ -87,8 +87,13 @@ export const DOWN_MS = 15_000
 export const HEDGE_AFTER_MS = 2000
 /** Hedges in flight at once, so a slow network cannot double the load. */
 export const HEDGE_MAX_IN_FLIGHT = 2
-/** Hedges as a share of this tab's gated requests over {@link FAILOVER_WINDOW_MS} (at least one). */
+/** Hedges as a share of this tab's gated requests over {@link FAILOVER_WINDOW_MS}, beyond {@link HEDGE_FLOOR}. */
 export const HEDGE_SHARE = 0.1
+/**
+ * Hedges a window allows whatever the share: a cold page makes its first reads before the share
+ * has anything to go on, and those are the ones a slow node holds up (L-15).
+ */
+export const HEDGE_FLOOR = 3
 /**
  * Once the node's own reply came back unusable (a rate limit, an unavailable node) while the
  * hedge is still out, how long the hedge gets before that reply is passed on, so the SDK's
@@ -306,7 +311,7 @@ export class RequestBudget implements DapiBudget {
     this.sent = this.sent.filter((t) => t > since && t <= now)
     this.hedges = this.hedges.filter((t) => t > since && t <= now)
     if (this.hedgesInFlight >= HEDGE_MAX_IN_FLIGHT) return null
-    if (this.hedges.length >= Math.max(1, Math.floor(this.sent.length * HEDGE_SHARE))) return null
+    if (this.hedges.length >= Math.max(HEDGE_FLOOR, Math.floor(this.sent.length * HEDGE_SHARE))) return null
     let impaired = 0
     for (const n of new Set([...this.known, ...this.nodes.keys()])) {
       const state = this.state(n, now)
