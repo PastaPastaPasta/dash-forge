@@ -84,7 +84,7 @@ Your **repository data** needs no backup of its own. Refs, issues and PRs are on
 
 A key *source* (`--identity`, `DASH_FORGE_KEY`, the recorded default) is any of:
 
-- a path to an identity file (bridge JSON), or to a file `dg auth` sealed under a passphrase (the passphrase comes from `DASH_FORGE_PASSPHRASE`, or a prompt);
+- a path to an identity file (bridge JSON), or to a file `dg auth` sealed under a passphrase. The passphrase comes from `DASH_FORGE_PASSPHRASE`, or from a prompt on the terminal; `git-remote-dash` asks on `/dev/tty`. A `git push` that `dg` runs (`dg init`, `dg pr merge`) doesn't ask again: `dg` hands the unlocked key to the helper through a pipe only that `git` inherits, never through the environment;
 - `keychain:dash-forge/<network>/<identity id>`, an OS keychain entry;
 - `dfk1:<network>:<identity id>:<key id>:<wif>`, one limited key in one value, for CI secrets. Pass it in the environment, not as `--identity` (arguments are visible to other users). `dg`, `git-remote-dash`, `forge-import` and the Mirror Action all accept it.
 

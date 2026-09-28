@@ -115,3 +115,50 @@ jobs:
       - name: Storage fixture logs
         if: failure()
         run: docker compose -f infra/docker-compose.yml logs --no-color --tail 200
+
+  # The Windows-only code paths (no key handoff; the console prompt; the pre-flight refusal
+  # for a sealed key with no console) compile and pass their unit tests. The release builds
+  # Windows binaries, and the Linux job above never compiles `cfg(not(unix))`.
+  windows:
+    name: windows check + sealed-key tests
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    env:
+      # aws-lc-sys needs NASM for x86_64 Windows; use the prebuilt objects it ships.
+      AWS_LC_SYS_PREBUILT_NASM: '1'
+      PROTOC_VERSION: '28.3'
+    steps:
+      - uses: actions/checkout@v4
+      # The Platform monorepo's paths exceed MAX_PATH under the default CARGO_HOME.
+      - name: Shorten CARGO_HOME
+        run: |
+          git config --global core.longpaths true
+          printf '%s\n' 'CARGO_HOME=C:\ch' >> "$GITHUB_ENV"
+          printf '%s\n' 'C:\ch\bin' >> "$GITHUB_PATH"
+      - name: Install protoc
+        run: |
+          set -euo pipefail
+          tmp="${RUNNER_TEMP}/protoc"
+          mkdir -p "$tmp"
+          curl -fsSLo "$tmp/protoc.zip" \
+            "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-win64.zip"
+          7z x -y -bso0 -bsp0 "-o$tmp" "$tmp/protoc.zip"
+          echo "$tmp/bin" >> "$GITHUB_PATH"
+          echo "PROTOC=$tmp/bin/protoc.exe" >> "$GITHUB_ENV"
+      - name: Install the pinned Rust toolchain
+        run: |
+          if ! command -v rustup >/dev/null; then
+            curl -fsSL https://win.rustup.rs/x86_64 -o "$RUNNER_TEMP/rustup-init.exe"
+            "$RUNNER_TEMP/rustup-init.exe" -y --default-toolchain none --profile minimal
+          fi
+          rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: check (Windows cfg paths)
+        run: cargo check --locked -p forge-core -p dg -p git-remote-dash --all-targets
+      - name: sealed-key unit tests
+        run: |
+          cargo test --locked -p forge-core --lib -- sealed:: key_handoff
+          cargo test --locked -p dg --bin dg -- git::tests::without_a_handoff

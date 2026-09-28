@@ -9,7 +9,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use anyhow::{Context, Result};
 use serde_json::json;
@@ -81,11 +81,10 @@ fn clone(ctx: &Ctx, repo: &str, dir: Option<&Path>) -> Result<()> {
         )));
     }
     let (_report_dir, report) = Report::new()?;
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::git::dash_env(ctx).git_command()?;
     cmd.arg("clone")
         .arg(&url)
         .arg(dest)
-        .envs(crate::git::dash_env(ctx))
         .envs(report.env())
         .stdin(Stdio::null());
     // Under --json git's own words (`fatal: …`) are captured for the cause; otherwise they

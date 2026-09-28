@@ -76,6 +76,14 @@ base64 = "0.22"
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 keyring = "4"
 
+# `key_handoff`: `dg` hands the key it unlocked to `git-remote-dash` over an inherited pipe.
+# command-fds clears FD_CLOEXEC in the forked child only (a pre_exec hook: the workspace
+# forbids unsafe code), so no other process `dg` starts can inherit the pipe; nix gives the
+# helper safe fcntl/close for its end.
+[target.'cfg(unix)'.dependencies]
+command-fds = "0.3"
+nix = { version = "0.31", features = ["fs"] }
+
 # Only for `vendored-openssl` below. rs-sdk-trusted-context-provider enables reqwest's default
 # (native-tls) features, which on Linux link the system OpenSSL; this lets a release build
 # compile OpenSSL in statically instead.

@@ -1497,7 +1497,7 @@ fn push_merge(
     push_to(
         dir,
         &push_argv(ctx, &base_url, &target, base_ref),
-        &git::dash_env(ctx),
+        &git::dash_env_signing(ctx)?,
         "merge failed",
     )?;
     steps.ok("push", format!("{base_ref} → {}", short(&target)));
@@ -1525,6 +1525,17 @@ pub(crate) fn scratch_repo() -> Result<tempfile::TempDir> {
     Ok(scratch)
 }
 
+/// The environment for fetching from a repository: the key is handed over only when it is
+/// `private`, whose content needs it (a private repository cannot be forked, so a PR's source
+/// repository is as private as its target). A public fetch never gets the key.
+fn read_env(ctx: &Ctx, private: bool) -> Result<git::DashEnv<'_>> {
+    if private {
+        git::dash_env_signing(ctx)
+    } else {
+        Ok(git::dash_env(ctx))
+    }
+}
+
 /// A scratch repository holding the PR's base branch and head ([`fetch_base_and_head`]).
 pub(crate) fn scratch_with_pr(
     ctx: &Ctx,
@@ -1532,7 +1543,8 @@ pub(crate) fn scratch_with_pr(
     view: &PatchView,
 ) -> Result<tempfile::TempDir> {
     let scratch = scratch_repo()?;
-    fetch_base_and_head(scratch.path(), handle, view, &git::dash_env(ctx))?;
+    let private = handle.visibility == forge_core::rules::v2::Visibility::Private;
+    fetch_base_and_head(scratch.path(), handle, view, &read_env(ctx, private)?)?;
     Ok(scratch)
 }
 
@@ -1544,13 +1556,13 @@ pub(crate) fn fetch_base_and_head(
     dir: &Path,
     handle: &Repo,
     view: &PatchView,
-    env: &[(String, String)],
+    env: &git::DashEnv<'_>,
 ) -> Result<()> {
     require_git_safe(view)?;
     let base_ref = &view.patch.base_ref_name;
     let head = &view.head;
     if view.base_tip.is_some() {
-        git::git(
+        git::git_dash(
             dir,
             &[
                 "fetch",
@@ -1566,7 +1578,7 @@ pub(crate) fn fetch_base_and_head(
         let source_url = format!("dash://{}", view.patch.source_repo_id);
         // Refspec fixed by us: the PR's `sourceRefName` is attacker-chosen and never used
         // as a refspec. The helper downloads the repo's packs whatever is asked for.
-        git::git(
+        git::git_dash(
             dir,
             &[
                 "fetch",
@@ -1766,13 +1778,13 @@ pub(crate) fn squash_message(
 pub(crate) fn push_to(
     dir: &Path,
     argv: &[String],
-    env: &[(String, String)],
+    env: &git::DashEnv<'_>,
     goal: &str,
 ) -> Result<()> {
-    let out = std::process::Command::new("git")
+    let out = env
+        .git_command()?
         .current_dir(dir)
         .args(argv)
-        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(std::process::Stdio::null())
         .output()
         .context("running git push")?;
@@ -1822,6 +1834,8 @@ struct Located {
     head: String,
     base_ref: String,
     target: String,
+    /// Whether the target repository is private (its fetches need the key).
+    private: bool,
 }
 
 async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<Located> {
@@ -1846,17 +1860,18 @@ async fn locate(ctx: &Ctx, repo: &str, number: u64) -> Result<Located> {
         head,
         base_ref,
         target,
+        private: s.repo.visibility == forge_core::rules::v2::Visibility::Private,
     })
 }
 
 /// Fetch a PR head into the repository at `cwd` from `dash://<source>` (fixed refspec —
 /// the PR's own `sourceRefName` is attacker-chosen and never used as one).
-fn fetch_head(ctx: &Ctx, cwd: &Path, source: &str, head: &str) -> Result<bool> {
+fn fetch_head(ctx: &Ctx, cwd: &Path, source: &str, head: &str, private: bool) -> Result<bool> {
     if source.is_empty() || git::has_object(cwd, head) {
         return Ok(false);
     }
     let url = format!("dash://{source}");
-    git::git(
+    git::git_dash(
         cwd,
         &[
             "fetch",
@@ -1864,16 +1879,21 @@ fn fetch_head(ctx: &Ctx, cwd: &Path, source: &str, head: &str) -> Result<bool> {
             &url,
             &format!("+refs/heads/*:refs/remotes/dash-pr/{source}/*"),
         ],
-        &git::dash_env(ctx),
+        &read_env(ctx, private)?,
     )
     .context("fetching the PR head from its source repository")?;
     Ok(true)
 }
 
 async fn checkout(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
-    let Located { source, head, .. } = locate(ctx, repo, number).await?;
+    let Located {
+        source,
+        head,
+        private,
+        ..
+    } = locate(ctx, repo, number).await?;
     let cwd = std::env::current_dir()?;
-    let fetched = fetch_head(ctx, &cwd, &source, &head)?;
+    let fetched = fetch_head(ctx, &cwd, &source, &head, private)?;
     if !git::has_object(&cwd, &head) {
         return Err(crate::errors::not_found(
             format!(
@@ -1911,13 +1931,14 @@ async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
         head,
         base_ref,
         target,
+        private,
     } = locate(ctx, repo, number).await?;
     git::require_branch_ref(&base_ref)?;
     let cwd = std::env::current_dir()?;
-    fetch_head(ctx, &cwd, &source, &head)?;
+    fetch_head(ctx, &cwd, &source, &head, private)?;
     // The base as the target repo has it now, fetched fresh.
     let base_local = format!("refs/remotes/dash-pr/base-{number}");
-    git::git(
+    git::git_dash(
         &cwd,
         &[
             "fetch",
@@ -1925,7 +1946,7 @@ async fn diff(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             &format!("dash://{target}"),
             &format!("+{base_ref}:{base_local}"),
         ],
-        &git::dash_env(ctx),
+        &read_env(ctx, private)?,
     )
     .context("fetching the base branch")?;
     let range = format!("{base_local}...{head}");
@@ -1992,8 +2013,13 @@ mod tests {
         ] {
             assert!(require_git_safe(&view_with(bad, &ok)).is_err(), "{bad:?}");
             let dir = tempfile::tempdir().unwrap();
-            let err = fetch_base_and_head(dir.path(), &dummy_repo(), &view_with(bad, &ok), &[])
-                .unwrap_err();
+            let err = fetch_base_and_head(
+                dir.path(),
+                &dummy_repo(),
+                &view_with(bad, &ok),
+                &git::DashEnv::default(),
+            )
+            .unwrap_err();
             assert!(
                 format!("{err:#}").contains("not a plain branch"),
                 "{bad:?}: {err:#}"

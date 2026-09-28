@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use anyhow::{Context as _, Result};
 use serde_json::Value;
 
-use forge_core::keystore::BridgeIdentity;
+use forge_core::keystore::{BridgeIdentity, Secret};
 use forge_core::network::{NetworkSettings, NetworkTarget};
 use forge_core::platform::{LoadedIdentity, Network, PlatformClient};
 use forge_core::user_error::{codes, UserError};
@@ -35,6 +35,12 @@ pub struct Ctx {
     pub stdin_tty: bool,
     /// `--allow-archived`: write to an archived repository anyway (E606 otherwise).
     pub allow_archived: bool,
+    /// The identity source's contents, once unlocked (a sealed file's passphrase is asked
+    /// once per run). Handed to `git-remote-dash` over a pipe ([`crate::git::DashEnv`]).
+    unlocked: std::sync::OnceLock<Secret>,
+    /// Whether this run's `git-remote-dash` takes the handed key (`git remote-dash
+    /// --check-key`, run once, before the first handoff).
+    helper_ok: std::sync::OnceLock<bool>,
 }
 
 /// Why a confirmation prompt cannot be asked, or `None` when it can (or `--yes` answers it).
@@ -107,6 +113,8 @@ impl Ctx {
             cli_identity: cli.identity.clone(),
             stdin_tty: std::io::stdin().is_terminal(),
             allow_archived: cli.allow_archived,
+            unlocked: std::sync::OnceLock::new(),
+            helper_ok: std::sync::OnceLock::new(),
         })
     }
 
@@ -134,12 +142,35 @@ impl Ctx {
     /// Load the signing identity (bridge-format key material) from the resolved path.
     pub fn load_bridge(&self) -> Result<BridgeIdentity> {
         let path = self.require_identity_path()?;
-        BridgeIdentity::load_from_file(path).with_context(|| {
-            format!(
-                "loading identity from {}",
-                forge_core::keystore::describe_key_source(path)
-            )
-        })
+        self.unlock_key(path)
+            .and_then(|key| Ok(BridgeIdentity::from_source_text(key.expose())?))
+            .with_context(|| {
+                format!(
+                    "loading identity from {}",
+                    forge_core::keystore::describe_key_source(path)
+                )
+            })
+    }
+
+    /// The identity source's contents, unlocked on first use (a sealed file asks for its
+    /// passphrase then, and not again in this run).
+    fn unlock_key(&self, path: &std::path::Path) -> Result<&Secret> {
+        if let Some(key) = self.unlocked.get() {
+            return Ok(key);
+        }
+        let key = BridgeIdentity::unlock_source(path)?;
+        Ok(self.unlocked.get_or_init(|| key))
+    }
+
+    /// The key this run already unlocked, if any: what a `dash://` git command is handed.
+    pub fn unlocked_key(&self) -> Option<&Secret> {
+        self.unlocked.get()
+    }
+
+    /// Whether `git-remote-dash` takes the handed key: `check` runs once per run, and its
+    /// answer is kept.
+    pub fn helper_checked(&self, check: impl FnOnce() -> bool) -> bool {
+        *self.helper_ok.get_or_init(check)
     }
 
     /// Connect to the resolved network.
@@ -271,6 +302,8 @@ impl Ctx {
             cli_identity: None,
             stdin_tty,
             allow_archived: false,
+            unlocked: std::sync::OnceLock::new(),
+            helper_ok: std::sync::OnceLock::new(),
         }
     }
 }

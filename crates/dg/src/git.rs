@@ -1,21 +1,58 @@
 //! Local `git` plumbing for `dg pr` (merge, checkout, diff) and the pure merge planner.
 //!
 //! Every call runs the `git` on PATH with explicit arguments (never a shell), in an explicit
-//! directory. `dash://` fetches and pushes reach `git-remote-dash`, which gets the identity
-//! and network this `dg` invocation resolved through the environment ([`dash_env`]).
+//! directory. `dash://` fetches and pushes reach `git-remote-dash`, which gets the network and
+//! identity source this `dg` invocation resolved through the environment, and the key `dg`
+//! already unlocked through an inherited pipe ([`DashEnv`]).
 
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use forge_core::keystore::Secret;
 use forge_core::network::{NetworkSettings, GIT_NETWORK_KEYS};
 use forge_core::platform::Network;
+use forge_core::user_error::{codes, UserError};
 
 use crate::context::Ctx;
 
-/// The environment a `dash://` fetch / push needs: the identity file and the network.
-pub fn dash_env(ctx: &Ctx) -> Vec<(String, String)> {
-    let mut env: Vec<(String, String)> = ctx
+/// What a `dash://` git command needs from this `dg`: the network and identity-source
+/// variables, and the key this run already unlocked. The key goes over a pipe only `git` (and
+/// the helper it runs) inherits, never the environment or argv ([`forge_core::key_handoff`]),
+/// so a sealed key's passphrase is asked once per `dg` command.
+#[derive(Default)]
+pub struct DashEnv<'a> {
+    vars: Vec<(String, String)>,
+    key: Option<&'a Secret>,
+}
+
+impl<'a> DashEnv<'a> {
+    fn with_key(mut self, key: Option<&'a Secret>) -> Self {
+        self.key = key;
+        self
+    }
+
+    /// A new `git` command with the variables set and the key attached. Built here, never
+    /// applied to an existing command: attaching twice would leave a second inheritable pipe
+    /// holding the key.
+    pub fn git_command(&self) -> Result<Command> {
+        self.command("git")
+    }
+
+    fn command(&self, program: &str) -> Result<Command> {
+        let mut cmd = Command::new(program);
+        cmd.envs(self.vars.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+        if let Some(key) = self.key {
+            forge_core::key_handoff::attach(&mut cmd, key)?;
+        }
+        Ok(cmd)
+    }
+}
+
+/// The [`DashEnv`] for `ctx` without the key: the network and the identity source. For a
+/// fetch or clone of a public repository, which needs no key, so none is handed over.
+pub fn dash_env(ctx: &Ctx) -> DashEnv<'_> {
+    let mut vars: Vec<(String, String)> = ctx
         .target
         .env_vars()
         .into_iter()
@@ -23,19 +60,105 @@ pub fn dash_env(ctx: &Ctx) -> Vec<(String, String)> {
         .collect();
     // A file path is made absolute: git runs the helper from another directory (a scratch
     // repo, or the repository root), where a relative path names nothing. A `keychain:` or
-    // inline `dfk1:` source is not a path and passes through as it is.
+    // inline `dfk1:` source is not a path and passes through as it is (an inline key is
+    // already in this process's environment or argv, where the user put it).
     if let Some(p) = &ctx.identity_path {
         let value = if forge_core::keystore::is_file_source(p) {
             std::path::absolute(p).unwrap_or_else(|_| p.clone())
         } else {
             p.clone()
         };
-        env.push((
+        vars.push((
             "DASH_FORGE_KEY".into(),
             value.to_string_lossy().into_owned(),
         ));
     }
-    env
+    // A `dg` that must not prompt (`--json`) keeps the helper from prompting too.
+    if !forge_core::sealed::prompts_allowed() {
+        vars.push(("GIT_TERMINAL_PROMPT".into(), "0".into()));
+    }
+    DashEnv { vars, key: None }
+}
+
+/// [`dash_env`] plus the key this run unlocked, for a `dash://` git command that signs (a
+/// push) or opens a private repository. The key is handed over only once this run's
+/// [`check_helper_key`] has passed: a `git-remote-dash` that would not read it (an older
+/// release) never gets it, and asks for the passphrase itself instead.
+pub fn dash_env_signing(ctx: &Ctx) -> Result<DashEnv<'_>> {
+    let mut env = dash_env(ctx);
+    if let Some(key) = ctx.unlocked_key() {
+        let identity_id =
+            forge_core::keystore::BridgeIdentity::from_source_text(key.expose())?.identity_id;
+        if ctx.helper_checked(|| check_helper_key(ctx, &identity_id).is_ok()) {
+            env.key = Some(key);
+        }
+    }
+    Ok(env)
+}
+
+/// Before anything is paid for: check that the `git-remote-dash` a `git push` will run gets
+/// the key and reads it as `identity_id`. On Unix `dg` hands it the key it unlocked (an
+/// older helper, or none on PATH, fails here); on Windows there is no handoff, and the helper
+/// must be able to ask for a sealed key's passphrase on the console. Otherwise the push would
+/// only fail after the create was paid for.
+pub fn check_helper_key(ctx: &Ctx, identity_id: &str) -> Result<()> {
+    let refuse = |cause: String| -> anyhow::Error {
+        UserError::new(
+            codes::IDENTITY_UNREADABLE,
+            "not published: `git push` could not use your key",
+        )
+        .cause(cause)
+        .fix("install dg and git-remote-dash from the same release (docs/INSTALL.md); `dg doctor` compares their versions")
+        .fix("`dg auth status` shows which key source dg uses")
+        .note("checked before anything was paid for; nothing was written")
+        .into()
+    };
+    if !cfg!(unix) {
+        // No handoff: the helper opens the key source itself, and a sealed file needs its
+        // passphrase from the environment or the console.
+        let sealed = ctx
+            .identity_path
+            .as_deref()
+            .is_some_and(forge_core::keystore::is_sealed_file);
+        return match no_handoff_blocker(sealed, forge_core::sealed::passphrase_available()) {
+            Some(cause) => Err(refuse(cause.into())),
+            None => Ok(()),
+        };
+    }
+    let out = dash_env(ctx)
+        .with_key(ctx.unlocked_key())
+        .git_command()?
+        .args(["remote-dash", "--check-key"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .context("running git remote-dash --check-key")?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(refuse(format!(
+            "`git remote-dash --check-key` failed: {}",
+            last_lines(&stderr, 3)
+        )));
+    }
+    let report = serde_json::from_slice::<serde_json::Value>(&out.stdout).unwrap_or_default();
+    match report["identityId"].as_str() {
+        Some(id) if id == identity_id => Ok(()),
+        Some(id) => Err(refuse(format!(
+            "git-remote-dash read identity {id}, and this repository is created for {identity_id}"
+        ))),
+        None => Err(refuse(
+            "git-remote-dash did not report the identity it would push as".into(),
+        )),
+    }
+}
+
+/// Where there is no handoff (Windows): why the helper could not open the key, if it could
+/// not. A `sealed` key needs a passphrase the helper can get (`passphrase_available`: the
+/// variable, or a console).
+fn no_handoff_blocker(sealed: bool, passphrase_available: bool) -> Option<&'static str> {
+    (sealed && !passphrase_available).then_some(
+        "your key is passphrase-sealed, and git-remote-dash will have no console to ask for \
+         the passphrase on (and DASH_FORGE_PASSPHRASE is not set)",
+    )
 }
 
 /// Pin `dg`'s network in the repository at `root` (its own git config) unless its git config
@@ -102,10 +225,20 @@ pub fn config_get(dir: &Path, key: &str) -> Option<String> {
 
 /// `git <args>` in `dir`, returning trimmed stdout; stderr goes into the error.
 pub fn git(dir: &Path, args: &[&str], env: &[(String, String)]) -> Result<String> {
-    let out = Command::new("git")
+    let mut cmd = Command::new("git");
+    cmd.envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    run_git(cmd, dir, args)
+}
+
+/// [`git`] for a command that reaches `dash://` (a fetch or a push), with [`DashEnv`].
+pub fn git_dash(dir: &Path, args: &[&str], env: &DashEnv<'_>) -> Result<String> {
+    run_git(env.git_command()?, dir, args)
+}
+
+fn run_git(mut cmd: Command, dir: &Path, args: &[&str]) -> Result<String> {
+    let out = cmd
         .current_dir(dir)
         .args(args)
-        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .output()
         .with_context(|| format!("running git {}", args.first().unwrap_or(&"")))?;
     if !out.status.success() {
@@ -453,6 +586,53 @@ pub fn full_ref(b: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Windows (no handoff): a sealed key with no passphrase source is refused before the
+    /// create is paid for; anything the helper can open passes.
+    #[test]
+    fn without_a_handoff_a_sealed_key_needs_a_passphrase_source() {
+        assert!(no_handoff_blocker(true, false).is_some_and(|c| c.contains("no console")));
+        assert_eq!(no_handoff_blocker(true, true), None);
+        assert_eq!(no_handoff_blocker(false, false), None);
+    }
+
+    /// The `git` a `dash://` command runs inherits exactly one open descriptor besides stdio:
+    /// the one handoff pipe, holding the key once.
+    #[cfg(unix)]
+    #[test]
+    fn a_dash_git_command_inherits_exactly_one_handoff_pipe() {
+        const KEY: &str = "dfk1:devnet-moutai:8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB:5:w";
+        /// `dash-forge-key/1\n`, the handoff header.
+        const HEADER: usize = 17;
+        let key = Secret::new(KEY);
+        let with_key = DashEnv {
+            vars: Vec::new(),
+            key: Some(&key),
+        };
+        assert_eq!(with_key.git_command().unwrap().get_program(), "git");
+        // The same construction with a shell in git's place: count the pipes it inherits above
+        // stdio, then read the one the variable names. The baseline is the same shell with no
+        // key (cargo may pass a jobserver pipe to every test process).
+        let script = r#"n=0; for f in /dev/fd/*; do d=${f#/dev/fd/}; [ "$d" -gt 2 ] && [ -p "$f" ] && n=$((n+1)); done; echo "$n"; if [ -n "$DASH_FORGE_KEY_FD" ]; then cat "/dev/fd/${DASH_FORGE_KEY_FD%%:*}" | wc -c; fi"#;
+        let run = |env: &DashEnv<'_>| {
+            let out = env
+                .command("/bin/sh")
+                .unwrap()
+                .args(["-c", script])
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+            String::from_utf8_lossy(&out.stdout)
+                .split_whitespace()
+                .map(|w| w.parse::<usize>().unwrap())
+                .collect::<Vec<_>>()
+        };
+        let base = run(&DashEnv::default());
+        let got = run(&with_key);
+        assert_eq!(got[0], base[0] + 1, "exactly one more inherited pipe");
+        assert_eq!(got[1], HEADER + KEY.len(), "holding the key once");
+    }
 
     const B: &str = "1111111111111111111111111111111111111111";
     const H: &str = "2222222222222222222222222222222222222222";
