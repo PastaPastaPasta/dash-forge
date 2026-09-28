@@ -362,6 +362,10 @@ fn event_phrase(e: &Event) -> String {
         EventKind::MilestoneSet if value.is_empty() => "set the milestone (hidden)".into(),
         EventKind::MilestoneSet => format!("set the milestone to {value}"),
         EventKind::MilestoneClear => "cleared the milestone".into(),
+        EventKind::Pin => "pinned this".into(),
+        EventKind::Unpin => "unpinned this".into(),
+        EventKind::Lock => "locked the conversation".into(),
+        EventKind::Unlock => "unlocked the conversation".into(),
         // PR-only kinds do nothing to an issue; name them as the contract does.
         other => serde_json::to_value(other)
             .ok()

@@ -1,0 +1,38 @@
+{
+  "name": "phase_shifts_the_grid",
+  "description": "A phase of 6 h moves every window start to 06:00 UTC; at 05:00 the newest window began yesterday 06:00.",
+  "case": "trending",
+  "rules": "v2",
+  "input": {
+    "beats": [
+      {
+        "repo": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "createdAt": 1727938800000
+      },
+      {
+        "repo": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "createdAt": 1727931600000
+      }
+    ],
+    "grid": {
+      "range": 604800,
+      "step": 86400,
+      "phase": 21600
+    },
+    "now": 1728018000000,
+    "selector": "newest",
+    "limit": 25
+  },
+  "expected": {
+    "window": {
+      "start": 1727935200000,
+      "end": 1728540000000
+    },
+    "ranking": [
+      {
+        "repo": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "count": 1
+      }
+    ]
+  }
+}

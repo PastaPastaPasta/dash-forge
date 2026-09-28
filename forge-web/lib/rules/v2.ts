@@ -28,6 +28,7 @@ import { mergedLog } from './review'
 import type { Event, IsAncestor, IssueState, Oid, PrState } from './types'
 
 export * from './review'
+export * from './parity'
 
 /** The versioned rules identifier for forge-v2 repositories. */
 export const FORGE_RULES_V2 = 'FORGE_RULES_V2' as const

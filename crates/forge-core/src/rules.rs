@@ -46,6 +46,7 @@ use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
+pub mod parity;
 pub mod review;
 pub mod v2;
 
@@ -772,9 +773,10 @@ fn neutralize_wildmatch(pattern: &str) -> String {
 // Event fold (issue / PR state)
 // ===========================================================================
 
-/// A collaboration `event` kind (forge-v2.md §3, numeric kinds 1–18). Kinds 1–10 change the
+/// A collaboration `event` kind (forge-v2.md §3, numeric kinds 1–22). Kinds 1–10 change the
 /// issue/PR state ([`apply_issue_event`], [`apply_pr_event`]); 11–18 are the review state
-/// ([`v2::fold_pr_review_v2`]) and do nothing to [`PrState`] / [`IssueState`].
+/// ([`v2::fold_pr_review_v2`]); 17–22 are a thread's milestone, pin and lock
+/// ([`parity::fold_thread_meta_v2`]). None of 11–22 changes [`PrState`] / [`IssueState`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum EventKind {
@@ -814,6 +816,14 @@ pub enum EventKind {
     MilestoneSet,
     /// 18 — the milestone cleared. Members only.
     MilestoneClear,
+    /// 19 — pinned to the repo's issue or PR list. Members only.
+    Pin,
+    /// 20 — unpinned. Members only.
+    Unpin,
+    /// 21 — locked: clients offer the composer to members only. Members only.
+    Lock,
+    /// 22 — unlocked. Members only.
+    Unlock,
 }
 
 /// A single `event` document (§2.3), flattened for the fold.
@@ -1525,6 +1535,41 @@ mod tests {
     }
 
     #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct ChecksInput {
+        runs: Vec<v2::CheckRunRow>,
+        head_oid: String,
+        memberships: Vec<v2::Membership>,
+        #[serde(default)]
+        runners: std::collections::BTreeSet<String>,
+        policy: v2::ChecksPolicy,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct EventsInput {
+        events: Vec<Event>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct MilestonesInput {
+        docs: Vec<v2::MilestoneDoc>,
+        #[serde(default)]
+        items: Vec<v2::MilestoneItem>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct TrendingInput {
+        beats: Vec<v2::StarBeat>,
+        grid: v2::TimeGrid,
+        now: u64,
+        selector: v2::TrendingSelector,
+        limit: usize,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
     #[serde(deny_unknown_fields)]
     struct WellFormedInput {
         doc: v2::ContentDoc,
@@ -1691,6 +1736,44 @@ mod tests {
         }
     }
 
+    /// The platform-parity cases (`docs/design/platform-parity-spec.md` §2.6, §1.2, §4).
+    fn run_parity_case(v: &Vector) {
+        let ctx = &v.name;
+        match v.case.as_str() {
+            "checks" => {
+                let inp: ChecksInput = input(v);
+                let oracle = v2::RoleOracle::new(inp.memberships);
+                let got =
+                    v2::checks_state(&inp.runs, &inp.head_oid, &oracle, &inp.runners, &inp.policy);
+                assert_eq!(got, expected::<v2::ChecksState>(v), "vector `{ctx}`");
+            }
+            "thread_meta" => {
+                let inp: EventsInput = input(v);
+                let got = v2::fold_thread_meta_v2(&inp.events);
+                assert_eq!(got, expected::<v2::ThreadMeta>(v), "vector `{ctx}`");
+            }
+            "pinned" => {
+                let inp: EventsInput = input(v);
+                let got = v2::pinned_targets(&inp.events);
+                assert_eq!(got, expected::<Vec<v2::PinnedTarget>>(v), "vector `{ctx}`");
+            }
+            "milestones" => {
+                let inp: MilestonesInput = input(v);
+                let got = v2::fold_milestones_v2(&inp.docs, &inp.items);
+                assert_eq!(got, expected::<Vec<v2::Milestone>>(v), "vector `{ctx}`");
+            }
+            "trending" => {
+                let inp: TrendingInput = input(v);
+                let got = serde_json::json!({
+                    "window": v2::trending_window(inp.grid, inp.now, inp.selector),
+                    "ranking": v2::trending_recount(&inp.beats, inp.grid, inp.now, inp.selector, inp.limit),
+                });
+                assert_eq!(got, v.expected, "vector `{ctx}`");
+            }
+            other => panic!("vector `{ctx}`: not a parity case `{other}`"),
+        }
+    }
+
     fn run_case_v2(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
@@ -1786,6 +1869,7 @@ mod tests {
             }
             "fold_review" | "policy" | "anchor" | "review_group" | "suggestion"
             | "linked_issues" => run_review_case(v),
+            "checks" | "thread_meta" | "pinned" | "milestones" | "trending" => run_parity_case(v),
             other => panic!("vector `{ctx}`: unknown v2 case `{other}`"),
         }
     }

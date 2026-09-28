@@ -1,0 +1,74 @@
+{
+  "name": "require_checks_all_pass",
+  "description": "requireChecks: every reported name passes (success, neutral, skipped all pass).",
+  "case": "checks",
+  "rules": "v2",
+  "input": {
+    "runs": [
+      {
+        "id": "r1",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "build",
+        "status": "completed",
+        "reporter": "writ",
+        "createdAt": 100,
+        "conclusion": "success"
+      },
+      {
+        "id": "r2",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "lint",
+        "status": "completed",
+        "reporter": "writ",
+        "createdAt": 100,
+        "conclusion": "neutral"
+      },
+      {
+        "id": "r3",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "docs",
+        "status": "completed",
+        "reporter": "writ",
+        "createdAt": 100,
+        "conclusion": "skipped"
+      }
+    ],
+    "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "policy": {
+      "requireChecks": true
+    }
+  },
+  "expected": {
+    "required": [
+      {
+        "name": "build",
+        "state": "passed",
+        "runId": "r1"
+      },
+      {
+        "name": "docs",
+        "state": "passed",
+        "runId": "r3"
+      },
+      {
+        "name": "lint",
+        "state": "passed",
+        "runId": "r2"
+      }
+    ],
+    "met": true,
+    "untrusted": 0
+  }
+}

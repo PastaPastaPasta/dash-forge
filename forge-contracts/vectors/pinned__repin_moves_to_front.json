@@ -1,0 +1,56 @@
+{
+  "name": "repin_moves_to_front",
+  "description": "A re-pin moves the target to the front; equal pin times order by target id.",
+  "case": "pinned",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "B",
+        "kind": "pin",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "targetId": "A",
+        "kind": "pin",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "e3",
+        "targetId": "B",
+        "kind": "unpin",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 150
+      },
+      {
+        "id": "e4",
+        "targetId": "B",
+        "kind": "pin",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 200
+      }
+    ]
+  },
+  "expected": [
+    {
+      "targetId": "B",
+      "pinnedAt": 200
+    },
+    {
+      "targetId": "A",
+      "pinnedAt": 100
+    }
+  ]
+}

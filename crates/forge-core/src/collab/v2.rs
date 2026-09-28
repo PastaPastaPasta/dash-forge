@@ -3432,6 +3432,10 @@ fn kind_verb(kind: EventKind) -> &'static str {
         EventKind::HeadUpdate => "move the head of",
         EventKind::MilestoneSet => "set the milestone of",
         EventKind::MilestoneClear => "clear the milestone of",
+        EventKind::Pin => "pin",
+        EventKind::Unpin => "unpin",
+        EventKind::Lock => "lock",
+        EventKind::Unlock => "unlock",
     }
 }
 

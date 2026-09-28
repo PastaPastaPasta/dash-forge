@@ -1,0 +1,61 @@
+{
+  "name": "milestone_newest_wins",
+  "description": "Set v1, set v2, clear, set v3, set with no value (inert): v3.",
+  "case": "thread_meta",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "milestoneSet",
+        "actor": "maint",
+        "value": "v1",
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "milestoneSet",
+        "actor": "maint",
+        "value": "v2",
+        "oid": null,
+        "createdAt": 110
+      },
+      {
+        "id": "e3",
+        "targetId": "T",
+        "kind": "milestoneClear",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 120
+      },
+      {
+        "id": "e4",
+        "targetId": "T",
+        "kind": "milestoneSet",
+        "actor": "maint",
+        "value": "v3",
+        "oid": null,
+        "createdAt": 130
+      },
+      {
+        "id": "e5",
+        "targetId": "T",
+        "kind": "milestoneSet",
+        "actor": "maint",
+        "value": "",
+        "oid": null,
+        "createdAt": 140
+      }
+    ]
+  },
+  "expected": {
+    "milestone": "v3",
+    "pinned": false,
+    "pinnedAt": null,
+    "locked": false
+  }
+}

@@ -89,8 +89,9 @@ export interface Holdings {
 }
 
 /**
- * A collaboration `event` kind (forge-v2.md §3, numeric kinds 1–18, string-tagged in vectors).
- * 1–10 change the issue/PR state; 11–18 are the review state (`foldPrReviewV2`).
+ * A collaboration `event` kind (forge-v2.md §3, numeric kinds 1–22, string-tagged in vectors).
+ * 1–10 change the issue/PR state; 11–18 are the review state (`foldPrReviewV2`); 17–22 are a
+ * thread's milestone, pin and lock (`foldThreadMetaV2`).
  */
 export type EventKind =
   | 'close'
@@ -111,6 +112,10 @@ export type EventKind =
   | 'headUpdate'
   | 'milestoneSet'
   | 'milestoneClear'
+  | 'pin'
+  | 'unpin'
+  | 'lock'
+  | 'unlock'
 
 /** A single `event` document (§2.3), flattened for the fold. */
 export interface Event {

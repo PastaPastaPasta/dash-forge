@@ -1,0 +1,41 @@
+{
+  "name": "no_policy_nothing_required",
+  "description": "Neither requireChecks nor requiredChecks: nothing is required, met even with a failing run.",
+  "case": "checks",
+  "rules": "v2",
+  "input": {
+    "runs": [
+      {
+        "id": "r1",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "build",
+        "status": "completed",
+        "reporter": "writ",
+        "createdAt": 100,
+        "conclusion": "failure"
+      }
+    ],
+    "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "policy": {
+      "requireChecks": false,
+      "requiredChecks": []
+    }
+  },
+  "expected": {
+    "required": [],
+    "met": true,
+    "untrusted": 0
+  }
+}

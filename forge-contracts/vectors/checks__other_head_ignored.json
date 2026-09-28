@@ -1,0 +1,63 @@
+{
+  "name": "other_head_ignored",
+  "description": "A passing run on another head does not count for this one; the head matches case-insensitively.",
+  "case": "checks",
+  "rules": "v2",
+  "input": {
+    "runs": [
+      {
+        "id": "r1",
+        "headOid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "name": "build",
+        "status": "completed",
+        "reporter": "writ",
+        "createdAt": 100,
+        "conclusion": "success"
+      },
+      {
+        "id": "r2",
+        "headOid": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "name": "test",
+        "status": "completed",
+        "reporter": "writ",
+        "createdAt": 100,
+        "conclusion": "success"
+      }
+    ],
+    "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "policy": {
+      "requiredChecks": [
+        "build",
+        "test"
+      ]
+    }
+  },
+  "expected": {
+    "required": [
+      {
+        "name": "build",
+        "state": "missing",
+        "runId": null
+      },
+      {
+        "name": "test",
+        "state": "passed",
+        "runId": "r2"
+      }
+    ],
+    "met": false,
+    "untrusted": 0
+  }
+}

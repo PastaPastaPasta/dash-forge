@@ -61,6 +61,10 @@ const EVENT_KIND_BY_INT: Readonly<Record<number, EventKind>> = {
   16: 'headUpdate',
   17: 'milestoneSet',
   18: 'milestoneClear',
+  19: 'pin',
+  20: 'unpin',
+  21: 'lock',
+  22: 'unlock',
 }
 
 /**

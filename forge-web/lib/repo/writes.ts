@@ -75,6 +75,10 @@ export const EVENT_KIND_CODE: Readonly<Record<EventKind, number>> = {
   headUpdate: 16,
   milestoneSet: 17,
   milestoneClear: 18,
+  pin: 19,
+  unpin: 20,
+  lock: 21,
+  unlock: 22,
 }
 
 /** Review verdicts (`review.verdict`). */

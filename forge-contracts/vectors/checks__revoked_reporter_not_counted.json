@@ -1,0 +1,57 @@
+{
+  "name": "revoked_reporter_not_counted",
+  "description": "A run by a reporter who is no longer a member is not counted and does not shadow the trusted run before it.",
+  "case": "checks",
+  "rules": "v2",
+  "input": {
+    "runs": [
+      {
+        "id": "r1",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "build",
+        "status": "completed",
+        "reporter": "writ",
+        "createdAt": 100,
+        "conclusion": "failure"
+      },
+      {
+        "id": "r2",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "build",
+        "status": "completed",
+        "reporter": "gone",
+        "createdAt": 200,
+        "conclusion": "success"
+      }
+    ],
+    "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "policy": {
+      "requiredChecks": [
+        "build"
+      ]
+    }
+  },
+  "expected": {
+    "required": [
+      {
+        "name": "build",
+        "state": "failing",
+        "runId": "r1"
+      }
+    ],
+    "met": false,
+    "untrusted": 1
+  }
+}

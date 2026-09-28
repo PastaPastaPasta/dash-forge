@@ -1,0 +1,49 @@
+{
+  "name": "progress_counts",
+  "description": "Items count toward their milestone by title; an undefined title and no milestone count nowhere.",
+  "case": "milestones",
+  "rules": "v2",
+  "input": {
+    "docs": [
+      {
+        "id": "m1",
+        "title": "v1",
+        "createdAt": 100,
+        "dueOn": 1790000000000
+      }
+    ],
+    "items": [
+      {
+        "open": true,
+        "milestone": "v1"
+      },
+      {
+        "open": false,
+        "milestone": "v1"
+      },
+      {
+        "open": false,
+        "milestone": "v1"
+      },
+      {
+        "open": true,
+        "milestone": "v9"
+      },
+      {
+        "open": true,
+        "milestone": null
+      }
+    ]
+  },
+  "expected": [
+    {
+      "id": "m1",
+      "title": "v1",
+      "description": "",
+      "dueOn": 1790000000000,
+      "closed": false,
+      "open": 1,
+      "closedItems": 2
+    }
+  ]
+}

@@ -222,6 +222,11 @@ Gaps below `base` are never filled. A number above the ceiling cannot be reached
 | A review's comments | `group_review_comments` | `review_group__*` |
 | Suggestion blocks | `parse_suggestions`, `apply_suggestion` | `suggestion__*` |
 | Linked issues, `fixes #n` | `linked_issues` | `linked_issues__*` |
+| Required checks: the newest trusted run per name on the head (maintainer, writer or runner), `requiredChecks` or `requireChecks` (platform-parity-spec §2.6) | `checks_state` | `checks__*` |
+| A thread's milestone, pin and lock (kinds 17–22) | `fold_thread_meta_v2` | `thread_meta__*` |
+| The repo's pinned issues and PRs | `pinned_targets` | `pinned__*` |
+| Milestones: newest definition per title, with open / closed counts | `fold_milestones_v2` | `milestones__*` |
+| Trending: the window a ranked read covers, and the ranking recomputed from the beats (§4 of the parity spec) | `trending_window`, `trending_recount` | `trending__*` |
 | Plaintext xor `enc` (§5) | `is_well_formed` | `well_formed__*` |
 | Repository names | `is_valid_repo_name`, `normalize_repo_name` | `repo_name__*` |
 | Private content: key derivation, ref-name hashes, `enc` seal/open with the ref-name hash check and the late-content rule (private-repos.md §2–§4, §8) | `EpochKeys::derive`, `ref_name_hash`, `open_content`, `is_late` | `private_kdf__*`, `private_ref_hash__*`, `private_doc_seal__*`, `private_doc_open__*`, `private_hedge__*` |

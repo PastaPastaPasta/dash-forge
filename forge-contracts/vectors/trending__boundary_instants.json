@@ -1,0 +1,38 @@
+{
+  "name": "boundary_instants",
+  "description": "At exactly a window start: a beat at the start is in, one 1 ms before is out.",
+  "case": "trending",
+  "rules": "v2",
+  "input": {
+    "beats": [
+      {
+        "repo": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "createdAt": 1728000000000
+      },
+      {
+        "repo": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "createdAt": 1727999999999
+      }
+    ],
+    "grid": {
+      "range": 604800,
+      "step": 86400,
+      "phase": 0
+    },
+    "now": 1728000000000,
+    "selector": "newest",
+    "limit": 25
+  },
+  "expected": {
+    "window": {
+      "start": 1728000000000,
+      "end": 1728604800000
+    },
+    "ranking": [
+      {
+        "repo": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "count": 1
+      }
+    ]
+  }
+}

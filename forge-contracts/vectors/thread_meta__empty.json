@@ -1,0 +1,15 @@
+{
+  "name": "empty",
+  "description": "No events: no milestone, not pinned, not locked.",
+  "case": "thread_meta",
+  "rules": "v2",
+  "input": {
+    "events": []
+  },
+  "expected": {
+    "milestone": null,
+    "pinned": false,
+    "pinnedAt": null,
+    "locked": false
+  }
+}

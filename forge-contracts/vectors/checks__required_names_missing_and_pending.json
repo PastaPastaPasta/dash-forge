@@ -1,0 +1,62 @@
+{
+  "name": "required_names_missing_and_pending",
+  "description": "requiredChecks names build and test: build in progress, test never reported; an unrequired failing run is ignored.",
+  "case": "checks",
+  "rules": "v2",
+  "input": {
+    "runs": [
+      {
+        "id": "r1",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "build",
+        "status": "in_progress",
+        "reporter": "writ",
+        "createdAt": 100
+      },
+      {
+        "id": "r2",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "lint",
+        "status": "completed",
+        "reporter": "writ",
+        "createdAt": 100,
+        "conclusion": "failure"
+      }
+    ],
+    "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "policy": {
+      "requiredChecks": [
+        "test",
+        "build"
+      ]
+    }
+  },
+  "expected": {
+    "required": [
+      {
+        "name": "build",
+        "state": "pending",
+        "runId": "r1"
+      },
+      {
+        "name": "test",
+        "state": "missing",
+        "runId": null
+      }
+    ],
+    "met": false,
+    "untrusted": 0
+  }
+}
