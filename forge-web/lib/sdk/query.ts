@@ -20,11 +20,14 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 // byteArray operand encoding (S0.8 — WASM needs base64)
 // ---------------------------------------------------------------------------
 
-/** Encode raw bytes as a standard base64 string — the required wasm byteArray operand form. */
+/**
+ * Encode raw bytes as a standard base64 string — the required wasm byteArray operand form.
+ * Built 32 KiB at a time: a string grown one character per byte is slow on a multi-MiB image.
+ */
 export function bytesToBase64(bytes: Uint8Array): string {
-  let bin = ''
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i] as number)
-  return btoa(bin)
+  const parts: string[] = []
+  for (let i = 0; i < bytes.length; i += 0x8000) parts.push(String.fromCharCode(...bytes.subarray(i, i + 0x8000)))
+  return btoa(parts.join(''))
 }
 
 /** Decode a base64 string (a query result operand) back to raw bytes. */

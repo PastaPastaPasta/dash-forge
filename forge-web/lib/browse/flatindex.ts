@@ -11,7 +11,7 @@
  * filename-search (it is O(files); the home view rides the locator instead).
  */
 
-import { gunzipSync } from 'fflate'
+import { ungzip } from 'pako'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
 const OID_LEN = 20
@@ -67,7 +67,7 @@ export class FlatIndex {
 
   /** Parse a gzip-compressed flatIndex artifact. */
   static parse(compressed: Uint8Array): FlatIndex {
-    const body = gunzipSync(compressed)
+    const body = ungzip(compressed) // pako: the reader's inflater, so only one ships
     const pos = { i: 0 }
     if (body.length < OID_LEN) throw new Error('flatIndex truncated (tip)')
     const tip = bytesToHex(body.subarray(0, OID_LEN))

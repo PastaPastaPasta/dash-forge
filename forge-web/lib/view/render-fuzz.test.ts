@@ -22,6 +22,11 @@ const MAX_LEN = 20_000
 const PER_CALL_MS = 250
 /** Budget for a 1 MiB worst case (the largest document that is parsed at all): ~50 ms locally. */
 const MIB_CALL_MS = 3_000
+/**
+ * Heap for the deep-nesting case: a 1 MiB document nested 31 spans deep parses in
+ * ~50 MB. Re-deriving per-span tables at every level took several hundred.
+ */
+const NESTING_HEAP_MB = 160
 /** Hard wall clock for a whole batch (real batches take ~2 s), under vitest's own timeout. */
 const BATCH_DEADLINE_MS = 60_000
 const MIB = 1 << 20
@@ -74,6 +79,13 @@ const ADVERSARIAL: readonly string[] = [
   '<pre>\na' + '\n'.repeat(MAX_LEN) + 'b\n</pre>',
   'İ'.repeat(MAX_LEN / 2) + '<kbd>x</kbd>',
   '[a ['.repeat(MAX_LEN / 4) + '](x)',
+  '<!--'.repeat(MAX_LEN / 4),
+  '<!--\n'.repeat(MAX_LEN / 5),
+  'a <!-- x '.repeat(MAX_LEN / 9),
+  '![a]['.repeat(MAX_LEN / 5),
+  'a__'.repeat(MAX_LEN / 3),
+  '<a name="x">'.repeat(MAX_LEN / 12),
+  '\u0001'.repeat(MAX_LEN / 2) + '[a](\u0001 x)',
   '# a\u2028',
   '# a\u2029',
   '## Feature\u2028\u2028- item',
@@ -128,6 +140,52 @@ const MIB_UNITS: readonly string[] = [
 describe('renderers terminate quickly on hostile input', () => {
   it('parseMarkdown: adversarial cases', async () => {
     await expectFast(markdownUrl, 'parseMarkdown', ADVERSARIAL.map((s) => [s]), 'parseMarkdown')
+  }, 120_000)
+
+  it('parseMarkdown: 1 MiB nested and reference brackets stay under budget (review of #82)', async () => {
+    const half = MIB / 2
+    const calls = [
+      // A failed `[` normalized its whole text as a reference label: O(n²).
+      ['[a]: b\n\n' + '['.repeat(half) + ']'.repeat(half)],
+      // `][ref]` labels and link destinations looked up from out-of-order positions.
+      ['[a]: b\n\n[' + fill(MIB - 16, '[x][y]') + '][z]'],
+      ['[' + fill(MIB - 4, '[a](b)') + ']( )'],
+      ['[a]: b\n\n' + fill(MIB, '![x]')],
+      ['[a]: b\n\n' + fill(MIB, '[![x][a]][a] ')],
+      // Each outer bracket used to normalize its (under 999-character) text as a label.
+      ['[a]: b\n\n' + fill(MIB - 8, '[ '.repeat(333) + ' ]'.repeat(333))],
+      ['[a]: b\n\n' + fill(MIB - 8, '[' + '\\['.repeat(300) + ']')],
+      // Emphasis: delimiter runs are paired in one pass (openers_bottom keeps it linear).
+      [fill(MIB, ' _a __')],
+      [fill(MIB, ' ___x')],
+      [fill(MIB, '_'.repeat(50) + ' a ')],
+      ['a ' + '_'.repeat(MIB)],
+      [fill(MIB, '_a ')],
+      ['*'.repeat(MIB)],
+      [fill(MIB, '*a ')],
+      [fill(MIB, 'a* ')],
+      ['*'.repeat(MIB / 2) + 'x' + '*'.repeat(MIB / 2)],
+      [fill(MIB, '*_')],
+      [fill(MIB, 'a***b**c*')],
+      [fill(MIB, 'Name: ___ Date: ___\n')],
+      // Strong around strong, many times over one long body: each pairing must be O(1).
+      ['*'.repeat(MIB / 4) + fill(MIB / 2, '`c`a') + '*'.repeat(MIB / 4)],
+      ['*'.repeat(15_000) + fill(30_000, '`c`a') + '*'.repeat(15_000)],
+    ]
+    await expectFast(markdownUrl, 'parseMarkdown', calls, 'parseMarkdown nested brackets', MIB_CALL_MS)
+  }, 120_000)
+
+  it('parseMarkdown: 1 MiB nested spans share one set of lookups (bounded memory)', async () => {
+    const depth = 31
+    const body = (unit: string): string => fill(MIB - depth * 6, unit)
+    const calls = [
+      ['['.repeat(depth) + body('[x] ') + '](a)'.repeat(depth)],
+      ['**'.repeat(depth) + body('[x] <b>y</b> ') + '**'.repeat(depth)],
+      ['<b>'.repeat(depth) + body('[x] `c` ') + '</b>'.repeat(depth)],
+    ]
+    const result = await runWithDeadline(markdownUrl, 'parseMarkdown', calls, BATCH_DEADLINE_MS, false, NESTING_HEAP_MB)
+    expect(result.timedOut).toBe(false)
+    if (!result.timedOut) expect(result.slowest).toBeLessThan(MIB_CALL_MS)
   }, 120_000)
 
   it('parseMarkdown: 1 MiB worst cases stay under budget', async () => {

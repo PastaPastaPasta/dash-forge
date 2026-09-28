@@ -46,7 +46,8 @@ export type DeadlineResult =
 
 /**
  * Run `module[fn](...args)` for each entry of `calls` in one worker. `timedOut` if the whole
- * batch has not finished within `ms` (the worker is then terminated).
+ * batch has not finished within `ms` (the worker is then terminated). `heapMb` caps the
+ * worker's heap: a call that needs more crashes the worker, which rejects.
  */
 export async function runWithDeadline(
   moduleUrl: URL,
@@ -54,10 +55,12 @@ export async function runWithDeadline(
   calls: readonly (readonly unknown[])[],
   ms: number,
   keep = false,
+  heapMb?: number,
 ): Promise<DeadlineResult> {
   const worker = new Worker(WORKER, {
     eval: true,
     workerData: { url: moduleUrl.href, fn, calls, keep },
+    ...(heapMb !== undefined ? { resourceLimits: { maxOldGenerationSizeMb: heapMb } } : {}),
     // The .ts modules have no package "type"; silence Node's MODULE_TYPELESS_PACKAGE_JSON
     // and type-stripping warnings, which are noise here.
     execArgv: [...process.execArgv, '--no-warnings'],

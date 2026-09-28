@@ -71,13 +71,19 @@ export function parseTag(src: string, start: number, end: number): TagToken | nu
   return { name, close, attrs }
 }
 
-const NAMED_ENTITIES: Readonly<Record<string, string>> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ' }
+/** The named references READMEs use (nav rows joined by `&middot;`, `&copy;` lines, arrows). */
+const NAMED_ENTITIES: Readonly<Record<string, string>> = {
+  amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0',
+  middot: '\u00b7', copy: '\u00a9', reg: '\u00ae', trade: '\u2122', mdash: '\u2014', ndash: '\u2013',
+  hellip: '\u2026', rarr: '\u2192', larr: '\u2190', times: '\u00d7', laquo: '\u00ab', raquo: '\u00bb',
+  bull: '\u2022',
+}
 
 /** Decode the character references an attribute value commonly carries (`&amp;` in a URL). */
 export function decodeEntities(s: string): string {
   if (!s.includes('&')) return s
   return s.replace(/&(#[0-9]{1,7}|#[xX][0-9a-fA-F]{1,6}|[a-zA-Z]{2,6});/g, (whole, ref: string) => {
-    if (ref[0] !== '#') return NAMED_ENTITIES[ref] ?? whole
+    if (ref[0] !== '#') return Object.hasOwn(NAMED_ENTITIES, ref) ? (NAMED_ENTITIES[ref] as string) : whole
     const code = ref[1] === 'x' || ref[1] === 'X' ? parseInt(ref.slice(2), 16) : parseInt(ref.slice(1), 10)
     return code > 0 && code <= 0x10ffff && !(code >= 0xd800 && code <= 0xdfff) ? String.fromCodePoint(code) : '�'
   })
@@ -114,8 +120,12 @@ export const BLOCK_TAGS = new Set([
   'track', 'ul',
 ])
 
+/** A line that opens an HTML comment block (CommonMark §4.6, type 2): it runs to the line holding `-->`. */
+export const COMMENT_START = /^ {0,3}<!--/
+
 /** Whether `line` starts an HTML block, and whether that block may interrupt a paragraph. */
 export function htmlBlockStart(line: string): 'strong' | 'weak' | null {
+  if (COMMENT_START.test(line)) return 'strong'
   const m = /^ {0,3}<(\/?)([A-Za-z][A-Za-z0-9-]*)(?=[\s/>]|$)/.exec(line)
   if (m === null) return null
   const name = (m[2] as string).toLowerCase()

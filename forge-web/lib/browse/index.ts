@@ -33,6 +33,7 @@ export {
   applyDelta,
   gitOidHex,
   inflateZlib,
+  ObjectTooLargeError,
   objTypeFromCode,
   parseObjHeader,
   parseOfsBase,
@@ -46,6 +47,7 @@ export {
   READ_AHEAD_BLOCK,
   readAheadSource,
   type BrowseReaderOptions,
+  type ReadObjectOptions,
   type ObjectVerdict,
   type PackSource,
 } from './reader'

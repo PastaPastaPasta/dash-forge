@@ -8,7 +8,7 @@
 
 import { decodeTextBlob } from './git-objects'
 import { isGitlink, type DiffSides, type FileChange } from './commit-log'
-import type { ObjectReader } from './tree-nav'
+import { knownMinSize, type ObjectReader } from './tree-nav'
 import { compactDiffLines, diffStat, diffTextLines, type CompactDiffLine } from './text-diff'
 import { formatBytes } from './format'
 
@@ -47,22 +47,12 @@ class TooLarge extends Error {
 
 class Binary extends Error {}
 
-/**
- * A lower bound on a stored object's size, when the locator can tell without a fetch. Only an
- * undeltified entry qualifies (a delta's stored length says little about its result); zlib
- * never expands input by more than a fraction of a percent, so the stored length minus that
- * slack and the object header is a safe bound — IF the locator is honest.
- *
- * The locator is published by whoever pushed the repo (for a PR's head side, the PR author),
- * and unlike an object read nothing verifies its lengths. So a skip based on it is labelled as
- * the index's claim and can be overridden with {@link PatchOptions.ignoreSizeHint}; otherwise a
- * false length could hide a small file's change from a reviewer.
+/*
+ * A skip based on {@link knownMinSize} is labelled as the index's claim and can be overridden
+ * with {@link PatchOptions.ignoreSizeHint}: the locator is published by whoever pushed the repo
+ * (for a PR's head side, the PR author), and a false length could otherwise hide a small
+ * file's change from a reviewer.
  */
-function knownMinSize(reader: ObjectReader, oid: string): number | null {
-  const entry = reader.locate?.(oid)
-  if (!entry || entry.deltaDepth !== 0) return null
-  return Math.floor((entry.length - 64) / 1.01)
-}
 
 export interface PatchOptions {
   /** Download and measure the blobs even when the browse index says they are too large. */

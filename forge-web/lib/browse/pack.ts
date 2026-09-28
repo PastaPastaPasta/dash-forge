@@ -13,7 +13,7 @@
 
 import { sha1 } from '@noble/hashes/legacy.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
-import { unzlibSync } from 'fflate'
+import { Inflate } from 'pako'
 
 /** Final git object type, after any delta chain is resolved to its base. */
 export type GitObjType = 'commit' | 'tree' | 'blob' | 'tag'
@@ -106,15 +106,93 @@ export function parseOfsBase(buf: Uint8Array, pos: number): [number, number] {
   return [ofs, p]
 }
 
-/** Inflate one zlib stream at `buf[from..]`, asserting it yields exactly `expected` bytes. */
-export function inflateZlib(buf: Uint8Array, from: number, expected: number): Uint8Array {
-  const out = unzlibSync(buf.subarray(from))
-  if (out.length !== expected) throw new Error('inflate size mismatch')
+/** An object (or a delta-chain step) is larger than the caller's `maxBytes`: it was not inflated. */
+export class ObjectTooLargeError extends Error {
+  constructor(
+    readonly size: number,
+    readonly maxBytes: number,
+  ) {
+    super(`object is ${size} bytes, over the ${maxBytes}-byte limit`)
+    this.name = 'ObjectTooLargeError'
+  }
+}
+
+/** Deflate cannot expand input by more than this factor (a 258-byte match per ~2 bits). */
+const DEFLATE_MAX_RATIO = 1032
+
+/** Output chunk: how far a stream may overrun its declared size before it is stopped. */
+const INFLATE_CHUNK = 64 * 1024
+
+/**
+ * Inflate one zlib stream at `buf[from..]` into exactly `expected` bytes (the size its pack
+ * header declares), failing as soon as it yields more. A declared size over `maxBytes`, or one
+ * the input could not inflate to, is refused before inflating.
+ *
+ * pako hands over output a chunk at a time while it inflates, and stops at the end of the zlib
+ * stream, ignoring the bytes after it (a pack slice goes on). So a zip bomb whose header claims
+ * 1 KiB costs about that much, not the gigabyte it would inflate to (a pack header is the
+ * pusher's claim, nothing checks it), and a short stream followed by megabytes of other
+ * entries costs only the stream.
+ */
+export function inflateZlib(buf: Uint8Array, from: number, expected: number, maxBytes = Infinity): Uint8Array {
+  if (expected > maxBytes) throw new ObjectTooLargeError(expected, maxBytes)
+  const input = buf.subarray(from)
+  if (expected > input.length * DEFLATE_MAX_RATIO + 64) throw new Error('inflate size mismatch')
+  const out = new Uint8Array(expected)
+  let got = 0
+  // windowBits 15: zlib only (no gzip or raw-deflate detection).
+  // A small object needs no 64 KiB output chunk (one past `expected` still catches an overrun).
+  const inflater = new Inflate({ chunkSize: Math.min(INFLATE_CHUNK, expected + 1), windowBits: 15 })
+  inflater.onData = (chunk: Uint8Array) => {
+    if (got + chunk.length > expected) throw new Error('inflate size mismatch')
+    out.set(chunk, got)
+    got += chunk.length
+  }
+  inflater.onEnd = () => {}
+  inflater.push(input, true)
+  if (inflater.err !== 0 || got !== expected) throw new Error('inflate size mismatch')
   return out
 }
 
-/** Apply a git delta (`src_size, dst_size, [copy|insert]*`) to `base`. */
-export function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Array {
+/**
+ * The most bytes a delta producing at most `maxBytes` can hold: a copy instruction is at most
+ * 8 bytes (opcode, 4 offset bytes, 3 size bytes) and yields at least one, plus the size varints.
+ */
+export function deltaMaxBytes(maxBytes: number): number {
+  return maxBytes * 8 + 32
+}
+
+/**
+ * The largest base an object of at most `maxBytes` may be a delta of. Bases are often larger
+ * than what is built from them (an image shrunk in a later commit), so they get room of their own.
+ */
+export function baseMaxBytes(maxBytes: number): number {
+  return maxBytes * 4
+}
+
+/**
+ * The most bytes a pack entry for an object of at most `maxBytes` can occupy: its inflated
+ * content (a delta at worst) stored raw, plus deflate's block overhead and the entry header.
+ * A longer entry is refused before it is fetched.
+ */
+export function storedMaxBytes(maxBytes: number): number {
+  return Math.ceil(deltaMaxBytes(maxBytes) * 1.001) + 64
+}
+
+/**
+ * Inflate the delta whose zlib stream is at `buf[from..]` (declared `size`) and apply it to
+ * `base`, refusing a delta or a result that could exceed `maxBytes` before allocating either.
+ */
+export function inflateDelta(base: Uint8Array, buf: Uint8Array, from: number, size: number, maxBytes = Infinity): Uint8Array {
+  return applyDelta(base, inflateZlib(buf, from, size, deltaMaxBytes(maxBytes)), maxBytes)
+}
+
+/**
+ * Apply a git delta (`src_size, dst_size, [copy|insert]*`) to `base`. A `dst_size` over
+ * `maxBytes` is refused before anything is allocated: a few KiB of copy opcodes can ask for
+ * gigabytes.
+ */
+export function applyDelta(base: Uint8Array, delta: Uint8Array, maxBytes = Infinity): Uint8Array {
   let pos = 0
   const readSize = (): number => {
     let r = 0
@@ -131,6 +209,7 @@ export function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Array {
   }
   readSize() // src size (unused)
   const dst = readSize()
+  if (dst > maxBytes) throw new ObjectTooLargeError(dst, maxBytes)
   const out = new Uint8Array(dst)
   let outPos = 0
   while (pos < delta.length) {
@@ -187,11 +266,13 @@ export function applyDelta(base: Uint8Array, delta: Uint8Array): Uint8Array {
 export function reconstructFromSpan(
   loc: { offset: number; length: number; deltaChainSpan: number },
   spanSlice: Uint8Array,
+  maxBytes = Infinity,
+  baseMax = baseMaxBytes(maxBytes),
 ): GitObject {
   const end = loc.offset + loc.length
   const baseAddr = end - loc.deltaChainSpan
   if (spanSlice.length !== loc.deltaChainSpan) throw new Error('span slice length mismatch')
-  return decodeAt(spanSlice, baseAddr, loc.offset, null)
+  return decodeAt(spanSlice, baseAddr, loc.offset, null, maxBytes, baseMax)
 }
 
 /** A resolver for REF_DELTA bases / per-base fetches, keyed by OID (hex). */
@@ -207,6 +288,8 @@ function decodeAt(
   baseAddr: number,
   absOff: number,
   refResolver: ((oidHex: string) => GitObject) | null,
+  maxBytes: number,
+  baseMax: number,
 ): GitObject {
   const pos = absOff - baseAddr
   const h = parseObjHeader(buf, pos)
@@ -215,15 +298,14 @@ function decodeAt(
     case T_TREE:
     case T_BLOB:
     case T_TAG: {
-      const data = inflateZlib(buf, h.after, h.size)
+      const data = inflateZlib(buf, h.after, h.size, maxBytes)
       return { type: typeFromCode(h.type), bytes: data }
     }
     case T_OFS_DELTA: {
       const [rel, dpos] = parseOfsBase(buf, h.after)
       const baseAbs = absOff - rel
-      const base = decodeAt(buf, baseAddr, baseAbs, refResolver)
-      const delta = inflateZlib(buf, dpos, h.size)
-      return { type: base.type, bytes: applyDelta(base.bytes, delta) }
+      const base = decodeAt(buf, baseAddr, baseAbs, refResolver, baseMax, baseMax)
+      return { type: base.type, bytes: inflateDelta(base.bytes, buf, dpos, h.size, maxBytes) }
     }
     case T_REF_DELTA: {
       if (refResolver === null) {
@@ -231,8 +313,7 @@ function decodeAt(
       }
       const oid = bytesToHex(buf.subarray(h.after, h.after + 20))
       const base = refResolver(oid)
-      const delta = inflateZlib(buf, h.after + 20, h.size)
-      return { type: base.type, bytes: applyDelta(base.bytes, delta) }
+      return { type: base.type, bytes: inflateDelta(base.bytes, buf, h.after + 20, h.size, maxBytes) }
     }
     default:
       throw new Error(`unknown pack object type ${h.type}`)

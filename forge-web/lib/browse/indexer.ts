@@ -11,9 +11,8 @@
  * {@link memoryPackSource}.
  *
  * The scan needs the exact compressed length of each object's zlib stream (to find the
- * next offset); fflate cannot report consumed input bytes, so this module — and only this
- * module — uses pako, whose `strm.next_in` exposes the stream end. Keep it behind a
- * dynamic import so pako stays out of the main-route bundles.
+ * next offset), which pako's `strm.next_in` exposes. pako is also the object reader's inflater
+ * (`pack.ts`), so it is in the repo routes' bundle either way.
  */
 
 import { Inflate } from 'pako'

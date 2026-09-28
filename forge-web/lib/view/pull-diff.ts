@@ -10,6 +10,7 @@
  */
 
 import { diffTrees, type DiffSides, type TreeDiff } from './commit-log'
+import type { ReadObjectOptions } from '../browse'
 import { readCommit, type ObjectReader } from './tree-nav'
 
 /**
@@ -80,13 +81,13 @@ export function historyWalker(primary: ObjectReader, fallback: ObjectReader): { 
 export function preferring(primary: ObjectReader, fallback: ObjectReader): ObjectReader {
   if (primary === fallback) return primary
   return {
-    async readObject(oid: string) {
-      if (primary.locate?.(oid) === null && (fallback.locate?.(oid) ?? null) !== null) return fallback.readObject(oid)
+    async readObject(oid: string, options?: ReadObjectOptions) {
+      if (primary.locate?.(oid) === null && (fallback.locate?.(oid) ?? null) !== null) return fallback.readObject(oid, options)
       try {
-        return await primary.readObject(oid)
+        return await primary.readObject(oid, options)
       } catch (primaryError) {
         try {
-          return await fallback.readObject(oid)
+          return await fallback.readObject(oid, options)
         } catch {
           throw primaryError
         }

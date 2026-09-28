@@ -30,10 +30,11 @@ import {
   type Block,
   type Inline,
   type TableAlignment,
+  type TreeEntry,
 } from '@/lib/view'
 import { imagePreviewType } from '@/lib/view/blob-view'
-import { IMAGE_HOSTS_KEY, parseImageHosts, resolveRepoPath, splitHref, urlHostOf } from '@/lib/view/markdown-links'
-import { readBlob, readTree, commitRootTree, treeAtPath, findEntry } from '@/lib/view/tree-nav'
+import { IMAGE_HOSTS_KEY, parseImageHosts, resolveRepoPath, splitHref, upgradeHttp, urlHostOf } from '@/lib/view/markdown-links'
+import { readBlob, commitRootTree, treeAtPath, findEntry, knownMinSize } from '@/lib/view/tree-nav'
 import type { BrowseReader } from '@/lib/browse'
 import { bytesToBase64 } from '@/lib/sdk/query'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
@@ -106,37 +107,46 @@ function AutolinkedText({ text }: { text: string }): JSX.Element {
 }
 
 /** A link: an in-page anchor, a repo-relative path (to the blob view), or an external URL. */
-function MdLink({ href, children }: { href: string; children: ReactNode }): JSX.Element {
+function MdLink({ href, id, children }: { href: string; id?: string; children: ReactNode }): JSX.Element {
   const { repo } = useContext(Ctx)
-  if (href === '#') return <>{children}</>
+  // An `<a href name>` is also an in-page target; a link that goes nowhere keeps only that.
+  const target = id === undefined ? undefined : anchorTarget(id)
+  if (href === '#') return target === undefined ? <>{children}</> : <a id={target}>{children}</a>
   if (href.startsWith('#')) {
-    // GitHub prefixes heading ids with `user-content-`; so do the headings here.
-    const id = `user-content-${decodeURIComponentSafe(href.slice(1)).toLowerCase()}`
+    // GitHub prefixes heading and `<a name>` ids with `user-content-`; so do the targets here.
+    const to = anchorTarget(decodeURIComponentSafe(href.slice(1)))
     return (
-      <a href={`#${id}`} className={LINK}>
+      <a id={target} href={`#${to}`} className={LINK}>
         {children}
       </a>
     )
   }
   if (isRelativeHref(href)) {
     const path = repo ? resolveRepoPath(repo.dir, splitHref(href).path) : null
-    if (repo === null || path === null) return <>{children}</>
+    if (repo === null || path === null) return target === undefined ? <>{children}</> : <a id={target}>{children}</a>
     const fragment = splitHref(href).fragment
-    const target = `${repoHref(/\/$/.test(href.split(/[?#]/)[0] ?? '') ? '/repo/tree' : '/repo/blob', repo.addr, {
-      path,
-      ...(repo.refParam ? { ref: repo.refParam } : {}),
-    })}${fragment ? `#${fragment}` : ''}`
+    const to = `${repoPathHref(repo, path, /\/$/.test(href.split(/[?#]/)[0] ?? '') ? '/repo/tree' : '/repo/blob')}${fragment ? `#${fragment}` : ''}`
     return (
-      <Link href={target} className={LINK}>
+      <Link id={target} href={to} className={LINK}>
         {children}
       </Link>
     )
   }
   return (
-    <a href={href} target={href.startsWith('http') ? '_blank' : undefined} rel="noreferrer noopener" className={LINK}>
+    <a id={target} href={href} target={href.startsWith('http') ? '_blank' : undefined} rel="noreferrer noopener" className={LINK}>
       {children}
     </a>
   )
+}
+
+/** The page for `path` in the repo the Markdown came from, at the ref the page shows. */
+function repoPathHref(repo: MarkdownRepoContext, path: string, route: '/repo/blob' | '/repo/tree' = '/repo/blob'): string {
+  return repoHref(route, repo.addr, { path, ...(repo.refParam ? { ref: repo.refParam } : {}) })
+}
+
+/** The DOM id an in-page anchor (a heading slug, `<a name>` or `id`) renders with, as on GitHub. */
+function anchorTarget(name: string): string {
+  return `user-content-${name.toLowerCase()}`
 }
 
 function decodeURIComponentSafe(s: string): string {
@@ -151,11 +161,14 @@ function decodeURIComponentSafe(s: string): string {
 // Images
 // ---------------------------------------------------------------------------
 
+const EMPTY_HOSTS: readonly string[] = []
 const hostListeners = new Set<() => void>()
 let hostsRaw: string | null | undefined
-let hostsCached: string[] = []
+let hostsCached: readonly string[] = EMPTY_HOSTS
+/** Hosts loaded this session (one click), shared by every image on the page. */
+const sessionHosts = new Set<string>()
 
-function readHosts(): string[] {
+function readHosts(): readonly string[] {
   let raw: string | null = null
   try {
     raw = window.localStorage.getItem(IMAGE_HOSTS_KEY)
@@ -169,20 +182,22 @@ function readHosts(): string[] {
   return hostsCached
 }
 
-function subscribeHosts(l: () => void): () => void {
-  hostListeners.add(l)
-  const onStorage = (e: StorageEvent): void => {
-    if (e.key === IMAGE_HOSTS_KEY) l()
-  }
-  window.addEventListener('storage', onStorage)
-  return () => {
-    hostListeners.delete(l)
-    window.removeEventListener('storage', onStorage)
-  }
+const notifyHosts = (): void => {
+  for (const l of hostListeners) l()
+}
+const onHostsStorage = (e: StorageEvent): void => {
+  if (e.key === IMAGE_HOSTS_KEY) notifyHosts()
 }
 
-/** Hosts loaded this session (one click), shared by every image on the page. */
-const sessionHosts = new Set<string>()
+/** One `storage` listener for the page (another tab's "Always allow"), however many images subscribe. */
+function subscribeHosts(l: () => void): () => void {
+  if (hostListeners.size === 0) window.addEventListener('storage', onHostsStorage)
+  hostListeners.add(l)
+  return () => {
+    hostListeners.delete(l)
+    if (hostListeners.size === 0) window.removeEventListener('storage', onHostsStorage)
+  }
+}
 
 function allowHost(host: string, always: boolean): void {
   sessionHosts.add(host)
@@ -194,40 +209,69 @@ function allowHost(host: string, always: boolean): void {
       /* private mode: this session only */
     }
   }
-  for (const l of hostListeners) l()
+  notifyHosts()
 }
 
 function useHostAllowed(host: string | null): boolean {
-  const always = useSyncExternalStore(subscribeHosts, readHosts, () => [])
-  const [, bump] = useState(0)
-  useEffect(() => {
-    const l = (): void => bump((n) => n + 1)
-    hostListeners.add(l)
-    return () => {
-      hostListeners.delete(l)
-    }
-  }, [])
-  return host !== null && (sessionHosts.has(host) || always.includes(host))
+  return useSyncExternalStore(
+    subscribeHosts,
+    () => host !== null && (sessionHosts.has(host) || readHosts().includes(host)),
+    () => false,
+  )
 }
 
 const IMG = 'my-2 inline-block max-w-full rounded align-middle'
 
-function MdImage({ src, alt, width, height }: { src: string; alt: string; width?: number; height?: number }): JSX.Element | null {
-  const ctx = useContext(Ctx)
-  if (src === '#') return alt ? <span className="text-anvil-500 dark:text-anvil-400">{alt}</span> : null
-  if (isRelativeHref(src)) return <RepoImage src={src} alt={alt} width={width} height={height} />
-  if (src.startsWith('/') || src.startsWith('#')) return null // a site path means nothing here
-  return ctx.images === 'auto' ? (
-    <RemoteImg src={src} alt={alt} width={width} height={height} />
-  ) : (
-    <GatedImage src={src} alt={alt} width={width} height={height} />
-  )
+interface ImageProps {
+  readonly src: string
+  readonly alt: string
+  readonly width?: number
+  readonly height?: number
 }
 
-function RemoteImg({ src, alt, width, height }: { src: string; alt: string; width?: number; height?: number }): JSX.Element {
+/** An image that cannot be shown here: its alt text, muted (or nothing). */
+function AltText({ alt }: { alt: string }): JSX.Element | null {
+  return alt ? <span className="text-anvil-500 dark:text-anvil-400">{alt}</span> : null
+}
+
+function MdImage(props: ImageProps): JSX.Element | null {
+  const ctx = useContext(Ctx)
+  const { src } = props
+  if (src === '#') return <AltText alt={props.alt} />
+  if (isRelativeHref(src)) return <RepoImage {...props} />
+  if (src.startsWith('/') || src.startsWith('#')) return null // a site path means nothing here
+  return ctx.images === 'auto' ? <RemoteImg {...props} /> : <GatedImage {...props} />
+}
+
+/**
+ * A remote image. `http:` is asked for as `https:` (the page is https, so the browser would
+ * block or upgrade it anyway, and a host that serves both answers the same). When it still
+ * fails to load (a dead host, a removed upload), the image becomes a link to its URL rather
+ * than a blank box.
+ */
+function RemoteImg({ src, alt, width, height }: ImageProps): JSX.Element {
+  const url = upgradeHttp(src)
+  const [failed, setFailed] = useState<string | null>(null)
+  if (failed === url) {
+    return (
+      <a href={url} target="_blank" rel="noreferrer noopener" referrerPolicy="no-referrer" className={cn(LINK, 'text-[12px]')} data-testid="image-failed">
+        <ImageOff className="mr-1 inline h-3.5 w-3.5 align-[-2px]" aria-hidden />
+        {alt || 'Image'} (did not load from {urlHostOf(url) ?? 'its host'})
+      </a>
+    )
+  }
   return (
     // eslint-disable-next-line @next/next/no-img-element
-    <img src={src} alt={alt} width={width} height={height} className={IMG} loading="lazy" referrerPolicy="no-referrer" />
+    <img
+      src={url}
+      alt={alt}
+      width={width}
+      height={height}
+      className={IMG}
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={() => setFailed(url)}
+    />
   )
 }
 
@@ -235,10 +279,11 @@ function RemoteImg({ src, alt, width, height }: { src: string; alt: string; widt
  * An image in Markdown anyone could write: it is not fetched until the viewer asks, because
  * the fetch tells the image's host the viewer's IP address and when they looked (D-053).
  */
-function GatedImage({ src, alt, width, height }: { src: string; alt: string; width?: number; height?: number }): JSX.Element {
-  const host = urlHostOf(src)
+function GatedImage(props: ImageProps): JSX.Element {
+  const { alt } = props
+  const host = urlHostOf(props.src)
   const allowed = useHostAllowed(host)
-  if (allowed) return <RemoteImg src={src} alt={alt} width={width} height={height} />
+  if (allowed) return <RemoteImg {...props} />
   return (
     <span
       data-testid="gated-image"
@@ -263,43 +308,86 @@ function GatedImage({ src, alt, width, height }: { src: string; alt: string; wid
 }
 
 /** Blobs a relative image may be read from (a larger file is linked, not inlined). */
-const REPO_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+export const REPO_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+
+/**
+ * Tree walks in flight or done, per (reader, commit, directory): a README with ten images in
+ * `docs/` reads the root and `docs` trees once, not ten times in parallel.
+ */
+const treeWalks = new WeakMap<BrowseReader, Map<string, Promise<TreeEntry[]>>>()
+
+function entriesAt(reader: BrowseReader, tipOid: string, dir: string): Promise<TreeEntry[]> {
+  const walks = treeWalks.get(reader) ?? new Map<string, Promise<TreeEntry[]>>()
+  treeWalks.set(reader, walks)
+  const key = `${tipOid}:${dir}`
+  let walk = walks.get(key)
+  if (walk === undefined) {
+    walk = commitRootTree(reader, tipOid).then(({ tree }) => treeAtPath(reader, tree, dir))
+    walks.set(key, walk)
+    walk.catch(() => walks.delete(key)) // a failed walk is retried by the next image
+  }
+  return walk
+}
+
+/**
+ * Read a relative image's blob, never more than {@link REPO_IMAGE_MAX_BYTES}: the reader
+ * refuses an object whose header says it is larger before inflating it, and `readBlob` checks
+ * the result. (A stored entry's length is only a hint: a delta or a run of zeros is tiny in
+ * the pack and huge once inflated, so it is trusted only to skip an undeltified blob early.)
+ */
+export async function readRepoImage(reader: BrowseReader, tipOid: string, path: string): Promise<{ bytes: Uint8Array; type: string }> {
+  const slash = path.lastIndexOf('/')
+  const entries = await entriesAt(reader, tipOid, slash === -1 ? '' : path.slice(0, slash))
+  const entry = findEntry(entries, slash === -1 ? path : path.slice(slash + 1))
+  if (entry === undefined) throw new Error('not found')
+  if ((knownMinSize(reader, entry.oid) ?? 0) > REPO_IMAGE_MAX_BYTES) throw new Error('too large')
+  const bytes = await readBlob(reader, entry.oid, REPO_IMAGE_MAX_BYTES)
+  const type = imagePreviewType(path, bytes)
+  if (type === null) throw new Error('not an image')
+  return { bytes, type }
+}
 
 /** A relative image: read from the repo's own objects (hash-checked), never fetched from a host. */
-function RepoImage({ src, alt, width, height }: { src: string; alt: string; width?: number; height?: number }): JSX.Element | null {
+function RepoImage({ src, alt, width, height }: ImageProps): JSX.Element | null {
   const { repo } = useContext(Ctx)
   const path = repo ? resolveRepoPath(repo.dir, splitHref(src).path) : null
-  const [url, setUrl] = useState<string | null | 'failed'>(null)
   const reader = repo?.reader
   const tipOid = repo?.tipOid
+  const key = path === null || reader === undefined || tipOid === undefined ? null : `${tipOid}:${path}`
+  // The URL is kept with the key it was read for, so a new path or commit never shows the old image.
+  const [shown, setShown] = useState<{ key: string; url: string | 'failed' } | null>(null)
   useEffect(() => {
-    if (path === null || reader === undefined || tipOid === undefined) return
+    if (key === null || path === null || reader === undefined || tipOid === undefined) return
     let active = true
-    void (async () => {
-      const { tree } = await commitRootTree(reader, tipOid)
-      const slash = path.lastIndexOf('/')
-      const entries = slash === -1 ? await readTree(reader, tree) : await treeAtPath(reader, tree, path.slice(0, slash))
-      const entry = findEntry(entries, slash === -1 ? path : path.slice(slash + 1))
-      if (entry === undefined) throw new Error('not found')
-      if ((reader.locate?.(entry.oid)?.length ?? 0) > REPO_IMAGE_MAX_BYTES) throw new Error('too large')
-      const bytes = await readBlob(reader, entry.oid)
-      const type = imagePreviewType(path, bytes)
-      if (type === null) throw new Error('not an image')
-      // data: for every type: an SVG must never be a same-origin blob: document.
-      return `data:${type};base64,${bytesToBase64(bytes)}`
-    })().then(
-      (u) => active && setUrl(u),
-      () => active && setUrl('failed'),
+    let objectUrl: string | null = null
+    readRepoImage(reader, tipOid, path).then(
+      ({ bytes, type }) => {
+        if (!active) return
+        // An SVG stays a data: URL: as a blob: URL it would be a same-origin document if
+        // opened. Raster images use a blob: URL (no multi-MiB base64 string), revoked on unmount.
+        if (type === 'image/svg+xml') {
+          setShown({ key, url: `data:${type};base64,${bytesToBase64(bytes)}` })
+        } else {
+          objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type }))
+          setShown({ key, url: objectUrl })
+        }
+      },
+      () => active && setShown({ key, url: 'failed' }),
     )
     return () => {
       active = false
+      if (objectUrl !== null) URL.revokeObjectURL(objectUrl)
     }
-  }, [path, reader, tipOid])
-  if (repo === null || path === null) return alt ? <span className="text-anvil-500 dark:text-anvil-400">{alt}</span> : null
+  }, [key, path, reader, tipOid])
+  if (repo === null || path === null) return <AltText alt={alt} />
+  let url: string | null = null
+  if (key === null) url = 'failed' // no reader for this page
+  else if (shown?.key === key) url = shown.url
   if (url === null) return <span className={cn(IMG, 'inline-block h-5 w-16 animate-pulse bg-anvil-100 dark:bg-anvil-800')} aria-label={alt} />
   if (url === 'failed') {
+    // No reader for this page, or the blob is missing, too large or not an image: link to it.
     return (
-      <Link href={repoHref('/repo/blob', repo.addr, { path, ...(repo.refParam ? { ref: repo.refParam } : {}) })} className={LINK}>
+      <Link href={repoPathHref(repo, path)} className={LINK} data-testid="repo-image-link">
         {alt || path}
       </Link>
     )
@@ -332,12 +420,14 @@ function renderInline(nodes: readonly Inline[], keyPrefix: string): ReactNode {
         )
       case 'link':
         return (
-          <MdLink key={key} href={n.href}>
+          <MdLink key={key} href={n.href} id={n.id}>
             {renderInline(n.c, key)}
           </MdLink>
         )
       case 'image':
         return <MdImage key={key} src={n.src} alt={n.alt} width={n.width} height={n.height} />
+      case 'anchor':
+        return <a key={key} id={anchorTarget(n.id)}>{renderInline(n.c, key)}</a>
       case 'br':
         return <br key={key} />
       case 'tag':
@@ -377,7 +467,7 @@ function renderBlock(b: Block, key: string, slugs: Map<string, number>): ReactNo
       const base = headingSlug(textOf(b.c))
       const n = slugs.get(base) ?? 0
       slugs.set(base, n + 1)
-      const id = `user-content-${n === 0 ? base : `${base}-${n}`}`
+      const id = anchorTarget(n === 0 ? base : `${base}-${n}`)
       if (b.level <= 2) return <h2 key={key} id={id} className={cls}>{content}</h2>
       if (b.level === 3) return <h3 key={key} id={id} className={cls}>{content}</h3>
       return <h4 key={key} id={id} className={cls}>{content}</h4>
@@ -466,66 +556,92 @@ function renderBlock(b: Block, key: string, slugs: Map<string, number>): ReactNo
   }
 }
 
-/** An allowlisted HTML container. Only its tag, alignment, `open` and a checked `href` survive. */
+/**
+ * A table's children, with bare `<tr>` rows put in a `<tbody>` (as a browser's parser would),
+ * so React never nests a row directly in a table.
+ */
+function wrapRows(blocks: readonly Block[], kids: readonly ReactNode[]): ReactNode {
+  const isRow = (b: Block | undefined): boolean => b?.t === 'element' && b.tag === 'tr'
+  if (!blocks.some(isRow)) return kids
+  const out: ReactNode[] = []
+  let rows: ReactNode[] = []
+  const flushRows = (): void => {
+    if (rows.length > 0) out.push(<tbody key={`rows-${out.length}`}>{rows}</tbody>)
+    rows = []
+  }
+  kids.forEach((kid, i) => {
+    if (isRow(blocks[i])) rows.push(kid)
+    else {
+      flushRows()
+      out.push(kid)
+    }
+  })
+  flushRows()
+  return out
+}
+
+/** An allowlisted HTML container. Only its tag, alignment, `open`, an `id` and a checked `href` survive. */
 function renderElement(b: Extract<Block, { t: 'element' }>, key: string, slugs: Map<string, number>): ReactNode {
   const kids = b.c.map((inner, i) => renderBlock(inner, `${key}-${i}`, slugs))
   const align = b.align === null ? undefined : tableAlignClass(b.align)
+  // An `id` (or an `<a name>`) is an in-page target, on the element itself (GitHub's prefix).
+  const id = b.id === undefined ? undefined : anchorTarget(b.id)
   switch (b.tag) {
     case 'details':
       return (
-        <details key={key} open={b.open} className="my-3 rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800">
+        <details key={key} id={id} open={b.open} className="my-3 rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800">
           {kids}
         </details>
       )
     case 'summary':
-      return <summary key={key} className="cursor-pointer font-medium">{kids}</summary>
+      return <summary key={key} id={id} className="cursor-pointer font-medium">{kids}</summary>
     case 'a':
-      return b.href === undefined ? <Fragment key={key}>{kids}</Fragment> : <MdLink key={key} href={b.href}>{kids}</MdLink>
+      return <MdLink key={key} href={b.href ?? '#'} id={b.id}>{kids}</MdLink>
     case 'p':
-      return <p key={key} className={cn('my-3 leading-relaxed', align)}>{kids}</p>
+      return <p key={key} id={id} className={cn('my-3 leading-relaxed', align)}>{kids}</p>
     case 'blockquote':
-      return <blockquote key={key} className="my-3 border-l-2 border-forge-500/40 pl-4 text-anvil-500 dark:text-anvil-400">{kids}</blockquote>
+      return <blockquote key={key} id={id} className="my-3 border-l-2 border-forge-500/40 pl-4 text-anvil-500 dark:text-anvil-400">{kids}</blockquote>
     case 'table':
       return (
         <ScrollRegion key={key} label="Table" className="my-4 max-w-full overflow-x-auto">
-          <table className={cn('min-w-full border-collapse text-dense', align)}>{kids}</table>
+          <table id={id} className={cn('min-w-full border-collapse text-dense', align)}>{wrapRows(b.c, kids)}</table>
         </ScrollRegion>
       )
     case 'thead':
-      return <thead key={key}>{kids}</thead>
+      return <thead key={key} id={id}>{kids}</thead>
     case 'tbody':
-      return <tbody key={key}>{kids}</tbody>
+      return <tbody key={key} id={id}>{kids}</tbody>
     case 'tfoot':
-      return <tfoot key={key}>{kids}</tfoot>
+      return <tfoot key={key} id={id}>{kids}</tfoot>
     case 'tr':
-      return <tr key={key} className="align-top">{kids}</tr>
+      return <tr key={key} id={id} className="align-top">{kids}</tr>
     case 'td':
-      return <td key={key} className={cn('px-3 py-2', align)}>{kids}</td>
+      return <td key={key} id={id} className={cn('px-3 py-2', align)}>{kids}</td>
     case 'th':
-      return <th key={key} className={cn('px-3 py-2 font-semibold', align)}>{kids}</th>
+      return <th key={key} id={id} className={cn('px-3 py-2 font-semibold', align)}>{kids}</th>
     case 'ul':
-      return <ul key={key} className="my-3 list-disc space-y-1 pl-6">{kids}</ul>
+      return <ul key={key} id={id} className="my-3 list-disc space-y-1 pl-6">{kids}</ul>
     case 'ol':
-      return <ol key={key} className="my-3 list-decimal space-y-1 pl-6">{kids}</ol>
+      return <ol key={key} id={id} className="my-3 list-decimal space-y-1 pl-6">{kids}</ol>
     case 'li':
-      return <li key={key}>{kids}</li>
+      return <li key={key} id={id}>{kids}</li>
     case 'dl':
-      return <dl key={key} className="my-3">{kids}</dl>
+      return <dl key={key} id={id} className="my-3">{kids}</dl>
     case 'dt':
-      return <dt key={key} className="font-semibold">{kids}</dt>
+      return <dt key={key} id={id} className="font-semibold">{kids}</dt>
     case 'dd':
-      return <dd key={key} className="ml-6">{kids}</dd>
+      return <dd key={key} id={id} className="ml-6">{kids}</dd>
     case 'h1':
     case 'h2':
-      return <h2 key={key} className={cn(HEADING_CLASS[b.tag === 'h1' ? 1 : 2], align)}>{kids}</h2>
+      return <h2 key={key} id={id} className={cn(HEADING_CLASS[b.tag === 'h1' ? 1 : 2], align)}>{kids}</h2>
     case 'h3':
-      return <h3 key={key} className={cn('mt-5 mb-2 text-lg', align)}>{kids}</h3>
+      return <h3 key={key} id={id} className={cn('mt-5 mb-2 text-lg', align)}>{kids}</h3>
     case 'h4':
     case 'h5':
     case 'h6':
-      return <h4 key={key} className={cn('mt-5 mb-2 text-lg', align)}>{kids}</h4>
+      return <h4 key={key} id={id} className={cn('mt-5 mb-2 text-lg', align)}>{kids}</h4>
     default:
-      return <div key={key} className={align}>{kids}</div>
+      return <div key={key} id={id} className={align}>{kids}</div>
   }
 }
 

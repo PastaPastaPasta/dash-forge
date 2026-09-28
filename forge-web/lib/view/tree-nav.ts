@@ -7,8 +7,8 @@
  * hash-verified by the reader before it is returned, so a tampered pack byte fails the read.
  */
 
-import type { BrowseReader, GitObject, LocatorEntry } from '../browse'
-import { MODE_TREE } from '../browse'
+import type { BrowseReader, GitObject, LocatorEntry, ReadObjectOptions } from '../browse'
+import { MODE_TREE, ObjectTooLargeError } from '../browse'
 import { commitSubject, parseCommit, parseTree, type CommitObject, type TreeEntry } from './git-objects'
 
 /**
@@ -17,7 +17,7 @@ import { commitSubject, parseCommit, parseTree, type CommitObject, type TreeEntr
  * stored size alone rules out showing it inline.
  */
 export interface ObjectReader {
-  readObject(oidHex: string): Promise<GitObject>
+  readObject(oidHex: string, options?: ReadObjectOptions): Promise<GitObject>
   locate?(oidHex: string): LocatorEntry | null
   /**
    * A new reader of the same objects with block read-ahead, for one walk over many commits
@@ -68,10 +68,28 @@ export function findEntry(entries: readonly TreeEntry[], name: string): TreeEntr
   return entries.find((e) => e.name === name)
 }
 
-/** Read a blob's raw bytes by oid. */
-export async function readBlob(reader: BrowseReader, blobOid: string): Promise<Uint8Array> {
-  const obj = await reader.readObject(blobOid)
+/**
+ * A lower bound on a stored object's size, when the locator can tell without a fetch. Only an
+ * undeltified entry qualifies (a delta's stored length says nothing about its result); zlib
+ * never expands input by more than a fraction of a percent, so the stored length minus that
+ * slack and the object header is a safe bound — IF the locator is honest. Nothing verifies a
+ * locator's lengths, so this only ever skips work early: a read must still check the real size.
+ */
+export function knownMinSize(reader: ObjectReader, oid: string): number | null {
+  const entry = reader.locate?.(oid)
+  if (!entry || entry.deltaDepth !== 0) return null
+  return Math.floor((entry.length - 64) / 1.01)
+}
+
+/**
+ * Read a blob's raw bytes by oid, refusing one over `maxBytes` ({@link ObjectTooLargeError}):
+ * a {@link BrowseReader} refuses it before inflating, and the result is checked here too, for
+ * readers that ignore the option.
+ */
+export async function readBlob(reader: ObjectReader, blobOid: string, maxBytes = Infinity): Promise<Uint8Array> {
+  const obj = await reader.readObject(blobOid, { maxBytes })
   if (obj.type !== 'blob') throw new Error(`${blobOid.slice(0, 8)} is not a blob`)
+  if (obj.bytes.length > maxBytes) throw new ObjectTooLargeError(obj.bytes.length, maxBytes)
   return obj.bytes
 }
 
