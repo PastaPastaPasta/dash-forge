@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { collectPageErrors, countDapi, E2E_DEVNET, nodeSdk, shot } from './helpers'
+import { collectPageErrors, countDocumentQueries, E2E_DEVNET, nodeSdk, shot } from './helpers'
 
 /**
  * Trending on Explore is the network's proved ranking of new stargazers, and it agrees with a
@@ -21,7 +21,7 @@ import { collectPageErrors, countDapi, E2E_DEVNET, nodeSdk, shot } from './helpe
  *      those counts (other repos on the devnet may interleave: only the relative order and the
  *      counts of the seeded ones are asserted);
  *   3. reads the same ranking in Node, independently of the app, and checks the page matches it;
- *   4. asserts the section's request budget (one ranked read, one composite).
+ *   4. asserts the section's request budget: one ranked `starBeat` read per window.
  */
 
 interface Seed {
@@ -76,7 +76,7 @@ test('t1. Trending this week matches a recount of the seeded stars in the window
 
   // The page.
   const { errors } = collectPageErrors(page)
-  const calls = countDapi(page)
+  const beatReads = countDocumentQueries(page, 'starBeat')
   await page.goto('/explore/', { waitUntil: 'domcontentloaded' })
   const section = page.getByTestId('explore-trending')
   await expect(section.getByRole('heading', { name: 'Trending this week' })).toBeVisible()
@@ -104,8 +104,8 @@ test('t1. Trending this week matches a recount of the seeded stars in the window
   }
   await shot(page, 't1-trending-today')
 
-  // Budget: the Trending and Most starred reads are one ranked read each (`getDocuments`
-  // carries them), never one request per star.
-  expect(calls.get('getDocuments') ?? 0).toBeLessThanOrEqual(30)
+  // Budget: Trending is ONE proved ranked read per window (`getDocuments` carries it), whatever
+  // the number of stars: this week, then today.
+  expect(beatReads.count()).toBe(2)
   expect(errors, errors.join('\n')).toEqual([])
 })
