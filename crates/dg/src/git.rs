@@ -613,7 +613,7 @@ mod tests {
         // The same construction with a shell in git's place: count the pipes it inherits above
         // stdio, then read the one the variable names. The baseline is the same shell with no
         // key (cargo may pass a jobserver pipe to every test process).
-        let script = r#"n=0; for f in /dev/fd/*; do d=${f#/dev/fd/}; [ "$d" -gt 2 ] && [ -p "$f" ] && n=$((n+1)); done; echo "$n"; if [ -n "$DASH_FORGE_KEY_FD" ]; then cat <&"${DASH_FORGE_KEY_FD%%:*}" | wc -c; fi"#;
+        let script = r#"n=0; for f in /dev/fd/*; do d=${f#/dev/fd/}; [ "$d" -gt 2 ] && [ -p "$f" ] && n=$((n+1)); done; echo "$n"; if [ -n "$DASH_FORGE_KEY_FD" ]; then cat "/dev/fd/${DASH_FORGE_KEY_FD%%:*}" | wc -c; fi"#;
         let run = |env: &DashEnv<'_>| {
             let out = env
                 .command("/bin/sh")

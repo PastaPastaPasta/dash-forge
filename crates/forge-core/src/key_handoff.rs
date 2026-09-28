@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn only_the_attached_child_inherits_the_key() {
-        let mut cmd = sh(r#"cat <&"${DASH_FORGE_KEY_FD%%:*}""#);
+        let mut cmd = sh(r#"cat "/dev/fd/${DASH_FORGE_KEY_FD%%:*}""#);
         attach(&mut cmd, &Secret::new(KEY)).unwrap();
         let var = cmd
             .get_envs()
