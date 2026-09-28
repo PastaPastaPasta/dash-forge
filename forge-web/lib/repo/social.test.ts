@@ -7,7 +7,8 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { describe, expect, it } from 'vitest'
 
 import type { ForgeIds } from '../deployments'
-import { readFollowPage } from './social'
+import type { RepoRef } from './contract'
+import { noteTargetCreated, readFollowPage, readTargetCounts } from './social'
 
 const FORGE = { core: 'CORE', collab: 'COLLAB', group: 'G' } as unknown as ForgeIds
 
@@ -46,6 +47,45 @@ function followSdk(seen: Q[]): EvoSDK {
     },
   } as unknown as EvoSDK
 }
+
+describe('readTargetCounts after a create (L-37)', () => {
+  const REPO = { forge: FORGE, repoId: 'R', ownerId: 'o', name: 'n', visibility: 'public' } as unknown as RepoRef
+
+  /** A count facade answering `answers` in turn for issues (last one repeats), 0 for patches. */
+  function countingSdk(answers: number[]): { sdk: EvoSDK; reads: () => number } {
+    let reads = 0
+    const sdk = {
+      documents: {
+        count: (q: Q): Promise<Map<string, bigint>> => {
+          if (q.documentTypeName !== 'issue') return Promise.resolve(new Map([['', 0n]]))
+          const n = answers[Math.min(reads++, answers.length - 1)]!
+          return Promise.resolve(new Map([['', BigInt(n)]]))
+        },
+      },
+    } as unknown as EvoSDK
+    return { sdk, reads: () => reads }
+  }
+
+  it('re-reads a count that a lagging node gives below what this browser created', async () => {
+    await readTargetCounts(countingSdk([0]).sdk, FORGE, 'R', { retryMs: 0 })
+    noteTargetCreated(REPO, 'issue')
+    const lagging = countingSdk([0, 0, 1])
+    expect(await readTargetCounts(lagging.sdk, FORGE, 'R', { retryMs: 0 })).toEqual({ issues: 1, pulls: 0 })
+    expect(lagging.reads()).toBe(3)
+    // Once seen, the floor is gone: one read.
+    const after = countingSdk([1])
+    await readTargetCounts(after.sdk, FORGE, 'R', { retryMs: 0 })
+    expect(after.reads()).toBe(1)
+  })
+
+  it('gives up after a few re-reads and shows what the node says', async () => {
+    await readTargetCounts(countingSdk([5]).sdk, FORGE, 'R', { retryMs: 0 })
+    noteTargetCreated(REPO, 'issue')
+    const stuck = countingSdk([5])
+    expect((await readTargetCounts(stuck.sdk, FORGE, 'R', { retryMs: 0 })).issues).toBe(5)
+    expect(stuck.reads()).toBe(5)
+  })
+})
 
 describe('readFollowPage', () => {
   it('lists followers by the byTarget terminal, paging with a range and no startAfter', async () => {

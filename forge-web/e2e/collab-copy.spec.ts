@@ -37,8 +37,10 @@ test('g17-1. a merged PR says what happened, with short branch names (L-37, D-10
   await shot(page, 'g17-01-merged-pr')
 
   // The list names the base branch the same way.
-  await page.goto(repoUrl('pulls', '&state=all'), { waitUntil: 'domcontentloaded' })
-  await expectLanded(page, page.getByText(/Document the fold rules/).first())
+  await page.goto(repoUrl('pulls'), { waitUntil: 'domcontentloaded' })
+  await expectLanded(page, page.getByText(/Greet by name/).first())
+  await page.getByRole('button', { name: /^All$/i }).click()
+  await expect(page.getByText(/Document the fold rules/).first()).toBeVisible({ timeout: 60_000 })
   await expect(page.locator('main')).not.toContainText('into refs/heads/')
   await expect(page.locator('main')).toContainText('into main')
 })
@@ -94,7 +96,7 @@ test.describe('follow lists and cost hints (own identities)', () => {
     await expect(page.getByRole('heading', { name: 'Following' })).toBeVisible({ timeout: 90_000 })
     const row = page.getByTestId('follow-list').locator(`[data-identity="${FOLLOWED}"]`)
     await expect(row).toBeVisible({ timeout: 60_000 })
-    await expect(row.locator('a')).toHaveAttribute('href', new RegExp(`/u\\?name=${FOLLOWED}`))
+    await expect(row.locator('a')).toHaveAttribute('href', new RegExp(`/u/?\\?name=${FOLLOWED}`))
     await shot(page, 'g17-03-following')
 
     // FOLLOWED follows nobody: the empty state, not an error.
@@ -129,6 +131,37 @@ test.describe('follow lists and cost hints (own identities)', () => {
     await shot(page, 'g17-06-approve-dialog')
     await dialog.getByRole('button', { name: /cancel/i }).click()
     await expect(dialog).toBeHidden()
+  })
+
+  test('g17-7. after an issue is created the Issues tab counts it; closed, the list does not invite the first (L-37)', async ({ browser }) => {
+    const repo = `g17-${Date.now().toString(36)}`
+    const page = await followerPage(browser, '/new/')
+    await page.getByLabel('Repository name').fill(repo)
+    await page.getByRole('button', { name: 'Create repository' }).click()
+    const create = page.getByRole('dialog')
+    await expect(create.getByTestId('cost-preview')).toBeVisible()
+    await create.getByRole('button', { name: /sign & create/i }).click()
+    await expect(page.getByRole('region', { name: 'Empty repository' })).toBeVisible({ timeout: 120_000 })
+
+    await page.getByRole('link', { name: /^Issues/ }).first().click()
+    await page.getByRole('button', { name: /new issue/i }).first().click()
+    await page.getByLabel('Title', { exact: true }).fill('A G17 issue')
+    await page.getByRole('button', { name: /submit issue/i }).click()
+    await expect(page.getByRole('heading', { name: /A G17 issue/ })).toBeVisible({ timeout: 120_000 })
+    // The header's Issues tab shows the new open issue, not a blank badge.
+    const tab = page.getByRole('link', { name: /^Issues\s*\d*$/ }).first()
+    await expect(tab).toHaveText(/Issues\s*1$/, { timeout: 60_000 })
+    await shot(page, 'g17-07-issue-tab-count')
+
+    await page.getByRole('button', { name: /close issue/i }).click()
+    const close = page.getByRole('dialog')
+    await close.getByRole('button', { name: /close issue/i }).click()
+    await expect(close).toBeHidden({ timeout: 90_000 })
+    await page.getByRole('link', { name: /^Issues/ }).first().click()
+    await expect(page.getByText('No open issues')).toBeVisible({ timeout: 90_000 })
+    await expect(page.locator('main')).not.toContainText('Open the first issue')
+    await expect(page.locator('main')).toContainText(/1 issue is closed|No issue is open right now/)
+    await shot(page, 'g17-07-issues-empty-closed')
   })
 
   test('g17-5. the inline composer shows its cost before Add comment (L-38)', async ({ browser }) => {
