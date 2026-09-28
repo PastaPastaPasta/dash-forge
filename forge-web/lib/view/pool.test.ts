@@ -30,4 +30,17 @@ describe('mapPooled', () => {
     // 0 and 1 ran together, 2 was taken when 0 finished; nothing after 1 failed.
     expect(started.length).toBeLessThanOrEqual(3)
   })
+
+  it('rejects only once the calls already in flight have settled', async () => {
+    const settled: number[] = []
+    const run = mapPooled([0, 1, 2, 3], 4, async (i) => {
+      await new Promise((r) => setTimeout(r, i === 0 ? 1 : 20))
+      settled.push(i)
+      if (i === 0) throw new Error('window 0 failed')
+      return i
+    })
+    await expect(run).rejects.toThrow('window 0 failed')
+    // The pool did not reject while windows 1..3 were still reading.
+    expect(settled.sort()).toEqual([0, 1, 2, 3])
+  })
 })

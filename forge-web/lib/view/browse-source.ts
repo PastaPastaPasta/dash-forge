@@ -895,13 +895,20 @@ async function loadPlatformWhole(
   const starts: number[] = []
   for (let at = 0; at < total; at += DOWNLOAD_WINDOW) starts.push(at)
   let fetched = 0
-  await mapPooled(starts, WINDOW_POOL, async (at) => {
+  const cancelled = (): void => {
     if (cancel?.aborted) throw new Error('the in-browser clone was cancelled')
+  }
+  await mapPooled(starts, WINDOW_POOL, async (at) => {
+    cancelled()
     const end = Math.min(at + DOWNLOAD_WINDOW, total)
-    out.set(await fetchPlatformRange(sdk, repo, manifest, at, end), at)
+    const bytes = await fetchPlatformRange(sdk, repo, manifest, at, end)
+    // A window that lands after the abort does not count: every window may already be in flight.
+    cancelled()
+    out.set(bytes, at)
     fetched += end - at
     onProgress?.(fetched, total)
   })
+  cancelled()
   return out
 }
 

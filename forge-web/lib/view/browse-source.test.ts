@@ -260,6 +260,16 @@ describe('whole-artifact load', () => {
     expect(w.queries()).toBeLessThanOrEqual(8)
   })
 
+  it('does not resolve when cancelled while every window is already in flight', async () => {
+    // Three windows, all started at once by the pool: none left to refuse when the abort comes.
+    const w = windowed(3)
+    const cancel = new AbortController()
+    const load = loadArtifactBytesProgress(w.sdk, REPO, w.manifest, undefined, cancel.signal)
+    await Promise.resolve()
+    cancel.abort()
+    expect(await load.then(() => 'resolved', (e: unknown) => String(e))).toMatch(/cancelled/)
+  })
+
   it('does not try the next copy once the load is cancelled', async () => {
     const w = windowed(12)
     const cancel = new AbortController()

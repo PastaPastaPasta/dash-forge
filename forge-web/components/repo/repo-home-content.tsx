@@ -159,7 +159,11 @@ function RootBody({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const walker = useMemo(() => historyWalker(reader), [reader, tipOid])
   const lastCommits = useLastCommits(reader, walker, tipOid, names)
-  const commits = useAsync(() => countCommits(reader, tipOid, HOME_COMMIT_COUNT_CAP, { walker }), [tipOid], { enabled: data !== null })
+  const commits = useAsync(
+    (signal) => countCommits(reader, tipOid, HOME_COMMIT_COUNT_CAP, { walker, signal }),
+    [tipOid],
+    { enabled: data !== null },
+  )
   const readmeRepo = useMemo<MarkdownRepoContext>(() => ({ addr, refParam, dir: '', reader, tipOid }), [addr, refParam, reader, tipOid])
 
   if (loading && !data) return <LoadingBlock label="Reading root tree" />
