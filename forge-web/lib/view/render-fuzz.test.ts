@@ -57,7 +57,8 @@ async function expectFast(
   expect(result.timedOut, `${label}: batch did not finish (hang)`).toBe(false)
   if (result.timedOut) return
   const worst = JSON.stringify(calls[result.slowestIndex])?.slice(0, 300)
-  expect(result.slowest, `${label}: slowest input ${result.slowest.toFixed(1)} CPU ms: ${worst}`).toBeLessThan(budgetMs)
+  const unit = result.cpu ? 'CPU ms' : 'ms'
+  expect(result.slowest, `${label}: slowest input ${result.slowest.toFixed(1)} ${unit}: ${worst}`).toBeLessThan(budgetMs)
 }
 
 /** `count` random nasty strings from a fixed seed, so a failure reproduces. */

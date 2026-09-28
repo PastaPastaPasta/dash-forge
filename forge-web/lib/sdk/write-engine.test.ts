@@ -153,7 +153,8 @@ afterEach(() => setWriteClock(null))
 
 /**
  * Let the spend report finish (it runs after the write resolves). Its balance reads and sleeps
- * are all promise jobs on the virtual clock, so one macrotask turn runs them to the end.
+ * are all promise jobs on the virtual clock, so one macrotask turn runs them to the end. (A real
+ * timer: under vi.useFakeTimers this would never fire.)
  */
 const reported = (): Promise<void> => new Promise((r) => setTimeout(r, 0))
 
@@ -197,6 +198,7 @@ describe('write engine', () => {
       exists: async () => undefined,
     }
     await expect(createDocumentIdempotent(sdkOf(script, []), auth(spends), { ...write, contractId: 'N3' })).rejects.toBeInstanceOf(UnconfirmedWriteError)
+    await reported()
     expect(spends).toEqual([])
   })
 

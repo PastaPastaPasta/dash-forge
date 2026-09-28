@@ -716,6 +716,7 @@ let clock: WriteClock = REAL_CLOCK
 /**
  * Tests only: run the polls on a virtual clock, so a poll's budget passes in no wall time.
  * `null` restores the real one (the default).
+ * @internal
  */
 export function setWriteClock(c: WriteClock | null): void {
   clock = c ?? REAL_CLOCK
