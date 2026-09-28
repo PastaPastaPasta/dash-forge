@@ -237,3 +237,73 @@ test.describe('commits paging, History and Blame (showcase repos)', () => {
     await expect(page.getByTestId('blame-table')).toHaveCount(0)
   })
 })
+
+/**
+ * LICENSE and the language bar in the About card (F-5), against GitHub's own answers for the
+ * mirrored repos (its licenses and languages APIs, 2026-09-28): ripgrep MIT + Unlicense (GitHub
+ * names the Unlicense only), Rust first; fzf MIT, Go first; jq a bundled COPYING (GitHub:
+ * NOASSERTION), C first. The bar is worked out after the page settles, from the tree walk Go to file
+ * shares (tree reads only), and costs no request on a warm revisit.
+ */
+test.describe('LICENSE and languages (showcase repos)', () => {
+  test.skip(E2E_DEVNET !== 'moutai', 'the showcase repos are imported on moutai')
+
+  const CASES = [
+    ['BURNTSUSHI', 'ripgrep', /MIT or Unlicense/, 'Rust'],
+    ['JUNEGUNN', 'fzf', /^MIT$/, 'Go'],
+    ['JQLANG', 'jq', /^Other$/, 'C'],
+  ] as const
+
+  for (const [key, name, license, first] of CASES) {
+    test(`lb-${name}. the About card names the license and the largest language`, async ({ page }) => {
+      const repo = await showcaseRepo(key, name)
+      const counts = countDapi(page)
+      await page.goto(repoUrl('', '', repo), { waitUntil: 'domcontentloaded' })
+      await waitForRepoResolved(page)
+      const about = page.getByRole('complementary', { name: 'About this repository' })
+      await expect(about.getByTestId('repo-license')).toBeVisible({ timeout: 90_000 })
+      await expect(about.getByTestId('repo-license').locator('span').last()).toHaveText(license)
+      const bar = about.getByTestId('language-bar')
+      await expect(bar).toBeVisible({ timeout: 90_000 })
+      await expect(bar.getByTestId('language').first()).toContainText(first)
+      await expect(bar.getByTestId('language-note')).toContainText('≈ by stored (compressed) size')
+      await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => undefined)
+      const cold = [...counts.values()].reduce((a, n) => a + n, 0)
+      test.info().annotations.push({
+        type: 'dapi',
+        description: `${name} cold home with the About facts: ${cold} DAPI requests ${JSON.stringify(Object.fromEntries(counts))}; ${await bar.getByTestId('language-note').innerText()}`,
+      })
+      // Within the cold home's budget (repo-home-latency rhl-1).
+      expect(cold, JSON.stringify(Object.fromEntries(counts))).toBeLessThanOrEqual(120)
+      await shot(page, `f5-lb-${name}`)
+
+      // The license row opens the license file.
+      expect(String(await about.getByTestId('repo-license').getAttribute('href'))).toMatch(/\/repo\/blob\/\?.*path=(LICENSE|COPYING|UNLICENSE)/)
+
+      // Warm: back to the home in the tab, the facts are shown at once and read nothing.
+      await page.getByRole('link', { name: /^Issues/ }).first().click()
+      await expect(page).toHaveURL(/\/repo\/issues\//)
+      await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => undefined)
+      const warm = countDocumentQueries(page, 'chunk')
+      await page.getByRole('link', { name: /^Code$/ }).first().click()
+      await expect(about.getByTestId('language-bar')).toBeVisible({ timeout: 10_000 })
+      await page.waitForTimeout(1500)
+      test.info().annotations.push({ type: 'dapi', description: `${name} warm revisit: ${warm.count()} chunk queries` })
+      expect(warm.count(), 'the walk is not repeated on a warm revisit').toBe(0)
+    })
+  }
+
+  test('lb-go-to-file. Go to file lists from the same walk, with no new reads', async ({ page }) => {
+    const repo = await showcaseRepo('JUNEGUNN', 'fzf')
+    await page.goto(repoUrl('', '', repo), { waitUntil: 'domcontentloaded' })
+    await waitForRepoResolved(page)
+    await expect(page.getByTestId('language-bar')).toBeVisible({ timeout: 90_000 })
+    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => undefined)
+    const chunks = countDocumentQueries(page, 'chunk')
+    const dapi = countDapi(page)
+    await page.getByLabel('Go to file').fill('terminal.go')
+    await expect(page.getByRole('option').filter({ hasText: 'src/terminal.go' })).toBeVisible({ timeout: 10_000 })
+    expect(chunks.count()).toBe(0)
+    expect([...dapi.values()].reduce((a, n) => a + n, 0)).toBe(0)
+  })
+})

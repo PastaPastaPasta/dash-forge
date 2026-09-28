@@ -12,7 +12,7 @@
 
 import { useLayoutEffect, useSyncExternalStore } from 'react'
 import Link from 'next/link'
-import { GitBranch, Star, Tag, Users } from 'lucide-react'
+import { GitBranch, Scale, Star, Tag, Users } from 'lucide-react'
 import {
   beginView,
   contentChecks,
@@ -20,6 +20,8 @@ import {
   isLive,
   readGatewaysFor,
   NO_CONTENT_CHECKS,
+  refParamFor,
+  selectedTip,
   subscribeContentChecks,
   timeAgo,
   type RepoHome,
@@ -35,6 +37,7 @@ import { useReleases, useViewerRole } from '@/hooks/use-repo-chrome'
 import { TrustPanel } from '@/components/ui/trust-panel'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { CloneBox } from '@/components/repo/clone-box'
+import { LanguageBar, useRepoFacts } from '@/components/repo/repo-facts-card'
 import { Author } from '@/components/author'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 
@@ -85,7 +88,7 @@ export function RepoRail({
       {isPrivate && role === null ? null : (
         <>
           <CloneBox home={home} addr={addr} selected={selected} />
-          <About home={home} addr={addr} />
+          <About home={home} addr={addr} selected={selected} />
           <Members repo={home.repo} />
           <LatestRelease home={home} addr={addr} />
         </>
@@ -106,7 +109,11 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
   )
 }
 
-function About({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
+function About({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; selected: SelectedRef }): JSX.Element {
+  const { license, languages } = useRepoFacts(repoKey(home.repo), selectedTip(selected))
+  // The license file at the ref the page shows (a pinned commit stays pinned).
+  const refParam = selected.pinned ?? refParamFor(selected.name, selected.isTag, home.defaultBranch)
+  const licenseHref = license ? repoHref('/repo/blob', addr, { path: license.file, ...(refParam ? { ref: refParam } : {}) }) : undefined
   return (
     <Card title="About">
       {home.description ? <p className="mb-2 text-anvil-700 dark:text-anvil-200">{home.description}</p> : null}
@@ -122,6 +129,12 @@ function About({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Eleme
       <Row icon={<Star className="h-3.5 w-3.5" aria-hidden />} label="Stars" href={repoHref('/repo/stargazers', addr)}>
         {home.starCount ?? <span title="Couldn't read the star count from Platform">–</span>}
       </Row>
+      {license ? (
+        <Row icon={<Scale className="h-3.5 w-3.5" aria-hidden />} label="License" href={licenseHref} testId="repo-license">
+          {license.ids.length > 0 ? license.ids.join(' or ') : 'Other'}
+        </Row>
+      ) : null}
+      {languages ? <LanguageBar stats={languages} /> : null}
       <div className="mt-2 flex items-center justify-between gap-2 border-t border-anvil-100 pt-2 dark:border-anvil-850">
         <span className="text-anvil-500 dark:text-anvil-400">Storage</span>
         <BackendBadge backend={home.backend} />
@@ -194,31 +207,38 @@ function Row({
   icon,
   label,
   href,
+  testId,
   children,
 }: {
   icon: React.ReactNode
   label: string
   href?: string
+  testId?: string
   children: React.ReactNode
 }): JSX.Element {
   const body = (
     <>
-      <span className="flex items-center gap-1.5 text-anvil-500 dark:text-anvil-400">
+      <span className="flex shrink-0 items-center gap-1.5 text-anvil-500 dark:text-anvil-400">
         {icon}
         {label}
       </span>
-      <span className="font-medium">{children}</span>
+      <span className="truncate font-medium">{children}</span>
     </>
   )
   if (href) {
     return (
       <Link
         href={href}
-        className="-mx-1 flex items-center justify-between rounded px-1 py-1 text-anvil-600 transition-colors hover:bg-anvil-50 hover:text-forge-800 coarse:min-h-11 dark:text-anvil-300 dark:hover:bg-anvil-850 dark:hover:text-forge-400"
+        data-testid={testId}
+        className="-mx-1 flex items-center justify-between gap-2 rounded px-1 py-1 text-anvil-600 transition-colors hover:bg-anvil-50 hover:text-forge-800 coarse:min-h-11 dark:text-anvil-300 dark:hover:bg-anvil-850 dark:hover:text-forge-400"
       >
         {body}
       </Link>
     )
   }
-  return <div className="flex items-center justify-between py-1 text-anvil-600 dark:text-anvil-300">{body}</div>
+  return (
+    <div data-testid={testId} className="flex items-center justify-between gap-2 py-1 text-anvil-600 dark:text-anvil-300">
+      {body}
+    </div>
+  )
 }

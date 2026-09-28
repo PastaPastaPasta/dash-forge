@@ -48,7 +48,7 @@ describe('zip of a ref', () => {
 
   it('refuses past the size cap', async () => {
     const big = { readObject: () => Promise.resolve({ type: 'blob' as const, bytes: new Uint8Array(ZIP_MAX_BYTES / 2 + 1) }) }
-    const files = [0, 1].map((i) => ({ path: `f${i}`, oid: String(i), mode: 0o100644 }))
+    const files = [0, 1].map((i) => ({ path: `f${i}`, oid: String(i), mode: 0o100644, size: 0 }))
     await expect(readZipFiles(big, files, () => undefined)).rejects.toBeInstanceOf(ZipTooLargeError)
   })
 

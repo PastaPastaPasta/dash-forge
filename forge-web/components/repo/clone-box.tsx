@@ -95,7 +95,7 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
     setProgress({ phase: 'listing', files: 0, filesTotal: 0, bytes: 0 })
     try {
       const files = await listFiles(reader, tip)
-      const stored = storedSize(reader, files)
+      const stored = storedSize(files)
       if (stored > ZIP_MAX_BYTES) throw new ZipTooLargeError(stored)
       const entries = await readZipFiles(reader, files, setProgress, cancel.current.signal)
       const name = zipFileName(addr.name, selected.name)
