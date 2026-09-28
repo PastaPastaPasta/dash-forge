@@ -47,7 +47,16 @@ const subscribe = (listener: () => void): (() => void) => evoSdkService.subscrib
 const getStatus = (): SdkStatus => evoSdkService.getStatus()
 const getGeneration = (): number => evoSdkService.generation
 const getRecoveries = (): number => evoSdkService.recoveryCount
+const getContractsMissing = (): string | null => evoSdkService.contractsMissing
 const SERVER_STATUS: SdkStatus = { phase: 'idle' }
+
+/**
+ * The raw error of the read that found this build's forge contracts absent from the network (a
+ * devnet reset), or null. The app shell shows one state for it instead of every view's error.
+ */
+export function useContractsMissing(): string | null {
+  return useSyncExternalStore(subscribe, getContractsMissing, () => null)
+}
 
 /** Connect the SDK (idempotent). Pass extra contract ids (e.g. a repo contract) to preload. */
 export function useSdk(extraContractIds: readonly string[] = []): SdkState {

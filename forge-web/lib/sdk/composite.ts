@@ -25,6 +25,7 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
+import { isContractMissingError } from './contract-missing'
 import {
   countDocuments,
   normalizeDocument,
@@ -129,6 +130,8 @@ interface CompositeFacadeLike {
 
 /** Whether an error says the composition is unsupported (fall back), not that the node is down. */
 function isUnsupported(e: unknown): boolean {
+  // Drive's "contract not found" is an InvalidArgument too, but plain reads would get it again.
+  if (isContractMissingError(e)) return false
   const msg = e instanceof Error ? e.message : String((e as { message?: unknown })?.message ?? e)
   return /unsupported|not supported|unimplemented|unknown (field|variant)|invalid argument|is not a function/i.test(msg)
 }

@@ -526,7 +526,11 @@ impl PlatformClient {
                 retry_transient_read("fetch contract", || DataContract::fetch(&self.sdk, id))
                     .await
                     .map_err(|e| {
-                        self.read_error(contract_id, &e, format!("fetching contract {contract_id}"))
+                        self.read_error(
+                            contract_id,
+                            &e,
+                            &format!("fetching contract {contract_id}"),
+                        )
                     })?
                     .ok_or_else(|| {
                         self.forge_contract_missing(contract_id, "Platform proved it absent")
@@ -629,11 +633,13 @@ impl PlatformClient {
     /// Platform refused it because that contract, one of this build's forge contracts, does
     /// not exist on the network (Drive's `contract not found`: a devnet that was reset);
     /// otherwise the SDK's error under `what`.
-    fn read_error(&self, contract_id: &str, e: &dash_sdk::Error, what: String) -> Error {
-        is_contract_missing(e)
-            .then(|| self.forge_contract_missing(contract_id, &e.to_string()))
-            .flatten()
-            .unwrap_or_else(|| Error::Platform(format!("{what}: {e}")))
+    fn read_error(&self, contract_id: &str, e: &dash_sdk::Error, what: &str) -> Error {
+        if is_contract_missing(e) {
+            if let Some(missing) = self.forge_contract_missing(contract_id, &e.to_string()) {
+                return missing;
+            }
+        }
+        Error::Platform(format!("{what}: {e}"))
     }
 
     /// [`Error::ContractsMissing`] for `contract_id` when it is one of the forge contracts this
@@ -718,7 +724,11 @@ impl PlatformClient {
         })
         .await
         .map_err(|e| {
-            self.read_error(&contract.id(), &e, format!("fetching document {document_id}"))
+            self.read_error(
+                &contract.id(),
+                &e,
+                &format!("fetching document {document_id}"),
+            )
         })?;
         Ok(found.as_ref().map(FetchedDocument::from_document))
     }
@@ -819,7 +829,11 @@ impl PlatformClient {
         })
         .await
         .map_err(|e| {
-            self.read_error(&contract.id(), &e, format!("querying {document_type} documents"))
+            self.read_error(
+                &contract.id(),
+                &e,
+                &format!("querying {document_type} documents"),
+            )
         })?;
 
         Ok(documents
@@ -1052,7 +1066,14 @@ impl PlatformClient {
             CompositeDocuments::fetch(&self.sdk, query.clone())
         })
         .await
-        .map_err(|e| composite_refusal(&e))?
+        .map_err(|e| {
+            // Not a refusal of the composition: plain reads would get the same answer.
+            if is_contract_missing(&e) {
+                self.read_error(&page.contract.id(), &e, "composite query")
+            } else {
+                composite_refusal(&e)
+            }
+        })?
         .ok_or_else(|| Error::Platform("composite query returned nothing".into()))?;
         if result.sub_results.len() != rest.len() {
             return Err(Error::Platform(format!(
@@ -1107,7 +1128,11 @@ impl PlatformClient {
         })
         .await
         .map_err(|e| {
-            self.read_error(&contract.id(), &e, format!("counting {document_type} documents"))
+            self.read_error(
+                &contract.id(),
+                &e,
+                &format!("counting {document_type} documents"),
+            )
         })?;
         Ok(count.map_or(0, |c| c.0))
     }
@@ -2878,16 +2903,6 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
     WriteFailure::Fatal(Error::Platform(e.to_string()))
 }
 
-/// Whether an SDK error is a node problem that a fresh DAPI rotation can fix, as opposed to
-/// an answer. Drives both the read retry and the write re-broadcast (whose idempotency
-/// comes from re-sending the same signed bytes, not from this check).
-///
-/// The SDK's own [`CanRetry`] for its top-level error covers a stale node, an
-/// SDK timeout and a failed proof, but not the two failures testnet produces most: a
-/// retryable gRPC status from the node (`Unavailable` for an unreachable one), and the SDK
-/// giving up because it banned every node it tried. Both are transient: a ban lapses after
-/// a minute (the SDK's default base ban period), so a backed-off retry does not just ask
-/// the same dead nodes again.
 /// Drive refused a read because the contract it names does not exist: gRPC `InvalidArgument`
 /// carrying `QuerySyntaxError::DataContractNotFound` ("contract not found error: …"). An answer,
 /// not a flake: no node has the contract.
@@ -2902,6 +2917,16 @@ fn is_contract_missing(e: &dash_sdk::Error) -> bool {
     )
 }
 
+/// Whether an SDK error is a node problem that a fresh DAPI rotation can fix, as opposed to
+/// an answer. Drives both the read retry and the write re-broadcast (whose idempotency
+/// comes from re-sending the same signed bytes, not from this check).
+///
+/// The SDK's own [`CanRetry`] for its top-level error covers a stale node, an
+/// SDK timeout and a failed proof, but not the two failures testnet produces most: a
+/// retryable gRPC status from the node (`Unavailable` for an unreachable one), and the SDK
+/// giving up because it banned every node it tried. Both are transient: a ban lapses after
+/// a minute (the SDK's default base ban period), so a backed-off retry does not just ask
+/// the same dead nodes again.
 fn is_transient_node_error(e: &dash_sdk::Error) -> bool {
     match e {
         dash_sdk::Error::NoAvailableAddressesToRetry(_) => true,
@@ -3327,10 +3352,10 @@ impl PushJournal {
 #[cfg(test)]
 mod tests {
     use super::{
-        ascending_equivalent, is_transient_node_error, page_to_exhaustion, retry_with_backoff,
-        tie_probe_allowed, FetchedDocument, FieldValue, JournalStore, PushJournal, QueryFilter,
-        QueryOrder, SignedTransition, WriteIntent, WriteOp, MAX_PAGES, MAX_READ_ATTEMPTS,
-        NONCE_MASK, PAGE_SIZE,
+        ascending_equivalent, is_contract_missing, is_transient_node_error, page_to_exhaustion,
+        retry_with_backoff, tie_probe_allowed, FetchedDocument, FieldValue, JournalStore,
+        PushJournal, QueryFilter, QueryOrder, SignedTransition, WriteIntent, WriteOp, MAX_PAGES,
+        MAX_READ_ATTEMPTS, NONCE_MASK, PAGE_SIZE,
     };
     use crate::error::{Error, Result};
     use std::cell::RefCell;
@@ -3842,16 +3867,17 @@ mod tests {
 
     #[test]
     fn drives_contract_not_found_refusal_is_recognized() {
+        use dapi_grpc::tonic::Status;
         use dash_sdk::dapi_client::transport::TransportError;
         use dash_sdk::dapi_client::DapiClientError;
-        let grpc = |s: dapi_grpc::tonic::Status| {
+        let grpc = |s: Status| {
             dash_sdk::Error::DapiClientError(DapiClientError::Transport(TransportError::Grpc(s)))
         };
         // What a reset devnet answers a document read against a contract it no longer has.
-        let reset = grpc(dapi_grpc::tonic::Status::invalid_argument(
+        let reset = grpc(Status::invalid_argument(
             "contract not found error: contract not found when querying from value with contract info",
         ));
-        assert!(super::is_contract_missing(&reset));
+        assert!(is_contract_missing(&reset));
         assert!(
             reset.to_string().contains(
                 "code: 'Client specified an invalid argument', message: \"contract not found error"
@@ -3860,18 +3886,16 @@ mod tests {
         );
         assert!(!is_transient_node_error(&reset), "an answer, not a flake");
         // Document query v1's wording.
-        assert!(super::is_contract_missing(&grpc(
-            dapi_grpc::tonic::Status::invalid_argument(
-                "contract not found error: contract not found for a document query"
-            )
-        )));
+        assert!(is_contract_missing(&grpc(Status::invalid_argument(
+            "contract not found error: contract not found for a document query"
+        ))));
         // Other refusals and outages are not it.
-        assert!(!super::is_contract_missing(&grpc(
-            dapi_grpc::tonic::Status::invalid_argument("bad where clause")
-        )));
-        assert!(!super::is_contract_missing(&grpc(
-            dapi_grpc::tonic::Status::unavailable("contract not found")
-        )));
+        assert!(!is_contract_missing(&grpc(Status::invalid_argument(
+            "bad where clause"
+        ))));
+        assert!(!is_contract_missing(&grpc(Status::unavailable(
+            "contract not found"
+        ))));
     }
 
     /// Drive [`super::drive_write`] with scripted broadcast and wait answers (consumed in

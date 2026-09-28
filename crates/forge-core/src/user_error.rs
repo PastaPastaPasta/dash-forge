@@ -976,30 +976,29 @@ fn not_deployed(ctx: &ErrorContext<'_>, network: &str) -> UserError {
 /// have them. On a devnet that means it was reset and Forge is not deployed again yet; anywhere
 /// else, that the embedded deployment record is wrong. Running it again cannot help.
 fn contracts_missing(ctx: &ErrorContext<'_>, network: &str, detail: &str) -> UserError {
-    let devnet = network.starts_with("devnet ");
+    let (note, fix) = if network.starts_with("devnet ") {
+        (
+            "a devnet is reset from time to time, which removes every contract on it; retrying will not help",
+            "the network may have been reset: update dg and git-remote-dash to a release made after Forge was deployed on it again",
+        )
+    } else {
+        (
+            "this build's deployment record names contracts the network does not have; retrying will not help",
+            "update dg and git-remote-dash: this build's contract ids are wrong for this network",
+        )
+    };
     let u = UserError::new(
         codes::NOT_DEPLOYED,
         ctx.headline(&format!("forge contracts not found on {network}")),
     )
     .cause(detail)
-    .note(if devnet {
-        "a devnet is reset from time to time, which removes every contract on it; retrying will not help"
-    } else {
-        "this build's deployment record names contracts the network does not have; retrying will not help"
-    });
-    let u = if devnet {
-        u.fix("the network may have been reset: update dg and git-remote-dash to a release made after Forge was deployed on it again")
-    } else {
-        u.fix("update dg and git-remote-dash: this build's contract ids are wrong for this network")
-    };
-    let check = "`dg doctor` shows the network and contract ids in use";
+    .note(note)
+    .fix(fix)
+    .fix("`dg doctor` shows the network and contract ids in use");
     if ctx.via_git {
-        u.fix(check).fix(
-            "check the network the helper uses: `git config --get dash.network` and `git config --get dash.devnetName` (DASH_FORGE_NETWORK overrides them)",
-        )
+        u.fix("check the network the helper uses: `git config --get dash.network` and `git config --get dash.devnetName` (DASH_FORGE_NETWORK overrides them)")
     } else {
-        u.fix(check)
-            .fix("or pick another network: `--network <testnet|mainnet|devnet> [--devnet-name <name>]`")
+        u.fix("check it is the network you meant: `--network <testnet|mainnet|devnet> [--devnet-name <name>]`")
     }
 }
 
@@ -1751,15 +1750,38 @@ mod tests {
         let u = core_chain(missing(), &PUSH);
         assert_eq!(u.code, "E702");
         assert_eq!(u.exit_code(), 7);
-        assert_eq!(u.message, "push failed: forge contracts not found on devnet moutai");
+        assert_eq!(
+            u.message,
+            "push failed: forge contracts not found on devnet moutai"
+        );
         assert_eq!(u.cause.as_deref(), Some(RESET_DEVNET_CAUSE));
-        assert!(u.fix[0].starts_with("the network may have been reset: update dg"), "{u:?}");
+        assert!(
+            u.fix[0].starts_with("the network may have been reset: update dg"),
+            "{u:?}"
+        );
         assert!(u.fix.iter().any(|f| f.contains("dg doctor")), "{u:?}");
-        assert!(u.note.as_deref().unwrap_or("").contains("retrying will not help"), "{u:?}");
+        assert!(
+            u.note
+                .as_deref()
+                .unwrap_or("")
+                .contains("retrying will not help"),
+            "{u:?}"
+        );
         // Under git, the network check names what the helper reads, never dg flags.
-        let git = core_chain(missing(), &ErrorContext { via_git: true, ..PUSH });
+        let git = core_chain(
+            missing(),
+            &ErrorContext {
+                via_git: true,
+                ..PUSH
+            },
+        );
         assert_eq!(git.code, "E702");
-        assert!(git.fix.iter().any(|f| f.contains("git config --get dash.network")), "{git:?}");
+        assert!(
+            git.fix
+                .iter()
+                .any(|f| f.contains("git config --get dash.network")),
+            "{git:?}"
+        );
         assert!(!git.fix.iter().any(|f| f.contains("--network")), "{git:?}");
         // Mainnet: a misconfigured build, not a reset.
         let main = core_chain(

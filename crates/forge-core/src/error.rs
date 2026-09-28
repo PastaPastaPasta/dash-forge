@@ -104,7 +104,8 @@ pub enum Error {
     /// (a proof of absence, or Drive's `contract not found` refusal); retrying cannot help.
     #[error("the forge contracts are not on {network}: {detail}")]
     ContractsMissing {
-        /// The network key (`devnet-moutai`, `mainnet`).
+        /// The network as a person reads it (`devnet moutai`, `mainnet`); `user_error` tells a
+        /// devnet by the `devnet ` prefix.
         network: String,
         /// What Platform answered: the missing contract, or Drive's refusal.
         detail: String,

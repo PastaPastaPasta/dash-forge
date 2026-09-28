@@ -693,6 +693,12 @@ async fn check_network(ctx: &Ctx) -> Vec<Check> {
     };
     out.push(match client.fetch_contract(contract_id).await {
         Ok(_) => Check::ok("dapi", format!("reachable; {what} fetched and proof-verified")),
+        // Platform answered: the node is fine, the contract is not there (E702).
+        Err(e @ forge_core::Error::ContractsMissing { .. }) => Check::fail(
+            "dapi",
+            format!("reachable, but {e}"),
+            "the network may have been reset: update dg to a release made after Forge was deployed on it again, or check the network selection",
+        ),
         Err(e) => Check::fail(
             "dapi",
             format!("connected, but the {what} fetch failed: {e}"),

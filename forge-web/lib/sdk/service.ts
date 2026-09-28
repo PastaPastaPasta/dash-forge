@@ -279,6 +279,10 @@ export class EvoSdkService {
    * every view failing on its own; no read can succeed until a build with the new contracts.
    */
   private missing: string | null = null
+  /** A fetch confirming {@link missing} is running. */
+  private confirming = false
+  /** When a confirming fetch last found the contract after all (a node that was behind). */
+  private presentAt = -Infinity
   private progressAt = -Infinity
   private progressTimer: unknown = null
   private latest: DownloadProgress = { loaded: 0, total: 0 }
@@ -346,13 +350,35 @@ export class EvoSdkService {
    * A read of `contract` failed: if that is one of this build's forge contracts and the network
    * says it does not exist, report it app-wide, once. Any other contract (a repo's, the wallet
    * key exchange) stays the error of the view that read it.
+   *
+   * Drive's refusal carries no proof and comes from one node (one that is behind, or lying),
+   * so it is confirmed first with one fetch of the contract: set only when that is proved
+   * absent, or refused the same way again. One check at a time; after one that found the
+   * contract, none for {@link RECOVER_GAP_MS}.
    */
   private noteMissing(contract: string | undefined, e: unknown): void {
-    if (this.missing !== null || contract === undefined || this.network === null) return
+    if (this.missing !== null || this.confirming || contract === undefined || this.network === null) return
     const forge = NETWORKS[this.network].v2
-    if ((contract !== forge?.core && contract !== forge?.collab) || !isContractMissingError(e)) return
-    this.missing = messageOf(e)
-    this.notify()
+    if (forge === null || (contract !== forge.core && contract !== forge.collab) || !isContractMissingError(e)) return
+    const connection = this.current
+    if (connection === null || this.clock.now() - this.presentAt < RECOVER_GAP_MS) return
+    const epoch = this.epoch
+    this.confirming = true
+    void this.track(connection, (sdk) => sdk.contracts.fetch(contract))
+      .then(
+        (found) => found === undefined,
+        (again: unknown) => isContractMissingError(again),
+      )
+      .then((absent) => {
+        if (this.epoch !== epoch) return
+        this.confirming = false
+        if (!absent) {
+          this.presentAt = this.clock.now()
+          return
+        }
+        this.missing = messageOf(e)
+        this.notify()
+      })
   }
 
   /** Follow status and connection changes. Returns the unsubscribe. */
@@ -727,6 +753,8 @@ export class EvoSdkService {
     this.usedContracts.clear()
     this.outdated.clear()
     this.missing = null
+    this.confirming = false
+    this.presentAt = -Infinity
     this.learnedVersion = undefined
     this.clearRetry()
     if (this.refreshTimer !== null) this.clock.clearTimeout(this.refreshTimer)

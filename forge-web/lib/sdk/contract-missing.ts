@@ -16,7 +16,7 @@
 
 import { errorMessage } from '../utils'
 
-const CONTRACT_MISSING = /contract not found error|contract not found (?:when querying|for a document query)|\bdata contract not found\b/i
+const CONTRACT_MISSING = /contract not found (?:error|when querying|for a document query)|\bdata contract not found\b/i
 
 /** Whether `e` says the contract a read named does not exist on the network. */
 export function isContractMissingError(e: unknown): boolean {

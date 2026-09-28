@@ -7,29 +7,18 @@
  * network does not have. No retry can fix either, so this state offers none as its main action:
  * a reload picks up a new build once one is published. The raw error stays behind Details.
  *
- * Detected once, app-wide ({@link useContractsMissing}): {@link AppShell} shows this state in
- * place of the page instead of each view failing with its own read error.
+ * Detected once, app-wide (`useContractsMissing` in hooks/use-sdk.ts): the app shell shows this
+ * state in place of the page instead of each view failing with its own read error.
  */
 
-import { useSyncExternalStore } from 'react'
 import { Unplug } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
-import { networkLabel } from '@/components/ui/network-badge'
 import { ACTIVE_NETWORK, type NetworkConfig } from '@/lib/constants'
-import { evoSdkService } from '@/lib/sdk'
-
-const subscribe = (listener: () => void): (() => void) => evoSdkService.subscribe(listener)
-const missing = (): string | null => evoSdkService.contractsMissing
-
-/** The error of the read that found this build's contracts absent from the network, or null. */
-export function useContractsMissing(): string | null {
-  return useSyncExternalStore(subscribe, missing, () => null)
-}
 
 /** The network as a person reads it: `devnet moutai`, `testnet`, `mainnet`. */
 function networkName(config: NetworkConfig): string {
-  return networkLabel(config).replace(' · ', ' ')
+  return config.network === 'devnet' && config.devnetName !== null ? `devnet ${config.devnetName}` : config.network
 }
 
 export function ContractsMissingState({
@@ -56,7 +45,7 @@ export function ContractsMissingState({
       </h2>
       <p className="mt-1.5 max-w-md text-dense text-anvil-600 dark:text-anvil-300">
         {devnet
-          ? `${where} is a development network, and devnets are reset from time to time. This one was reset, so the contracts Dash Forge reads are gone until it is redeployed. This page works again once a build with the new contracts is published.`
+          ? `${where} is a development network, and devnets are reset from time to time. This one was most likely reset, so the contracts Dash Forge reads are gone until it is redeployed. This page works again once a build with the new contracts is published.`
           : `${where} has no contracts with the ids this build reads, so nothing can be read here. The build may be misconfigured or made for another network.`}
       </p>
       <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
