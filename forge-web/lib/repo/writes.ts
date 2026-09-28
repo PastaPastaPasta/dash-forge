@@ -36,6 +36,7 @@ import {
   previewCredits,
   queryDocumentsWithProof,
   type DeleteResult,
+  type DocumentQuery,
   type WriteAuth,
   type WriteResult,
 } from '../sdk'
@@ -252,6 +253,12 @@ function numberOf(doc: Record<string, unknown>): number | null {
   return n > 0 ? n : null
 }
 
+/** The number of a `number desc, limit 1` read's row, or 0 when it found none. */
+async function firstNumber(sdk: EvoSDK, query: DocumentQuery): Promise<number> {
+  const { documents } = await queryDocumentsWithProof(sdk, query)
+  return documents[0] ? numberOf(documents[0]) ?? 0 : 0
+}
+
 /**
  * The largest number among `repo`'s issues (or PRs) written by its owner or a current
  * maintainer, or 0: one `number desc, limit 1` read of the `author` index
@@ -262,15 +269,14 @@ async function trustedMaxNumber(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'pat
   const trusted = [...new Set([repo.ownerId, ...maintainers])]
   const source = repoSource(repo)
   const highest = await Promise.all(
-    trusted.map(async (author) => {
-      const { documents } = await queryDocumentsWithProof(sdk, {
+    trusted.map((author) =>
+      firstNumber(sdk, {
         ...source.targetQuery(DOC[type]),
         where: [['$ownerId', '==', author], ['repoId', '==', repo.repoId]],
         orderBy: [['number', 'desc']],
         limit: 1,
-      })
-      return documents[0] ? numberOf(documents[0]) ?? 0 : 0
-    }),
+      }),
+    ),
   )
   return Math.max(0, ...highest)
 }
@@ -286,7 +292,7 @@ export async function nextNumber(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'pa
   const source = repoSource(repo)
   const [count, trustedMax] = await Promise.all([countDocuments(sdk, source.repoQuery(DOC[type])), trustedMaxNumber(sdk, repo, type)])
   const ceiling = numberCeiling(count)
-  const { documents } = await queryDocumentsWithProof(
+  const belowCeiling = await firstNumber(
     sdk,
     source.repoQuery(DOC[type], {
       where: [['number', '<=', ceiling]],
@@ -294,7 +300,7 @@ export async function nextNumber(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'pa
       limit: 1,
     }),
   )
-  const base = Math.max(documents[0] ? numberOf(documents[0]) ?? 0 : 0, trustedMax)
+  const base = Math.max(belowCeiling, trustedMax)
   const taken: number[] = base > 0 ? [base] : []
   // Below the ceiling `base + 1` is free by the choice of `base`. At or above it (the ceiling
   // itself, or a trusted number past it) squatters may sit right above: walk the run to its

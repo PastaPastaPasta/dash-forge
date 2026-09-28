@@ -8,16 +8,16 @@
 
 /** A mirror's source repository and its full list of the given kind. */
 export interface MirrorSource {
+  /** `github.com`. */
+  readonly host: string
   /** `github.com/dashpay/dash`. */
   readonly label: string
   /** The source's own list, e.g. `https://github.com/dashpay/dash/issues`. */
   readonly listUrl: string
 }
 
-const LIST_PATH: Readonly<Record<'issue' | 'pull', { readonly github: string; readonly gitlab: string }>> = {
-  issue: { github: 'issues', gitlab: '-/issues' },
-  pull: { github: 'pulls', gitlab: '-/merge_requests' },
-}
+const GITHUB_ITEM = /^\/([^/]+\/[^/]+)\/(?:issues|pull)\/\d+\/?$/
+const GITLAB_ITEM = /^\/(.+?)\/-\/(?:issues|merge_requests)\/\d+\/?$/
 
 /** The source of one imported item's URL, or null when it is not a GitHub or GitLab item URL. */
 export function mirrorSourceOf(url: string, kind: 'issue' | 'pull'): MirrorSource | null {
@@ -28,19 +28,22 @@ export function mirrorSourceOf(url: string, kind: 'issue' | 'pull'): MirrorSourc
     return null
   }
   if (parsed.protocol !== 'https:') return null
-  const path = parsed.pathname
-  const github = /^\/([^/]+\/[^/]+)\/(?:issues|pull)\/\d+\/?$/.exec(path)
-  const gitlab = /^\/(.+?)\/-\/(?:issues|merge_requests)\/\d+\/?$/.exec(path)
-  const repo = github?.[1] ?? gitlab?.[1]
-  if (repo === undefined) return null
-  const list = github ? LIST_PATH[kind].github : LIST_PATH[kind].gitlab
-  return { label: `${parsed.host}/${repo}`, listUrl: `${parsed.origin}/${repo}/${list}` }
+  const source = (repo: string, list: string): MirrorSource => ({
+    host: parsed.host,
+    label: `${parsed.host}/${repo}`,
+    listUrl: `${parsed.origin}/${repo}/${list}`,
+  })
+  const github = GITHUB_ITEM.exec(parsed.pathname)?.[1]
+  if (github !== undefined) return source(github, kind === 'issue' ? 'issues' : 'pulls')
+  const gitlab = GITLAB_ITEM.exec(parsed.pathname)?.[1]
+  if (gitlab !== undefined) return source(gitlab, kind === 'issue' ? '-/issues' : '-/merge_requests')
+  return null
 }
 
 /** The source the first imported row of a list names, or null when none is imported. */
-export function mirrorSourceOfRows(urls: readonly (string | null | undefined)[], kind: 'issue' | 'pull'): MirrorSource | null {
+export function mirrorSourceOfRows(urls: readonly string[], kind: 'issue' | 'pull'): MirrorSource | null {
   for (const url of urls) {
-    const source = url ? mirrorSourceOf(url, kind) : null
+    const source = mirrorSourceOf(url, kind)
     if (source !== null) return source
   }
   return null

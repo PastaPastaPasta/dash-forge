@@ -2473,6 +2473,7 @@ impl<'a> Collab<'a> {
         &self,
         collab: &LoadedContract,
         repo: &RepoRef,
+        repo_filter: &QueryFilter,
         kind: TargetKind,
     ) -> Result<u32> {
         let oracle = self.member_oracle(repo).await?;
@@ -2490,10 +2491,7 @@ impl<'a> Collab<'a> {
                     .query_documents(
                         collab,
                         kind.doc_type(),
-                        &[
-                            QueryFilter::eq("$ownerId", owner),
-                            Self::repo_filter(repo)?,
-                        ],
+                        &[QueryFilter::eq("$ownerId", owner), repo_filter.clone()],
                         &[QueryOrder::desc("number")],
                         1,
                         None,
@@ -2520,7 +2518,7 @@ impl<'a> Collab<'a> {
                 kind.doc_type(),
                 std::slice::from_ref(&repo_filter),
             ),
-            self.trusted_max_number(&collab, repo, kind),
+            self.trusted_max_number(&collab, repo, &repo_filter, kind),
         )
         .await?;
         let ceiling = number_ceiling(count);
@@ -2545,7 +2543,7 @@ impl<'a> Collab<'a> {
         // Below the ceiling `base + 1` is free by construction; only a base at or above it
         // (the ceiling itself, or a trusted number past it) can have squatters directly
         // above it, and the probe steps over the whole run.
-        if u64::from(base) >= ceiling && base > 0 {
+        if u64::from(base) >= ceiling {
             let page = DEFAULT_PAGE as usize;
             let run = contiguous_run_above(base, page, |after| {
                 let filters = [
