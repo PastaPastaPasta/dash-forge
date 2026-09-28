@@ -12,7 +12,7 @@ import type { PullView } from '../repo'
 import { historicalTipsPredicate } from '../repo'
 import type { Event, Holdings } from '../rules'
 import { foldPrStateV2 } from '../rules/v2'
-import { deleteBranchOffer, deleteBranchProblem, mergeBaseTip, mergeButton, mergeRefProblem, policyOf, pullActions, type PullActionInputs } from './pull-actions'
+import { deleteBranchOffer, deleteBranchProblem, mergeBaseTip, mergeBoxShown, mergeButton, mergeRefProblem, policyOf, pullActions, type PullActionInputs } from './pull-actions'
 
 const AUTHOR = 'author'
 const WRITER = 'writer'
@@ -299,4 +299,21 @@ describe('"Delete the branch after merging" in the merge box', () => {
     expect(deleteBranchOffer({ ...base, refName: null })).toEqual({ kind: 'hide' })
     expect(deleteBranchOffer({ ...base, source: { visibility: 'public', sameRepo: true }, refName: 'refs/heads/main' })).toEqual({ kind: 'hide' })
   })
+})
+
+describe('the merge box through its own merge', () => {
+  it('stays mounted after onMerged flips the PR to merged, so it can finish (report, delete the branch)', () => {
+    // A page view: the viewer can merge, merges; the refresh reads the PR as merged.
+    const canMerge = [true, true, false, false]
+    let shownBefore = false
+    const seen = canMerge.map((can) => {
+      const shown = mergeBoxShown(can, shownBefore)
+      shownBefore = shownBefore || shown
+      return shown
+    })
+    expect(seen).toEqual([true, true, true, true])
+    // It never appears for a viewer who could not merge in this page view.
+    expect(mergeBoxShown(false, false)).toBe(false)
+  })
+
 })

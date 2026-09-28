@@ -312,6 +312,16 @@ export function deleteBranchOffer(i: {
   return { kind: 'offer' }
 }
 
+/**
+ * Whether the merge box is on screen, given whether the viewer can merge now and whether it was
+ * shown before in this page view. Once shown it stays: its own merge flips the PR to merged
+ * (the viewer can no longer merge it) while it still has its last steps to report and the
+ * source branch to delete, and unmounting it then would drop both silently.
+ */
+export function mergeBoxShown(canMerge: boolean, shownBefore: boolean): boolean {
+  return canMerge || shownBefore
+}
+
 function shortRef(ref: string): string {
   return ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref
 }
