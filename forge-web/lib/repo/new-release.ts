@@ -29,6 +29,7 @@ import { publicObjectUrl, s3Uri } from '../storage/s3'
 import { sha256Hex } from '../storage/sigv4'
 import type { RepoRef } from './contract'
 import { invalidateMembers, readViewerPermissions } from './members'
+import { readReleases, type ReleaseAssetView } from './releases'
 import { createRelease, releaseAssetsJson, type ReleaseAsset } from './writes'
 
 /** The `release` schema's limits (forge-core `release`: `maxLength` characters, `maxBytes`). */
@@ -130,11 +131,16 @@ export function plannedAsset(name: string, size: number, policy: StoragePolicy |
  * Why these files cannot be published under `policy`, checked before any upload: no external
  * storage for them, or an asset list the release document cannot hold.
  */
-export function assetPlanProblem(files: readonly { readonly name: string; readonly size: number }[], policy: StoragePolicy | null, profiles: readonly StorageProfile[]): string | null {
+export function assetPlanProblem(
+  files: readonly { readonly name: string; readonly size: number }[],
+  policy: StoragePolicy | null,
+  profiles: readonly StorageProfile[],
+  kept: readonly ReleaseAsset[] = [],
+): string | null {
   if (files.length === 0) return null
   if (externalTargets(policy, profiles).length === 0) return 'choose your own storage (S3 or IPFS) for this repo first: Settings → Storage. Release assets never go to Platform.'
   try {
-    releaseAssetsJson(files.map((f) => plannedAsset(f.name, f.size, policy, profiles)))
+    releaseAssetsJson([...kept, ...files.map((f) => plannedAsset(f.name, f.size, policy, profiles))])
     return null
   } catch (e) {
     return e instanceof Error ? e.message : String(e)
@@ -148,11 +154,27 @@ export function assetPlanProblem(files: readonly { readonly name: string; readon
  */
 export async function releaseIntent(
   draft: string,
-  input: { readonly tagName: string; readonly name: string; readonly notes: string },
+  input: { readonly tagName: string; readonly name: string; readonly notes: string; readonly yanked?: boolean },
   assets: readonly ReleaseAsset[],
 ): Promise<string> {
-  const content = JSON.stringify([input.tagName, input.name, input.notes, assets.map((a) => [a.name, a.sha256, a.sizeBytes, a.uris])])
+  const content = JSON.stringify([input.tagName, input.name, input.notes, input.yanked === true, assets.map((a) => [a.name, a.sha256, a.sizeBytes, a.uris])])
   return `${draft}:${(await sha256Hex(new TextEncoder().encode(content))).slice(0, 32)}`
+}
+
+/**
+ * The current release's assets a new revision of the same tag keeps (D-504): all of them,
+ * except any a new upload of the same name replaces. The newest release per tag wins, so a
+ * revision that left them out (a yank, an edit of the notes) would drop the files. Returned in
+ * the writer's shape, so they are written back exactly as recorded.
+ */
+export function carriedAssets(
+  existing: { readonly assets: readonly ReleaseAssetView[] } | null,
+  uploads: readonly { readonly name: string }[],
+): ReleaseAsset[] {
+  const replaced = new Set(uploads.map((f) => f.name))
+  return (existing?.assets ?? [])
+    .filter((a) => !replaced.has(a.name))
+    .map((a) => ({ name: a.name, sha256: a.sha256, sizeBytes: a.size ?? 0, uris: a.uris }))
 }
 
 /** Progress of a publish. */
@@ -166,16 +188,30 @@ export type PublishEvent =
 export class ReleaseWriteError extends Error {
   constructor(
     readonly cause: unknown,
-    /** The assets stored for this release: a retry writes the release with exactly these. */
-    readonly assets: readonly ReleaseAsset[],
+    /** The release the write named, as resolved (carried title, notes and assets included). */
+    readonly resolved: ResolvedRelease,
+    /** How many files this attempt uploaded (never the kept ones, nor a retry's reused ones). */
+    readonly assetsStored: number,
   ) {
     super('the release document was not written')
     this.name = 'ReleaseWriteError'
   }
 
-  get assetsStored(): number {
-    return this.assets.length
+  /** The assets the release names (kept ones included). */
+  get assets(): readonly ReleaseAsset[] {
+    return this.resolved.assets
   }
+}
+
+/**
+ * A release as one attempt resolved it: title and notes (the given ones, else the carried ones)
+ * and every asset. A retry of an unconfirmed write passes it back as `stored` and re-signs
+ * exactly it: the same content, the same intent, so a write that did land is not signed twice.
+ */
+export interface ResolvedRelease {
+  readonly name: string
+  readonly notes: string
+  readonly assets: readonly ReleaseAsset[]
 }
 
 /**
@@ -211,24 +247,35 @@ export async function publishRelease(
      * writes the release with exactly these (same content, same intent: the same signed write)
      * and uploads nothing.
      */
-    readonly stored?: readonly ReleaseAsset[]
+    readonly stored?: ResolvedRelease
+    /** Publish it yanked (withdrawn): shown with a warning, its assets kept. */
+    readonly yanked?: boolean
   },
   storage: { readonly policy: StoragePolicy | null; readonly profiles: readonly StorageProfile[] },
   onEvent?: (e: PublishEvent) => void,
 ): Promise<{ readonly release: WriteResult; readonly assets: readonly ReleaseAsset[] }> {
   // A private repo's release assets would be uploaded unencrypted: refused, as `dg release` does.
-  if (repo.visibility === 'private' && (input.files.length > 0 || (input.stored?.length ?? 0) > 0)) {
+  if (repo.visibility === 'private' && (input.files.length > 0 || (input.stored?.assets.length ?? 0) > 0)) {
     throw new Error(PRIVATE_ASSETS_REFUSED)
   }
-  const problem =
-    tagProblem(input.tagName) ??
-    releaseTextProblem(input) ??
-    (input.stored ? null : assetFilesProblem(input.files) ?? assetPlanProblem(input.files, storage.policy, storage.profiles))
-  if (problem) throw new Error(problem)
+  const early = tagProblem(input.tagName) ?? (input.stored ? null : assetFilesProblem(input.files))
+  if (early) throw new Error(early)
   onEvent?.({ step: 'role' })
   await requireMaintainer(sdk, repo, auth.identityId, auth.network)
+  // The release this one supersedes, read now (never a list the page may not have loaded):
+  // its assets, title and notes carry forward unless given (D-504, as `dg release create`).
+  const existing = input.stored ? null : ((await readReleases(sdk, repo)).current.find((r) => r.tagName === input.tagName) ?? null)
+  const name = input.stored?.name ?? (input.name || existing?.name || '')
+  const notes = input.stored?.notes ?? (input.notes || existing?.notes || '')
+  const keep = carriedAssets(existing, input.files)
+  const problem =
+    releaseTextProblem({ name, notes }) ?? (input.stored ? null : assetPlanProblem(input.files, storage.policy, storage.profiles, keep))
+  if (problem) throw new Error(problem)
 
-  const assets: ReleaseAsset[] = input.stored ? [...input.stored] : []
+  // A retry of an unconfirmed write re-signs exactly what it named (kept assets included) and
+  // uploads nothing; otherwise the kept assets come first, then this attempt's uploads.
+  const assets: ReleaseAsset[] = input.stored ? [...input.stored.assets] : [...keep]
+  let uploaded = 0
   for (const f of input.stored ? [] : input.files) {
     // One file in memory at a time.
     const bytes = new Uint8Array(await f.arrayBuffer())
@@ -236,20 +283,22 @@ export async function publishRelease(
     const stored = await storeFile(bytes, { ...storage, sha256Hex: hash, onStep: (event) => onEvent?.({ step: 'upload', asset: f.name, event }) })
     const asset: ReleaseAsset = { name: f.name, sha256: stored.sha256, sizeBytes: stored.sizeBytes, uris: stored.uris }
     assets.push(asset)
+    uploaded += 1
     onEvent?.({ step: 'uploaded', asset: f.name, stored: asset, copies: stored.confirmed.length, failures: stored.failures })
   }
   onEvent?.({ step: 'release' })
-  const intent = await releaseIntent(input.draft, input, assets)
+  const intent = await releaseIntent(input.draft, { ...input, name, notes }, assets)
   try {
     const release = await createRelease(sdk, auth, repo, {
       tagName: input.tagName,
-      ...(input.name ? { name: input.name } : {}),
-      ...(input.notes ? { notes: input.notes } : {}),
+      ...(input.yanked ? { yanked: true } : {}),
+      ...(name ? { name } : {}),
+      ...(notes ? { notes } : {}),
       ...(assets.length > 0 ? { assets } : {}),
       intent,
     })
     return { release, assets }
   } catch (e) {
-    throw new ReleaseWriteError(e, assets)
+    throw new ReleaseWriteError(e, { name, notes, assets }, uploaded)
   }
 }

@@ -80,8 +80,14 @@ impl SyncState {
     }
 }
 
+/// What a state file's scope is stamped with: bumped whenever an importer writes items
+/// differently, so the first run after an upgrade is a full scan that revisits items a state
+/// file would skip. `v2`: merged PRs recorded as merged, and release asset hashes (D-602,
+/// D-517), so a repository an older import mirrored is repaired by its next scheduled run.
+pub const SCOPE_VERSION: &str = "v2";
+
 /// The state key of a run: its source plus what it reads (`github.com/o/r
-/// [issues,prs,releases,labels,code] limit=0`).
+/// [issues,prs,releases,labels,code] limit=0 v2`).
 pub fn scope(source: &str, classes: crate::source::Classes, limit: usize) -> String {
     let c = classes;
     let on = [
@@ -92,7 +98,10 @@ pub fn scope(source: &str, classes: crate::source::Classes, limit: usize) -> Str
         (c.labels, "labels"),
     ];
     let names: Vec<&str> = on.iter().filter(|(b, _)| *b).map(|(_, n)| *n).collect();
-    format!("{source} [{}] limit={limit}", names.join(","))
+    format!(
+        "{source} [{}] limit={limit} {SCOPE_VERSION}",
+        names.join(",")
+    )
 }
 
 /// Now, unix seconds.
@@ -128,6 +137,23 @@ mod tests {
         assert!(SyncState::load(Some(&path), "github.com/o/r", "R1")
             .since()
             .is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A state file an older importer saved (no version in its scope) is a full scan for this
+    /// one: the PRs it recorded closed-not-merged are revisited and repaired (D-602).
+    #[test]
+    fn an_older_importers_state_is_a_full_scan() {
+        let dir = std::env::temp_dir().join(format!("forge-import-scope-{}", std::process::id()));
+        let path = dir.join("s.json");
+        let all = crate::source::Classes::parse("all").unwrap();
+        let old = "github.com/o/r [code,issues,prs,releases,labels] limit=0";
+        SyncState::load(Some(&path), old, "R1")
+            .save(1_000_000)
+            .unwrap();
+        let now = scope("github.com/o/r", all, 0);
+        assert!(now.ends_with(" v2"), "{now}");
+        assert!(SyncState::load(Some(&path), &now, "R1").since().is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

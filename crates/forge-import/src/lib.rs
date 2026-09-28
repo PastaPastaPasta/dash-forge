@@ -8,6 +8,7 @@
 //! * [`gitsync`] — git data through the ordinary `git-remote-dash` push.
 //! * [`summary`] — the run summary (table and `--summary-json`).
 
+pub mod assets;
 pub mod budget;
 pub mod claim;
 pub mod dest;

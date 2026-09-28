@@ -92,11 +92,12 @@ esac
     printf '### %s\n\n' "$heading"
     # shellcheck disable=SC2016 # literal backticks: Markdown code spans
     printf '`%s` → `%s`%s\n\n' "$(cell "${source:-?}")" "$(cell "${url:-?}")" "$([ "$created" = true ] && echo ' (repository created by this run)')"
-    if [ "$status" = dry_run ]; then
-        printf '| Would write | |\n|---|---:|\n'
-    else
-        printf '| Written | |\n|---|---:|\n'
-    fi
+    case "$status" in
+        dry_run) printf '| Would write | |\n|---|---:|\n' ;;
+        # What a failed or capped run wrote before it stopped is on chain and paid for.
+        error | cap_exceeded) printf '| Written before it stopped | |\n|---|---:|\n' ;;
+        *) printf '| Written | |\n|---|---:|\n' ;;
+    esac
     printf '| Ref updates | %s |\n' "$(num .counts.refs 0)"
     printf '| Packs | %s (%s MiB) |\n' "$(num .counts.packs 0)" "$(awk -v b="$pack_bytes" 'BEGIN { printf "%.2f", b / 1048576 }')"
     for pair in issues:Issues prs:PRs comments:Comments reviews:Reviews events:Events releases:Releases labels:Labels; do

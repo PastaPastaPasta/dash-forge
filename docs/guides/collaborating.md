@@ -285,7 +285,7 @@ dg release download <owner>/<repo> v1.0.0 [--asset <name>] [--output <path>]
 
 `dg release list` always names who published each release. A maintainer who is later removed can still delete, but not edit, the releases they published.
 
-To withdraw a release, publish it again with `--yanked`. The newest release for a tag wins.
+To withdraw a release, publish it again with `--yanked`. The newest release for a tag wins, so a new revision keeps what you leave out: its assets, name and notes carry over (an `--asset` of the same file name replaces that one asset), and `--yanked` alone withdraws the release without dropping its files. Publishing again without `--yanked` un-yanks it. Releases are listed by version (highest first), and the latest is the highest that is neither a pre-release nor yanked.
 
 ### Labels
 

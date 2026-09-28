@@ -8,7 +8,7 @@
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, concatBytes } from '@noble/hashes/utils.js'
 
-import type { ReleaseAssetView } from '../repo/releases'
+import { UNVERIFIABLE_ASSET, assetVerifiable, type ReleaseAssetView } from '../repo/releases'
 import { externalFetchUrls } from './browse-source'
 import { urlHost } from './format'
 
@@ -84,7 +84,10 @@ export async function downloadVerifiedAsset(
   onProgress: (p: DownloadProgress) => void = () => undefined,
   opts: { readonly fetch?: typeof fetch; readonly signal?: AbortSignal; readonly gateways?: readonly string[] } = {},
 ): Promise<Uint8Array> {
-  const urls = externalFetchUrls(asset.uris, opts.gateways)
+  // No recorded hash: nothing to verify against, so nothing is fetched (D-517).
+  if (!assetVerifiable(asset)) throw new Error(UNVERIFIABLE_ASSET)
+  // A host that refuses cross-origin reads always fails here; the view links to it instead.
+  const urls = browserFetchUrls(asset, opts.gateways)
   if (urls.length === 0) throw new Error('no place a browser can download this asset from is recorded')
   const fetchImpl = opts.fetch ?? ((input, init) => fetch(input, init))
   let mismatch: AssetHashMismatchError | null = null
@@ -100,6 +103,35 @@ export async function downloadVerifiedAsset(
   }
   if (mismatch !== null) throw mismatch
   throw new Error(`the asset could not be downloaded: ${reasons.join('; ')}`)
+}
+
+/**
+ * Release-download hosts whose responses carry no `Access-Control-Allow-Origin` (checked
+ * 2026-09-27: `github.com/<o>/<r>/releases/download/…` answers 302 to
+ * `release-assets.githubusercontent.com` and neither sends the header; GitLab's release links
+ * are the same). A page may link to their files but can never read them (L-13), so the
+ * in-browser verified download would always fail with "Failed to fetch".
+ */
+const NO_CORS_HOSTS = ['github.com', 'gitlab.com']
+
+/** Whether `url` is on a host a page cannot read (see {@link NO_CORS_HOSTS}). */
+function noCorsHost(url: string): boolean {
+  const host = urlHost(url).toLowerCase()
+  return NO_CORS_HOSTS.some((h) => host === h || host.endsWith(`.${h}`))
+}
+
+/**
+ * Whether this page can read `asset` itself (and so verify it as it downloads): some place it
+ * is recorded at is not a host known to refuse cross-origin reads. Imported GitHub and GitLab
+ * assets are not; the owner's own storage (S3, IPFS gateways) is.
+ */
+export function browserReadable(asset: ReleaseAssetView, gateways?: readonly string[]): boolean {
+  return browserFetchUrls(asset, gateways).length > 0
+}
+
+/** The places this page can read `asset` from: public ones, minus hosts that refuse pages. */
+function browserFetchUrls(asset: ReleaseAssetView, gateways?: readonly string[]): string[] {
+  return externalFetchUrls(asset.uris, gateways).filter((u) => !noCorsHost(u))
 }
 
 /**

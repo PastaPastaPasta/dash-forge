@@ -56,6 +56,9 @@ SCENARIOS=(
   "22-issue-parity"
   "23-request-budgets"
   "24-fresh-home-network"
+  "30-release-yank-keeps-assets"
+  "31-import-merged-and-hashed"
+  "32-import-failed-push-reports-landed"
 )
 
 # Optional subset filter (match by leading number or substring).
@@ -73,8 +76,16 @@ fi
 # run them at all rather than spending the one tolerated SKIP on a missing service.
 if ! curl -fsS -m 3 -o /dev/null "http://127.0.0.1:9000/health/ready" 2>/dev/null; then
   kept=()
-  for s in "${SCENARIOS[@]}"; do [[ "$s" == 11-* || "$s" == 13-* ]] || kept+=("$s"); done
-  [[ ${#kept[@]} -ne ${#SCENARIOS[@]} ]] && info "the local S3 store (RustFS) is not up: not running 11-release-asset / 13-init-push (make infra-up to include them)"
+  for s in "${SCENARIOS[@]}"; do [[ "$s" == 11-* || "$s" == 13-* || "$s" == 30-* ]] || kept+=("$s"); done
+  [[ ${#kept[@]} -ne ${#SCENARIOS[@]} ]] && info "the local S3 store (RustFS) is not up: not running 11-release-asset / 13-init-push / 30-release-yank-keeps-assets (make infra-up to include them)"
+  SCENARIOS=("${kept[@]}")
+fi
+
+# 31 and 32 read GitHub (gh or GH_TOKEN) and create a repo per run; 32 also needs a
+# test-hooks git-remote-dash. They run when named (`run.sh 31 32`), not in the default set.
+if [[ $# -eq 0 ]]; then
+  kept=()
+  for s in "${SCENARIOS[@]}"; do [[ "$s" == 31-* || "$s" == 32-* ]] || kept+=("$s"); done
   SCENARIOS=("${kept[@]}")
 fi
 

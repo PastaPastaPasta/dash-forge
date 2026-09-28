@@ -24,7 +24,7 @@ import {
   type RepoHome,
   type SelectedRef,
 } from '@/lib/view'
-import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
+import { latestRelease, readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
 import type { Membership } from '@/lib/rules/v2'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -157,7 +157,7 @@ function Members({ repo }: { repo: RepoRef }): JSX.Element {
 
 function LatestRelease({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const releases = useReleases(home.repo)
-  const latest = releases.data?.current[0]
+  const latest = releases.data ? latestRelease(releases.data) : undefined
   return (
     <Card title="Latest release">
       {releases.error ? (

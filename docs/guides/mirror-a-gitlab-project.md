@@ -130,7 +130,7 @@ What the template does:
 |---|---|
 | Branches and tags | Branches and tags (force-pushes and deletions too). |
 | Issues `#n` | Issues, at the same number. The body opens with *"Mirrored from gitlab.com/acme/widget#12 by @bob"*. |
-| Merge requests `!n` | Pull requests at the same number: title, description, target branch, head commit, state (open, closed, merged with its merge commit, draft), and labels. GitLab numbers issues and merge requests separately, and so does Forge. |
+| Merge requests `!n` | Pull requests at the same number: title, description, target branch, head commit, state (open, closed, merged, draft; a merge is recorded against the mirrored tip of the target branch that contains the merge commit, or as closed when that branch is not mirrored), and labels. GitLab numbers issues and merge requests separately, and so does Forge. |
 | The head of an open merge request | `refs/mirror/pull/<n>/head`, so it can be checked out. This includes fork merge requests: GitLab keeps a fork MR's head in the project too. |
 | Comments on issues, discussions on merge requests | Comments, oldest first. A diff comment keeps its file, line and commit as the comment's anchor. |
 | Labels | Label definitions, and each item's labels. |

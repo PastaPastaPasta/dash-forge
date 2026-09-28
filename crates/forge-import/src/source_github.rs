@@ -639,4 +639,31 @@ mod tests {
         assert_eq!(rel.assets[0].sha256, "a".repeat(64));
         assert_eq!(rel.name, "v1");
     }
+
+    /// Live on moutai (sharkdp/diskus v0.7.0, 17 assets): fitted with `sha256: ""`, the list
+    /// outgrew 4096 bytes once the importer hashed them (D-517), and the release write failed.
+    /// It is fitted with the hashes it will carry.
+    #[test]
+    fn assets_without_a_digest_are_fitted_with_their_hash() {
+        let r = GhRelease {
+            tag_name: "v1".into(),
+            assets: (0..100)
+                .map(|i| GhAsset {
+                    name: format!("asset-{i}.tar.gz"),
+                    size: 10,
+                    browser_download_url: format!(
+                        "https://github.com/o/r/releases/download/v1/asset-{i}.tar.gz"
+                    ),
+                    digest: None,
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let mut rel = release(&r);
+        assert!(!rel.assets.is_empty());
+        for a in &mut rel.assets {
+            a.sha256 = "b".repeat(64);
+        }
+        assert!(serde_json::to_string(&rel.assets).unwrap().len() <= 4096);
+    }
 }

@@ -132,6 +132,9 @@ async fn run_inner<'a>(
                 .context("preparing the open pull requests' heads")?;
         }
     }
+    // Merged PRs are proved against the base tips this mirror pushes (D-602): only with the
+    // git data in hand. Without `code`, a merged PR is recorded closed.
+    let mirror = cfg.classes.code.then(|| work.clone());
 
     // Price everything, then the up-front cap check. Branches and tags, then the open PRs'
     // heads, are separate pushes (see gitsync); the second is optional, so it is priced for
@@ -200,7 +203,14 @@ async fn run_inner<'a>(
         }
         _ => collab_src.clone(),
     };
-    let dry = dest::dry_collab(client, dest.existing.clone(), signer, &priced).await?;
+    let dry = dest::dry_collab(
+        client,
+        dest.existing.clone(),
+        signer,
+        &priced,
+        mirror.clone(),
+    )
+    .await?;
     let collab_estimate = dry.budget.spent();
     let create_credits = if create { REPO_CREATE_CREDITS } else { 0 };
     let estimate = create_credits + git_estimate + collab_estimate;
@@ -295,16 +305,11 @@ async fn run_inner<'a>(
 
     // 3. Issues, PRs, comments, reviews, events, labels, releases (required).
     let definitions = cfg.classes.include_label_definitions;
-    dest::write_collab(
-        client,
-        signer,
-        role,
-        repo,
-        &collab_src,
-        definitions,
-        outcome,
-    )
-    .await?;
+    let source = dest::CollabSource {
+        src: &collab_src,
+        mirror,
+    };
+    dest::write_collab(client, signer, role, repo, source, definitions, outcome).await?;
 
     // 4. The open PRs' heads, last: optional, so they may only use what the required writes
     //    left (a stranger's huge or unfetchable PR must never stop the mirror).
@@ -374,16 +379,34 @@ async fn push_one(
         "push estimate"
     );
     ledger.trace_cost(what, est.est_credits, traced).await;
-    if let Err(e) = &pushed {
-        // Refund the charge only when nothing can have been paid for without the ledger
-        // knowing: the helper's guard refused before storing anything, or the balance read
-        // just now succeeded (so the measured drop counts what a part-way push paid).
-        if crate::gitsync::refused_before_storing(e) || measured {
-            ledger.budget.refund(est.est_credits);
+    match pushed {
+        Ok(report) => {
+            ledger.counts.add_push(&report);
+            Ok(())
+        }
+        Err(e) => {
+            // Refund the charge only when nothing can have been paid for without the ledger
+            // knowing: the helper's guard refused before storing anything, or the balance
+            // read just now succeeded (so the measured drop counts what a part-way push paid).
+            if crate::gitsync::refused_before_storing(&e) || measured {
+                ledger.budget.refund(est.est_credits);
+            }
+            // What landed before the failure is on chain and paid for: count it, so the
+            // summary does not say "0 ref updates" (D-601). A re-run does not write it again
+            // (git sees those refs up to date; the helper finds the pack recorded).
+            if let Some(failed) = e.downcast_ref::<crate::gitsync::PushFailed>() {
+                ledger.counts.add_push(&failed.landed);
+                if failed.landed != PushReport::default() {
+                    ledger.warn(format!(
+                        "{what} failed after writing {} ref update(s) and {} pack(s); they \
+                         are on chain, and a re-run does not write them again",
+                        failed.landed.refs, failed.landed.packs
+                    ));
+                }
+            }
+            Err(e)
         }
     }
-    ledger.counts.add_push(&pushed?);
-    Ok(())
 }
 
 /// The git pushes of a run: branches and tags with `code`, then the open PRs'/MRs' heads
