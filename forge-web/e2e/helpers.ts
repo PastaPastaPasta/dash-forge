@@ -239,9 +239,25 @@ export function stateFile(name: string): string {
   return join(__dirname, '.playwright', 'auth', `devnet-${E2E_DEVNET}-${who}.json`)
 }
 
+/**
+ * Open the sign-in sheet until `ready` shows in it. A click that lands before the page hydrates
+ * opens nothing (the static button has no handler yet), so the click is repeated.
+ */
+async function openSignIn(page: Page, ready: Locator): Promise<void> {
+  for (let i = 0; ; i++) {
+    await page.getByRole('button', { name: /^sign in$/i }).first().click()
+    try {
+      await ready.waitFor({ state: 'visible', timeout: 10_000 })
+      return
+    } catch (e) {
+      if (i >= 4) throw e
+    }
+  }
+}
+
 /** Import the identity file once: the master key registers a limited key for this browser. */
 export async function importIdentity(page: Page, name: string): Promise<void> {
-  await page.getByRole('button', { name: /^sign in$/i }).first().click()
+  await openSignIn(page, page.getByTestId('tile-import'))
   await page.getByTestId('tile-import').click()
   await page.setInputFiles('input[type="file"]', idFile(name))
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
@@ -279,18 +295,8 @@ export async function signedIn(browser: Browser, name: string, path = '/'): Prom
 
 /** After a reload: unlock the vault this context already holds. */
 export async function unlock(page: Page): Promise<void> {
-  // A click that lands before the page hydrates opens nothing (the static button has no handler
-  // yet): click again until the sign-in sheet shows its passphrase field.
   const passphrase = page.getByLabel('Passphrase', { exact: true })
-  for (let i = 0; ; i++) {
-    await page.getByRole('button', { name: /^sign in$/i }).first().click()
-    try {
-      await passphrase.waitFor({ state: 'visible', timeout: 10_000 })
-      break
-    } catch (e) {
-      if (i >= 4) throw e
-    }
-  }
+  await openSignIn(page, passphrase)
   await passphrase.fill(PASSPHRASE)
   await page.getByRole('button', { name: /^unlock$/i }).click()
   await expect(page.getByTestId('funds-pill')).toBeVisible({ timeout: 60_000 })
