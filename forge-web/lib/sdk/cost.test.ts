@@ -98,6 +98,10 @@ describe('cost preview (D-011)', () => {
     expect(over(create(S), 132_684_960)).toBeLessThanOrEqual(0.3)
     expect(create({})).toBeGreaterThanOrEqual(159_654_180)
     expect(over(create({}), 159_654_180)).toBeLessThanOrEqual(0.3)
+    // The fresh forge-core of the beta.6 reset (documentsCountable, ranked forkOf) measured
+    // 136.9M for a returning owner and 166.3M for a first repo (dg, moutai, 2026-09-28).
+    expect(create(S)).toBeGreaterThanOrEqual(136_941_620)
+    expect(create({})).toBeGreaterThanOrEqual(166_290_800)
   })
 
   it('previews an unstar and an unfollow as refunds no larger than measured (12.3M for the ranked star, 23.5M)', () => {

@@ -43,7 +43,7 @@ The per-repo "sovereign" tier is dropped. Anyone who wants different rules can r
 | `runner` | repo owner only (as `maintainer`) | no | yes (= revoke) | CI membership (C-1, platform-parity-spec §2.2): unique `(repoId, memberId)`, index `memberId`; a runner may post `checkRun` and nothing else |
 | `topic` | repo owner only (as `maintainer`) | no | yes (untag) | C-1: unique `(repoId, name)`; `byName (name, $createdAt)` countable and ranked at `name` (repos per topic, popular topics); `name` `^[a-z0-9][a-z0-9-]{0,29}$`; the owner tags, so an untag is always possible |
 
-forge-core was registered fresh on moutai after the beta.6 reset (2026-09-28), with the C-1 types and optional properties and the gaps an in-place update could not close. Later changes ship as an in-place `DataContractUpdate`: new types and new optional properties. C-1 added `renamedTo` (a permanent `repo` reference: where the repository moved) and `language` (≤ 30 characters). CI (`.github/workflows/contracts.yml`) validates it, and `tools/contract-validate/negative.sh` checks that `--expect-update forge-contracts/contracts/forge-core.json` refuses a change the update rules forbid.
+forge-core was registered fresh on moutai after the beta.6 reset (2026-09-28), with the C-1 types and optional properties and the gaps an in-place update could not close. Later changes ship as an in-place `DataContractUpdate`: new types and new optional properties. C-1 added `renamedTo` (a permanent `repo` reference: where the repository moved) and `language` (≤ 30 characters). CI (`.github/workflows/contracts.yml`) validates it with `contract-validate --expect-update forge-contracts/contracts/registered/forge-core.v1.json`, the schema registered fresh after the beta.6 reset.
 
 ### forge-collab
 

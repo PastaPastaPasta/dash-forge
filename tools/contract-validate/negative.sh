@@ -74,15 +74,16 @@ expect_reject rule-const-outside-enum collab '.documentSchemas.checkRun.property
 # indexed strings are at most 63 characters
 expect_reject topic-name-too-long-for-an-index core '.documentSchemas.topic.properties.name.maxLength = 64'
 
-# A later forge-core change ships as an in-place update of the registered schema (forge-core.json,
-# registered fresh on moutai after the beta.6 reset): a change the update rules refuse (here an
-# index flag on a registered type) must fail --expect-update against it.
+# A later forge-core change ships as an in-place update of the registered schema
+# (registered/forge-core.v1.json, registered fresh on moutai after the beta.6 reset): a change the
+# update rules refuse (here an index flag or a rule of a registered type) must fail
+# --expect-update against it.
 expect_update_refused() {
   local label="$1" filter="$2" dir="$work/$1"
   mkdir -p "$dir"
   jq "$filter" "$contracts/forge-core.json" > "$dir/forge-core.json"
   # Refused by the update rules themselves, not by a sample or a parse error
-  if "$bin" "$dir/forge-core.json" --expect-update "$contracts/forge-core.json" > "$dir/out" 2>&1 \
+  if "$bin" "$dir/forge-core.json" --expect-update "$contracts/registered/forge-core.v1.json" > "$dir/out" 2>&1 \
     || ! grep -q 'REFUSED by validate_update' "$dir/out"; then
     echo "NOT REJECTED: $label"
     fails=$((fails + 1))

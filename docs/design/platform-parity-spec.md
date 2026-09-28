@@ -427,7 +427,7 @@ Allowed by `validate_update` v1: new document types and new optional properties;
 - `repo` `documentsCountable`;
 - the sealed-presence rules: `noPlain` on `refUpdate`, `protectedRefUpdate`, `config`, `release` and `label`, and `hasName` on the ref types; `config.backend` stays plaintext, as private configs need it;
 - `dependentRequired {enc: [epoch]}` on `release` and `label`;
-- ranked `forkOf` (`rangeCountable` + `rankedCountable`, without `nullSearchable: false`, which a ranked index refuses, so a ranked read skips the null group).
+- ranked `forkOf` (`rangeCountable` + `rankedCountable`, without `nullSearchable: false`, which a ranked index refuses). Every repo that is not a fork is then indexed under the null `forkOf`, a real group that ranks first by far, so a "most forked" reader must drop the null key from the ranking.
 
 `packManifest.kind` stays: forge-web's `readNewestManifestOfKind` (`lib/repo/packs.ts`, the browse flat index) queries it, so the "no reader" below was wrong. The paragraph below is the record of what the in-place update had to accept.
 

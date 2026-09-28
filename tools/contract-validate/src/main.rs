@@ -1041,6 +1041,16 @@ fn bad_documents(contract: &str) -> Vec<(&'static str, &'static str, Json)> {
                 serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "refName": "refs/heads/x", "newOid": bytes(1, 20), "enc": bytes(1, 64), "epoch": 0 }),
             ),
             (
+                "refUpdate",
+                "neither refName nor enc",
+                serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "newOid": bytes(1, 20) }),
+            ),
+            (
+                "label",
+                "enc without epoch",
+                serde_json::json!({ "repoId": id(1), "name": "x", "enc": bytes(1, 64) }),
+            ),
+            (
                 "protectedRefUpdate",
                 "neither refName nor enc",
                 serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "newOid": bytes(1, 20) }),
