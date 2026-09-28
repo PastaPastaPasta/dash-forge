@@ -6,6 +6,8 @@
 //!
 //! `--previous <file>` after a contract also reports whether a `DataContractUpdate` from that
 //! (registered) schema to this one passes rs-dpp's `validate_update` under protocol 14.
+//! `--expect-update <file>` is the same check made a failure when the update is refused: CI runs
+//! it for forge-core, which only ever changes by an in-place update (platform-parity-spec §6).
 //!
 //! For each contract, in order, this:
 //!   1. derives the contract id the deploy script will get (placeholder owner, nonce 1) and, for
@@ -78,28 +80,32 @@ struct Entry {
     /// `--previous <file>` after a contract: the schema registered before, to report whether a
     /// DataContractUpdate from it to this one passes the protocol's update rules.
     previous: Option<PathBuf>,
+    /// `--expect-update` instead of `--previous`: a refused update fails the run.
+    expect_update: bool,
 }
 
 fn main() -> Result<()> {
     let mut entries: Vec<Entry> = Vec::new();
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
-        if arg == "--previous" {
-            let previous = args.next().context("--previous needs a file")?;
+        if arg == "--previous" || arg == "--expect-update" {
+            let previous = args.next().with_context(|| format!("{arg} needs a file"))?;
             let last = entries
                 .last_mut()
-                .context("--previous must follow the contract it applies to")?;
+                .with_context(|| format!("{arg} must follow the contract it applies to"))?;
             last.previous = Some(PathBuf::from(previous));
+            last.expect_update = arg == "--expect-update";
             continue;
         }
         entries.push(Entry {
             path: PathBuf::from(arg),
             registers_group: entries.is_empty(),
             previous: None,
+            expect_update: false,
         });
     }
     if entries.is_empty() {
-        bail!("usage: contract-validate <forge-core.json> [<forge-collab.json> [--previous <registered-forge-collab.json>] ...]");
+        bail!("usage: contract-validate <forge-core.json> [--expect-update <registered-forge-core.json>] [<forge-collab.json> [--previous <registered-forge-collab.json>] ...]");
     }
 
     let pv = PlatformVersion::get(PROTOCOL_VERSION)
@@ -187,8 +193,9 @@ fn validate_one(
     );
 
     // (2b) optional: would a DataContractUpdate from the previously registered schema to this
-    // one pass the protocol's update rules? Informational, not a failure: the answer decides
-    // between updating the registered contract in place and registering a new one.
+    // one pass the protocol's update rules? With `--previous` informational (the answer decides
+    // between updating the registered contract in place and registering a new one); with
+    // `--expect-update` a refusal fails the contract.
     if let Some(previous) = &entry.previous {
         let old = load_contract(previous, nonce, owner, placeholders, pv)?;
         let mut updated = contract.clone();
@@ -208,6 +215,12 @@ fn validate_one(
             );
             for error in &result.errors {
                 println!("     - {error}");
+            }
+            if entry.expect_update {
+                bail!(
+                    "{name} must stay an in-place update of {}, and the update rules refuse it",
+                    previous.display()
+                );
             }
         }
     }
@@ -748,6 +761,24 @@ fn sample_documents(contract: &str) -> Vec<(&'static str, Json)> {
                 "repoKey",
                 serde_json::json!({ "repoId": id(1), "memberId": id(2), "epoch": 0, "recipientKeyId": 4, "senderKeyId": 4, "wrapped": bytes(7, 64) }),
             ),
+            // C-1 (platform-parity-spec §6.1): the new types and optional properties
+            (
+                "repo",
+                serde_json::json!({ "name": "moved", "visibility": "public", "renamedTo": id(4), "language": "Rust" }),
+            ),
+            (
+                "release",
+                serde_json::json!({ "repoId": id(1), "tagName": "0f3a9c", "enc": bytes(1, 64), "epoch": 2 }),
+            ),
+            (
+                "label",
+                serde_json::json!({ "repoId": id(1), "name": "0f3a9c", "enc": bytes(1, 64), "epoch": 2 }),
+            ),
+            (
+                "runner",
+                serde_json::json!({ "repoId": id(1), "memberId": id(2) }),
+            ),
+            ("topic", serde_json::json!({ "repoId": id(1), "name": "rust-cli" })),
         ],
         "forge-collab" => vec![
             (
@@ -843,6 +874,62 @@ fn sample_documents(contract: &str) -> Vec<(&'static str, Json)> {
             ),
             ("star", serde_json::json!({ "repoId": id(1) })),
             ("follow", serde_json::json!({ "identityId": id(2) })),
+            // C-1 (platform-parity-spec §6.2): new types, fields and the beta.5 rules' good side
+            ("starBeat", serde_json::json!({ "repoId": id(1) })),
+            ("watch", serde_json::json!({ "repoId": id(1) })),
+            (
+                "milestone",
+                serde_json::json!({ "repoId": id(1), "title": "v1.0", "description": "First release", "dueOn": 1_790_000_000_000u64, "closed": false }),
+            ),
+            (
+                "milestone",
+                serde_json::json!({ "repoId": id(1), "title": "a3f09b", "enc": bytes(1, 64), "epoch": 0 }),
+            ),
+            (
+                "checkRun",
+                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "build", "status": "in_progress", "externalId": "gh-1234", "startedAt": 1_790_000_000_000u64 }),
+            ),
+            (
+                "checkRun",
+                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 32), "name": "build", "status": "completed", "conclusion": "timed_out", "startedAt": 1_790_000_000_000u64, "completedAt": 1_790_000_060_000u64, "artifacts": "[]", "logUrl": "https://logs.example/1.txt", "logSha256": bytes(3, 32) }),
+            ),
+            (
+                "policy",
+                serde_json::json!({ "repoId": id(1), "requiredApprovals": 1, "requireChecks": true, "requiredChecks": ["build", "test"] }),
+            ),
+            (
+                "profile",
+                serde_json::json!({ "displayName": "pasta", "location": "Earth", "company": "Dash", "pubkeys": ["gpg:ABCDEF0123456789", "ssh-ed25519 AAAAC3Nza"] }),
+            ),
+            (
+                "event",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 6, "value": "5rceSmDn8kXWcp2HYoTyB6B3FNdL72nZgaoZC9niUswx", "refId": id(2) }),
+            ),
+            (
+                "event",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 6, "enc": bytes(1, 64), "epoch": 0, "refId": id(2) }),
+            ),
+            (
+                "event",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 17, "value": "v1.0" }),
+            ),
+            // pin / unpin / lock / unlock (19-22) carry no payload
+            (
+                "event",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 21 }),
+            ),
+            (
+                "comment",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "enc": bytes(1, 64), "epoch": 0, "commitOid": bytes(1, 20), "line": 3, "side": 1 }),
+            ),
+            (
+                "review",
+                serde_json::json!({ "repoId": id(1), "patchId": id(5), "verdict": 1, "commitOid": bytes(1, 20), "enc": bytes(1, 64), "epoch": 0 }),
+            ),
+            (
+                "patch",
+                serde_json::json!({ "repoId": id(1), "number": 3, "enc": bytes(1, 64), "epoch": 0, "baseRefNameHash": bytes(9, 32), "sourceRepoId": id(3), "headOid": bytes(1, 20) }),
+            ),
         ],
         _ => vec![],
     }
@@ -895,6 +982,26 @@ fn bad_documents(contract: &str) -> Vec<(&'static str, &'static str, Json)> {
                 "repoKey",
                 "wrapped under 32",
                 serde_json::json!({ "repoId": id(1), "memberId": id(2), "epoch": 0, "recipientKeyId": 4, "senderKeyId": 4, "wrapped": bytes(7, 16) }),
+            ),
+            (
+                "topic",
+                "uppercase topic",
+                serde_json::json!({ "repoId": id(1), "name": "Rust" }),
+            ),
+            (
+                "topic",
+                "topic over 30 characters",
+                serde_json::json!({ "repoId": id(1), "name": "a".repeat(31) }),
+            ),
+            (
+                "runner",
+                "short member id",
+                serde_json::json!({ "repoId": id(1), "memberId": bytes(2, 31) }),
+            ),
+            (
+                "repo",
+                "language over 30",
+                serde_json::json!({ "name": "x", "visibility": "public", "language": "a".repeat(31) }),
             ),
         ],
         "forge-collab" => vec![
@@ -981,6 +1088,112 @@ fn bad_documents(contract: &str) -> Vec<(&'static str, &'static str, Json)> {
             ),
             (
                 "star",
+                "extra property",
+                serde_json::json!({ "repoId": id(1), "note": "x" }),
+            ),
+            // C-1: each beta.5 propertyConstraints rule, broken once
+            (
+                "issue",
+                "sealed issue with a plaintext title (noPlain)",
+                serde_json::json!({ "repoId": id(1), "number": 4, "title": "leak", "enc": bytes(1, 64), "epoch": 0 }),
+            ),
+            (
+                "issue",
+                "neither title nor enc (hasTitle)",
+                serde_json::json!({ "repoId": id(1), "number": 4, "body": "no title" }),
+            ),
+            (
+                "issue",
+                "empty body (minLength 1: omit it instead)",
+                serde_json::json!({ "repoId": id(1), "number": 4, "title": "t", "body": "" }),
+            ),
+            (
+                "patch",
+                "sealed PR with a plaintext base name (noPlain)",
+                serde_json::json!({ "repoId": id(1), "number": 4, "enc": bytes(1, 64), "epoch": 0, "baseRefNameHash": bytes(9, 32), "baseRefName": "refs/heads/main", "sourceRepoId": id(3), "headOid": bytes(1, 20) }),
+            ),
+            (
+                "comment",
+                "sealed comment with a plaintext path (noPlain)",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "enc": bytes(1, 64), "epoch": 0, "path": "src/main.rs" }),
+            ),
+            (
+                "comment",
+                "neither body nor enc (hasBody)",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "path": "src/main.rs", "line": 1, "side": 1 }),
+            ),
+            (
+                "review",
+                "sealed review with a plaintext body (noPlain)",
+                serde_json::json!({ "repoId": id(1), "patchId": id(5), "verdict": 2, "commitOid": bytes(1, 20), "body": "leak", "enc": bytes(1, 64), "epoch": 0 }),
+            ),
+            (
+                "event",
+                "sealed event with a plaintext value (noPlain)",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 4, "value": "bug", "enc": bytes(1, 64), "epoch": 0 }),
+            ),
+            (
+                "event",
+                "label add without a value (needValue)",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 4 }),
+            ),
+            (
+                "event",
+                "milestone set without a value (needValue)",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 17 }),
+            ),
+            (
+                "event",
+                "assign without refId (needAssignee)",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 6, "value": "x" }),
+            ),
+            (
+                "event",
+                "review request without refId (needRefId)",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 13 }),
+            ),
+            (
+                "event",
+                "merge without an oid (needOid)",
+                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 3 }),
+            ),
+            (
+                "checkRun",
+                "completed without a conclusion (conclusionIfDone)",
+                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci", "status": "completed" }),
+            ),
+            (
+                "checkRun",
+                "a conclusion while still running (doneIfConclusion)",
+                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci", "status": "in_progress", "conclusion": "success" }),
+            ),
+            (
+                "checkRun",
+                "a conclusion outside GitHub's set",
+                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci", "status": "completed", "conclusion": "passed" }),
+            ),
+            (
+                "checkRun",
+                "a log URL without its hash",
+                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci", "status": "queued", "logUrl": "https://logs.example/1.txt" }),
+            ),
+            (
+                "policy",
+                "eleven required checks",
+                serde_json::json!({ "repoId": id(1), "requiredApprovals": 0, "requiredChecks": ["a","b","c","d","e","f","g","h","i","j","k"] }),
+            ),
+            (
+                "milestone",
+                "sealed milestone with a plaintext description (noPlain)",
+                serde_json::json!({ "repoId": id(1), "title": "a3f09b", "description": "leak", "enc": bytes(1, 64), "epoch": 0 }),
+            ),
+            (
+                "milestone",
+                "enc without epoch",
+                serde_json::json!({ "repoId": id(1), "title": "a3f09b", "enc": bytes(1, 64) }),
+            ),
+            (
+                "starBeat",
                 "extra property",
                 serde_json::json!({ "repoId": id(1), "note": "x" }),
             ),
