@@ -16,7 +16,7 @@ import type { RepoRef } from '@/lib/repo'
 import { previewCredits } from '@/lib/sdk'
 import { estimateChunkCredits } from '@/lib/sdk/cost'
 import { policyForRepo, storeArtifact, type PlatformQuestion } from '@/lib/storage'
-import { fragmentBytes, storageChoice, type StorageChoice } from '@/lib/storage/merge-choice'
+import { fragmentBytes, storageChoice, type PackEstimate, type StorageChoice } from '@/lib/storage/merge-choice'
 import type { UploadPack } from '@/lib/merge/runner'
 import { formatBytes } from '@/lib/view'
 import { useStorageConfig } from '@/hooks/use-storage-config'
@@ -29,13 +29,11 @@ export interface MergeUpload {
   /** For the runner; null until the storage settings are read. */
   readonly upload: UploadPack | null
   /** The Storage row's data for an estimated pack (null estimate: no price yet). */
-  readonly choiceFor: (estimate: { bytes: number; objectCount: number } | null) => StorageChoice | null
-  /** The question the run is waiting on (render it in the step list), or null. */
+  readonly choiceFor: (estimate: PackEstimate | null) => StorageChoice | null
+  /** The question the run is waiting on (render it in the upload step), or null. */
   readonly question: JSX.Element | null
-  readonly waiting: boolean
   /** Call at each attempt with the pre-answer: credits allowed on Platform (null: none given). */
   readonly begin: (preAgreedCredits?: number | null) => void
-  readonly storageLabel: string
   readonly storageNeedsUnlock: boolean
 }
 
@@ -80,21 +78,15 @@ export function useMergeUpload(repo: RepoRef): MergeUpload {
   )
 
   const choiceFor = useCallback(
-    (estimate: { bytes: number; objectCount: number } | null): StorageChoice | null => (config === null ? null : storageChoice(policy, config.profiles, estimate)),
+    (estimate: PackEstimate | null): StorageChoice | null => (config === null ? null : storageChoice(policy, config.profiles, estimate)),
     [config, policy],
   )
 
   const question =
     pending === null ? null : (
-      <StorageQuestion
-        question={pending}
-        indexBytes={fragmentBytes(packObjects.current)}
-        objects={packObjects.current}
-        onAnswer={(ok) => answer.current?.(ok)}
-      />
+<StorageQuestion question={pending} objects={packObjects.current} onAnswer={(ok) => answer.current?.(ok)} />
     )
 
-  const storageLabel = config === null ? '' : storageChoice(policy, config.profiles, null).label
   const begin = useCallback((preAgreedCredits: number | null = null) => {
     agreed.current = null
     preAgreed.current = preAgreedCredits
@@ -103,9 +95,7 @@ export function useMergeUpload(repo: RepoRef): MergeUpload {
     upload: config === null ? null : upload,
     choiceFor,
     question,
-    waiting: pending !== null,
     begin,
-    storageLabel,
     storageNeedsUnlock: storage.needsUnlock,
   }
 }
@@ -113,15 +103,14 @@ export function useMergeUpload(repo: RepoRef): MergeUpload {
 /** The run's upload step, waiting for the merger's choice: where, why, and the price. */
 function StorageQuestion({
   question,
-  indexBytes,
   objects,
   onAnswer,
 }: {
   question: PlatformQuestion
-  indexBytes: number
   objects: number
   onAnswer: (ok: boolean) => void
 }): JSX.Element {
+  const indexBytes = fragmentBytes(objects)
   return (
     <div className="mt-2 space-y-2 rounded-md border border-caution/50 bg-caution/5 px-3 py-2 text-dense" role="group" aria-label="Waiting for your choice" data-testid="storage-question">
       <p className="font-medium">Waiting for your choice: store the pack ({formatBytes(question.bytes)}) on Dash Platform?</p>
@@ -165,13 +154,15 @@ export function StorageRow({
         {uses && choice.platform.kind !== 'only' ? <> · {choice.platform.reason}</> : null}
       </p>
       {uses ? (
-        <label className="flex flex-wrap items-center gap-2 text-dense text-anvil-700 dark:text-anvil-200">
-          <input type="checkbox" className="h-4 w-4 accent-forge-700" checked={allowed} onChange={(e) => onAllow(e.target.checked)} data-testid="allow-platform" />
-          Allow storing on Platform, up to
-          {choice.platformCredits !== null ? <CostPreview cost={previewCredits(choice.platformCredits)} /> : <span>the pack&apos;s price (sized when the merge is checked)</span>}
-        </label>
+        <>
+          <label className="flex flex-wrap items-center gap-2 text-dense text-anvil-700 dark:text-anvil-200">
+            <input type="checkbox" className="h-4 w-4 accent-forge-700" checked={allowed} onChange={(e) => onAllow(e.target.checked)} data-testid="allow-platform" />
+            Allow storing on Platform, up to
+            {choice.platformCredits !== null ? <CostPreview cost={previewCredits(choice.platformCredits)} /> : <span>the pack&apos;s price (sized when the merge is checked)</span>}
+          </label>
+          <p>Unchecked, the merge asks when it gets there, with the price.</p>
+        </>
       ) : null}
-      {uses ? <p>Unchecked, the merge asks when it gets there, with the price.</p> : null}
     </div>
   )
 }

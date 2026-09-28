@@ -26,6 +26,7 @@ import { findMergeBases, MergeBaseSearchLimitError } from '../view/pull-diff'
 import type { ObjectReader } from '../view/tree-nav'
 import { newCommits, objectsToPack, UnsupportedChangeError, WalkLimitError } from './objects'
 import { writePack } from './pack-writer'
+import type { PackEstimate } from '../storage/merge-choice'
 
 /** Who the merge commit is by (the merger's Settings name and email). */
 export interface MergeIdentity {
@@ -344,12 +345,20 @@ export interface MergeCheckResult {
    * check walks exactly these objects; null when it did not reach the pack step. Priced before
    * the merge starts, so its storage question is asked up front.
    */
-  readonly packEstimate: { readonly bytes: number; readonly objectCount: number } | null
+  readonly packEstimate: PackEstimate | null
 }
 
-/** A pack's framing: the 12-byte header and 20-byte trailer, plus up to 10 bytes of entry header per object. */
+/** zlib's `deflateBound`: the most a zlib stream (with its 6-byte wrapper) can be for `n` input bytes. */
+function zlibBound(n: number): number {
+  return n + (n >>> 12) + (n >>> 14) + (n >>> 25) + 13 + 6
+}
+
+/**
+ * A pack's size, bounded: the 12-byte header and 20-byte trailer, and per object up to 10 bytes
+ * of entry header plus its zlib stream at its worst (incompressible blobs included).
+ */
 export function packSizeBound(objects: readonly { readonly bytes: Uint8Array }[]): number {
-  return 32 + objects.reduce((n, o) => n + o.bytes.length + 10, 0)
+  return 32 + objects.reduce((n, o) => n + 10 + zlibBound(o.bytes.length), 0)
 }
 
 /** {@link checkMerge} with the conflicting paths (the merge box lists them, review-parity F7). */
@@ -393,7 +402,7 @@ async function build(
   onProgress?: MergeProgress,
 ): Promise<
   | MergeOutcome
-  | { kind: 'checked'; check: 'fast-forward' | 'merge'; packEstimate: { bytes: number; objectCount: number } }
+  | { kind: 'checked'; check: 'fast-forward' | 'merge'; packEstimate: PackEstimate }
   | Exclude<MergePlan, { kind: 'fast-forward' | 'merge' | 'malformed' | 'too-large' }>
 > {
   onProgress?.('analyse')

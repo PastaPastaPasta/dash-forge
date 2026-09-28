@@ -41,9 +41,7 @@ vi.mock('@/components/repo/merge-upload', async (importOriginal) => {
       choiceFor: (estimate: { bytes: number; objectCount: number } | null) =>
         storageChoice({ targets: ['chain'], replicas: 1, platformFallback: false }, [{ name: 'chain', settings: { kind: 'platform', provider: 'platform' }, secrets: {} } as never], estimate),
       question: null,
-      waiting: false,
       begin: (credits?: number | null) => void begun.push(credits),
-      storageLabel: '',
       storageNeedsUnlock: false,
     }),
   }

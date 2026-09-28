@@ -21,7 +21,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
-import { Check, GitMerge, Loader2, Minus, X } from 'lucide-react'
+import { GitMerge, Loader2 } from 'lucide-react'
 
 import { readConfigHistory, refNameHash, resolveRefByHash, type PullView, type RepoRef } from '@/lib/repo'
 import { isLegalRefName, matchesProtected } from '@/lib/rules'
@@ -33,6 +33,8 @@ import { MERGE_STEPS, MergeStepError, retryLabel, runFor, runMergeSteps, type Me
 import { mergeButton, mergeRefProblem } from '@/lib/view/pull-actions'
 import { publishMergeIndex } from '@/lib/merge/locator'
 import { StorageRow, useMergeUpload } from '@/components/repo/merge-upload'
+import { StepRow, type StepState } from '@/components/repo/step-list'
+import type { PackEstimate } from '@/lib/storage/merge-choice'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { mergeIdentityValid } from '@/lib/view/prefs'
 import { branchName, tipOidOf, type DiffSides, type ObjectReader } from '@/lib/view'
@@ -45,11 +47,9 @@ import { CopyRow } from '@/components/ui/copy-row'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { Oid } from '@/components/ui/oid'
 import { Textarea } from '@/components/ui/input'
-import { cn } from '@/lib/utils'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
-type StepState = 'todo' | 'running' | 'done' | 'skipped' | 'failed'
 
 /** "Delete the branch after merging": runnable, or shown disabled with why. */
 export type DeleteBranchOption = { readonly label: string; readonly run: () => Promise<void> } | { readonly label: string; readonly disabled: string }
@@ -97,13 +97,15 @@ export function MergePanel({
   const guard = useWriteGuard()
   const [prefs] = usePrefs()
   const wide = useMinWidth(1024)
-  const { upload, question: storageQuestion, waiting: storageWaiting, choiceFor, begin, storageNeedsUnlock } = useMergeUpload(repo)
+  const { upload, question: storageQuestion, choiceFor, begin, storageNeedsUnlock } = useMergeUpload(repo)
   // The check sizes the pack (an upper bound): the Storage row prices it before the merge starts.
-  const [packEstimate, setPackEstimate] = useState<{ bytes: number; objectCount: number } | null>(null)
+  const [packEstimate, setPackEstimate] = useState<PackEstimate | null>(null)
   const storage = choiceFor(packEstimate)
   // "Allow storing on Platform": until the merger touches it, its default follows the policy.
   const [allowTouched, setAllowTouched] = useState<boolean | null>(null)
   const allowPlatform = allowTouched ?? storage?.allowByDefault ?? false
+  // The pre-answer the run starts with: credits allowed on Platform (null: none, it asks).
+  const preAgreedCredits = allowPlatform ? (storage?.platformCredits ?? null) : null
   const baseRefName = pull.state.baseRef ?? pull.baseRefName
   const baseProtected = matchesProtected(baseRefName, protectedPatterns)
   const refProblem = mergeRefProblem(baseRefName, baseTipOid, pull.headOid, pull.baseRefName)
@@ -217,8 +219,7 @@ export function MergePanel({
     setBusy(true)
     setFailure(null)
     setStopped(null)
-    // The pre-answer: what the Storage row allowed on Platform, priced from the check's estimate.
-    begin(allowPlatform && storage !== null && storage.platformCredits !== null ? storage.platformCredits : null)
+    begin(preAgreedCredits)
     const intent = `merge:${repo.repoId}:${pull.number}:${pull.headOid}:${baseTipOid}${input.squash ? `:squash:${bytesToHex(sha256(new TextEncoder().encode(input.squash.message))).slice(0, 16)}` : ''}`
     try {
       const done = await runMergeSteps(
@@ -271,7 +272,7 @@ export function MergePanel({
     } finally {
       setBusy(false)
     }
-  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, allowPlatform, storage, deletable, alsoDelete])
+  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, preAgreedCredits, deletable, alsoDelete])
 
   // A run in this panel keeps it on screen to the end (the PR reads Merged meanwhile).
   const started = Object.keys(steps).length > 0
@@ -409,23 +410,9 @@ export function MergePanel({
 
       {started ? (
         <ol aria-label="Merge steps" className="mt-3 space-y-1 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
-          {MERGE_STEPS.map(({ id, label }) => {
-            const s = steps[id] ?? 'todo'
-            return (
-              <li key={id} className={cn('text-dense', s === 'todo' && 'text-anvil-500 dark:text-anvil-400')} data-step={id} data-state={id === 'upload' && storageWaiting ? 'waiting' : s}>
-                <span className="flex items-center gap-2">
-                  <StepIcon state={s} />
-                  {label}
-                  {id === 'upload' && storageWaiting ? (
-                    <span className="text-[12px] font-medium text-caution-700 dark:text-caution-400">Waiting for your choice</span>
-                  ) : details[id] ? (
-                    <span className="text-[12px] text-anvil-600 dark:text-anvil-400">({details[id]})</span>
-                  ) : null}
-                </span>
-                {id === 'upload' ? storageQuestion : null}
-              </li>
-            )
-          })}
+          {MERGE_STEPS.map(({ id, label }) => (
+            <StepRow key={id} id={id} label={label} state={steps[id] ?? 'todo'} detail={details[id]} question={id === 'upload' ? storageQuestion : null} />
+          ))}
         </ol>
       ) : null}
       {failure ? (
@@ -454,19 +441,4 @@ export function MergePanel({
       ) : null}
     </section>
   )
-}
-
-function StepIcon({ state }: { state: StepState }): JSX.Element {
-  switch (state) {
-    case 'done':
-      return <Check className="h-4 w-4 text-verify-700 dark:text-verify-400" aria-hidden />
-    case 'running':
-      return <Loader2 className="h-4 w-4 animate-spin text-anvil-500 dark:text-anvil-400" aria-hidden />
-    case 'skipped':
-      return <Minus className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
-    case 'failed':
-      return <X className="h-4 w-4 text-danger-700 dark:text-danger-400" aria-hidden />
-    default:
-      return <span className="h-4 w-4 rounded-full border border-anvil-300 dark:border-anvil-700" aria-hidden />
-  }
 }

@@ -367,7 +367,7 @@ export async function storeArtifact(
   const agreePlatform = async (reason: string): Promise<boolean> => {
     if (platformAgreed === null) {
       const estimateCredits = estimateChunkCredits(bytes.length)
-      platformAgreed = withinPreAgreement(opts.preAgreedCredits ?? null, estimateCredits) ? true : await opts.confirmPlatform({ bytes: bytes.length, estimateCredits, reason })
+      platformAgreed = withinPreAgreement(opts.preAgreedCredits ?? null, estimateCredits) || (await opts.confirmPlatform({ bytes: bytes.length, estimateCredits, reason }))
     }
     return platformAgreed
   }

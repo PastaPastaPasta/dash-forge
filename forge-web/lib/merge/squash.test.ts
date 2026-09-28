@@ -9,7 +9,8 @@ import { BrowseReader, ObjectLocator, type GitObject } from '../browse'
 import { indexPacks, memoryPackSource, serializeLocator } from '../browse/indexer'
 import { Store } from '../view/diff-fixtures'
 import { parseCommit } from '../view/git-objects'
-import { checkMergeDetailed, runMerge, squashDraft, squashMessage, type MergeInput } from './engine'
+import { checkMergeDetailed, packSizeBound, runMerge, squashDraft, squashMessage, type MergeInput } from './engine'
+import { writePack } from './pack-writer'
 import { gitAcceptsHistory, HAVE_GIT } from './git-oracle'
 
 const ME = { name: 'Merger', email: 'm@example.com', timestamp: 1_700_000_000, timezoneOffset: 0 }
@@ -89,6 +90,13 @@ describe('squash and merge', () => {
       expect(checked.packEstimate!.bytes).toBeGreaterThanOrEqual(built.pack.length)
       expect(checked.packEstimate!.objectCount).toBeGreaterThanOrEqual(built.objectCount)
     }
+  })
+
+  it('bounds the pack even when the objects do not compress (random blobs, big and tiny)', () => {
+    let seed = 7
+    const random = (n: number): Uint8Array => Uint8Array.from({ length: n }, () => ((seed = (seed * 1_103_515_245 + 12_345) >>> 0) >>> 24))
+    const objects: GitObject[] = [0, 1, 5, 300, 70_000, 200_000].map((n) => ({ type: 'blob', bytes: random(n) }))
+    expect(packSizeBound(objects)).toBeGreaterThanOrEqual(writePack(objects).bytes.length)
   })
 
   it("squashes a head that descends from the base to the head's own tree", async () => {

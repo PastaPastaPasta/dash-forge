@@ -14,6 +14,12 @@ import { estimateChunkCredits } from '../sdk/cost'
 import { FANOUT_LEN, LOCATOR_ROW_LEN } from '../browse'
 import type { StoragePolicy, StorageProfile } from './profiles'
 
+/** An upper bound on a pack the run will store, from the merge check (bytes and object count). */
+export interface PackEstimate {
+  readonly bytes: number
+  readonly objectCount: number
+}
+
 /** When a pack may land on Platform, and why (the sentence the row shows). */
 export type PlatformUse =
   /** No storage configured: Platform is the only place (the policy's default). */
@@ -45,7 +51,7 @@ export function fragmentBytes(objectCount: number): number {
 export function storageChoice(
   policy: StoragePolicy | null,
   profiles: readonly StorageProfile[],
-  estimate: { readonly bytes: number; readonly objectCount: number } | null,
+  estimate: PackEstimate | null,
 ): StorageChoice {
   const byName = new Map(profiles.map((p) => [p.name, p]))
   const isPlatform = (name: string): boolean => byName.get(name)?.settings.kind === 'platform'
@@ -59,7 +65,6 @@ export function storageChoice(
     }
   }
   const onChain = policy.targets.filter(isPlatform)
-  const external = policy.targets.filter((n) => !isPlatform(n))
   const names = policy.targets.join(', ')
   if (onChain.length > 0) {
     return {
@@ -72,7 +77,7 @@ export function storageChoice(
   if (policy.platformFallback) {
     return {
       label: `${names}, with Dash Platform as a fallback`,
-      platform: { kind: 'fallback', reason: `Only if ${external.join(', ')} cannot confirm the copies your policy needs.` },
+      platform: { kind: 'fallback', reason: `Only if ${names} cannot confirm the copies your policy needs.` },
       platformCredits: price,
       allowByDefault: false,
     }
