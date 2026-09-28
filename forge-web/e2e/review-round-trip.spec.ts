@@ -53,7 +53,9 @@ test('the web shows the fold dg read', async ({ page }) => {
   await expect(page.getByText(/pushed new commits/)).toHaveCount(fold.headUpdates)
 
   // Every review, with the commit it was on.
-  for (const r of fold.reviews) await expect(page.getByTitle(r.commitOid).first()).toBeVisible()
+  // A review's commit is also named inside the collapsed "on an older version" disclosure;
+  // what counts is a copy the reader can see (WebKit's `.first()` can be the collapsed one).
+  for (const r of fold.reviews) await expect(page.getByTitle(r.commitOid).filter({ visible: true }).first()).toBeVisible()
   const verdictText = (v: number): RegExp => (v === 1 ? /approved/i : v === 2 ? /changes requested/i : /commented/i)
   for (const v of new Set(fold.reviews.map((r) => r.verdict))) await expect(page.getByText(verdictText(v)).first()).toBeVisible()
 
