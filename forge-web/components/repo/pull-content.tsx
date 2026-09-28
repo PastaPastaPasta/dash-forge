@@ -867,7 +867,7 @@ function PullPage({
           {/* The merge box: one slot for every tab, so a merge running in it (maybe waiting for a
               storage choice) survives a tab switch and can be finished (mergeBoxSlot). */}
           {mergeSlot === 'none' ? null : (
-            <div hidden={mergeSlot === 'kept'} className="space-y-4" data-testid="merge-slot">
+            <div hidden={mergeSlot === 'kept'} className="space-y-4 empty:hidden" data-testid="merge-slot">
               <PullMerge
                 repo={repo}
                 home={home}
@@ -883,6 +883,7 @@ function PullPage({
                 }}
                 extras={{
                   onRunning: setMergeRunning,
+                  active: mergeSlot === 'shown',
                   allowedMethods: policyNow?.mergeMethods ?? 0,
                   squashAuthors: commits.error
                     ? { error: commits.error }

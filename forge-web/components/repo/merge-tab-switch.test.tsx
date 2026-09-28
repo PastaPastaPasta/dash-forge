@@ -43,8 +43,9 @@ vi.mock('@/lib/storage', async (importOriginal) => {
     },
   }
 })
+const checks = vi.fn(async () => ({ check: 'merge', conflictPaths: [] as string[], packEstimate: { bytes: 4000, objectCount: 4 } }))
 vi.mock('@/lib/merge/client', () => ({
-  checkMergeInWorker: async () => ({ check: 'merge', conflictPaths: [] as string[], packEstimate: { bytes: 4000, objectCount: 4 } }),
+  checkMergeInWorker: () => checks(),
   runMergeInWorker: vi.fn(),
 }))
 // The run: its upload step stores through the panel's real upload (which asks), then the rest lands.
@@ -101,7 +102,7 @@ function Page(): JSX.Element {
       {tab === 'conversation' ? <p>The conversation</p> : <p>The {tab} tab</p>}
       {slot === 'none' ? null : (
         <div hidden={slot === 'kept'} data-testid="merge-slot">
-          <PullMerge repo={repo} home={homeAt(merged ? NEW_TIP : BASE)} pull={pullOf(merged)} canMerge={!merged} isMaintainer checkout="dg pr checkout 1" onMerged={() => setMerged(true)} extras={{ onRunning }} />
+          <PullMerge repo={repo} home={homeAt(merged ? NEW_TIP : BASE)} pull={pullOf(merged)} canMerge={!merged} isMaintainer checkout="dg pr checkout 1" onMerged={() => setMerged(true)} extras={{ onRunning, active: slot === 'shown' }} />
         </div>
       )}
     </div>
@@ -171,9 +172,14 @@ describe('a merge waiting for the storage choice, across tabs', () => {
     // Finished on Files: the outcome is still on screen there.
     expect(slot()?.hidden).toBe(false)
     expect(host.querySelector('[data-testid="merge-done"]')?.textContent).toBe('Merged')
-    // Moving on to another tab hides it (kept mounted); the conversation shows it again.
+    // Moving on to another tab hides it (kept mounted, and checking nothing meanwhile); the
+    // conversation shows it again.
     await act(async () => goTo('commits'))
     expect(slot()?.hidden).toBe(true)
+    const before = checks.mock.calls.length
+    await act(async () => goTo('checks'))
+    await act(async () => undefined)
+    expect(checks.mock.calls.length).toBe(before)
     await act(async () => goTo('conversation'))
     expect(slot()?.hidden).toBe(false)
     expect(host.querySelector('[data-testid="merge-done"]')?.textContent).toBe('Merged')

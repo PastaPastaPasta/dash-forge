@@ -319,18 +319,18 @@ describe('the merge box through its own merge', () => {
 })
 
 describe('where the merge box is, per tab', () => {
-  const at = (o: Partial<Parameters<typeof mergeBoxSlot>[0]>) => mergeBoxSlot({ onConversation: false, draft: false, running: false, ranHere: false, ranOnThisTab: false, ...o })
+  const at = (o: Partial<Parameters<typeof mergeBoxSlot>[0]>) => mergeBoxSlot({ onConversation: false, draft: false, running: false, ranOnPage: false, ranOnThisTab: false, ...o })
   it('lives on the conversation of a ready PR', () => {
     expect(at({ onConversation: true })).toBe('shown')
     expect(at({ onConversation: true, draft: true })).toBe('none')
     expect(at({})).toBe('none')
   })
   it('a running merge is on screen on every tab (it may be waiting for the merger)', () => {
-    expect(at({ running: true, ranHere: true, ranOnThisTab: true })).toBe('shown')
-    expect(at({ running: true, ranHere: true })).toBe('shown')
+    expect(at({ running: true, ranOnPage: true, ranOnThisTab: true })).toBe('shown')
+    expect(at({ running: true, ranOnPage: true })).toBe('shown')
   })
   it('after its merge it stays mounted: on screen where it ended, hidden on other tabs', () => {
-    expect(at({ ranHere: true, ranOnThisTab: true })).toBe('shown')
-    expect(at({ ranHere: true })).toBe('kept')
+    expect(at({ ranOnPage: true, ranOnThisTab: true })).toBe('shown')
+    expect(at({ ranOnPage: true })).toBe('kept')
   })
 })

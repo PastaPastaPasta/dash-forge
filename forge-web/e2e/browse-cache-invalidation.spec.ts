@@ -219,6 +219,8 @@ test('g3. a merge commit built in the browser (a new pack), then the Code tab re
   await page.getByRole('button', { name: 'Create merge commit and merge' }).click()
   const steps = page.getByRole('list', { name: 'Merge steps' })
   await expect(steps.locator('[data-step="ref"]')).toHaveAttribute('data-state', 'done', { timeout: 300_000 })
+  // Pre-allowed before the merge: the run never stopped to ask.
+  await expect(page.getByTestId('storage-question')).toHaveCount(0)
   await page.getByTestId('merge-panel').scrollIntoViewIfNeeded()
   await shot(page, 'g4-06-merge-commit-done')
 

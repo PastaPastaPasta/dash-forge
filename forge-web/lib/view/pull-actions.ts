@@ -330,7 +330,7 @@ export function mergeBoxShown(canMerge: boolean, shownBefore: boolean): boolean 
  * merger moves on. Once it has run it stays mounted (hidden elsewhere), so the outcome is still
  * there on the way back.
  */
-export function mergeBoxSlot(i: { onConversation: boolean; draft: boolean; running: boolean; ranHere: boolean; ranOnThisTab: boolean }): 'shown' | 'kept' | 'none' {
+export function mergeBoxSlot(i: { onConversation: boolean; draft: boolean; running: boolean; ranOnPage: boolean; ranOnThisTab: boolean }): 'shown' | 'kept' | 'none' {
   if ((i.onConversation && !i.draft) || i.running || i.ranOnThisTab) return 'shown'
-  return i.ranHere ? 'kept' : 'none'
+  return i.ranOnPage ? 'kept' : 'none'
 }

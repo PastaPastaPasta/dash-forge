@@ -70,6 +70,7 @@ export function MergePanel({
   squashAuthors = null,
   deleteBranch = null,
   onRunning,
+  active = true,
 }: {
   repo: RepoRef
   pull: PullView
@@ -94,6 +95,8 @@ export function MergePanel({
   deleteBranch?: DeleteBranchOption | null
   /** Told when a merge starts and ends here (the page keeps the panel mounted meanwhile). */
   onRunning?: (running: boolean) => void
+  /** False while the page keeps the panel mounted but hidden: no merge check runs meanwhile. */
+  active?: boolean
 }): JSX.Element | null {
   const { sdk } = useSdk()
   const { signer } = useAuth()
@@ -154,7 +157,7 @@ export function MergePanel({
   const [mergedHere, setMergedHere] = useState(false)
   // Nothing to check once the PR is merged (this panel's own merge included: the base then holds
   // it, and a check against the new tip would only report the merge against itself).
-  const checkable = canMerge && !pull.state.merged && !mergedHere && repo.visibility === 'public' && refProblem === null && reader !== null && wide
+  const checkable = active && canMerge && !pull.state.merged && !mergedHere && repo.visibility === 'public' && refProblem === null && reader !== null && wide
   // The check reads the latest input without re-running when only the merger's name changes.
   const inputRef = useRef(input)
   inputRef.current = input
@@ -212,7 +215,13 @@ export function MergePanel({
   const [failure, setFailure] = useState<{ step: MergeStepId; message: string } | null>(null)
   const [stopped, setStopped] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
-  useEffect(() => onRunning?.(busy), [busy, onRunning])
+  useEffect(() => {
+    onRunning?.(busy)
+    // Unmounted mid-run: the page must not keep the box pinned for a run that is gone.
+    return () => {
+      if (busy) onRunning?.(false)
+    }
+  }, [busy, onRunning])
   const [newTip, setNewTip] = useState<string | null>(null)
   // The branch deletion's outcome, with the label it was run for: the page stops offering the
   // option once the PR reads merged, which is exactly when this is shown.
