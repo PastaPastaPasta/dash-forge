@@ -18,7 +18,6 @@ import {
   objectObserver,
   resetContentChecks,
   subscribeContentChecks,
-  viewSeq,
   viewSources,
 } from './content-checks'
 
@@ -81,8 +80,7 @@ describe('content-check ledger', () => {
     expect(contentChecks('repo-a').packSources).toEqual({ aa: ['platform'], bb: ['files.example'] })
     expect(contentChecks('repo-a').sources).toEqual(['platform', 'files.example'])
 
-    const home = viewSeq('repo-a', '/repo?name=x')
-    expect(viewSeq('repo-a', '/repo?name=x')).toBe(home) // the same view: the same number
+    const home = '/repo?name=x'
     beginView('repo-a', home)
     noteViewPack('repo-a', 'aa', home)
     noteViewPack('repo-a', 'BB', home)
@@ -95,7 +93,7 @@ describe('content-check ledger', () => {
     expect(notified).toBe(before)
 
     // A new view starts empty; the session's record of each pack stays.
-    const file = viewSeq('repo-a', '/repo/blob?name=x&path=s3file.txt')
+    const file = '/repo/blob?name=x&path=s3file.txt'
     beginView('repo-a', file)
     expect(contentChecks('repo-a').viewPacks).toEqual([])
     expect(viewSources(contentChecks('repo-a'))).toEqual([])
@@ -105,22 +103,28 @@ describe('content-check ledger', () => {
     unsubscribe()
   })
 
-  it("drops reads of a view the viewer left, and lets a view's first read start it (L-18)", () => {
+  it('drops reads of a view that is not on screen (L-18)', () => {
     noteContentCheck('repo-a', { source: 'platform', pack: 'aa' })
     noteContentCheck('repo-a', { source: 'files.example', pack: 'bb' })
-    const home = viewSeq('repo-a', '/repo?name=x')
-    const file = viewSeq('repo-a', '/repo/blob?name=x&path=f')
-    expect(file).toBeGreaterThan(home)
-    // The file view's first read comes before the rail's layout effect: it starts the view.
-    noteViewPack('repo-a', 'bb', file)
+    beginView('repo-a', '/repo/blob?path=f')
+    noteViewPack('repo-a', 'bb', '/repo/blob?path=f')
     // The home page's history walk, still running, reads a Platform-stored commit: dropped.
-    noteViewPack('repo-a', 'aa', home)
-    beginView('repo-a', home) // a stale start is ignored too
-    beginView('repo-a', file)
+    noteViewPack('repo-a', 'aa', '/repo')
     expect(viewSources(contentChecks('repo-a'))).toEqual(['files.example'])
-    // Back on the home page: a new view (a new number), not the old one revived.
-    const again = viewSeq('repo-a', '/repo?name=x')
-    expect(again).toBeGreaterThan(file)
+  })
+
+  it('names the copy that served a read, not a sibling copy the reader rejected (L-18)', () => {
+    // Two writers' copies of one pack: a bad mirror answered ranges of copy c1, copy c2 verified.
+    noteContentCheck('repo-a', { source: 'bad.example', pack: 'aa', copy: 'C1' })
+    noteContentCheck('repo-a', { source: 'good.example', pack: 'aa', copy: 'c2' })
+    expect(contentChecks('repo-a').packSources['aa']).toEqual(['bad.example', 'good.example'])
+    beginView('repo-a', '/v')
+    noteViewPack('repo-a', 'aa#c2', '/v')
+    expect(viewSources(contentChecks('repo-a'))).toEqual(['good.example'])
+    // No copy-level record (a whole-pack fetch): the pack's places.
+    noteContentCheck('repo-a', { source: 'platform', pack: 'bb' })
+    noteViewPack('repo-a', 'bb#x', '/v')
+    expect(viewSources(contentChecks('repo-a'))).toEqual(['good.example', 'platform'])
   })
 
   it('names an external source by its host', () => {

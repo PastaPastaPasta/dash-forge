@@ -57,7 +57,7 @@ export function RepoRail({
   // Each page (a route and its query: another file, ref or tab) is a new view: the summary names
   // the places that served ITS objects (L-18). A layout effect, so it runs before the page's own
   // effects start reading (its reads start the view themselves too, if they come first).
-  const view = useTrustView(key)
+  const view = useTrustView()
   useLayoutEffect(() => beginView(key, view), [key, view])
   const checks = useSyncExternalStore(
     subscribeContentChecks,

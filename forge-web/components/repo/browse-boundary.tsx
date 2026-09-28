@@ -76,7 +76,7 @@ export function BrowseBoundary({
   const key = repoKey(repo)
   const retry = useCallback(() => invalidateBrowseContext(key), [key])
   // The page reads for its own view, so the Verification summary names what served IT (L-18).
-  const view = useTrustView(key)
+  const view = useTrustView()
   const shared = state.kind === 'ready' ? state.reader : null
   const reader = useMemo(() => shared?.forView(view) ?? null, [shared, view])
 

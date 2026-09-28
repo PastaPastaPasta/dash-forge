@@ -209,7 +209,7 @@ function contextFromStored(sdk: EvoSDK | null, repo: RepoRef, stored: StoredFall
   const locator = ObjectLocator.parse(stored.locator)
   return import('../browse/indexer').then(({ memoryPackSource }) => {
     const packs = memoryPackSource(stored.packs)
-    return { locator, packs, reader: repoReader(sdk, repo, locator, packs, livePacks.map((m) => m.packHash)) }
+    return { locator, packs, reader: repoReader(sdk, repo, locator, packs, livePacks) }
   })
 }
 
@@ -348,7 +348,7 @@ async function runFallback(
   const locator = ObjectLocator.parse(locatorBytes)
   // The synthesized locator's packRef space is exactly the packs that downloaded.
   const packSource = memoryPackSource(packs)
-  const reader = repoReader(sdk, repo, locator, packSource, manifests.map((m) => m.packHash), unavailable)
+  const reader = repoReader(sdk, repo, locator, packSource, manifests, unavailable)
   // Only a complete clone is persisted. A skipped pack's mirror may come back, and a reload
   // is the natural moment to try it again; a persisted partial clone would never retry.
   // A private repo's clone is decrypted: it is never written to browser storage.

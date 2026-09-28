@@ -28,7 +28,7 @@ import type { PackManifest, RepoRef } from '../repo'
 import { base64ToHex, bytesToBase64 } from '../sdk'
 import { cachedFallback, startFallback, type FallbackProgress } from './browse-fallback'
 import { externalFetchUrls, resetExternalFetchState, StorageUnreachableError } from './browse-source'
-import { contentChecks, resetContentChecks, viewSeq } from './content-checks'
+import { beginView, contentChecks, resetContentChecks } from './content-checks'
 import { describeUnavailable, noteRepoGateways, overrideDefaultGateways, readGateways } from './storage-status'
 import { deriveTrust } from './trust'
 
@@ -253,7 +253,11 @@ describe('startFallback with external-storage packs', () => {
       }).summary
 
     // Each page reads through a reader for its view, as BrowseBoundary gives it.
-    const visit = (route: string) => ctx.reader.forView(viewSeq(repo.repoId, route))
+    // (The rail starts each view when its route commits.)
+    const visit = (route: string) => {
+      beginView(repo.repoId, route)
+      return ctx.reader.forView(route)
+    }
     // The repo home read the README (Platform), then the viewer opened the S3 file.
     const home = visit('/repo')
     await home.readObject(plat.oid)
@@ -265,7 +269,7 @@ describe('startFallback with external-storage packs', () => {
     await home.readObject(plat.oid)
     expect(summary()).toMatch(/· from files\.example$/)
     // A memo hit still names its place: the next visit reads nothing new.
-    await visit('/repo').readObject(plat.oid)
+    await visit('/repo?again').readObject(plat.oid)
     expect(summary()).toMatch(/· from Platform$/)
     // The shared reader (no view) reports nothing: only a page's own reads name places.
     await ctx.reader.readObject(s3.oid)

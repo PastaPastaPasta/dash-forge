@@ -708,11 +708,16 @@ export function unavailableOf(e: PackUnavailableError): UnavailablePack {
   return { packHash: e.packHash, hosts: e.hosts, reason: e.reason, corrupt: e.corrupt }
 }
 
-/** Record in the repo's content-check ledger where an artifact's (pack `packHash`) bytes came from. */
-function noteSource(repo: RepoRef, packHash: string, uri?: string): void {
+/**
+ * Record in the repo's content-check ledger where an artifact's (pack `packHash`) bytes came
+ * from; `copy` (its manifest document id) for a range, which the reader verifies per copy, so a
+ * copy whose bytes it then rejects is not named for the objects another copy served.
+ */
+function noteSource(repo: RepoRef, packHash: string, uri?: string, copy?: string): void {
   noteContentCheck(repoKey(repo), {
     source: uri === undefined ? 'platform' : externalSourceName(uri),
     pack: packHash,
+    ...(copy === undefined ? {} : { copy }),
   })
 }
 
@@ -730,7 +735,7 @@ export function artifactRangeFetch(
       for (const at of platformLocatorReads(repo, copy)) {
         try {
           const bytes = await fetchPlatformRange(sdk, at.repo, at.manifest, start, end)
-          noteSource(repo, copy.packHash)
+          noteSource(repo, copy.packHash, undefined, copy.documentId)
           return bytes
         } catch (e) {
           lastErr = e
@@ -740,10 +745,10 @@ export function artifactRangeFetch(
       if (lastErr !== undefined && externalFetchUrls(copy.uris, gateways).length === 0) {
         throw new PackUnavailableError(copy.packHash, ['platform'], false, errorText(lastErr))
       }
-      return fetchExternalRange(copy, start, end, gateways, (uri) => noteSource(repo, copy.packHash, uri))
+      return fetchExternalRange(copy, start, end, gateways, (uri) => noteSource(repo, copy.packHash, uri, copy.documentId))
     }
     const bytes = await fetchPlatformRange(sdk, repo, copy, start, end)
-    noteSource(repo, copy.packHash)
+    noteSource(repo, copy.packHash, undefined, copy.documentId)
     return bytes
   }
   // A private repo's artifacts are sealed: the reader asks for PLAINTEXT ranges (locator rows
@@ -1220,7 +1225,7 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   // The packRef space is the current live pack set: the fragments cover all of it, and each
   // was built over a prefix of it, so every row's packRef means the same pack here.
   const packs = buildPackSource(sdk, repo, manifests)
-  const reader = repoReader(sdk, repo, locator, packs, livePacks.map((m) => m.packHash))
+  const reader = repoReader(sdk, repo, locator, packs, livePacks)
   return { kind: 'ready', context: { locator, packs, reader }, manifests: ids }
 }
 
@@ -1265,16 +1270,18 @@ export function repoReader(
   repo: RepoRef,
   locator: ObjectLocator,
   packs: PackSource,
-  /** Each `packRef`'s pack hash (hex), so a read names the pack, and so its place (L-18). */
-  packHashes: readonly string[],
+  /** Each `packRef`'s pack (and its copies), so a read names the copy that served it (L-18). */
+  space: readonly PackManifest[],
   unavailable: readonly UnavailablePack[] = [],
 ): BrowseReader {
   const key = repoKey(repo)
   const reader: BrowseReader = new BrowseReader(locator, packs, {
     onObject: objectObserver(key),
-    onRead: (packRef, view) => {
-      const hash = packHashes[packRef]
-      if (hash !== undefined) noteViewPack(key, hash, view)
+    onRead: (packRef, copy, view) => {
+      const m = space[packRef]
+      if (m === undefined) return
+      const doc = copy === undefined ? undefined : (m.copies ?? [m])[copy]?.documentId
+      noteViewPack(key, doc === undefined ? m.packHash : `${m.packHash}#${doc}`, view)
     },
     missingObject: unavailable.length > 0 ? (oid) => missingObjectError(oid, unavailable) : undefined,
     onMiss: sdk === null ? undefined : (oid) => readerAfterMiss(sdk, repo, reader, oid),

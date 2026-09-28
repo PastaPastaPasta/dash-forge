@@ -174,9 +174,10 @@ export interface BrowseReaderOptions {
   readonly onMiss?: (oidHex: string) => Promise<BrowseReader | null>
   /**
    * Told the pack (`packRef`) of every object a view's reader ({@link BrowseReader.forView})
-   * returned, memo hits included, with the view: which places served a page (L-18).
+   * returned, memo hits included, with the copy of it that verified (when known) and the view:
+   * which places served a page (L-18).
    */
-  readonly onRead?: (packRef: number, view: number) => void
+  readonly onRead?: (packRef: number, copy: number | undefined, view: string) => void
 }
 
 /** The memos a reader and its {@link BrowseReader.forView} siblings share. */
@@ -271,7 +272,7 @@ export class BrowseReader {
     private readonly packs: PackSource,
     private readonly opts: BrowseReaderOptions = {},
     /** The view whose reads this reader reports ({@link forView}); none for a shared reader. */
-    private readonly view?: number,
+    private readonly view?: string,
     caches?: ReaderCaches,
   ) {
     this.caches = caches ?? { offsetIndex: null, objectsByOid: new ObjectLru(), objectsByAddr: new ObjectLru(), copyOf: new Map() }
@@ -298,12 +299,12 @@ export class BrowseReader {
    * returns is reported to `onRead` with `view`, so a page's trust summary names the places that
    * served it, and a view the viewer left (a history walk still running) is told apart.
    */
-  forView(view: number): BrowseReader {
+  forView(view: string): BrowseReader {
     return new BrowseReader(this.locator, this.packs, this.opts, view, this.caches)
   }
 
   private noteRead(packRef: number): void {
-    if (this.view !== undefined) this.opts.onRead?.(packRef, this.view)
+    if (this.view !== undefined) this.opts.onRead?.(packRef, this.copyOf.get(packRef), this.view)
   }
 
   /**
