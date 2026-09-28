@@ -36,11 +36,23 @@ export function showsOwnRefMoves(repo: RepoRef, refs: readonly ResolvedRef[]): b
   if (tips === undefined) return true
   for (const [refName, { oid, until }] of tips) {
     const ref = refs.find((r) => r.refName === refName)
-    const shown = ref === undefined ? /^0+$/.test(oid) : tipOidOf(ref) === oid
+    // A deleted ref is absent or unborn; a diverged one names more than one head, so any read of
+    // it that knows the move is as good as this tab can expect.
+    const shown =
+      ref === undefined || ref.state.state === 'unborn'
+        ? /^0+$/.test(oid)
+        : ref.state.state === 'diverged'
+          ? ref.state.heads.some((h) => h.oid === oid)
+          : tipOidOf(ref) === oid
     if (shown || Date.now() > until) tips.delete(refName)
   }
   if (tips.size === 0) expected.delete(repo.repoId)
   return tips.size === 0
+}
+
+/** Stop waiting for `repo`'s ref moves (a full run of re-reads did not see them). */
+export function forgetOwnRefMoves(repo: RepoRef): void {
+  expected.delete(repo.repoId)
 }
 
 /** Test hook: forget every expectation. */

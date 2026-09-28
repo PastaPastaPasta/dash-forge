@@ -119,8 +119,14 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     [head?.key ?? '', head?.oid ?? '', sides?.key ?? ''],
     { enabled: sides !== null && head !== null },
   )
+  // Cleared when the head changes; filled once its subject is read. Readers replaced under the
+  // same head re-read the subject but never blank the field meanwhile.
+  const headId = head === null ? '' : `${head.key}@${head.oid}`
   useEffect(() => {
-    if (!titleTouched) setTitle(subject.data ?? '')
+    if (!titleTouched) setTitle('')
+  }, [headId, titleTouched])
+  useEffect(() => {
+    if (!titleTouched && subject.data) setTitle(subject.data)
   }, [subject.data, titleTouched])
 
   const input =

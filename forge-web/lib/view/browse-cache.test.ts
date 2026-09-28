@@ -77,6 +77,9 @@ function repoSdk() {
   const manifests: Record<string, unknown>[] = []
   const artifacts = new Map<string, Uint8Array>()
   const queries: string[] = []
+  /** Manifests a node a block behind has not seen (the newest ones). */
+  let unseen = 0
+  let chunksFail = false
   const sdk = {
     documents: {
       query: (q: { documentTypeName: string; where?: readonly (readonly unknown[])[]; limit?: number; startAfter?: string }) => {
@@ -85,7 +88,7 @@ function repoSdk() {
           return Promise.resolve(new Map([['m0', { $id: 'm0', $ownerId: 'owner', identityId: 'owner' }]]))
         }
         if (q.documentTypeName === DOC.packManifest) {
-          let rows = [...manifests].sort((a, b) => (b['$createdAt'] as number) - (a['$createdAt'] as number))
+          let rows = [...manifests].sort((a, b) => (b['$createdAt'] as number) - (a['$createdAt'] as number)).slice(unseen)
           if (q.startAfter !== undefined) {
             const at = rows.findIndex((d) => d['$id'] === q.startAfter)
             rows = at < 0 ? [] : rows.slice(at + 1)
@@ -94,6 +97,7 @@ function repoSdk() {
           return Promise.resolve(new Map(rows.map((d) => [String(d['$id']), d])))
         }
         if (q.documentTypeName === DOC.chunk) {
+          if (chunksFail) return Promise.reject(new Error('node unavailable'))
           const packClause = (q.where ?? []).find((w) => w[0] === 'packHash')
           const seqClause = (q.where ?? []).find((w) => w[0] === 'seq')
           const bytes = artifacts.get(base64ToHex(String(packClause?.[2] ?? '')))
@@ -120,6 +124,10 @@ function repoSdk() {
     },
     manifestReads: () => queries.filter((t) => t === DOC.packManifest).length,
     reset: () => void (queries.length = 0),
+    /** From now on, answer as a node that has not seen the newest `n` manifests. */
+    behind: (n: number) => void (unseen = n),
+    /** Fail every `chunk` query (an index fragment that will not load). */
+    failChunks: (on: boolean) => void (chunksFail = on),
   }
 }
 
@@ -205,43 +213,90 @@ describe('browse cache: a push the cached context did not see (L-08)', () => {
   })
 })
 
-describe('browse cache: version and generation', () => {
-  it('a revalidation that finds a new pack list replaces the context and announces it', async () => {
+/** Wait until the background revalidation behind the cache has settled. */
+async function settledRefresh(repo: { manifestReads: () => number }, reads: number): Promise<void> {
+  await vi.waitFor(() => expect(repo.manifestReads()).toBe(reads))
+  for (let i = 0; i < 20; i++) await Promise.resolve()
+  await new Promise((r) => setTimeout(r, 0))
+}
+
+describe('browse cache: versions and generations', () => {
+  it("a revalidation that finds someone else's push replaces the context quietly: open views are not remounted", async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     const repo = repoSdk()
     repo.land(await push('a\n', 0, 100))
     const before = await readerOf(repo.sdk)
+    const gen = browseGeneration(REPO.repoId)
+    repo.land(await push('b\n', 1, 200))
+    vi.setSystemTime(Date.now() + 31_000)
+    repo.reset()
+    // Stale-while-revalidate: the old state is served, the refresh runs behind it.
+    expect(await readerOf(repo.sdk)).toBe(before)
+    await settledRefresh(repo, 1)
+    expect(browseGeneration(REPO.repoId)).toBe(gen)
+    // The next view gets the newer context.
+    expect(await readerOf(repo.sdk)).not.toBe(before)
+  })
+
+  it('a revalidation that finds the same pack list keeps the warm reader', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const repo = repoSdk()
+    repo.land(await push('a\n', 0, 100))
+    const before = await readerOf(repo.sdk)
+    vi.setSystemTime(Date.now() + 31_000)
+    repo.reset()
+    await readerOf(repo.sdk)
+    await settledRefresh(repo, 1)
+    expect(await readerOf(repo.sdk)).toBe(before)
+  })
+
+  it('a lagging node that answers with an older pack list never rolls the cache back', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const repo = repoSdk()
+    repo.land(await push('a\n', 0, 100))
+    const second = await push('b\n', 1, 200)
+    repo.land(second)
+    const current = await readerOf(repo.sdk)
+    // Every node from now on is a block behind: it has not seen the second push.
+    repo.behind(2)
+    vi.setSystemTime(Date.now() + 31_000)
+    repo.reset()
+    await readerOf(repo.sdk)
+    await settledRefresh(repo, 1)
+    expect(await readerOf(repo.sdk)).toBe(current)
+    expect(text((await current.readObject(second.oid)).bytes)).toBe('b\n')
+  })
+
+  it('an index fragment that failed to load once is picked up by the next revalidation (same pack list)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const repo = repoSdk()
+    repo.land(await push('a\n', 0, 100))
+    repo.failChunks(true)
+    expect((await loadBrowseContextCached(repo.sdk, REPO)).kind).toBe('unindexed')
+    repo.failChunks(false)
+    vi.setSystemTime(Date.now() + 31_000)
+    repo.reset()
+    await loadBrowseContextCached(repo.sdk, REPO)
+    await settledRefresh(repo, 1)
+    expect((await loadBrowseContextCached(repo.sdk, REPO)).kind).toBe('ready')
+  })
+
+  it('a miss that finds a newer pack list announces it once, so the other views move too', async () => {
+    const repo = repoSdk()
+    repo.land(await push('a\n', 0, 100))
+    const stale = await readerOf(repo.sdk)
+    const second = await push('b\n', 1, 200)
+    repo.land(second)
     const gen = browseGeneration(REPO.repoId)
     const seen: number[] = []
     const off = subscribeBrowseGeneration(() => seen.push(browseGeneration(REPO.repoId)))
     try {
-      repo.land(await push('b\n', 1, 200))
-      vi.setSystemTime(Date.now() + 31_000)
-      // Stale-while-revalidate: the old state is served, the refresh runs behind it.
-      expect(await readerOf(repo.sdk)).toBe(before)
-      await vi.waitFor(() => expect(browseGeneration(REPO.repoId)).toBe(gen + 1))
+      await stale.readObject(second.oid)
+      await stale.readObject(second.oid)
       expect(seen).toEqual([gen + 1])
-      const after = await readerOf(repo.sdk)
-      expect(after).not.toBe(before)
     } finally {
       off()
     }
-  })
-
-  it('a revalidation that finds the same pack list keeps the warm reader and announces nothing', async () => {
-    vi.useFakeTimers({ toFake: ['Date'] })
-    const repo = repoSdk()
-    repo.land(await push('a\n', 0, 100))
-    const before = await readerOf(repo.sdk)
-    const gen = browseGeneration(REPO.repoId)
-    vi.setSystemTime(Date.now() + 31_000)
-    repo.reset()
-    await readerOf(repo.sdk)
-    await vi.waitFor(() => expect(repo.manifestReads()).toBe(1))
-    // Settle the background refresh.
-    await new Promise((r) => setTimeout(r, 0))
-    expect(browseGeneration(REPO.repoId)).toBe(gen)
-    expect(await readerOf(repo.sdk)).toBe(before)
   })
 
   it('invalidateBrowseContext ("Try again", a reload) drops the context and announces it', async () => {
@@ -268,8 +323,7 @@ describe('browse cache: version and generation', () => {
     await readerOf(repo.sdk)
     repoContentWritten({ ...REPO, repoId: 'OTHER' })
     expect(peekBrowseState(REPO.repoId)).toBeDefined()
-  })
-})
+  })})
 
 describe('browse cache: request budget on the happy path', () => {
   it('a warm hit and a read the context holds cost no request at all', async () => {

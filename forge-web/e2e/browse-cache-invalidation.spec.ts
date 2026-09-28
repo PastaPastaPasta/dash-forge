@@ -27,7 +27,7 @@ import { countDocumentQueries, idFile, idOrEmpty, shot, signedIn, waitForRepoRes
 test.skip(process.env['E2E_WRITE'] !== '1', 'live devnet writes: set E2E_WRITE=1')
 test.skip(!process.env['E2E_IDENTITY_DIR'], "set E2E_IDENTITY_DIR to this spec's own identities (never the shared fixtures)")
 test.skip(!process.env['E2E_BIN_DIR'], 'set E2E_BIN_DIR to a directory holding dg and git-remote-dash')
-test.skip(!!process.env['E2E_IDENTITY_DIR'] && !existsSync(idFile('COLLAB')), 'OWNER / COLLAB identity files not found')
+test.skip(!!process.env['E2E_IDENTITY_DIR'] && (!existsSync(idFile('OWNER')) || !existsSync(idFile('COLLAB'))), 'OWNER / COLLAB identity files not found')
 test.describe.configure({ mode: 'serial', timeout: 480_000 })
 
 const BIN = process.env['E2E_BIN_DIR'] ?? ''
@@ -82,7 +82,7 @@ function repoPath(path: string, extra = ''): string {
 
 /** A tab link inside the repo header: client-side navigation, the browse cache is kept. */
 async function tab(page: Page, name: 'Code' | 'Pull requests'): Promise<void> {
-  await page.getByRole('navigation').getByRole('link', { name: new RegExp(`^${name}`) }).first().click()
+  await page.getByRole('navigation', { name: 'Repository' }).getByRole('link', { name: new RegExp(`^${name}`) }).first().click()
 }
 
 let page: Page
@@ -191,4 +191,50 @@ test('g2. a browser merge, then the Code tab shows the new tip without a reload 
   await expect(page.getByRole('region', { name: 'README' })).toBeVisible()
   await expect(page.getByText(/did not land|not in locator/)).toHaveCount(0)
   await shot(page, 'g4-05-code-tab-after-merge')
+})
+
+test('g3. a merge commit built in the browser (a new pack), then the Code tab reads the new commit (L-09)', async () => {
+  test.skip(secondHead === '', 'needs g1')
+  // main has moved on (g2's fast-forward) since docs/checklist branched: merging it needs a
+  // merge commit, whose objects exist only in the pack this merge stores — the object no
+  // context resolved before the merge can hold.
+  await page.evaluate(() => {
+    const key = 'forge.prefs.v1'
+    const prefs = JSON.parse(window.localStorage.getItem(key) ?? '{}') as Record<string, unknown>
+    window.localStorage.setItem(key, JSON.stringify({ ...prefs, mergeName: 'Forge G4 E2E', mergeEmail: 'g4@e2e.forge.invalid' }))
+    window.dispatchEvent(new StorageEvent('storage', { key }))
+  })
+  await tab(page, 'Pull requests')
+  await page.getByRole('link', { name: /new pull request/i }).click()
+  await page.waitForURL(/\/repo\/pulls\/new/)
+  const head = page.locator('#pr-head')
+  await expect(head.locator('option', { hasText: 'docs/checklist' })).toBeAttached({ timeout: 90_000 })
+  await head.selectOption({ label: 'docs/checklist' })
+  await expect(page.getByLabel('Title', { exact: true })).toHaveValue(SECOND, { timeout: 120_000 })
+  await page.getByRole('button', { name: /create pull request/i }).click()
+  await page.waitForURL(/\/repo\/pull\/\?.*number=\d+/, { timeout: 180_000 })
+
+  await expect(page.getByTestId('merge-button-state')).toHaveAttribute('data-state', 'merge-commit', { timeout: 180_000 })
+  await page.getByRole('button', { name: 'Create merge commit and merge' }).click()
+  const ask = page.getByRole('dialog', { name: /Store the merge pack .* on Platform\?/ })
+  await expect(ask).toBeVisible({ timeout: 120_000 })
+  await ask.getByRole('button', { name: /sign & store on platform/i }).click()
+  const steps = page.getByRole('list', { name: 'Merge steps' })
+  await expect(steps.locator('[data-step="ref"]')).toHaveAttribute('data-state', 'done', { timeout: 300_000 })
+  await page.getByTestId('merge-panel').scrollIntoViewIfNeeded()
+  await shot(page, 'g4-06-merge-commit-done')
+
+  // The merge commit's oid, from the panel ("Base branch moved to <oid>").
+  const moved = page.getByText(/Base branch moved to/)
+  await expect(moved).toBeVisible({ timeout: 120_000 })
+  const mergeTip = ((await moved.getByRole('button').first().getAttribute('title')) ?? '').split('\n')[0] ?? ''
+  expect(mergeTip).toMatch(/^[0-9a-f]{40}$/)
+
+  await tab(page, 'Code')
+  const refBar = page.getByTestId('commit-count').locator('..')
+  await expect(refBar.getByRole('button', { name: new RegExp(`^${mergeTip.slice(0, 7)}\\b`) })).toBeVisible({ timeout: 120_000 })
+  await expect(page.getByRole('link', { name: /CHECKLIST\.md/ }).first()).toBeVisible({ timeout: 60_000 })
+  await expect(page.getByRole('link', { name: /greeting\.txt/ }).first()).toBeVisible()
+  await expect(page.getByText(/did not land|not in locator/)).toHaveCount(0)
+  await shot(page, 'g4-07-code-tab-after-merge-commit')
 })

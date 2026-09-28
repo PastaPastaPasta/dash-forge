@@ -8,7 +8,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { repoContentWritten, type RepoRef, type ResolvedRef } from '../repo'
-import { OWN_MOVE_WAIT_MS, awaitingOwnRefMoves, resetOwnRefMoves, showsOwnRefMoves } from './own-ref-moves'
+import { OWN_MOVE_WAIT_MS, awaitingOwnRefMoves, forgetOwnRefMoves, resetOwnRefMoves, showsOwnRefMoves } from './own-ref-moves'
 import { retryUntil } from './retry'
 
 const REPO: RepoRef = { forge: { core: 'C', collab: 'L', group: 'G' }, repoId: 'MOVES', ownerId: 'o', name: 'n', visibility: 'public' }
@@ -33,6 +33,25 @@ describe('own ref moves (L-09)', () => {
     expect(showsOwnRefMoves({ ...REPO, repoId: 'OTHER' }, [main(OLD)])).toBe(true)
     expect(showsOwnRefMoves(REPO, [main(NEW)])).toBe(true)
     expect(awaitingOwnRefMoves()).toBe(false)
+  })
+
+  it('a diverged ref counts as shown once one of its heads is the move; a deletion once it reads unborn', () => {
+    repoContentWritten(REPO, { refName: 'refs/heads/main', newOid: NEW })
+    const diverged: ResolvedRef = {
+      refName: 'refs/heads/main',
+      refNameHash: 'x',
+      state: { state: 'diverged', heads: [{ oid: OLD, author: 'a', createdAt: 1 }, { oid: NEW, author: 'b', createdAt: 2 }] } as never,
+    }
+    expect(showsOwnRefMoves(REPO, [diverged])).toBe(true)
+    repoContentWritten(REPO, { refName: 'refs/heads/gone', newOid: '0'.repeat(40) })
+    expect(showsOwnRefMoves(REPO, [{ refName: 'refs/heads/gone', refNameHash: 'y', state: { state: 'unborn' } }])).toBe(true)
+  })
+
+  it('forgetOwnRefMoves drops what a full run of re-reads never saw', () => {
+    repoContentWritten(REPO, { refName: 'refs/heads/main', newOid: NEW })
+    forgetOwnRefMoves(REPO)
+    expect(awaitingOwnRefMoves()).toBe(false)
+    expect(showsOwnRefMoves(REPO, [main(OLD)])).toBe(true)
   })
 
   it('lapses, so a ref another writer moved since is taken as it is', () => {
