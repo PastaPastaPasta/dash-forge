@@ -387,7 +387,10 @@ export class BrowseReader {
     if (entry === null) {
       const fresher = await this.opts.onMiss?.(oidHex)
       // The retry keeps this read's limits (a README image stays capped on the fresher reader).
-      if (fresher != null && fresher !== this && fresher.locate(oidHex) !== null) return fresher.readBounded(oidHex, limits)
+      // The fresher reader reads for this reader's view (its places still count for the page).
+      if (fresher != null && fresher !== this && fresher.locate(oidHex) !== null) {
+        return (this.view === undefined ? fresher : fresher.forView(this.view)).readBounded(oidHex, limits)
+      }
       throw this.opts.missingObject?.(oidHex) ?? new Error(`object not in locator: ${oidHex}`)
     }
 
@@ -561,8 +564,9 @@ export class BrowseReader {
   private async decodeByOid(oidHex: string, limits: Limits): Promise<GitObject> {
     const e = this.locator.lookup(hexToBytes(oidHex))
     if (e === null) throw new Error(`REF_DELTA base not in locator: ${oidHex}`)
+    const base = await this.decodeEntry(e, limits.base, limits)
     this.noteRead(e.packRef)
-    return this.decodeEntry(e, limits.base, limits)
+    return base
   }
 
   /**

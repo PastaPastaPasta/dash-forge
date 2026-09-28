@@ -253,13 +253,16 @@ const COVERED_MAX = 4 * MAX_THREADS
 
 /**
  * A state feed's covered record, bounded: thread id → when it was covered (ms; `0` for a thread
- * covered before records existed), or a failure count below zero. The oldest go first.
+ * covered before records existed), or a failure count below zero. Threads the feed watches now
+ * are always kept; of the others (watched before), the most recently covered.
  */
-function pruneCovered(covered: Record<string, number>, now: number): Record<string, number> {
+function pruneCovered(covered: Record<string, number>, watched: readonly ThreadSub[]): Record<string, number> {
   const rows = Object.entries(covered)
   if (rows.length <= COVERED_MAX) return covered
-  // Pending retries (below zero) sort as newest: they are still being tried.
-  return Object.fromEntries(rows.sort((a, b) => (b[1] < 0 ? now : b[1]) - (a[1] < 0 ? now : a[1])).slice(0, COVERED_MAX))
+  const now = new Set(watched.map((t) => t.id))
+  const kept = rows.filter(([id]) => now.has(id))
+  const others = rows.filter(([id]) => !now.has(id)).sort((a, b) => b[1] - a[1])
+  return Object.fromEntries([...kept, ...others.slice(0, Math.max(0, COVERED_MAX - kept.length))])
 }
 
 /** A stored cursor (an earlier build stored a bare timestamp). */
@@ -540,6 +543,7 @@ export async function pollOnce(
   let added = 0
   let failed = 0
   let backfills = 0
+  let backfillsFailed = 0
   const store = async (items: readonly InboxItem[]): Promise<void> => {
     for (const it of items) {
       if (existing.has(it.id)) continue
@@ -558,9 +562,10 @@ export async function pollOnce(
     if (f.kind === 'state') {
       const coverKey = `${p}covered:${fk}`
       // The threads this feed has answered for, kept after a thread leaves the watch set (it is
-      // not re-read when it returns). A feed read by an earlier build has no record: it covered
-      // every thread it watched then, so its current threads are taken as covered (an upgrade
-      // re-reads nothing, and never brings back pruned notifications as unread).
+      // not re-read when it returns). A feed read by an earlier build has no record: its current
+      // threads are taken as covered, so an upgrade re-reads nothing and never brings back pruned
+      // notifications as unread. The price: a thread that joined just before the upgrade, after
+      // the feed passed its events, is not backfilled (as before this fix).
       const record = await idbGet<Record<string, number>>('inbox', coverKey)
       const covered: Record<string, number> = record ?? (cursor === start ? {} : Object.fromEntries(f.threads.map((t) => [t.id, 0])))
       let changed = record === undefined && Object.keys(covered).length > 0
@@ -576,7 +581,7 @@ export async function pollOnce(
               await store(toItems({ ...f, threads: [t] }, (await queryDocumentsWithProof(sdk, q)).documents, me))
             } catch {
               // Retried next poll; given up after BACKFILL_TRIES (a count below zero).
-              failed++
+              backfillsFailed++
               const tries = (covered[t.id] ?? 0) - 1
               covered[t.id] = tries <= -BACKFILL_TRIES ? now : tries
               changed = true
@@ -587,7 +592,7 @@ export async function pollOnce(
           changed = true
         }
       }
-      if (changed) await idbPut('inbox', coverKey, pruneCovered(covered, now))
+      if (changed) await idbPut('inbox', coverKey, pruneCovered(covered, f.threads))
     }
     let docs: PlainDocument[]
     try {
@@ -603,5 +608,5 @@ export async function pollOnce(
   if (added > 0) {
     for (const id of itemsToDrop(await loadItems(network, me))) await idbDelete('inbox', `${p}item:${id}`)
   }
-  return { added, feedsRead: round.length - failed, feedsTotal: feeds.length, failed, subs }
+  return { added, feedsRead: round.length - failed, feedsTotal: feeds.length, failed: failed + backfillsFailed, subs }
 }

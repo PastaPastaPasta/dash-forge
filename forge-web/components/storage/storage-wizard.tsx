@@ -378,6 +378,8 @@ export function DefaultPolicy({ config, storable, save }: { config: StorageConfi
   // Written, and the form shows it, but the settings have not been re-read yet.
   const saving = saved !== null && draft.policy !== null && samePolicy(saved, draft.policy) && draft.state === 'changed'
   const stored = saved !== null && current !== null && samePolicy(saved, current) && draft.state === 'unchanged'
+  // Landed: the form follows the stored default again (a rename or a new first profile changes it).
+  if (stored && edits !== null) setEdits(null)
   const [status, tone] =
     stored
       ? ['Saved.', 'text-verify-700 dark:text-verify-400']

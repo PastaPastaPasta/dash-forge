@@ -422,6 +422,16 @@ describe('storeArtifact', () => {
     expect(new Headers(pub?.[1]?.headers).get('authorization')).toBeNull()
   })
 
+  it('"one place": your own storage confirmed, a Platform target after it is neither asked for nor charged', async () => {
+    const net = fakeNetwork()
+    vi.stubGlobal('fetch', net.fetchMock)
+    const platform: StorageProfile = { name: PLATFORM_PROFILE, settings: { kind: 'platform', provider: 'platform' }, secrets: {} }
+    const confirm = vi.fn(async () => true)
+    const stored = await storeArtifact(SDK, AUTH, REPO, bytes, { policy: policyFor(['r2-main', PLATFORM_PROFILE], 'one'), profiles: [S3, platform], confirmPlatform: confirm })
+    expect(confirm).not.toHaveBeenCalled()
+    expect(stored.storage).toBe(1)
+  })
+
   it("never uploads a private repo's unsealed bytes; a sealed pack goes through", async () => {
     const net = fakeNetwork()
     vi.stubGlobal('fetch', net.fetchMock)

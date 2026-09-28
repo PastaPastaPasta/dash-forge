@@ -9,7 +9,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { EMPTY_STORAGE_CONFIG, policyFor, withFirstDefault, withProfile, type StorageConfig, type StorageProfile } from '@/lib/storage'
+import { EMPTY_STORAGE_CONFIG, policyFor, withFirstDefault, withProfile, withRenamedProfile, type StorageConfig, type StorageProfile } from '@/lib/storage'
 import { DefaultPolicy } from './storage-wizard'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -112,6 +112,18 @@ describe('DefaultPolicy (L-10)', () => {
     // Unticking the only place: back to the explanation, and Save stays disabled.
     await act(async () => checkbox('minio-e2e').click())
     expect(status()).toMatch(/Tick at least one place/)
+    expect(saveButton().disabled).toBe(true)
+  })
+
+  it('follows the stored default after a save lands (a later rename shows ticked)', async () => {
+    const { reread, setConfig } = await mount(withProfile(EMPTY_STORAGE_CONFIG, MINIO))
+    await act(async () => checkbox('minio-e2e').click())
+    await act(async () => saveButton().click())
+    await reread()
+    const renamed = withRenamedProfile({ ...withProfile(EMPTY_STORAGE_CONFIG, MINIO), defaultPolicy: policyFor(['minio-e2e'], 'one') }, 'minio-e2e', { ...MINIO, name: 'rustfs' })
+    await setConfig(renamed)
+    expect(checkbox('rustfs').checked).toBe(true)
+    expect(status()).not.toMatch(/Tick at least one place/)
     expect(saveButton().disabled).toBe(true)
   })
 
