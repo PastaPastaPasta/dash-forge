@@ -20,7 +20,9 @@ const OVERLAP_SECS: u64 = 600;
 pub struct SyncState {
     /// The source this state belongs to (`github.com/owner/repo`, `gitlab.com/group/project`).
     pub source: String,
-    /// The destination repo id.
+    /// The destination: the repo id and the forge-collab contract its collaboration documents
+    /// live in ([`destination`]). A re-registered forge-collab starts empty, so a cursor saved
+    /// against the old one must not narrow what the next run reads (D-918).
     pub repo_id: String,
     /// Unix seconds when the last successful run started.
     pub last_sync_started: Option<u64>,
@@ -104,6 +106,17 @@ pub fn scope(source: &str, classes: crate::source::Classes, limit: usize) -> Str
     )
 }
 
+/// The destination key a state file is saved against: the repo id and the forge-collab
+/// contract id (`<repoId>@<collab>`). An empty repo id (a repo this run will create) stays
+/// empty, so no saved state ever matches it.
+pub fn destination(repo_id: &str, collab_contract: &str) -> String {
+    if repo_id.is_empty() {
+        String::new()
+    } else {
+        format!("{repo_id}@{collab_contract}")
+    }
+}
+
 /// Now, unix seconds.
 pub fn now() -> u64 {
     std::time::SystemTime::now()
@@ -154,6 +167,30 @@ mod tests {
         let now = scope("github.com/o/r", all, 0);
         assert!(now.ends_with(" v2"), "{now}");
         assert!(SyncState::load(Some(&path), &now, "R1").since().is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// D-918: after forge-collab is re-registered, the collab documents of every repo are gone
+    /// from the contract the importer now writes to. A state file saved against the old contract
+    /// must not narrow the next run to "changed since": it is a full scan, which re-imports the
+    /// issues and PRs into the new contract.
+    #[test]
+    fn a_state_saved_against_another_collab_contract_is_a_full_scan() {
+        let dir = std::env::temp_dir().join(format!("forge-import-collab-{}", std::process::id()));
+        let path = dir.join("s.json");
+        let before = destination("R1", "CollabOld");
+        SyncState::load(Some(&path), "github.com/o/r", &before)
+            .save(1_000_000)
+            .unwrap();
+        assert!(SyncState::load(Some(&path), "github.com/o/r", &before)
+            .since()
+            .is_some());
+        let after = destination("R1", "CollabNew");
+        assert!(SyncState::load(Some(&path), "github.com/o/r", &after)
+            .since()
+            .is_none());
+        // A repo the run will create has no destination yet: nothing matches it.
+        assert_eq!(destination("", "CollabNew"), "");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
