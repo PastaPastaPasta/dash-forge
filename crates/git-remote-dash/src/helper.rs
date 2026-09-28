@@ -1382,8 +1382,13 @@ async fn missing_index(
             replication: recorded_replication(ctx, job).await,
             externals,
         }),
+        // Unknown whether it is indexed: say so with the fix (`dg repo reindex` checks again and
+        // publishes only what is missing) rather than let the retry pass in silence.
         Err(e) => {
-            tracing::info!(error = %e, "could not check the recorded pack's index");
+            index_skipped(
+                ctx,
+                &reindex_skip(format!("could not check the recorded pack's index: {e:#}")),
+            );
             None
         }
     }
