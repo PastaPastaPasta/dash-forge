@@ -525,8 +525,13 @@ impl PlatformClient {
             let contract =
                 retry_transient_read("fetch contract", || DataContract::fetch(&self.sdk, id))
                     .await
-                    .map_err(|e| Error::Platform(format!("fetching contract {contract_id}: {e}")))?
-                    .ok_or(Error::NotFound)?;
+                    .map_err(|e| {
+                        self.read_error(contract_id, &e, format!("fetching contract {contract_id}"))
+                    })?
+                    .ok_or_else(|| {
+                        self.forge_contract_missing(contract_id, "Platform proved it absent")
+                            .unwrap_or(Error::NotFound)
+                    })?;
             self.store_contract(contract_id, &contract);
             contract
         };
@@ -620,6 +625,33 @@ impl PlatformClient {
         .write(&path);
     }
 
+    /// A failed read of `contract_id` as a crate error: [`Error::ContractsMissing`] when
+    /// Platform refused it because that contract, one of this build's forge contracts, does
+    /// not exist on the network (Drive's `contract not found`: a devnet that was reset);
+    /// otherwise the SDK's error under `what`.
+    fn read_error(&self, contract_id: &str, e: &dash_sdk::Error, what: String) -> Error {
+        is_contract_missing(e)
+            .then(|| self.forge_contract_missing(contract_id, &e.to_string()))
+            .flatten()
+            .unwrap_or_else(|| Error::Platform(format!("{what}: {e}")))
+    }
+
+    /// [`Error::ContractsMissing`] for `contract_id` when it is one of the forge contracts this
+    /// build records for the network; `None` for any other contract (a repository's own).
+    fn forge_contract_missing(&self, contract_id: &str, detail: &str) -> Option<Error> {
+        let forge = self.target.v2.as_ref()?;
+        if contract_id != forge.core && contract_id != forge.collab {
+            return None;
+        }
+        let network = &self.target.network;
+        Some(Error::ContractsMissing {
+            network: network
+                .devnet_name()
+                .map_or_else(|| network.key(), |name| format!("devnet {name}")),
+            detail: format!("contract {contract_id}: {detail}"),
+        })
+    }
+
     /// Fetch an identity by base58 id.
     pub async fn fetch_identity(&self, identity_id: &str) -> Result<LoadedIdentity> {
         let id = parse_id(identity_id, "identity id")?;
@@ -685,7 +717,9 @@ impl PlatformClient {
             Document::fetch(&self.sdk, query.clone())
         })
         .await
-        .map_err(|e| Error::Platform(format!("fetching document {document_id}: {e}")))?;
+        .map_err(|e| {
+            self.read_error(&contract.id(), &e, format!("fetching document {document_id}"))
+        })?;
         Ok(found.as_ref().map(FetchedDocument::from_document))
     }
 
@@ -784,7 +818,9 @@ impl PlatformClient {
             Document::fetch_many(&self.sdk, query.clone())
         })
         .await
-        .map_err(|e| Error::Platform(format!("querying {document_type} documents: {e}")))?;
+        .map_err(|e| {
+            self.read_error(&contract.id(), &e, format!("querying {document_type} documents"))
+        })?;
 
         Ok(documents
             .into_iter()
@@ -1070,7 +1106,9 @@ impl PlatformClient {
             DocumentCount::fetch(&self.sdk, query.clone())
         })
         .await
-        .map_err(|e| Error::Platform(format!("counting {document_type} documents: {e}")))?;
+        .map_err(|e| {
+            self.read_error(&contract.id(), &e, format!("counting {document_type} documents"))
+        })?;
         Ok(count.map_or(0, |c| c.0))
     }
 
@@ -2850,6 +2888,20 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
 /// giving up because it banned every node it tried. Both are transient: a ban lapses after
 /// a minute (the SDK's default base ban period), so a backed-off retry does not just ask
 /// the same dead nodes again.
+/// Drive refused a read because the contract it names does not exist: gRPC `InvalidArgument`
+/// carrying `QuerySyntaxError::DataContractNotFound` ("contract not found error: …"). An answer,
+/// not a flake: no node has the contract.
+fn is_contract_missing(e: &dash_sdk::Error) -> bool {
+    use dash_sdk::dapi_client::transport::TransportError;
+    use dash_sdk::dapi_client::DapiClientError;
+    matches!(
+        e,
+        dash_sdk::Error::DapiClientError(DapiClientError::Transport(TransportError::Grpc(s)))
+            if s.code() == dapi_grpc::tonic::Code::InvalidArgument
+                && s.message().contains("contract not found")
+    )
+}
+
 fn is_transient_node_error(e: &dash_sdk::Error) -> bool {
     match e {
         dash_sdk::Error::NoAvailableAddressesToRetry(_) => true,
@@ -3785,6 +3837,40 @@ mod tests {
         )));
         assert!(!is_transient_node_error(&dash_sdk::Error::Config(
             "bad".into()
+        )));
+    }
+
+    #[test]
+    fn drives_contract_not_found_refusal_is_recognized() {
+        use dash_sdk::dapi_client::transport::TransportError;
+        use dash_sdk::dapi_client::DapiClientError;
+        let grpc = |s: dapi_grpc::tonic::Status| {
+            dash_sdk::Error::DapiClientError(DapiClientError::Transport(TransportError::Grpc(s)))
+        };
+        // What a reset devnet answers a document read against a contract it no longer has.
+        let reset = grpc(dapi_grpc::tonic::Status::invalid_argument(
+            "contract not found error: contract not found when querying from value with contract info",
+        ));
+        assert!(super::is_contract_missing(&reset));
+        assert!(
+            reset.to_string().contains(
+                "code: 'Client specified an invalid argument', message: \"contract not found error"
+            ),
+            "{reset}"
+        );
+        assert!(!is_transient_node_error(&reset), "an answer, not a flake");
+        // Document query v1's wording.
+        assert!(super::is_contract_missing(&grpc(
+            dapi_grpc::tonic::Status::invalid_argument(
+                "contract not found error: contract not found for a document query"
+            )
+        )));
+        // Other refusals and outages are not it.
+        assert!(!super::is_contract_missing(&grpc(
+            dapi_grpc::tonic::Status::invalid_argument("bad where clause")
+        )));
+        assert!(!super::is_contract_missing(&grpc(
+            dapi_grpc::tonic::Status::unavailable("contract not found")
         )));
     }
 

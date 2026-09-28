@@ -8,6 +8,7 @@
 import type { ReactNode } from 'react'
 import { AppHeader } from '@/components/app-header'
 import { AppFooter } from '@/components/app-footer'
+import { ContractsMissingState, useContractsMissing } from '@/components/ui/contracts-missing'
 import { LowFundsBanner } from '@/components/low-funds-banner'
 import { LoginModal } from '@/components/login-modal'
 import { PlatformBusy } from '@/components/platform-busy'
@@ -23,6 +24,9 @@ export function AppShell({
   /** Use the full 1280px column (repo pages) vs a narrower reading column. */
   wide?: boolean
 }): JSX.Element {
+  // The network does not have this build's contracts (a devnet reset): one state for the whole
+  // app, not a read error in every view.
+  const contractsMissing = useContractsMissing()
   return (
     <div className="flex min-h-screen flex-col">
       {/* First Tab stop: skip the header's controls (WCAG 2.4.1). */}
@@ -39,7 +43,7 @@ export function AppShell({
         tabIndex={-1}
         className={`mx-auto w-full flex-1 px-4 py-6 outline-none sm:px-6 ${wide ? 'max-w-[1280px]' : 'max-w-[1080px]'}`}
       >
-        {children}
+        {contractsMissing !== null ? <ContractsMissingState detail={contractsMissing} /> : children}
       </main>
       <AppFooter />
       <LoginModal />

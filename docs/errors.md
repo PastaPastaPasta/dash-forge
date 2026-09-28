@@ -354,6 +354,10 @@ Fix: check your connection and run the command again after a minute. `dg doctor`
 
 Fix: use a network with a deployment. For `dg`, pass `--network devnet --devnet-name moutai` (`dg auth new` and `dg auth login` record it as the default). For `git clone` / `git push`, the helper takes the network from `DASH_FORGE_NETWORK`, then git config `dash.network` / `dash.devnetName`, then the network `dg` recorded, so set one of those: `git config --global dash.network devnet && git config --global dash.devnetName moutai`, or `git clone -c dash.network=devnet -c dash.devnetName=moutai dash://…` for one clone. See [the mainnet runbook](mainnet-runbook.md).
 
+`forge contracts not found on <network>` is also E702. This build records forge-v2 contracts for the network, but the network does not have them: Platform proved forge-core or forge-collab absent, or refused a read with `contract not found`. On a devnet this means it was reset, which removes every contract on it, and Forge has not been deployed on it again yet. On testnet or mainnet it means the build's deployment record is wrong. Running the command again cannot help.
+
+Fix: update `dg` and `git-remote-dash` to a release made after Forge was deployed on the network again. `dg doctor` shows the network and the contract ids in use. Check that the network is the one you meant: `--network` for `dg`; git config `dash.network` / `dash.devnetName` or `DASH_FORGE_NETWORK` for the helper.
+
 ## E703
 
 **Incomplete read.** A read that has to be complete (every ref update, every event) could not be proven complete. The data was refused rather than folded partially, because a partial history can resolve refs differently from a complete one.

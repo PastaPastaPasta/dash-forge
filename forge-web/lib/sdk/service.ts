@@ -41,6 +41,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { NETWORKS, type Network } from '../constants'
 import { dapiBudget, installDapiFetchGate } from './budget'
+import { isContractMissingError } from './contract-missing'
 import { loadContractSnapshots } from './contract-seed'
 import { followSdkVersion, setStaleContractHandler } from './query'
 import { compileWasm, onWasmProgress, type DownloadProgress } from './wasm-fetch'
@@ -130,10 +131,12 @@ export function isStaleConnectionError(e: unknown): boolean {
  * A read failed because Platform could not be reached (a stale connection, a transport error,
  * a timeout, a node that is down or rate-limited), not because of what it asked or what came
  * back. A proof or decode failure is not one of these: it must surface, never be papered over
- * with content read earlier.
+ * with content read earlier. Nor is a contract the network does not have.
  */
 export function isUnreachableError(e: unknown): boolean {
   if (isStaleConnectionError(e)) return true
+  // Drive's "contract not found" arrives as a gRPC transport error, but it is an answer.
+  if (isContractMissingError(e)) return false
   return /failed to fetch|fetch failed|networkerror|network error|load failed|timed out|timeout|deadline exceeded|\bunavailable\b|resourceexhausted|resource exhausted|transport error|connection (?:refused|reset)|HTTP 5\d\d|could not reach platform|can't reach platform/i.test(
     messageOf(e),
   )
@@ -183,6 +186,14 @@ const realClock: Clock = {
   now: () => Date.now(),
   setTimeout: (fn, ms) => setTimeout(fn, ms),
   clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
+}
+
+/** The contract id a `documents` / `contracts` read names (its query's, or the bare id), if any. */
+function contractOf(args: unknown[]): string | undefined {
+  const first = args[0] as { dataContractId?: unknown; contractId?: unknown } | string | undefined
+  if (typeof first === 'string') return first
+  const id = typeof first?.dataContractId === 'string' ? first.dataContractId : first?.contractId
+  return typeof id === 'string' ? id : undefined
 }
 
 function messageOf(e: unknown): string {
@@ -262,6 +273,12 @@ export class EvoSdkService {
    * write whose own read is waiting on the recovery would otherwise never end.
    */
   private swapUrgent = false
+  /**
+   * The error of the first read that found a contract missing from the network (a devnet reset,
+   * or a build made for other contracts), or null. Once set, the app shows one state instead of
+   * every view failing on its own; no read can succeed until a build with the new contracts.
+   */
+  private missing: string | null = null
   private progressAt = -Infinity
   private progressTimer: unknown = null
   private latest: DownloadProgress = { loaded: 0, total: 0 }
@@ -318,6 +335,24 @@ export class EvoSdkService {
 
   getStatus(): SdkStatus {
     return this.status
+  }
+
+  /** The raw error of the read that found this build's contracts absent, or null (see {@link missing}). */
+  get contractsMissing(): string | null {
+    return this.missing
+  }
+
+  /**
+   * A read of `contract` failed: if that is one of this build's forge contracts and the network
+   * says it does not exist, report it app-wide, once. Any other contract (a repo's, the wallet
+   * key exchange) stays the error of the view that read it.
+   */
+  private noteMissing(contract: string | undefined, e: unknown): void {
+    if (this.missing !== null || contract === undefined || this.network === null) return
+    const forge = NETWORKS[this.network].v2
+    if ((contract !== forge?.core && contract !== forge?.collab) || !isContractMissingError(e)) return
+    this.missing = messageOf(e)
+    this.notify()
   }
 
   /** Follow status and connection changes. Returns the unsubscribe. */
@@ -691,6 +726,7 @@ export class EvoSdkService {
     this.failures = 0
     this.usedContracts.clear()
     this.outdated.clear()
+    this.missing = null
     this.learnedVersion = undefined
     this.clearRetry()
     if (this.refreshTimer !== null) this.clock.clearTimeout(this.refreshTimer)
@@ -777,11 +813,8 @@ export class EvoSdkService {
   }
 
   /** Note the contract a read names (a refresh preloads the recently used ones). */
-  private noteContract(args: unknown[]): void {
-    const first = args[0] as { dataContractId?: unknown; contractId?: unknown } | string | undefined
-    let id: unknown = first
-    if (typeof first !== 'string') id = typeof first?.dataContractId === 'string' ? first.dataContractId : first?.contractId
-    if (typeof id === 'string') this.usedContracts.set(id, this.clock.now())
+  private noteContract(id: string | undefined): void {
+    if (id !== undefined) this.usedContracts.set(id, this.clock.now())
   }
 
   /**
@@ -802,8 +835,12 @@ export class EvoSdkService {
               const call = (sdk: EvoSDK, args: unknown[]): unknown => (sdk as unknown as Facades)[name]![method]!(...args)
               if (!RETRYABLE_READS.has(`${name}.${method}`)) return (...args: unknown[]) => this.track(this.live(), (sdk) => call(sdk, args))
               return (...args: unknown[]) => {
-                if (name === 'documents' || name === 'contracts') this.noteContract(args)
-                return this.withRecovery((sdk) => call(sdk, args) as Promise<unknown>)
+                const contract = name === 'documents' || name === 'contracts' ? contractOf(args) : undefined
+                this.noteContract(contract)
+                return this.withRecovery((sdk) => call(sdk, args) as Promise<unknown>).catch((e: unknown) => {
+                  this.noteMissing(contract, e)
+                  throw e
+                })
               }
             },
           },
