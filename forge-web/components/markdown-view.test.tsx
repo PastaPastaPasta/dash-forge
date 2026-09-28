@@ -129,6 +129,17 @@ describe('anchors (review of #82)', () => {
     expect([...(host.querySelector('ul')?.children ?? [])].every((c) => c.tagName === 'LI')).toBe(true)
   })
 
+  it('puts bare <tr> rows in a <tbody>', async () => {
+    const errors: unknown[] = []
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args) => void errors.push(args))
+    await render(<MarkdownView source={'<table>\n<tr><td>a</td></tr>\n<tr><td>b</td></tr>\n</table>'} />)
+    spy.mockRestore()
+    const table = host.querySelector('table')
+    expect([...(table?.children ?? [])].map((c) => c.tagName)).toEqual(['TBODY'])
+    expect(table?.querySelectorAll('tbody > tr')).toHaveLength(2)
+    expect(errors.filter((e) => /validateDOMNesting|cannot be a child|cannot appear as a child/.test(String(e)))).toEqual([])
+  })
+
   it('makes `<a name>` a target that an in-page link reaches, and keeps `<a href name>` a link', async () => {
     await render(<MarkdownView source={'<a name="install"></a>\n\n[Install](#install) and <a name="up" href="#top">top</a>'} />)
     expect(host.querySelector('a[href="#user-content-install"]')?.textContent).toBe('Install')

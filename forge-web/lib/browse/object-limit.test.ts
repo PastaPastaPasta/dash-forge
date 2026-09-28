@@ -95,6 +95,81 @@ describe('object size limit', () => {
     expect((await reader.readObject(oids['a.png'] as string, { maxBytes: 8 * 1024 })).bytes).toEqual(good)
   })
 
+  it('ignores the bytes after a stream, however many (a pack slice goes on)', () => {
+    const junk = new Uint8Array(8 * MIB).map((_, i) => (i * 2654435761) >>> 24)
+    const stream = zlibSync(new Uint8Array([7]))
+    const withTail = new Uint8Array(stream.length + junk.length)
+    withTail.set(stream)
+    withTail.set(junk, stream.length)
+    let t = performance.now()
+    expect(inflateZlib(withTail, 0, 1, CAP)).toEqual(new Uint8Array([7]))
+    expect(performance.now() - t).toBeLessThan(50)
+    t = performance.now()
+    expect(() => inflateZlib(withTail, 0, 2, CAP)).toThrow(/inflate size mismatch/)
+    expect(performance.now() - t).toBeLessThan(50)
+  })
+
+  it('inflates exactly what node zlib deflated, at every level and strategy, with tails', async () => {
+    const zlib = await import('node:zlib')
+    let seed = 1
+    const rand = (): number => ((seed = (seed * 1103515245 + 12345) >>> 0) / 2 ** 32)
+    for (let level = 1; level <= 9; level++) {
+      for (const strategy of [0, 1, 2, 3, 4]) {
+        for (let k = 0; k < 8; k++) {
+          const size = Math.floor(rand() ** 3 * 200_000)
+          const data = new Uint8Array(size).map(() => (rand() < 0.5 ? 0 : (rand() * 256) | 0))
+          const z = new Uint8Array(zlib.deflateSync(data, { level, strategy }))
+          const tail = new Uint8Array(k * 997).map(() => (rand() * 256) | 0)
+          const buf = new Uint8Array(z.length + tail.length)
+          buf.set(z)
+          buf.set(tail, z.length)
+          expect(inflateZlib(buf, 0, size, CAP), `level ${level} strategy ${strategy} size ${size}`).toEqual(data)
+        }
+      }
+    }
+  })
+
+  it('keeps one base limit across REF_DELTA hops on the copy-fallback path', async () => {
+    // image a2 (1 KiB) ← REF base a1 (200 KiB) ← REF base a0 (600 KiB). With a 64 KiB limit a
+    // base may be 256 KiB: a1 is allowed, a0 is not. Letting the limit grow 4× per hop would
+    // allow a0 (1 MiB) and so the whole chain.
+    const LIMIT = 64 * 1024
+    const noise = png(600 * 1024)
+    crypto.getRandomValues(noise.subarray(8, 65544))
+    const files = [
+      { name: 'a0.png', bytes: noise },
+      { name: 'a1.png', delta: { base: 'a0.png', size: 200 * 1024, ref: true } },
+      { name: 'a2.png', delta: { base: 'a1.png', size: 1024, ref: true } },
+    ]
+    // Copy 0 is unreadable, so every read falls back to copy 1 (reconstructFrom's walk).
+    const { reader, oids } = imageRepo(files, (pack) => {
+      const good = memoryPackSource([pack])
+      return {
+        copyCount: () => 2,
+        fetchRange: (packRef, start, end, copy = 0) => (copy === 0 ? Promise.reject(new Error('copy 0 down')) : good.fetchRange(packRef, start, end)),
+      }
+    })
+    await expect(reader.readObject(oids['a2.png'] as string, { maxBytes: LIMIT })).rejects.toBeInstanceOf(ObjectTooLargeError)
+    // Under an unlimited read the chain is fine.
+    expect((await reader.readObject(oids['a2.png'] as string)).bytes.length).toBe(1024)
+  })
+
+  it('reads only the header of an entry whose header already says too much', async () => {
+    // 256 KiB of noise stores at about its size, over what a 64 KiB image could take up.
+    const noise = png(256 * 1024)
+    crypto.getRandomValues(noise.subarray(8, 65536 + 8))
+    for (let i = 65536 + 8; i < noise.length; i += 65536) noise.set(noise.subarray(8, Math.min(65536 + 8, noise.length - i + 8)), i)
+    const { reader, oids, fetched } = imageRepo([{ name: 'big.png', bytes: noise }])
+    const oid = oids['big.png'] as string
+    const length = reader.locate(oid)?.length ?? 0
+    expect(length).toBeGreaterThan(64 * 1024 * 1.001 + 64)
+    const before = fetched.length
+    await expect(reader.readObject(oid, { maxBytes: 64 * 1024 })).rejects.toBeInstanceOf(ObjectTooLargeError)
+    const ranges = fetched.slice(before)
+    expect(ranges.length).toBeGreaterThan(0)
+    expect(ranges.every(([start, end]) => end - start <= 32 && end - start < length)).toBe(true)
+  })
+
   it('refuses a declared size the input could not inflate to, without inflating', () => {
     const stream = zlibSync(new Uint8Array(100))
     expect(() => inflateZlib(stream, 0, 100 * 1024 * 1024)).toThrow(/inflate size mismatch/)

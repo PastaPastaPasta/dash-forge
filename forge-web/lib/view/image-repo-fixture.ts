@@ -34,8 +34,11 @@ export interface ImageRepoFile {
   readonly name: string
   /** Stored whole. */
   readonly bytes?: Uint8Array
-  /** Stored as a delta that repeats `base` to `size` bytes (the blob is that result). */
-  readonly delta?: { readonly base: Uint8Array; readonly size: number }
+  /**
+   * Stored as a delta that repeats `base` to `size` bytes (the blob is that result). `base` is
+   * a blob stored whole, or the name of an earlier file; `ref` makes it a REF_DELTA.
+   */
+  readonly delta?: { readonly base: Uint8Array | string; readonly size: number; readonly ref?: boolean }
   /**
    * A zip bomb: the entry's header says `claimed` bytes (the tree names `png(claimed)`'s oid),
    * but its zlib stream inflates to `inflates` bytes of zeros.
@@ -73,19 +76,30 @@ export function imageRepo(files: readonly ImageRepoFile[], source?: (pack: Uint8
   }
 
   const oids: Record<string, string> = {}
+  const contents = new Map<string, { bytes: Uint8Array; at: number; depth: number }>()
   for (const f of files) {
     if (f.delta !== undefined) {
-      const { base, size } = f.delta
-      const delta = repeatingDelta(base, size)
-      oids[f.name] = gitOidHex('blob', applyDelta(base, delta))
-      whole('blob', PACK_TYPE.BLOB, base)
-      const baseAt = offset - (stored[stored.length - 1] as Uint8Array).length
-      put(oids[f.name] as string, concat(objHeader(PACK_TYPE.OFS_DELTA, delta.length), ofsBase(offset - baseAt), zlibSync(delta)), 1)
+      const { size, ref } = f.delta
+      let base: { bytes: Uint8Array; at: number; depth: number }
+      if (typeof f.delta.base === 'string') {
+        base = contents.get(f.delta.base) as { bytes: Uint8Array; at: number; depth: number }
+      } else {
+        whole('blob', PACK_TYPE.BLOB, f.delta.base)
+        base = { bytes: f.delta.base, at: offset - (stored[stored.length - 1] as Uint8Array).length, depth: 0 }
+      }
+      const delta = repeatingDelta(base.bytes, size)
+      const bytes = applyDelta(base.bytes, delta)
+      oids[f.name] = gitOidHex('blob', bytes)
+      const link = ref ? hexToBytes(gitOidHex('blob', base.bytes)) : ofsBase(offset - base.at)
+      const at = put(oids[f.name] as string, concat(objHeader(ref ? PACK_TYPE.REF_DELTA : PACK_TYPE.OFS_DELTA, delta.length), link, zlibSync(delta)), base.depth + 1)
+      contents.set(f.name, { bytes, at, depth: base.depth + 1 })
     } else if (f.bomb !== undefined) {
       oids[f.name] = gitOidHex('blob', png(f.bomb.claimed))
       put(oids[f.name] as string, concat(objHeader(PACK_TYPE.BLOB, f.bomb.claimed), zlibSync(new Uint8Array(f.bomb.inflates), { level: 9 })))
     } else {
-      oids[f.name] = whole('blob', PACK_TYPE.BLOB, f.bytes ?? new Uint8Array(0))
+      const bytes = f.bytes ?? new Uint8Array(0)
+      oids[f.name] = whole('blob', PACK_TYPE.BLOB, bytes)
+      contents.set(f.name, { bytes, at: offset - (stored[stored.length - 1] as Uint8Array).length, depth: 0 })
     }
   }
 

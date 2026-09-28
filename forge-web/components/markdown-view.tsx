@@ -557,6 +557,30 @@ function renderBlock(b: Block, key: string, slugs: Map<string, number>): ReactNo
 }
 
 /** An allowlisted HTML container. Only its tag, alignment, `open` and a checked `href` survive. */
+/**
+ * A table's children, with bare `<tr>` rows put in a `<tbody>` (as a browser's parser would),
+ * so React never nests a row directly in a table.
+ */
+function wrapRows(blocks: readonly Block[], kids: readonly ReactNode[]): ReactNode {
+  const isRow = (b: Block | undefined): boolean => b?.t === 'element' && b.tag === 'tr'
+  if (!blocks.some(isRow)) return kids
+  const out: ReactNode[] = []
+  let rows: ReactNode[] = []
+  const flushRows = (): void => {
+    if (rows.length > 0) out.push(<tbody key={`rows-${out.length}`}>{rows}</tbody>)
+    rows = []
+  }
+  kids.forEach((kid, i) => {
+    if (isRow(blocks[i])) rows.push(kid)
+    else {
+      flushRows()
+      out.push(kid)
+    }
+  })
+  flushRows()
+  return out
+}
+
 function renderElement(b: Extract<Block, { t: 'element' }>, key: string, slugs: Map<string, number>): ReactNode {
   const kids = b.c.map((inner, i) => renderBlock(inner, `${key}-${i}`, slugs))
   const align = b.align === null ? undefined : tableAlignClass(b.align)
@@ -580,7 +604,7 @@ function renderElement(b: Extract<Block, { t: 'element' }>, key: string, slugs: 
     case 'table':
       return (
         <ScrollRegion key={key} label="Table" className="my-4 max-w-full overflow-x-auto">
-          <table id={id} className={cn('min-w-full border-collapse text-dense', align)}>{kids}</table>
+          <table id={id} className={cn('min-w-full border-collapse text-dense', align)}>{wrapRows(b.c, kids)}</table>
         </ScrollRegion>
       )
     case 'thead':

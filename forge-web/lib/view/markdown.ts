@@ -409,18 +409,48 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
     return run.opens
   }
   /**
-   * The `_` closing an em opened before `from`: a lone `_`, not one of a run (the `__` of
-   * `_a __b__ c_` is a strong span inside the em). A few runs are skipped at most, so a line of
-   * `_a __` stays linear.
+   * The `_` closing an em opened before `from`. A lone `_` closes it. A run of `_` closes it
+   * too (`_a__` is em `a` then `_`) unless it closes a run opened inside the em first (the
+   * `__…__` of `_a __b__ c_` is a strong span within it). At most a few runs are looked at, so
+   * a line of `_a __` stays linear.
    */
   const emUnderscoreClose = (from: number): number => {
+    let open = 0 // `__` runs opened inside the em and not yet closed
     let u = find('_', from)
-    for (let tries = 0; u !== -1 && tries < 4 && at(u + 1) === '_'; tries++) {
+    for (let runs = 0; u !== -1 && at(u + 1) === '_'; runs++) {
+      if (runs >= 4) return -1
       let past = u
-      while (at(past) === '_') past += 1
+      while (at(past) === '_' && past - u <= MAX_DELIMITER_RUN) past += 1
+      if (past - u > MAX_DELIMITER_RUN) {
+        u = find('_', past) // a long run is text, not a delimiter
+        continue
+      }
+      // A run after a word character can only close; before one it can only open; between
+      // two (`a__b`) it does neither.
+      const opens = !isWordChar(at(u - 1))
+      const closes = !isWordChar(at(past))
+      if (opens && !closes) open += 1
+      else if (closes && !opens) {
+        if (open === 0) return u // closes the em
+        open -= 1 // closes a run opened inside it
+      }
       u = find('_', past)
     }
-    return u !== -1 && at(u + 1) === '_' ? -1 : u
+    return u
+  }
+  /** Whether a `_` closer ending just before `k` may close: its run ends there, not inside a word. */
+  const underscoreCloses = (k: number): boolean => at(k) !== '_' && !isWordChar(at(k))
+  /**
+   * Whether `src[from..to)` holds a `[` that is not backslash-escaped. Each step is a binary
+   * search, and escaped ones are skipped at most {@link MAX_LABEL} times (a label's length).
+   */
+  const hasUnescapedBracket = (from: number, to: number): boolean => {
+    for (let b = doc.find('[', from, to); b !== -1; b = doc.find('[', b + 1, to)) {
+      let slashes = 0
+      while (src[b - 1 - slashes] === '\\' && b - 1 - slashes >= from) slashes += 1
+      if (slashes % 2 === 0) return true
+    }
+    return false
   }
   /** The `]` matching a `[` at `open`, when it is inside this span; else -1. */
   const closeOf = (open: number): number => {
@@ -455,7 +485,7 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
     // A label holds no `[` (CommonMark): an outer bracket around links is never a reference,
     // and checking that first (a binary search) keeps nested brackets from each normalizing
     // up to 999 characters.
-    if (to - from > MAX_LABEL || doc.find('[', from, to) !== -1) return null
+    if (to - from > MAX_LABEL || hasUnescapedBracket(from, to)) return null
     const href = references.get(normalizeLabel(src.slice(from, to)))
     return href === undefined ? null : { href, end: refEnd + 1 }
   }
@@ -582,20 +612,33 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
         }
       }
     }
+    // a run of more `_` than any delimiter uses is text, taken whole (so it is measured once)
+    if (ch === '_' && at(i - 1) !== '_') {
+      let past = i
+      while (at(past) === '_') past += 1
+      if (past - i > MAX_DELIMITER_RUN) {
+        add(src.slice(i, past))
+        i = past
+        continue
+      }
+    }
+    // strong emphasis ***x*** / ___x___: em around strong, as CommonMark nests them
+    if ((ch === '*' || ch === '_') && next === ch && at(i + 2) === ch && depth + 1 < MAX_INLINE_DEPTH && (ch !== '_' || underscoreOpens(i))) {
+      const close = find(ch.repeat(3), i + 3)
+      if (close > i + 3 && (ch !== '_' || underscoreCloses(close + 3))) {
+        push({ t: 'em', c: [{ t: 'strong', c: parseSpan(doc, i + 3, close, depth + 2, false) }] })
+        nodesLeft -= 1
+        i = close + 3
+        continue
+      }
+    }
     // strong **x** / __x__, strikethrough ~~x~~ (an intraword `__` is literal: my__var__name)
     if ((ch === '*' || ch === '_' || ch === '~') && next === ch && depth < MAX_INLINE_DEPTH && (ch !== '_' || underscoreOpens(i))) {
       const close = find(ch, i + 2)
-      if (close > i + 2 && at(close + 1) === ch && (ch !== '_' || !isWordChar(at(close + 2)))) {
+      if (close > i + 2 && at(close + 1) === ch && (ch !== '_' || underscoreCloses(close + 2))) {
         const c = parseSpan(doc, i + 2, close, depth + 1, false)
         push(ch === '~' ? { t: 'del', c } : { t: 'strong', c })
         i = close + 2
-        continue
-      }
-      if (ch === '_') {
-        // An unclosed `__` is text, both characters: its second `_` opens no emphasis
-        // (`__a__b` is literal, as on GitHub).
-        add('__')
-        i += 2
         continue
       }
     }
@@ -626,6 +669,9 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
   flush()
   return out
 }
+
+/** The longest `_` run read as emphasis delimiters (`___x___`); a longer one is text. */
+const MAX_DELIMITER_RUN = 3
 
 /** Nesting cap for spans inside spans (a hostile `[[[[…](x)](x)…` stays shallow). */
 const MAX_INLINE_DEPTH = 32

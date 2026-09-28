@@ -13,7 +13,8 @@
 
 import { sha1 } from '@noble/hashes/legacy.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
-import { Unzlib, unzlibSync } from 'fflate'
+import { unzlibSync } from 'fflate'
+import { Inflate } from 'pako'
 
 /** Final git object type, after any delta chain is resolved to its base. */
 export type GitObjType = 'commit' | 'tree' | 'blob' | 'tag'
@@ -141,24 +142,27 @@ export function inflateZlib(buf: Uint8Array, from: number, expected: number, max
   return inflateBounded(input, expected)
 }
 
+/** Output chunk for {@link inflateBounded}: how far a stream may overrun before it is stopped. */
+const BOUNDED_CHUNK = 16 * 1024
+
 /**
- * Inflate `input` in slices sized so each can yield at most about `expected` bytes, stopping
- * at `expected` bytes and failing as soon as the stream yields more.
+ * Inflate `input` into exactly `expected` bytes, failing as soon as the stream yields more.
+ * pako hands over output a chunk at a time while it inflates, and stops at the end of the zlib
+ * stream, ignoring the bytes after it (a pack slice goes on), so the cost is linear in what is
+ * actually inflated, never in the input's tail.
  */
 function inflateBounded(input: Uint8Array, expected: number): Uint8Array {
   const out = new Uint8Array(expected)
   let got = 0
-  const inflater = new Unzlib((chunk) => {
+  const inflater = new Inflate({ chunkSize: BOUNDED_CHUNK })
+  inflater.onData = (chunk: Uint8Array) => {
     if (got + chunk.length > expected) throw new Error('inflate size mismatch')
     out.set(chunk, got)
     got += chunk.length
-  })
-  const step = Math.min(16 * 1024, Math.max(256, Math.ceil(expected / DEFLATE_MAX_RATIO)))
-  for (let at = 0; at < input.length && got < expected; at += step) {
-    const end = Math.min(at + step, input.length)
-    inflater.push(input.subarray(at, end), end === input.length)
   }
-  if (got !== expected) throw new Error('inflate size mismatch')
+  inflater.onEnd = () => {}
+  inflater.push(input, true)
+  if ((inflater.err !== 0 && !inflater.ended) || got !== expected) throw new Error('inflate size mismatch')
   return out
 }
 

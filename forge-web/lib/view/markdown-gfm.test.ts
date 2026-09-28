@@ -392,6 +392,23 @@ describe('post-merge review of #82', () => {
     ])
   })
 
+  it('reads ___x___ and ***x*** as strong emphasis, and mismatched runs as GitHub does', () => {
+    const strongEm = [{ t: 'em', c: [{ t: 'strong', c: [{ t: 'text', v: 'a' }] }] }]
+    expect(para('___a___')).toEqual(strongEm)
+    expect(para('***a***')).toEqual(strongEm)
+    expect(para('see ___this___ now')).toEqual([
+      { t: 'text', v: 'see ' },
+      { t: 'em', c: [{ t: 'strong', c: [{ t: 'text', v: 'this' }] }] },
+      { t: 'text', v: ' now' },
+    ])
+    expect(para('__a_')).toEqual([{ t: 'text', v: '_' }, { t: 'em', c: [{ t: 'text', v: 'a' }] }])
+    expect(para('_a__')).toEqual([{ t: 'em', c: [{ t: 'text', v: 'a' }] }, { t: 'text', v: '_' }])
+  })
+
+  it('accepts an escaped [ in a reference label', () => {
+    expect(para('[a\\[b]: docs/x.md\n\n[a\\[b]')).toEqual([{ t: 'link', href: 'docs/x.md', c: [{ t: 'text', v: 'a[b' }] }])
+  })
+
   it('keeps both the link and the anchor of <a href name>', () => {
     expect(para('<a name="top" href="#x">up</a>')).toEqual([{ t: 'link', href: '#x', id: 'top', c: [{ t: 'text', v: 'up' }] }])
   })
