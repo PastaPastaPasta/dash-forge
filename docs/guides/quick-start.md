@@ -138,7 +138,7 @@ Forge hosts nothing, so you decide where the pack bytes (the git objects) live. 
 
 | Option | Cost | |
 |---|---|---|
-| Your S3-compatible bucket (Cloudflare R2, Backblaze B2, AWS S3, MinIO) | about 0.0003–0.004 DASH per push on Platform, plus your provider's bill | recommended; R2 has no egress fees |
+| Your S3-compatible bucket (Cloudflare R2, Backblaze B2, AWS S3, Storj, or a store on [your own NAS](home-nas-storage.md)) | about 0.0003–0.004 DASH per push on Platform, plus your provider's bill | recommended; R2 has no egress fees |
 | Your IPFS node (kubo) or a pinning service | the same on Platform | |
 | Dash Platform | about **0.28 DASH per MiB**, permanently | no account needed; fine for tiny repositories |
 
@@ -277,7 +277,7 @@ Browsing, cloning and downloading a branch as a zip (up to 100 MB, built in your
 
 ## Next steps
 
-- [Mirror a GitHub repository](mirror-a-github-repo.md) so it can't be taken down.
+- [Move a project from GitHub or GitLab](moving-from-github.md), or [mirror a GitHub repository](mirror-a-github-repo.md) so it can't be taken down.
 - [Collaborate](collaborating.md): members, issues, pull requests, merges, releases.
 - [Identity and keys](identity-and-keys.md): backups, recovery, and keeping keys out of web pages.
 - [Costs](costs.md): what each action costs, and what comes back.

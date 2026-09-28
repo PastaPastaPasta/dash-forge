@@ -9,9 +9,9 @@ Everything a team does on Forge is a signed document on Dash Platform: who may p
 5. [From the web app](#from-the-web-app)
 6. [Webhooks and CI](#webhooks-and-ci)
 
-The commands below take a repository as `<owner>/<name>`, where `<owner>` is the owner's **identity id** (base58) or **DPNS username** (`alice` or `alice.dash`, resolved with a proof-verified DPNS read). A bare `<name>` means one of your own repositories.
+The commands below take a repository as `<owner>/<name>`, where `<owner>` is the owner's **identity id** (base58) or **DPNS username** (`alice` or `alice.dash`, resolved with a proof-verified DPNS read). A bare `<name>` means one of your own repositories. `dg repo list --owner` and member arguments (`dg collab add`) take an identity id only.
 
-Reading a public repository needs no identity: `dg repo view`, `dg issue list` / `view`, `dg pr list` / `view` / `diff` / `checks`, `dg label list`, `dg collab list` and `dg release list` / `download` work signed out, and never open a key you have configured, so a passphrase-sealed key file is not unlocked just to read. A private repository's content is encrypted to its members, so reading one uses your identity, and without one it stops with [`E301`](../errors.md#e301).
+Reading a public repository needs no identity: `dg repo view`, `dg repo list --owner`, `dg issue list` / `view`, `dg pr list` / `view` / `diff` / `checkout` / `checks` / `commits`, `dg label list`, `dg collab list`, `dg release list` / `download`, `dg repo protect list` and `dg repo policy show` work signed out, and never open a key you have configured, so a passphrase-sealed key file is not unlocked just to read. A private repository's content is encrypted to its members, so reading one uses your identity, and without one it stops with [`E301`](../errors.md#e301).
 
 ---
 
@@ -111,7 +111,9 @@ Leave the description empty if the project's purpose is itself sensitive.
 
 **No recovery.** If every member loses their encryption key (every copy of every identity file and mnemonic), the contents cannot be decrypted by anyone.
 
-Not supported for private repositories yet: forks (`dg repo fork`, refused with a clear error), and `dg issue`, `dg pr`, `dg release` and `dg label` on them (refused until their sealed forms land).
+Not supported for private repositories yet ([`E207`](../errors.md#e207)): forks (`dg repo fork`), releases (their notes and assets would be published unencrypted) and webhooks. Issues, PRs, comments and reviews are sealed; label definitions (`dg label create`) are allowed but stay public.
+
+**Content a removed member wrote late.** A member removed from the repository who keeps writing under the old key, more than 240 blocks after the rotation, is hidden from every reader (the late-content rule). A clone that needs such a pack stops with [`E510`](../errors.md#e510) (`clone incomplete: N packs hidden by the late-content rule`).
 
 ---
 
@@ -318,12 +320,14 @@ On forge.dashhq.org, signed in with a limited key ([Identity and keys](identity-
 
 | You can | Not yet (coming soon) |
 |---|---|
-| Browse code, commits, branches, tags and PR diffs; download a branch as a zip | Open a PR |
-| File issues, comment, close and reopen; label them (members) | Merge code (see below) |
-| Review a PR: approve, request changes or comment | Inline review comments |
-| Create a repository, with a cost preview | Fork a repository |
-| Add and remove members (owner) | Web editing |
-| Publish a release with assets (maintainers) | Private repositories (use `dg`; web views follow) |
+| Browse code, commits, branches, tags and PR diffs; download a branch as a zip | Web editing of files |
+| File issues, comment, close and reopen; label them (members) | Merging a private repository's PRs, or committing to its branches (use `dg`) |
+| Open a PR from a branch you have already pushed, in the repository or your fork | Merging when both sides changed the same files (use `dg pr merge`) |
+| Review a PR: approve, request changes or comment, with inline comments, suggestions and a pending review | |
+| Merge a PR (see below) | |
+| Create a repository (public or private), or fork one, with a cost preview | |
+| Add and remove members (owner) | |
+| Publish a release with assets (maintainers) | |
 | Star repositories and follow people | |
 | See your repositories, issues, PRs and stars in **Explore**, and new activity in **Notifications** | |
 
@@ -331,11 +335,11 @@ Every write shows its price before you sign, and a toast shows what it actually 
 
 **Releases from the browser.** On a repository's **Releases** tab, a maintainer sees **New release**. It works like `dg release create --asset`: the maintainer role is checked before anything uploads, each file (up to 256 MiB) goes to *your* storage from **Settings → Storage** (never to Platform), is verified by reading it back, and is recorded with its SHA-256. Anyone who downloads an asset from the release page gets it only if it hashes to the recorded value.
 
-**Merging.** The web app has a **Mark as merged** button, shown only to writers and maintainers. It posts the `merge` event (step 4 of `dg pr merge` above). It does not merge code. The PR counts as merged only once the head is already on the base branch. Use `dg pr merge` to merge code.
+**Merging.** Writers and maintainers get a merge box on a public repository's PR. It checks the merge in the browser first, then offers what it can do: **Merge (fast-forward)**, **Create merge commit and merge** (only when the two sides changed different files; the browser never merges file contents), or **Squash and merge**, limited to the methods the branch policy allows. It builds the pack, uploads it to your storage from **Settings → Storage** (it asks before storing on Platform), moves the branch and posts the `merge` event: the same steps as `dg pr merge`. These cases go to `dg pr merge`: changes both sides made to the same files, a private repository, a merge too large to build in the browser, and a history that changes `.gitmodules` or `.gitattributes` or holds an object git would reject. On a protected base branch only a maintainer can merge, in the browser or with `dg`; a writer sees **Protected branch — maintainers only**. **Mark as merged** only records a merge done elsewhere; it counts once the head is on the base branch.
 
 **Notifications** are computed in your browser from the chain: new issues and PRs in your repositories, state changes, comments and reviews on your threads, and optionally pushes and starred repositories. There is no email, no push notification and no sync across devices, because there is no server to send them.
 
-**Coming soon:** open a PR from a branch or fork, inline review comments, forks, and real merges from the browser (fast-forward and clean merges, uploaded to your own storage).
+**Coming soon:** editing files in the browser, and browser merges and branch commits for private repositories.
 
 ---
 
