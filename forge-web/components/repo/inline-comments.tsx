@@ -49,6 +49,26 @@ export interface ThreadActions {
   readonly onDelete: (comment: CommentView) => void
 }
 
+/**
+ * Suggestions on the diff (review-parity R5, §4.5): which comments' suggestions this viewer can
+ * apply, the batch they collected, and what was already applied (by commit trailers).
+ */
+export interface SuggestionActions {
+  /** The viewer can move the PR branch (a writer of the source repo); else why not. */
+  readonly canApply: boolean
+  readonly why: string | null
+  /** The file lines a comment's suggestion would replace (the head's text), or null when unknown. */
+  readonly original: (c: CommentView) => readonly string[] | null
+  /** Whether `c`'s suggestion applies on the head (one block, the new side, this head). */
+  /** Why the comment's suggestion cannot be applied on the head, or null when it can. */
+  readonly unapplicable: (c: CommentView) => string | null
+  /** Comment id → the commit that applied it. */
+  readonly applied: ReadonlyMap<string, string>
+  readonly batch: ReadonlySet<string>
+  readonly onToggleBatch: (c: CommentView) => void
+  readonly onApply: (c: CommentView) => void
+}
+
 /** The viewer's pending review, as the diff needs it. */
 export interface PendingReview {
   /** The pending comments anchored to the current head: shown on their lines. */
@@ -74,6 +94,7 @@ export function InlineCommentsProvider({
   writeBlock = null,
   actions,
   pending,
+  suggestions,
   onLinesKnown,
   children,
 }: {
@@ -90,6 +111,8 @@ export function InlineCommentsProvider({
   actions?: ThreadActions
   /** The viewer's pending review; absent: no "Start a review". */
   pending?: PendingReview
+  /** Apply and batch suggestions; absent: suggestions render as diffs only. */
+  suggestions?: SuggestionActions
   /** Told which lines each loaded file's patch shows (`lineKey`s): re-anchoring a pending review uses it. */
   onLinesKnown?: (lines: ReadonlyMap<string, ReadonlySet<string>>) => void
   children: ReactNode
@@ -162,7 +185,7 @@ export function InlineCommentsProvider({
     }
   }, [])
 
-  const threadProps = { repo, pullId, onPosted, writeBlock, ...(actions ? { actions } : {}) }
+  const threadProps = { repo, pullId, onPosted, writeBlock, ...(actions ? { actions } : {}), ...(suggestions ? { suggestions } : {}) }
   const value = useMemo<InlineComments>(
     () => ({
       canComment: writeBlock === null,
@@ -209,7 +232,7 @@ export function InlineCommentsProvider({
     }),
     // threadProps is rebuilt from the listed values.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [placed, selection, ranges, pendingAt, pending, repo, pullId, headOid, onPosted, report, writeBlock, actions],
+    [placed, selection, ranges, pendingAt, pending, repo, pullId, headOid, onPosted, report, writeBlock, actions, suggestions],
   )
 
   return (
@@ -288,6 +311,7 @@ interface ThreadProps {
   onPosted: (id?: string) => void
   writeBlock: string | null
   actions?: ThreadActions
+  suggestions?: SuggestionActions
 }
 
 /** A thread shown away from its line, headed by where it points. */
@@ -309,7 +333,7 @@ function AnchoredThread({ thread, ...rest }: ThreadProps & { thread: InlineThrea
   )
 }
 
-function Thread({ thread, repo, pullId, onPosted, writeBlock, actions }: ThreadProps & { thread: InlineThread }): JSX.Element {
+function Thread({ thread, repo, pullId, onPosted, writeBlock, actions, suggestions }: ThreadProps & { thread: InlineThread }): JSX.Element {
   const [replying, setReplying] = useState(false)
   const resolved = actions?.resolved.has(thread.root.id) ?? false
   const [expanded, setExpanded] = useState(false)
@@ -327,7 +351,7 @@ function Thread({ thread, repo, pullId, onPosted, writeBlock, actions }: ThreadP
   return (
     <div className="rounded-md border border-anvil-200 bg-white dark:border-anvil-750 dark:bg-anvil-950" data-testid="thread" data-root={thread.root.id} data-resolved={resolved ? 'true' : 'false'}>
       {[thread.root, ...thread.replies].map((c) => (
-        <CommentBlock key={c.id} comment={c} actions={actions} writeBlock={writeBlock} />
+        <CommentBlock key={c.id} comment={c} actions={actions} writeBlock={writeBlock} {...(suggestions ? { suggestions } : {})} />
       ))}
       <div className="flex flex-wrap items-center gap-2 px-3 py-1.5">
         {replying ? (
@@ -367,7 +391,7 @@ function Thread({ thread, repo, pullId, onPosted, writeBlock, actions }: ThreadP
 }
 
 /** One comment of a thread, with its author's Edit and Delete. */
-function CommentBlock({ comment: c, actions, writeBlock }: { comment: CommentView; actions?: ThreadActions; writeBlock: string | null }): JSX.Element {
+function CommentBlock({ comment: c, actions, writeBlock, suggestions }: { comment: CommentView; actions?: ThreadActions; writeBlock: string | null; suggestions?: SuggestionActions }): JSX.Element {
   const [editing, setEditing] = useState<string | null>(null)
   const own = actions !== undefined && actions.viewer !== null && actions.viewer === c.author && writeBlock === null
   return (
@@ -409,10 +433,48 @@ function CommentBlock({ comment: c, actions, writeBlock }: { comment: CommentVie
         </div>
       ) : (
         <div className="mt-1">
-          <MarkdownView source={c.body} />
+          <SuggestedBody comment={c} suggestions={suggestions} />
         </div>
       )}
     </div>
+  )
+}
+
+/** A comment body: its ```suggestion blocks as diffs, with Apply / Add to batch / "Applied in". */
+function SuggestedBody({ comment: c, suggestions }: { comment: CommentView; suggestions?: SuggestionActions | undefined }): JSX.Element {
+  const has = c.body.includes('```suggestion') || c.body.includes('~~~suggestion')
+  const original = has && suggestions ? suggestions.original(c) : null
+  const ctx = useMemo(() => (has ? { original } : null), [has, original])
+  if (!has || !suggestions) return <MarkdownView source={c.body} suggestion={ctx} />
+  const applied = suggestions.applied.get(c.id)
+  const refused = suggestions.unapplicable(c)
+  const inBatch = suggestions.batch.has(c.id)
+  return (
+    <>
+      <MarkdownView source={c.body} suggestion={ctx} />
+      <div className="mt-1 flex flex-wrap items-center gap-2 text-[12px]" data-testid="suggestion-actions" data-comment={c.id}>
+        {applied ? (
+          <span className="inline-flex items-center gap-1 text-verify-700 dark:text-verify-400" data-testid="suggestion-applied">
+            <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> Applied in <Oid value={applied} chars={7} copyable={false} />
+          </span>
+        ) : refused !== null ? (
+          <span className="text-anvil-500 dark:text-anvil-400">{refused}</span>
+        ) : suggestions.canApply ? (
+          <>
+            <Button size="sm" variant="primary" onClick={() => suggestions.onApply(c)}>
+              Apply suggestion
+            </Button>
+            <Button size="sm" variant="outline" aria-pressed={inBatch} onClick={() => suggestions.onToggleBatch(c)}>
+              {inBatch ? 'Remove from batch' : 'Add to batch'}
+            </Button>
+          </>
+        ) : (
+          <span className="text-anvil-500 dark:text-anvil-400" title={suggestions.why ?? undefined}>
+            {suggestions.why}
+          </span>
+        )}
+      </div>
+    </>
   )
 }
 
