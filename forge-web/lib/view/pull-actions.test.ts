@@ -12,7 +12,7 @@ import type { PullView } from '../repo'
 import { historicalTipsPredicate } from '../repo'
 import type { Event, Holdings } from '../rules'
 import { foldPrStateV2 } from '../rules/v2'
-import { deleteBranchOffer, deleteBranchProblem, mergeBaseTip, mergeBoxShown, mergeButton, mergeRefProblem, policyOf, pullActions, type PullActionInputs } from './pull-actions'
+import { deleteBranchOffer, deleteBranchProblem, mergeBaseTip, mergeBoxShown, mergeBoxSlot, mergeButton, mergeRefProblem, policyOf, pullActions, type PullActionInputs } from './pull-actions'
 
 const AUTHOR = 'author'
 const WRITER = 'writer'
@@ -316,4 +316,21 @@ describe('the merge box through its own merge', () => {
     expect(mergeBoxShown(false, false)).toBe(false)
   })
 
+})
+
+describe('where the merge box is, per tab', () => {
+  const at = (o: Partial<Parameters<typeof mergeBoxSlot>[0]>) => mergeBoxSlot({ onConversation: false, draft: false, running: false, ranOnPage: false, ranOnThisTab: false, ...o })
+  it('lives on the conversation of a ready PR', () => {
+    expect(at({ onConversation: true })).toBe('shown')
+    expect(at({ onConversation: true, draft: true })).toBe('none')
+    expect(at({})).toBe('none')
+  })
+  it('a running merge is on screen on every tab (it may be waiting for the merger)', () => {
+    expect(at({ running: true, ranOnPage: true, ranOnThisTab: true })).toBe('shown')
+    expect(at({ running: true, ranOnPage: true })).toBe('shown')
+  })
+  it('after its merge it stays mounted: on screen where it ended, hidden on other tabs', () => {
+    expect(at({ ranOnPage: true, ranOnThisTab: true })).toBe('shown')
+    expect(at({ ranOnPage: true })).toBe('kept')
+  })
 })

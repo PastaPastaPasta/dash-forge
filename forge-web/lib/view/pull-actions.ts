@@ -322,3 +322,15 @@ export function deleteBranchOffer(i: {
 export function mergeBoxShown(canMerge: boolean, shownBefore: boolean): boolean {
   return canMerge || shownBefore
 }
+
+/**
+ * Where the merge box is, per tab. It lives on the Conversation tab; a merge running in it
+ * (possibly waiting for the merger's storage choice) stays mounted and on screen on every tab,
+ * so switching tabs never strands it, and its outcome stays on the tab it ended on until the
+ * merger moves on. Once it has run it stays mounted (hidden elsewhere), so the outcome is still
+ * there on the way back.
+ */
+export function mergeBoxSlot(i: { onConversation: boolean; draft: boolean; running: boolean; ranOnPage: boolean; ranOnThisTab: boolean }): 'shown' | 'kept' | 'none' {
+  if ((i.onConversation && !i.draft) || i.running || i.ranOnThisTab) return 'shown'
+  return i.ranOnPage ? 'kept' : 'none'
+}

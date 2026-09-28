@@ -112,7 +112,7 @@ import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { InlineCommentsProvider, type ThreadActions } from '@/components/repo/inline-comments'
 import { ReviewDrawer, useReviewDraft } from '@/components/repo/review-drawer'
 import { BranchCommitCost, IdentityNote, buildUpdateBranch, useSuggestions } from '@/components/repo/branch-commit-panel'
-import { PullMerge } from '@/components/repo/pull-merge'
+import { PullMerge, useMergeSlot } from '@/components/repo/pull-merge'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
 import { AssigneePicker, LabelPicker, SidebarSection } from '@/components/repo/target-rail'
@@ -258,6 +258,7 @@ function PullPage({
   const composeBlock = archived ? ARCHIVED_REASON : privateComposeBlock(home)
   const writeBlocked = composeBlock !== null
   const open = pull.state.open
+  const { slot: mergeSlot, onRunning: setMergeRunning } = useMergeSlot(tab, open && pull.state.draft)
   const merged = pull.state.merged
   const target = { id: pull.id, number: pull.number }
   /**
@@ -859,51 +860,63 @@ function PullPage({
                     </section>
                   ) : null}
                   {tab === 'conversation' ? suggest.runner.view : null}
-                  <PullMerge
-                    repo={repo}
-                    home={home}
-                    pull={pull}
-                    canMerge={actions.canMarkMerged && !archived}
-                    isMaintainer={holdings.data?.maintain === true}
-                    checkout={checkout}
-                    onMerged={() => {
-                      refresh((t) => t.pull.state.merged)
-                      // The base branch moved and a pack was stored: the repo's refs and its
-                      // browse context are out of date too (L-09).
-                      reloadHome?.()
-                    }}
-                    extras={{
-                      allowedMethods: policyNow?.mergeMethods ?? 0,
-                      squashAuthors: commits.error
-                        ? { error: commits.error }
-                        : commits.data === null
-                          ? null
-                          : { authors: commitAuthors(commits.data.commits), complete: !commits.data.truncated },
-                      deleteBranch: (() => {
-                        const src = sourceRef ?? (crossRepo ? null : repo)
-                        const name = pull.sourceRefName
-                        // `sourceDefault.data` is null until the default branch has been read (and after a failed read).
-                        const offer = deleteBranchOffer({
-                          refName: name,
-                          source: src === null ? null : { visibility: src.visibility, sameRepo: src.repoId === repo.repoId },
-                          canWrite: sourceWrite.known ? sourceWrite.can : null,
-                          baseRefName: pull.baseRefName,
-                          defaultBranch: sourceDefault.data,
-                          headOid: pull.headOid,
-                        })
-                        if (offer.kind === 'hide' || src === null || name === null) return null
-                        const label = `${crossRepo ? `${src.name}:` : ''}${name.replace(/^refs\/heads\//, '')}`
-                        if (offer.kind === 'explain') return { label, disabled: offer.reason }
-                        const head = pull.headOid
-                        return { label, run: () => deleteSourceBranch(src, name, head) }
-                      })(),
-                    }}
-                  />
-                  {open && (actions.baseProtected || rules.status !== null) ? (
-                    <BranchRules base={pull.baseRefName} baseProtected={actions.baseProtected} policy={rules.policy} status={rules.status} checksBlocking={checksBlocking} />
-                  ) : null}
                 </>
               )}
+            </>
+          ) : null}
+          {/* The merge box: one slot for every tab, so a merge running in it (maybe waiting for a
+              storage choice) survives a tab switch and can be finished (mergeBoxSlot). */}
+          {mergeSlot === 'none' ? null : (
+            <div hidden={mergeSlot === 'kept'} className="space-y-4 empty:hidden" data-testid="merge-slot">
+              <PullMerge
+                repo={repo}
+                home={home}
+                pull={pull}
+                canMerge={actions.canMarkMerged && !archived}
+                isMaintainer={holdings.data?.maintain === true}
+                checkout={checkout}
+                onMerged={() => {
+                  refresh((t) => t.pull.state.merged)
+                  // The base branch moved and a pack was stored: the repo's refs and its
+                  // browse context are out of date too (L-09).
+                  reloadHome?.()
+                }}
+                extras={{
+                  onRunning: setMergeRunning,
+                  active: mergeSlot === 'shown',
+                  allowedMethods: policyNow?.mergeMethods ?? 0,
+                  squashAuthors: commits.error
+                    ? { error: commits.error }
+                    : commits.data === null
+                      ? null
+                      : { authors: commitAuthors(commits.data.commits), complete: !commits.data.truncated },
+                  deleteBranch: (() => {
+                    const src = sourceRef ?? (crossRepo ? null : repo)
+                    const name = pull.sourceRefName
+                    // `sourceDefault.data` is null until the default branch has been read (and after a failed read).
+                    const offer = deleteBranchOffer({
+                      refName: name,
+                      source: src === null ? null : { visibility: src.visibility, sameRepo: src.repoId === repo.repoId },
+                      canWrite: sourceWrite.known ? sourceWrite.can : null,
+                      baseRefName: pull.baseRefName,
+                      defaultBranch: sourceDefault.data,
+                      headOid: pull.headOid,
+                    })
+                    if (offer.kind === 'hide' || src === null || name === null) return null
+                    const label = `${crossRepo ? `${src.name}:` : ''}${name.replace(/^refs\/heads\//, '')}`
+                    if (offer.kind === 'explain') return { label, disabled: offer.reason }
+                    const head = pull.headOid
+                    return { label, run: () => deleteSourceBranch(src, name, head) }
+                  })(),
+                }}
+              />
+            </div>
+          )}
+          {tab === 'conversation' ? (
+            <>
+              {!(open && pull.state.draft) && open && (actions.baseProtected || rules.status !== null) ? (
+                <BranchRules base={pull.baseRefName} baseProtected={actions.baseProtected} policy={rules.policy} status={rules.status} checksBlocking={checksBlocking} />
+              ) : null}
 
               {/* Composer */}
               <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">

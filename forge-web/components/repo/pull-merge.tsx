@@ -9,10 +9,25 @@ import { useState } from 'react'
 
 import type { PullView, RepoRef } from '@/lib/repo'
 import { tipOidOf, type RepoHome } from '@/lib/view'
-import { mergeBaseTip, mergeBoxShown } from '@/lib/view/pull-actions'
+import { mergeBaseTip, mergeBoxShown, mergeBoxSlot } from '@/lib/view/pull-actions'
 import type { SquashAuthors } from '@/lib/merge/engine'
 import { MergePanel, type DeleteBranchOption } from '@/components/repo/merge-panel'
 import { pullBase, useComparisonSides } from '@/components/repo/pull-diff'
+
+/**
+ * Where the PR page puts the merge box on `tab` ({@link mergeBoxSlot}), and the callback that
+ * tells it a merge is running (pass it as `extras.onRunning`).
+ */
+export function useMergeSlot(tab: string, draft: boolean): { slot: 'shown' | 'kept' | 'none'; onRunning: (running: boolean) => void } {
+  const [running, setRunning] = useState(false)
+  // The tab a merge last ran on: its outcome stays on screen there until the merger moves on.
+  const [ranOn, setRanOn] = useState<string | null>(null)
+  if (running && ranOn !== tab) setRanOn(tab)
+  return {
+    slot: mergeBoxSlot({ onConversation: tab === 'conversation', draft, running, ranOnPage: ranOn !== null, ranOnThisTab: ranOn === tab }),
+    onRunning: setRunning,
+  }
+}
 
 export function PullMerge({
   repo,
@@ -50,6 +65,9 @@ export interface MergeExtras {
   readonly allowedMethods?: number
   readonly squashAuthors?: SquashAuthors
   readonly deleteBranch?: DeleteBranchOption | null
+  readonly onRunning?: (running: boolean) => void
+  /** False while the page keeps the box mounted but hidden (no merge check runs then). */
+  readonly active?: boolean
 }
 
 function MergeReaders({
@@ -90,6 +108,8 @@ function MergeReaders({
       {...(extras.allowedMethods !== undefined ? { allowedMethods: extras.allowedMethods } : {})}
       {...(extras.squashAuthors !== undefined ? { squashAuthors: extras.squashAuthors } : {})}
       {...(extras.deleteBranch !== undefined ? { deleteBranch: extras.deleteBranch } : {})}
+      {...(extras.onRunning !== undefined ? { onRunning: extras.onRunning } : {})}
+      {...(extras.active !== undefined ? { active: extras.active } : {})}
     />
   )
 }

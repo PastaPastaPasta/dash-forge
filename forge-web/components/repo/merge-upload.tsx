@@ -136,7 +136,7 @@ function StorageQuestion({
     heading.current?.focus({ preventScroll: true })
   }, [])
   return (
-    <div className="mt-2 space-y-2 rounded-md border border-caution/50 bg-caution/5 px-3 py-2 text-dense" role="group" aria-label="Waiting for your choice" data-testid="storage-question">
+    <div className="mt-2 space-y-2 rounded-md border border-caution/50 bg-caution/5 px-3 py-2 text-dense" role="group" aria-label="Waiting for your choice" aria-live="polite" data-testid="storage-question">
       <p ref={heading} tabIndex={-1} role="alert" className="font-medium outline-none">
         Waiting for your choice: store the {fragment ? 'browse index' : 'pack'} ({formatBytes(question.bytes)}) on Dash Platform?
       </p>

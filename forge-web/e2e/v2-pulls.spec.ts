@@ -227,6 +227,8 @@ test('c7. the owner merges a divergent PR in the browser (merge commit, Platform
   for (const s of ['fetch', 'merge', 'pack', 'upload', 'manifest', 'index', 'ref']) {
     await expect(steps.locator(`[data-step="${s}"]`)).toHaveAttribute('data-state', 'done')
   }
+  // Pre-allowed before the merge: the run never stopped to ask.
+  await expect(page.getByTestId('storage-question')).toHaveCount(0)
   await page.getByTestId('merge-panel').scrollIntoViewIfNeeded()
   await shot(page, 'c-merge-steps-done')
 

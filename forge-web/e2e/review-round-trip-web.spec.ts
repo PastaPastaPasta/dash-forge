@@ -264,12 +264,24 @@ test('r6. squash and merge with an edited message; the branch is deleted', async
   await expect(msg).toHaveValue(/Co-authored-by: E2E Contrib <contrib@e2e\.forge\.invalid>/)
   await msg.fill(`${TITLE} (#${prNumber})\n\nSquashed in the browser (${RUN}).\n\nCo-authored-by: E2E Contrib <contrib@e2e.forge.invalid>`)
   await expect(panel.getByLabel(/Delete .*feature\/greet after merging/)).toBeChecked()
-  // Where the pack goes is answered before the merge starts; the run then never stops to ask.
+  // Where the pack goes is offered before the merge starts (pre-allowed: the policy is Platform).
   await expectPlatformPreAllowed(panel)
   await shot(page, 'review-rt-05-squash-box')
+  // Untick it: the run then stops at the upload for the choice. Switch tabs while it waits;
+  // the merge box stays on screen with the question, and back on the conversation it is answered
+  // and the merge completes.
+  await panel.getByTestId('allow-platform').uncheck()
   await panel.getByRole('button', { name: 'Squash and merge' }).click()
+  const ask = panel.getByTestId('storage-question')
+  await expect(ask).toBeVisible({ timeout: 180_000 })
+  await expect(panel.locator('[data-step="upload"]')).toHaveAttribute('data-state', 'waiting')
+  await page.getByTestId('pr-tab-commits').click()
+  await expect(page.getByTestId('pr-tab-commits')).toHaveAttribute('aria-selected', 'true')
+  await expect(ask).toBeVisible()
+  await shot(page, 'review-rt-05b-waiting-on-commits')
+  await page.getByTestId('pr-tab-conversation').click()
+  await ask.getByRole('button', { name: /sign & store on platform/i }).click()
   await expect(panel.locator('[data-step="upload"]')).toHaveAttribute('data-state', 'done', { timeout: 300_000 })
-  await expect(panel.getByTestId('storage-question')).toHaveCount(0)
   await expect(panel.locator('[data-step="event"]')).toHaveAttribute('data-state', 'done', { timeout: 300_000 })
   await expect(page.getByTestId('branch-deleted')).toBeVisible({ timeout: 180_000 })
   await expect(page.getByTestId('pr-state')).toHaveText('Merged', { timeout: 180_000 })
