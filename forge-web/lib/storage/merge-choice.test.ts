@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { estimateChunkCredits } from '../sdk/cost'
-import { fragmentBytes, storageChoice, withinPreAgreement } from './merge-choice'
+import { fragmentBytes, remainingPreAgreement, storageChoice, widenEstimate, withinPreAgreement } from './merge-choice'
 import type { StorageProfile } from './profiles'
 
 const platform = { name: 'chain', settings: { kind: 'platform', provider: 'platform' }, secrets: {} } as unknown as StorageProfile
@@ -42,5 +42,20 @@ describe('where a merge will store its pack, decided before it starts', () => {
     expect(withinPreAgreement(null, 1)).toBe(false)
     expect(withinPreAgreement(1000, 1000)).toBe(true)
     expect(withinPreAgreement(1000, 1001)).toBe(false)
+  })
+
+  it('the cap is spent across the run: what a copy used is gone for the next', () => {
+    expect(remainingPreAgreement(1000, 600)).toBe(400)
+    expect(remainingPreAgreement(1000, 1600)).toBe(0)
+    expect(remainingPreAgreement(null, 10)).toBeNull()
+    expect(withinPreAgreement(remainingPreAgreement(1000, 600), 500)).toBe(false)
+  })
+
+  it("widens the check's estimate by the real commit's identity and message", () => {
+    const long = 'x'.repeat(10_000)
+    const w = widenEstimate({ bytes: 100, objectCount: 2 }, long)!
+    expect(w.bytes).toBeGreaterThan(100 + 10_000)
+    expect(w.objectCount).toBe(2)
+    expect(widenEstimate(null, long)).toBeNull()
   })
 })

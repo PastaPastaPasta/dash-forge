@@ -93,3 +93,23 @@ export function storageChoice(
 export function withinPreAgreement(preAgreedCredits: number | null, neededCredits: number): boolean {
   return preAgreedCredits !== null && neededCredits <= preAgreedCredits
 }
+
+/**
+ * What is left of a pre-answer after a copy: the cap covers the whole run (the pack and its
+ * index fragment together), so each Platform copy spends from it. Null stays null (no pre-answer).
+ */
+export function remainingPreAgreement(preAgreedCredits: number | null, spentCredits: number): number | null {
+  return preAgreedCredits === null ? null : Math.max(0, preAgreedCredits - spentCredits)
+}
+
+/**
+ * The check's estimate, widened for what the check could not know: it wrote its trial commit
+ * with a placeholder identity and the message of the moment, while the real commit carries the
+ * merger's identity (author and committer) and the message as it is now. Adding their full size
+ * (and zlib's worst-case overhead on it) keeps the bound.
+ */
+export function widenEstimate(estimate: PackEstimate | null, commitText: string): PackEstimate | null {
+  if (estimate === null) return null
+  const n = new TextEncoder().encode(commitText).length
+  return { bytes: estimate.bytes + n + (n >>> 12) + 64, objectCount: estimate.objectCount }
+}

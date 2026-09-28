@@ -3,7 +3,7 @@
  * `question` is waiting on the merger ("Waiting for your choice"), and renders it inline.
  */
 
-import { Check, Loader2, Minus, X } from 'lucide-react'
+import { Check, CirclePause, Loader2, Minus, X } from 'lucide-react'
 
 import { cn } from '@/lib/utils'
 
@@ -26,7 +26,7 @@ export function StepRow({
   return (
     <li className={cn('text-dense', state === 'todo' && 'text-anvil-500 dark:text-anvil-400')} data-step={id} data-state={waiting ? 'waiting' : state}>
       <span className="flex items-center gap-2">
-        <StepIcon state={state} />
+        {waiting ? <CirclePause className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden /> : <StepIcon state={state} />}
         {label}
         {waiting ? (
           <span className="text-[12px] font-medium text-caution-700 dark:text-caution-400">Waiting for your choice</span>

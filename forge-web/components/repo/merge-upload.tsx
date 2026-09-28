@@ -10,13 +10,13 @@
  * ({@link StorageQuestion}, rendered in the step list), never behind a modal.
  */
 
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 
 import type { RepoRef } from '@/lib/repo'
 import { previewCredits } from '@/lib/sdk'
 import { estimateChunkCredits } from '@/lib/sdk/cost'
 import { policyForRepo, storeArtifact, type PlatformQuestion } from '@/lib/storage'
-import { fragmentBytes, storageChoice, type PackEstimate, type StorageChoice } from '@/lib/storage/merge-choice'
+import { fragmentBytes, remainingPreAgreement, storageChoice, type PackEstimate, type StorageChoice } from '@/lib/storage/merge-choice'
 import type { UploadPack } from '@/lib/merge/runner'
 import { formatBytes } from '@/lib/view'
 import { useStorageConfig } from '@/hooks/use-storage-config'
@@ -69,9 +69,11 @@ export function useMergeUpload(repo: RepoRef): MergeUpload {
       if (agreed.current === null) packObjects.current = info.objectCount
       if (!sdk || !signer) throw new Error('sign in to continue')
       if (config === null) throw new Error("your storage settings aren't unlocked yet")
-      // The pre-answer covers the pack and its index fragment (both priced in the Storage row);
-      // an answer given mid-run covers the rest of the run (`confirmPlatform` remembers it).
+      // The pre-answer covers the pack and its index fragment together (both priced in the
+      // Storage row): each Platform copy spends from it, and one past what is left asks. An
+      // answer given mid-run covers the rest of the run (`confirmPlatform` remembers it).
       const stored = await storeArtifact(sdk, signer, repo, bytes, { policy, profiles: config.profiles, confirmPlatform, preAgreedCredits: preAgreed.current })
+      if (stored.storage === 0) preAgreed.current = remainingPreAgreement(preAgreed.current, estimateChunkCredits(bytes.length))
       return { storage: stored.storage, chunkCount: stored.chunkCount, uris: stored.uris }
     },
     [sdk, signer, config, policy, repo, confirmPlatform],
@@ -111,9 +113,18 @@ function StorageQuestion({
   onAnswer: (ok: boolean) => void
 }): JSX.Element {
   const indexBytes = fragmentBytes(objects)
+  // The run has stopped for the merger: say so (a live region) and bring it into view, focusing
+  // the question itself rather than a button, so a stray Enter never pays.
+  const heading = useRef<HTMLParagraphElement>(null)
+  useEffect(() => {
+    heading.current?.scrollIntoView?.({ block: 'nearest' })
+    heading.current?.focus({ preventScroll: true })
+  }, [])
   return (
     <div className="mt-2 space-y-2 rounded-md border border-caution/50 bg-caution/5 px-3 py-2 text-dense" role="group" aria-label="Waiting for your choice" data-testid="storage-question">
-      <p className="font-medium">Waiting for your choice: store the pack ({formatBytes(question.bytes)}) on Dash Platform?</p>
+      <p ref={heading} tabIndex={-1} role="alert" className="font-medium outline-none">
+        Waiting for your choice: store the pack ({formatBytes(question.bytes)}) on Dash Platform?
+      </p>
       <p className="text-[12px] text-anvil-600 dark:text-anvil-400">{question.reason} Platform storage is permanent and paid once.</p>
       <div className="flex flex-wrap items-center gap-2">
         <CostPreview cost={previewCredits(question.estimateCredits + estimateChunkCredits(indexBytes))} />
@@ -140,11 +151,15 @@ export function StorageRow({
   choice,
   allowed,
   onAllow,
+  disabled = false,
 }: {
   choice: StorageChoice | null
   allowed: boolean
   onAllow: (allowed: boolean) => void
+  /** While a run is going: its cap was fixed when it started. */
+  disabled?: boolean
 }): JSX.Element | null {
+  const priceId = useId()
   if (choice === null) return null
   const uses = choice.platform.kind !== 'never'
   return (
@@ -155,11 +170,23 @@ export function StorageRow({
       </p>
       {uses ? (
         <>
-          <label className="flex flex-wrap items-center gap-2 text-dense text-anvil-700 dark:text-anvil-200">
-            <input type="checkbox" className="h-4 w-4 accent-forge-700" checked={allowed} onChange={(e) => onAllow(e.target.checked)} data-testid="allow-platform" />
-            Allow storing on Platform, up to
-            {choice.platformCredits !== null ? <CostPreview cost={previewCredits(choice.platformCredits)} /> : <span>the pack&apos;s price (sized when the merge is checked)</span>}
-          </label>
+          <div className="flex flex-wrap items-center gap-2 text-dense text-anvil-700 dark:text-anvil-200">
+            <label className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-forge-700"
+                checked={allowed}
+                disabled={disabled}
+                onChange={(e) => onAllow(e.target.checked)}
+                aria-describedby={priceId}
+                data-testid="allow-platform"
+              />
+              Allow storing on Platform, up to
+            </label>
+            <span id={priceId}>
+              {choice.platformCredits !== null ? <CostPreview cost={previewCredits(choice.platformCredits)} /> : <>the pack&apos;s price (sized when the merge is checked)</>}
+            </span>
+          </div>
           <p>Unchecked, the merge asks when it gets there, with the price.</p>
         </>
       ) : null}

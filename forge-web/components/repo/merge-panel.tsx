@@ -34,7 +34,7 @@ import { mergeButton, mergeRefProblem } from '@/lib/view/pull-actions'
 import { publishMergeIndex } from '@/lib/merge/locator'
 import { StorageRow, useMergeUpload } from '@/components/repo/merge-upload'
 import { StepRow, type StepState } from '@/components/repo/step-list'
-import type { PackEstimate } from '@/lib/storage/merge-choice'
+import { widenEstimate, type PackEstimate } from '@/lib/storage/merge-choice'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { mergeIdentityValid } from '@/lib/view/prefs'
 import { branchName, tipOidOf, type DiffSides, type ObjectReader } from '@/lib/view'
@@ -100,12 +100,8 @@ export function MergePanel({
   const { upload, question: storageQuestion, choiceFor, begin, storageNeedsUnlock } = useMergeUpload(repo)
   // The check sizes the pack (an upper bound): the Storage row prices it before the merge starts.
   const [packEstimate, setPackEstimate] = useState<PackEstimate | null>(null)
-  const storage = choiceFor(packEstimate)
   // "Allow storing on Platform": until the merger touches it, its default follows the policy.
   const [allowTouched, setAllowTouched] = useState<boolean | null>(null)
-  const allowPlatform = allowTouched ?? storage?.allowByDefault ?? false
-  // The pre-answer the run starts with: credits allowed on Platform (null: none, it asks).
-  const preAgreedCredits = allowPlatform ? (storage?.platformCredits ?? null) : null
   const baseRefName = pull.state.baseRef ?? pull.baseRefName
   const baseProtected = matchesProtected(baseRefName, protectedPatterns)
   const refProblem = mergeRefProblem(baseRefName, baseTipOid, pull.headOid, pull.baseRefName)
@@ -138,6 +134,12 @@ export function MergePanel({
     }),
     [baseTipOid, pull.headOid, pull.number, pull.sourceRefName, pull.title, prefs.mergeName, prefs.mergeEmail, sameRepo, method, squashMsg],
   )
+  // Widened for the real commit's identity (author and committer) and the squash message as it
+  // is now: the check used a placeholder identity and the message of the moment.
+  const storage = choiceFor(widenEstimate(packEstimate, `${input.author.name}${input.author.email}`.repeat(2) + (input.squash?.message ?? '')))
+  const allowPlatform = allowTouched ?? storage?.allowByDefault ?? false
+  // The pre-answer the run starts with: credits allowed on Platform (null: none, it asks).
+  const preAgreedCredits = allowPlatform ? (storage?.platformCredits ?? null) : null
 
   // The worker's verdict. Each check owns its worker and aborts it when superseded or
   // unmounted, so a stale check never keeps reading objects.
@@ -167,7 +169,8 @@ export function MergePanel({
       },
     )
     return () => abort.abort()
-  }, [checkable, reader, sidesKey, baseTipOid, pull.headOid])
+    // The method changes what the pack holds (a squash packs none of the head's history): re-size.
+  }, [checkable, reader, sidesKey, baseTipOid, pull.headOid, method])
   const button = mergeButton({
     canMerge,
     isPublic: repo.visibility === 'public',
@@ -404,7 +407,7 @@ export function MergePanel({
             <CostPreview cost={cost} />
             <span>plus the pack&apos;s storage (below)</span>
           </div>
-          <StorageRow choice={storage} allowed={allowPlatform} onAllow={setAllowTouched} />
+          <StorageRow choice={storage} allowed={allowPlatform} onAllow={setAllowTouched} disabled={busy} />
         </div>
       ) : null}
 
