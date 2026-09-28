@@ -17,7 +17,8 @@ import { ACTIVE_NETWORK } from '@/lib/constants'
 import { dashRange, PUSH_COST_DASH } from '@/lib/sdk/cost'
 import { repoCommands, shellWord } from '@/lib/view/repo-commands'
 import type { BrowseReader } from '@/lib/browse'
-import { walkFiles } from '@/lib/view/zip'
+import { loadRepoFacts, repoFilesWalk } from '@/lib/view/repo-facts'
+import { repoKey } from '@/lib/repo'
 import type { RepoHome, SelectedRef } from '@/lib/view'
 import { plural } from '@/lib/view/format'
 import {
@@ -168,6 +169,16 @@ function RootBody({
     { enabled: data !== null },
   )
   const readmeRepo = useMemo<MarkdownRepoContext>(() => ({ addr, refParam, dir: '', reader, tipOid }), [addr, refParam, reader, tipOid])
+  // The About card's LICENSE and language bar (F-5): worked out only once everything the page
+  // shows has settled (list, README, commit count and column), so they never delay it.
+  const key = repoKey(home.repo)
+  const settled = data !== null && !readme.loading && commits.data !== null && lastCommits.done
+  useEffect(() => {
+    if (!settled || data === null) return
+    const stop = new AbortController()
+    void loadRepoFacts(key, tipOid, reader, data.tree, data.entries, stop.signal).catch(() => undefined)
+    return () => stop.abort()
+  }, [settled, key, tipOid, reader, data])
 
   if (loading && !data) return <LoadingBlock label="Reading root tree" />
   if (cause instanceof PackUnavailableError) {
@@ -192,7 +203,7 @@ function RootBody({
           {commits.data ? plural(commits.data.capped ? `${commits.data.count}+` : commits.data.count, 'commit') : 'Commits'}
         </Link>
         <Oid value={tipOid} />
-        <GoToFile reader={reader} rootTree={data.tree} addr={addr} refParam={refParam} />
+        <GoToFile reader={reader} repoKey={key} tipOid={tipOid} rootTree={data.tree} addr={addr} refParam={refParam} />
       </div>
 
       <FileList
@@ -269,25 +280,29 @@ function CommitCell({
 }
 
 /**
- * Go to file: a filename filter over a walk of the shown tree (never `flatIndex`, which home
- * must not load). The walk starts on first focus and stops at {@link GO_TO_FILE_MAX} paths.
+ * Go to file: a filename filter over the bounded walk of the shown tree (never `flatIndex`, which
+ * home must not load), shared with the language bar. It starts on first focus if not already run.
  */
-const GO_TO_FILE_MAX = 5000
 
 function GoToFile({
   reader,
+  repoKey: key,
+  tipOid,
   rootTree,
   addr,
   refParam,
 }: {
   reader: BrowseReader
+  repoKey: string
+  tipOid: string
   rootTree: string
   addr: RepoAddress
   refParam: string
 }): JSX.Element {
   const [started, setStarted] = useState(false)
   const [query, setQuery] = useState('')
-  const walk = useAsync(() => walkFiles(reader, rootTree, GO_TO_FILE_MAX), [rootTree], { enabled: started })
+  // The same walk as the language bar's (one per commit), started here on first focus if first.
+  const walk = useAsync(() => repoFilesWalk(key, tipOid, reader, rootTree), [key, tipOid], { enabled: started })
   const q = query.trim().toLowerCase()
   const hits = q === '' ? [] : (walk.data?.files ?? []).map((f) => f.path).filter((p) => p.toLowerCase().includes(q)).slice(0, 12)
   return (
@@ -328,7 +343,7 @@ function GoToFile({
             </li>
           ))}
           {walk.data?.truncated ? (
-            <li className="px-3 py-1.5 text-[11px] text-anvil-500 dark:text-anvil-400">Searched the first {GO_TO_FILE_MAX} files.</li>
+            <li className="px-3 py-1.5 text-[11px] text-anvil-500 dark:text-anvil-400">Searched the first {plural(walk.data.files.length, 'file')}.</li>
           ) : null}
         </ul>
       ) : null}

@@ -20,6 +20,8 @@ import {
   isLive,
   readGatewaysFor,
   NO_CONTENT_CHECKS,
+  refParamFor,
+  selectedTip,
   subscribeContentChecks,
   timeAgo,
   type RepoHome,
@@ -35,6 +37,7 @@ import { useReleases, useViewerRole } from '@/hooks/use-repo-chrome'
 import { TrustPanel } from '@/components/ui/trust-panel'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { CloneBox } from '@/components/repo/clone-box'
+import { RepoFactsRows } from '@/components/repo/repo-facts-card'
 import { Author } from '@/components/author'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 
@@ -85,7 +88,7 @@ export function RepoRail({
       {isPrivate && role === null ? null : (
         <>
           <CloneBox home={home} addr={addr} selected={selected} />
-          <About home={home} addr={addr} />
+          <About home={home} addr={addr} selected={selected} />
           <Members repo={home.repo} />
           <LatestRelease home={home} addr={addr} />
         </>
@@ -106,7 +109,7 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
   )
 }
 
-function About({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
+function About({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; selected: SelectedRef }): JSX.Element {
   return (
     <Card title="About">
       {home.description ? <p className="mb-2 text-anvil-700 dark:text-anvil-200">{home.description}</p> : null}
@@ -122,6 +125,7 @@ function About({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Eleme
       <Row icon={<Star className="h-3.5 w-3.5" aria-hidden />} label="Stars" href={repoHref('/repo/stargazers', addr)}>
         {home.starCount ?? <span title="Couldn't read the star count from Platform">–</span>}
       </Row>
+      <RepoFactsRows repoKey={repoKey(home.repo)} tipOid={selectedTip(selected)} addr={addr} refParam={selected.pinned ?? refParamFor(selected.name, selected.isTag, home.defaultBranch)} />
       <div className="mt-2 flex items-center justify-between gap-2 border-t border-anvil-100 pt-2 dark:border-anvil-850">
         <span className="text-anvil-500 dark:text-anvil-400">Storage</span>
         <BackendBadge backend={home.backend} />
