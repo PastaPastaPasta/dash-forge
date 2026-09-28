@@ -81,6 +81,7 @@ import {
   KeyUnusableError,
   SupersededWriteError,
   UnconfirmedWriteError,
+  UNREADABLE_REFUSAL_CODE,
   contentHash,
   WAIT_SETTINGS,
   createDocumentIdempotent,
@@ -853,6 +854,29 @@ describe('a damaged cached transition, and 10002 (protocol 14)', () => {
       expect(store.size).toBe(0)
       await createDocumentIdempotent(sdk, auth([]), params)
       expect(signed).toEqual([2n, 2n, 3n])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('a refusal whose reason the SDK cannot decode (platform#5053) is discarded, never left pending', async () => {
+    const store = new Map<string, string>()
+    const { sdk, signed } = lostAttempt(store, () => {
+      throw sdkRefusal('platform deserialization error: unable to deserialize ConsensusError: UnexpectedEnd { additional: 18 }')
+    })
+    try {
+      const params = { ...write, contractId: 'T3', intent: 'undecodable' }
+      await createDocumentIdempotent(sdk, auth([]), params).catch(() => undefined)
+      const err = await createDocumentIdempotent(sdk, auth([]), params).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(ConsensusRefusal)
+      expect(err).not.toBeInstanceOf(UnconfirmedWriteError)
+      expect((err as ConsensusRefusal).code).toBe(UNREADABLE_REFUSAL_CODE)
+      expect((err as ConsensusRefusal).feeCharged).toBe(false)
+      expect(store.size).toBe(0)
+      await createDocumentIdempotent(sdk, auth([]), params)
+      // The refused bytes are never re-sent: the retry signs a new transition, one nonce on
+      expect(signed).toHaveLength(3)
+      expect(signed[2]).toBe(signed[1]! + 1n)
     } finally {
       vi.unstubAllGlobals()
     }

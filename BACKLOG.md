@@ -4,10 +4,11 @@ Small follow-ups that are known and accepted, not yet scheduled. Larger work is 
 
 ## Platform SDK
 
-- **TODO: bump the JS SDK to 4.2.0-beta.5 (blocked on dashpay/platform#5077).** moutai runs drive 4.2.0-beta.5 since the 2026-09-27 reset, and the Rust crates are on the `v4.2.0-beta.5` tag. `@dashevo/evo-sdk@4.2.0-beta.5` is on npm, but the dependency it pins, `@dashevo/wasm-sdk@4.2.0-beta.5`, was never published: the release's NPM job failed with ENEEDAUTH. So forge-web, `tools/mint-identity` and `forge-contracts/sdk-v2` stay on the beta.4 pair. A beta.4 client works against beta.5 (identities, contract registration, documents, proofs; `/Users/pasta/workspace/dash-forge-qa/BETA5-ANALYSIS.md`). Once wasm-sdk beta.5 is published:
+- **TODO: bump the JS SDK to 4.2.0-beta.6 once `@dashevo/wasm-sdk@4.2.0-beta.6` is on npm** (the release's NPM job failed: "Required runner group 'platform-npm-releases' not found"). moutai runs drive 4.2.0-beta.6 since the 2026-09-28 reset and the Rust crates are on the `v4.2.0-beta.6` tag; forge-web, `tools/mint-identity` and `forge-contracts/sdk-v2` stay on the beta.5 pair, which reads and writes on beta.6 nodes. When it is published:
   - move the pins in all three `package.json` files and `forge-web/pnpm-workspace.yaml` together, and refresh the locks;
-  - pass `contestFund` where a contested DPNS name is registered, if the default is not enough;
-  - only then register schema changes that use the new `propertyConstraints` forms (C-1), since beta.4 clients cannot parse them.
+  - **delete `forge-web/lib/sdk/consensus-shift.ts`** and its use in `asConsensusRefusal` with the 11001 / 10904 patterns (platform#5053: until then the pinned SDK decodes a beta.6 node's CheckTx refusal one variant off; `consensus-shift.test.ts` fails once `PINNED_WASM_SDK` no longer matches package.json, as a reminder), and set the 10421 fixture in `write-errors.test.ts` back to 10421;
+  - beta.6 JS carries the node's code on every refusal path (platform#5112), so `REFUSAL_PATTERNS` becomes a fallback;
+  - only then register contracts that use the beta.6 `propertyConstraints` forms (`$ownerId`, `startsWith`, `countOf`, …), since beta.5 clients cannot parse them (BETA6-ANALYSIS §3.1).
 
 ## Cost estimates
 

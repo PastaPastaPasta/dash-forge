@@ -39,7 +39,9 @@ describe('asConsensusRefusal decodes the SDK text (D-007)', () => {
     ['Protocol error: Current credits balance 10 is not enough to pay 20 fee', 30000],
     ['Protocol error: Document Abc has duplicate unique properties ["repoId", "number"] with other documents', 40105],
     ['Protocol error: referenced document Xyz not found for path repoId', 40120],
-    ['Protocol error: Property body is 6000 bytes in UTF-8, over its maxBytes of 5120', 10421],
+    // The pinned SDK renders a beta.6 node's 10422 with the 10421 text (platform#5053,
+    // lib/sdk/consensus-shift.ts); a real 10421 arrives as the 11001 text.
+    ['Protocol error: Property body is 6000 bytes in UTF-8, over its maxBytes of 5120', 10422],
   ])('reads %s', (message, code) => {
     expect(asConsensusRefusal(wasm(message))?.code).toBe(code)
   })
@@ -163,6 +165,26 @@ describe('protocol 14 refusals: expired, contest full, trailing bytes', () => {
     expect(f.message).toMatch(/re-sign/)
     expect(f.message).toMatch(/discarded/)
     expect(f.message).toMatch(/Nothing was charged/)
+  })
+})
+
+describe('field-size and contract-bound refusals say whether a fee was taken', () => {
+  // At the broadcast check nothing is charged; in a block they take the paid nonce-bump path.
+  it.each([10417, 10421, 20014])('%i at the broadcast check: nothing charged', (code) => {
+    const r = new ConsensusRefusal(code, 'x', {}, false)
+    expect(r.feeCharged).toBe(false)
+    expect(writeFailure(r).message).toMatch(/Nothing was charged/)
+  })
+  it.each([10417, 10421, 20014])('%i in a block: its processing fee was charged', (code) => {
+    const r = new ConsensusRefusal(code, 'x', {}, true)
+    expect(r.unpaid).toBe(false)
+    expect(r.feeCharged).toBe(true)
+    expect(writeFailure(r).message).toMatch(/fee was charged/)
+    expect(writeFailure(r).message).not.toMatch(/Nothing was charged/)
+  })
+  it('a nonce or undecodable-transition refusal stays unpaid even in a block', () => {
+    expect(new ConsensusRefusal(40204, 'x', {}, true).feeCharged).toBe(false)
+    expect(new ConsensusRefusal(10002, 'x', {}, true).feeCharged).toBe(false)
   })
 })
 

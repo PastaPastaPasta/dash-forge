@@ -20,6 +20,7 @@ import {
   KeyUnusableError,
   type KeyUnusableReason,
   MALFORMED_TRANSITION_CODE,
+  UNREADABLE_REFUSAL_CODE,
   SupersededWriteError,
   UnconfirmedWriteError,
   WriterBusyError,
@@ -69,9 +70,13 @@ function refusalSentence(r: ConsensusRefusal): string {
       return `Platform refused it: that field cannot be changed once written. ${charged}`
     case 10417:
     case 10421:
-      return 'Platform refused it: a field is longer than the contract allows. Shorten it and try again. Nothing was charged.'
+      return `Platform refused it: a field is longer than the contract allows. Shorten it and try again. ${charged}`
+    case 10422:
+      return `Platform refused it: it breaks one of the contract's rules for this kind of document (for example a sealed field sent in plain text, or a status without the field it needs). ${charged}`
     case 20014:
-      return "Platform refused it: this browser's key is not allowed to sign for this contract. Nothing was charged."
+      return `Platform refused it: this browser's key is not allowed to sign for this contract. ${charged}`
+    case UNREADABLE_REFUSAL_CODE:
+      return `Platform refused it, but this app could not read the reason (its Platform SDK is older than the network's). ${charged} Reload to pick up the current app version; if it still fails, report it.`
     case MALFORMED_TRANSITION_CODE:
       return 'Platform could not read this write, so it was discarded. Nothing was charged. Try again to re-sign it; if it fails again, reload the page to pick up the current app version.'
     case DOCUMENT_EXPIRED_CODE:
