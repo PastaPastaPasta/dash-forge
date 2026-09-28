@@ -120,6 +120,9 @@ test.beforeAll(() => {
   repoId = String(dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform')['repoId'])
   git('OWNER', src, ['push', '-q', `dash://${SLUG}`, 'main:refs/heads/main'])
   dg('CONTRIB', 'repo', 'fork', SLUG, '--name', FORK)
+  // The contributor lets the maintainer write the fork (as "allow edits by maintainers"): only
+  // a writer of the source repo is offered "Delete the branch after merging" (r6).
+  dg('CONTRIB', 'collab', 'add', FORK_SLUG, ids.owner, '--role', 'writer')
   const w = join(WORK, 'fork')
   git('CONTRIB', WORK, ['clone', '-q', `dash://${FORK_SLUG}`, w])
   const gw = (...a: string[]): void => void execFileSync('git', a, { cwd: w })
