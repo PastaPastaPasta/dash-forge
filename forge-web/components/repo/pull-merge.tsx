@@ -5,6 +5,8 @@
  * head lives in), the base branch's tip, and the repo's protected patterns.
  */
 
+import { useState } from 'react'
+
 import type { PullView, RepoRef } from '@/lib/repo'
 import { tipOidOf, type RepoHome } from '@/lib/view'
 import { mergeBaseTip } from '@/lib/view/pull-actions'
@@ -32,8 +34,13 @@ export function PullMerge({
   /** Review-parity additions: allowed methods, squash authors, delete the branch after merging. */
   extras?: MergeExtras
 }): JSX.Element | null {
+  // Once shown, the panel stays for the rest of this page view: a merge in it refreshes the PR,
+  // which then reads Merged (and `canMerge` turns false) while the panel still has its last steps
+  // to report and the branch to delete. Unmounting it there would drop both silently.
+  const [shown, setShown] = useState(canMerge)
+  if (canMerge && !shown) setShown(true)
   // Only a maintainer or writer resolves the readers the merge needs.
-  if (!canMerge) return null
+  if (!canMerge && !shown) return null
   return <MergeReaders repo={repo} home={home} pull={pull} isMaintainer={isMaintainer} checkout={checkout} onMerged={onMerged} extras={extras} />
 }
 

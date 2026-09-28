@@ -258,8 +258,9 @@ export function MergePanel({
     }
   }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, deletable, alsoDelete])
 
-  if (button.kind === 'hidden') return null
+  // A run in this panel keeps it on screen to the end (the PR reads Merged meanwhile).
   const started = Object.keys(steps).length > 0
+  if (button.kind === 'hidden' && !started && newTip === null) return null
 
   return (
     <section aria-label="Merge" data-testid="merge-panel" className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
@@ -304,6 +305,9 @@ export function MergePanel({
             </>
           ) : button.kind === 'unavailable' ? (
             <span className="text-dense text-anvil-600 dark:text-anvil-400">{button.reason}</span>
+          ) : button.kind === 'hidden' ? (
+            // Only after this panel's own merge (the PR now reads Merged): its steps stay below.
+            <span className="text-dense text-anvil-600 dark:text-anvil-400">Merged</span>
           ) : (
             <Button disabled>{button.label}</Button>
           )}
