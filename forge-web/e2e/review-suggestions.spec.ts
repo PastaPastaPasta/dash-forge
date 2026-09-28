@@ -66,12 +66,6 @@ function git(who: string, dir: string, args: string[]): string {
 const pr = (extra = ''): string => `/repo/pull/?owner=${ids.owner}&name=${REPO}&number=${prNumber}${extra}`
 const lineButton = (page: Page, line: number) => page.getByRole('button', { name: `Comment on new line ${line} of ${FILE}` }).first()
 
-async function confirmWrite(page: Page, label: RegExp): Promise<void> {
-  const dialog = page.getByRole('dialog')
-  await expect(dialog.getByTestId('cost-preview')).toBeVisible()
-  await dialog.getByRole('button', { name: label }).click()
-  await expect(dialog).toBeHidden({ timeout: 180_000 })
-}
 
 /** Set the browser's commit identity (Settings), as a merge needs. */
 async function commitIdentity(page: Page, name: string, email: string): Promise<void> {
