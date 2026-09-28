@@ -14,7 +14,7 @@
 
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import { useEffect, useMemo, useState, type ReactNode } from 'react'
+import { Suspense, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { CircleDot, Compass, GitBranch, GitPullRequest, History, Info, Package, Search, Star, UserCheck } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { SignInButton } from '@/components/sign-in-button'
@@ -28,7 +28,7 @@ import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { repoHref } from '@/hooks/use-query-param'
 import { useRepoPages, type RepoPages } from '@/hooks/use-repo-pages'
 import { useSdk } from '@/hooks/use-sdk'
-import { NETWORKS } from '@/lib/constants'
+import { NETWORKS, type Network } from '@/lib/constants'
 import { listReposByOwner, resolveDpnsName, timeAgo, type DiscoveredRepo } from '@/lib/view'
 import { mostStarredRepos, recentReposPage, recentlyUpdated, searchPrefix, searchRepos, PUSH_WINDOW_MS } from '@/lib/view/discovery'
 import {
@@ -58,14 +58,6 @@ export function ExploreClient(): JSX.Element {
   const { identity } = useAuth()
   const forge = NETWORKS[network].v2
   const on = ready && sdk !== null && forge !== null
-
-  // Search lives in the URL (`?q=`), so a search can be shared and survives a reload.
-  const router = useRouter()
-  const pathname = usePathname()
-  const params = useSearchParams()
-  const q = (params.get('q') ?? '').trim()
-  const prefix = searchPrefix(q)
-  const search = useRepoPages<string>((after) => searchRepos(sdk!, q, { network, after }), `${network}:${q}`, on && prefix !== null)
 
   const recent = useRepoPages<number>((after) => recentReposPage(sdk!, { network, after }), network, on)
   const starred = useAsync(() => mostStarredRepos(sdk!, { network, limit: TOP_N }), [ready, network], { enabled: on })
@@ -136,40 +128,11 @@ export function ExploreClient(): JSX.Element {
           <DownloadProgressBar status={sdkStatus} />
         ) : null}
 
-        <SearchBox
-          initial={q}
-          onSearch={(text) => {
-            const next = new URLSearchParams(params.toString())
-            if (text === '') next.delete('q')
-            else next.set('q', text)
-            const qs = next.toString()
-            router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
-          }}
-        />
-        {q !== '' ? (
-          prefix === null ? (
-            <p role="status" className="rounded-lg border border-dashed border-anvil-300 px-4 py-3 text-dense text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="explore-search-invalid">
-              Repo names use only a-z, 0-9, dot, dash and underscore, so no repo name starts with “{q}”.
-            </p>
-          ) : (
-            <Section
-              title={`Repos starting with “${prefix}”`}
-              testId="explore-search-results"
-              icon={Search}
-              state={pagesState(search)}
-              empty={`No repo name starts with “${prefix}”.`}
-              note="Matched on the repo name index, A to Z. Descriptions and code are not searched: that needs an indexer."
-            >
-              {(d) => (
-                <>
-                  <FallbackNote pages={search} />
-                  <PagedGrid repos={d} pages={search} what="results" />
-                </>
-              )}
-              {(d) => d.length === 0}
-            </Section>
-          )
-        ) : null}
+        {/* Only the search reads the URL's query, so only it waits on Suspense: the page shell
+            (and its skip link) is the static HTML, never swapped out on hydration. */}
+        <Suspense fallback={null}>
+          <ExploreSearch on={on} network={network} />
+        </Suspense>
 
         <Section
           title={starred.data === null || starred.data.complete ? 'Most starred' : `Most starred among ${starred.data.starsRead} stars read`}
@@ -303,6 +266,56 @@ export function ExploreClient(): JSX.Element {
         </Section>
       </div>
     </AppShell>
+  )
+}
+
+/** The repo-name search: the box writes `?q=`, and the results page through the `repo.name` index. */
+function ExploreSearch({ on, network }: { on: boolean; network: Network }): JSX.Element {
+  const { sdk } = useSdk()
+  // Search lives in the URL (`?q=`), so a search can be shared and survives a reload.
+  const router = useRouter()
+  const pathname = usePathname()
+  const params = useSearchParams()
+  const q = (params.get('q') ?? '').trim()
+  const prefix = searchPrefix(q)
+  const search = useRepoPages<string>((after) => searchRepos(sdk!, q, { network, after }), `${network}:${q}`, on && prefix !== null)
+  return (
+    <>
+      <SearchBox
+        initial={q}
+        onSearch={(text) => {
+          const next = new URLSearchParams(params.toString())
+          if (text === '') next.delete('q')
+          else next.set('q', text)
+          const qs = next.toString()
+          router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false })
+        }}
+      />
+      {q !== '' ? (
+        prefix === null ? (
+          <p role="status" className="rounded-lg border border-dashed border-anvil-300 px-4 py-3 text-dense text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-testid="explore-search-invalid">
+            Repo names use only a-z, 0-9, dot, dash and underscore, so no repo name starts with “{q}”.
+          </p>
+        ) : (
+          <Section
+            title={`Repos starting with “${prefix}”`}
+            testId="explore-search-results"
+            icon={Search}
+            state={pagesState(search)}
+            empty={`No repo name starts with “${prefix}”.`}
+            note="Matched on the repo name index, A to Z. Descriptions and code are not searched: that needs an indexer."
+          >
+            {(d) => (
+              <>
+                <FallbackNote pages={search} />
+                <PagedGrid repos={d} pages={search} what="results" />
+              </>
+            )}
+            {(d) => d.length === 0}
+          </Section>
+        )
+      ) : null}
+    </>
   )
 }
 
