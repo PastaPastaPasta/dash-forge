@@ -42,8 +42,8 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
         RepoCommand::Create(args) => crate::publish::create(ctx, args).await,
         RepoCommand::Clone { repo, dir } => clone(ctx, repo, dir.as_deref()),
         RepoCommand::Fork { repo, name } => fork(ctx, repo, name.as_deref()).await,
-        RepoCommand::Star { repo } => star(ctx, repo, true).await,
-        RepoCommand::Unstar { repo } => star(ctx, repo, false).await,
+        RepoCommand::Star { repo, no_trending } => star(ctx, repo, true, !no_trending).await,
+        RepoCommand::Unstar { repo } => star(ctx, repo, false, false).await,
         RepoCommand::View { repo } => view(ctx, repo).await,
         RepoCommand::List { owner } => list(ctx, owner.as_deref()).await,
         RepoCommand::Backend(RepoBackendCommand::Set { repo, mode }) => {
@@ -299,19 +299,26 @@ fn report_fork(
 }
 
 /// Star or unstar `repo` (forge-collab `star`, `indexOnly`; unstar is the values-carrying
-/// delete).
-async fn star(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
+/// delete). A new star also writes a `starBeat` when `trending` and the config allow it.
+async fn star(ctx: &Ctx, repo: &str, on: bool, trending: bool) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
     let handle = &s.repo;
-    let verb = if on { "Star" } else { "Unstar" };
-    ctx.confirm_or_cancel(&format!(
-        "{verb} {}? (one small document)",
-        handle.display()
-    ))?;
+    let trending = on
+        && trending
+        && crate::config::Config::load()
+            .ok()
+            .and_then(|c| c.trending)
+            .unwrap_or(forge_core::collab::v2::TRENDING_DEFAULT);
+    let what = match (on, trending) {
+        (true, true) => "Star {}? (two small documents: the star, and one that counts it toward Trending; --no-trending skips it)",
+        (true, false) => "Star {}? (one small document)",
+        (false, _) => "Unstar {}? (one small document, refunded; a Trending count stays until its week ends)",
+    };
+    ctx.confirm_or_cancel(&what.replace("{}", &handle.display()))?;
     let collab = s.collab();
     let before = collab.star_count(handle).await.ok();
     let changed = if on {
-        collab.star(handle).await?
+        collab.star(handle, trending).await?
     } else {
         collab.unstar(handle).await?
     };

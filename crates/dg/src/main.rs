@@ -286,10 +286,14 @@ pub enum RepoCommand {
         #[arg(long)]
         name: Option<String>,
     },
-    /// Star a repo.
+    /// Star a repo. A new star also counts toward Trending (one more small document, about
+    /// 0.00015 DASH) unless `--no-trending` or `trending = false` in config.toml.
     Star {
         /// The repository (`owner/name`).
         repo: String,
+        /// Star without counting toward Trending (no `starBeat`).
+        #[arg(long)]
+        no_trending: bool,
     },
     /// Remove your star from a repo.
     Unstar {

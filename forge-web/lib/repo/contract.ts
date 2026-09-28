@@ -39,6 +39,12 @@ export const DOC = {
   webhook: 'webhook',
   star: 'star',
   follow: 'follow',
+  starBeat: 'starBeat',
+  watch: 'watch',
+  milestone: 'milestone',
+  // forge-core (C-1)
+  runner: 'runner',
+  topic: 'topic',
 } as const
 
 /** `event.kind` integer → FORGE_RULES {@link EventKind} (`forge-v2.md` §3). */

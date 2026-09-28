@@ -45,8 +45,15 @@ const MEASURED: ReadonlyArray<readonly [string, string, Record<string, unknown>,
   ['authorEvent, steady', 'authorEvent', {}, S, 41_497_400],
   ['authorEvent, thread first', 'authorEvent', {}, { ...S, target: true }, 49_618_080],
   ['authorEvent, thread and feed first', 'authorEvent', {}, { ...S, target: true, repo: true }, 57_422_380],
-  ['star, steady', 'star', {}, S, 27_378_000],
-  ['star, repo first (+36.5 % before)', 'star', {}, { ...S, repo: true }, 37_709_220],
+  // C-1 (2026-09-28, beta.5): the ranked star, and the trending beat (platform-parity-spec §4.4)
+  ['star, steady', 'star', {}, S, 17_789_160],
+  ['star, steady', 'star', {}, S, 17_693_260],
+  ['star, the starrer\'s first', 'star', {}, { ...S, author: true }, 26_934_380],
+  ['star, repo first', 'star', {}, { ...S, repo: true }, 36_152_660],
+  ['star, repo first', 'star', {}, { ...S, repo: true }, 35_991_480],
+  ['star, repo and starrer first', 'star', {}, { ...S, repo: true, author: true }, 45_250_660],
+  ['starBeat, steady', 'starBeat', {}, S, 15_293_260],
+  ['starBeat, the identity\'s first', 'starBeat', {}, { ...S, author: true }, 21_730_680],
   ['follow, steady', 'follow', {}, S, 28_275_800],
   ['follow, author first', 'follow', {}, { ...S, author: true }, 38_412_260],
   ['follow, author and contract first', 'follow', {}, { ...S, author: true, contract: true }, 50_169_500],
@@ -92,9 +99,9 @@ describe('cost preview (D-011)', () => {
     expect(over(create({}), 159_654_180)).toBeLessThanOrEqual(0.3)
   })
 
-  it('previews an unstar and an unfollow as refunds no larger than measured (22.0M, 23.5M)', () => {
+  it('previews an unstar and an unfollow as refunds no larger than measured (12.3M for the ranked star, 23.5M)', () => {
     expect(previewDelete('star').credits).toBeLessThan(0)
-    expect(-previewDelete('star').credits).toBeLessThanOrEqual(21_988_788)
+    expect(-previewDelete('star').credits).toBeLessThanOrEqual(12_251_828)
     expect(-previewDelete('follow').credits).toBeLessThanOrEqual(23_461_140)
   })
 })

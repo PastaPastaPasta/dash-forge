@@ -144,6 +144,10 @@ function mapToDocuments(response: Map<string, unknown> | unknown): PlainDocument
 interface DocumentsFacadeLike {
   query: (q: DocumentQuery) => Promise<Map<string, unknown>>
   count: (q: DocumentQuery) => Promise<Map<string, bigint>>
+  ranked: (q: unknown) => Promise<{
+    startingRank: bigint
+    entries: ReadonlyArray<{ groupKeyHex: string; groupValue: unknown; value: bigint; rank: bigint }>
+  }>
 }
 interface SdkLike {
   documents: DocumentsFacadeLike
@@ -226,6 +230,58 @@ export async function countDocuments(sdk: EvoSDK, query: DocumentQuery): Promise
   }
   const n = Number(total)
   return Number.isSafeInteger(n) ? n : Number.MAX_SAFE_INTEGER
+}
+
+/** A ranked (top-K) read: `documents.ranked` over a `rankedCountable` index (protocol 14). */
+export interface RankedQuery {
+  readonly dataContractId: string
+  readonly documentTypeName: string
+  /** The index's last property: the groups ranked. */
+  readonly groupBy: string
+  /** 1..100 (a hard ceiling the proof re-checks). */
+  readonly limit: number
+  /** A bucketed index's window: `oldest` (a near-full trailing range) or `newest`. */
+  readonly timeRange?: { readonly field: string; readonly selector: 'newest' | 'oldest' }
+}
+
+/** One ranked group: its key (the group value's index encoding, hex), its value and count. */
+export interface RankedEntry {
+  /** The group's value as the query returns it (a base58 identifier for an id group). */
+  readonly group: string
+  /** The group key's raw index bytes, hex (a 32-byte id for an identifier group). */
+  readonly keyHex: string
+  readonly count: number
+  /** 0-based rank. */
+  readonly rank: number
+}
+
+export interface RankedPage {
+  readonly entries: readonly RankedEntry[]
+}
+
+/**
+ * The top groups of a ranked count index, highest first, proved (the verifier re-derives the
+ * window of a `timeRange` selection from the quorum-signed time). Equal counts come back by
+ * group key descending.
+ */
+export async function rankedDocuments(sdk: EvoSDK, query: RankedQuery): Promise<RankedPage> {
+  const res = await documentsOf(sdk).ranked({
+    dataContractId: query.dataContractId,
+    documentTypeName: query.documentTypeName,
+    groupBy: query.groupBy,
+    aggregate: { type: 'count' },
+    limit: query.limit,
+    direction: 'desc',
+    ...(query.timeRange ? { timeRange: [{ field: query.timeRange.field, selector: query.timeRange.selector }] } : {}),
+  })
+  return {
+    entries: res.entries.map((e) => ({
+      group: typeof e.groupValue === 'string' ? e.groupValue : String(e.groupValue ?? ''),
+      keyHex: e.groupKeyHex,
+      count: Number(e.value),
+      rank: Number(e.rank),
+    })),
+  }
 }
 
 /**

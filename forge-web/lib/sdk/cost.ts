@@ -24,6 +24,13 @@
  *   event: steady 43.2M; thread's first 51.3M; thread's and repo feed's first 59.3M.
  *   authorEvent: steady 41.5M; thread's first 49.6M; both 57.4M.
  *   star: 27.4M; repo's first 37.7M. Unstar refunds 22.0M (32.3M for the repo's last star).
+ * Measured on moutai, protocol 14 (drive / evo-sdk 4.2.0-beta.5), 2026-09-28, the C-1 shapes
+ * (platform-parity-spec §4.4):
+ *   star with its ranked axis: steady 17.7M (the starrer's other stars exist), the starrer's
+ *     first in the repo's value tree 27.0M, the repo's first 36.0M. Unstar refunds 12.3M
+ *     (23.3M for the repo's last star).
+ *   starBeat (trending): steady 14.4M–15.3M; the identity's first 20.7M–21.7M. Never refunded.
+ *   watch: the star's shape without the ranked axis (17.4M steady, repo's first 27.6M).
  *   follow: 28.3M; author's first 38.4M; author's first and first forge-collab write 50.2M.
  *     Unfollow refunds 23.5M (34.1M for the last).
  *   repo + maintainer + config: 132.7M; the owner's first repo (first forge-core write) 159.7M.
@@ -76,8 +83,13 @@ export const BASE_CREDITS: Readonly<Record<string, number>> = {
   authorEvent: 41_500_000,
   review: 35_900_000,
   policy: 34_000_000,
-  star: 27_400_000,
+  // C-1: the ranked star, steady (the starrer holds stars, the repo has some): 17.8M
+  star: 18_000_000,
   follow: 28_300_000,
+  starBeat: 15_300_000,
+  watch: 27_400_000,
+  milestone: 45_000_000,
+  checkRun: 45_000_000,
 }
 
 /** Which index subtrees a create may be the first to write. Unknown fields count as first. */
@@ -109,8 +121,14 @@ export const FIRST_WRITE_CREDITS: Readonly<Record<string, Surcharge>> = {
   comment: { target: 11_700_000, author: 10_600_000 },
   event: { target: 8_300_000, repo: 8_000_000 },
   authorEvent: { target: 8_100_000, repo: 7_800_000 },
-  star: { repo: 10_400_000 },
-  follow: { author: 10_200_000 },
+  // C-1: the repo's first star builds its ranked value tree (+18.3M); the starrer's first star
+  // their byOwner value tree (+9.2M)
+  star: { repo: 18_500_000, author: 9_400_000 },
+  starBeat: { author: 6_400_000 },
+  watch: { repo: 10_400_000 },
+  // `target`: the first follow of an identity builds its byTarget value tree, ranked since C-1
+  // (not re-measured; priced like the ranked star's repo-first tree)
+  follow: { author: 10_200_000, target: 18_500_000 },
   repo: { author: 9_000_000 },
   maintainer: { member: 7_400_000 },
   writer: { member: 7_400_000 },
@@ -143,7 +161,10 @@ const DEFAULT_DELETE_CREDITS = -20_000_000
  * revoking a writer 20.8M. The preview shows the smaller refund, so it never promises more.
  */
 export const DELETE_CREDITS: Readonly<Record<string, number>> = {
-  star: -21_500_000,
+  // C-1 measured 12.3M for an unstar that is not the repo's last (the ranked axis re-keys).
+  star: -12_000_000,
+  watch: -12_000_000,
+  milestone: -25_000_000,
   follow: -23_000_000,
   maintainer: -20_800_000,
   writer: -20_800_000,
