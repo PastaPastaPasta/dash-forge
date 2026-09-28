@@ -165,7 +165,8 @@ export function ReviewDrawer({
   isMember: boolean
   /** Whether the current diff shows a line (for re-anchoring after the head moved). */
   lineExists: (path: string, side: 0 | 1, line: number) => boolean
-  onSubmitted: (reviewId: string) => void
+  /** The submitted review and every comment it wrote (the page re-reads until all show). */
+  onSubmitted: (submitted: { reviewId: string; commentIds: readonly string[] }) => void
 }): JSX.Element {
   const { sdk, network } = useSdk()
   const { identity, signer } = useAuth()
@@ -232,7 +233,7 @@ export function ReviewDrawer({
       update(null)
       setOpen(false)
       setProgress(null)
-      onSubmitted(r.reviewId)
+      onSubmitted(r)
     } catch (e) {
       // What landed is saved in the draft (IndexedDB or memory): read it back to say so.
       const saved = (await loadReviewDraft(network, identity, pullId).catch(() => undefined)) ?? toSubmit

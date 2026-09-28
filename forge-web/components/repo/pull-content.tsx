@@ -84,7 +84,7 @@ import { headUpdatePhrases } from '@/lib/view/head-updates'
 import { inlineCommentIds, lineKey, repliesByRoot } from '@/lib/view/inline-threads'
 import { appliedSuggestions, prCommits, prHaveSet } from '@/lib/view/pr-commits'
 import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
-import { draftIsEmpty, draftWhereabouts } from '@/lib/view/pending-review'
+import { draftIsEmpty, draftWhereabouts, reviewShows } from '@/lib/view/pending-review'
 import { tipOidOf } from '@/lib/view/refs'
 import type { ReviewerCardRow } from '@/lib/view/review-fold'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
@@ -979,7 +979,7 @@ function PullPage({
                     ensure={reviewDraft.ensure}
                     isMember={isMember}
                     lineExists={(path, side, line) => knownLines.current.get(path)?.has(lineKey(path, side, line)) ?? false}
-                    onSubmitted={(id) => refresh((t) => t.reviews.some((r) => r.id === id))}
+                    onSubmitted={(s) => refresh((t) => reviewShows(t, s))}
                   />
                 ) : null
               }

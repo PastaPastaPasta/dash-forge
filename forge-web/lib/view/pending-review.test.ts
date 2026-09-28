@@ -9,6 +9,7 @@ import {
   partialSubmitMessage,
   reanchorDraft,
   removeDraftComment,
+  reviewShows,
   setDraftVerdict,
   splitDraftComments,
   startSubmit,
@@ -96,5 +97,15 @@ describe('a submit and a moved head', () => {
     // Shown on H2's lines, and listed apart while the diff shows H1.
     expect(splitDraftComments(d, H2).onLines.map((c) => c.localId)).toEqual(['b'])
     expect(splitDraftComments(d, H1).onLines.map((c) => c.localId)).toEqual(['a'])
+  })
+})
+
+describe('after a submit', () => {
+  it('waits until the review and every comment it wrote show, not just the review', () => {
+    const submitted = { reviewId: 'R', commentIds: ['c1', 'c2'] }
+    expect(reviewShows({ reviews: [], comments: [] }, submitted)).toBe(false)
+    expect(reviewShows({ reviews: [{ id: 'R' }], comments: [{ id: 'c1' }] }, submitted)).toBe(false)
+    expect(reviewShows({ reviews: [{ id: 'R' }], comments: [{ id: 'c2' }, { id: 'c1' }, { id: 'x' }] }, submitted)).toBe(true)
+    expect(reviewShows({ reviews: [{ id: 'R' }], comments: [] }, { reviewId: 'R', commentIds: [] })).toBe(true)
   })
 })

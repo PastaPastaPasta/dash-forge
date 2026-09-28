@@ -130,6 +130,20 @@ export function splitDraftComments(d: ReviewDraft | null, headOid: string): { on
   return { onLines, elsewhere }
 }
 
+/**
+ * Whether a read of the PR shows a submitted review whole: the review and every comment it
+ * wrote. A node can return the review a block before its last comments, so the page keeps
+ * re-reading until all of them show (seen live: one of two threads, until a reload).
+ */
+export function reviewShows(
+  thread: { readonly reviews: readonly { readonly id: string }[]; readonly comments: readonly { readonly id: string }[] },
+  submitted: { readonly reviewId: string; readonly commentIds: readonly string[] },
+): boolean {
+  if (!thread.reviews.some((r) => r.id === submitted.reviewId)) return false
+  const ids = new Set(thread.comments.map((c) => c.id))
+  return submitted.commentIds.every((id) => ids.has(id))
+}
+
 /** What the submit will write: the review and each comment, priced as the composers do. */
 export function draftCost(d: ReviewDraft): { documents: number; cost: CostPreview } {
   const review = previewCreate('review', { body: d.summary })
