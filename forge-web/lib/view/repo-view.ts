@@ -75,11 +75,12 @@ export interface RepoHome {
 
 /**
  * How the viewer reads a private repo: `signed-out` and `outsider` see only what is public
- * (`ux-dx-spec.md` §6.3), `no-key` is a member whose browser holds no encryption key yet, and
+ * (`ux-dx-spec.md` §6.3), `no-key` is a member whose browser holds no encryption key yet,
+ * `locked` a member whose tab resumed a signing-only session (unlock to read), and
  * `member` reads through its decryption session (`repo.session`).
  */
 export type PrivateAccess =
-  | { readonly access: 'signed-out' | 'outsider' | 'no-key' }
+  | { readonly access: 'signed-out' | 'outsider' | 'no-key' | 'locked' }
   | { readonly access: 'member'; readonly session: PrivateSession }
 
 /**

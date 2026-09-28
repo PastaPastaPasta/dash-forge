@@ -6,6 +6,9 @@ import { formatBytes, timeAgo } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { Author } from '@/components/author'
+import { SignInButton } from '@/components/sign-in-button'
+import { UnlockMore } from '@/components/auth/unlock-more'
+import { useAuth } from '@/contexts/auth-context'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
 /**
@@ -13,7 +16,19 @@ import type { RepoAddress } from '@/hooks/use-query-param'
  * (name, owner, member count, size, last activity). Nothing is decrypted or rendered from
  * encrypted fields, titles included.
  */
-export function PrivateRepoState({ repo, addr, member = false }: { repo: RepoRef; addr: RepoAddress; member?: boolean }): JSX.Element {
+export function PrivateRepoState({
+  repo,
+  addr,
+  access,
+}: {
+  repo: RepoRef
+  addr: RepoAddress
+  /**
+   * Why the contents stay sealed (`usePrivateHome`): not signed in, not a member, no key here,
+   * or a member whose tab resumed a signing-only session (`locked`: unlock inline).
+   */
+  access: 'signed-out' | 'outsider' | 'no-key' | 'locked'
+}): JSX.Element {
   const { sdk, ready } = useSdk(repoContractIds(repo))
   const facts = useAsync(() => readPublicRepoFacts(sdk!, repo), [ready, repo.repoId], { enabled: ready && sdk !== null })
   return (
@@ -26,11 +41,17 @@ export function PrivateRepoState({ repo, addr, member = false }: { repo: RepoRef
         <Lock className="h-5 w-5 text-anvil-500 dark:text-anvil-400" aria-hidden />
         <h2 className="text-prose font-mono">{repo.name || addr.name}</h2>
       </div>
-      <p className="text-dense text-anvil-700 dark:text-anvil-200">
-        {member
-          ? 'Private: contents are encrypted for members. Add your encryption key to this browser to read them.'
-          : "Private: contents are encrypted for members. You're not one."}
-      </p>
+      {access === 'signed-out' ? (
+        <SignedOutNote />
+      ) : access === 'locked' ? (
+        <UnlockMore title="Unlock to view this private repo" testId="private-unlock" />
+      ) : (
+        <p className="text-dense text-anvil-700 dark:text-anvil-200">
+          {access === 'no-key'
+            ? 'Private: contents are encrypted for members. Add your encryption key to this browser to read them.'
+            : "Private: contents are encrypted for members. You're not one."}
+        </p>
+      )}
       <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-dense">
         <dt className="text-anvil-500 dark:text-anvil-400">Owner</dt>
         <dd>
@@ -44,5 +65,23 @@ export function PrivateRepoState({ repo, addr, member = false }: { repo: RepoRef
         <dd>{facts.data ? (facts.data.lastActivity ? timeAgo(facts.data.lastActivity) : 'none yet') : facts.error ? '–' : '…'}</dd>
       </dl>
     </section>
+  )
+}
+
+/**
+ * Signed out or locked: membership is not known yet, so nothing is said about it. A member (the
+ * owner included) unlocks or signs in to read.
+ */
+function SignedOutNote(): JSX.Element {
+  const { locked } = useAuth()
+  return (
+    <div className="space-y-3" data-testid="private-signed-out">
+      <p className="text-dense text-anvil-700 dark:text-anvil-200">
+        {locked
+          ? 'Private: contents are encrypted for members. Your session is locked: unlock to read it if you are one.'
+          : 'Private: contents are encrypted for members. Sign in to read it if you are one.'}
+      </p>
+      <SignInButton size="sm" />
+    </div>
   )
 }

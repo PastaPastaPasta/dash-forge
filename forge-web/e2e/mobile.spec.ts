@@ -226,7 +226,7 @@ test.describe('signed in with a low balance', () => {
       await page.keyboard.press('Escape')
       await banner.getByRole('button', { name: 'Dismiss for this session' }).click()
       await expect(banner).toHaveCount(0)
-      // Navigate in the app (a reload would lock the vault and end the session).
+      // Navigate in the app.
       await page.getByRole('link', { name: 'Explore' }).last().click()
       await expect(page.getByRole('heading', { name: 'Explore' })).toBeVisible()
       await expect(pill).toBeVisible()

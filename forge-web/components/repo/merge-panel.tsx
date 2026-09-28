@@ -28,6 +28,7 @@ import { MERGE_STEPS, MergeStepError, retryLabel, runFor, runMergeSteps, type Me
 import { mergeButton, mergeRefProblem } from '@/lib/view/pull-actions'
 import { publishMergeIndex } from '@/lib/merge/locator'
 import { useMergeUpload } from '@/components/repo/merge-upload'
+import { UnlockMore } from '@/components/auth/unlock-more'
 import { mergeIdentityValid } from '@/lib/view/prefs'
 import { tipOidOf, type DiffSides, type ObjectReader } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
@@ -73,7 +74,7 @@ export function MergePanel({
   const guard = useWriteGuard()
   const [prefs] = usePrefs()
   const wide = useMinWidth(1024)
-  const { upload, dialog: uploadDialog, storageLabel, begin } = useMergeUpload(repo)
+  const { upload, dialog: uploadDialog, storageLabel, begin, storageNeedsUnlock } = useMergeUpload(repo)
   const baseRefName = pull.state.baseRef ?? pull.baseRefName
   const baseProtected = matchesProtected(baseRefName, protectedPatterns)
   const refProblem = mergeRefProblem(baseRefName, baseTipOid, pull.headOid, pull.baseRefName)
@@ -148,6 +149,8 @@ export function MergePanel({
 
   const start = useCallback(async () => {
     if (!sdk || !signer || reader === null || baseOnly === null || busy || refProblem !== null) return
+    // Stored storage settings are sealed in this tab (a resumed session): the prompt above asks.
+    if (storageNeedsUnlock) return
     if (!guard.check(cost)) return
     setBusy(true)
     setFailure(null)
@@ -196,7 +199,7 @@ export function MergePanel({
     } finally {
       setBusy(false)
     }
-  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, baseRefName, input, run, baseTipOid, onMerged, upload, begin])
+  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock])
 
   if (button.kind === 'hidden') return null
   const started = Object.keys(steps).length > 0
@@ -240,11 +243,16 @@ export function MergePanel({
       {(button.kind === 'fast-forward' || button.kind === 'merge-commit') && !identityOk ? (
         <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400">
           A browser merge commit is authored with your name and email. Set them in{' '}
-          <Link href="/settings" className="underline">
+          <Link href="/settings/" className="underline">
             Settings
           </Link>{' '}
           first.
         </p>
+      ) : null}
+      {(button.kind === 'fast-forward' || button.kind === 'merge-commit') && storageNeedsUnlock ? (
+        <div className="mt-3">
+          <UnlockMore title="Unlock to merge with your storage settings" testId="merge-storage-unlock" />
+        </div>
       ) : null}
       {button.kind === 'fast-forward' || button.kind === 'merge-commit' ? (
         <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">

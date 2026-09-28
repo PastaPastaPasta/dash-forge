@@ -42,7 +42,7 @@ export function Author({
   const pill = <IdentityPill identityId={identityId} name={name} role={role} className={className} />
   if (!link) return pill
   return (
-    <Link href={`/u?name=${encodeURIComponent(identityId)}`} className="hit-area rounded-full">
+    <Link href={`/u/?name=${encodeURIComponent(identityId)}`} className="hit-area rounded-full">
       {pill}
     </Link>
   )

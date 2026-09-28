@@ -183,7 +183,7 @@ test('s5. the branch policy is saved and shown on the PR as a client rule', asyn
   await confirmWrite(page, /sign & save/i)
   await expect(policy.getByRole('button', { name: /save policy/i })).toBeDisabled({ timeout: 60_000 })
 
-  // A full navigation locks the key; the vault unlocks it again with the passphrase.
+  // A full navigation keeps the session (or unlocks a restored one with the passphrase).
   await page.goto(repoPath('pull', `&number=${prNumber}`), { waitUntil: 'domcontentloaded' })
   await unlock(page)
   await waitForRepoResolved(page)

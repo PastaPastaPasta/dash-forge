@@ -1,0 +1,26 @@
+name: Keep the Pages static-chunk cache alive
+
+# pages.yml keeps the previous builds' _next/static chunks in the Actions cache so tabs opened
+# before a deploy keep working (deploy skew). GitHub evicts a cache nobody reads for 7 days;
+# this downloads it twice a week (a real restore, which counts as a read), so a quiet week
+# cannot drop it.
+# Restore only: it never writes the cache.
+
+on:
+  schedule:
+    - cron: '17 4 * * 1,4'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  touch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Restore the static-chunk cache (a read keeps it)
+        uses: actions/cache/restore@v4
+        with:
+          path: forge-web/.pages-static
+          key: pages-static-keepalive-never-matches
+          restore-keys: pages-static-

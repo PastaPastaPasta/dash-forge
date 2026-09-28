@@ -15,10 +15,10 @@ export function AppFooter(): JSX.Element {
           <Link href="/" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
             Discover
           </Link>
-          <Link href="/explore" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
+          <Link href="/explore/" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
             Explore
           </Link>
-          <Link href="/new" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
+          <Link href="/new/" className="hit-area hover:text-anvil-800 dark:hover:text-anvil-100">
             New repo
           </Link>
         </div>

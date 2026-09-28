@@ -25,7 +25,7 @@ import { authSdk, sleep } from '../sdk/facade'
 import { timed } from '../step-timing'
 import { deriveAt, deriveMasterKey, identityKeyPath, isValidMnemonic, normalizeMnemonic, wasmNetwork } from './hd'
 import { parsePrivateKey } from './wif'
-import { VaultLockedError, storeEncryptionKey, storedEncryptionKeyId, unlockedSecret, withEncryptionKey } from './vault'
+import { VaultLockedError, storeEncryptionKey, storedEncryptionKeyId, unlockScope, unlockedSecret, withEncryptionKey } from './vault'
 
 /** The step-timing flow of enabling private repos at sign-in (L-20). */
 export const PRIVATE_REPOS_FLOW = 'enable-private-repos'
@@ -253,6 +253,8 @@ export async function registerEncryptionKey(
   if (!(await isValidMnemonic(source.mnemonic))) throw new Error('those words are not a valid recovery phrase')
   // The new key must land in the vault: never pay for a key this browser cannot keep.
   if (unlockedSecret(network, identityId) === null) throw new VaultLockedError('unlock this browser first')
+  // A reloaded tab holds the signing key only: the new key could not be stored with the vault.
+  if (unlockScope(network, identityId) === 'signing') throw new VaultLockedError('unlock this tab first: a new encryption key is stored with the rest of the vault')
   const existing = usableEncryptionKey(await requireIdentityKeys(sdk, identityId), coreId)
   if (existing !== null) {
     const imported = await importEncryptionKey(sdk, network, identityId, coreId, source)

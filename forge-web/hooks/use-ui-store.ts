@@ -16,7 +16,7 @@ export type { TopUpReason }
  * A sign-in sheet view to open on directly (e.g. `import` to renew this browser's key; `grant`
  * asks the signed-in identity's wallet for a key on forge-collab, when the session lacks one).
  */
-export type LoginView = 'import' | 'create' | 'wallet' | 'grant'
+export type LoginView = 'import' | 'create' | 'wallet' | 'grant' | 'unlock'
 
 interface UiState {
   readonly loginOpen: boolean

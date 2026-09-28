@@ -21,7 +21,7 @@ import {
   type TopUpRequest,
   type VaultInfo,
 } from '../lib/auth'
-import { MissingGrantError } from '../lib/auth/controller'
+import { MissingGrantError, UnlockNeededError } from '../lib/auth/controller'
 import type { WalletKey } from '../lib/auth/key-registration'
 import { useUiStore } from '../hooks/use-ui-store'
 import { DEFAULT_NETWORK, type Network } from '../lib/constants'
@@ -93,6 +93,22 @@ interface AuthContextValue {
   readonly vaultsError: string | null
   /** Whether the stored-key list has been read at least once. */
   readonly vaultsLoaded: boolean
+  /**
+   * A session an earlier page load kept is still being picked up (a reload, a new tab): show
+   * neither "Sign in" nor "Unlock" yet.
+   */
+  readonly resuming: boolean
+  /**
+   * This browser holds a key but the session is locked (12 hours up, Lock, "Ask to unlock on
+   * every visit"): every page offers Unlock, and write buttons open it.
+   */
+  readonly locked: boolean
+  /**
+   * `signing`: this tab resumed a kept session and holds the spend-capped signing key only
+   * (private repos, storage settings and wallet grants ask to unlock); `full`: an interactive
+   * unlock; null when signed out.
+   */
+  readonly unlockScope: 'full' | 'signing' | null
   /** The limited-key ceremony: import an identity file or a mnemonic once. */
   importIdentity: (
     input: { fileText: string } | { mnemonic: string; identityId: string },
@@ -141,6 +157,14 @@ export function AuthProvider({
   const [state, setState] = useState(() => controller.getState())
 
   useEffect(() => controller.subscribe(setState), [controller])
+  // Follow locks and the other tabs (subscribed here, so an instance StrictMode discards holds
+  // no listener), and pick up the session an earlier page load kept (until it locks).
+  useEffect(() => {
+    const detach = controller.attach()
+    void controller.resume()
+    return detach
+  }, [controller])
+  const resuming = state.resuming
 
   // A notice from a sign-in step (e.g. storage settings that could not survive a key renewal).
   const notice = state.notice ?? null
@@ -246,6 +270,7 @@ export function AuthProvider({
           return auth.getSigningKeyWif(contractId)
         } catch (e) {
           if (e instanceof MissingGrantError) useUiStore.getState().openLogin('grant')
+          else if (e instanceof UnlockNeededError) useUiStore.getState().openLogin('unlock')
           throw e
         }
       },
@@ -287,11 +312,14 @@ export function AuthProvider({
       vaults,
       vaultsError,
       vaultsLoaded,
+      resuming,
+      locked: session === null && !resuming && vaults.length > 0,
+      unlockScope: session === null ? null : state.scope ?? null,
       reloadVaults,
       controller,
       ...actions,
     }),
-    [actions, controller, funds, keyLimits, reloadVaults, session, signer, state.error, state.isLoading, state.step, vaults, vaultsError, vaultsLoaded],
+    [actions, controller, funds, keyLimits, reloadVaults, resuming, session, signer, state.error, state.isLoading, state.scope, state.step, vaults, vaultsError, vaultsLoaded],
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

@@ -78,7 +78,7 @@ export function PrivateBanner({ home }: { home: RepoHome }): JSX.Element | null 
         <p className="font-medium">You&apos;re a member, but this browser has no encryption key to read this repo.</p>
         <p className="mt-1">
           Add your identity&apos;s encryption key in{' '}
-          <Link href="/settings" className="text-forge-700 underline dark:text-forge-400">
+          <Link href="/settings/" className="text-forge-700 underline dark:text-forge-400">
             Settings → Keys → Enable private repos
           </Link>
           . If your identity has none yet, that page registers one (one master-key signature), or run{' '}

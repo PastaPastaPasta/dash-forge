@@ -134,7 +134,7 @@ function ForkDialog({ parent, owner, onClose }: { parent: RepoRef; owner: string
         setPending(false)
         return
       }
-      router.push(`/repo?owner=${encodeURIComponent(owner)}&name=${encodeURIComponent(result.name)}&created=1`)
+      router.push(`/repo/?owner=${encodeURIComponent(owner)}&name=${encodeURIComponent(result.name)}&created=1`)
     } catch (e) {
       setError(guard.failed(e))
       setPending(false)

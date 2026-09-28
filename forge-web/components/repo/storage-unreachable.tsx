@@ -65,7 +65,7 @@ export function StorageUnreachableCard({
             <p data-testid="gateway-advice" className="mt-2 text-dense text-anvil-700 dark:text-anvil-200">
               This repo is stored on IPFS, and none of the gateways this browser tried could serve it.
               Add a gateway that can reach the owner&apos;s IPFS node below (or in{' '}
-              <Link href="/settings" className="underline underline-offset-2">
+              <Link href="/settings/" className="underline underline-offset-2">
                 Settings → Your IPFS gateways
               </Link>
               ), then Try again. The owner can fix it for everyone by setting a public gateway on

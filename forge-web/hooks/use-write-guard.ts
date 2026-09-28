@@ -17,6 +17,7 @@
 import { useCallback } from 'react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
+import { toast } from '@/hooks/use-toasts'
 import { affordability, type WriteNeed } from '@/lib/view/funds'
 import { writeFailure } from '@/lib/view/write-errors'
 
@@ -40,18 +41,27 @@ const EMPTY_REASON: Readonly<Record<'balance' | 'key-budget' | 'key-expiry', str
 }
 
 export function useWriteGuard(): WriteGuard {
-  const { identity, signer, balance, funds, keyLimits, grants, refreshBalance } = useAuth()
+  const { identity, signer, balance, funds, keyLimits, grants, refreshBalance, resuming, unlockScope } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
   const openTopUp = useUiStore((s) => s.openTopUp)
 
   const check = useCallback(
     (need: WriteNeed, contract: 'core' | 'collab' = 'core'): boolean => {
       if (!identity || !signer) {
+        // A kept session is still being picked up (a moment after a reload): not a sign-in.
+        if (resuming) {
+          toast({ title: 'Checking this browser’s session…', detail: 'Try again in a moment.' })
+          return false
+        }
+        // Opens on Unlock when this browser holds a key (a locked session), else the sign-in tiles.
         openLogin()
         return false
       }
       if (grants && !grants[contract]) {
-        openLogin('grant')
+        // A reloaded tab holds the main key only: this browser may already hold that grant,
+        // sealed with the vault. Unlock first (a new wallet grant would register a key this tab
+        // cannot store).
+        openLogin(unlockScope === 'signing' ? 'unlock' : 'grant')
         return false
       }
       if (funds?.level === 'empty') {
@@ -65,7 +75,7 @@ export function useWriteGuard(): WriteGuard {
       }
       return true
     },
-    [balance, funds, grants, identity, keyLimits, openLogin, openTopUp, signer],
+    [balance, funds, grants, identity, keyLimits, openLogin, openTopUp, resuming, signer, unlockScope],
   )
 
   const failed = useCallback(

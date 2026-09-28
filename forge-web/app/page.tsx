@@ -47,12 +47,12 @@ export default function LandingPage(): JSX.Element {
           from Dash Platform or the storage the repo owner chose. Foundry, not SaaS.
         </p>
         <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-          <Link href="/new">
+          <Link href="/new/">
             <Button variant="primary" size="lg">
               <Plus className="h-4 w-4" aria-hidden /> New repo
             </Button>
           </Link>
-          <Link href="/explore">
+          <Link href="/explore/">
             <Button variant="outline" size="lg">
               <Compass className="h-4 w-4" aria-hidden /> Explore
             </Button>
@@ -82,7 +82,7 @@ export default function LandingPage(): JSX.Element {
           <h2 className="text-xl">Recent repos</h2>
           <div className="flex items-center gap-3">
             {feed.loading ? <Spinner label="Reading forge-core" /> : null}
-            <Link href="/explore" className="hit-area text-dense text-forge-700 underline dark:text-forge-300">
+            <Link href="/explore/" className="hit-area text-dense text-forge-700 underline dark:text-forge-300">
               Explore more
             </Link>
           </div>
@@ -101,7 +101,7 @@ export default function LandingPage(): JSX.Element {
             title="The forge is quiet"
             body="No repos have been created on this network yet. Forge the first one."
             action={
-              <Link href="/new">
+              <Link href="/new/">
                 <Button variant="primary">
                   <Plus className="h-4 w-4" aria-hidden /> New repo
                 </Button>

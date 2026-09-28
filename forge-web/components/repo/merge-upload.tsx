@@ -27,7 +27,7 @@ import { CostPreview } from '@/components/ui/cost-preview'
  * `upload` for the runner (null until storage settings are read), the price dialog, and
  * `begin` (call at each merge attempt, so a declined question is asked again on retry).
  */
-export function useMergeUpload(repo: RepoRef): { upload: UploadPack | null; dialog: JSX.Element | null; storageLabel: string; begin: () => void } {
+export function useMergeUpload(repo: RepoRef): { upload: UploadPack | null; dialog: JSX.Element | null; storageLabel: string; begin: () => void; storageNeedsUnlock: boolean } {
   const { sdk } = useSdk()
   const { signer } = useAuth()
   const storage = useStorageConfig()
@@ -101,5 +101,5 @@ export function useMergeUpload(repo: RepoRef): { upload: UploadPack | null; dial
   const begin = useCallback(() => {
     agreed.current = null
   }, [])
-  return { upload: config === null ? null : upload, dialog, storageLabel, begin }
+  return { upload: config === null ? null : upload, dialog, storageLabel, begin, storageNeedsUnlock: storage.needsUnlock }
 }

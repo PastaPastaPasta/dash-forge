@@ -20,6 +20,8 @@ import { useRouter } from 'next/navigation'
 import { Check, Globe, GitBranch, Hammer, Loader2, Lock } from 'lucide-react'
 import Link from 'next/link'
 import { AppShell } from '@/components/app-shell'
+import { UnlockMore } from '@/components/auth/unlock-more'
+import { SignInButton } from '@/components/sign-in-button'
 import { Button } from '@/components/ui/button'
 import { Field, Input, Textarea } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
@@ -28,7 +30,6 @@ import { EmptyState } from '@/components/ui/states'
 import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
 import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
 import { useAuth } from '@/contexts/auth-context'
-import { useUiStore } from '@/hooks/use-ui-store'
 import { useSdk } from '@/hooks/use-sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import {
@@ -77,8 +78,7 @@ const INITIAL_PROGRESS: Record<CreateRepoStep, StepState> = { repo: 'todo', main
 export default function NewRepoPage(): JSX.Element {
   const router = useRouter()
   const { sdk, ready } = useSdk()
-  const { identity, signer } = useAuth()
-  const openLogin = useUiStore((s) => s.openLogin)
+  const { identity, signer, unlockScope } = useAuth()
   const guard = useWriteGuard()
   const forge = ACTIVE_NETWORK.v2
   // A returning owner's repo costs less than the first (D-011): read which it is.
@@ -97,7 +97,7 @@ export default function NewRepoPage(): JSX.Element {
   // A private create wraps its key from the encryption key in this browser's vault.
   const ops = useAsync(
     () => encryptionOps(sdk!, DEFAULT_NETWORK, identity!, forge!.core),
-    [ready, identity ?? '', forge?.core ?? '', isPrivate],
+    [ready, identity ?? '', forge?.core ?? '', isPrivate, unlockScope ?? ''],
     { enabled: isPrivate && sdk !== null && identity !== null && forge !== null },
   )
   // Re-read when a key is added (Settings in another tab, or this one) or the tab regains focus.
@@ -113,7 +113,9 @@ export default function NewRepoPage(): JSX.Element {
   }, [isPrivate, reloadOps])
   // Only a settled answer of "no key" says so; a failed read says what failed.
   const noKey = isPrivate && ops.settled && ops.error === null && ops.data === null
-  const privateBlocked = !isPrivate ? null : ops.error !== null ? `Couldn't read your encryption key: ${ops.error}` : noKey ? 'Add your encryption key to this browser first (Settings → Keys).' : ops.data == null ? 'Checking your encryption key…' : null
+  // A reloaded tab holds the signing key only: the encryption key needs an unlock here first.
+  const needsUnlock = isPrivate && unlockScope === 'signing'
+  const privateBlocked = !isPrivate ? null : needsUnlock ? 'Unlock this tab to use your encryption key.' : ops.error !== null ? `Couldn't read your encryption key: ${ops.error}` : noKey ? 'Add your encryption key to this browser first (Settings → Keys).' : ops.data == null ? 'Checking your encryption key…' : null
   const [confirm, setConfirm] = useState<CreateRepoInput | null>(null)
   const [progress, setProgress] = useState<Record<CreateRepoStep, StepState> | null>(null)
   const [pending, setPending] = useState<RepoCreationJournal[]>([])
@@ -165,7 +167,8 @@ export default function NewRepoPage(): JSX.Element {
   const cost = costOf(name.trim() && nameError === null ? input() : { name: 'x' })
 
   const create = async (i: CreateRepoInput): Promise<void> => {
-    if (!sdk || !signer || !forge) throw new Error('sign in first')
+    if (!signer || !forge) throw new Error('sign in first')
+    if (!sdk) throw new Error('still connecting to Dash Platform: try again in a moment')
     setProgress(INITIAL_PROGRESS)
     let result
     try {
@@ -189,7 +192,7 @@ export default function NewRepoPage(): JSX.Element {
     } finally {
       reloadPending()
     }
-    router.push(`/repo?owner=${encodeURIComponent(identity ?? '')}&name=${encodeURIComponent(result.name)}&created=1`)
+    router.push(`/repo/?owner=${encodeURIComponent(identity ?? '')}&name=${encodeURIComponent(result.name)}&created=1`)
   }
 
   if (!isForgeDeployed()) {
@@ -207,7 +210,7 @@ export default function NewRepoPage(): JSX.Element {
           icon={Lock}
           title="Sign in to forge a repo"
           body="Creating a repo writes three small documents signed by your identity."
-          action={<Button variant="primary" onClick={() => openLogin()}>Sign in</Button>}
+          action={<SignInButton />}
         />
       </AppShell>
     )
@@ -297,7 +300,11 @@ export default function NewRepoPage(): JSX.Element {
                 ))}
               </ul>
               {description.trim() ? <p className="mt-2 text-caution-700 dark:text-caution-400">{PUBLIC_DESCRIPTION_NOTE}</p> : null}
-              {ops.error !== null ? (
+              {needsUnlock ? (
+                <div className="mt-2">
+                  <UnlockMore title="Unlock to create a private repo" testId="new-private-unlock" />
+                </div>
+              ) : ops.error !== null ? (
                 <p className="mt-2 text-danger-700 dark:text-danger-400" data-testid="private-key-error">
                   Couldn&apos;t read your encryption key: {ops.error}
                 </p>
@@ -305,7 +312,7 @@ export default function NewRepoPage(): JSX.Element {
               {noKey ? (
                 <p className="mt-2 text-caution-700 dark:text-caution-400" data-testid="private-no-key">
                   cannot create a private repository: your identity has no encryption key in this browser. Add it in{' '}
-                  <Link href="/settings" className="text-forge-700 underline dark:text-forge-400">
+                  <Link href="/settings/" className="text-forge-700 underline dark:text-forge-400">
                     Settings → Keys → Enable private repos
                   </Link>
                   .

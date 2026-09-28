@@ -11,6 +11,8 @@
 import { useRef, useState } from 'react'
 import { BatteryCharging, Lock, LogOut, RefreshCw, ShieldOff, Wallet } from 'lucide-react'
 import { UnlimitedKeyWarning } from '@/components/auth/wallet-connect-flow'
+import { UnlockNeededError } from '@/lib/auth/controller'
+import { UnlockMore } from '@/components/auth/unlock-more'
 import { errorMessage } from '@/lib/utils'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
@@ -29,13 +31,20 @@ export function KeysPanel(): JSX.Element {
   const { identity, keyId, heldOnly, keyLimits, storage, funds, logout, forget, revokeStored, isLoading, grants, unlimitedKey, unboundedKey } = useAuth()
   const revokeRef = useRef<HTMLInputElement>(null)
   const [revokeError, setRevokeError] = useState<string | null>(null)
+  // A reloaded tab holds the signing key only: a revoke must see every key held, so unlock first.
+  const [unlockFirst, setUnlockFirst] = useState<(() => void) | null>(null)
   const revoke = async (file: File): Promise<void> => {
     if (!identity) return
     setRevokeError(null)
+    const fileText = await file.text()
     try {
-      await revokeStored(identity, { fileText: await file.text() })
+      await revokeStored(identity, { fileText })
     } catch (e) {
-      setRevokeError(errorMessage(e))
+      if (e instanceof UnlockNeededError) setUnlockFirst(() => () => {
+        setUnlockFirst(null)
+        void revokeStored(identity, { fileText }).catch((err: unknown) => setRevokeError(errorMessage(err)))
+      })
+      else setRevokeError(errorMessage(e))
     }
   }
   const openLogin = useUiStore((s) => s.openLogin)
@@ -155,6 +164,7 @@ export function KeysPanel(): JSX.Element {
       <p className="text-[12px] text-anvil-500 dark:text-anvil-400">
         Forgetting deletes the key from this device only. Revoking disables it on chain (needs your identity file once).
       </p>
+      {unlockFirst ? <UnlockMore title="Unlock this tab to revoke on chain" testId="revoke-unlock" then={unlockFirst} /> : null}
       {revokeError ? <p role="alert" className="text-[12px] text-danger-700 dark:text-danger-400">{revokeError}</p> : null}
       <Field
         label="Fallback block explorer (asked only if the network's nodes cannot see an identity deposit)"

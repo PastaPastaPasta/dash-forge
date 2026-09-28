@@ -29,6 +29,7 @@ import {
 import { errText } from '@/lib/storage/util'
 import { useStorageConfig } from '@/hooks/use-storage-config'
 import { Button } from '@/components/ui/button'
+import { UnlockMore } from '@/components/auth/unlock-more'
 import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { ProfileForm, initialDraft } from '@/components/storage/profile-form'
 import { StorageTest, profileSnapshot } from '@/components/storage/storage-test'
@@ -48,10 +49,11 @@ const TILE_ICON: Readonly<Record<ProviderId, typeof Cloud>> = {
 }
 
 export function StorageWizard(): JSX.Element {
-  const { config, loading, error, storable, save, reload, discard } = useStorageConfig()
+  const { config, loading, error, storable, save, reload, discard, needsUnlock } = useStorageConfig()
   const [provider, setProvider] = useState<ProviderId | null>(null)
   const [editing, setEditing] = useState<StorageProfile | null>(null)
 
+  if (needsUnlock) return <UnlockMore title="Unlock to open your storage settings" testId="storage-unlock" />
   if (loading && !config) return <LoadingBlock label="Opening your storage settings" />
   if (error) return <UnreadableSettings message={error} onRetry={reload} onDiscard={discard} />
   if (!config) return <LoadingBlock />

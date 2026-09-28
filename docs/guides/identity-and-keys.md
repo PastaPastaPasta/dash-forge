@@ -206,7 +206,8 @@ The header shows your balance and the key's remaining budget. It turns amber whe
 
 - **Top up key budget** adds budget to the same key (0.05 DASH by default) and can push its expiry out, up to 365 days. It is a protocol-14 `IdentityKeyLimitsUpdate`, signed once by your master key from the identity file or recovery phrase, and costs about 0.00002 DASH.
 - **Renew key** registers a fresh key and disables the previous one in the same update.
-- **Lock** drops the unlocked key from memory; unlock again with the passkey or passphrase.
+- **Lock** drops the unlocked key in every open tab and ends the kept session; unlock again with the passkey or passphrase.
+- **Settings → Security → Stay signed in for public repos (12 h)** (on by default): reloads and new tabs keep only the spend-capped signing key. Private repos, storage credentials and wallet grants still ask you to unlock, once per tab. Turn it off and every reload or new tab starts locked.
 - **Revoke on chain** disables this browser's key. It needs your identity file once.
 - **Sign out & forget key** deletes the key from this device. Forgetting is **not** revoking: a forgotten key stays valid on chain until it expires.
 
@@ -242,12 +243,15 @@ CI gets one pasteable value, `DASH_FORGE_KEY=dfk1:<network>:<identity id>:<key i
 
 ## The browser vault and its limits
 
-The limited key is stored in IndexedDB, encrypted with AES-256-GCM. The data key is wrapped by a passkey's PRF output (stretched with HKDF), by Argon2id of your passphrase (64 MiB, 3 passes, 16-byte salt), or by both. Each ciphertext is bound to its network and identity. Unlocked, the key lives only in page memory. It locks after 12 hours, and is cleared when you lock or sign out.
+The limited key is stored in IndexedDB, encrypted with AES-256-GCM. The data key is wrapped by a passkey's PRF output (stretched with HKDF), by Argon2id of your passphrase (64 MiB, 3 passes, 16-byte salt), or by both. Each ciphertext is bound to its network and identity.
+
+Once unlocked, a session lasts across reloads, typed URLs and new tabs for **public repos**: up to 12 hours after the unlock, and not after 4 hours without use. It ends at once when you lock or sign out in any tab (every tab locks), or when the key turns out to be disabled or expired on chain. A resumed session holds only a signing key bound to Forge's contracts, with a budget and an on-chain expiry (a browser key: 0.05 DASH and 90 days by default; a wallet's key only when the wallet gave it a budget and an expiry). Anyone with JavaScript running on this site, or a copy of your browser profile taken within the window, could use that key. Your encryption key, storage credentials and wallet grants are never stored unlocked: a reloaded tab asks you to unlock (one passkey gesture, or your passphrase) the first time it needs them, and keeps them in that tab's memory only. Turn this off with **Stay signed in for public repos**.
 
 What the vault does **not** protect against:
 
-- **Script running in the page.** The vault protects the key at rest. While it is unlocked, any script running on the page (an XSS) can use it. The page's CSP allows inline scripts, which Next's static bootstrap needs. It does not allow JavaScript `eval`, only `wasm-unsafe-eval` for the SDK's WebAssembly.
-- **Clickjacking where the host cannot send headers.** `frame-ancestors` only works as an HTTP header, and GitHub Pages cannot send one, so the Pages deployment can be framed. Serve the app from a host that sends `Content-Security-Policy: frame-ancestors 'none'` if that matters to you.
+- **Script running in the page.** The vault protects the key at rest. While it is unlocked, any script running on the page (an XSS) can use it. During the stay-signed-in window a script on any page load of this site can also read the kept signing key and send it off, bounded by that key's budget and on-chain expiry (not the encryption key, storage credentials or wallet grants, which are never kept). The page's CSP allows inline scripts, which Next's static bootstrap needs. It does not allow JavaScript `eval`, only `wasm-unsafe-eval` for the SDK's WebAssembly.
+- **Someone with a copy of your browser profile, taken within the window.** The kept record is deleted when the app next runs after it expires, not the moment it does, and the browser may keep the key that seals it in the profile. So a copy taken before your next visit can use the signing key without your passphrase or passkey, until its budget or on-chain expiry runs out, or you revoke it. Nothing else of the vault is in that record. **Stay signed in for public repos** off closes this.
+- **Clickjacking where the host cannot send headers.** `frame-ancestors` only works as an HTTP header, and GitHub Pages cannot send one, so the Pages deployment can be framed (a framed page never picks up a kept session, so it opens locked). Serve the app from a host that sends `Content-Security-Policy: frame-ancestors 'none'` if that matters to you.
 - **A shared origin.** On a GitHub Pages project site (`*.github.io/<repo>`) or an IPFS path gateway (`ipfs.io/ipfs/…`), other sites share the origin and could read the vault or ask the browser for the passkey's PRF output. So the app refuses to create or unlock a vault there. Browsing still works. Use <https://forge.dashhq.org> (the Pages deployment's custom domain, set in the repository's Pages settings) or an IPFS subdomain gateway (`<cid>.ipfs.<gateway>`).
 
 ---

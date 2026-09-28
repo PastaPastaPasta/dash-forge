@@ -121,7 +121,7 @@ export function useProtection(opts: { readonly preferPasskey?: boolean } = {}): 
         </Field>
       ) : null}
       <p className="flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400">
-        <KeyRound className="h-3 w-3" aria-hidden /> Locks itself after 12 hours or when you sign out.
+        <KeyRound className="h-3 w-3" aria-hidden /> Locks itself after 12 hours or when you sign out. Reloads keep only the spend-capped key for public repos.
       </p>
     </form>
   )

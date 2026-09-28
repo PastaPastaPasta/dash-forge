@@ -13,8 +13,9 @@ export const metadata: Metadata = {
 // - script 'wasm-unsafe-eval': the evo-sdk WASM runtime. JS 'unsafe-eval' is not granted
 //   (verified: reads, writes and sign-in run without it). 'unsafe-inline' stays for Next's
 //   inline bootstrap scripts.
-// - frame-ancestors is ignored in a <meta> CSP; the host must send it as a header (GitHub
-//   Pages cannot; see docs/guides/identity-and-keys.md).
+// - frame-ancestors is not here: browsers ignore it in a <meta> CSP (and log an error on every
+//   page). The host must send it as a header; GitHub Pages cannot (docs/guides/identity-and-keys.md).
+//   A framed page never restores a kept session (lib/auth/session-resume.ts `framed`).
 // - connect-src https:/wss:: DAPI endpoints + IPFS/S3/HTTPS pack backends. Plain http to this
 //   machine is allowed so the storage settings can reach the user's OWN local node (a kubo
 //   RPC API, a MinIO endpoint), which is how kubo ships. It cannot be narrowed to one page: a
@@ -31,7 +32,6 @@ const CSP = [
   "connect-src 'self' https: wss: http://127.0.0.1:* http://localhost:*",
   "worker-src 'self' blob:",
   "child-src 'self' blob:",
-  "frame-ancestors 'none'",
   "base-uri 'self'",
 ].join('; ')
 

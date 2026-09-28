@@ -10,6 +10,7 @@ import Link from 'next/link'
 import { useState } from 'react'
 import { Bell, CheckCheck, CircleDot, GitCommit, GitPullRequest, Info, MessageSquare, RefreshCw, ShieldCheck, Tag } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
+import { SignInButton } from '@/components/sign-in-button'
 import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, Spinner } from '@/components/ui/states'
@@ -17,7 +18,6 @@ import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge
 import { useAuth } from '@/contexts/auth-context'
 import { useInboxActions, useInboxStore } from '@/hooks/use-inbox'
 import { repoHref } from '@/hooks/use-query-param'
-import { useUiStore } from '@/hooks/use-ui-store'
 import { INBOX_EMPTY, MAX_REPOS, MAX_THREADS, POLL_MS, type InboxItem } from '@/lib/view/inbox'
 import { timeAgo } from '@/lib/view'
 import { cn } from '@/lib/utils'
@@ -39,7 +39,6 @@ function hrefOf(item: InboxItem): string {
 
 export default function NotificationsPage(): JSX.Element {
   const { identity } = useAuth()
-  const openLogin = useUiStore((s) => s.openLogin)
   const { items, subs, prefs, polling, lastPoll, lastFeeds, error } = useInboxStore()
   const { markRead, markAllRead, setPrefs, pollNow } = useInboxActions()
   const [filter, setFilter] = useState<'unread' | 'all'>('unread')
@@ -61,7 +60,7 @@ export default function NotificationsPage(): JSX.Element {
           icon={Bell}
           title="Sign in to see your notifications"
           body={`${INBOX_EMPTY} They follow the identity you sign in with.`}
-          action={<Button variant="primary" onClick={() => openLogin()}>Sign in</Button>}
+          action={<SignInButton />}
         />
       </AppShell>
     )

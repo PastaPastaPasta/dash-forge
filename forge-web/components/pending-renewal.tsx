@@ -14,6 +14,8 @@ import { useAuth } from '@/contexts/auth-context'
 import { useAsync } from '@/hooks/use-async'
 import { useUiStore } from '@/hooks/use-ui-store'
 import { Button } from '@/components/ui/button'
+import { UnlockNeededError } from '@/lib/auth/controller'
+import { UnlockMore } from '@/components/auth/unlock-more'
 import { Field, Input } from '@/components/ui/input'
 import { formatDate } from '@/lib/view/format'
 import { errorMessage } from '@/lib/utils'
@@ -25,6 +27,8 @@ export function PendingRenewal({ identityId }: { identityId: string }): JSX.Elem
   const [discarding, setDiscarding] = useState(false)
   const [busy, setBusy] = useState(false)
   const [passphrase, setPassphrase] = useState('')
+  // A reloaded tab holds the signing key only: keeping the renewal's key needs the vault open.
+  const [unlockFirst, setUnlockFirst] = useState<(() => void) | null>(null)
   const { data, reload } = useAsync(() => controller.pendingRenewal(identityId), [identityId])
   if (!data) return null
   const discard = async (unlockWith?: { passphrase: string } | 'passkey'): Promise<void> => {
@@ -36,7 +40,11 @@ export function PendingRenewal({ identityId }: { identityId: string }): JSX.Elem
       setDiscarding(false)
       reload()
     } catch (e) {
-      setError(errorMessage(e))
+      if (e instanceof UnlockNeededError) setUnlockFirst(() => () => {
+        setUnlockFirst(null)
+        void discard(unlockWith)
+      })
+      else setError(errorMessage(e))
     } finally {
       setBusy(false)
     }
@@ -95,6 +103,7 @@ export function PendingRenewal({ identityId }: { identityId: string }): JSX.Elem
           </div>
         </div>
       ) : null}
+      {unlockFirst ? <UnlockMore title="Unlock this tab to discard the renewal" testId="pending-renewal-unlock" then={unlockFirst} /> : null}
       {error ? <p role="alert" className="text-[12px] text-danger-700 dark:text-danger-400">{error}</p> : null}
     </div>
   )

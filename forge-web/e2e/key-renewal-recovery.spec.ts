@@ -68,7 +68,7 @@ let renewedKey = -1
 
 /**
  * Open Settings through the account menu. A client-side navigation: a full page load would
- * lock the vault (the unlocked key lives in this page's memory only).
+ * resume a signing-only session, without the key ids this spec reads from Settings → Keys.
  */
 async function openSettings(p: Page): Promise<void> {
   await p.getByRole('button', { name: 'Account menu' }).click()
@@ -140,8 +140,9 @@ test('k3. reload and unlock: the staged renewal is adopted; Settings → Keys sh
   test.skip(renewedKey < 0, 'k2 did not interrupt a renewal')
   page = await context.newPage()
   await page.goto('/settings/', { waitUntil: 'domcontentloaded' })
-  // Locked: the stored keys are offered for unlock (nothing opened yet).
-  await page.getByRole('button', { name: /^sign in$/i }).first().click()
+  // Locked: the stored keys are offered for unlock (nothing opened yet; a kept session is not
+  // resumed while a renewal is staged). The header says "Session locked — Unlock".
+  await page.getByRole('banner').getByRole('button', { name: /^sign in$|unlock$/i }).first().click()
   await shot(page, `${SHOTS}-k3-locked`)
   await page.getByLabel('Passphrase', { exact: true }).fill(PASSPHRASE)
   await page.getByRole('button', { name: /^unlock$/i }).click()

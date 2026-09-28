@@ -5,7 +5,7 @@
 import Link from 'next/link'
 import { Wallet } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
-import { Button } from '@/components/ui/button'
+import { SignInButton } from '@/components/sign-in-button'
 import { EmptyState } from '@/components/ui/states'
 import { IdentityPill } from '@/components/ui/identity-pill'
 import { Oid } from '@/components/ui/oid'
@@ -15,6 +15,7 @@ import { NetworkBadge } from '@/components/ui/network-badge'
 import { SpendPanel } from '@/components/spend-panel'
 import { KeysPanel } from '@/components/keys-panel'
 import { EncryptionKeyPanel } from '@/components/encryption-key-panel'
+import { SecurityPanel } from '@/components/security-panel'
 import { GatewaysField } from '@/components/gateways-field'
 import { DisplayPrefsPanel } from '@/components/display-prefs-panel'
 import { creditsToDash } from '@/lib/sdk'
@@ -22,7 +23,6 @@ import { balanceToDash, dashToUsd } from '@/lib/view/format'
 
 export default function SettingsPage(): JSX.Element {
   const { identity, balance } = useAuth()
-  const openLogin = useUiStore((s) => s.openLogin)
   const openTopUp = useUiStore((s) => s.openTopUp)
 
   const gateways = (
@@ -42,7 +42,7 @@ export default function SettingsPage(): JSX.Element {
             icon={Wallet}
             title="Not signed in"
             body="Sign in to see your balance and account settings."
-            action={<Button variant="primary" onClick={() => openLogin()}>Sign in</Button>}
+            action={<SignInButton />}
           />
           {gateways}
         </div>
@@ -90,7 +90,7 @@ export default function SettingsPage(): JSX.Element {
           <p className="text-dense text-anvil-600 dark:text-anvil-300">
             Your buckets and IPFS nodes for browser pushes, tested from this page, with their keys encrypted in this browser.
           </p>
-          <Link href="/settings/storage" className="hit-area mt-2 inline-block text-dense text-forge-700 underline dark:text-forge-400">
+          <Link href="/settings/storage/" className="hit-area mt-2 inline-block text-dense text-forge-700 underline dark:text-forge-400">
             Storage settings →
           </Link>
         </section>
@@ -104,6 +104,8 @@ export default function SettingsPage(): JSX.Element {
           <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">This browser&apos;s key</h2>
           <KeysPanel />
         </section>
+
+        <SecurityPanel />
 
         <EncryptionKeyPanel />
 
