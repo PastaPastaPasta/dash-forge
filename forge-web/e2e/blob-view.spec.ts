@@ -57,9 +57,9 @@ test.describe('blob view (showcase repos)', () => {
     await page.locator('#L5 a').click({ modifiers: ['Shift'] })
     await expect(page).toHaveURL(/#L3-L5$/)
     await expect(page.locator('tr[data-selected]')).toHaveCount(3)
-    // The permalink pins the commit, not the branch.
+    // The permalink pins the commit, not the branch: the short `/blob/<oid>/path` form (F-5).
     const href = (await page.getByTestId('copy-permalink').getAttribute('data-href')) as string
-    expect(href).toMatch(/[?&]ref=[0-9a-f]{40}.*#L3-L5$/)
+    expect(href).toMatch(/\/blob\/[0-9a-f]{40}\/src\/main\.rs#L3-L5$/)
 
     const url = new URL(href)
     await page.goto(`${url.pathname}${url.search}${url.hash}`, { waitUntil: 'domcontentloaded' })
