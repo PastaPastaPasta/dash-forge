@@ -36,6 +36,16 @@ describe('issue list URL state', () => {
     expect(parseIssueQuery(params('author=none')).author).toBeNull()
   })
 
+  it("lifts GitHub's qualifiers out of ?q= (a /issues?q= link, L-27)", () => {
+    const q = parseIssueQuery(params('q=is%3Aclosed+label%3Abug+crash'))
+    expect(q).toMatchObject({ state: 'closed', labels: ['bug'], q: 'crash' })
+    // The app's own URL (free text only) reads back unchanged, page included.
+    const own = parseIssueQuery(params('state=closed&q=crash&page=2'))
+    expect(own).toMatchObject({ state: 'closed', q: 'crash', page: 2 })
+    // An unknown qualifier stays free text.
+    expect(parseIssueQuery(params('q=foo%3Abar')).q).toBe('foo:bar')
+  })
+
   it('dedupes repeated labels', () => {
     expect(parseIssueQuery(params('label=bug&label=bug&label=%20')).labels).toEqual(['bug'])
   })

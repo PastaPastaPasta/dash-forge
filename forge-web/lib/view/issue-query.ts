@@ -79,7 +79,7 @@ export function parseIssueQuery(params: { get(name: string): string | null; getA
   const sort = params.get('sort')
   const page = Number.parseInt(params.get('page') ?? '', 10)
   const labels = [...new Set(params.getAll('label').map((l) => l.trim()).filter((l) => l !== '' && [...l].length <= LABEL_MAX))]
-  return {
+  const parsed: IssueListQuery = {
     state: STATES.includes(state as IssueStateFilter) ? (state as IssueStateFilter) : 'open',
     labels,
     author: identityParam(params.get('author'), ['me']),
@@ -89,6 +89,9 @@ export function parseIssueQuery(params: { get(name: string): string | null; getA
     q: (params.get('q') ?? '').slice(0, 200),
     page: Number.isInteger(page) && page >= 1 && page <= 10_000 ? page : 1,
   }
+  // A GitHub link carries its qualifiers inside `q` (`/issues?q=is:closed+label:bug`): lift
+  // them out. The app writes only free text to `q`, so this leaves its own URLs as they are.
+  return parsed.q.includes(':') ? { ...parseSearchText(parsed.q, parsed), page: parsed.page } : parsed
 }
 
 /** The URL params of a query, defaults omitted, in a stable order (so equal queries share a URL). */
