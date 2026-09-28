@@ -68,6 +68,40 @@ fn history(name: &str, body: &[u8], ident: &str) -> (tempfile::TempDir, String, 
 }
 
 #[test]
+fn many_malformed_author_lines_push_without_hanging() {
+    // Every malformed line is a line on index-pack's stderr unless the check is ignored; with
+    // stdin written before stderr is drained, ~560 of them filled the pipe and hung the push.
+    let tmp = tempfile::tempdir().unwrap();
+    let d = tmp.path();
+    git(d, &["init", "-q", "--bare"], b"");
+    let tree = one_file_tree(d, "a.txt", b"a\n");
+    let mut tip = String::new();
+    for i in 0..1500 {
+        let parent = if tip.is_empty() {
+            String::new()
+        } else {
+            format!("parent {tip}\n")
+        };
+        let text = format!(
+            "tree {tree}\n{parent}author S <s@k> {i} +051800\ncommitter S <s@k>{i} +051800\n\nc{i}\n"
+        );
+        tip = put(d, "commit", text.as_bytes());
+    }
+    let repo = d.to_path_buf();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let head = tip.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(
+            forge_core::pack::build_pack(&repo, &[&head], &[]).map(|p| p.parsed.object_count()),
+        );
+    });
+    let built = rx
+        .recv_timeout(std::time::Duration::from_secs(60))
+        .expect("build_pack hung on a history with many malformed author lines");
+    assert!(built.unwrap() >= 1500);
+}
+
+#[test]
 fn malformed_author_lines_push() {
     for ident in [
         "Shrikant <s@k> 1313584730 +051800",

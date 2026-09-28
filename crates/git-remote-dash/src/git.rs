@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use anyhow::{anyhow, bail, Result};
-use forge_core::pack::{ensure_safe_rev, fsck};
+use forge_core::pack::{ensure_safe_rev, fsck, run_feeding};
 use std::io::Write as _;
 
 /// Run `git <args>`, optionally in `cwd`, optionally with the ambient `GIT_DIR`/
@@ -26,6 +26,27 @@ fn run_git(
     clear_git_dir: bool,
     stdin: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
+    let out = git_output(args, cwd, clear_git_dir, stdin)?;
+    if !out.status.success() {
+        bail!(
+            "git {} failed: {}",
+            args.first().copied().unwrap_or_default(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    Ok(out.stdout)
+}
+
+/// [`run_git`]'s run, returning git's output whether it succeeded or not. stdin is fed while
+/// the output is drained ([`forge_core::pack::run_feeding`]), so a git that writes a lot
+/// before reading all its input cannot deadlock; a stdin write error is only an error when
+/// git itself succeeded (a git that stops reading has its own error on stderr).
+fn git_output(
+    args: &[&str],
+    cwd: Option<&Path>,
+    clear_git_dir: bool,
+    stdin: Option<&[u8]>,
+) -> Result<std::process::Output> {
     let mut cmd = Command::new("git");
     // Use the OS process cwd rather than `git -C` to avoid arg-ordering pitfalls.
     if let Some(dir) = cwd {
@@ -36,41 +57,57 @@ fn run_git(
         cmd.env_remove("GIT_DIR");
         cmd.env_remove("GIT_WORK_TREE");
     }
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-    cmd.stdin(if stdin.is_some() {
-        Stdio::piped()
-    } else {
-        Stdio::null()
-    });
+    let (out, written) = run_feeding(&mut cmd, stdin).map_err(|e| anyhow!("running git: {e}"))?;
+    if out.status.success() {
+        written.map_err(|e| anyhow!("write git stdin: {e}"))?;
+    }
+    Ok(out)
+}
 
-    let mut child = cmd.spawn().map_err(|e| anyhow!("spawn git: {e}"))?;
-    // A git that stops reading early (index-pack refusing an object) breaks the pipe: its
-    // exit status and stderr are the real answer, so they are collected before the write
-    // error is reported.
-    let written = match stdin {
-        Some(data) => child
-            .stdin
-            .take()
-            .ok_or_else(|| anyhow!("git stdin unavailable"))?
-            .write_all(data),
-        None => Ok(()),
-    };
-    let out = child
-        .wait_with_output()
-        .map_err(|e| anyhow!("wait git: {e}"))?;
+/// What `index-pack --stdin` reported: the pack's sha (its `pack\t<sha>` or `keep\t<sha>`
+/// line), and the `.gitmodules`/`.gitattributes` blobs its checks could not read (the oid
+/// lines after it: blobs a tree in this pack names, held by a pack not yet indexed).
+#[derive(Debug, Default)]
+pub struct Indexed {
+    /// The pack's sha.
+    pub sha: String,
+    /// Special-file blobs left to check once every pack is indexed.
+    pub unchecked: Vec<String>,
+}
+
+/// `git index-pack --stdin --fix-thin` of `pack_bytes`, with the object checks
+/// ([`fsck::index_pack_checks`]), in `cwd` (the repo git spawned the helper for when `None`).
+/// A refused object is E511.
+fn index_checked(pack_bytes: &[u8], cwd: Option<&Path>) -> Result<Indexed> {
+    let args = [
+        "index-pack",
+        "--stdin",
+        "--fix-thin",
+        fsck::index_pack_checks(),
+    ];
+    let out = git_output(&args, cwd, cwd.is_some(), Some(pack_bytes))?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
     if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
         if let Some(refused) = fsck::refused(&stderr, false) {
             return Err(refused.into());
         }
-        bail!(
-            "git {} failed: {}",
-            args.first().copied().unwrap_or_default(),
-            stderr.trim()
-        );
+        bail!("git index-pack failed: {}", stderr.trim());
     }
-    written.map_err(|e| anyhow!("write git stdin: {e}"))?;
-    Ok(out.stdout)
+    let mut lines = stdout.lines();
+    let sha = lines
+        .find_map(|l| {
+            l.strip_prefix("pack\t")
+                .or_else(|| l.strip_prefix("keep\t"))
+        })
+        .ok_or_else(|| anyhow!("index-pack produced no pack sha"))?;
+    Ok(Indexed {
+        sha: sha.trim().to_string(),
+        unchecked: lines
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+    })
 }
 
 /// `git config --get <key>` in the helper's environment (the repo git spawned it for, then
@@ -224,25 +261,64 @@ impl LocalRepo {
     /// in this pack or already in the odb, and a repo's history is split across packs indexed
     /// one at a time in no guaranteed order, so a valid multi-pack fetch would fail.
     /// Connectivity is checked by git itself once the fetch completes.
-    pub fn index_pack(pack_bytes: &[u8]) -> Result<String> {
-        let out = run_git(
-            &[
-                "index-pack",
-                "--stdin",
-                "--fix-thin",
-                fsck::index_pack_checks(),
-            ],
-            None,
-            false,
-            Some(pack_bytes),
-        )?;
-        let s = String::from_utf8_lossy(&out);
-        s.split_whitespace()
-            .last()
-            .map(str::to_string)
-            .ok_or_else(|| anyhow!("index-pack produced no pack sha"))
+    ///
+    /// A `.gitmodules` blob the pack's trees name but another pack holds cannot be checked
+    /// yet: it is returned in [`Indexed::unchecked`] for [`Self::check_blobs`] once every pack
+    /// is indexed, as git's fetch-pack does.
+    pub fn index_pack(pack_bytes: &[u8]) -> Result<Indexed> {
+        index_checked(pack_bytes, None)
     }
 
+    /// Check `.gitmodules` blobs ([`Indexed::unchecked`]) now that every pack of the fetch is
+    /// indexed: packed together into a scratch repo whose one tree names each as
+    /// `.gitmodules`, and indexed with the object checks, so a hostile one is E511. One whose
+    /// blob no pack delivered (a partial clone's filter left it out) is skipped: git fetches
+    /// and checks it when it is needed.
+    pub fn check_blobs(oids: &[String]) -> Result<()> {
+        check_gitmodules_blobs(oids, None)
+    }
+}
+
+/// [`LocalRepo::check_blobs`] against the repo in `from` (the one git spawned the helper for
+/// when `None`).
+fn check_gitmodules_blobs(oids: &[String], from: Option<&Path>) -> Result<()> {
+    let clear = from.is_some();
+    let present: Vec<&String> = oids
+        .iter()
+        .filter(|oid| {
+            ensure_safe_rev(oid).is_ok()
+                && run_git(&["cat-file", "-e", oid], from, clear, None).is_ok()
+        })
+        .collect();
+    if present.is_empty() {
+        return Ok(());
+    }
+    // Copied (as read from `from`) into a scratch repo, each under a tree that names it
+    // `.gitmodules`, so the checking index-pack reads each as one.
+    let scratch = ScratchRepo::init()?;
+    let mut revs = String::new();
+    for oid in present {
+        let body = run_git(&["cat-file", "blob", oid], from, clear, None)?;
+        let blob = scratch.put("blob", &body)?;
+        let mut tree = b"100644 .gitmodules\0".to_vec();
+        tree.extend(hex::decode(&blob).map_err(|e| anyhow!("blob oid {blob}: {e}"))?);
+        let tree = scratch.put("tree", &tree)?;
+        for oid in [&tree, &blob] {
+            revs.push_str(oid);
+            revs.push('\n');
+        }
+    }
+    let pack = run_git(
+        &["pack-objects", "--stdout"],
+        Some(&scratch.dir),
+        true,
+        Some(revs.as_bytes()),
+    )?;
+    index_checked(&pack, Some(&ScratchRepo::init()?.dir))?;
+    Ok(())
+}
+
+impl LocalRepo {
     /// The local `GIT_DIR`, canonicalized to an absolute path. Falls back to `.git` under
     /// the current directory when the env var is unset (manual invocation).
     pub fn git_dir() -> Result<PathBuf> {
@@ -273,30 +349,40 @@ pub struct ScratchRepo {
 impl ScratchRepo {
     /// Create and `git init --bare` a fresh scratch repo.
     pub fn init() -> Result<Self> {
+        // Two in the same clock tick (threads, or a check inside a fetch) must not collide.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
-        let dir =
-            std::env::temp_dir().join(format!("git-remote-dash-{}-{}", std::process::id(), nanos));
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "git-remote-dash-{}-{nanos}-{seq}",
+            std::process::id()
+        ));
         std::fs::create_dir_all(&dir).map_err(|e| anyhow!("mkdir scratch: {e}"))?;
         run_git(&["init", "--bare", "-q"], Some(&dir), true, None)?;
         Ok(Self { dir })
     }
 
     /// Index a self-contained pack into the scratch odb, checked as [`LocalRepo::index_pack`] checks.
-    pub fn index_pack(&self, pack_bytes: &[u8]) -> Result<()> {
-        run_git(
-            &[
-                "index-pack",
-                "--stdin",
-                "--fix-thin",
-                fsck::index_pack_checks(),
-            ],
+    pub fn index_pack(&self, pack_bytes: &[u8]) -> Result<Indexed> {
+        index_checked(pack_bytes, Some(&self.dir))
+    }
+
+    /// [`LocalRepo::check_blobs`] for the packs indexed into this scratch repo.
+    pub fn check_blobs(&self, oids: &[String]) -> Result<()> {
+        check_gitmodules_blobs(oids, Some(&self.dir))
+    }
+
+    /// Write `body` as a loose object of `kind`, unchecked; its oid.
+    fn put(&self, kind: &str, body: &[u8]) -> Result<String> {
+        let out = run_git(
+            &["hash-object", "-w", "--literally", "-t", kind, "--stdin"],
             Some(&self.dir),
             true,
-            Some(pack_bytes),
+            Some(body),
         )?;
-        Ok(())
+        Ok(String::from_utf8_lossy(&out).trim().to_string())
     }
 
     /// Produce a self-contained pack of the objects reachable from `want_oids`, applying an
@@ -481,6 +567,105 @@ mod tests {
         let err = ScratchRepo::init().unwrap().index_pack(&pack).unwrap_err();
         let refused = refusal(&err);
         assert!(refused.to_string().contains("hasDotgit"), "{refused}");
+    }
+
+    #[test]
+    fn many_malformed_idents_index_without_hanging() {
+        // Each malformed line was a warning on index-pack's stderr; with stdin written before
+        // stderr was drained, ~560 of them filled the pipe and the fetch hung for ever.
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        run_git(&["init", "-q", "--bare"], Some(d), true, None).unwrap();
+        let tree = put(d, "tree", &entry("100644", "a", &put(d, "blob", b"a\n")));
+        let mut tip = String::new();
+        for i in 0..1500 {
+            let parent = if tip.is_empty() {
+                String::new()
+            } else {
+                format!("parent {tip}\n")
+            };
+            let text = format!("tree {tree}\n{parent}author S <s@k> {i} +051800\ncommitter S <s@k>{i} +051800\n\nc{i}\n");
+            tip = put(d, "commit", text.as_bytes());
+        }
+        let bytes = pack(d, &format!("{tip}\n"));
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(ScratchRepo::init().unwrap().index_pack(&bytes).map(|_| ()));
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(60))
+            .expect("index-pack hung on a pack with many malformed author lines")
+            .unwrap();
+    }
+
+    /// A repo with a commit whose tree holds `.gitmodules` = `body`, packed as two packs: the
+    /// commit and tree, then the blob alone. Returns (tree pack, blob pack, blob oid).
+    fn gitmodules_split(body: &[u8]) -> (Vec<u8>, Vec<u8>, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let d = dir.path();
+        run_git(&["init", "-q", "--bare"], Some(d), true, None).unwrap();
+        let blob = put(d, "blob", body);
+        let tree = put(d, "tree", &entry("100644", ".gitmodules", &blob));
+        let commit = put(d, "commit", commit_text(&tree, None, 1).as_bytes());
+        let objects = |oids: &[&str]| {
+            let list: String = oids.iter().flat_map(|o| [*o, "\n"]).collect();
+            run_git(
+                &["pack-objects", "--stdout"],
+                Some(d),
+                true,
+                Some(list.as_bytes()),
+            )
+            .unwrap()
+        };
+        (objects(&[&commit, &tree]), objects(&[&blob]), blob)
+    }
+
+    #[test]
+    fn a_hostile_gitmodules_in_another_pack_than_its_tree_is_refused() {
+        // The tree's pack cannot check a blob it does not hold; the blob's pack does not know
+        // the blob is a .gitmodules. Checked once both are in, as git's fetch-pack does.
+        let hostile = b"[submodule \"x\"]\n\tpath = x\n\turl = --upload-pack=touch /tmp/pwn\n";
+        let (trees, blobs, blob) = gitmodules_split(hostile);
+        let scratch = ScratchRepo::init().unwrap();
+        let mut unchecked = scratch.index_pack(&trees).unwrap().unchecked;
+        assert_eq!(
+            unchecked,
+            vec![blob.clone()],
+            "the tree pack names the blob it could not check"
+        );
+        unchecked.extend(scratch.index_pack(&blobs).unwrap().unchecked);
+        let err = scratch.check_blobs(&unchecked).unwrap_err();
+        assert!(
+            refusal(&err).to_string().contains("gitmodulesUrl"),
+            "{err:#}"
+        );
+        // A benign one passes, and a blob no pack delivered (a partial clone) is skipped.
+        let (trees, blobs, _) =
+            gitmodules_split(b"[submodule \"x\"]\n\tpath = x\n\turl = https://e.com/x\n");
+        let scratch = ScratchRepo::init().unwrap();
+        let mut unchecked = scratch.index_pack(&trees).unwrap().unchecked;
+        scratch.check_blobs(&unchecked).unwrap();
+        unchecked.extend(scratch.index_pack(&blobs).unwrap().unchecked);
+        scratch.check_blobs(&unchecked).unwrap();
+    }
+
+    #[test]
+    fn the_pack_sha_is_read_from_its_line_not_the_last_word() {
+        // index-pack prints `pack\t<sha>` then the .gitmodules blobs it could not check; the
+        // last word is then a blob oid, and a `.promisor` marker was written for it.
+        let (trees, _, blob) =
+            gitmodules_split(b"[submodule \"x\"]\n\tpath = x\n\turl = https://e.com/x\n");
+        let scratch = ScratchRepo::init().unwrap();
+        let indexed = scratch.index_pack(&trees).unwrap();
+        assert_ne!(indexed.sha, blob);
+        let packs = std::fs::read_dir(scratch.dir.join("objects/pack")).unwrap();
+        let names: Vec<String> = packs
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            names.contains(&format!("pack-{}.idx", indexed.sha)),
+            "{names:?} vs {}",
+            indexed.sha
+        );
     }
 
     #[test]

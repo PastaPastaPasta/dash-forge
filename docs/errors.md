@@ -283,7 +283,9 @@ In either case, a maintainer can instead move the ref back to history every memb
 
 ## E511
 
-**git refused an object in the history.** A clone or fetch downloaded a pack holding an object that git's own checks refuse. It stopped before any ref could point at that object. The `cause:` line names each object, the git check that refused it (its `fsck` msg-id, for example `hasDotgit` or `gitmodulesUrl`) and git's message.
+**git refused an object in the history.** An object failed git's own checks. The `cause:` line names each object, the git check that refused it (its `fsck` msg-id, for example `hasDotgit` or `gitmodulesUrl`) and git's message. It happens in two places:
+- **Clone or fetch:** a downloaded pack holds the object. The clone stops before any ref can point at it. A `.gitmodules` whose tree and blob arrive in different packs is checked once every pack is in.
+- **Push, including `forge-import`, which pushes through the helper:** the pushed history holds the object. The push stops before anything is stored or paid for.
 
 These are the checks git runs with `transfer.fsckObjects`, which a plain `git clone` skips. Each stays fatal because it can change what a checkout writes, or lets two readers disagree on what an object names:
 - a path git treats as the repository (`.git`, `.GIT`, `git~1`);
@@ -291,9 +293,12 @@ These are the checks git runs with `transfer.fsckObjects`, which a plain `git cl
 - a `.gitmodules` or `.gitattributes` that is a symbolic link;
 - a corrupt tree or commit header.
 
-The author and committer line checks (`badTimezone`, `missingSpaceBeforeDate`, `badEmail`, `badDate` and similar) are only warnings, so real histories with old malformed commits still clone.
+The author and committer line checks (`badTimezone`, `missingSpaceBeforeDate`, `badEmail`, `badDate` and similar) are ignored, so real histories with old malformed commits still clone, push and merge. That needs git 2.44 or newer. An older git can only run every check at once, so it refuses those histories on clone; in that case the error says to upgrade git.
 
-Fix: the history itself has to change. Ask a maintainer to push history without that object. Nothing needs cleaning up on your side.
+Fix:
+- On a clone or fetch, the history itself has to change: ask a maintainer to push history without that object. Nothing needs cleaning up on your side.
+- On a push or import, rewrite the history so no commit holds that object, then push again.
+- If every refused check is an author or committer line check, upgrade git to 2.44 or newer.
 
 ## E601
 

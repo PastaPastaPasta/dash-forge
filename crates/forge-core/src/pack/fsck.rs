@@ -15,7 +15,9 @@
 //! reader could disagree on what an object names.
 //!
 //! [`RELAXED`] are the checks of the text of an `author`, `committer` or `tagger` line (the
-//! name, email, date and time zone). They are demoted to warnings because:
+//! name, email, date and time zone). They are set to `ignore` — not `warn`, which prints a
+//! stderr line per object, and a history of thousands of such commits must not flood the pipe —
+//! because:
 //!
 //! - Real, widely cloned histories fail them. psf/requests' commit 5e6ecdad has the time zone
 //!   `+051800` (`badTimezone`); older tools wrote `A <a@b>1313584730` (`missingSpaceBeforeDate`),
@@ -35,7 +37,7 @@
 
 use crate::user_error::{codes, UserError};
 
-/// The author/committer/tagger-line checks demoted to `warn` (see the module docs), as git
+/// The author/committer/tagger-line checks set to `ignore` (see the module docs), as git
 /// spells their msg-ids. Every other check keeps git's severity.
 pub const RELAXED: &[&str] = &[
     "badDate",
@@ -50,12 +52,12 @@ pub const RELAXED: &[&str] = &[
     "zeroPaddedDate",
 ];
 
-/// The `index-pack` argument that checks every object with [`RELAXED`] demoted to warnings
+/// The `index-pack` argument that checks every object with [`RELAXED`] ignored
 /// (`--fsck-objects=<id>=<severity>,…`, git ≥ 2.44). Spelled out so it can be a `const`; a
 /// test pins it to [`RELAXED`].
-pub const INDEX_PACK_FSCK: &str = "--fsck-objects=badDate=warn,badDateOverflow=warn,\
-badEmail=warn,badName=warn,badTimezone=warn,missingEmail=warn,missingNameBeforeEmail=warn,\
-missingSpaceBeforeDate=warn,missingSpaceBeforeEmail=warn,zeroPaddedDate=warn";
+pub const INDEX_PACK_FSCK: &str = "--fsck-objects=badDate=ignore,badDateOverflow=ignore,\
+badEmail=ignore,badName=ignore,badTimezone=ignore,missingEmail=ignore,missingNameBeforeEmail=ignore,\
+missingSpaceBeforeDate=ignore,missingSpaceBeforeEmail=ignore,zeroPaddedDate=ignore";
 
 /// The first git version whose `index-pack` takes severities after `--fsck-objects`.
 const MIN_GIT_FOR_SEVERITIES: (u32, u32) = (2, 44);
@@ -157,12 +159,17 @@ pub fn refused(stderr: &str, pushing: bool) -> Option<UserError> {
             "no ref was moved to that history",
         )
     };
-    Some(
-        UserError::new(codes::OBJECT_REFUSED, message)
-            .cause(cause.join("; "))
-            .fix(fix)
-            .note(note),
-    )
+    let err = UserError::new(codes::OBJECT_REFUSED, message).cause(cause.join("; "));
+    // Only a git that cannot take severities refuses these ids: the history is fine.
+    let err = if all.iter().all(|r| RELAXED.contains(&r.msg_id.as_str())) {
+        err.fix(format!(
+            "upgrade git to {}.{} or newer: older gits refuse the malformed author lines that git clone accepts, and this history only has those",
+            MIN_GIT_FOR_SEVERITIES.0, MIN_GIT_FOR_SEVERITIES.1
+        ))
+    } else {
+        err.fix(fix).note(note)
+    };
+    Some(err)
 }
 
 #[cfg(test)]
@@ -174,7 +181,7 @@ mod tests {
         let list = INDEX_PACK_FSCK.strip_prefix("--fsck-objects=").unwrap();
         let ids: Vec<&str> = list
             .split(',')
-            .map(|e| e.strip_suffix("=warn").unwrap())
+            .map(|e| e.strip_suffix("=ignore").unwrap())
             .collect();
         assert_eq!(ids, RELAXED);
     }
@@ -208,5 +215,18 @@ fatal: fsck error in packed object\n";
             }]
         );
         assert!(refusals("fatal: early EOF").is_empty());
+    }
+
+    #[test]
+    fn an_old_git_refusing_only_author_lines_is_told_to_upgrade() {
+        let tz = "error: object 5e6ecdad9f69b1ff789a17733b8edc6fd7091bd8: badTimezone: invalid author/committer line - bad time zone\n";
+        let dotgit =
+            "error: object 1111111111111111111111111111111111111111: hasDotgit: contains '.git'\n";
+        let old = refused(tz, false).unwrap();
+        assert_eq!(old.code, codes::OBJECT_REFUSED);
+        assert!(old.fix[0].contains("upgrade git to 2.44"), "{:?}", old.fix);
+        let hostile = refused(&format!("{tz}{dotgit}"), false).unwrap();
+        assert!(!hostile.fix[0].contains("upgrade"), "{:?}", hostile.fix);
+        assert!(refused("fatal: early EOF", false).is_none());
     }
 }

@@ -250,7 +250,13 @@ fn index_pack_bytes(repo: &Path, bytes: &[u8], checks: Option<&str>) -> Result<P
     let mut args = vec!["index-pack", "--stdin"];
     args.extend(checks);
     args.extend(["-o", &idx, &pack]);
-    git_capture(repo, &args, Some(bytes))?;
+    let out = git_output(repo, &args, Some(bytes))?;
+    if !out.status.success() {
+        // An object git's checks refused (only a checking index-pack reports one): a push.
+        let refused =
+            checks.and_then(|_| super::fsck::refused(&String::from_utf8_lossy(&out.stderr), true));
+        return Err(refused.map_or_else(|| git_failed(&args, &out.stderr), Error::from));
+    }
     Pack::from_files(&pack_path, &idx_path)
 }
 
@@ -385,46 +391,65 @@ fn git_at(cwd: &Path, args: &[&str]) -> Command {
     cmd
 }
 
-/// Run `git -C <cwd> <args>` feeding `stdin`, returning captured stdout on success. The
-/// repository is exactly `cwd` — inherited repo-location variables are cleared.
-pub(super) fn git_capture(cwd: &Path, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
-    let mut cmd = git_at(cwd, args);
+/// Run `cmd` with `stdin` fed to it, capturing stdout and stderr: the output, and how writing
+/// stdin went. stdin is written from its own thread while this one drains stdout and stderr,
+/// so a child that writes a lot before it has read all its input (index-pack printing a line
+/// per object it warns about) cannot fill a pipe and deadlock with us. A child that stops
+/// reading early breaks the pipe; its exit status and stderr are then the real answer, so the
+/// write result is returned apart rather than as the error.
+pub fn run_feeding(
+    cmd: &mut Command,
+    stdin: Option<&[u8]>,
+) -> std::io::Result<(std::process::Output, std::io::Result<()>)> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.stdin(if stdin.is_some() {
         Stdio::piped()
     } else {
         Stdio::null()
     });
+    let mut child = cmd.spawn()?;
+    let pipe = child.stdin.take();
+    std::thread::scope(|s| {
+        // The pipe is dropped (closed) when the writer is done, so the child sees EOF.
+        let writer = s.spawn(move || match (pipe, stdin) {
+            (Some(mut pipe), Some(data)) => pipe.write_all(data),
+            _ => Ok(()),
+        });
+        let out = child.wait_with_output();
+        let written = writer
+            .join()
+            .unwrap_or_else(|_| Err(std::io::Error::other("the stdin writer panicked")));
+        Ok((out?, written))
+    })
+}
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| Error::Io(format!("spawn git: {e}")))?;
-    // A git that stops reading early (index-pack refusing an object) breaks the pipe: its exit
-    // status and stderr are the real answer, so they are read before a write error is.
-    let written = match stdin {
-        Some(data) => child
-            .stdin
-            .take()
-            .ok_or_else(|| Error::Io("git stdin unavailable".into()))?
-            .write_all(data),
-        None => Ok(()),
-    };
-    let out = child
-        .wait_with_output()
-        .map_err(|e| Error::Io(format!("wait git: {e}")))?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        // Only an object-checking index-pack reports refused objects, and here that is a push.
-        if let Some(refused) = super::fsck::refused(&stderr, true) {
-            return Err(refused.into());
-        }
-        return Err(Error::Io(format!(
-            "git {} failed: {}",
-            args.first().copied().unwrap_or_default(),
-            stderr.trim()
-        )));
+/// `git -C <cwd> <args>` fed `stdin`: its output, whether it succeeded or not. A stdin write
+/// error is only an error when git itself succeeded (see [`run_feeding`]).
+fn git_output(cwd: &Path, args: &[&str], stdin: Option<&[u8]>) -> Result<std::process::Output> {
+    let (out, written) = run_feeding(&mut git_at(cwd, args), stdin)
+        .map_err(|e| Error::Io(format!("running git: {e}")))?;
+    if out.status.success() {
+        written.map_err(|e| Error::Io(format!("write git stdin: {e}")))?;
     }
-    written.map_err(|e| Error::Io(format!("write git stdin: {e}")))?;
+    Ok(out)
+}
+
+/// A failed `git <args>`, with its stderr.
+fn git_failed(args: &[&str], stderr: &[u8]) -> Error {
+    Error::Io(format!(
+        "git {} failed: {}",
+        args.first().copied().unwrap_or_default(),
+        String::from_utf8_lossy(stderr).trim()
+    ))
+}
+
+/// Run `git -C <cwd> <args>` feeding `stdin`, returning captured stdout on success. The
+/// repository is exactly `cwd` — inherited repo-location variables are cleared.
+pub(super) fn git_capture(cwd: &Path, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+    let out = git_output(cwd, args, stdin)?;
+    if !out.status.success() {
+        return Err(git_failed(args, &out.stderr));
+    }
     Ok(out.stdout)
 }
 

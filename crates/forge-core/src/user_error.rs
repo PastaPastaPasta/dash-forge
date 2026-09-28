@@ -226,8 +226,9 @@ pub mod codes {
     pub const SEALED_PACK_CORRUPT: &str = "E509";
     /// Content under a superseded key epoch, written after the rotation by a non-member.
     pub const LATE_CONTENT: &str = "E510";
-    /// git's object checks refused an object in a fetched pack (a `.git` look-alike, a hostile
-    /// `.gitmodules`, a corrupt tree or commit): nothing from that pack reaches a ref.
+    /// git's object checks refused an object (a `.git` look-alike, a hostile `.gitmodules`, a
+    /// corrupt tree or commit): in a fetched pack, before any ref points at it; or in a push's
+    /// (or an import's) pack, before anything is stored or paid for.
     pub const OBJECT_REFUSED: &str = "E511";
     /// Consensus refused a write: no `writer`/`maintainer` document (40120).
     pub const NOT_A_WRITER: &str = "E601";
