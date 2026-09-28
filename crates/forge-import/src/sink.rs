@@ -183,6 +183,10 @@ pub struct Sink<'a> {
     /// Bases already re-read for read-after-write lag this run ([`BASE_LAG_WAITS`]): the lag
     /// is waited out once, not once per PR.
     lag_waited: BTreeSet<String>,
+    /// Bases this write phase read from the network already. The process's synced copy of
+    /// the history may be the dry run's, from before this run's push: a base's first read
+    /// here asks the network (`Freshness::Now`), later ones reuse that copy.
+    fresh_read: BTreeSet<String>,
 }
 
 /// Pauses (ms) between re-reads of a base's history that does not show this run's push yet
@@ -281,6 +285,7 @@ impl<'a> Sink<'a> {
             mirror: None,
             opened: BTreeMap::new(),
             lag_waited: BTreeSet::new(),
+            fresh_read: BTreeSet::new(),
         }
     }
 
@@ -319,7 +324,14 @@ impl<'a> Sink<'a> {
                 .await?);
         }
         // One read of the repo's git history per process (`Synced`), shared by every PR of
-        // the run; `Now` when this run's own push may not show yet.
+        // the run; `Now` when this run's own push may not show yet, and for a base's first
+        // read in a write phase (the synced copy may predate this run's push).
+        let first_write_read = !self.ledger.dry_run && self.fresh_read.insert(base_ref.clone());
+        let freshness = if first_write_read {
+            Freshness::Now
+        } else {
+            freshness
+        };
         let client = self.ledger.client;
         let core = client.fetch_contract(&repo.forge().core).await?;
         Ok(forge_core::refs::read_merge_base(
