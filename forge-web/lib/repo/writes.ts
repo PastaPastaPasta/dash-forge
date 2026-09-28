@@ -738,6 +738,8 @@ export function starRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string
       const confirmed = (await createIndexOnly(sdk, need(auth), repo.forge, 'star', repo.repoId)).confirmed
       if (confirmed && trending) {
         const beat = await writeStarBeat(sdk, need(auth), repo.forge, repo.repoId)
+        // The star stands without it; the console keeps why (the beat only feeds a ranking).
+        // eslint-disable-next-line no-console
         if (beat.error !== null) console.warn('the star landed; its Trending beat did not', beat.error)
       }
       return confirmed

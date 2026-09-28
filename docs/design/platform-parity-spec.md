@@ -17,7 +17,7 @@ Constraints (all verified): one document operation per state transition (`System
 | S-3 | **Append-only delta caches.** `refUpdate`, `protectedRefUpdate`, `config`, `packManifest`, `event`, `authorEvent`, locator fragments and chunks are immutable and non-deletable, so a client caches them (IndexedDB; `~/.cache/dash-forge` for the CLI) and reads only `$createdAt > cursor`. Ref resolution, the state fold and pack lists become O(new rows), not O(history). |
 | S-4 | **Open/closed counts stay a client fold** (§5.2). Consensus cannot count them; a summary document would be an unverified second copy. The fold runs over the cached feed, so it is exact and cheap; the header shows the countable total and the folded open count. |
 | S-5 | **CI = plug-in trust model + a user-run `forge-runner` built on nektos/act** (§2). Any runner posts `checkRun` documents under a `runner` membership with a key bound to `(forge-collab, checkRun)`; the first runner we ship is a GitHub Action, the second is a Docker image users run. |
-| S-6 | **Trending rides `star` itself** with one `timeRange` + `ttl` + `rankedCountable` index, because ephemeral bytes bill at 1% of storage (`ttl_ephemeral_disk_usage_credit_per_byte: 270` vs `27000`, `fee/storage/v1.rs`) and the measured overhead is expected under 10% of a star. The registration gate in §4.4 falls back to a separate `starBeat` type if moutai measures more than 15%. |
+| S-6 | **Trending is a separate, optional `starBeat`** (decided in C-1 from moutai measurements, §4.4). Fusing the window index into `star` would make `$createdAt` required, and an indexOnly delete must then carry the exact `$createdAt`, which only a permanent `$createdAt` index could give back: measured +86 % per star, far over the 15 % gate. So `star` stays permanent and unstar-safe (plus a ranked axis for all-time "most starred", +2 %), and a star optionally writes a `starBeat` (≈ 15 M credits) whose weekly window index expires through its index-level `ttl`. On by default; a preference and `--no-trending` turn it off. |
 | S-7 | **One final revision**: forge-core gets an in-place update (new `runner`, `topic` types; ids unchanged) and forge-collab gets one new registration (§6). Nothing else touches the schema before mainnet. |
 | S-8 | Out for launch, said so in the UI: packages, Projects, Discussions, wiki, GitHub Pages equivalent, email, auto-merge, global code search, repo transfer, reactions, LFS. |
 
@@ -323,46 +323,61 @@ Every count the UI shows comes from a count tree or a fold over cached rows; **n
 
 ### 4.3 The star / watch / fork model
 
+As registered in C-1 (`forge-contracts/contracts/forge-collab.json`; decided by the measurements in §4.4):
+
 ```jsonc
 "star": {                                   // indexOnly, immutable, deletable by values (as #48)
   "properties": { "repoId": {… "refersTo": {"type":"permanentDocument","contractId": FORGE_CORE, "documentType":"repo"} } },
-  "required": ["repoId", "$createdAt"],     // $createdAt required: the trending index buckets it
+  "required": ["repoId"],                   // $createdAt NOT required: unstar must work forever, from any device
   "indices": [
     { "name": "byRepo",  "properties": [{"repoId":"asc"}], "countable": "countable",
-      "rangeCountable": true, "rankedCountable": true },                       // count O(1); all-time top-K
-    { "name": "byOwner", "properties": [{"$ownerId":"asc"}], "terminal": "repoId" },   // my stars; "did I star" = terminal equality
-    { "name": "byWeek",  "properties": [{"$createdAt":"asc"}, {"repoId":"asc"}], "terminal": "$ownerId",
+      "rangeCountable": true, "rankedCountable": true },                       // count O(1); all-time top-K ("most starred")
+    { "name": "byOwner", "properties": [{"$ownerId":"asc"}], "terminal": "repoId" }   // my stars; "did I star" = terminal equality
+  ]
+},
+"starBeat": {                               // indexOnly, NOT deletable: its window entries expire on their own
+  "properties": { "repoId": { … same reference as star … } },
+  "required": ["$createdAt", "repoId"],
+  "indices": [
+    { "name": "byOwner", "properties": [{"$ownerId":"asc"}], "terminal": "repoId" },  // the proof index: one beat per (identity, repo), ever
+    { "name": "byWeek",  "properties": [{"$createdAt":"asc"}, {"repoId":"asc"}],
       "timeRange": { "on": "$createdAt", "range": 604800, "step": 86400, "ttl": 604800 },
-      "countable": "countable", "rangeCountable": true, "rankedCountable": true }      // trending: top-K by stars in a window
+      "countable": "countable", "rangeCountable": true, "rankedCountable": true }     // trending: top-K by new stargazers in a window
   ]
 }
 ```
 
-- **Trending this week** = `ranked({documentTypeName:'star', groupBy:'repoId', aggregate:{type:'count'}, limit:25, timeRange:[{field:'$createdAt', selector:'oldest'}]})`: the oldest still-active 7-day window (a near-full trailing week). **Trending today** = the same with `selector:'newest'` (the window that started at today's grid line: stars since 00:00 UTC — set `phase` to align the grid; the 7-day range means "today" is the partial current window). One grid serves both because `range = 7 × step`. A second grid for "this hour" would be a fourth index with overlap 24 — not worth 24 entries per star.
-- **Most starred (all time)** = `ranked(... no timeRange)` on `byRepo` (single-property ranked index, no pins).
+- **Why not fused.** A `timeRange` index needs `$createdAt` in `required` (rs-dpp refuses the index otherwise), and an indexOnly delete carries the full value tuple, `$createdAt` included, checked against the row commitment (book `index-only-document-types.md`, "Delete"; the live probe got *"an indexOnly document of type … requires $createdAt, but the document being deleted does not carry one"*). The bucketed index cannot give the timestamp back (bucket-start granularity, and it expires), so an unstar would need a permanent `$createdAt` level such as `byOwner [$ownerId, $createdAt]`: +49 % per star on its own, +86 % with the window index (§4.4). The owner's rule: correctness beats trending, and unstar must always work.
+- **The beat's window expires through the index's own `ttl`** (`timeRange.ttl`, protocol 14, at most one week; entries bill as processing at 270 credits/byte and are drained lazily on later writes, book `time-range-ttl.md`). It is **not** a document `ttl` (beta.5's doctype keyword, which indexOnly types refuse and which C-1 does not use). The `byOwner` proof index is permanent: a beat is never deleted and never re-written.
+- **Semantics.** Trending counts **new stargazers in the window**. An unstar does not remove a beat, and starring again later adds none (the second beat is a duplicate of the first under `byOwner`).
+- **Default ON, visible and reversible.** After a successful star the client writes the beat when "Count my stars toward Trending" is on (the default, one constant: `forge-web/lib/repo/trending.ts` `TRENDING_DEFAULT`, `forge-core::collab` `TRENDING_DEFAULT`). The star button's cost preview includes the beat (≈ 0.00015 DASH) with "Counts toward Trending"; Settings has the toggle; `dg repo star --no-trending` and the `trending = false` config key opt out.
+- **Trending this week** = `ranked({documentTypeName:'starBeat', groupBy:'repoId', aggregate:{type:'count'}, limit:25, timeRange:[{field:'$createdAt', selector:'oldest'}]})`: the oldest still-active 7-day window (a near-full trailing week). **Trending today** = the same with `selector:'newest'` (the window that started at today's grid line: stars since 00:00 UTC — set `phase` to align the grid; the 7-day range means "today" is the partial current window). One grid serves both because `range = 7 × step`. A second grid for "this hour" would be a fourth index with overlap 24 — not worth 24 entries per star.
+- **Most starred (all time)** = `ranked({documentTypeName:'star', groupBy:'repoId', …})` with no timeRange, on `star.byRepo` (single-property ranked index, no pins). Equal counts come back by repo id descending (the descending walk of the ranked secondary; measured).
 - **Star count** and **"did I star"** unchanged (`countDocuments`, `findOwnIndexOnly`).
 - **Watch**: new indexOnly `watch {repoId}` with `byRepo (repoId) countable` and `byOwner ($ownerId) terminal repoId`; the inbox seeds subscriptions from `byOwner` (cross-device), `readViewerRelations` reads star and watch in one composite. No ranked axis.
 - **Forks**: `repo.forkOf` (countable) is already the fork count and the fork list; the network page walks it. A ranked "most forked" needs `rangeCountable + rankedCountable` on `forkOf` — forge-core index changes need a new registration, so **not** in the final revision; "most forked" is computed client-side over the top-100 most-starred (P2).
-- **Most followed**: `follow.byTarget` gains `rangeCountable + rankedCountable` (one secondary rewrite per follow; ~1 M credits).
+- **Most followed**: `follow.byTarget` gains `rangeCountable + rankedCountable` (the same shape as `star.byRepo`, so the same +2 %).
 - **Per-topic / per-language trending**: no index can bind a star to its repo's topic (the agreement would cross contracts and `topics` is an array), so: fetch top-100 trending, join with the `repo` docs (`$id in`, 1 request), filter by topic/language client-side. Good enough for Explore; a `topic`-scoped ranked index would cost a third entry chain per star and is not justified.
 
-### 4.4 Fee arithmetic per star
+### 4.4 Fee arithmetic per star (measured in C-1)
 
-Measured today (`lib/sdk/cost.ts:45,58`, moutai): star **27.8 M credits (0.000278 DASH)**, unstar refunds 23.3 M. Two index entries (`byRepo`, `byOwner`), each `[…, 0, <32-byte owner>] → Item(32-byte commitment)`: ≈ 110–130 stored bytes per entry including element and node overhead ⇒ ≈ 3.2 M credits of storage per entry (27 000 × 120) plus the transition's fixed processing; the balance of the 27.8 M is the first-write subtree creation of a fresh `repoId` value tree (a star on an already-starred repo should measure lower — the PR must record steady-state separately).
+Measured on devnet moutai (drive 4.2.0-beta.5, evo-sdk 4.2.0-beta.5) on 2026-09-28 against two scratch contracts (`BEcG2LrGcNhxYyQAEAiNNU3g2QuQomfoL93HMAFxrbkF`, `EMD8icGMDDr4mvA43NWPhaSPbHqJ3nEjSzBSPiqmdsFG`, test-only, left on the devnet) that carry each candidate shape as its own type. Credits are balance deltas of two identities minted for the probe; 1 M credits = 0.00001 DASH. "Steady" = the repo already has stars and the starrer already holds stars of that type.
 
-Additional cost of the trending axes:
+| Shape of `star` | Repo's first star | Steady star | Unstar refund (not last / repo's last) |
+|---|---|---|---|
+| as registered before C-1: `byRepo` countable, `byOwner` | 27.6 M | **17.40 M** | 12.6 M / 23.1 M |
+| + `rangeCountable` + `rankedCountable` on `byRepo` (**C-1**) | 36.0 M | **17.74 M (+2.0 %)** | 12.3 M / 23.3 M |
+| + a permanent `$createdAt` level (`byOwner [$ownerId, $createdAt]`, needed for unstar once `$createdAt` is required) | 44.3 M | 26.0 M (+49 %) | 20.4 M / 31.4 M |
+| fused: ranked `byRepo` + `$createdAt` level + the weekly `byWeek` window | 51.1 M | **32.3 M (+86 %)** | 14.2 M / 25.1 M |
+| `[repoId, $createdAt]` ranked at `repoId` (stargazers by time) | 46.1 M | 27.3 M (+57 %) | 21.7 M / 33.1 M |
 
-| Component | Bytes written per star | Rate | Credits | Refundable |
-|---|---|---|---|---|
-| `byWeek` entries: 7 buckets × (entry ≈ 120 B) | ≈ 840 B | 270/B (ttl, processing) | ≈ 0.23 M | no |
-| `byWeek` new prefix trees (first star of a repo in a bucket): 7 × ≈ 250 B worst case | ≤ 1 750 B | 270/B | ≤ 0.47 M | no |
-| `byWeek` ranked secondary re-key: 7 × ≈ 48 B replaced | ≈ 340 B | processing (replaced bytes) | ≈ 0.15 M | — |
-| `byRepo` value-tree upgrade to `CountTree` + ranked secondary re-key (1 group entry ≈ 48 B) | ≈ 60 B | storage 27 000/B (once per repo) + processing | ≈ 1.6 M first star of a repo, ≈ 0.1 M after | yes (once) |
-| Total | | | **≈ 1.0–2.5 M ≈ +4–9 %**; steady state ≈ +2–4 % | |
-| Same `byWeek` **without `ttl`** (permanent) | ≈ 2 600 B | 27 000/B | ≈ 70 M ≈ **+250 %** | yes |
+| A separate beat (second transition) | Identity's first | Steady |
+|---|---|---|
+| `starBeat`, weekly sliding window (range 7 d, step 1 d, ttl 7 d: 7 buckets) (**C-1**) | 20.7–21.7 M | **14.4–15.3 M** |
+| daily window (range = step = 1 d, ttl 7 d: 1 bucket) | 25.4 M | 9.4–9.6 M |
+| weekly window with a flat `(repoId, $ownerId)` proof index | 18.6 M | 14.7–17.6 M |
 
-So the axes are marginal **only because of `ttl`**. Estimates, not measurements: the registration PR (§7, item C-1) measures on moutai and applies the gate: fused on `star` if the steady-state overhead ≤ 15 % (≤ 4 M credits) and unstar still refunds ≥ 80 % of the permanent part; otherwise trending moves to a separate optional indexOnly type `starBeat {repoId}` with only the `byWeek` index, written by clients as a second transition (≈ 5–8 M credits including the transition base — the reason it is the fallback, not the default) and toggled by a client preference, so the decision can be revisited without touching `star`. Both shapes are validated by `tools/contract-validate` before the gate is run.
-
+**Decision.** The fused star fails the ≤ 15 % gate by a factor of six, and the reason is structural (the permanent `$createdAt` level an unstar needs), not the window index. So `star` keeps its permanent shape plus the ranked axis (+2 %, the "most starred" read), and trending is the separate optional `starBeat` on the weekly grid: ≈ 15 M credits (≈ 0.00015 DASH) when the preference is on. The daily grid is cheaper per beat but can only answer "this week" as an approximate client merge of seven daily top-100 lists; the weekly grid answers it exactly, proved, with `oldest`. Ranked `newest` / `oldest` reads on the live beat indexes returned the seeded counts.
 ### 4.5 Where the counts come from, page by page
 
 | Number | Source | Exact? |
@@ -391,37 +406,41 @@ Consensus cannot count open issues: open is `fold(event, authorEvent)` and a mer
 
 ## 6. The final contract revision
 
-Ships as **one** batch before mainnet (moutai first, testnet when PV14 arrives): a forge-core **in-place update** and a forge-collab **re-registration** (new id, same group). Both validated by `tools/contract-validate --previous` (forge-core must pass as an update; forge-collab must fail as an update, which is why it re-registers). D-D (who owns the mainnet contracts) applies unchanged; PR #54's trust root (group owner, not member list) is what lets a new forge-collab join the group without breaking shipped binaries.
+Ships as **one** batch before mainnet (moutai first, testnet when PV14 arrives): a forge-core **in-place update** and a forge-collab **re-registration** (new id, same group). Both validated by `tools/contract-validate` in CI (`.github/workflows/contracts.yml`): forge-core with `--expect-update forge-contracts/contracts/registered/forge-core.v1.json`, so a change the update rules refuse fails the build; forge-collab is a new registration and carries protocol-14 beta.5 `propertyConstraints` (web clients are on evo-sdk / wasm-sdk 4.2.0-beta.5 since #125, so they load them). forge-core's in-place update was chosen over a re-registration (owner decision 2026-09-28): a new forge-core id would orphan every repo, ref, pack and membership and re-push the showcase (≈ 135 DASH, 10 h); mainnet registers fresh from the same JSON either way. D-D (who owns the mainnet contracts) applies unchanged; PR #54's trust root (group owner, not member list) is what lets a new forge-collab join the group without breaking shipped binaries.
 
 ### 6.1 forge-core (in-place `DataContractUpdate`; ids and group unchanged)
 
-Allowed by `validate_update` v1: new document types and new optional properties; no index of an existing type changes.
+Allowed by `validate_update` v1: new document types and new optional properties; no index of an existing type changes. **Checked against rs-dpp v4.2.0-beta.5 with `contract-validate --previous`:** two changes this section first listed are refused as updates and are dropped (below, and "accepted gaps").
 
 | Change | Why |
 |---|---|
 | New type `runner {repoId, memberId}`: unique `byRepoMember (repoId, memberId)`, `byMember (memberId)`; `propertyAgreement {"$ownerId":"$ownerId"}` on `repoId → repo` (owner-only grant); immutable, deletable | CI trust (§2.2) |
 | New type `topic {repoId, name}`: gated `ownerRefersTo` maintainer lookup; unique `byRepo (repoId, name)`; `byName (name, $createdAt)` countable; deletable (untag) | Explore by topic, repo count per topic; `repo.topics` stays for display |
 | `repo.renamedTo` (optional identifier, `refersTo permanentDocument repo`) | Rename/move with client-side redirect |
-| `repo` doctype `documentsCountable: true` | "N repositories" on Explore | 
+| ~~`repo` doctype `documentsCountable: true`~~ **dropped**: refused as an update ("document type can not change whether its documents are countable", `validate_config` v1). Explore shows "Recent repositories" with paging and no total | — |
 | `repo.language` (optional string ≤ 30) written by the pusher's helper from the flatIndex | Explore language filter without a client join (**cheap; optional**) |
-| `enc`/`epoch` on `release` and `label`: optional `enc` (`schemaDefs.enc`) and `epoch`, `dependentRequired {enc: [epoch]}` (new optional properties) | Private repos: a release's tag name, title, notes and asset list, and a label definition's name, colour and description, sealed like every other content type (private-repos.md §7, §13 item 6). Until this lands `dg release create` refuses a private repo ([E207](../errors.md#e207)) and `dg label create` warns that the definition is plaintext; the labels put on issues (`event.value`) are already sealed |
+| `enc`/`epoch` on `release` and `label`: optional `enc` (`schemaDefs.enc`) and `epoch`. **No `dependentRequired`**: adding it to an existing type is refused ("Incompatible change 'add' of property '/dependentRequired'"), so "`enc` needs `epoch`" stays a client rule on these two types (`is_well_formed`). A sealed release or label keeps the required `tagName` / `name` as the keyed hash of the name (private-repos.md §4.5), like a sealed milestone's `title` | Private repos: a release's tag name, title, notes and asset list, and a label definition's name, colour and description, sealed like every other content type (private-repos.md §7, §13 item 6). Until this lands `dg release create` refuses a private repo ([E207](../errors.md#e207)) and `dg label create` warns that the definition is plaintext; the labels put on issues (`event.value`) are already sealed |
 
-Cost: 2 types × 0.02 + 4 indexes × 0.01 ≈ 0.08 DASH plus storage, paid once by the deployer.
+`topic` carries one beta.5 rule-free shape (its `name` pattern covers it); `runner` has no rule worth a node. The update's cost and size are in §6.4.
+
+**Accepted gaps for mainnet v1** (each needs a forge-core re-registration, which the owner declined on 2026-09-28): no provable repository total (`documentsCountable`); no consensus sealed-presence rules on `refUpdate`, `protectedRefUpdate`, `config`, `release` and `label` (clients enforce them, `is_well_formed`; consensus cannot see `visibility` anyway); no `dependentRequired {enc: [epoch]}` on `release` / `label`; no ranked `forkOf` ("most forked" stays a client ranking over the top most-starred, P2); `packManifest.kind` kept although no reader queries it (≈ 3 M credits a manifest). (BETA5-ANALYSIS §4.4's `storage = 1 ⇒ chunkCount > 0` rule would have been wrong anyway: a fork's manifest is `storage = 1, chunkCount = 0`, §4 of forge-v2.md.)
 
 ### 6.2 forge-collab (re-registration)
 
 | Type | Change |
 |---|---|
-| `checkRun` | gate `anyOf [maintainer, writer, runner]`; fields `externalId`, `startedAt`, `completedAt`, `artifacts`, `logUrl`, `logSha256`; `conclusion` enum; `$updatedAt` required; index `recent (repoId, $createdAt)` |
+| `checkRun` | gate `anyOf [maintainer, writer, runner]`; fields `externalId`, `startedAt`, `completedAt`, `artifacts`, `logUrl`, `logSha256` (`dependentRequired` both ways); `conclusion` enum; `$updatedAt` required; index `recent (repoId, $createdAt)`; rules `conclusionIfDone` / `doneIfConclusion` (a conclusion exactly when `status` is `completed`) |
 | `policy` | `requiredChecks` typed string array (≤ 10 × ≤ 100) |
-| `star` | `$createdAt` required; `byRepo` + `rangeCountable` + `rankedCountable`; new `byWeek` timeRange index (§4.3) — or the `starBeat` fallback |
+| `star` | `byRepo` + `rangeCountable` + `rankedCountable` (measured +2 %); `$createdAt` stays unrequired so unstar always works (§4.3, §4.4) |
+| new `starBeat {repoId}` indexOnly, non-deletable | `byOwner ($ownerId) terminal repoId` (proof index); `byWeek ($createdAt, repoId)` timeRange 7 d / 1 d with index `ttl` 7 d, countable + rangeCountable + rankedCountable (§4.3) |
 | `follow` | `byTarget` + `rangeCountable` + `rankedCountable` |
 | new `watch {repoId}` indexOnly | `byRepo (repoId) countable`, `byOwner ($ownerId) terminal repoId` |
-| new `milestone {repoId, title, description, dueOn, closed}` | M/W gated; `byRepo (repoId, title, $createdAt)`; deletable |
-| `event` / `authorEvent` | kinds documented 17/18 milestone, 19–22 pin/unpin/lock/unlock, assign/unassign carry `refId`; no schema change |
+| new `milestone {repoId, title, description, dueOn, closed, enc, epoch}` | M/W gated; `byRepo (repoId, title, $createdAt)`; newest per title wins; deletable; a sealed milestone puts the keyed hash of its title in `title` and the rest in `enc` (rule `noPlain`) |
+| `event` / `authorEvent` | kinds 17/18 milestone, 19–22 pin/unpin/lock/unlock; `kind` stays the open range 1..255 on `event` (extensible) and the author enum on `authorEvent`. beta.5 rules on `event`: `noPlain` (a sealed event has no plaintext `value`), `needValue` (4, 5, 8, 17 name a value, plaintext or sealed), `needAssignee` (6, 7 carry `refId` and a value), `needRefId` (11–15), `needOid` (3, 16); `value` gets `minLength 1` |
+| `issue`, `patch`, `comment`, `review` | beta.5 sealed-presence rules: `noPlain` (a document with `enc` carries none of its plaintext fields) and `hasTitle` / `hasBody` (a document without `enc` carries its required plaintext); `body` and `comment.path` get `minLength 1`, so an empty string can no longer stand for "absent" |
 | `profile` | `location`, `company` (optional ≤ 60); `pubkeys` typed string array (≤ 4 × ≤ 300: `gpg:<fpr>` / `ssh-ed25519 …`) for signature badges |
 
-Everything the review spec registered in #48 stays. Estimated size: 14.3 KB + ≈ 2.5 KB ≈ 16.8 KB signed, under 20 480 B (the dry run confirms); fee ≈ 0.55 + 0.02 × 2 + 0.01 × 6 ≈ 0.63 DASH. Index count per type stays ≤ 10 (`star` has 3).
+Everything the review spec registered in #48 stays. The measured size, fee and ids are in §6.4 (the signed create transition is ≈ 19.1 KB of the 20,480 B limit; beta.5 rule names are kept short for that reason, and `authorEvent` carries no rules: its kind is already an enum and the folds treat a payload-less author kind as inert).
 
 ### 6.3 Not changed, and why
 
