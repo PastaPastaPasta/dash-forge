@@ -281,6 +281,20 @@ A clone or fetch reports E510 as `clone incomplete: N packs hidden by the late-c
 
 In either case, a maintainer can instead move the ref back to history every member can read.
 
+## E511
+
+**git refused an object in the history.** A clone or fetch downloaded a pack holding an object that git's own checks refuse. It stopped before any ref could point at that object. The `cause:` line names each object, the git check that refused it (its `fsck` msg-id, for example `hasDotgit` or `gitmodulesUrl`) and git's message.
+
+These are the checks git runs with `transfer.fsckObjects`, which a plain `git clone` skips. Each stays fatal because it can change what a checkout writes, or lets two readers disagree on what an object names:
+- a path git treats as the repository (`.git`, `.GIT`, `git~1`);
+- a `.gitmodules` whose URL or path is an option or escapes the work tree;
+- a `.gitmodules` or `.gitattributes` that is a symbolic link;
+- a corrupt tree or commit header.
+
+The author and committer line checks (`badTimezone`, `missingSpaceBeforeDate`, `badEmail`, `badDate` and similar) are only warnings, so real histories with old malformed commits still clone.
+
+Fix: the history itself has to change. Ask a maintainer to push history without that object. Nothing needs cleaning up on your side.
+
 ## E601
 
 **Not a writer of this repository.** Platform refused the write at consensus: there is no current `writer` or `maintainer` document for your identity (40120 on path `$ownerId`, the `ownerRefersTo` gate).

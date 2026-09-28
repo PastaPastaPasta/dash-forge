@@ -26,6 +26,7 @@
 
 pub mod build;
 pub mod flatindex;
+pub mod fsck;
 pub mod locator;
 pub mod manifest;
 pub mod parse;
