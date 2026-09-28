@@ -327,6 +327,12 @@ pub enum RepoCommand {
     /// every Forge client applies to its merge controls; consensus does not enforce it.
     #[command(subcommand)]
     Policy(RepoPolicyCommand),
+    /// Publish the browse index for stored packs that have none (a push that could not
+    /// publish it). Reads the packs and uploads only the index: nothing is stored again.
+    Reindex {
+        /// The repository (`owner/name`).
+        repo: String,
+    },
     /// Mark a repo archived (maintainers): every Forge client refuses writes to it. A client
     /// rule; consensus still admits a member's writes.
     Archive {

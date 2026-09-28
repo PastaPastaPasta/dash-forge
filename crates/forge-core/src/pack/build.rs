@@ -298,6 +298,18 @@ pub fn repack_all(repo: &Path) -> Result<Pack> {
     Pack::from_files(&pack_path, &idx_path)
 }
 
+/// Index an already-stored pack (downloaded bytes, no `.idx`) so its objects can be
+/// described by an [`ObjectLocator`](super::ObjectLocator): `index-pack` in a scratch bare
+/// repo, then parse. Refuses a pack that is not locator-quality, like every other producer
+/// here: a pack stored by an older client (`--fix-thin`) needs `dg repack` instead.
+pub fn index_stored_pack(bytes: &[u8]) -> Result<Pack> {
+    let scratch = Scratch::new()?;
+    let odb = scratch.dir.join("odb.git");
+    fs::create_dir_all(&odb).map_err(|e| Error::Io(e.to_string()))?;
+    git_capture(&odb, &["init", "--bare", "-q"], None)?;
+    index_pack_bytes(&odb, bytes, None)
+}
+
 /// Materialize a set of self-contained packs into a fresh scratch repo, point refs at
 /// `tips`, and consolidate everything reachable into one optimized pack (repack/GC).
 ///

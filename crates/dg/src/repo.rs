@@ -42,6 +42,7 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
         RepoCommand::Create(args) => crate::publish::create(ctx, args).await,
         RepoCommand::Clone { repo, dir } => clone(ctx, repo, dir.as_deref()),
         RepoCommand::Fork { repo, name } => fork(ctx, repo, name.as_deref()).await,
+        RepoCommand::Reindex { repo } => crate::maint::reindex(ctx, repo).await,
         RepoCommand::Star { repo, no_trending } => star(ctx, repo, true, !no_trending).await,
         RepoCommand::Unstar { repo } => star(ctx, repo, false, false).await,
         RepoCommand::View { repo } => view(ctx, repo).await,

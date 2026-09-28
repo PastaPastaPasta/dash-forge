@@ -5,7 +5,7 @@
 
 #![allow(clippy::cast_possible_truncation)]
 
-use super::build::{build_pack, repack_all, repack_from_packs, Pack};
+use super::build::{build_pack, index_stored_pack, repack_all, repack_from_packs, Pack};
 use super::flatindex::FlatIndex;
 use super::locator::ObjectLocator;
 use super::manifest::{PackManifest, KIND_GIT_PACK};
@@ -506,6 +506,40 @@ fn locator_lookup_matches_parsed_offsets() {
     let reparsed = ObjectLocator::parse(loc.as_bytes()).unwrap();
     let known = repo_blob_oid(repo.path(), "doc.txt");
     assert_eq!(reparsed.lookup(&known), loc.lookup(&known));
+}
+
+/// `dg repo reindex` indexes a pack from its stored bytes alone (no `.idx` was ever
+/// stored): the locator it builds is the one the push would have published, and a pack an
+/// older client stored `--fix-thin` is refused rather than given rows that lie about spans.
+#[test]
+fn a_stored_pack_indexes_from_its_bytes_like_the_push_did() {
+    let repo = make_repo();
+    let p = repo.path();
+    let pushed = build_pack(p, &["HEAD"], &[]).unwrap();
+    let from_bytes = index_stored_pack(&pushed.bytes).unwrap();
+    assert_eq!(
+        ObjectLocator::build(&from_bytes.parsed, 3)
+            .unwrap()
+            .as_bytes(),
+        ObjectLocator::build(&pushed.parsed, 3).unwrap().as_bytes()
+    );
+    assert_eq!(
+        ObjectLocator::build(&from_bytes.parsed, 3)
+            .unwrap()
+            .pack_refs(),
+        [3].into_iter().collect()
+    );
+
+    let head = git_str(p, &["rev-parse", "HEAD~1"]);
+    let base = git_str(p, &["rev-parse", "HEAD~2"]);
+    let (fixed_bytes, _) = thin_fixed_pack(p, &head, &base);
+    let Err(err) = index_stored_pack(&fixed_bytes) else {
+        panic!("a fix-thin'd pack must not be indexed")
+    };
+    assert!(
+        format!("{err}").contains("browse index cannot describe"),
+        "{err}"
+    );
 }
 
 #[test]

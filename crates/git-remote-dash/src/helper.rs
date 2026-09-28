@@ -1722,7 +1722,7 @@ async fn reuse_recorded(ctx: &PushContext<'_>, job: &PackJob<'_>) -> Result<Opti
     let refs_only = push_fees::estimate_ref_updates(ctx.refs.len() as u64);
     policy::enforce(refs_only, ctx.policy, false, policy::NOTE_NOTHING_STORED)?;
     // The browse index is left alone: the earlier push published (or tried to) the fragment
-    // for this pack, and a missing one is rebuilt by the next repack. The kept sealed bytes
+    // for this pack, and a missing one is published by `dg repo reindex`. The kept sealed bytes
     // stay until the refs land ([`forget_sealed`]): this push may still fail at its refs.
     Ok(Some(refs_only))
 }
@@ -1904,12 +1904,17 @@ async fn publish_browse_index(
             tracing::info!(folded, "folded browse-index fragments into one locator");
         }
         Ok(forge_core::repo::PushIndexOutcome::Skipped(why)) => {
-            tracing::warn!(reason = %why, "browse index not updated by this push");
+            // Said on the push's own output, not only logged: a caller that keeps the
+            // helper's events (forge-import) must learn the repo is left unbrowsable (D-920).
+            ctx.say(&format!(
+                "warning: the push landed but its browse index was not updated: {why}"
+            ));
         }
         Err(e) => {
             ctx.say(&format!(
                 "warning: the push landed but its browse-index fragment could not be \
-                 published ({e}); browsing uses the fallback path until the next push or repack"
+                 published ({e}); browsing uses the fallback path until `dg repo reindex` \
+                 publishes it"
             ));
         }
     }

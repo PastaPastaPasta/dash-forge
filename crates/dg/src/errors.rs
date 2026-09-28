@@ -112,6 +112,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Repo(Rp::Clone { repo, .. }) => ("repository not cloned", Some(repo)),
         Command::Repo(Rp::View { repo }) => ("could not show the repository", Some(repo)),
         Command::Repo(Rp::Fork { repo, .. }) => ("repository not forked", Some(repo)),
+        Command::Repo(Rp::Reindex { repo }) => ("browse index not published", Some(repo)),
         Command::Repo(Rp::Star { repo, .. }) => ("repository not starred", Some(repo)),
         Command::Repo(Rp::Unstar { repo }) => ("star not removed", Some(repo)),
         Command::Repo(Rp::List { .. }) => ("could not list repositories", None),

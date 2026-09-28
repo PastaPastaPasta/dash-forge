@@ -22,6 +22,7 @@
 
 use super::parse::{ParsedPack, OID_LEN};
 use crate::error::{Error, Result};
+use std::collections::BTreeSet;
 
 /// Fixed row width of the locator, in bytes.
 pub const LOCATOR_ROW_LEN: usize = OID_LEN + 2 + 5 + 4 + 4 + 1; // 36
@@ -159,6 +160,12 @@ impl ObjectLocator {
     /// The largest `packRef` any row carries — `None` for an empty locator. Lets a caller
     /// check a locator against the pack space it claims to index before trusting it.
     pub fn max_pack_ref(&self) -> Option<u16> {
+        self.pack_refs().into_iter().next_back()
+    }
+
+    /// Every `packRef` some row carries: the packs this locator covers (forge-web's
+    /// `packRefsCovered`, which decides whether a repository reads as fully indexed).
+    pub fn pack_refs(&self) -> BTreeSet<u16> {
         (0..self.count)
             .map(|i| {
                 u16::from_be_bytes(
@@ -167,7 +174,7 @@ impl ObjectLocator {
                         .expect("fixed-width row"),
                 )
             })
-            .max()
+            .collect()
     }
 
     /// Assemble `fanout || rows` from rows already sorted ascending by OID.
