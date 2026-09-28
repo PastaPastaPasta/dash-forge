@@ -69,6 +69,7 @@ export function MergePanel({
   allowedMethods = 0,
   squashAuthors = null,
   deleteBranch = null,
+  onRunning,
 }: {
   repo: RepoRef
   pull: PullView
@@ -91,6 +92,8 @@ export function MergePanel({
   squashAuthors?: SquashAuthors
   /** Delete the PR's source branch after merging (the merger can write there), or null. */
   deleteBranch?: DeleteBranchOption | null
+  /** Told when a merge starts and ends here (the page keeps the panel mounted meanwhile). */
+  onRunning?: (running: boolean) => void
 }): JSX.Element | null {
   const { sdk } = useSdk()
   const { signer } = useAuth()
@@ -209,6 +212,7 @@ export function MergePanel({
   const [failure, setFailure] = useState<{ step: MergeStepId; message: string } | null>(null)
   const [stopped, setStopped] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  useEffect(() => onRunning?.(busy), [busy, onRunning])
   const [newTip, setNewTip] = useState<string | null>(null)
   // The branch deletion's outcome, with the label it was run for: the page stops offering the
   // option once the PR reads merged, which is exactly when this is shown.
