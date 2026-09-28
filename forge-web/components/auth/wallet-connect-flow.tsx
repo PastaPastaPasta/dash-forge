@@ -27,8 +27,9 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { AlertTriangle, RefreshCw, Smartphone } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { useUiStore } from '@/hooks/use-ui-store'
-import { PendingRenewalChoiceError } from '@/lib/auth/controller'
+import { PendingRenewalChoiceError, PendingRenewalLockedError } from '@/lib/auth/controller'
 import { Button } from '@/components/ui/button'
+import { Field, Input } from '@/components/ui/input'
 import { Qr } from '@/components/ui/qr'
 import { ErrorBox, useProtection } from '@/components/auth/protection-fields'
 import { Waiting } from '@/components/auth/step-status'
@@ -67,6 +68,12 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
   const [error, setError] = useState<string | null>(null)
   /** An unfinished renewal on this device (D-016): the choice to finish it or give it up. */
   const [pendingRenewal, setPendingRenewal] = useState<string | null>(null)
+  /**
+   * Giving it up needs its key opened (kept so the next renewal or revoke disables it): its own
+   * passphrase or passkey, when the one chosen here is not it.
+   */
+  const [renewalLocked, setRenewalLocked] = useState<{ message: string; methods: readonly ('passkey' | 'passphrase')[] } | null>(null)
+  const [renewalPassphrase, setRenewalPassphrase] = useState('')
   // What the request is waiting for before its QR can show.
   const [preparing, setPreparing] = useState(PHASE_TEXT.connecting)
   const [attempt, setAttempt] = useState(0)
@@ -81,22 +88,32 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
   latest.current = { addWalletGrant, onDone, stored: vaults.map((v) => v.identityId) }
   // A grant is for the signed-in identity: a different one (or signing out) starts over.
   const grantFor = mode === 'grant' ? identity : null
+  // The sign-in sheet: unlocking there finishes an unfinished renewal with its passphrase.
   const openLogin = useUiStore((s) => s.openLogin)
-  /** Unlock view of the sign-in sheet (finishes an unfinished renewal with its passphrase). */
-  const openUnlock = (): void => openLogin()
 
-  /** Store the wallet's keys; `discard`: give up an unfinished renewal on this device first. */
-  const finish = async (discard: boolean): Promise<void> => {
+  /**
+   * Store the wallet's keys. `discard`: give up an unfinished renewal on this device first,
+   * keeping its key (opened with `renewalUnlock` when given) for the next revoke to disable;
+   * `drop`: give it up without its key.
+   */
+  const finish = async (discard: boolean, renewalUnlock?: { passphrase: string } | 'passkey', drop = false): Promise<void> => {
     const g = grant.current
     if (!protection || !g) return
     setError(null)
     try {
-      await adoptWalletKeys(g.identityId, g.keys, protection, discard ? { discardPendingRenewal: true } : undefined)
+      await adoptWalletKeys(g.identityId, g.keys, protection, {
+        discardPendingRenewal: discard,
+        ...(renewalUnlock ? { renewalUnlock } : {}),
+        ...(drop ? { dropUnopened: true } : {}),
+      })
       grant.current = null
       setPendingRenewal(null)
+      setRenewalLocked(null)
+      setRenewalPassphrase('')
       onDone()
     } catch (e) {
       if (e instanceof PendingRenewalChoiceError) setPendingRenewal(e.message)
+      else if (e instanceof PendingRenewalLockedError) setRenewalLocked({ message: e.message, methods: e.methods })
       else setError(errorMessage(e))
     }
   }
@@ -217,13 +234,38 @@ export function WalletConnectFlow({ onDone, mode = 'login', contractId }: { onDo
           <div role="alert" className="space-y-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-caution-700 dark:text-caution-400" data-testid="pending-renewal-choice">
             <p>{pendingRenewal}</p>
             <div className="flex flex-wrap gap-2">
-              <Button variant="outline" size="sm" onClick={() => openUnlock()}>
+              <Button variant="outline" size="sm" onClick={() => openLogin()}>
                 Finish the renewal (unlock)
               </Button>
               <Button variant="danger" size="sm" loading={isLoading} onClick={() => void finish(true)}>
                 Continue with the wallet
               </Button>
             </div>
+            {renewalLocked !== null ? (
+              <div className="space-y-2 border-t border-caution/30 pt-2" data-testid="pending-renewal-unlock">
+                <p>{renewalLocked.message}</p>
+                {renewalLocked.methods.includes('passphrase') ? (
+                  <Field label="The renewal's passphrase" htmlFor="renewal-passphrase">
+                    <Input id="renewal-passphrase" type="password" autoComplete="off" value={renewalPassphrase} onChange={(e) => setRenewalPassphrase(e.target.value)} />
+                  </Field>
+                ) : null}
+                <div className="flex flex-wrap gap-2">
+                  {renewalLocked.methods.includes('passphrase') ? (
+                    <Button variant="outline" size="sm" loading={isLoading} disabled={renewalPassphrase === ''} onClick={() => void finish(true, { passphrase: renewalPassphrase })}>
+                      Keep its key and continue
+                    </Button>
+                  ) : null}
+                  {renewalLocked.methods.includes('passkey') ? (
+                    <Button variant="outline" size="sm" loading={isLoading} onClick={() => void finish(true, 'passkey')}>
+                      Use its passkey and continue
+                    </Button>
+                  ) : null}
+                  <Button variant="danger" size="sm" loading={isLoading} onClick={() => void finish(true, undefined, true)}>
+                    Continue without it
+                  </Button>
+                </div>
+              </div>
+            ) : null}
           </div>
         ) : null}
         {problem ? <p className="text-[12px] text-anvil-500 dark:text-anvil-400">{problem}</p> : null}

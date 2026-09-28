@@ -13,7 +13,7 @@ import { AuthController, MissingGrantError } from './controller'
 import type { WalletKey } from './key-registration'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import { decodeWif, encodeWif } from './wif'
-import { lockVault } from './vault'
+import { lockVault, stageInVault, stagedInfo, storeInVault } from './vault'
 
 vi.mock('../sdk/write', async (orig) => {
   const real = await orig<typeof import('../sdk/write')>()
@@ -257,4 +257,106 @@ describe('wallet session', () => {
       controller.adoptWalletKeys(ID, [walletKey(5, wifOf(5), { core: true, collab: false, unbounded: false })], { passphrase: 'correct horse battery' }),
     ).rejects.toThrow(/outside Dash Forge/)
   }, 30_000)
+
+  describe('a wallet login over an unfinished renewal (D-016)', () => {
+    const renewalKey = (): FakeKey => key(7, wifOf(7), { $type: 'contractGroup', id: forge.group }, { totalBudget: 5n, expiresAt: BigInt(Date.now() + 1e9) })
+    const OTHER = { passphrase: 'the renewal passphrase' }
+    const discard = { discardPendingRenewal: true } as const
+
+    it('keeps the given-up renewal key beside the wallet keys, never to sign, and the next renewal disables it', async () => {
+      await stageInVault(NET, { identityId: ID, keyId: 7, wif: wifOf(7) }, PASS)
+      keys.push(renewalKey())
+      await expect(controller.adoptWalletKeys(ID, [coreKey()], PASS)).rejects.toThrow(/unfinished key renewal/)
+      const s = await controller.adoptWalletKeys(ID, [coreKey()], PASS, discard)
+      expect(await stagedInfo(NET, ID)).toBeNull()
+      expect(s.heldOnly).toEqual([7])
+      // It grants nothing: signing picks the wallet key, and a collab write has no key.
+      expect(controller.writeAuth!.getSigningKeyWif(forge.core)).toBe(wifOf(5))
+      expect(() => controller.writeAuth!.getSigningKeyWif(forge.collab)).toThrow(MissingGrantError)
+      keys.push(key(20, encodeWif(new Uint8Array(32).fill(20), 'devnet'), { $type: 'contractGroup', id: forge.group }, { totalBudget: 5n, expiresAt: BigInt(Date.now() + 1e9) }))
+      await controller.importIdentity({ fileText: '{}' }, PASS)
+      const call = chainCalls.register[0] as { disableHeld: { keyId: number }[] }
+      expect(call.disableHeld.map((h) => h.keyId).sort()).toEqual([5, 7])
+    }, 60_000)
+
+    it('is kept across a lock and unlock, and a revoke disables it too', async () => {
+      await stageInVault(NET, { identityId: ID, keyId: 7, wif: wifOf(7) }, PASS)
+      keys.push(renewalKey())
+      await controller.adoptWalletKeys(ID, [coreKey()], PASS, discard)
+      controller.logout()
+      expect((await controller.unlock(ID, PASS)).heldOnly).toEqual([7])
+      await controller.revokeStored(ID, { fileText: '{}' })
+      expect((chainCalls.disable[0] as { keys: { keyId: number }[] }).keys.map((k) => k.keyId).sort()).toEqual([5, 7])
+    }, 60_000)
+
+    it("a renewal protected differently asks for its own passphrase, then keeps its key", async () => {
+      await stageInVault(NET, { identityId: ID, keyId: 7, wif: wifOf(7) }, OTHER)
+      keys.push(renewalKey())
+      await expect(controller.adoptWalletKeys(ID, [coreKey()], PASS, discard)).rejects.toThrow(/passphrase or use the passkey you chose for that renewal/)
+      expect(await stagedInfo(NET, ID)).not.toBeNull()
+      await expect(controller.adoptWalletKeys(ID, [coreKey()], PASS, { ...discard, renewalUnlock: { passphrase: 'wrong wrong wrong' } })).rejects.toThrow(/did not open/)
+      const s = await controller.adoptWalletKeys(ID, [coreKey()], PASS, { ...discard, renewalUnlock: OTHER })
+      expect(s.heldOnly).toEqual([7])
+    }, 90_000)
+
+    it('the user may continue without the renewal key; it is then not held', async () => {
+      await stageInVault(NET, { identityId: ID, keyId: 7, wif: wifOf(7) }, OTHER)
+      keys.push(renewalKey())
+      const s = await controller.adoptWalletKeys(ID, [coreKey()], PASS, { ...discard, dropUnopened: true })
+      expect(s.heldOnly).toBeUndefined()
+      expect(await stagedInfo(NET, ID)).toBeNull()
+    }, 60_000)
+
+    it('a wallet login that cannot store keeps the stage (never gone before its key is held)', async () => {
+      // The old vault holds wallet keys and is locked: the login is refused before anything is dropped.
+      await controller.adoptWalletKeys(ID, [coreKey()], PASS)
+      keys.push(key(6, wifOf(6), { $type: 'singleContract', id: forge.collab }))
+      await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: false, collab: true, unbounded: false }), forge.collab)
+      controller.logout()
+      await stageInVault(NET, { identityId: ID, keyId: 7, wif: wifOf(7) }, PASS)
+      keys.push(renewalKey())
+      await expect(controller.adoptWalletKeys(ID, [coreKey()], PASS, discard)).rejects.toThrow(/Unlock first/)
+      expect(await stagedInfo(NET, ID)).toMatchObject({ keyId: 7 })
+    }, 60_000)
+
+    it("the Settings discard keeps the renewal's key with its passphrase, and drops it without", async () => {
+      await controller.adoptWalletKeys(ID, [coreKey()], PASS)
+      await stageInVault(NET, { identityId: ID, keyId: 7, wif: wifOf(7) }, OTHER)
+      keys.push(renewalKey())
+      await expect(controller.abandonPendingRenewal(ID, { passphrase: 'wrong wrong wrong' })).rejects.toThrow(/did not open/)
+      expect(await stagedInfo(NET, ID)).not.toBeNull()
+      await controller.abandonPendingRenewal(ID, OTHER)
+      expect(await stagedInfo(NET, ID)).toBeNull()
+      expect(controller.getState().session?.heldOnly).toEqual([7])
+      controller.logout()
+      expect((await controller.unlock(ID, PASS)).heldOnly).toEqual([7])
+      // Without the passphrase: dropped, nothing held.
+      await stageInVault(NET, { identityId: ID, keyId: 8, wif: wifOf(8) }, OTHER)
+      await controller.abandonPendingRenewal(ID)
+      expect(await stagedInfo(NET, ID)).toBeNull()
+    }, 90_000)
+
+    it('a renewal key that never landed is not listed', async () => {
+      await stageInVault(NET, { identityId: ID, keyId: 7, wif: wifOf(7) }, PASS)
+      const s = await controller.adoptWalletKeys(ID, [coreKey()], PASS, discard)
+      expect(s.heldOnly).toBeUndefined()
+    }, 60_000)
+  })
+
+  it('a reopened create sheet also returns the wallet grants held, for its renewal to disable', async () => {
+    await controller.adoptWalletKeys(ID, [coreKey()], PASS)
+    keys.push(key(6, wifOf(6), { $type: 'singleContract', id: forge.collab }))
+    await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: false, collab: true, unbounded: false }), forge.collab)
+    controller.logout()
+    expect(await controller.storedKeyFor(ID, PASS)).toEqual({ keyId: 5, wif: wifOf(5), alsoHeld: [{ keyId: 6, wif: wifOf(6) }] })
+  }, 60_000)
+
+  it('a reopened create sheet reads the stored key back with the protection chosen now (L-06)', async () => {
+    await storeInVault(NET, { identityId: ID, keyId: 5, wif: wifOf(5) }, PASS)
+    lockVault()
+    expect(await controller.storedKeyFor(ID, PASS)).toEqual({ keyId: 5, wif: wifOf(5) })
+    lockVault()
+    expect(await controller.storedKeyFor(ID, { passphrase: 'another passphrase' })).toBeNull()
+    expect(await controller.storedKeyFor('4EfA9Jrvv3nnCFdSf7fad59851iiTRZ6Wcu6YVJ4iSeF', PASS)).toBeNull()
+  }, 60_000)
 })

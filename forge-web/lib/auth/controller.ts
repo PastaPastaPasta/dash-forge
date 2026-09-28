@@ -34,6 +34,7 @@ import { assertGroupHolds, type GroupCheck } from './group-trust'
 import { SECURITY_LEVEL, WriteAuthError, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
 import { KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS } from '../sdk/cost'
 import { authSdk, type WasmIdentity } from '../sdk/facade'
+import type { HeldBrowserKey } from './create-identity'
 import type { KeyLimits } from '../view/funds'
 import { controlsKey, normalizeToWif } from './wif'
 import { retryWhileMissing } from '../view/retry'
@@ -71,7 +72,10 @@ import {
   hasStaged,
   recoverStaged,
   abandonStaged,
+  openStaged,
+  forgetPasskeyOutputs,
   stagedInfo,
+  unlockWithProtection,
   type RecoverResult,
   type StagedKeyState,
   unlockWithPasskey,
@@ -109,6 +113,11 @@ export interface AuthSession {
   readonly unlimited?: boolean
   /** A key this session holds has no contract bounds: it could sign outside Forge too. */
   readonly unbounded?: boolean
+  /**
+   * Keys this browser holds only so the next renewal or revoke disables them (a renewal given
+   * up for a wallet sign-in, D-016), by key id. They never sign.
+   */
+  readonly heldOnly?: readonly number[]
 }
 
 /** A write to a Forge contract no key of this session covers: ask the wallet for that grant. */
@@ -338,6 +347,7 @@ export class AuthController {
       }
       if (this.scopes.main && scopeCovers(this.scopes.main, forge, contractId)) return secret.wif
       const extra = secret.extra?.find((e) => {
+        if (e.holdOnly) return false
         const scope = this.scopes.extra.get(e.keyId)
         return scope !== undefined && scopeCovers(scope, forge, contractId)
       })
@@ -397,6 +407,10 @@ export class AuthController {
         if (!forge) throw new KeyNotUsableError(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
         extra = await this.verifyScopes(identity, secret, match.keyId, forge)
       }
+      // Held to be disabled later: listed while still live on the identity.
+      const heldOnly = (secret.extra ?? [])
+        .filter((e) => e.holdOnly && identity.publicKeys.some((k) => k.keyId === e.keyId && k.disabledAt === undefined))
+        .map((e) => e.keyId)
       const session: AuthSession = {
         identityId: secret.identityId,
         balance: identity.balance.toString(),
@@ -405,6 +419,7 @@ export class AuthController {
         keyId: match.keyId,
         storage,
         ...extra,
+        ...(heldOnly.length ? { heldOnly } : {}),
       }
       this.setState({ session })
       return session
@@ -442,6 +457,8 @@ export class AuthController {
     let unbounded = main.unbounded
     let unlimited = hasNoLimits(mainKey)
     for (const e of secret.extra ?? []) {
+      // Held only to be disabled later: it grants nothing.
+      if (e.holdOnly) continue
       const k = identity.publicKeys.find((x) => x.keyId === e.keyId)
       if (!k) continue
       let scope: KeyScope
@@ -664,43 +681,73 @@ export class AuthController {
     identityId: string,
     keys: readonly WalletKey[],
     protection: Protection,
-    options: { readonly discardPendingRenewal?: boolean } = {},
+    options: {
+      /** Give up this device's unfinished renewal (the user chose the wallet). */
+      readonly discardPendingRenewal?: boolean
+      /** The renewal's own passphrase or passkey, when the protection chosen here is not it. */
+      readonly renewalUnlock?: { passphrase: string } | 'passkey'
+      /** Give it up even though it cannot be opened (its key then stays live until it expires). */
+      readonly dropUnopened?: boolean
+    } = {},
   ): Promise<AuthSession> {
     return this.run(async () => {
       const [main, ...rest] = keys
       if (!main) throw new Error('the wallet granted no key')
       const forge = NETWORKS[this.network].v2
       if (!forge) throw new Error(`Dash Forge is not deployed on ${NETWORKS[this.network].key}`)
-      // An unfinished renewal here (D-016): the user chooses to finish it (unlock) or to carry
-      // on with the wallet, which gives it up (its key stays registered, unused, until it is
-      // disabled). Never a silent overwrite, never a dead end.
-      const pending = await stagedInfo(this.network, identityId)
-      if (pending !== null) {
-        if (options.discardPendingRenewal !== true) throw new PendingRenewalChoiceError(pending.keyId)
-        await abandonStaged(this.network, identityId)
-      }
-      const previous = (await listVaults(this.network)).find((v) => v.identityId === identityId)
+      const previous = (await listVaults(this.network)).find((v) => v.identityId === identityId && v.staged !== true)
       if (previous) await this.assertUnlockedIfWalletKeys(await this.getSdk(), identityId, previous.keyId)
-      // Nothing this browser holds for the identity is dropped: the keys it held before stay
-      // beside the new ones (a returning login keeps its forge-collab grant; a key the new
-      // grant supersedes is still held, so a later revoke can disable it). Stale ones fall
-      // out at the next unlock.
-      const fresh = new Set([main.keyId, ...rest.map((k) => k.keyId)])
-      const kept: ExtraKey[] = this.heldKeys(identityId)
-        .filter((h) => !fresh.has(h.keyId))
-        .map((h) => ({ contractId: 'contractId' in h ? h.contractId : forge.core, keyId: h.keyId, wif: h.wif }))
-      const extra = [...rest.map((k) => toExtraKey(k, forge)), ...kept]
-      const secret: VaultSecret = { identityId, keyId: main.keyId, wif: main.wif, ...(extra.length ? { extra } : {}) }
-      this.noteDropped(
-        await storeInVault(this.network, secret, protection),
-        'Your storage settings could not be carried over to the new key. Add your storage again in Settings → Storage.',
-      )
-      try {
-        return await this.open(secret, 'vault', main.limits ?? undefined)
-      } catch (e) {
-        throw new Error(`Key saved on this device, but signing in did not finish (${errorMessage(e)}). Unlock to continue.`)
-      }
+      // An unfinished renewal here (D-016): the user chooses to finish it (unlock) or to carry
+      // on with the wallet, which gives it up. Never a silent overwrite, never a dead end. Its
+      // key may already be registered: it is kept beside the wallet's keys (never to sign), so
+      // the next renewal or revoke disables it, and its staged record goes only in the write
+      // that stores it. As this identity's one writer: no other tab's stage is dropped instead.
+      return serialized(identityId, async () => {
+        try {
+          return await this.storeWalletKeys(identityId, main, rest, forge, protection, options)
+        } finally {
+          forgetPasskeyOutputs()
+        }
+      })
     })
+  }
+
+  private async storeWalletKeys(
+    identityId: string,
+    main: WalletKey,
+    rest: readonly WalletKey[],
+    forge: ForgeIds,
+    protection: Protection,
+    options: Parameters<AuthController['adoptWalletKeys']>[3] = {},
+  ): Promise<AuthSession> {
+    const pending = await stagedInfo(this.network, identityId)
+    let given: ExtraKey | null = null
+    if (pending !== null) {
+      if (options.discardPendingRenewal !== true) throw new PendingRenewalChoiceError(pending.keyId)
+      const staged =
+        (await openStaged(this.network, identityId, protection).catch(() => null)) ??
+        (options.renewalUnlock !== undefined ? await openStaged(this.network, identityId, options.renewalUnlock, true).catch(() => null) : null)
+      if (staged === null && options.dropUnopened !== true) throw new PendingRenewalLockedError(pending.keyId, pending.methods, options.renewalUnlock !== undefined)
+      if (staged !== null) given = { contractId: forge.core, keyId: staged.keyId, wif: staged.wif, holdOnly: true }
+    }
+    // Nothing this browser holds for the identity is dropped: the keys it held before stay
+    // beside the new ones (a returning login keeps its forge-collab grant; a key the new
+    // grant supersedes is still held, so a later revoke can disable it). Stale ones fall
+    // out at the next unlock.
+    const fresh = new Set([main.keyId, ...rest.map((k) => k.keyId)])
+    const held: ExtraKey[] = this.heldKeys(identityId).map((h) => ('contractId' in h ? h : { contractId: forge.core, keyId: h.keyId, wif: h.wif }))
+    const kept = [...held, ...(given ? [given] : [])].filter((h, i, all) => !fresh.has(h.keyId) && all.findIndex((x) => x.keyId === h.keyId) === i)
+    const extra = [...rest.map((k) => toExtraKey(k, forge)), ...kept]
+    const secret: VaultSecret = { identityId, keyId: main.keyId, wif: main.wif, ...(extra.length ? { extra } : {}) }
+    this.noteDropped(
+      await storeInVault(this.network, secret, protection, pending !== null ? { dropStagedKeyId: pending.keyId } : {}),
+      'Your storage settings could not be carried over to the new key. Add your storage again in Settings → Storage.',
+    )
+    try {
+      return await this.open(secret, 'vault', main.limits ?? undefined)
+    } catch (e) {
+      throw new Error(`Key saved on this device, but signing in did not finish (${errorMessage(e)}). Unlock to continue.`)
+    }
   }
 
   /**
@@ -737,7 +784,7 @@ export class AuthController {
       const secret =
         unlockedSecret(this.network, identityId) ??
         (method === 'passkey'
-          ? await unlockWithPasskey(this.network, identityId)
+          ? await unlockWithPasskey(this.network, identityId, (why) => this.step(why))
           : method !== null
             ? await unlockWithPassphrase(this.network, identityId, method.passphrase)
             : null)
@@ -761,7 +808,7 @@ export class AuthController {
       // Opens the main record, or the staged one when the method is the renewal's (D-016).
       const secret =
         method === 'passkey'
-          ? await unlockWithPasskey(this.network, identityId)
+          ? await unlockWithPasskey(this.network, identityId, (why) => this.step(why))
           : await unlockWithPassphrase(this.network, identityId, method.passphrase)
       const { secret: finished, status } = await this.finishStagedRenewal(identityId, method)
       if (finished) return this.open(finished, 'vault')
@@ -815,12 +862,46 @@ export class AuthController {
   }
 
   /**
-   * Give up this device's unfinished renewal (the user signs in another way instead, or does not
-   * have its passphrase any more). Its key stays registered on chain, unused, until disabled in
-   * Settings → Keys (revoke) or by the next renewal.
+   * Give up this device's unfinished renewal. `unlockWith` (the renewal's own passphrase or
+   * passkey) opens its key first, and it is kept beside the signed-in key, never to sign, so the
+   * next renewal or revoke disables it; the staged record goes only once that is stored.
+   * Without it (the user no longer has that passphrase), a key that was registered stays valid
+   * on chain, unused, until it expires.
    */
-  async abandonPendingRenewal(identityId: string): Promise<void> {
-    await abandonStaged(this.network, identityId)
+  async abandonPendingRenewal(identityId: string, unlockWith?: { passphrase: string } | 'passkey'): Promise<void> {
+    await serialized(identityId, async () => {
+      const pending = await stagedInfo(this.network, identityId)
+      if (pending === null) return
+      if (unlockWith !== undefined) {
+        if (this.unlockedVaultSecret(identityId) === null) throw new VaultLockedError('unlock this browser\'s key first')
+        const forge = NETWORKS[this.network].v2
+        const staged = await openStaged(this.network, identityId, unlockWith, true).finally(forgetPasskeyOutputs)
+        if (staged === null || !forge) throw new PendingRenewalLockedError(pending.keyId, pending.methods, true)
+        await addExtraKey(this.network, identityId, { contractId: forge.core, keyId: staged.keyId, wif: staged.wif, holdOnly: true })
+        const session = this.state.session
+        const identity = await authSdk(await this.getSdk()).identities.fetch(identityId).catch(() => undefined)
+        const live = identity?.publicKeys.some((k) => k.keyId === staged.keyId && k.disabledAt === undefined) ?? false
+        if (session?.identityId === identityId && live) {
+          this.setState({ session: { ...session, heldOnly: [...new Set([...(session.heldOnly ?? []), staged.keyId])] } })
+        }
+      }
+      await abandonStaged(this.network, identityId, pending.keyId)
+    })
+  }
+
+  /**
+   * The key this device stores for `identityId`, opened with the protection just chosen (a
+   * create sheet reopened after its identity landed, L-06): the run checks it on chain and keeps
+   * it instead of paying for a renewal. Null when none is stored or the protection does not
+   * open it. The key stays unlocked for the {@link openStored} that follows; a failed run locks.
+   */
+  async storedKeyFor(identityId: string, protection: Protection): Promise<HeldBrowserKey | null> {
+    const secret = await unlockWithProtection(this.network, identityId, protection).catch(() => null)
+    if (secret === null) return null
+    // Every other key held here (wallet grants, a renewal given up): a renewal from the sheet
+    // disables them in the same update, as any renewal does, so none is left live unheld.
+    const alsoHeld = (secret.extra ?? []).map((e) => ({ keyId: e.keyId, wif: e.wif }))
+    return { keyId: secret.keyId, wif: secret.wif, ...(alsoHeld.length ? { alsoHeld } : {}) }
   }
 
   /** This device's unfinished renewal for `identityId`, if any (Settings → Keys shows it). */
@@ -1037,13 +1118,29 @@ function stagedUnlockMessage(status: RecoverResult['status'] | 'none', hasMain: 
 export class PendingRenewalChoiceError extends Error {
   constructor(readonly keyId: number) {
     super(
-      `This device has an unfinished key renewal (key ${keyId}). Finish it by unlocking with the passphrase or passkey you chose for it, or continue with your wallet: the renewal's key then stays registered on Platform but unused, and you can disable it later in Settings → Keys.`,
+      `This device has an unfinished key renewal (key ${keyId}). Finish it by unlocking with the passphrase or passkey you chose for it, or continue with your wallet: this browser then keeps the renewal's key only so that your next key renewal or "Revoke on chain" (Settings → Keys) disables it. It never signs.`,
     )
     this.name = 'PendingRenewalChoiceError'
   }
 }
 
-/** The key opened no longer controls a usable key on the identity (disabled, expired, wrong). */
+/**
+ * Continuing with the wallet needs the unfinished renewal's key opened, to keep it for the next
+ * revoke or renewal to disable: the protection chosen for the wallet is not the renewal's.
+ */
+export class PendingRenewalLockedError extends Error {
+  constructor(
+    readonly keyId: number,
+    readonly methods: readonly ('passkey' | 'passphrase')[],
+    readonly retried: boolean,
+  ) {
+    super(
+      `${retried ? "That did not open the renewal's key. " : ''}To keep the renewal's key (key ${keyId}) so your next renewal or revoke disables it, enter the passphrase or use the passkey you chose for that renewal. Without it, the key stays valid on Platform, unused, until it expires.`,
+    )
+    this.name = 'PendingRenewalLockedError'
+  }
+}
+
 /** Signing in from the words found an identity this browser already holds a key for. */
 export class AlreadyStoredError extends Error {
   constructor(readonly identityId: string) {

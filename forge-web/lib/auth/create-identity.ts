@@ -61,7 +61,8 @@ import {
 } from './asset-lock'
 import { CANONICAL_KEYS, assetLockKeyPath, deriveAt, deriveMasterKey, identityKeyPath, normalizeMnemonic } from './hd'
 import { assertGroupHolds } from './group-trust'
-import { controlsKey, defaultLimits, registerLimitedKey, verifyLimitedKey, type LimitedKey, type LimitedKeyRequest } from './limited-key'
+import { UnusableLimitedKeyError, controlsKey, defaultLimits, registerLimitedKey, verifyLimitedKey, type LimitedKey, type LimitedKeyRequest } from './limited-key'
+import type { KeyLimits } from '../view/funds'
 
 /** Minimum deposit (spec §2.2: 0.02 DASH; the asset-lock floor is 0.003). */
 export const MIN_DEPOSIT_DUFFS = 2_000_000
@@ -273,7 +274,19 @@ async function keyIsNotOurs(sdk: EvoSDK, identityId: string, keyId: number, wif:
   const identity = await authSdk(sdk).identities.fetch(identityId)
   if (identity === undefined) return false
   const k = identity.publicKeys.find((x) => x.keyId === keyId)
-  return k === undefined || !controlsKey(k, wif, network)
+  // Not shown: the IdentityCreate always carries key 5, so only a node behind shows none.
+  // The check that follows retries it; a renewal (paid, disabling it) is not the answer.
+  return k !== undefined && !controlsKey(k, wif, network)
+}
+
+/**
+ * The key this browser stores for an identity, and any other keys it holds for it (wallet
+ * grants): a renewal disables all of them in the same update, so none stays live unheld.
+ */
+export interface HeldBrowserKey {
+  readonly keyId: number
+  readonly wif: string
+  readonly alsoHeld?: readonly { readonly keyId: number; readonly wif: string }[]
 }
 
 /** The identity exists, but its browser key could not be checked: "Try again" checks it again. */
@@ -328,7 +341,7 @@ export async function createIdentityFromMnemonic(
      * still read it. When the identity already exists and holds that key, the run checks it and
      * finishes instead of paying for a renewal.
      */
-    readonly heldKey?: (identityId: string) => Promise<{ keyId: number; wif: string } | null>
+    readonly heldKey?: (identityId: string) => Promise<HeldBrowserKey | null>
   },
 ): Promise<{ identityId: string; key: LimitedKey }> {
   const { network, group } = params
@@ -391,7 +404,10 @@ export async function createIdentityFromMnemonic(
   const limits = params.limits ?? defaultLimits()
   const freshen = params.freshen ?? ((maxAgeMs?: number) => evoSdkService.ensureFresh(maxAgeMs))
   /** The identity exists, but this browser holds none of its keys: the master key renews key 5. */
-  const renewBrowserKey = async (balanceBefore: bigint | null): Promise<{ identityId: string; key: LimitedKey }> => {
+  const renewBrowserKey = async (
+    balanceBefore: bigint | null,
+    disableHeld: readonly { readonly keyId: number; readonly wif: string }[] = [],
+  ): Promise<{ identityId: string; key: LimitedKey }> => {
     params.onStage?.('registering', 'The identity exists; registering a key for this browser…')
     const master = await deriveMasterKey(mnemonic, network)
     // The earlier run's key 5 may be live (its vault copy is locked or gone): disable it in
@@ -411,6 +427,7 @@ export async function createIdentityFromMnemonic(
         replaceKeyId: BROWSER_KEY_ID,
         groupChecked: true,
         persist: (k) => params.persistKey(identityId, k, { staged: true }),
+        ...(disableHeld.length ? { disableHeld } : {}),
       }),
     )
     params.onCharge?.(identityId, { kind: 'key:renew', keyId: key.keyId, balanceBefore })
@@ -428,11 +445,21 @@ export async function createIdentityFromMnemonic(
     // Created by an earlier run. Its browser key, when this browser still holds it and the
     // identity carries it, is checked and kept; only a key that is gone is renewed (paid).
     const held = (await params.heldKey?.(identityId).catch(() => null)) ?? null
-    if (held === null || (await keyIsNotOurs(sdk, identityId, held.keyId, held.wif, network))) return renewBrowserKey(existingBalance)
+    // What a renewal here disables beside the old key 5: every key this browser holds (each
+    // only if its stored private key controls it).
+    const disable = held === null ? [] : [{ keyId: held.keyId, wif: held.wif }, ...(held.alsoHeld ?? [])]
+    if (held === null || (await keyIsNotOurs(sdk, identityId, held.keyId, held.wif, network))) return renewBrowserKey(existingBalance, disable)
     params.onStage?.('verifying')
-    const verified = await verifyLimitedKey(sdk, identityId, held.keyId, group, network, held.wif).catch((e: unknown) => {
-      throw isAbort(e) ? e : keyUncheckedError(identityId, e)
-    })
+    let verified: KeyLimits
+    try {
+      verified = await verifyLimitedKey(sdk, identityId, held.keyId, group, network, held.wif)
+    } catch (e) {
+      if (isAbort(e)) throw e
+      // Ours, but Platform shows it cannot be used (expired, disabled, used up, or not a Forge
+      // browser key): renewing is the only way on. A read that failed is retried instead.
+      if (e instanceof UnusableLimitedKeyError) return renewBrowserKey(existingBalance, disable)
+      throw keyUncheckedError(identityId, e)
+    }
     return { identityId, key: { keyId: held.keyId, wif: held.wif, limits: verified } }
   }
 
