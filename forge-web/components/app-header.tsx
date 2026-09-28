@@ -121,9 +121,17 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
   const params = useSearchParams()
   const [query, setQuery] = useState('')
   const [note, setNote] = useState<ReactNode>(null)
+  // A word's choices: a list of links, kept out of the status line so it is not announced whole.
+  const [choices, setChoices] = useState<{ word: string; matches: WordMatches } | null>(null)
   const [busy, setBusy] = useState(false)
-  // Only the newest #n lookup may act: a slow one must not navigate after the query changed.
+  // Only the newest lookup may act: a slow one must not navigate after the query changed, nor
+  // after the header unmounted (the user went somewhere else).
   const request = useRef(0)
+  useEffect(() => () => void request.current++, [])
+  const clear = (): void => {
+    setNote(null)
+    setChoices(null)
+  }
   const here = addressFromParams(params)
   const inRepo = pathname.startsWith('/repo') && here.owner !== '' && here.name !== ''
   const id = compact ? 'jump-compact' : 'jump'
@@ -132,7 +140,7 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
     const mine = ++request.current
     const current = (): boolean => request.current === mine
     setBusy(true)
-    setNote(null)
+    clear()
     try {
       const sdk = await ensureSdk(DEFAULT_NETWORK)
       const resolved = await resolveAnyRepo(sdk, { network: DEFAULT_NETWORK, ...addr })
@@ -168,7 +176,7 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
 
   const go = (href: string): void => {
     setQuery('')
-    setNote(null)
+    clear()
     router.push(href)
   }
 
@@ -176,7 +184,7 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
     const mine = ++request.current
     const current = (): boolean => request.current === mine
     setBusy(true)
-    setNote(null)
+    clear()
     try {
       const sdk = await ensureSdk(DEFAULT_NETWORK)
       const matches = await resolveWord(sdk, word, DEFAULT_NETWORK)
@@ -184,12 +192,22 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
       const target = wordTarget(matches)
       if (target.kind === 'repo') go(discoveredRepoHref(target.repo))
       else if (target.kind === 'profile') go(profileHref(target.identityId))
-      else if (target.kind === 'choose') setNote(<WordChoices word={word} matches={target.matches} onPick={() => setQuery('')} />)
-      else {
+      else if (target.kind === 'choose') {
+        const n = matches.repos.length + (matches.profile === null ? 0 : 1)
+        setNote(n === 0 ? `Could not check everything named ${word}.` : `${n} match${n === 1 ? '' : 'es'} for ${word}.`)
+        setChoices({ word, matches: target.matches })
+      } else {
         setNote(
           <span>
             No repo or profile named {word}.{' '}
-            <Link className="underline" href={`/explore/?q=${encodeURIComponent(word)}`} onClick={() => setQuery('')}>
+            <Link
+              className="underline"
+              href={`/explore/?q=${encodeURIComponent(word)}`}
+              onClick={() => {
+                setQuery('')
+                clear()
+              }}
+            >
               Search repos for “{word}”
             </Link>
           </span>,
@@ -241,7 +259,7 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
         value={query}
         onChange={(e) => {
           setQuery(e.target.value)
-          setNote(null)
+          clear()
           // Typing supersedes a lookup still in flight.
           request.current++
           setBusy(false)
@@ -250,7 +268,9 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
         aria-describedby={note ? `${id}-note` : undefined}
         aria-busy={busy}
         onKeyDown={(e) => {
-          if (e.key === 'Escape') e.currentTarget.blur()
+          if (e.key !== 'Escape') return
+          if (note !== null || choices !== null) clear()
+          else e.currentTarget.blur()
         }}
         className="peer h-8 w-full rounded-md border border-anvil-300 bg-white pl-8 pr-7 text-dense placeholder:text-anvil-500 focus-visible:border-forge-400 coarse:h-11 coarse:text-base dark:border-anvil-700 dark:bg-anvil-900 dark:placeholder:text-anvil-400"
       />
@@ -262,13 +282,28 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
           /
         </kbd>
       )}
-      {note ? (
+      {note || choices ? (
         <div
-          id={`${id}-note`}
-          role="status"
           className="absolute left-0 right-0 top-full z-50 mt-1 rounded-md border border-anvil-200 bg-white px-2.5 py-1.5 text-[12px] text-anvil-700 shadow-lg dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-200"
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') clear()
+          }}
         >
-          {note}
+          {note ? (
+            <div id={`${id}-note`} role="status">
+              {note}
+            </div>
+          ) : null}
+          {choices ? (
+            <WordChoices
+              word={choices.word}
+              matches={choices.matches}
+              onPick={() => {
+                setQuery('')
+                clear()
+              }}
+            />
+          ) : null}
         </div>
       ) : null}
     </form>
@@ -284,20 +319,18 @@ function discoveredRepoHref(r: DiscoveredRepo): string {
   return repoHref('/repo', { owner: r.ownerId, name: r.slug, repoId: r.key })
 }
 
-/** A bare word that names several things: each repo (by owner), then the profile. */
+/**
+ * What a bare word may be: each repo (with its owner), then the profile, then what could not
+ * be checked, and a search when more owners use the name than were read.
+ */
 function WordChoices({ word, matches, onPick }: { word: string; matches: WordMatches; onPick: () => void }): JSX.Element {
+  const search = `/explore/?q=${encodeURIComponent(word)}`
   return (
-    <div data-testid="jump-choices">
-      <p className="mb-1">“{word}” is:</p>
+    <div data-testid="jump-choices" className="mt-1">
       <ul className="space-y-1">
         {matches.repos.map((r) => (
           <li key={r.key} className="flex flex-wrap items-center gap-1">
-            <Link
-              className="hit-area font-mono underline"
-              href={discoveredRepoHref(r)}
-              onClick={onPick}
-              aria-label={`repo ${r.slug} by ${r.ownerId}`}
-            >
+            <Link className="hit-area font-mono underline" href={discoveredRepoHref(r)} onClick={onPick} data-owner={r.ownerId}>
               repo {r.slug}
             </Link>
             <span>by</span>
@@ -312,6 +345,23 @@ function WordChoices({ word, matches, onPick }: { word: string; matches: WordMat
           </li>
         ) : null}
       </ul>
+      {matches.moreRepos ? (
+        <p className="mt-1">
+          More owners have a repo called {word}.{' '}
+          <Link className="underline" href={search} onClick={onPick}>
+            Search repos
+          </Link>
+        </p>
+      ) : null}
+      {matches.reposFailed ? (
+        <p className="mt-1 text-caution-700 dark:text-caution-400">
+          Couldn&apos;t check repos named {word}.{' '}
+          <Link className="underline" href={search} onClick={onPick}>
+            Search repos
+          </Link>
+        </p>
+      ) : null}
+      {matches.profileFailed ? <p className="mt-1 text-caution-700 dark:text-caution-400">Couldn&apos;t check profiles named {word}.</p> : null}
     </div>
   )
 }

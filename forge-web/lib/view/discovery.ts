@@ -50,7 +50,10 @@ export interface DiscoveredRepo {
   /** Provable counts, or null when not read. */
   readonly stars?: number | null
   readonly issues?: number | null
-  /** The newest push (a `refUpdate` or `protectedRefUpdate`) in the window read, if seen. */
+  /**
+   * The newest push that uploaded objects (a `packManifest`) in the last week, when the page's
+   * push lookup read it; null when none was read (none in the window, or past the read's end).
+   */
   readonly pushedAt?: number | null
   /** Profile pages: the viewer's role in a repo it does not own. */
   readonly role?: Role
@@ -95,6 +98,13 @@ export interface RepoPage<T extends string | number> {
   readonly next: Keyset<T> | null
   /** Whether each repo's `pushedAt` is known (the push lookups were short, so complete). */
   readonly pushesComplete: boolean
+  /** The composite was refused, so the page came from a plain query: no counts, no pushes. */
+  readonly fallback: boolean
+  /**
+   * More repos than one read holds shared the boundary value, so the rest of them were skipped
+   * to keep paging (the list is incomplete there).
+   */
+  readonly skippedTies: boolean
 }
 
 /**
@@ -200,12 +210,16 @@ async function readRepoPage<T extends string | number>(
   forge: ForgeIds,
   network: Network,
   order: { field: string; direction: 'asc' | 'desc' },
-  where: (after: Keyset<T> | null) => WhereClause[],
+  where: (after: Keyset<T> | null, strict: boolean) => WhereClause[],
   limit: number,
   after: Keyset<T> | null,
 ): Promise<RepoPage<T>> {
-  const requested = Math.min(MAX_ROWS, limit + (after?.seen.length ?? 0))
-  const pageWhere = where(after)
+  // The ids shown at the boundary are re-read and skipped. Once they would crowd out a page,
+  // step strictly past the boundary instead, and say that the rest of that tie was skipped.
+  const strict = after !== null && after.seen.length + limit > MAX_ROWS
+  const from = strict ? null : after
+  const requested = Math.min(MAX_ROWS, limit + (from?.seen.length ?? 0))
+  const pageWhere = where(after, strict)
   const orderBy = [[order.field, order.direction]] as const
   const pushesSince = order.direction === 'desc' ? Date.now() - PUSH_WINDOW_MS : null
   let rows: PlainDocument[]
@@ -221,17 +235,22 @@ async function readRepoPage<T extends string | number>(
     if (!isRefused(e)) throw e
     rows = (await queryDocumentsWithProof(sdk, { dataContractId: forge.core, documentTypeName: DOC.repo, where: pageWhere, orderBy, limit: requested })).documents
   }
-  const cut = keysetPage<T>(rows, order.field, limit, requested, after)
+  const cut = keysetPage<T>(rows, order.field, limit, requested, from)
   const { repos, pushesComplete } =
-    res === null ? { repos: cut.rows.map((d) => fromRepoDoc(toRepoDoc(d))), pushesComplete: false } : reposOf(res, cut.rows, 0, network)
-  return { repos, next: cut.next, pushesComplete }
+    res === null ? { repos: cut.rows.map((d) => fromRepoDoc(toRepoDoc(d))), pushesComplete: true } : reposOf(res, cut.rows, 0, network)
+  return { repos, next: cut.next, pushesComplete, fallback: res === null, skippedTies: strict }
 }
 
-/** The composite surface refused the request's shape (an older node or SDK), not a network error. */
-function isRefused(e: unknown): boolean {
+/**
+ * The composite surface refused the request's shape (an older node or SDK, which answers a
+ * shape it does not know with "invalid argument"), not a network error.
+ */
+export function isRefused(e: unknown): boolean {
   const msg = e instanceof Error ? e.message : String((e as { message?: unknown })?.message ?? e)
-  return /unsupported|not supported|not available|unimplemented|unknown (field|variant)|is not a function/i.test(msg)
+  return /unsupported|not supported|not available|unimplemented|unknown (field|variant)|is not a function|invalid argument/i.test(msg)
 }
+
+const EMPTY_PAGE: RepoPage<never> = { repos: [], next: null, pushesComplete: true, fallback: false, skippedTies: false }
 
 function forgeOf(network: Network): ForgeIds | null {
   return NETWORKS[network].v2
@@ -244,13 +263,13 @@ export async function recentReposPage(
 ): Promise<RepoPage<number>> {
   const network = opts.network ?? DEFAULT_NETWORK
   const forge = forgeOf(network)
-  if (forge === null) return { repos: [], next: null, pushesComplete: true }
+  if (forge === null) return EMPTY_PAGE
   return readRepoPage<number>(
     sdk,
     forge,
     network,
     { field: '$createdAt', direction: 'desc' },
-    (after) => (after === null ? [] : [['$createdAt', '<=', after.at]]),
+    (after, strict) => (after === null ? [] : [['$createdAt', strict ? '<' : '<=', after.at]]),
     opts.limit ?? REPO_PAGE,
     opts.after ?? null,
   )
@@ -276,15 +295,15 @@ export async function searchRepos(
   const network = opts.network ?? DEFAULT_NETWORK
   const forge = forgeOf(network)
   const prefix = searchPrefix(text)
-  if (forge === null || prefix === null) return { repos: [], next: null, pushesComplete: true }
+  if (forge === null || prefix === null) return EMPTY_PAGE
   const upper = prefixUpperBound(prefix)
   return readRepoPage<string>(
     sdk,
     forge,
     network,
     { field: 'name', direction: 'asc' },
-    (after) => [
-      ['name', '>=', after?.at ?? prefix],
+    (after, strict) => [
+      after === null ? ['name', '>=', prefix] : ['name', strict ? '>' : '>=', after.at],
       ['name', '<', upper],
     ],
     opts.limit ?? REPO_PAGE,
@@ -292,15 +311,20 @@ export async function searchRepos(
   )
 }
 
-/** Every repo named exactly `name` (any owner), for the jump box. Empty for an invalid name. */
-export async function reposNamed(sdk: EvoSDK, name: string, opts: { network?: Network } = {}): Promise<DiscoveredRepo[]> {
+/** Repos named exactly `name` (any owner), for the jump box: the first {@link NAMED_MAX}. */
+export const NAMED_MAX = 20
+
+/**
+ * The repos named exactly `name`, any owner (a name is unique per owner only, so this is a
+ * short page on the `name` index), and whether more owners use it. Empty for an invalid name.
+ */
+export async function reposNamed(sdk: EvoSDK, name: string, opts: { network?: Network } = {}): Promise<{ repos: DiscoveredRepo[]; more: boolean }> {
   const network = opts.network ?? DEFAULT_NETWORK
   const forge = forgeOf(network)
   const n = name.trim().toLowerCase()
-  if (forge === null || !NAME_CHARS.test(n)) return []
-  // A name is unique per owner only, so this is a (short) page on the `name` index.
-  const page = await readRepoPage<string>(sdk, forge, network, { field: 'name', direction: 'asc' }, () => [['name', '==', n]], 20, null)
-  return page.repos
+  if (forge === null || !NAME_CHARS.test(n)) return { repos: [], more: false }
+  const page = await readRepoPage<string>(sdk, forge, network, { field: 'name', direction: 'asc' }, () => [['name', '==', n]], NAMED_MAX, null)
+  return { repos: page.repos, more: page.next !== null }
 }
 
 /** The "Most starred" ranking and how much of the star set it saw. */
@@ -312,6 +336,11 @@ export interface MostStarred {
   /** True when the read reached the end of the star set (so the ranking is over every star). */
   readonly complete: boolean
   readonly pushesComplete: boolean
+  /**
+   * The node refused the composite. Its plain equivalent is one count request per starred
+   * repo, which this does not spend: the section says it cannot rank here.
+   */
+  readonly unavailable: boolean
 }
 
 /**
@@ -323,36 +352,46 @@ export interface MostStarred {
 export async function mostStarredRepos(sdk: EvoSDK, opts: { network?: Network; limit?: number } = {}): Promise<MostStarred> {
   const network = opts.network ?? DEFAULT_NETWORK
   const forge = forgeOf(network)
-  if (forge === null) return { repos: [], starsRead: 0, complete: true, pushesComplete: true }
-  const res = await queryComposite(
-    sdk,
-    {
-      dataContractId: forge.collab,
-      documentType: DOC.star,
-      // Descending, so the joined repos' push lookups (newest first) walk the page's way.
-      orderBy: [['$ownerId', 'desc']],
-      limit: MAX_ROWS,
-      subQueries: [
-        { dataContractId: forge.core, documentType: DOC.repo, bind: { sourceProperty: 'repoId', field: '$id' } },
-        ...repoSubs(forge, network, 0, Date.now() - PUSH_WINDOW_MS),
-      ],
-    },
-    { plainFallback: false },
-  )
+  if (forge === null) return { repos: [], starsRead: 0, complete: true, pushesComplete: true, unavailable: false }
+  let res: CompositeResult
+  try {
+    res = await queryComposite(
+      sdk,
+      {
+        dataContractId: forge.collab,
+        documentType: DOC.star,
+        // Descending, so the joined repos' push lookups (newest first) walk the page's way.
+        orderBy: [['$ownerId', 'desc']],
+        limit: MAX_ROWS,
+        subQueries: [
+          { dataContractId: forge.core, documentType: DOC.repo, bind: { sourceProperty: 'repoId', field: '$id' } },
+          ...repoSubs(forge, network, 0, Date.now() - PUSH_WINDOW_MS),
+        ],
+      },
+      { plainFallback: false },
+    )
+  } catch (e) {
+    if (!isRefused(e)) throw e
+    return { repos: [], starsRead: 0, complete: false, pushesComplete: true, unavailable: true }
+  }
   const { repos, pushesComplete } = reposOf(res, docsAt(res, 0), 1, network)
   const ranked = repos
     .filter((r) => (r.stars ?? 0) > 0)
     .sort((a, b) => (b.stars ?? 0) - (a.stars ?? 0) || a.slug.localeCompare(b.slug) || a.key.localeCompare(b.key))
-  return { repos: ranked.slice(0, opts.limit ?? 12), starsRead: res.page.length, complete: res.page.length < MAX_ROWS, pushesComplete }
+  return { repos: ranked.slice(0, opts.limit ?? 12), starsRead: res.page.length, complete: res.page.length < MAX_ROWS, pushesComplete, unavailable: false }
 }
 
 /**
  * "Recently updated": the repos among `lists` with a push in the window, newest push first,
- * each repo once. Pure; the pushes came with the lists' own reads.
+ * each repo once (the copy with the newest push). Pure; the pushes came with the lists' reads.
  */
 export function recentlyUpdated(lists: readonly (readonly DiscoveredRepo[])[], limit = 12): DiscoveredRepo[] {
   const byId = new Map<string, DiscoveredRepo>()
-  for (const r of lists.flat()) if (typeof r.pushedAt === 'number' && !byId.has(r.key)) byId.set(r.key, r)
+  for (const r of lists.flat()) {
+    if (typeof r.pushedAt !== 'number') continue
+    const held = byId.get(r.key)
+    if (held === undefined || (held.pushedAt ?? 0) < r.pushedAt) byId.set(r.key, r)
+  }
   return [...byId.values()].sort((a, b) => (b.pushedAt ?? 0) - (a.pushedAt ?? 0)).slice(0, limit)
 }
 

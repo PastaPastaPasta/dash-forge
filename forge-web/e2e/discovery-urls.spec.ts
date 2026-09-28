@@ -125,9 +125,12 @@ test('g3. the jump box: a bare repo name opens the repo, not "No such identity"'
   await jump.press('Enter')
   if (demoOwners.length > 1) {
     const choices = page.getByTestId('jump-choices')
-    await expect(choices.getByRole('link', { name: new RegExp(`^repo ${DEMO.name} by`) })).toHaveCount(demoOwners.length, { timeout: 60_000 })
+    await expect(choices.getByRole('link', { name: `repo ${DEMO.name}`, exact: true })).toHaveCount(demoOwners.length, { timeout: 60_000 })
+    await expect(page.getByRole('status').filter({ hasText: `${demoOwners.length} matches for ${DEMO.name}` })).toBeVisible()
     await shot(page, 'g14-jump-choices')
-    await choices.getByRole('link', { name: `repo ${DEMO.name} by ${DEMO.owner}` }).click()
+    await choices.locator(`a[data-owner="${DEMO.owner}"]`).click()
+    // A pick closes the popover.
+    await expect(choices).toHaveCount(0)
   }
   await expect(page).toHaveURL(new RegExp(`/repo/?\\?owner=${DEMO.owner}&name=${DEMO.name}`), { timeout: 60_000 })
   await expect(page.getByText('No such identity')).toHaveCount(0)

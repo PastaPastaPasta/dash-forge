@@ -51,8 +51,13 @@ export function parseJump(input: string, inRepo: boolean): Jump | null {
 /** What a bare word names: repos called that (any owner) and the profile it resolves to. */
 export interface WordMatches {
   readonly repos: readonly DiscoveredRepo[]
+  /** More owners use the name than were read (`NAMED_MAX`). */
+  readonly moreRepos: boolean
   /** The identity the word resolves to as a DPNS name, or null. */
   readonly profile: string | null
+  /** A side whose lookup failed: its "nothing found" is not an answer. */
+  readonly reposFailed: boolean
+  readonly profileFailed: boolean
 }
 
 /** Where a word's matches lead: straight there when there is exactly one, else a choice. */
@@ -65,22 +70,29 @@ export type WordTarget =
 /**
  * Look a bare word up both ways, in parallel: repos named it (the `repo.name` index, one
  * composite with their counts and owners' names) and the DPNS name (one `resolveName`). Either
- * failing leaves the other's answer; both failing is an error.
+ * failing leaves the other's answer, flagged; both failing is an error.
  */
 export async function resolveWord(sdk: EvoSDK, word: string, network: Network): Promise<WordMatches> {
   const [repos, profile] = await Promise.allSettled([reposNamed(sdk, word, { network }), resolveOwner(sdk, word)])
   if (repos.status === 'rejected' && profile.status === 'rejected') throw repos.reason
   return {
-    repos: repos.status === 'fulfilled' ? repos.value : [],
+    repos: repos.status === 'fulfilled' ? repos.value.repos : [],
+    moreRepos: repos.status === 'fulfilled' && repos.value.more,
     profile: profile.status === 'fulfilled' ? profile.value : null,
+    reposFailed: repos.status === 'rejected',
+    profileFailed: profile.status === 'rejected',
   }
 }
 
-/** Pick where a word goes (pure). */
+/**
+ * Pick where a word goes (pure). Straight there only when both lookups answered and exactly
+ * one thing matched; a failed side, or more owners than were read, always shows the choice.
+ */
 export function wordTarget(m: WordMatches): WordTarget {
   const total = m.repos.length + (m.profile === null ? 0 : 1)
-  if (total === 0) return { kind: 'none' }
-  if (total > 1) return { kind: 'choose', matches: m }
+  const certain = !m.reposFailed && !m.profileFailed && !m.moreRepos
+  if (total === 0 && certain) return { kind: 'none' }
+  if (total !== 1 || !certain) return { kind: 'choose', matches: m }
   const [repo] = m.repos
   if (repo !== undefined) return { kind: 'repo', repo }
   return m.profile !== null ? { kind: 'profile', identityId: m.profile } : { kind: 'none' }

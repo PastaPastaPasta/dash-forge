@@ -70,7 +70,7 @@ export function ExploreClient(): JSX.Element {
   const recent = useRepoPages<number>((after) => recentReposPage(sdk!, { network, after }), network, on)
   const starred = useAsync(() => mostStarredRepos(sdk!, { network, limit: TOP_N }), [ready, network], { enabled: on })
   // Pushes rode along with the repos already read; rank those (the section says so).
-  const updated = useMemo(() => recentlyUpdated([recent.repos, starred.data?.repos ?? [], search.repos], TOP_N), [recent.repos, starred.data, search.repos])
+  const updated = useMemo(() => recentlyUpdated([recent.repos, starred.data?.repos ?? []], TOP_N), [recent.repos, starred.data])
   const recentRepos = recent.repos.slice(0, 24)
   const releases = useAsync(() => latestReleases(sdk!, forge!, recentRepos.map(repoLite)), [recentRepos.map((r) => r.key).join(',')], {
     enabled: on && recent.settled,
@@ -160,7 +160,12 @@ export function ExploreClient(): JSX.Element {
               empty={`No repo name starts with “${prefix}”.`}
               note="Matched on the repo name index, A to Z. Descriptions and code are not searched: that needs an indexer."
             >
-              {(d) => <PagedGrid repos={d} pages={search} what="results" />}
+              {(d) => (
+                <>
+                  <FallbackNote pages={search} />
+                  <PagedGrid repos={d} pages={search} what="results" />
+                </>
+              )}
               {(d) => d.length === 0}
             </Section>
           )
@@ -173,10 +178,16 @@ export function ExploreClient(): JSX.Element {
           state={starred}
           empty="No repo on this network has a star yet."
           note="Each repo's star count is exact (the star index counts them). Which repos are ranked comes from one read of up to 100 stars; a ranked star index arrives with the next contract revision."
-          partial={(d) => (d.complete ? null : `There are more than ${d.starsRead} stars, so this ranks only the repos those ${d.starsRead} name. A repo with many stars can be missing.`)}
+          partial={(d) =>
+            d.unavailable
+              ? 'This node cannot answer the combined star read, and ranking without it would cost one request per starred repo, so nothing is ranked here.'
+              : d.complete
+                ? null
+                : `There are more than ${d.starsRead} stars, so this ranks only the repos those ${d.starsRead} name. A repo with many stars can be missing.`
+          }
         >
           {(d) => <RepoGrid repos={d.repos} />}
-          {(d) => d.repos.length === 0}
+          {(d) => d.repos.length === 0 && !d.unavailable}
         </Section>
 
         <Section
@@ -185,8 +196,14 @@ export function ExploreClient(): JSX.Element {
           icon={History}
           state={updatedState(recent, starred, updated)}
           empty="None of the repos shown here was pushed to in the last week."
-          note={`Pushes have no cross-repo index, so this ranks the repos shown on this page (recent, most starred and search results) by their newest push in the last ${Math.round(PUSH_WINDOW_MS / 86_400_000)} days. Load more recent repos to widen it.`}
-          partial={() => (recent.pushesComplete && (starred.data?.pushesComplete ?? true) ? null : 'Some repos pushed so often that their older pushes were not read; they are ranked by the pushes that were.')}
+          note={`Pushes have no cross-repo index, so this ranks the recent and most-starred repos above by their newest push that uploaded objects in the last ${Math.round(PUSH_WINDOW_MS / 86_400_000)} days. Load more recent repos to widen it.`}
+          partial={() =>
+            recent.fallback
+              ? 'This node refused the combined read, so recent repos came without their pushes and are not ranked here.'
+              : recent.pushesComplete && (starred.data?.pushesComplete ?? true)
+                ? null
+                : 'Each read looks at the newest 100 pushes of its repos; repos whose pushes fell past those 100 are not ranked here.'
+          }
         >
           {(d) => <RepoGrid repos={d} />}
           {(d) => d.length === 0}
@@ -251,7 +268,12 @@ export function ExploreClient(): JSX.Element {
         ) : null}
 
         <Section title="Recent repos" testId="explore-recent-repos" icon={GitBranch} state={pagesState(recent)} empty="No repos on this network yet." emptyAction={<NewRepoLink />}>
-          {(d) => <PagedGrid repos={d} pages={recent} what="repos" />}
+          {(d) => (
+            <>
+              <FallbackNote pages={recent} />
+              <PagedGrid repos={d} pages={recent} what="repos" />
+            </>
+          )}
           {(d) => d.length === 0}
         </Section>
 
@@ -408,13 +430,26 @@ function SearchBox({ initial, onSearch }: { initial: string; onSearch: (text: st
   )
 }
 
-/** A repo grid with "Load more" while the keyset has a next page. */
+/** Say when a list came from the plain-query fallback (no counts) or skipped part of a tie. */
+function FallbackNote({ pages }: { pages: RepoPages }): JSX.Element | null {
+  const lines = [
+    pages.fallback ? 'This node refused the combined read, so these repos show without star and issue counts.' : null,
+    pages.skippedTies ? 'More than 100 repos share one boundary value here; some of them were skipped to keep paging.' : null,
+  ].filter((l): l is string => l !== null)
+  if (lines.length === 0) return null
+  return (
+    <p role="note" className="mb-3 rounded-md border border-caution/30 bg-caution/5 px-3 py-1.5 text-[12px] text-anvil-700 dark:text-anvil-200" data-partial="true">
+      {lines.join(' ')}
+    </p>
+  )
+}
+
+/** A repo grid with "Load more" while the keyset has a next page (Retry instead after a failure). */
 function PagedGrid({ repos, pages, what }: { repos: readonly DiscoveredRepo[]; pages: RepoPages; what: string }): JSX.Element {
   return (
     <div className="space-y-3">
       <RepoGrid repos={repos} />
-      {pages.error ? <ErrorState message={pages.error} onRetry={pages.loadMore} /> : null}
-      {pages.hasMore ? (
+      {pages.error ? <ErrorState message={pages.error} onRetry={pages.loadMore} /> : pages.hasMore ? (
         <Button variant="outline" size="sm" onClick={pages.loadMore} loading={pages.loading}>
           Load more {what}
         </Button>

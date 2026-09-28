@@ -27,6 +27,7 @@ import {
   parseIssueQuery,
   parseSearchText,
   searchText,
+  unresolvedQualifiers,
   withQuery,
   BODY_MAX,
   utf8Length,
@@ -108,8 +109,11 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const labelDefs = useMemo(() => new Map((data?.labels ?? []).map((l) => [l.name, l])), [data])
   const [search, setSearch] = useState<string | null>(null)
   const searchValue = search ?? searchText(query)
+  // Qualifiers typed (or linked in `?q=`) that could not be used: said, not silently dropped.
+  const [dropped, setDropped] = useState<string[]>(() => unresolvedQualifiers(params.get('q') ?? ''))
   const submitSearch = (e: FormEvent): void => {
     e.preventDefault()
+    setDropped(unresolvedQualifiers(searchValue))
     setQuery(parseSearchText(searchValue))
     setSearch(null)
   }
@@ -134,6 +138,11 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           </Button>
         ) : null}
       </div>
+      {dropped.length > 0 ? (
+        <p role="note" className="mb-3 text-[12px] text-caution-700 dark:text-caution-400" data-testid="issue-search-dropped">
+          Not applied: {dropped.join(' ')}. Authors and assignees take an identity id or @me.
+        </p>
+      ) : null}
 
       {filtered ? (
         <button

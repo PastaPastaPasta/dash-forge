@@ -52,7 +52,14 @@ const repo = (name: string, ownerId: string): DiscoveredRepo => ({
 })
 
 describe('wordTarget', () => {
-  const m = (repos: DiscoveredRepo[], profile: string | null): WordMatches => ({ repos, profile })
+  const m = (repos: DiscoveredRepo[], profile: string | null, over: Partial<WordMatches> = {}): WordMatches => ({
+    repos,
+    profile,
+    moreRepos: false,
+    reposFailed: false,
+    profileFailed: false,
+    ...over,
+  })
   it('goes straight to the one match', () => {
     expect(wordTarget(m([repo('ripgrep', ME)], null))).toEqual({ kind: 'repo', repo: repo('ripgrep', ME) })
     expect(wordTarget(m([], OTHER))).toEqual({ kind: 'profile', identityId: OTHER })
@@ -63,6 +70,15 @@ describe('wordTarget', () => {
   })
   it('says when it names nothing', () => {
     expect(wordTarget(m([], null))).toEqual({ kind: 'none' })
+  })
+  it('never goes straight on, nor says "nothing", when a lookup failed or owners were left unread', () => {
+    // One repo found, but profiles could not be checked: offer it, do not navigate.
+    expect(wordTarget(m([repo('bob', ME)], null, { profileFailed: true })).kind).toBe('choose')
+    // Nothing found because repos could not be checked: not "none".
+    expect(wordTarget(m([], null, { reposFailed: true })).kind).toBe('choose')
+    expect(wordTarget(m([], OTHER, { reposFailed: true })).kind).toBe('choose')
+    // More owners than one read: a choice with a search, not a guess.
+    expect(wordTarget(m([repo('jq', ME)], null, { moreRepos: true })).kind).toBe('choose')
   })
 })
 
@@ -113,9 +129,12 @@ describe('resolveWord', () => {
 
   it('keeps one side when the other fails, and fails only when both do', async () => {
     const repoDown = await resolveWord(sdk([], { 'bob.dash': ME }, { repos: true }).sdk, 'bob', 'devnet')
-    expect(repoDown).toEqual({ repos: [], profile: ME })
-    const dpnsDown = await resolveWord(sdk([doc('bob', OTHER)], {}, { dpns: true }).sdk, 'bob', 'devnet')
+    expect(repoDown).toEqual({ repos: [], moreRepos: false, profile: ME, reposFailed: true, profileFailed: false })
+    expect(wordTarget(repoDown).kind).toBe('choose')
+    const dpnsDown = await resolveWord(sdk([doc('dave', OTHER)], {}, { dpns: true }).sdk, 'dave', 'devnet')
+    expect(dpnsDown).toMatchObject({ reposFailed: false, profileFailed: true })
     expect(dpnsDown.repos).toHaveLength(1)
+    expect(wordTarget(dpnsDown).kind).toBe('choose')
     await expect(resolveWord(sdk([], {}, { repos: true, dpns: true }).sdk, 'carol', 'devnet')).rejects.toThrow()
   })
 })

@@ -17,6 +17,9 @@ import { CopyLinkButton } from '@/components/ui/copy-link'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
+/** `readStargazers` reads one page of this many. */
+const STARGAZERS_READ = 100
+
 export function StargazersContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const { sdk, ready, network } = useSdk()
   const { repo } = home
@@ -33,7 +36,14 @@ export function StargazersContent({ home, addr }: { home: RepoHome; addr: RepoAd
   else if (!data) body = <LoadingBlock />
   else if (data.length === 0) body = <EmptyState icon={Star} title="No stargazers yet" body="Be the first to star this repo." />
   else {
+    const capped = typeof home.starCount === 'number' && home.starCount > data.length && data.length >= STARGAZERS_READ
     body = (
+      <>
+      {capped ? (
+        <p role="note" className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="stargazers-capped">
+          Showing the first {data.length} of {home.starCount} stargazers (index order).
+        </p>
+      ) : null}
       <ul className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
         {data.map((identity) => (
           <li key={identity} className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850">
@@ -43,6 +53,7 @@ export function StargazersContent({ home, addr }: { home: RepoHome; addr: RepoAd
           </li>
         ))}
       </ul>
+      </>
     )
   }
 

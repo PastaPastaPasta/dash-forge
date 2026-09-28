@@ -318,7 +318,64 @@ describe('mostStarredRepos', () => {
   })
 })
 
+describe('paging past a huge tie (review: a stall at >= 100 repos sharing a name)', () => {
+  it('steps strictly past a boundary shared by more repos than one read, and says so', async () => {
+    const s = store()
+    const tie = Array.from({ length: 130 }, (_, i) => ({ ...repo('same', 1, id(`T${i}`)), $id: id(`RT${String(i).padStart(3, '0')}`) }))
+    s[FORGE.core]!['repo'] = [...tie, repo('samf', 2), repo('samz', 3)]
+    const seen = fresh()
+    const sdk = mockSdk(s, seen)
+    const all: string[] = []
+    let skipped = false
+    let page = await searchRepos(sdk, 'sam', { network: NET, limit: 24 })
+    all.push(...names(page.repos))
+    for (let i = 0; page.next !== null && i < 20; i++) {
+      page = await searchRepos(sdk, 'sam', { network: NET, limit: 24, after: page.next })
+      all.push(...names(page.repos))
+      skipped ||= page.skippedTies
+    }
+    // It ends (no stall), reaches the names after the tie, and reports the skipped part.
+    expect(page.next).toBeNull()
+    expect(all).toContain('samf')
+    expect(all).toContain('samz')
+    expect(skipped).toBe(true)
+    expect(new Set(all.filter((n) => n === 'same')).size).toBe(1)
+    const last = seen.composites.find((c) => c.where?.some(([, op]) => op === '>'))
+    expect(last?.where?.[0]).toEqual(['name', '>', 'same'])
+  })
+})
+
+describe('the composite refused (an older node)', () => {
+  function refusing(): EvoSDK {
+    const base = mockSdk(store(), fresh()) as unknown as { documents: Record<string, unknown> }
+    return {
+      ...base,
+      documents: {
+        ...base.documents,
+        composite: async () => {
+          throw new Error("grpc error: code: 'Client specified an invalid argument'")
+        },
+      },
+    } as unknown as EvoSDK
+  }
+  it('pages with one plain query, marked as the fallback', async () => {
+    const page = await recentReposPage(refusing(), { network: NET })
+    expect(page.repos).toHaveLength(24)
+    expect(page.fallback).toBe(true)
+    expect(page.repos[0]?.stars).toBeNull()
+  })
+  it('most starred says it cannot rank, instead of failing or spending a request per repo', async () => {
+    const r = await mostStarredRepos(refusing(), { network: NET })
+    expect(r).toMatchObject({ unavailable: true, repos: [] })
+  })
+})
+
 describe('recentlyUpdated', () => {
+  it('keeps the copy with the newest push when a repo is in two lists', () => {
+    const row = (key: string, pushedAt: number | null): DiscoveredRepo => ({ key, ownerId: OWNER_A, name: key, slug: key, description: '', createdAt: 0, visibility: 'public', pushedAt })
+    const out = recentlyUpdated([[row('a', 5)], [row('a', 9)]])
+    expect(out[0]?.pushedAt).toBe(9)
+  })
   const row = (key: string, pushedAt: number | null): DiscoveredRepo => ({ key, ownerId: OWNER_A, name: key, slug: key, description: '', createdAt: 0, visibility: 'public', pushedAt })
   it('ranks the repos with a push, newest first, each once', () => {
     const out = recentlyUpdated([[row('a', 5), row('b', null), row('c', 9)], [row('a', 5), row('d', 7)]])
@@ -327,16 +384,24 @@ describe('recentlyUpdated', () => {
 })
 
 describe('reposNamed (the jump box)', () => {
+  it('says when more owners use a name than one read holds', async () => {
+    const s = store()
+    s[FORGE.core]!['repo'] = Array.from({ length: 25 }, (_, i) => repo('common', i, id(`Own${i}`)))
+    const out = await reposNamed(mockSdk(s, fresh()), 'common', { network: NET })
+    expect(out.repos).toHaveLength(20)
+    expect(out.more).toBe(true)
+  })
   it('finds every owner of a name in one composite', async () => {
     const seen = fresh()
     const out = await reposNamed(mockSdk(store(), seen), 'JQ', { network: NET })
-    expect(out.map((r) => r.ownerId).sort()).toEqual([OWNER_A, OWNER_B].sort())
+    expect(out.repos.map((r) => r.ownerId).sort()).toEqual([OWNER_A, OWNER_B].sort())
+    expect(out.more).toBe(false)
     expect(requests(seen)).toBe(1)
     expect(seen.composites[0]?.where).toEqual([['name', '==', 'jq']])
   })
   it('asks nothing for a word that cannot be a repo name', async () => {
     const seen = fresh()
-    expect(await reposNamed(mockSdk(store(), seen), 'Not A Name!', { network: NET })).toEqual([])
+    expect(await reposNamed(mockSdk(store(), seen), 'Not A Name!', { network: NET })).toEqual({ repos: [], more: false })
     expect(requests(seen)).toBe(0)
   })
 })
