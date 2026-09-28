@@ -3,7 +3,7 @@
 //   (cd forge-contracts/sdk-v2 && npm ci)           # @dashevo/evo-sdk@4.2.0-beta.5, pinned
 //   node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
 //        --network devnet --devnet-name moutai [--addresses https://ip:1443,...] [--dry-run]
-//        [--only collab] [--force-new [--same-group]]
+//        [--only collab] [--force-new [--same-group]] [--update core]
 //
 // --only collab registers forge-collab alone, against the forge-core and contract group already
 // recorded (and found on chain); it never touches forge-core. --force-new (with --only collab)
@@ -15,6 +15,16 @@
 // sign for it too), so this needs --same-group as well. Rerunning the same command after it succeeded, or after a crash, therefore
 // registers nothing new. That is how a schema change the update rules refuse (e.g. narrowing an
 // ownerRefersTo) ships; documents under the old contract stay where they are, under its id.
+//
+// --update core updates the recorded forge-core IN PLACE (a DataContractUpdate: same id, same
+// group, every document kept) to the current forge-core.json, as the next version. Protocol 14
+// accepts only additive changes (new document types, new optional properties); indexes,
+// references, `required` system fields and `dependentRequired` are frozen, and the node refuses
+// anything else. Check first with `tools/contract-validate forge-core.json --expect-update
+// <registered schema>`. The record keeps the registration's fields and gains `version`,
+// `schemaHash` (now the updated schema's), and an `updates` list (version, nonce, size, cost,
+// the previous schema hash). A rerun after it landed finds the on-chain version already at the
+// target and the hash already recorded, and broadcasts nothing.
 //
 // --force-new without --only does the same for the pair: when the recorded forge-core was
 // registered from a different schema (a change such as a new `required` system field, which the
@@ -173,6 +183,9 @@ async function main() {
   const dryRun = Boolean(args['dry-run']);
   const only = args.only === undefined ? null : String(args.only);
   if (only !== null && only !== 'collab') throw new Error(`--only accepts "collab", got ${only}`);
+  const update = args.update === undefined ? null : String(args.update);
+  if (update !== null && update !== 'core') throw new Error(`--update accepts "core", got ${update}`);
+  if (update !== null && (only !== null || args['force-new'])) throw new Error('--update core runs alone: no --only, no --force-new');
   const forceNew = Boolean(args['force-new']);
   // A new forge-collab registered into the EXISTING group adds a member that every key already
   // bound to the group can sign for, and a group never drops members. dg accepts superseded
@@ -194,7 +207,7 @@ async function main() {
   const critKey = pickKey(rec, 'AUTHENTICATION', 'CRITICAL');
 
   const evo = await loadEvoSdk();
-  const { EvoSDK, DataContract, DataContractCreateTransition, PrivateKey, IdentityPublicKey } = evo;
+  const { EvoSDK, DataContract, DataContractCreateTransition, DataContractUpdateTransition, PrivateKey, IdentityPublicKey } = evo;
   const sdkOptions = { network, trusted: true, settings: PUT_SETTINGS, version: PROTOCOL_VERSION };
   if (devnetName) sdkOptions.devnetName = devnetName;
   if (addresses) sdkOptions.addresses = addresses;
@@ -364,6 +377,83 @@ async function main() {
     log(`${key}: registered; cost ${(Number(costCredits) / CREDITS_PER_DASH).toFixed(6)} DASH`);
     report.steps.push({ key, ...v2[key] });
     return id;
+  }
+
+  // --update core: an in-place DataContractUpdate of the recorded forge-core to the current schema.
+  if (update === 'core') {
+    const rec = v2.forgeCore;
+    if (!rec?.contractId || rec.status !== 'registered') throw new Error('--update core: no registered forge-core recorded for this network');
+    const json = loadSchema('forge-core');
+    const hash = schemaHash(json);
+    const onChain = await sdk.contracts.fetch(rec.contractId);
+    if (!onChain) throw new Error(`--update core: ${rec.contractId} is recorded but not on chain`);
+    const chainVersion = Number(onChain.version);
+    if (rec.schemaHash === hash) {
+      log(`forgeCore: ${rec.contractId} is already at the current schema (version ${chainVersion}); nothing to update`);
+      report.steps.push({ key: 'forgeCore', ...rec, resumed: true });
+      console.log(JSON.stringify(report, null, 2));
+      return;
+    }
+    const pending = rec.pendingUpdate;
+    if (pending && pending.schemaHash === hash && chainVersion >= pending.version) {
+      // An earlier run broadcast this update and it landed; finish the record.
+      const cost = BigInt(pending.balanceBefore) - (await balance());
+      rec.updates = [...(rec.updates ?? []), { ...pending, status: 'updated', confirmedAt: new Date().toISOString(), costCredits: cost.toString(), costDash: Number(cost) / CREDITS_PER_DASH, costNote: 'balance delta since the recorded pre-broadcast balance' }];
+      rec.version = pending.version;
+      rec.schemaHash = hash;
+      delete rec.pendingUpdate;
+      record();
+      log(`forgeCore: found version ${chainVersion} on chain; record completed`);
+      report.steps.push({ key: 'forgeCore', ...rec, resumed: true });
+      console.log(JSON.stringify(report, null, 2));
+      return;
+    }
+    const version = chainVersion + 1;
+    const full = {
+      $formatVersion: '1',
+      id: rec.contractId,
+      ownerId,
+      version,
+      ...(json.config ? { config: json.config } : {}),
+      ...(json.description ? { description: json.description } : {}),
+      ...(json.keywords ? { keywords: json.keywords } : {}),
+      schemaDefs: json.schemaDefs,
+      documentSchemas: json.documentSchemas,
+    };
+    const contract = DataContract.fromJSON(full, true, PROTOCOL_VERSION);
+    const nonce = (await chainNonce()) + 1n;
+    const transition = new DataContractUpdateTransition(contract, nonce, PROTOCOL_VERSION);
+    const st = transition.toStateTransition();
+    st.sign(privateKey, publicKey);
+    const size = st.toBytes().length;
+    log(`forgeCore: update ${rec.contractId} v${chainVersion} -> v${version}, nonce ${nonce}, signed transition ${size} B (limit ${MAX_STATE_TRANSITION_SIZE})`);
+    if (size > MAX_STATE_TRANSITION_SIZE) throw new Error('forgeCore: update transition exceeds max_state_transition_size');
+    if (dryRun) {
+      report.steps.push({ key: 'forgeCore', contractId: rec.contractId, update: { from: chainVersion, to: version }, sizeBytes: size, schemaHash: hash, dryRun: true });
+      console.log(JSON.stringify(report, null, 2));
+      return;
+    }
+    const before = await balance();
+    rec.pendingUpdate = { version, identityNonce: nonce.toString(), sizeBytes: size, schemaHash: hash, previousSchemaHash: rec.schemaHash ?? null, balanceBefore: before.toString() };
+    record();
+    await sdk.stateTransitions.broadcastAndWait(st, PUT_SETTINGS);
+    let after = await balance();
+    for (let i = 0; after === before && i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      after = await balance();
+    }
+    const fetched = await sdk.contracts.fetch(rec.contractId);
+    if (!fetched || Number(fetched.version) !== version) throw new Error(`forgeCore: update broadcast but the chain shows version ${fetched ? fetched.version : 'none'}`);
+    const cost = before - after;
+    rec.updates = [...(rec.updates ?? []), { ...rec.pendingUpdate, status: 'updated', updatedAt: new Date().toISOString(), costCredits: cost.toString(), costDash: Number(cost) / CREDITS_PER_DASH }];
+    rec.version = version;
+    rec.schemaHash = hash;
+    delete rec.pendingUpdate;
+    record();
+    log(`forgeCore: updated to version ${version}; cost ${(Number(cost) / CREDITS_PER_DASH).toFixed(6)} DASH`);
+    report.steps.push({ key: 'forgeCore', ...rec });
+    console.log(JSON.stringify(report, null, 2));
+    return;
   }
 
   // --force-new for the pair: supersede a forge-core registered from another schema (and so the

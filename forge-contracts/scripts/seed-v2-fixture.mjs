@@ -23,6 +23,9 @@
 //     requested by OWNER, MAINTAINER's request-changes review with one multi-line inline
 //     comment attached through `reviewId`, CONTRIB's reply, the author resolving the thread,
 //     OWNER dismissing the review with a reason, and a branch `policy` by OWNER;
+//   * the C-1 types (platform-parity-spec §6): CONTRIB's trending beat and watch, the topics
+//     `fixture` and `forge-v2`, milestone `v0.2` holding issues #1 (open) and #3 (closed), and
+//     issue #1 pinned;
 //   * repo `forge-v2-empty` owned by MAINTAINER, with no refs (the empty-repo state).
 //
 // The git-remote-dash v2 push path is not there yet (forge-core PR C), which is why the
@@ -71,9 +74,15 @@ const EVENT = {
   reviewRequestRemove: 14,
   reviewDismiss: 15,
   headUpdate: 16,
+  milestoneSet: 17,
+  milestoneClear: 18,
+  pin: 19,
+  unpin: 20,
+  lock: 21,
+  unlock: 22,
 };
 // Steps whose documents live in forge-collab: re-seeded when forge-collab is re-registered.
-const COLLAB_STEP = /^(issue:|patch:|pr3:|policy$|star:)/;
+const COLLAB_STEP = /^(issue:|patch:|pr3:|policy$|star:|starBeat:|watch:|milestone:|pin:)/;
 
 const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}`);
 
@@ -524,6 +533,47 @@ async function main() {
     save();
     log('star:contrib');
   }
+
+  // --- the final contract revision (platform-parity-spec §6, C-1) -----------------------
+  // indexOnly writes are confirmed by a read of the writer's own entry (the strict wait
+  // refuses that transition family, as for the star above).
+  async function createIndexOnly(step, who, documentTypeName, where) {
+    if (state[step]) return;
+    const own = async () => {
+      const rows = await sdk.documents.query({ dataContractId: collab, documentTypeName, where: [['$ownerId', '==', who.id], ...where], orderBy: [['$ownerId', 'asc']], limit: 1 });
+      return rows.size > 0;
+    };
+    if (!(await own())) {
+      const base = new Document({ properties: {}, documentTypeName, dataContractId: collab, ownerId: who.id });
+      const document = Document.fromObject({ ...base.toObject(), repoId: R }, version);
+      try {
+        await sdk.documents.create({ document, identityKey: who.identityKey, signer: who.signer });
+      } catch (e) {
+        if (!/VerifiedDocuments snapshot|already exists|duplicate/i.test(String(e?.message ?? e))) throw e;
+      }
+      for (let i = 0; i < 10 && !(await own()); i++) await new Promise((r) => setTimeout(r, 2000));
+      if (!(await own())) throw new Error(`${step} did not land`);
+    }
+    state[step] = 'indexOnly';
+    save();
+    log(step);
+  }
+  // CONTRIB's star counts toward Trending (the default), and CONTRIB watches the repo.
+  await createIndexOnly('starBeat:contrib', CONTRIB, 'starBeat', [['repoId', '==', repoId]]);
+  await createIndexOnly('watch:contrib', CONTRIB, 'watch', [['repoId', '==', repoId]]);
+  // Topics (forge-core, maintainer-gated): Explore by topic counts `fixture` and `forge-v2`.
+  await create('topic:fixture', OWNER, core, 'topic', { repoId: R, name: 'fixture' });
+  await create('topic:forge-v2', OWNER, core, 'topic', { repoId: R, name: 'forge-v2' });
+  // A milestone holding issue #1 (open) and issue #3 (closed); issue #1 pinned.
+  await create('milestone:v0.2', OWNER, collab, 'milestone', {
+    repoId: R,
+    title: 'v0.2',
+    description: 'The review-parity release.',
+    dueOn: Date.UTC(2026, 11, 1),
+  });
+  await ev('milestone:issue:1', MAINTAINER, 'event', i1, 1, EVENT.milestoneSet, { value: 'v0.2' });
+  await ev('milestone:issue:3', MAINTAINER, 'event', i3, 3, EVENT.milestoneSet, { value: 'v0.2' });
+  await ev('pin:issue:1', OWNER, 'event', i1, 1, EVENT.pin);
 
   const summary = {
     network: key,
