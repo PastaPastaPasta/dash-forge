@@ -48,7 +48,7 @@ import {
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, loadPullThread, policyOf, pullActions, timeAgo } from '@/lib/view'
-import { deleteBranchProblem } from '@/lib/view/pull-actions'
+import { deleteBranchOffer, deleteBranchProblem } from '@/lib/view/pull-actions'
 import {
   addEvent,
   createComment,
@@ -839,15 +839,21 @@ function PullPage({
                           : { authors: commitAuthors(commits.data.commits), complete: !commits.data.truncated },
                       deleteBranch: (() => {
                         const src = sourceRef ?? (crossRepo ? null : repo)
-                        // Offered only once the source's default branch is known (a failed read never is).
-                        // `data` is null until the default branch has been read (and after a failed read).
-                        const dflt = sourceDefault.data
-                        if (!sourceWrite.can || pull.sourceRefName === null || src === null || src.visibility !== 'public' || dflt === null) return null
                         const name = pull.sourceRefName
-                        // The fixed refusals are known before merging: the option is not offered.
-                        if (deleteBranchProblem({ refName: name, sameRepo: src.repoId === repo.repoId, baseRefName: pull.baseRefName, defaultBranch: dflt, headOid: pull.headOid }) !== null) return null
+                        // `sourceDefault.data` is null until the default branch has been read (and after a failed read).
+                        const offer = deleteBranchOffer({
+                          refName: name,
+                          source: src === null ? null : { visibility: src.visibility, sameRepo: src.repoId === repo.repoId },
+                          canWrite: sourceWrite.known ? sourceWrite.can : null,
+                          baseRefName: pull.baseRefName,
+                          defaultBranch: sourceDefault.data,
+                          headOid: pull.headOid,
+                        })
+                        if (offer.kind === 'hide' || src === null || name === null) return null
+                        const label = `${crossRepo ? `${src.name}:` : ''}${name.replace(/^refs\/heads\//, '')}`
+                        if (offer.kind === 'explain') return { label, disabled: offer.reason }
                         const head = pull.headOid
-                        return { label: `${crossRepo ? `${src.name}:` : ''}${name.replace(/^refs\/heads\//, '')}`, run: () => deleteSourceBranch(src, name, head) }
+                        return { label, run: () => deleteSourceBranch(src, name, head) }
                       })(),
                     }}
                   />

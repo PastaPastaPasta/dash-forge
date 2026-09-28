@@ -279,6 +279,39 @@ export function deleteBranchProblem(i: {
   return null
 }
 
+/**
+ * What the merge box shows for "Delete the branch after merging":
+ * - `offer`: the checkbox (the merger can write the source branch, and it may be deleted);
+ * - `explain`: the checkbox shown disabled, with `reason` (the merger cannot write the source,
+ *   typically a contributor's fork: the option exists, they just cannot use it here);
+ * - `hide`: nothing (no source branch, a private or unresolved source, the branch must never be
+ *   deleted: the base or default branch, or the default is not read yet).
+ */
+export function deleteBranchOffer(i: {
+  readonly refName: string | null
+  /** The source repo, resolved (null while unknown), and whether it is this repo. */
+  readonly source: { readonly visibility: string; readonly sameRepo: boolean } | null
+  /** The merger can write the source branch; null while not known yet. */
+  readonly canWrite: boolean | null
+  readonly baseRefName: string
+  /** The source repo's default branch; null while not read (or unreadable). */
+  readonly defaultBranch: string | null
+  readonly headOid: string
+}): { kind: 'offer' } | { kind: 'explain'; reason: string } | { kind: 'hide' } {
+  if (i.refName === null || i.source === null || i.source.visibility !== 'public' || i.canWrite === null) return { kind: 'hide' }
+  if (i.source.sameRepo && i.refName === i.baseRefName) return { kind: 'hide' }
+  if (!i.canWrite) {
+    return {
+      kind: 'explain',
+      reason: i.source.sameRepo
+        ? "You can't write this branch here (it is protected, or you are not a writer)."
+        : "You can't write the contributor's fork; ask them to allow edits by maintainers, or delete it from the fork.",
+    }
+  }
+  if (deleteBranchProblem({ refName: i.refName, sameRepo: i.source.sameRepo, baseRefName: i.baseRefName, defaultBranch: i.defaultBranch, headOid: i.headOid }) !== null) return { kind: 'hide' }
+  return { kind: 'offer' }
+}
+
 function shortRef(ref: string): string {
   return ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref
 }

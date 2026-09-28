@@ -12,7 +12,7 @@ import type { PullView } from '../repo'
 import { historicalTipsPredicate } from '../repo'
 import type { Event, Holdings } from '../rules'
 import { foldPrStateV2 } from '../rules/v2'
-import { deleteBranchProblem, mergeBaseTip, mergeButton, mergeRefProblem, policyOf, pullActions, type PullActionInputs } from './pull-actions'
+import { deleteBranchOffer, deleteBranchProblem, mergeBaseTip, mergeButton, mergeRefProblem, policyOf, pullActions, type PullActionInputs } from './pull-actions'
 
 const AUTHOR = 'author'
 const WRITER = 'writer'
@@ -274,5 +274,29 @@ describe('deleting the source branch after a merge (dg deletable_source, and the
 
   it('refuses a branch that moved past the merged head', () => {
     expect(deleteBranchProblem({ ...base, tip: 'cd'.repeat(20) })).toMatch(/moved to cdcdcdcdc after the merged head/)
+  })
+})
+
+describe('"Delete the branch after merging" in the merge box', () => {
+  const H = 'ab'.repeat(20)
+  const fork = { visibility: 'public', sameRepo: false }
+  const base = { refName: 'refs/heads/feature', source: fork, canWrite: true, baseRefName: 'refs/heads/main', defaultBranch: 'main', headOid: H }
+  it('is offered to a writer of the source branch', () => {
+    expect(deleteBranchOffer(base)).toEqual({ kind: 'offer' })
+  })
+  it("is shown disabled, with why, to a merger who can't write the contributor's fork", () => {
+    expect(deleteBranchOffer({ ...base, canWrite: false })).toEqual({
+      kind: 'explain',
+      reason: "You can't write the contributor's fork; ask them to allow edits by maintainers, or delete it from the fork.",
+    })
+    expect(deleteBranchOffer({ ...base, canWrite: false, source: { visibility: 'public', sameRepo: true } })).toMatchObject({ kind: 'explain', reason: expect.stringMatching(/can't write this branch here/) })
+  })
+  it('is hidden when it must never be deleted, or while unknown', () => {
+    expect(deleteBranchOffer({ ...base, canWrite: null })).toEqual({ kind: 'hide' })
+    expect(deleteBranchOffer({ ...base, defaultBranch: null })).toEqual({ kind: 'hide' })
+    expect(deleteBranchOffer({ ...base, refName: 'refs/heads/main', defaultBranch: 'main' })).toEqual({ kind: 'hide' })
+    expect(deleteBranchOffer({ ...base, source: { visibility: 'private', sameRepo: false } })).toEqual({ kind: 'hide' })
+    expect(deleteBranchOffer({ ...base, refName: null })).toEqual({ kind: 'hide' })
+    expect(deleteBranchOffer({ ...base, source: { visibility: 'public', sameRepo: true }, refName: 'refs/heads/main' })).toEqual({ kind: 'hide' })
   })
 })

@@ -9,7 +9,7 @@ import type { PullView, RepoRef } from '@/lib/repo'
 import { tipOidOf, type RepoHome } from '@/lib/view'
 import { mergeBaseTip } from '@/lib/view/pull-actions'
 import type { SquashAuthors } from '@/lib/merge/engine'
-import { MergePanel } from '@/components/repo/merge-panel'
+import { MergePanel, type DeleteBranchOption } from '@/components/repo/merge-panel'
 import { pullBase, useComparisonSides } from '@/components/repo/pull-diff'
 
 export function PullMerge({
@@ -41,7 +41,7 @@ export function PullMerge({
 export interface MergeExtras {
   readonly allowedMethods?: number
   readonly squashAuthors?: SquashAuthors
-  readonly deleteBranch?: { readonly label: string; readonly run: () => Promise<void> } | null
+  readonly deleteBranch?: DeleteBranchOption | null
 }
 
 function MergeReaders({

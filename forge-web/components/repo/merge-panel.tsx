@@ -51,6 +51,9 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 
 type StepState = 'todo' | 'running' | 'done' | 'skipped' | 'failed'
 
+/** "Delete the branch after merging": runnable, or shown disabled with why. */
+export type DeleteBranchOption = { readonly label: string; readonly run: () => Promise<void> } | { readonly label: string; readonly disabled: string }
+
 export function MergePanel({
   repo,
   pull,
@@ -87,7 +90,7 @@ export function MergePanel({
    */
   squashAuthors?: SquashAuthors
   /** Delete the PR's source branch after merging (the merger can write there), or null. */
-  deleteBranch?: { readonly label: string; readonly run: () => Promise<void> } | null
+  deleteBranch?: DeleteBranchOption | null
 }): JSX.Element | null {
   const { sdk } = useSdk()
   const { signer } = useAuth()
@@ -178,7 +181,8 @@ export function MergePanel({
 
   // Upload estimate unknown until the pack exists; the documents are known (and the branch
   // deletion's ref update when it is ticked).
-  const deleting = deleteBranch !== null && alsoDelete
+  const deletable = deleteBranch !== null && 'run' in deleteBranch ? deleteBranch : null
+  const deleting = deletable !== null && alsoDelete
   const cost = sumPreviews([
     previewCreate('packManifest'),
     previewCreate(baseProtected ? 'protectedRefUpdate' : 'refUpdate'),
@@ -233,9 +237,9 @@ export function MergePanel({
       setRun(done)
       setNewTip(done.result?.newTip ?? null)
       onMerged()
-      if (deleteBranch !== null && alsoDelete) {
+      if (deletable !== null && alsoDelete) {
         try {
-          await deleteBranch.run()
+          await deletable.run()
           setDeleted('done')
         } catch (e) {
           setDeleted(e instanceof Error ? e.message : String(e))
@@ -252,7 +256,7 @@ export function MergePanel({
     } finally {
       setBusy(false)
     }
-  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, deleteBranch, alsoDelete])
+  }, [sdk, signer, reader, readers, baseOnly, refProblem, busy, guard, cost, repo, pull.id, pull.number, pull.headOid, pull.baseRefName, baseRefName, input, run, baseTipOid, onMerged, upload, begin, storageNeedsUnlock, deletable, alsoDelete])
 
   if (button.kind === 'hidden') return null
   const started = Object.keys(steps).length > 0
@@ -341,10 +345,22 @@ export function MergePanel({
         </div>
       ) : null}
       {mergeable && deleteBranch !== null && newTip === null ? (
-        <label className="mt-2 flex items-center gap-2 text-dense">
-          <input type="checkbox" className="h-4 w-4 accent-forge-700" checked={alsoDelete} onChange={(e) => setAlsoDelete(e.target.checked)} />
-          Delete {deleteBranch.label} after merging
-        </label>
+        'run' in deleteBranch ? (
+          <label className="mt-2 flex items-center gap-2 text-dense">
+            <input type="checkbox" className="h-4 w-4 accent-forge-700" checked={alsoDelete} onChange={(e) => setAlsoDelete(e.target.checked)} />
+            Delete {deleteBranch.label} after merging
+          </label>
+        ) : (
+          <div className="mt-2" data-testid="delete-branch-unavailable">
+            <label className="flex items-center gap-2 text-dense text-anvil-500 dark:text-anvil-400">
+              <input type="checkbox" className="h-4 w-4" checked={false} disabled aria-describedby="delete-branch-why" />
+              Delete {deleteBranch.label} after merging
+            </label>
+            <p id="delete-branch-why" className="ml-6 text-[12px] text-anvil-500 dark:text-anvil-400">
+              {deleteBranch.disabled}
+            </p>
+          </div>
+        )
       ) : null}
       {mergeable && !identityOk ? (
         <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400">
