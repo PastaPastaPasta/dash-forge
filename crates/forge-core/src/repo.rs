@@ -1824,16 +1824,24 @@ impl<'a> RepoService<'a> {
     ) -> Result<PushIndexOutcome> {
         // The pack's own manifest must be listed before its position can be known, and the
         // node answering may be a block behind the one that confirmed it (D-920).
-        let manifests = read_until(
-            MANIFEST_VISIBLE_ATTEMPTS,
-            MANIFEST_VISIBLE_DELAY,
-            |ms: &Vec<PackManifestInfo>| ms.iter().any(|m| m.pack_hash == pack_hash),
-            || self.read_pack_manifests(repo),
-        )
-        .await?;
         let roles = self.copy_roles(repo).await?;
+        // Test affordance, compiled only with `--features test-hooks`: every read misses the
+        // pushed pack's manifest, as a lagging node's did for dashpay/dash, so the e2e can
+        // prove the skip is reported and `dg repo reindex` repairs it.
+        #[cfg(feature = "test-hooks")]
+        let lagging = std::env::var_os("DASH_FORGE_TEST_MANIFEST_LAG").is_some();
+        #[cfg(not(feature = "test-hooks"))]
+        let lagging = false;
+        let (manifests, plan) = read_push_index_plan(&roles, pack_hash, || async {
+            let mut ms = self.read_pack_manifests(repo).await?;
+            if lagging {
+                ms.retain(|m| m.pack_hash != pack_hash);
+            }
+            Ok(ms)
+        })
+        .await?;
         let space_len = locator_pack_space(&manifests, &roles, None).len();
-        let (pack_ref, live_locators) = match plan_push_index(&manifests, &roles, pack_hash) {
+        let (pack_ref, live_locators) = match plan {
             PushIndexPlan::NotListed => {
                 return Ok(PushIndexOutcome::Skipped(
                     "the pack's manifest is not listed yet by the nodes read; run \
@@ -2508,32 +2516,42 @@ enum PushIndexPlan {
 /// Reads of the manifest list a push makes before it gives up on seeing its own manifest.
 /// Writes are confirmed by one node's proof and reads go to any node, so the first read after
 /// a write can miss it (D-920: the 18,452-chunk dashpay/dash import landed with no browse
-/// index because of exactly this). The web's merge path waits the same way.
-const MANIFEST_VISIBLE_ATTEMPTS: u32 = 8;
-/// Pause between those reads (about a block).
-const MANIFEST_VISIBLE_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
+/// index because of exactly this).
+const MANIFEST_VISIBLE_ATTEMPTS: u32 = 6;
+/// The pause before the second read (about a block); each later pause doubles, capped at
+/// [`MANIFEST_VISIBLE_MAX_DELAY`]: 1, 2, 4, 8, 8 s, about 23 s in all before giving up.
+const MANIFEST_VISIBLE_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
+/// The longest pause between two of those reads.
+const MANIFEST_VISIBLE_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(8);
 
-/// Run `read` until `ready` accepts its result, at most `attempts` times with `delay` between
-/// reads, returning the last result either way (the caller decides what a miss means).
-async fn read_until<T, F, Fut>(
-    attempts: u32,
-    delay: std::time::Duration,
-    ready: impl Fn(&T) -> bool,
+/// Read the manifest list (`read`) and plan the push's index, reading again with a growing
+/// pause while the pushed pack's manifest is not listed yet ([`PushIndexPlan::NotListed`]),
+/// at most [`MANIFEST_VISIBLE_ATTEMPTS`] times. Returns the last list read and its plan.
+async fn read_push_index_plan<F, Fut>(
+    roles: &RoleMap,
+    pack_hash: [u8; 32],
     mut read: F,
-) -> Result<T>
+) -> Result<(Vec<PackManifestInfo>, PushIndexPlan)>
 where
     F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = Result<T>>,
+    Fut: std::future::Future<Output = Result<Vec<PackManifestInfo>>>,
 {
-    let mut got = read().await?;
-    for _ in 1..attempts.max(1) {
-        if ready(&got) {
-            break;
+    let mut delay = MANIFEST_VISIBLE_DELAY;
+    let mut attempt = 1;
+    loop {
+        let manifests = read().await?;
+        let plan = plan_push_index(&manifests, roles, pack_hash);
+        if !matches!(plan, PushIndexPlan::NotListed) || attempt >= MANIFEST_VISIBLE_ATTEMPTS {
+            return Ok((manifests, plan));
         }
+        tracing::info!(
+            attempt,
+            "the pushed pack's manifest is not listed yet; reading again"
+        );
         tokio::time::sleep(delay).await;
-        got = read().await?;
+        delay = (delay * 2).min(MANIFEST_VISIBLE_MAX_DELAY);
+        attempt += 1;
     }
-    Ok(got)
 }
 
 /// Why an index is not extended when a live fragment was built over another pack space.
@@ -2857,9 +2875,10 @@ fn current_protected_patterns(configs: &[ConfigDoc]) -> Vec<String> {
 mod tests {
     use super::{
         current_protected_patterns, group_by_hash, live_locator_manifests, locator_pack_space,
-        order_copies, plan_push_index, read_until, refuse_raced_push, repack_remaining,
+        order_copies, plan_push_index, read_push_index_plan, refuse_raced_push, repack_remaining,
         repack_supersedes, trusted_repo_gateways, uncovered_packs, PackManifestInfo, PushIndexPlan,
-        RoleMap, MANIFEST_VISIBLE_ATTEMPTS, MANIFEST_VISIBLE_DELAY, MAX_LOCATOR_FRAGMENTS,
+        RoleMap, MANIFEST_VISIBLE_ATTEMPTS, MANIFEST_VISIBLE_DELAY, MANIFEST_VISIBLE_MAX_DELAY,
+        MAX_LOCATOR_FRAGMENTS,
     };
     use crate::rules::v2::{CopyKey, Role};
     use crate::rules::ConfigDoc;
@@ -3269,48 +3288,61 @@ mod tests {
         assert_eq!(plan(&caught_up, 2), Ok((1, false, 0)));
     }
 
-    /// D-920: the push reads the manifest list again until its own manifest is listed, a
-    /// bounded number of times, instead of deciding from the first (lagging) read.
+    /// D-920 end to end, with the manifest reader mocked: the node answering the push's first
+    /// reads is behind and does not list the pack the push just recorded. The push must read
+    /// again (backing off) and then plan to PUBLISH the fragment at the pack's position. Before
+    /// the fix the first read decided, and the plan was a skip: no index was ever published.
     #[tokio::test(start_paused = true)]
-    async fn the_manifest_read_retries_until_the_pushed_manifest_is_listed() {
+    async fn a_push_whose_first_manifest_reads_lag_still_publishes_its_index() {
         let reads = std::cell::Cell::new(0u32);
-        let listed = |n: u32| {
+        let lagging_node = || {
+            reads.set(reads.get() + 1);
+            // The pack recorded earlier is listed; the one this push just recorded shows up
+            // only from the third read on.
             let mut ms = vec![manifest("p1", 100, 0, 1)];
-            if n >= 3 {
+            if reads.get() >= 3 {
                 ms.push(manifest("p2", 200, 0, 2));
             }
-            ms
+            async move { Ok(ms) }
         };
-        let got = read_until(
-            MANIFEST_VISIBLE_ATTEMPTS,
-            MANIFEST_VISIBLE_DELAY,
-            |ms: &Vec<PackManifestInfo>| ms.iter().any(|m| m.pack_hash == [2; 32]),
-            || {
-                reads.set(reads.get() + 1);
-                let n = reads.get();
-                async move { Ok(listed(n)) }
-            },
-        )
-        .await
-        .unwrap();
+        let started = tokio::time::Instant::now();
+        let (manifests, plan) = read_push_index_plan(&RoleMap::new(), [2; 32], lagging_node)
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                plan,
+                PushIndexPlan::Publish {
+                    pack_ref: 1,
+                    fold: false,
+                    ..
+                }
+            ),
+            "{plan:?}"
+        );
+        assert_eq!(manifests.len(), 2);
         assert_eq!(reads.get(), 3, "stops at the first read that lists it");
-        assert_eq!(plan(&got, 2), Ok((1, false, 0)));
+        // Backed off 1 s, then 2 s.
+        assert_eq!(started.elapsed(), std::time::Duration::from_secs(3));
+    }
 
-        // Never listed: bounded, and the caller gets the last read to report on.
-        reads.set(0);
-        let got = read_until(
-            MANIFEST_VISIBLE_ATTEMPTS,
-            MANIFEST_VISIBLE_DELAY,
-            |ms: &Vec<PackManifestInfo>| ms.iter().any(|m| m.pack_hash == [9; 32]),
-            || {
-                reads.set(reads.get() + 1);
-                async { Ok(vec![manifest("p1", 100, 0, 1)]) }
-            },
-        )
+    /// D-920: a manifest that never shows up is given up on after a bounded number of reads
+    /// (the push then reports the skip, with `dg repo reindex` as the fix).
+    #[tokio::test(start_paused = true)]
+    async fn a_manifest_that_never_shows_up_is_given_up_on() {
+        let reads = std::cell::Cell::new(0u32);
+        let started = tokio::time::Instant::now();
+        let (_, plan) = read_push_index_plan(&RoleMap::new(), [9; 32], || {
+            reads.set(reads.get() + 1);
+            async { Ok(vec![manifest("p1", 100, 0, 1)]) }
+        })
         .await
         .unwrap();
+        assert!(matches!(plan, PushIndexPlan::NotListed), "{plan:?}");
         assert_eq!(reads.get(), MANIFEST_VISIBLE_ATTEMPTS);
-        assert_eq!(got.len(), 1);
+        // 1 + 2 + 4 + 8 + 8: capped, and bounded.
+        assert_eq!(started.elapsed(), std::time::Duration::from_secs(23));
+        assert!(MANIFEST_VISIBLE_MAX_DELAY >= MANIFEST_VISIBLE_DELAY);
     }
 
     /// `dg repo reindex` indexes exactly the stored packs no live fragment covers: an empty

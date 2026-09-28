@@ -1903,21 +1903,23 @@ async fn publish_browse_index(
         Ok(forge_core::repo::PushIndexOutcome::Consolidated { folded, .. }) => {
             tracing::info!(folded, "folded browse-index fragments into one locator");
         }
-        Ok(forge_core::repo::PushIndexOutcome::Skipped(why)) => {
-            // Said on the push's own output, not only logged: a caller that keeps the
-            // helper's events (forge-import) must learn the repo is left unbrowsable (D-920).
-            ctx.say(&format!(
-                "warning: the push landed but its browse index was not updated: {why}"
-            ));
-        }
-        Err(e) => {
-            ctx.say(&format!(
-                "warning: the push landed but its browse-index fragment could not be \
-                 published ({e}); browsing uses the fallback path until `dg repo reindex` \
-                 publishes it"
-            ));
-        }
+        Ok(forge_core::repo::PushIndexOutcome::Skipped(why)) => index_skipped(ctx, &why),
+        Err(e) => index_skipped(ctx, &format!("{e:#}")),
     }
+}
+
+/// Say that the push left its browse index unpublished (D-920), on the push's output in every
+/// mode (a `-q` push too) and in the report file: the dashpay/dash import only ever logged it,
+/// so an 18,452-chunk repository landed unbrowsable and nobody knew. forge-import turns the
+/// event into a summary warning; `dg init` prints it.
+fn index_skipped(ctx: &PushContext<'_>, why: &str) {
+    let (text, event) = progress::index_skipped_line(&ctx.repo_label, why);
+    Progress {
+        enabled: true,
+        ..ctx.progress
+    }
+    .emit(&text, &event);
+    progress::report(&event);
 }
 
 /// Turn the plan + post-push ref state into per-ref outcomes. A rejected spec keeps its

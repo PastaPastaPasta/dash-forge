@@ -971,6 +971,10 @@ async fn wire_and_push(
         "tracking": track,
         "cost": cost_json(push_cost, price),
     });
+    // The helper printed it already in human mode; --json keeps it in the result.
+    if let Some(skipped) = &outcome.index_skipped {
+        body["push"]["indexSkipped"] = skipped.clone();
+    }
     body["balanceCredits"] = json!(after);
     if !ctx.json {
         println!(
@@ -1019,6 +1023,8 @@ fn configure_local(
 struct PushOutcome {
     /// The helper's measured (or estimated) Platform charge, in credits.
     charged: Option<u64>,
+    /// The helper's `indexSkipped` event: the push landed without its browse index (D-920).
+    index_skipped: Option<Value>,
 }
 
 /// The helper's report file: its `done` / `error` events, one JSON object per line.
@@ -1111,7 +1117,15 @@ fn run_push(
         .find(|e| e["event"] == "done")
         .and_then(|e| e["chargedCredits"].as_u64());
     if status.success() {
-        return Ok(PushOutcome { charged });
+        let index_skipped = events
+            .iter()
+            .rev()
+            .find(|e| e["event"] == "indexSkipped")
+            .cloned();
+        return Ok(PushOutcome {
+            charged,
+            index_skipped,
+        });
     }
     let rejected = events.iter().rev().find(|e| e["event"] == "rejected");
     let (code, cause) = Report::helper_error(&events, ctx.json).unwrap_or_else(|| {

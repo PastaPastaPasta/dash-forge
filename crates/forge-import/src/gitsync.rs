@@ -94,6 +94,9 @@ pub struct PushReport {
     /// store: the helper's guard weighs them itself when it falls back, so they are not taken
     /// off its threshold.
     pub fallback_credits: u64,
+    /// Why the push left its browse index unpublished, with the fix (the helper's
+    /// `indexSkipped` event, D-920): the repository clones but the web cannot browse it.
+    pub index_skipped: Option<String>,
 }
 
 impl PushReport {
@@ -168,7 +171,29 @@ pub fn parse_landed(stderr: &str) -> PushReport {
             _ => {}
         }
     }
+    r.index_skipped = index_skipped(stderr);
     r
+}
+
+/// The helper's `indexSkipped` event, as a warning a person can act on (D-920).
+fn index_skipped(stderr: &str) -> Option<String> {
+    events(stderr)
+        .filter(|v| v.get("event").and_then(Value::as_str) == Some("indexSkipped"))
+        .last()
+        .map(|v| {
+            let s = |k: &str| {
+                v.get(k)
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            format!(
+                "the push landed but its browse index was not published ({}); the web cannot \
+                 browse it until `{}` publishes it",
+                s("reason"),
+                s("fix")
+            )
+        })
 }
 
 /// A push that failed, with what it still wrote before failing ([`parse_landed`]).
@@ -546,6 +571,7 @@ impl GitPusher {
             let landed = parse_landed(&stderr);
             (report.packs, report.pack_bytes, report.objects) =
                 (landed.packs, landed.pack_bytes, landed.objects);
+            report.index_skipped = landed.index_skipped;
         }
         Ok(report)
     }
@@ -602,7 +628,28 @@ dash: some human line"#;
                 ref_updates: 2,
                 objects: 3,
                 fallback_credits: 0,
+                index_skipped: None,
             }
+        );
+    }
+
+    /// D-920: the dashpay/dash import stored an 18,452-chunk pack whose browse index was
+    /// never published, and its summary said nothing. The helper's `indexSkipped` event now
+    /// reaches the report, with the fix, whether the push then succeeded or failed.
+    #[test]
+    fn a_skipped_browse_index_reaches_the_report() {
+        let stderr = r#"{"event":"stored","packHash":"cd","bytes":900,"objects":3}
+{"event":"indexSkipped","reason":"the pack's manifest is not listed yet","fix":"dg repo reindex o/r"}
+{"event":"refUpdate","ref":"refs/heads/main","newOid":"1fe5ecd3"}"#;
+        let w = parse_landed(stderr).index_skipped.expect("reported");
+        assert!(w.contains("browse index was not published"), "{w}");
+        assert!(w.contains("the pack's manifest is not listed yet"), "{w}");
+        assert!(w.contains("`dg repo reindex o/r`"), "{w}");
+        // A push that published its index says nothing.
+        assert_eq!(
+            parse_landed(r#"{"event":"stored","packHash":"cd","bytes":9,"objects":1}"#)
+                .index_skipped,
+            None
         );
     }
 
@@ -855,6 +902,7 @@ dash: push failed: ref did not converge to pushed tip"#;
                     ref_updates: refs,
                     chunks: 0,
                     fallback_credits: 0,
+                    index_skipped: None,
                 },
                 false,
             )
@@ -913,6 +961,7 @@ dash: push failed: ref did not converge to pushed tip"#;
             ref_updates: 1,
             chunks: 0,
             fallback_credits: 0,
+            index_skipped: None,
         };
         let plain = price_helper_estimate(r.clone(), false);
         let armed = price_helper_estimate(r, true);

@@ -393,6 +393,9 @@ async fn push_one(
     match pushed {
         Ok(report) => {
             ledger.counts.add_push(&report);
+            if let Some(w) = &report.index_skipped {
+                ledger.warn(format!("{what}: {w}"));
+            }
             Ok(())
         }
         Err(e) => {
@@ -407,6 +410,9 @@ async fn push_one(
             // (git sees those refs up to date; the helper finds the pack recorded).
             if let Some(failed) = e.downcast_ref::<crate::gitsync::PushFailed>() {
                 ledger.counts.add_push(&failed.landed);
+                if let Some(w) = &failed.landed.index_skipped {
+                    ledger.warn(format!("{what}: {w}"));
+                }
                 if failed.landed != PushReport::default() {
                     ledger.warn(format!(
                         "{what} failed after writing {} ref update(s) and {} pack(s); they \
