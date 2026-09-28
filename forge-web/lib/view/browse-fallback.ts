@@ -24,19 +24,21 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
-import { BrowseReader, MissingObjectError, ObjectLocator } from '../browse'
+import { ObjectLocator } from '../browse'
 import { repoKey, type PackManifest, type RepoRef } from '../repo'
 import { onPrivateSessionEnded } from '../repo/private-session'
 import {
   loadArtifactBytesProgress,
+  missingObjectError,
   PackUnavailableError,
+  repoReader,
   StorageUnreachableError,
   unavailableOf,
   type BrowseContext,
   type UnavailablePack,
 } from './browse-source'
 import { describePack, readGatewaysFor } from './storage-status'
-import { noteContentCheck, objectObserver } from './content-checks'
+import { noteContentCheck } from './content-checks'
 import {
   deleteStoredFallback,
   fallbackManifestKey,
@@ -111,6 +113,8 @@ export function cachedFallback(
 export function restoreFallback(
   repo: RepoRef,
   livePacks: readonly PackManifest[],
+  /** Lets the restored reader re-resolve the repo on a miss; null: it cannot. */
+  sdk: EvoSDK | null = null,
 ): Promise<BrowseContext | null> {
   const manifestKey = fallbackManifestKey(livePacks)
   const existing = cachedFallback(repoKey(repo), livePacks)
@@ -134,7 +138,7 @@ export function restoreFallback(
       validatePacks(stored.packs, livePacks)
       // The stored copy passed the same sha256 check a fresh download does.
       noteContentCheck(repoKey(repo), { packsVerified: livePacks.length, source: 'browser cache' })
-      return await remember(repoKey(repo), manifestKey, contextFromStored(repo, stored))
+      return await remember(repoKey(repo), manifestKey, contextFromStored(sdk, repo, stored))
     } catch {
       await deleteStoredFallback(repoKey(repo))
       return null
@@ -195,42 +199,17 @@ function validatePacks(packs: readonly Uint8Array[], livePacks: readonly PackMan
   }
 }
 
-function contextFromStored(repo: RepoRef, stored: StoredFallback): Promise<BrowseContext> {
+/**
+ * A clone's reader ({@link repoReader}): a read of an object it does not hold re-resolves the repo
+ * once, since a push since the clone was built may hold it. The published index, when that push
+ * brought one, answers the read; a new pack list otherwise has the views build a new clone.
+ */
+function contextFromStored(sdk: EvoSDK | null, repo: RepoRef, stored: StoredFallback): Promise<BrowseContext> {
   const locator = ObjectLocator.parse(stored.locator)
   return import('../browse/indexer').then(({ memoryPackSource }) => {
     const packs = memoryPackSource(stored.packs)
-    const onObject = objectObserver(repoKey(repo))
-    return { locator, packs, reader: new BrowseReader(locator, packs, { onObject }) }
+    return { locator, packs, reader: repoReader(sdk, repo, locator, packs) }
   })
-}
-
-/**
- * The error a view gets for an object this clone does not hold, when some packs were
- * skipped: it names them and where they were looked for, instead of a bare "not in locator".
- */
-export function missingObjectError(
-  oidHex: string,
-  unavailable: readonly UnavailablePack[],
-): MissingObjectError {
-  const where = unavailable
-    .map((p) => `${p.packHash.slice(0, 12)}… (${p.hosts.length > 0 ? p.hosts.join(', ') : 'no fetchable mirror'})`)
-    .join('; ')
-  // Name the storage that actually failed: a fork's pack is read from its parent's chunks on
-  // Platform (a `platform://` locator), not from anyone's external mirrors.
-  const onPlatform = unavailable.some((p) => p.hosts.includes('platform'))
-  const external = unavailable.some((p) => p.hosts.some((h) => h !== 'platform'))
-  const source =
-    onPlatform && !external
-      ? "the parent repo's chunks on Platform"
-      : onPlatform
-        ? "the parent repo's chunks on Platform or external storage"
-        : 'external storage'
-  const n = unavailable.length
-  return new MissingObjectError(
-    `object ${oidHex.slice(0, 12)}… is not in any pack this browser could load. ` +
-      `${n === 1 ? 'One pack' : `${n} packs`} could not be fetched from ${source} and may hold it: ${where}. ` +
-      `Cloning with dash:// reads the same ${n === 1 ? 'pack' : 'packs'}; if ${onPlatform && !external ? 'those chunks are missing' : 'the storage is down'} it will fail the same way.`,
-  )
 }
 
 /** A downloaded live pack, or the record of why it could not be. */
@@ -368,11 +347,7 @@ async function runFallback(
   const locator = ObjectLocator.parse(locatorBytes)
   // The synthesized locator's packRef space is exactly the packs that downloaded.
   const packSource = memoryPackSource(packs)
-  const reader = new BrowseReader(locator, packSource, {
-    onObject: objectObserver(repoKey(repo)),
-    missingObject:
-      unavailable.length > 0 ? (oid) => missingObjectError(oid, unavailable) : undefined,
-  })
+  const reader = repoReader(sdk, repo, locator, packSource, unavailable)
   // Only a complete clone is persisted. A skipped pack's mirror may come back, and a reload
   // is the natural moment to try it again; a persisted partial clone would never retry.
   // A private repo's clone is decrypted: it is never written to browser storage.

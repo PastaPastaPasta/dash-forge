@@ -160,6 +160,14 @@ export interface BrowseReaderOptions {
    * reader built over an incomplete pack set supplies one that names what is missing.
    */
   readonly missingObject?: (oidHex: string) => Error
+  /**
+   * Asked once per read of an OID the locator does not index, before that read fails: a
+   * reader held since before a push or a merge can be stale, and the session browse cache
+   * answers with a freshly resolved reader when the repo's packs changed since
+   * (`browse-source.ts`). The read is retried once on the reader returned, if it indexes the
+   * OID; null (or a reader that does not hold it either) fails the read as before.
+   */
+  readonly onMiss?: (oidHex: string) => Promise<BrowseReader | null>
 }
 
 /** Per-reader object-memo budget — readers live for the session (cached browse context). */
@@ -276,6 +284,8 @@ export class BrowseReader {
 
     const entry = this.locate(oidHex)
     if (entry === null) {
+      const fresher = await this.opts.onMiss?.(oidHex)
+      if (fresher != null && fresher !== this && fresher.locate(oidHex) !== null) return fresher.readObject(oidHex)
       throw this.opts.missingObject?.(oidHex) ?? new Error(`object not in locator: ${oidHex}`)
     }
 

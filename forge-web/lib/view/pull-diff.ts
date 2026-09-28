@@ -72,11 +72,16 @@ export function historyWalker(primary: ObjectReader, fallback: ObjectReader): { 
   }
 }
 
-/** Read from `primary`, falling back to `fallback` when it does not hold the object. */
+/**
+ * Read from `primary`, falling back to `fallback` when it does not hold the object. An object
+ * only `fallback` indexes is read there directly: a miss in `primary` would have it re-resolve
+ * its repo first (`BrowseReaderOptions.onMiss`), which is for objects neither side holds.
+ */
 export function preferring(primary: ObjectReader, fallback: ObjectReader): ObjectReader {
   if (primary === fallback) return primary
   return {
     async readObject(oid: string) {
+      if (primary.locate?.(oid) === null && (fallback.locate?.(oid) ?? null) !== null) return fallback.readObject(oid)
       try {
         return await primary.readObject(oid)
       } catch (primaryError) {

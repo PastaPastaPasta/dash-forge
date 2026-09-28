@@ -1,5 +1,5 @@
-import { test, expect, type Page, type Request } from '@playwright/test'
-import { collectPageErrors, repoUrl as url, shot, waitForRepoResolved } from './helpers'
+import { test, expect } from '@playwright/test'
+import { collectPageErrors, countDapi, repoUrl as url, shot, waitForRepoResolved } from './helpers'
 
 /**
  * P-1: the shared DAPI request budget (`lib/sdk/budget.ts`) and the seeded contracts
@@ -35,18 +35,6 @@ function overLimitReply(resetS: number) {
     },
     body: '',
   }
-}
-
-const DAPI_METHOD =/\/org\.dash\.platform\.dapi\.v0\.Platform\/(\w+)$/
-
-/** Count the DAPI requests of `page` by gRPC method. */
-function countDapi(page: Page): Map<string, number> {
-  const counts = new Map<string, number>()
-  page.on('request', (request: Request) => {
-    const method = DAPI_METHOD.exec(request.url())?.[1]
-    if (method !== undefined) counts.set(method, (counts.get(method) ?? 0) + 1)
-  })
-  return counts
 }
 
 test.describe('DAPI request budget', () => {

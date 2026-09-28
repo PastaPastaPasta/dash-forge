@@ -95,8 +95,8 @@ export function RepoHomeContent({
 
   return (
     <BrowseBoundary repo={home.repo} addr={addr}>
-      {(reader) => (
-        <RootBody reader={reader} tipOid={tipOid} home={home} addr={addr} selected={selected} refParam={refParam} />
+      {(reader, retry) => (
+        <RootBody reader={reader} retry={retry} tipOid={tipOid} home={home} addr={addr} selected={selected} refParam={refParam} />
       )}
     </BrowseBoundary>
   )
@@ -104,6 +104,7 @@ export function RepoHomeContent({
 
 function RootBody({
   reader,
+  retry,
   tipOid,
   home,
   addr,
@@ -111,6 +112,8 @@ function RootBody({
   refParam,
 }: {
   reader: BrowseReader
+  /** Re-resolve the browse context ({@link BrowseBoundary}): a tip newer than the reader (L-09). */
+  retry: () => void
   tipOid: string
   home: RepoHome
   addr: RepoAddress
@@ -131,7 +134,7 @@ function RootBody({
     // An indexed repo whose storage stopped answering: the same card as the fallback clone's.
     return <StorageUnreachableCard repo={home.repo} addr={addr} packs={[unavailableOf(cause)]} retry={reload} />
   }
-  if (error) return <ErrorState message={error} onRetry={reload} />
+  if (error) return <ErrorState message={error} onRetry={retry} />
   if (!data) return <LoadingBlock />
 
   const commitsHref = repoHref('/repo/commits', addr, refParam ? { ref: refParam } : {})

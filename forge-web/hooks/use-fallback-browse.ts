@@ -92,7 +92,7 @@ export function useFallbackBrowse(
     let cancelled = false
     setStatus('working')
     setError(null)
-    restoreFallback(repo, livePacks)
+    restoreFallback(repo, livePacks, sdk)
       .then((ctx) => {
         if (cancelled || !mounted.current) return
         if (ctx !== null) {

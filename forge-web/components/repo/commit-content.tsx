@@ -31,13 +31,13 @@ export function CommitContent({ home, addr, oid }: { home: RepoHome; addr: RepoA
   if (!oid) return <EmptyState icon={GitCommit} title="No commit addressed" body="Add &oid= to the URL." />
   return (
     <BrowseBoundary repo={home.repo} addr={addr}>
-      {(reader) => <Body reader={reader} oid={oid} addr={addr} />}
+      {(reader, retry) => <Body reader={reader} retry={retry} oid={oid} addr={addr} />}
     </BrowseBoundary>
   )
 }
 
-function Body({ reader, oid, addr }: { reader: BrowseReader; oid: string; addr: RepoAddress }): JSX.Element {
-  const { data, loading, error, cause, reload } = useAsync(() => loadCommitChanges(reader, oid), [oid])
+function Body({ reader, retry, oid, addr }: { reader: BrowseReader; retry: () => void; oid: string; addr: RepoAddress }): JSX.Element {
+  const { data, loading, error, cause } = useAsync(() => loadCommitChanges(reader, oid), [oid])
   const sides = useMemo<DiffSides>(() => ({ base: reader, head: reader }), [reader])
   if (loading) return <LoadingBlock label="Reconstructing commit" />
   if (cause instanceof CommitIdError) {
@@ -62,7 +62,7 @@ function Body({ reader, oid, addr }: { reader: BrowseReader; oid: string; addr: 
       />
     )
   }
-  if (error) return <ErrorState message={error} onRetry={reload} />
+  if (error) return <ErrorState message={error} onRetry={retry} />
   if (!data) return <LoadingBlock />
 
   const { commit, changes, truncated } = data

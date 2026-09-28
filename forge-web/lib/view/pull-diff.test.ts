@@ -314,4 +314,27 @@ describe('preferring', () => {
     expect(s.reads).toEqual([b, b])
     await expect(both.readObject('0'.repeat(40))).rejects.toThrow('object not in locator')
   })
+
+  it('reads an object only the fallback indexes there directly, never missing in the primary first', async () => {
+    // A primary miss makes a browse reader re-resolve its repo (`onMiss`): for an object the
+    // other side is known to hold, that would be a manifest read per object of a fork's diff.
+    const s = new Store()
+    const a = s.blob('a')
+    const aOnly = s.snapshot()
+    const b = s.blob('b')
+    const entry = { packRef: 0, offset: 0, length: 1, deltaChainSpan: 0, deltaDepth: 0 }
+    const primary = s.reader(aOnly, (oid) => (aOnly.has(oid) ? entry : null))
+    const fallback = s.reader(undefined, (oid) => (s.objects.has(oid) ? entry : null))
+    const both = preferring(primary, fallback)
+    s.reads.length = 0
+    await both.readObject(b)
+    expect(s.reads).toEqual([b])
+    s.reads.length = 0
+    await both.readObject(a)
+    expect(s.reads).toEqual([a])
+    // Neither indexes it: the primary is asked (and may re-resolve), then the fallback.
+    s.reads.length = 0
+    await expect(both.readObject('0'.repeat(40))).rejects.toThrow('object not in locator')
+    expect(s.reads).toEqual(['0'.repeat(40), '0'.repeat(40)])
+  })
 })

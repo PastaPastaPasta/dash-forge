@@ -1,5 +1,5 @@
 import AxeBuilder from '@axe-core/playwright'
-import { expect, type Browser, type Locator, type Page, type ConsoleMessage } from '@playwright/test'
+import { expect, type Browser, type Locator, type Page, type ConsoleMessage, type Request } from '@playwright/test'
 import { homedir } from 'node:os'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -76,6 +76,34 @@ export const SCREENSHOT_DIR = join(__dirname, 'screenshots')
 export function shot(page: Page, name: string) {
   mkdirSync(SCREENSHOT_DIR, { recursive: true })
   return page.screenshot({ path: join(SCREENSHOT_DIR, `${name}.png`), fullPage: true })
+}
+
+const DAPI_METHOD = /\/org\.dash\.platform\.dapi\.v0\.Platform\/(\w+)$/
+
+/** Count the DAPI requests of `page` by gRPC method, from now on (P-1, #72). */
+export function countDapi(page: Page): Map<string, number> {
+  const counts = new Map<string, number>()
+  page.on('request', (request: Request) => {
+    const method = DAPI_METHOD.exec(request.url())?.[1]
+    if (method !== undefined) counts.set(method, (counts.get(method) ?? 0) + 1)
+  })
+  return counts
+}
+
+/**
+ * Count the `getDocuments` requests of `page` that query `documentType`, from now on. A
+ * gRPC-web body is protobuf: the document type name travels as its plain bytes, so a byte
+ * match isolates one type's queries (`packManifest` is a browse resolve's listing). A name that
+ * is a prefix of another (`event` / `eventX`) would over-count; the forge types used here are not.
+ */
+export function countDocumentQueries(page: Page, documentType: string): { readonly count: () => number } {
+  const needle = Buffer.from(documentType)
+  let n = 0
+  page.on('request', (request: Request) => {
+    if (DAPI_METHOD.exec(request.url())?.[1] !== 'getDocuments') return
+    if (request.postDataBuffer()?.includes(needle)) n++
+  })
+  return { count: () => n }
 }
 
 /**

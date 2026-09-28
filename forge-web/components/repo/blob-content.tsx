@@ -97,7 +97,7 @@ export function BlobContent({
         <PathBreadcrumb addr={addr} path={path} refParam={refParam} />
       </div>
       <BrowseBoundary repo={home.repo} addr={addr}>
-        {(reader) => <BlobBody key={`${tipOid}:${path}`} reader={reader} tipOid={tipOid} path={path} addr={addr} />}
+        {(reader, retry) => <BlobBody key={`${tipOid}:${path}`} reader={reader} retry={retry} tipOid={tipOid} path={path} addr={addr} />}
       </BrowseBoundary>
     </div>
   )
@@ -105,16 +105,18 @@ export function BlobContent({
 
 function BlobBody({
   reader,
+  retry,
   tipOid,
   path,
   addr,
 }: {
   reader: BrowseReader
+  retry: () => void
   tipOid: string
   path: string
   addr: RepoAddress
 }): JSX.Element {
-  const { data, loading, error, reload } = useAsync(() => loadBlob(reader, tipOid, path), [tipOid, path])
+  const { data, loading, error } = useAsync(() => loadBlob(reader, tipOid, path), [tipOid, path])
   const name = path.split('/').pop() ?? path
   const [renderLarge, setRenderLarge] = useState(false)
   // An image that is also text (SVG) can be read as code too, as on GitHub.
@@ -133,7 +135,7 @@ function BlobBody({
   if (error?.includes('file not found')) {
     return <EmptyState icon={FileText} title="File not found on this ref" body={`${path} does not exist here. Pick another branch or tag, or browse the tree.`} />
   }
-  if (error) return <ErrorState message={error} onRetry={reload} />
+  if (error) return <ErrorState message={error} onRetry={retry} />
   if (!data || !display) return <LoadingBlock />
 
   const origin = typeof window === 'undefined' ? '' : window.location.origin

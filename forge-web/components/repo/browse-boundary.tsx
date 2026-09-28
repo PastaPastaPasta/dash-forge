@@ -9,14 +9,14 @@
  * local memory. The state machine itself is {@link useBrowseReader}.
  */
 
-import type { ReactNode } from 'react'
+import { Fragment, useCallback, type ReactNode } from 'react'
 import { AlertTriangle, HardDriveDownload, PackageOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { useBrowseReader } from '@/hooks/use-browse-reader'
 import type { BrowseReader } from '@/lib/browse'
-import type { RepoRef } from '@/lib/repo'
-import { formatBytes, StorageUnreachableError, type UnavailablePack } from '@/lib/view'
+import { repoKey, type RepoRef } from '@/lib/repo'
+import { formatBytes, invalidateBrowseContext, StorageUnreachableError, type UnavailablePack } from '@/lib/view'
 import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
@@ -65,9 +65,16 @@ export function BrowseBoundary({
 }: {
   repo: RepoRef
   addr?: RepoAddress
-  children: (reader: BrowseReader) => ReactNode
+  /**
+   * The view over a ready reader. `retry` is its "Try again": it drops the repo's browse context,
+   * so the view is rebuilt on a freshly resolved reader. Re-running on the same reader fails the
+   * same way when that reader predates a push or a merge (L-09).
+   */
+  children: (reader: BrowseReader, retry: () => void) => ReactNode
 }): JSX.Element {
   const state = useBrowseReader(repo)
+  const key = repoKey(repo)
+  const retry = useCallback(() => invalidateBrowseContext(key), [key])
 
   switch (state.kind) {
     case 'loading':
@@ -85,8 +92,11 @@ export function BrowseBoundary({
           body="This repo has no stored packs. Push with the helper or via dash:// to populate it."
         />
       )
-    case 'ready':
-      if (!state.local) return <>{children(state.reader)}</>
+    case 'ready': {
+      // Keyed by the reader: one resolved from a newer pack list (a push, a merge) replaces the
+      // view, whose reads then run against it, instead of keeping what the old one showed.
+      const view = <Fragment key={state.version}>{children(state.reader, retry)}</Fragment>
+      if (!state.local) return view
       return (
         <div>
           <p className="mb-3 text-dense text-anvil-500 dark:text-anvil-400">
@@ -94,9 +104,10 @@ export function BrowseBoundary({
             {state.behind ? "doesn't cover everything stored" : "hasn't been published"} yet.
           </p>
           {state.unavailable.length > 0 ? <UnavailablePacksNotice packs={state.unavailable} /> : null}
-          {children(state.reader)}
+          {view}
         </div>
       )
+    }
     case 'offer':
       return (
         <EmptyState

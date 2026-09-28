@@ -56,6 +56,42 @@ export interface PackManifestInput {
   readonly supersedes?: readonly string[]
 }
 
+/** A ref this tab moved, when the write that changed a repo's content was a ref update. */
+export interface MovedRef {
+  readonly refName: string
+  readonly newOid: string
+}
+
+type ContentListener = (repo: RepoRef, moved?: MovedRef) => void
+const contentListeners = new Set<ContentListener>()
+
+/**
+ * Run `listener` after this tab records a pack, moves a ref or publishes a release in a repo:
+ * the browse plane's cached context of it (`lib/view/browse-source.ts`) and the repo home's refs
+ * (`hooks/use-repo.ts`) no longer describe what is stored. `moved` names the ref a ref update
+ * moved, and where to.
+ */
+export function onRepoContentWritten(listener: ContentListener): () => void {
+  contentListeners.add(listener)
+  return () => {
+    contentListeners.delete(listener)
+  }
+}
+
+/** Tell the {@link onRepoContentWritten} listeners that `repo`'s stored content changed. */
+export function repoContentWritten(repo: RepoRef, moved?: MovedRef): void {
+  // Called from the writes' `finally`: a listener that throws must neither stop the others nor
+  // replace the write's own result or error (a landed write retried as failed).
+  for (const listener of contentListeners) {
+    try {
+      listener(repo, moved)
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('repoContentWritten listener failed', e)
+    }
+  }
+}
+
 /** Why `uris` does not fit the manifest's typed array, or null (`uris` ≤ 8 × ≤ 300 bytes). */
 export function manifestUrisProblem(uris: readonly string[]): string | null {
   if (uris.length === 0) return 'no confirmed copy recorded any URI; refusing to write a manifest nothing can read'
@@ -134,6 +170,8 @@ export async function writePackManifest(
     const id = await findOwnManifest(sdk, repo, auth.identityId, input.packHash)
     if (id === null) throw e
     return alreadyRecorded(id)
+  } finally {
+    repoContentWritten(repo)
   }
 }
 
@@ -287,6 +325,7 @@ export async function writeRefUpdate(
     documentType = refUpdateType(input.refName, patterns)
   }
   assertNoPlaintext(repo, documentType, data)
+  let moved: MovedRef | undefined
   try {
     const r = await createDocumentIdempotent(sdk, auth, {
       contractId: repo.forge.core,
@@ -294,9 +333,11 @@ export async function writeRefUpdate(
       data: { repoId: decodeIdentifier(repo.repoId), ...data },
       ...(options.intent ? { intent: options.intent } : {}),
     })
+    moved = { refName: input.refName, newOid: input.newOid.toLowerCase() }
     return { ...r, documentType }
   } finally {
     invalidateRepoFeed(repo)
+    repoContentWritten(repo, moved)
   }
 }
 

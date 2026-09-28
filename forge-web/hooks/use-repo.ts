@@ -21,10 +21,11 @@ import { useCallback, useRef } from 'react'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { invalidateBrowseContext, loadRepoHome, type RepoHome } from '@/lib/view'
-import { retryWhileMissing } from '@/lib/view/retry'
+import { awaitingOwnRefMoves, forgetOwnRefMoves, showsOwnRefMoves } from '@/lib/view/own-ref-moves'
+import { retryUntil, retryWhileMissing } from '@/lib/view/retry'
 import { useParam } from '@/hooks/use-query-param'
 import { forgetPrivateHome } from '@/hooks/use-private-home'
-import { repoKey } from '@/lib/repo'
+import { onRepoContentWritten, repoKey } from '@/lib/repo'
 import type { Network } from '@/lib/constants'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { evoSdkService, isUnreachableError, type SdkStatus } from '@/lib/sdk'
@@ -71,8 +72,31 @@ export function keepLastGood(e: unknown, status: SdkStatus): boolean {
   return status.phase === 'error' && isUnreachableError(e)
 }
 
+// This tab moved a ref, stored a pack or published a release: every cached home of the repo
+// (any address form) is out of date.
+// A home still loading was started before the write and would settle on the old refs: it goes
+// too (its caller keeps its own promise).
+onRepoContentWritten((repo) => {
+  for (const [k, entry] of homeCache) {
+    if (entry.settled === undefined || entry.settled.value?.repo.repoId === repo.repoId) homeCache.delete(k)
+  }
+})
+
+/** Read attempts (1.5 s apart) a home read gets to show a ref this tab just moved (L-09). */
+const OWN_MOVE_ATTEMPTS = 8
+
 function startLoad(sdk: EvoSDK, key: string, network: Network, addr: RepoAddress): HomeCacheEntry {
-  const entry: HomeCacheEntry = { at: Date.now(), promise: loadRepoHome(sdk, { network, ...addr }) }
+  const load = (): Promise<RepoHome | null> => loadRepoHome(sdk, { network, ...addr })
+  // Zero extra reads unless this tab is waiting for its own ref move to show.
+  const shows = (home: RepoHome | null): boolean => home === null || showsOwnRefMoves(home.repo, [...home.branches, ...home.tags])
+  const attempts = awaitingOwnRefMoves() ? OWN_MOVE_ATTEMPTS : 0
+  const read = retryUntil(load, shows, attempts).then((home) => {
+    // One full run of re-reads is all a move gets: the next load takes the refs as they are. A
+    // load that started before the move (no re-reads) leaves the expectation to the next one.
+    if (attempts > 0 && home !== null && !shows(home)) forgetOwnRefMoves(home.repo)
+    return home
+  })
+  const entry: HomeCacheEntry = { at: Date.now(), promise: read }
   homeCache.set(key, entry)
   entry.promise
     .then((value) => {

@@ -228,11 +228,14 @@ export {
 } from './review-writes'
 export {
   manifestUrisProblem,
+  onRepoContentWritten,
   refNameHash,
+  repoContentWritten,
   refUpdateData,
   refUpdateType,
   writePackManifest,
   writeRefUpdate,
+  type MovedRef,
   type PackManifestInput,
   type RefUpdateInput,
 } from './push'

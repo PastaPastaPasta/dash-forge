@@ -9,7 +9,7 @@ export function PullClient(): JSX.Element {
   const number = Number.parseInt(useParam('number'), 10)
   return (
     <RepoScaffold addr={addr} rail={false}>
-      {(home) => <PullContent home={home} addr={addr} number={number} />}
+      {(home, reloadHome) => <PullContent home={home} addr={addr} number={number} reloadHome={reloadHome} />}
     </RepoScaffold>
   )
 }

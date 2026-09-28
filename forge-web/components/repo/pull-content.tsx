@@ -146,7 +146,18 @@ type Pending =
   | { kind: 'delete-comment'; id: string }
   | { kind: 'resolve'; root: string; resolve: boolean }
 
-export function PullContent({ home, addr, number }: { home: RepoHome; addr: RepoAddress; number: number }): JSX.Element {
+export function PullContent({
+  home,
+  addr,
+  number,
+  reloadHome,
+}: {
+  home: RepoHome
+  addr: RepoAddress
+  number: number
+  /** Re-read the repo home (its refs) and drop its browse context: a browser merge moved a branch. */
+  reloadHome?: () => void
+}): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   // Just opened here: a node one block behind answers "not found"; keep asking briefly.
   const justCreated = useParam('created') === '1'
@@ -182,7 +193,7 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
   if (loading && !data) return <LoadingBlock label="Folding PR" />
   if (error && !data) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <EmptyState icon={GitPullRequest} title={`PR #${number} not found`} body="No patch with that number in this repo." />
-  return <PullPage home={home} addr={addr} thread={data} refresh={refresh} refreshing={loading} />
+  return <PullPage home={home} addr={addr} thread={data} refresh={refresh} refreshing={loading} reloadHome={reloadHome} />
 }
 
 function PullPage({
@@ -191,12 +202,14 @@ function PullPage({
   thread,
   refresh,
   refreshing,
+  reloadHome,
 }: {
   home: RepoHome
   addr: RepoAddress
   thread: PullThread
   refresh: (want?: (t: PullThread) => boolean) => void
   refreshing: boolean
+  reloadHome?: () => void
 }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const { identity, signer } = useAuth()
@@ -746,7 +759,12 @@ function PullPage({
                     canMerge={actions.canMarkMerged && !archived}
                     isMaintainer={holdings.data?.maintain === true}
                     checkout={checkout}
-                    onMerged={() => refresh((t) => t.pull.state.merged)}
+                    onMerged={() => {
+                      refresh((t) => t.pull.state.merged)
+                      // The base branch moved and a pack was stored: the repo's refs and its
+                      // browse context are out of date too (L-09).
+                      reloadHome?.()
+                    }}
                   />
                   {open && (actions.baseProtected || rules.status !== null) ? (
                     <BranchRules base={pull.baseRefName} baseProtected={actions.baseProtected} policy={rules.policy} status={rules.status} />
@@ -848,7 +866,7 @@ function PullPage({
                     ? "Neither the base repo nor the repo holding the PR's head could be loaded, so there are no commits to list."
                     : null
               }
-              onRetry={() => (comparison.error ? comparison.reload() : commits.reload())}
+              onRetry={() => (comparison.error ? comparison.tryAgain() : commits.reload())}
             />
           ) : tab === 'checks' ? (
             <ChecksTab runs={checks.data} summary={checkSummary} headOid={pull.headOid} error={checks.error} onRetry={checks.reload} />
