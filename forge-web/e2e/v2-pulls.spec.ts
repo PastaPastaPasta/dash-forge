@@ -1,6 +1,6 @@
 import { test, expect, type Locator, type Page } from '@playwright/test'
 import { existsSync, readFileSync } from 'node:fs'
-import { DEMO, E2E_DEVNET, fixtureWriteBlocked, idFile, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
+import { DEMO, E2E_DEVNET, expectPlatformPreAllowed, fixtureWriteBlocked, idFile, runAxe, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
 
 /**
  * Pull requests, forks and the browser merge engine, live on a devnet (real spend, about
@@ -217,14 +217,10 @@ test('c7. the owner merges a divergent PR in the browser (merge commit, Platform
 
   await expect(page.getByTestId('merge-button-state')).toHaveAttribute('data-state', 'merge-commit', { timeout: 120_000 })
   await page.getByTestId('merge-panel').scrollIntoViewIfNeeded()
+  // Where the pack goes, and its Platform price, are answered before the merge starts.
+  await expectPlatformPreAllowed(page.getByTestId('merge-panel'))
   await shot(page, 'c-merge-commit-button')
   await page.getByRole('button', { name: 'Create merge commit and merge' }).click()
-
-  const ask = page.getByRole('dialog', { name: /Store the merge pack .* on Platform\?/ })
-  await expect(ask).toBeVisible({ timeout: 120_000 })
-  await expect(ask.getByTestId('cost-preview')).toContainText('DASH')
-  await shot(page, 'c-merge-platform-question')
-  await ask.getByRole('button', { name: /sign & store on platform/i }).click()
 
   const steps = page.getByRole('list', { name: 'Merge steps' })
   await expect(steps.locator('[data-step="event"]')).toHaveAttribute('data-state', 'done', { timeout: 300_000 })
