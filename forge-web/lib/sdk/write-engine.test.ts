@@ -44,6 +44,8 @@ vi.mock('@dashevo/evo-sdk', () => {
       return new Uint8Array([Number(this.nonce)])
     }
     static fromBytes(b: Uint8Array): ST {
+      // A transition here is one byte; anything else does not decode (a damaged cache entry).
+      if (b.length !== 1) throw new Error(`platform deserialization error: ${b.length - 1} bytes left over after the value`)
       const st = new ST()
       st.nonce = BigInt(b[0] ?? 0)
       st.title = carried.get(st.nonce)
@@ -745,6 +747,77 @@ describe('after "your earlier attempt was posted" (review N1, N4)', () => {
     await expect(createDocumentIdempotent(sdkOf(script, []), auth(spends), { ...write, contractId: 'N3' })).rejects.toBeInstanceOf(ConsensusRefusal)
     await reported()
     expect(spends.map((s) => s.kind)).toEqual(['refused:comment'])
+  })
+})
+
+describe('a cached transition that is not exactly one transition (10002, protocol 14)', () => {
+  /** A write whose first answer is lost, so its signed bytes stay cached under `intent`. */
+  const lostThenLands = (store: Map<string, string>, onRebroadcast: () => void) => {
+    let calls = 0
+    let landed = false
+    const signed: bigint[] = []
+    vi.stubGlobal('window', {
+      localStorage: {
+        getItem: (k: string) => store.get(k) ?? null,
+        setItem: (k: string, v: string) => void store.set(k, v),
+        removeItem: (k: string) => void store.delete(k),
+      },
+    })
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => {
+        calls += 1
+        if (calls === 1) throw new Error('grpc: deadline exceeded')
+        if (calls === 2) onRebroadcast()
+        landed = true
+      },
+      wait: async () => ({}),
+      exists: async () => (landed ? {} : undefined),
+    }
+    return { sdk: sdkOf(script, signed), signed }
+  }
+
+  it('damaged cached bytes are never broadcast: the action is re-signed on the same nonce, so at most one lands', async () => {
+    const store = new Map<string, string>()
+    const { sdk, signed } = lostThenLands(store, () => undefined)
+    try {
+      const params = { ...write, contractId: 'T1', intent: 'pad-1' }
+      const first = await createDocumentIdempotent(sdk, auth([]), params).catch((e: unknown) => e)
+      expect(first).toBeInstanceOf(UnconfirmedWriteError)
+      // The cached entry is damaged so it no longer decodes (this stub's decoder is exact; the
+      // real one, wasm-dpp2 `fromBytes`, is loose and throws only on truncated or corrupt bytes).
+      const [key, raw] = [...store.entries()][0]!
+      const entry = JSON.parse(raw) as { data: string }
+      store.set(key, JSON.stringify({ ...entry, data: btoa(atob(entry.data) + '\xab') }))
+      const r = await createDocumentIdempotent(sdk, auth([]), params)
+      expect(r.confirmed).toBe(true)
+      // A fresh transition (a new document id), pinned to the lost attempt's still-free nonce: the
+      // attempt the damaged entry recorded and this one cannot both land.
+      expect(r.documentId).not.toBe((first as UnconfirmedWriteError).documentId)
+      expect(signed).toEqual([2n, 2n])
+      expect(store.has(key)).toBe(false)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it("a rebroadcast Drive refuses as trailing bytes (10002) is discarded, not replayed", async () => {
+    const store = new Map<string, string>()
+    const { sdk, signed } = lostThenLands(store, () => {
+      throw sdkRefusal('Parsing of serialized object failed due to: platform deserialization error: unable to deserialize dpp::state_transition::StateTransition: 1 bytes left over after the value')
+    })
+    try {
+      const params = { ...write, contractId: 'T2', intent: 'pad-2' }
+      await createDocumentIdempotent(sdk, auth([]), params).catch(() => undefined)
+      const err = await createDocumentIdempotent(sdk, auth([]), params).catch((e: unknown) => e)
+      expect((err as ConsensusRefusal).code).toBe(10002)
+      expect((err as ConsensusRefusal).unpaid).toBe(true)
+      expect(store.size).toBe(0)
+      await createDocumentIdempotent(sdk, auth([]), params)
+      expect(signed).toEqual([2n, 2n, 3n])
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
 

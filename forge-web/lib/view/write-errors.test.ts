@@ -111,6 +111,55 @@ describe('writeFailure routes each refusal to its fix, never "sent" (D-007)', ()
   })
 })
 
+/**
+ * The refusals protocol 14 adds (platform v4.2.0-beta.5): Drive's texts from rs-dpp
+ * `document_expired_error.rs`, `document_contest_maximum_contenders_reached_error.rs` and
+ * `serialized_object_parsing_error.rs` (#5007, #5029, #5011).
+ */
+const EXPIRED =
+  'Failed to broadcast: Protocol error: Document 4ggxb4HBaT of type "issue" on contract 6DJ3px1Z expired at 1790491415877, its $createdAt plus the type\'s time to live, which block time 1790491500000 is not before'
+const CONTEST_FULL = 'Failed to broadcast: Protocol error: The vote poll ContestedDocumentResourceVotePoll(dpns/domain) already has 1000 contenders, the most a contest accepts'
+const TRAILING =
+  'Failed to broadcast: Protocol error: Parsing of serialized object failed due to: platform deserialization error: unable to deserialize dpp::state_transition::StateTransition: 1 bytes left over after the value'
+
+describe('protocol 14 refusals: expired, contest full, trailing bytes', () => {
+  it.each([
+    [EXPIRED, 40140],
+    [CONTEST_FULL, 40141],
+    [TRAILING, 10002],
+  ])('decodes %s', (message, code) => {
+    const r = asConsensusRefusal(wasm(message))
+    expect(r?.code).toBe(code)
+    expect(r?.feeCharged).toBe(false)
+  })
+  it('decodes the numeric codes a block verdict carries', () => {
+    expect(asConsensusRefusal(wasm(EXPIRED, 40140))?.code).toBe(40140)
+    expect(asConsensusRefusal(wasm(CONTEST_FULL, 40141))?.feeCharged).toBe(true)
+    // Trailing bytes are refused unpaid, in a block too.
+    expect(asConsensusRefusal(wasm(TRAILING, 10002))?.feeCharged).toBe(false)
+  })
+  it('an expired document says it can no longer be changed, with no sheet', () => {
+    const f = writeFailure(new ConsensusRefusal(40140, 'expired', {}, true))
+    expect(f.sheet).toBeNull()
+    expect(f.message).toMatch(/has expired/)
+    expect(f.message).toMatch(/fee was charged/)
+    expect(f.message).not.toMatch(/consensus error/)
+  })
+  it('a full contest says so, with no sheet', () => {
+    const f = writeFailure(asConsensusRefusal(wasm(CONTEST_FULL)))
+    expect(f.sheet).toBeNull()
+    expect(f.message).toMatch(/most contenders/)
+    expect(f.message).toMatch(/Nothing was charged/)
+  })
+  it('trailing bytes ask for a re-sign and say the damaged write was discarded', () => {
+    const f = writeFailure(asConsensusRefusal(wasm(TRAILING, 10002)))
+    expect(f.sheet).toBeNull()
+    expect(f.message).toMatch(/re-sign/)
+    expect(f.message).toMatch(/discarded/)
+    expect(f.message).toMatch(/Nothing was charged/)
+  })
+})
+
 describe('an unusable key opens renew, not a raw error (D-042)', () => {
   it('routes an expired key to the renew sheet', () => {
     const f = writeFailure(new KeyUnusableError('expired'))

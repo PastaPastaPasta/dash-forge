@@ -496,7 +496,20 @@ export const KEY_LIMIT_CODES: ReadonlySet<number> = new Set([20006, 20015, 20016
 export const BALANCE_CODES: ReadonlySet<number> = new Set([30000, 40210])
 
 /** Refusals besides key-limit and balance ones that are never charged. */
-const UNPAID_CODES: ReadonlySet<number> = new Set([40204, 10417, 10421, 20014])
+const UNPAID_CODES: ReadonlySet<number> = new Set([40204, 10417, 10421, 20014, 10002])
+
+/**
+ * The signed transition is not exactly one encoded transition (`SerializedObjectParsingError`;
+ * from protocol 14 bytes left over are refused too, unpaid). The bytes can never land: they are
+ * discarded and the action signed afresh. Also what a cached attempt that no longer decodes is.
+ */
+export const MALFORMED_TRANSITION_CODE = 10002
+
+/** A replace, transfer, purchase or restore of a document whose type's time to live ran out. */
+export const DOCUMENT_EXPIRED_CODE = 40140
+
+/** A contested create joining a contest that already holds the most contenders (1,000). */
+export const CONTEST_FULL_CODE = 40141
 
 /** Budget exceeded by this write: the key has some budget, not enough for this one. */
 export const BUDGET_EXCEEDED_CODE = 40218
@@ -515,7 +528,7 @@ export const INVALID_REVISION_CODE = 40106
 
 /**
  * The consensus refusals a write can meet, by the text Drive's error renders (`#[error(...)]`
- * in rs-dpp 4.2.0-beta.4, `packages/rs-dpp/src/errors/consensus`). A refusal at broadcast
+ * in rs-dpp 4.2.0-beta.5, `packages/rs-dpp/src/errors/consensus`). A refusal at broadcast
  * (CheckTx) reaches the browser as the SDK's `Protocol error: <that text>` with no numeric
  * code (the wasm error's `code` is -1), so the text is how it is recognised. Named groups
  * carry the figures the UI shows (`remaining`, `balance`, `required`).
@@ -541,6 +554,9 @@ const REFUSAL_PATTERNS: ReadonlyArray<readonly [number, RegExp]> = [
   [10421, /over its maxBytes of \d+/i],
   [10417, /Document field \S+ size \d+ is more than system maximum/i],
   [20014, /Batch member is outside the contract bounds of key/i],
+  [40140, /expired at \d+, its \$createdAt plus the type's time to live/i],
+  [40141, /already has \d+ contenders, the most a contest accepts/i],
+  [10002, /Parsing of serialized object failed due to/i],
 ]
 
 /** The numeric consensus code a wasm error carries, if any. */
@@ -1116,8 +1132,20 @@ async function createDocumentUnlocked(
   const landedAs = landedAsOf(cacheKey)
   if (landedAs !== null) throw new SupersededWriteError(landedAs)
   const cached = loadPendingST(cacheKey)
-  if (cached && cached.content !== null && cached.content !== content) {
-    // Edited since the last attempt.
+  const { StateTransition: StateTransitionClass } = await import('@dashevo/evo-sdk')
+  /** The cached attempt's transition, or null when its bytes no longer decode (a damaged entry). */
+  const cachedSt = ((): StateTransition | null => {
+    if (!cached) return null
+    try {
+      return StateTransitionClass.fromBytes(cached.bytes)
+    } catch {
+      return null
+    }
+  })()
+  if (cached && ((cached.content !== null && cached.content !== content) || cachedSt === null)) {
+    // Edited since the last attempt, or its bytes are damaged (what Drive refuses as 10002):
+    // they are discarded and the action signed afresh. The attempt they recorded was sent intact
+    // and may still land, so it is settled like an edited one: never a second document.
     const { documentId, nonce } = cached
     supersedes = [...cached.supersedes, documentId]
     if (nonce === null) throw new UnconfirmedWriteError(documentId)
@@ -1137,19 +1165,19 @@ async function createDocumentUnlocked(
       }
       pinnedNonce = nonce
     }
-  } else if (cached) {
+  } else if (cached && cachedSt) {
     const { documentId } = cached
     supersedes = [...cached.supersedes]
     let seen = await landed(documentId, 0)
     if (!seen) {
-      const { StateTransition: StateTransitionClass } = await import('@dashevo/evo-sdk')
       try {
-        await facades(sdk).stateTransitions.broadcastStateTransition(StateTransitionClass.fromBytes(cached.bytes))
+        await facades(sdk).stateTransitions.broadcastStateTransition(cachedSt)
       } catch (e) {
         // A used nonce: they landed (the poll sees them) or never will. Refused: the cached
-        // bytes cannot land. Already in, or a transport error: the poll decides, and the
-        // bytes stay cached until it sees them. (The nonce check comes first: a rebroadcast
-        // of bytes that did land is answered "nonce already present".)
+        // bytes cannot land (a transition Drive refuses as not exactly one, 10002, included:
+        // these are the bytes first sent). Already in, or a transport error: the poll decides,
+        // and the bytes stay cached until it sees them. (The nonce check comes first: a
+        // rebroadcast of bytes that did land is answered "nonce already present".)
         const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
         if (refusal) {
           // These bytes can never land. Settle any earlier version first, then clear, so a

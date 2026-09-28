@@ -10,13 +10,16 @@
 
 import {
   BUDGET_EXCEEDED_CODE,
+  CONTEST_FULL_CODE,
   ConsensusRefusal,
+  DOCUMENT_EXPIRED_CODE,
   DUPLICATE_UNIQUE_CODE,
   GATE_REFUSED_CODE,
   INVALID_NONCE_CODE,
   INVALID_REVISION_CODE,
   KeyUnusableError,
   type KeyUnusableReason,
+  MALFORMED_TRANSITION_CODE,
   SupersededWriteError,
   UnconfirmedWriteError,
   WriterBusyError,
@@ -69,6 +72,12 @@ function refusalSentence(r: ConsensusRefusal): string {
       return 'Platform refused it: a field is longer than the contract allows. Shorten it and try again. Nothing was charged.'
     case 20014:
       return "Platform refused it: this browser's key is not allowed to sign for this contract. Nothing was charged."
+    case MALFORMED_TRANSITION_CODE:
+      return 'Platform refused it: the signed write was damaged (not exactly one transition), so it was discarded. Nothing was charged. Try again to re-sign it.'
+    case DOCUMENT_EXPIRED_CODE:
+      return `Platform refused it: this document has expired (its time to live ran out), so it can no longer be changed. Reload to see it gone. ${charged}`
+    case CONTEST_FULL_CODE:
+      return `Platform refused it: that contest already has the most contenders it accepts, so this cannot join it. ${charged}`
     default:
       return `Platform refused it (consensus error ${r.code}). ${charged}`
   }

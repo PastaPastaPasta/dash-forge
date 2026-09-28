@@ -1,6 +1,6 @@
 // Register the forge-v2 contract pair (forge-core + forge-collab) in one PV14 contract group.
 //
-//   (cd forge-contracts/sdk-v2 && npm ci)           # @dashevo/evo-sdk@4.2.0-beta.4, pinned
+//   (cd forge-contracts/sdk-v2 && npm ci)           # @dashevo/evo-sdk@4.2.0-beta.5, pinned
 //   node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
 //        --network devnet --devnet-name moutai [--addresses https://ip:1443,...] [--dry-run]
 //        [--only collab] [--force-new [--same-group]]
@@ -465,7 +465,7 @@ async function main() {
     v2.contractGroupId = groupIdFinal;
     v2.contractGroup = { id: groupIdFinal, name: GROUP.name, owner: ownerId, verifiedAt: new Date().toISOString() };
     v2.protocolVersion = PROTOCOL_VERSION;
-    v2.sdk = '@dashevo/evo-sdk@4.2.0-beta.4';
+    v2.sdk = '@dashevo/evo-sdk@4.2.0-beta.5';
     if (devnetName) v2.devnet = { name: devnetName, addresses: addresses ?? null };
     record();
     log(`contract group ${groupIdFinal} verified: owner ${ownerId}, both contracts enrolled`);
