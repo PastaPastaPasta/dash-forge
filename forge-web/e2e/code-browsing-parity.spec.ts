@@ -146,7 +146,8 @@ test.describe('commits, History and Blame (read fixture)', () => {
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => undefined)
     const total = [...counts.values()].reduce((x, n) => x + n, 0)
     test.info().annotations.push({ type: 'dapi', description: `blame (cold page): ${total} DAPI requests ${JSON.stringify(Object.fromEntries(counts))}` })
-    expect(total, JSON.stringify(Object.fromEntries(counts))).toBeLessThanOrEqual(80)
+    // Measured 19 (connect, refs, browse resolve, a few chunk reads).
+    expect(total, JSON.stringify(Object.fromEntries(counts))).toBeLessThanOrEqual(40)
     await shot(page, 'f5-hb-02-blame-fixture')
     expect(errors, errors.join('\n')).toEqual([])
   })
@@ -199,7 +200,8 @@ test.describe('commits paging, History and Blame (showcase repos)', () => {
     const total = [...counts.values()].reduce((x, n) => x + n, 0)
     test.info().annotations.push({ type: 'dapi', description: `2 older pages: ${total} DAPI requests ${JSON.stringify(Object.fromEntries(counts))}` })
     // Commits are read in 256 KiB blocks (~15 platform chunks each): two pages of 40 are one or two blocks.
-    expect(total, JSON.stringify(Object.fromEntries(counts))).toBeLessThanOrEqual(12)
+    // Measured 1.
+    expect(total, JSON.stringify(Object.fromEntries(counts))).toBeLessThanOrEqual(6)
     await shot(page, 'f5-hb-04-jq-commits-page-3')
   })
 
@@ -221,7 +223,8 @@ test.describe('commits paging, History and Blame (showcase repos)', () => {
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => undefined)
     const total = [...counts.values()].reduce((x, n) => x + n, 0)
     test.info().annotations.push({ type: 'dapi', description: `fzf main.go blame: ${ms} ms, ${total} DAPI requests ${JSON.stringify(Object.fromEntries(counts))}` })
-    expect(total, JSON.stringify(Object.fromEntries(counts))).toBeLessThanOrEqual(150)
+    // Measured 48 for 64 versions of the file, cold (the page load included).
+    expect(total, JSON.stringify(Object.fromEntries(counts))).toBeLessThanOrEqual(90)
     await shot(page, 'f5-hb-05-fzf-blame')
 
     // A fresh run, cancelled: it stops and offers to start again.
