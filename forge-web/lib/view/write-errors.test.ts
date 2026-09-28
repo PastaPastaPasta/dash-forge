@@ -39,7 +39,9 @@ describe('asConsensusRefusal decodes the SDK text (D-007)', () => {
     ['Protocol error: Current credits balance 10 is not enough to pay 20 fee', 30000],
     ['Protocol error: Document Abc has duplicate unique properties ["repoId", "number"] with other documents', 40105],
     ['Protocol error: referenced document Xyz not found for path repoId', 40120],
-    ['Protocol error: Property body is 6000 bytes in UTF-8, over its maxBytes of 5120', 10421],
+    // The pinned SDK renders a beta.6 node's 10422 with the 10421 text (platform#5053,
+    // lib/sdk/consensus-shift.ts); a real 10421 arrives as the 11001 text.
+    ['Protocol error: Property body is 6000 bytes in UTF-8, over its maxBytes of 5120', 10422],
   ])('reads %s', (message, code) => {
     expect(asConsensusRefusal(wasm(message))?.code).toBe(code)
   })

@@ -70,6 +70,8 @@ function refusalSentence(r: ConsensusRefusal): string {
     case 10417:
     case 10421:
       return 'Platform refused it: a field is longer than the contract allows. Shorten it and try again. Nothing was charged.'
+    case 10422:
+      return `Platform refused it: it breaks one of the contract's rules for this kind of document (for example a sealed field sent in plain text, or a status without the field it needs). ${charged}`
     case 20014:
       return "Platform refused it: this browser's key is not allowed to sign for this contract. Nothing was charged."
     case MALFORMED_TRANSITION_CODE:

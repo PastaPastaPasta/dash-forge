@@ -34,6 +34,7 @@ import type { Network } from '../constants'
 import { base58Encode } from '../auth/base58'
 import { controlsKey } from '../auth/wif'
 import { previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview } from './cost'
+import { trueCodeOf } from './consensus-shift'
 import { base64ToBytes, bytesToBase64, followSdkVersion } from './query'
 
 export type { CostPreview } from './cost'
@@ -573,6 +574,11 @@ const REFUSAL_PATTERNS: ReadonlyArray<readonly [number, RegExp]> = [
   [40140, /expired at \d+, its \$createdAt plus the type's time to live/i],
   [40141, /already has \d+ contenders, the most a contest accepts/i],
   [10002, /Parsing of serialized object failed due to/i],
+  // Texts only a shifted decode produces here (platform#5053, see ./consensus-shift): the SDK
+  // renders a beta.6 node's 10421 as the 11001 text and its 10419 as the 10904 text (its 10422
+  // as the 10421 text above). `asConsensusRefusal` maps each to the code the node sent.
+  [11001, /The moderation charter's reward split of/i],
+  [10904, /The documents a contract moderation reason cites are invalid/i],
 ]
 
 /** The numeric consensus code a wasm error carries, if any. */
@@ -610,7 +616,9 @@ export function asConsensusRefusal(e: unknown): ConsensusRefusal | null {
   for (const [patternCode, re] of REFUSAL_PATTERNS) {
     if (code !== null && code !== patternCode) continue
     const m = re.exec(message)
-    if (m) return new ConsensusRefusal(patternCode, message, figuresOf(m.groups), code !== null)
+    // Without a code the text is the SDK's own decode of the node's error, which the pinned
+    // SDK may have shifted by one variant (platform#5053); a coded verdict is the node's own.
+    if (m) return new ConsensusRefusal(code ?? trueCodeOf(patternCode), message, figuresOf(m.groups), code !== null)
   }
   return code === null ? null : new ConsensusRefusal(code, message, {}, true)
 }
