@@ -155,7 +155,6 @@ export {
   diffTrees,
   loadCommitChanges,
   resolveCommitOid,
-  walkLog,
   type CommitChanges,
   type DiffSides,
   type FileChange,

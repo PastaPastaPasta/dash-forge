@@ -7,7 +7,7 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -37,6 +37,28 @@ function relaxing(relaxed: readonly string[]): string[] {
 }
 
 /**
+ * Write well-formed `objects` into repository `dir`, one `git hash-object --stdin-paths` per
+ * object type instead of one process per object (git checks them on the way in, so only for
+ * objects git accepts; use {@link writeLiterally} for malformed ones).
+ */
+export function writeBatched(dir: string, objects: Iterable<GitObject>): void {
+  const byType = new Map<GitObject['type'], string[]>()
+  let n = 0
+  for (const o of objects) {
+    const file = join(dir, `.obj-${n++}`)
+    writeFileSync(file, o.bytes)
+    const list = byType.get(o.type)
+    if (list === undefined) byType.set(o.type, [file])
+    else list.push(file)
+  }
+  for (const [type, files] of byType) {
+    const r = spawnSync('git', ['hash-object', '-w', '-t', type, '--stdin-paths'], { cwd: dir, input: files.join('\n'), maxBuffer: 1 << 28 })
+    if (r.status !== 0) throw new Error(`git hash-object failed: ${r.error?.message ?? r.stderr.toString()}`)
+    for (const f of files) rmSync(f)
+  }
+}
+
+/**
  * The oids `git fsck --strict` reports an error or warning for, among the loose objects of
  * `dir` (every object, reachable or not), or null without git. `relaxed`: msg-ids git is told
  * to ignore (`-c fsck.<id>=ignore`), every other check at `--strict` severity.
@@ -50,6 +72,40 @@ export function gitStrictRejects(dir: string, relaxed: readonly string[] = []): 
     if (m) out.add(m[1] as string)
   }
   return out
+}
+
+/**
+ * `git blame --first-parent` of `path` at `tip` over `objects` (written literally into a scratch
+ * repository): the commit each line is blamed on, in line order. Null without git.
+ */
+export function gitBlame(objects: Iterable<GitObject>, tip: string, path: string): string[] | null {
+  return gitBlameMany(objects, [[tip, path]])?.[0] ?? null
+}
+
+/**
+ * {@link gitBlame} for many `[tip, path]` pairs over one set of objects: the objects are written
+ * once, and each pair costs one `git blame` process. Null without git.
+ */
+export function gitBlameMany(objects: Iterable<GitObject>, targets: readonly (readonly [string, string])[]): string[][] | null {
+  if (!HAVE_GIT) return null
+  const { dir, done } = scratchRepo()
+  try {
+    writeBatched(dir, objects)
+    return targets.map(([tip, path]) => {
+      const r = spawnSync('git', ['-c', 'blame.ignoreRevsFile=', 'blame', '--first-parent', '--porcelain', tip, '--', path], { cwd: dir, maxBuffer: 1 << 26 })
+      if (r.status !== 0) throw new Error(`git blame failed: ${r.stderr.toString()}`)
+      // Porcelain: each line's header is `<oid> <orig line> <final line>[ <count>]`, then the
+      // commit's headers (first time only), then a TAB and the line itself.
+      const owners: string[] = []
+      for (const line of r.stdout.toString().split('\n')) {
+        const m = /^([0-9a-f]{40}) \d+ (\d+)/.exec(line)
+        if (m) owners[Number(m[2]) - 1] = m[1] as string
+      }
+      return owners
+    })
+  } finally {
+    done()
+  }
 }
 
 /**

@@ -11,7 +11,8 @@
  * over 1 MB asks before rendering at all (D-054, D-055).
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { ROW_PX, scrollToRow, useRowWindow } from '@/hooks/use-row-window'
 import { Check, Download, FileText, Link2 } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
@@ -30,8 +31,6 @@ import {
   selectLine,
   selectRef,
   treeAtPath,
-  visibleRows,
-  VIRTUALIZE_LINES,
   type BlobDisplay,
   type HighlightedBlob,
   type LineRange,
@@ -39,6 +38,7 @@ import {
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
+import { PathActions } from '@/components/repo/path-actions'
 import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { Oid } from '@/components/ui/oid'
 import { ScrollRegion } from '@/components/ui/scroll-region'
@@ -96,6 +96,7 @@ export function BlobContent({
       <div className="flex flex-wrap items-center gap-3">
         <RefSwitcher home={home} addr={addr} current={selected} path={path} />
         <PathBreadcrumb addr={addr} path={path} refParam={refParam} />
+        {path ? <PathActions addr={addr} path={path} refParam={refParam} show={['blame', 'history']} /> : null}
       </div>
       <BrowseBoundary repo={home.repo} addr={addr}>
         {(reader, retry) => (
@@ -325,12 +326,6 @@ function useImageUrl(bytes: Uint8Array | undefined, type: string | null): string
   return dataUrl ?? blobUrl
 }
 
-/**
- * Row height of the line table (13px text, leading-5). Windowing and `#L` scrolling position
- * rows by it, so the cells carry no vertical padding (browsers give a `td` 1px) and never wrap.
- */
-const ROW_PX = 20
-
 const CODE_CELL = 'whitespace-pre py-0 px-4 align-top text-anvil-800 dark:text-anvil-200'
 
 /**
@@ -372,11 +367,7 @@ function TextLines({ text, name, permalink }: { text: string; name: string; perm
   const tableRef = useRef<HTMLTableElement>(null)
   // Scroll a range from the URL into view (the table is laid out by the time effects run).
   const [range, select] = useLineSelection(lines.length, (r) => {
-    requestAnimationFrame(() => {
-      if (tableRef.current === null) return
-      const top = tableRef.current.getBoundingClientRect().top + window.scrollY + (r.start - 1) * ROW_PX
-      window.scrollTo({ top: Math.max(0, top - window.innerHeight / 3) })
-    })
+    requestAnimationFrame(() => scrollToRow(tableRef.current, r.start))
   })
   const href = permalink === null || range === null ? permalink : `${permalink}#${lineHash(range)}`
 
@@ -396,31 +387,7 @@ function TextLines({ text, name, permalink }: { text: string; name: string; perm
   const hlLines = highlighted && highlighted.lines.length === lines.length ? highlighted.lines : null
 
   // Long files render only the rows near the viewport (D-055: a 1 MB file was 81k DOM nodes).
-  const virtual = lines.length > VIRTUALIZE_LINES
-  const [win, setWin] = useState({ from: 0, to: 200 })
-  const { from, to } = virtual ? win : { from: 0, to: lines.length }
-  useLayoutEffect(() => {
-    if (!virtual) return
-    let frame = 0
-    const update = (): void => {
-      frame = 0
-      const el = tableRef.current
-      if (el === null) return
-      const next = visibleRows(lines.length, ROW_PX, el.getBoundingClientRect().top, window.innerHeight)
-      setWin((w) => (w.from === next.from && w.to === next.to ? w : next))
-    }
-    const schedule = (): void => {
-      if (frame === 0) frame = requestAnimationFrame(update)
-    }
-    update()
-    window.addEventListener('scroll', schedule, { passive: true })
-    window.addEventListener('resize', schedule)
-    return () => {
-      if (frame !== 0) cancelAnimationFrame(frame)
-      window.removeEventListener('scroll', schedule)
-      window.removeEventListener('resize', schedule)
-    }
-  }, [virtual, lines.length])
+  const { from, to } = useRowWindow(tableRef, lines.length)
 
   const rows: JSX.Element[] = []
   for (let i = from; i < to; i++) {

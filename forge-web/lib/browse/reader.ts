@@ -303,6 +303,15 @@ export class BrowseReader {
     return new BrowseReader(this.locator, this.packs, this.opts, view, this.caches)
   }
 
+  /**
+   * One object per set of readers that share memos (this reader and its {@link forView} siblings):
+   * a key for session memos derived from what they read (a path's history), so every page of a
+   * repo shares them, and a newer context (a push) starts afresh.
+   */
+  get memoScope(): object {
+    return this.caches
+  }
+
   private noteRead(packRef: number): void {
     if (this.view !== undefined) this.opts.onRead?.(packRef, this.copyOf.get(packRef), this.view)
   }

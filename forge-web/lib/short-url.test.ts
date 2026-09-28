@@ -26,6 +26,10 @@ describe('shortRepoPath → shim → canonical route', () => {
     ],
     [{ kind: 'commits' }, '/alice/project/commits', '/repo/commits/?owner=alice&name=project'],
     [{ kind: 'commits', ref: 'dev' }, '/alice/project/commits/dev', '/repo/commits/?owner=alice&name=project&ref=dev'],
+    // F-5: a path's History and Blame, as GitHub writes them.
+    [{ kind: 'commits', ref: 'dev', path: 'src/a.rs' }, '/alice/project/commits/dev/src/a.rs', '/repo/commits/?owner=alice&name=project&ref=dev&path=src%2Fa.rs'],
+    [{ kind: 'commits', path: 'src' }, '/alice/project/commits/HEAD/src', '/repo/commits/?owner=alice&name=project&path=src'],
+    [{ kind: 'blame', ref: 'main', path: 'src/a.rs' }, '/alice/project/blame/main/src/a.rs', '/repo/blame/?owner=alice&name=project&ref=main&path=src%2Fa.rs'],
     [{ kind: 'issues' }, '/alice/project/issues', '/repo/issues/?owner=alice&name=project'],
     [{ kind: 'issue', number: 42 }, '/alice/project/issues/42', '/repo/issue/?owner=alice&name=project&number=42'],
     [{ kind: 'pulls' }, '/alice/project/pulls', '/repo/pulls/?owner=alice&name=project'],
@@ -76,6 +80,10 @@ describe('GitHub URLs that map onto an existing page (L-27)', () => {
     ['/alice/project/releases/tag/rel%2F1', '/repo/release/?owner=alice&name=project&tag=rel%2F1'],
     // A tag literally named "tag" keeps its old URL.
     ['/alice/project/releases/tag', '/repo/release/?owner=alice&name=project&tag=tag'],
+    // HEAD is the default branch (GitHub's own links use it): no ref param.
+    ['/alice/project/blob/HEAD/src/a.rs', '/repo/blob/?owner=alice&name=project&path=src%2Fa.rs'],
+    ['/alice/project/blame/HEAD/src/a.rs', '/repo/blame/?owner=alice&name=project&path=src%2Fa.rs'],
+    ['/alice/project/commits/HEAD', '/repo/commits/?owner=alice&name=project'],
     // Already served: tree/blob with a path, the PR tabs, the issues search (its `?q=` rides along).
     ['/alice/project/tree/main/src/lib', '/repo/tree/?owner=alice&name=project&ref=main&path=src%2Flib'],
     ['/alice/project/pull/7/files', '/repo/pull/?owner=alice&name=project&number=7&tab=files'],

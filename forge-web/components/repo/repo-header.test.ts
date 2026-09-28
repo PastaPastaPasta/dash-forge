@@ -12,6 +12,7 @@ describe('activeRepoTab', () => {
     ['/repo/branches', 'code'],
     ['/repo/tags/', 'code'],
     ['/repo/commit', 'code'],
+    ['/repo/blame/', 'code'],
     ['/repo/issue/', 'issues'],
     ['/repo/pulls/new/', 'pulls'],
     ['/repo/release', 'releases'],
