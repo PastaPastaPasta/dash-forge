@@ -12,7 +12,7 @@
 
 import { MODE_GITLINK, MODE_TREE, ObjectTooLargeError } from '../browse'
 import { BlameState, lineMap } from './blame-core'
-import { historyWalker, type WalkOptions } from './commit-log'
+import { diffTrees, historyWalker, type WalkOptions } from './commit-log'
 import { decodeTextBlob, type CommitObject } from './git-objects'
 import { commitVia, logPage, pathEntryAt } from './path-history'
 import { readBlob, type ObjectReader } from './tree-nav'
@@ -43,6 +43,15 @@ export interface BlameResult {
   readonly partial: boolean
   readonly approximate: boolean
   readonly versions: number
+  /** Exact renames the walk followed, newest first. */
+  readonly renames: readonly BlameRename[]
+}
+
+/** `commit` moved the file from `from` to `to` without changing it. */
+export interface BlameRename {
+  readonly commit: string
+  readonly from: string
+  readonly to: string
 }
 
 export interface BlameProgress {
@@ -114,27 +123,29 @@ export async function blameFile(
 
   // The versions come from the path's History, page by page: the commits that changed it.
   let start: string | null = tipOid
-  let current = { oid: '', text: '' }
+  let current = { oid: '', text: '', blob: entry }
   let first = true
+  let at = path
+  const renames: BlameRename[] = []
   try {
     outer: while (start !== null && state.pending > 0) {
-      const page = await logPage(reader, start, { path, walker, signal })
+      const page = await logPage(reader, start, { path: at, walker, signal })
       for (const e of page.entries) {
         signal?.throwIfAborted()
         commits.set(e.oid, e.commit)
         if (first) {
           // The newest change to the path is at or before the tip: the tip's text is its text.
           first = false
-          current = { oid: e.oid, text: state.lines.join('') }
+          current = { oid: e.oid, text: state.lines.join(''), blob: entry }
         } else {
           // `current.oid` changed the file from this version's text to `current.text`. A version
           // that was a directory or a submodule there means `current.oid` made the file.
-          const older = await pathEntryAt(reader, walker, e.oid, path)
+          const older = await pathEntryAt(reader, walker, e.oid, at)
           if (older === null || !isFileEntry(older)) break outer
           const text = await textOf(reader, older)
           const map = lineMap(text, current.text)
           if (state.step(current.oid, map).approximate) approximate = true
-          current = { oid: e.oid, text }
+          current = { oid: e.oid, text, blob: older }
           versions += 1
           onProgress?.({ versions, pending: state.pending, total: state.lines.length })
           await yieldToEventLoop()
@@ -147,6 +158,17 @@ export async function blameFile(
       }
       if (page.capped) partial = true
       start = page.next
+      // The History ended at the commit that added the path: follow it back through an exact
+      // rename there, as blame in git does (the same blob, deleted from another path by that commit).
+      if (start === null && !page.capped && current.oid !== '' && state.pending > 0) {
+        const from = await renamedFrom(reader, walker, current.oid, at, current.blob)
+        if (from === 'unknown') partial = true
+        else if (from !== null) {
+          renames.push({ commit: current.oid, from: from.path, to: at })
+          at = from.path
+          start = from.parent
+        }
+      }
     }
   } finally {
     walker.flush?.()
@@ -157,12 +179,37 @@ export async function blameFile(
     // The path is unchanged in every commit examined (the walk cap): nothing to attribute to.
     const tip = await commitVia(reader, walker, tipOid)
     commits.set(tipOid, tip)
-    current = { oid: tipOid, text: '' }
+    current = { oid: tipOid, text: '', blob: entry }
     partial = true
   }
   state.finish(current.oid)
   onProgress?.({ versions, pending: 0, total: state.lines.length })
-  return { lines: state.lines, hunks: toHunks(state.owner as string[]), commits, partial, approximate, versions }
+  return { lines: state.lines, hunks: toHunks(state.owner as string[]), commits, partial, approximate, versions, renames }
+}
+
+/**
+ * Where `commit` renamed `path` from, when it did so without changing it: a file its change
+ * deleted whose blob is the one it added at `path` (preferring one with the same name, as rename
+ * detection does). Null: `path` was new there, or renamed with edits (which similarity scoring
+ * would follow and this does not). `'unknown'`: the change is over the tree diff's cap.
+ */
+async function renamedFrom(
+  reader: ObjectReader,
+  walker: ObjectReader,
+  commitOid: string,
+  path: string,
+  entry: string,
+): Promise<{ readonly path: string; readonly parent: string } | null | 'unknown'> {
+  const commit = await commitVia(reader, walker, commitOid)
+  const parent = commit.parents[0]
+  if (parent === undefined) return null
+  const diff = await diffTrees({ base: walker, head: walker }, (await commitVia(reader, walker, parent)).tree, commit.tree)
+  const blob = entry.slice(entry.indexOf(':') + 1)
+  const sources = diff.changes.filter((c) => c.status === 'deleted' && c.baseOid === blob && c.baseMode !== null && isFileEntry(`${c.baseMode}:`))
+  const name = path.slice(path.lastIndexOf('/') + 1)
+  const source = sources.find((c) => c.path.slice(c.path.lastIndexOf('/') + 1) === name) ?? sources[0]
+  if (source !== undefined) return { path: source.path, parent }
+  return diff.truncated ? 'unknown' : null
 }
 
 /** Consecutive lines with one owner, as hunks. */

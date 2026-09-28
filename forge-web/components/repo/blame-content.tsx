@@ -207,6 +207,11 @@ function BlameTable({ result, addr }: { result: BlameResult; addr: RepoAddress }
           <span className="text-caution-700 dark:text-caution-400">Partial: the oldest lines are attributed to the oldest version compared ({BLAME_MAX_VERSIONS} at most).</span>
         ) : null}
         {result.approximate ? <span className="text-caution-700 dark:text-caution-400">Some changes were too large to align line by line.</span> : null}
+        {result.renames.map((r) => (
+          <span key={r.commit}>
+            Followed a rename from <span className="font-mono">{r.from}</span>
+          </span>
+        ))}
       </div>
       <ScrollRegion label="Blame" className="overflow-x-auto">
         <table ref={tableRef} className="w-full border-collapse font-mono text-[13px] leading-5" data-lines={lines.length} data-testid="blame-table">

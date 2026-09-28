@@ -85,6 +85,19 @@ describe.skipIf(!HAVE_GIT)('blame matches git blame --first-parent', () => {
     expect(owners(got)).toEqual([base, merge, base, main])
   })
 
+  it('follows a file back through an exact rename (a move to another directory), as git does', async () => {
+    const s = new Store()
+    const c1 = s.commit(s.files({ 'src/fzf/main.go': 'package main\n\nfunc main() {}\n', 'x': '1' }), [], 'one')
+    const c2 = s.commit(s.files({ 'src/fzf/main.go': 'package main\n\n// run\nfunc main() {}\n', 'x': '2' }), [c1], 'two')
+    const moved = s.commit(s.files({ 'main.go': 'package main\n\n// run\nfunc main() {}\n', 'x': '3' }), [c2], 'move to the root')
+    const c4 = s.commit(s.files({ 'main.go': 'package main\n\n// run\nfunc main() { go() }\n', 'x': '3' }), [moved], 'four')
+    const got = await blameFile(s.reader(), c4, 'main.go')
+    expect(owners(got)).toEqual(gitBlame(s.objects.values(), c4, 'main.go'))
+    expect(owners(got)).toEqual([c1, c1, c2, c4])
+    expect(got.renames).toEqual([{ commit: moved, from: 'src/fzf/main.go', to: 'main.go' }])
+    expect(got.partial).toBe(false)
+  })
+
   it(`random histories (${CASES} cases, seed ${SEED})`, async () => {
     const rand = prng(SEED)
     const pick = <T,>(xs: readonly T[]): T => xs[Math.floor(rand() * xs.length)] as T
