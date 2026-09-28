@@ -1,18 +1,18 @@
 //! Which of git's object checks (`git help fsck-msgids`) refuse history, everywhere Dash Forge
-//! checks objects: the helper's `index-pack` on clone and fetch, and the web's browser merge
-//! (`forge-web/lib/view/git-objects.ts`, `RELAXED_FSCK_IDS`, which must list the same ids).
+//! checks objects: the helper's `index-pack` on clone and fetch, the push pack
+//! ([`super::build_pack`]), and the web's browser merge (`forge-web/lib/view/git-objects.ts`,
+//! `RELAXED_FSCK_IDS`, which must list the same ids). The importer pushes through the helper,
+//! so it gets the push check.
 //!
 //! The rule: **refuse what git refuses when it checks a fetch, except the author/committer-line
 //! checks.** git's `transfer.fsckObjects=true` runs `index-pack --strict`, where every ERROR
 //! and WARN id is fatal: `.git` look-alikes (`hasDotgit`, `hasDot`, `hasDotdot`), `.gitmodules`
-//! URLs, paths, names and symlinks, `.gitattributes` size and symlinks, tree corruption
-//! (`badTree`, `duplicateEntries`, `treeNotSorted`, `nullSha1`, `zeroPaddedFilemode`,
-//! `fullPathname`, `emptyName`, `largePathname`), header corruption (`nulInHeader`,
-//! `unterminatedHeader`, `nulInCommit`, `badTreeSha1`, `badParentSha1`, `missingTree`,
-//! `missingAuthor`, `missingCommitter`, `multipleAuthors`) and tag corruption. All of those
-//! stay fatal here: each either changes what a checkout writes (a path git itself treats as
-//! the repository, a submodule URL that runs a command) or means git and another reader could
-//! disagree on what an object names.
+//! URLs, paths, names and symlinks, `.gitattributes` size and symlinks, and tree, header and
+//! tag corruption (`badTree`, `duplicateEntries`, `treeNotSorted`, `nullSha1`,
+//! `zeroPaddedFilemode`, `nulInHeader`, `badParentSha1`, `missingAuthor`, `multipleAuthors`, …).
+//! All of those stay fatal here: each either changes what a checkout writes (a path git itself
+//! treats as the repository, a submodule URL that runs a command) or means git and another
+//! reader could disagree on what an object names.
 //!
 //! [`RELAXED`] are the checks of the text of an `author`, `committer` or `tagger` line (the
 //! name, email, date and time zone). They are demoted to warnings because:
@@ -58,7 +58,7 @@ badEmail=warn,badName=warn,badTimezone=warn,missingEmail=warn,missingNameBeforeE
 missingSpaceBeforeDate=warn,missingSpaceBeforeEmail=warn,zeroPaddedDate=warn";
 
 /// The first git version whose `index-pack` takes severities after `--fsck-objects`.
-pub const MIN_GIT_FOR_SEVERITIES: (u32, u32) = (2, 44);
+const MIN_GIT_FOR_SEVERITIES: (u32, u32) = (2, 44);
 
 /// The `index-pack` object-check argument for the `git` on PATH ([`index_pack_checks_for`]
 /// its `git version`), asked once per process.
@@ -79,21 +79,17 @@ pub fn index_pack_checks() -> &'static str {
 /// on a git older than 2.44, which could only check with the author-line ids fatal and so
 /// would refuse histories a clone accepts; readers still check what they fetch.
 pub fn push_checks() -> Option<&'static str> {
-    let checks = index_pack_checks();
-    (checks == INDEX_PACK_FSCK).then_some(checks)
+    (index_pack_checks() == INDEX_PACK_FSCK).then_some(INDEX_PACK_FSCK)
 }
 
 /// The `index-pack` object-check argument for the git that printed `version`
 /// (`git version 2.50.1 (Apple Git-155)`): [`INDEX_PACK_FSCK`] from 2.44, else plain
 /// `--fsck-objects` (an older git refuses the severities as an unknown option; it then checks
 /// everything at git's defaults, which is stricter, never looser).
-pub fn index_pack_checks_for(version: &str) -> &'static str {
+fn index_pack_checks_for(version: &str) -> &'static str {
     let parsed = version.split_whitespace().nth(2).and_then(|v| {
         let mut it = v.split('.');
-        Some((
-            it.next()?.parse::<u32>().ok()?,
-            it.next()?.parse::<u32>().ok()?,
-        ))
+        Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
     });
     match parsed {
         Some(v) if v < MIN_GIT_FOR_SEVERITIES => "--fsck-objects",
@@ -103,18 +99,18 @@ pub fn index_pack_checks_for(version: &str) -> &'static str {
 
 /// One object git's checks refused, from `index-pack`'s stderr.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Refusal {
+struct Refusal {
     /// The object's id.
-    pub oid: String,
+    oid: String,
     /// git's msg-id (`hasDotgit`, `gitmodulesUrl`, …).
-    pub msg_id: String,
+    msg_id: String,
     /// git's message after the msg-id.
-    pub message: String,
+    message: String,
 }
 
 /// The objects `index-pack` (or `fsck`) refused, in the order it reported them: its
 /// `error: object <oid>: <msgId>: <message>` lines. Warnings are not refusals.
-pub fn refusals(stderr: &str) -> Vec<Refusal> {
+fn refusals(stderr: &str) -> Vec<Refusal> {
     stderr
         .lines()
         .filter_map(|line| {

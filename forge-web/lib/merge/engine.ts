@@ -216,7 +216,9 @@ function identLine(who: MergeIdentity): string {
   const abs = Math.abs(east)
   const tz = `${east < 0 ? '-' : '+'}${String(Math.floor(abs / 60)).padStart(2, '0')}${String(abs % 60).padStart(2, '0')}`
   const line = `${who.name} <${who.email}> ${when} ${tz}`
-  if (!STRICT_IDENT.test(line)) throw new MalformedObjectError('0'.repeat(40), `the merge identity ${JSON.stringify(line)} is not one git accepts`)
+  if (!STRICT_IDENT.test(line)) {
+    throw new MalformedObjectError('0'.repeat(40), `the merge identity ${JSON.stringify(line)} is not one git accepts`)
+  }
   return line
 }
 

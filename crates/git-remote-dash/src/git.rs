@@ -17,21 +17,6 @@ use anyhow::{anyhow, bail, Result};
 use forge_core::pack::{ensure_safe_rev, fsck};
 use std::io::Write as _;
 
-/// How every downloaded pack is checked as it is indexed: git's own object checks, at the
-/// severities [`fsck::INDEX_PACK_FSCK`] sets (every check git's `transfer.fsckObjects` makes
-/// fatal stays fatal, except the author/committer-line checks real histories fail — see that
-/// module), so a hostile pack is refused before a ref can point at it, even with
-/// `transfer.fsckObjects` off. A git older than 2.44 cannot take severities, and gets every
-/// check at its default.
-///
-/// Not `--strict`: that also requires every object a pack's commits and trees name to be in
-/// this pack or already in the odb, and a repo's history is split across packs indexed one
-/// at a time in no guaranteed order, so a valid multi-pack fetch would fail. Connectivity is
-/// checked by git itself once the fetch completes.
-fn index_pack_checks() -> &'static str {
-    fsck::index_pack_checks()
-}
-
 /// Run `git <args>`, optionally in `cwd`, optionally with the ambient `GIT_DIR`/
 /// `GIT_WORK_TREE` cleared, optionally feeding `stdin`. Returns captured stdout on a zero
 /// exit; a non-zero exit is an error carrying git's stderr.
@@ -229,11 +214,24 @@ impl LocalRepo {
     }
 
     /// Index a self-contained pack into the local odb, returning the pack's sha. Feeds the
-    /// bytes to `git index-pack --stdin --fix-thin` with [`index_pack_checks`] (our stored
-    /// packs are already self-contained, so `--fix-thin` is a no-op safety net).
+    /// bytes to `git index-pack --stdin --fix-thin` (our stored packs are already
+    /// self-contained, so `--fix-thin` is a no-op safety net) with git's object checks at
+    /// the severities [`fsck::index_pack_checks`] gives (the classification in
+    /// [`forge_core::pack::fsck`]), so a hostile pack is refused before a ref can point at it,
+    /// even with `transfer.fsckObjects` off. A refusal is E511.
+    ///
+    /// Not `--strict`: that also requires every object a pack's commits and trees name to be
+    /// in this pack or already in the odb, and a repo's history is split across packs indexed
+    /// one at a time in no guaranteed order, so a valid multi-pack fetch would fail.
+    /// Connectivity is checked by git itself once the fetch completes.
     pub fn index_pack(pack_bytes: &[u8]) -> Result<String> {
         let out = run_git(
-            &["index-pack", "--stdin", "--fix-thin", index_pack_checks()],
+            &[
+                "index-pack",
+                "--stdin",
+                "--fix-thin",
+                fsck::index_pack_checks(),
+            ],
             None,
             false,
             Some(pack_bytes),
@@ -285,10 +283,15 @@ impl ScratchRepo {
         Ok(Self { dir })
     }
 
-    /// Index a self-contained pack into the scratch odb, with [`index_pack_checks`].
+    /// Index a self-contained pack into the scratch odb, checked as [`LocalRepo::index_pack`] checks.
     pub fn index_pack(&self, pack_bytes: &[u8]) -> Result<()> {
         run_git(
-            &["index-pack", "--stdin", "--fix-thin", index_pack_checks()],
+            &[
+                "index-pack",
+                "--stdin",
+                "--fix-thin",
+                fsck::index_pack_checks(),
+            ],
             Some(&self.dir),
             true,
             Some(pack_bytes),
@@ -362,15 +365,24 @@ mod tests {
     }
 
     /// Builds a tree's entry bytes, writing the objects they name into the given repo.
-    type TreeEntries = dyn Fn(&Path) -> Vec<u8>;
+    type TreeEntries<'a> = dyn Fn(&Path) -> Vec<u8> + 'a;
 
     /// A self-contained pack of one commit whose root tree is `entries`.
-    fn pack_with(entries: &TreeEntries) -> Vec<u8> {
+    fn pack_with(entries: &TreeEntries<'_>) -> Vec<u8> {
         let dir = tempfile::tempdir().unwrap();
         run_git(&["init", "-q", "--bare"], Some(dir.path()), true, None).unwrap();
         let tree = put(dir.path(), "tree", &entries(dir.path()));
         let commit = put(dir.path(), "commit", commit_text(&tree, None, 1).as_bytes());
         pack(dir.path(), &format!("{commit}\n"))
+    }
+
+    /// `err` is an E511 refusal; returns it.
+    fn refusal(err: &anyhow::Error) -> &UserError {
+        let refused = err
+            .downcast_ref::<UserError>()
+            .unwrap_or_else(|| panic!("not a user error: {err:#}"));
+        assert_eq!(refused.code, codes::OBJECT_REFUSED, "{refused}");
+        refused
     }
 
     #[test]
@@ -391,7 +403,7 @@ mod tests {
             let b = put(d, "blob", b"a\n");
             [entry("100644", "b", &b), entry("100644", "a", &b)].concat()
         };
-        let cases: [(&str, &TreeEntries); 4] = [
+        let cases: [(&str, &TreeEntries<'_>); 4] = [
             ("a .gitmodules whose url is an option", &gitmodules),
             ("a .git look-alike", &dot_git),
             (
@@ -405,10 +417,7 @@ mod tests {
                 .unwrap()
                 .index_pack(&pack_with(entries))
                 .expect_err(label);
-            let refused = err
-                .downcast_ref::<UserError>()
-                .unwrap_or_else(|| panic!("{label}: {err:#}"));
-            assert_eq!(refused.code, codes::OBJECT_REFUSED, "{label}");
+            let refused = refusal(&err);
             assert!(
                 refused.message.starts_with("git refused object "),
                 "{label}: {refused}"
@@ -416,9 +425,9 @@ mod tests {
         }
     }
 
-    /// A self-contained pack of one commit over a one-file tree, with these author and
-    /// committer lines (their text after `author `/`committer `).
-    fn pack_of_commit(author: &str, committer: &str) -> Vec<u8> {
+    /// A self-contained pack of one commit over a one-file tree, with this author line (its
+    /// text after `author `) and a well-formed committer.
+    fn pack_of_commit(author: &str) -> Vec<u8> {
         let dir = tempfile::tempdir().unwrap();
         let d = dir.path();
         run_git(&["init", "-q", "--bare"], Some(d), true, None).unwrap();
@@ -427,7 +436,8 @@ mod tests {
             "tree",
             &entry("100644", "a.txt", &put(d, "blob", b"a\n")),
         );
-        let text = format!("tree {tree}\nauthor {author}\ncommitter {committer}\n\nm\n");
+        let text =
+            format!("tree {tree}\nauthor {author}\ncommitter A <a@b> 1313584730 +0000\n\nm\n");
         let commit = put(d, "commit", text.as_bytes());
         pack(d, &format!("{commit}\n"))
     }
@@ -436,7 +446,6 @@ mod tests {
     fn real_histories_with_malformed_idents_index() {
         // psf/requests' 5e6ecdad (`+051800`), and the shapes older tools wrote. A plain
         // `git clone` accepts every one; git's `transfer.fsckObjects` refuses them.
-        let ok = "A <a@b> 1313584730 +0000";
         for (label, author) in [
             ("badTimezone", "Shrikant <s@k> 1313584730 +051800"),
             ("missingSpaceBeforeDate", "A <a@b>1313584730 +0000"),
@@ -447,7 +456,7 @@ mod tests {
             ("badDate", "A <a@b> never +0000"),
             ("badDateOverflow", "A <a@b> 99999999999999999999 +0000"),
         ] {
-            let pack = pack_of_commit(author, ok);
+            let pack = pack_of_commit(author);
             ScratchRepo::init()
                 .unwrap()
                 .index_pack(&pack)
@@ -459,9 +468,6 @@ mod tests {
     fn a_refused_object_in_a_large_pack_is_reported_not_a_broken_pipe() {
         // index-pack stops reading at the first refused object; with the rest of a large pack
         // still unwritten the write fails with EPIPE, which used to be the only error shown.
-        let dir = tempfile::tempdir().unwrap();
-        let d = dir.path();
-        run_git(&["init", "-q", "--bare"], Some(d), true, None).unwrap();
         // Incompressible, so the pack is far larger than a pipe buffer.
         let mut noise = Vec::with_capacity(4 << 20);
         let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -471,17 +477,10 @@ mod tests {
             x ^= x << 17;
             noise.extend_from_slice(&x.to_le_bytes());
         }
-        let tree = put(d, "tree", &entry("100644", ".git", &put(d, "blob", &noise)));
-        let commit = put(d, "commit", commit_text(&tree, None, 1).as_bytes());
-        let err = ScratchRepo::init()
-            .unwrap()
-            .index_pack(&pack(d, &format!("{commit}\n")))
-            .unwrap_err();
-        let refused = err
-            .downcast_ref::<UserError>()
-            .unwrap_or_else(|| panic!("{err:#}"));
-        assert_eq!(refused.code, codes::OBJECT_REFUSED);
-        assert!(format!("{refused}").contains("hasDotgit"), "{refused}");
+        let pack = pack_with(&|d| entry("100644", ".git", &put(d, "blob", &noise)));
+        let err = ScratchRepo::init().unwrap().index_pack(&pack).unwrap_err();
+        let refused = refusal(&err);
+        assert!(refused.to_string().contains("hasDotgit"), "{refused}");
     }
 
     #[test]

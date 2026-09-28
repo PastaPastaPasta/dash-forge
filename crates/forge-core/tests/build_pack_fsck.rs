@@ -4,14 +4,15 @@
 //! look-alike, a `.gitmodules` whose URL is an option — is refused as E511 before anything is
 //! stored.
 
+use std::io::Write as _;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use std::io::Write as _;
-
 use forge_core::user_error::codes;
 
-fn git(dir: &Path, args: &[&str], stdin: Option<&[u8]>) -> String {
+const OK_IDENT: &str = "A <a@b> 1313584730 +0000";
+
+fn git(dir: &Path, args: &[&str], stdin: &[u8]) -> String {
     let mut child = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -24,12 +25,7 @@ fn git(dir: &Path, args: &[&str], stdin: Option<&[u8]>) -> String {
         .stderr(Stdio::piped())
         .spawn()
         .expect("spawn git");
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(stdin.unwrap_or_default())
-        .unwrap();
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
     let out = child.wait_with_output().unwrap();
     assert!(
         out.status.success(),
@@ -44,48 +40,31 @@ fn put(repo: &Path, kind: &str, body: &[u8]) -> String {
     git(
         repo,
         &["hash-object", "--literally", "-w", "-t", kind, "--stdin"],
-        Some(body),
+        body,
     )
 }
 
-fn entry(mode: &str, name: &str, oid: &str) -> Vec<u8> {
-    let mut e = format!("{mode} {name}\0").into_bytes();
-    e.extend(hex::decode(oid).unwrap());
-    e
+/// A tree of one file `name` holding `body`.
+fn one_file_tree(repo: &Path, name: &str, body: &[u8]) -> String {
+    let mut e = format!("100644 {name}\0").into_bytes();
+    e.extend(hex::decode(put(repo, "blob", body)).unwrap());
+    put(repo, "tree", &e)
 }
 
-/// A repo whose `main` is `base` (well-formed) then one commit with `tree_entries` and `ident`
-/// as its author; returns (repo, base, head).
-fn history(
-    tree_entries: impl Fn(&Path) -> Vec<u8>,
-    ident: &str,
-) -> (tempfile::TempDir, String, String) {
+/// A repo whose `main` is a well-formed `base`, then one commit whose tree is the one file
+/// `name` = `body` and whose author line is `ident`; returns (repo, base, head).
+fn history(name: &str, body: &[u8], ident: &str) -> (tempfile::TempDir, String, String) {
     let tmp = tempfile::tempdir().unwrap();
     let d = tmp.path();
-    git(d, &["init", "-q", "--bare"], None);
-    let ok = "A <a@b> 1313584730 +0000";
-    let t0 = put(
-        d,
-        "tree",
-        &entry("100644", "a.txt", &put(d, "blob", b"a\n")),
-    );
-    let base = put(
-        d,
-        "commit",
-        format!("tree {t0}\nauthor {ok}\ncommitter {ok}\n\nbase\n").as_bytes(),
-    );
-    let t1 = put(d, "tree", &tree_entries(d));
-    let head = put(
-        d,
-        "commit",
-        format!("tree {t1}\nparent {base}\nauthor {ident}\ncommitter {ok}\n\nhead\n").as_bytes(),
-    );
-    git(d, &["update-ref", "refs/heads/main", &head], None);
+    git(d, &["init", "-q", "--bare"], b"");
+    let t0 = one_file_tree(d, "a.txt", b"a\n");
+    let base = format!("tree {t0}\nauthor {OK_IDENT}\ncommitter {OK_IDENT}\n\nbase\n");
+    let base = put(d, "commit", base.as_bytes());
+    let t1 = one_file_tree(d, name, body);
+    let head = format!("tree {t1}\nparent {base}\nauthor {ident}\ncommitter {OK_IDENT}\n\nhead\n");
+    let head = put(d, "commit", head.as_bytes());
+    git(d, &["update-ref", "refs/heads/main", &head], b"");
     (tmp, base, head)
-}
-
-fn file(d: &Path) -> Vec<u8> {
-    entry("100644", "a.txt", &put(d, "blob", b"b\n"))
 }
 
 #[test]
@@ -95,7 +74,7 @@ fn malformed_author_lines_push() {
         "A <a@b>1313584730 +0000",
         "A <a@b> 01313584730 +0000",
     ] {
-        let (tmp, base, head) = history(file, ident);
+        let (tmp, base, head) = history("a.txt", b"b\n", ident);
         // Whole history, and the delta over a base the remote has (both candidates built).
         for bases in [vec![], vec![base.as_str()]] {
             forge_core::pack::build_pack(tmp.path(), &[&head], &bases)
@@ -106,25 +85,18 @@ fn malformed_author_lines_push() {
 
 #[test]
 fn history_no_clone_takes_is_refused_before_it_is_stored() {
-    let dot_git = |d: &Path| entry("100644", ".GIT", &put(d, "blob", b"x\n"));
-    let gitmodules = |d: &Path| {
-        let body = b"[submodule \"x\"]\n\tpath = x\n\turl = --upload-pack=touch /tmp/pwn\n";
-        entry("100644", ".gitmodules", &put(d, "blob", body))
-    };
-    let ok = "A <a@b> 1313584730 +0000";
-    for (label, check, tree) in [
-        (
-            "a .git look-alike",
-            "hasDotgit",
-            &dot_git as &dyn Fn(&Path) -> Vec<u8>,
-        ),
+    let gitmodules: &[u8] =
+        b"[submodule \"x\"]\n\tpath = x\n\turl = --upload-pack=touch /tmp/pwn\n";
+    for (label, check, name, body) in [
+        ("a .git look-alike", "hasDotgit", ".GIT", &b"x\n"[..]),
         (
             "a .gitmodules url that is an option",
             "gitmodulesUrl",
-            &gitmodules,
+            ".gitmodules",
+            gitmodules,
         ),
     ] {
-        let (tmp, base, head) = history(tree, ok);
+        let (tmp, base, head) = history(name, body, OK_IDENT);
         for bases in [vec![], vec![base.as_str()]] {
             let Err(err) = forge_core::pack::build_pack(tmp.path(), &[&head], &bases) else {
                 panic!("{label} was packed");

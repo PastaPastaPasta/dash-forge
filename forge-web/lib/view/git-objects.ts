@@ -118,7 +118,7 @@ const OID_HEX = /^[0-9a-f]{40}$/
  * git's author/committer/tagger-line checks, demoted to warnings wherever Dash Forge checks
  * objects (the same list as `RELAXED` in `crates/forge-core/src/pack/fsck.rs`, which gives the
  * reason for each). {@link checkCommit} does not judge that text; the parity tests judge it
- * with `git -c fsck.<id>=warn fsck --strict`.
+ * with `git -c fsck.<id>=ignore fsck --strict`.
  */
 export const RELAXED_FSCK_IDS: readonly string[] = [
   'badDate',
@@ -141,12 +141,9 @@ export const RELAXED_FSCK_IDS: readonly string[] = [
  * repeat any of those four. Stricter than git in places (a blank line after the header), never
  * looser.
  *
- * The TEXT of the author and committer lines is not judged: git's checks of it (`badTimezone`,
- * `missingSpaceBeforeDate`, `badEmail`, `badDate` and the rest of `RELAXED` in
- * `crates/forge-core/src/pack/fsck.rs`) are warnings wherever Dash Forge checks objects, as a
- * plain `git clone` accepts them and real histories fail them (psf/requests' 5e6ecdad has the
- * time zone `+051800`). The line is display metadata: git reads it leniently, never as a path,
- * a URL or an object, and so does {@link parseIdent}.
+ * The text of the author and committer lines is not judged: git's checks of it are the relaxed
+ * ones ({@link RELAXED_FSCK_IDS}; psf/requests' 5e6ecdad has the time zone `+051800`), and
+ * {@link parseIdent} reads it leniently, as git does.
  */
 export function checkCommit(oid: string, bytes: Uint8Array): void {
   const bad = (why: string): never => {

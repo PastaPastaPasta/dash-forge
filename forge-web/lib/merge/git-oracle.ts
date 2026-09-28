@@ -32,7 +32,9 @@ export function writeLiterally(dir: string, objects: Iterable<GitObject>): void 
 }
 
 /** `-c fsck.<id>=ignore` for each of `relaxed`: git's checks with those demoted. */
-const relaxing = (relaxed: readonly string[]): string[] => relaxed.flatMap((id) => ['-c', `fsck.${id}=ignore`])
+function relaxing(relaxed: readonly string[]): string[] {
+  return relaxed.flatMap((id) => ['-c', `fsck.${id}=ignore`])
+}
 
 /**
  * The oids `git fsck --strict` reports an error or warning for, among the loose objects of
