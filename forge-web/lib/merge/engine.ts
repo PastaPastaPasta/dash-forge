@@ -232,6 +232,34 @@ export function squashMessage(title: string, body: string, number: number, autho
   return m
 }
 
+/** The PR's commit authors for a squash: loading (null), read (`complete` false: the list was capped), or unreadable. */
+export type SquashAuthors = { readonly authors: readonly string[]; readonly complete: boolean } | { readonly error: string } | null
+
+/**
+ * The squash message box's state. The default waits for the authors (a squash made before would
+ * drop their credit); a commit list that cannot be read gives a default without them, with a
+ * warning, instead of waiting forever. `edited` (the merger's text) wins once typed. `problem`
+ * says why "Squash and merge" is disabled, or null.
+ */
+export function squashDraft(
+  pr: { readonly title: string; readonly body: string; readonly number: number },
+  authors: SquashAuthors,
+  committer: string,
+  edited: string | null,
+): { message: string; ready: boolean; warning: string | null; problem: string | null } {
+  const fallback = authors === null ? null : squashMessage(pr.title, pr.body, pr.number, 'error' in authors ? [] : authors.authors, committer)
+  const ready = edited !== null || fallback !== null
+  const message = edited ?? fallback ?? ''
+  const warning =
+    authors !== null && 'error' in authors
+      ? `The PR's commits could not be read (${authors.error}), so the message has no Co-authored-by lines: add them by hand if you want the authors credited.`
+      : authors !== null && !authors.complete
+        ? 'This PR has more commits than the page lists: add any missing Co-authored-by lines (or squash with `dg pr merge --squash`).'
+        : null
+  const problem = !ready ? "Reading the PR's commits for the Co-authored-by lines…" : message.trim() === '' ? 'Write a commit message to squash and merge.' : null
+  return { message, ready, warning, problem }
+}
+
 /** The squash commit's bytes: the tree, the base tip as its only parent, the merger as author and committer. */
 export function squashCommitBytes(tree: string, input: MergeInput): Uint8Array {
   const ident = identLine(input.author)

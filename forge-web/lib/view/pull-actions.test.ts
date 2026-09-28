@@ -267,6 +267,11 @@ describe('deleting the source branch after a merge (dg deletable_source, and the
     expect(deleteBranchProblem({ ...base, refName: 'refs/heads/main', sameRepo: false })).toMatch(/default branch/)
     expect(deleteBranchProblem({ ...base, defaultBranch: 'refs/heads/feature' })).toMatch(/default branch/)
   })
+  it("fails closed when the source repo's default branch could not be read", () => {
+    expect(deleteBranchProblem({ ...base, defaultBranch: null })).toMatch(/default branch could not be read/)
+    expect(deleteBranchProblem({ ...base, defaultBranch: null, tip: H })).toMatch(/default branch could not be read/)
+  })
+
   it('refuses a branch that moved past the merged head', () => {
     expect(deleteBranchProblem({ ...base, tip: 'cd'.repeat(20) })).toMatch(/moved to cdcdcdcdc after the merged head/)
   })

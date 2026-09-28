@@ -8,6 +8,7 @@
 import type { PullView, RepoRef } from '@/lib/repo'
 import { tipOidOf, type RepoHome } from '@/lib/view'
 import { mergeBaseTip } from '@/lib/view/pull-actions'
+import type { SquashAuthors } from '@/lib/merge/engine'
 import { MergePanel } from '@/components/repo/merge-panel'
 import { pullBase, useComparisonSides } from '@/components/repo/pull-diff'
 
@@ -39,7 +40,7 @@ export function PullMerge({
 /** What the PR page adds to the merge panel. */
 export interface MergeExtras {
   readonly allowedMethods?: number
-  readonly squashAuthors?: { readonly authors: readonly string[]; readonly complete: boolean } | null
+  readonly squashAuthors?: SquashAuthors
   readonly deleteBranch?: { readonly label: string; readonly run: () => Promise<void> } | null
 }
 

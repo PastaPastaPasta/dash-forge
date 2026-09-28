@@ -9,7 +9,7 @@ import { BrowseReader, ObjectLocator, type GitObject } from '../browse'
 import { indexPacks, memoryPackSource, serializeLocator } from '../browse/indexer'
 import { Store } from '../view/diff-fixtures'
 import { parseCommit } from '../view/git-objects'
-import { checkMergeDetailed, runMerge, squashMessage, type MergeInput } from './engine'
+import { checkMergeDetailed, runMerge, squashDraft, squashMessage, type MergeInput } from './engine'
 import { gitAcceptsHistory, HAVE_GIT } from './git-oracle'
 
 const ME = { name: 'Merger', email: 'm@example.com', timestamp: 1_700_000_000, timezoneOffset: 0 }
@@ -29,6 +29,25 @@ async function packed(pack: Uint8Array): Promise<GitObject[]> {
   const r = new BrowseReader(ObjectLocator.parse(serializeLocator(rows)), memoryPackSource([pack]))
   return Promise.all(rows.map((row) => r.readObject(row.oidHex)))
 }
+
+describe('the squash message box', () => {
+  const pr = { title: 'Greet', body: '', number: 7 }
+  const me = 'M <m@x>'
+  it('waits for the authors, then credits them; an edit wins', () => {
+    expect(squashDraft(pr, null, me, null)).toMatchObject({ ready: false, problem: expect.stringMatching(/Reading the PR/) })
+    expect(squashDraft(pr, { authors: ['A <a@x>'], complete: true }, me, null)).toEqual({ message: 'Greet (#7)\n\nCo-authored-by: A <a@x>', ready: true, warning: null, problem: null })
+    expect(squashDraft(pr, null, me, 'Mine').message).toBe('Mine')
+  })
+  it('never waits forever: an unreadable commit list gives a message without authors, and says so', () => {
+    const d = squashDraft(pr, { error: 'the head repo is unreachable' }, me, null)
+    expect(d).toMatchObject({ message: 'Greet (#7)', ready: true, problem: null })
+    expect(d.warning).toMatch(/could not be read \(the head repo is unreachable\).*no Co-authored-by lines/)
+  })
+  it('says why Squash is disabled with an empty message, and warns about a capped list', () => {
+    expect(squashDraft(pr, { authors: [], complete: true }, me, '  ').problem).toBe('Write a commit message to squash and merge.')
+    expect(squashDraft(pr, { authors: [], complete: false }, me, null).warning).toMatch(/more commits than the page lists/)
+  })
+})
 
 describe('squashMessage (parity with dg squash_message)', () => {
   it('title (#n), the body, and Co-authored-by for every author but the committer', () => {
