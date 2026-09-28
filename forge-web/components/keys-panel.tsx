@@ -26,7 +26,7 @@ export const FORGET_CONFIRM =
   "Delete this browser's key from this device? This does not revoke it: the key stays valid on chain until it expires, and a wallet key never expires (use \"Revoke on chain\" or \"Disable key on chain\" for that). You will need your identity file, recovery phrase or wallet to sign in again here."
 
 export function KeysPanel(): JSX.Element {
-  const { identity, keyLimits, storage, funds, logout, forget, revokeStored, isLoading, grants, unlimitedKey, unboundedKey } = useAuth()
+  const { identity, keyId, heldOnly, keyLimits, storage, funds, logout, forget, revokeStored, isLoading, grants, unlimitedKey, unboundedKey } = useAuth()
   const revokeRef = useRef<HTMLInputElement>(null)
   const [revokeError, setRevokeError] = useState<string | null>(null)
   const revoke = async (file: File): Promise<void> => {
@@ -58,6 +58,14 @@ export function KeysPanel(): JSX.Element {
         </p>
       ) : keyLimits ? (
         <dl className="grid grid-cols-2 gap-2">
+          {keyId !== null ? (
+            <>
+              <dt className="text-anvil-500 dark:text-anvil-400">Key</dt>
+              <dd data-testid="key-id" data-key-id={keyId} className="font-mono">
+                #{keyId}
+              </dd>
+            </>
+          ) : null}
           <dt className="text-anvil-500 dark:text-anvil-400">Budget left</dt>
           <dd data-testid="key-budget" className="font-mono">
             {keyLimits.remaining === null ? '—' : `${creditsAsDash(Number(keyLimits.remaining))} of ${creditsAsDash(Number(keyLimits.total ?? 0n))} DASH`}
@@ -70,6 +78,12 @@ export function KeysPanel(): JSX.Element {
       ) : (
         <p className="text-anvil-500 dark:text-anvil-400">This key has no budget or expiry.</p>
       )}
+      {heldOnly.length > 0 ? (
+        <p className="rounded-md border border-anvil-200 px-3 py-2 dark:border-anvil-800" data-testid="held-only-keys" data-key-ids={heldOnly.join(',')}>
+          Also held, never used to sign: key{heldOnly.length > 1 ? 's' : ''} {heldOnly.map((k) => `#${k}`).join(', ')}, from a key renewal you gave up.
+          Your next renewal or &quot;Revoke on chain&quot; disables {heldOnly.length > 1 ? 'them' : 'it'}.
+        </p>
+      ) : null}
       {storage === 'vault' && unlimitedKey ? (
         <div className="space-y-2">
           <UnlimitedKeyWarning unbounded={unboundedKey} />

@@ -211,7 +211,9 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
           // A staged key (a renewal in flight) is not the key this browser holds yet.
           if (!o?.staged) storedKey.current = { identityId: id, keyId: k.keyId, wif: k.wif }
         },
-        heldKey: async (id) => (storedKey.current?.identityId === id ? storedKey.current : null),
+        // This sheet's own run first; else (the sheet was reopened) the key the vault holds for
+        // the identity, opened with the protection chosen now.
+        heldKey: async (id) => (storedKey.current?.identityId === id ? storedKey.current : controller.storedKeyFor(id, protection)),
         onStage: (s, detail) => setStage(detail ?? STAGE_TEXT[s]),
         onDeposit: setSeen,
         onCharge: (id, charge) => controller.reportCharge(id, charge),

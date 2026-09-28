@@ -251,23 +251,35 @@ export async function verifyLimitedKey(
     const identity = await authSdk(sdk).identities.fetch(identityId)
     return identity?.publicKeys.find((x) => x.keyId === keyId) ?? null
   }, 6)
+  // Not shown can be a node behind, not a verdict: the caller retries rather than replace it.
   if (!k) throw new Error(`key ${keyId} is not on identity ${identityId}`)
-  if (k.disabledAt !== undefined) throw new Error(`key ${keyId} is disabled`)
-  if (k.purposeNumber !== 0 || k.securityLevelNumber !== 2) throw new Error(`key ${keyId} is not an AUTHENTICATION/HIGH key`)
+  if (k.disabledAt !== undefined) throw new UnusableLimitedKeyError(`key ${keyId} is disabled`)
+  if (k.purposeNumber !== 0 || k.securityLevelNumber !== 2) throw new UnusableLimitedKeyError(`key ${keyId} is not an AUTHENTICATION/HIGH key`)
   const bounds = k.contractBounds?.toJSON()
   if (bounds?.$type !== 'contractGroup' || bounds.id !== group) {
-    throw new Error(`key ${keyId} is not bound to the dash-forge contract group`)
+    throw new UnusableLimitedKeyError(`key ${keyId} is not bound to the dash-forge contract group`)
   }
-  if (k.totalBudget === undefined || k.expiresAt === undefined) throw new Error(`key ${keyId} has no budget or expiry`)
-  if (Number(k.expiresAt) <= Date.now()) throw new Error(`key ${keyId} has expired`)
+  if (k.totalBudget === undefined || k.expiresAt === undefined) throw new UnusableLimitedKeyError(`key ${keyId} has no budget or expiry`)
+  if (Number(k.expiresAt) <= Date.now()) throw new UnusableLimitedKeyError(`key ${keyId} has expired`)
   if (request) {
-    if (k.totalBudget !== request.budgetCredits) throw new Error(`key ${keyId} has a different budget than requested`)
-    if (Number(k.expiresAt) !== request.expiresAt) throw new Error(`key ${keyId} has a different expiry than requested`)
+    if (k.totalBudget !== request.budgetCredits) throw new UnusableLimitedKeyError(`key ${keyId} has a different budget than requested`)
+    if (Number(k.expiresAt) !== request.expiresAt) throw new UnusableLimitedKeyError(`key ${keyId} has a different expiry than requested`)
   }
-  if (wif !== undefined && !controlsKey(k, wif, network)) throw new Error(`the stored private key does not control key ${keyId}`)
+  if (wif !== undefined && !controlsKey(k, wif, network)) throw new UnusableLimitedKeyError(`the stored private key does not control key ${keyId}`)
   const remaining = await readRemainingBudget(sdk, identityId, keyId)
-  if (remaining !== null && remaining <= 0n) throw new Error(`key ${keyId} has no budget left`)
+  if (remaining !== null && remaining <= 0n) throw new UnusableLimitedKeyError(`key ${keyId} has no budget left`)
   return { remaining, total: k.totalBudget, expiresAt: Number(k.expiresAt) }
+}
+
+/**
+ * The key Platform returned cannot be used as this browser's key (disabled, expired, wrong
+ * bounds, not ours, no budget): a definite answer, unlike a read that failed or a key not shown.
+ */
+export class UnusableLimitedKeyError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'UnusableLimitedKeyError'
+  }
 }
 
 /** What is left of a key's budget (null when it has none). */

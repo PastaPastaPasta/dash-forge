@@ -254,7 +254,7 @@ function FilePicker({ label, detail, onFile, disabled }: { label: string; detail
 }
 
 function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | null; onDone: () => void; onOther: () => void; onRenew: () => void }): JSX.Element {
-  const { vaults, unlock, forget, isLoading } = useAuth()
+  const { vaults, unlock, forget, isLoading, step } = useAuth()
   const [pick, setPick] = useState(() => Math.max(0, vaults.findIndex((v) => v.identityId === initial)))
   const [passphrase, setPassphrase] = useState('')
   const passphraseRef = useRef<HTMLInputElement>(null)
@@ -330,6 +330,12 @@ function UnlockView({ initial, onDone, onOther, onRenew }: { initial: string | n
             Unlock
           </Button>
         </form>
+      ) : null}
+      {/* Why a second passkey prompt follows, when one does (an unfinished renewal, D-016). */}
+      {isLoading && step ? (
+        <p role="status" className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="unlock-step">
+          {step}
+        </p>
       ) : null}
       <ErrorBox error={error} />
       {expired ? (

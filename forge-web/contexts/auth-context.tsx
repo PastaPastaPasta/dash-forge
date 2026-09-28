@@ -62,6 +62,8 @@ const SPEND_TITLES: Readonly<Record<string, string>> = {
   'identity:create': 'Identity created',
 }
 
+const NONE: readonly number[] = []
+
 interface AuthContextValue {
   /** The logged-in identity id, or null. */
   readonly identity: string | null
@@ -71,6 +73,10 @@ interface AuthContextValue {
   readonly funds: FundsState | null
   /** The signing key's limits (a PV14 limited key), when it has any. */
   readonly keyLimits: KeyLimits | null
+  /** The signing key's id on the identity, when signed in. */
+  readonly keyId: number | null
+  /** Keys held only for the next renewal or revoke to disable ({@link AuthSession.heldOnly}). */
+  readonly heldOnly: readonly number[]
   readonly isLoading: boolean
   /** The step a running sign-in is on, for the sheet (null when none). */
   readonly step: string | null
@@ -96,7 +102,7 @@ interface AuthContextValue {
   ) => Promise<void>
   adoptLimitedKey: (identityId: string, key: LimitedKey, protection: Protection) => Promise<void>
   /** Store the keys a wallet granted (verified on chain) and open the session. */
-  adoptWalletKeys: (identityId: string, keys: readonly WalletKey[], protection: Protection, options?: { readonly discardPendingRenewal?: boolean }) => Promise<void>
+  adoptWalletKeys: (identityId: string, keys: readonly WalletKey[], protection: Protection, options?: Parameters<AuthController['adoptWalletKeys']>[3]) => Promise<void>
   /** Add a wallet grant for another Forge contract to the signed-in identity. */
   addWalletGrant: (identityId: string, key: WalletKey, requested: string) => Promise<void>
   /** Which Forge contracts the session's keys cover, and whether a held key is unlimited. */
@@ -267,6 +273,8 @@ export function AuthProvider({
       balance: session?.balance ?? null,
       funds,
       keyLimits,
+      keyId: session?.keyId ?? null,
+      heldOnly: session?.heldOnly ?? NONE,
       isLoading: state.isLoading,
       step: state.step ?? null,
       error: state.error,

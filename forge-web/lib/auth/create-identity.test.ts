@@ -98,7 +98,8 @@ vi.mock('./limited-key', async (orig) => {
     verifyLimitedKey: async () => {
       if (chain.readsFailAfterVerify) chain.fetchFails = true
       if (chain.verifyFails) throw new Error(chain.verifyFails)
-      if (chain.key5 !== 'ours') throw new Error('the stored private key does not control key 5')
+      if (chain.key5 !== 'ours') throw new real.UnusableLimitedKeyError('the stored private key does not control key 5')
+      if (chain.key5Expired) throw new real.UnusableLimitedKeyError('key 5 has expired')
       return limits
     },
     // Production registers the renewed key under a new id (the old key 5 is disabled).
@@ -125,6 +126,10 @@ const chain = vi.hoisted(() => ({
   balanceFails: false,
   /** verifyLimitedKey fails with this message (a transient failure), when set. */
   verifyFails: '',
+  /** Our key 5 is on the identity but has expired (a definite "cannot be used"). */
+  key5Expired: false,
+  /** Identity reads do not show key 5 (a node behind). */
+  key5Hidden: false,
   /** Identity reads fail from the key check on. */
   readsFailAfterVerify: false,
   /** Aborts this controller on the first probe read. */
@@ -174,7 +179,7 @@ function fakeSdk(): EvoSDK {
           chain.lag--
           return undefined
         }
-        return { publicKeys: [{ keyId: 5, validatePrivateKey: () => chain.key5 === 'ours' }] }
+        return { publicKeys: chain.key5Hidden ? [] : [{ keyId: 5, validatePrivateKey: () => chain.key5 === 'ours' }] }
       },
       create: async () => {
         chain.events.push('create')
@@ -266,6 +271,8 @@ beforeEach(async () => {
     fetchFails: false,
     balanceFails: false,
     verifyFails: '',
+    key5Expired: false,
+    key5Hidden: false,
     readsFailAfterVerify: false,
     abortOnProbe: null,
     events: [],
@@ -335,6 +342,46 @@ describe('IdentityCreate with a stale quorum after the broadcast (L-06)', () => 
     expect(out.key).toEqual({ keyId: 5, wif: BROWSER_WIF.value, limits: expect.anything() })
     expect(renewed.calls).toEqual([])
     expect(chain.events).not.toContain('create')
+  })
+
+  it('L-06: the sheet reopened later, the identity exists and the stored key 5 is its key: no renewal', async () => {
+    // A new sheet: no key of this run in memory; heldKey reads the vault (storedKeyFor).
+    chain.exists = true
+    const vault: { identityId: string; keyId: number; wif: string }[] = [{ identityId: IDENTITY, keyId: 5, wif: BROWSER_WIF.value }]
+    const out = await run({ heldKey: async (id) => vault.find((v) => v.identityId === id) ?? null }).promise
+    expect(out.key).toEqual({ keyId: 5, wif: BROWSER_WIF.value, limits: expect.anything() })
+    expect(renewed.calls).toEqual([])
+  })
+
+  it('L-06: the sheet reopened, the stored key 5 is ours but expired: renews instead of a retry that cannot succeed', async () => {
+    chain.exists = true
+    chain.key5Expired = true
+    const out = await run({ heldKey: async () => ({ keyId: 5, wif: BROWSER_WIF.value }) }).promise
+    expect(out.key.keyId).toBe(6)
+    expect(renewed.calls).toHaveLength(1)
+  })
+
+  it('L-06: a stored key 5 a lagging node does not show yet: "Try again", never a paid renewal', async () => {
+    chain.exists = true
+    chain.key5Hidden = true
+    chain.verifyFails = 'key 5 is not on identity x'
+    await expect(run({ heldKey: async () => ({ keyId: 5, wif: BROWSER_WIF.value }) }).promise).rejects.toThrow(/could not be checked/)
+    expect(renewed.calls).toEqual([])
+  })
+
+  it('L-06: the stored key is not a Forge key (a wallet key) with grants beside it: the renewal disables them all', async () => {
+    chain.exists = true
+    chain.key5Expired = true
+    const out = await run({ heldKey: async () => ({ keyId: 5, wif: BROWSER_WIF.value, alsoHeld: [{ keyId: 6, wif: 'GRANT' }] }) }).promise
+    expect(out.key.keyId).toBe(6)
+    expect(renewed.calls[0]).toMatchObject({ disableHeld: [{ keyId: 5, wif: BROWSER_WIF.value }, { keyId: 6, wif: 'GRANT' }] })
+  })
+
+  it('L-06: the sheet reopened, the identity exists, no stored key opens: renews (paid) as before', async () => {
+    chain.exists = true
+    const out = await run({ heldKey: async () => null }).promise
+    expect(out.key.keyId).toBe(6)
+    expect(renewed.calls).toHaveLength(1)
   })
 
   it('M1: "Try again" when the identity exists but holds another key 5: renews it', async () => {
