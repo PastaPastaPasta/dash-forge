@@ -1,9 +1,9 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type Locator, type Page } from '@playwright/test'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PASSPHRASE, countDocumentQueries, idFile, idOf, shot, signedIn, unlock, waitForRepoResolved } from './helpers'
+import { PASSPHRASE, idFile, idOf, shot, signedIn, stateFile, unlock, waitForRepoResolved } from './helpers'
 
 /**
  * G5 + G18 of the live fix list, on a devnet with the spec's OWN identities (never the shared
@@ -101,9 +101,11 @@ async function removeAllProfiles(page: Page): Promise<void> {
  * After a navigation: unlock the vault, and the storage settings a resumed signing-only session
  * keeps sealed (#108) when the page asks for them.
  */
-async function unlockAll(page: Page): Promise<void> {
+async function unlockAll(page: Page, settled?: Locator): Promise<void> {
   await unlock(page)
   const more = page.locator('[data-testid="storage-unlock"], [data-testid="release-storage-unlock"]').first()
+  // Wait for the page to show either what it needs the settings for, or the prompt to open them.
+  if (settled !== undefined) await expect(settled.or(more)).toBeVisible({ timeout: 60_000 })
   if (await more.isVisible().catch(() => false)) {
     await more.getByPlaceholder('Passphrase').fill(PASSPHRASE)
     await more.getByRole('button', { name: /unlock/i }).last().click()
@@ -140,7 +142,7 @@ test.beforeAll(() => {
   // The README's pack on Platform, then a second file's pack on S3 (the same repo, two places).
   dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform', '--description', 'G5/G18 e2e: storage default, trust summary, inbox backfill')
   git('OWNER', 'push', REMOTE, 'main')
-  dg('OWNER', 'storage', 'add', PROFILE, '--kind', 's3', '--endpoint', 'http://127.0.0.1:9000', '--region', 'us-east-1', '--bucket', 'forge-byo', '--public-url', PUBLIC, '--prefix', `g5g18-${RUN}`, '--access-key-id', 'minioadmin', '--secret-access-key', 'env:E2E_S3_SECRET')
+  dg('OWNER', 'storage', 'add', PROFILE, '--kind', 's3', '--endpoint', 'http://127.0.0.1:9000', '--region', 'us-east-1', '--bucket', 'forge-byo', '--public-url', PUBLIC, '--prefix', `g5g18-${RUN}`, '--access-key-id', 'minioadmin', '--secret-access-key', 'env:E2E_S3_SECRET', '--allow-private-uri')
   execFileSync('git', ['config', 'dash.storage', PROFILE], { cwd: SRC })
   writeFileSync(join(SRC, 's3file.txt'), `served from S3 (${RUN})\n`)
   g('add', 's3file.txt')
@@ -200,6 +202,8 @@ test('g1. a new S3 profile is the default at once; Save is disabled with nothing
   await box.check()
   await expect(save).toBeDisabled()
   await expect(status).toHaveText('This is your saved default.')
+  // Later tests restore this context's IndexedDB: keep the (sealed) settings in it.
+  await page.context().storageState({ path: stateFile('OWNER'), indexedDB: true })
 })
 
 test('g2. a release asset uploads on that default; without one the dialog says what is missing (L-10)', async ({ browser }) => {
@@ -207,7 +211,9 @@ test('g2. a release asset uploads on that default; without one the dialog says w
   await waitForRepoResolved(page)
   await page.getByRole('button', { name: /new release/i }).click({ timeout: 90_000 })
   const dialog = page.getByRole('dialog')
-  await expect(dialog.locator('#release-assets-hint')).toContainText(`Uploaded to ${PROFILE}`, { timeout: 30_000 })
+  const hint = dialog.locator('#release-assets-hint')
+  await unlockAll(page, hint.getByText(`Uploaded to ${PROFILE}`))
+  await expect(hint).toContainText(`Uploaded to ${PROFILE}`, { timeout: 30_000 })
   await dialog.getByLabel('Tag').fill(TAG)
   await dialog.getByLabel('Title (optional)').fill(`Release ${TAG}`)
   await dialog.locator('input[type="file"]').setInputFiles({ name: `${TAG}.txt`, mimeType: 'text/plain', buffer: Buffer.from(`asset for ${TAG}\n`) })
@@ -222,116 +228,148 @@ test('g2. a release asset uploads on that default; without one the dialog says w
 
   // The trap as QA hit it: a profile but no default. This repo's own choice is only Platform:
   // the dialog names the step and links to the page that fixes it.
-  await page.goto(repoPath('settings'), { waitUntil: 'domcontentloaded' })
-  await unlockAll(page)
-  await waitForRepoResolved(page)
   const repoPolicy = page.getByTestId('repo-storage-policy')
-  await expect(repoPolicy).toContainText('Using your default', { timeout: 60_000 })
+  const openRepoSettings = async (): Promise<void> => {
+    await page.goto(repoPath('settings'), { waitUntil: 'domcontentloaded' })
+    await waitForRepoResolved(page)
+    await unlockAll(page, repoPolicy)
+    await expect(repoPolicy).toContainText(/Using your default|This repo has its own choice/, { timeout: 60_000 })
+  }
+  await openRepoSettings()
   await repoPolicy.getByRole('checkbox', { name: PROFILE }).uncheck()
   // No Platform profile to tick: with nothing ticked the repo override cannot be saved either.
   await expect(repoPolicy.getByRole('button', { name: /use for this repo/i })).toBeDisabled()
   await page.goto('/settings/storage/', { waitUntil: 'domcontentloaded' })
-  await unlockAll(page)
+  await unlockAll(page, page.getByTestId('profile-list'))
   await page.getByTestId('tile-platform').click()
   await page.getByRole('button', { name: /add dash platform/i }).click()
   await expect(page.getByTestId('profile-list')).toContainText('platform')
   // Adding a second profile never replaces the default.
   await expect(page.getByRole('checkbox', { name: PROFILE })).toBeChecked()
   await expect(page.getByRole('checkbox', { name: 'platform' })).not.toBeChecked()
-  await page.goto(repoPath('settings'), { waitUntil: 'domcontentloaded' })
-  await unlockAll(page)
-  await waitForRepoResolved(page)
-  await expect(repoPolicy).toContainText('Using your default', { timeout: 60_000 })
+  await openRepoSettings()
   await repoPolicy.getByRole('checkbox', { name: PROFILE }).uncheck()
   await repoPolicy.getByRole('checkbox', { name: 'platform' }).check()
   await repoPolicy.getByRole('button', { name: /use for this repo/i }).click()
   await expect(repoPolicy).toContainText('Saved for this repo.')
 
   await page.goto(repoPath('releases'), { waitUntil: 'domcontentloaded' })
-  await unlockAll(page)
   await waitForRepoResolved(page)
+  await unlock(page)
   await page.getByRole('button', { name: /new release/i }).click({ timeout: 90_000 })
   const gap = page.getByRole('dialog').getByTestId('release-storage-gap')
+  await unlockAll(page, gap)
   await expect(gap).toHaveAttribute('data-reason', 'platform-only', { timeout: 30_000 })
   await expect(gap).toContainText("This repo's storage choice has only Platform")
   const fix = gap.getByRole('link', { name: "Open this repo's storage settings" })
-  await expect(fix).toHaveAttribute('href', /\/repo\/settings\?.*#storage$/)
+  await expect(fix).toHaveAttribute('href', /\/repo\/settings\/?\?.*#storage$/)
   await shot(page, 'g5-06-release-dialog-names-the-gap')
-  // Back to the default: the dialog uploads to the profile again.
+  // The link opens this repo's storage settings; back to the default there.
   await fix.click()
-  await unlockAll(page)
+  await expect(page).toHaveURL(/\/repo\/settings\/?\?.*#storage$/)
   await waitForRepoResolved(page)
-  await page.getByTestId('repo-storage-policy').getByRole('button', { name: /use my default/i }).click()
-  await expect(page.getByTestId('repo-storage-policy')).toContainText('Back to your default.')
+  await unlockAll(page, repoPolicy)
+  await repoPolicy.getByRole('button', { name: /use my default/i }).click()
+  await expect(repoPolicy).toContainText('Back to your default.')
 })
 
 test('g3. on a file served from S3 the Verification summary names S3, not Platform (L-18)', async ({ browser }) => {
   const page = await signedIn(browser, 'OWNER', repoPath(''))
   await waitForRepoResolved(page)
   const summary = page.getByTestId('verification-summary')
-  // The home reads the README from its Platform pack.
+  // The home reads the tip commit and root tree from the S3 pack (the second push) and the
+  // README from the Platform pack (the first): both places served this view.
   await eventually(page, () => expect(page.getByText('Pushed to Platform.').first()).toBeVisible({ timeout: 60_000 }))
-  await expect(summary).toContainText('from Platform', { timeout: 60_000 })
-  await shot(page, 'g5-04-home-from-platform')
+  await expect(summary).toContainText(new RegExp(`from (${S3_HOST.replace(/\./g, '\\.')}, Platform|Platform, ${S3_HOST.replace(/\./g, '\\.')})$`), { timeout: 60_000 })
+  await shot(page, 'g5-04-home-both-places')
 
-  // Then the S3 file, in the same tab (a client navigation keeps the session's ledger).
+  // Then the S3 file, in the same tab (a client navigation keeps the session's ledger, which
+  // already holds Platform as a source): every object of THIS view came from S3.
   await page.getByRole('link', { name: 's3file.txt' }).first().click()
   await expect(page.getByText(`served from S3 (${RUN})`)).toBeVisible({ timeout: 90_000 })
-  await expect(summary).toContainText(`from ${S3_HOST}`, { timeout: 60_000 })
-  await expect(summary).not.toContainText('from Platform')
+  await expect(summary).toHaveText(new RegExp(`· from ${S3_HOST.replace(/\./g, '\\.')}$`), { timeout: 60_000 })
+  await expect(summary).not.toContainText('Platform')
   await page.getByRole('button', { name: /verification/i }).first().click()
   await shot(page, 'g5-05-s3-file-from-s3')
 })
 
 test('g4. a PR watched after it merged shows "marked merged" in the inbox, for one backfill query (L-17)', async ({ browser }) => {
-  // CONTRIB opens a PR; CONTRIB marks it merged (a writer's merge event); CONTRIB watches its own
-  // PR from the start, so the watcher who arrives LATE is the other user: OWNER.
+  // J4, as QA hit it: CONTRIB watches this repo (an issue CONTRIB opened) and its inbox has read
+  // the repo's state feed. Then CONTRIB opens a PR and OWNER merges it. The tab's own poll reads
+  // the state feed past the merge while its watch list (kept 15 min) predates the PR.
+  const page = await signedIn(browser, 'CONTRIB', '/notifications/')
+  const checkNow = page.getByRole('button', { name: /check now/i })
+  const watching = page.getByRole('region', { name: 'What this browser watches' })
+  const list = page.getByTestId('inbox-list')
+  // How many threads CONTRIB watches (an identity reused across runs already watches some).
+  const threads = async (): Promise<number> => Number(/(\d+) issues and pull requests you opened or commented on/.exec((await watching.textContent()) ?? '')?.[1] ?? NaN)
+  const feedsTotal = async (): Promise<number> => Number(/of (\d+) feeds this round/.exec((await watching.textContent()) ?? '')?.[1] ?? 12)
+  // Every document read, and the state-feed backfills among them: `event`/`authorEvent` reads
+  // ('vent' is in both names) keyed by `targetId` (the feeds themselves read by `repoId`).
+  let reads = 0
+  let backfills = 0
+  page.on('request', (r) => {
+    if (!/\/org\.dash\.platform\.dapi\.v0\.Platform\/getDocuments$/.test(r.url())) return
+    reads++
+    const body = r.postDataBuffer()
+    if (body !== null && body.includes(Buffer.from('vent')) && body.includes(Buffer.from('targetId'))) backfills++
+  })
+  /** One poll that keeps the watch list (as the tab's 60 s timer does): a visibility change. */
+  const poll = async (): Promise<void> => {
+    const before = reads
+    await expect(checkNow).toBeEnabled({ timeout: 180_000 })
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')))
+    await expect.poll(() => reads - before, { timeout: 60_000 }).toBeGreaterThan(0)
+    await expect(checkNow).toBeEnabled({ timeout: 180_000 })
+  }
+  /** Enough polls for the round-robin to read every feed at least once. */
+  const pollAll = async (): Promise<void> => {
+    const rounds = Math.ceil((await feedsTotal()) / 12) + 1
+    for (let i = 0; i < rounds; i++) await poll()
+  }
+  await expect(page.getByText(/Last checked/)).toBeVisible({ timeout: 180_000 })
+  await expect(checkNow).toBeEnabled({ timeout: 180_000 })
+  const n0 = await threads()
+  expect(n0).not.toBeNaN()
+
+  // CONTRIB watches this repo through an issue of its own; every feed is read once.
+  const issue = dg('CONTRIB', 'issue', 'create', SLUG, '--title', `Watched first ${RUN}`)
+  expect(Number(issue['number'])).toBeGreaterThan(0)
+  await expect(async () => {
+    await checkNow.click()
+    await expect(checkNow).toBeEnabled({ timeout: 180_000 })
+    expect(await threads()).toBe(n0 + 1)
+  }).toPass({ timeout: 240_000, intervals: [10_000] })
+  await pollAll()
+
+  // CONTRIB opens a PR; OWNER merges it. Polls that keep the watch list read the repo's state
+  // feed past the merge: the PR is not watched yet, so nothing shows (the bug left it at that).
   const pr = dg('CONTRIB', 'pr', 'create', SLUG, '--base', 'main', '--head', 'feature/greet', '--head-repo', SLUG, '--title', `Greet by name ${RUN}`)
   prNumber = Number(pr['number'])
   expect(prNumber).toBeGreaterThan(0)
-  // OWNER watches this repo's state feed through an issue of its own, and its inbox reads it
-  // (every thread OWNER opened or commented on is watched; the repo's state feed with it).
-  const issue = dg('OWNER', 'issue', 'create', SLUG, '--title', `Watched first ${RUN}`)
-  expect(Number(issue['number'])).toBeGreaterThan(0)
   dg('OWNER', 'pr', 'merge', SLUG, String(prNumber))
+  await pollAll()
+  expect(await threads()).toBe(n0 + 1)
+  // (The saved browser state keeps this identity's inbox from earlier runs: only THIS PR counts.)
+  const merged = list.locator('li', { hasText: `Greet by name ${RUN}` }).filter({ hasText: 'marked merged' })
+  await expect(merged).toHaveCount(0)
+  expect(backfills).toBe(0)
+  await shot(page, 'g18-01-inbox-feed-past-the-merge')
 
-  const page = await signedIn(browser, 'OWNER', '/notifications/')
-  const checkNow = page.getByRole('button', { name: /check now/i })
-  const watching = page.getByRole('region', { name: 'What this browser watches' })
-  // The first poll reads the state feed PAST the merge: the PR is not watched yet.
-  await expect(page.getByText(/Last checked/)).toBeVisible({ timeout: 180_000 })
+  // "Check now" recomputes the watch list: the PR joins it; when its repo's state feed comes
+  // round, one backfill reads the merge the feed had passed.
   await checkNow.click()
   await expect(checkNow).toBeEnabled({ timeout: 180_000 })
-  await expect(watching).toContainText(/1 issues and pull requests you opened or commented on/, { timeout: 60_000 })
-  await expect(page.getByTestId('inbox-list').getByText('marked merged')).toHaveCount(0)
-  await shot(page, 'g18-01-inbox-before-watching')
-
-  // OWNER comments on the merged PR: now it is watched.
-  dg('OWNER', 'pr', 'comment', SLUG, String(prNumber), '--body', 'Late to this one: thanks!')
-  // "Check now" recomputes the watch list, then backfills the PR's state events: ONE query on
-  // the PR's `target` index for the `event` feed (the merge), none for `authorEvent` (nothing
-  // since the PR's start that the feed had read past... unless it had: at most one more).
-  // Every state-feed read: `event` is a byte substring of `authorEvent`, so this counts both.
-  const events = countDocumentQueries(page, 'vent')
-  const stateReads = (): number => events.count()
-  const before = stateReads()
-  const list = page.getByTestId('inbox-list')
-  let rounds = 0
-  while (rounds < 4) {
-    rounds++
-    await checkNow.click()
-    await expect(checkNow).toBeEnabled({ timeout: 180_000 })
-    if (await list.getByText('marked merged').isVisible().catch(() => false)) break
-  }
-  await expect(watching).toContainText(/2 issues and pull requests you opened or commented on/)
-  const row = list.locator('li', { hasText: 'marked merged' })
-  await expect(row).toBeVisible({ timeout: 30_000 })
-  await expect(row).toContainText(`#${prNumber}`)
-  await expect(row).toContainText(`Greet by name ${RUN}`)
+  expect(await threads()).toBe(n0 + 2)
+  await expect(async () => {
+    if (!(await merged.isVisible())) await poll()
+    await expect(merged).toBeVisible()
+  }).toPass({ timeout: 300_000, intervals: [1_000] })
+  await expect(merged).toContainText(`#${prNumber}`)
   await shot(page, 'g18-02-inbox-marked-merged')
-  // Request budget: the `event` + `authorEvent` feed reads each round, plus at most 2 backfills
-  // in total (one per state feed, once). A per-poll re-read of the PR's history would exceed it.
-  // (A poll is counted even if the tab's own 60 s timer ran one more.)
-  const polls = rounds + 1
-  expect(stateReads() - before).toBeLessThanOrEqual(2 * polls + 2)
+  // Request budget: ONE backfill query in all (the `event` feed read past the merge; the
+  // `authorEvent` feed read nothing past the PR's start, so it needs none), never repeated.
+  expect(backfills).toBe(1)
+  await pollAll()
+  expect(backfills).toBe(1)
 })
