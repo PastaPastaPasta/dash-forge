@@ -1,21 +1,22 @@
 'use client'
 
 /**
- * `/explore` (`ux-dx-spec.md` §5.11): search repos by name, most starred, recently updated,
+ * `/explore` (`ux-dx-spec.md` §5.11): search repos by name, trending (new stargazers this week or
+ * today), most starred, recently updated,
  * recent repos (paged), recently released, and, signed in, my repos, the repos I maintain or
  * write to, my issues, my PRs, my stars, and what is assigned to me or mentions me. Every
  * section reads an index that answers it; where none exists the section says so rather than
  * implying it saw everything.
  *
- * Request budget, signed out: search 1 composite per page; most starred 1 composite (up to 100
- * stars, the repos they name, exact counts); recent 1 composite per page (its pushes feed
- * "Recently updated", its first 24 repos "Recently released").
+ * Request budget, signed out: search 1 composite per page; trending, most starred and most forked
+ * 2 each (a proved ranked read, then the ranked repos in one composite); recent 1
+ * composite per page (its pushes feed "Recently updated", its first 24 repos "Recently released").
  */
 
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Suspense, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { CircleDot, Compass, GitBranch, GitPullRequest, History, Info, Package, Search, Star, UserCheck } from 'lucide-react'
+import { CircleDot, Compass, Flame, Info, GitBranch, GitFork, GitPullRequest, History, Package, Search, Star, UserCheck } from 'lucide-react'
 import { AppShell } from '@/components/app-shell'
 import { SignInButton } from '@/components/sign-in-button'
 import { RepoCard } from '@/components/repo-card'
@@ -30,7 +31,8 @@ import { useRepoPages, type RepoPages } from '@/hooks/use-repo-pages'
 import { useSdk } from '@/hooks/use-sdk'
 import { NETWORKS, type Network } from '@/lib/constants'
 import { listReposByOwner, plural, resolveDpnsName, timeAgo, type DiscoveredRepo } from '@/lib/view'
-import { mostStarredRepos, recentReposPage, recentlyUpdated, searchPrefix, searchRepos, PUSH_WINDOW_MS } from '@/lib/view/discovery'
+import { rankedRepos, recentReposPage, recentlyUpdated, searchPrefix, searchRepos, PUSH_WINDOW_MS, type RankedRepos } from '@/lib/view/discovery'
+import type { TrendingWindow } from '@/lib/repo/trending'
 import {
   latestReleases,
   listMyTargets,
@@ -42,15 +44,12 @@ import {
   type TargetRow,
 } from '@/lib/view/mine'
 
-/** The trending note, verbatim from the spec. */
-const TRENDING = "Trending needs an indexer. Forge doesn't run one; you can"
 /** "My repos" and "maintain or write to" read at most this many each (listReposByOwner's page). */
 const MY_REPOS_MAX = 50
 /** The assignment / mention scan looks at this many repos (one feed read each, 3 at a time). */
 const SCAN_REPOS_MAX = 20
-const INDEXER_DOCS = 'https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/roadmap.md'
 
-/** "Most starred" and "Recently updated" show this many. */
+/** "Trending", "Most starred" and "Recently updated" show this many. */
 const TOP_N = 12
 
 export function ExploreClient(): JSX.Element {
@@ -60,9 +59,15 @@ export function ExploreClient(): JSX.Element {
   const on = ready && sdk !== null && forge !== null
 
   const recent = useRepoPages<number>((after) => recentReposPage(sdk!, { network, after }), network, on)
-  const starred = useAsync(() => mostStarredRepos(sdk!, { network, limit: TOP_N }), [ready, network], { enabled: on })
+  const [trendWindow, setTrendWindow] = useState<TrendingWindow>('week')
+  const trending = useAsync(() => rankedRepos(sdk!, trendWindow, { network, limit: TOP_N }), [ready, network, trendWindow], { enabled: on })
+  const starred = useAsync(() => rankedRepos(sdk!, 'most-starred', { network, limit: TOP_N }), [ready, network], { enabled: on })
+  const forked = useAsync(() => rankedRepos(sdk!, 'most-forked', { network, limit: TOP_N }), [ready, network], { enabled: on })
   // Pushes rode along with the repos already read; rank those (the section says so).
-  const updated = useMemo(() => recentlyUpdated([recent.repos, starred.data?.repos ?? []], TOP_N), [recent.repos, starred.data])
+  const updated = useMemo(
+    () => recentlyUpdated([recent.repos, starred.data?.repos ?? [], trending.data?.repos ?? [], forked.data?.repos ?? []], TOP_N),
+    [recent.repos, starred.data, trending.data, forked.data],
+  )
   const recentRepos = recent.repos.slice(0, 24)
   const releases = useAsync(() => latestReleases(sdk!, forge!, recentRepos.map(repoLite)), [recentRepos.map((r) => r.key).join(',')], {
     enabled: on && recent.settled,
@@ -110,16 +115,6 @@ export function ExploreClient(): JSX.Element {
             </h1>
             <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">Read straight from {NETWORKS[network].key}, proof-checked. No server ranks or filters this.</p>
           </div>
-          <p role="note" className="flex items-center gap-2 rounded-md border border-anvil-200 px-3 py-1.5 text-dense text-anvil-600 dark:border-anvil-800 dark:text-anvil-300" data-testid="trending-note" data-tap-exempt="prose">
-            <Info className="h-4 w-4 shrink-0 text-anvil-500 dark:text-anvil-400" aria-hidden />
-            <span>
-              {TRENDING} (
-              <a href={INDEXER_DOCS} className="text-forge-700 underline dark:text-forge-300" target="_blank" rel="noopener noreferrer">
-                docs
-              </a>
-              ).
-            </span>
-          </p>
         </header>
 
         {sdkStatus.phase === 'error' ? (
@@ -135,35 +130,61 @@ export function ExploreClient(): JSX.Element {
         </Suspense>
 
         <Section
-          title={starred.data === null || starred.data.complete ? 'Most starred' : `Most starred among ${plural(starred.data.starsRead, 'star')} read`}
+          title={trendWindow === 'week' ? 'Trending this week' : 'Trending today'}
+          testId="explore-trending"
+          icon={Flame}
+          state={trending}
+          empty={trendWindow === 'week' ? 'Nobody starred a repo in the last week.' : 'Nobody has starred a repo today yet.'}
+          emptyAction={<TrendWindowToggle value={trendWindow} onChange={setTrendWindow} />}
+          note="Ranked by new stargazers in the window, proved by the network (a star counts toward Trending unless the starrer turned that off). An unstar does not take a count back before its week ends."
+          partial={missingNote}
+        >
+          {(d) => (
+            <>
+              <TrendWindowToggle value={trendWindow} onChange={setTrendWindow} />
+              <RankedGrid repos={d.repos} unit="new star" />
+            </>
+          )}
+          {(d) => d.repos.length === 0}
+        </Section>
+
+        <Section
+          title="Most starred"
           testId="explore-most-starred"
           icon={Star}
           state={starred}
           empty="No repo on this network has a star yet."
-          note="Each repo's star count is exact (the star index counts them). Which repos are ranked comes from one read of up to 100 stars; a ranked star index arrives with the next contract revision."
-          partial={(d) =>
-            d.unavailable
-              ? 'This node cannot answer the combined star read, and ranking without it would cost one request per starred repo, so nothing is ranked here.'
-              : d.complete
-                ? null
-                : `There are more than ${d.starsRead} stars, so this ranks only the repos those ${d.starsRead} name. A repo with many stars can be missing.`
-          }
+          note="All time, over every star on the network, proved by the ranked star index."
+          partial={missingNote}
         >
-          {(d) => <RepoGrid repos={d.repos} />}
-          {(d) => d.repos.length === 0 && !d.unavailable}
+          {(d) => <RankedGrid repos={d.repos} unit="star" />}
+          {(d) => d.repos.length === 0}
+        </Section>
+
+        <Section
+          title="Most forked"
+          testId="explore-most-forked"
+          icon={GitFork}
+          state={forked}
+          empty="No repo on this network has been forked yet."
+          note="All time, over every fork on the network, proved by the ranked fork index."
+          partial={missingNote}
+        >
+          {(d) => <RankedGrid repos={d.repos} unit="fork" />}
+          {(d) => d.repos.length === 0}
         </Section>
 
         <Section
           title="Recently updated, among the repos on this page"
           testId="explore-recently-updated"
           icon={History}
-          state={updatedState(recent, starred, updated)}
+          state={updatedState(recent, [starred, trending, forked], updated)}
           empty="None of the repos shown here was pushed to in the last week."
-          note={`Pushes have no cross-repo index, so this ranks the recent and most-starred repos above by their newest push that uploaded objects in the last ${Math.round(PUSH_WINDOW_MS / 86_400_000)} days. Load more recent repos to widen it.`}
+          note={`Pushes have no cross-repo index, so this ranks the recent, trending, most-starred and most-forked repos above by their newest push that uploaded objects in the last ${Math.round(PUSH_WINDOW_MS / 86_400_000)} days. Load more recent repos to widen it.`}
           partial={() =>
             recent.fallback
               ? 'This node refused the combined read, so recent repos came without their pushes and are not ranked here.'
-              : recent.pushesComplete && (starred.data?.pushesComplete ?? true)
+              : recent.pushesComplete && (starred.data?.pushesComplete ?? true) && (trending.data?.pushesComplete ?? true) && (forked.data?.pushesComplete ?? true)
                 ? null
                 : 'Each read looks at the newest 100 pushes of its repos; repos whose pushes fell past those 100 are not ranked here.'
           }
@@ -400,10 +421,51 @@ function pagesState(p: RepoPages): SectionState<DiscoveredRepo[]> {
   return { data: p.settled ? p.repos : null, loading: p.loading, error: p.settled ? null : p.error, reload: p.reload }
 }
 
-/** "Recently updated" settles with the reads it ranks (recent and most starred). */
-function updatedState(recent: RepoPages, starred: AsyncState<unknown>, rows: DiscoveredRepo[]): SectionState<DiscoveredRepo[]> {
-  const settled = recent.settled && (starred.data !== null || starred.error !== null)
-  return { data: settled ? rows : null, loading: recent.loading || starred.loading, error: recent.settled ? null : recent.error, reload: recent.reload }
+/** A ranked repo the ranked read named but whose `repo` document could not be read. */
+function missingNote(d: RankedRepos): string | null {
+  return d.missing > 0 ? `${plural(d.missing, 'ranked repo')} could not be read and ${d.missing === 1 ? 'is' : 'are'} not shown.` : null
+}
+
+/** Week (the oldest open window, a near-full trailing week) or today (the newest window). */
+function TrendWindowToggle({ value, onChange }: { value: TrendingWindow; onChange: (v: TrendingWindow) => void }): JSX.Element {
+  return (
+    <div role="group" aria-label="Trending window" className="mb-3 inline-flex overflow-hidden rounded-md border border-anvil-200 text-dense dark:border-anvil-800">
+      {(['week', 'today'] as const).map((w) => (
+        <button
+          key={w}
+          type="button"
+          aria-pressed={value === w}
+          onClick={() => onChange(w)}
+          className={`hit-area px-3 py-1 ${value === w ? 'bg-anvil-100 font-medium dark:bg-anvil-800' : 'text-anvil-600 dark:text-anvil-300'}`}
+          data-testid={`trending-${w}`}
+        >
+          {w === 'week' ? 'This week' : 'Today'}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** A ranked grid: the repo cards in the proved order, each with its count in the window. */
+function RankedGrid({ repos, unit }: { repos: RankedRepos['repos']; unit: string }): JSX.Element {
+  return (
+    <ol className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3" data-testid="ranked-grid">
+      {repos.map((r, i) => (
+        <li key={r.key} className="relative" data-testid="ranked-row" data-repo-id={r.key} data-count={r.rankCount}>
+          <span className="absolute right-2 top-2 z-10 rounded bg-anvil-100 px-1.5 font-mono text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300" aria-label={`rank ${i + 1}, ${plural(r.rankCount, unit)}`}>
+            #{i + 1} · {plural(r.rankCount, unit)}
+          </span>
+          <RepoCard repo={r} />
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+/** "Recently updated" settles with the reads it ranks (recent, most starred and trending). */
+function updatedState(recent: RepoPages, ranked: readonly AsyncState<unknown>[], rows: DiscoveredRepo[]): SectionState<DiscoveredRepo[]> {
+  const settled = recent.settled && ranked.every((r) => r.data !== null || r.error !== null)
+  return { data: settled ? rows : null, loading: recent.loading || ranked.some((r) => r.loading), error: recent.settled ? null : recent.error, reload: recent.reload }
 }
 
 /** The repo-name search box: submits into `?q=` (Enter or the button; empty clears it). */

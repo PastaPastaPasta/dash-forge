@@ -16,7 +16,7 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import { CheckCircle2, ChevronLeft, ChevronRight, CircleDot, MessageSquare, MessageSquarePlus, Search, X } from 'lucide-react'
+import { CheckCircle2, ChevronLeft, ChevronRight, CircleDot, MessageSquare, MessageSquarePlus, Pin, Search, X } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { ARCHIVED_REASON, resolveDpnsName } from '@/lib/view'
 import {
@@ -143,6 +143,21 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         <p role="note" className="mb-3 text-[12px] text-caution-700 dark:text-caution-400" data-testid="issue-search-dropped">
           Not applied: {dropped.join(' ')}. Authors and assignees take an identity id or @me.
         </p>
+      ) : null}
+
+      {data && data.pinned.length > 0 ? (
+        <ul aria-label="Pinned issues" className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-3" data-testid="pinned-issues">
+          {data.pinned.map((issue) => (
+            <li key={issue.id} className="rounded-lg border border-anvil-200 px-3 py-2 dark:border-anvil-800" data-testid="pinned-issue" data-number={issue.number}>
+              <p className="flex items-center gap-1 text-[11px] text-anvil-500 dark:text-anvil-400">
+                <Pin className="h-3 w-3" aria-hidden /> Pinned · <span className="font-mono">#{issue.number}</span> · {issue.state.open ? 'open' : 'closed'}
+              </p>
+              <Link href={repoHref('/repo/issue', addr, { number: String(issue.number) })} className="hit-area line-clamp-2 text-dense font-medium text-anvil-900 hover:text-forge-700 dark:text-anvil-50 dark:hover:text-forge-400">
+                {issue.title || '(untitled)'}
+              </Link>
+            </li>
+          ))}
+        </ul>
       ) : null}
 
       {filtered ? (

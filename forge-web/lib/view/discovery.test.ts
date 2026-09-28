@@ -13,7 +13,7 @@ import type { CompositeQuery } from '../sdk/composite'
 import { cachedDpnsName, clearDpnsCache } from './dpns'
 import {
   keysetPage,
-  mostStarredRepos,
+  rankedRepos,
   prefixUpperBound,
   recentReposPage,
   recentlyUpdated,
@@ -80,12 +80,20 @@ interface Seen {
   composites: CompositeQuery[]
   queries: DocumentQuery[]
   counts: DocumentQuery[]
+  ranked: Record<string, unknown>[]
 }
 
 function mockSdk(store: Record<string, Record<string, Doc[]>>, seen: Seen, opts: { noComposite?: boolean } = {}): EvoSDK {
   const rows = (c: string, t: string): Doc[] => store[c]?.[t] ?? []
   const composite = async (q: CompositeQuery) => {
     seen.composites.push(q)
+    // Every sub-query walks in the page's direction; an ordering that disagrees is refused.
+    const dir = (o: readonly (readonly [string, string])[] | undefined): string | undefined => o?.[o.length - 1]?.[1]
+    const pageDir = dir(q.orderBy as never)
+    for (const s of q.subQueries) {
+      const d = dir(s.orderBy as never)
+      if (pageDir !== undefined && d !== undefined && d !== pageDir) throw new Error('invalid argument: a sub-query ordering disagrees with the page direction')
+    }
     const page = run(rows(q.dataContractId, q.documentType), (q.where ?? []) as never, (q.orderBy ?? []) as never, q.limit)
     const subDocs: Doc[][] = []
     const subResults = q.subQueries.map((s, i) => {
@@ -120,6 +128,18 @@ function mockSdk(store: Record<string, Record<string, Doc[]>>, seen: Seen, opts:
       count: async (q: DocumentQuery) => {
         seen.counts.push(q)
         return new Map([['', 0n]])
+      },
+      // Drive's ranked walk: count per group, highest first, equal counts by group key descending.
+      ranked: async (q: { dataContractId: string; documentTypeName: string; groupBy: string; limit: number }) => {
+        seen.ranked.push(q as unknown as Record<string, unknown>)
+        const counts = new Map<string, number>()
+        // A document without the grouped property falls in the null group (key "", value null), as on chain.
+        for (const d of rows(q.dataContractId, q.documentTypeName)) counts.set(String(d[q.groupBy] ?? ''), (counts.get(String(d[q.groupBy] ?? '')) ?? 0) + 1)
+        const entries = [...counts.entries()]
+          .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? 1 : a[0] > b[0] ? -1 : 0))
+          .slice(0, q.limit)
+          .map(([g, n], i) => ({ groupKeyHex: Buffer.from(g).toString('hex'), groupValue: g === '' ? null : g, value: BigInt(n), rank: BigInt(i) }))
+        return { startingRank: 0n, entries }
       },
       ...(opts.noComposite ? {} : { composite }),
     },
@@ -158,9 +178,9 @@ function store(): Record<string, Record<string, Doc[]>> {
   }
 }
 
-const fresh = (): Seen => ({ composites: [], queries: [], counts: [] })
+const fresh = (): Seen => ({ composites: [], queries: [], counts: [], ranked: [] })
 const names = (rs: readonly DiscoveredRepo[]): string[] => rs.map((r) => r.slug)
-const requests = (s: Seen): number => s.composites.length + s.queries.length + s.counts.length
+const requests = (s: Seen): number => s.composites.length + s.queries.length + s.counts.length + s.ranked.length
 
 beforeEach(() => clearDpnsCache())
 
@@ -292,29 +312,64 @@ describe('recentReposPage', () => {
   })
 })
 
-describe('mostStarredRepos', () => {
-  it('ranks by exact star counts in ONE composite over the star set', async () => {
+describe('rankedRepos (C-1: proved ranked reads)', () => {
+  it('most starred: one ranked read over every star, then the repos in ONE composite', async () => {
     const seen = fresh()
-    const r = await mostStarredRepos(mockSdk(store(), seen), { network: NET })
-    expect(names(r.repos)).toEqual(['ripgrep', 'demo-05', 'jq'])
+    const r = await rankedRepos(mockSdk(store(), seen), 'most-starred', { network: NET })
+    // ripgrep 3; jq and demo-05 tie at 1, the larger repo id first (Rjq… > Rdemo…)
+    expect(names(r.repos)).toEqual(['ripgrep', 'jq', 'demo-05'])
+    expect(r.repos.map((x) => x.rankCount)).toEqual([3, 1, 1])
     expect(r.repos.map((x) => x.stars)).toEqual([3, 1, 1])
     expect(r.repos[0]?.pushedAt).toBe(NOW - 10_000)
-    expect(r).toMatchObject({ starsRead: 5, complete: true })
-    expect(requests(seen)).toBe(1)
-    const [c] = seen.composites
-    expect(c).toMatchObject({ documentType: 'star', limit: 100 })
-    expect(c?.subQueries[0]).toMatchObject({ documentType: 'repo', bind: { sourceProperty: 'repoId', field: '$id' } })
-    // Counts, names and pushes bind to the joined repos, not to the star page.
-    expect(c?.subQueries.slice(1).every((s) => s.bind?.source === 0)).toBe(true)
+    expect(r.missing).toBe(0)
+    expect(requests(seen)).toBe(2)
+    expect(seen.ranked[0]).toMatchObject({ documentTypeName: 'star', groupBy: 'repoId', aggregate: { type: 'count' }, direction: 'desc' })
+    expect(seen.ranked[0]).not.toHaveProperty('timeRange')
+    expect(seen.composites[0]).toMatchObject({ documentType: 'repo', where: [['$id', 'in', [id('RripgrepB'), id('Rjq'), id('Rdemo-05')]]] })
   })
 
-  it('says it is partial when a full page of stars was read', async () => {
+  it('ranks past 100 stars (the bounded star read could not)', async () => {
     const s = store()
-    s[FORGE.collab]!['star'] = Array.from({ length: 150 }, (_, i) => ({ $id: id(`S${i}`), $ownerId: id(`U${i}`), repoId: id('RripgrepB') }))
-    const r = await mostStarredRepos(mockSdk(s, fresh()), { network: NET })
-    expect(r).toMatchObject({ starsRead: 100, complete: false })
-    // The count is the exact one (150), not the 100 seen.
-    expect(r.repos[0]?.stars).toBe(150)
+    const many = (target: string, n: number) => Array.from({ length: n }, (_, i) => ({ $id: id(`S${target}${i}`), $ownerId: id(`U${i}`), repoId: id(target) }))
+    s[FORGE.collab]!['star'] = [...many('Rdemo-01', 150), ...many('RripgrepB', 120), ...many('Rjq', 3)]
+    const r = await rankedRepos(mockSdk(s, fresh()), 'most-starred', { network: NET })
+    expect(names(r.repos)).toEqual(['demo-01', 'ripgrep', 'jq'])
+    expect(r.repos.map((x) => x.rankCount)).toEqual([150, 120, 3])
+  })
+
+  it('trending reads starBeat with the oldest (week) or newest (today) window', async () => {
+    const s = store()
+    s[FORGE.collab]!['starBeat'] = [{ $id: id('B1'), $ownerId: id('U1'), repoId: id('Rjq') }]
+    const seen = fresh()
+    const week = await rankedRepos(mockSdk(s, seen), 'week', { network: NET })
+    await rankedRepos(mockSdk(s, seen), 'today', { network: NET })
+    expect(names(week.repos)).toEqual(['jq'])
+    expect(seen.ranked.map((q) => [q['documentTypeName'], (q['timeRange'] as { selector: string }[])[0]?.selector])).toEqual([
+      ['starBeat', 'oldest'],
+      ['starBeat', 'newest'],
+    ])
+  })
+
+  it('most forked ranks repo.forkOf and drops the null group of repos that are not forks', async () => {
+    const s = store()
+    const fork = (name: string, of: string) => ({ $id: id(`F${name}`), $ownerId: OWNER_B, $createdAt: NOW - 1000, name, visibility: 'public', description: '', forkOf: id(of) })
+    // Every stored repo without forkOf is the (largest) null group; jq has 2 forks, ripgrep 1.
+    s[FORGE.core]!['repo'] = [...s[FORGE.core]!['repo']!, fork('jq-a', 'Rjq'), fork('jq-b', 'Rjq'), fork('rg-a', 'RripgrepB')]
+    const seen = fresh()
+    const r = await rankedRepos(mockSdk(s, seen), 'most-forked', { network: NET, limit: 2 })
+    expect(names(r.repos)).toEqual(['jq', 'ripgrep'])
+    expect(r.repos.map((x) => x.rankCount)).toEqual([2, 1])
+    expect(seen.ranked[0]).toMatchObject({ documentTypeName: 'repo', groupBy: 'forkOf', limit: 3 })
+    expect(requests(seen)).toBe(2)
+  })
+
+  it('an empty ranking costs one request and shows nothing', async () => {
+    const s = store()
+    s[FORGE.collab]!['starBeat'] = []
+    const seen = fresh()
+    const r = await rankedRepos(mockSdk(s, seen), 'week', { network: NET })
+    expect(r.repos).toEqual([])
+    expect(requests(seen)).toBe(1)
   })
 })
 
@@ -364,9 +419,10 @@ describe('the composite refused (an older node)', () => {
     expect(page.fallback).toBe(true)
     expect(page.repos[0]?.stars).toBeNull()
   })
-  it('most starred says it cannot rank, instead of failing or spending a request per repo', async () => {
-    const r = await mostStarredRepos(refusing(), { network: NET })
-    expect(r).toMatchObject({ unavailable: true, repos: [] })
+  it('most starred still ranks, reading the ranked repos with one plain query', async () => {
+    const r = await rankedRepos(refusing(), 'most-starred', { network: NET })
+    expect(names(r.repos)).toEqual(['ripgrep', 'jq', 'demo-05'])
+    expect(r.repos[0]?.stars).toBeNull()
   })
 })
 

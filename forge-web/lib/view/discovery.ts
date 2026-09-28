@@ -10,10 +10,9 @@
  * - **Search**: the `repo.name` index. A name prefix is the range `name >= p AND name < p⁺`
  *   (Drive's `startsWith` is that same range, but it cannot be combined with the page's own
  *   range clause, and a composite page takes no cursor).
- * - **Most starred**: `star` has no ranked index yet (that is the C-1 contract revision), so
- *   this reads a page of `star` documents (`byOwner`, 100 at a time) with the repos they point
- *   at (a by-id join, `refersTo: permanentDocument`) and each repo's exact star count, then
- *   ranks what it saw. Complete when the page was short; otherwise it says how far it read.
+ * - **Most starred** and **Trending**: proved ranked reads (`documents.ranked`) of the
+ *   `star.byRepo` and `starBeat.byWeek` indexes (C-1, platform-parity-spec §4.3), then the
+ *   ranked repos by id ({@link rankedRepos}): two requests over every star on the network.
  * - **Recently updated**: pushes have no cross-repo index (`packManifest` and `refUpdate`
  *   indexes all lead with `repoId`), so the pushes of the last week of each repo already on a
  *   newest-first page ride along as a bound lookup, and the section ranks those repos only.
@@ -33,6 +32,7 @@ import type { Role } from '../rules/v2'
 import { queryDocumentsWithProof, type PlainDocument, type WhereClause } from '../sdk'
 import { countsAt, docsAt, queryComposite, type CompositeSub, type CompositeResult } from '../sdk/composite'
 import { DOC, readMemberRepoIds, toRepoDoc, type RepoDoc } from '../repo'
+import { readMostForked, readMostStarred, readTrending, type TrendingWindow } from '../repo/trending'
 import { seedFromDomains } from './dpns'
 
 /** A repo row for the discovery feeds and profiles. */
@@ -327,58 +327,68 @@ export async function reposNamed(sdk: EvoSDK, name: string, opts: { network?: Ne
   return { repos: page.repos, more: page.next !== null }
 }
 
-/** The "Most starred" ranking and how much of the star set it saw. */
-export interface MostStarred {
-  /** Starred repos, most stars first (ties by name). */
-  readonly repos: DiscoveredRepo[]
-  /** Star documents read. */
-  readonly starsRead: number
-  /** True when the read reached the end of the star set (so the ranking is over every star). */
-  readonly complete: boolean
+/** A proved ranking of repos: the ranked read's order and counts, with each repo's row. */
+export interface RankedRepos {
+  /** Highest first, as the ranked index proved it (ties by repo id, descending). */
+  readonly repos: readonly (DiscoveredRepo & { readonly rankCount: number })[]
+  /** Ranked groups whose `repo` document could not be read (should not happen: repos are permanent). */
+  readonly missing: number
+  /** Whether each repo's `pushedAt` is known (the push lookup was short, so complete). */
   readonly pushesComplete: boolean
-  /**
-   * The node refused the composite. Its plain equivalent is one count request per starred
-   * repo, which this does not spend: the section says it cannot rank here.
-   */
-  readonly unavailable: boolean
 }
 
 /**
- * The most starred repos, in ONE composite: a page of `star` documents (the `byOwner` index)
- * with the repos they point at (a by-id join), each repo's exact star and issue counts, its
- * owner's DPNS name, and its latest pushes. The ranking is over the repos those stars name;
- * with more than one page of stars it is partial, and says so (`complete`).
+ * Trending (new stargazers in the week or today, `starBeat`), Most starred (all time,
+ * `star.byRepo`) or Most forked (`repo.forkOf`, its non-fork null group dropped): one proved ranked read, then the ranked repos by id in one composite with
+ * their star and issue counts, owners' names and pushes. Two requests, whatever the star count
+ * (this replaces the bounded 100-star read that ranked only the repos those stars named).
  */
-export async function mostStarredRepos(sdk: EvoSDK, opts: { network?: Network; limit?: number } = {}): Promise<MostStarred> {
+export async function rankedRepos(
+  sdk: EvoSDK,
+  kind: TrendingWindow | 'most-starred' | 'most-forked',
+  opts: { network?: Network; limit?: number } = {},
+): Promise<RankedRepos> {
   const network = opts.network ?? DEFAULT_NETWORK
   const forge = forgeOf(network)
-  if (forge === null) return { repos: [], starsRead: 0, complete: true, pushesComplete: true, unavailable: false }
-  let res: CompositeResult
+  if (forge === null) return { repos: [], missing: 0, pushesComplete: true }
+  const limit = Math.min(opts.limit ?? 12, MAX_ROWS)
+  const page =
+    kind === 'most-starred'
+      ? await readMostStarred(sdk, forge, limit)
+      : kind === 'most-forked'
+        ? await readMostForked(sdk, forge, limit)
+        : await readTrending(sdk, forge, kind, limit)
+  const ids = page.entries.map((e) => e.group).filter((id) => id !== '')
+  if (ids.length === 0) return { repos: [], missing: 0, pushesComplete: true }
+  let rows: DiscoveredRepo[]
+  let pushesComplete = true
   try {
-    res = await queryComposite(
+    const res = await queryComposite(
       sdk,
       {
-        dataContractId: forge.collab,
-        documentType: DOC.star,
-        // Descending, so the joined repos' push lookups (newest first) walk the page's way.
-        orderBy: [['$ownerId', 'desc']],
-        limit: MAX_ROWS,
-        subQueries: [
-          { dataContractId: forge.core, documentType: DOC.repo, bind: { sourceProperty: 'repoId', field: '$id' } },
-          ...repoSubs(forge, network, 0, Date.now() - PUSH_WINDOW_MS),
-        ],
+        dataContractId: forge.core,
+        documentType: DOC.repo,
+        where: [['$id', 'in', ids]],
+        // Descending, as the pushes lookup is: a sub-query that disagrees with the page's
+        // direction is refused (and this would silently fall back to the plain read).
+        orderBy: [['$id', 'desc']],
+        limit: ids.length,
+        subQueries: repoSubs(forge, network, 'page', Date.now() - PUSH_WINDOW_MS),
       },
       { plainFallback: false },
     )
+    ;({ repos: rows, pushesComplete } = reposOf(res, res.page, 0, network))
   } catch (e) {
     if (!isRefused(e)) throw e
-    return { repos: [], starsRead: 0, complete: false, pushesComplete: true, unavailable: true }
+    const plain = await queryDocumentsWithProof(sdk, { dataContractId: forge.core, documentTypeName: DOC.repo, where: [['$id', 'in', ids]], orderBy: [['$id', 'asc']], limit: ids.length })
+    rows = plain.documents.map((d) => fromRepoDoc(toRepoDoc(d)))
   }
-  const { repos, pushesComplete } = reposOf(res, docsAt(res, 0), 1, network)
-  const ranked = repos
-    .filter((r) => (r.stars ?? 0) > 0)
-    .sort((a, b) => (b.stars ?? 0) - (a.stars ?? 0) || a.slug.localeCompare(b.slug) || a.key.localeCompare(b.key))
-  return { repos: ranked.slice(0, opts.limit ?? 12), starsRead: res.page.length, complete: res.page.length < MAX_ROWS, pushesComplete, unavailable: false }
+  const byId = new Map(rows.map((r) => [r.key, r]))
+  const repos = page.entries.flatMap((e) => {
+    const r = byId.get(e.group)
+    return r === undefined ? [] : [{ ...r, rankCount: e.count }]
+  })
+  return { repos, missing: ids.length - repos.length, pushesComplete }
 }
 
 /**

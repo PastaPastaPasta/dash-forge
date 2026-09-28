@@ -46,6 +46,7 @@ import type { Membership } from '../rules/v2'
 import { HiddenTally, admitAll, gateFor, type HiddenCounts } from '../repo/private-content'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { compareKey, type Event } from '../rules'
+import { foldThreadMetaV2, type ThreadMeta } from '../rules/parity'
 import { anchorOf, countApprovals, foldPrReviewV2, groupReviewComments, meetsPolicy, RoleOracle, type Anchor, type Approvals, type Policy, type PolicyStatus, type PrReviewState, type Review, type Role } from '../rules/v2'
 import { reviewerRows, sinceYourReview, summarizeReviews, type ReviewerCardRow, type ReviewSummary, type SinceYourReview } from './review-fold'
 
@@ -176,6 +177,8 @@ export interface IssueThread {
   readonly members: readonly Membership[]
   /** Private repos: the target's event values not readable here, and those not encrypted. */
   readonly eventValues: EventValueCounts
+  /** Milestone, pinned and locked (the member events, folded: kinds 17-22). */
+  readonly meta: ThreadMeta
 }
 
 /** How a private repo's event values were read ({@link TargetLog}). */
@@ -262,6 +265,7 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
     eventValues: eventValues(log),
     labels,
     members: memberships ?? (await readMembershipsCached(sdk, repo, network)),
+    meta: foldThreadMetaV2(log.events),
   }
 }
 

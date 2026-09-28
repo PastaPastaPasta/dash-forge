@@ -1419,6 +1419,11 @@ impl<'a> Collab<'a> {
     }
 
     /// Reads only. A private repository needs a signer (its keys are the signer's).
+    /// The client this reads and writes through.
+    pub(super) fn client(&self) -> &'a PlatformClient {
+        self.client
+    }
+
     pub fn reader(client: &'a PlatformClient) -> Self {
         Self {
             client,
@@ -1581,27 +1586,27 @@ impl<'a> Collab<'a> {
             .ok_or_else(|| Error::Config("this operation signs; no identity was given".into()))
     }
 
-    fn engine(&self) -> Result<WriteEngine<'a>> {
+    pub(super) fn engine(&self) -> Result<WriteEngine<'a>> {
         let (identity, bridge) = self.signer()?;
         doc_engine(self.client, identity, bridge)
     }
 
-    async fn collab_contract(&self, repo: &RepoRef) -> Result<LoadedContract> {
+    pub(super) async fn collab_contract(&self, repo: &RepoRef) -> Result<LoadedContract> {
         self.client.fetch_contract(&repo.forge().collab).await
     }
 
-    async fn core_contract(&self, repo: &RepoRef) -> Result<LoadedContract> {
+    pub(super) async fn core_contract(&self, repo: &RepoRef) -> Result<LoadedContract> {
         self.client.fetch_contract(&repo.forge().core).await
     }
 
-    fn repo_filter(repo: &RepoRef) -> Result<QueryFilter> {
+    pub(super) fn repo_filter(repo: &RepoRef) -> Result<QueryFilter> {
         Ok(QueryFilter::eq(
             "repoId",
             FieldValue::identifier(platform::decode_identifier(repo.id())?),
         ))
     }
 
-    fn with_repo(
+    pub(super) fn with_repo(
         repo: &RepoRef,
         mut props: BTreeMap<String, FieldValue>,
     ) -> Result<BTreeMap<String, FieldValue>> {
@@ -1613,7 +1618,7 @@ impl<'a> Collab<'a> {
     }
 
     /// Create one document of `repo` (its `repoId` added) in `contract`, as the signer.
-    async fn write(
+    pub(super) async fn write(
         &self,
         repo: &RepoRef,
         contract: &LoadedContract,
@@ -3430,26 +3435,39 @@ impl<'a> Collab<'a> {
     /// not starred.
     pub async fn unstar(&self, repo: &RepoRef) -> Result<bool> {
         let collab = self.collab_contract(repo).await?;
-        let Some(star) = self.own_star(&collab, repo).await? else {
+        self.delete_own_index_only(&collab, repo, DOC_STAR).await
+    }
+
+    /// Delete the signer's row of an indexOnly `doc_type` for `repo` (the values-carrying
+    /// delete). `false` when there was none, or another process deleted it first.
+    pub(super) async fn delete_own_index_only(
+        &self,
+        collab: &LoadedContract,
+        repo: &RepoRef,
+        doc_type: &str,
+    ) -> Result<bool> {
+        let Some(row) = self.own_index_only(collab, repo, doc_type).await? else {
             return Ok(false);
         };
         let engine = self.engine()?;
         for _ in 0..2 {
             let values = Self::with_repo(repo, BTreeMap::new())?;
             match engine
-                .delete_with_values(&collab, DOC_STAR, &star.id, values, None)
+                .delete_with_values(collab, doc_type, &row.id, values, None)
                 .await
             {
                 Ok(BroadcastOutcome::NonceConsumed) => {
                     // Our delete landed earlier, or another write by this identity took the
-                    // nonce: the star's presence says which.
-                    if self.own_star(&collab, repo).await?.is_none() {
+                    // nonce: the row's presence says which.
+                    if self.own_index_only(collab, repo, doc_type).await?.is_none() {
                         return Ok(true);
                     }
-                    tracing::debug!("another write took the unstar's nonce; re-preparing");
+                    tracing::debug!(
+                        doc_type,
+                        "another write took the delete's nonce; re-preparing"
+                    );
                 }
                 Ok(_) => return Ok(true),
-                // Already gone (another process unstarred it first).
                 Err(Error::NotFound) => return Ok(false),
                 Err(e) => return Err(e),
             }

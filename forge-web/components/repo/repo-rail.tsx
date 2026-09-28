@@ -117,6 +117,15 @@ function About({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
   return (
     <Card title="About">
       {home.description ? <p className="mb-2 text-anvil-700 dark:text-anvil-200">{home.description}</p> : null}
+      {home.v2.topics.length > 0 ? (
+        <ul className="mb-2 flex flex-wrap gap-1.5" aria-label="Topics" data-testid="repo-topics">
+          {home.v2.topics.map((t) => (
+            <li key={t} className="rounded-full bg-forge-50 px-2 py-0.5 font-mono text-[11px] text-forge-800 dark:bg-forge-950 dark:text-forge-300">
+              {t}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       <Row icon={<GitBranch className="h-3.5 w-3.5" aria-hidden />} label="Default branch">
         <span className="font-mono">{home.defaultBranch}</span>
       </Row>

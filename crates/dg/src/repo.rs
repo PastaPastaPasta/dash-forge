@@ -44,6 +44,9 @@ pub async fn run(ctx: &Ctx, cmd: &RepoCommand) -> Result<()> {
         RepoCommand::Fork { repo, name } => fork(ctx, repo, name.as_deref()).await,
         RepoCommand::Star { repo, no_trending } => star(ctx, repo, true, !no_trending).await,
         RepoCommand::Unstar { repo } => star(ctx, repo, false, false).await,
+        RepoCommand::Watch { repo } => watch(ctx, repo, true).await,
+        RepoCommand::Unwatch { repo } => watch(ctx, repo, false).await,
+        RepoCommand::Topic { repo, add, remove } => topic(ctx, repo, add, remove).await,
         RepoCommand::View { repo } => view(ctx, repo).await,
         RepoCommand::List { owner } => list(ctx, owner.as_deref()).await,
         RepoCommand::Backend(RepoBackendCommand::Set { repo, mode }) => {
@@ -357,6 +360,108 @@ async fn star(ctx: &Ctx, repo: &str, on: bool, trending: bool) -> Result<()> {
         || {
             let n = count.map(|c| format!(" ({c} star(s))")).unwrap_or_default();
             println!("✓ {} {what}{n}", handle.display());
+        },
+    );
+    Ok(())
+}
+
+/// Watch or stop watching `repo` (forge-collab `watch`, indexOnly).
+async fn watch(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
+    // Not a write to the repo: an archived repo can be watched, as it can be starred.
+    let s = Session::open(ctx, repo).await?;
+    let verb = if on { "Watch" } else { "Stop watching" };
+    ctx.confirm_or_cancel(&format!(
+        "{verb} {}? (one small document{})",
+        s.repo.display(),
+        if on { "" } else { ", refunded" }
+    ))?;
+    let collab = s.collab();
+    let changed = if on {
+        collab.watch(&s.repo).await?
+    } else {
+        collab.unwatch(&s.repo).await?
+    };
+    let watchers = collab.watcher_count(&s.repo).await.ok();
+    let status = match (on, changed) {
+        (true, true) => "watching",
+        (true, false) => "already_watching",
+        (false, true) => "unwatched",
+        (false, false) => "not_watching",
+    };
+    ctx.emit(
+        json!({ "status": status, "repo": s.repo.display(), "watchers": watchers }),
+        || {
+            let n = watchers
+                .map(|c| format!(" ({c} watching)"))
+                .unwrap_or_default();
+            println!("✓ {}: {}{n}", s.repo.display(), status.replace('_', " "));
+        },
+    );
+    Ok(())
+}
+
+/// List `repo`'s topics, or add / remove some (its owner): `repo.topics` changes, and the
+/// `topic` documents Explore counts follow it.
+async fn topic(ctx: &Ctx, repo: &str, add: &[String], remove: &[String]) -> Result<()> {
+    if add.is_empty() && remove.is_empty() {
+        let r = Reader::open(ctx, repo).await?;
+        let topics = r.collab().topics(&r.repo).await?;
+        ctx.emit(
+            json!({ "repo": r.repo.display(), "topics": topics }),
+            || {
+                if topics.is_empty() {
+                    println!("no topics");
+                }
+                for t in &topics {
+                    println!("{t}");
+                }
+            },
+        );
+        return Ok(());
+    }
+    let s = Session::open_for_write(ctx, repo, "topics not changed").await?;
+    let collab = s.collab();
+    let current = collab.topics(&s.repo).await?;
+    let added: Vec<String> = add
+        .iter()
+        .filter(|t| !current.contains(t))
+        .cloned()
+        .collect();
+    let removed: Vec<String> = remove
+        .iter()
+        .filter(|t| current.contains(t))
+        .cloned()
+        .collect();
+    let mut topics: Vec<String> = current
+        .iter()
+        .filter(|t| !removed.contains(t))
+        .cloned()
+        .collect();
+    for t in &added {
+        if !topics.contains(t) {
+            topics.push(t.clone());
+        }
+    }
+    ctx.confirm_or_cancel(&format!(
+        "Change the topics of {}? (+{} / -{}: the repo document's list, and one small topic document each; owner only)",
+        s.repo.display(),
+        added.len(),
+        removed.len()
+    ))?;
+    // Also run when the list is unchanged: it repairs topic documents that lag the list.
+    collab.set_topics(&s.repo, &topics).await?;
+    ctx.emit(
+        json!({ "repo": s.repo.display(), "added": added, "removed": removed, "topics": topics }),
+        || {
+            println!(
+                "✓ {}: {}",
+                s.repo.display(),
+                if topics.is_empty() {
+                    "no topics".to_string()
+                } else {
+                    topics.join(", ")
+                }
+            );
         },
     );
     Ok(())

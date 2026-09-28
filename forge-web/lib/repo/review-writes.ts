@@ -543,6 +543,28 @@ export async function setAssignee(
   return write(sdk, auth, repo, DOC.event, data, input.intent)
 }
 
+/** Pin / unpin or lock / unlock an issue or PR (event kinds 19-22, members only at consensus). */
+export async function setThreadFlag(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: { target: WriteTarget; flag: 'pin' | 'lock'; on: boolean; intent?: string },
+): Promise<WriteResult> {
+  const kind = input.flag === 'pin' ? (input.on ? 'pin' : 'unpin') : input.on ? 'lock' : 'unlock'
+  return write(sdk, auth, repo, DOC.event, targetEventData(input.target, kind), input.intent)
+}
+
+/** Put an issue or PR in milestone `title` (null: take it out). Members only at consensus. */
+export async function setMilestone(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: { target: WriteTarget; title: string | null; intent?: string },
+): Promise<WriteResult> {
+  const data = input.title === null ? targetEventData(input.target, 'milestoneClear') : targetEventData(input.target, 'milestoneSet', { value: input.title })
+  return write(sdk, auth, repo, DOC.event, data, input.intent)
+}
+
 /** Apply or remove a label on an issue or PR (members only at consensus). */
 export async function setLabel(
   sdk: EvoSDK,

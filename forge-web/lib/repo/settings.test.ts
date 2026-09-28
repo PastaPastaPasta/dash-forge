@@ -20,11 +20,13 @@ import {
   newestPolicy,
   parseTopics,
   patternMatches,
+  previewRepoEdit,
   patternsProblem,
   repoEditChanges,
   sameConfig,
   shortBranch,
   staleProblem,
+  topicChanges,
   topicsProblem,
   updateConfig,
 } from './settings'
@@ -169,6 +171,21 @@ describe('repo document edits', () => {
     expect(repoEditChanges({ description: '', topics: [] })).toEqual({ description: undefined, topics: undefined })
     expect(repoEditChanges({ description: 'hi' })).toEqual({ description: 'hi' })
     expect(repoEditChanges({})).toEqual({})
+  })
+
+  it('prices the topic documents a topics edit adds and removes (C-1 `topic`)', () => {
+    expect(topicChanges(['rust', 'cli'], ['rust', 'git'])).toEqual({ added: ['git'], removed: ['cli'] })
+    // Same replace, plus one topic document created: costs more than the replace alone.
+    const replace = previewRepoEdit({ topics: ['rust'] }, ['rust']).credits
+    expect(previewRepoEdit({ topics: ['rust', 'git'] }, ['rust']).credits).toBeGreaterThan(replace)
+    // A removal refunds part of the replace.
+    expect(previewRepoEdit({ topics: [] }, ['rust']).credits).toBeLessThan(replace)
+    // Priced against the topic documents held, not the list: a pre-C-1 repo holds none, so all
+    // three are created; unknown (null) prices that worst case too.
+    const three = previewRepoEdit({ topics: ['rust', 'cli', 'git'] }, []).credits
+    expect(three).toBeGreaterThan(previewRepoEdit({ topics: ['rust', 'cli', 'git'] }, ['rust', 'cli']).credits)
+    expect(previewRepoEdit({ topics: ['rust', 'cli', 'git'] }, null).credits).toBe(three)
+    expect(previewRepoEdit({}, ['rust']).credits).toBe(0)
   })
 })
 

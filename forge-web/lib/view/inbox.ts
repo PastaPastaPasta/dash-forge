@@ -34,6 +34,7 @@ import {
   listMyCommentTargets,
   listMyTargets,
   listStarredRepoIds,
+  listWatchedRepoIds,
   parseDocs,
   readReposByIds,
   readTargetsByIds,
@@ -67,7 +68,7 @@ export const BACKFILL_MS = 7 * 24 * 60 * 60_000
 /** Items kept; the oldest read ones go first. */
 export const MAX_ITEMS = 300
 
-export type RepoReason = 'owner' | 'maintainer' | 'writer' | 'starred'
+export type RepoReason = 'owner' | 'maintainer' | 'writer' | 'watched' | 'starred'
 
 export interface RepoSub {
   readonly repo: RepoLite
@@ -386,11 +387,12 @@ export async function computeSubscriptions(
     listMyTargets(sdk, forge, me, 'issue'),
     listMyTargets(sdk, forge, me, 'pull'),
     listMyCommentTargets(sdk, forge, me),
+    listWatchedRepoIds(sdk, forge, me),
   ] as const)
   // Only sources actually read count: stars are skipped (not read) when the preference is off.
   const read = settled.filter((_, i) => i !== 1 || prefs.stars)
   if (read.every((r) => r.status === 'rejected')) throw (read[0] as PromiseRejectedResult).reason
-  const [owned, starred, issues, pulls, commented] = settled
+  const [owned, starred, issues, pulls, commented, watching] = settled
   const ok = <T>(r: PromiseSettledResult<T>, fallback: T): T => (r.status === 'fulfilled' ? r.value : fallback)
 
   const repoSubs: RepoSub[] = []
@@ -404,13 +406,14 @@ export async function computeSubscriptions(
   for (const r of mine.owned) addRepo(repoLite(r), 'owner')
   for (const r of mine.member) addRepo(repoLite(r), r.role ?? 'writer')
   const starIds = ok(starred, EMPTY_PAGE).rows.filter((id) => !seen.has(id))
+  const watchIds = ok(watching, EMPTY_PAGE).rows.filter((id) => !seen.has(id))
   const commentedTargets = ok(commented, [])
   const myIssues = ok(issues, EMPTY_PAGE)
   const myPulls = ok(pulls, EMPTY_PAGE)
   const authored = [...myIssues.rows, ...myPulls.rows]
   const authoredIds = new Set(authored.map((t) => t.id))
   const incomplete: string[] = []
-  const labels = ['repos you own or belong to', 'your stars', 'issues you opened', 'pull requests you opened', 'comments you wrote'] as const
+  const labels = ['repos you own or belong to', 'your stars', 'issues you opened', 'pull requests you opened', 'comments you wrote', 'the repos you watch'] as const
   settled.forEach((r, i) => {
     if (r.status === 'rejected') incomplete.push(labels[i] ?? 'a source')
   })
@@ -422,11 +425,16 @@ export async function computeSubscriptions(
   })
 
   // Repo rows for stars and for threads whose repo is not one of mine.
-  const needed = [...starIds, ...authored.map((t) => t.repoId), ...[...commentedRows.values()].map((t) => t.repoId)].filter((id) => !seen.has(id))
+  const needed = [...watchIds, ...starIds, ...authored.map((t) => t.repoId), ...[...commentedRows.values()].map((t) => t.repoId)].filter((id) => !seen.has(id))
   const extra = await readReposByIds(sdk, forge, needed).catch(() => {
-    incomplete.push('the repos of your threads and stars')
+    incomplete.push('the repos of your threads, watches and stars')
     return new Map<string, RepoLite>()
   })
+  // Watched before starred: a watch is the explicit ask, and it holds when stars are off.
+  for (const id of watchIds) {
+    const repo = extra.get(id)
+    if (repo) addRepo(repo, 'watched')
+  }
   for (const id of starIds) {
     const repo = extra.get(id)
     if (repo) addRepo(repo, 'starred')

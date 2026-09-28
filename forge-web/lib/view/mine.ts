@@ -238,17 +238,22 @@ export async function readTargetsByIds(sdk: EvoSDK, forge: ForgeIds, ids: readon
   return out
 }
 
-const starDoc = z.object({ repoId: ident })
+const repoIdDoc = z.object({ repoId: ident })
 
-/** The repos I starred (`star.byOwner`; index order, and a star records no time). */
-export async function listStarredRepoIds(sdk: EvoSDK, forge: ForgeIds, me: string, limit = IN_MAX): Promise<Page<string>> {
-  const docs = await read(sdk, {
-    dataContractId: forge.collab,
-    documentTypeName: DOC.star,
-    where: [['$ownerId', '==', me]],
-    limit,
-  })
-  return { rows: parseDocs(starDoc, docs).map((d) => d.repoId), more: docs.length >= limit }
+/** The repos `me` holds a `star` or `watch` of (`byOwner`: index order; neither records a time). */
+async function ownRepoIds(sdk: EvoSDK, forge: ForgeIds, type: 'star' | 'watch', me: string, limit: number): Promise<Page<string>> {
+  const docs = await read(sdk, { dataContractId: forge.collab, documentTypeName: type, where: [['$ownerId', '==', me]], limit })
+  return { rows: parseDocs(repoIdDoc, docs).map((d) => d.repoId), more: docs.length >= limit }
+}
+
+/** The repos I starred (`star.byOwner`). */
+export function listStarredRepoIds(sdk: EvoSDK, forge: ForgeIds, me: string, limit = IN_MAX): Promise<Page<string>> {
+  return ownRepoIds(sdk, forge, 'star', me, limit)
+}
+
+/** The repos I watch (`watch.byOwner`, C-1): the inbox follows them on every device. */
+export function listWatchedRepoIds(sdk: EvoSDK, forge: ForgeIds, me: string, limit = IN_MAX): Promise<Page<string>> {
+  return ownRepoIds(sdk, forge, 'watch', me, limit)
 }
 
 /** A release, for the Explore "Recently released" row. */

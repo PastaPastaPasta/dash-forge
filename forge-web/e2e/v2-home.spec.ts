@@ -128,7 +128,7 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     await page.goto(url('issues'), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     const openFilter = page.getByRole('tab', { name: /^\d+ Open$/ })
-    await expectLanded(page, page.getByText('README should explain the event split'))
+    await expectLanded(page, page.getByRole('list', { name: 'Issues', exact: true }).getByText('README should explain the event split'))
     const listOpen = Number((await openFilter.innerText()).match(/(\d+)/)?.[1])
     const listClosed = Number((await page.getByRole('tab', { name: /^\d+ Closed$/ }).innerText()).match(/(\d+)/)?.[1])
     expect(listClosed, 'the fixture has closed issues').toBeGreaterThan(0)

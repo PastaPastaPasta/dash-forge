@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { AssigneeAvatars, LabelChip } from '@/components/repo/issue-bits'
 import { cn } from '@/lib/utils'
+import type { Milestone } from '@/lib/rules/parity'
 
 export function SidebarSection({ title, icon: Icon, children }: { title: string; icon: LucideIcon; children: React.ReactNode }): JSX.Element {
   return (
@@ -24,6 +25,66 @@ export function SidebarSection({ title, icon: Icon, children }: { title: string;
       </h2>
       {children}
     </section>
+  )
+}
+
+/** The milestone, and for members a picker of the repo's open milestones (set / clear). */
+export function MilestonePicker({
+  current,
+  choices,
+  loading,
+  canDefine,
+  canEdit,
+  onChoose,
+}: {
+  current: string | null
+  choices: readonly Pick<Milestone, 'title' | 'closed'>[]
+  /** The milestones are still being read. */
+  loading: boolean
+  /** Whether `dg milestone create` can define one here (not yet in a private repo). */
+  canDefine: boolean
+  canEdit: boolean
+  onChoose: (title: string | null) => void
+}): JSX.Element {
+  const [open, setOpen] = useState(false)
+  return (
+    <div data-testid="milestone">
+      {current === null ? (
+        <p className="text-anvil-500 dark:text-anvil-400">No milestone</p>
+      ) : (
+        <p className="font-medium text-anvil-800 dark:text-anvil-100">{current}</p>
+      )}
+      {canEdit ? (
+        <div className="mt-2">
+          <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open} className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400">
+            <Settings2 className="h-3.5 w-3.5" aria-hidden /> Set milestone
+          </button>
+          {open ? (
+            <ul className="mt-1 space-y-1" aria-label="Milestones">
+              {choices.filter((c) => !c.closed).map((c) => (
+                <li key={c.title}>
+                  <button type="button" className="hit-area text-left hover:underline" onClick={() => { setOpen(false); onChoose(c.title) }} disabled={c.title === current}>
+                    {c.title}
+                  </button>
+                </li>
+              ))}
+              {loading ? (
+                <li className="text-[12px] text-anvil-500 dark:text-anvil-400">Reading milestones…</li>
+              ) : choices.every((c) => c.closed) ? (
+                <li className="text-[12px] text-anvil-500 dark:text-anvil-400">{canDefine ? 'No open milestones (`dg milestone create`)' : 'No open milestones'}</li>
+              ) : null}
+              {current !== null ? (
+                <li>
+                  <button type="button" className="hit-area text-left text-danger-700 hover:underline dark:text-danger-400" onClick={() => { setOpen(false); onChoose(null) }}>
+                    Clear the milestone
+                  </button>
+                </li>
+              ) : null}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   )
 }
 

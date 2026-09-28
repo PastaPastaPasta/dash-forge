@@ -40,7 +40,7 @@ const ROUTES: [label: string, href: string, ready: (page: Page) => ReturnType<Pa
   ['history', repoUrl('commits', '&path=src/main.rs'), (page) => page.getByTestId('commit-row').first()],
   ['blame', repoUrl('blame', '&path=src/main.rs'), (page) => page.getByTestId('blame-table')],
   ['commits', repoUrl('commits'), (page) => page.getByRole('link', { name: 'Initial import' }).first()],
-  ['issues', repoUrl('issues'), (page) => page.getByRole('link', { name: 'README should explain the event split' })],
+  ['issues', repoUrl('issues'), (page) => page.getByRole('list', { name: 'Issues', exact: true }).getByRole('link', { name: 'README should explain the event split' })],
   ['pull', repoUrl('pull', '&number=3&tab=files'), (page) => page.getByRole('heading', { name: /Files changed/ })],
   ['explore', '/explore/', (page) => page.getByRole('heading', { name: 'Explore' })],
   ['repo settings', repoUrl('settings'), (page) => page.getByRole('navigation', { name: 'Settings sections' })],

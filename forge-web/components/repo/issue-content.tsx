@@ -17,7 +17,7 @@
  */
 
 import { useMemo, useState } from 'react'
-import { CheckCircle2, CircleDot, Pencil, Tag, UserPlus } from 'lucide-react'
+import { CheckCircle2, CircleDot, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, loadIssueThread, timeAgo } from '@/lib/view'
 import {
@@ -30,6 +30,8 @@ import {
   repoKey,
   setAssignee,
   setLabel,
+  setMilestone,
+  setThreadFlag,
   setTargetState,
   updateComment,
   updateTarget,
@@ -54,7 +56,8 @@ import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
-import { AssigneePicker, LabelPicker, SidebarSection } from '@/components/repo/target-rail'
+import { AssigneePicker, LabelPicker, MilestonePicker, SidebarSection } from '@/components/repo/target-rail'
+import { readMilestones } from '@/lib/repo/milestones'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
@@ -64,6 +67,8 @@ type Pending =
   | { kind: 'state' }
   | { kind: 'label'; label: string; remove: boolean }
   | { kind: 'assign'; who: string; remove: boolean }
+  | { kind: 'flag'; flag: 'pin' | 'lock'; on: boolean }
+  | { kind: 'milestone'; title: string | null }
   | { kind: 'defineLabel'; name: string; color: string; description: string; apply: boolean }
   | { kind: 'editIssue'; title: string; body: string }
   | { kind: 'editComment'; id: string; body: string }
@@ -90,6 +95,14 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     () => readViewerPermissions(sdk!, home.repo, identity!, network),
     [ready, repoKey(home.repo), identity ?? '', network, data === null ? 0 : 1],
     { enabled: ready && sdk !== null && identity !== null && data !== null },
+  )
+
+  // The repo's milestones, for the picker: read for members only (only they can set one).
+  const canSetMilestone = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
+  const milestones = useAsync(
+    () => readMilestones(sdk!, home.repo),
+    [ready, repoKey(home.repo), canSetMilestone ? 1 : 0],
+    { enabled: ready && sdk !== null && canSetMilestone },
   )
 
   const [comment, setComment] = useState('')
@@ -121,7 +134,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <EmptyState icon={CircleDot} title={`Issue #${number} not found`} body="No issue with that number in this repo." />
 
-  const { issue, timeline, labels, members, hidden, eventValues } = data
+  const { issue, timeline, labels, members, hidden, eventValues, meta } = data
+  const whileLocked = commentsWhileLocked(timeline, new Set(members.map((m) => m.identity)))
   const open = issue.state.open
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const isAuthor = identity !== null && identity === issue.author
@@ -130,7 +144,11 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   // member holding the current key can, so everyone else sees why not instead of a composer.
   // An archived repo takes no writes (client-side gate: consensus cannot enforce it).
   const archived = home.config?.archived === true
-  const composeBlock = archived ? ARCHIVED_REASON : privateComposeBlock(home)
+  const composeBlock = archived
+    ? ARCHIVED_REASON
+    : meta.locked && !isMember
+      ? 'This conversation is locked: only maintainers and writers can comment.'
+      : privateComposeBlock(home)
   const isPrivate = home.repo.visibility === 'private'
   const toggleHint =
     !canToggle && identity !== null && holdings.settled && holdings.data === null
@@ -177,6 +195,12 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       case 'assign':
         await setAssignee(sdk, signer, home.repo, { target, assignee: pending.who, assign: !pending.remove, intent })
         break
+      case 'flag':
+        await setThreadFlag(sdk, signer, home.repo, { target, flag: pending.flag, on: pending.on, intent })
+        break
+      case 'milestone':
+        await setMilestone(sdk, signer, home.repo, { target, title: pending.title, intent })
+        break
       case 'defineLabel':
         await defineLabel(sdk, signer, home.repo, { name: pending.name, color: pending.color, description: pending.description, intent: `${intent}:def` })
         if (pending.apply) await setLabel(sdk, signer, home.repo, { target, label: pending.name, add: true, intent: `${intent}:apply` })
@@ -214,6 +238,10 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         return composeCost(home.repo, 'event', { value: pending.label }, eventFirst)
       case 'assign':
         return composeCost(home.repo, 'event', { value: pending.who }, eventFirst)
+      case 'flag':
+        return composeCost(home.repo, 'event', {}, eventFirst)
+      case 'milestone':
+        return composeCost(home.repo, 'event', pending.title === null ? {} : { value: pending.title }, eventFirst)
       case 'defineLabel': {
         const def = previewCreate('label', { name: pending.name, color: pending.color, description: pending.description })
         const apply = composeCost(home.repo, 'event', { value: pending.name }, eventFirst)
@@ -308,8 +336,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           <Timeline
             items={timeline}
             links={links}
-            renderComment={(item) =>
-              commentSlots({
+            renderComment={(item) => {
+              const slots = commentSlots({
                 item,
                 viewer: identity,
                 editing: editingComment,
@@ -318,7 +346,19 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 onSave: (id, body) => setPending({ kind: 'editComment', id, body }),
                 links,
               })
-            }
+              if (!whileLocked.has(item.comment.id)) return slots
+              return {
+                ...slots,
+                header: (
+                  <>
+                    <span className="rounded-full bg-anvil-100 px-2 py-0.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300" data-testid="posted-while-locked" title="A non-member posted this while the conversation was locked to members (consensus cannot refuse it; Forge clients do not offer it).">
+                      posted while locked
+                    </span>
+                    {slots.header}
+                  </>
+                ),
+              }
+            }}
           />
         ) : null}
 
@@ -373,6 +413,33 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             onToggle={(who, remove) => setPending({ kind: 'assign', who, remove })}
           />
         </SidebarSection>
+        <SidebarSection title="Milestone" icon={Milestone}>
+          <MilestonePicker
+            current={meta.milestone}
+            choices={milestones.data ?? []}
+            loading={milestones.data === null && milestones.error === null}
+            canDefine={!isPrivate}
+            canEdit={isMember && !archived && guard.disabledReason === null}
+            onChoose={(title) => setPending({ kind: 'milestone', title })}
+          />
+        </SidebarSection>
+        {isMember || meta.pinned || meta.locked ? (
+          <SidebarSection title="Conversation" icon={Pin}>
+            <p className="text-anvil-600 dark:text-anvil-300" data-testid="thread-flags">
+              {meta.pinned ? 'Pinned' : 'Not pinned'} · {meta.locked ? 'Locked to members' : 'Open to everyone'}
+            </p>
+            {isMember && !archived && guard.disabledReason === null ? (
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" onClick={() => setPending({ kind: 'flag', flag: 'pin', on: !meta.pinned })} data-testid="pin-toggle">
+                  {meta.pinned ? 'Unpin' : 'Pin'}
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => setPending({ kind: 'flag', flag: 'lock', on: !meta.locked })} data-testid="lock-toggle">
+                  {meta.locked ? 'Unlock' : 'Lock'}
+                </Button>
+              </div>
+            ) : null}
+          </SidebarSection>
+        ) : null}
         <SidebarSection title="Labels" icon={Tag}>
           <LabelPicker
             applied={issue.state.labels}
@@ -410,6 +477,23 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
         description: `${pending.remove ? 'Unassigns' : 'Assigns'} ${pending.who.slice(0, 10)}… with a member event, which also names them as its addressee so it shows up under "assigned to me".`,
         label: pending.remove ? 'Sign & unassign' : 'Sign & assign',
       }
+    case 'flag': {
+      const verb = pending.flag === 'pin' ? (pending.on ? 'Pin' : 'Unpin') : pending.on ? 'Lock' : 'Unlock'
+      return {
+        title: `${verb} issue #${number}`,
+        description:
+          pending.flag === 'pin'
+            ? pending.on ? 'Appends a pin event: the issue is listed first on the repo\'s issues page (and in dg issue list).' : 'Appends an unpin event.'
+            : pending.on
+              ? 'Appends a lock event: Forge clients (this app and dg) then offer commenting to maintainers and writers only. Consensus cannot stop anyone else from commenting (fees are the only floor); a comment posted after the lock is marked so.'
+              : 'Appends an unlock event: everyone is offered the comment box again.',
+        label: `Sign & ${verb.toLowerCase()}`,
+      }
+    }
+    case 'milestone':
+      return pending.title === null
+        ? { title: 'Clear the milestone', description: 'Appends a milestone-clear event.', label: 'Sign & clear' }
+        : { title: `Set milestone "${pending.title}"`, description: 'Appends a milestone event naming it.', label: 'Sign & set' }
     case 'defineLabel':
       return {
         title: `Create label "${pending.name}"`,
@@ -473,6 +557,21 @@ function commentSlots({
       <Pencil className="h-3 w-3" aria-hidden /> Edit
     </button>
   ) }
+}
+
+/**
+ * The comments a non-member posted while the conversation was locked (the member `event`s
+ * kinds 21/22, in timeline order, as `foldThreadMetaV2` reads them). Consensus admits such a
+ * comment; readers mark it.
+ */
+function commentsWhileLocked(items: readonly TimelineItem[], members: ReadonlySet<string>): Set<string> {
+  const out = new Set<string>()
+  let locked = false
+  for (const it of [...items].sort((a, b) => a.at - b.at)) {
+    if (it.kind === 'event' && !it.byAuthor && (it.event.kind === 'lock' || it.event.kind === 'unlock')) locked = it.event.kind === 'lock'
+    else if (it.kind === 'comment' && locked && !members.has(it.comment.author)) out.add(it.comment.id)
+  }
+  return out
 }
 
 /** A comment of the timeline by id (the text an edit re-seals from). */

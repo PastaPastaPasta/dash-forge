@@ -127,7 +127,11 @@ export default function NotificationsPage(): JSX.Element {
           {subs ? (
             <ul className="list-inside list-disc space-y-1 text-anvil-600 dark:text-anvil-300">
               <li>
-                {plural(subs.repos.filter((r) => r.reason !== 'starred').length, 'repo')} you own or belong to: new issues and pull
+                {plural(subs.repos.filter((r) => r.reason !== 'starred' && r.reason !== 'watched').length, 'repo')} you own or belong to: new issues and pull
+                requests{prefs?.pushes ? ', pushes' : ''}.
+              </li>
+              <li>
+                {plural(subs.repos.filter((r) => r.reason === 'watched').length, 'repo')} you watch (on every device): new issues and pull
                 requests{prefs?.pushes ? ', pushes' : ''}.
               </li>
               <li>

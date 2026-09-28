@@ -40,6 +40,7 @@ import {
   type TargetLog,
 } from './issues'
 import { newestLabels, type LabelDef } from './labels'
+import { pinnedTargets } from '../rules/parity'
 import { HiddenTally, gateFor, type ContentGate, type HiddenCounts } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
@@ -361,6 +362,11 @@ export interface IssueListPage {
   readonly searchedOf: { readonly searched: number; readonly total: number | null } | null
   /** False when the feed was too large to fold: states, labels and assignees are unverified. */
   readonly stateComplete: boolean
+  /**
+   * The repo's pinned issues (member pin events, kinds 19/20, from the complete feed), newest
+   * pin first: page 1 shows them above the list. Empty past page 1 or when the feed is partial.
+   */
+  readonly pinned: readonly IssueRow[]
   readonly labels: readonly LabelDef[]
   readonly hidden: number
   /** `hidden` by reason (private repos: shown to maintainers). */
@@ -576,6 +582,7 @@ export async function queryIssues(
   const start = (q.page - 1) * q.pageSize
   return {
     rows: rows.slice(start, start + q.pageSize),
+    pinned: q.page === 1 ? await pinnedRows(sdk, state) : [],
     matching: complete ? rows.length : null,
     hasNext: rows.length > start + q.pageSize,
     openCount,
@@ -608,6 +615,15 @@ async function candidatesFor(sdk: EvoSDK, state: IndexState, q: IssueSelection):
   const mine = q.author === null ? null : await authorCandidates(sdk, state, q.author)
   if (mine === null) return fromFeed
   return fromFeed === null ? mine : new Set([...fromFeed].filter((id) => mine.has(id)))
+}
+
+/** The repo's pinned issues, newest pin first (one `$id in` read for any not loaded yet). */
+async function pinnedRows(sdk: EvoSDK, state: IndexState): Promise<IssueRow[]> {
+  if (state.feed === null) return []
+  const ids = pinnedTargets([...state.feed.values()].flatMap((log) => log.events)).map((p) => p.targetId)
+  if (ids.length === 0) return []
+  await resolveIds(sdk, state, ids)
+  return rowsOf(state, ids)
 }
 
 /** The loaded rows of `ids`, in order (ids not loaded are skipped). */

@@ -15,8 +15,8 @@ use forge_core::user_error::{self, codes, ErrorContext, UserError};
 use serde_json::Value;
 
 use crate::{
-    CollabCommand, Command, CostCommand, IssueCommand, LabelCommand, PrCommand, ReleaseCommand,
-    RepoBackendCommand, RepoCommand, StorageCommand,
+    CollabCommand, Command, CostCommand, IssueCommand, LabelCommand, MilestoneCommand, PrCommand,
+    ReleaseCommand, RepoBackendCommand, RepoCommand, StorageCommand,
 };
 
 /// A failure with a result of its own: `body` is the command's `--json` object (printed
@@ -114,6 +114,9 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Repo(Rp::Fork { repo, .. }) => ("repository not forked", Some(repo)),
         Command::Repo(Rp::Star { repo, .. }) => ("repository not starred", Some(repo)),
         Command::Repo(Rp::Unstar { repo }) => ("star not removed", Some(repo)),
+        Command::Repo(Rp::Watch { repo }) => ("repository not watched", Some(repo)),
+        Command::Repo(Rp::Unwatch { repo }) => ("watch not removed", Some(repo)),
+        Command::Repo(Rp::Topic { repo, .. }) => ("topics not changed", Some(repo)),
         Command::Repo(Rp::List { .. }) => ("could not list repositories", None),
         Command::Repo(Rp::Keys(crate::RepoKeysCommand::Status { repo })) => {
             ("could not read the repository's keys", Some(repo))
@@ -151,6 +154,15 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Issue(I::Create { repo, .. }) => ("issue not created", Some(repo)),
         Command::Issue(I::Comment { repo, .. }) => ("comment not posted", Some(repo)),
         Command::Issue(I::Close { repo, .. }) => ("issue not closed", Some(repo)),
+        Command::Issue(I::Pin { repo, .. }) => ("pin not changed", Some(repo)),
+        Command::Issue(I::Lock { repo, .. }) => ("lock not changed", Some(repo)),
+        Command::Milestone(MilestoneCommand::List { repo }) => {
+            ("could not list milestones", Some(repo))
+        }
+        Command::Issue(I::Milestone { repo, .. })
+        | Command::Milestone(
+            MilestoneCommand::Create { repo, .. } | MilestoneCommand::Close { repo, .. },
+        ) => ("milestone not changed", Some(repo)),
         Command::Issue(I::Reopen { repo, .. }) => ("issue not reopened", Some(repo)),
         Command::Issue(I::Edit { repo, .. }) => ("issue not edited", Some(repo)),
         Command::Issue(I::EditComment { repo, .. }) => ("comment not edited", Some(repo)),

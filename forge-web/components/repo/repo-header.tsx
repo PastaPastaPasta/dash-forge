@@ -15,6 +15,7 @@ import { BackendBadge } from '@/components/ui/backend-badge'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { Author } from '@/components/author'
 import { StarButton } from '@/components/repo/star-button'
+import { WatchButton } from '@/components/repo/watch-button'
 import { useTargetCounts, useViewerRole } from '@/hooks/use-repo-chrome'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
@@ -101,6 +102,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
         <div className="ml-auto flex items-center gap-2">
           <CopyLinkButton repo={addr} />
           {home.repo.visibility === 'public' ? <ForkButton parent={home.repo} /> : null}
+          <WatchButton repo={home.repo} />
           <StarButton repo={home.repo} count={home.starCount} />
         </div>
       </div>

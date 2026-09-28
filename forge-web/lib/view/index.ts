@@ -57,7 +57,7 @@ export { highlightBlob, type HighlightedBlob } from './highlight'
 export {
   listRecentRepos,
   listReposByOwner,
-  mostStarredRepos,
+  rankedRepos,
   recentReposPage,
   searchRepos,
   type DiscoveredRepo,
