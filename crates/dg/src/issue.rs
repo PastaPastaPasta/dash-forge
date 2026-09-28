@@ -122,11 +122,12 @@ async fn thread_flag(ctx: &Ctx, repo: &str, number: u64, flag: Flag, on: bool) -
     let s = Session::open(ctx, repo).await?;
     let target = target(&s, repo, number).await?;
     let verb = match (flag, on) {
-        (Flag::Pin, true) => "pin",
-        (Flag::Pin, false) => "unpin",
-        (Flag::Lock, true) => "lock",
-        (Flag::Lock, false) => "unlock",
+        (Flag::Pin, true) => ("pin", "pinned"),
+        (Flag::Pin, false) => ("unpin", "unpinned"),
+        (Flag::Lock, true) => ("lock", "locked"),
+        (Flag::Lock, false) => ("unlock", "unlocked"),
     };
+    let (verb, done) = verb;
     let note = match (flag, on) {
         (Flag::Lock, true) => "; clients then offer the comment box to members only",
         _ => "",
@@ -141,8 +142,8 @@ async fn thread_flag(ctx: &Ctx, repo: &str, number: u64, flag: Flag, on: bool) -
         Flag::Lock => collab.set_locked(&s.repo, &target, on).await?,
     };
     ctx.emit(
-        json!({ "status": verb, "issue": number, "eventId": id }),
-        || println!("✓ {verb}ned issue #{number}"),
+        json!({ "status": done, "issue": number, "eventId": id }),
+        || println!("✓ {done} issue #{number}"),
     );
     Ok(())
 }
@@ -354,6 +355,8 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let (hidden_values, plaintext_values) = (view.hidden_values, view.plaintext_values);
     let events: Vec<Event> = view.events().into_iter().cloned().collect();
     let timeline = timeline(&comments, &events);
+    // Milestone, pin and lock: the member events folded (kinds 17-22).
+    let meta = forge_core::rules::v2::fold_thread_meta_v2(&view.log.events);
     let state = view.state;
     let i = view.issue;
     let (id, title, body, author) = (i.document_id, i.title, i.body, i.author);
@@ -366,6 +369,9 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "author": author,
             "documentId": id,
             "state": { "open": state.open, "labels": state.labels, "assignees": state.assignees },
+            "milestone": meta.milestone,
+            "pinned": meta.pinned,
+            "locked": meta.locked,
             "comments": comments.iter().map(|c| json!({"id": c.document_id, "author": c.author, "body": c.body})).collect::<Vec<_>>(),
             "events": events.iter().map(|e| json!({
                 "id": e.id,
