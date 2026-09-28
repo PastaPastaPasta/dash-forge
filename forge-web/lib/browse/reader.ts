@@ -331,7 +331,8 @@ export class BrowseReader {
     const entry = this.locate(oidHex)
     if (entry === null) {
       const fresher = await this.opts.onMiss?.(oidHex)
-      if (fresher != null && fresher !== this && fresher.locate(oidHex) !== null) return fresher.readObject(oidHex)
+      // The retry keeps this read's limits (a README image stays capped on the fresher reader).
+      if (fresher != null && fresher !== this && fresher.locate(oidHex) !== null) return fresher.readBounded(oidHex, limits)
       throw this.opts.missingObject?.(oidHex) ?? new Error(`object not in locator: ${oidHex}`)
     }
 

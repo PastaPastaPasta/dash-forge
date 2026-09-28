@@ -404,7 +404,7 @@ function DirectDownload({ asset, linksShown = false }: { asset: ReleaseAssetView
         <p className="inline-flex items-center gap-1 font-medium text-danger-700 dark:text-danger-400">
           <XCircle className="h-3.5 w-3.5" aria-hidden />
           {check.kind === 'wrong-size'
-            ? `Does not match: it is ${formatBytes(check.size)}, not the published ${formatBytes(check.want)}.`
+            ? `Does not match: it is ${check.size.toLocaleString('en-US')} bytes (${formatBytes(check.size)}), not the published ${check.want.toLocaleString('en-US')} bytes (${formatBytes(check.want)}).`
             : `Does not match: its SHA-256 is ${check.sha256.slice(0, 12)}…, not ${asset.sha256.slice(0, 12)}….`}{' '}
           Do not use it.
         </p>

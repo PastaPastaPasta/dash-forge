@@ -11,8 +11,8 @@ import { describe, expect, it } from 'vitest'
 import { gzipSync, zlibSync } from 'fflate'
 
 import { imageRepo, png } from '../view/image-repo-fixture'
-import { memoryPackSource } from './indexer'
-import { ObjectTooLargeError, PACK_TYPE, applyDelta, gitOidHex, inflateZlib, type PackSource } from './index'
+import { memoryPackSource, serializeLocator } from './indexer'
+import { BrowseReader, ObjectLocator, ObjectTooLargeError, PACK_TYPE, applyDelta, gitOidHex, inflateZlib, type PackSource } from './index'
 import { objHeader } from './pack-fixtures'
 
 /** The pack offset of the blob entry that inflates to the object `oid` (a linear scan of this tiny test pack). */
@@ -197,6 +197,13 @@ describe('object size limit', () => {
     const ofDelta = fetched.slice(before).filter(([a]) => a === entry?.offset)
     expect(ofDelta.length).toBeGreaterThan(0)
     expect(ofDelta.every(([a, b]) => b - a <= 32)).toBe(true)
+  })
+
+  it('keeps the limit when a read is retried on a fresher reader', async () => {
+    const fresh = imageRepo([{ name: 'big.png', delta: { base: png(1024), size: 6 * MIB } }])
+    const oid = fresh.oids['big.png'] as string
+    const reader = new BrowseReader(ObjectLocator.parse(serializeLocator([])), memoryPackSource([]), { onMiss: async () => fresh.reader })
+    await expect(reader.readObject(oid, { maxBytes: CAP })).rejects.toBeInstanceOf(ObjectTooLargeError)
   })
 
   it('refuses a declared size the input could not inflate to, without inflating', () => {
