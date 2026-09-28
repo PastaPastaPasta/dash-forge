@@ -40,7 +40,7 @@ import {
   type WriteResult,
 } from '../sdk'
 import { DOC, num, str, type RepoRef } from './contract'
-import { invalidateMembers } from './members'
+import { invalidateMembers, readMembershipsCached } from './members'
 import { refNameHash, repoContentWritten } from './push'
 import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
@@ -253,14 +253,38 @@ function numberOf(doc: Record<string, unknown>): number | null {
 }
 
 /**
+ * The largest number among `repo`'s issues (or PRs) written by its owner or a current
+ * maintainer, or 0: one `number desc, limit 1` read of the `author` index
+ * (`$ownerId, repoId, number`) per trusted identity.
+ */
+async function trustedMaxNumber(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch'): Promise<number> {
+  const maintainers = (await readMembershipsCached(sdk, repo)).filter((m) => m.role === 'maintainer').map((m) => m.identity)
+  const trusted = [...new Set([repo.ownerId, ...maintainers])]
+  const source = repoSource(repo)
+  const highest = await Promise.all(
+    trusted.map(async (author) => {
+      const { documents } = await queryDocumentsWithProof(sdk, {
+        ...source.targetQuery(DOC[type]),
+        where: [['$ownerId', '==', author], ['repoId', '==', repo.repoId]],
+        orderBy: [['number', 'desc']],
+        limit: 1,
+      })
+      return documents[0] ? numberOf(documents[0]) ?? 0 : 0
+    }),
+  )
+  return Math.max(0, ...highest)
+}
+
+/**
  * The number the allocation rule gives the next issue (or PR) of a repo:
- * `n` = the provable count, `base` = the largest taken number at or below the ceiling, then
- * — only when `base` sits at the ceiling — the contiguous run of taken numbers above it,
- * paged to its end. Null when nothing is left to allocate.
+ * `n` = the provable count, `base` = the larger of the largest taken number at or below the
+ * ceiling and the owner's and maintainers' largest number, then — only when `base` is at or
+ * above the ceiling — the contiguous run of taken numbers above it, paged to its end. Null
+ * when nothing is left to allocate.
  */
 export async function nextNumber(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch'): Promise<number | null> {
   const source = repoSource(repo)
-  const count = await countDocuments(sdk, source.repoQuery(DOC[type]))
+  const [count, trustedMax] = await Promise.all([countDocuments(sdk, source.repoQuery(DOC[type])), trustedMaxNumber(sdk, repo, type)])
   const ceiling = numberCeiling(count)
   const { documents } = await queryDocumentsWithProof(
     sdk,
@@ -270,10 +294,12 @@ export async function nextNumber(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'pa
       limit: 1,
     }),
   )
-  const base = documents[0] ? numberOf(documents[0]) ?? 0 : 0
+  const base = Math.max(documents[0] ? numberOf(documents[0]) ?? 0 : 0, trustedMax)
   const taken: number[] = base > 0 ? [base] : []
-  if (base === ceiling) {
-    // Squatters may sit right above the ceiling: walk the run to its first gap.
+  // Below the ceiling `base + 1` is free by the choice of `base`. At or above it (the ceiling
+  // itself, or a trusted number past it) squatters may sit right above: walk the run to its
+  // first gap.
+  if (base >= ceiling) {
     let expect = base + 1
     let startAfter: string | undefined
     for (;;) {
@@ -301,7 +327,7 @@ export async function nextNumber(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'pa
       startAfter = str(last, '$id')
     }
   }
-  return allocateNumber(count, taken.sort((a, b) => b - a))
+  return allocateNumber(count, taken.sort((a, b) => b - a), trustedMax)
 }
 
 // ---------------------------------------------------------------------------

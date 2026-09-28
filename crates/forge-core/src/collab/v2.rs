@@ -2466,14 +2466,63 @@ impl<'a> Collab<'a> {
 
     // --- numbering --------------------------------------------------------------------
 
+    /// The largest number among `repo`'s issues (or PRs) written by its owner or a current
+    /// maintainer, or 0 (§6): one `number desc, limit 1` read of the `author` index
+    /// (`$ownerId, repoId, number`) per trusted identity.
+    async fn trusted_max_number(
+        &self,
+        collab: &LoadedContract,
+        repo: &RepoRef,
+        kind: TargetKind,
+    ) -> Result<u32> {
+        let oracle = self.member_oracle(repo).await?;
+        let mut trusted: BTreeSet<&str> = oracle
+            .memberships
+            .iter()
+            .filter(|m| m.role == Role::Maintainer)
+            .map(|m| m.identity.as_str())
+            .collect();
+        trusted.insert(repo.owner_id());
+        let reads = trusted.into_iter().map(|author| async move {
+            let owner = FieldValue::identifier(platform::decode_identifier(author)?);
+            Ok::<u32, Error>(
+                self.client
+                    .query_documents(
+                        collab,
+                        kind.doc_type(),
+                        &[
+                            QueryFilter::eq("$ownerId", owner),
+                            Self::repo_filter(repo)?,
+                        ],
+                        &[QueryOrder::desc("number")],
+                        1,
+                        None,
+                    )
+                    .await?
+                    .first()
+                    .map_or(0, number_of),
+            )
+        });
+        Ok(futures::future::try_join_all(reads)
+            .await?
+            .into_iter()
+            .max()
+            .unwrap_or(0))
+    }
+
     /// The number a new issue or PR would claim now (§6).
     pub async fn next_number(&self, repo: &RepoRef, kind: TargetKind) -> Result<u32> {
         let collab = self.collab_contract(repo).await?;
         let repo_filter = Self::repo_filter(repo)?;
-        let count = self
-            .client
-            .count_documents(&collab, kind.doc_type(), std::slice::from_ref(&repo_filter))
-            .await?;
+        let (count, trusted_max) = futures::future::try_join(
+            self.client.count_documents(
+                &collab,
+                kind.doc_type(),
+                std::slice::from_ref(&repo_filter),
+            ),
+            self.trusted_max_number(&collab, repo, kind),
+        )
+        .await?;
         let ceiling = number_ceiling(count);
         let base = self
             .client
@@ -2490,11 +2539,13 @@ impl<'a> Collab<'a> {
             )
             .await?
             .first()
-            .map_or(0, number_of);
+            .map_or(0, number_of)
+            .max(trusted_max);
         let mut taken = vec![base];
-        // Below the ceiling `base + 1` is free by construction; only a base AT the ceiling
-        // can have squatters directly above it, and the probe steps over the whole run.
-        if u64::from(base) == ceiling && base > 0 {
+        // Below the ceiling `base + 1` is free by construction; only a base at or above it
+        // (the ceiling itself, or a trusted number past it) can have squatters directly
+        // above it, and the probe steps over the whole run.
+        if u64::from(base) >= ceiling && base > 0 {
             let page = DEFAULT_PAGE as usize;
             let run = contiguous_run_above(base, page, |after| {
                 let filters = [
@@ -2523,7 +2574,7 @@ impl<'a> Collab<'a> {
             taken.extend(run);
         }
         taken.retain(|n| *n > 0);
-        allocate_number(count, &taken).ok_or_else(|| {
+        allocate_number(count, &taken, trusted_max).ok_or_else(|| {
             Error::Config(format!(
                 "every {} number above {base} is taken",
                 kind.noun()
@@ -4207,7 +4258,7 @@ mod tests {
         let count = 0; // the ceiling is 100 = base
         let mut all = vec![100];
         all.extend(run);
-        assert_eq!(allocate_number(count, &all), Some(251));
+        assert_eq!(allocate_number(count, &all, 0), Some(251));
     }
 
     #[tokio::test]
@@ -4226,7 +4277,7 @@ mod tests {
     #[test]
     fn a_squatter_far_ahead_does_not_move_numbering() {
         // Three issues, and a squatter at 4294967295: the ceiling is 106, base 3.
-        assert_eq!(allocate_number(4, &[3]), Some(4));
+        assert_eq!(allocate_number(4, &[3], 0), Some(4));
     }
 
     #[test]

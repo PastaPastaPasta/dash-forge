@@ -1450,6 +1450,9 @@ mod tests {
     struct AllocateNumberInput {
         count: u64,
         taken_numbers_desc: Vec<u32>,
+        /// The owner's and maintainers' largest number; absent is 0.
+        #[serde(default)]
+        trusted_max: u32,
     }
 
     #[derive(Debug, Deserialize, Serialize)]
@@ -1803,7 +1806,7 @@ mod tests {
             }
             "allocate_number" => {
                 let inp: AllocateNumberInput = input(v);
-                let got = v2::allocate_number(inp.count, &inp.taken_numbers_desc);
+                let got = v2::allocate_number(inp.count, &inp.taken_numbers_desc, inp.trusted_max);
                 assert_eq!(got, expected::<Option<u32>>(v), "vector `{ctx}`");
             }
             "pack_copies" => run_pack_copies(v),

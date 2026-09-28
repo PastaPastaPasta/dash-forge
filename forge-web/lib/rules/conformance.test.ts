@@ -235,9 +235,9 @@ function runCaseV2(v: Vector): void {
       break
     }
     case 'allocate_number': {
-      onlyKeys(v, ['count', 'takenNumbersDesc'])
-      const inp = v.input as { readonly count: number; readonly takenNumbersDesc: readonly number[] }
-      expect(v2.allocateNumber(inp.count, inp.takenNumbersDesc)).toEqual(v.expected)
+      onlyKeys(v, ['count', 'takenNumbersDesc', 'trustedMax'])
+      const inp = v.input as { readonly count: number; readonly takenNumbersDesc: readonly number[]; readonly trustedMax?: number }
+      expect(v2.allocateNumber(inp.count, inp.takenNumbersDesc, inp.trustedMax ?? 0)).toEqual(v.expected)
       break
     }
     case 'pack_copies': {
