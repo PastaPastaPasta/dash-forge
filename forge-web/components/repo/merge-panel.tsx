@@ -99,7 +99,9 @@ export function MergePanel({
   const wide = useMinWidth(1024)
   const { upload, question: storageQuestion, questionStep, choiceFor, begin, storageNeedsUnlock } = useMergeUpload(repo)
   // The check sizes the pack (an upper bound): the Storage row prices it before the merge starts.
-  const [packEstimate, setPackEstimate] = useState<PackEstimate | null>(null)
+  // With the method it was sized for (a squash packs none of the head's history): an estimate for
+  // another method is no price for this one, and is sized again.
+  const [sized, setSized] = useState<{ readonly estimate: PackEstimate | null; readonly method: 'merge' | 'squash' } | null>(null)
   // "Allow storing on Platform": until the merger touches it, its default follows the policy.
   const [allowTouched, setAllowTouched] = useState<boolean | null>(null)
   const baseRefName = pull.state.baseRef ?? pull.baseRefName
@@ -136,6 +138,7 @@ export function MergePanel({
   )
   // Widened for the real commit's identity (author and committer) and the squash message as it
   // is now: the check used a placeholder identity and the message of the moment.
+  const packEstimate = sized !== null && sized.method === method ? sized.estimate : null
   const storage = choiceFor(widenEstimate(packEstimate, `${input.author.name}${input.author.email}`.repeat(2) + (input.squash?.message ?? '')))
   const allowPlatform = allowTouched ?? storage?.allowByDefault ?? false
   // The pre-answer the run starts with: credits allowed on Platform (null: none, it asks).
@@ -152,20 +155,19 @@ export function MergePanel({
   // The check reads the latest input without re-running when only the merger's name changes.
   const inputRef = useRef(input)
   inputRef.current = input
-  // The method the current estimate was sized for (a squash packs none of the head's history).
-  const sizedFor = useRef<'merge' | 'squash' | null>(null)
   useEffect(() => {
     if (!checkable || reader === null) return
     const abort = new AbortController()
     setCheck(null)
-    sizedFor.current = inputRef.current.squash !== undefined ? 'squash' : 'merge'
+    setSized(null)
+    const sizing = inputRef.current.squash !== undefined ? 'squash' : 'merge'
     // The check needs a name for the trial merge commit; the real one is written on click.
     checkMergeInWorker(reader, { ...inputRef.current, author: { name: 'check', email: 'check@forge' } }, abort.signal).then(
       (c) => {
         if (abort.signal.aborted) return
         setCheck(c.check)
         setConflictPaths(c.conflictPaths)
-        setPackEstimate(c.packEstimate)
+        setSized({ estimate: c.packEstimate, method: sizing })
       },
       (e: unknown) => {
         if (!abort.signal.aborted) setCheck({ error: e instanceof Error ? e.message : String(e) })
@@ -174,24 +176,19 @@ export function MergePanel({
     return () => abort.abort()
   }, [checkable, reader, sidesKey, baseTipOid, pull.headOid])
   // A method switch re-sizes the pack only: the verdict and the controls stay (the menu keeps
-  // focus); the Storage row shows no price until the new size is in.
+  // focus); the Storage row shows no price until the size for this method is in.
+  const sizedMethod = sized?.method ?? null
   useEffect(() => {
-    if (!checkable || reader === null || sizedFor.current === null || sizedFor.current === method) return
+    if (!checkable || reader === null || sizedMethod === null || sizedMethod === method) return
     const abort = new AbortController()
-    sizedFor.current = method
-    setPackEstimate(null)
     checkMergeInWorker(reader, { ...inputRef.current, author: { name: 'check', email: 'check@forge' } }, abort.signal).then(
       (c) => {
-        if (!abort.signal.aborted) setPackEstimate(c.packEstimate)
+        if (!abort.signal.aborted) setSized({ estimate: c.packEstimate, method })
       },
       () => undefined,
     )
-    return () => {
-      abort.abort()
-      // Superseded before it answered: the next run sizes again.
-      sizedFor.current = null
-    }
-  }, [checkable, reader, method])
+    return () => abort.abort()
+  }, [checkable, reader, method, sizedMethod])
   const button = mergeButton({
     canMerge,
     isPublic: repo.visibility === 'public',

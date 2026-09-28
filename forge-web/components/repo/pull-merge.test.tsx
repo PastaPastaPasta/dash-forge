@@ -189,5 +189,34 @@ describe('the merge box through its own merge', () => {
     // Sized again, for the squash.
     expect(checks).toHaveBeenCalledTimes(2)
     expect(price()).not.toBe(before)
+    expect(price()).toMatch(/DASH/)
+  })
+
+  it('switching away and back before the new size is in keeps a price for the method shown', async () => {
+    checkCount = 0
+    checks.mockClear()
+    const never = new Promise<never>(() => undefined)
+    checks.mockImplementation(async () => {
+      if (checks.mock.calls.length > 1) return never
+      return { check: 'merge', conflictPaths: [] as string[], packEstimate: { bytes: 4000, objectCount: 4 } }
+    })
+    await act(async () => root.render(<Page onDelete={async () => undefined} />))
+    await act(async () => undefined)
+    const select = host.querySelector('#merge-method') as HTMLSelectElement
+    const price = (): string => host.querySelector('[data-testid="storage-row"] [data-testid="cost-preview"]')?.textContent ?? ''
+    const before = price()
+    expect(before).toMatch(/DASH/)
+    const pick = async (v: string): Promise<void> => {
+      await act(async () => {
+        select.value = v
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+    }
+    await pick('squash')
+    // Not sized for squash yet: no price rather than the merge's.
+    expect(price()).toBe('')
+    await pick('merge')
+    // Back on merge: its own size still stands.
+    expect(price()).toBe(before)
   })
 })
