@@ -278,6 +278,7 @@ export {
   patternsProblem,
   previewConfig,
   previewRepoEdit,
+  readTopicDocNames,
   readPolicy,
   sameConfig,
   shortBranch,

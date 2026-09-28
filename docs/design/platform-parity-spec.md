@@ -485,7 +485,7 @@ The live acceptance checks of §7 C-1 (`forge-contracts/scripts/verify-c1.mjs`, 
 
 How the clients carry the C-1 types (PR (b)):
 
-- **Topics**: the owner writes both the `topic` documents (what Explore counts per topic) and `repo.topics` (what repo pages show); `dg repo topic --add/--remove` and the web Settings save keep the two in step (`Collab::sync_repo_topics`, `syncTopicDocs`).
+- **Topics**: the owner writes both `repo.topics` (what repo pages show) and the `topic` documents (what Explore counts per topic). `repo.topics` is authoritative in every client: `dg repo topic --add/--remove`, `dg repo edit --topics` and the web Settings save replace it, then reconcile the documents to it (`Collab::set_topics` / `reconcile_topic_docs`, `syncTopicDocs`), which also back-fills a repo tagged before C-1. The web prices the save against the documents it holds.
 - **Watch**: the inbox reads `watch.byOwner` as a subscription source (reason `watched`, whatever the star preference), so a watch follows the viewer to every device.
 - **Pin**: the Issues tab shows the repo's pinned issues above the list (folded from the feed it already reads, `pinnedTargets`); `dg issue list` lists them first.
 - **Lock**: a client rule, like archiving. The web composer and `dg issue comment` refuse a non-member's comment on a locked thread before signing; consensus still admits one, and the web marks it "posted while locked".

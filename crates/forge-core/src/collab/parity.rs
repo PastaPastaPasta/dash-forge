@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use super::v2::{Collab, Target, DOC_MILESTONE, DOC_WATCH};
 use crate::error::{Error, Result};
-use crate::platform::{FieldValue, QueryFilter, QueryOrder};
+use crate::platform::{FieldValue, QueryOrder};
 use crate::rules::v2::Role;
 use crate::rules::v2::{fold_milestones_v2, MilestoneDoc, MilestoneItem};
 use crate::rules::EventKind;
@@ -20,17 +20,6 @@ use crate::scope::RepoRef;
 
 /// forge-core: a repo's topic (owner-granted).
 pub const DOC_TOPIC: &str = "topic";
-
-/// A topic name: what the contract's pattern admits (`^[a-z0-9][a-z0-9-]{0,29}$`).
-#[must_use]
-pub fn is_valid_topic(name: &str) -> bool {
-    let b = name.as_bytes();
-    !b.is_empty()
-        && b.len() <= 30
-        && (b[0].is_ascii_lowercase() || b[0].is_ascii_digit())
-        && b.iter()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
-}
 
 /// A milestone of a repo with its progress (the fold's [`crate::rules::v2::Milestone`]).
 pub use crate::rules::v2::Milestone;
@@ -59,11 +48,57 @@ impl Collab<'_> {
     }
 
     // --- topics ----------------------------------------------------------------------
+    //
+    // Two records, both the owner's: `repo.topics` (what repo pages show, and what every client
+    // edits) is authoritative; the `topic` documents (what Explore counts per topic) follow it.
 
-    /// `repo`'s topics (the `topic` documents; unique per name), sorted.
+    /// `repo`'s topics: the `repo` document's `topics`, as stored.
     pub async fn topics(&self, repo: &RepoRef) -> Result<Vec<String>> {
         let core = self.core_contract(repo).await?;
-        let docs = self
+        let doc = self
+            .client()
+            .fetch_document(&core, "repo", repo.id())
+            .await?
+            .ok_or(Error::NotFound)?;
+        Ok(doc
+            .fields
+            .get("topics")
+            .and_then(FieldValue::as_text_list)
+            .unwrap_or_default())
+    }
+
+    /// Set `repo`'s topics to `names` (its owner only): replace `repo.topics`, then bring the
+    /// `topic` documents in line ([`Self::reconcile_topic_docs`]). Refused before signing when
+    /// the list breaks the schema (at most [`crate::repo::MAX_TOPICS`], unique, the pattern).
+    /// `false` when nothing changed.
+    pub async fn set_topics(&self, repo: &RepoRef, names: &[String]) -> Result<bool> {
+        self.require_owner(repo, "change the repository's topics")?;
+        crate::repo::RepoEdit {
+            description: None,
+            topics: Some(names.to_vec()),
+        }
+        .validate()?;
+        let core = self.core_contract(repo).await?;
+        let changes = BTreeMap::from([(
+            "topics".to_string(),
+            (!names.is_empty()).then(|| FieldValue::text_list(names.to_vec())),
+        )]);
+        let replaced = self
+            .engine()?
+            .replace_document(&core, "repo", repo.id(), &changes)
+            .await?;
+        let reconciled = self.reconcile_topic_docs(repo, names).await?;
+        Ok(replaced || reconciled)
+    }
+
+    /// Create the `topic` documents `names` lacks and delete the ones it no longer holds (its
+    /// owner only; idempotent). What `dg repo edit --topics` and the web's Settings save run
+    /// after replacing `repo.topics`, so Explore's per-topic counts follow the repo page.
+    /// `false` when they already matched.
+    pub async fn reconcile_topic_docs(&self, repo: &RepoRef, names: &[String]) -> Result<bool> {
+        self.require_owner(repo, "change the repository's topics")?;
+        let core = self.core_contract(repo).await?;
+        let held: BTreeMap<String, String> = self
             .client()
             .query_all_documents(
                 &core,
@@ -71,82 +106,28 @@ impl Collab<'_> {
                 &[Self::repo_filter(repo)?],
                 &[QueryOrder::asc("repoId"), QueryOrder::asc("name")],
             )
-            .await?;
-        let mut names: Vec<String> = docs
-            .iter()
-            .filter_map(|d| d.field_str("name"))
-            .filter(|n| is_valid_topic(n))
+            .await?
+            .into_iter()
+            .filter_map(|d| d.field_str("name").map(|n| (n, d.id)))
             .collect();
-        names.sort();
-        names.dedup();
-        Ok(names)
-    }
-
-    /// Tag `repo` with `name` (its owner only: `topic` is owner-granted). `false` when it
-    /// already carries the topic. The caller keeps `repo.topics` (what pages display) in step.
-    pub async fn add_topic(&self, repo: &RepoRef, name: &str) -> Result<bool> {
-        if !is_valid_topic(name) {
-            return Err(Error::Config(format!(
-                "topic {name:?} must be 1-30 lowercase letters, digits and dashes, starting with a letter or digit"
-            )));
+        let mut changed = false;
+        for name in names.iter().filter(|n| !held.contains_key(*n)) {
+            let props = BTreeMap::from([("name".to_string(), FieldValue::text(name))]);
+            match self.write(repo, &core, DOC_TOPIC, props).await {
+                Ok(_) => changed = true,
+                // Tagged in between (another device): the (repoId, name) index is unique.
+                Err(Error::DuplicateUniqueIndex(_)) => {}
+                Err(e) => return Err(e),
+            }
         }
-        if self.topics(repo).await?.iter().any(|t| t == name) {
-            return Ok(false);
+        let engine = self.engine()?;
+        for (name, id) in &held {
+            if !names.contains(name) {
+                engine.delete_document(&core, DOC_TOPIC, id).await?;
+                changed = true;
+            }
         }
-        self.require_owner(repo, &format!("tag the repository {name}"))?;
-        let core = self.core_contract(repo).await?;
-        let props = BTreeMap::from([("name".to_string(), FieldValue::text(name))]);
-        match self.write(repo, &core, DOC_TOPIC, props).await {
-            Ok(_) => Ok(true),
-            // Tagged in between (another device): the (repoId, name) index is unique.
-            Err(Error::DuplicateUniqueIndex(_)) => Ok(false),
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Remove topic `name` from `repo` (its owner only). `false` when it does not carry it.
-    pub async fn remove_topic(&self, repo: &RepoRef, name: &str) -> Result<bool> {
-        self.require_owner(repo, &format!("remove topic {name}"))?;
-        let core = self.core_contract(repo).await?;
-        let docs = self
-            .client()
-            .query_documents(
-                &core,
-                DOC_TOPIC,
-                &[
-                    Self::repo_filter(repo)?,
-                    QueryFilter::eq("name", FieldValue::text(name)),
-                ],
-                &[],
-                1,
-                None,
-            )
-            .await?;
-        let Some(doc) = docs.into_iter().next() else {
-            return Ok(false);
-        };
-        self.engine()?
-            .delete_document(&core, DOC_TOPIC, &doc.id)
-            .await?;
-        Ok(true)
-    }
-
-    /// Make the `repo` document's `topics` (what repo pages and Explore display) the topic
-    /// documents' names, the first [`crate::repo::MAX_TOPICS`] of them. Both are the owner's to
-    /// write, so the owner's tagging keeps them in step. `false` when they already match
-    /// (nothing signed).
-    pub async fn sync_repo_topics(&self, repo: &RepoRef) -> Result<bool> {
-        self.require_owner(repo, "update the repository's topics")?;
-        let mut names = self.topics(repo).await?;
-        names.truncate(crate::repo::MAX_TOPICS);
-        let core = self.core_contract(repo).await?;
-        let changes = BTreeMap::from([(
-            "topics".to_string(),
-            (!names.is_empty()).then(|| FieldValue::text_list(names)),
-        )]);
-        self.engine()?
-            .replace_document(&core, "repo", repo.id(), &changes)
-            .await
+        Ok(changed)
     }
 
     /// Refuse before signing unless the signer owns `repo` (the owner-granted types).
@@ -279,28 +260,5 @@ impl Collab<'_> {
             EventKind::Unlock
         };
         self.post_event(repo, target, kind, None, None).await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_valid_topic;
-
-    #[test]
-    fn topic_names_follow_the_contract_pattern() {
-        for ok in ["rust", "git", "c", "0x", "a-b-c", &"a".repeat(30)] {
-            assert!(is_valid_topic(ok), "{ok}");
-        }
-        for bad in [
-            "",
-            "Rust",
-            "-rust",
-            "rust_cli",
-            "rust cli",
-            &"a".repeat(31),
-            "é",
-        ] {
-            assert!(!is_valid_topic(bad), "{bad}");
-        }
     }
 }

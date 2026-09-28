@@ -340,12 +340,15 @@ export function repoEditChanges(edit: RepoDocEdit): Record<string, unknown> {
 
 /**
  * The pre-sign cost of an edit of the repo document, and of the `topic` documents a topics edit
- * adds and removes (`current`: the topics it replaces) so Explore can count repos per topic.
+ * creates and deletes so Explore can count repos per topic. `held`: the topic documents the repo
+ * has ({@link readTopicDocNames}); null while unknown, priced as the worst case (every listed
+ * topic created, none deleted).
  */
-export function previewRepoEdit(edit: RepoDocEdit, current: readonly string[] = []): CostPreview {
+export function previewRepoEdit(edit: RepoDocEdit, held: readonly string[] | null = []): CostPreview {
   const changes = repoEditChanges(edit)
   if (Object.keys(changes).length === 0) return previewCredits(0)
-  const { added, removed } = topicChanges(current, edit.topics ?? current)
+  if (edit.topics === undefined) return previewReplace(DOC.repo, changes)
+  const { added, removed } = held === null ? { added: [...edit.topics], removed: [] } : topicChanges(held, edit.topics)
   return sumPreviews([
     previewReplace(DOC.repo, changes),
     ...added.map((name) => previewCreate(DOC.topic, { name })),
@@ -358,14 +361,24 @@ export function topicChanges(before: readonly string[], after: readonly string[]
   return { added: after.filter((t) => !before.includes(t)), removed: before.filter((t) => !after.includes(t)) }
 }
 
+/** The repo's `topic` documents: name to document id. */
+async function readTopicDocs(sdk: EvoSDK, repo: RepoRef): Promise<Map<string, string>> {
+  const docs = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.topic, { orderBy: [['repoId', 'asc'], ['name', 'asc']] }))
+  return new Map(docs.map((d) => [str(d, 'name'), str(d, '$id')]))
+}
+
+/** The names of the repo's `topic` documents (what a topics edit prices against). */
+export async function readTopicDocNames(sdk: EvoSDK, repo: RepoRef): Promise<string[]> {
+  return [...(await readTopicDocs(sdk, repo)).keys()]
+}
+
 /**
  * Bring the repo's `topic` documents (forge-core, owner-granted, C-1: what Explore counts per
  * topic) in line with `topics`: create the missing ones, delete the extra ones. Idempotent; the
  * owner only (consensus refuses anyone else).
  */
 export async function syncTopicDocs(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, topics: readonly string[]): Promise<void> {
-  const docs = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.topic, { orderBy: [['repoId', 'asc'], ['name', 'asc']] }))
-  const held = new Map(docs.map((d) => [str(d, 'name'), str(d, '$id')]))
+  const held = await readTopicDocs(sdk, repo)
   const { added, removed } = topicChanges([...held.keys()], topics)
   for (const name of added) {
     try {

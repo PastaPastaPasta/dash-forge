@@ -127,6 +127,10 @@ pub async fn edit(ctx: &Ctx, args: &RepoEditArgs) -> Result<()> {
     if doc_changes {
         let before = s.balance().await;
         edited = svc.edit_repo(&s.repo, &repo_edit).await?;
+        // The `topic` documents Explore counts follow the list (also repairs a lagging set).
+        if let Some(t) = &repo_edit.topics {
+            edited |= s.collab().reconcile_topic_docs(&s.repo, t).await?;
+        }
         if edited {
             spent += s.spent_since(before).await;
         }

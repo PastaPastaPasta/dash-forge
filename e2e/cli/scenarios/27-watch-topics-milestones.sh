@@ -3,8 +3,8 @@
 #
 #   1. CONTRIB watches the suite repo (count +1), watches again (nothing written), unwatches
 #      (the indexOnly delete by values; count back)                 -> `dg repo watch|unwatch`
-#   2. OWNER tags the repo with a topic; the list reads it back; a re-tag writes nothing;
-#      removing it deletes OWNER's own tag                           -> `dg repo topic`
+#   2. OWNER tags the repo with a topic; the list reads it back; a re-tag adds nothing;
+#      removing it drops it (repo.topics, and its topic document)   -> `dg repo topic`
 #   3. OWNER defines a milestone, opens an issue, puts it in the milestone, lists the
 #      milestones (1 open); closes the issue (0 open, 1 closed); closes the milestone
 #                                                                    -> `dg milestone`, `dg issue milestone`
@@ -61,7 +61,7 @@ dg_write "$ID_OWNER" "$LOG-topic" repo topic "$REPO" --add "$TOPIC" || must "$LO
 check "topic added" assert_eq "['$TOPIC']" "$(jq_py "$LOG-topic.json" 'd["added"]')"
 check "the list reads it" until_read "$LOG-topics" "'$TOPIC' in d['topics']" repo topic "$REPO"
 dg_write "$ID_OWNER" "$LOG-topic2" repo topic "$REPO" --add "$TOPIC" || must "$LOG-topic2" "re-add topic"
-check "re-tagging writes nothing" assert_eq "[]" "$(jq_py "$LOG-topic2.json" 'd["added"]')"
+check "re-tagging adds nothing" assert_eq "[]" "$(jq_py "$LOG-topic2.json" 'd["added"]')"
 dg_write "$ID_OWNER" "$LOG-untopic" repo topic "$REPO" --remove "$TOPIC" || must "$LOG-untopic" "remove topic"
 check "topic removed" assert_eq "['$TOPIC']" "$(jq_py "$LOG-untopic.json" 'd["removed"]')"
 

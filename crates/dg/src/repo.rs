@@ -367,7 +367,8 @@ async fn star(ctx: &Ctx, repo: &str, on: bool, trending: bool) -> Result<()> {
 
 /// Watch or stop watching `repo` (forge-collab `watch`, indexOnly).
 async fn watch(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
-    let s = Session::open_for_write(ctx, repo, "watch not changed").await?;
+    // Not a write to the repo: an archived repo can be watched, as it can be starred.
+    let s = Session::open(ctx, repo).await?;
     let verb = if on { "Watch" } else { "Stop watching" };
     ctx.confirm_or_cancel(&format!(
         "{verb} {}? (one small document{})",
@@ -399,8 +400,8 @@ async fn watch(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
     Ok(())
 }
 
-/// List `repo`'s topics, or add / remove some (its owner; a topic is its own document, and
-/// the repo document's `topics`, which pages display, follows).
+/// List `repo`'s topics, or add / remove some (its owner): `repo.topics` changes, and the
+/// `topic` documents Explore counts follow it.
 async fn topic(ctx: &Ctx, repo: &str, add: &[String], remove: &[String]) -> Result<()> {
     if add.is_empty() && remove.is_empty() {
         let r = Reader::open(ctx, repo).await?;
@@ -419,28 +420,36 @@ async fn topic(ctx: &Ctx, repo: &str, add: &[String], remove: &[String]) -> Resu
         return Ok(());
     }
     let s = Session::open_for_write(ctx, repo, "topics not changed").await?;
-    ctx.confirm_or_cancel(&format!(
-        "Change the topics of {}? (+{} / -{}: one small document each, then the repo's topic list; owner only)",
-        s.repo.display(),
-        add.len(),
-        remove.len()
-    ))?;
     let collab = s.collab();
-    let (mut added, mut removed) = (Vec::new(), Vec::new());
-    for t in add {
-        if collab.add_topic(&s.repo, t).await? {
-            added.push(t.clone());
+    let current = collab.topics(&s.repo).await?;
+    let added: Vec<String> = add
+        .iter()
+        .filter(|t| !current.contains(t))
+        .cloned()
+        .collect();
+    let removed: Vec<String> = remove
+        .iter()
+        .filter(|t| current.contains(t))
+        .cloned()
+        .collect();
+    let mut topics: Vec<String> = current
+        .iter()
+        .filter(|t| !removed.contains(t))
+        .cloned()
+        .collect();
+    for t in &added {
+        if !topics.contains(t) {
+            topics.push(t.clone());
         }
     }
-    for t in remove {
-        if collab.remove_topic(&s.repo, t).await? {
-            removed.push(t.clone());
-        }
-    }
-    if !added.is_empty() || !removed.is_empty() {
-        collab.sync_repo_topics(&s.repo).await?;
-    }
-    let topics = collab.topics(&s.repo).await.unwrap_or_default();
+    ctx.confirm_or_cancel(&format!(
+        "Change the topics of {}? (+{} / -{}: the repo document's list, and one small topic document each; owner only)",
+        s.repo.display(),
+        added.len(),
+        removed.len()
+    ))?;
+    // Also run when the list is unchanged: it repairs topic documents that lag the list.
+    collab.set_topics(&s.repo, &topics).await?;
     ctx.emit(
         json!({ "repo": s.repo.display(), "added": added, "removed": removed, "topics": topics }),
         || {

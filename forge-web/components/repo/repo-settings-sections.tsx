@@ -35,6 +35,7 @@ import {
   patternsProblem,
   previewConfig,
   previewRepoEdit,
+  readTopicDocNames,
   readConfig,
   readPolicy,
   readRepoById,
@@ -257,7 +258,9 @@ export function GeneralSettings({
 
 /** Description and topics: the `repo` document, which only its owner can edit. */
 function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean; onSaved: () => void }): JSX.Element {
-  const { sdk } = useSdk(repoContractIds(home.repo))
+  const { sdk, ready } = useSdk(repoContractIds(home.repo))
+  // The topic documents the save reconciles, for its price (the owner only: only they can save).
+  const held = useAsync(() => readTopicDocNames(sdk!, home.repo), [ready, repoKey(home.repo)], { enabled: owner && ready && sdk !== null })
   const { signer } = useAuth()
   const guard = useWriteGuard()
   const [description, setDescription] = useState(home.v2.description)
@@ -270,7 +273,7 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
   }
   const changed = Object.keys(edit).length > 0
   const problem = descriptionProblem(description) ?? topicsProblem(topics)
-  const cost = previewRepoEdit(edit, home.v2.topics)
+  const cost = previewRepoEdit(edit, held.data)
   const run = async (): Promise<void> => {
     if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
     await editRepoDoc(sdk, signer, home.repo, pending)
@@ -325,7 +328,7 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
         onClose={() => setPending(null)}
         title="Edit the repo details"
         description="Replaces the description and topics on the repo document; each topic added or removed is also one small topic document (what Explore counts per topic). Its name, visibility and fork origin cannot change."
-        cost={pending ? previewRepoEdit(pending, home.v2.topics) : null}
+        cost={pending ? previewRepoEdit(pending, held.data) : null}
         confirmLabel="Sign & save"
         onConfirm={run}
       />

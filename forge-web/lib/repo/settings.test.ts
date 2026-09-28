@@ -180,6 +180,11 @@ describe('repo document edits', () => {
     expect(previewRepoEdit({ topics: ['rust', 'git'] }, ['rust']).credits).toBeGreaterThan(replace)
     // A removal refunds part of the replace.
     expect(previewRepoEdit({ topics: [] }, ['rust']).credits).toBeLessThan(replace)
+    // Priced against the topic documents held, not the list: a pre-C-1 repo holds none, so all
+    // three are created; unknown (null) prices that worst case too.
+    const three = previewRepoEdit({ topics: ['rust', 'cli', 'git'] }, []).credits
+    expect(three).toBeGreaterThan(previewRepoEdit({ topics: ['rust', 'cli', 'git'] }, ['rust', 'cli']).credits)
+    expect(previewRepoEdit({ topics: ['rust', 'cli', 'git'] }, null).credits).toBe(three)
     expect(previewRepoEdit({}, ['rust']).credits).toBe(0)
   })
 })
