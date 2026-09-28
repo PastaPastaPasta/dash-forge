@@ -90,6 +90,24 @@ export function shortRepoPath(repo: { readonly owner: string; readonly name: str
   }
 }
 
+/** An owner (identity id or DPNS label) and a repo name the shim accepts ({@link SHORT_URL_EXPAND_SOURCE}). */
+const OWNER_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9-]*$/
+const NAME_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+/**
+ * Whether `repo` has a short URL the shim expands back to it: an owner or name the shim refuses
+ * (`alice.dash`), a reserved owner (`repo`), or a `?repo=` pin (the short form cannot carry it)
+ * needs the canonical query route instead.
+ */
+export function hasShortUrl(repo: { readonly owner: string; readonly name: string; readonly repoId?: string }): boolean {
+  return (
+    !repo.repoId &&
+    OWNER_SEGMENT.test(repo.owner) &&
+    NAME_SEGMENT.test(repo.name) &&
+    !RESERVED_SEGMENTS.includes(repo.owner.toLowerCase())
+  )
+}
+
 /** The base path this build is served under (`NEXT_PUBLIC_BASE_PATH`, e.g. `/dash-forge`). */
 export const BASE_PATH = (process.env.NEXT_PUBLIC_BASE_PATH ?? '').replace(/\/+$/, '')
 
@@ -116,7 +134,7 @@ export const SHORT_URL_EXPAND_SOURCE = `function (pathname, base, reserved) {
   var owner = dec(parts[0]), name = dec(parts[1]);
   if (owner === null || name === null) return null;
   if (reserved.indexOf(owner.toLowerCase()) >= 0) return null;
-  if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(owner) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name)) return null;
+  if (!${OWNER_SEGMENT}.test(owner) || !${NAME_SEGMENT}.test(name)) return null;
   var q = function (route, extra) {
     var s = 'owner=' + encodeURIComponent(owner) + '&name=' + encodeURIComponent(name);
     for (var i = 0; i < extra.length; i += 2) {

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { trapTab } from './focus'
+import { isPageShortcut, trapTab } from './focus'
 
 /**
  * A minimal stand-in for the DOM `trapTab` touches (vitest runs in Node): a panel whose
@@ -23,7 +23,11 @@ class FakeEl {
   }
 }
 
-const doc: { activeElement: unknown } = { activeElement: null }
+const doc: { activeElement: unknown; modal: boolean; querySelector: (s: string) => unknown } = {
+  activeElement: null,
+  modal: false,
+  querySelector: (s) => (s === '[aria-modal="true"]' && doc.modal ? {} : null),
+}
 
 function panel(items: FakeEl[]): FakeEl & { querySelectorAll: () => FakeEl[] } {
   return Object.assign(new FakeEl('panel'), { querySelectorAll: () => items })
@@ -46,6 +50,35 @@ vi.stubGlobal('document', doc)
 vi.stubGlobal('HTMLElement', FakeEl)
 afterEach(() => {
   doc.activeElement = null
+  doc.modal = false
+})
+
+describe('isPageShortcut (`/` to search, `y` for a permalink)', () => {
+  const field = (tagName: string, isContentEditable = false): EventTarget => Object.assign(new FakeEl(tagName), { tagName, isContentEditable }) as unknown as EventTarget
+  const key = (k: string, more: Partial<KeyboardEvent> = {}): Parameters<typeof isPageShortcut>[0] => ({
+    key: k,
+    metaKey: false,
+    ctrlKey: false,
+    altKey: false,
+    defaultPrevented: false,
+    target: field('BODY'),
+    ...more,
+  })
+
+  it('takes the bare key on the page', () => {
+    expect(isPageShortcut(key('y'), 'y')).toBe(true)
+    expect(isPageShortcut(key('Y'), 'y')).toBe(false)
+  })
+
+  it('leaves it to a field being typed in, a modifier chord, a handled key and an open modal', () => {
+    for (const tag of ['INPUT', 'TEXTAREA', 'SELECT']) expect(isPageShortcut(key('y', { target: field(tag) }), 'y')).toBe(false)
+    expect(isPageShortcut(key('y', { target: field('DIV', true) }), 'y')).toBe(false)
+    expect(isPageShortcut(key('y', { metaKey: true }), 'y')).toBe(false)
+    expect(isPageShortcut(key('y', { ctrlKey: true }), 'y')).toBe(false)
+    expect(isPageShortcut(key('y', { defaultPrevented: true }), 'y')).toBe(false)
+    doc.modal = true
+    expect(isPageShortcut(key('y'), 'y')).toBe(false)
+  })
 })
 
 describe('trapTab', () => {

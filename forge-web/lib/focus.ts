@@ -15,6 +15,21 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
 
+/** Whether a key press is typing into a field (where `/` or `y` must stay a character). */
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (typeof HTMLElement === 'undefined' || !(target instanceof HTMLElement)) return false
+  return target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)
+}
+
+/**
+ * Whether `e` is the single-key page shortcut `key` (`/` to search, `y` for a permalink): no
+ * modifier, not typed into a field, not already handled, and no modal open (it keeps the keyboard).
+ */
+export function isPageShortcut(e: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'altKey' | 'defaultPrevented' | 'target'>, key: string): boolean {
+  if (e.key !== key || e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented || isTypingTarget(e.target)) return false
+  return document.querySelector('[aria-modal="true"]') === null
+}
+
 /** The tabbable elements of `root`, in DOM order (hidden ones — `display: none`, `inert` — excluded). */
 export function tabbables(root: HTMLElement): HTMLElement[] {
   return [...root.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(

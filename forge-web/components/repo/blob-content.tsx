@@ -7,11 +7,11 @@
  * never blocks first paint), an image preview, or a raw download for other binary files.
  *
  * Lines carry GitHub's `#L10` / `#L10-L20` anchors (click a number, shift-click to extend) and
- * a permalink that pins the commit. Long files render only the rows in view, and a text file
+ * a permalink that pins the commit (`y` pins the address bar to it). Long files render only the rows in view, and a text file
  * over 1 MB asks before rendering at all (D-054, D-055).
  */
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Check, Download, FileText, Link2 } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
@@ -44,8 +44,9 @@ import { Oid } from '@/components/ui/oid'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
-import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
-import { BASE_PATH } from '@/lib/short-url'
+import type { RepoAddress } from '@/hooks/use-query-param'
+import { permalinkPath, pinnedHref, usePermalinkKey } from '@/components/repo/permalink'
+import { useCopy } from '@/hooks/use-copy'
 import { bytesToBase64 } from '@/lib/sdk/query'
 import { cn } from '@/lib/utils'
 
@@ -97,7 +98,9 @@ export function BlobContent({
         <PathBreadcrumb addr={addr} path={path} refParam={refParam} />
       </div>
       <BrowseBoundary repo={home.repo} addr={addr}>
-        {(reader, retry) => <BlobBody key={`${tipOid}:${path}`} reader={reader} retry={retry} tipOid={tipOid} path={path} addr={addr} />}
+        {(reader, retry) => (
+          <BlobBody key={`${tipOid}:${path}`} reader={reader} retry={retry} tipOid={tipOid} path={path} addr={addr} privateRepo={home.repo.visibility === 'private'} />
+        )}
       </BrowseBoundary>
     </div>
   )
@@ -109,14 +112,17 @@ function BlobBody({
   tipOid,
   path,
   addr,
+  privateRepo,
 }: {
   reader: BrowseReader
   retry: () => void
   tipOid: string
   path: string
   addr: RepoAddress
+  privateRepo: boolean
 }): JSX.Element {
   const { data, loading, error } = useAsync(() => loadBlob(reader, tipOid, path), [tipOid, path])
+  usePermalinkKey(pinnedHref(addr, 'blob', tipOid, path, privateRepo))
   const name = path.split('/').pop() ?? path
   const [renderLarge, setRenderLarge] = useState(false)
   // An image that is also text (SVG) can be read as code too, as on GitHub.
@@ -138,8 +144,9 @@ function BlobBody({
   if (error) return <ErrorState message={error} onRetry={retry} />
   if (!data || !display) return <LoadingBlock />
 
-  const origin = typeof window === 'undefined' ? '' : window.location.origin
-  const permalink = `${origin}${BASE_PATH}${repoHref('/repo/blob/', addr, { path, ref: tipOid })}`
+  // The link at this commit (null in the instant a private repo's vault locks).
+  const pinned = permalinkPath(addr, 'blob', tipOid, path, privateRepo)
+  const permalink = pinned === null ? null : `${typeof window === 'undefined' ? '' : window.location.origin}${pinned}`
 
   return (
     <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
@@ -158,7 +165,7 @@ function BlobBody({
                   type="button"
                   aria-pressed={showCode === (label === 'Code')}
                   onClick={() => setShowCode(label === 'Code')}
-                  className={cn('rounded px-2 py-0.5', showCode === (label === 'Code') && 'bg-anvil-200 dark:bg-anvil-750')}
+                  className={cn('rounded px-2 py-0.5 coarse:min-h-11 coarse:px-3', showCode === (label === 'Code') && 'bg-anvil-200 dark:bg-anvil-750')}
                 >
                   {label}
                 </button>
@@ -204,21 +211,26 @@ function BlobView({
   name: string
   imageHref: string | null
   rawHref: string | null
-  permalink: string
+  permalink: string | null
   onRenderLarge: () => void
 }): JSX.Element {
   switch (display.kind) {
     case 'image':
       if (imageHref === null) return <LoadingBlock />
       return (
-        <div className="flex justify-center bg-anvil-50 p-6 dark:bg-anvil-900/60">
-          {/* An <img> runs no script and loads nothing; see useImageUrl for why SVG is a data: URL. */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={imageHref} alt={name} className="max-h-[70vh] max-w-full object-contain" data-testid="blob-image" />
-        </div>
+        <>
+          <BlobToolbar href={permalink} />
+          <div className="flex justify-center bg-anvil-50 p-6 dark:bg-anvil-900/60">
+            {/* An <img> runs no script and loads nothing; see useImageUrl for why SVG is a data: URL. */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={imageHref} alt={name} className="max-h-[70vh] max-w-full object-contain" data-testid="blob-image" />
+          </div>
+        </>
       )
     case 'confirm-large':
       return (
+        <>
+        <BlobToolbar href={permalink} />
         <div className="flex flex-col items-center gap-3 px-4 py-8 text-center text-dense text-anvil-500 dark:text-anvil-400">
           <p>This file is {formatBytes(size)}. Rendering it in the page is slow, so it is not shown by default.</p>
           <div className="flex gap-2">
@@ -227,7 +239,7 @@ function BlobView({
                 href={rawHref}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex h-7 items-center rounded-md border border-anvil-300 px-2.5 text-dense hover:bg-anvil-100 dark:border-anvil-700 dark:hover:bg-anvil-800"
+                className="inline-flex h-7 items-center rounded-md border border-anvil-300 px-2.5 text-dense hover:bg-anvil-100 coarse:h-11 coarse:px-3 dark:border-anvil-700 dark:hover:bg-anvil-800"
               >
                 View raw
               </a>
@@ -237,16 +249,48 @@ function BlobView({
             </Button>
           </div>
         </div>
+        </>
       )
     case 'text':
       return <TextLines text={display.text} name={name} permalink={permalink} />
     case 'binary':
       return (
-        <div className="px-4 py-8 text-center text-dense text-anvil-500 dark:text-anvil-400">
-          Binary file ({formatBytes(size)}) — use Raw to download.
-        </div>
+        <>
+          <BlobToolbar href={permalink} />
+          <div className="px-4 py-8 text-center text-dense text-anvil-500 dark:text-anvil-400">
+            Binary file ({formatBytes(size)}) — use Raw to download.
+          </div>
+        </>
       )
   }
+}
+
+/** The strip above a file's contents: the selection (children) and the permalink. */
+function BlobToolbar({ href, children }: { href: string | null; children?: ReactNode }): JSX.Element {
+  return (
+    <div className="flex items-center justify-end gap-2 border-b border-anvil-100 px-4 py-1 text-[12px] text-anvil-500 dark:border-anvil-850 dark:text-anvil-400">
+      {children}
+      {href === null ? null : <PermalinkButton href={href} />}
+    </div>
+  )
+}
+
+/** Copy the file's link at this commit (`y` puts it in the address bar). */
+function PermalinkButton({ href }: { href: string }): JSX.Element {
+  const [copied, copy] = useCopy(href)
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      data-testid="copy-permalink"
+      data-href={href}
+      className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-anvil-100 coarse:min-h-11 coarse:px-3 dark:hover:bg-anvil-800"
+      title="Copy a link to this file at this commit (press y to show it in the address bar)"
+    >
+      {copied ? <Check className="h-3 w-3 text-verify" aria-hidden /> : <Link2 className="h-3 w-3" aria-hidden />}
+      {copied ? 'Copied' : 'Copy permalink'}
+    </button>
+  )
 }
 
 /**
@@ -323,7 +367,7 @@ function useLineSelection(lineCount: number, onHash: (range: LineRange) => void)
   return [range, select]
 }
 
-function TextLines({ text, name, permalink }: { text: string; name: string; permalink: string }): JSX.Element {
+function TextLines({ text, name, permalink }: { text: string; name: string; permalink: string | null }): JSX.Element {
   const lines = useMemo(() => text.split('\n'), [text])
   const tableRef = useRef<HTMLTableElement>(null)
   // Scroll a range from the URL into view (the table is laid out by the time effects run).
@@ -334,8 +378,7 @@ function TextLines({ text, name, permalink }: { text: string; name: string; perm
       window.scrollTo({ top: Math.max(0, top - window.innerHeight / 3) })
     })
   })
-  const [copied, setCopied] = useState(false)
-  const href = range ? `${permalink}#${lineHash(range)}` : permalink
+  const href = permalink === null || range === null ? permalink : `${permalink}#${lineHash(range)}`
 
   // Lazy syntax highlighting: highlight.js loads in its own async chunk after the text is on
   // screen, then swaps in per-line highlighted HTML. highlightBlob caps the size it takes on.
@@ -379,16 +422,6 @@ function TextLines({ text, name, permalink }: { text: string; name: string; perm
     }
   }, [virtual, lines.length])
 
-  const copyPermalink = async (): Promise<void> => {
-    try {
-      await navigator.clipboard.writeText(href)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1200)
-    } catch {
-      /* insecure context: nothing to copy to */
-    }
-  }
-
   const rows: JSX.Element[] = []
   for (let i = from; i < to; i++) {
     const n = i + 1
@@ -405,6 +438,8 @@ function TextLines({ text, name, permalink }: { text: string; name: string; perm
             href={`#L${n}`}
             // Not a tab stop per line: a long file would put thousands before the page's rail.
             tabIndex={-1}
+            // One per code line, as tall as the line (e2e/mobile.spec.ts exempts it, as the diff's gutter).
+            data-tap-exempt="code-line"
             onClick={(e) => {
               if (e.metaKey || e.ctrlKey) return // open in a new tab, as a link does
               e.preventDefault()
@@ -427,20 +462,9 @@ function TextLines({ text, name, permalink }: { text: string; name: string; perm
 
   return (
     <>
-      <div className="flex items-center justify-end gap-2 border-b border-anvil-100 px-4 py-1 text-[12px] text-anvil-500 dark:border-anvil-850 dark:text-anvil-400">
+      <BlobToolbar href={href}>
         {range ? <span>{range.start === range.end ? `Line ${range.start}` : `Lines ${range.start}–${range.end}`} selected</span> : null}
-        <button
-          type="button"
-          onClick={copyPermalink}
-          data-testid="copy-permalink"
-          data-href={href}
-          className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-anvil-100 dark:hover:bg-anvil-800"
-          title="Copy a link to this file at this commit"
-        >
-          {copied ? <Check className="h-3 w-3 text-verify" aria-hidden /> : <Link2 className="h-3 w-3" aria-hidden />}
-          {copied ? 'Copied' : 'Copy permalink'}
-        </button>
-      </div>
+      </BlobToolbar>
       <ScrollRegion label={`Contents of ${name}`} className="overflow-x-auto">
         <table ref={tableRef} className="hljs w-full border-collapse bg-transparent font-mono text-[13px] leading-5" data-lines={lines.length}>
           <tbody>
