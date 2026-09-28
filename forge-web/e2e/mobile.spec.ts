@@ -37,6 +37,8 @@ const ROUTES: [label: string, href: string, ready: (page: Page) => ReturnType<Pa
   ['tree', repoUrl('tree', '&path=src'), (page) => page.getByRole('link', { name: 'main.rs' }).first()],
   // F-5: the file view with a selected range (permalink, Raw, the line numbers exempt as code lines).
   ['blob', `${repoUrl('blob', '&path=src/main.rs')}#L2-L3`, (page) => page.getByTestId('copy-permalink')],
+  ['history', repoUrl('commits', '&path=src/main.rs'), (page) => page.getByTestId('commit-row').first()],
+  ['blame', repoUrl('blame', '&path=src/main.rs'), (page) => page.getByTestId('blame-table')],
   ['commits', repoUrl('commits'), (page) => page.getByRole('link', { name: 'Initial import' }).first()],
   ['issues', repoUrl('issues'), (page) => page.getByRole('link', { name: 'README should explain the event split' })],
   ['pull', repoUrl('pull', '&number=3&tab=files'), (page) => page.getByRole('heading', { name: /Files changed/ })],
