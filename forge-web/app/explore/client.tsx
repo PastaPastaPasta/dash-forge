@@ -29,7 +29,7 @@ import { repoHref } from '@/hooks/use-query-param'
 import { useRepoPages, type RepoPages } from '@/hooks/use-repo-pages'
 import { useSdk } from '@/hooks/use-sdk'
 import { NETWORKS, type Network } from '@/lib/constants'
-import { listReposByOwner, resolveDpnsName, timeAgo, type DiscoveredRepo } from '@/lib/view'
+import { listReposByOwner, plural, resolveDpnsName, timeAgo, type DiscoveredRepo } from '@/lib/view'
 import { mostStarredRepos, recentReposPage, recentlyUpdated, searchPrefix, searchRepos, PUSH_WINDOW_MS } from '@/lib/view/discovery'
 import {
   latestReleases,
@@ -135,7 +135,7 @@ export function ExploreClient(): JSX.Element {
         </Suspense>
 
         <Section
-          title={starred.data === null || starred.data.complete ? 'Most starred' : `Most starred among ${starred.data.starsRead} stars read`}
+          title={starred.data === null || starred.data.complete ? 'Most starred' : `Most starred among ${plural(starred.data.starsRead, 'star')} read`}
           testId="explore-most-starred"
           icon={Star}
           state={starred}
@@ -210,9 +210,9 @@ export function ExploreClient(): JSX.Element {
               state={scan}
               empty="Nothing assigned to you or mentioning you in the recent activity of your repos."
               note={`Partial by necessity: assignments and @mentions have no index. This looks only at the newest 100 events and 30 issues and 30 pull requests of ${
-                watched.length < memberOf.length ? `${watched.length} of the ${memberOf.length} repos` : `the ${watched.length} repos`
+                watched.length < memberOf.length ? `${watched.length} of the ${plural(memberOf.length, 'repo')}` : `the ${plural(watched.length, 'repo')}`
               } you own or belong to, and at issue and pull request descriptions only (not comments).`}
-              partial={(d) => (d.failed > 0 ? `${d.failed} of ${d.reposScanned} repos could not be read; results cover the rest.` : null)}
+              partial={(d) => (d.failed > 0 ? `${d.failed} of ${plural(d.reposScanned, 'repo')} could not be read; results cover the rest.` : null)}
             >
               {(d) => (
                 <div className="space-y-4">
@@ -246,7 +246,7 @@ export function ExploreClient(): JSX.Element {
           state={releases}
           empty="None of the 24 newest repos has published a release."
           note="Releases have no cross-repo index, so this lists the newest release of each of the 24 newest repos. A full feed needs an indexer."
-          partial={(d) => (d.failed > 0 ? `${d.failed} of ${d.total} repos could not be read; their releases are not shown.` : null)}
+          partial={(d) => (d.failed > 0 ? `${d.failed} of ${plural(d.total, 'repo')} could not be read; their releases are not shown.` : null)}
         >
           {(d) => (
             <ul className="divide-y divide-anvil-200 rounded-lg border border-anvil-200 dark:divide-anvil-800 dark:border-anvil-800">
@@ -496,7 +496,7 @@ function RepoLinks({ repos, more }: { repos: readonly RepoLite[]; more: boolean 
           </li>
         ))}
       </ul>
-      {more ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Showing the first {repos.length} stars (index order); there may be more.</p> : null}
+      {more ? <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">Showing the first {plural(repos.length, 'star')} (index order); there may be more.</p> : null}
     </div>
   )
 }

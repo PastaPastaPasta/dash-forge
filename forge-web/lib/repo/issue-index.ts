@@ -489,8 +489,10 @@ async function exactCounts(sdk: EvoSDK, state: IndexState, total: number | null)
   if (state.feed === null || total === null) return null
   await resolveIds(sdk, state, closedTargets(state))
   const closed = [...state.rows.values()].filter((r) => !r.state.open).length
-  // Every issue is loaded: count directly (no reliance on the total).
+  // Every issue is loaded: count directly (no reliance on the total), unless the index holds
+  // fewer issues than the total proves (it was read from a node without a newer issue).
   if (state.all) {
+    if (state.rows.size + state.hidden.total < total) return null
     return { open: state.rows.size - closed, closed }
   }
   // Not every issue is loaded: open = the countable total less the closed and the hidden seen so

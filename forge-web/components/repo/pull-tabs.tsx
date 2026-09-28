@@ -14,7 +14,7 @@ import { CheckCircle2, CircleDashed, GitCommit, ListChecks, MinusCircle, XCircle
 
 import { checkOutcome, checksPhrase, safeDetailsUrl, untrustedWords, type CheckRun, type ChecksSummary } from '@/lib/repo/checks'
 import type { PrCommits } from '@/lib/view/pr-commits'
-import { timeAgo } from '@/lib/view'
+import { plural, timeAgo } from '@/lib/view'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
 import { Oid } from '@/components/ui/oid'
@@ -65,7 +65,7 @@ export function CommitsTab({
       </div>
       {commits.truncated ? (
         <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-          Showing the newest {commits.commits.length} of {commits.total === null ? 'many' : commits.total.toLocaleString('en-US')} commits. `dg pr commits` lists them all.
+          Showing the newest {commits.commits.length} of {plural(commits.total ?? 'many', 'commit')}. `dg pr commits` lists them all.
         </p>
       ) : null}
     </div>

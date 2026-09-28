@@ -50,15 +50,48 @@ export async function readTargetCounts(
   sdk: EvoSDK,
   forge: ForgeIds,
   repoId: string,
+  { retryMs = 1500 }: { retryMs?: number } = {},
 ): Promise<{ issues: number | null; pulls: number | null }> {
-  const count = (type: string): Promise<number | null> =>
-    countDocuments(sdk, {
-      dataContractId: forge.collab,
-      documentTypeName: type,
-      where: [['repoId', '==', repoId]],
-    }).catch(() => null)
-  const [issues, pulls] = await Promise.all([count(DOC.issue), count(DOC.patch)])
+  const key = `${forge.collab}:${repoId}`
+  const count = async (type: 'issue' | 'patch'): Promise<number | null> => {
+    const read = (): Promise<number | null> =>
+      countDocuments(sdk, {
+        dataContractId: forge.collab,
+        documentTypeName: DOC[type],
+        where: [['repoId', '==', repoId]],
+      }).catch(() => null)
+    // Read-after-write: a node a block behind still counts without the issue or PR this browser
+    // just created. Re-read it a few times while it is below what that write proves (L-37).
+    const floor = createdFloor.get(`${key}:${type}`) ?? 0
+    let n = await read()
+    for (let i = 0; n !== null && n < floor && i < FLOOR_RETRIES; i++) {
+      await new Promise((r) => setTimeout(r, retryMs))
+      n = await read()
+    }
+    if (n !== null) lastCount.set(`${key}:${type}`, n)
+    // Seen, or given up on (a replayed write that was already counted cannot be seen twice): the
+    // floor is spent either way, so later reads never wait on it again.
+    createdFloor.delete(`${key}:${type}`)
+    return n
+  }
+  const [issues, pulls] = await Promise.all([count('issue'), count('patch')])
   return { issues, pulls }
+}
+
+/** How often a count below a write's floor is read again (about 6 s: a few blocks). */
+const FLOOR_RETRIES = 4
+/** The last count read per `collab:repoId:type`, and the least a create by this browser proves. */
+const lastCount = new Map<string, number>()
+const createdFloor = new Map<string, number>()
+
+/**
+ * This browser created an issue or PR in `repo`: its total is now at least one more than the
+ * last count read (neither type can be deleted, `canBeDeleted: false`), so the next count read
+ * waits for a node that has the new document rather than showing a stale total.
+ */
+export function noteTargetCreated(repo: RepoRef, type: 'issue' | 'patch'): void {
+  const key = `${repo.forge.collab}:${repo.repoId}:${type}`
+  createdFloor.set(key, Math.max(createdFloor.get(key) ?? 0, lastCount.get(key) ?? 0) + 1)
 }
 
 /**
@@ -95,6 +128,52 @@ export async function readPublicRepoFacts(
     lastActivity: typeof at === 'number' ? at : null,
     storedBytes: [...sizes.values()].reduce((a, b) => a + b, 0),
   }
+}
+
+/** Which side of an identity's follow graph a list shows. */
+export type FollowSide = 'followers' | 'following'
+
+/** One page of a follow list, and the cursor that continues it (null: this was the last page). */
+export interface FollowPage {
+  readonly ids: readonly string[]
+  readonly next: string | null
+}
+
+/** The all-zero identifier: every real identity id sorts after it, so it opens a keyset walk. */
+const FIRST_ID = '11111111111111111111111111111111'
+
+/** Rows a follow list reads per page. */
+const FOLLOW_PAGE = 50
+
+/**
+ * One page of who follows `identityId` (`follow.byTarget`, whose terminal is `$ownerId`) or
+ * whom it follows (`follow.byOwner`, terminal `identityId`). `follow` is `indexOnly`, so a
+ * page cannot continue from a `startAfter` document id (Drive refuses it: the synthesized id is
+ * a one-way hash); it continues with a range on the index's terminal, ordered by it
+ * (keyset pagination, `index-only-document-types.md`). The list is in identity-id order and
+ * carries no follow time. Proof-verified, like every read.
+ */
+export async function readFollowPage(
+  sdk: EvoSDK,
+  forge: ForgeIds,
+  identityId: string,
+  side: FollowSide,
+  after: string | null = null,
+  limit = FOLLOW_PAGE,
+): Promise<FollowPage> {
+  const [pinned, terminal] = side === 'followers' ? (['identityId', '$ownerId'] as const) : (['$ownerId', 'identityId'] as const)
+  const docs = await queryDocuments(sdk, {
+    dataContractId: forge.collab,
+    documentTypeName: DOC.follow,
+    where: [
+      [pinned, '==', identityId],
+      [terminal, '>', after ?? FIRST_ID],
+    ],
+    orderBy: [[terminal, 'asc']],
+    limit,
+  })
+  const ids = docs.map((d) => str(d, terminal)).filter((id) => id !== '')
+  return { ids, next: docs.length < limit ? null : ids[ids.length - 1] ?? null }
 }
 
 /** Follower count (`follow.byTarget`) and following count (`follow.byOwner`), both countable. */

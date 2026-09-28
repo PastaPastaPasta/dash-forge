@@ -18,7 +18,7 @@
 import { useMemo, useState } from 'react'
 import { KeyRound } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { timeAgo } from '@/lib/view'
+import { plural, timeAgo } from '@/lib/view'
 import { decodeIdentifier } from '@/lib/auth'
 import { noEncryptionKeyMessage } from '@/lib/auth/encryption-key'
 import type { Role } from '@/lib/rules/v2'
@@ -271,7 +271,7 @@ export function PrivateMembers({ home, session }: { home: RepoHome; session: Pri
       {removing !== null && removalPlan.error !== null ? <p className="text-[12px] text-danger-700 dark:text-danger-400">{removalPlan.error}</p> : null}
       {removing !== null && removalPlan.plan !== null && removalPlan.plan.unreachable.length > 0 ? (
         <p className="text-[12px] text-caution-700 dark:text-caution-400">
-          {removalPlan.plan.unreachable.length} remaining {removalPlan.plan.unreachable.length === 1 ? 'member has' : 'members have'} no
+          {plural(removalPlan.plan.unreachable.length, 'remaining member')} {removalPlan.plan.unreachable.length === 1 ? 'has' : 'have'} no
           encryption key and won&apos;t get the new key.
         </p>
       ) : null}

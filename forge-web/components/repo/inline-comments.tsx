@@ -19,14 +19,15 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { CheckCircle2, MessageSquare, Pencil, Trash2 } from 'lucide-react'
 
-import { postComment, type AnchorInput, type RepoRef } from '@/lib/repo'
+import { commentFirsts, postComment, type AnchorInput, type RepoRef } from '@/lib/repo'
 import type { DraftComment } from '@/lib/repo'
-import { timeAgo, type CommentView } from '@/lib/view'
+import { plural, timeAgo, type CommentView } from '@/lib/view'
 import { anchorLabel, extendSelection, lineKey, placeThreads, rangeKeys, type InlineThread, type LineSelection } from '@/lib/view/inline-threads'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useIntent } from '@/hooks/use-intent'
+import { useFirstWrite } from '@/hooks/use-first-write'
 import { InlineCommentsContext, type InlineComments } from '@/components/repo/diff-view'
 import { Author } from '@/components/author'
 import { MarkdownView } from '@/components/markdown-view'
@@ -254,7 +255,7 @@ export function InlineCommentsProvider({
         <details className="mb-3 rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="unshown-comments">
           <summary className="flex cursor-pointer items-center px-3 py-2 text-dense text-anvil-700 coarse:min-h-11 dark:text-anvil-300">
             <MessageSquare className="mr-1.5 inline h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
-            {unshown.length} comment thread{unshown.length === 1 ? '' : 's'} on lines not shown below
+            {plural(unshown.length, 'comment thread')} on lines not shown below
           </summary>
           <div className="space-y-2 border-t border-anvil-200 px-3 py-2 dark:border-anvil-800">
             {unshown.map((t) => (
@@ -267,7 +268,7 @@ export function InlineCommentsProvider({
         <details open className="mb-3 rounded-lg border border-caution/40 dark:border-caution/40" data-testid="pending-elsewhere">
           <summary className="flex cursor-pointer items-center px-3 py-2 text-dense text-anvil-700 coarse:min-h-11 dark:text-anvil-300">
             <MessageSquare className="mr-1.5 inline h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
-            {pending.elsewhere.length} pending comment{pending.elsewhere.length === 1 ? '' : 's'} on an older version
+            {plural(pending.elsewhere.length, 'pending comment')} on an older version
           </summary>
           <div className="space-y-2 border-t border-anvil-200 px-3 py-2 dark:border-anvil-800">
             {pending.elsewhere.map((d) => (
@@ -291,7 +292,7 @@ export function InlineCommentsProvider({
         <details className="mb-3 rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="outdated-comments">
           <summary className="flex cursor-pointer items-center px-3 py-2 text-dense text-anvil-700 coarse:min-h-11 dark:text-anvil-300">
             <MessageSquare className="mr-1.5 inline h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
-            {placed.outdatedCount} comment{placed.outdatedCount === 1 ? '' : 's'} on an older version
+            {plural(placed.outdatedCount, 'comment')} on an older version
           </summary>
           <div className="space-y-2 border-t border-anvil-200 px-3 py-2 dark:border-anvil-800">
             {placed.outdated.map((t) => (
@@ -341,7 +342,7 @@ function Thread({ thread, repo, pullId, onPosted, writeBlock, actions, suggestio
     return (
       <div className="flex flex-wrap items-center gap-2 rounded-md border border-anvil-200 bg-white px-3 py-1.5 text-[12px] text-anvil-600 dark:border-anvil-750 dark:bg-anvil-950 dark:text-anvil-400" data-testid="thread-collapsed" data-root={thread.root.id}>
         <CheckCircle2 className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />
-        <span>Resolved conversation ({1 + thread.replies.length} comment{thread.replies.length === 0 ? '' : 's'})</span>
+        <span>Resolved conversation ({plural(1 + thread.replies.length, 'comment')})</span>
         <Button size="sm" variant="ghost" onClick={() => setExpanded(true)}>
           Show
         </Button>
@@ -546,17 +547,32 @@ function Composer({
   onDone: (id?: string) => void
   onCancel: () => void
 }): JSX.Element {
-  const { sdk } = useSdk()
-  const { signer } = useAuth()
+  const { sdk, ready } = useSdk()
+  const { identity, signer } = useAuth()
   const guard = useWriteGuard()
   const draft = useIntent()
   const [body, setBody] = useState('')
   const [posting, setPosting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const cost = composeCost(repo, 'comment', {
-    body: body.trim(),
-    ...(anchor ? { path: anchor.path } : {}),
-  })
+  // Which subtrees this comment would create, read once the viewer starts typing, so the price
+  // shown before "Add comment" is as tight as the conversation composer's (L-38, D-011). A reply
+  // may be its root's first, which opens the `reply` subtree no surcharge measures: keep the
+  // thread surcharge in for it, so the preview stays an upper bound.
+  const read = useFirstWrite(
+    () => commentFirsts(sdk!, repo, pullId, identity!),
+    [pullId, identity ?? ''],
+    body !== '' && ready && sdk !== null && identity !== null,
+  )
+  const first = replyTo ? { ...read, target: true } : read
+  const cost = composeCost(
+    repo,
+    'comment',
+    {
+      body: body.trim(),
+      ...(anchor ? { path: anchor.path } : {}),
+    },
+    first,
+  )
   const tooLong = composeTooLong(repo, 'comment', { body: body.trim(), ...(anchor ? { path: anchor.path } : {}) })
   const submit = async (): Promise<void> => {
     if (posting || body.trim() === '' || tooLong || !guard.check(cost, 'collab') || !sdk || !signer) return

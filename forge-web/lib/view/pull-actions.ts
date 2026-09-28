@@ -25,6 +25,7 @@
 import { isOidHex, isPlainBranchRef, matchesProtected, type Holdings } from '../rules'
 import type { Policy, PolicyStatus } from '../rules/v2'
 import type { PullView } from '../repo'
+import { branchName, plural } from './format'
 
 /** What the viewer may do from the PR page, and why not when not. */
 export interface PullActions {
@@ -191,11 +192,11 @@ export function pullActions({ pull, viewer, holdings, protectedPatterns = [], po
     } else if (!holder) {
       mergeHint = "Only this repo's maintainers and writers can mark a PR as merged."
     } else if (baseProtected) {
-      mergeHint = `${shortRef(base)} is a protected branch: only maintainers can merge into it.`
+      mergeHint = `${branchName(base)} is a protected branch: only maintainers can merge into it.`
     } else if (policyUnknown) {
       mergeHint = "Couldn't read the branch policy, so only a maintainer can merge for now."
     } else if (policy !== null && typeof policy === 'object' && !policy.met) {
-      mergeHint = `The branch policy needs ${policy.need} approval${policy.need === 1 ? '' : 's'} (${policy.have} so far). Only a maintainer can merge before then.`
+      mergeHint = `The branch policy needs ${plural(policy.need, 'approval')} (${policy.have} so far). Only a maintainer can merge before then.`
     } else if (checksBlocking) {
       mergeHint = 'The branch policy requires passing checks on the head. Only a maintainer can merge before then.'
     }
@@ -269,7 +270,7 @@ export function deleteBranchProblem(i: {
   readonly headOid: string
   readonly tip?: string | null
 }): string | null {
-  const name = shortRef(i.refName)
+  const name = branchName(i.refName)
   if (i.sameRepo && i.refName === i.baseRefName) return "the PR's source branch is its base branch"
   const d = i.defaultBranch
   if (d === null || d === '') return `the source repo's default branch could not be read, so ${name} is not deleted`
@@ -320,8 +321,4 @@ export function deleteBranchOffer(i: {
  */
 export function mergeBoxShown(canMerge: boolean, shownBefore: boolean): boolean {
   return canMerge || shownBefore
-}
-
-function shortRef(ref: string): string {
-  return ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref
 }

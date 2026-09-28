@@ -2,6 +2,7 @@
 
 import { useAuth } from '@/contexts/auth-context'
 import type { RepoHome } from '@/lib/view'
+import { plural } from '@/lib/view/format'
 import { HIDDEN_REASON_TEXT, totalHidden, type HiddenCounts, type HiddenReason } from '@/lib/repo/private-content'
 import { isMaintainer } from '@/lib/repo/private-session'
 import type { EventValueCounts } from '@/lib/view/issues-view'
@@ -13,7 +14,7 @@ import type { EventValueCounts } from '@/lib/view/issues-view'
  */
 export function EventValuesNote({ counts }: { counts: EventValueCounts }): JSX.Element | null {
   const parts: string[] = []
-  if (counts.hidden > 0) parts.push(`${counts.hidden} label, assignee or milestone change${counts.hidden === 1 ? ' is' : 's are'} not readable with your keys`)
+  if (counts.hidden > 0) parts.push(`${plural(counts.hidden, 'label, assignee or milestone change')} ${counts.hidden === 1 ? 'is' : 'are'} not readable with your keys`)
   if (counts.plaintext > 0) parts.push(`${counts.plaintext} ${counts.plaintext === 1 ? 'was' : 'were'} written by an older client and ${counts.plaintext === 1 ? 'is' : 'are'} not encrypted`)
   if (parts.length === 0) return null
   return (
@@ -53,7 +54,7 @@ export function HiddenNote({
       .map((r) => `${by[r]} ${HIDDEN_REASON_TEXT[r]}`)
     return (
       <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="private-hidden">
-        {totalHidden(by)} documents ignored ({parts.join(', ')}). Anyone can post into a repo&apos;s namespace; only documents
+        {plural(totalHidden(by), 'document')} ignored ({parts.join(', ')}). Anyone can post into a repo&apos;s namespace; only documents
         that decrypt with this repo&apos;s key are shown.
       </p>
     )
@@ -61,8 +62,7 @@ export function HiddenNote({
   if (hidden <= 0) return null
   return (
     <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-      {hidden} newer {what}
-      {hidden === 1 ? ' was' : ' were'} hidden: not readable in this repo (malformed, or encrypted
+      {hidden} newer {what} {hidden === 1 ? 'was' : 'were'} hidden: not readable in this repo (malformed, or encrypted
       by someone who is not a member).
     </p>
   )

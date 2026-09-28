@@ -10,7 +10,7 @@
 import Link from 'next/link'
 import { GitBranch, Tag } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { isDiverged, isLive, refParamFor, tipOidOf } from '@/lib/view'
+import { isDiverged, isLive, plural, refParamFor, tipOidOf } from '@/lib/view'
 import type { ResolvedRef } from '@/lib/repo'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState } from '@/components/ui/states'
@@ -109,7 +109,7 @@ export function RefListContent({
       {deleted.length > 0 ? (
         <details className="rounded-lg border border-anvil-200 dark:border-anvil-800">
           <summary className="cursor-pointer select-none px-4 py-2.5 text-dense coarse:py-3 text-anvil-500 hover:text-anvil-700 dark:text-anvil-400 dark:hover:text-anvil-200">
-            {deleted.length} deleted {deleted.length === 1 ? single : kind}
+            {plural(deleted.length, `deleted ${single}`, `deleted ${kind}`)}
           </summary>
           <div className="border-t border-anvil-100 dark:border-anvil-850">
             {deleted.map((ref) => (

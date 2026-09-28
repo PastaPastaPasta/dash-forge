@@ -49,6 +49,9 @@ export {
 } from './members'
 export {
   readFollowCounts,
+  readFollowPage,
+  type FollowPage,
+  type FollowSide,
   readStarCount,
   readStargazers,
   readTargetCounts,

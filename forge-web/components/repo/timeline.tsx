@@ -10,7 +10,7 @@
 
 import { Check, CheckCircle2, Eye, GitCommit, GitMerge, Lock, LockOpen, Milestone, MessageSquare, Tag, UserPlus, X } from 'lucide-react'
 import type { TimelineItem } from '@/lib/view'
-import { timeAgo } from '@/lib/view'
+import { branchName, plural, timeAgo } from '@/lib/view'
 import { anchorLabel } from '@/lib/view/inline-threads'
 import { VERDICT_LABEL, type VerdictName } from '@/lib/repo'
 import type { Event } from '@/lib/rules'
@@ -56,7 +56,7 @@ function eventPhrase(e: Event): { text: string; icon: JSX.Element; who?: string;
     case 'unassign':
       return value ? { text: 'unassigned', who: value, icon: <UserPlus className={muted} aria-hidden /> } : { text: 'unassigned this', icon: <UserPlus className={muted} aria-hidden /> }
     case 'retarget':
-      return { text: `retargeted to ${value ?? ''}`, icon: <GitMerge className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /> }
+      return { text: `retargeted to ${branchName(value ?? '')}`, icon: <GitMerge className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden /> }
     case 'draft':
       return { text: 'converted this to a draft', icon: <Lock className={muted} aria-hidden /> }
     case 'ready':
@@ -163,7 +163,7 @@ export function Timeline({
                   {/* A submit writes the review first, then its comments: say when some have not landed (yet). */}
                   {item.expected > item.comments.length ? (
                     <p className="text-[12px] text-anvil-600 dark:text-anvil-400">
-                      {item.comments.length} of {item.expected} comments shown: the rest are still landing or were deleted.
+                      {item.comments.length} of {plural(item.expected, 'comment')} shown: the rest are still landing or were deleted.
                     </p>
                   ) : null}
                 </div>

@@ -18,7 +18,7 @@ import type { RepoAddress } from '@/hooks/use-query-param'
 import { ACTIVE_NETWORK } from '@/lib/constants'
 import { errorMessage } from '@/lib/utils'
 import { saveBytes } from '@/lib/view/release-download'
-import { formatBytes, selectedTip, type RepoHome, type SelectedRef } from '@/lib/view'
+import { formatBytes, plural, selectedTip, type RepoHome, type SelectedRef } from '@/lib/view'
 import { repoCommands } from '@/lib/view/repo-commands'
 import {
   compressInWorker,
@@ -103,7 +103,7 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
       for (const [path, bytes] of Object.entries(entries)) rooted[`${name.replace(/\.zip$/, '')}/${path}`] = bytes
       const zip = await compressInWorker(rooted, setProgress, cancel.current.signal)
       saveBytes(zip, name, 'application/zip')
-      setMessage(`Saved ${name} (${formatBytes(zip.length)}, ${files.length} files, each hash-checked).`)
+      setMessage(`Saved ${name} (${formatBytes(zip.length)}, ${plural(files.length, 'file')}, each hash-checked).`)
     } catch (e) {
       if (e instanceof ZipTooLargeError) setTooLargeRef(tip)
       else setMessage(cancel.current?.signal.aborted ? 'Cancelled.' : `The zip could not be built: ${errorMessage(e)}`)
@@ -119,7 +119,7 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
       : progress.phase === 'listing'
         ? 'Listing files…'
         : progress.phase === 'reading'
-          ? `Reading ${progress.files} of ${progress.filesTotal} files (${formatBytes(progress.bytes)})`
+          ? `Reading ${progress.files} of ${plural(progress.filesTotal, 'file')} (${formatBytes(progress.bytes)})`
           : `Compressing ${formatBytes(progress.bytes)}…`
 
   return (

@@ -19,7 +19,7 @@
 import { useState } from 'react'
 import { Archive, GitBranch, Info, Lock, Scale, Settings2, ShieldCheck, Trash2 } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { isLive } from '@/lib/view'
+import { isLive, plural } from '@/lib/view'
 import {
   DEFAULT_CONFIG,
   MAX_PROTECTED_PATTERNS,
@@ -573,7 +573,7 @@ function PolicyEditor({ home, maintainer }: { home: RepoHome; maintainer: boolea
         open={confirming}
         onClose={() => setConfirming(false)}
         title="Save the branch policy"
-        description={`Writes a policy: ${shown.requiredApprovals} required approval${shown.requiredApprovals === 1 ? '' : 's'}${(shown.approverRole ?? 0) === 1 ? ' (maintainers)' : ''}. The newest policy wins. A client rule: a maintainer can override it.`}
+        description={`Writes a policy: ${plural(shown.requiredApprovals, 'required approval')}${(shown.approverRole ?? 0) === 1 ? ' (maintainers)' : ''}. The newest policy wins. A client rule: a maintainer can override it.`}
         cost={cost}
         confirmLabel="Sign & save"
         onConfirm={run}

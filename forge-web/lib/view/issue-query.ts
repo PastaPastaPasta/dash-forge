@@ -17,6 +17,8 @@
  * lifts into the structured query; what is left is the free text.
  */
 
+import { plural } from './format'
+
 export type IssueStateFilter = 'open' | 'closed' | 'all'
 export type IssueSort = 'newest' | 'oldest' | 'comments'
 
@@ -117,6 +119,19 @@ export function withQuery(q: IssueListQuery, change: Partial<IssueListQuery>): I
 /** Whether any filter narrows the list beyond the state tab. */
 export function hasFilters(q: IssueListQuery): boolean {
   return q.labels.length > 0 || q.author !== null || q.assignee !== null || q.mentions || q.q.trim() !== ''
+}
+
+/**
+ * The empty issue list's line. "Open the first issue" only when the repo has none at all: when
+ * the open list is empty but issues were closed (or the closed count is unknown), it says so
+ * rather than inviting the first issue (L-37).
+ */
+export function emptyIssuesBody(filtered: boolean, state: IssueStateFilter, closedCount: number | null): string {
+  if (filtered) return 'Try fewer filters.'
+  if (state === 'closed') return 'Nothing has been closed yet.'
+  if (state === 'all' || closedCount === 0) return 'Everything is quiet. Open the first issue to start the conversation.'
+  if (closedCount === null) return 'No issue is open right now.'
+  return `No issue is open right now; ${plural(closedCount, 'issue')} ${closedCount === 1 ? 'is' : 'are'} closed.`
 }
 
 /** Split `text` into tokens, keeping `"quoted phrases"` (and `label:"two words"`) whole. */

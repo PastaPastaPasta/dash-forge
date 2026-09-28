@@ -8,12 +8,14 @@
 
 export {
   balanceToDash,
+  branchName,
   creditsAsDash,
   dashToUsd,
   formatBytes,
   formatDash,
   formatDate,
   modeKind,
+  plural,
   shortIdentity,
   shortOid,
   timeAgo,

@@ -21,6 +21,7 @@
 
 import { gitOidHex, MODE_TREE, type GitObject } from '../browse'
 import { checkCommit, checkTree, MalformedObjectError, MAX_TREE_DEPTH, parseCommit, parseTree, serializeTree, treeTooDeep, type TreeEntry } from '../view/git-objects'
+import { plural } from '../view/format'
 import { findMergeBases, MergeBaseSearchLimitError } from '../view/pull-diff'
 import type { ObjectReader } from '../view/tree-nav'
 import { newCommits, objectsToPack, UnsupportedChangeError, WalkLimitError } from './objects'
@@ -423,6 +424,6 @@ async function build(
   // history (a fast-forward to it packs nothing).
   if (input.headInBase && input.squash === undefined) objects = await objectsToPack(source, await newCommits(source, tip, [...baseHave, input.headOid]))
   const built = writePack(objects)
-  onProgress?.('pack', `${built.objectCount} objects`)
+  onProgress?.('pack', plural(built.objectCount, 'object'))
   return { kind: input.squash !== undefined ? 'squash' : plan.kind, newTip: tip, pack: built.bytes, packHash: built.packHash, objectCount: built.objectCount }
 }

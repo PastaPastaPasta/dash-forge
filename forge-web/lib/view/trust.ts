@@ -23,7 +23,7 @@ import { NETWORKS, QUORUM_KEY_ENDPOINT, type Network } from '../constants'
 import type { RefHead, RefState } from '../rules'
 import type { ContentChecks } from './content-checks'
 import type { QuorumCrossCheck } from './quorum-check'
-import { shortOid, timeAgo, urlHost } from './format'
+import { plural, shortOid, timeAgo, urlHost } from './format'
 import { readGateways } from './storage-status'
 
 export type TrustState = 'verified' | 'partial' | 'unverified' | 'pending' | 'failed'
@@ -122,10 +122,6 @@ export function worstOf(states: readonly TrustState[]): TrustState {
   let worst: TrustState = 'pending'
   for (const s of states) if (SEVERITY[s] > SEVERITY[worst]) worst = s
   return worst
-}
-
-function plural(n: number, one: string, many = `${one}s`): string {
-  return `${n} ${n === 1 ? one : many}`
 }
 
 function deriveChain(
@@ -291,7 +287,7 @@ function deriveReadContent(checks: ContentChecks): TrustLink {
     const parts: string[] = []
     if (checks.objectsFailed > 0) {
       const total = checks.objectsFailed + checks.objectsVerified + checks.objectsUnchecked
-      parts.push(`${checks.objectsFailed} of ${plural(total, 'object')} did not match their git hash`)
+      parts.push(`${checks.objectsFailed.toLocaleString('en-US')} of ${plural(total, 'object')} did not match their git hash`)
     }
     if (checks.packsFailed > 0) parts.push(`${plural(checks.packsFailed, 'pack')} did not match ${checks.packsFailed === 1 ? 'its' : 'their'} manifest`)
     return { state: 'failed', detail: `${parts.join('; ')}. Nothing from them is shown.` }
@@ -308,13 +304,13 @@ function deriveReadContent(checks: ContentChecks): TrustLink {
   if (checks.objectsUnchecked > 0) {
     return {
       state: checked > 0 ? 'partial' : 'unverified',
-      detail: `${checks.objectsVerified} of ${plural(total, 'object')} read this session matched their git hash; ${checks.objectsUnchecked} ${checks.objectsUnchecked === 1 ? 'was' : 'were'} shown without the check.`,
+      detail: `${checks.objectsVerified.toLocaleString('en-US')} of ${plural(total, 'object')} read this session matched their git hash; ${checks.objectsUnchecked} ${checks.objectsUnchecked === 1 ? 'was' : 'were'} shown without the check.`,
       ...(packs ? { note: packs } : {}),
     }
   }
   return {
     state: 'verified',
-    detail: `${checks.objectsVerified} of ${plural(total, 'object')} read this session matched their git hash.`,
+    detail: `${checks.objectsVerified.toLocaleString('en-US')} of ${plural(total, 'object')} read this session matched their git hash.`,
     ...(packs ? { note: packs } : {}),
   }
 }

@@ -19,6 +19,7 @@ import { repoCommands, shellWord } from '@/lib/view/repo-commands'
 import type { BrowseReader } from '@/lib/browse'
 import { walkFiles } from '@/lib/view/zip'
 import type { RepoHome, SelectedRef } from '@/lib/view'
+import { plural } from '@/lib/view/format'
 import {
   commitRootTree,
   decodeTextBlob,
@@ -149,7 +150,7 @@ function RootBody({
           data-testid="commit-count"
         >
           <GitCommit className="h-3.5 w-3.5" aria-hidden />
-          {commits.data ? `${commits.data.count}${commits.data.capped ? '+' : ''} commits` : 'Commits'}
+          {commits.data ? plural(commits.data.capped ? `${commits.data.count}+` : commits.data.count, 'commit') : 'Commits'}
         </Link>
         <Oid value={tipOid} />
         <GoToFile reader={reader} rootTree={data.tree} addr={addr} refParam={refParam} />

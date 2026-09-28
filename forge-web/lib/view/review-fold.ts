@@ -12,6 +12,7 @@
 
 import { countApprovals, type Review, type Role, type RoleOracle } from '../rules/v2'
 import { compareKey } from '../rules'
+import { plural } from './format'
 
 export type ReviewerStanding =
   | { readonly kind: 'approved'; readonly role: Role; readonly self: boolean }
@@ -74,8 +75,7 @@ export function summarizeReviews(
 
 /** "2 maintainers", "1 maintainer and 1 writer". */
 export function approverPhrase({ maintainers, writers }: ReviewSummary['approvedBy']): string {
-  const part = (n: number, noun: string): string => `${n} ${noun}${n === 1 ? '' : 's'}`
-  const parts = [maintainers > 0 ? part(maintainers, 'maintainer') : '', writers > 0 ? part(writers, 'writer') : ''].filter((p) => p !== '')
+  const parts = [maintainers > 0 ? plural(maintainers, 'maintainer') : '', writers > 0 ? plural(writers, 'writer') : ''].filter((p) => p !== '')
   return parts.join(' and ')
 }
 
