@@ -51,6 +51,7 @@ import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { HiddenNote } from '@/components/repo/hidden-note'
+import { MirrorNote } from '@/components/repo/mirror-note'
 import { AssigneeAvatars, LabelChip, MarkdownEditor } from '@/components/repo/issue-bits'
 import { IssueTemplatePicker } from '@/components/repo/issue-templates'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
@@ -144,6 +145,8 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           Not applied: {dropped.join(' ')}. Authors and assignees take an identity id or @me.
         </p>
       ) : null}
+
+      <MirrorNote kind="issue" urls={(data?.rows ?? []).map((r) => importedUrlOf(r.importedRaw))} />
 
       {data && data.pinned.length > 0 ? (
         <ul aria-label="Pinned issues" className="mb-3 grid grid-cols-1 gap-2 sm:grid-cols-3" data-testid="pinned-issues">
@@ -305,6 +308,12 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
       />
     </div>
   )
+}
+
+/** An issue's `imported.url`, when its import recorded one. */
+function importedUrlOf(imported: Readonly<Record<string, unknown>> | null | undefined): string | null {
+  const url = imported?.['url']
+  return typeof url === 'string' ? url : null
 }
 
 function StateTab({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }): JSX.Element {

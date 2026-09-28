@@ -14,6 +14,7 @@ import { GitPullRequest, GitMerge, GitPullRequestClosed } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { Listed, PullView } from '@/lib/repo'
 import { HiddenNote } from '@/components/repo/hidden-note'
+import { MirrorNote } from '@/components/repo/mirror-note'
 import { listPullsCached, repoContractIds, repoKey } from '@/lib/repo'
 import { branchName, timeAgo } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
@@ -79,6 +80,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         </Link>
       </div>
 
+      <MirrorNote kind="pull" urls={(data ?? []).map((p) => p.importedUrl)} />
       {loading ? (
         <LoadingBlock label="Folding PR state" />
       ) : error ? (
