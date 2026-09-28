@@ -99,6 +99,18 @@ pub enum Error {
         network: String,
     },
 
+    /// This build records forge-v2 contracts for the network, but the network does not have
+    /// them: a devnet that was reset, or a deployment record that is wrong. Platform answered
+    /// (a proof of absence, or Drive's `contract not found` refusal); retrying cannot help.
+    #[error("the forge contracts are not on {network}: {detail}")]
+    ContractsMissing {
+        /// The network as a person reads it (`devnet moutai`, `mainnet`); `user_error` tells a
+        /// devnet by the `devnet ` prefix.
+        network: String,
+        /// What Platform answered: the missing contract, or Drive's refusal.
+        detail: String,
+    },
+
     /// Consensus refused a write because the writer has no membership document the
     /// document type needs (protocol 14 `ownerRefersTo`, consensus code 40120): not a
     /// member at all, or a writer where the type is maintainer-only (`protectedRefUpdate`,

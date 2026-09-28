@@ -657,6 +657,7 @@ fn from_core(core: &CoreError, chain: &str, ctx: &ErrorContext<'_>) -> Option<Us
             needs,
         } => not_permitted(ctx, action, reason, needs),
         CoreError::V2NotDeployed { network } => not_deployed(ctx, network),
+        CoreError::ContractsMissing { network, detail } => contracts_missing(ctx, network, detail),
         CoreError::Timeout { retryable } => timed_out(ctx, *retryable),
         CoreError::IncompleteRead {
             document_type,
@@ -969,6 +970,36 @@ fn not_deployed(ctx: &ErrorContext<'_>, network: &str) -> UserError {
         "for one command: `{} git …`",
         there.env_assignments()
     ))
+}
+
+/// E702 as well: this build records forge-v2 contracts for `network`, but the network does not
+/// have them. On a devnet that means it was reset and Forge is not deployed again yet; anywhere
+/// else, that the embedded deployment record is wrong. Running it again cannot help.
+fn contracts_missing(ctx: &ErrorContext<'_>, network: &str, detail: &str) -> UserError {
+    let (note, fix) = if network.starts_with("devnet ") {
+        (
+            "a devnet is reset from time to time, which removes every contract on it; retrying will not help",
+            "the network may have been reset: update dg and git-remote-dash to a release made after Forge was deployed on it again",
+        )
+    } else {
+        (
+            "this build's deployment record names contracts the network does not have; retrying will not help",
+            "update dg and git-remote-dash: this build's contract ids are wrong for this network",
+        )
+    };
+    let u = UserError::new(
+        codes::NOT_DEPLOYED,
+        ctx.headline(&format!("forge contracts not found on {network}")),
+    )
+    .cause(detail)
+    .note(note)
+    .fix(fix)
+    .fix("`dg doctor` shows the network and contract ids in use");
+    if ctx.via_git {
+        u.fix("check the network the helper uses: `git config --get dash.network` and `git config --get dash.devnetName` (DASH_FORGE_NETWORK overrides them)")
+    } else {
+        u.fix("check it is the network you meant: `--network <testnet|mainnet|devnet> [--devnet-name <name>]`")
+    }
 }
 
 fn timed_out(ctx: &ErrorContext<'_>, retryable: bool) -> UserError {
@@ -1705,6 +1736,63 @@ mod tests {
         );
         assert_eq!(u.code, "E702");
         assert!(u.fix[0].contains("--devnet-name moutai"), "{u:?}");
+    }
+
+    /// Moutai after its reset to beta.6 (2026-09-28): the build's forge contracts are gone.
+    const RESET_DEVNET_CAUSE: &str = "contract 6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux: Dapi client error: transport error: grpc error: code: 'Client specified an invalid argument', message: \"contract not found error: contract not found when querying from value with contract info\"";
+
+    #[test]
+    fn forge_contracts_missing_is_e702_with_a_next_step_not_a_transport_error() {
+        let missing = || CoreError::ContractsMissing {
+            network: "devnet moutai".into(),
+            detail: RESET_DEVNET_CAUSE.into(),
+        };
+        let u = core_chain(missing(), &PUSH);
+        assert_eq!(u.code, "E702");
+        assert_eq!(u.exit_code(), 7);
+        assert_eq!(
+            u.message,
+            "push failed: forge contracts not found on devnet moutai"
+        );
+        assert_eq!(u.cause.as_deref(), Some(RESET_DEVNET_CAUSE));
+        assert!(
+            u.fix[0].starts_with("the network may have been reset: update dg"),
+            "{u:?}"
+        );
+        assert!(u.fix.iter().any(|f| f.contains("dg doctor")), "{u:?}");
+        assert!(
+            u.note
+                .as_deref()
+                .unwrap_or("")
+                .contains("retrying will not help"),
+            "{u:?}"
+        );
+        // Under git, the network check names what the helper reads, never dg flags.
+        let git = core_chain(
+            missing(),
+            &ErrorContext {
+                via_git: true,
+                ..PUSH
+            },
+        );
+        assert_eq!(git.code, "E702");
+        assert!(
+            git.fix
+                .iter()
+                .any(|f| f.contains("git config --get dash.network")),
+            "{git:?}"
+        );
+        assert!(!git.fix.iter().any(|f| f.contains("--network")), "{git:?}");
+        // Mainnet: a misconfigured build, not a reset.
+        let main = core_chain(
+            CoreError::ContractsMissing {
+                network: "mainnet".into(),
+                detail: "contract X: Platform proved it absent".into(),
+            },
+            &ErrorContext::default(),
+        );
+        assert_eq!(main.message, "forge contracts not found on mainnet");
+        assert!(!main.fix[0].contains("reset"), "{main:?}");
     }
 
     #[test]
