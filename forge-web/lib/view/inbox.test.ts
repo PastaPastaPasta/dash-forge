@@ -3,10 +3,13 @@
  * my own actions), the jump-box parser, mentions and the assignment fold.
  */
 
+import type { EvoSDK } from '@dashevo/evo-sdk'
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { resetMemoryStores } from '../idb'
+import type { DocumentQuery } from '../sdk'
 import {
+  BACKFILL_BUDGET,
   BACKFILL_MS,
   DEFAULT_PREFS,
   PAGE,
@@ -19,6 +22,7 @@ import {
   markRead,
   pickRound,
   planFeeds,
+  pollOnce,
   stateWhat,
   toItems,
   type Feed,
@@ -245,5 +249,101 @@ describe('parseJump', () => {
     expect(parseJump('#3', false)).toMatchObject({ kind: 'invalid' })
     expect(parseJump('a b', false)).toMatchObject({ kind: 'invalid' })
     expect(parseJump('a/b/c', false)).toMatchObject({ kind: 'invalid' })
+  })
+})
+
+describe('a thread watched after its state events landed (L-17)', () => {
+  beforeEach(() => resetMemoryStores())
+  const ISSUE = thread({ id: 'ISSUE1', kind: 'issue', number: 1, title: 'First', since: 100 })
+  const PR = thread({ id: 'PR2', kind: 'pull', number: 2, title: 'Greet by name', since: 300 })
+  const MERGED = { $id: 'EV-MERGE', $ownerId: OTHER, $createdAt: 500, repoId: REPO.id, targetId: PR.id, kind: 3 }
+
+  /** An SDK over `docs` answering `==`, ranges, `$createdAt` order and `limit` as Drive does; logs every query. */
+  function chainSdk(docs: readonly Record<string, unknown>[]): { sdk: EvoSDK; queries: DocumentQuery[] } {
+    const queries: DocumentQuery[] = []
+    const holds = (d: Record<string, unknown>, [f, op, v]: readonly unknown[]): boolean => {
+      const x = d[f as string] as number
+      const n = v as number
+      return op === '==' ? d[f as string] === v : op === '>' ? x > n : op === '>=' ? x >= n : op === '<' ? x < n : x <= n
+    }
+    const sdk = {
+      documents: {
+        query: async (q: DocumentQuery) => {
+          queries.push(q)
+          const desc = q.orderBy?.[0]?.[1] === 'desc'
+          const rows = docs
+            .filter((d) => d['type'] === q.documentTypeName && (q.where ?? []).every((w) => holds(d, w)))
+            .sort((a, b) => ((a['$createdAt'] as number) - (b['$createdAt'] as number)) * (desc ? -1 : 1))
+          return new Map(rows.slice(0, q.limit ?? 100).map((d) => [String(d['$id']), d]))
+        },
+      },
+    } as unknown as EvoSDK
+    return { sdk, queries }
+  }
+  const watch = (threads: ThreadSub[], at: number): Promise<void> => idbPut('inbox', `devnet:${ME}:subs`, subs({ at, repos: [], threads }))
+  const backfills = (qs: readonly DocumentQuery[]): DocumentQuery[] => qs.filter((q) => q.where?.[0]?.[0] === 'targetId' && q.documentTypeName !== 'comment' && q.documentTypeName !== 'review')
+  const stateReads = (qs: readonly DocumentQuery[]): DocumentQuery[] => qs.filter((q) => q.documentTypeName === 'event' || q.documentTypeName === 'authorEvent')
+
+  it('shows "marked merged" once the PR is watched, for one more query, once', async () => {
+    const { sdk, queries } = chainSdk([{ ...MERGED, type: 'event' }])
+    // Poll 1: only the issue is watched; the repo's state feed reads the merge (on a PR not
+    // watched yet) and moves past it.
+    await watch([ISSUE], 1000)
+    await pollOnce(sdk, 'devnet', FORGE, ME, { now: 1000 })
+    expect(await loadItems('devnet', ME)).toEqual([])
+
+    // Poll 2: the PR is watched now (the subscriptions were recomputed).
+    await watch([PR, ISSUE], 2000)
+    queries.length = 0
+    await pollOnce(sdk, 'devnet', FORGE, ME, { now: 2000 })
+    expect((await loadItems('devnet', ME)).map((i) => [i.target?.number, i.what])).toEqual([[2, 'marked merged']])
+    // The budget: the two state feeds, plus ONE backfill (the authorEvent feed read nothing past
+    // the PR's start, so it needs none), on the PR's own `target` index, bounded by the cursor.
+    expect(backfills(queries)).toEqual([
+      {
+        dataContractId: 'COLLAB',
+        documentTypeName: 'event',
+        where: [['targetId', '==', PR.id], ['$createdAt', '>', 300], ['$createdAt', '<=', 500]],
+        orderBy: [['$createdAt', 'desc']],
+        limit: PAGE,
+      },
+    ])
+    expect(stateReads(queries)).toHaveLength(3)
+
+    // Poll 3: nothing is backfilled twice.
+    queries.length = 0
+    await pollOnce(sdk, 'devnet', FORGE, ME, { now: 3000 })
+    expect(stateReads(queries)).toHaveLength(2)
+    expect((await loadItems('devnet', ME)).map((i) => i.id)).toEqual(['EV-MERGE'])
+  })
+
+  it('needs no backfill when the feed has not read past the thread yet', async () => {
+    const docs: Record<string, unknown>[] = []
+    const { sdk, queries } = chainSdk(docs)
+    await watch([ISSUE], 1000)
+    await pollOnce(sdk, 'devnet', FORGE, ME, { now: 1000 })
+    // The merge lands after that poll: the feed's next read, with the PR watched, sees it.
+    docs.push({ ...MERGED, type: 'event', $createdAt: 5000 })
+    await watch([PR, ISSUE], 2000)
+    queries.length = 0
+    await pollOnce(sdk, 'devnet', FORGE, ME, { now: 2000 })
+    expect(backfills(queries)).toEqual([])
+    expect((await loadItems('devnet', ME)).map((i) => i.what)).toEqual(['marked merged'])
+  })
+
+  it('spreads many backfills over polls, BACKFILL_BUDGET at a time, and each runs once', async () => {
+    const many = Array.from({ length: BACKFILL_BUDGET + 2 }, (_, i) => thread({ id: `T${i}`, kind: 'issue', number: 10 + i, since: 300 }))
+    const { sdk, queries } = chainSdk([{ ...MERGED, type: 'event', targetId: 'T0' }])
+    await watch([ISSUE], 1000)
+    await pollOnce(sdk, 'devnet', FORGE, ME, { now: 1000 })
+    await watch([...many, ISSUE], 2000)
+    const counts: number[] = []
+    for (const now of [2000, 3000, 4000]) {
+      queries.length = 0
+      await pollOnce(sdk, 'devnet', FORGE, ME, { now })
+      counts.push(backfills(queries).length)
+    }
+    expect(counts).toEqual([BACKFILL_BUDGET, 2, 0])
+    expect((await loadItems('devnet', ME)).map((i) => i.target?.number)).toEqual([10])
   })
 })
