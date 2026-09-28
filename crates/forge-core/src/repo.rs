@@ -2124,12 +2124,22 @@ impl<'a> RepoService<'a> {
     ) -> Result<Vec<crate::pack::ObjectLocator>> {
         let contract = self.repo_contract(repo).await?;
         let reader = self.repo_reader(repo, manifests, roles).await;
+        let kind = u64::from(crate::pack::KIND_OBJECT_LOCATOR);
         let mut parts = Vec::with_capacity(live.len());
         for m in live.iter().rev() {
-            let sealed = self
-                .fetch_artifact_from(repo, &contract, m, &reader)
+            // Every uploader's copy of the fragment, in reader order: one dead copy must not
+            // fail a fold another copy can serve.
+            let copies: Vec<&PackManifestInfo> = manifests
+                .iter()
+                .filter(|c| c.kind == kind && c.pack_hash == m.pack_hash)
+                .collect();
+            let copies = if copies.is_empty() { vec![m] } else { copies };
+            let (sealed, best) = self
+                .fetch_best_copy(repo, &contract, &copies, roles, &reader)
                 .await?;
-            let bytes = self.open_artifact(repo, m, sealed).await?;
+            let bytes = self
+                .open_artifact_of(repo, &copies, best.size_bytes, sealed)
+                .await?;
             parts.push(crate::pack::ObjectLocator::parse(&bytes)?);
         }
         Ok(parts)

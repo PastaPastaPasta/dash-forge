@@ -1376,12 +1376,50 @@ async fn missing_index(
 ) -> Option<PendingIndex> {
     match ctx.svc.is_pack_indexed(ctx.repo, job.pack_hash).await {
         Ok(true) => None,
-        Ok(false) => Some(PendingIndex {
-            pack_hash: job.pack_hash,
-            parsed,
-            replication: recorded_replication(ctx, job).await,
-            externals,
-        }),
+        Ok(false) => {
+            let replication = recorded_replication(ctx, job).await;
+            if replication.replicas.is_empty() {
+                // The pack's copy is on storage this clone's policy does not name: nowhere to
+                // put its index that readers would find with it.
+                index_skipped(
+                    ctx,
+                    &reindex_skip(
+                        "the recorded pack is stored where this clone's storage policy does \
+                         not point",
+                    ),
+                );
+                return None;
+            }
+            // The index is a write this push adds: the cost guard weighs it before any ref is
+            // written, as it weighs a new pack's index.
+            let index_cost = push_fees::estimate_push(&push_fees::PushShape {
+                index_objects: job.object_count,
+                external_targets: ctx.policy.resolved.external.len() as u64,
+                platform_bytes: replication.has_platform(),
+                sealed: ctx.repo.visibility == forge_core::rules::v2::Visibility::Private,
+                ..push_fees::PushShape::default()
+            });
+            // One manifest (the index's), not the push's two; no pack bytes.
+            let credits = index_cost.chunk_credits + index_cost.metadata_credits / 2;
+            if let Err(e) = policy::enforce(
+                credits + push_fees::estimate_ref_updates(ctx.refs.len() as u64),
+                ctx.policy,
+                replication.has_platform(),
+                policy::NOTE_NOTHING_STORED,
+            ) {
+                index_skipped(
+                    ctx,
+                    &reindex_skip(format!("the cost guard declined it: {e}")),
+                );
+                return None;
+            }
+            Some(PendingIndex {
+                pack_hash: job.pack_hash,
+                parsed,
+                replication,
+                externals,
+            })
+        }
         // Unknown whether it is indexed: say so with the fix (`dg repo reindex` checks again and
         // publishes only what is missing) rather than let the retry pass in silence.
         Err(e) => {
