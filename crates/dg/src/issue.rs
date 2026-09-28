@@ -350,12 +350,16 @@ fn event_phrase(e: &Event) -> String {
     match e.kind {
         EventKind::Close => "closed this".into(),
         EventKind::Reopen => "reopened this".into(),
+        // A private repo's value this reader cannot open is absent: say what happened.
+        EventKind::LabelAdd if value.is_empty() => "added a label (hidden)".into(),
         EventKind::LabelAdd => format!("added the {value} label"),
+        EventKind::LabelRemove if value.is_empty() => "removed a label (hidden)".into(),
         EventKind::LabelRemove => format!("removed the {value} label"),
         EventKind::Assign if value.is_empty() => "assigned this".into(),
         EventKind::Assign => format!("assigned {value}"),
         EventKind::Unassign if value.is_empty() => "unassigned this".into(),
         EventKind::Unassign => format!("unassigned {value}"),
+        EventKind::MilestoneSet if value.is_empty() => "set the milestone (hidden)".into(),
         EventKind::MilestoneSet => format!("set the milestone to {value}"),
         EventKind::MilestoneClear => "cleared the milestone".into(),
         // PR-only kinds do nothing to an issue; name them as the contract does.
@@ -696,6 +700,11 @@ mod tests {
         assert_eq!(
             event_phrase(&event("e", 1, EventKind::Assign, Some("X"))),
             "assigned X"
+        );
+        // A sealed value this reader cannot open.
+        assert_eq!(
+            event_phrase(&event("e", 1, EventKind::LabelAdd, None)),
+            "added a label (hidden)"
         );
     }
 

@@ -1163,6 +1163,14 @@ fn ends_value(c: char) -> bool {
     c.is_whitespace() || matches!(c, '&' | '"' | '\'' | ')' | '>' | ';' | ',' | '`')
 }
 
+/// Whether `value` (followed by `next`) is a `<placeholder>` in a fix line: `<`, one or more
+/// lowercase letters, `-` or `_`, then `>` or a space (`<file>`, `<identity file | …>`).
+fn is_placeholder(value: &[char], next: Option<&char>) -> bool {
+    matches!(value.split_first(), Some(('<', word)) if !word.is_empty()
+        && word.iter().all(|c| c.is_ascii_lowercase() || matches!(c, '-' | '_')))
+        && matches!(next, Some('>' | ' '))
+}
+
 /// `key=value` where `key` starts at a word boundary and names a credential.
 fn redact_key_values(s: &str) -> String {
     let chars: Vec<char> = s.chars().collect();
@@ -1191,9 +1199,10 @@ fn redact_key_values(s: &str) -> String {
             // A `dfk1:` value is left to `redact_tokens`, which keeps its non-secret
             // network/identity/key-id prefix and drops only the WIF.
             let dfk1 = chars[val_start..i].starts_with(&['d', 'f', 'k', '1', ':']);
-            // `DASH_FORGE_KEY=<identity file>` in a fix line is a placeholder, not a value: no
-            // credential format (base64, hex, WIF, a token) starts with `<`.
-            let placeholder = chars.get(val_start) == Some(&'<');
+            // `DASH_FORGE_KEY=<identity file>` in a fix line is a placeholder, not a value: `<`,
+            // lowercase words only, then `>` or a space. A bracketed credential (`<cVt4…>`,
+            // `<ghp_x1>`) has digits or capitals and is still redacted.
+            let placeholder = is_placeholder(&chars[val_start..i], chars.get(i));
             if i > val_start && is_secret_key(&key) && !dfk1 && !placeholder {
                 out.push_str(REDACTED);
             } else {
@@ -1294,15 +1303,25 @@ fn redact_token(t: &str) -> String {
     }
     if let Some(pos) = t.find("dfk1:") {
         let (lead, rest) = t.split_at(pos);
-        // `dfk1:…` / `dfk1:<network>:…` in a fix line is a placeholder: no key starts so.
-        let placeholder = rest["dfk1:".len()..].starts_with(['<', '…']);
-        if !placeholder
-            && lead
-                .chars()
-                .last()
-                .is_none_or(|c| !c.is_ascii_alphanumeric())
+        if lead
+            .chars()
+            .last()
+            .is_none_or(|c| !c.is_ascii_alphanumeric())
         {
-            let parts: Vec<&str> = rest["dfk1:".len()..].splitn(4, ':').collect();
+            let body = &rest["dfk1:".len()..];
+            let parts: Vec<&str> = body.splitn(4, ':').collect();
+            // A fix line's template (`dfk1:…`, `dfk1:<network>:<identityId>:<keyId>:<wif>`)
+            // is shown as written: only a WIF that is itself a placeholder is kept.
+            let wif = parts.get(3).copied().unwrap_or(body);
+            let template = wif.trim_end_matches('>') == "…"
+                || (wif.starts_with('<')
+                    && wif.ends_with('>')
+                    && wif[1..wif.len() - 1]
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || matches!(c, '-' | '_')));
+            if template {
+                return t.to_string();
+            }
             if parts.len() == 4 {
                 return format!(
                     "{lead}dfk1:{}:{}:{}:{REDACTED}",
@@ -2086,6 +2105,21 @@ mod tests {
             "an inline dfk1:<network>:<identityId>:<keyId>:<wif> key",
         ] {
             assert_eq!(redact(fix), fix);
+        }
+        // …but a credential in brackets, or behind a placeholder field, is still scrubbed.
+        let wif = "cVt4o7BGAig1UXywgGSmARhxMdzP5qvQsxKkSsc1XEkw3tDTQFpy";
+        for leak in [
+            format!("DASH_FORGE_KEY=<{wif}>"),
+            "token=<ghp_abc123>".to_string(),
+            "password=<hunter2".to_string(),
+            format!("dfk1:<testnet>:8hJm:3:{wif}"),
+            format!("dfk1:…:{wif}"),
+        ] {
+            let out = redact(&leak);
+            assert!(
+                !out.contains(wif) && !out.contains("abc123") && !out.contains("hunter2"),
+                "{leak} → {out}"
+            );
         }
         // Rendering applies it.
         let u = UserError::new(codes::UNEXPECTED, "x").cause("https://a:b@h/");

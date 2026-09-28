@@ -85,6 +85,11 @@ fn identity_id_of_source(source: &std::path::Path) -> Option<String> {
         // keychain:dash-forge/<network>/<identityId>
         return account.rsplit('/').next().map(str::to_string);
     }
+    // Only a regular file: reading a pipe (`--identity <(pass show …)`, /dev/stdin) here would
+    // leave nothing for the key load that may follow.
+    if !std::fs::metadata(source).is_ok_and(|m| m.is_file()) {
+        return None;
+    }
     let raw = zeroize::Zeroizing::new(std::fs::read_to_string(source).ok()?);
     if forge_core::sealed::is_sealed(&raw) {
         return None;
@@ -182,9 +187,9 @@ impl Ctx {
     /// sealed file given by path) or no identity is configured.
     pub fn identity_id_hint(&self) -> Option<String> {
         let source = self.identity_path.as_deref()?;
-        self.config_identity_id
-            .clone()
-            .or_else(|| identity_id_of_source(source))
+        // What the source itself says wins; the recorded id covers a sealed file.
+        identity_id_of_source(source)
+            .or_else(|| self.config_identity_id.clone())
             .filter(|id| forge_core::resolve::looks_like_identity_id(id))
     }
 
@@ -495,6 +500,21 @@ mod tests {
             hint(sealed_path.to_str().unwrap(), Some(ID)).as_deref(),
             Some(ID)
         );
+        // The source's own id wins over a (possibly stale) recorded one.
+        let other = "4ggxb4HB2aFc5Q3Ms5x8ATYD3JdMLp9f3kMpWTyLEFtX";
+        assert_eq!(
+            hint(plain.to_str().unwrap(), Some(other)).as_deref(),
+            Some(ID)
+        );
+        // A pipe (`--identity <(…)`) is not read for a hint: the key load needs its bytes.
+        #[cfg(unix)]
+        {
+            let fifo = dir.path().join("fifo");
+            let made = std::process::Command::new("mkfifo").arg(&fifo).status();
+            if made.is_ok_and(|s| s.success()) {
+                assert_eq!(hint(fifo.to_str().unwrap(), None), None);
+            }
+        }
         // No identity at all: nobody.
         let anon = Ctx::scripted(false, false, false, None);
         assert_eq!(anon.identity_id_hint(), None);

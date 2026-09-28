@@ -371,15 +371,26 @@ struct Dest {
     replace: bool,
 }
 
+/// Whether `path` is a regular file already holding the bytes whose sha256 is `sha256`: an
+/// earlier run saved it (a rerun after one asset failed resumes instead of refusing).
+fn already_saved(path: &Path, sha256: &str) -> bool {
+    path.symlink_metadata().is_ok_and(|m| m.is_file())
+        && std::fs::read(path).is_ok_and(|b| {
+            PackMeta::for_bytes(&b)
+                .pack_hash
+                .eq_ignore_ascii_case(sha256)
+        })
+}
+
 /// Where each of the assets `names` goes (L-22). No `--output`: the current directory. An
 /// `--output` that is a directory (or ends in `/`): one file per asset, by its name. Any other
 /// `--output`: that file, for exactly one asset. Every destination is checked before anything
 /// is downloaded.
-fn plan_outputs(names: &[&str], output: Option<&Path>) -> Result<Vec<Dest>> {
+fn plan_outputs(assets: &[(&str, &str)], output: Option<&Path>) -> Result<Vec<Dest>> {
     let dir = match output {
         None => PathBuf::new(),
         Some(p) if p.is_dir() || p.as_os_str().to_string_lossy().ends_with('/') => p.to_path_buf(),
-        Some(file) if names.len() == 1 => {
+        Some(file) if assets.len() == 1 => {
             return Ok(vec![Dest {
                 path: file.to_path_buf(),
                 replace: true,
@@ -388,21 +399,29 @@ fn plan_outputs(names: &[&str], output: Option<&Path>) -> Result<Vec<Dest>> {
         Some(_) => {
             return Err(crate::errors::usage(format!(
                 "--output names one file, and the release has {} assets: pass an --output directory, or --asset <name>",
-                names.len()
+                assets.len()
             )));
         }
     };
+    // Compared without case: on a case-insensitive filesystem (macOS, Windows) `A.bin` and
+    // `a.bin` are one file.
     let mut seen = std::collections::BTreeSet::new();
-    names
+    assets
         .iter()
-        .map(|name| {
+        .map(|(name, sha256)| {
             // A recorded name is data anyone with the maintainer role wrote: never let it
             // choose a path outside the directory.
             let file = Path::new(name)
                 .file_name()
                 .map_or_else(|| PathBuf::from("asset"), PathBuf::from);
             let path = dir.join(&file);
-            if !seen.insert(file) || path.symlink_metadata().is_ok() {
+            if !seen.insert(file.to_string_lossy().to_lowercase()) {
+                return Err(crate::errors::usage(format!(
+                    "two assets of the release save as {}: download them one at a time, with --asset <name> --output <file>",
+                    crate::fmt::safe(&path.display().to_string())
+                )));
+            }
+            if path.symlink_metadata().is_ok() && !already_saved(&path, sha256) {
                 return Err(already_exists(&path));
             }
             Ok(Dest {
@@ -417,7 +436,7 @@ fn plan_outputs(names: &[&str], output: Option<&Path>) -> Result<Vec<Dest>> {
 fn already_exists(path: &Path) -> anyhow::Error {
     crate::errors::usage(format!(
         "{} already exists; pass --output <directory or file> to choose where the assets go",
-        path.display()
+        crate::fmt::safe(&path.display().to_string())
     ))
 }
 
@@ -441,30 +460,34 @@ fn save_failed(path: &Path, e: &std::io::Error) -> anyhow::Error {
     .into()
 }
 
-/// Write `bytes` to `dest` ([`Dest::replace`] decides whether an existing file may go).
+/// Write `bytes` to `dest` ([`Dest::replace`] decides whether an existing file may go). The
+/// bytes go to a temporary file beside it first, so a failed write never leaves a truncated
+/// file under the asset's name (a rerun would then refuse it as "already exists").
 fn save(dest: &Dest, bytes: &[u8]) -> Result<()> {
-    let mut open = std::fs::OpenOptions::new();
-    open.write(true);
+    let fail = |e: std::io::Error| save_failed(&dest.path, &e);
+    let dir = match dest.path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    let mut tmp = tempfile::NamedTempFile::new_in(dir).map_err(fail)?;
+    std::io::Write::write_all(&mut tmp, bytes).map_err(fail)?;
     if dest.replace {
-        open.create(true).truncate(true);
+        tmp.persist(&dest.path).map_err(|e| fail(e.error))?;
     } else {
-        open.create_new(true);
+        // Never replaces a file or a symlink that appeared meanwhile.
+        tmp.persist_noclobber(&dest.path)
+            .map_err(|e| fail(e.error))?;
     }
-    let mut f = open
-        .open(&dest.path)
-        .map_err(|e| save_failed(&dest.path, &e))?;
-    std::io::Write::write_all(&mut f, bytes).map_err(|e| save_failed(&dest.path, &e))
+    Ok(())
 }
 
-/// Download a release's assets (every one, or `--asset`), accepting only bytes that hash to
-/// the recorded sha256.
-async fn download(
+/// The assets of release `tag` to download: every one, or the one named `--asset`.
+async fn assets_to_download(
     ctx: &Ctx,
     repo: &str,
     tag: &str,
     asset_name: Option<&str>,
-    output: Option<PathBuf>,
-) -> Result<()> {
+) -> Result<Vec<ReleaseAsset>> {
     let (current, _) = read_releases(ctx, repo).await?;
     let release = current
         .into_iter()
@@ -489,6 +512,19 @@ async fn download(
             "omit --asset to download every asset, or check the names with `dg release list`",
         ));
     }
+    Ok(assets)
+}
+
+/// Download a release's assets (every one, or `--asset`), accepting only bytes that hash to
+/// the recorded sha256.
+async fn download(
+    ctx: &Ctx,
+    repo: &str,
+    tag: &str,
+    asset_name: Option<&str>,
+    output: Option<PathBuf>,
+) -> Result<()> {
+    let assets = assets_to_download(ctx, repo, tag, asset_name).await?;
     // The gateways the uploaders recorded reach their nodes: try them before the shared list.
     let reader = PackReader::from_user_config().prefer_gateways(
         forge_core::storage::read::repo_gateways(assets.iter().flat_map(|a| a.uris.iter())),
@@ -507,8 +543,11 @@ async fn download(
             return Err(no_readable_copy(a).into());
         }
     }
-    let names: Vec<&str> = assets.iter().map(|a| a.name.as_str()).collect();
-    let dests = plan_outputs(&names, output.as_deref())?;
+    let planned: Vec<(&str, &str)> = assets
+        .iter()
+        .map(|a| (a.name.as_str(), a.sha256.as_str()))
+        .collect();
+    let dests = plan_outputs(&planned, output.as_deref())?;
     if let Some(dir) = dests.first().and_then(|d| d.path.parent()) {
         if !dir.as_os_str().is_empty() && !dir.exists() {
             std::fs::create_dir_all(dir).map_err(|e| save_failed(dir, &e))?;
@@ -516,6 +555,23 @@ async fn download(
     }
     let mut saved = Vec::new();
     for (asset, dest) in assets.iter().zip(&dests) {
+        let shown = crate::fmt::safe(&dest.path.display().to_string()).into_owned();
+        if !dest.replace && already_saved(&dest.path, &asset.sha256) {
+            if !ctx.json {
+                println!(
+                    "✓ {} is already there, sha256 verified → {shown}",
+                    crate::fmt::safe(&asset.name)
+                );
+            }
+            saved.push(json!({
+                "name": asset.name,
+                "sha256": asset.sha256,
+                "bytes": asset.size_bytes,
+                "output": dest.path.to_string_lossy(),
+                "alreadyThere": true,
+            }));
+            continue;
+        }
         let bytes = reader
             .fetch_verified(
                 &asset.uris,
@@ -528,10 +584,9 @@ async fn download(
         save(dest, &bytes)?;
         if !ctx.json {
             println!(
-                "✓ {} ({} bytes, sha256 verified) → {}",
+                "✓ {} ({} bytes, sha256 verified) → {shown}",
                 crate::fmt::safe(&asset.name),
                 bytes.len(),
-                dest.path.display()
             );
         }
         saved.push(json!({
@@ -556,8 +611,14 @@ async fn download(
 mod download_tests {
     use super::*;
 
+    /// Assets named `names`, whose sha256 nothing on disk matches.
+    fn plan(names: &[&str], output: Option<&Path>) -> Result<Vec<Dest>> {
+        let assets: Vec<(&str, &str)> = names.iter().map(|n| (*n, "00")).collect();
+        plan_outputs(&assets, output)
+    }
+
     fn dests(names: &[&str], output: Option<&Path>) -> Result<Vec<(PathBuf, bool)>> {
-        Ok(plan_outputs(names, output)?
+        Ok(plan(names, output)?
             .into_iter()
             .map(|d| (d.path, d.replace))
             .collect())
@@ -593,16 +654,53 @@ mod download_tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("out.bin");
         assert_eq!(dests(&["a"], Some(&file)).unwrap(), [(file.clone(), true)]);
-        let two = plan_outputs(&["a", "b"], Some(&file)).unwrap_err();
+        let two = plan(&["a", "b"], Some(&file)).unwrap_err();
         assert!(format!("{two:#}").contains("--output directory"), "{two:#}");
         std::fs::write(dir.path().join("a"), b"mine").unwrap();
-        let exists = plan_outputs(&["a"], Some(dir.path())).unwrap_err();
+        let exists = plan(&["a"], Some(dir.path())).unwrap_err();
         assert!(
             format!("{exists:#}").contains("already exists"),
             "{exists:#}"
         );
-        // Two recorded names that land on one file.
-        assert!(plan_outputs(&["x/c", "y/c"], Some(dir.path())).is_err());
+        // Two recorded names that land on one file, also when they differ only in case.
+        assert!(plan(&["x/c", "y/c"], Some(dir.path())).is_err());
+        let case = plan(&["README.txt", "readme.TXT"], Some(dir.path())).unwrap_err();
+        assert!(format!("{case:#}").contains("two assets"), "{case:#}");
+    }
+
+    /// A rerun after one asset failed resumes: a file already holding the asset's bytes
+    /// (its sha256 matches) is kept and skipped, not refused.
+    #[test]
+    fn a_file_with_the_assets_bytes_is_already_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a"), b"mine").unwrap();
+        let sha = PackMeta::for_bytes(b"mine").pack_hash;
+        let d = plan_outputs(&[("a", sha.as_str())], Some(dir.path())).unwrap();
+        assert_eq!(d[0].path, dir.path().join("a"));
+        assert!(already_saved(&d[0].path, &sha.to_ascii_uppercase()));
+        assert!(!already_saved(&d[0].path, &"0".repeat(64)));
+    }
+
+    /// A save never leaves a partial file behind, and never replaces a name-derived file.
+    #[test]
+    fn saves_are_whole_and_do_not_clobber() {
+        let dir = tempfile::tempdir().unwrap();
+        let dest = Dest {
+            path: dir.path().join("a"),
+            replace: false,
+        };
+        save(&dest, b"one").unwrap();
+        assert_eq!(std::fs::read(&dest.path).unwrap(), b"one");
+        assert!(save(&dest, b"two").is_err());
+        assert_eq!(std::fs::read(&dest.path).unwrap(), b"one");
+        let file = Dest {
+            replace: true,
+            ..dest
+        };
+        save(&file, b"two").unwrap();
+        assert_eq!(std::fs::read(&file.path).unwrap(), b"two");
+        let left = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(left, 1, "no temporary file left behind");
     }
 
     /// A local write failure is its own error, not "could not read releases".
