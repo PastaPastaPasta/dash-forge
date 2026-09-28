@@ -85,6 +85,12 @@ No. Your repositories are on Platform and in your storage. Your identity survive
 
 Then that identity is gone. Nobody can recover it, and nobody can sign as it again. Everything it published stays readable and clonable. Its repositories can no longer gain or lose members, because only the owner can change membership. Members it already added can keep pushing. To carry on under a new identity, create a new repository and push your clone to it. [Keep the words safe.](guides/identity-and-keys.md#backup-and-recovery)
 
+## Which browsers does the web app support?
+
+Chrome and Edge 103 or newer, Firefox 104 or newer, and Safari 16 or newer (macOS and iOS). That floor comes from what the app needs to run at all: WebAssembly under a strict content policy (`wasm-unsafe-eval`), IndexedDB, WebCrypto, `AbortSignal.timeout` and `Array.prototype.findLast`. It is declared as the `browserslist` in `forge-web/package.json`, which the build compiles for.
+
+Protecting the browser vault with a **passkey** also needs WebAuthn's PRF extension, which depends on the browser (Chrome and Edge 116, Safari 18, recent Firefox), the operating system and the passkey provider (iCloud Keychain and Google Password Manager support it; some third-party managers and security keys do not). Where it is missing, use a passphrase instead; everything else works the same.
+
 ## Where do I report a bug?
 
 [GitHub Issues](https://github.com/PastaPastaPasta/dash-forge/issues) for now. Every error `dg` prints has a code; [errors.md](errors.md) explains each one.

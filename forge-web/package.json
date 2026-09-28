@@ -5,6 +5,13 @@
   "engines": {
     "node": ">=22.18"
   },
+  "browserslist": [
+    "chrome >= 103",
+    "edge >= 103",
+    "firefox >= 104",
+    "safari >= 16",
+    "ios_saf >= 16"
+  ],
   "scripts": {
     "dev": "next dev",
     "build": "next build",

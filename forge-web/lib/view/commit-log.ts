@@ -269,53 +269,124 @@ export interface LastCommit {
   readonly when: number
 }
 
-/** How far back the commit column looks (first parent) before leaving an entry blank. */
-const LAST_COMMIT_WALK = 60
+/**
+ * How far back the commit column looks (first parent). An entry no commit in the window changed
+ * is left out of the answer, and the view says it is older than the window (L-41) rather than
+ * guessing at older history.
+ */
+export const LAST_COMMIT_WALK = 400
+
+/**
+ * A reader for walks over many commits: the reader's own read-ahead walker when it has one (one
+ * ranged read per block of neighbouring commits, not one per commit), else the reader. Pass one
+ * walker to several walks of the same history (the repo home's commit count and commit column)
+ * so they share its blocks instead of each fetching them.
+ */
+export function historyWalker(reader: ObjectReader): ObjectReader & { flush?(): void } {
+  return reader.forHistoryWalk?.() ?? reader
+}
+
+/** Options of a history walk. */
+export interface WalkOptions {
+  /** The walker to read through ({@link historyWalker}); default: a new one for this walk. */
+  readonly walker?: ObjectReader & { flush?(): void }
+  /** Stops the walk (it rejects with the signal's reason) before its next step. */
+  readonly signal?: AbortSignal
+}
 
 /**
  * For each entry of the tree at `dirPath` (`''` = root), the newest first-parent commit whose
- * change touched it, walking at most {@link LAST_COMMIT_WALK} commits. Names no commit in the
- * window changed are absent (older history is not guessed at). Each step reads one commit
- * and the trees along `dirPath`; the reader memoizes objects, so shared subtrees cost once.
+ * change touched it, walking at most `limit` commits. Names no commit in the window changed are
+ * absent (older history is not guessed at). Each step reads one commit and the trees along
+ * `dirPath`, through a read-ahead walker; the reader memoizes objects, so shared subtrees cost
+ * once. `onFound` is told the answer so far each time a step settles more names, so a view can
+ * fill in as the walk goes.
  */
 export async function lastCommitsForDir(
   reader: ObjectReader,
   tipOid: string,
   dirPath: string,
   names: readonly string[],
-  limit = LAST_COMMIT_WALK,
+  {
+    limit = LAST_COMMIT_WALK,
+    onFound,
+    walker = historyWalker(reader),
+    signal,
+  }: WalkOptions & { readonly limit?: number; readonly onFound?: (found: ReadonlyMap<string, LastCommit>) => void } = {},
 ): Promise<Map<string, LastCommit>> {
   const segments = dirPath.split('/').filter((s) => s !== '')
   const dirOf = async (treeOid: string): Promise<Map<string, string> | null> => {
     let oid = treeOid
     for (const seg of segments) {
-      const next = (await readTree(reader, oid)).find((e) => e.name === seg && e.mode === MODE_TREE)
+      const next = (await readTree(walker, oid)).find((e) => e.name === seg && e.mode === MODE_TREE)
       if (!next) return null
       oid = next.oid
     }
-    return new Map((await readTree(reader, oid)).map((e) => [e.name, `${e.mode}:${e.oid}`]))
+    return new Map((await readTree(walker, oid)).map((e) => [e.name, `${e.mode}:${e.oid}`]))
   }
   const out = new Map<string, LastCommit>()
   const open = new Set(names)
-  let oid = tipOid
-  let commit = await readCommit(reader, tipOid)
-  let here = await dirOf(commit.tree)
-  for (let steps = 0; here !== null && open.size > 0 && steps < limit; steps++) {
-    const parentOid = commit.parents[0]
-    const parent = parentOid !== undefined ? await readCommit(reader, parentOid) : null
-    const there = parent !== null ? await dirOf(parent.tree) : null
-    for (const name of [...open]) {
-      if (here.get(name) !== there?.get(name)) {
-        out.set(name, { oid, subject: commitSubject(commit.message), when: commit.author.when })
-        open.delete(name)
+  try {
+    let oid = tipOid
+    let commit = await readCommit(walker, tipOid)
+    let here = await dirOf(commit.tree)
+    for (let steps = 0; here !== null && open.size > 0 && steps < limit; steps++) {
+      signal?.throwIfAborted()
+      const parentOid = commit.parents[0]
+      const parent = parentOid !== undefined ? await readCommit(walker, parentOid) : null
+      const there = parent !== null ? await dirOf(parent.tree) : null
+      const before = out.size
+      for (const name of [...open]) {
+        if (here.get(name) !== there?.get(name)) {
+          out.set(name, { oid, subject: commitSubject(commit.message), when: commit.author.when })
+          open.delete(name)
+        }
       }
+      if (out.size > before) onFound?.(new Map(out))
+      if (parent === null || parentOid === undefined) break
+      oid = parentOid
+      commit = parent
+      here = there
     }
-    if (parent === null || parentOid === undefined) break
-    oid = parentOid
-    commit = parent
-    here = there
+    return out
+  } finally {
+    walker.flush?.()
   }
-  return out
+}
+
+/**
+ * The commit column of a listing (L-41): each entry's last commit as the walk finds it, `done`
+ * once it has stopped, and `failed` when it stopped on an error. An entry still without one reads
+ * as older than the walked window when the walk finished, and as not loaded when it failed.
+ */
+export interface LastCommitColumn {
+  readonly found: ReadonlyMap<string, LastCommit>
+  readonly done: boolean
+  readonly failed: boolean
+}
+
+/**
+ * Runs {@link lastCommitsForDir} for the root listing and reports each state of its column to
+ * `onState`, starting empty. A failed walk keeps what it found before the failure. Nothing is
+ * reported once `signal` aborts.
+ */
+export function walkCommitColumn(
+  reader: ObjectReader,
+  tipOid: string,
+  names: readonly string[],
+  onState: (state: LastCommitColumn) => void,
+  { walker, signal, limit }: WalkOptions & { readonly limit?: number } = {},
+): Promise<void> {
+  let found: ReadonlyMap<string, LastCommit> = new Map()
+  const report = (next: ReadonlyMap<string, LastCommit>, done: boolean, failed = false): void => {
+    found = next
+    if (signal?.aborted !== true) onState({ found: next, done, failed })
+  }
+  report(new Map(), false)
+  return lastCommitsForDir(reader, tipOid, '', names, { walker, signal, limit, onFound: (next) => report(next, false) }).then(
+    (next) => report(next, true),
+    () => report(found, true, true),
+  )
 }
 
 /**
@@ -326,14 +397,20 @@ export async function countCommits(
   reader: ObjectReader,
   tipOid: string,
   cap = 1000,
+  { walker = historyWalker(reader), signal }: WalkOptions = {},
 ): Promise<{ count: number; capped: boolean }> {
   let count = 0
   let oid: string | undefined = tipOid
   const seen = new Set<string>()
-  while (oid !== undefined && count < cap && !seen.has(oid)) {
-    seen.add(oid)
-    count += 1
-    oid = (await readCommit(reader, oid)).parents[0]
+  try {
+    while (oid !== undefined && count < cap && !seen.has(oid)) {
+      signal?.throwIfAborted()
+      seen.add(oid)
+      count += 1
+      oid = (await readCommit(walker, oid)).parents[0]
+    }
+  } finally {
+    walker.flush?.()
   }
   return { count, capped: oid !== undefined && count >= cap }
 }

@@ -189,6 +189,107 @@ describe('chunk LRU', () => {
   })
 })
 
+// L-15: a 10 MB locator is ~7 windows of 100 chunks; read one after another they were ~2 s of
+// serial round trips before the repo home could show anything.
+describe('whole-artifact load', () => {
+  it('reads its windows several at a time and reassembles them exactly', async () => {
+    const total = CHUNK_PAYLOAD_MAX * 100 * 6 + 999
+    const full = new Uint8Array(total)
+    for (let i = 0; i < total; i++) full[i] = (i * 13 + 5) % 251
+    const hash = bytesToHex(sha256(full))
+    const inner = mockSdk(() => full) as unknown as { documents: { query: (q: unknown) => Promise<Map<string, unknown>> } }
+    let inFlight = 0
+    let peak = 0
+    const sdk = {
+      documents: {
+        query: async (q: unknown): Promise<Map<string, unknown>> => {
+          inFlight++
+          peak = Math.max(peak, inFlight)
+          await new Promise((r) => setTimeout(r, 5))
+          inFlight--
+          return inner.documents.query(q)
+        },
+      },
+    } as unknown as EvoSDK
+    const progress: number[] = []
+    const manifest = { ...gitPack(hash, 0, 'w1'), sizeBytes: total }
+    const got = await loadArtifactBytesProgress(sdk, REPO, manifest, (done) => progress.push(done))
+    expect(bytesToHex(sha256(got))).toBe(hash)
+    expect(peak).toBeGreaterThanOrEqual(4)
+    expect(progress[progress.length - 1]).toBe(total)
+  })
+
+  /** An artifact of `windows` full 100-chunk windows, and an sdk counting chunk queries. */
+  function windowed(windows: number, fail: (seq0: number) => boolean = () => false) {
+    const total = CHUNK_PAYLOAD_MAX * 100 * windows
+    const full = new Uint8Array(total).fill(7)
+    const inner = mockSdk(() => full) as unknown as { documents: { query: (q: { where?: readonly (readonly unknown[])[] }) => Promise<Map<string, unknown>> } }
+    let queries = 0
+    const sdk = {
+      documents: {
+        query: async (q: { where?: readonly (readonly unknown[])[] }): Promise<Map<string, unknown>> => {
+          queries++
+          await new Promise((r) => setTimeout(r, 2))
+          const seqs = ((q.where ?? []).find((w) => w[0] === 'seq')?.[2] as number[]) ?? []
+          if (fail(seqs[0] ?? 0)) throw new Error('chunk query failed')
+          return inner.documents.query(q)
+        },
+      },
+    } as unknown as EvoSDK
+    const manifest = { ...gitPack(bytesToHex(sha256(full)), 0, `w${windows}`), sizeBytes: total }
+    return { sdk, manifest, queries: () => queries }
+  }
+
+  it('stops reading windows once one fails', async () => {
+    const w = windowed(12, (seq0) => seq0 === 100)
+    const outcome = await loadArtifactBytesProgress(w.sdk, REPO, w.manifest).then(() => 'resolved', (e: unknown) => String(e))
+    expect(outcome).toMatch(/chunk query failed/)
+    await new Promise((r) => setTimeout(r, 100))
+    // The four windows in flight when window 1 failed, and no more of the twelve.
+    expect(w.queries()).toBeLessThanOrEqual(5)
+  })
+
+  it('stops reading windows once the load is cancelled', async () => {
+    const w = windowed(12)
+    const cancel = new AbortController()
+    const load = loadArtifactBytesProgress(w.sdk, REPO, w.manifest, (done) => {
+      if (done > 0) cancel.abort()
+    }, cancel.signal)
+    expect(await load.then(() => 'resolved', (e: unknown) => String(e))).toMatch(/cancelled/)
+    await new Promise((r) => setTimeout(r, 100))
+    expect(w.queries()).toBeLessThanOrEqual(8)
+  })
+
+  it('does not resolve when cancelled while every window is already in flight', async () => {
+    // Three windows, all started at once by the pool: none left to refuse when the abort comes.
+    const w = windowed(3)
+    const cancel = new AbortController()
+    const load = loadArtifactBytesProgress(w.sdk, REPO, w.manifest, undefined, cancel.signal)
+    await Promise.resolve()
+    cancel.abort()
+    expect(await load.then(() => 'resolved', (e: unknown) => String(e))).toMatch(/cancelled/)
+  })
+
+  it('does not try the next copy once the load is cancelled', async () => {
+    const w = windowed(12)
+    const cancel = new AbortController()
+    const copies = [
+      { ...w.manifest, documentId: 'copy-a' },
+      { ...w.manifest, documentId: 'copy-b' },
+    ]
+    const manifest = { ...w.manifest, copies }
+    const load = loadArtifactBytesProgress(w.sdk, REPO, manifest, (done) => {
+      if (done > 0) cancel.abort()
+    }, cancel.signal)
+    expect(await load.then(() => 'resolved', (e: unknown) => String(e))).toMatch(/cancelled/)
+    const afterFirst = w.queries()
+    await new Promise((r) => setTimeout(r, 100))
+    // One copy's windows in flight at the abort, and none of the second copy's.
+    expect(w.queries()).toBe(afterFirst)
+    expect(w.queries()).toBeLessThanOrEqual(8)
+  })
+})
+
 describe('packRef ordering (assumption a)', () => {
   // Each pack's "bytes" are a single identifying byte, so fetchRange(packRef, 0, 1) reveals
   // which manifest packRef resolved to.

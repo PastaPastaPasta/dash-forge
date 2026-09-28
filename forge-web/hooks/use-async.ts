@@ -48,7 +48,8 @@ interface KeyedState<T> {
 }
 
 export function useAsync<T>(
-  producer: () => Promise<T>,
+  /** Told, through `signal`, when its result is no longer wanted (deps changed, or unmounted). */
+  producer: (signal: AbortSignal) => Promise<T>,
   deps: readonly unknown[],
   options: { enabled?: boolean; initial?: () => T | undefined } = {},
 ): AsyncState<T> {
@@ -93,9 +94,10 @@ export function useAsync<T>(
       return
     }
     let cancelled = false
+    const stop = new AbortController()
     setLoading(true)
     producerRef
-      .current()
+      .current(stop.signal)
       .then((result) => {
         if (cancelled) return
         setState({ key: depKey, data: result, error: null, settled: true })
@@ -108,6 +110,7 @@ export function useAsync<T>(
       })
     return () => {
       cancelled = true
+      stop.abort()
     }
   }, [enabled, nonce, depKey])
 

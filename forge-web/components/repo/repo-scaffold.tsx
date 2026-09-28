@@ -29,6 +29,7 @@ export function RepoScaffold({
   rail = true,
   refParam = '',
   sealedOk = false,
+  browse = false,
 }: {
   addr: RepoAddress
   /** The page body; `reload` re-reads the repo home (after a write that changes it). */
@@ -41,8 +42,10 @@ export function RepoScaffold({
    * public). Every other page shows the private state instead of its content (§6.3).
    */
   sealedOk?: boolean
+  /** The page reads code (home, tree, blob, commits): start the browse index with the refs. */
+  browse?: boolean
 }): JSX.Element {
-  const { data, loading, error, settled, ready, reload } = useRepoHome(addr)
+  const { data, loading, error, settled, ready, reload } = useRepoHome(addr, { browse })
   const { status: sdkStatus, retry: retrySdk } = useSdk()
   // A private repo is re-read through the viewer's decryption session (or shown as sealed).
   const privateHome = usePrivateHome(data ?? null, addr)
