@@ -1,4 +1,4 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect, type Locator, type Page } from '@playwright/test'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -91,9 +91,14 @@ async function commitIdentity(page: Page, name: string, email: string): Promise<
 }
 
 /** Agree to Platform storage when the upload asks (no bucket configured for the spec's identities). */
-async function allowPlatformStorage(page: Page): Promise<void> {
+/**
+ * Answer the "Store the merge pack on Platform?" sheet if it opens before `done` shows. It opens
+ * only after the pack is built (seconds in), so this waits for either; `isVisible` does not wait.
+ */
+async function allowPlatformStorage(page: Page, done: Locator): Promise<void> {
   const ask = page.getByRole('dialog', { name: /Store the merge pack .* on Platform\?/ })
-  if (await ask.isVisible({ timeout: 90_000 }).catch(() => false)) await ask.getByRole('button', { name: /sign & store on platform/i }).click()
+  await expect(ask.or(done)).toBeVisible({ timeout: 180_000 })
+  if (await ask.isVisible()) await ask.getByRole('button', { name: /sign & store on platform/i }).click()
 }
 
 interface View {
@@ -193,7 +198,7 @@ test('r4. the contributor applies the suggestion; the head follows', async ({ br
   await unlock(page)
   await waitForRepoResolved(page)
   await page.getByRole('button', { name: 'Apply suggestion' }).click({ timeout: 180_000 })
-  await allowPlatformStorage(page)
+  await allowPlatformStorage(page, page.getByTestId('branch-commit').locator('[data-step="upload"]:is([data-state="done"],[data-state="skipped"])'))
   await expect(page.getByTestId('branch-commit').locator('[data-step="head"]')).toHaveAttribute('data-state', 'done', { timeout: 300_000 })
   // The thread was made on the previous head, so it now sits under "comments on an older version"
   // (collapsed, as on GitHub): open it to see the suggestion marked applied.
@@ -235,7 +240,9 @@ test('r5. the maintainer re-reviews: resolves, approves; checks gate the merge u
     await page.reload({ waitUntil: 'domcontentloaded' })
     await unlock(page)
     await waitForRepoResolved(page)
-    if (await page.getByTestId('checks-row').filter({ hasText: '1 passed' }).isVisible({ timeout: 60_000 }).catch(() => false)) break
+    // (isVisible does not wait: wait for the row to settle on either answer first.)
+    const passed = page.getByTestId('checks-row').filter({ hasText: '1 passed' })
+    if (await passed.waitFor({ state: 'visible', timeout: 60_000 }).then(() => true, () => false)) break
   }
   await expect(page.getByTestId('checks-row')).toContainText('1 passed')
   await expect(page.getByTestId('policy-checks')).toContainText('Required checks pass')
@@ -270,7 +277,7 @@ test('r6. squash and merge with an edited message; the branch is deleted', async
   await expect(panel.getByLabel(/Delete .*feature\/greet after merging/)).toBeChecked()
   await shot(page, 'review-rt-05-squash-box')
   await panel.getByRole('button', { name: 'Squash and merge' }).click()
-  await allowPlatformStorage(page)
+  await allowPlatformStorage(page, panel.locator('[data-step="upload"]:is([data-state="done"],[data-state="skipped"])'))
   await expect(panel.locator('[data-step="event"]')).toHaveAttribute('data-state', 'done', { timeout: 300_000 })
   await expect(page.getByTestId('branch-deleted')).toBeVisible({ timeout: 180_000 })
   await expect(page.getByTestId('pr-state')).toHaveText('Merged', { timeout: 180_000 })
