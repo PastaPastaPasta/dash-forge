@@ -723,15 +723,21 @@ function processEmphasis(items: Inline[], delims: readonly Delim[], maxNest: num
     }
     const o = delims[opener] as Delim
     const use = c.count >= 2 && o.count >= 2 ? 2 : 1
-    // One new node, less the runs this uses up (their text nodes go).
-    const cost = 1 - (o.count === use ? 1 : 0) - (c.count === use ? 1 : 0)
+    // `**` around a lone strong (`****x****`): cmark-gfm renders one strong, so the inner node
+    // is kept as it is. No node is made and nothing is walked, so a run of these stays O(1).
+    const inner = next[o.item] as number
+    const reuse = use === 2 && inner !== c.item && next[inner] === c.item && (nodes[inner] as Inline).t === 'strong'
+    // One new node (none when reusing), less the runs this uses up (their text nodes go).
+    const cost = (reuse ? 0 : 1) - (o.count === use ? 1 : 0) - (c.count === use ? 1 : 0)
     // What lies between the two runs becomes the new node's children.
     const children: Inline[] = []
     let depthIn = 0
-    for (let k = next[o.item] as number; k !== c.item; k = next[k] as number) {
-      const node = nodes[k] as Inline
-      children.push(node)
-      depthIn = Math.max(depthIn, inlineDepth(node))
+    if (!reuse) {
+      for (let k = inner; k !== c.item; k = next[k] as number) {
+        const node = nodes[k] as Inline
+        children.push(node)
+        depthIn = Math.max(depthIn, inlineDepth(node))
+      }
     }
     if (depthIn + 1 > maxNest || (nodesLeft <= 0 && cost > 0)) {
       // Too deep, or no budget left: this closer stays text, and nothing before it pairs.
@@ -743,16 +749,17 @@ function processEmphasis(items: Inline[], delims: readonly Delim[], maxNest: num
     c.count -= use
     nodes[o.item] = { t: 'text', v: o.ch.repeat(o.count) }
     nodes[c.item] = { t: 'text', v: c.ch.repeat(c.count) }
-    // GitHub's cmark-gfm does not nest strong directly in strong (`****foo****` is one strong).
-    const flat = use === 2 ? children.flatMap((n) => (n.t === 'strong' ? n.c : [n])) : children
-    const emph: Inline = { t: use === 2 ? 'strong' : 'em', c: mergeText(flat) }
     nodesLeft -= cost
-    const k = nodes.length
-    nodes.push(emph)
-    next.push(c.item)
-    prev.push(o.item)
-    next[o.item] = k
-    prev[c.item] = k
+    if (!reuse) {
+      // GitHub's cmark-gfm does not nest strong directly in strong (`**a **b** c**` is one strong).
+      const flat = use === 2 ? children.flatMap((n) => (n.t === 'strong' ? n.c : [n])) : children
+      const k = nodes.length
+      nodes.push({ t: use === 2 ? 'strong' : 'em', c: mergeText(flat) })
+      next.push(c.item)
+      prev.push(o.item)
+      next[o.item] = k
+      prev[c.item] = k
+    }
     // Runs between the two can no longer pair.
     dNext[opener] = closer
     dPrev[closer] = opener

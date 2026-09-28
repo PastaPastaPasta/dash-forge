@@ -168,6 +168,9 @@ describe('renderers terminate quickly on hostile input', () => {
       [fill(MIB, '*_')],
       [fill(MIB, 'a***b**c*')],
       [fill(MIB, 'Name: ___ Date: ___\n')],
+      // Strong around strong, many times over one long body: each pairing must be O(1).
+      ['*'.repeat(MIB / 4) + fill(MIB / 2, '`c`a') + '*'.repeat(MIB / 4)],
+      ['*'.repeat(15_000) + fill(30_000, '`c`a') + '*'.repeat(15_000)],
     ]
     await expectFast(markdownUrl, 'parseMarkdown', calls, 'parseMarkdown nested brackets', MIB_CALL_MS)
   }, 120_000)
