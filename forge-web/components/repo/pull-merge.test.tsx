@@ -127,5 +127,9 @@ describe('the merge box through its own merge', () => {
     expect(checks).toHaveBeenCalledTimes(1)
     expect(host.querySelector('[data-testid="conflict-paths"]')).toBeNull()
     expect(host.textContent).not.toMatch(/Conflicts or overlapping changes/)
+    // Nothing is left to merge: the header says Merged, with no method menu, button or cost.
+    expect(host.querySelector('[data-testid="merge-done"]')?.textContent).toBe('Merged')
+    expect(host.querySelector('#merge-method')).toBeNull()
+    expect([...host.querySelectorAll('button')].some((b) => /merge/i.test(b.textContent ?? ''))).toBe(false)
   })
 })

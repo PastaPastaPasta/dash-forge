@@ -199,7 +199,8 @@ export function MergePanel({
   // The plan's own method bit (ff 1, merge commit 2), or squash (4): what the policy is checked against.
   const planBit = button.kind === 'fast-forward' ? 1 : button.kind === 'merge-commit' ? 2 : 0
   const methodAllowed = method === 'squash' ? policyAllows(4) && squash.problem === null : planBit === 0 || policyAllows(planBit)
-  const mergeable = button.kind === 'fast-forward' || button.kind === 'merge-commit'
+  // Once this panel's merge has landed there is nothing left to merge: no method, button or cost.
+  const mergeable = !mergedHere && (button.kind === 'fast-forward' || button.kind === 'merge-commit')
 
   const start = useCallback(async () => {
     if (!sdk || !signer || reader === null || baseOnly === null || busy || refProblem !== null) return
@@ -281,8 +282,13 @@ export function MergePanel({
             </>
           ) : null}
         </span>
-        <div className="ml-auto flex flex-wrap items-center gap-2" data-testid="merge-button-state" data-state={button.kind}>
-          {button.kind === 'checking' ? (
+        <div className="ml-auto flex flex-wrap items-center gap-2" data-testid="merge-button-state" data-state={mergedHere ? 'merged' : button.kind}>
+          {mergedHere || button.kind === 'hidden' ? (
+            // After this panel's own merge (the PR now reads Merged): its steps stay below.
+            <span className="text-dense font-medium text-verify-700 dark:text-verify-400" data-testid="merge-done">
+              Merged
+            </span>
+          ) : button.kind === 'checking' ? (
             <Button disabled>
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> Checking the merge…
             </Button>
@@ -311,9 +317,6 @@ export function MergePanel({
             </>
           ) : button.kind === 'unavailable' ? (
             <span className="text-dense text-anvil-600 dark:text-anvil-400">{button.reason}</span>
-          ) : button.kind === 'hidden' ? (
-            // Only after this panel's own merge (the PR now reads Merged): its steps stay below.
-            <span className="text-dense text-anvil-600 dark:text-anvil-400">Merged</span>
           ) : (
             <Button disabled>{button.label}</Button>
           )}
