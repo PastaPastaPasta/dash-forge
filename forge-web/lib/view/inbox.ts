@@ -533,22 +533,23 @@ export async function pollOnce(
     }
   }
   for (const f of round) {
-    const key = `${p}cursor:${feedKey(f)}`
-    const stored = asCursor(await idbGet<unknown>('inbox', key))
-    const cursor = stored ?? initialCursor(f, seen[feedKey(f)] ?? now)
+    const fk = feedKey(f)
+    const key = `${p}cursor:${fk}`
+    const start = initialCursor(f, seen[fk] ?? now)
+    const cursor = asCursor(await idbGet<unknown>('inbox', key)) ?? start
     // A repo's state feed is shared by its threads: a thread that joined it after the cursor
     // moved past its events is read once from its own history (L-17).
     if (f.kind === 'state') {
-      const coverKey = `${p}covered:${feedKey(f)}`
+      const coverKey = `${p}covered:${fk}`
       // The threads this feed has answered for. A feed read by an earlier build has no record:
       // its threads are checked once each (a thread whose events it passed is backfilled), so an
       // inbox that already missed a merge gets it too.
       const covered = new Set((await idbGet<string[]>('inbox', coverKey)) ?? [])
-      const floor = initialCursor(f, seen[feedKey(f)] ?? now).at
       for (const t of f.threads) {
         if (covered.has(t.id)) continue
-        // Never read yet, or not read past the thread's start: the read below answers for it.
-        const q = stored === undefined ? null : backfillQuery(forge, f, t, cursor, floor)
+        // Null when the feed has not read past the thread's start (always so before its first
+        // read): the read below answers for it.
+        const q = backfillQuery(forge, f, t, cursor, start.at)
         if (q !== null) {
           if (backfills >= BACKFILL_BUDGET) continue
           backfills++

@@ -188,12 +188,16 @@ export function defaultPolicyDraft(config: StorageConfig, picked: readonly strin
   const policy = policyFor(targets, choice)
   const problem = policyProblem(config, policy)
   if (problem !== null) return { state: 'invalid', targets, policy, reason: problem }
-  const current = config.defaultPolicy
-  const same =
-    current !== null &&
-    current.replicas === policy.replicas &&
-    current.platformFallback === policy.platformFallback &&
-    current.targets.length === policy.targets.length &&
-    current.targets.every((t, i) => t === policy.targets[i])
+  const same = config.defaultPolicy !== null && samePolicy(config.defaultPolicy, policy)
   return { state: same ? 'unchanged' : 'changed', targets, policy }
+}
+
+/** Whether two policies store the same way (targets in order, copies, fallback). */
+function samePolicy(a: StoragePolicy, b: StoragePolicy): boolean {
+  return (
+    a.replicas === b.replicas &&
+    a.platformFallback === b.platformFallback &&
+    a.targets.length === b.targets.length &&
+    a.targets.every((t, i) => t === b.targets[i])
+  )
 }

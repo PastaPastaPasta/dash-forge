@@ -137,6 +137,13 @@ export interface ReleaseStorageGap {
   readonly message: string
 }
 
+/** No storage of one's own at all (also what the dialog says before the settings are read). */
+export const NO_STORAGE_GAP: ReleaseStorageGap = {
+  reason: 'no-profiles',
+  fix: 'account',
+  message: 'Add storage of your own (S3 or IPFS) to attach assets: they never go to Platform.',
+}
+
 /**
  * What stops release assets for `repoId` under `config`, or null when they have somewhere to go
  * (L-10). The dialog used to say only "no storage chosen" when a profile existed but no default
@@ -147,9 +154,7 @@ export function releaseStorageGap(config: StorageConfig, repoId: string): Releas
   const policy = policyForRepo(config, repoId)
   if (externalTargets(policy, config.profiles).length > 0) return null
   const own = config.profiles.filter((p) => p.settings.kind !== 'platform').map((p) => p.name)
-  if (own.length === 0) {
-    return { reason: 'no-profiles', fix: 'account', message: 'Add storage of your own (S3 or IPFS) to attach assets: they never go to Platform.' }
-  }
+  if (own.length === 0) return NO_STORAGE_GAP
   if (policy === null) {
     return {
       reason: 'no-default',

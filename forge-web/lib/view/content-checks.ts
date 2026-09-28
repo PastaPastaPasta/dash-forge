@@ -98,10 +98,11 @@ const listeners = new Set<() => void>()
 /** Record checks for a repo. No-op (no notification) when nothing would change. */
 export function noteContentCheck(key: string, delta: ContentCheckDelta): void {
   const prev = ledger.get(key) ?? NO_CONTENT_CHECKS
-  const newSource = delta.source !== undefined && !prev.sources.includes(delta.source)
-  const pack = delta.source !== undefined ? delta.pack?.toLowerCase() : undefined
-  const packPlaces = pack === undefined ? undefined : prev.packSources[pack] ?? []
-  const newPackSource = pack !== undefined && delta.source !== undefined && !packPlaces?.includes(delta.source)
+  const { source } = delta
+  const newSource = source !== undefined && !prev.sources.includes(source)
+  const pack = source === undefined ? undefined : delta.pack?.toLowerCase()
+  const packPlaces = pack === undefined ? [] : prev.packSources[pack] ?? []
+  const newPackSource = pack !== undefined && source !== undefined && !packPlaces.includes(source)
   const counters: Counter[] = [
     'objectsVerified',
     'objectsUnchecked',
@@ -119,10 +120,8 @@ export function noteContentCheck(key: string, delta: ContentCheckDelta): void {
 
   const next: { -readonly [K in keyof ContentChecks]: ContentChecks[K] } = { ...prev }
   for (const k of counters) next[k] = prev[k] + Math.max(0, delta[k] ?? 0)
-  if (newSource && delta.source !== undefined) next.sources = [...prev.sources, delta.source]
-  if (newPackSource && pack !== undefined && delta.source !== undefined) {
-    next.packSources = { ...prev.packSources, [pack]: [...(packPlaces ?? []), delta.source] }
-  }
+  if (newSource) next.sources = [...prev.sources, source]
+  if (newPackSource) next.packSources = { ...prev.packSources, [pack]: [...packPlaces, source] }
   if (newMissing) next.unavailablePacks = [...prev.unavailablePacks, missing]
   if (newCorrupt) next.corruptMirrorPacks = [...prev.corruptMirrorPacks, missing]
   if (newPlaces.length > 0) next.unreachable = [...prev.unreachable, ...newPlaces]

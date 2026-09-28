@@ -372,14 +372,11 @@ export function DefaultPolicy({ config, storable, save }: { config: StorageConfi
     setSaved(false)
     setEdits({ picked: next.picked ?? picked, choice: next.choice ?? choice })
   }
-  const status = saved
-    ? 'Saved.'
+  const [status, tone] = saved
+    ? ['Saved.', 'text-verify-700 dark:text-verify-400']
     : draft.state === 'empty' || draft.state === 'invalid'
-      ? draft.reason
-      : draft.state === 'unchanged'
-        ? current === null ? '' : 'This is your saved default.'
-        : ''
-  const warn = !saved && (draft.state === 'empty' || draft.state === 'invalid')
+      ? [draft.reason, 'text-caution-700 dark:text-caution-400']
+      : [draft.state === 'unchanged' ? 'This is your saved default.' : '', 'text-anvil-500 dark:text-anvil-400']
 
   return (
     <section aria-labelledby="policy-title" className="space-y-3 rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-750 dark:bg-anvil-900">
@@ -444,7 +441,7 @@ export function DefaultPolicy({ config, storable, save }: { config: StorageConfi
           role="status"
           aria-live="polite"
           data-testid="default-policy-status"
-          className={cn('text-[12px]', saved ? 'text-verify-700 dark:text-verify-400' : warn ? 'text-caution-700 dark:text-caution-400' : 'text-anvil-500 dark:text-anvil-400')}
+          className={cn('text-[12px]', tone)}
         >
           {status}
         </span>

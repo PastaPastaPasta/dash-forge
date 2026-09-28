@@ -19,7 +19,9 @@ import type { RepoHome } from '@/lib/view'
 import { ARCHIVED_REASON, formatBytes } from '@/lib/view'
 import type { ReleaseList } from '@/lib/repo'
 import {
+  NO_STORAGE_GAP,
   ReleaseWriteError,
+  type ReleaseStorageGap,
   type ResolvedRelease,
   assetFilesProblem,
   assetPlanProblem,
@@ -64,6 +66,12 @@ function AssetStateIcon({ state }: { state: AssetState | undefined }): JSX.Eleme
     default:
       return null
   }
+}
+
+/** The link that fixes a {@link ReleaseStorageGap}, in words. */
+function gapLinkLabel(gap: ReleaseStorageGap): string {
+  if (gap.reason === 'no-profiles') return 'Set up storage'
+  return gap.fix === 'repo' ? "Open this repo's storage settings" : 'Choose your default storage'
 }
 
 function stateText(s: AssetState | undefined): string {
@@ -138,7 +146,8 @@ function NewReleaseDialog({
   const targets = externalTargets(policy, profiles)
   // Why assets have nowhere to go, and the page that fixes it (L-10).
   const gap = config && repo ? releaseStorageGap(config, repo.repoId) : null
-  const fixHref = gap?.fix === 'repo' ? `${repoHref('/repo/settings', addr)}#storage` : '/settings/storage/'
+  const shownGap = gap ?? NO_STORAGE_GAP
+  const fixHref = shownGap.fix === 'repo' ? `${repoHref('/repo/settings', addr)}#storage` : '/settings/storage/'
   const trimmedTag = tag.trim()
   // A new revision of an existing tag supersedes it (newest per tag wins): what the form leaves
   // blank is kept, so a yank or a notes edit never drops the files (D-504).
@@ -316,10 +325,10 @@ function NewReleaseDialog({
             ) : targets.length > 0 ? (
               <>Uploaded to {targets.join(', ')} and verified before the release is written. Up to 256 MiB per file.</>
             ) : (
-              <span data-testid="release-storage-gap" data-reason={gap?.reason ?? 'no-profiles'}>
-                {gap?.message ?? 'Add storage of your own (S3 or IPFS) to attach assets: they never go to Platform.'}{' '}
+              <span data-testid="release-storage-gap" data-reason={shownGap.reason}>
+                {shownGap.message}{' '}
                 <Link href={fixHref} className="text-forge-700 underline dark:text-forge-400">
-                  {gap?.reason === 'no-profiles' || gap === null ? 'Set up storage' : gap.fix === 'repo' ? "Open this repo's storage settings" : 'Choose your default storage'}
+                  {gapLinkLabel(shownGap)}
                 </Link>
               </span>
             )}
