@@ -249,17 +249,19 @@ The v2 fold takes no membership input: an `event`'s existence is its authorizati
 
 From `tools/contract-validate` (rs-dpp v4.2.0-beta.5, `PlatformVersion` 14; the same sizes as under beta.4). The signed-shape transitions carry a 65-byte recoverable signature and the contract group fields. The deploy script's dry run built the same transitions with the evo-sdk wasm, signed them, and got the same byte counts.
 
-| | forge-core | forge-collab |
+| | forge-core (C-1, version 2) | forge-collab (C-1) |
 |---|---|---|
-| Document types / indexes | 12 / 26 | 12 / 27 |
-| Serialized contract | 11,876 B | 14,181 B |
-| Signed `DataContractCreate` v1 | **12,039 B** | **14,287 B** |
-| vs `max_state_transition_size` (20,480 B, the hard limit) | 58.8% | 69.8% |
-| Registration fee (fee schedule v3: 0.1 base + 0.02/type + 0.01/index) | **0.60 DASH** | **0.61 DASH** |
+| Document types / indexes | 14 / 30 | 15 / 33 |
+| Serialized contract | 13,645 B | 19,355 B |
+| Signed transition | **13,716 B** (`DataContractUpdate`) | **19,461 B** (`DataContractCreate` v1) |
+| vs `max_state_transition_size` (20,480 B, the hard limit) | 67.0% | 95.0% |
+| Fee (fee schedule v3: 0.1 base + 0.02/type + 0.01/index) | **0.68 DASH** (an update pays the schedule too) | **0.73 DASH** |
+
+**forge-collab's size is a lifetime budget.** A `DataContractUpdate` carries the whole contract, so every later in-place update of forge-collab (a new optional property, a widened enum, a new type) must fit in the ≈ 1,000 B left under 20,480 B. Anything larger goes in a new contract (or a new registration, which orphans every collab document). forge-core has ≈ 6.7 KB left.
 
 `estimated_contract_max_serialized_size` (16,384 B) is not a limit. It is the size Drive's fee *estimation* assumes when it prices reading a stored contract (`apply_contract_with_serialization` v0). Both contracts are under it anyway.
 
-Total one-time registration fees are **1.21 DASH**, paid once by the deployer, plus storage. A new repository is three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate. `dg repo create` quotes an upper bound of 0.002 DASH before signing and reports the measured cost afterwards.
+Total one-time registration fees are **1.41 DASH** (C-1: forge-core's update 0.68, forge-collab 0.73), paid once by the deployer, plus storage. A new repository is three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate. `dg repo create` quotes an upper bound of 0.002 DASH before signing and reports the measured cost afterwards.
 
 **Measured on devnet moutai**, as the deployer's balance change. The current contracts are the forge-core of 2026-09-26 (the private-repository changes of `docs/security/private-repos.md` §13) and the forge-collab of 2026-09-27 (the review-parity revision, `docs/design/review-parity-spec.md` §3):
 
@@ -285,6 +287,9 @@ node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
 # update rules refuse:
 node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
      --network devnet --devnet-name moutai --force-new [--dry-run]
+# update the recorded forge-core in place (DataContractUpdate, next version; same id and group):
+node forge-contracts/scripts/deploy-v2.mjs --identity <deployer.identity.json> \
+     --network devnet --devnet-name moutai --update core [--dry-run]
 # would an in-place DataContractUpdate from the registered schema be accepted instead?
 git show <commit it was registered from>:forge-contracts/contracts/forge-collab.json > /tmp/registered-forge-collab.json
 cargo +1.98.1 run -q --locked --manifest-path tools/contract-validate/Cargo.toml -- \
@@ -299,8 +304,8 @@ cargo +1.98.1 run -q --locked --manifest-path tools/contract-validate/Cargo.toml
 - `--only collab` registers forge-collab alone, against the forge-core and group already recorded and found on chain; it never registers forge-core. With `--force-new` it registers a new forge-collab when the recorded one is registered from a different schema (its `schemaHash` differs, or it predates the field): the old record moves to `v2.forgeCollabSuperseded`, and the new one takes the next nonce and so a new id. A recorded contract from the current schema, or one still `broadcasting` (an interrupted run, which is completed or retried instead), is never superseded, so rerunning the same command registers nothing. This is how a schema change the update rules refuse ships. Documents written under the old contract stay under its id.
 - The script refuses a CRITICAL key that is missing, different from the identity file, or disabled on chain.
 - **Registered on devnet moutai** (protocol 14, drive 4.2.0-beta.5) by the moutai DEPLOYER `7mRv16E77y5dPzhNhBBhUMqFNMoBNTNsBeEYCAtpLnTu`. moutai's Platform chain was wiped and restarted on drive 4.2.0-beta.5 on 2026-09-27, taking every contract, identity, name and document with it. The pair was then registered fresh from the same schemas as before the reset: the private-repository changes of `docs/security/private-repos.md` §13 and the review-parity forge-collab (`docs/design/review-parity-spec.md` §3, §3.9). The ids are recorded in `deployments/devnet-moutai.json`, and the script checked on chain that the group exists, that the deployer owns it, and that both contracts are enrolled. The read fixtures were re-seeded under the new ids (`forge-contracts/scripts/seed-v2-fixture.mjs`, `seed-issues-paging.mjs`):
-  - forge-core `6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux` (nonce 1), 12,039 B signed, 0.605738 DASH
-  - forge-collab `6BbENuf3uZhkntw9DSsxQcTu9a5fATxQoSe6Ph1JxHkS` (nonce 2), 14,287 B signed, 0.616292 DASH
+  - forge-core `6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux` (nonce 1), 12,039 B signed, 0.605738 DASH; **updated in place to version 2 by C-1** on 2026-09-28 (`deploy-v2.mjs --update core`, identity-contract nonce 2, 13,716 B, 0.680826 DASH). After the update the group still lists forge-core (proved read), and a group-bound limited key registered before it pushed to forge-core after it
+  - forge-collab **`8QRpVzGbGaGTxUKp2Z7eRDfyWxs9HRGXWX9N8KREZgsJ`** (C-1, nonce 4, 19,461 B signed, 0.738030 DASH, `--only collab --force-new --same-group`), superseding `6BbENuf3uZhkntw9DSsxQcTu9a5fATxQoSe6Ph1JxHkS` (nonce 2, 14,287 B, 0.616292 DASH), whose documents stay under its id
   - contract group `FtHLFE1xLqn7s6FzS56GbY6Hh6KgLjCezNJ8HLUNJ3mc` (`dash-forge`)
   - the key-exchange copy for wallet sign-in (`deploy-key-exchange.mjs`) `CErHv5FHjnXJ1Zv6TNmtWirzELYbz8H7rinvn4UtQFZQ` (nonce 3)
   - Before the reset, the pair went through several registrations on the old chain. Each one was needed because the update rules refuse the schema change: adding a `required` system field, an index, or an `enum`, or removing `ownerRefersTo` operands. None of those contracts exists any more. The history is in git (this section before 2026-09-27).

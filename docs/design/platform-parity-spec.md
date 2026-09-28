@@ -448,6 +448,21 @@ Everything the review spec registered in #48 stays. The measured size, fee and i
 
 No `$updatedAt` sort index on issues (activity sort is a fold); no `assignee` index (`addressee` serves it); no `label` index (labels are events); no forge-core index changes (a forge-core re-registration changes the group id and every membership doc); no `stateHint` fields; no wiki/pages types. `readonly` stays off on both contracts (the owner decides at mainnet registration; it cannot be turned on later).
 
+
+### 6.4 As registered on devnet moutai (2026-09-28)
+
+| | forge-core | forge-collab |
+|---|---|---|
+| Id | `6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux` (unchanged, now version 2) | **`8QRpVzGbGaGTxUKp2Z7eRDfyWxs9HRGXWX9N8KREZgsJ`** (supersedes `6BbENuf3…`) |
+| Transition | `DataContractUpdate`, identity-contract nonce 2 | `DataContractCreate` v1, nonce 4, enrols in the same group |
+| Signed size | 13,716 B | 19,461 B of 20,480 B |
+| Cost | 0.680826 DASH | 0.738030 DASH |
+| Group `FtHLFE1xLqn7s6FzS56GbY6Hh6KgLjCezNJ8HLUNJ3mc` | still a whole-contract member (proved read after the update; a group-bound key registered before the update pushed after it) | enrolled |
+
+The live acceptance checks of §7 C-1 (`forge-contracts/scripts/verify-c1.mjs`, two identities minted for the run) passed 8 / 8: forge-core is version 2 with `runner` and `topic`; a runner's `checkRun` is accepted and, once the runner membership is deleted, the same identity's next one is refused at consensus (40120); a `completed` run without a conclusion is refused by `conclusionIfDone`; a `policy` with `requiredChecks` is accepted; a `watch` is created and deleted by values; `count` on `topic.byName` counts the tagged repo; `ranked(starBeat, oldest)` returns the seeded order.
+
+**forge-collab's size is a lifetime budget:** every future additive change to forge-collab must fit the ≈ 1 KB left (an update carries the whole contract), or go in a new contract.
+
 ---
 
 ## 7. Implementation plan
