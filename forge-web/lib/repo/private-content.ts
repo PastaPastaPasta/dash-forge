@@ -194,11 +194,17 @@ function storedPrivateDoc(type: PrivateDocType, doc: PlainDocument): StoredPriva
   }
 }
 
+/** Where an admitted private document keeps the key epoch it was sealed under. */
+export const SEALED_EPOCH = '$sealedEpoch'
+
 /** The plaintext-shaped copy of an opened document: `enc` and `epoch` dropped, fields set. */
 function asPlaintext(doc: PlainDocument, fields: DocFields): PlainDocument {
   const out: PlainDocument = { ...doc }
   delete out['enc']
   delete out['epoch']
+  // The epoch it was sealed under stays readable as `$sealedEpoch`: a PR edit re-seals under the
+  // PR's own epoch (private-repos.md §4.5), which no content field carries.
+  if (doc['epoch'] != null) out[SEALED_EPOCH] = doc['epoch']
   for (const [k, v] of Object.entries(fields) as [string, unknown][]) {
     // A config's chain link carries raw keys of other epochs: never part of the plaintext view.
     if (v === undefined || k === 'prevEpochKey' || k === 'skipEpochKey' || k === 'prevEpoch') continue

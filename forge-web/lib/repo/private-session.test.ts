@@ -31,6 +31,7 @@ import { readAllRefUpdates, readRefs } from './refs'
 import { listIssues, readReviews } from './issues'
 import { anchorVerdict, epochsAnchoredBy, needsKeepWrap, planRepair, planRotation, removalEffect, rotationCost, wrapOutcome } from './private-members'
 import { privateGate, sealedGate } from './private-content'
+import { editFields, sealContent } from './private-writes'
 import { loadPrivateSession, closePrivateSessions, type SessionSource, type SessionUnwrapper } from './private-session'
 import { assertNoPlaintext, grantMember, revokeMember } from './writes'
 import type { PackManifest, RepoRef } from './index'
@@ -621,6 +622,32 @@ describe('no plaintext reaches a private repo', () => {
       expect(a.doc['imported']).toEqual({ createdAt: 1700000000, author: 'octocat', url: 'https://github.com/acme/secret/issues/9' })
       expect(a.doc['importedAuthor']).toBeUndefined()
       expect(a.doc['importedUrl']).toBeUndefined()
+    }
+  })
+
+  it('an edit of an imported private document re-seals its provenance (editFields → sealContent)', async () => {
+    const w = await world()
+    const s = await sessionFor(w, ALICE)
+    const k0 = w.keys.get(0) as EpochKeys
+    const issue = await sealed(
+      'issue',
+      k0,
+      ALICE,
+      { number: 9 },
+      { title: 'from GitHub', importedAuthor: 'octocat', importedUrl: 'https://github.com/acme/secret/issues/9' },
+      { number: 9, imported: { createdAt: 1700000000 } },
+      20,
+    )
+    const a = await privateGate(REPO_REF, s.ctx).admit('issue', issue)
+    if (!a.ok) throw new Error('not admitted')
+    const imported = a.doc['imported'] as Record<string, unknown>
+    const out = await sealContent(k0, 'issue', ALICE, editFields('issue', { number: 9 }, { title: 'from GitHub' }, { title: 'edited' }, imported))
+    const edited = { ...issue, enc: bytesToBase64(out['enc'] as Uint8Array), imported: out['imported'] }
+    const b = await privateGate(REPO_REF, s.ctx).admit('issue', edited)
+    expect(b.ok).toBe(true)
+    if (b.ok) {
+      expect(b.doc['title']).toBe('edited')
+      expect(b.doc['imported']).toEqual({ createdAt: 1700000000, author: 'octocat', url: 'https://github.com/acme/secret/issues/9' })
     }
   })
 

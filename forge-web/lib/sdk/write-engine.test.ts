@@ -570,7 +570,8 @@ describe('a nonce refusal is never a "refused, try again" (review C1)', () => {
     } finally {
       restore()
     }
-  })
+    // Two creates, each waiting up to its 3 s confirm: past vitest's 5 s default on a slow runner.
+  }, 15_000)
 
   it('in settleUnanswered, a rebroadcast answered with the nonce text is not thrown as a refusal', async () => {
     const signed: bigint[] = []

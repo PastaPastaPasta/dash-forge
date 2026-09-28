@@ -338,6 +338,8 @@ export interface PatchInput {
   readonly sourceRefName: string
   /** The head commit, hex. */
   readonly headOid: string
+  /** Open as a draft (`patch.draft`, review-parity P6): not ready for review until marked so. */
+  readonly draft?: boolean
 }
 
 /**
@@ -362,6 +364,7 @@ export function patchData(input: PatchInput): Record<string, unknown> {
   data['sourceRefNameHash'] = refNameHash(input.sourceRefName)
   data['sourceRefName'] = input.sourceRefName
   data['headOid'] = head
+  if (input.draft === true) data['draft'] = true
   return data
 }
 

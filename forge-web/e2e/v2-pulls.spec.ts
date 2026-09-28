@@ -129,7 +129,7 @@ test('c4. a signed-out visitor keeps the draft through the sign-in sheet', async
 
 test('c5. a writer comments inline and requests changes; merge is maintainers-only on main', async ({ browser }) => {
   test.skip(prNumber === 0, 'needs the PR from c3')
-  const page = await signedIn(browser, 'COLLAB', demo('pull', `&number=${prNumber}`))
+  const page = await signedIn(browser, 'COLLAB', demo('pull', `&number=${prNumber}&tab=files`))
   await waitForRepoResolved(page)
   const line = page.getByRole('button', { name: 'Comment on new line 2 of src/main.rs' }).first()
   await expect(line).toBeVisible({ timeout: 120_000 })
@@ -140,6 +140,7 @@ test('c5. a writer comments inline and requests changes; merge is maintainers-on
 
   // main is protected in the fixture: a writer cannot move it. Since #66 (repo settings) the
   // writer gets no merge panel at all; Branch rules says why.
+  await page.getByTestId('pr-tab-conversation').click()
   await expect(page.getByTestId('protected-base')).toContainText('only maintainers can merge into it', { timeout: 60_000 })
   await expect(page.getByTestId('merge-button-state')).toHaveCount(0)
 
@@ -169,6 +170,7 @@ test('c6. the owner approves; the fold, the palette and the merge button states'
   await shot(page, 'c-merge-fast-forward')
 
   // Side by side at desktop width, the inline thread under its line.
+  await page.getByTestId('pr-tab-files').click()
   await expect(page.locator('table[data-layout="split"]').first()).toBeVisible({ timeout: 60_000 })
   await expect(page.getByTestId('inline-thread').first()).toBeVisible()
   await page.getByTestId('inline-thread').first().scrollIntoViewIfNeeded()
@@ -183,8 +185,10 @@ test('c6. the owner approves; the fold, the palette and the merge button states'
 
   // A phone: unified diff, and the merge says to use a desktop browser.
   await page.setViewportSize({ width: 390, height: 844 })
+  await page.getByTestId('pr-tab-conversation').click()
   await expect(page.getByTestId('merge-button-state')).toHaveAttribute('data-state', 'mobile')
   await expect(page.getByRole('button', { name: 'Use a desktop browser for this step' })).toBeDisabled()
+  await page.getByTestId('pr-tab-files').click()
   await expect(page.locator('table[data-layout="unified"]').first()).toBeVisible()
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth)
   expect(overflow).toBeLessThanOrEqual(1)

@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   asConsensusRefusal,
+  checkOwnRepo,
   isAlreadyExistsError,
   isNonceUsedError,
   newIntent,
@@ -17,6 +18,16 @@ import {
   pendingWriteKey,
   sameValue,
 } from './write'
+
+describe('replace: an edit is made against the document’s own repo', () => {
+  it('refuses a document whose repoId is not the repo the edit names', () => {
+    const R = '8rSFEyS7gidGdS4r8m22YtMEc519otpDNQ242Zw9c1Gb'
+    expect(() => checkOwnRepo(R, R)).not.toThrow()
+    expect(() => checkOwnRepo(R, undefined)).not.toThrow()
+    expect(() => checkOwnRepo('EA8HsynH63cw1i8xQLoARwk43sDf74HrKut1D4RV3L35', R)).toThrow(/another repo/)
+    expect(() => checkOwnRepo(undefined, R)).toThrow(/another repo/)
+  })
+})
 
 describe('replace: does the stored document hold a change?', () => {
   it('compares arrays element-wise, so a landed topics edit confirms and a retry pays nothing (M3)', () => {

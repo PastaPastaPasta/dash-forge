@@ -1,52 +1,123 @@
 'use client'
 
 /**
- * PullContent — PR detail: folded state, base/head, where the PR's objects live, the author's
- * body, the review fold, the files changed (see {@link PullDiff}) with inline threads, the
- * timeline (comments, state events and review verdicts), a comment composer, and
- * mark-as-merged / close / reopen.
+ * PullContent — a PR (review-parity spec §2.2, §4.4, §4.6, §4.7), laid out as GitHub's:
  *
- * The merge panel ({@link PullMerge}) merges code in the browser. "Mark as merged" only
- * appends a `merge` event carrying the PR head oid; the fold accepts it only from a maintainer
- * or writer, and only once the head has been a tip of the base ref, so the control says
- * whether the head is already on the base branch.
+ * - a header (title with the author's Edit, the state pill, "wants to merge", the head);
+ * - tabs with counts — Conversation · Commits · Checks · Files changed — kept in `?tab=`
+ *   (short URL `/<owner>/<repo>/pull/<n>/files`);
+ * - a right rail: Reviewers (request, re-request, dismiss), Assignees, Labels, Linked issues,
+ *   where the objects live and the checkout line;
+ * - the head-sync banner: the PR's source branch moved past the PR head → "Update PR head" (a
+ *   `headUpdate`); "new commits since your review" for a reviewer whose verdict is on an older head;
+ * - draft ↔ ready (author or member), and a draft's merge box replaced by "Ready for review".
+ *
+ * Every write names its price in a confirm dialog before it is signed, and the page re-reads the
+ * PR until the write shows (a node one block behind would otherwise hide it). Who may do what is
+ * consensus's (forge-v2.md §3): members post `event`s; the author posts `authorEvent`s of the
+ * author kinds (close/reopen, draft/ready, resolve, review requests, head updates) and edits
+ * their own PR and comments. In a private repo every edit is re-sealed (`sealEdit`); events are
+ * plaintext by design.
  */
 
-import { useEffect, useState } from 'react'
-import { Check, GitMerge, GitPullRequest, GitPullRequestClosed, ShieldCheck, X } from 'lucide-react'
-import type { RepoHome, PullThread } from '@/lib/view'
-import { ARCHIVED_REASON, loadPullThread, policyOf, pullActions, timeAgo } from '@/lib/view'
-import { addEvent, commentFirsts, createComment, createReview, eventFirsts, readViewerPermissions, repoContractIds, repoKey, reviewFirsts, setTargetState, type VerdictInput } from '@/lib/repo'
-import type { Holdings } from '@/lib/rules'
-import type { Policy, PolicyStatus } from '@/lib/rules/v2'
-import { SupersededWriteError, previewCreate } from '@/lib/sdk'
+import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
+import Link from 'next/link'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import {
+  AlertTriangle,
+  Check,
+  Eye,
+  FileDiff,
+  GitCommit,
+  GitMerge,
+  GitPullRequest,
+  GitPullRequestClosed,
+  GitPullRequestDraft,
+  HardDrive,
+  Link2,
+  ListChecks,
+  MessageSquare,
+  Pencil,
+  RefreshCw,
+  ShieldCheck,
+  Tag,
+  UserPlus,
+  X,
+} from 'lucide-react'
+
+import type { CommentView, PullThread, RepoHome, TimelineItem } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, loadPullThread, policyOf, pullActions, timeAgo } from '@/lib/view'
+import {
+  addEvent,
+  createComment,
+  commentFirsts,
+  createReview,
+  eventFirsts,
+  reviewFirsts,
+  defineLabel,
+  postTargetEvent,
+  readViewerPermissions,
+  repoContractIds,
+  repoKey,
+  setAssignee,
+  setLabel,
+  setTargetState,
+  updateComment,
+  updateTarget,
+  type VerdictInput,
+} from '@/lib/repo'
+import { checksPhrase, newestCheckRuns, readCheckRunDocs, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
+import { headSync, readBranchState } from '@/lib/repo/source-branch'
+import type { EventKind, Holdings, RefState } from '@/lib/rules'
+import { linkedIssues, type Policy, type PolicyStatus } from '@/lib/rules/v2'
+import { SupersededWriteError, previewCreate, previewCredits, previewReplace, type CostPreview as Cost } from '@/lib/sdk'
+import { pullSinceYourReview } from '@/lib/view/issues-view'
+import { headUpdatePhrases } from '@/lib/view/head-updates'
+import { inlineCommentIds } from '@/lib/view/inline-threads'
+import { prCommits, prHaveSet } from '@/lib/view/pr-commits'
+import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
+import { tipOidOf } from '@/lib/view/refs'
+import type { ReviewerCardRow } from '@/lib/view/review-fold'
+import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
+import { readUntil, retryWhileMissing } from '@/lib/view/retry'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useIntent } from '@/hooks/use-intent'
 import { useFirstWrite } from '@/hooks/use-first-write'
+import { useParam, repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Author } from '@/components/author'
-import { Timeline } from '@/components/repo/timeline'
-import { PullDiff } from '@/components/repo/pull-diff'
+import { Timeline, type CommentSlots } from '@/components/repo/timeline'
+import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
-import { MarkdownView } from '@/components/markdown-view'
+import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
 import { Oid } from '@/components/ui/oid'
 import { CopyLinkButton } from '@/components/ui/copy-link'
-import { Textarea } from '@/components/ui/input'
+import { CopyRow } from '@/components/ui/copy-row'
+import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
-import { Approvals } from '@/components/repo/approvals'
 import { InlineCommentsProvider } from '@/components/repo/inline-comments'
 import { PullMerge } from '@/components/repo/pull-merge'
-import { inlineCommentIds } from '@/lib/view/inline-threads'
-import { useParam, type RepoAddress } from '@/hooks/use-query-param'
-import { retryWhileMissing } from '@/lib/view/retry'
 import { EventValuesNote, HiddenNote } from '@/components/repo/hidden-note'
+import { EditedMarker, MarkdownEditor } from '@/components/repo/issue-bits'
+import { AssigneePicker, LabelPicker, SidebarSection } from '@/components/repo/target-rail'
+import { ReviewersCard } from '@/components/repo/reviewers-card'
+import { Approvals } from '@/components/repo/approvals'
+import { ChecksTab, CommitsTab } from '@/components/repo/pull-tabs'
+import { cn } from '@/lib/utils'
 
-type Pending = 'merge' | 'close' | 'reopen' | { review: VerdictInput; body: string } | null
+/** The PR page's tabs (`?tab=`; absent: conversation). */
+export const PR_TABS = ['conversation', 'commits', 'checks', 'files'] as const
+export type PrTab = (typeof PR_TABS)[number]
+
+/** The tab a `?tab=` value names (anything else: the conversation). */
+export function prTabOf(value: string): PrTab {
+  return (PR_TABS as readonly string[]).includes(value) ? (value as PrTab) : 'conversation'
+}
 
 const VERDICT_TEXT: Readonly<Record<VerdictInput, string>> = {
   approve: 'Approve',
@@ -54,85 +125,189 @@ const VERDICT_TEXT: Readonly<Record<VerdictInput, string>> = {
   comment: 'Comment only',
 }
 
+/** The write the confirm dialog is about to sign. */
+type Pending =
+  | { kind: 'state'; to: 'close' | 'reopen' }
+  | { kind: 'mark-merged' }
+  | { kind: 'review'; verdict: VerdictInput; body: string }
+  | { kind: 'draft'; to: 'draft' | 'ready' }
+  | { kind: 'head'; oid: string }
+  | { kind: 'request'; who: string; remove: boolean }
+  | { kind: 'dismiss'; row: ReviewerCardRow; reason: string }
+  | { kind: 'label'; label: string; remove: boolean }
+  | { kind: 'assign'; who: string; remove: boolean }
+  | { kind: 'define-label'; name: string; color: string; description: string }
+  | { kind: 'edit-pull'; title: string; body: string }
+  | { kind: 'edit-comment'; id: string; body: string }
+
 export function PullContent({ home, addr, number }: { home: RepoHome; addr: RepoAddress; number: number }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
-  const { identity, signer } = useAuth()
-  const guard = useWriteGuard()
-
   // Just opened here: a node one block behind answers "not found"; keep asking briefly.
   const justCreated = useParam('created') === '1'
+  // After a write the page re-reads until the write shows (`refresh(expect)`). Expectations
+  // accumulate until one read satisfies them all, so two quick writes are both waited for; a newer
+  // read aborts the older one's polling (useAsync discards its result anyway).
+  const expectations = useRef<((t: PullThread) => boolean)[]>([])
+  const current = useRef<{ aborted: boolean }>({ aborted: false })
   const { data, loading, error, reload } = useAsync<PullThread | null>(
-    () => retryWhileMissing(() => loadPullThread(sdk!, home.repo, number), justCreated ? 8 : 0),
-    [ready, repoKey(home.repo), number],
+    async () => {
+      current.current.aborted = true
+      const signal = { aborted: false }
+      current.current = signal
+      const want = [...expectations.current]
+      const load = () => loadPullThread(sdk!, home.repo, number, network)
+      const first = await retryWhileMissing(load, justCreated ? 8 : 0)
+      const t = first === null ? null : await readUntil(async () => (signal.aborted ? first : load()), want, { signal })
+      if (!signal.aborted && t !== null) expectations.current = expectations.current.filter((w) => !w(t))
+      return t
+    },
+    [ready, repoKey(home.repo), number, network],
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
-
-  // What the PR controls are gated on: a current maintainer or writer document (the
-  // membership cache approvals read).
-  const holdings = useAsync<Holdings | null>(
-    () => readViewerPermissions(sdk!, home.repo, identity!, network),
-    [ready, repoKey(home.repo), identity ?? '', network],
-    { enabled: ready && sdk !== null && identity !== null },
+  const refresh = useCallback(
+    (want?: (t: PullThread) => boolean) => {
+      if (want) expectations.current.push(want)
+      reload()
+    },
+    [reload],
   )
-
-  const [comment, setComment] = useState('')
-  const draft = useIntent()
-  const [posting, setPosting] = useState(false)
-  const [commentError, setCommentError] = useState<string | null>(null)
-  const [pending, setPending] = useState<Pending>(null)
-  const [diffShown, setDiffShown] = useState(false)
-
-  // Which subtrees this viewer's comment, review or event would create (D-011). Read only once
-  // the viewer turns to a write (typing, or a confirm opening); the previews are upper bounds
-  // meanwhile, and a page view costs no reads.
-  const pullId = data?.pull.id ?? ''
-  const hasComments = data ? data.timeline.some((t) => t.kind === 'comment') : undefined
-  const hasReviews = data ? data.timeline.some((t) => t.kind === 'review') : false
-  const viewerMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
-  const firstsReady = (comment !== '' || pending !== null) && ready && sdk !== null && identity !== null && pullId !== ''
-  const commentFirst = useFirstWrite(() => commentFirsts(sdk!, home.repo, pullId, identity!, hasComments), [pullId, identity ?? '', hasComments ?? ''], firstsReady)
-  const reviewFirst = useFirstWrite(() => reviewFirsts(sdk!, home.repo, identity!, hasReviews), [pullId, identity ?? '', hasReviews], firstsReady)
-  const stateType = viewerMember ? 'event' : 'authorEvent'
-  const eventFirst = useFirstWrite(() => eventFirsts(sdk!, home.repo, stateType, pullId, identity!), [pullId, identity ?? '', stateType], firstsReady)
 
   if (!Number.isFinite(number)) return <EmptyState icon={GitPullRequest} title="No PR addressed" body="Add &number= to the URL." />
   if (loading && !data) return <LoadingBlock label="Folding PR" />
-  if (error) return <ErrorState message={error} onRetry={reload} />
+  if (error && !data) return <ErrorState message={error} onRetry={reload} />
   if (!data) return <EmptyState icon={GitPullRequest} title={`PR #${number} not found`} body="No patch with that number in this repo." />
+  return <PullPage home={home} addr={addr} thread={data} refresh={refresh} refreshing={loading} />
+}
 
-  const { pull, timeline } = data
-  // Inline comments and their replies show with the diff once it has rendered; until then (or
-  // when it cannot render at all) they stay in the conversation, so none is ever hidden.
-  const inlineIds = new Set(diffShown ? inlineCommentIds(data.comments) : [])
-  const conversation = timeline.filter((t) => t.kind !== 'comment' || !inlineIds.has(t.comment.id))
-  const merged = pull.state.merged
+function PullPage({
+  home,
+  addr,
+  thread,
+  refresh,
+  refreshing,
+}: {
+  home: RepoHome
+  addr: RepoAddress
+  thread: PullThread
+  refresh: (want?: (t: PullThread) => boolean) => void
+  refreshing: boolean
+}): JSX.Element {
+  const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
+  const { identity, signer } = useAuth()
+  const guard = useWriteGuard()
+  const router = useRouter()
+  const pathname = usePathname()
+  const params = useSearchParams()
+  const tab = prTabOf(params.get('tab') ?? '')
+  const setTab = (t: PrTab): void => {
+    const q = new URLSearchParams(params.toString())
+    if (t === 'conversation') q.delete('tab')
+    else q.set('tab', t)
+    router.replace(`${pathname}?${q.toString()}`, { scroll: false })
+  }
+
+  const { pull, timeline, review } = thread
+  const repo = home.repo
+  const holdings = useAsync<Holdings | null>(
+    () => readViewerPermissions(sdk!, repo, identity!, network),
+    [ready, repoKey(repo), identity ?? '', network],
+    { enabled: ready && sdk !== null && identity !== null },
+  )
+  const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
+  const isAuthor = identity !== null && identity === pull.author
+  const archived = home.config?.archived === true
+  const composeBlock = archived ? ARCHIVED_REASON : privateComposeBlock(home)
+  const writeBlocked = composeBlock !== null
   const open = pull.state.open
-  const rules = policyOf(data.approvals)
+  const merged = pull.state.merged
+  const target = { id: pull.id, number: pull.number }
+
+  // ---- the comparison (Files changed, the tab counts, the commit list) -----------------------
+  const spec = pullSpec(pull, home)
+  const comparison = usePullComparison(repo, pull.sourceId, spec)
+  const cmp = comparison.data
+  const headReader = cmp?.sides.head ?? null
+  const { baseTipOid } = pullBase(pull, home)
+  const commits = useAsync(
+    () => prCommits(headReader!, prHaveSet({ baseTipOid, comparedBaseOid: cmp!.comparedBaseOid, fellBack: cmp!.fellBack === true, merged: pull.state.merged }), pull.headOid),
+    [cmp === null ? '' : `${cmp.comparedBaseOid}:${comparison.sidesKey}`, pull.headOid, baseTipOid],
+    { enabled: headReader !== null && cmp !== null },
+  )
+  const phrases = useAsync(
+    () => headUpdatePhrases(headReader!, pull.initialHeadOid, review.headUpdates),
+    [comparison.sidesKey, review.headUpdates.map((u) => u.id).join(','), headReader === null],
+    { enabled: headReader !== null && review.headUpdates.length > 0 },
+  )
+
+  // ---- checks on the head ---------------------------------------------------------------------
+  // Trust is by the current member set: keyed on the set itself (a swap of members re-reads).
+  const membersKnown = thread.approvals !== null
+  const memberKey = thread.members.map((m) => m.identity).sort().join(',')
+  const checks = useAsync(
+    async () => {
+      const members = new Set(memberKey === '' ? [] : memberKey.split(','))
+      return newestCheckRuns(await readCheckRunDocs(sdk!, repo, pull.headOid), (who) => members.has(who))
+    },
+    [ready, repoKey(repo), pull.headOid, memberKey],
+    { enabled: ready && sdk !== null && pull.headOid !== '' },
+  )
+  const checkSummary = checks.data === null ? null : summarizeChecks(checks.data, membersKnown)
+
+  // ---- the source branch (head sync) ----------------------------------------------------------
+  const crossRepo = pull.sourceId !== '' && pull.sourceId !== repo.repoId
+  const source = comparison.source
+  const sourceRef = source.kind === 'found' ? source.repo : null
+  // A same-repo source reads from the page's resolved branches (a branch never pushed there has
+  // no entry: unknown, not deleted); a fork's branch is resolved in the fork.
+  const sameRepoBranches = crossRepo ? '' : home.branches.map((b) => `${b.refName}:${tipOidOf(b) ?? ''}`).join(',')
+  const sourceState = useAsync<RefState | null>(
+    () =>
+      crossRepo
+        ? readBranchState(sdk!, sourceRef!, pull.sourceRefName!)
+        : Promise.resolve(repo.visibility === 'private' ? null : home.branches.find((b) => b.refName === pull.sourceRefName)?.state ?? null),
+    [ready, crossRepo ? sourceRef?.repoId ?? '' : repoKey(repo), pull.sourceRefName ?? '', pull.headOid, sameRepoBranches],
+    { enabled: ready && sdk !== null && open && pull.sourceRefName !== null && (!crossRepo || sourceRef !== null) },
+  )
+  const sync = sourceState.settled && !sourceState.error && pull.sourceRefName !== null ? headSync(pull.headOid, sourceState.data) : null
+  const canMoveHead = identity !== null && (isAuthor || isMember) && open && !writeBlocked
+  const since = pullSinceYourReview(thread, identity)
+
+  // ---- controls ---------------------------------------------------------------------------------
+  const rules = policyOf(thread.approvals)
   const actions = pullActions({
     pull,
     viewer: identity,
-    // Signed in but not yet read: withhold the controls without a "can't" message.
     holdings: identity !== null && !holdings.settled ? 'loading' : holdings.data,
     protectedPatterns: home.config?.protectedPatterns ?? [],
     policy: rules.status,
   })
-  const archived = home.config?.archived === true
   const base = pull.baseRefName || 'the base branch'
+  const canAuthorOrMember = identity !== null && (isAuthor || isMember) && !archived
+  const canMember = identity !== null && isMember && !archived && guard.disabledReason === null
 
-  const status = merged
-    ? { label: 'Merged', icon: <GitMerge className="h-4 w-4" aria-hidden />, bg: 'bg-dash-700' }
-    : !open
-      ? { label: 'Closed', icon: <GitPullRequestClosed className="h-4 w-4" aria-hidden />, bg: 'bg-danger' }
-      : { label: pull.state.draft ? 'Draft' : 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: pull.state.draft ? 'bg-anvil-500' : 'bg-verify-700' }
+  const [comment, setComment] = useState('')
+  const commentIntent = useIntent()
+  const [posting, setPosting] = useState(false)
+  const [commentError, setCommentError] = useState<string | null>(null)
+  const [pending, setPending] = useState<Pending | null>(null)
+  const [editing, setEditing] = useState<{ title: string; body: string } | null>(null)
+  const [editingComment, setEditingComment] = useState<{ id: string; body: string } | null>(null)
 
-  const commentCost = composeCost(home.repo, 'comment', { body: comment.trim() }, commentFirst)
-  const commentTooLong = composeTooLong(home.repo, 'comment', { body: comment.trim() })
-  // A private repo's comments and reviews are sealed on write; only a member holding the
-  // current key writes them (`private-compose.tsx`).
-  const composeBlock = privateComposeBlock(home)
-  const writeBlocked = composeBlock !== null
-  const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
-  const target = { id: pull.id, number: pull.number }
+  const links: MarkdownLinks = useMemo(() => ({ issueHref: (n: number) => repoHref('/repo/issue', addr, { number: String(n) }) }), [addr])
+
+  // Which subtrees this viewer's comment, review or event would create (D-011). Read only once
+  // the viewer turns to a write (typing, or a confirm opening); the previews are upper bounds
+  // meanwhile, and a page view costs no reads.
+  const hasComments = thread.comments.length > 0
+  const hasReviews = thread.reviews.length > 0
+  const firstsReady = (comment !== '' || pending !== null) && ready && sdk !== null && identity !== null
+  const commentFirst = useFirstWrite(() => commentFirsts(sdk!, repo, pull.id, identity!, hasComments), [pull.id, identity ?? '', hasComments], firstsReady)
+  const reviewFirst = useFirstWrite(() => reviewFirsts(sdk!, repo, identity!, hasReviews), [pull.id, identity ?? '', hasReviews], firstsReady)
+  const stateType = isMember ? 'event' : 'authorEvent'
+  const eventFirst = useFirstWrite(() => eventFirsts(sdk!, repo, stateType, pull.id, identity!), [pull.id, identity ?? '', stateType], firstsReady)
+
+  const commentCost = composeCost(repo, 'comment', { body: comment.trim() }, commentFirst)
+  const commentTooLong = composeTooLong(repo, 'comment', { body: comment.trim() })
 
   const postComment = async (): Promise<void> => {
     if (posting || comment.trim() === '' || commentTooLong || !guard.check(commentCost, 'collab')) return
@@ -140,15 +315,16 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
     setPosting(true)
     setCommentError(null)
     try {
-      await createComment(sdk, signer, home.repo, { targetId: pull.id, body: comment.trim(), intent: draft.intent })
+      const r = await createComment(sdk, signer, repo, { targetId: pull.id, body: comment.trim(), intent: commentIntent.intent })
       setComment('')
-      draft.renew()
-      reload()
+      commentIntent.renew()
+      refresh((t) => t.comments.some((c) => c.id === r.documentId))
     } catch (e) {
+      // Another tab of this identity wrote it: the composer's text is on chain, clear it.
       if (e instanceof SupersededWriteError) {
         setComment('')
-        draft.renew()
-        reload()
+        commentIntent.renew()
+        refresh()
       }
       setCommentError(guard.failed(e))
     } finally {
@@ -156,251 +332,815 @@ export function PullContent({ home, addr, number }: { home: RepoHome; addr: Repo
     }
   }
 
+  /** Post a review-parity event by whichever route the viewer holds. */
+  const post = async (kind: EventKind, intent: string, payload: { value?: string; oidHex?: string; refId?: string } = {}): Promise<string> => {
+    if (!sdk || !signer) throw new Error('sign in to continue')
+    const r = await postTargetEvent(sdk, signer, repo, { target, kind, author: pull.author, isMember, payload, intent })
+    return r.documentId
+  }
+
   const runPending = async (intent: string): Promise<void> => {
     if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
-    if (pending === 'merge') await addEvent(sdk, signer, home.repo, { target, kind: 'merge', oidHex: pull.headOid, intent })
-    else if (pending === 'close' || pending === 'reopen') {
-      await setTargetState(sdk, signer, home.repo, { target, kind: pending, author: pull.author, isMember, intent })
-    } else {
-      await createReview(sdk, signer, home.repo, {
-        patchId: pull.id,
-        verdict: pending.review,
-        commitOid: pull.headOid,
-        body: pending.body,
-        intent,
-      })
-      setComment('')
-      draft.renew()
+    const p = pending
+    switch (p.kind) {
+      case 'state':
+        await setTargetState(sdk, signer, repo, { target, kind: p.to, author: pull.author, isMember, intent })
+        refresh((t) => t.pull.state.open === (p.to === 'reopen'))
+        return
+      case 'mark-merged':
+        await addEvent(sdk, signer, repo, { target, kind: 'merge', oidHex: pull.headOid, intent })
+        refresh()
+        return
+      case 'review': {
+        const r = await createReview(sdk, signer, repo, { patchId: pull.id, verdict: p.verdict, commitOid: pull.headOid, body: p.body, intent })
+        setComment('')
+        commentIntent.renew()
+        refresh((t) => t.reviews.some((x) => x.id === r.documentId))
+        return
+      }
+      case 'draft':
+        await post(p.to, intent)
+        refresh((t) => t.pull.state.draft === (p.to === 'draft'))
+        return
+      case 'head':
+        await post('headUpdate', intent, { oidHex: p.oid })
+        refresh((t) => t.pull.headOid === p.oid)
+        return
+      case 'request':
+        await post(p.remove ? 'reviewRequestRemove' : 'reviewRequest', intent, { refId: p.who })
+        refresh((t) => t.review.requestedReviewers.some((r) => r.identity === p.who) !== p.remove)
+        return
+      case 'dismiss':
+        if (p.row.dismissId === null) throw new Error('no review of theirs counts on this head')
+        await post('reviewDismiss', intent, { refId: p.row.dismissId, ...(p.reason ? { value: p.reason } : {}) })
+        refresh((t) => t.review.dismissedReviews.some((d) => d.reviewId === p.row.dismissId))
+        return
+      case 'label':
+        await setLabel(sdk, signer, repo, { target, label: p.label, add: !p.remove, intent })
+        refresh((t) => t.pull.state.labels.includes(p.label) !== p.remove)
+        return
+      case 'assign':
+        await setAssignee(sdk, signer, repo, { target, assignee: p.who, assign: !p.remove, intent })
+        refresh((t) => t.pull.state.assignees.includes(p.who) !== p.remove)
+        return
+      case 'define-label':
+        await defineLabel(sdk, signer, repo, { name: p.name, color: p.color, description: p.description, intent: `${intent}:def` })
+        await setLabel(sdk, signer, repo, { target, label: p.name, add: true, intent: `${intent}:apply` })
+        refresh((t) => t.pull.state.labels.includes(p.name))
+        return
+      case 'edit-pull': {
+        const changes: { title?: string; body?: string } = {}
+        if (p.title !== pull.title) changes.title = p.title
+        if (p.body !== pull.body) changes.body = p.body
+        await updateTarget(sdk, signer, repo, {
+          type: 'patch',
+          id: pull.id,
+          ...changes,
+          expectedRevision: BigInt(pull.revision),
+          seal: {
+            current: { title: pull.title, body: pull.body, baseRefName: pull.baseRefName, sourceRefName: pull.sourceRefName ?? undefined },
+            bind: { number: pull.number },
+            ...(pull.epoch !== null ? { patchEpoch: pull.epoch } : {}),
+            imported: pull.importedRaw ?? null,
+          },
+        })
+        setEditing(null)
+        refresh((t) => t.pull.title === p.title && t.pull.body === p.body)
+        return
+      }
+      case 'edit-comment': {
+        const c = thread.comments.find((x) => x.id === p.id)
+        await updateComment(sdk, signer, repo, {
+          id: p.id,
+          body: p.body,
+          ...(c?.revision !== undefined ? { expectedRevision: BigInt(c.revision) } : {}),
+          seal: { current: { body: c?.body ?? '', path: c?.anchor?.path }, bind: { targetId: pull.id }, imported: c?.importedRaw ?? null },
+        })
+        setEditingComment(null)
+        refresh((t) => t.comments.some((x) => x.id === p.id && x.body === p.body))
+        return
+      }
     }
-    reload()
   }
-  const pendingCost =
-    pending !== null && typeof pending === 'object'
-      ? composeCost(home.repo, 'review', { body: pending.body }, reviewFirst)
-      : previewCreate(pending === 'merge' || isMember ? 'event' : 'authorEvent', {}, eventFirst)
+
+  const eventCost = previewCreate(stateType, {}, eventFirst)
+  const pendingCost = ((): Cost => {
+    if (pending === null) return eventCost
+    switch (pending.kind) {
+      case 'review':
+        return composeCost(repo, 'review', { body: pending.body }, reviewFirst)
+      case 'mark-merged':
+      case 'label':
+      case 'assign':
+        return previewCreate('event', pending.kind === 'label' ? { value: pending.label } : {})
+      case 'dismiss':
+        return previewCreate('event', { value: pending.reason })
+      case 'define-label':
+        return previewCredits(
+          previewCreate('label', { name: pending.name, color: pending.color, description: pending.description }).credits + previewCreate('event', { value: pending.name }).credits,
+        )
+      case 'edit-pull':
+        return previewReplace('patch', { title: pending.title, body: pending.body })
+      case 'edit-comment':
+        return previewReplace('comment', { body: pending.body })
+      default:
+        return eventCost
+    }
+  })()
+  const confirm = confirmText(pending, pull.number, isMember, pull.headOid)
+
+  // ---- conversation ------------------------------------------------------------------------------
+  // Replies to an inline thread show under its root, not on their own.
+  const inlineIds = useMemo(() => new Set(inlineCommentIds(thread.comments)), [thread.comments])
+  const repliesOf = useMemo(() => {
+    // Under the thread's ROOT (a reply to a reply belongs to the same thread).
+    const byId = new Map(thread.comments.map((c) => [c.id, c]))
+    const rootOf = (id: string): string => {
+      let cur = byId.get(id)
+      const seen = new Set<string>()
+      while (cur !== undefined && cur.replyTo !== null && !seen.has(cur.id)) {
+        seen.add(cur.id)
+        const parent = byId.get(cur.replyTo)
+        if (parent === undefined) break
+        cur = parent
+      }
+      return cur?.id ?? id
+    }
+    const m = new Map<string, CommentView[]>()
+    for (const c of thread.comments) {
+      if (c.replyTo === null || !inlineIds.has(c.id)) continue
+      const root = rootOf(c.id)
+      m.set(root, [...(m.get(root) ?? []), c])
+    }
+    return m
+  }, [thread.comments, inlineIds])
+  const conversation = timeline.filter((t) => !(t.kind === 'comment' && t.comment.replyTo !== null && inlineIds.has(t.comment.id)))
+  const resolved = new Set(review.resolvedThreads)
+  const headWords = phrases.data
+  const eventText = (e: TimelineItem & { kind: 'event' }): string | null => (e.event.kind === 'headUpdate' && e.event.id ? headWords?.get(e.event.id) ?? null : null)
+
+  const counts = {
+    conversation: thread.comments.length + thread.reviews.length,
+    // A walk that stopped at its limit has no exact count: "many".
+    commits: commits.data === null ? null : commits.data.total ?? ('many' as const),
+    // The runs that count (the summary's total), as the checks row says.
+    checks: checkSummary?.total ?? null,
+    files: cmp?.changes.length ?? null,
+  }
+  const status = merged
+    ? { label: 'Merged', icon: <GitMerge className="h-4 w-4" aria-hidden />, bg: 'bg-dash-700' }
+    : !open
+      ? { label: 'Closed', icon: <GitPullRequestClosed className="h-4 w-4" aria-hidden />, bg: 'bg-danger' }
+      : pull.state.draft
+        ? { label: 'Draft', icon: <GitPullRequestDraft className="h-4 w-4" aria-hidden />, bg: 'bg-anvil-600' }
+        : { label: 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: 'bg-verify-700' }
+  const linked = linkedIssues(pull.body)
+  const checkout = checkoutCommand(repo, pull.number)
+  const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
+  const shortRef = (r: string): string => r.replace(/^refs\/heads\//, '')
 
   return (
-    <div className="mx-auto max-w-3xl space-y-5">
+    <div className="mx-auto max-w-6xl space-y-4" data-testid="pull-page">
+      {/* Header */}
       <div>
-        <h1 className="text-2xl">
-          {pull.title || '(untitled)'} <span className="font-mono font-normal text-anvil-500 dark:text-anvil-400">#{pull.number}</span>
-        </h1>
+        {editing ? (
+          <div className="space-y-2">
+            <Field label="Title" htmlFor="edit-pr-title">
+              <Input id="edit-pr-title" value={editing.title} onChange={(e) => setEditing({ ...editing, title: e.target.value })} maxLength={256} />
+            </Field>
+            <div className="flex gap-2">
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={editing.title.trim() === '' || (editing.title.trim() === pull.title && editing.body === pull.body) || utf8Length(editing.body) > BODY_MAX || guard.disabledReason !== null}
+                onClick={() => setPending({ kind: 'edit-pull', title: editing.title.trim(), body: editing.body })}
+              >
+                Save
+              </Button>
+              <Button variant="ghost" size="sm" onClick={() => setEditing(null)}>
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-start gap-3">
+            <h1 className="min-w-0 flex-1 break-words text-2xl">
+              {pull.title || '(untitled)'} <span className="font-mono font-normal text-anvil-500 dark:text-anvil-400">#{pull.number}</span>
+            </h1>
+            {isAuthor ? (
+              <Button variant="outline" size="sm" onClick={() => setEditing({ title: pull.title, body: pull.body })} disabled={writeBlocked} title={composeBlock ?? undefined}>
+                <Pencil className="h-3.5 w-3.5" aria-hidden /> Edit
+              </Button>
+            ) : null}
+          </div>
+        )}
         <div className="mt-2 flex flex-wrap items-center gap-2 text-dense">
-          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium text-white ${status.bg}`}>
+          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[12px] font-medium text-white ${status.bg}`} data-testid="pr-state">
             {status.icon}
             {status.label}
           </span>
           <span className="text-anvil-500 dark:text-anvil-400">
-            <Author identityId={pull.author} link={false} /> wants to merge into <span className="font-mono">{pull.baseRefName || '?'}</span> · {timeAgo(pull.createdAt)}
+            <Author identityId={pull.author} link={false} /> wants to merge into <span className="font-mono">{shortRef(pull.state.baseRef ?? pull.baseRefName) || '?'}</span>
+            {pull.sourceRefName ? (
+              <>
+                {' '}
+                from <span className="font-mono">{crossRepo && sourceRef ? `${sourceRef.name}:` : ''}{shortRef(pull.sourceRefName)}</span>
+              </>
+            ) : null}{' '}
+            · {timeAgo(pull.createdAt)}
           </span>
-          {pull.headOid ? <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400">head <Oid value={pull.headOid} chars={9} /></span> : null}
+          {pull.headOid ? (
+            <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400" data-testid="pr-head">
+              head <Oid value={pull.headOid} chars={9} />
+            </span>
+          ) : null}
+          {refreshing ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Refreshing…</span> : null}
           <CopyLinkButton repo={addr} target={{ kind: 'pull', number: pull.number }} className="ml-auto" />
         </div>
-        {/* Where the PR's objects actually live. Without this a reviewer has a commit id
-            with no stated home: a PR's head normally sits in the contributor's own repo, and
-            the patch document's source pointer (sourceRepoId) is the only pointer to it. */}
-        {pull.sourceId ? (
-          <div className="mt-2 rounded-md border border-anvil-200 bg-anvil-50 px-3 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
-            <span className="text-anvil-500 dark:text-anvil-400">
-              {pull.sourceId === home.repo.repoId ? (
-                <>Objects live in this repo</>
-              ) : (
-                <>
-                  Objects live in repo{' '}
-                  <span className="font-mono break-all">{pull.sourceId}</span>
-                </>
-              )}
-              {pull.sourceRefName ? <> on <span className="font-mono">{pull.sourceRefName}</span></> : null}
-            </span>
-            <div className="mt-1 font-mono text-[12px] text-anvil-500 dark:text-anvil-400 break-all">
-              {checkoutCommand(home.repo, pull.number)}
-            </div>
-          </div>
-        ) : null}
-        {data.approvals !== null ? (
-          <div className="mt-3">
-            <Approvals approvals={data.approvals} headOid={pull.headOid} />
-          </div>
-        ) : null}
       </div>
 
-      <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
-        <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
-          <Author identityId={pull.author} />
-          <span className="text-anvil-500 dark:text-anvil-400">proposed {timeAgo(pull.createdAt)}</span>
+      {/* Banners */}
+      {canMoveHead && sync?.kind === 'ahead' ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-forge-500/40 bg-forge-500/5 px-4 py-3 text-dense" data-testid="head-sync-banner">
+          <RefreshCw className="h-4 w-4 text-forge-700 dark:text-forge-400" aria-hidden />
+          <span className="min-w-0 flex-1">
+            {isAuthor ? 'Your branch' : 'The source branch'} <span className="font-mono">{shortRef(pull.sourceRefName ?? '')}</span> is at{' '}
+            <Oid value={sync.tip} chars={7} copyable={false} />, but this PR is at <Oid value={pull.headOid} chars={7} copyable={false} />.
+          </span>
+          <CostPreview cost={eventCost} />
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={guard.disabledReason !== null}
+            onClick={() => {
+              if (guard.check(eventCost, 'collab')) setPending({ kind: 'head', oid: sync.tip })
+            }}
+          >
+            Update PR head
+          </Button>
         </div>
-        <div className="px-4 py-3">
-          {pull.body ? <MarkdownView source={pull.body} /> : <p className="italic text-anvil-500 dark:text-anvil-400">No description.</p>}
+      ) : null}
+      {open && sync?.kind === 'deleted' && pull.sourceRefName ? (
+        <p className="rounded-lg border border-caution/40 bg-caution/5 px-4 py-2 text-dense text-anvil-700 dark:text-anvil-200" data-testid="source-deleted">
+          <AlertTriangle className="mr-1.5 inline h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
+          The source branch <span className="font-mono">{shortRef(pull.sourceRefName)}</span> no longer exists; the PR keeps its head.
+        </p>
+      ) : null}
+      {since !== null && open ? (
+        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-300 bg-anvil-50 px-4 py-3 text-dense dark:border-anvil-700 dark:bg-anvil-900" data-testid="since-your-review">
+          <Eye className="h-4 w-4 text-anvil-600 dark:text-anvil-300" aria-hidden />
+          <span className="min-w-0 flex-1">
+            New commits since your review: you reviewed <Oid value={since.reviewedOid} chars={7} copyable={false} />
+            {since.headUpdates > 0 ? `, and the head moved ${since.headUpdates} time${since.headUpdates === 1 ? '' : 's'} since` : ''}; it is now{' '}
+            <Oid value={since.headOid} chars={7} copyable={false} />.
+          </span>
+          <Button size="sm" variant="outline" onClick={() => setTab('files')}>
+            Re-review
+          </Button>
         </div>
-      </div>
-
-      <PullMerge
-        repo={home.repo}
-        home={home}
-        pull={pull}
-        canMerge={actions.canMarkMerged && !archived}
-        isMaintainer={holdings.data?.maintain === true}
-        checkout={checkoutCommand(home.repo, pull.number)}
-        onMerged={reload}
-      />
-
-      {open && (actions.baseProtected || rules.status !== null) ? (
-        <BranchRules
-          base={pull.baseRefName}
-          baseProtected={actions.baseProtected}
-          policy={rules.policy}
-          status={rules.status}
-        />
       ) : null}
 
-      <PullDiff
-        pull={pull}
-        home={home}
-        wrap={(comparison, diff) => (
-          <InlineCommentsProvider
-            repo={home.repo}
-            writeBlock={composeBlock}
-            pullId={pull.id}
-            headOid={pull.headOid}
-            comments={data.comments}
-            changedPaths={new Set(comparison.changes.map((c) => c.path))}
-            onPosted={reload}
-          >
-            <DiffMounted onChange={setDiffShown} />
-            {diff}
-          </InlineCommentsProvider>
-        )}
-      />
+      {/* Tabs */}
+      <div role="tablist" aria-label="Pull request" className="flex gap-1 overflow-x-auto border-b border-anvil-200 dark:border-anvil-800">
+        <TabButton id="conversation" current={tab} onSelect={setTab} icon={<MessageSquare className="h-4 w-4" aria-hidden />} label="Conversation" count={counts.conversation} />
+        <TabButton id="commits" current={tab} onSelect={setTab} icon={<GitCommit className="h-4 w-4" aria-hidden />} label="Commits" count={counts.commits} />
+        <TabButton id="checks" current={tab} onSelect={setTab} icon={<ListChecks className="h-4 w-4" aria-hidden />} label="Checks" count={counts.checks} />
+        <TabButton id="files" current={tab} onSelect={setTab} icon={<FileDiff className="h-4 w-4" aria-hidden />} label="Files changed" count={counts.files} />
+      </div>
 
-      {conversation.length > 0 ? <Timeline items={conversation} /> : null}
-      <HiddenNote hidden={0} what="comments and reviews" home={home} by={data.hidden} />
-      <EventValuesNote counts={data.eventValues} />
+      <div className={cn('grid gap-6', tab !== 'files' && 'lg:grid-cols-[minmax(0,1fr)_16rem]')}>
+        <div role="tabpanel" aria-label={tab} className="min-w-0 space-y-4">
+          {tab === 'conversation' ? (
+            <>
+              {/* Description */}
+              <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
+                <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
+                  <Author identityId={pull.author} />
+                  <span className="text-anvil-500 dark:text-anvil-400">opened this {timeAgo(pull.createdAt)}</span>
+                  <EditedMarker createdAt={pull.createdAt} updatedAt={pull.updatedAt} />
+                </div>
+                <div className="px-4 py-3">
+                  {editing ? (
+                    <MarkdownEditor id="edit-pr-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} />
+                  ) : pull.body ? (
+                    <MarkdownView source={pull.body} links={links} />
+                  ) : (
+                    <p className="italic text-anvil-500 dark:text-anvil-400">No description.</p>
+                  )}
+                </div>
+              </div>
 
-      <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
-        <h3 className="mb-2 text-dense font-medium">Review</h3>
-        {composeBlock !== null ? (
-          <PrivateComposeNote reason={composeBlock} />
-        ) : (
-          <>
-            <Textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Leave a review comment…" />
-            <SealedLimit repo={home.repo} kind="comment" text={comment.trim()} />
-            <BodyCounter repo={home.repo} text={comment.trim()} field="comment" />
-          </>
-        )}
-        <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-          {writeBlocked ? <span /> : <CostPreview cost={commentCost} />}
-          <div className="flex flex-wrap items-center gap-2">
-            {actions.canCloseReopen ? (
-              <Button variant="outline" onClick={() => setPending(open ? 'close' : 'reopen')} disabled={!signer || guard.disabledReason !== null || archived}>
-                {open ? 'Close' : 'Reopen'}
-              </Button>
-            ) : null}
-            {actions.canMarkMerged ? (
-              <Button
-                variant={actions.policyOverride ? 'danger' : 'primary'}
-                onClick={() => setPending('merge')}
-                disabled={!signer || guard.disabledReason !== null || archived}
-                title={archived ? ARCHIVED_REASON : undefined}
-              >
-                <GitMerge className="h-3.5 w-3.5" aria-hidden /> {actions.policyOverride ? 'Merge anyway (policy override)' : 'Mark as merged'}
-              </Button>
-            ) : null}
-            {writeBlocked ? null : (
-              <Button
-                variant="primary"
-                onClick={postComment}
-                loading={posting}
-                disabled={comment.trim() === '' || commentTooLong || guard.disabledReason !== null || archived}
-                title={guard.disabledReason ?? undefined}
-              >
-                {identity ? 'Comment' : 'Sign in'}
-              </Button>
-            )}
-          </div>
+              {timeline.length > 0 ? (
+                <Timeline
+                  items={conversation}
+                  links={links}
+                  eventText={(e) => eventText({ kind: 'event', at: e.createdAt, event: e })}
+                  renderComment={(item) =>
+                    commentSlots({
+                      item,
+                      viewer: identity,
+                      editing: editingComment,
+                      disabled: writeBlocked || guard.disabledReason !== null,
+                      onEdit: setEditingComment,
+                      onSave: (id, body) => setPending({ kind: 'edit-comment', id, body }),
+                      links,
+                      replies: repliesOf.get(item.comment.id) ?? [],
+                      resolved: resolved.has(item.comment.id),
+                      outdated: item.comment.anchor !== null && item.comment.anchor.commitOid !== pull.headOid,
+                      onShowFiles: () => setTab('files'),
+                    })
+                  }
+                />
+              ) : null}
+              <HiddenNote hidden={0} what="comments and reviews" home={home} by={thread.hidden} />
+              <EventValuesNote counts={thread.eventValues} />
+
+              {/* Merge box */}
+              {open && pull.state.draft ? (
+                <section aria-label="Draft" className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-300 px-4 py-3 dark:border-anvil-700" data-testid="draft-box">
+                  <GitPullRequestDraft className="h-5 w-5 text-anvil-500 dark:text-anvil-400" aria-hidden />
+                  <div className="min-w-0 flex-1 text-dense">
+                    <p className="font-medium">This pull request is still a draft</p>
+                    <p className="text-anvil-500 dark:text-anvil-400">It can be reviewed, but not merged until it is marked ready.</p>
+                  </div>
+                  {canAuthorOrMember ? (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      disabled={guard.disabledReason !== null}
+                      onClick={() => {
+                        if (guard.check(eventCost, 'collab')) setPending({ kind: 'draft', to: 'ready' })
+                      }}
+                    >
+                      Ready for review
+                    </Button>
+                  ) : null}
+                </section>
+              ) : (
+                <>
+                  {thread.approvals !== null ? <Approvals approvals={thread.approvals} headOid={pull.headOid} /> : null}
+                  <ChecksRow summary={checkSummary} headOid={pull.headOid} onOpen={() => setTab('checks')} />
+                  <PullMerge
+                    repo={repo}
+                    home={home}
+                    pull={pull}
+                    canMerge={actions.canMarkMerged && !archived}
+                    isMaintainer={holdings.data?.maintain === true}
+                    checkout={checkout}
+                    onMerged={() => refresh((t) => t.pull.state.merged)}
+                  />
+                  {open && (actions.baseProtected || rules.status !== null) ? (
+                    <BranchRules base={pull.baseRefName} baseProtected={actions.baseProtected} policy={rules.policy} status={rules.status} />
+                  ) : null}
+                </>
+              )}
+
+              {/* Composer */}
+              <div className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
+                <h3 className="mb-2 text-dense font-medium">Add a comment</h3>
+                {composeBlock !== null ? (
+                  <PrivateComposeNote reason={composeBlock} />
+                ) : (
+                  <>
+                    <MarkdownEditor id="pr-comment" label="Comment" value={comment} onChange={setComment} placeholder="Leave a comment (markdown supported)…" links={links} />
+                    <SealedLimit repo={repo} kind="comment" text={comment.trim()} />
+                    <BodyCounter repo={repo} text={comment.trim()} field="comment" />
+                  </>
+                )}
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                  {writeBlocked ? <span /> : <CostPreview cost={commentCost} />}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {actions.canCloseReopen ? (
+                      <Button variant="outline" onClick={() => setPending({ kind: 'state', to: open ? 'close' : 'reopen' })} disabled={!signer || guard.disabledReason !== null || archived}>
+                        {open ? 'Close pull request' : 'Reopen pull request'}
+                      </Button>
+                    ) : null}
+                    {actions.canMarkMerged && !pull.state.draft ? (
+                      <Button
+                        variant={actions.policyOverride ? 'danger' : 'outline'}
+                        onClick={() => setPending({ kind: 'mark-merged' })}
+                        disabled={!signer || guard.disabledReason !== null || archived}
+                        title={archived ? ARCHIVED_REASON : undefined}
+                      >
+                        <GitMerge className="h-3.5 w-3.5" aria-hidden /> {actions.policyOverride ? 'Merge anyway (policy override)' : 'Mark as merged'}
+                      </Button>
+                    ) : null}
+                    {writeBlocked ? null : (
+                      <Button
+                        variant="primary"
+                        onClick={postComment}
+                        loading={posting}
+                        disabled={comment.trim() === '' || commentTooLong || guard.disabledReason !== null}
+                        title={guard.disabledReason ?? undefined}
+                      >
+                        {identity ? 'Comment' : 'Sign in to comment'}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+                {open && identity !== null && pull.headOid && !writeBlocked ? (
+                  <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-anvil-100 pt-3 dark:border-anvil-850">
+                    <span className="text-dense text-anvil-500 dark:text-anvil-400">
+                      Review head <span className="font-mono">{pull.headOid.slice(0, 9)}</span>:
+                    </span>
+                    {(Object.keys(VERDICT_TEXT) as VerdictInput[]).map((v) => (
+                      <Button
+                        key={v}
+                        size="sm"
+                        variant={v === 'approve' ? 'primary' : 'outline'}
+                        disabled={guard.disabledReason !== null}
+                        onClick={() => {
+                          if (!commentTooLong && guard.check(composeCost(repo, 'review', { body: comment.trim() }, reviewFirst), 'collab')) setPending({ kind: 'review', verdict: v, body: comment.trim() })
+                        }}
+                      >
+                        {VERDICT_TEXT[v]}
+                      </Button>
+                    ))}
+                    {!isMember && holdings.settled ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Only approvals from maintainers and writers count.</span> : null}
+                  </div>
+                ) : null}
+                {actions.canMarkMerged && !pull.state.draft ? (
+                  <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
+                    {actions.markCountsNow
+                      ? `The head commit is already on ${base}, so a merge mark counts as soon as it lands.`
+                      : `"Mark as merged" records a merge done elsewhere: it only counts once the head commit is on ${base}. Merge it above to move the branch.`}
+                  </p>
+                ) : actions.mergeHint !== null ? (
+                  <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{actions.mergeHint}</p>
+                ) : null}
+                {commentError ? (
+                  <div role="alert" className="mt-2 break-words rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400">
+                    {commentError}
+                  </div>
+                ) : null}
+              </div>
+            </>
+          ) : tab === 'commits' ? (
+            <CommitsTab
+              commits={commits.data}
+              error={comparison.error ?? commits.error}
+              loading={commits.loading}
+              addr={addr}
+              sourceAddr={sourceAddr}
+              unavailable={
+                pull.headOid === ''
+                  ? 'This PR does not record a head commit.'
+                  : comparison.waiting === null && comparison.sides === null
+                    ? "Neither the base repo nor the repo holding the PR's head could be loaded, so there are no commits to list."
+                    : null
+              }
+              onRetry={() => (comparison.error ? comparison.reload() : commits.reload())}
+            />
+          ) : tab === 'checks' ? (
+            <ChecksTab runs={checks.data} summary={checkSummary} headOid={pull.headOid} error={checks.error} onRetry={checks.reload} />
+          ) : (
+            <ComparisonView
+              state={comparison}
+              noHead="This PR does not record a head commit."
+              wrap={(c, diff) => (
+                <InlineCommentsProvider
+                  repo={repo}
+                  writeBlock={composeBlock}
+                  pullId={pull.id}
+                  headOid={pull.headOid}
+                  comments={thread.comments}
+                  changedPaths={new Set(c.changes.map((x) => x.path))}
+                  onPosted={() => refresh()}
+                >
+                  {diff}
+                </InlineCommentsProvider>
+              )}
+            />
+          )}
         </div>
-        {open && identity !== null && pull.headOid && !writeBlocked ? (
-          <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-anvil-100 pt-3 dark:border-anvil-850">
-            <span className="text-dense text-anvil-500 dark:text-anvil-400">
-              Review head <span className="font-mono">{pull.headOid.slice(0, 9)}</span>:
-            </span>
-            {(Object.keys(VERDICT_TEXT) as VerdictInput[]).map((v) => (
-              <Button
-                key={v}
-                size="sm"
-                variant={v === 'approve' ? 'primary' : 'outline'}
-                disabled={commentTooLong || guard.disabledReason !== null || archived}
-                onClick={() => {
-                  if (!commentTooLong && guard.check(composeCost(home.repo, 'review', { body: comment.trim() }, reviewFirst), 'collab')) setPending({ review: v, body: comment.trim() })
+
+        {tab !== 'files' ? (
+          <aside className="space-y-4 text-dense" aria-label="Pull request details">
+            <SidebarSection title="Reviewers" icon={Eye}>
+              <ReviewersCard
+                rows={thread.reviewers}
+                members={thread.members}
+                author={pull.author}
+                headOid={pull.headOid}
+                membersKnown={thread.approvals !== null}
+                canRequest={canAuthorOrMember && open && guard.disabledReason === null}
+                canDismiss={canMember && open}
+                onRequest={(who, remove) => {
+                  if (guard.check(eventCost, 'collab')) setPending({ kind: 'request', who, remove })
                 }}
+                onDismiss={(row, reason) => {
+                  if (guard.check(previewCreate('event', { value: reason }, eventFirst), 'collab')) setPending({ kind: 'dismiss', row, reason })
+                }}
+              />
+            </SidebarSection>
+            <SidebarSection title="Assignees" icon={UserPlus}>
+              <AssigneePicker
+                assignees={pull.state.assignees}
+                members={thread.members.map((m) => m.identity)}
+                canEdit={canMember}
+                onToggle={(who, remove) => setPending({ kind: 'assign', who, remove })}
+              />
+            </SidebarSection>
+            <SidebarSection title="Labels" icon={Tag}>
+              <LabelPicker
+                applied={pull.state.labels}
+                defs={thread.labels}
+                byName={new Map(thread.labels.map((l) => [l.name, l]))}
+                canEdit={canMember}
+                onToggle={(label, remove) => setPending({ kind: 'label', label, remove })}
+                onDefine={(name, color, description) => setPending({ kind: 'define-label', name, color, description })}
+              />
+            </SidebarSection>
+            <SidebarSection title="Linked issues" icon={Link2}>
+              {linked.length === 0 ? (
+                <p className="text-anvil-500 dark:text-anvil-400">None. &ldquo;Fixes #12&rdquo; in the description links one.</p>
+              ) : (
+                <ul className="space-y-1" data-testid="linked-issues">
+                  {linked.map((n) => (
+                    <li key={n}>
+                      <Link href={repoHref('/repo/issue', addr, { number: String(n) })} className="text-forge-700 underline underline-offset-2 dark:text-forge-400">
+                        #{n}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </SidebarSection>
+            {open && canAuthorOrMember && !pull.state.draft ? (
+              <button
+                type="button"
+                onClick={() => {
+                  if (guard.check(eventCost, 'collab')) setPending({ kind: 'draft', to: 'draft' })
+                }}
+                className="text-[12px] text-anvil-500 underline-offset-2 hover:text-forge-700 hover:underline dark:text-anvil-400 dark:hover:text-forge-400"
               >
-                {VERDICT_TEXT[v]}
-              </Button>
-            ))}
-            {!isMember && holdings.settled ? (
-              <span className="text-[12px] text-anvil-500 dark:text-anvil-400">Only approvals from maintainers and writers count.</span>
+                Convert to draft
+              </button>
             ) : null}
-          </div>
-        ) : null}
-        {actions.canMarkMerged ? (
-          <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-            {actions.markCountsNow
-              ? `The head commit is already on ${base}, so a merge mark counts as soon as it lands.`
-              : `A merge mark only counts once the head commit is on ${base}; merge it above, or push it there first.`}
-          </p>
-        ) : actions.mergeHint !== null ? (
-          <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{actions.mergeHint}</p>
-        ) : null}
-        {commentError ? (
-          <div className="mt-2 rounded-md border border-danger/30 bg-danger/5 px-3 py-2 text-dense text-danger-700 dark:text-danger-400 break-words">{commentError}</div>
+            <SidebarSection title="Where it lives" icon={HardDrive}>
+              <p className="text-anvil-500 dark:text-anvil-400">
+                {!crossRepo ? (
+                  <>Objects live in this repo</>
+                ) : sourceRef && sourceAddr ? (
+                  <>
+                    Objects live in{' '}
+                    <Link href={repoHref('/repo', sourceAddr)} className="text-forge-700 underline underline-offset-2 dark:text-forge-400">
+                      {sourceRef.name}
+                    </Link>
+                  </>
+                ) : (
+                  <>
+                    Objects live in repo <span className="break-all font-mono">{pull.sourceId}</span>
+                  </>
+                )}
+                {pull.sourceRefName ? (
+                  <>
+                    {' '}
+                    on <span className="font-mono">{shortRef(pull.sourceRefName)}</span>
+                  </>
+                ) : null}
+              </p>
+              <CopyRow text={checkout} className="mt-2" />
+            </SidebarSection>
+            {holdings.settled && holdings.data === null && identity !== null ? (
+              <p className="text-[12px] text-anvil-500 dark:text-anvil-400">Couldn&apos;t read this repo&apos;s {ACL_NAME}, so your permissions are unknown.</p>
+            ) : null}
+          </aside>
         ) : null}
       </div>
 
-      <ConfirmDialog
-        open={pending !== null}
-        onClose={() => setPending(null)}
-        title={
-          pending !== null && typeof pending === 'object'
-            ? `${VERDICT_TEXT[pending.review]} PR #${pull.number}`
-            : pending === 'merge'
-              ? `Mark PR #${pull.number} as merged`
-              : pending === 'close'
-                ? `Close PR #${pull.number}`
-                : `Reopen PR #${pull.number}`
-        }
-        description={
-          pending === 'merge'
-            ? `${actions.policyOverride ? 'Overrides the branch policy (a client rule; the merge event records who merged). ' : ''}Appends a merge event naming ${pull.headOid.slice(0, 9)}. This does not merge any code. ${
-                actions.markCountsNow
-                  ? `That commit is already on ${base}, so the PR will show as merged.`
-                  : `That commit is not on ${base} yet, so the PR stays open until a push puts it there. If ${base} has moved on, the commit that lands will be a merge commit, not this head; record that merge with the CLI instead (dg pr merge --merge-oid).`
-              }`
-            : pending !== null && typeof pending === 'object'
-              ? `Records a ${VERDICT_TEXT[pending.review].toLowerCase()} review on ${pull.headOid.slice(0, 9)}${pending.body ? ', with your comment as its body' : ''}. New commits make it stale.`
-              : 'Appends a state event to the append-only log.'
-        }
-        cost={pendingCost}
-        confirmLabel={
-          pending !== null && typeof pending === 'object'
-            ? 'Sign & submit review'
-            : pending === 'merge'
-              ? 'Sign & mark merged'
-              : pending === 'close'
-                ? 'Close PR'
-                : 'Reopen PR'
-        }
-        onConfirm={runPending}
-      />
+      <ConfirmDialog open={pending !== null} onClose={() => setPending(null)} title={confirm.title} description={confirm.description} cost={pendingCost} confirmLabel={confirm.label} onConfirm={runPending} />
     </div>
   )
 }
 
-/** Tells the page while the diff (with its inline threads) is on screen. */
-function DiffMounted({ onChange }: { onChange: (shown: boolean) => void }): null {
-  useEffect(() => {
-    onChange(true)
-    return () => onChange(false)
-  }, [onChange])
-  return null
+function TabButton({
+  id,
+  current,
+  onSelect,
+  icon,
+  label,
+  count,
+}: {
+  id: PrTab
+  current: PrTab
+  onSelect: (t: PrTab) => void
+  icon: ReactNode
+  label: string
+  count: number | 'many' | null
+}): JSX.Element {
+  const on = id === current
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={on}
+      data-testid={`pr-tab-${id}`}
+      onClick={() => onSelect(id)}
+      className={cn(
+        '-mb-px flex shrink-0 items-center gap-1.5 border-b-2 px-3 py-2 text-dense font-medium coarse:min-h-11',
+        on ? 'border-forge-600 text-anvil-900 dark:text-anvil-50' : 'border-transparent text-anvil-600 hover:text-anvil-900 dark:text-anvil-400 dark:hover:text-anvil-100',
+      )}
+    >
+      {icon}
+      {label}
+      <span className="rounded-full bg-anvil-100 px-1.5 text-[11px] text-anvil-700 dark:bg-anvil-800 dark:text-anvil-300" data-testid={`pr-tab-${id}-count`}>
+        {count === null ? '…' : count === 'many' ? `${WALK_COMMIT_CAP.toLocaleString('en-US')}+` : count}
+      </span>
+    </button>
+  )
+}
+
+/** The checks row of the merge box (review-parity §4.8 row 2). */
+function ChecksRow({ summary, headOid, onOpen }: { summary: ChecksSummary | null; headOid: string; onOpen: () => void }): JSX.Element | null {
+  if (summary === null) return null
+  const icon =
+    summary.total === 0 ? (
+      <ListChecks className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
+    ) : summary.failing > 0 ? (
+      <X className="h-4 w-4 text-danger-700 dark:text-danger-400" aria-hidden />
+    ) : summary.pending > 0 ? (
+      <RefreshCw className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
+    ) : (
+      <Check className="h-4 w-4 text-verify-700 dark:text-verify-400" aria-hidden />
+    )
+  return (
+    <div className="flex flex-wrap items-center gap-2 rounded-lg border border-anvil-200 px-4 py-2 text-dense dark:border-anvil-800" data-testid="checks-row">
+      {icon}
+      <span className="flex-1">
+        {checksPhrase(summary)}
+        {summary.total === 0 && summary.membersKnown ? (
+          <>
+            {' '}
+            for <Oid value={headOid} chars={7} copyable={false} />
+          </>
+        ) : null}
+      </span>
+      {summary.total + summary.untrusted > 0 ? (
+        <button type="button" onClick={onOpen} className="text-[12px] text-forge-700 underline-offset-2 hover:underline dark:text-forge-400">
+          Details
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+/** The confirm dialog's words for each pending write. */
+function confirmText(pending: Pending | null, number: number, isMember: boolean, head: string): { title: string; description: string; label: string } {
+  const via = isMember ? 'a member event' : 'an author event (you opened this PR)'
+  switch (pending?.kind) {
+    case 'state':
+      return {
+        title: `${pending.to === 'close' ? 'Close' : 'Reopen'} PR #${number}`,
+        description: `Appends ${via}.`,
+        label: pending.to === 'close' ? 'Close PR' : 'Reopen PR',
+      }
+    case 'mark-merged':
+      return {
+        title: `Mark PR #${number} as merged`,
+        description: `Appends a merge event naming ${head.slice(0, 9)}. This does not merge any code: it records a merge done elsewhere, and only counts once that commit is on the base branch.`,
+        label: 'Sign & mark merged',
+      }
+    case 'review':
+      return {
+        title: `${VERDICT_TEXT[pending.verdict]} PR #${number}`,
+        description: `Records a ${VERDICT_TEXT[pending.verdict].toLowerCase()} review on ${head.slice(0, 9)}${pending.body ? ', with your comment as its body' : ''}. New commits make it stale. Reviews can't be edited; a maintainer can dismiss one.`,
+        label: 'Sign & submit review',
+      }
+    case 'draft':
+      return pending.to === 'ready'
+        ? { title: `Mark PR #${number} ready for review`, description: `Appends ${via}. Reviewers see it as ready; it can be merged.`, label: 'Sign & mark ready' }
+        : { title: `Convert PR #${number} to a draft`, description: `Appends ${via}. A draft can be reviewed but not merged.`, label: 'Sign & convert' }
+    case 'head':
+      return {
+        title: `Update PR #${number}'s head`,
+        description: `Appends a head update naming ${pending.oid.slice(0, 9)}, ${via}. The diff, the commits and the approvals then follow the new head; approvals on the old head become stale.`,
+        label: 'Sign & update head',
+      }
+    case 'request':
+      return pending.remove
+        ? { title: 'Remove the review request', description: `Appends ${via} naming ${pending.who.slice(0, 10)}….`, label: 'Sign & remove' }
+        : {
+            title: 'Request a review',
+            description: `Appends ${via} naming ${pending.who.slice(0, 10)}… as a requested reviewer. They see it under "review requested"; nothing notifies them otherwise.`,
+            label: 'Sign & request',
+          }
+    case 'dismiss':
+      return {
+        title: 'Dismiss this review',
+        description: `Appends a member event: the review no longer counts for or against the PR.${pending.reason ? ` The reason "${pending.reason}" is public, even in a private repo.` : ''}`,
+        label: 'Sign & dismiss',
+      }
+    case 'label':
+      return { title: `${pending.remove ? 'Remove' : 'Add'} label "${pending.label}"`, description: 'Appends a label event. Only maintainers and writers can label.', label: 'Sign & label' }
+    case 'define-label':
+      return { title: `Create label "${pending.name}"`, description: 'Two documents: the label definition (for the whole repo), then a label event on this PR.', label: 'Sign & create' }
+    case 'assign':
+      return {
+        title: pending.remove ? 'Remove assignee' : 'Assign',
+        description: `${pending.remove ? 'Unassigns' : 'Assigns'} ${pending.who.slice(0, 10)}… with a member event.`,
+        label: pending.remove ? 'Sign & unassign' : 'Sign & assign',
+      }
+    case 'edit-pull':
+      return { title: `Edit PR #${number}`, description: 'Replaces your PR document; you pay only for the changed bytes. Earlier versions stay readable on Platform.', label: 'Sign & save' }
+    case 'edit-comment':
+      return { title: 'Edit comment', description: 'Replaces your comment document; you pay only for the changed bytes.', label: 'Sign & save' }
+    default:
+      return { title: '', description: '', label: 'Confirm' }
+  }
+}
+
+/** A comment's slots on the PR page: the author's Edit, the inline editor, an inline thread's anchor and replies. */
+function commentSlots({
+  item,
+  viewer,
+  editing,
+  disabled,
+  onEdit,
+  onSave,
+  links,
+  replies,
+  resolved,
+  outdated,
+  onShowFiles,
+}: {
+  item: Extract<TimelineItem, { kind: 'comment' }>
+  viewer: string | null
+  editing: { id: string; body: string } | null
+  disabled: boolean
+  onEdit: (e: { id: string; body: string } | null) => void
+  onSave: (id: string, body: string) => void
+  links: MarkdownLinks
+  replies: readonly { id: string; author: string; body: string; createdAt: number }[]
+  resolved: boolean
+  outdated: boolean
+  onShowFiles: () => void
+}): CommentSlots {
+  const c = item.comment
+  const tags =
+    c.anchor !== null ? (
+      <span className="flex items-center gap-1.5">
+        {outdated ? <span className="rounded-full bg-anvil-100 px-2 py-0.5 text-[11px] text-anvil-700 dark:bg-anvil-800 dark:text-anvil-300">Outdated</span> : null}
+        {resolved ? <span className="rounded-full bg-verify/10 px-2 py-0.5 text-[11px] text-verify-700 dark:text-verify-400" data-testid="thread-resolved">Resolved</span> : null}
+      </span>
+    ) : null
+  const edit =
+    viewer !== null && viewer === c.author && editing?.id !== c.id ? (
+      <button
+        type="button"
+        onClick={() => onEdit({ id: c.id, body: c.body })}
+        disabled={disabled}
+        className="ml-auto inline-flex items-center gap-1 text-[12px] text-anvil-500 hover:text-forge-700 disabled:opacity-50 dark:text-anvil-400 dark:hover:text-forge-400"
+        aria-label="Edit comment"
+      >
+        <Pencil className="h-3 w-3" aria-hidden /> Edit
+      </button>
+    ) : null
+  const header = (
+    <>
+      {tags}
+      {edit}
+    </>
+  )
+  if (editing?.id === c.id) {
+    return {
+      header: tags,
+      body: (
+        <div className="space-y-2 px-4 py-3">
+          <MarkdownEditor id={`edit-comment-${c.id}`} label="Edit comment" value={editing.body} onChange={(body) => onEdit({ id: c.id, body })} links={links} autoFocus />
+          <div className="flex gap-2">
+            <Button variant="primary" size="sm" disabled={editing.body.trim() === '' || editing.body === c.body || utf8Length(editing.body) > BODY_MAX} onClick={() => onSave(c.id, editing.body)}>
+              Save
+            </Button>
+            <Button variant="ghost" size="sm" onClick={() => onEdit(null)}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      ),
+    }
+  }
+  if (c.anchor === null) return { header }
+  return {
+    header,
+    body: (
+      <div className="space-y-2 px-4 py-3">
+        <MarkdownView source={c.body} links={links} />
+        {replies.map((r) => (
+          <div key={r.id} className="border-l-2 border-anvil-200 pl-3 dark:border-anvil-750">
+            <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
+              <Author identityId={r.author} link={false} />
+              <span>{timeAgo(r.createdAt)}</span>
+            </div>
+            <MarkdownView source={r.body} links={links} />
+          </div>
+        ))}
+        <button type="button" onClick={onShowFiles} className="text-[12px] text-forge-700 underline-offset-2 hover:underline dark:text-forge-400">
+          View in Files changed
+        </button>
+      </div>
+    ),
+  }
 }
 
 /** The copy-to-shell checkout line, from the resolved repo (never the URL's own text). */
@@ -430,8 +1170,8 @@ function BranchRules({
         <p className="flex items-center gap-2" data-testid="protected-base">
           <ShieldCheck className="h-4 w-4 text-forge-500" aria-hidden />
           <span>
-            <span className="font-mono">{short}</span> is protected: only maintainers can merge into it. Enforced by
-            Platform (a writer&apos;s update of it is refused or inert).
+            <span className="font-mono">{short}</span> is protected: only maintainers can merge into it. Enforced by Platform (a writer&apos;s update of it is refused or
+            inert).
           </span>
         </p>
       ) : null}
@@ -449,11 +1189,7 @@ function BranchRules({
           </span>
         </p>
       ) : null}
-      {policy !== null ? (
-        <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-          Policy is a client rule; a maintainer can override it. Nothing at consensus requires approvals.
-        </p>
-      ) : null}
+      {policy !== null ? <p className="mt-2 text-[12px] text-anvil-600 dark:text-anvil-400">Policy is a client rule; a maintainer can override it. Nothing at consensus requires approvals.</p> : null}
     </section>
   )
 }

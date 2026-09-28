@@ -10,3 +10,24 @@ export async function retryWhileMissing<T>(read: () => Promise<T | null>, attemp
     await new Promise((r) => setTimeout(r, delayMs))
   }
 }
+
+/**
+ * Read, then re-read (`delayMs` apart, at most `attempts` more times) until every expectation in
+ * `want` holds of the value: a page waiting for its own writes to show. A null read is returned at
+ * once (not found is the caller's to handle). `signal.aborted` stops the polling early (a newer
+ * read took over), returning the latest value.
+ */
+export async function readUntil<T>(
+  read: () => Promise<T | null>,
+  want: readonly ((v: T) => boolean)[],
+  { attempts = 8, delayMs = 1500, signal }: { attempts?: number; delayMs?: number; signal?: { readonly aborted: boolean } } = {},
+): Promise<T | null> {
+  const stopped = (): boolean => signal?.aborted === true
+  let v = await read()
+  for (let i = 0; v !== null && !want.every((w) => w(v as T)) && i < attempts && !stopped(); i++) {
+    await new Promise((r) => setTimeout(r, delayMs))
+    if (stopped()) break
+    v = await read()
+  }
+  return v
+}

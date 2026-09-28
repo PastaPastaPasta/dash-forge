@@ -30,6 +30,7 @@ export {
   pendingWriteKey,
   deleteDocumentIdempotent,
   replaceDocumentIdempotent,
+  precheckEdit,
   type ReplaceParams,
   type ReplaceResult,
   findSigningKey,

@@ -216,6 +216,13 @@ describe('document encodings (forge-core parity; packManifest is covered with li
     expect(() => patchData({ title: 't', body: '', baseRefName: 'refs/heads/a b', sourceRepoId: REPO, sourceRefName: 'x', headOid: HEAD })).toThrow()
   })
 
+  it('patch: a draft carries draft=true (review-parity P6); a ready PR carries no draft field', () => {
+    const input = { title: 't', body: '', baseRefName: 'refs/heads/main', sourceRepoId: REPO, sourceRefName: 'refs/heads/x', headOid: HEAD }
+    expect(patchData({ ...input, draft: true })['draft']).toBe(true)
+    expect('draft' in patchData(input)).toBe(false)
+    expect('draft' in patchData({ ...input, draft: false })).toBe(false)
+  })
+
   it('ref update: sha256 name hash, raw oids, force, and protected routing', () => {
     const d = refUpdateData({ refName: 'refs/heads/main', newOid: HEAD, prevOid: OLD })
     expect(bytesToHex(d['refNameHash'] as Uint8Array)).toBe(bytesToHex(sha256(enc('refs/heads/main'))))

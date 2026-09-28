@@ -22,6 +22,7 @@ import { anchorOf, groupReviewComments, isAuthorKind, type AnchorFields, type Po
 import type { EventKind } from '../rules'
 import {
   ConsensusRefusal,
+  precheckEdit,
   GATE_REFUSED_CODE,
   queryAllDocuments,
   replaceDocumentIdempotent,
@@ -561,7 +562,12 @@ export interface SealContext {
   readonly current: Readonly<Record<string, unknown>>
   readonly bind: Readonly<Record<string, unknown>>
   readonly patchEpoch?: number
+  /** An imported document's provenance as read (decrypted): kept in the re-sealed content. */
+  readonly imported?: Readonly<Record<string, unknown>> | null
 }
+
+/** The content fields a sealed replace clears when a legacy plaintext copy sits next to `enc`. */
+const PLAINTEXT_OF: Readonly<Record<'issue' | 'patch' | 'comment', readonly string[]>> = { issue: ['title', 'body'], patch: ['title', 'body'], comment: ['body'] }
 
 /**
  * Replace one of the signer's documents of `repo`, dropping the caches the edit invalidates.
@@ -581,7 +587,15 @@ async function replace(
   let replaced = changes
   if (repo.visibility === 'private') {
     if (seal === undefined) refusePlaintextInPrivate(repo, documentType)
-    else replaced = await sealEdit(sdk, auth, repo, documentType, { ...seal.bind }, seal.current, changes, seal.patchEpoch)
+    // A private edit re-seals the whole text: without the revision it was read at, a concurrent
+    // edit would be overwritten, not refused (the CLI guards every sealed edit the same way).
+    if (expectedRevision === undefined) throw new Error(`a private ${documentType} edit needs the revision it was read at`)
+    // The author, the repo and the revision are checked before any key is opened.
+    await precheckEdit(sdk, auth, { contractId: contractFor(repo, documentType), documentType, documentId, expectRepoId: repo.repoId, expectedRevision })
+    const sealed = await sealEdit(sdk, auth, repo, documentType, { ...seal!.bind }, seal!.current, changes, seal!.patchEpoch, seal!.imported)
+    // Legacy plaintext stored next to `enc` goes in the same replace (as the CLI's re-seal does):
+    // `undefined` removes a field from the stored document.
+    replaced = { ...sealed, ...Object.fromEntries(PLAINTEXT_OF[documentType].map((f) => [f, undefined])) }
   }
   try {
     return await replaceDocumentIdempotent(sdk, auth, {
@@ -590,6 +604,7 @@ async function replace(
       documentId,
       changes: replaced,
       repo: repo.repoId,
+      expectRepoId: repo.repoId,
       expectedRevision,
     })
   } finally {

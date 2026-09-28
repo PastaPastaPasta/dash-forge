@@ -281,6 +281,27 @@ export async function sealContent(keys: EpochKeys, type: PrivateDocType, ownerId
  * current write epoch; a PR keeps its own epoch `patchEpoch` (§4.5), which must still be
  * readable and not burned.
  */
+/**
+ * The plaintext a private edit re-seals: the bind fields, every sealed field as the edit leaves
+ * it (unchanged ones from `current`), and an imported document's provenance (`imported`: its
+ * author and URL are sealed too, TLV 13 / 14, and a replace that left them out would drop them).
+ */
+export function editFields(
+  type: 'issue' | 'patch' | 'comment',
+  bind: Data,
+  current: Readonly<Record<string, unknown>>,
+  changes: Readonly<Record<string, unknown>>,
+  imported?: Readonly<Record<string, unknown>> | null,
+): Data {
+  const merged: Data = { ...bind }
+  for (const f of SEALED_FIELDS[type]) {
+    const v = f in changes ? changes[f] : current[f]
+    if (v !== undefined && v !== null && v !== '') merged[f] = v
+  }
+  if (imported !== undefined && imported !== null) merged['imported'] = { ...imported }
+  return merged
+}
+
 export async function sealEdit(
   sdk: EvoSDK,
   auth: WriteAuth,
@@ -290,12 +311,9 @@ export async function sealEdit(
   current: Readonly<Record<string, unknown>>,
   changes: Readonly<Record<string, unknown>>,
   patchEpoch?: number,
+  imported?: Readonly<Record<string, unknown>> | null,
 ): Promise<Data> {
-  const merged: Data = { ...bind }
-  for (const f of SEALED_FIELDS[type]) {
-    const v = f in changes ? changes[f] : current[f]
-    if (v !== undefined && v !== null && v !== '') merged[f] = v
-  }
+  const merged = editFields(type, bind, current, changes, imported)
   let writer: { readonly keys: EpochKeys } | undefined
   if (type === 'patch') {
     if (patchEpoch === undefined) throw new PrivateWriteError("a PR edit re-seals under the PR's own epoch: pass it")

@@ -15,7 +15,7 @@
  * shows "Diff unavailable" only when the objects genuinely are not reachable.
  */
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { FileDiff, Files, HardDriveDownload } from 'lucide-react'
 
 import { readRepoById, repoKey, repoRefOf, type PullView, type RepoRef } from '@/lib/repo'
@@ -32,14 +32,14 @@ import { Spinner } from '@/components/ui/states'
  * The PR's source repo when it is not the base repo: the `repo` document `sourceRepoId` names
  * (a fork, in the same forge contracts), read so its owner and visibility are real.
  */
-type SourceRepo =
+export type SourceRepo =
   | { readonly kind: 'none' }
   | { readonly kind: 'loading' }
   | { readonly kind: 'found'; readonly repo: RepoRef }
   /** `sourceRepoId` names no readable repo: the diff reads the base repo alone. */
   | { readonly kind: 'missing'; readonly message: string; readonly retry?: () => void }
 
-function useSourceRepo(base: RepoRef, sourceId: string | null): SourceRepo {
+export function useSourceRepo(base: RepoRef, sourceId: string | null): SourceRepo {
   const { sdk, ready } = useSdk()
   const { forge } = base
   const sourceRepo = useAsync<RepoRef | null>(
@@ -185,6 +185,8 @@ export interface ComparisonSides {
   /** Changes when a side's reader does (the published index, or an in-browser clone). */
   readonly sidesKey: string
   readonly crossRepo: boolean
+  /** The PR's source repo when it is not the base (read once here; the page reuses it). */
+  readonly source: SourceRepo
 }
 
 export function useComparisonSides(baseRepo: RepoRef, sourceId: string): ComparisonSides {
@@ -233,7 +235,7 @@ export function useComparisonSides(baseRepo: RepoRef, sourceId: string): Compari
       : headState.kind === 'loading'
         ? `${crossRepo ? 'Source repo: ' : ''}${headState.label}`
         : null
-  return { sides, baseOnly: baseReader, problems, waiting, sidesKey, crossRepo }
+  return { sides, baseOnly: baseReader, problems, waiting, sidesKey, crossRepo, source }
 }
 
 /** What a comparison diffs: the base tips and the head, as {@link loadPullComparison} takes them. */
@@ -246,50 +248,31 @@ export interface ComparisonSpec {
   readonly importedUrl: string
 }
 
-export function PullDiff({
-  pull,
-  home,
-  wrap,
-}: {
-  pull: PullView
-  home: RepoHome
-  /** Wrap the rendered diff (the PR page adds inline comment threads). */
-  wrap?: (comparison: PullComparison, diff: ReactNode) => ReactNode
-}): JSX.Element {
-  const { baseTipOid, baseOidAtOpen } = pullBase(pull, home)
-  return (
-    <ComparisonDiff
-      baseRepo={home.repo}
-      sourceId={pull.sourceId}
-      spec={{ baseTipOid, baseOidAtOpen, headOid: pull.headOid, merged: pull.state.merged, imported: pull.imported, importedUrl: pull.importedUrl }}
-      noHead="This PR does not record a head commit."
-      {...(wrap ? { wrap } : {})}
-    />
-  )
+/** A comparison being computed: the sides' readers and the merge-base diff (see {@link usePullComparison}). */
+export interface ComparisonState {
+  readonly spec: ComparisonSpec
+  readonly sides: DiffSides | null
+  readonly problems: readonly SideProblem[]
+  readonly waiting: string | null
+  readonly sidesKey: string
+  readonly data: PullComparison | null
+  readonly loading: boolean
+  readonly error: string | null
+  readonly cause: unknown
+  readonly reload: () => void
+  readonly commitsRead: number
+  readonly stop: () => void
+  /** The source repo `useComparisonSides` resolved. */
+  readonly source: SourceRepo
 }
 
-/** A head compared with its merge base against a base branch, across two repos. */
-export function ComparisonDiff({
-  baseRepo,
-  sourceId,
-  spec,
-  noHead,
-  wrap,
-  onSides,
-}: {
-  baseRepo: RepoRef
-  sourceId: string
-  spec: ComparisonSpec
-  noHead: string
-  wrap?: (comparison: PullComparison, diff: ReactNode) => ReactNode
-  /** Told the readers the comparison uses, once both sides resolve (e.g. to read the head commit). */
-  onSides?: (sides: DiffSides | null) => void
-}): JSX.Element {
-  const { sides, problems, waiting, sidesKey, crossRepo } = useComparisonSides(baseRepo, sourceId)
-  useEffect(() => {
-    onSides?.(sides)
-  }, [onSides, sides])
-  const pull = { headOid: spec.headOid, imported: spec.imported, importedUrl: spec.importedUrl }
+/**
+ * Compute a head's comparison with its merge base against a base branch, across two repos. The PR
+ * page holds one for the whole page: the Files tab renders it, the tab counts and the Commits
+ * tab read it, so the merge-base walk runs once.
+ */
+export function usePullComparison(baseRepo: RepoRef, sourceId: string, spec: ComparisonSpec): ComparisonState {
+  const { sides, problems, waiting, sidesKey, crossRepo, source } = useComparisonSides(baseRepo, sourceId)
   const { baseTipOid, baseOidAtOpen } = spec
   // The merge-base search can read tens of thousands of commits on a long-lived branch: it
   // reports how far it got, and "Stop" ends it (D-040).
@@ -316,6 +299,56 @@ export function ComparisonDiff({
   useEffect(() => {
     if (!enabled) search.current?.abort()
   }, [enabled])
+  const stop = useCallback(() => search.current?.abort(), [])
+  return { spec, sides, problems, waiting, sidesKey, data, loading, error, cause, reload, commitsRead, stop, source }
+}
+
+/** The base, head and flags of a PR's comparison. */
+export function pullSpec(pull: PullView, home: RepoHome): ComparisonSpec {
+  const { baseTipOid, baseOidAtOpen } = pullBase(pull, home)
+  return { baseTipOid, baseOidAtOpen, headOid: pull.headOid, merged: pull.state.merged, imported: pull.imported, importedUrl: pull.importedUrl }
+}
+
+/** A head compared with its merge base against a base branch, across two repos. */
+export function ComparisonDiff({
+  baseRepo,
+  sourceId,
+  spec,
+  noHead,
+  wrap,
+  onSides,
+}: {
+  baseRepo: RepoRef
+  sourceId: string
+  spec: ComparisonSpec
+  noHead: string
+  wrap?: (comparison: PullComparison, diff: ReactNode) => ReactNode
+  /** Told the readers the comparison uses, once both sides resolve (e.g. to read the head commit). */
+  onSides?: (sides: DiffSides | null) => void
+}): JSX.Element {
+  const state = usePullComparison(baseRepo, sourceId, spec)
+  const { sides } = state
+  useEffect(() => {
+    onSides?.(sides)
+  }, [onSides, sides])
+  return <ComparisonView state={state} noHead={noHead} {...(wrap ? { wrap } : {})} />
+}
+
+/** Render a {@link ComparisonState}: progress, the side problems, the diff. */
+export function ComparisonView({
+  state,
+  noHead,
+  wrap,
+  action,
+}: {
+  state: ComparisonState
+  noHead: string
+  wrap?: (comparison: PullComparison, diff: ReactNode) => ReactNode
+  /** Extra controls beside the heading. */
+  action?: ReactNode
+}): JSX.Element {
+  const { spec, sides, problems, waiting, sidesKey, data, loading, error, cause, reload, commitsRead } = state
+  const pull = { headOid: spec.headOid, imported: spec.imported, importedUrl: spec.importedUrl }
   const searching = loading && commitsRead > 0
   const searchProgress = (
     <div className="flex flex-wrap items-center justify-center gap-3 rounded-lg border border-anvil-200 px-4 py-6 text-center dark:border-anvil-800">
@@ -325,7 +358,7 @@ export function ComparisonDiff({
         }
       />
       {searching ? (
-        <Button size="sm" variant="ghost" onClick={() => search.current?.abort()}>
+        <Button size="sm" variant="ghost" onClick={state.stop}>
           Stop
         </Button>
       ) : null}
@@ -334,12 +367,13 @@ export function ComparisonDiff({
 
   const range =
     data !== null ? (
-      <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
+      <div className="flex flex-wrap items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
         {data.comparedBaseOid ? <Oid value={data.comparedBaseOid} chars={7} copyable={false} /> : <span>(empty tree)</span>}
         <span>…</span>
         <Oid value={pull.headOid} chars={7} copyable={false} />
+        {action}
       </div>
-    ) : undefined
+    ) : action
 
   if (pull.headOid === '') {
     return (
