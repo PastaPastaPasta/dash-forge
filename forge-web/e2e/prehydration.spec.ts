@@ -108,13 +108,21 @@ test.describe('a tap before hydration', () => {
     await expect(sheet(page)).toBeVisible()
   })
 
-  test('a page that never loads its scripts clears the busy look', async ({ page }) => {
-    await page.route(CHUNKS, (route) => route.abort())
+  test('a script that fails to load clears the busy look (not only the timer)', async ({ page }) => {
+    // Hold the chunks, tap, then fail them: the tap is caught first, the error clears it.
+    let fail!: () => void
+    const failed = new Promise<void>((r) => (fail = r))
+    await page.route(CHUNKS, async (route) => {
+      await failed
+      await route.abort()
+    })
     await page.goto('/explore/', { waitUntil: 'domcontentloaded' })
     const signIn = signInButton(page)
     await signIn.click()
-    // A script failed to load: the catcher stops and the button is no longer shown busy.
-    await expect(signIn).not.toHaveAttribute('aria-busy', 'true', { timeout: 15_000 })
+    await expect(signIn).toHaveAttribute('aria-busy', 'true')
+    fail()
+    // Well inside the 12 s timer: it is the load error that stops the catcher.
+    await expect(signIn).not.toHaveAttribute('aria-busy', 'true', { timeout: 3_000 })
     expect(await signIn.getAttribute('data-prehydrate-pending')).toBeNull()
   })
 

@@ -5,7 +5,8 @@
  * `useSearchParams`, so a static export renders it on the client only (a Suspense bailout). The
  * chrome is rendered OUTSIDE that Suspense: the header is in the exported HTML and hydrates with
  * the page (its Sign in works as soon as the app does, and it is not remounted when the content
- * resolves); only the content area shows a spinner until then.
+ * resolves); only the content area shows a spinner until then. Keep the header out of any
+ * Suspense boundary: a pre-hydration tap is acted on in its mount effect (lib/prehydration.ts).
  */
 
 import { Suspense, type ReactNode } from 'react'

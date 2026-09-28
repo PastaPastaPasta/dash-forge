@@ -20,8 +20,8 @@ installDapiFetchGate(NETWORKS[DEFAULT_NETWORK].dapiAddresses)
  */
 export function Providers({ children }: { children: ReactNode }): JSX.Element {
   // The app is up: taps now reach the buttons' own handlers. A tap caught before this is acted
-  // on by the component that owns its button, in that component's own mount effect
-  // (`consumePrehydrationIntent`); this only ends the catching (whichever effect runs first).
+  // on by the component that owns its button, in its own mount effect (`consumePrehydrationIntent`);
+  // this only ends the catching and keeps the intent, whichever of the two effects runs first.
   useEffect(() => {
     stopPrehydrationCatcher()
   }, [])

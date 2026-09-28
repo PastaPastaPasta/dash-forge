@@ -7,7 +7,7 @@
  * Dark = layered anvil-950/900/850; light = anvil-50/white.
  */
 @layer base {
-  /* A button tapped before the app hydrated: kept, and clicked once it has (lib/prehydration.ts). */
+  /* A button tapped before the app hydrated: its intent is kept and acted on once it has (lib/prehydration.ts). */
   button[data-prehydrate-pending] {
     cursor: progress;
     opacity: 0.7;

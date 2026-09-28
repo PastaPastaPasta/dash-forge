@@ -74,7 +74,7 @@ export function RepoScaffold({
   // way the connection retries with backoff, and "Try again" reconnects now.
   const offline = sdkStatus.phase === 'error' ? <UnreachableBanner status={sdkStatus} onRetry={retrySdk} cached={data != null} /> : null
   if (offline !== null && data == null) {
-    return <>{offline}</>
+    return offline
   }
 
   // While the SDK connects (or a cold resolve is in flight) show the shell — never flash

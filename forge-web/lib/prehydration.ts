@@ -8,7 +8,10 @@
  * marking that button busy (`aria-busy`, a progress cursor). The component that owns the button
  * consumes the intent in its own mount effect ({@link consumePrehydrationIntent}) and acts on it
  * (the header opens the sign-in sheet). The intent is a name, not a node: it does not depend on
- * which DOM node React keeps, nor on the order effects run in.
+ * which DOM node React keeps. Stopping the catcher (Providers, whichever effect runs first) never
+ * drops a recorded intent; an intent older than {@link INTENT_TTL_MS} is ignored instead, so a
+ * header that mounts much later (behind a slow boundary, or after a navigation) cannot act on a
+ * stale tap. Keep the header out of any Suspense boundary all the same (`QueryPage`).
  *
  * - Only buttons with `data-replay` are caught; any other tap before hydration does what it did
  *   before (nothing for a button, navigation for a link). An intent is only for a button whose
@@ -34,12 +37,15 @@ export const PREHYDRATION_KEY = '__forgePrehydration'
 /** How long the catcher waits for the app before giving up (and clearing the busy look). */
 export const STOP_AFTER_MS = 12_000
 
+/** How long a caught tap stays actionable. */
+export const INTENT_TTL_MS = 15_000
+
 /** The intents a button can carry (`data-replay`). */
 export type PrehydrationIntent = 'sign-in'
 
 interface PrehydrationState {
   intent: string | null
-  consumed: boolean
+  at: number
   stop: () => void
 }
 
@@ -55,7 +61,7 @@ export function prehydrationScript(): string {
     busy.removeAttribute('data-prehydrate-pending');
     busy = null; prior = null;
   }
-  var state = { intent: null, consumed: false, stop: function(){} };
+  var state = { intent: null, at: 0, stop: function(){} };
   function onClick(e){
     var t = e.target;
     var b = t && t.closest ? t.closest('button[data-replay]') : null;
@@ -64,6 +70,7 @@ export function prehydrationScript(): string {
     e.stopPropagation();
     clearBusy();
     state.intent = b.getAttribute('data-replay');
+    state.at = Date.now();
     busy = b; prior = b.getAttribute('aria-busy');
     b.setAttribute('aria-busy','true');
     b.setAttribute('data-prehydrate-pending','');
@@ -77,7 +84,6 @@ export function prehydrationScript(): string {
     document.removeEventListener('click', onClick, true);
     window.removeEventListener('error', onError, true);
     clearBusy();
-    if (!state.consumed) state.intent = null;
   };
   window[KEY] = state;
 })();`
@@ -90,12 +96,12 @@ type WithState = Window & { [PREHYDRATION_KEY]?: PrehydrationState }
  * caller takes it). Also stops the catcher: from now on a tap reaches the button's own handler.
  * Call it from the owning component's mount effect.
  */
-export function consumePrehydrationIntent(intent: PrehydrationIntent, win: WithState = window as WithState): boolean {
+export function consumePrehydrationIntent(intent: PrehydrationIntent, win: WithState = window as WithState, now = Date.now()): boolean {
   const state = win[PREHYDRATION_KEY]
   if (state === undefined) return false
-  const wanted = state.intent === intent && !state.consumed
-  if (wanted) state.consumed = true
   state.stop()
+  const wanted = state.intent === intent && now - state.at <= INTENT_TTL_MS
+  if (state.intent === intent) state.intent = null
   return wanted
 }
 
