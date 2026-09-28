@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test'
-import { collectPageErrors, E2E_DEVNET, repoUrl, shot, waitForRepoResolved } from './helpers'
+import { collectPageErrors, E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
 
 /**
  * Code browsing on the showcase repos (preact, ripgrep, requests, dips) imported on moutai:
@@ -10,13 +10,19 @@ import { collectPageErrors, E2E_DEVNET, repoUrl, shot, waitForRepoResolved } fro
  * from time to time, so nothing here depends on a PR number.
  */
 
-const PREACT = { owner: 'qrUbjpBNDWpFscytpp8w9Uw87DV7hSzH5CW7ux9ERCz', name: 'preact' } as const
-
 /** A 7-file preact commit that hung on 4 of 4 loads before D-005 was fixed. */
 const MULTI_FILE_COMMIT = '8101ff821690817c7786739c317af215c62a0cff'
 
+// Owners resolve by DPNS name (helpers.ts `showcaseRepo`), so a devnet reset that re-mints them
+// under new ids does not break these specs.
+let PREACT: { readonly owner: string; readonly name: string }
+
 test.describe('code browsing (showcase repos)', () => {
   test.skip(E2E_DEVNET !== 'moutai', 'the showcase repos are imported on moutai')
+
+  test.beforeAll(async () => {
+    PREACT = await showcaseRepo('PREACTJS', 'preact')
+  })
 
   test('cb-1. a multi-file commit diff finishes loading every file (D-005)', async ({ page }) => {
     const errors = collectPageErrors(page)
