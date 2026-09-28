@@ -31,7 +31,7 @@ export function PathBreadcrumb({
             {isLast ? (
               <span className="font-mono text-anvil-800 dark:text-anvil-100">{seg}</span>
             ) : (
-              <Link href={repoHref('/repo/tree', addr, { path: sub, ...refExtra })} className="font-mono text-forge-700 hover:underline dark:text-forge-400">
+              <Link href={repoHref('/repo/tree', addr, { path: sub, ...refExtra })} className="hit-area font-mono text-forge-700 hover:underline dark:text-forge-400">
                 {seg}
               </Link>
             )}
