@@ -170,7 +170,8 @@ interface LandedTombstone {
 
 /** A cached attempt, as read back. */
 interface PendingST {
-  readonly bytes: Uint8Array
+  /** The signed transition, or null when the stored copy is damaged (not valid base64). */
+  readonly bytes: Uint8Array | null
   readonly documentId: string
   readonly nonce: bigint | null
   readonly content: string | null
@@ -200,13 +201,14 @@ export function contentHash(documentType: string, data: Readonly<Record<string, 
 }
 
 /**
- * A retry whose content changed after an earlier attempt of the same action had already
- * landed: the earlier version is on Platform, and the edited one was not sent (sending it
- * would post a second document).
+ * A retry that was not sent because an earlier attempt of the same action had already landed:
+ * the retry's content was edited since, or its cached transition was damaged and had to be
+ * signed afresh. The earlier version is on Platform; sending this one would post a second
+ * document.
  */
 export class SupersededWriteError extends Error {
   constructor(readonly documentId: string) {
-    super('Your earlier attempt was posted before this edit, so the edited version was not sent. Reload to see it; edit it from there.')
+    super('Your earlier attempt was posted, so this one was not sent (it would have posted a second copy). Reload to see it; make any edit from there.')
     this.name = 'SupersededWriteError'
   }
 }
@@ -278,7 +280,7 @@ function loadPendingST(key: string): PendingST | null {
     const raw = window.localStorage.getItem(key)
     if (!raw) return null
     const parsed = JSON.parse(raw) as CachedST
-    if (typeof parsed.data !== 'string') return null
+    if (typeof parsed.data !== 'string' && typeof parsed.documentId !== 'string') return null
     if (Date.now() - parsed.cachedAt > ST_CACHE_MAX_AGE_MS || !parsed.documentId) {
       window.localStorage.removeItem(key)
       return null
@@ -286,7 +288,15 @@ function loadPendingST(key: string): PendingST | null {
     const nonce = typeof parsed.nonce === 'string' && /^[0-9]+$/.test(parsed.nonce) ? BigInt(parsed.nonce) : null
     const content = typeof parsed.content === 'string' ? parsed.content : null
     const supersedes = Array.isArray(parsed.supersedes) ? parsed.supersedes.filter((s): s is string => typeof s === 'string') : []
-    return { bytes: base64ToBytes(parsed.data), documentId: parsed.documentId, nonce, content, supersedes }
+    // Damaged bytes still name the attempt they recorded, which was sent intact and may land: the
+    // caller settles it before signing afresh, never forgets it.
+    let bytes: Uint8Array | null = null
+    try {
+      bytes = typeof parsed.data === 'string' ? base64ToBytes(parsed.data) : null
+    } catch {
+      bytes = null
+    }
+    return { bytes, documentId: parsed.documentId, nonce, content, supersedes }
   } catch {
     return null
   }
@@ -499,16 +509,22 @@ export const BALANCE_CODES: ReadonlySet<number> = new Set([30000, 40210])
 const UNPAID_CODES: ReadonlySet<number> = new Set([40204, 10417, 10421, 20014, 10002])
 
 /**
- * The signed transition is not exactly one encoded transition (`SerializedObjectParsingError`;
- * from protocol 14 bytes left over are refused too, unpaid). The bytes can never land: they are
- * discarded and the action signed afresh. Also what a cached attempt that no longer decodes is.
+ * Drive could not decode the transition (`SerializedObjectParsingError`; from protocol 14 bytes
+ * left over after it are refused too), unpaid. The SDK re-encodes what it sends, so this means
+ * the network reads the format differently (an SDK and node version mismatch) or a decode limit.
  */
 export const MALFORMED_TRANSITION_CODE = 10002
 
-/** A replace, transfer, purchase or restore of a document whose type's time to live ran out. */
+/**
+ * A replace, transfer, purchase or restore of a document whose type's time to live ran out
+ * (checked at the broadcast check and in the block alike).
+ */
 export const DOCUMENT_EXPIRED_CODE = 40140
 
-/** A contested create joining a contest that already holds the most contenders (1,000). */
+/**
+ * A contested create joining a contest that already holds the most contenders (1,000). Only
+ * the block's full state validation raises it, so it always arrives with its code, charged.
+ */
 export const CONTEST_FULL_CODE = 40141
 
 /** Budget exceeded by this write: the key has some budget, not enough for this one. */
@@ -1132,20 +1148,12 @@ async function createDocumentUnlocked(
   const landedAs = landedAsOf(cacheKey)
   if (landedAs !== null) throw new SupersededWriteError(landedAs)
   const cached = loadPendingST(cacheKey)
-  const { StateTransition: StateTransitionClass } = await import('@dashevo/evo-sdk')
-  /** The cached attempt's transition, or null when its bytes no longer decode (a damaged entry). */
-  const cachedSt = ((): StateTransition | null => {
-    if (!cached) return null
-    try {
-      return StateTransitionClass.fromBytes(cached.bytes)
-    } catch {
-      return null
-    }
-  })()
+  const cachedSt = cached ? await intactTransition(cached.bytes) : null
   if (cached && ((cached.content !== null && cached.content !== content) || cachedSt === null)) {
-    // Edited since the last attempt, or its bytes are damaged (what Drive refuses as 10002):
-    // they are discarded and the action signed afresh. The attempt they recorded was sent intact
-    // and may still land, so it is settled like an edited one: never a second document.
+    // Edited since the last attempt, or the stored bytes are damaged (they must never be
+    // broadcast: they may decode to some other transition). Either way the action is signed
+    // afresh; the attempt the entry recorded was sent intact and may still land, so it is
+    // settled like an edited one first: never a second document.
     const { documentId, nonce } = cached
     supersedes = [...cached.supersedes, documentId]
     if (nonce === null) throw new UnconfirmedWriteError(documentId)
@@ -1174,10 +1182,10 @@ async function createDocumentUnlocked(
         await facades(sdk).stateTransitions.broadcastStateTransition(cachedSt)
       } catch (e) {
         // A used nonce: they landed (the poll sees them) or never will. Refused: the cached
-        // bytes cannot land (a transition Drive refuses as not exactly one, 10002, included:
-        // these are the bytes first sent). Already in, or a transport error: the poll decides,
-        // and the bytes stay cached until it sees them. (The nonce check comes first: a
-        // rebroadcast of bytes that did land is answered "nonce already present".)
+        // bytes cannot land (they round-trip exactly, so they are the transition first sent).
+        // Already in, or a transport error: the poll decides, and the bytes stay cached until
+        // it sees them. (The nonce check comes first: a rebroadcast of bytes that did land is
+        // answered "nonce already present".)
         const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
         if (refusal) {
           // These bytes can never land. Settle any earlier version first, then clear, so a
@@ -1300,6 +1308,23 @@ async function pollUntil(check: () => Promise<boolean>, timeoutMs: number): Prom
 export function isStaleDocumentIdError(e: unknown): boolean {
   const m = errorMessage(e).toLowerCase()
   return m.includes('invalid document transition id') || m.includes('10405')
+}
+
+/**
+ * The cached attempt's transition, or null when the stored bytes are damaged: missing, not
+ * decodable, or not exactly one transition (they do not re-encode to themselves). The SDK's
+ * decoder ignores bytes left over and the broadcast re-encodes, so without the round-trip a
+ * padded or corrupted entry could go out as some other transition than the one first sent.
+ */
+async function intactTransition(bytes: Uint8Array | null): Promise<StateTransition | null> {
+  if (bytes === null) return null
+  const { StateTransition: StateTransitionClass } = await import('@dashevo/evo-sdk')
+  try {
+    const st = StateTransitionClass.fromBytes(bytes)
+    return bytesToHex(st.toBytes()) === bytesToHex(bytes) ? st : null
+  } catch {
+    return null
+  }
 }
 
 /** Build and sign one document-create transition (fresh entropy and nonce). */

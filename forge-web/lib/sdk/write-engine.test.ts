@@ -44,8 +44,9 @@ vi.mock('@dashevo/evo-sdk', () => {
       return new Uint8Array([Number(this.nonce)])
     }
     static fromBytes(b: Uint8Array): ST {
-      // A transition here is one byte; anything else does not decode (a damaged cache entry).
-      if (b.length !== 1) throw new Error(`platform deserialization error: ${b.length - 1} bytes left over after the value`)
+      // A transition here is one byte. Like wasm-dpp2's loose decoder, bytes after it are ignored;
+      // no bytes at all do not decode.
+      if (b.length === 0) throw new Error('platform deserialization error: unexpected end of input')
       const st = new ST()
       st.nonce = BigInt(b[0] ?? 0)
       st.title = carried.get(st.nonce)
@@ -750,11 +751,15 @@ describe('after "your earlier attempt was posted" (review N1, N4)', () => {
   })
 })
 
-describe('a cached transition that is not exactly one transition (10002, protocol 14)', () => {
-  /** A write whose first answer is lost, so its signed bytes stay cached under `intent`. */
-  const lostThenLands = (store: Map<string, string>, onRebroadcast: () => void) => {
+describe('a damaged cached transition, and 10002 (protocol 14)', () => {
+  /**
+   * A write whose first answer is lost, so its signed bytes stay cached under the intent. The
+   * chain is tracked per document: a broadcast lands the document last saved for its nonce
+   * (unless `onRebroadcast` throws), so a test sees exactly which documents are on Platform.
+   */
+  const lostAttempt = (store: Map<string, string>, onRebroadcast: () => void = () => undefined) => {
     let calls = 0
-    let landed = false
+    const onChain = new Set<string>()
     const signed: bigint[] = []
     vi.stubGlobal('window', {
       localStorage: {
@@ -763,48 +768,81 @@ describe('a cached transition that is not exactly one transition (10002, protoco
         removeItem: (k: string) => void store.delete(k),
       },
     })
+    /** The document the cache last recorded for `nonce` (saved just before each broadcast). */
+    const savedFor = (nonce: bigint): string | undefined => {
+      for (const raw of store.values()) {
+        const e = JSON.parse(raw) as { documentId?: string; nonce?: string }
+        if (e.documentId && e.nonce === nonce.toString()) return e.documentId
+      }
+      return undefined
+    }
     const script: Script = {
       platformNonce: 1n,
-      broadcast: () => {
+      broadcast: (st) => {
         calls += 1
         if (calls === 1) throw new Error('grpc: deadline exceeded')
         if (calls === 2) onRebroadcast()
-        landed = true
+        const id = savedFor(st.nonce)
+        if (id) onChain.add(id)
       },
       wait: async () => ({}),
-      exists: async () => (landed ? {} : undefined),
+      exists: async (id: string) => (onChain.has(id) ? {} : undefined),
     }
-    return { sdk: sdkOf(script, signed), signed }
+    const cachedEntry = (): { key: string; entry: { data: string; documentId: string } } => {
+      const [key, raw] = [...store.entries()][0]!
+      return { key, entry: JSON.parse(raw) as { data: string; documentId: string } }
+    }
+    return { sdk: sdkOf(script, signed), signed, onChain, cachedEntry }
   }
 
-  it('damaged cached bytes are never broadcast: the action is re-signed on the same nonce, so at most one lands', async () => {
+  it('padded cached bytes (the SDK would decode them) are never broadcast: re-signed on the same nonce, one document', async () => {
     const store = new Map<string, string>()
-    const { sdk, signed } = lostThenLands(store, () => undefined)
+    const { sdk, signed, onChain, cachedEntry } = lostAttempt(store)
     try {
       const params = { ...write, contractId: 'T1', intent: 'pad-1' }
       const first = await createDocumentIdempotent(sdk, auth([]), params).catch((e: unknown) => e)
       expect(first).toBeInstanceOf(UnconfirmedWriteError)
-      // The cached entry is damaged so it no longer decodes (this stub's decoder is exact; the
-      // real one, wasm-dpp2 `fromBytes`, is loose and throws only on truncated or corrupt bytes).
-      const [key, raw] = [...store.entries()][0]!
-      const entry = JSON.parse(raw) as { data: string }
+      const { key, entry } = cachedEntry()
+      // A byte left over after the transition: the loose decoder reads it; the round-trip does not.
       store.set(key, JSON.stringify({ ...entry, data: btoa(atob(entry.data) + '\xab') }))
       const r = await createDocumentIdempotent(sdk, auth([]), params)
       expect(r.confirmed).toBe(true)
-      // A fresh transition (a new document id), pinned to the lost attempt's still-free nonce: the
-      // attempt the damaged entry recorded and this one cannot both land.
+      // A fresh transition (a new id), pinned to the lost attempt's still-free nonce.
       expect(r.documentId).not.toBe((first as UnconfirmedWriteError).documentId)
       expect(signed).toEqual([2n, 2n])
+      expect([...onChain]).toEqual([r.documentId])
       expect(store.has(key)).toBe(false)
     } finally {
       vi.unstubAllGlobals()
     }
   })
 
-  it("a rebroadcast Drive refuses as trailing bytes (10002) is discarded, not replayed", async () => {
+  it('an entry with corrupt base64 still settles the attempt it recorded: when that landed, nothing is re-signed', async () => {
     const store = new Map<string, string>()
-    const { sdk, signed } = lostThenLands(store, () => {
-      throw sdkRefusal('Parsing of serialized object failed due to: platform deserialization error: unable to deserialize dpp::state_transition::StateTransition: 1 bytes left over after the value')
+    const { sdk, signed, onChain, cachedEntry } = lostAttempt(store)
+    try {
+      const params = { ...write, contractId: 'T3', intent: 'b64-1' }
+      await createDocumentIdempotent(sdk, auth([]), params).catch(() => undefined)
+      const { key, entry } = cachedEntry()
+      store.set(key, JSON.stringify({ ...entry, data: '%%not base64%%' }))
+      // The original attempt was sent intact and lands after all; its nonce is now spent.
+      onChain.add(entry.documentId)
+      ;(sdk as unknown as { identities: { contractNonce: () => Promise<bigint> } }).identities.contractNonce = async () => 2n
+      const err = await createDocumentIdempotent(sdk, auth([]), params).catch((e: unknown) => e)
+      expect(err).toBeInstanceOf(SupersededWriteError)
+      expect((err as SupersededWriteError).documentId).toBe(entry.documentId)
+      // Nothing was signed after the first attempt: never a second document.
+      expect(signed).toEqual([2n])
+      expect([...onChain]).toEqual([entry.documentId])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('a rebroadcast Drive refuses as 10002 is discarded, not replayed, and the retry signs afresh', async () => {
+    const store = new Map<string, string>()
+    const { sdk, signed } = lostAttempt(store, () => {
+      throw sdkRefusal('Parsing of serialized object failed due to: unable to deserialize dpp::state_transition::StateTransition: 1 bytes left over after the value')
     })
     try {
       const params = { ...write, contractId: 'T2', intent: 'pad-2' }

@@ -73,9 +73,9 @@ function refusalSentence(r: ConsensusRefusal): string {
     case 20014:
       return "Platform refused it: this browser's key is not allowed to sign for this contract. Nothing was charged."
     case MALFORMED_TRANSITION_CODE:
-      return 'Platform refused it: the signed write was damaged (not exactly one transition), so it was discarded. Nothing was charged. Try again to re-sign it.'
+      return 'Platform could not read this write, so it was discarded. Nothing was charged. Try again to re-sign it; if it fails again, reload the page to pick up the current app version.'
     case DOCUMENT_EXPIRED_CODE:
-      return `Platform refused it: this document has expired (its time to live ran out), so it can no longer be changed. Reload to see it gone. ${charged}`
+      return `Platform refused it: this document has expired (its time to live ran out), so it can no longer be changed. Platform removes it shortly. ${charged}`
     case CONTEST_FULL_CODE:
       return `Platform refused it: that contest already has the most contenders it accepts, so this cannot join it. ${charged}`
     default:

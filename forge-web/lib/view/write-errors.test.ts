@@ -118,24 +118,30 @@ describe('writeFailure routes each refusal to its fix, never "sent" (D-007)', ()
  */
 const EXPIRED =
   'Failed to broadcast: Protocol error: Document 4ggxb4HBaT of type "issue" on contract 6DJ3px1Z expired at 1790491415877, its $createdAt plus the type\'s time to live, which block time 1790491500000 is not before'
-const CONTEST_FULL = 'Failed to broadcast: Protocol error: The vote poll ContestedDocumentResourceVotePoll(dpns/domain) already has 1000 contenders, the most a contest accepts'
+/** 40141 comes only from a block's full state validation: the result wait's coded verdict. */
+const CONTEST_FULL =
+  'The vote poll ContestedDocumentResourceVotePoll { contract_id: GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec, document_type_name: domain, index_name: parentNameAndLabel, index_values: [string dash, string a0b1] } already has 1000 contenders, the most a contest accepts'
+/** Drive passes the decoder's inner message only (`SerializedObjectParsingError::new(message)`). */
 const TRAILING =
-  'Failed to broadcast: Protocol error: Parsing of serialized object failed due to: platform deserialization error: unable to deserialize dpp::state_transition::StateTransition: 1 bytes left over after the value'
+  'Failed to broadcast: Protocol error: Parsing of serialized object failed due to: unable to deserialize dpp::state_transition::StateTransition: 1 bytes left over after the value'
 
 describe('protocol 14 refusals: expired, contest full, trailing bytes', () => {
-  it.each([
-    [EXPIRED, 40140],
-    [CONTEST_FULL, 40141],
-    [TRAILING, 10002],
-  ])('decodes %s', (message, code) => {
-    const r = asConsensusRefusal(wasm(message))
-    expect(r?.code).toBe(code)
+  it('decodes an expired document refused at the broadcast check: nothing charged', () => {
+    const r = asConsensusRefusal(wasm(EXPIRED))
+    expect(r?.code).toBe(40140)
     expect(r?.feeCharged).toBe(false)
   })
-  it('decodes the numeric codes a block verdict carries', () => {
-    expect(asConsensusRefusal(wasm(EXPIRED, 40140))?.code).toBe(40140)
-    expect(asConsensusRefusal(wasm(CONTEST_FULL, 40141))?.feeCharged).toBe(true)
-    // Trailing bytes are refused unpaid, in a block too.
+  it('decodes an expired document refused in a block: charged', () => {
+    expect(asConsensusRefusal(wasm(EXPIRED, 40140))?.feeCharged).toBe(true)
+  })
+  it('decodes a full contest from the block verdict: charged', () => {
+    const r = asConsensusRefusal(wasm(CONTEST_FULL, 40141))
+    expect(r?.code).toBe(40141)
+    expect(r?.feeCharged).toBe(true)
+  })
+  it('decodes trailing bytes, unpaid wherever they are refused', () => {
+    expect(asConsensusRefusal(wasm(TRAILING))?.code).toBe(10002)
+    expect(asConsensusRefusal(wasm(TRAILING))?.feeCharged).toBe(false)
     expect(asConsensusRefusal(wasm(TRAILING, 10002))?.feeCharged).toBe(false)
   })
   it('an expired document says it can no longer be changed, with no sheet', () => {
@@ -146,13 +152,13 @@ describe('protocol 14 refusals: expired, contest full, trailing bytes', () => {
     expect(f.message).not.toMatch(/consensus error/)
   })
   it('a full contest says so, with no sheet', () => {
-    const f = writeFailure(asConsensusRefusal(wasm(CONTEST_FULL)))
+    const f = writeFailure(asConsensusRefusal(wasm(CONTEST_FULL, 40141)))
     expect(f.sheet).toBeNull()
     expect(f.message).toMatch(/most contenders/)
-    expect(f.message).toMatch(/Nothing was charged/)
+    expect(f.message).toMatch(/fee was charged/)
   })
-  it('trailing bytes ask for a re-sign and say the damaged write was discarded', () => {
-    const f = writeFailure(asConsensusRefusal(wasm(TRAILING, 10002)))
+  it('an unreadable write asks for a re-sign, says it was discarded and charged nothing', () => {
+    const f = writeFailure(asConsensusRefusal(wasm(TRAILING)))
     expect(f.sheet).toBeNull()
     expect(f.message).toMatch(/re-sign/)
     expect(f.message).toMatch(/discarded/)
