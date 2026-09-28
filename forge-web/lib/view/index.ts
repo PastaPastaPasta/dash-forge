@@ -55,7 +55,12 @@ export { highlightBlob, type HighlightedBlob } from './highlight'
 export {
   listRecentRepos,
   listReposByOwner,
+  mostStarredRepos,
+  recentReposPage,
+  searchRepos,
   type DiscoveredRepo,
+  type Keyset,
+  type RepoPage,
 } from './discovery'
 export {
   artifactRangeFetch,

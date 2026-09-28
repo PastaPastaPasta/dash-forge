@@ -22,7 +22,8 @@ import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
 import { resolveAnyRepo } from '@/lib/repo'
 import { creditsToDash, ensureSdk } from '@/lib/sdk'
 import { errorMessage } from '@/lib/utils'
-import { numberTargets, parseJump } from '@/lib/view/jump'
+import { numberTargets, parseJump, resolveWord, wordTarget, type WordMatches } from '@/lib/view/jump'
+import { Author } from '@/components/author'
 import { balanceToDash, dashToUsd } from '@/lib/view/format'
 import { FundsPill } from '@/components/funds-pill'
 
@@ -109,7 +110,9 @@ export function AppHeader(): JSX.Element {
 
 /**
  * The jump box. `#n` resolves against the repo the page shows (from its query string): issue
- * first, then PR; both existing opens a choice. `owner/name#n` does the same for that repo.
+ * first, then PR; both existing opens a choice. `owner/name#n` does the same for that repo. A
+ * bare word is looked up as a repo name and as a DPNS name: one match goes straight there,
+ * several offer each (repos by owner, then the profile), none says so and offers a search.
  */
 function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
   const router = useRouter()
@@ -162,6 +165,42 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
     }
   }
 
+  const go = (href: string): void => {
+    setQuery('')
+    setNote(null)
+    router.push(href)
+  }
+
+  const goWord = async (word: string): Promise<void> => {
+    const mine = ++request.current
+    const current = (): boolean => request.current === mine
+    setBusy(true)
+    setNote(null)
+    try {
+      const sdk = await ensureSdk(DEFAULT_NETWORK)
+      const matches = await resolveWord(sdk, word, DEFAULT_NETWORK)
+      if (!current()) return
+      const target = wordTarget(matches)
+      if (target.kind === 'repo') go(repoHref('/repo', { owner: target.repo.ownerId, name: target.repo.slug, repoId: target.repo.key }))
+      else if (target.kind === 'profile') go(`/u/?name=${encodeURIComponent(target.identityId)}`)
+      else if (target.kind === 'choose') setNote(<WordChoices word={word} matches={target.matches} onPick={() => setQuery('')} />)
+      else {
+        setNote(
+          <span>
+            No repo or profile named {word}.{' '}
+            <Link className="underline" href={`/explore/?q=${encodeURIComponent(word)}`} onClick={() => setQuery('')}>
+              Search repos for “{word}”
+            </Link>
+          </span>,
+        )
+      }
+    } catch (e) {
+      if (current()) setNote(errorMessage(e))
+    } finally {
+      if (current()) setBusy(false)
+    }
+  }
+
   const onSubmit = (e: React.FormEvent): void => {
     e.preventDefault()
     const jump = parseJump(query, inRepo)
@@ -178,14 +217,13 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
           void goNumber({ owner: jump.owner, name: jump.name }, jump.number)
           return
         }
-        setQuery('')
-        setNote(null)
-        router.push(repoHref('/repo', { owner: jump.owner, name: jump.name }))
+        go(repoHref('/repo', { owner: jump.owner, name: jump.name }))
         return
       case 'profile':
-        setQuery('')
-        setNote(null)
-        router.push(`/u/?name=${encodeURIComponent(jump.name)}`)
+        go(`/u/?name=${encodeURIComponent(jump.name)}`)
+        return
+      case 'word':
+        void goWord(jump.word)
     }
   }
 
@@ -207,7 +245,7 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
           request.current++
           setBusy(false)
         }}
-        placeholder={inRepo ? 'owner/name, @name or #n' : 'owner/name or @name'}
+        placeholder={inRepo ? 'repo, owner/name, @name or #n' : 'repo, owner/name or @name'}
         aria-describedby={note ? `${id}-note` : undefined}
         aria-busy={busy}
         onKeyDown={(e) => {
@@ -224,15 +262,47 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
         </kbd>
       )}
       {note ? (
-        <p
+        <div
           id={`${id}-note`}
           role="status"
           className="absolute left-0 right-0 top-full z-50 mt-1 rounded-md border border-anvil-200 bg-white px-2.5 py-1.5 text-[12px] text-anvil-700 shadow-lg dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-200"
         >
           {note}
-        </p>
+        </div>
       ) : null}
     </form>
+  )
+}
+
+/** A bare word that names several things: each repo (by owner), then the profile. */
+function WordChoices({ word, matches, onPick }: { word: string; matches: WordMatches; onPick: () => void }): JSX.Element {
+  return (
+    <div data-testid="jump-choices">
+      <p className="mb-1">“{word}” is:</p>
+      <ul className="space-y-1">
+        {matches.repos.map((r) => (
+          <li key={r.key} className="flex flex-wrap items-center gap-1">
+            <Link
+              className="hit-area font-mono underline"
+              href={repoHref('/repo', { owner: r.ownerId, name: r.slug, repoId: r.key })}
+              onClick={onPick}
+              aria-label={`repo ${r.slug} by ${r.ownerId}`}
+            >
+              repo {r.slug}
+            </Link>
+            <span>by</span>
+            <Author identityId={r.ownerId} link={false} />
+          </li>
+        ))}
+        {matches.profile !== null ? (
+          <li>
+            <Link className="hit-area underline" href={`/u/?name=${encodeURIComponent(matches.profile)}`} onClick={onPick}>
+              profile @{word}
+            </Link>
+          </li>
+        ) : null}
+      </ul>
+    </div>
   )
 }
 

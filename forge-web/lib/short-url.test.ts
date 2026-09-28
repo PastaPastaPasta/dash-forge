@@ -35,6 +35,15 @@ describe('shortRepoPath → shim → canonical route', () => {
     [{ kind: 'pull', number: 7, tab: 'checks' }, '/alice/project/pull/7/checks', '/repo/pull/?owner=alice&name=project&number=7&tab=checks'],
     [{ kind: 'releases' }, '/alice/project/releases', '/repo/releases/?owner=alice&name=project'],
     [{ kind: 'release', tag: 'v1.2' }, '/alice/project/releases/v1.2', '/repo/release/?owner=alice&name=project&tag=v1.2'],
+    // L-27: the GitHub pages that had no short URL.
+    [{ kind: 'branches' }, '/alice/project/branches', '/repo/branches/?owner=alice&name=project'],
+    [{ kind: 'tags' }, '/alice/project/tags', '/repo/tags/?owner=alice&name=project'],
+    [{ kind: 'stargazers' }, '/alice/project/stargazers', '/repo/stargazers/?owner=alice&name=project'],
+    [
+      { kind: 'commit', oid: '0123456789abcdef0123456789abcdef01234567' },
+      '/alice/project/commit/0123456789abcdef0123456789abcdef01234567',
+      '/repo/commit/?owner=alice&name=project&oid=0123456789abcdef0123456789abcdef01234567',
+    ],
   ]
   it.each(cases)('%j', (target, short, canonical) => {
     expect(shortRepoPath(REPO, target)).toBe(short)
@@ -53,6 +62,43 @@ describe('shortRepoPath → shim → canonical route', () => {
     expect(expand('/dash-forge/', '/dash-forge')).toBeNull()
     expect(expand('/alice/project', '/dash-forge')).toBeNull()
   })
+})
+
+describe('GitHub URLs that map onto an existing page (L-27)', () => {
+  it.each([
+    ['/alice/project/branches/', '/repo/branches/?owner=alice&name=project'],
+    ['/alice/project/tags', '/repo/tags/?owner=alice&name=project'],
+    ['/alice/project/stargazers', '/repo/stargazers/?owner=alice&name=project'],
+    // A short commit id, in any case, opens the commit page (which resolves prefixes).
+    ['/alice/project/commit/ABCDEF1', '/repo/commit/?owner=alice&name=project&oid=abcdef1'],
+    // GitHub's release permalink.
+    ['/alice/project/releases/tag/v1.2.3', '/repo/release/?owner=alice&name=project&tag=v1.2.3'],
+    ['/alice/project/releases/tag/rel%2F1', '/repo/release/?owner=alice&name=project&tag=rel%2F1'],
+    // A tag literally named "tag" keeps its old URL.
+    ['/alice/project/releases/tag', '/repo/release/?owner=alice&name=project&tag=tag'],
+    // Already served: tree/blob with a path, the PR tabs, the issues search (its `?q=` rides along).
+    ['/alice/project/tree/main/src/lib', '/repo/tree/?owner=alice&name=project&ref=main&path=src%2Flib'],
+    ['/alice/project/pull/7/files', '/repo/pull/?owner=alice&name=project&number=7&tab=files'],
+    ['/alice/project/issues', '/repo/issues/?owner=alice&name=project'],
+  ])('%s', (path, canonical) => {
+    expect(expand(path)).toBe(canonical)
+  })
+
+  it('carries a query string such as ?q= through the rewrite', () => {
+    const script = shortUrlShimScript('')
+    const replaced: string[] = []
+    const location = { pathname: '/alice/project/issues', search: '?q=is%3Aclosed+label%3Abug', hash: '#top', replace: (to: string) => replaced.push(to) }
+    const documentElement = { setAttribute: () => undefined }
+    new Function('location', 'document', script)(location, { documentElement })
+    expect(replaced).toEqual(['/repo/issues/?owner=alice&name=project&q=is%3Aclosed+label%3Abug#top'])
+  })
+
+  it.each(['/alice/project/commit/xyz', '/alice/project/commit/abc', '/alice/project/commit', '/alice/project/branches/main', '/alice/project/stargazers/x', '/alice/project/releases/tag/a/b'])(
+    'refuses %s',
+    (path) => {
+      expect(expand(path)).toBeNull()
+    },
+  )
 })
 
 describe('the shim leaves everything else alone', () => {

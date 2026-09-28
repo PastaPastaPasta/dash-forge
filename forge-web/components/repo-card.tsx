@@ -40,7 +40,11 @@ export function RepoCard({ repo }: { repo: DiscoveredRepo }): JSX.Element {
       )}
       <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
         <Author identityId={repo.ownerId} />
-        {repo.createdAt ? <span>· {timeAgo(repo.createdAt)}</span> : null}
+        {typeof repo.pushedAt === 'number' ? (
+          <span title="Newest push">· pushed {timeAgo(repo.pushedAt)}</span>
+        ) : repo.createdAt ? (
+          <span>· {timeAgo(repo.createdAt)}</span>
+        ) : null}
         {typeof repo.stars === 'number' ? (
           <span className="inline-flex items-center gap-1" title="Stars (provable count)">
             <Star className="h-3 w-3" aria-hidden /> {repo.stars}
