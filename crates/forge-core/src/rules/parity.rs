@@ -155,19 +155,18 @@ pub fn checks_state(
             newest.insert(run.name.as_str(), run);
         }
     }
-    let names: BTreeSet<&str> = if policy.required_checks.is_empty() {
-        if policy.require_checks {
-            newest.keys().copied().collect()
-        } else {
-            BTreeSet::new()
-        }
+    // An empty name names nothing (the schema refuses one; a reader's input may not).
+    let listed: BTreeSet<&str> = policy
+        .required_checks
+        .iter()
+        .map(String::as_str)
+        .filter(|n| !n.is_empty())
+        .collect();
+    let require_all = listed.is_empty() && policy.require_checks;
+    let names = if require_all {
+        newest.keys().copied().collect()
     } else {
-        policy
-            .required_checks
-            .iter()
-            .map(String::as_str)
-            .filter(|n| !n.is_empty())
-            .collect()
+        listed
     };
     let required: Vec<RequiredCheck> = names
         .into_iter()
@@ -185,11 +184,7 @@ pub fn checks_state(
         })
         .collect();
     let all_pass = required.iter().all(|c| c.state == CheckState::Passed);
-    let met = if policy.required_checks.is_empty() && policy.require_checks {
-        !required.is_empty() && all_pass
-    } else {
-        all_pass
-    };
+    let met = all_pass && !(require_all && required.is_empty());
     ChecksState {
         required,
         met,
@@ -450,18 +445,16 @@ pub fn trending_window(grid: TimeGrid, now_ms: u64, selector: TrendingSelector) 
         grid.step.saturating_mul(1000),
         grid.phase.saturating_mul(1000),
     );
-    if step == 0 || now_ms < phase || selector == TrendingSelector::All {
+    if step == 0 || now_ms < phase {
         return None;
     }
-    let newest = phase + (now_ms - phase) / step * step;
-    let start = match selector {
-        TrendingSelector::Newest => newest,
-        TrendingSelector::Oldest => {
-            let back = (range / step).saturating_sub(1).saturating_mul(step);
-            newest.saturating_sub(back).max(phase)
-        }
-        TrendingSelector::All => unreachable!(),
+    let back = match selector {
+        TrendingSelector::Newest => 0,
+        TrendingSelector::Oldest => (range / step).saturating_sub(1).saturating_mul(step),
+        TrendingSelector::All => return None,
     };
+    let newest = phase + (now_ms - phase) / step * step;
+    let start = newest.saturating_sub(back).max(phase);
     Some(Window {
         start,
         end: start.saturating_add(range),

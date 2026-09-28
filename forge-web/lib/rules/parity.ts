@@ -65,7 +65,7 @@ export const PASSING_CONCLUSIONS: readonly string[] = ['success', 'neutral', 'sk
 
 function checkStateOf(run: CheckRunRow): CheckState {
   if (run.status !== 'completed') return 'pending'
-  return run.conclusion !== undefined && run.conclusion !== null && PASSING_CONCLUSIONS.includes(run.conclusion) ? 'passed' : 'failing'
+  return PASSING_CONCLUSIONS.includes(run.conclusion ?? '') ? 'passed' : 'failing'
 }
 
 /**
@@ -95,15 +95,16 @@ export function checksState(
     const held = newest.get(run.name)
     if (held === undefined || compareKey(run, held) > 0) newest.set(run.name, run)
   }
-  const requiredChecks = (policy.requiredChecks ?? []).filter((n) => n !== '')
-  const requireAll = requiredChecks.length === 0 && policy.requireChecks === true
-  const names = [...new Set(requiredChecks.length > 0 ? requiredChecks : requireAll ? [...newest.keys()] : [])].sort(compareStrings)
+  // An empty name names nothing (the schema refuses one; a reader's input may not).
+  const named = (policy.requiredChecks ?? []).filter((n) => n !== '')
+  const requireAll = named.length === 0 && policy.requireChecks === true
+  const names = [...new Set(requireAll ? newest.keys() : named)].sort(compareStrings)
   const required: RequiredCheck[] = names.map((name) => {
     const run = newest.get(name)
     return run === undefined ? { name, state: 'missing', runId: null } : { name, state: checkStateOf(run), runId: run.id }
   })
   const allPass = required.every((c) => c.state === 'passed')
-  return { required, met: requireAll ? required.length > 0 && allPass : allPass, untrusted }
+  return { required, met: allPass && !(requireAll && required.length === 0), untrusted }
 }
 
 // ---------------------------------------------------------------------------
@@ -268,8 +269,9 @@ export function trendingWindow(grid: TimeGrid, nowMs: number, selector: Trending
   const step = grid.step * 1000
   const phase = (grid.phase ?? 0) * 1000
   if (step === 0 || nowMs < phase || selector === 'all') return null
+  const back = selector === 'newest' ? 0 : Math.max(Math.floor(range / step) - 1, 0) * step
   const newest = phase + Math.floor((nowMs - phase) / step) * step
-  const start = selector === 'newest' ? newest : Math.max(newest - Math.max(Math.floor(range / step) - 1, 0) * step, phase)
+  const start = Math.max(newest - back, phase)
   return { start, end: start + range }
 }
 

@@ -276,7 +276,7 @@ export async function rankedDocuments(sdk: EvoSDK, query: RankedQuery): Promise<
   })
   return {
     entries: res.entries.map((e) => ({
-      group: typeof e.groupValue === 'string' ? e.groupValue : String(e.groupValue ?? ''),
+      group: String(e.groupValue ?? ''),
       keyHex: e.groupKeyHex,
       count: Number(e.value),
       rank: Number(e.rank),

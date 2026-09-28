@@ -63,8 +63,7 @@ async function create(w, contractId, documentTypeName, data, { indexOnly = false
   const base = new Document({ properties: {}, documentTypeName, dataContractId: contractId, ownerId: w.id });
   const document = Document.fromObject({ ...base.toObject(), ...data }, version);
   try {
-    const d = await sdk.documents.create({ document, identityKey: w.identityKey, signer: w.signer });
-    return d;
+    return await sdk.documents.create({ document, identityKey: w.identityKey, signer: w.signer });
   } catch (e) {
     if (indexOnly && INDEX_ONLY_WAIT.test(String(e?.message ?? e))) return null;
     throw e;
@@ -119,11 +118,11 @@ const pol = await refused(() => create(OWNER, collab, 'policy', { repoId: R, req
 check('a policy with requiredChecks is accepted', pol === null, pol ?? '');
 
 // 5. watch create + delete by values
-const own = async (w, t, id) => (await sdk.documents.query({ dataContractId: collab, documentTypeName: t, where: [['$ownerId', '==', w.id], ['repoId', '==', id]], orderBy: [['$ownerId', 'asc']], limit: 1 })).size > 0;
+const ownRows = (w, t, id) => sdk.documents.query({ dataContractId: collab, documentTypeName: t, where: [['$ownerId', '==', w.id], ['repoId', '==', id]], orderBy: [['$ownerId', 'asc']], limit: 1 });
+const own = async (w, t, id) => (await ownRows(w, t, id)).size > 0;
 await create(OWNER, collab, 'watch', { repoId: R }, { indexOnly: true });
 const watched = await until(() => own(OWNER, 'watch', repoId));
-const rows = await sdk.documents.query({ dataContractId: collab, documentTypeName: 'watch', where: [['$ownerId', '==', OWNER.id], ['repoId', '==', repoId]], orderBy: [['$ownerId', 'asc']], limit: 1 });
-const doc = [...rows.values()][0];
+const doc = [...(await ownRows(OWNER, 'watch', repoId)).values()][0];
 try {
   await sdk.documents.delete({ document: doc, identityKey: OWNER.identityKey, signer: OWNER.signer });
 } catch (e) {
@@ -143,16 +142,14 @@ check('count on topic.byName counts the tagged repo', counted);
 
 // 7. ranked trending with `oldest`
 for (const [w, id] of [[OWNER, R], [MEMBER, R], [OWNER, b58(repo2Id)]]) await create(w, collab, 'starBeat', { repoId: id }, { indexOnly: true });
-let ranked = null;
+// The scratch repos' rows of the ranking, in ranked order: [repoId, count].
+let mine = [];
 await until(async () => {
-  ranked = await sdk.documents.ranked({ dataContractId: collab, documentTypeName: 'starBeat', groupBy: 'repoId', aggregate: { type: 'count' }, limit: 100, timeRange: [{ field: '$createdAt', selector: 'oldest' }] });
-  const mine = ranked.entries.filter((e) => e.groupValue === repoId || e.groupValue === repo2Id);
+  const ranked = await sdk.documents.ranked({ dataContractId: collab, documentTypeName: 'starBeat', groupBy: 'repoId', aggregate: { type: 'count' }, limit: 100, timeRange: [{ field: '$createdAt', selector: 'oldest' }] });
+  mine = ranked.entries.filter((e) => e.groupValue === repoId || e.groupValue === repo2Id).map((e) => [e.groupValue, Number(e.value)]);
   return mine.length === 2;
 });
-const mine = ranked.entries.filter((e) => e.groupValue === repoId || e.groupValue === repo2Id).map((e) => [e.groupValue, Number(e.value)]);
-const firstIdx = ranked.entries.findIndex((e) => e.groupValue === repoId);
-const secondIdx = ranked.entries.findIndex((e) => e.groupValue === repo2Id);
-check('ranked(starBeat, oldest) returns the seeded order', mine.length === 2 && firstIdx < secondIdx && mine.find((m) => m[0] === repoId)[1] === 2 && mine.find((m) => m[0] === repo2Id)[1] === 1, JSON.stringify(mine));
+check('ranked(starBeat, oldest) returns the seeded order', JSON.stringify(mine) === JSON.stringify([[repoId, 2], [repo2Id, 1]]), JSON.stringify(mine));
 
 const failed = results.filter((r) => !r.ok).length;
 console.log(JSON.stringify({ run, repoId, repo2Id, passed: results.length - failed, failed }));

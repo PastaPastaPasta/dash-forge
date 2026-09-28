@@ -22,8 +22,10 @@ pub struct SyncState {
     pub source: String,
     /// The destination: the repo id and the forge-collab contract its collaboration documents
     /// live in ([`destination`]). A re-registered forge-collab starts empty, so a cursor saved
-    /// against the old one must not narrow what the next run reads (D-918).
-    pub repo_id: String,
+    /// against the old one must not narrow what the next run reads (D-918). The key stays
+    /// `repoId` in the file, so an older state file is read (and, being bare, does not match).
+    #[serde(rename = "repoId")]
+    pub destination: String,
     /// Unix seconds when the last successful run started.
     pub last_sync_started: Option<u64>,
     #[serde(skip)]
@@ -31,14 +33,14 @@ pub struct SyncState {
 }
 
 impl SyncState {
-    /// Load `path` for `source` → `repo_id`. `source` names what the run reads, classes and
-    /// limit included (see [`scope`]), so a file saved by a narrower run (`--sync code`) is
-    /// not reused by a wider one. A missing file, or one for another source, scope or
-    /// destination, is a fresh state (a full scan).
-    pub fn load(path: Option<&Path>, source: &str, repo_id: &str) -> Self {
+    /// Load `path` for `source` → `destination` ([`destination`]). `source` names what the run
+    /// reads, classes and limit included (see [`scope`]), so a file saved by a narrower run
+    /// (`--sync code`) is not reused by a wider one. A missing file, or one for another source,
+    /// scope or destination, is a fresh state (a full scan).
+    pub fn load(path: Option<&Path>, source: &str, destination: &str) -> Self {
         let fresh = Self {
             source: source.to_string(),
-            repo_id: repo_id.to_string(),
+            destination: destination.to_string(),
             last_sync_started: None,
             path: path.map(Path::to_path_buf),
         };
@@ -47,7 +49,7 @@ impl SyncState {
             .ok()
             .and_then(|b| serde_json::from_slice::<SyncState>(&b).ok())
         {
-            Some(s) if s.source == source && s.repo_id == repo_id => Self {
+            Some(s) if s.source == source && s.destination == destination => Self {
                 path: fresh.path,
                 ..s
             },

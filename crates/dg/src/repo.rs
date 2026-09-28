@@ -309,12 +309,12 @@ async fn star(ctx: &Ctx, repo: &str, on: bool, trending: bool) -> Result<()> {
             .ok()
             .and_then(|c| c.trending)
             .unwrap_or(forge_core::collab::v2::TRENDING_DEFAULT);
-    let what = match (on, trending) {
-        (true, true) => "Star {}? (two small documents: the star, and one that counts it toward Trending; --no-trending skips it)",
-        (true, false) => "Star {}? (one small document)",
-        (false, _) => "Unstar {}? (one small document, refunded; a Trending count stays until its week ends)",
-    };
-    ctx.confirm_or_cancel(&what.replace("{}", &handle.display()))?;
+    let name = handle.display();
+    ctx.confirm_or_cancel(&match (on, trending) {
+        (true, true) => format!("Star {name}? (two small documents: the star, and one that counts it toward Trending; --no-trending skips it)"),
+        (true, false) => format!("Star {name}? (one small document)"),
+        (false, _) => format!("Unstar {name}? (one small document, refunded; a Trending count stays until its week ends)"),
+    })?;
     let collab = s.collab();
     let before = collab.star_count(handle).await.ok();
     let changed = if on {

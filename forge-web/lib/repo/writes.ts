@@ -647,6 +647,9 @@ export function releaseAssetsJson(assets: readonly ReleaseAsset[]): string {
 /** The indexOnly types a viewer writes one of per target: `repoId` for all but `follow`. */
 type IndexOnlyType = 'star' | 'follow' | 'starBeat' | 'watch'
 
+/** The property an indexOnly type's target is in. */
+const targetField = (type: IndexOnlyType): 'repoId' | 'identityId' => (type === 'follow' ? 'identityId' : 'repoId')
+
 interface RawDocumentsFacade {
   query(q: unknown): Promise<Map<string, unknown>>
 }
@@ -663,7 +666,7 @@ async function findOwnIndexOnly(
   ownerId: string,
   targetId: string,
 ): Promise<unknown | null> {
-  const field = type === 'follow' ? 'identityId' : 'repoId'
+  const field = targetField(type)
   const rows = await (sdk as unknown as { documents: RawDocumentsFacade }).documents.query({
     dataContractId: forge.collab,
     documentTypeName: type,
@@ -680,7 +683,7 @@ async function findOwnIndexOnly(
 
 /** Create the signer's `star` / `follow` (indexOnly). Idempotent: a duplicate is success. */
 function createIndexOnly(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, type: IndexOnlyType, targetId: string): Promise<WriteResult> {
-  const field = type === 'follow' ? 'identityId' : 'repoId'
+  const field = targetField(type)
   return createOrExisting(() =>
     createDocumentIdempotent(sdk, auth, {
       contractId: forge.collab,
@@ -699,7 +702,7 @@ async function deleteIndexOnly(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, ty
     contractId: forge.collab,
     documentType: type,
     documentId: targetId,
-    repo: type === 'follow' ? null : targetId,
+    repo: targetField(type) === 'repoId' ? targetId : null,
     document: own,
     probeGone: async () => (await findOwnIndexOnly(sdk, forge, type, auth.identityId, targetId)) === null,
   })
@@ -714,17 +717,11 @@ export interface Relation {
 
 /**
  * Write the signer's `starBeat` for `repoId` (trending, platform-parity-spec §4.3) unless one
- * exists: one per identity and repo, ever. Best effort, after the star: a failure is returned
- * for the caller to log, never thrown, because the star stands without it.
+ * exists: one per identity and repo, ever.
  */
-export async function writeStarBeat(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, repoId: string): Promise<{ written: boolean; error: unknown }> {
-  try {
-    if ((await findOwnIndexOnly(sdk, forge, 'starBeat', auth.identityId, repoId)) !== null) return { written: false, error: null }
-    await createIndexOnly(sdk, auth, forge, 'starBeat', repoId)
-    return { written: true, error: null }
-  } catch (e) {
-    return { written: false, error: e }
-  }
+export async function writeStarBeat(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, repoId: string): Promise<void> {
+  if ((await findOwnIndexOnly(sdk, forge, 'starBeat', auth.identityId, repoId)) !== null) return
+  await createIndexOnly(sdk, auth, forge, 'starBeat', repoId)
 }
 
 /**
@@ -735,12 +732,12 @@ export function starRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string
   return {
     read: async () => (await findOwnIndexOnly(sdk, repo.forge, 'star', viewer, repo.repoId)) !== null,
     add: async () => {
-      const confirmed = (await createIndexOnly(sdk, need(auth), repo.forge, 'star', repo.repoId)).confirmed
+      const a = need(auth)
+      const confirmed = (await createIndexOnly(sdk, a, repo.forge, 'star', repo.repoId)).confirmed
       if (confirmed && trending) {
-        const beat = await writeStarBeat(sdk, need(auth), repo.forge, repo.repoId)
-        // The star stands without it; the console keeps why (the beat only feeds a ranking).
+        // Best effort: the star stands without its beat, which only feeds a ranking.
         // eslint-disable-next-line no-console
-        if (beat.error !== null) console.warn('the star landed; its Trending beat did not', beat.error)
+        await writeStarBeat(sdk, a, repo.forge, repo.repoId).catch((e: unknown) => console.warn('the star landed; its Trending beat did not', e))
       }
       return confirmed
     },

@@ -76,15 +76,15 @@ pub const DOC_STAR_BEAT: &str = "starBeat";
 pub const DOC_WATCH: &str = "watch";
 /// A milestone definition (maintainer- or writer-gated).
 pub const DOC_MILESTONE: &str = "milestone";
+/// forge-core: a release (maintainer-gated).
+pub const DOC_RELEASE: &str = "release";
+/// forge-core: a label definition (member-gated).
+pub const DOC_LABEL: &str = "label";
 
 /// Whether a star also counts toward Trending unless the user says otherwise (the owner's
 /// default, 2026-09-28; `dg repo star --no-trending` and the `trending` config key opt out).
 /// The web app's default is `TRENDING_DEFAULT` in `forge-web/lib/repo/trending.ts`.
 pub const TRENDING_DEFAULT: bool = true;
-/// forge-core: a release (maintainer-gated).
-pub const DOC_RELEASE: &str = "release";
-/// forge-core: a label definition (member-gated).
-pub const DOC_LABEL: &str = "label";
 
 /// The most PRs one push follows ([`Collab::prs_following`]): each costs a few reads.
 pub const MAX_FOLLOWING: usize = 20;
@@ -3336,18 +3336,20 @@ impl<'a> Collab<'a> {
             .await
     }
 
-    /// The signer's star on `repo`, if any (the `byOwner` index, `repoId` its terminal).
-    async fn own_star(
+    /// The signer's own row of an indexOnly `doc_type` keyed by repo (`star`, `starBeat`,
+    /// `watch`): its `byOwner` index, `repoId` the terminal.
+    pub(super) async fn own_index_only(
         &self,
         collab: &LoadedContract,
         repo: &RepoRef,
+        doc_type: &str,
     ) -> Result<Option<FetchedDocument>> {
         let me = platform::decode_identifier(&self.signer_id()?)?;
         let docs = self
             .client
             .query_documents(
                 collab,
-                DOC_STAR,
+                doc_type,
                 &[
                     QueryFilter::eq("$ownerId", FieldValue::identifier(me)),
                     Self::repo_filter(repo)?,
@@ -3358,6 +3360,44 @@ impl<'a> Collab<'a> {
             )
             .await?;
         Ok(docs.into_iter().next())
+    }
+
+    /// Create the signer's row of an indexOnly `doc_type` for `repo`, unless it exists.
+    /// `false` when it did (or a concurrent write won: one row per identity and repo is
+    /// structural). indexOnly: no stored row, so a spent nonce is settled by looking for the
+    /// signer's row, not by reading a document id back.
+    pub(super) async fn create_own_index_only(
+        &self,
+        collab: &LoadedContract,
+        repo: &RepoRef,
+        doc_type: &str,
+    ) -> Result<bool> {
+        if self.own_index_only(collab, repo, doc_type).await?.is_some() {
+            return Ok(false);
+        }
+        let probe = || async { Ok(self.own_index_only(collab, repo, doc_type).await?.is_some()) };
+        match self
+            .engine()?
+            .create_index_only(
+                collab,
+                doc_type,
+                Self::with_repo(repo, BTreeMap::new())?,
+                probe,
+            )
+            .await
+        {
+            Ok(_) => Ok(true),
+            Err(Error::DuplicateUniqueIndex(_)) => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+
+    async fn own_star(
+        &self,
+        collab: &LoadedContract,
+        repo: &RepoRef,
+    ) -> Result<Option<FetchedDocument>> {
+        self.own_index_only(collab, repo, DOC_STAR).await
     }
 
     /// Whether the signer has starred `repo`.
@@ -3371,76 +3411,19 @@ impl<'a> Collab<'a> {
     /// already starred (nothing written, no beat either).
     pub async fn star(&self, repo: &RepoRef, trending: bool) -> Result<bool> {
         let collab = self.collab_contract(repo).await?;
-        if self.own_star(&collab, repo).await?.is_some() {
-            return Ok(false);
-        }
-        // indexOnly: a star has no stored row, so a spent nonce is settled by looking for
-        // this identity's star, not by reading the (row-less) document id back.
-        let probe = || async { Ok(self.own_star(&collab, repo).await?.is_some()) };
-        let starred = match self
-            .engine()?
-            .create_index_only(
-                &collab,
-                DOC_STAR,
-                Self::with_repo(repo, BTreeMap::new())?,
-                probe,
-            )
-            .await
-        {
-            Ok(_) => true,
-            // One star per (repo, identity) is structural: a concurrent star won.
-            Err(Error::DuplicateUniqueIndex(_)) => false,
-            Err(e) => return Err(e),
-        };
+        let starred = self.create_own_index_only(&collab, repo, DOC_STAR).await?;
         if starred && trending {
-            // The star stands whatever happens to the beat, which only feeds a ranking.
-            if let Err(e) = self.star_beat(&collab, repo).await {
+            // The star stands whatever happens to the beat, which only feeds a ranking. A beat
+            // from an earlier star of this repo makes this a no-op (one per identity and repo,
+            // ever: it cannot be deleted).
+            if let Err(e) = self
+                .create_own_index_only(&collab, repo, DOC_STAR_BEAT)
+                .await
+            {
                 tracing::warn!(error = %e, "the star landed; its Trending beat did not");
             }
         }
         Ok(starred)
-    }
-
-    /// Whether the signer has a `starBeat` for `repo` (the `byOwner` proof index).
-    async fn has_star_beat(&self, collab: &LoadedContract, repo: &RepoRef) -> Result<bool> {
-        let me = platform::decode_identifier(&self.signer_id()?)?;
-        let docs = self
-            .client
-            .query_documents(
-                collab,
-                DOC_STAR_BEAT,
-                &[
-                    QueryFilter::eq("$ownerId", FieldValue::identifier(me)),
-                    Self::repo_filter(repo)?,
-                ],
-                &[],
-                1,
-                None,
-            )
-            .await?;
-        Ok(!docs.is_empty())
-    }
-
-    /// Write the signer's `starBeat` for `repo`. One exists at most per identity and repo,
-    /// ever (it cannot be deleted), so an earlier star's beat makes this a no-op.
-    async fn star_beat(&self, collab: &LoadedContract, repo: &RepoRef) -> Result<()> {
-        if self.has_star_beat(collab, repo).await? {
-            return Ok(());
-        }
-        let probe = || async { self.has_star_beat(collab, repo).await };
-        match self
-            .engine()?
-            .create_index_only(
-                collab,
-                DOC_STAR_BEAT,
-                Self::with_repo(repo, BTreeMap::new())?,
-                probe,
-            )
-            .await
-        {
-            Ok(_) | Err(Error::DuplicateUniqueIndex(_)) => Ok(()),
-            Err(e) => Err(e),
-        }
     }
 
     /// Unstar `repo` (the values-carrying `indexOnly` delete). Returns `false` when it was

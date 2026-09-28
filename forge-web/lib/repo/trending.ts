@@ -27,12 +27,16 @@ export const TRENDING_DEFAULT = true
 export const TRENDING_PREF_KEY = 'forge.trending.v1'
 
 type Store = Pick<Storage, 'getItem' | 'setItem'>
-const browserStore = (): Store | null => (typeof localStorage === 'undefined' ? null : localStorage)
+function browserStore(): Store | null {
+  return typeof localStorage === 'undefined' ? null : localStorage
+}
 
 /** The stored preference, or {@link TRENDING_DEFAULT}. */
 export function trendingPref(storage: Store | null = browserStore()): boolean {
   const raw = storage?.getItem(TRENDING_PREF_KEY) ?? null
-  return raw === 'on' ? true : raw === 'off' ? false : TRENDING_DEFAULT
+  if (raw === 'on') return true
+  if (raw === 'off') return false
+  return TRENDING_DEFAULT
 }
 
 export function setTrendingPref(on: boolean, storage: Store | null = browserStore()): void {
@@ -43,13 +47,13 @@ export function setTrendingPref(on: boolean, storage: Store | null = browserStor
 export type TrendingWindow = 'week' | 'today'
 
 /** The top repos by new stargazers in the window: `starBeat.byWeek`, proved. */
-export function readTrending(sdk: EvoSDK, forge: ForgeIds, window: TrendingWindow, limit = 25): Promise<RankedPage> {
+export function readTrending(sdk: EvoSDK, forge: ForgeIds, span: TrendingWindow, limit = 25): Promise<RankedPage> {
   return rankedDocuments(sdk, {
     dataContractId: forge.collab,
     documentTypeName: DOC.starBeat,
     groupBy: 'repoId',
     limit,
-    timeRange: { field: '$createdAt', selector: window === 'week' ? 'oldest' : 'newest' },
+    timeRange: { field: '$createdAt', selector: span === 'week' ? 'oldest' : 'newest' },
   })
 }
 

@@ -537,10 +537,10 @@ async function main() {
   // --- the final contract revision (platform-parity-spec §6, C-1) -----------------------
   // indexOnly writes are confirmed by a read of the writer's own entry (the strict wait
   // refuses that transition family, as for the star above).
-  async function createIndexOnly(step, who, documentTypeName, where) {
+  async function createIndexOnly(step, who, documentTypeName) {
     if (state[step]) return;
     const own = async () => {
-      const rows = await sdk.documents.query({ dataContractId: collab, documentTypeName, where: [['$ownerId', '==', who.id], ...where], orderBy: [['$ownerId', 'asc']], limit: 1 });
+      const rows = await sdk.documents.query({ dataContractId: collab, documentTypeName, where: [['$ownerId', '==', who.id], ['repoId', '==', repoId]], orderBy: [['$ownerId', 'asc']], limit: 1 });
       return rows.size > 0;
     };
     if (!(await own())) {
@@ -559,8 +559,8 @@ async function main() {
     log(step);
   }
   // CONTRIB's star counts toward Trending (the default), and CONTRIB watches the repo.
-  await createIndexOnly('starBeat:contrib', CONTRIB, 'starBeat', [['repoId', '==', repoId]]);
-  await createIndexOnly('watch:contrib', CONTRIB, 'watch', [['repoId', '==', repoId]]);
+  await createIndexOnly('starBeat:contrib', CONTRIB, 'starBeat');
+  await createIndexOnly('watch:contrib', CONTRIB, 'watch');
   // Topics (forge-core, maintainer-gated): Explore by topic counts `fixture` and `forge-v2`.
   await create('topic:fixture', OWNER, core, 'topic', { repoId: R, name: 'fixture' });
   await create('topic:forge-v2', OWNER, core, 'topic', { repoId: R, name: 'forge-v2' });

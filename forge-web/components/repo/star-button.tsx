@@ -50,18 +50,12 @@ export function StarButton({
   // Read which subtrees a star would create only once the viewer points at the button: a page
   // view costs no reads, and the price is an upper bound until then.
   const [interested, setInterested] = useState(false)
-  const first = useFirstWrite(
-    () => starFirsts(sdk!, repo, identity!, count),
-    [repo.repoId, identity ?? '', count],
-    interested && ready && sdk !== null && identity !== null && !starred,
-  )
-  const beatFirst = useFirstWrite(
-    () => starBeatFirsts(sdk!, repo, identity!),
-    [repo.repoId, identity ?? ''],
-    trending && interested && ready && sdk !== null && identity !== null && !starred,
-  )
+  const pricing = interested && ready && sdk !== null && identity !== null && !starred
+  const first = useFirstWrite(() => starFirsts(sdk!, repo, identity!, count), [repo.repoId, identity ?? '', count], pricing)
+  const beatFirst = useFirstWrite(() => starBeatFirsts(sdk!, repo, identity!), [repo.repoId, identity ?? ''], trending && pricing)
   // An upper bound: a beat is skipped when an earlier star of this repo already wrote one.
-  const cost = trending ? sumPreviews([previewCreate('star', {}, first), previewCreate('starBeat', {}, beatFirst)]) : previewCreate('star', {}, first)
+  const starCost = previewCreate('star', {}, first)
+  const cost = trending ? sumPreviews([starCost, previewCreate('starBeat', {}, beatFirst)]) : starCost
   const refund = previewDelete('star')
   const onClick = (): void => {
     if (!starred && !guard.check(cost, 'collab')) return

@@ -298,6 +298,29 @@ async function main() {
     return null;
   }
 
+  // The contract JSON a transition carries: the schema file's parts under this id and version.
+  const contractJson = (json, id, version) => ({
+    $formatVersion: '1',
+    id,
+    ownerId,
+    version,
+    ...(json.config ? { config: json.config } : {}),
+    ...(json.description ? { description: json.description } : {}),
+    ...(json.keywords ? { keywords: json.keywords } : {}),
+    schemaDefs: json.schemaDefs,
+    documentSchemas: json.documentSchemas,
+  });
+  // A node can answer the balance query from the block before the one that applied the
+  // transition (the moutai deploy recorded forge-collab at 0 this way), so wait for it to move.
+  async function settledBalance(before) {
+    let after = await balance();
+    for (let i = 0; after === before && i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 2000));
+      after = await balance();
+    }
+    return after;
+  }
+
   // Build, check and (unless --dry-run) broadcast one contract create. The nonce, contract id
   // and (for forge-core) the contract group id derived from THAT nonce are recorded together
   // BEFORE broadcasting, so a crash after broadcast resumes against the right ids.
@@ -313,20 +336,9 @@ async function main() {
     const id = contractId(ownerId, nonce);
     const groupId = groupIdFor(nonce);
 
-    const full = {
-      $formatVersion: '1',
-      id,
-      ownerId,
-      version: 1,
-      ...(json.config ? { config: json.config } : {}),
-      ...(json.description ? { description: json.description } : {}),
-      ...(json.keywords ? { keywords: json.keywords } : {}),
-      schemaDefs: json.schemaDefs,
-      documentSchemas: json.documentSchemas,
-    };
     // Full validation, the same parse a node's action transform runs (a cross-contract
     // reference is resolved only at registration, against state)
-    const contract = DataContract.fromJSON(full, true, PROTOCOL_VERSION);
+    const contract = DataContract.fromJSON(contractJson(json, id, 1), true, PROTOCOL_VERSION);
     if (contract.id.toString() !== id) throw new Error(`${key}: contract id mismatch ${contract.id} != ${id}`);
 
     const transition = new DataContractCreateTransition(contract, nonce, PROTOCOL_VERSION);
@@ -356,13 +368,7 @@ async function main() {
     record();
 
     await sdk.stateTransitions.broadcastAndWait(st, PUT_SETTINGS);
-    // A node can answer the balance query from the block before the one that applied the
-    // transition (the moutai deploy recorded forge-collab at 0 this way), so wait for it to move
-    let after = await balance();
-    for (let i = 0; after === before && i < 10; i++) {
-      await new Promise((r) => setTimeout(r, 2000));
-      after = await balance();
-    }
+    const after = await settledBalance(before);
     const fetched = await sdk.contracts.fetch(id);
     if (!fetched) throw new Error(`${key}: broadcast confirmed but ${id} cannot be fetched`);
     const costCredits = before - after;
@@ -379,79 +385,57 @@ async function main() {
     return id;
   }
 
-  // --update core: an in-place DataContractUpdate of the recorded forge-core to the current schema.
-  if (update === 'core') {
-    const rec = v2.forgeCore;
-    if (!rec?.contractId || rec.status !== 'registered') throw new Error('--update core: no registered forge-core recorded for this network');
+  // --update core: an in-place DataContractUpdate of the recorded forge-core to the current
+  // schema, as the next version. Returns the step to report; resumable (see the header).
+  async function updateCore() {
+    const coreRec = v2.forgeCore;
+    if (!coreRec?.contractId || coreRec.status !== 'registered') throw new Error('--update core: no registered forge-core recorded for this network');
     const json = loadSchema('forge-core');
     const hash = schemaHash(json);
-    const onChain = await sdk.contracts.fetch(rec.contractId);
-    if (!onChain) throw new Error(`--update core: ${rec.contractId} is recorded but not on chain`);
+    const onChain = await sdk.contracts.fetch(coreRec.contractId);
+    if (!onChain) throw new Error(`--update core: ${coreRec.contractId} is recorded but not on chain`);
     const chainVersion = Number(onChain.version);
-    if (rec.schemaHash === hash) {
-      log(`forgeCore: ${rec.contractId} is already at the current schema (version ${chainVersion}); nothing to update`);
-      report.steps.push({ key: 'forgeCore', ...rec, resumed: true });
-      console.log(JSON.stringify(report, null, 2));
-      return;
+    // Close an update out: the version and schema it took the contract to, and what it cost.
+    const complete = (pending, cost, extra) => {
+      coreRec.updates = [...(coreRec.updates ?? []), { ...pending, status: 'updated', costCredits: cost.toString(), costDash: Number(cost) / CREDITS_PER_DASH, ...extra }];
+      coreRec.version = pending.version;
+      coreRec.schemaHash = pending.schemaHash;
+      delete coreRec.pendingUpdate;
+      record();
+    };
+    if (coreRec.schemaHash === hash) {
+      log(`forgeCore: ${coreRec.contractId} is already at the current schema (version ${chainVersion}); nothing to update`);
+      return { key: 'forgeCore', ...coreRec, resumed: true };
     }
-    const pending = rec.pendingUpdate;
+    const pending = coreRec.pendingUpdate;
     if (pending && pending.schemaHash === hash && chainVersion >= pending.version) {
       // An earlier run broadcast this update and it landed; finish the record.
-      const cost = BigInt(pending.balanceBefore) - (await balance());
-      rec.updates = [...(rec.updates ?? []), { ...pending, status: 'updated', confirmedAt: new Date().toISOString(), costCredits: cost.toString(), costDash: Number(cost) / CREDITS_PER_DASH, costNote: 'balance delta since the recorded pre-broadcast balance' }];
-      rec.version = pending.version;
-      rec.schemaHash = hash;
-      delete rec.pendingUpdate;
-      record();
+      complete(pending, BigInt(pending.balanceBefore) - (await balance()), { confirmedAt: new Date().toISOString(), costNote: 'balance delta since the recorded pre-broadcast balance' });
       log(`forgeCore: found version ${chainVersion} on chain; record completed`);
-      report.steps.push({ key: 'forgeCore', ...rec, resumed: true });
-      console.log(JSON.stringify(report, null, 2));
-      return;
+      return { key: 'forgeCore', ...coreRec, resumed: true };
     }
     const version = chainVersion + 1;
-    const full = {
-      $formatVersion: '1',
-      id: rec.contractId,
-      ownerId,
-      version,
-      ...(json.config ? { config: json.config } : {}),
-      ...(json.description ? { description: json.description } : {}),
-      ...(json.keywords ? { keywords: json.keywords } : {}),
-      schemaDefs: json.schemaDefs,
-      documentSchemas: json.documentSchemas,
-    };
-    const contract = DataContract.fromJSON(full, true, PROTOCOL_VERSION);
+    const contract = DataContract.fromJSON(contractJson(json, coreRec.contractId, version), true, PROTOCOL_VERSION);
     const nonce = (await chainNonce()) + 1n;
-    const transition = new DataContractUpdateTransition(contract, nonce, PROTOCOL_VERSION);
-    const st = transition.toStateTransition();
+    const st = new DataContractUpdateTransition(contract, nonce, PROTOCOL_VERSION).toStateTransition();
     st.sign(privateKey, publicKey);
     const size = st.toBytes().length;
-    log(`forgeCore: update ${rec.contractId} v${chainVersion} -> v${version}, nonce ${nonce}, signed transition ${size} B (limit ${MAX_STATE_TRANSITION_SIZE})`);
+    log(`forgeCore: update ${coreRec.contractId} v${chainVersion} -> v${version}, nonce ${nonce}, signed transition ${size} B (limit ${MAX_STATE_TRANSITION_SIZE})`);
     if (size > MAX_STATE_TRANSITION_SIZE) throw new Error('forgeCore: update transition exceeds max_state_transition_size');
-    if (dryRun) {
-      report.steps.push({ key: 'forgeCore', contractId: rec.contractId, update: { from: chainVersion, to: version }, sizeBytes: size, schemaHash: hash, dryRun: true });
-      console.log(JSON.stringify(report, null, 2));
-      return;
-    }
+    if (dryRun) return { key: 'forgeCore', contractId: coreRec.contractId, update: { from: chainVersion, to: version }, sizeBytes: size, schemaHash: hash, dryRun: true };
     const before = await balance();
-    rec.pendingUpdate = { version, identityNonce: nonce.toString(), sizeBytes: size, schemaHash: hash, previousSchemaHash: rec.schemaHash ?? null, balanceBefore: before.toString() };
+    coreRec.pendingUpdate = { version, identityNonce: nonce.toString(), sizeBytes: size, schemaHash: hash, previousSchemaHash: coreRec.schemaHash ?? null, balanceBefore: before.toString() };
     record();
     await sdk.stateTransitions.broadcastAndWait(st, PUT_SETTINGS);
-    let after = await balance();
-    for (let i = 0; after === before && i < 10; i++) {
-      await new Promise((r) => setTimeout(r, 2000));
-      after = await balance();
-    }
-    const fetched = await sdk.contracts.fetch(rec.contractId);
+    const after = await settledBalance(before);
+    const fetched = await sdk.contracts.fetch(coreRec.contractId);
     if (!fetched || Number(fetched.version) !== version) throw new Error(`forgeCore: update broadcast but the chain shows version ${fetched ? fetched.version : 'none'}`);
-    const cost = before - after;
-    rec.updates = [...(rec.updates ?? []), { ...rec.pendingUpdate, status: 'updated', updatedAt: new Date().toISOString(), costCredits: cost.toString(), costDash: Number(cost) / CREDITS_PER_DASH }];
-    rec.version = version;
-    rec.schemaHash = hash;
-    delete rec.pendingUpdate;
-    record();
-    log(`forgeCore: updated to version ${version}; cost ${(Number(cost) / CREDITS_PER_DASH).toFixed(6)} DASH`);
-    report.steps.push({ key: 'forgeCore', ...rec });
+    complete(coreRec.pendingUpdate, before - after, { updatedAt: new Date().toISOString() });
+    log(`forgeCore: updated to version ${version}; cost ${(Number(before - after) / CREDITS_PER_DASH).toFixed(6)} DASH`);
+    return { key: 'forgeCore', ...coreRec };
+  }
+  if (update === 'core') {
+    report.steps.push(await updateCore());
     console.log(JSON.stringify(report, null, 2));
     return;
   }
