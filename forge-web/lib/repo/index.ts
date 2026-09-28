@@ -198,6 +198,7 @@ export {
   issueFirsts,
   repoCreationFirsts,
   reviewFirsts,
+  starBeatFirsts,
   starFirsts,
 } from './first-write'
 export {

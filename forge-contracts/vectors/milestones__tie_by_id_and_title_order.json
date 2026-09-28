@@ -1,0 +1,48 @@
+{
+  "name": "tie_by_id_and_title_order",
+  "description": "Same $createdAt: the larger $id stands. Output sorted by title in code-point order (uppercase first).",
+  "case": "milestones",
+  "rules": "v2",
+  "input": {
+    "docs": [
+      {
+        "id": "m2",
+        "title": "beta",
+        "createdAt": 100,
+        "description": "b2"
+      },
+      {
+        "id": "m1",
+        "title": "beta",
+        "createdAt": 100,
+        "description": "b1"
+      },
+      {
+        "id": "m3",
+        "title": "Alpha",
+        "createdAt": 50
+      }
+    ],
+    "items": []
+  },
+  "expected": [
+    {
+      "id": "m3",
+      "title": "Alpha",
+      "description": "",
+      "dueOn": null,
+      "closed": false,
+      "open": 0,
+      "closedItems": 0
+    },
+    {
+      "id": "m2",
+      "title": "beta",
+      "description": "b2",
+      "dueOn": null,
+      "closed": false,
+      "open": 0,
+      "closedItems": 0
+    }
+  ]
+}

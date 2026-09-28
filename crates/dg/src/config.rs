@@ -8,6 +8,7 @@
 //! network = "devnet"            # testnet | mainnet | devnet
 //! devnet_name = "moutai"        # devnet only
 //! dapi_addresses = "68.67.122.254,68.67.122.207"   # devnet only; default: deployments file
+//! trending = false              # `dg repo star` does not count toward Trending (default: true)
 //! ```
 
 use std::path::{Path, PathBuf};
@@ -35,6 +36,11 @@ pub struct Config {
     /// Base58 id of the default identity (for display in `auth status`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_identity_id: Option<String>,
+    /// Whether `dg repo star` also counts toward Trending (a `starBeat`,
+    /// platform-parity-spec §4.3). Unset: `forge_core::collab::v2::TRENDING_DEFAULT`.
+    /// `--no-trending` overrides it for one star.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trending: Option<bool>,
 }
 
 /// The config directory: `$XDG_CONFIG_HOME/dash-forge`, else `~/.config/dash-forge`.

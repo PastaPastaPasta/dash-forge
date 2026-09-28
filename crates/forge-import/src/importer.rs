@@ -97,10 +97,17 @@ async fn run_inner<'a>(
     // Collaboration data (diffed on chain; `since` narrows what the source is asked for).
     let scope = state::scope(&summary.source, cfg.classes, cfg.limit);
     let existing_id = dest.existing.as_ref().map(|r| r.id().to_string());
+    // Keyed by the forge-collab contract too: a re-registered one starts empty (D-918).
+    let collab_contract = client
+        .target()
+        .v2
+        .as_ref()
+        .map(|f| f.collab.clone())
+        .unwrap_or_default();
     let mut sync_state = SyncState::load(
         cfg.state_path.as_deref(),
         &scope,
-        existing_id.as_deref().unwrap_or_default(),
+        &state::destination(existing_id.as_deref().unwrap_or_default(), &collab_contract),
     );
     let since = sync_state.since();
     let collab_src = src.collect(cfg.classes, since.as_deref(), cfg.limit)?;
@@ -289,7 +296,11 @@ async fn run_inner<'a>(
     let repo = dest.existing.clone().expect("created or existing");
     let role = dest::require_member(client, &repo, &signer.id()).await?;
     if existing_id.is_none() {
-        sync_state = SyncState::load(cfg.state_path.as_deref(), &scope, repo.id());
+        sync_state = SyncState::load(
+            cfg.state_path.as_deref(),
+            &scope,
+            &state::destination(repo.id(), &collab_contract),
+        );
     }
 
     // 2. Branches and tags (required). The helper prices the push against the repo as it is

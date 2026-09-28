@@ -145,13 +145,20 @@ export async function eventFirsts(
 
 /** A new star on `repo` by `viewer`. `starCount`: the count the page already shows. */
 export async function starFirsts(sdk: EvoSDK, repo: RepoRef, viewer: string, starCount?: number | null): Promise<FirstWrite> {
-  const [repoFirst, contract] = await Promise.all([
+  const [repoFirst, author, contract] = await Promise.all([
     typeof starCount === 'number'
       ? Promise.resolve(starCount === 0)
       : none(sdk, { dataContractId: repo.forge.collab, documentTypeName: DOC.star, where: [['repoId', '==', repo.repoId]] }),
+    // The starrer's first star builds their `byOwner` value tree.
+    none(sdk, { dataContractId: repo.forge.collab, documentTypeName: DOC.star, where: [['$ownerId', '==', viewer]] }),
     contractFirst(sdk, viewer, repo.forge.collab),
   ])
-  return known({ repo: repoFirst, contract })
+  return known({ repo: repoFirst, author, contract })
+}
+
+/** The viewer's trending beat (`starBeat`): their first builds their `byOwner` value tree. */
+export async function starBeatFirsts(sdk: EvoSDK, repo: RepoRef, viewer: string): Promise<FirstWrite> {
+  return known({ author: await none(sdk, { dataContractId: repo.forge.collab, documentTypeName: DOC.starBeat, where: [['$ownerId', '==', viewer]] }) })
 }
 
 /** A new follow by `viewer` (the author subtree of the `byOwner` index). */

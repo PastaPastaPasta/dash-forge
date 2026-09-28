@@ -1,0 +1,43 @@
+{
+  "name": "pin_unpin_pin",
+  "description": "Pin, unpin, pin again: pinned, at the last pin's time. Input order does not matter.",
+  "case": "thread_meta",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e3",
+        "targetId": "T",
+        "kind": "pin",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 300
+      },
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "pin",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "unpin",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 200
+      }
+    ]
+  },
+  "expected": {
+    "milestone": null,
+    "pinned": true,
+    "pinnedAt": 300,
+    "locked": false
+  }
+}

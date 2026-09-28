@@ -1,0 +1,28 @@
+{
+  "name": "empty_required_name_is_no_name",
+  "description": "requiredChecks [\"\"] names nothing, so requireChecks applies: with no run reported it is not met (the schema refuses an empty name; a reader's input may carry one).",
+  "case": "checks",
+  "rules": "v2",
+  "input": {
+    "runs": [],
+    "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      }
+    ],
+    "policy": {
+      "requireChecks": true,
+      "requiredChecks": [
+        ""
+      ]
+    }
+  },
+  "expected": {
+    "required": [],
+    "met": false,
+    "untrusted": 0
+  }
+}

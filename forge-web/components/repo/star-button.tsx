@@ -6,6 +6,10 @@
  * the viewer's own star before the button offers an action, and a failed read or write is
  * shown rather than swallowed. The price shows beside the button before the click (`ux-dx-spec.md`
  * §4 rule 1): the star's cost, or the unstar's refund (D-011); a refused write opens its fix.
+ *
+ * A new star also counts toward Trending (a `starBeat`, platform-parity-spec §4.3) when the
+ * viewer's "Count my stars toward Trending" is on, the default: the price then includes it and
+ * says so. An unstar leaves the beat (it cannot be deleted; its week ends on its own).
  */
 
 import { useState } from 'react'
@@ -16,8 +20,9 @@ import { useFirstWrite } from '@/hooks/use-first-write'
 import { useRelationToggle } from '@/hooks/use-relation-toggle'
 import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Button } from '@/components/ui/button'
-import { starFirsts, starRelation, type RepoRef } from '@/lib/repo'
-import { previewCreate, previewDelete } from '@/lib/sdk'
+import { starBeatFirsts, starFirsts, starRelation, type RepoRef } from '@/lib/repo'
+import { trendingPref } from '@/lib/repo/trending'
+import { previewCreate, previewDelete, sumPreviews } from '@/lib/sdk'
 import { creditsAsDash } from '@/lib/view/format'
 
 export function StarButton({
@@ -31,11 +36,13 @@ export function StarButton({
   const { sdk, ready, network } = useSdk()
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
+  // Read once per mount: Settings changes it, and the next page picks it up.
+  const [trending] = useState(() => trendingPref())
 
   const star = useRelationToggle({
     enabled: ready && sdk !== null && identity !== null,
     key: `${network}:${identity ?? ''}:${repo.repoId}`,
-    ...starRelation(sdk!, signer, identity ?? '', repo),
+    ...starRelation(sdk!, signer, identity ?? '', repo, trending),
     onError: guard.failed,
   })
 
@@ -43,12 +50,12 @@ export function StarButton({
   // Read which subtrees a star would create only once the viewer points at the button: a page
   // view costs no reads, and the price is an upper bound until then.
   const [interested, setInterested] = useState(false)
-  const first = useFirstWrite(
-    () => starFirsts(sdk!, repo, identity!, count),
-    [repo.repoId, identity ?? '', count],
-    interested && ready && sdk !== null && identity !== null && !starred,
-  )
-  const cost = previewCreate('star', {}, first)
+  const pricing = interested && ready && sdk !== null && identity !== null && !starred
+  const first = useFirstWrite(() => starFirsts(sdk!, repo, identity!, count), [repo.repoId, identity ?? '', count], pricing)
+  const beatFirst = useFirstWrite(() => starBeatFirsts(sdk!, repo, identity!), [repo.repoId, identity ?? ''], trending && pricing)
+  // An upper bound: a beat is skipped when an earlier star of this repo already wrote one.
+  const starCost = previewCreate('star', {}, first)
+  const cost = trending ? sumPreviews([starCost, previewCreate('starBeat', {}, beatFirst)]) : starCost
   const refund = previewDelete('star')
   const onClick = (): void => {
     if (!starred && !guard.check(cost, 'collab')) return
@@ -59,7 +66,9 @@ export function StarButton({
   const signedIn = identity !== null && signer !== null
   // Signed in but the current state is not known yet (or could not be read): no action to offer.
   const unknown = signedIn && star.on === null
-  const price = starred ? `Unstar · refunds at least ${creditsAsDash(-refund.credits)} DASH` : `Star · ~${creditsAsDash(cost.credits)} DASH`
+  const price = starred
+    ? `Unstar · refunds at least ${creditsAsDash(-refund.credits)} DASH`
+    : `Star · ~${creditsAsDash(cost.credits)} DASH${trending ? ' · counts toward Trending (turn off in Settings)' : ''}`
 
   return (
     <span className="inline-flex items-center gap-2">

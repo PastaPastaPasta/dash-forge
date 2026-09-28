@@ -69,10 +69,22 @@ pub const DOC_POLICY: &str = "policy";
 pub const DOC_CHECK_RUN: &str = "checkRun";
 /// A star (`indexOnly`).
 pub const DOC_STAR: &str = "star";
+/// A trending beat (`indexOnly`, non-deletable): written beside a star when the starrer counts
+/// toward Trending (platform-parity-spec §4.3).
+pub const DOC_STAR_BEAT: &str = "starBeat";
+/// A watch (`indexOnly`): cross-device "watching this repo".
+pub const DOC_WATCH: &str = "watch";
+/// A milestone definition (maintainer- or writer-gated).
+pub const DOC_MILESTONE: &str = "milestone";
 /// forge-core: a release (maintainer-gated).
 pub const DOC_RELEASE: &str = "release";
 /// forge-core: a label definition (member-gated).
 pub const DOC_LABEL: &str = "label";
+
+/// Whether a star also counts toward Trending unless the user says otherwise (the owner's
+/// default, 2026-09-28; `dg repo star --no-trending` and the `trending` config key opt out).
+/// The web app's default is `TRENDING_DEFAULT` in `forge-web/lib/repo/trending.ts`.
+pub const TRENDING_DEFAULT: bool = true;
 
 /// The most PRs one push follows ([`Collab::prs_following`]): each costs a few reads.
 pub const MAX_FOLLOWING: usize = 20;
@@ -3324,18 +3336,20 @@ impl<'a> Collab<'a> {
             .await
     }
 
-    /// The signer's star on `repo`, if any (the `byOwner` index, `repoId` its terminal).
-    async fn own_star(
+    /// The signer's own row of an indexOnly `doc_type` keyed by repo (`star`, `starBeat`,
+    /// `watch`): its `byOwner` index, `repoId` the terminal.
+    pub(super) async fn own_index_only(
         &self,
         collab: &LoadedContract,
         repo: &RepoRef,
+        doc_type: &str,
     ) -> Result<Option<FetchedDocument>> {
         let me = platform::decode_identifier(&self.signer_id()?)?;
         let docs = self
             .client
             .query_documents(
                 collab,
-                DOC_STAR,
+                doc_type,
                 &[
                     QueryFilter::eq("$ownerId", FieldValue::identifier(me)),
                     Self::repo_filter(repo)?,
@@ -3348,36 +3362,68 @@ impl<'a> Collab<'a> {
         Ok(docs.into_iter().next())
     }
 
-    /// Whether the signer has starred `repo`.
-    pub async fn is_starred(&self, repo: &RepoRef) -> Result<bool> {
-        let collab = self.collab_contract(repo).await?;
-        Ok(self.own_star(&collab, repo).await?.is_some())
-    }
-
-    /// Star `repo`. Returns `false` when it was already starred (nothing written).
-    pub async fn star(&self, repo: &RepoRef) -> Result<bool> {
-        let collab = self.collab_contract(repo).await?;
-        if self.own_star(&collab, repo).await?.is_some() {
+    /// Create the signer's row of an indexOnly `doc_type` for `repo`, unless it exists.
+    /// `false` when it did (or a concurrent write won: one row per identity and repo is
+    /// structural). indexOnly: no stored row, so a spent nonce is settled by looking for the
+    /// signer's row, not by reading a document id back.
+    pub(super) async fn create_own_index_only(
+        &self,
+        collab: &LoadedContract,
+        repo: &RepoRef,
+        doc_type: &str,
+    ) -> Result<bool> {
+        if self.own_index_only(collab, repo, doc_type).await?.is_some() {
             return Ok(false);
         }
-        // indexOnly: a star has no stored row, so a spent nonce is settled by looking for
-        // this identity's star, not by reading the (row-less) document id back.
-        let probe = || async { Ok(self.own_star(&collab, repo).await?.is_some()) };
+        let probe = || async { Ok(self.own_index_only(collab, repo, doc_type).await?.is_some()) };
         match self
             .engine()?
             .create_index_only(
-                &collab,
-                DOC_STAR,
+                collab,
+                doc_type,
                 Self::with_repo(repo, BTreeMap::new())?,
                 probe,
             )
             .await
         {
             Ok(_) => Ok(true),
-            // One star per (repo, identity) is structural: a concurrent star won.
             Err(Error::DuplicateUniqueIndex(_)) => Ok(false),
             Err(e) => Err(e),
         }
+    }
+
+    async fn own_star(
+        &self,
+        collab: &LoadedContract,
+        repo: &RepoRef,
+    ) -> Result<Option<FetchedDocument>> {
+        self.own_index_only(collab, repo, DOC_STAR).await
+    }
+
+    /// Whether the signer has starred `repo`.
+    pub async fn is_starred(&self, repo: &RepoRef) -> Result<bool> {
+        let collab = self.collab_contract(repo).await?;
+        Ok(self.own_star(&collab, repo).await?.is_some())
+    }
+
+    /// Star `repo`; with `trending`, a new star also counts toward Trending (a `starBeat`,
+    /// once per identity and repo, platform-parity-spec §4.3). Returns `false` when it was
+    /// already starred (nothing written, no beat either).
+    pub async fn star(&self, repo: &RepoRef, trending: bool) -> Result<bool> {
+        let collab = self.collab_contract(repo).await?;
+        let starred = self.create_own_index_only(&collab, repo, DOC_STAR).await?;
+        if starred && trending {
+            // The star stands whatever happens to the beat, which only feeds a ranking. A beat
+            // from an earlier star of this repo makes this a no-op (one per identity and repo,
+            // ever: it cannot be deleted).
+            if let Err(e) = self
+                .create_own_index_only(&collab, repo, DOC_STAR_BEAT)
+                .await
+            {
+                tracing::warn!(error = %e, "the star landed; its Trending beat did not");
+            }
+        }
+        Ok(starred)
     }
 
     /// Unstar `repo` (the values-carrying `indexOnly` delete). Returns `false` when it was
@@ -3432,6 +3478,10 @@ fn kind_verb(kind: EventKind) -> &'static str {
         EventKind::HeadUpdate => "move the head of",
         EventKind::MilestoneSet => "set the milestone of",
         EventKind::MilestoneClear => "clear the milestone of",
+        EventKind::Pin => "pin",
+        EventKind::Unpin => "unpin",
+        EventKind::Lock => "lock",
+        EventKind::Unlock => "unlock",
     }
 }
 

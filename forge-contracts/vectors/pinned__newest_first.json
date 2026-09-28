@@ -1,0 +1,65 @@
+{
+  "name": "newest_first",
+  "description": "Three targets pinned, one unpinned after: the two standing, newest pin first.",
+  "case": "pinned",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "A",
+        "kind": "pin",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "targetId": "B",
+        "kind": "pin",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 200
+      },
+      {
+        "id": "e3",
+        "targetId": "C",
+        "kind": "pin",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 300
+      },
+      {
+        "id": "e4",
+        "targetId": "B",
+        "kind": "unpin",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 400
+      },
+      {
+        "id": "e5",
+        "targetId": "A",
+        "kind": "close",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 500
+      }
+    ]
+  },
+  "expected": [
+    {
+      "targetId": "C",
+      "pinnedAt": 300
+    },
+    {
+      "targetId": "A",
+      "pinnedAt": 100
+    }
+  ]
+}

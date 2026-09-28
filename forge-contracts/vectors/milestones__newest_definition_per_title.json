@@ -1,0 +1,50 @@
+{
+  "name": "newest_definition_per_title",
+  "description": "Two definitions of v1: the newer stands (closed, new description); v2 has no items.",
+  "case": "milestones",
+  "rules": "v2",
+  "input": {
+    "docs": [
+      {
+        "id": "m1",
+        "title": "v1",
+        "createdAt": 100,
+        "description": "first",
+        "dueOn": 5000
+      },
+      {
+        "id": "m2",
+        "title": "v1",
+        "createdAt": 200,
+        "description": "shipped",
+        "closed": true
+      },
+      {
+        "id": "m3",
+        "title": "v2",
+        "createdAt": 150
+      }
+    ],
+    "items": []
+  },
+  "expected": [
+    {
+      "id": "m2",
+      "title": "v1",
+      "description": "shipped",
+      "dueOn": null,
+      "closed": true,
+      "open": 0,
+      "closedItems": 0
+    },
+    {
+      "id": "m3",
+      "title": "v2",
+      "description": "",
+      "dueOn": null,
+      "closed": false,
+      "open": 0,
+      "closedItems": 0
+    }
+  ]
+}

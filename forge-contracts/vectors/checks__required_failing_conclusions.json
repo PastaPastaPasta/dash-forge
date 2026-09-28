@@ -1,0 +1,78 @@
+{
+  "name": "required_failing_conclusions",
+  "description": "cancelled, timed_out and action_required all block a required check.",
+  "case": "checks",
+  "rules": "v2",
+  "input": {
+    "runs": [
+      {
+        "id": "r1",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "a",
+        "status": "completed",
+        "reporter": "writ",
+        "createdAt": 100,
+        "conclusion": "cancelled"
+      },
+      {
+        "id": "r2",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "b",
+        "status": "completed",
+        "reporter": "writ",
+        "createdAt": 100,
+        "conclusion": "timed_out"
+      },
+      {
+        "id": "r3",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "c",
+        "status": "completed",
+        "reporter": "writ",
+        "createdAt": 100,
+        "conclusion": "action_required"
+      }
+    ],
+    "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "policy": {
+      "requiredChecks": [
+        "a",
+        "b",
+        "c"
+      ]
+    }
+  },
+  "expected": {
+    "required": [
+      {
+        "name": "a",
+        "state": "failing",
+        "runId": "r1"
+      },
+      {
+        "name": "b",
+        "state": "failing",
+        "runId": "r2"
+      },
+      {
+        "name": "c",
+        "state": "failing",
+        "runId": "r3"
+      }
+    ],
+    "met": false,
+    "untrusted": 0
+  }
+}

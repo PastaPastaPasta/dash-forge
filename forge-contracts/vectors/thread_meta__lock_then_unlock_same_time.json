@@ -1,0 +1,34 @@
+{
+  "name": "lock_then_unlock_same_time",
+  "description": "Lock and unlock at the same $createdAt: ordered by $id, so the unlock (e2) wins over the lock (e1).",
+  "case": "thread_meta",
+  "rules": "v2",
+  "input": {
+    "events": [
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "unlock",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "lock",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      }
+    ]
+  },
+  "expected": {
+    "milestone": null,
+    "pinned": false,
+    "pinnedAt": null,
+    "locked": false
+  }
+}

@@ -1,0 +1,78 @@
+{
+  "name": "newest_run_per_name_decides",
+  "description": "A failing run then a passing re-run of the same name: the newest decides; ties by $id.",
+  "case": "checks",
+  "rules": "v2",
+  "input": {
+    "runs": [
+      {
+        "id": "r1",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "build",
+        "status": "completed",
+        "reporter": "writ",
+        "createdAt": 100,
+        "conclusion": "failure"
+      },
+      {
+        "id": "r2",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "build",
+        "status": "completed",
+        "reporter": "writ",
+        "createdAt": 200,
+        "conclusion": "success"
+      },
+      {
+        "id": "r4",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "test",
+        "status": "completed",
+        "reporter": "writ",
+        "createdAt": 300,
+        "conclusion": "success"
+      },
+      {
+        "id": "r3",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "test",
+        "status": "completed",
+        "reporter": "writ",
+        "createdAt": 300,
+        "conclusion": "failure"
+      }
+    ],
+    "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "policy": {
+      "requireChecks": true
+    }
+  },
+  "expected": {
+    "required": [
+      {
+        "name": "build",
+        "state": "passed",
+        "runId": "r2"
+      },
+      {
+        "name": "test",
+        "state": "passed",
+        "runId": "r4"
+      }
+    ],
+    "met": true,
+    "untrusted": 0
+  }
+}

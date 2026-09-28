@@ -1,0 +1,78 @@
+{
+  "name": "week_is_the_oldest_open_window",
+  "description": "selector oldest at day 20000 + 10 h: window [day 19994, day 20001). A: 3, B: 2 (its day-19993 beat is outside), D: 2, C: 1; B and D tie at 2, larger repo id first.",
+  "case": "trending",
+  "rules": "v2",
+  "input": {
+    "beats": [
+      {
+        "repo": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "createdAt": 1727481600000
+      },
+      {
+        "repo": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "createdAt": 1727740800000
+      },
+      {
+        "repo": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "createdAt": 1728003600000
+      },
+      {
+        "repo": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "createdAt": 1727395200000
+      },
+      {
+        "repo": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "createdAt": 1728007200000
+      },
+      {
+        "repo": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "createdAt": 1728010800000
+      },
+      {
+        "repo": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "createdAt": 1727999999999
+      },
+      {
+        "repo": "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d",
+        "createdAt": 1728018000000
+      },
+      {
+        "repo": "0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D0D",
+        "createdAt": 1727827200000
+      }
+    ],
+    "grid": {
+      "range": 604800,
+      "step": 86400,
+      "phase": 0
+    },
+    "now": 1728036000000,
+    "selector": "oldest",
+    "limit": 25
+  },
+  "expected": {
+    "window": {
+      "start": 1727481600000,
+      "end": 1728086400000
+    },
+    "ranking": [
+      {
+        "repo": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+        "count": 3
+      },
+      {
+        "repo": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+        "count": 2
+      },
+      {
+        "repo": "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d",
+        "count": 2
+      },
+      {
+        "repo": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+        "count": 1
+      }
+    ]
+  }
+}

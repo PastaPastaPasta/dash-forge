@@ -1,0 +1,56 @@
+name: Contracts
+
+# Offline validation of the forge-v2 data contracts (tools/contract-validate, rs-dpp at the
+# Platform tag its Cargo.toml pins, protocol 14): the full parse a node runs at registration,
+# the registration reference checks, sample documents against every propertyConstraints rule,
+# the create-transition size against the 20,480-byte limit, and — for forge-core, which only
+# ever changes by an in-place DataContractUpdate (platform-parity-spec §6) — that the update
+# from the registered schema is accepted. negative.sh then proves the validator refuses each
+# broken rule the design relies on.
+on:
+  pull_request:
+    paths:
+      - 'forge-contracts/contracts/**'
+      - 'tools/contract-validate/**'
+      - '.github/workflows/contracts.yml'
+  push:
+    branches: [master]
+    paths:
+      - 'forge-contracts/contracts/**'
+      - 'tools/contract-validate/**'
+      - '.github/workflows/contracts.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: contracts-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  validate:
+    name: contract-validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target-contract-validate
+    steps:
+      - uses: actions/checkout@v4
+      # The toolchain platform v4.2.0-beta.5 pins (its rust-toolchain.toml)
+      - name: Install Rust 1.98.1
+        run: rustup toolchain install 1.98.1 --profile minimal
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target-contract-validate
+          key: contract-validate-${{ hashFiles('tools/contract-validate/Cargo.lock') }}
+      - name: Build the validator
+        run: cargo +1.98.1 build -q --locked --manifest-path tools/contract-validate/Cargo.toml
+      - name: Validate forge-core (as an update of the registered schema) and forge-collab
+        run: |
+          "$CARGO_TARGET_DIR/debug/contract-validate" \
+            forge-contracts/contracts/forge-core.json \
+            --expect-update forge-contracts/contracts/registered/forge-core.v1.json \
+            forge-contracts/contracts/forge-collab.json
+      - name: Negative mutations are refused
+        run: tools/contract-validate/negative.sh

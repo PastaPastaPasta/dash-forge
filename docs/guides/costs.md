@@ -75,12 +75,15 @@ Measured on devnet moutai (Platform protocol 14) as the signing identity's balan
 | Review | ~0.00035 DASH |
 | Release (the document; assets go to your storage) | ~0.0007 DASH |
 | Add a member / remove one | ~0.0004 DASH / refunds ~0.0002 DASH |
-| Star / unstar | ~0.0003 DASH / refunds ~0.0002 DASH |
+| Star / unstar | **~0.00018 DASH** (a repo's first star ~0.00036) / refunds ~0.00012 DASH (the repo's last star ~0.00023) |
+| Counting a star toward **Trending** (on by default) | **~0.00015 DASH** more for a new star (~0.00022 for your first): one small `starBeat` document. It is not refunded and unstarring does not remove it; starring the same repo again adds nothing. Turn it off in **Settings → Stars**, with `dg repo star --no-trending`, or `trending = false` in `config.toml` |
 | Webhook | ~0.0008 DASH; removing it refunds all but ~0.00008 DASH |
 | Fork a repository | **~0.01 DASH** for a small repository (8 packs, 5 branches: 0.0095 DASH), 0.03 DASH for 36 packs: one small manifest per pack and one ref update per branch. The parent's packs are referenced, never re-uploaded |
 | Mirror a GitHub repository, first run | depends on its size; the Mirror Action's first live run of a small repository (`dash-faucet`, packs on Platform) cost **~0.078 DASH**, and a repository with 2 PRs, 15 comments and 7 reviews cost 0.112 DASH. A re-run with nothing new costs **0** |
 | Top up a browser key's budget | ~0.00002 DASH |
 | Clone, fetch, browse, read issues, download a zip | **free** |
+
+**How Trending counts.** Trending on Explore ranks repositories by their **new stargazers in the last week** (or today), read with a proof from the `starBeat` documents' weekly window index. A beat's window entries expire on their own after a week (the index's own time-to-live), so the network keeps no permanent record for them; the one small permanent entry per starrer and repository is what stops a second beat. Measured on devnet moutai on 2026-09-28 (platform-parity-spec §4.4): a star costs 17.7 M credits in steady state (+2 % for the ranked "most starred" index), a beat 14.4–15.3 M.
 
 Where the numbers come from: the live measurements recorded in the pull requests that built each feature and in [e2e/README.md](../../e2e/README.md), `dg cost audit` (the per-operation reference below), [economics.md](../economics.md), and the contract costs in [forge-v2.md §7](../contracts/forge-v2.md#7-measured-size-and-cost).
 

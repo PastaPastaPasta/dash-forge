@@ -133,6 +133,10 @@ pub(crate) fn event_kind_to_u64(kind: EventKind) -> u64 {
         EventKind::HeadUpdate => 16,
         EventKind::MilestoneSet => 17,
         EventKind::MilestoneClear => 18,
+        EventKind::Pin => 19,
+        EventKind::Unpin => 20,
+        EventKind::Lock => 21,
+        EventKind::Unlock => 22,
     }
 }
 
@@ -157,6 +161,10 @@ pub(crate) fn u64_to_event_kind(kind: u64) -> Option<EventKind> {
         16 => EventKind::HeadUpdate,
         17 => EventKind::MilestoneSet,
         18 => EventKind::MilestoneClear,
+        19 => EventKind::Pin,
+        20 => EventKind::Unpin,
+        21 => EventKind::Lock,
+        22 => EventKind::Unlock,
         _ => return None,
     })
 }
@@ -359,12 +367,16 @@ mod tests {
             (EventKind::HeadUpdate, 16),
             (EventKind::MilestoneSet, 17),
             (EventKind::MilestoneClear, 18),
+            (EventKind::Pin, 19),
+            (EventKind::Unpin, 20),
+            (EventKind::Lock, 21),
+            (EventKind::Unlock, 22),
         ] {
             assert_eq!(event_kind_to_u64(kind), n);
             assert_eq!(u64_to_event_kind(n), Some(kind));
         }
         assert_eq!(u64_to_event_kind(0), None);
-        assert_eq!(u64_to_event_kind(19), None);
+        assert_eq!(u64_to_event_kind(23), None);
     }
 
     #[test]

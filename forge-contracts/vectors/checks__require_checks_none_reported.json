@@ -1,0 +1,30 @@
+{
+  "name": "require_checks_none_reported",
+  "description": "requireChecks with no run on the head: not met (at least one must be reported).",
+  "case": "checks",
+  "rules": "v2",
+  "input": {
+    "runs": [],
+    "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "policy": {
+      "requireChecks": true
+    }
+  },
+  "expected": {
+    "required": [],
+    "met": false,
+    "untrusted": 0
+  }
+}

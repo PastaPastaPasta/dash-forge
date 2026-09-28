@@ -331,6 +331,53 @@ function runCaseV2(v: Vector): void {
       expect(v2.linkedIssues((v.input as { readonly text: string }).text)).toEqual(v.expected)
       break
     }
+    case 'checks': {
+      onlyKeys(v, ['runs', 'headOid', 'memberships', 'runners', 'policy'], {
+        runs: ['id', 'headOid', 'name', 'status', 'conclusion', 'reporter', 'createdAt'],
+        memberships: MEMBERSHIP_KEYS,
+        policy: ['requireChecks', 'requiredChecks'],
+      })
+      const inp = v.input as {
+        readonly runs: readonly v2.CheckRunRow[]
+        readonly headOid: string
+        readonly memberships: readonly v2.Membership[]
+        readonly runners?: readonly string[]
+        readonly policy: v2.ChecksPolicy
+      }
+      expect(v2.checksState(inp.runs, inp.headOid, new v2.RoleOracle(inp.memberships), new Set(inp.runners ?? []), inp.policy)).toEqual(v.expected)
+      break
+    }
+    case 'thread_meta':
+    case 'pinned': {
+      onlyKeys(v, ['events'])
+      const { events } = v.input as { readonly events: readonly Event[] }
+      expect(v.case === 'pinned' ? v2.pinnedTargets(events) : v2.foldThreadMetaV2(events)).toEqual(v.expected)
+      break
+    }
+    case 'milestones': {
+      onlyKeys(v, ['docs', 'items'], {
+        docs: ['id', 'title', 'description', 'dueOn', 'closed', 'createdAt'],
+        items: ['open', 'milestone'],
+      })
+      const inp = v.input as { readonly docs: readonly v2.MilestoneDoc[]; readonly items?: readonly v2.MilestoneItem[] }
+      expect(v2.foldMilestonesV2(inp.docs, inp.items ?? [])).toEqual(v.expected)
+      break
+    }
+    case 'trending': {
+      onlyKeys(v, ['beats', 'grid', 'now', 'selector', 'limit'], { beats: ['repo', 'createdAt'], grid: ['range', 'step', 'phase'] })
+      const inp = v.input as {
+        readonly beats: readonly v2.StarBeat[]
+        readonly grid: v2.TimeGrid
+        readonly now: number
+        readonly selector: v2.TrendingSelector
+        readonly limit: number
+      }
+      expect({
+        window: v2.trendingWindow(inp.grid, inp.now, inp.selector),
+        ranking: v2.trendingRecount(inp.beats, inp.grid, inp.now, inp.selector, inp.limit),
+      }).toEqual(v.expected)
+      break
+    }
     case 'well_formed': {
       onlyKeys(v, ['doc', 'visibility'])
       const inp = v.input as { readonly doc: v2.ContentDoc; readonly visibility: v2.Visibility }

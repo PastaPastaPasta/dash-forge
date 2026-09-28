@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { queryDocuments, setStaleContractHandler } from './query'
 
-const CONTRACT = '6BbENuf3uZhkntw9DSsxQcTu9a5fATxQoSe6Ph1JxHkS'
+const CONTRACT = '8QRpVzGbGaGTxUKp2Z7eRDfyWxs9HRGXWX9N8KREZgsJ'
 
 function fakeSdk(query: () => Promise<Map<string, unknown>>): EvoSDK {
   return { documents: { query }, version: () => 14 } as unknown as EvoSDK

@@ -8,7 +8,7 @@
  * here as the audit trail it is.
  */
 
-import { Check, CheckCircle2, Eye, GitCommit, GitMerge, Lock, LockOpen, Milestone, MessageSquare, Tag, UserPlus, X } from 'lucide-react'
+import { Check, CheckCircle2, Eye, GitCommit, GitMerge, Lock, LockOpen, Milestone, MessageSquare, Pin, Tag, UserPlus, X } from 'lucide-react'
 import type { TimelineItem } from '@/lib/view'
 import { branchName, plural, timeAgo } from '@/lib/view'
 import { anchorLabel } from '@/lib/view/inline-threads'
@@ -77,6 +77,14 @@ function eventPhrase(e: Event): { text: string; icon: JSX.Element; who?: string;
       return { text: `set the milestone to ${value ?? ''}`, icon: <Milestone className={muted} aria-hidden /> }
     case 'milestoneClear':
       return { text: 'cleared the milestone', icon: <Milestone className={muted} aria-hidden /> }
+    case 'pin':
+      return { text: 'pinned this', icon: <Pin className={muted} aria-hidden /> }
+    case 'unpin':
+      return { text: 'unpinned this', icon: <Pin className={muted} aria-hidden /> }
+    case 'lock':
+      return { text: 'locked the conversation', icon: <Lock className={muted} aria-hidden /> }
+    case 'unlock':
+      return { text: 'unlocked the conversation', icon: <LockOpen className={muted} aria-hidden /> }
     default:
       return { text: String(kind), icon: <Tag className={muted} aria-hidden /> }
   }

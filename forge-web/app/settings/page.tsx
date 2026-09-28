@@ -18,6 +18,7 @@ import { EncryptionKeyPanel } from '@/components/encryption-key-panel'
 import { SecurityPanel } from '@/components/security-panel'
 import { GatewaysField } from '@/components/gateways-field'
 import { DisplayPrefsPanel } from '@/components/display-prefs-panel'
+import { TrendingPrefPanel } from '@/components/trending-pref-panel'
 import { creditsToDash } from '@/lib/sdk'
 import { balanceToDash, dashToUsd } from '@/lib/view/format'
 
@@ -98,6 +99,11 @@ export default function SettingsPage(): JSX.Element {
         <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
           <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Diffs and merges</h2>
           <DisplayPrefsPanel />
+        </section>
+
+        <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
+          <h2 className="mb-3 text-dense font-medium text-anvil-500 dark:text-anvil-400">Stars</h2>
+          <TrendingPrefPanel />
         </section>
 
         <section className="rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">

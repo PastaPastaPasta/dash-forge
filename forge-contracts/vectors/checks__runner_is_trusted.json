@@ -1,0 +1,51 @@
+{
+  "name": "runner_is_trusted",
+  "description": "A current runner (not a maintainer or writer) reports: counted.",
+  "case": "checks",
+  "rules": "v2",
+  "input": {
+    "runs": [
+      {
+        "id": "r1",
+        "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "name": "build",
+        "status": "completed",
+        "reporter": "ci-bot",
+        "createdAt": 100,
+        "conclusion": "success"
+      }
+    ],
+    "headOid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ],
+    "runners": [
+      "ci-bot"
+    ],
+    "policy": {
+      "requiredChecks": [
+        "build"
+      ]
+    }
+  },
+  "expected": {
+    "required": [
+      {
+        "name": "build",
+        "state": "passed",
+        "runId": "r1"
+      }
+    ],
+    "met": true,
+    "untrusted": 0
+  }
+}
