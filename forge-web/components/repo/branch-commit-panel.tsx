@@ -167,6 +167,8 @@ export function useBranchCommit({
       } catch (e) {
         if (e instanceof BranchStepError) {
           // What landed so far is kept with the very commit it belongs to: Retry resumes it.
+          // A refusal the renew / top-up sheet can fix (the key's budget, the balance) opens it.
+          guard.failed(e.failure)
           setSteps((s) => ({ ...s, [e.step]: 'failed' }))
           setError(e.message)
         } else if (e instanceof BranchStopped || e instanceof SuggestionRefused) {

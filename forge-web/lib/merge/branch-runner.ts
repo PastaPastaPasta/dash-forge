@@ -63,12 +63,14 @@ export interface BranchRunDeps {
 
 export type BranchStepEvent = { readonly step: BranchStepId; readonly state: 'running' | 'done' | 'skipped'; readonly detail?: string }
 
-/** A step failed: `run` is what was done before it. */
+/** A step failed: `run` is what was done before it; `failure` is what the step threw. */
 export class BranchStepError extends Error {
   constructor(
     readonly step: BranchStepId,
     reason: string,
     readonly run: BranchRun,
+    /** The step's own error (a Platform refusal: the key's budget, the balance, …). */
+    readonly failure: unknown = undefined,
   ) {
     const moved = run.done.includes('ref')
     super(
@@ -135,7 +137,7 @@ export async function runBranchCommit(deps: BranchRunDeps, from: BranchRun | nul
       return await work()
     } catch (e) {
       if (e instanceof BranchStopped) throw e
-      throw new BranchStepError(step, reasonOf(e), run)
+      throw new BranchStepError(step, reasonOf(e), run, e)
     }
   }
 

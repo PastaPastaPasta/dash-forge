@@ -85,6 +85,8 @@ describe('a commit to the PR branch', () => {
     } catch (e) {
       expect(e).toBeInstanceOf(BranchStepError)
       expect((e as Error).message).toMatch(/branch holds the new commit, but moving the PR head failed/)
+      // The step's own error travels with it (the page routes a budget refusal to its sheet).
+      expect(((e as BranchStepError).failure as Error).message).toBe('network dropped')
       saved = (e as BranchStepError).run
     }
     fail.clear()
