@@ -19,8 +19,6 @@
 use std::io::{BufRead as _, Write as _};
 
 use anyhow::{anyhow, bail, Result};
-use forge_core::cost::estimate;
-use forge_core::cost::git_doc_sizes::{MANIFEST_BASE_BYTES, REF_UPDATE_BYTES};
 use forge_core::repo::credits_to_dash;
 use forge_core::storage::policy::{parse_git_bool, pick_scoped};
 use forge_core::storage::publish::{
@@ -31,13 +29,6 @@ use forge_core::user_error::{codes, dash, UserError};
 
 use crate::git::LocalRepo;
 use crate::options::OptionState;
-
-/// Per-object row size of a browse-index fragment (36-byte rows + fanout overhead).
-const LOCATOR_ROW_BYTES: u64 = 36;
-/// Fixed browse-index header (256-entry u32 fanout + header).
-const LOCATOR_HEADER_BYTES: u64 = 1_100;
-/// Per-`chunk` document overhead on top of its payload.
-const CHUNK_DOC_OVERHEAD: u64 = 120;
 
 /// How to treat a cost above the threshold.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -154,61 +145,6 @@ impl PushPolicy {
             Some(&format!("git push -o {ALLOW_PRIVATE_URI_PUSH_OPTION} …")),
         )
     }
-}
-
-/// A push's pre-flight cost estimate, split by what is written on-chain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PushEstimate {
-    /// Manifests + ref updates (always on Platform).
-    pub metadata_credits: u64,
-    /// Pack + browse-index `chunk` documents (only when Platform stores bytes).
-    pub chunk_credits: u64,
-}
-
-impl PushEstimate {
-    /// Total credits.
-    pub fn total(&self) -> u64 {
-        self.metadata_credits + self.chunk_credits
-    }
-}
-
-fn chunk_credits(len: u64) -> u64 {
-    let len = usize::try_from(len).unwrap_or(usize::MAX);
-    let full = len / forge_core::pack::DOC_PAYLOAD_MAX;
-    let rest = len % forge_core::pack::DOC_PAYLOAD_MAX;
-    let full_doc = estimate(forge_core::pack::DOC_PAYLOAD_MAX as u64 + CHUNK_DOC_OVERHEAD).total();
-    let mut total = full_doc.saturating_mul(full as u64);
-    if rest > 0 {
-        total += estimate(rest as u64 + CHUNK_DOC_OVERHEAD).total();
-    }
-    total
-}
-
-/// Estimate what a push writes on-chain: two manifests (pack + browse-index fragment), a
-/// ref update per ref, and — only when Platform stores bytes — the chunk documents.
-pub fn estimate_push(
-    pack_bytes: u64,
-    object_count: u64,
-    ref_count: usize,
-    uris_json_len: u64,
-    platform_bytes: bool,
-) -> PushEstimate {
-    let manifest = estimate(MANIFEST_BASE_BYTES + uris_json_len).total();
-    let refs = estimate_ref_updates(ref_count);
-    let locator_len = LOCATOR_HEADER_BYTES + LOCATOR_ROW_BYTES * object_count;
-    PushEstimate {
-        metadata_credits: manifest * 2 + refs,
-        chunk_credits: if platform_bytes {
-            chunk_credits(pack_bytes) + chunk_credits(locator_len)
-        } else {
-            0
-        },
-    }
-}
-
-/// The on-chain estimate for `n` ref updates alone (a push that stores no pack).
-pub fn estimate_ref_updates(n: usize) -> u64 {
-    estimate(REF_UPDATE_BYTES).total() * n as u64
 }
 
 /// The cost-guard refusal note when nothing at all has been stored yet.
@@ -353,20 +289,6 @@ pub fn refusal(cause: &str, platform_bytes: bool) -> UserError {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn external_policy_bills_metadata_only() {
-        let ext = estimate_push(1_258_291, 300, 1, 200, false);
-        assert_eq!(ext.chunk_credits, 0);
-        let chain = estimate_push(1_258_291, 300, 1, 0, true);
-        assert!(
-            chain.chunk_credits > 100 * ext.metadata_credits,
-            "{chain:?} vs {ext:?}"
-        );
-        // ~1.2 MiB of chunks is ~0.35 DASH (0.283 DASH/MiB deposit + burn).
-        let d = credits_to_dash(chain.total());
-        assert!((0.3..0.45).contains(&d), "{d}");
-    }
 
     #[test]
     fn guard_decisions() {

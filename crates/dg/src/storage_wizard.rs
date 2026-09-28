@@ -62,13 +62,17 @@ pub fn collect(p: &mut dyn Prompter, existing: &[String], keychain_ok: bool) -> 
             break name;
         }
     };
+    let platform = format!(
+        "Dash Platform (on-chain, permanent, {})",
+        crate::fmt::platform_rate()
+    );
     let kind = match p.choose(
         "Kind",
         &[
             "S3-compatible (Cloudflare R2, Backblaze B2, AWS S3, MinIO)",
             "IPFS: your own kubo node",
             "IPFS: kubo + a pinning service",
-            "Dash Platform (on-chain, permanent, ~0.28 DASH per MiB)",
+            &platform,
         ],
         0,
     )? {

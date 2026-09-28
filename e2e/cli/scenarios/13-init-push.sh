@@ -110,7 +110,7 @@ B0="$(balance "$LOG-bal0")" || skip_scenario "balance read flaked"
 RC=$?
 check "exit code 5" assert_eq "5" "$RC"
 check "code E508" assert_eq "E508" "$(jq_py "$LOG-e508.json" 'd["error"]["code"]' 2>/dev/null)"
-check "cause prices Platform storage" assert_file_contains "$LOG-e508.json" "Packs would go to Platform at ~0.28 DASH/MiB"
+check "cause prices Platform storage" assert_file_contains "$LOG-e508.json" "Packs would go to Platform at ~0.34 DASH/MiB"
 B1="$(balance "$LOG-bal1")" || skip_scenario "balance read flaked"
 check "balance unchanged" assert_eq "$B0" "$B1"
 

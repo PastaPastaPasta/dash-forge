@@ -363,8 +363,8 @@ async fn push_optional(ledger: &mut Ledger<'_>, p: &GitPusher, signer: &Signer) 
 }
 
 /// Charge and push one ref set. The helper's guard gets what the budget had left BEFORE
-/// this charge, less the index overhead the estimate adds on top of the helper's own price
-/// (the guard compares the helper's price, which has none).
+/// this charge, less what the estimate adds on top of the helper's own price (the guard
+/// compares the helper's price).
 async fn push_one(
     ledger: &mut Ledger<'_>,
     p: &GitPusher,

@@ -361,17 +361,15 @@ impl Storage {
     }
 }
 
-/// `~0.28 DASH/MiB`, plus what `size` bytes would cost when known.
+/// `~0.34 DASH/MiB`, plus what `size` bytes would cost when known: the calibrated chunk
+/// fees `git push` quotes.
 fn platform_price(size: Option<u64>) -> String {
-    // The rate is the storage deposit (what the spec and the guides quote); the size's
-    // price includes processing fees.
-    let per_mib = forge_core::cost::estimate(1024 * 1024).deposit;
-    let rate = format!("~{:.2} DASH/MiB", crate::fmt::credits_to_dash(per_mib));
+    let rate = crate::fmt::platform_rate();
     match size.filter(|b| *b > 0) {
         Some(b) => format!(
             "{rate} ({} ≈ {} DASH)",
             human_bytes(b),
-            dash(forge_core::cost::estimate(b).total())
+            dash(forge_core::cost::push_fees::chunks(b))
         ),
         None => rate,
     }
@@ -1276,15 +1274,15 @@ mod tests {
         let cause = u.cause.unwrap();
         assert!(
             cause.starts_with(
-                "No storage profile. Packs would go to Platform at ~0.28 DASH/MiB (1.2 MiB ≈ 0.3"
+                "No storage profile. Packs would go to Platform at ~0.34 DASH/MiB (1.2 MiB ≈ 0.41"
             ),
             "{cause}"
         );
         assert!(u.fix[0].contains("dg storage add") && u.fix[0].contains("--storage platform"));
         assert_eq!(u.note.as_deref(), Some("nothing was written"));
         // Without a size, just the rate.
-        assert_eq!(platform_price(None), "~0.28 DASH/MiB");
-        assert_eq!(platform_price(Some(0)), "~0.28 DASH/MiB");
+        assert_eq!(platform_price(None), "~0.34 DASH/MiB");
+        assert_eq!(platform_price(Some(0)), "~0.34 DASH/MiB");
     }
 
     #[test]
@@ -1315,7 +1313,7 @@ mod tests {
             .unwrap();
         let line = packs_line(&r, Some(2 * 1024 * 1024));
         assert!(
-            line.contains("Platform stores the packs at ~0.28 DASH/MiB (2.0 MiB ≈ 0.5"),
+            line.contains("Platform stores the packs at ~0.34 DASH/MiB (2.0 MiB ≈ 0.68"),
             "{line}"
         );
     }

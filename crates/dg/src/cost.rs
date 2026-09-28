@@ -3,8 +3,10 @@
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use forge_core::cost::estimate;
+use forge_core::cost::{estimate, push_fees};
+use forge_core::pack::DOC_PAYLOAD_MAX;
 use forge_core::repo::RepoService;
+use forge_import::budget::{collab_doc_credits, CollabDoc};
 
 use crate::common::{resolve, RepoRef};
 use crate::context::Ctx;
@@ -23,7 +25,8 @@ pub async fn run(ctx: &Ctx, cmd: &CostCommand) -> Result<()> {
     }
 }
 
-/// A pre-write quote for storing `bytes` bytes as a document (platform tier). External
+/// A pre-write quote for storing `bytes` bytes as Platform `chunk` documents, priced like
+/// `git push` prices them (platform tier). External
 /// backends move the pack bytes off-chain — only the manifest + refs are billed on-chain —
 /// so the figure is labeled with the chosen backend.
 fn estimate_cmd(
@@ -39,7 +42,11 @@ fn estimate_cmd(
             .len(),
         (None, None) => 0,
     };
-    let est = estimate(bytes);
+    // What `git push` would pay to store `bytes` as Platform chunks (the calibrated fees),
+    // split into the storage deposit and the rest (per-document and processing fees).
+    let deposit = estimate(bytes).deposit;
+    let total = push_fees::chunks(bytes);
+    let burn = total - deposit;
     let price = dash_usd_price();
     let backend_label = backend.map_or("platform", Backend::label);
 
@@ -47,17 +54,17 @@ fn estimate_cmd(
         json!({
             "bytes": bytes,
             "backend": backend_label,
-            "depositCredits": est.deposit,
-            "burnCredits": est.burn,
-            "totalCredits": est.total(),
-            "cost": cost_json(est.total(), price),
-            "storageDeposit": cost_json(est.deposit, price),
+            "depositCredits": deposit,
+            "burnCredits": burn,
+            "totalCredits": total,
+            "cost": cost_json(total, price),
+            "storageDeposit": cost_json(deposit, price),
         }),
         || {
             println!("Estimate for {bytes} bytes ({backend_label} tier):");
-            println!("  total:      {}", cost_line(est.total(), price));
-            println!("  storage:    {} (deposit; Platform packs are permanent, not refunded)", cost_line(est.deposit, price));
-            println!("  processing: {}", cost_line(est.burn, price));
+            println!("  total:      {}", cost_line(total, price));
+            println!("  storage:    {} (deposit; Platform packs are permanent, not refunded)", cost_line(deposit, price));
+            println!("  fees:       {} (per-document and processing)", cost_line(burn, price));
             if !matches!(backend, None | Some(Backend::Platform)) {
                 println!("  note: external backends store pack bytes off-chain — only the manifest + refs are billed on-chain.");
             }
@@ -74,11 +81,21 @@ async fn audit(ctx: &Ctx, repo: Option<&str>) -> Result<()> {
 
     let Some(repo) = repo else {
         // Per-operation reference table.
+        // Upper bounds from the fees measured on moutai (`push_fees`, the importer's
+        // calibrated collaboration model); docs/guides/costs.md has the measured table.
         let ops = [
             ("repo create", REPO_CREATE_ESTIMATE_CREDITS),
-            ("ref update (~200 B doc)", estimate(200).total()),
-            ("pack chunk (~4900 B)", estimate(4900).total()),
-            ("issue / comment (~500 B)", estimate(500).total()),
+            ("ref update", push_fees::REF_FIRST),
+            ("pack manifest", push_fees::MANIFEST_FIRST),
+            (
+                "pack chunk (14.7 KB)",
+                push_fees::chunks(DOC_PAYLOAD_MAX as u64),
+            ),
+            ("issue (~500 B)", collab_doc_credits(CollabDoc::Target, 500)),
+            (
+                "comment (~500 B)",
+                collab_doc_credits(CollabDoc::Comment, 500),
+            ),
         ];
         let rows: Vec<_> = ops
             .iter()
@@ -89,7 +106,7 @@ async fn audit(ctx: &Ctx, repo: Option<&str>) -> Result<()> {
                 "mode": "per_operation_estimates",
                 "tracked": false,
                 "operations": rows,
-                "note": "running spend is not tracked yet; these are per-op estimates from the fee schedule",
+                "note": "running spend is not tracked yet; these are per-op upper bounds from fees measured on devnet moutai",
             }),
             || {
                 println!("Per-operation cost reference (no live spend tracking yet):");

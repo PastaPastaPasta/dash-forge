@@ -253,7 +253,7 @@ const DEFAULT_ADMISSION_FACTOR: Admission = { budget: 2, balance: 5 }
 export const PUSH_COST_DASH = {
   byo: { min: 0.002, max: 0.003 },
   platform: { min: 0.003, max: 0.005 },
-  perMib: 0.31,
+  perMib: 0.34,
 } as const
 
 /** A `min–max` DASH range for copy: `0.002–0.003`. */
@@ -356,7 +356,7 @@ export function estimateBytesCredits(
 /**
  * Estimated credits to store `bytes` as Platform `chunk` documents (three 4,900-byte fields
  * each, forge-core `pack::split`): every chunk's fixed cost plus the storage of its bytes.
- * Roughly 0.28 DASH per MiB — Platform storage is permanent.
+ * Roughly 0.33 DASH per MiB (`PUSH_COST_DASH.perMib` quotes the upper bound) — Platform storage is permanent.
  */
 export function estimateChunkCredits(bytes: number): number {
   const chunks = Math.max(1, Math.ceil(bytes / (4900 * 3)))

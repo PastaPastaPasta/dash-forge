@@ -838,7 +838,10 @@ async fn check_storage() -> Vec<Check> {
     if profiles.profiles.is_empty() {
         return vec![Check::ok(
             "profiles",
-            format!("none in {path}: pushes store packs on Platform (~0.28 DASH/MiB); `dg storage add` adds your own bucket"),
+            format!(
+                "none in {path}: pushes store packs on Platform ({}); `dg storage add` adds your own bucket",
+                crate::fmt::platform_rate()
+            ),
         )];
     }
     let http = forge_core::storage::http_client();

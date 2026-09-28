@@ -69,16 +69,102 @@ pub fn estimate_document_storage(bytes: u64) -> CostEstimate {
     CostEstimate { deposit, burn }
 }
 
-/// Git-data document sizes a push is priced by (git-remote-dash's pre-flight estimate and
-/// forge-import's price of a first push both use these, so the two agree).
-pub mod git_doc_sizes {
-    /// Serialized size assumed for a `packManifest` document before its `uris` field.
-    pub const MANIFEST_BASE_BYTES: u64 = 220;
-    /// Rough JSON length of the manifest `uris` each external target adds (public URL +
-    /// locator).
-    pub const URIS_PER_TARGET: u64 = 180;
-    /// Serialized size assumed for a `refUpdate` document.
-    pub const REF_UPDATE_BYTES: u64 = 200;
+/// What a `git push` writes on Platform, priced from fees measured on devnet moutai (drive
+/// 4.2.0-beta.5, protocol 14; balance deltas per write, 2026-09-27; the table and method are
+/// in `docs/guides/costs.md` and PR #98 / P-6). The byte formula above prices storage alone:
+/// forge-v2 documents also pay for their index entries (`repoId`, the uploader, counts), a
+/// fixed cost per document that dominates small writes, and was the 6-10x gap of D-311 /
+/// D-514 / D-700 / L-11.
+///
+/// Every figure is at or above what the calibration paid, so the estimate is an upper bound:
+/// a push's estimate lands between 1.00x and about 1.25x its charge.
+pub mod push_fees {
+    /// Credits per byte of a `chunk` document's signed transition (storage, its processing,
+    /// and the chunk's own index entries growing with it). Measured 27,450-27,650.
+    pub const CHUNK_PER_BYTE: u64 = 27_700;
+    /// A `chunk`'s cost beyond its bytes. Measured 60-70M.
+    pub const CHUNK_FLAT: u64 = 72_000_000;
+    /// Bytes a chunk document's transition carries beyond its payload (ids, the pack hash,
+    /// `seq`, field headers, the signature). Measured 116-128.
+    pub const CHUNK_OVERHEAD_BYTES: u64 = 130;
+    /// A `packManifest`, the first of a push into a repository or ref that has none of its
+    /// kind yet (its index subtrees are created). Measured 109.3-109.6M.
+    pub const MANIFEST_FIRST: u64 = 112_000_000;
+    /// A `packManifest` into existing index subtrees. Measured 77.2-83.8M.
+    pub const MANIFEST: u64 = 86_000_000;
+    /// A `refUpdate` creating a ref's history. Measured 88.3-89.3M.
+    pub const REF_FIRST: u64 = 92_000_000;
+    /// A `refUpdate` of an existing ref (or a new ref at an existing commit). Measured
+    /// 58.2-65.8M.
+    pub const REF: u64 = 68_000_000;
+    /// What the byte count of each external target's URIs adds to a manifest. Measured: a
+    /// one-target manifest cost the same as a Platform one within 0.3%.
+    pub const URIS_PER_TARGET: u64 = 1_000_000;
+
+    /// The credits of storing `bytes` as `chunk` documents.
+    pub fn chunks(bytes: u64) -> u64 {
+        let payload = crate::pack::DOC_PAYLOAD_MAX as u64;
+        let full = bytes / payload;
+        let rest = bytes % payload;
+        let doc = |b: u64| CHUNK_PER_BYTE * (b + CHUNK_OVERHEAD_BYTES) + CHUNK_FLAT;
+        let tail = if rest > 0 { doc(rest) } else { 0 };
+        full.saturating_mul(doc(payload)).saturating_add(tail)
+    }
+
+    /// The size of the browse-index fragment a push of `objects` objects publishes: the
+    /// fanout, a header, and one row per object.
+    pub fn locator_bytes(objects: u64) -> u64 {
+        const HEADER: u64 = crate::pack::FANOUT_LEN as u64 + 76;
+        HEADER + crate::pack::LOCATOR_ROW_LEN as u64 * objects
+    }
+
+    /// A push's estimate, split by what is written on chain.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct PushEstimate {
+        /// Manifests + ref updates (always on Platform).
+        pub metadata_credits: u64,
+        /// Pack + browse-index `chunk` documents (only when Platform stores the bytes).
+        pub chunk_credits: u64,
+    }
+
+    impl PushEstimate {
+        /// Total credits.
+        pub fn total(&self) -> u64 {
+            self.metadata_credits + self.chunk_credits
+        }
+    }
+
+    /// What a push writes on chain: two manifests (the pack's and its browse-index
+    /// fragment's), a ref update per ref, and, only when Platform stores the bytes, the
+    /// chunk documents of the pack AND of its browse index (D-311: the index chunks were left
+    /// out). `external_targets` adds each target's URIs to the manifests. A push that creates
+    /// anything new pays first-write fees (a repository's first manifest, a ref's first
+    /// update: new index subtrees, up to +40%); this prices every push as a first write, so
+    /// the estimate is an upper bound for all of them. git-remote-dash's guard and
+    /// forge-import's cap both use it.
+    pub fn estimate_push(
+        pack_bytes: u64,
+        object_count: u64,
+        ref_count: u64,
+        external_targets: u64,
+        platform_bytes: bool,
+    ) -> PushEstimate {
+        let manifest = MANIFEST_FIRST + URIS_PER_TARGET * external_targets;
+        PushEstimate {
+            metadata_credits: manifest * 2 + estimate_ref_updates(ref_count),
+            chunk_credits: if platform_bytes {
+                chunks(pack_bytes) + chunks(locator_bytes(object_count))
+            } else {
+                0
+            },
+        }
+    }
+
+    /// `n` ref updates alone (a push that stores no pack), priced as first writes of their
+    /// refs (the upper bound).
+    pub fn estimate_ref_updates(n: u64) -> u64 {
+        REF_FIRST * n
+    }
 }
 
 /// Estimate the split `{deposit, burn}` cost of writing a single `bytes`-byte
@@ -103,10 +189,61 @@ pub fn prompt_delete_refund(bytes: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    use super::push_fees::{estimate_push, estimate_ref_updates};
     use super::{
         estimate_document_storage, BASE_ST_PROCESSING, CREDITS_PER_DASH, PROCESSING_PER_BYTE, SEEK,
         STORAGE_CREDIT_PER_BYTE, STORAGE_PROCESSING_PER_BYTE, WRITE_BASE,
     };
+
+    #[test]
+    fn external_policy_bills_metadata_only() {
+        let ext = estimate_push(1_258_291, 300, 1, 1, false);
+        assert_eq!(ext.chunk_credits, 0);
+        let chain = estimate_push(1_258_291, 300, 1, 0, true);
+        assert!(
+            chain.chunk_credits > 100 * ext.metadata_credits,
+            "{chain:?} vs {ext:?}"
+        );
+        // ~1.2 MiB of chunks is ~0.37 DASH (measured ≈0.31 DASH/MiB, plus the index).
+        #[allow(clippy::cast_precision_loss)]
+        let d = chain.total() as f64 / CREDITS_PER_DASH as f64;
+        assert!((0.34..0.45).contains(&d), "{d}");
+    }
+
+    /// L-11 / D-311 / D-700: every push recorded on moutai (drive 4.2.0-beta.5, 2026-09-27,
+    /// per-write balance deltas, an identity nothing else spent from) with its estimate. The
+    /// estimate must be an upper bound, and within +25% of the charge on a push into a new
+    /// repository or ref (the case the first-write fees price exactly). A follow-up push into
+    /// existing index subtrees pays less, and stays an upper bound.
+    #[test]
+    fn estimates_cover_recorded_beta5_pushes() {
+        // (pack bytes, objects, refs, external targets, platform, paid credits, first write)
+        const RUNS: &[(u64, u64, u64, u64, bool, u64, bool)] = &[
+            (218, 3, 1, 0, true, 460_467_580, true),  // tiny, new repo
+            (247, 3, 1, 0, true, 402_038_960, false), // tiny, same ref again
+            (207_108, 4, 2, 0, true, 7_074_540_000, true), // 202 KiB, 2 refs, new repo
+            (410_023, 3, 1, 0, true, 13_809_300_000, false), // 400 KiB follow-up
+            (62_312, 4, 1, 1, false, 281_865_480, true), // own storage (S3), new repo
+            (278, 3, 1, 1, false, 213_867_380, false), // own storage, follow-up
+            (21_011, 4, 1, 0, true, 1_123_946_960, true), // private (sealed), new repo
+        ];
+        for &(bytes, objects, refs, targets, platform, paid, first) in RUNS {
+            let est = estimate_push(bytes, objects, refs, targets, platform).total();
+            #[allow(clippy::cast_precision_loss)]
+            let ratio = est as f64 / paid as f64;
+            assert!(
+                est >= paid,
+                "{bytes} B: estimate {est} under paid {paid} ({ratio:.3})"
+            );
+            let cap = if first { 1.25 } else { 1.6 };
+            assert!(
+                ratio <= cap,
+                "{bytes} B: estimate {est} vs paid {paid} ({ratio:.3})"
+            );
+        }
+        // A new ref at a stored commit (no pack): paid 65,783,120.
+        assert!(estimate_ref_updates(1) >= 65_783_120);
+    }
 
     const FLAT_BURN: u64 = BASE_ST_PROCESSING + WRITE_BASE + SEEK;
 
