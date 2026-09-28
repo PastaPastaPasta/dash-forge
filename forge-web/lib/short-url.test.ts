@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { RESERVED_SEGMENTS, SHORT_URL_EXPAND_SOURCE, shortRepoPath, shortUrlShimScript, type ShortTarget } from './short-url'
+import { hasShortUrl, RESERVED_SEGMENTS, SHORT_URL_EXPAND_SOURCE, shortRepoPath, shortUrlShimScript, type ShortTarget } from './short-url'
 
 type Expand = (pathname: string, base: string, reserved: readonly string[]) => string | null
 // The shim is plain JS in a string; evaluate it as the page does.
@@ -132,6 +132,35 @@ describe('the shim leaves everything else alone', () => {
     for (const r of ['repo', 'settings', 'new', 'login', 'u', 'explore', 'notifications', 'mirror', '_next']) {
       expect(RESERVED_SEGMENTS).toContain(r)
     }
+  })
+})
+
+describe('hasShortUrl', () => {
+  it('is true exactly for the addresses the shim expands back to the same repo', () => {
+    const cases = [
+      { owner: 'alice', name: 'project' },
+      { owner: '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp', name: 'forge-v2-demo' },
+      { owner: 'alice', name: 'my.repo_1' },
+      { owner: 'alice.dash', name: 'project' },
+      { owner: 'alice', name: '.hidden' },
+      { owner: 'repo', name: 'x' },
+      { owner: 'Explore', name: 'x' },
+    ]
+    for (const repo of cases) {
+      const expanded = expand(shortRepoPath(repo))
+      expect(hasShortUrl(repo), JSON.stringify(repo)).toBe(expanded === `/repo/?owner=${encodeURIComponent(repo.owner)}&name=${encodeURIComponent(repo.name)}`)
+    }
+  })
+
+  it('is false for a repo pinned by id (the short form cannot carry `?repo=`)', () => {
+    expect(hasShortUrl({ owner: 'alice', name: 'project', repoId: 'R' })).toBe(false)
+  })
+
+  it('pins blob and tree to a commit id: the 40-hex ref and the path survive the shim', () => {
+    const oid = 'ABCDEF0123456789abcdef0123456789abcdef01'
+    expect(expand(shortRepoPath(REPO, { kind: 'blob', ref: oid, path: 'src/main.rs' }))).toBe(
+      `/repo/blob/?owner=alice&name=project&ref=${oid}&path=src%2Fmain.rs`,
+    )
   })
 })
 

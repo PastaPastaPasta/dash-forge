@@ -29,23 +29,16 @@ import { Author } from '@/components/author'
 import { balanceToDash, dashToUsd } from '@/lib/view/format'
 import { FundsPill } from '@/components/funds-pill'
 import { consumePrehydrationIntent } from '@/lib/prehydration'
+import { isPageShortcut } from '@/lib/focus'
 
 /** The mirror guide (the `/mirror` wizard does not exist yet). */
 export const MIRROR_GUIDE_URL = 'https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/guides/mirror-a-github-repo.md'
-
-/** Whether a key press is typing into a field (where `/` must stay a character). */
-function isTyping(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false
-  return target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)
-}
 
 /** `/` focuses the jump box (the visible one: the header's, or the phone row's). */
 function useSlashToSearch(): void {
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey || e.defaultPrevented || isTyping(e.target)) return
-      // An open modal keeps the keyboard.
-      if (document.querySelector('[aria-modal="true"]') !== null) return
+      if (!isPageShortcut(e, '/')) return
       const box = [...document.querySelectorAll<HTMLInputElement>('input[data-jump-box]')].find(
         (el) => el.getClientRects().length > 0,
       )

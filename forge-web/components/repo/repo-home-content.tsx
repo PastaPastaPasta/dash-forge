@@ -51,6 +51,7 @@ import { ErrorState, LoadingBlock } from '@/components/ui/states'
 import { Input } from '@/components/ui/input'
 import { Oid } from '@/components/ui/oid'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
+import { usePermalinkKey } from '@/components/repo/permalink'
 
 /** The ref bar counts at most this many commits (one read each), then shows `100+`. */
 const HOME_COMMIT_COUNT_CAP = 100
@@ -151,6 +152,8 @@ function RootBody({
   refParam: string
 }): JSX.Element {
   const { data, loading, error, cause, reload } = useAsync(() => loadRoot(reader, tipOid), [tipOid])
+  // `y` pins the root listing to this commit, as GitHub's does (`/tree/<oid>`).
+  usePermalinkKey(addr, 'tree', tipOid, '')
   // The README, the commit column and the count load after the list paints and never block it.
   const names = useMemo(() => (data === null ? null : data.entries.map((e) => e.name)), [data])
   const readme = useAsync(() => loadReadme(reader, data?.entries ?? []), [data?.tree ?? ''], { enabled: data !== null })
