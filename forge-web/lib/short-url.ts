@@ -8,6 +8,11 @@
  *   /alice/project/tree/<ref>/<path>     /alice/project/blob/<ref>/<path>
  *   /alice/project/issues[/<n>]          /alice/project/pulls, /alice/project/pull/<n>[/files|commits|checks]
  *   /alice/project/releases[/<tag>]      /alice/project/commits[/<ref>]
+ *   /alice/project/releases/tag/<tag>    /alice/project/commit/<oid>
+ *   /alice/project/branches, /tags, /stargazers
+ *
+ * `?q=` on `/issues` carries GitHub's search qualifiers through (the shim appends the query
+ * string, and the Issues page lifts `is:closed label:bug …` out of `q`).
  *
  * A static host answers a short URL with `404.html`, whose inline {@link SHORT_URL_SHIM}
  * rewrites it to the canonical route. A ref containing `/` travels as one `%2F`-encoded
@@ -43,6 +48,8 @@ export type ShortTarget =
   | { readonly kind: 'issue'; readonly number: number }
   | { readonly kind: 'pull'; readonly number: number; readonly tab?: 'commits' | 'checks' | 'files' }
   | { readonly kind: 'release'; readonly tag: string }
+  | { readonly kind: 'branches' | 'tags' | 'stargazers' }
+  | { readonly kind: 'commit'; readonly oid: string }
 
 const seg = (s: string): string => encodeURIComponent(s)
 const pathSegs = (p: string): string =>
@@ -68,6 +75,9 @@ export function shortRepoPath(repo: { readonly owner: string; readonly name: str
     case 'issues':
     case 'pulls':
     case 'releases':
+    case 'branches':
+    case 'tags':
+    case 'stargazers':
       return `${base}/${target.kind}`
     case 'issue':
       return `${base}/issues/${target.number}`
@@ -75,6 +85,8 @@ export function shortRepoPath(repo: { readonly owner: string; readonly name: str
       return `${base}/pull/${target.number}${target.tab ? `/${target.tab}` : ''}`
     case 'release':
       return `${base}/releases/${seg(target.tag)}`
+    case 'commit':
+      return `${base}/commit/${seg(target.oid)}`
   }
 }
 
@@ -119,6 +131,7 @@ export const SHORT_URL_EXPAND_SOURCE = `function (pathname, base, reserved) {
   for (var i = 2; i < rest.length; i++) { var d = dec(rest[i]); if (d === null) return null; tail.push(d); }
   var number = /^[1-9][0-9]{0,9}$/.test(arg) ? arg : null;
   if (rest.length === 0) return q('/repo/', []);
+  if (kind === 'releases' && arg === 'tag' && tail.length === 1) return q('/repo/release/', ['tag', tail[0]]);
   if ((kind === 'tree' || kind === 'blob') && rest.length >= 2) {
     return q('/repo/' + kind + '/', ['ref', arg, 'path', tail.join('/')]);
   }
@@ -133,6 +146,8 @@ export const SHORT_URL_EXPAND_SOURCE = `function (pathname, base, reserved) {
   if ((kind === 'pull' || kind === 'pulls') && number) return q('/repo/pull/', ['number', number]);
   if (kind === 'releases' && rest.length === 1) return q('/repo/releases/', []);
   if (kind === 'releases') return q('/repo/release/', ['tag', arg]);
+  if ((kind === 'branches' || kind === 'tags' || kind === 'stargazers') && rest.length === 1) return q('/repo/' + kind + '/', []);
+  if (kind === 'commit' && /^[0-9a-fA-F]{4,40}$/.test(arg)) return q('/repo/commit/', ['oid', arg.toLowerCase()]);
   return null;
 }`
 

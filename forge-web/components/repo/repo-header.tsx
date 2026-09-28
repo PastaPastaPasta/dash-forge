@@ -52,25 +52,37 @@ function ForkedFrom({ forge, parentId }: { forge: ForgeIds; parentId: string }):
  * Settings. Commits live under Code (the ref bar's `n commits`). Settings is a maintainer's
  * tab; a writer sees the same page as a read-only Members list.
  */
-const CODE_ROUTES = ['/repo', '/repo/tree', '/repo/blob', '/repo/branches', '/repo/tags', '/repo/stargazers', '/repo/commits', '/repo/commit']
+export const CODE_ROUTES = ['/repo', '/repo/tree', '/repo/blob', '/repo/branches', '/repo/tags', '/repo/commits', '/repo/commit']
+
+/** The tab a repo route belongs to (`null`: none, e.g. Stargazers, as on GitHub). */
+export function activeRepoTab(pathname: string): 'code' | 'issues' | 'pulls' | 'releases' | 'settings' | null {
+  const p = bare(pathname)
+  if (CODE_ROUTES.includes(p)) return 'code'
+  if (p === '/repo/issues' || p === '/repo/issue') return 'issues'
+  if (p === '/repo/pulls' || p === '/repo/pull' || p === '/repo/pulls/new') return 'pulls'
+  if (p === '/repo/releases' || p === '/repo/release') return 'releases'
+  if (p === '/repo/settings') return 'settings'
+  return null
+}
 
 /** Match a route with or without the export's trailing slash. */
 const bare = (p: string): string => (p.length > 1 ? p.replace(/\/+$/, '') : p)
 
 export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const pathname = bare(usePathname())
+  const current = activeRepoTab(pathname)
   const refParam = useParam('ref')
   const counts = useTargetCounts(home.repo)
   const { role } = useViewerRole(home.repo)
   const tabs = [
-    { label: 'Code', path: '/repo', icon: Code2, refAware: true, match: CODE_ROUTES, count: null },
-    { label: 'Issues', path: '/repo/issues', icon: MessageSquare, refAware: false, match: ['/repo/issues', '/repo/issue'], count: counts.issues },
-    { label: 'Pull requests', path: '/repo/pulls', icon: GitPullRequest, refAware: false, match: ['/repo/pulls', '/repo/pull', '/repo/pulls/new'], count: counts.pulls },
-    { label: 'Releases', path: '/repo/releases', icon: Tag, refAware: false, match: ['/repo/releases', '/repo/release'], count: null },
+    { key: 'code', label: 'Code', path: '/repo', icon: Code2, refAware: true, count: null },
+    { key: 'issues', label: 'Issues', path: '/repo/issues', icon: MessageSquare, refAware: false, count: counts.issues },
+    { key: 'pulls', label: 'Pull requests', path: '/repo/pulls', icon: GitPullRequest, refAware: false, count: counts.pulls },
+    { key: 'releases', label: 'Releases', path: '/repo/releases', icon: Tag, refAware: false, count: null },
     ...(role === 'maintainer'
-      ? [{ label: 'Settings', path: '/repo/settings', icon: Settings, refAware: false, match: ['/repo/settings'], count: null }]
+      ? [{ key: 'settings', label: 'Settings', path: '/repo/settings', icon: Settings, refAware: false, count: null }]
       : role === 'writer'
-        ? [{ label: 'Members', path: '/repo/settings', icon: Users, refAware: false, match: ['/repo/settings'], count: null }]
+        ? [{ key: 'settings', label: 'Members', path: '/repo/settings', icon: Users, refAware: false, count: null }]
         : []),
   ]
 
@@ -108,7 +120,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
       {/* Nav: on a phone the tabs scroll sideways, with a fade on the side that has more. */}
       <TabStrip activeKey={pathname}>
         {tabs.map((tab) => {
-          const active = tab.match.includes(pathname)
+          const active = tab.key === current
           const Icon = tab.icon
           return (
             <Link

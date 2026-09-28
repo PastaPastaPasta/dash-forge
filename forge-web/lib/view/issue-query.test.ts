@@ -7,6 +7,7 @@ import {
   parseIssueQuery,
   parseSearchText,
   searchText,
+  unresolvedQualifiers,
   withQuery,
 } from './issue-query'
 import { matchesText } from '../repo/issue-index'
@@ -34,6 +35,18 @@ describe('issue list URL state', () => {
     expect(parseIssueQuery(params('page=abc')).page).toBe(1)
     expect(parseIssueQuery(params('assignee=none')).assignee).toBe('none')
     expect(parseIssueQuery(params('author=none')).author).toBeNull()
+  })
+
+  it("lifts GitHub's qualifiers out of ?q= (a /issues?q= link, L-27)", () => {
+    const q = parseIssueQuery(params('q=is%3Aclosed+label%3Abug+crash'))
+    expect(q).toMatchObject({ state: 'closed', labels: ['bug'], q: 'crash' })
+    // The app's own URL (free text only) reads back unchanged, page included.
+    const own = parseIssueQuery(params('state=closed&q=crash&page=2'))
+    expect(own).toMatchObject({ state: 'closed', q: 'crash', page: 2 })
+    // An unknown qualifier stays free text.
+    expect(parseIssueQuery(params('q=foo%3Abar')).q).toBe('foo:bar')
+    // A URL param is never cleared by a qualifier that does not resolve.
+    expect(parseIssueQuery(params(`author=${ID}&q=author%3Aalice`))).toMatchObject({ author: ID, q: '' })
   })
 
   it('dedupes repeated labels', () => {
@@ -67,11 +80,18 @@ describe('search-box qualifiers', () => {
     expect(parseSearchText('is:issue x').q).toBe('x')
   })
 
-  it('leaves unknown or malformed qualifiers in the free text', () => {
+  it('keeps unknown keys as free text, and drops (and reports) known ones it cannot resolve', () => {
     const q = parseSearchText('author:alice is:merged foo:bar hello')
     expect(q.author).toBeNull()
     expect(q.state).toBe('open')
-    expect(q.q).toBe('author:alice is:merged foo:bar hello')
+    expect(q.q).toBe('foo:bar hello')
+    expect(unresolvedQualifiers('author:alice is:merged foo:bar hello')).toEqual(['author:alice', 'is:merged'])
+  })
+
+  it('never overrides a filter with an unresolvable qualifier', () => {
+    const base = { ...DEFAULT_ISSUE_QUERY, author: ID, assignee: 'me', mentions: true, sort: 'comments' as const }
+    const q = parseSearchText('author:alice assignee:bob mentions:you sort:random', base)
+    expect(q).toMatchObject({ author: ID, assignee: 'me', mentions: true, sort: 'comments', q: '' })
   })
 
   it('writes the query back as text that parses to the same query', () => {
