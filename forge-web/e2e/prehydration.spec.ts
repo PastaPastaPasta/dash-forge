@@ -77,8 +77,10 @@ test.describe('a tap before hydration', () => {
     expect(await page.evaluate((k) => typeof (window as unknown as Record<string, unknown>)[k], '__forgePrehydration')).toBe('object')
     await expect(signInButton(page)).toBeVisible()
     await page.waitForLoadState('load')
-    // `frame-ancestors` in a <meta> CSP is only ignored with a console error: not a refusal.
-    expect(csp.filter((t) => !/frame-ancestors/i.test(t))).toEqual([])
+    // `frame-ancestors` in a <meta> CSP is only ignored with a console error: not a refusal. The
+    // host's own analytics beacon (Cloudflare injects it on forge.dashhq.org) is refused by the
+    // page CSP on purpose; it is not the app's.
+    expect(csp.filter((t) => !/frame-ancestors/i.test(t) && !/static\.cloudflareinsights\.com/.test(t))).toEqual([])
   })
 
   test('Sign in on a static page opens the sheet once the app is ready', async ({ page }) => {
@@ -111,6 +113,17 @@ test.describe('a tap before hydration', () => {
     await expect.poll(() => signInButton(page).evaluate((el) => Object.keys(el).some((k) => k.startsWith('__reactProps'))), { timeout: 60_000 }).toBe(true)
     await signInButton(page).click()
     await expect(sheet(page)).toBeVisible()
+  })
+
+  test("a script the host injects, refused by the CSP, does not stop the catcher (forge.dashhq.org)", async ({ page }) => {
+    // Cloudflare adds its analytics beacon to every page; the CSP refuses it, which fires a script
+    // error before the app loads. The tap must still be caught and replayed.
+    await page.route(/\/explore\/(\?.*)?$/, async (route) => {
+      const res = await route.fetch()
+      const html = (await res.text()).replace('</body>', '<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v1"></script></body>')
+      await route.fulfill({ response: res, body: html })
+    })
+    await tapBeforeHydration(page, '/explore/')
   })
 
   test('a script that fails to load clears the busy look (not only the timer)', async ({ page }) => {

@@ -45,3 +45,35 @@ describe('a tap caught before hydration', () => {
     expect(consumePrehydrationIntent('sign-in', {} as never, 1)).toBe(false)
   })
 })
+
+describe('what stops the catcher early', () => {
+  /** The real inline script on a fake window: its error listener, and a count of its stops. */
+  function withErrors(): { fire: (src: string, tag?: string) => void; stopped: () => boolean } {
+    const listeners: Record<string, (e: unknown) => void> = {}
+    const w: Record<string, unknown> = {
+      addEventListener: (type: string, fn: (e: unknown) => void) => void (listeners[type] = fn),
+      removeEventListener: (type: string) => void delete listeners[type],
+    }
+    const doc = { addEventListener: () => undefined, removeEventListener: () => undefined, querySelectorAll: () => [] }
+    const location = { origin: 'https://forge.example' }
+    new Function('window', 'document', 'setTimeout', 'clearTimeout', 'location', prehydrationScript())(w, doc, () => 0, () => undefined, location)
+    return {
+      fire: (src, tag = 'SCRIPT') => listeners['error']?.({ target: { tagName: tag, src } }),
+      stopped: () => listeners['error'] === undefined,
+    }
+  }
+
+  it("the host's own injected script being refused does not stop it (seen on forge.dashhq.org)", () => {
+    const c = withErrors()
+    c.fire('https://static.cloudflareinsights.com/beacon.min.js/v1')
+    c.fire('https://forge.example/cdn-cgi/other.js')
+    c.fire('https://forge.example/_next/image.png', 'IMG')
+    expect(c.stopped()).toBe(false)
+  })
+
+  it("one of the app's own scripts failing does", () => {
+    const c = withErrors()
+    c.fire('https://forge.example/_next/static/chunks/main-app.js')
+    expect(c.stopped()).toBe(true)
+  })
+})
