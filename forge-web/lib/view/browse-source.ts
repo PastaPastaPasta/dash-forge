@@ -1251,9 +1251,9 @@ export function repoReader(
   const key = repoKey(repo)
   const reader: BrowseReader = new BrowseReader(locator, packs, {
     onObject: objectObserver(key),
-    onRead: (packRef) => {
+    onRead: (packRef, view) => {
       const hash = packHashes[packRef]
-      if (hash !== undefined) noteViewPack(key, hash)
+      if (hash !== undefined) noteViewPack(key, hash, view)
     },
     missingObject: unavailable.length > 0 ? (oid) => missingObjectError(oid, unavailable) : undefined,
     onMiss: sdk === null ? undefined : (oid) => readerAfterMiss(sdk, repo, reader, oid),

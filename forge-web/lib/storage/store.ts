@@ -159,11 +159,20 @@ export function policyProblem(config: StorageConfig, policy: StoragePolicy): str
 /**
  * `config` with profile `name` as the default for browser pushes when there is no default yet
  * (L-10): a first profile that is not the default leaves every browser push, and every release
- * asset, with nowhere to go. An existing default is never replaced.
+ * asset, with nowhere to go. Likewise the first storage of one's OWN joins a default that is
+ * only Platform (added first), in front of it: release assets never go to Platform. Any other
+ * default is the user's choice and is never changed.
  */
 export function withFirstDefault(config: StorageConfig, name: string): StorageConfig {
-  if (config.defaultPolicy !== null || !config.profiles.some((p) => p.name === name)) return config
-  return { ...config, defaultPolicy: policyFor([name], 'one') }
+  const kindOf = (n: string): string | undefined => config.profiles.find((p) => p.name === n)?.settings.kind
+  const kind = kindOf(name)
+  const current = config.defaultPolicy
+  if (kind === undefined) return config
+  if (current === null) return { ...config, defaultPolicy: policyFor([name], 'one') }
+  const platformOnly = current.targets.length > 0 && current.targets.every((t) => kindOf(t) === 'platform')
+  const firstOwn = kind !== 'platform' && config.profiles.every((p) => p.name === name || p.settings.kind === 'platform')
+  if (!platformOnly || !firstOwn) return config
+  return { ...config, defaultPolicy: { ...current, targets: [name, ...current.targets] } }
 }
 
 /**
@@ -193,7 +202,7 @@ export function defaultPolicyDraft(config: StorageConfig, picked: readonly strin
 }
 
 /** Whether two policies store the same way (targets in order, copies, fallback). */
-function samePolicy(a: StoragePolicy, b: StoragePolicy): boolean {
+export function samePolicy(a: StoragePolicy, b: StoragePolicy): boolean {
   return (
     a.replicas === b.replicas &&
     a.platformFallback === b.platformFallback &&

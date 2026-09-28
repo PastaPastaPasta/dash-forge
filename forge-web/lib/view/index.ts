@@ -85,6 +85,7 @@ export {
 } from './browse-fallback'
 export {
   beginView,
+  viewSeq,
   contentChecks,
   NO_CONTENT_CHECKS,
   subscribeContentChecks,

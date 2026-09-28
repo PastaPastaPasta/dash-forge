@@ -183,6 +183,19 @@ describe('the stored configuration', () => {
     expect(second.defaultPolicy).toBe(first.defaultPolicy)
   })
 
+  it('puts the first storage of your own in front of a Platform-only default, and nothing later (L-10)', () => {
+    const platform: StorageProfile = { name: PLATFORM_PROFILE, settings: { kind: 'platform', provider: 'platform' }, secrets: {} }
+    const onlyPlatform = withFirstDefault(withProfile(EMPTY_STORAGE_CONFIG, platform), PLATFORM_PROFILE)
+    expect(onlyPlatform.defaultPolicy).toEqual(policyFor([PLATFORM_PROFILE], 'one'))
+    const withS3 = withFirstDefault(withProfile(onlyPlatform, S3), 'r2-main')
+    expect(withS3.defaultPolicy).toEqual({ targets: ['r2-main', PLATFORM_PROFILE], replicas: 1, platformFallback: false })
+    // A second storage of one's own is the user's to add.
+    expect(withFirstDefault(withProfile(withS3, KUBO), 'kubo').defaultPolicy).toBe(withS3.defaultPolicy)
+    // A Platform-only default with a storage of one's own already there was a choice: kept.
+    const chosen = { ...withProfile(withProfile(EMPTY_STORAGE_CONFIG, platform), S3), defaultPolicy: policyFor([PLATFORM_PROFILE], 'one') }
+    expect(withFirstDefault(withProfile(chosen, KUBO), 'kubo').defaultPolicy).toBe(chosen.defaultPolicy)
+  })
+
   it('lets the default form save only a real, changed policy (L-10)', () => {
     const c = withProfile(withProfile(EMPTY_STORAGE_CONFIG, S3), KUBO)
     // Nothing ticked: nothing to save, and it says why (the old form saved a null policy, "Saved.").

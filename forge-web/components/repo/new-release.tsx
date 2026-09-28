@@ -147,7 +147,7 @@ function NewReleaseDialog({
   // Why assets have nowhere to go, and the page that fixes it (L-10).
   const gap = config && repo ? releaseStorageGap(config, repo.repoId) : null
   const shownGap = gap ?? NO_STORAGE_GAP
-  const fixHref = shownGap.fix === 'repo' ? `${repoHref('/repo/settings', addr)}#storage` : '/settings/storage/'
+  const fixHref = shownGap.fix === 'repo' ? `${repoHref('/repo/settings', addr)}#storage` : shownGap.reason === 'no-profiles' ? '/settings/storage/' : '/settings/storage/#policy-title'
   const trimmedTag = tag.trim()
   // A new revision of an existing tag supersedes it (newest per tag wins): what the form leaves
   // blank is kept, so a yank or a notes edit never drops the files (D-504).

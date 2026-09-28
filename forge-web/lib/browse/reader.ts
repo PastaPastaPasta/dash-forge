@@ -173,10 +173,18 @@ export interface BrowseReaderOptions {
    */
   readonly onMiss?: (oidHex: string) => Promise<BrowseReader | null>
   /**
-   * Told the pack (`packRef`) of every object read, memo hits included: which packs a view's
-   * objects came from, so the trust summary names the places that served them (L-18).
+   * Told the pack (`packRef`) of every object a view's reader ({@link BrowseReader.forView})
+   * returned, memo hits included, with the view: which places served a page (L-18).
    */
-  readonly onRead?: (packRef: number) => void
+  readonly onRead?: (packRef: number, view: number) => void
+}
+
+/** The memos a reader and its {@link BrowseReader.forView} siblings share. */
+interface ReaderCaches {
+  offsetIndex: Map<string, LocatorEntry> | null
+  readonly objectsByOid: ObjectLru
+  readonly objectsByAddr: ObjectLru
+  readonly copyOf: Map<number, number>
 }
 
 /** Per-read limits for {@link BrowseReader.readObject}. */
@@ -248,23 +256,55 @@ class ObjectLru {
 
 /** High-level browse reader over one repo's objectLocator + pack source. */
 export class BrowseReader {
-  private offsetIndex: Map<string, LocatorEntry> | null = null
-  /** Verified whole-object memo, keyed by lowercase OID hex. */
-  private readonly objectsByOid = new ObjectLru()
-  /** Decoded-entry memo keyed `(packRef, offset)` — where repeated delta-base work lands. */
-  private readonly objectsByAddr = new ObjectLru()
   /**
-   * The copy each pack is read from (forge-v2 packs have one per writer). Starts at the
-   * top-ranked copy and moves on only when an object read through it fails to reconstruct or
-   * to hash to its oid; the copy that served a verified object is kept.
+   * `offsetIndex`: built on first use. `objectsByOid`: the verified whole-object memo, keyed by
+   * lowercase OID hex. `objectsByAddr`: the decoded-entry memo keyed `(packRef, offset)`, where
+   * repeated delta-base work lands. `copyOf`: the copy each pack is read from (forge-v2 packs have
+   * one per writer); it starts at the top-ranked copy and moves on only when an object read
+   * through it fails to reconstruct or to hash to its oid, and the copy that served a verified
+   * object is kept.
    */
-  private readonly copyOf = new Map<number, number>()
+  private readonly caches: ReaderCaches
 
   constructor(
     private readonly locator: ObjectLocator,
     private readonly packs: PackSource,
     private readonly opts: BrowseReaderOptions = {},
-  ) {}
+    /** The view whose reads this reader reports ({@link forView}); none for a shared reader. */
+    private readonly view?: number,
+    caches?: ReaderCaches,
+  ) {
+    this.caches = caches ?? { offsetIndex: null, objectsByOid: new ObjectLru(), objectsByAddr: new ObjectLru(), copyOf: new Map() }
+  }
+
+  private get objectsByOid(): ObjectLru {
+    return this.caches.objectsByOid
+  }
+  private get objectsByAddr(): ObjectLru {
+    return this.caches.objectsByAddr
+  }
+  private get copyOf(): Map<number, number> {
+    return this.caches.copyOf
+  }
+  private get offsetIndex(): Map<string, LocatorEntry> | null {
+    return this.caches.offsetIndex
+  }
+  private set offsetIndex(index: Map<string, LocatorEntry> | null) {
+    this.caches.offsetIndex = index
+  }
+
+  /**
+   * This reader for one view of a page (L-18): the same objects and memos, but every object it
+   * returns is reported to `onRead` with `view`, so a page's trust summary names the places that
+   * served it, and a view the viewer left (a history walk still running) is told apart.
+   */
+  forView(view: number): BrowseReader {
+    return new BrowseReader(this.locator, this.packs, this.opts, view, this.caches)
+  }
+
+  private noteRead(packRef: number): void {
+    if (this.view !== undefined) this.opts.onRead?.(packRef, this.view)
+  }
 
   /**
    * A new reader over the same locator that reads the packs through {@link readAheadSource}:
@@ -276,10 +316,12 @@ export class BrowseReader {
    */
   forHistoryWalk(): BrowseReader & { flush(): void } {
     const verdicts = this.opts.onObject ? new BatchedVerdicts(this.opts.onObject) : null
-    const walker = new BrowseReader(this.locator, readAheadSource(this.packs), {
-      ...this.opts,
-      ...(verdicts ? { onObject: (v: ObjectVerdict) => verdicts.note(v) } : {}),
-    })
+    const walker = new BrowseReader(
+      this.locator,
+      readAheadSource(this.packs),
+      { ...this.opts, ...(verdicts ? { onObject: (v: ObjectVerdict) => verdicts.note(v) } : {}) },
+      this.view,
+    )
     return Object.assign(walker, { flush: () => verdicts?.flush() })
   }
 
@@ -299,10 +341,14 @@ export class BrowseReader {
    * practice, so a delta is "not a commit" for short-id resolution.
    */
   async objectType(oidHex: string): Promise<GitObject['type'] | null> {
-    const cached = this.objectsByOid.get(oidHex.toLowerCase())
-    if (cached !== undefined) return cached.type
     const entry = this.locate(oidHex)
+    const cached = this.objectsByOid.get(oidHex.toLowerCase())
+    if (cached !== undefined) {
+      if (entry !== null) this.noteRead(entry.packRef)
+      return cached.type
+    }
     if (entry === null) return null
+    this.noteRead(entry.packRef)
     const head = await this.packs.fetchRange(entry.packRef, entry.offset, Math.min(entry.offset + 16, entry.offset + entry.length), this.copyOf.get(entry.packRef))
     const { type } = parseObjHeader(head, 0)
     return type === PACK_TYPE.OFS_DELTA || type === PACK_TYPE.REF_DELTA ? null : objTypeFromCode(type)
@@ -332,8 +378,11 @@ export class BrowseReader {
     const oidKey = oidHex.toLowerCase()
     const cached = this.objectsByOid.get(oidKey)
     const entry = this.locate(oidHex)
-    if (entry !== null) this.opts.onRead?.(entry.packRef)
-    if (cached !== undefined) return withinLimit(cached, limits.item)
+    if (cached !== undefined) {
+      const obj = withinLimit(cached, limits.item)
+      if (entry !== null) this.noteRead(entry.packRef)
+      return obj
+    }
 
     if (entry === null) {
       const fresher = await this.opts.onMiss?.(oidHex)
@@ -344,6 +393,7 @@ export class BrowseReader {
 
     const obj = await this.readVerified(entry, oidKey, limits)
     this.objectsByOid.set(oidKey, obj)
+    this.noteRead(entry.packRef)
     return obj
   }
 
@@ -511,6 +561,7 @@ export class BrowseReader {
   private async decodeByOid(oidHex: string, limits: Limits): Promise<GitObject> {
     const e = this.locator.lookup(hexToBytes(oidHex))
     if (e === null) throw new Error(`REF_DELTA base not in locator: ${oidHex}`)
+    this.noteRead(e.packRef)
     return this.decodeEntry(e, limits.base, limits)
   }
 

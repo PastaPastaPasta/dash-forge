@@ -18,6 +18,7 @@ import {
   objectObserver,
   resetContentChecks,
   subscribeContentChecks,
+  viewSeq,
   viewSources,
 } from './content-checks'
 
@@ -80,23 +81,46 @@ describe('content-check ledger', () => {
     expect(contentChecks('repo-a').packSources).toEqual({ aa: ['platform'], bb: ['files.example'] })
     expect(contentChecks('repo-a').sources).toEqual(['platform', 'files.example'])
 
-    noteViewPack('repo-a', 'aa')
-    noteViewPack('repo-a', 'BB')
+    const home = viewSeq('repo-a', '/repo?name=x')
+    expect(viewSeq('repo-a', '/repo?name=x')).toBe(home) // the same view: the same number
+    beginView('repo-a', home)
+    noteViewPack('repo-a', 'aa', home)
+    noteViewPack('repo-a', 'BB', home)
     expect(viewSources(contentChecks('repo-a'))).toEqual(['platform', 'files.example'])
     const before = notified
     const snap = contentChecks('repo-a')
-    noteViewPack('repo-a', 'bb') // already in this view: no change, no notification
+    noteViewPack('repo-a', 'bb', home) // already in this view: no change, no notification
+    beginView('repo-a', home) // the rail re-rendering the same view
     expect(contentChecks('repo-a')).toBe(snap)
     expect(notified).toBe(before)
 
     // A new view starts empty; the session's record of each pack stays.
-    beginView('repo-a')
+    const file = viewSeq('repo-a', '/repo/blob?name=x&path=s3file.txt')
+    beginView('repo-a', file)
     expect(contentChecks('repo-a').viewPacks).toEqual([])
     expect(viewSources(contentChecks('repo-a'))).toEqual([])
-    noteViewPack('repo-a', 'bb')
+    noteViewPack('repo-a', 'bb', file)
     expect(viewSources(contentChecks('repo-a'))).toEqual(['files.example'])
     expect(contentChecks('repo-b')).toBe(NO_CONTENT_CHECKS)
     unsubscribe()
+  })
+
+  it("drops reads of a view the viewer left, and lets a view's first read start it (L-18)", () => {
+    noteContentCheck('repo-a', { source: 'platform', pack: 'aa' })
+    noteContentCheck('repo-a', { source: 'files.example', pack: 'bb' })
+    const home = viewSeq('repo-a', '/repo?name=x')
+    const file = viewSeq('repo-a', '/repo/blob?name=x&path=f')
+    expect(file).toBeGreaterThan(home)
+    // The file view's first read comes before the rail's layout effect: it starts the view.
+    noteViewPack('repo-a', 'bb', file)
+    // The home page's history walk, still running, reads a Platform-stored commit: dropped.
+    noteViewPack('repo-a', 'aa', home)
+    beginView('repo-a', home) // a stale start is ignored too
+    beginView('repo-a', file)
+    expect(viewSources(contentChecks('repo-a'))).toEqual(['files.example'])
+    // Back on the home page: a new view (a new number), not the old one revived.
+    const again = viewSeq('repo-a', '/repo?name=x')
+    expect(again).toBeGreaterThan(file)
   })
 
   it('names an external source by its host', () => {

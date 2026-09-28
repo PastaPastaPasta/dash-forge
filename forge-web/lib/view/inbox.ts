@@ -246,6 +246,22 @@ export function backfillQuery(forge: ForgeIds, f: Extract<Feed, { kind: 'state' 
   }
 }
 
+/** Failed backfill attempts of one thread before it is given up (its future events still come). */
+export const BACKFILL_TRIES = 3
+/** Covered threads kept per state feed: the newest (a feed watches at most MAX_THREADS). */
+const COVERED_MAX = 4 * MAX_THREADS
+
+/**
+ * A state feed's covered record, bounded: thread id → when it was covered (ms; `0` for a thread
+ * covered before records existed), or a failure count below zero. The oldest go first.
+ */
+function pruneCovered(covered: Record<string, number>, now: number): Record<string, number> {
+  const rows = Object.entries(covered)
+  if (rows.length <= COVERED_MAX) return covered
+  // Pending retries (below zero) sort as newest: they are still being tried.
+  return Object.fromEntries(rows.sort((a, b) => (b[1] < 0 ? now : b[1]) - (a[1] < 0 ? now : a[1])).slice(0, COVERED_MAX))
+}
+
 /** A stored cursor (an earlier build stored a bare timestamp). */
 function asCursor(v: unknown): Cursor | undefined {
   if (typeof v === 'number') return { at: v }
@@ -541,27 +557,37 @@ export async function pollOnce(
     // moved past its events is read once from its own history (L-17).
     if (f.kind === 'state') {
       const coverKey = `${p}covered:${fk}`
-      // The threads this feed has answered for. A feed read by an earlier build has no record:
-      // its threads are checked once each (a thread whose events it passed is backfilled), so an
-      // inbox that already missed a merge gets it too.
-      const covered = new Set((await idbGet<string[]>('inbox', coverKey)) ?? [])
+      // The threads this feed has answered for, kept after a thread leaves the watch set (it is
+      // not re-read when it returns). A feed read by an earlier build has no record: it covered
+      // every thread it watched then, so its current threads are taken as covered (an upgrade
+      // re-reads nothing, and never brings back pruned notifications as unread).
+      const record = await idbGet<Record<string, number>>('inbox', coverKey)
+      const covered: Record<string, number> = record ?? (cursor === start ? {} : Object.fromEntries(f.threads.map((t) => [t.id, 0])))
+      let changed = record === undefined && Object.keys(covered).length > 0
       for (const t of f.threads) {
-        if (covered.has(t.id)) continue
-        // Null when the feed has not read past the thread's start (always so before its first
-        // read): the read below answers for it.
-        const q = backfillQuery(forge, f, t, cursor, start.at)
-        if (q !== null) {
-          if (backfills >= BACKFILL_BUDGET) continue
-          backfills++
-          try {
-            await store(toItems({ ...f, threads: [t] }, (await queryDocumentsWithProof(sdk, q)).documents, me))
-          } catch {
-            continue // retried next poll
+        if (covered[t.id] === undefined || covered[t.id]! < 0) {
+          // Null when the feed has not read past the thread's start (always so before its
+          // first read): the read below answers for it.
+          const q = backfillQuery(forge, f, t, cursor, start.at)
+          if (q !== null) {
+            if (backfills >= BACKFILL_BUDGET) continue
+            backfills++
+            try {
+              await store(toItems({ ...f, threads: [t] }, (await queryDocumentsWithProof(sdk, q)).documents, me))
+            } catch {
+              // Retried next poll; given up after BACKFILL_TRIES (a count below zero).
+              failed++
+              const tries = (covered[t.id] ?? 0) - 1
+              covered[t.id] = tries <= -BACKFILL_TRIES ? now : tries
+              changed = true
+              continue
+            }
           }
+          covered[t.id] = now
+          changed = true
         }
-        covered.add(t.id)
       }
-      await idbPut('inbox', coverKey, f.threads.map((t) => t.id).filter((id) => covered.has(id)))
+      if (changed) await idbPut('inbox', coverKey, pruneCovered(covered, now))
     }
     let docs: PlainDocument[]
     try {

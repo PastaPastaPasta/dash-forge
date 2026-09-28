@@ -88,10 +88,16 @@ export type ContentCheckDelta = Partial<Record<Counter, number>> & {
 
 const ledger = new Map<string, ContentChecks>()
 
+/** Per repo: the newest view's sequence number, and the view (route and query) it stands for. */
+const views = new Map<string, { readonly view: string; readonly seq: number }>()
+/** The view whose reads the ledger counts, per repo (reads of an older view are dropped). */
+const currentView = new Map<string, number>()
+let lastSeq = 0
+
 // A private repo's entries are keyed `repoId#sessionId` and hold decrypted state: they go with
 // the session, however it ends (lock, key change, retirement).
 onPrivateSessionEnded((id) => {
-  for (const m of [ledger]) for (const k of [...m.keys()]) if (k.endsWith(`#${id}`) || k.includes(`#${id}\0`)) m.delete(k)
+  for (const m of [ledger, views, currentView]) for (const k of [...m.keys()]) if (k.endsWith(`#${id}`) || k.includes(`#${id}\0`)) m.delete(k)
 })
 const listeners = new Set<() => void>()
 
@@ -141,18 +147,36 @@ export function clearUnreachable(key: string): void {
 }
 
 /**
- * A new view of the repo starts (a route or its query changed): the objects it reads, and so the
- * places the summary names, are counted from here. The session's totals are kept.
+ * The sequence number of `view` (a route and its query) of repo `key`: the same while the view
+ * stays, a higher one when it changes (back to an earlier view too). Pure for a given view, so
+ * the rail and the page body, rendering the same view, agree on it.
  */
-export function beginView(key: string): void {
+export function viewSeq(key: string, view: string): number {
+  const prev = views.get(key)
+  if (prev !== undefined && prev.view === view) return prev.seq
+  const seq = ++lastSeq
+  views.set(key, { view, seq })
+  return seq
+}
+
+/**
+ * View `seq` of the repo starts: the objects it reads, and so the places the summary names, are
+ * counted from here. An older view's reads still in flight (a history walk the viewer left) are
+ * dropped from now on. The session's totals are kept.
+ */
+export function beginView(key: string, seq: number): void {
+  if (seq <= (currentView.get(key) ?? 0)) return
+  currentView.set(key, seq)
   const prev = ledger.get(key)
   if (prev === undefined || prev.viewPacks.length === 0) return
   ledger.set(key, { ...prev, viewPacks: [] })
   for (const l of listeners) l()
 }
 
-/** The current view read an object from pack `packHash` (hex). No-op when already counted. */
-export function noteViewPack(key: string, packHash: string): void {
+/** View `seq` read an object from pack `packHash` (hex). No-op when already counted or stale. */
+export function noteViewPack(key: string, packHash: string, seq: number): void {
+  if (seq < (currentView.get(key) ?? 0)) return
+  beginView(key, seq)
   const pack = packHash.toLowerCase()
   const prev = ledger.get(key) ?? NO_CONTENT_CHECKS
   if (prev.viewPacks.includes(pack)) return
@@ -192,6 +216,8 @@ export function objectObserver(key: string): (verdict: ObjectVerdict, count?: nu
 /** Test hook: forget every repo's ledger. */
 export function resetContentChecks(): void {
   ledger.clear()
+  views.clear()
+  currentView.clear()
   for (const l of listeners) l()
 }
 

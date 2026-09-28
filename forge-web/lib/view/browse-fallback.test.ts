@@ -28,7 +28,7 @@ import type { PackManifest, RepoRef } from '../repo'
 import { base64ToHex, bytesToBase64 } from '../sdk'
 import { cachedFallback, startFallback, type FallbackProgress } from './browse-fallback'
 import { externalFetchUrls, resetExternalFetchState, StorageUnreachableError } from './browse-source'
-import { beginView, contentChecks, resetContentChecks } from './content-checks'
+import { contentChecks, resetContentChecks, viewSeq } from './content-checks'
 import { describeUnavailable, noteRepoGateways, overrideDefaultGateways, readGateways } from './storage-status'
 import { deriveTrust } from './trust'
 
@@ -252,16 +252,23 @@ describe('startFallback with external-storage packs', () => {
         configuredBackend: 'platform',
       }).summary
 
+    // Each page reads through a reader for its view, as BrowseBoundary gives it.
+    const visit = (route: string) => ctx.reader.forView(viewSeq(repo.repoId, route))
     // The repo home read the README (Platform), then the viewer opened the S3 file.
-    beginView(repo.repoId)
-    await ctx.reader.readObject(plat.oid)
+    const home = visit('/repo')
+    await home.readObject(plat.oid)
     expect(summary()).toMatch(/· from Platform$/)
-    beginView(repo.repoId)
-    await ctx.reader.readObject(s3.oid)
+    const file = visit('/repo/blob?path=s3')
+    await file.readObject(s3.oid)
     expect(summary()).toMatch(/· from files\.example$/)
-    // A memo hit still names its place: the second visit reads nothing new.
-    beginView(repo.repoId)
-    await ctx.reader.readObject(plat.oid)
+    // The home page's walk, still reading after the viewer left it, is not counted.
+    await home.readObject(plat.oid)
+    expect(summary()).toMatch(/· from files\.example$/)
+    // A memo hit still names its place: the next visit reads nothing new.
+    await visit('/repo').readObject(plat.oid)
+    expect(summary()).toMatch(/· from Platform$/)
+    // The shared reader (no view) reports nothing: only a page's own reads name places.
+    await ctx.reader.readObject(s3.oid)
     expect(summary()).toMatch(/· from Platform$/)
   })
 

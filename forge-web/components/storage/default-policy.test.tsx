@@ -34,17 +34,32 @@ afterEach(() => {
   host.remove()
 })
 
-/** Render the form over a config that `save` really updates, as the vault-backed hook does. */
-async function mount(initial: StorageConfig): Promise<{ saves: StorageConfig[] }> {
+/**
+ * Render the form over a config that `save` really updates as the vault-backed hook does: the
+ * write resolves first, and the re-read config arrives later (`reread()`), not with the write.
+ */
+async function mount(initial: StorageConfig): Promise<{ saves: StorageConfig[]; reread: () => Promise<void>; setConfig: (c: StorageConfig) => Promise<void> }> {
   const saves: StorageConfig[] = []
   let config = initial
+  let pending: StorageConfig | null = null
+  const draw = (): Promise<void> => act(async () => root.render(<DefaultPolicy config={config} storable save={save} />))
   const save = vi.fn(async (next: StorageConfig) => {
     saves.push(next)
-    config = next
-    await act(async () => root.render(<DefaultPolicy config={config} storable save={save} />))
+    pending = next
   })
-  await act(async () => root.render(<DefaultPolicy config={config} storable save={save} />))
-  return { saves }
+  await draw()
+  return {
+    saves,
+    reread: async () => {
+      if (pending !== null) config = pending
+      pending = null
+      await draw()
+    },
+    setConfig: async (c) => {
+      config = c
+      await draw()
+    },
+  }
 }
 
 const checkbox = (name: string): HTMLInputElement => {
@@ -79,12 +94,18 @@ describe('DefaultPolicy (L-10)', () => {
     expect(status()).not.toBe('Saved.')
   })
 
-  it('says "Saved." only after writing a real policy, and clears it on the next edit', async () => {
-    const { saves } = await mount(withProfile(EMPTY_STORAGE_CONFIG, MINIO))
+  it('says "Saved." only once the written policy is the stored one, and clears it on the next edit', async () => {
+    const { saves, reread } = await mount(withProfile(EMPTY_STORAGE_CONFIG, MINIO))
     await act(async () => checkbox('minio-e2e').click())
     expect(saveButton().disabled).toBe(false)
     await act(async () => saveButton().click())
     expect(saves.map((c) => c.defaultPolicy)).toEqual([policyFor(['minio-e2e'], 'one')])
+    // Written, not yet re-read: the form keeps showing what was saved, and does not claim it yet.
+    expect(checkbox('minio-e2e').checked).toBe(true)
+    expect(status()).toBe('Saving…')
+    expect(saveButton().disabled).toBe(true)
+    await reread()
+    expect(checkbox('minio-e2e').checked).toBe(true)
     expect(status()).toBe('Saved.')
     // Saved and unchanged: nothing more to save.
     expect(saveButton().disabled).toBe(true)
@@ -92,5 +113,16 @@ describe('DefaultPolicy (L-10)', () => {
     await act(async () => checkbox('minio-e2e').click())
     expect(status()).toMatch(/Tick at least one place/)
     expect(saveButton().disabled).toBe(true)
+  })
+
+  it('stops saying "Saved." when the saved default is replaced (its profile removed)', async () => {
+    const { reread, setConfig } = await mount(withProfile(EMPTY_STORAGE_CONFIG, MINIO))
+    await act(async () => checkbox('minio-e2e').click())
+    await act(async () => saveButton().click())
+    await reread()
+    expect(status()).toBe('Saved.')
+    // Removing the profile prunes the default to null (`withoutProfile`).
+    await setConfig({ ...withProfile(EMPTY_STORAGE_CONFIG, { ...MINIO, name: 'other' }), defaultPolicy: null })
+    expect(status()).toMatch(/Tick at least one place/)
   })
 })

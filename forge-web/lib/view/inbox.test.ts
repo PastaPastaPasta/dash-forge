@@ -11,6 +11,8 @@ import type { DocumentQuery } from '../sdk'
 import {
   BACKFILL_BUDGET,
   BACKFILL_MS,
+  BACKFILL_TRIES,
+  backfillQuery,
   DEFAULT_PREFS,
   PAGE,
   advanceCursor,
@@ -345,5 +347,65 @@ describe('a thread watched after its state events landed (L-17)', () => {
     }
     expect(counts).toEqual([BACKFILL_BUDGET, 2, 0])
     expect((await loadItems('devnet', ME)).map((i) => i.target?.number)).toEqual([10])
+  })
+
+  it('on upgrade (cursors but no record) re-reads nothing, so pruned items never come back unread', async () => {
+    const { sdk, queries } = chainSdk([{ ...MERGED, type: 'event' }])
+    await watch([PR, ISSUE], 2000)
+    // An earlier build read both state feeds past the merge and has since pruned its items.
+    for (const type of ['event', 'authorEvent']) await idbPut('inbox', `devnet:${ME}:cursor:state:${type}:${REPO.id}`, { at: 900 })
+    await pollOnce(sdk, 'devnet', FORGE, ME, { now: 2000 })
+    expect(backfills(queries)).toEqual([])
+    expect(await loadItems('devnet', ME)).toEqual([])
+    // A thread watched after the upgrade is backfilled as usual.
+    const LATER = thread({ id: 'PR3', kind: 'pull', number: 3, since: 300 })
+    await watch([LATER, PR, ISSUE], 3000)
+    queries.length = 0
+    await pollOnce(sdk, 'devnet', FORGE, ME, { now: 3000 })
+    expect(backfills(queries).map((q) => q.where?.[0]?.[2])).toEqual(['PR3', 'PR3'])
+  })
+
+  it('retries a failed backfill, reports it, and gives up after BACKFILL_TRIES', async () => {
+    const { sdk: inner, queries } = chainSdk([{ ...MERGED, type: 'event' }])
+    const sdk = {
+      documents: {
+        query: (q: DocumentQuery) =>
+          backfills([q]).length > 0 && (q.documentTypeName === 'event' || q.documentTypeName === 'authorEvent')
+            ? Promise.reject(new Error('node down'))
+            : (inner as unknown as { documents: { query: (q: DocumentQuery) => Promise<unknown> } }).documents.query(q),
+      },
+    } as unknown as EvoSDK
+    await watch([ISSUE], 1000)
+    await pollOnce(inner, 'devnet', FORGE, ME, { now: 1000 })
+    await watch([PR, ISSUE], 2000)
+    const failures: number[] = []
+    for (let i = 0; i < BACKFILL_TRIES + 1; i++) failures.push((await pollOnce(sdk, 'devnet', FORGE, ME, { now: 2000 + i })).failed)
+    // One failed backfill per poll (the event feed; authorEvent needs none), then no more tries.
+    expect(failures).toEqual([...Array(BACKFILL_TRIES).fill(1), 0])
+    // Every state backfill failed (the only ones that reached the SDK were the thread feeds').
+    expect(stateReads(backfills(queries))).toEqual([])
+  })
+
+  it('does not re-read a thread that left the watch set and came back', async () => {
+    const { sdk, queries } = chainSdk([{ ...MERGED, type: 'event' }])
+    await watch([ISSUE], 1000)
+    await pollOnce(sdk, 'devnet', FORGE, ME, { now: 1000 })
+    await watch([PR, ISSUE], 2000)
+    await pollOnce(sdk, 'devnet', FORGE, ME, { now: 2000 })
+    await watch([ISSUE], 3000)
+    await pollOnce(sdk, 'devnet', FORGE, ME, { now: 3000 })
+    await watch([PR, ISSUE], 4000)
+    queries.length = 0
+    await pollOnce(sdk, 'devnet', FORGE, ME, { now: 4000 })
+    expect(backfills(queries)).toEqual([])
+  })
+
+  it('never reads before the feed\'s own floor, whatever the thread\'s age', () => {
+    const f: Extract<Feed, { kind: 'state' }> = { kind: 'state', type: 'event', repo: REPO, threads: [PR] }
+    const old = thread({ id: 'OLD', since: 10 })
+    expect(backfillQuery(FORGE, f, old, { at: 900 }, 500)?.where).toEqual([['targetId', '==', 'OLD'], ['$createdAt', '>', 500], ['$createdAt', '<=', 900]])
+    expect(backfillQuery(FORGE, f, old, { at: 500 }, 500)).toBeNull()
+    // A page that stopped inside a busy block: the whole block at `at` is included.
+    expect(backfillQuery(FORGE, f, PR, { at: 900, afterId: 'X' }, 0)?.where?.[2]).toEqual(['$createdAt', '<=', 900])
   })
 })

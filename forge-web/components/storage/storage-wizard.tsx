@@ -17,6 +17,7 @@ import {
   providerPreset,
   PLATFORM_PROFILE,
   profileProblem,
+  samePolicy,
   withFirstDefault,
   withProfile,
   withRenamedProfile,
@@ -24,6 +25,7 @@ import {
   type ProviderId,
   type ReplicationChoice,
   type StorageConfig,
+  type StoragePolicy,
   type StorageProfile,
 } from '@/lib/storage'
 import { errText } from '@/lib/storage/util'
@@ -362,21 +364,28 @@ export function DefaultPolicy({ config, storable, save }: { config: StorageConfi
   const [edits, setEdits] = useState<{ picked: readonly string[]; choice: ReplicationChoice } | null>(null)
   const picked = edits?.picked ?? current?.targets ?? []
   const choice = edits?.choice ?? (current ? choiceOf(current) : 'one')
-  // What Save did last; any edit clears it. "Saved." only ever follows a real write.
-  const [saved, setSaved] = useState(false)
+  // The policy Save last wrote. "Saved." shows only while it IS the stored default: not before
+  // the settings re-read after the write lands, and not after anything replaced it.
+  const [saved, setSaved] = useState<StoragePolicy | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const statusId = useId()
   if (config.profiles.length === 0) return null
   const draft = defaultPolicyDraft(config, picked, choice)
   const edit = (next: { picked?: readonly string[]; choice?: ReplicationChoice }): void => {
-    setSaved(false)
+    setSaved(null)
     setEdits({ picked: next.picked ?? picked, choice: next.choice ?? choice })
   }
-  const [status, tone] = saved
-    ? ['Saved.', 'text-verify-700 dark:text-verify-400']
-    : draft.state === 'empty' || draft.state === 'invalid'
-      ? [draft.reason, 'text-caution-700 dark:text-caution-400']
-      : [draft.state === 'unchanged' ? 'This is your saved default.' : '', 'text-anvil-500 dark:text-anvil-400']
+  // Written, and the form shows it, but the settings have not been re-read yet.
+  const saving = saved !== null && draft.policy !== null && samePolicy(saved, draft.policy) && draft.state === 'changed'
+  const stored = saved !== null && current !== null && samePolicy(saved, current) && draft.state === 'unchanged'
+  const [status, tone] =
+    stored
+      ? ['Saved.', 'text-verify-700 dark:text-verify-400']
+      : saving
+        ? ['Saving…', 'text-anvil-500 dark:text-anvil-400']
+        : draft.state === 'empty' || draft.state === 'invalid'
+          ? [draft.reason, 'text-caution-700 dark:text-caution-400']
+          : [draft.state === 'unchanged' ? 'This is your saved default.' : '', 'text-anvil-500 dark:text-anvil-400']
 
   return (
     <section aria-labelledby="policy-title" className="space-y-3 rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-750 dark:bg-anvil-900">
@@ -420,15 +429,15 @@ export function DefaultPolicy({ config, storable, save }: { config: StorageConfi
           variant="primary"
           size="sm"
           // Only a real, changed policy saves: never a null one (L-10), never a no-op.
-          disabled={!storable || draft.state !== 'changed'}
+          disabled={!storable || draft.state !== 'changed' || saving}
           aria-describedby={statusId}
           onClick={async () => {
             if (draft.state !== 'changed') return
             setErr(null)
             try {
+              // The edits stay: the form keeps showing what was saved until the re-read lands.
               await save({ ...config, defaultPolicy: draft.policy })
-              setEdits(null)
-              setSaved(true)
+              setSaved(draft.policy)
             } catch (e) {
               setErr(errText(e))
             }
