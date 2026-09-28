@@ -68,6 +68,12 @@ export interface PullActionInputs {
    * `'unknown'`: it could not be read, so a writer's merge is withheld (fail closed).
    */
   readonly policy?: PolicyStatus | null | 'unknown'
+  /**
+   * The branch policy requires passing checks (`requireChecks`) and the head's trusted check runs
+   * are not all passing (none, pending or failing). A client rule like the approvals: a writer's
+   * merge is withheld, a maintainer may override.
+   */
+  readonly checksBlocking?: boolean
 }
 
 /** What a repo's ACL is read from, for "couldn't read …" messages. */
@@ -157,7 +163,7 @@ export function policyOf(
 }
 
 /** Decide the PR controls for a viewer. Pure — the unit-tested core of the PR page gate. */
-export function pullActions({ pull, viewer, holdings, protectedPatterns = [], policy = null }: PullActionInputs): PullActions {
+export function pullActions({ pull, viewer, holdings, protectedPatterns = [], policy = null, checksBlocking = false }: PullActionInputs): PullActions {
   const known = holdings !== null && holdings !== 'loading'
   const maintainer = known && holdings.maintain
   const holder = known && (holdings.write || holdings.maintain)
@@ -168,7 +174,7 @@ export function pullActions({ pull, viewer, holdings, protectedPatterns = [], po
   const base = pull.baseRefName ?? ''
   const baseProtected = base !== '' && matchesProtected(base, protectedPatterns)
   const policyUnknown = policy === 'unknown'
-  const policyUnmet = policyUnknown || (policy !== null && !policy.met)
+  const policyUnmet = policyUnknown || (policy !== null && !policy.met) || checksBlocking
 
   const eligible = actionable && open && viewer !== null && holder && pull.headOid !== ''
   // A writer can neither move a protected base nor override the policy.
@@ -190,6 +196,8 @@ export function pullActions({ pull, viewer, holdings, protectedPatterns = [], po
       mergeHint = "Couldn't read the branch policy, so only a maintainer can merge for now."
     } else if (policy !== null && typeof policy === 'object' && !policy.met) {
       mergeHint = `The branch policy needs ${policy.need} approval${policy.need === 1 ? '' : 's'} (${policy.have} so far). Only a maintainer can merge before then.`
+    } else if (checksBlocking) {
+      mergeHint = 'The branch policy requires passing checks on the head. Only a maintainer can merge before then.'
     }
   }
 
@@ -243,6 +251,75 @@ export function mergeRefProblem(
   }
   if (!isOidHex(headOid)) return 'The PR names no valid head commit.'
   return null
+}
+
+/**
+ * Why "Delete the branch after merging" cannot delete the PR's source branch, or null when it
+ * can. Refused, as `dg pr merge --delete-branch` refuses (`deletable_source`), for the base branch
+ * itself and the source repo's default branch; and, beyond dg, unless the branch still points at
+ * the PR head that was merged: a commit pushed after it would be lost. `defaultBranch` null: it
+ * could not be read, so the branch might be the default one: refused (it fails closed). `tip`
+ * undefined: not read yet (only the fixed refusals apply); null: the branch is already gone.
+ */
+export function deleteBranchProblem(i: {
+  readonly refName: string
+  readonly sameRepo: boolean
+  readonly baseRefName: string
+  readonly defaultBranch: string | null
+  readonly headOid: string
+  readonly tip?: string | null
+}): string | null {
+  const name = shortRef(i.refName)
+  if (i.sameRepo && i.refName === i.baseRefName) return "the PR's source branch is its base branch"
+  const d = i.defaultBranch
+  if (d === null || d === '') return `the source repo's default branch could not be read, so ${name} is not deleted`
+  if (i.refName === d || i.refName === `refs/heads/${d}`) return `${name} is the source repo's default branch`
+  if (i.tip === undefined || i.tip === null) return null
+  if (i.tip.toLowerCase() !== i.headOid.toLowerCase()) return `${name} moved to ${i.tip.slice(0, 9)} after the merged head; not deleted, so those commits are kept`
+  return null
+}
+
+/**
+ * What the merge box shows for "Delete the branch after merging":
+ * - `offer`: the checkbox (the merger can write the source branch, and it may be deleted);
+ * - `explain`: the checkbox shown disabled, with `reason` (the merger cannot write the source,
+ *   typically a contributor's fork: the option exists, they just cannot use it here);
+ * - `hide`: nothing (no source branch, a private or unresolved source, the branch must never be
+ *   deleted: the base or default branch, or the default is not read yet).
+ */
+export function deleteBranchOffer(i: {
+  readonly refName: string | null
+  /** The source repo, resolved (null while unknown), and whether it is this repo. */
+  readonly source: { readonly visibility: string; readonly sameRepo: boolean } | null
+  /** The merger can write the source branch; null while not known yet. */
+  readonly canWrite: boolean | null
+  readonly baseRefName: string
+  /** The source repo's default branch; null while not read (or unreadable). */
+  readonly defaultBranch: string | null
+  readonly headOid: string
+}): { kind: 'offer' } | { kind: 'explain'; reason: string } | { kind: 'hide' } {
+  if (i.refName === null || i.source === null || i.source.visibility !== 'public' || i.canWrite === null) return { kind: 'hide' }
+  if (i.source.sameRepo && i.refName === i.baseRefName) return { kind: 'hide' }
+  if (!i.canWrite) {
+    return {
+      kind: 'explain',
+      reason: i.source.sameRepo
+        ? "You can't write this branch here (it is protected, or you are not a writer)."
+        : "You can't write the contributor's fork; ask them to allow edits by maintainers, or delete it from the fork.",
+    }
+  }
+  if (deleteBranchProblem({ refName: i.refName, sameRepo: i.source.sameRepo, baseRefName: i.baseRefName, defaultBranch: i.defaultBranch, headOid: i.headOid }) !== null) return { kind: 'hide' }
+  return { kind: 'offer' }
+}
+
+/**
+ * Whether the merge box is on screen, given whether the viewer can merge now and whether it was
+ * shown before in this page view. Once shown it stays: its own merge flips the PR to merged
+ * (the viewer can no longer merge it) while it still has its last steps to report and the
+ * source branch to delete, and unmounting it then would drop both silently.
+ */
+export function mergeBoxShown(canMerge: boolean, shownBefore: boolean): boolean {
+  return canMerge || shownBefore
 }
 
 function shortRef(ref: string): string {

@@ -5,10 +5,13 @@
  * head lives in), the base branch's tip, and the repo's protected patterns.
  */
 
+import { useState } from 'react'
+
 import type { PullView, RepoRef } from '@/lib/repo'
 import { tipOidOf, type RepoHome } from '@/lib/view'
-import { mergeBaseTip } from '@/lib/view/pull-actions'
-import { MergePanel } from '@/components/repo/merge-panel'
+import { mergeBaseTip, mergeBoxShown } from '@/lib/view/pull-actions'
+import type { SquashAuthors } from '@/lib/merge/engine'
+import { MergePanel, type DeleteBranchOption } from '@/components/repo/merge-panel'
 import { pullBase, useComparisonSides } from '@/components/repo/pull-diff'
 
 export function PullMerge({
@@ -19,6 +22,7 @@ export function PullMerge({
   isMaintainer,
   checkout,
   onMerged,
+  extras = {},
 }: {
   repo: RepoRef
   home: RepoHome
@@ -27,10 +31,25 @@ export function PullMerge({
   isMaintainer: boolean
   checkout: string
   onMerged: () => void
+  /** Review-parity additions: allowed methods, squash authors, delete the branch after merging. */
+  extras?: MergeExtras
 }): JSX.Element | null {
+  // Once shown, the panel stays for the rest of this page view: a merge in it refreshes the PR,
+  // which then reads Merged (and `canMerge` turns false) while the panel still has its last steps
+  // to report and the branch to delete. Unmounting it there would drop both silently.
+  const [shownBefore, setShownBefore] = useState(canMerge)
+  const shown = mergeBoxShown(canMerge, shownBefore)
+  if (shown && !shownBefore) setShownBefore(true)
   // Only a maintainer or writer resolves the readers the merge needs.
-  if (!canMerge) return null
-  return <MergeReaders repo={repo} home={home} pull={pull} isMaintainer={isMaintainer} checkout={checkout} onMerged={onMerged} />
+  if (!shown) return null
+  return <MergeReaders repo={repo} home={home} pull={pull} isMaintainer={isMaintainer} checkout={checkout} onMerged={onMerged} extras={extras} />
+}
+
+/** What the PR page adds to the merge panel. */
+export interface MergeExtras {
+  readonly allowedMethods?: number
+  readonly squashAuthors?: SquashAuthors
+  readonly deleteBranch?: DeleteBranchOption | null
 }
 
 function MergeReaders({
@@ -40,6 +59,7 @@ function MergeReaders({
   isMaintainer,
   checkout,
   onMerged,
+  extras,
 }: {
   repo: RepoRef
   home: RepoHome
@@ -47,6 +67,7 @@ function MergeReaders({
   isMaintainer: boolean
   checkout: string
   onMerged: () => void
+  extras: MergeExtras
 }): JSX.Element | null {
   const { sides, baseOnly, sidesKey } = useComparisonSides(repo, pull.sourceId)
   // Build only on the base as it stands now, and only on a base the PR could merge into (D-501);
@@ -66,6 +87,9 @@ function MergeReaders({
       isMaintainer={isMaintainer}
       checkout={checkout}
       onMerged={onMerged}
+      {...(extras.allowedMethods !== undefined ? { allowedMethods: extras.allowedMethods } : {})}
+      {...(extras.squashAuthors !== undefined ? { squashAuthors: extras.squashAuthors } : {})}
+      {...(extras.deleteBranch !== undefined ? { deleteBranch: extras.deleteBranch } : {})}
     />
   )
 }

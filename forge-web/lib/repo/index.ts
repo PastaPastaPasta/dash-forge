@@ -265,6 +265,7 @@ export {
   editRepoDoc,
   fullPattern,
   newestPolicy,
+  policyFromDocs,
   parseTopics,
   patternMatches,
   patternsProblem,

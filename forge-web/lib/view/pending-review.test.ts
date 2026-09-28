@@ -9,6 +9,9 @@ import {
   partialSubmitMessage,
   reanchorDraft,
   removeDraftComment,
+  commentsShown,
+  reviewShows,
+  SUBMIT_WAIT,
   setDraftVerdict,
   splitDraftComments,
   startSubmit,
@@ -96,5 +99,27 @@ describe('a submit and a moved head', () => {
     // Shown on H2's lines, and listed apart while the diff shows H1.
     expect(splitDraftComments(d, H2).onLines.map((c) => c.localId)).toEqual(['b'])
     expect(splitDraftComments(d, H1).onLines.map((c) => c.localId)).toEqual(['a'])
+  })
+})
+
+describe('after a submit', () => {
+  it('waits until the review and every comment it wrote show, not just the review', () => {
+    const submitted = { reviewId: 'R', commentIds: ['c1', 'c2'] }
+    expect(reviewShows({ reviews: [], comments: [] }, submitted)).toBe(false)
+    expect(reviewShows({ reviews: [{ id: 'R' }], comments: [{ id: 'c1' }] }, submitted)).toBe(false)
+    expect(reviewShows({ reviews: [{ id: 'R' }], comments: [{ id: 'c2' }, { id: 'c1' }, { id: 'x' }] }, submitted)).toBe(true)
+    expect(reviewShows({ reviews: [{ id: 'R' }], comments: [] }, { reviewId: 'R', commentIds: [] })).toBe(true)
+    expect(commentsShown({ comments: [{ id: 'c2' }, { id: 'x' }] }, ['c1', 'c2'])).toBe(1)
+  })
+
+  it('waits about a minute in all, backing off', () => {
+    let total = 0
+    let wait: number = SUBMIT_WAIT.delayMs
+    for (let i = 0; i < SUBMIT_WAIT.attempts; i++) {
+      total += wait
+      wait = Math.min(SUBMIT_WAIT.maxDelayMs, wait * SUBMIT_WAIT.backoff)
+    }
+    expect(total).toBeGreaterThanOrEqual(50_000)
+    expect(total).toBeLessThanOrEqual(70_000)
   })
 })

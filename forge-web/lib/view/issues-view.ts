@@ -21,11 +21,10 @@ import {
   num,
   readLabels,
   readMembershipsCached,
-  newestPolicy,
+  policyFromDocs,
   readPolicy,
   readPull,
   reviewViewOf,
-  toPolicy,
   seedMemberships,
   toLog,
   updatedAtOf,
@@ -383,10 +382,7 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number,
   const review = foldPrReviewV2(log.events, log.authorEvents, pull.author, pull.initialHeadOid, roots)
   const labels = docs(4).length < 100 ? newestLabels(docs(4)) : await readLabels(sdk, repo)
   const policyDocs = docs(7).length < 100 ? docs(7) : null
-  const policy: Promise<Policy | null> =
-    policyDocs === null
-      ? readPolicy(sdk, repo)
-      : Promise.resolve(newestPolicy(policyDocs.map((d) => ({ createdAt: num(d, '$createdAt'), id: str(d, '$id'), policy: toPolicy(d) }))))
+  const policy: Promise<Policy | null> = policyDocs === null ? readPolicy(sdk, repo) : Promise.resolve(policyFromDocs(policyDocs))
   const members = memberships ?? (await readMembershipsCached(sdk, repo, network).catch(() => null))
   const approvals = await readApprovals(members, policy, reviews, review, pull.author)
   return {

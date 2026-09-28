@@ -5,7 +5,7 @@
  */
 
 import type { ObjectReader } from '../view/tree-nav'
-import type { MergeCheck, MergeInput } from './engine'
+import type { MergeCheckResult, MergeInput } from './engine'
 import type { FromWorker, MergeResult, ToWorker } from './protocol'
 
 type Phase = Extract<FromWorker, { type: 'progress' }>
@@ -71,7 +71,7 @@ function withWorker<T>(
 export const CHECK_TIMEOUT_MS = 60_000
 
 /** Whether (and how) the PR merges, without building anything; gives up after {@link CHECK_TIMEOUT_MS}. */
-export function checkMergeInWorker(reader: ObjectReader, input: MergeInput, signal?: AbortSignal): Promise<MergeCheck> {
+export function checkMergeInWorker(reader: ObjectReader, input: MergeInput, signal?: AbortSignal): Promise<MergeCheckResult> {
   const timeout = new AbortController()
   const timer = setTimeout(() => timeout.abort(), CHECK_TIMEOUT_MS)
   signal?.addEventListener('abort', () => timeout.abort())

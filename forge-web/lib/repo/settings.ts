@@ -252,9 +252,8 @@ export function toPolicy(doc: PlainDocument): Policy {
 // Reads and writes
 // ---------------------------------------------------------------------------------------------
 
-/** The branch policy in force for `repo` (newest `policy`), or null. */
-export async function readPolicy(sdk: EvoSDK, repo: RepoRef): Promise<Policy | null> {
-  const docs = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.policy, { orderBy: [['$createdAt', 'asc']] }))
+/** The policy in force among `policy` documents (newest by `($createdAt, $id)`), or null. */
+export function policyFromDocs(docs: readonly PlainDocument[]): Policy | null {
   return newestPolicy(
     docs.map((d) => ({
       createdAt: typeof d['$createdAt'] === 'number' ? d['$createdAt'] : 0,
@@ -262,6 +261,11 @@ export async function readPolicy(sdk: EvoSDK, repo: RepoRef): Promise<Policy | n
       policy: toPolicy(d),
     })),
   )
+}
+
+/** The branch policy in force for `repo` (newest `policy`), or null. */
+export async function readPolicy(sdk: EvoSDK, repo: RepoRef): Promise<Policy | null> {
+  return policyFromDocs(await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.policy, { orderBy: [['$createdAt', 'asc']] })))
 }
 
 /** Thrown for a config write the web cannot make in a private repo (its config is sealed). */

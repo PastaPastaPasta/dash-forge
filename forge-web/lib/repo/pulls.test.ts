@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest'
 import { base58Decode } from '../auth/base58'
 import { RoleOracle, type Review } from '../rules/v2'
 import { mergeTimeline, toCommentView, type CommentView } from '../view/issues-view'
-import { anchorLabel, extendSelection, placeThreads, rangeKeys } from '../view/inline-threads'
+import { anchorLabel, extendSelection, placeThreads, rangeKeys, repliesByRoot } from '../view/inline-threads'
 import { approverPhrase, summarizeReviews } from '../view/review-fold'
 import type { ReviewView } from './issues'
 import { refUpdateData, refUpdateType } from './push'
@@ -153,6 +153,13 @@ describe('inline thread placement', () => {
     const placed = placeThreads(cs, HEAD, null)
     expect([...placed.current.keys()].sort()).toEqual(['0:3:a.ts', '1:3:a.ts'])
     expect(placed.general.map((c) => c.id)).toEqual(['c3', 'c4'])
+  })
+
+  it('groups every reply under its thread root (a reply to a reply too); general replies stay out', () => {
+    const cs = [comment('c1', on('a.ts', 3)), comment('c2', { replyTo: 'c1' }), comment('c3', { replyTo: 'c2' }), comment('g1'), comment('g2', { replyTo: 'g1' })]
+    const byRoot = repliesByRoot(cs)
+    expect([...byRoot.keys()]).toEqual(['c1'])
+    expect(byRoot.get('c1')?.map((c) => c.id)).toEqual(['c2', 'c3'])
   })
 
   it('tints every line a range covers (rangeKeys), one-line threads none', () => {

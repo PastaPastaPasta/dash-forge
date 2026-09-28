@@ -5,7 +5,7 @@
  */
 
 import type { GitObject } from '../browse'
-import type { MergeCheck, MergeInput, MergeOutcome, MergePlan } from './engine'
+import type { MergeCheckResult, MergeInput, MergeOutcome, MergePlan } from './engine'
 
 export type MergeResult = MergeOutcome | Exclude<MergePlan, { kind: 'fast-forward' | 'merge' }>
 
@@ -17,6 +17,6 @@ export type ToWorker =
 export type FromWorker =
   | { readonly type: 'read'; readonly req: number; readonly oid: string }
   | { readonly type: 'progress'; readonly phase: 'analyse' | 'merge' | 'pack'; readonly detail?: string }
-  | { readonly type: 'checked'; readonly check: MergeCheck }
+  | { readonly type: 'checked'; readonly check: MergeCheckResult }
   | { readonly type: 'done'; readonly result: MergeResult }
   | { readonly type: 'error'; readonly message: string }
