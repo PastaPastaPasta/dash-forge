@@ -374,8 +374,6 @@ pub struct ReindexPlan {
     /// Every index fragment hash the plan read (or tried to): one that appears later was
     /// published concurrently.
     known: BTreeSet<[u8; 32]>,
-    /// Fragments that could not be read (their packs count as unindexed).
-    pub unreadable_fragments: usize,
     manifests: Vec<PackManifestInfo>,
     roles: RoleMap,
 }
@@ -2103,8 +2101,9 @@ impl<'a> RepoService<'a> {
     ///
     /// Coverage is decided over the fragments the WEB merges ([`index_fragments`]: every
     /// kind-1 pack of the pack list, superseded or not), so a repository the web already reads
-    /// as indexed is never indexed again. A fragment that cannot be read covers nothing (the
-    /// web falls back for it too). Only the fold decision uses the live set.
+    /// as indexed is never indexed again. A fragment that cannot be read is refused: the web
+    /// falls back for the whole repository while it cannot load one, so a new index would be
+    /// paid for and change nothing. Only the fold decision uses the live set.
     pub async fn plan_reindex(&self, repo: &RepoRef) -> Result<ReindexPlan> {
         let manifests = self.read_pack_manifests(repo).await?;
         let roles = self.copy_roles(repo).await?;
@@ -2118,6 +2117,20 @@ impl<'a> RepoService<'a> {
         let read = self
             .read_fragments(repo, &manifests, &roles, &merged)
             .await?;
+        // A fragment the web merges but cannot load sends it to its fallback clone whatever
+        // else is published: indexing its packs again would be paid for and change nothing.
+        if let Some(bad) = merged
+            .iter()
+            .find(|m| !read.iter().any(|(r, _)| r.pack_hash == m.pack_hash))
+        {
+            return Err(Error::Config(format!(
+                "index fragment {} cannot be read (no copy verifies, or this identity cannot \
+                 open it); readers fall back to downloading the packs until it can be read, \
+                 and a new index would not change that. Restore its storage (`dg reseed`), or \
+                 check `dg storage status`",
+                hex::encode(bad.pack_hash)
+            )));
+        }
         let covered: BTreeSet<u16> = read.iter().flat_map(|(_, f)| f.pack_ref_iter()).collect();
         let missing = uncovered_packs(&space, &covered)?;
         if let Some(p) = missing.iter().find(|p| u16::try_from(p.pack_ref).is_err()) {
@@ -2129,7 +2142,6 @@ impl<'a> RepoService<'a> {
             )));
         }
         // Folded only when a push would fold: the live fragments at the cap, those read.
-        let unreadable_fragments = merged.len() - read.len();
         let live = if missing.is_empty() {
             Vec::new()
         } else {
@@ -2143,7 +2155,6 @@ impl<'a> RepoService<'a> {
             missing,
             fold,
             known: merged.iter().map(|m| m.pack_hash).collect(),
-            unreadable_fragments,
             manifests,
             roles,
         })
@@ -2899,6 +2910,11 @@ fn plan_push_index(
         ));
     };
 
+    // Checked over every fragment a reader merges (the web honours no `supersedes`), not
+    // only the live ones: publishing into an index readers already reject helps nobody.
+    if !fragments_index_prefixes(manifests, roles, &space, &index_fragments(manifests, roles)) {
+        return PushIndexPlan::Skip(IndexSkip::new(FRAGMENT_MISMATCH, IndexRemedy::Repack));
+    }
     let live_locators = live_locator_manifests(manifests);
     if !fragments_index_prefixes(manifests, roles, &space, &live_locators) {
         return PushIndexPlan::Skip(IndexSkip::new(FRAGMENT_MISMATCH, IndexRemedy::Repack));
@@ -3708,6 +3724,35 @@ mod tests {
         assert!(
             why.contains("older client") && why.contains("dg repack"),
             "{why}"
+        );
+    }
+
+    /// Re-review: a push checks the prefix rule over every fragment a reader merges, not
+    /// only the live ones. A superseded fragment built over another space still breaks the
+    /// web's index, so the push does not publish into it.
+    #[test]
+    fn a_push_checks_superseded_fragments_readers_still_merge() {
+        let mut relabel = manifest("m1", 300, 1, 1);
+        relabel.owner_id = "alice".into();
+        let mut fold = manifest("fz", 350, 1, 20);
+        fold.supersedes = vec![[8; 32]]; // the bad fragment below is no longer live
+        let ms = vec![
+            relabel,
+            fold,
+            manifest("f0", 150, 1, 8), // indexed [p1]; the space no longer starts with p1
+            manifest("p2", 200, 0, 2),
+            manifest("p1", 100, 0, 1),
+        ];
+        let roles: RoleMap = [("alice".to_string(), Role::Maintainer)]
+            .into_iter()
+            .collect();
+        assert!(live_locator_manifests(&ms)
+            .iter()
+            .all(|m| m.document_id != "f0"));
+        let got = plan_push_index(&ms, &roles, [2; 32]);
+        assert!(
+            matches!(&got, PushIndexPlan::Skip(s) if s.remedy == IndexRemedy::Repack),
+            "{got:?}"
         );
     }
 

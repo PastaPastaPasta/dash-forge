@@ -13,6 +13,8 @@
 #      as an `indexSkipped` event. The repo has a git pack and no objectLocator.
 #   3. `dg repo reindex` on it prices one index fragment (no pack upload), publishes it, and a
 #      second run finds nothing to do. The spend is the index only: far below the pack's price.
+#   4. A push stopped after its manifest and before its refs (DASH_FORGE_FAIL_BEFORE_REFS)
+#      reports `indexSkipped`; the retry stores nothing again, and `dg repo reindex` repairs it.
 #
 # Needs a test-hooks git-remote-dash (SKIPs otherwise; `cargo build -p git-remote-dash
 # --features test-hooks`), GitHub access, and an identity minted for the run (the moutai funding
@@ -107,5 +109,26 @@ check "the spend is positive (${spent} credits)" test "${spent:-0}" -gt 0
 check "the spend is the index only (${spent} credits)" test "${spent:-0}" -lt 1000000000
 reindex "$LOG-3b" "$OWNER_ID/$LAG" || { cat "$LOG-3b.err" >&2; bad "second reindex failed"; }
 check "a second reindex finds nothing to do" assert_eq "indexed" "$(jq_py "$LOG-3b.json" 'd["status"]')"
+
+step "4. a push that stops before its refs still leaves an index (or says so); the retry lands"
+# The pack and its manifest are stored, the refs are not (DASH_FORGE_FAIL_BEFORE_REFS). The
+# retry finds the pack recorded and stores nothing again, so this push is the one that must
+# have indexed it, or said it did not.
+FB="$(printf 'e2e-idx-fb-%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
+dg_read_retry "$ID" "$LOG-4c.json" "$LOG-4c.err" --yes --json repo create "$FB" --storage platform \
+  || { cat "$LOG-4c.err" >&2; bad "repo create failed"; finish_scenario; }
+SRC4="$WORKROOT/s33-src4"
+seed_tiny_repo "$SRC4" main >/dev/null
+DASH_FORGE_FAIL_BEFORE_REFS=1 GIT_DASH_JSON=1 git_dash "$ID" "$LOG-4a" \
+  -C "$SRC4" push "dash://$OWNER_ID/$FB" main:main \
+  && bad "the push with DASH_FORGE_FAIL_BEFORE_REFS succeeded"
+check "the stopped push reports the index as skipped" assert_file_contains "$LOG-4a.err" '"event":"indexSkipped"'
+if ! git_dash "$ID" "$LOG-4b" -C "$SRC4" push "dash://$OWNER_ID/$FB" main:main; then
+  cat "$LOG-4b.err" >&2; is_flake "$LOG-4b.err" && skip_scenario "push flaked"
+  bad "the retry failed"; finish_scenario
+fi
+check "one git pack, no index yet (the retry stored nothing)" assert_eq "1 0" "$(kinds "$OWNER_ID/$FB")"
+reindex "$LOG-4r" "$OWNER_ID/$FB" || { cat "$LOG-4r.err" >&2; bad "reindex failed"; }
+check "reindex repairs it" assert_eq "1 1" "$(kinds "$OWNER_ID/$FB")"
 
 finish_scenario

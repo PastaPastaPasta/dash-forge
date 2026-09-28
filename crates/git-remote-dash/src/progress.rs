@@ -288,7 +288,16 @@ pub fn recorded_line(pack_hash: &str) -> (String, Value) {
 /// from the event stream (`indexSkipped`) and puts it in its summary's warnings.
 /// `fix` is the command that repairs it (`dg repo reindex …` or `dg repack …`), when one does.
 pub fn index_skipped_line(why: &str, fix: Option<&str>) -> (String, Value) {
-    let until = fix.map_or_else(String::new, |fix| format!(" until `{fix}` publishes it"));
+    // `dg repo reindex` publishes the missing index. `dg repack` only rebuilds a consistent
+    // one: while the web honours no `supersedes`, a reader still merges the fragment that
+    // stopped this push, so it does not promise browsing is fixed.
+    let until = fix.map_or_else(String::new, |fix| {
+        if fix.starts_with("dg repo reindex") {
+            format!(" until `{fix}` publishes it")
+        } else {
+            format!("; `{fix}` rebuilds the index")
+        }
+    });
     let message = format!(
         "the push landed but its browse index was not published ({why}); the web cannot \
          browse the new commits{until}"

@@ -167,12 +167,6 @@ pub async fn reindex(ctx: &Ctx, repo: &str, profile: Option<&str>) -> Result<()>
             s.repo.display(),
             plan.missing.len()
         );
-        if plan.unreadable_fragments > 0 {
-            println!(
-                "  {} index fragment(s) could not be read; the packs they cover are indexed again",
-                plan.unreadable_fragments
-            );
-        }
         println!(
             "  uploads one index fragment over {index_objects} objects{} to {label} + its \
              manifest   {}",
@@ -216,17 +210,17 @@ pub async fn reindex(ctx: &Ctx, repo: &str, profile: Option<&str>) -> Result<()>
 /// Credits spent since `before`, read until the balance moves (a node a block behind still
 /// shows the old one); `None` when the balance cannot be read.
 async fn measured_spend(s: &crate::common::Session, before: u64) -> Option<u64> {
-    let mut last = None;
+    // A manifest was paid for, so a balance that has not moved is a node a block behind, not
+    // a free write: unknown, not 0.
     for _ in 0..4 {
         if let Ok(after) = s.client.get_balance(&s.identity.id()).await {
             if after < before {
                 return Some(before - after);
             }
-            last = Some(0);
         }
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
     }
-    last
+    None
 }
 
 /// Where `dg repo reindex` stores the index: `--profile`, else this clone's storage policy

@@ -528,19 +528,21 @@ impl Helper {
             // the re-push-of-an-already-recorded-pack path.
             #[cfg(feature = "test-hooks")]
             if !dry_run && std::env::var_os("DASH_FORGE_FAIL_BEFORE_REFS").is_some() {
+                if pending_index.is_some() {
+                    index_skipped(ctx, &reindex_skip("the push stopped before its refs"));
+                }
                 bail!("simulated interruption after the manifest, before the refs (DASH_FORGE_FAIL_BEFORE_REFS)");
             }
         }
 
-        // Apply ref updates for accepted specs.
+        // Apply ref updates for accepted specs, then publish the browse index.
         if !dry_run {
-            write_ref_updates(&svc, &conn.repo, &mut planned, progress).await?;
-            forget_sealed(sealed_cache.as_deref());
-        }
-        // The browse index goes last: waiting for a lagging node to list the pack's manifest
-        // (D-920) must never hold the refs back, and a push is complete without its index.
-        if let (Some(ctx), Some(index)) = (&ctx, pending_index) {
-            publish_browse_index(ctx, index).await;
+            let refs = write_ref_updates(&svc, &conn.repo, &mut planned, progress).await;
+            if refs.is_ok() {
+                forget_sealed(sealed_cache.as_deref());
+            }
+            publish_index_after_refs(ctx.as_ref(), pending_index).await;
+            refs?;
         }
 
         // Post-push re-read: a same-prevOid race lost to a concurrent pusher surfaces here
@@ -1762,9 +1764,10 @@ async fn reuse_recorded(ctx: &PushContext<'_>, job: &PackJob<'_>) -> Result<Opti
     }
     let refs_only = push_fees::estimate_ref_updates(ctx.refs.len() as u64);
     policy::enforce(refs_only, ctx.policy, false, policy::NOTE_NOTHING_STORED)?;
-    // The browse index is left alone: the earlier push published (or tried to) the fragment
-    // for this pack, and a missing one is published by `dg repo reindex`. The kept sealed bytes
-    // stay until the refs land ([`forget_sealed`]): this push may still fail at its refs.
+    // The browse index is not published again here: the push that recorded the pack published
+    // it (it does so even when its refs fail), or said it did not, naming `dg repo reindex`,
+    // which publishes it without storing the pack again. The kept sealed bytes stay until the
+    // refs land ([`forget_sealed`]): this push may still fail at its refs.
     Ok(Some(refs_only))
 }
 
@@ -1946,13 +1949,25 @@ async fn publish_browse_index(ctx: &PushContext<'_>, index: PendingIndex) {
         }
         Ok(forge_core::repo::PushIndexOutcome::Skipped(skip)) => index_skipped(ctx, &skip),
         // The pack is stored and fine: only its index is missing.
-        Err(e) => index_skipped(
-            ctx,
-            &forge_core::repo::IndexSkip {
-                reason: format!("{e:#}"),
-                remedy: forge_core::repo::IndexRemedy::Reindex,
-            },
-        ),
+        Err(e) => index_skipped(ctx, &reindex_skip(format!("{e:#}"))),
+    }
+}
+
+/// The browse index goes last: waiting for a lagging node to list the pack's manifest (D-920)
+/// must never hold the refs back, and a push is complete without its index. It is published
+/// even when the refs failed: the pack is stored, and a retry finds it recorded and stores
+/// (and indexes) nothing again.
+async fn publish_index_after_refs(ctx: Option<&PushContext<'_>>, index: Option<PendingIndex>) {
+    if let (Some(ctx), Some(index)) = (ctx, index) {
+        publish_browse_index(ctx, index).await;
+    }
+}
+
+/// A skip whose repair is `dg repo reindex` (the pack is stored; only its index is missing).
+fn reindex_skip(reason: impl Into<String>) -> forge_core::repo::IndexSkip {
+    forge_core::repo::IndexSkip {
+        reason: reason.into(),
+        remedy: forge_core::repo::IndexRemedy::Reindex,
     }
 }
 
