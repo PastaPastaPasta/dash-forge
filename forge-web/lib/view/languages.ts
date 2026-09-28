@@ -4,7 +4,7 @@
  * walk of the tree — like GitHub's language bar, which counts bytes by linguist's extension map and
  * skips vendored, generated and documentation files.
  *
- * The walk (`walkFiles` in `zip.ts`) is bounded (`FILE_WALK_TREES` trees, `FILE_WALK_FILES` files) and shared with Go to file; when a
+ * The walk (`walkFiles` in `zip.ts`) is bounded (`FILE_WALK_FILES` files) and shared with Go to file; when a
  * bound stops it, the result says how much it covered. Sizes are stored sizes, so the bar is an
  * approximation and says so.
  */

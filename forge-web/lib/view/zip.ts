@@ -22,8 +22,7 @@ export interface ZipFile {
   readonly size: number
 }
 
-/** The file walk's bounds for Go to file and the language bar (tree reads only; no blob is read). */
-export const FILE_WALK_TREES = 300
+/** The file walk's bound for Go to file and the language bar (tree reads only; no blob is read). */
 export const FILE_WALK_FILES = 5000
 
 /** The files a walk found, and whether a bound stopped it before it saw every file. */

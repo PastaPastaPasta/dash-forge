@@ -3,7 +3,11 @@
  * walk shared between the language bar and Go to file (one walk per tip, never a second).
  */
 
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+/** The session-end listeners repo-facts registers, so a test can end a session. */
+const sessionEnded = vi.hoisted((): ((id: string) => void)[] => [])
+vi.mock('../repo/private-session', () => ({ onPrivateSessionEnded: (l: (id: string) => void) => (sessionEnded.push(l), () => undefined) }))
 
 import { Store } from './diff-fixtures'
 import { readTree } from './tree-nav'
@@ -50,6 +54,55 @@ describe('loadRepoFacts', () => {
     const files = await repoFilesWalk('r', tip, reader, root)
     expect(files.files.map((f) => f.path)).toEqual(['LICENSE', 'README.md', 'build.sh', 'src/main.rs'])
     expect(s.reads.length).toBe(reads)
+  })
+
+  it('a directory named license is not a license file', async () => {
+    const s = new Store()
+    const root = s.files({ 'license/README.md': 'the licenses we use\n', 'a.go': 'package a\n' })
+    const tip = s.commit(root)
+    const reader = s.reader(undefined, locateBy(s))
+    await loadRepoFacts('r', tip, reader, root, await readTree(reader, root))
+    expect(repoFacts('r', tip).license).toBeNull()
+  })
+
+  it('a failed walk leaves the languages unknown, and the next visit tries again', async () => {
+    const { s, tip, root } = repo()
+    const good = s.reader(undefined, locateBy(s))
+    const entries = await readTree(good, root)
+    let fail = true
+    const flaky = { ...good, readObject: (oid: string) => (fail && oid !== root ? Promise.reject(new Error('offline')) : good.readObject(oid)) }
+    await expect(loadRepoFacts('r', tip, flaky, root, entries)).rejects.toThrow('offline')
+    expect(repoFacts('r', tip).languages).toBeUndefined()
+    fail = false
+    await loadRepoFacts('r', tip, flaky, root, entries)
+    expect(repoFacts('r', tip).languages?.languages.map((l) => l.name)).toEqual(['Rust', 'Shell'])
+  })
+
+  it('a private repo’s facts and walk go when its session ends', async () => {
+    const { s, tip, root } = repo()
+    const reader = s.reader(undefined, locateBy(s))
+    const key = 'repoId#session7'
+    await loadRepoFacts(key, tip, reader, root, await readTree(reader, root))
+    await loadRepoFacts('other#session8', tip, reader, root, await readTree(reader, root))
+    expect(repoFacts(key, tip).languages).toBeDefined()
+    const reads = s.reads.length
+    for (const l of sessionEnded) l('session7')
+    expect(repoFacts(key, tip)).toEqual({ license: undefined, languages: undefined })
+    expect(repoFacts('other#session8', tip).languages).toBeDefined()
+    // The walk went too: asking again reads the trees again.
+    await repoFilesWalk(key, tip, reader, root)
+    expect(s.reads.length).toBeGreaterThan(reads)
+  })
+
+  it('Go to file reaches files under more than 300 directories', async () => {
+    const s = new Store()
+    const files: Record<string, string> = {}
+    for (let i = 0; i < 320; i++) files[`d${String(i).padStart(3, '0')}/f.rs`] = String(i)
+    const root = s.files(files)
+    const tip = s.commit(root)
+    const walk = await repoFilesWalk('r', tip, s.reader(undefined, locateBy(s)), root)
+    expect(walk.files).toHaveLength(320)
+    expect(walk.truncated).toBe(false)
   })
 
   it('no license file: null, not unknown', async () => {

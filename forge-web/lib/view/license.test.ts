@@ -47,6 +47,37 @@ describe('identifyLicense on the showcase repos', () => {
   })
 })
 
+describe('identifyLicense on the full canonical texts (SPDX license-list-data)', () => {
+  // Full texts, not title lines: their bodies name their relatives (GPL-3 mentions the Lesser and
+  // Affero GPLs, MPL-2.0 names GPL/LGPL/AGPL as Secondary Licenses, SPDX's LGPL-3.0-only carries
+  // GPL-3 appended), which a phrase search anywhere in the text got wrong.
+  it.each([
+    ['spdx-GPL-2.0-only.txt', 'GPL-2.0'],
+    ['spdx-GPL-3.0-only.txt', 'GPL-3.0'],
+    ['spdx-LGPL-2.1-only.txt', 'LGPL-2.1'],
+    ['spdx-LGPL-3.0-only.txt', 'LGPL-3.0'],
+    ['spdx-AGPL-3.0-only.txt', 'AGPL-3.0'],
+    ['spdx-MPL-2.0.txt', 'MPL-2.0'],
+    ['spdx-EPL-2.0.txt', 'EPL-2.0'],
+    ['spdx-Apache-2.0.txt', 'Apache-2.0'],
+    ['spdx-MIT.txt', 'MIT'],
+    ['spdx-ISC.txt', 'ISC'],
+    ['spdx-BSD-2-Clause.txt', 'BSD-2-Clause'],
+    ['spdx-BSD-3-Clause.txt', 'BSD-3-Clause'],
+    ['spdx-Unlicense.txt', 'Unlicense'],
+    ['spdx-CC0-1.0.txt', 'CC0-1.0'],
+    ['spdx-Zlib.txt', 'Zlib'],
+    ['spdx-BSL-1.0.txt', 'BSL-1.0'],
+  ])('%s is %s', (file, id) => {
+    expect(identifyLicense(text(file))).toBe(id)
+  })
+
+  it('does not take a relative for a license it does not know: 0BSD is not ISC, BSD-4-Clause is not BSD-3-Clause', () => {
+    expect(identifyLicense(text('spdx-0BSD.txt'))).toBeNull()
+    expect(identifyLicense(text('spdx-BSD-4-Clause.txt'))).toBeNull()
+  })
+})
+
 describe('identifyLicense tells relatives apart', () => {
   const bsd2 = `Redistribution and use in source and binary forms, with or without modification, are permitted provided that the following conditions are met:
 1. Redistributions of source code must retain the above copyright notice, this list of conditions and the following disclaimer.
@@ -66,7 +97,11 @@ describe('identifyLicense tells relatives apart', () => {
   it('Apache-2.0, MPL-2.0, ISC; re-wrapped and with typographic quotes', () => {
     expect(identifyLicense('Apache License\n                           Version 2.0, January 2004')).toBe('Apache-2.0')
     expect(identifyLicense('Mozilla Public License Version 2.0')).toBe('MPL-2.0')
-    expect(identifyLicense('Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted')).toBe('ISC')
+    // The grant alone is 0BSD's too: ISC needs its notice condition as well.
+    expect(identifyLicense('Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted')).toBeNull()
+    expect(
+      identifyLicense('Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted, provided that the above copyright notice and this permission notice appear in all copies.'),
+    ).toBe('ISC')
     expect(identifyLicense(text('fzf-LICENSE').replace(/\n/g, '\n   ').replace(/"/g, '“'))).toBe('MIT')
   })
 

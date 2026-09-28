@@ -6,17 +6,22 @@
  * (after its own list, README and commit column have settled) and publishes them here, keyed by
  * repo and tip, and the card subscribes. One file walk per tip ({@link repoFilesWalk}): the
  * language bar and Go to file share it, and a second visit reuses it.
+ *
+ * A private repo's keys carry its decryption session (`repoId#session`) and its facts name
+ * decrypted paths: they go when the session ends, as the browse caches do.
  */
 
+import { MODE_GITLINK, MODE_TREE } from '../browse'
+import { onPrivateSessionEnded } from '../repo/private-session'
 import { historyWalker } from './commit-log'
 import { readBlob, type ObjectReader } from './tree-nav'
 import { decodeTextBlob, type TreeEntry } from './git-objects'
 import { detectLicense, isLicenseFile, LICENSE_MAX_BYTES, type RepoLicense } from './license'
 import { languageStats, type LanguageStats } from './languages'
-import { FILE_WALK_FILES, FILE_WALK_TREES, walkFiles, type FileWalk } from './zip'
+import { FILE_WALK_FILES, walkFiles, type FileWalk } from './zip'
 
 export interface RepoFacts {
-  /** null: no license file (or unreadable); undefined: not known yet. */
+  /** null: no license file; undefined: not known yet (a failed read stays unknown and is tried again). */
   readonly license: RepoLicense | null | undefined
   readonly languages: LanguageStats | null | undefined
 }
@@ -25,20 +30,34 @@ const UNKNOWN: RepoFacts = { license: undefined, languages: undefined }
 const facts = new Map<string, RepoFacts>()
 const listeners = new Set<() => void>()
 const walks = new Map<string, Promise<FileWalk>>()
-/** Tips kept (a long session visiting many repos keeps only the recent ones). */
-const KEEP = 50
+/** Tips whose facts are kept (small), and whose file walks are (up to 5,000 paths each). */
+const KEEP_FACTS = 50
+const KEEP_WALKS = 10
 
 const keyOf = (repoKey: string, tipOid: string): string => `${repoKey}\0${tipOid}`
 
-function trim<V>(map: Map<string, V>): void {
-  if (map.size > KEEP) map.delete(map.keys().next().value as string)
+function trim<V>(map: Map<string, V>, keep: number): void {
+  while (map.size > keep) map.delete(map.keys().next().value as string)
 }
 
 function publish(key: string, next: Partial<RepoFacts>): void {
   facts.set(key, { ...(facts.get(key) ?? UNKNOWN), ...next })
-  trim(facts)
+  trim(facts, KEEP_FACTS)
   for (const l of listeners) l()
 }
+
+onPrivateSessionEnded((id) => {
+  let dropped = false
+  for (const m of [facts, walks]) {
+    for (const k of [...m.keys()]) {
+      if (k.includes(`#${id}\0`)) {
+        m.delete(k)
+        dropped = true
+      }
+    }
+  }
+  if (dropped) for (const l of listeners) l()
+})
 
 /** The facts known for this repo at this tip (a stable reference until they change). */
 export function repoFacts(repoKey: string, tipOid: string | null): RepoFacts {
@@ -53,22 +72,24 @@ export function subscribeRepoFacts(listener: () => void): () => void {
 }
 
 /**
- * The walk of the repo's files at this tip, started once per tip and shared, through a read-ahead
- * walker (a pack keeps its trees together). Not cancellable: the next caller wants the same walk.
+ * The walk of the repo's files at this tip (up to {@link FILE_WALK_FILES} files, however many
+ * directories hold them, so Go to file reaches as far as it always did), started once per tip and
+ * shared with the language bar, through a read-ahead walker (a pack keeps its trees together). Not
+ * cancellable: the next caller wants the same walk.
  */
 export function repoFilesWalk(repoKey: string, tipOid: string, reader: ObjectReader, rootTree: string): Promise<FileWalk> {
   const key = keyOf(repoKey, tipOid)
   let walk = walks.get(key)
   if (walk === undefined) {
     const walker = historyWalker(reader)
-    const started = walkFiles(walker, rootTree, { maxTrees: FILE_WALK_TREES, maxFiles: FILE_WALK_FILES }).finally(() => walker.flush?.())
+    const started = walkFiles(walker, rootTree, { maxFiles: FILE_WALK_FILES }).finally(() => walker.flush?.())
     walk = started
     walks.set(key, started)
     // A failed walk is forgotten (the next caller tries again), unless a newer one took the key.
     started.catch(() => {
       if (walks.get(key) === started) walks.delete(key)
     })
-    trim(walks)
+    trim(walks, KEEP_WALKS)
   }
   return walk
 }
@@ -76,7 +97,8 @@ export function repoFilesWalk(repoKey: string, tipOid: string, reader: ObjectRea
 /**
  * Work out and publish the facts for this tip: the license from the root's license files (a few
  * KiB each, through the page's reader), then the language bar from the shared file walk. Facts
- * already known are not read again. A failure publishes null for that fact.
+ * already known are not read again; a fact whose read failed stays unknown, so the next visit
+ * tries again.
  */
 export async function loadRepoFacts(
   repoKey: string,
@@ -89,13 +111,14 @@ export async function loadRepoFacts(
   const key = keyOf(repoKey, tipOid)
   const known = facts.get(key) ?? UNKNOWN
   if (known.license === undefined) {
-    const files = rootEntries.filter((e) => isLicenseFile(e.name))
+    // Files only: a directory named `license/` is not a license.
+    const files = rootEntries.filter((e) => isLicenseFile(e.name) && e.mode !== MODE_TREE && e.mode !== MODE_GITLINK)
     const texts = await Promise.all(
       files.map(async (e): Promise<readonly [string, string | null]> => {
         try {
           return [e.name, decodeTextBlob(await readBlob(reader, e.oid, LICENSE_MAX_BYTES))]
         } catch {
-          return [e.name, null] // a directory named LICENSE, too large, unreadable: not placed
+          return [e.name, null] // too large or not text: not placed
         }
       }),
     )
@@ -103,14 +126,9 @@ export async function loadRepoFacts(
     publish(key, { license: detectLicense(texts) })
   }
   if (known.languages === undefined) {
-    let languages: LanguageStats | null
-    try {
-      languages = languageStats(await repoFilesWalk(repoKey, tipOid, reader, rootTree))
-    } catch {
-      languages = null
-    }
+    const walk = await repoFilesWalk(repoKey, tipOid, reader, rootTree)
     signal?.throwIfAborted()
-    publish(key, { languages })
+    publish(key, { languages: languageStats(walk) })
   }
 }
 

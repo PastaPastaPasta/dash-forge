@@ -22,37 +22,55 @@ export function normaliseLicense(text: string): string {
     .replace(/\s+/g, ' ')
 }
 
+/**
+ * Licenses that open with their title: identified by it alone. Their bodies name their relatives
+ * (GPL-3 says "use the GNU Lesser General Public License instead", MPL-2.0 names GPL, LGPL and AGPL
+ * as Secondary Licenses), so a phrase search anywhere in the text would find several; the title at
+ * the start finds one. Checked in order, the longer titles first.
+ */
+const TITLES: readonly (readonly [title: string, id: string])[] = [
+  ['gnu affero general public license version 3', 'AGPL-3.0'],
+  ['gnu lesser general public license version 3', 'LGPL-3.0'],
+  ['gnu lesser general public license version 2.1', 'LGPL-2.1'],
+  ['gnu general public license version 3', 'GPL-3.0'],
+  ['gnu general public license version 2', 'GPL-2.0'],
+  ['apache license version 2.0', 'Apache-2.0'],
+  ['mozilla public license version 2.0', 'MPL-2.0'],
+  ['eclipse public license - v 2.0', 'EPL-2.0'],
+  ['boost software license - version 1.0', 'BSL-1.0'],
+]
+
 interface Fingerprint {
   readonly id: string
   /** Every phrase must appear (normalised text). */
   readonly all: readonly string[]
-  /** None of these may (tells a license from its relatives: LGPL from GPL, BSD-2 from BSD-3). */
+  /** None of these may (tells a license from its relatives: BSD-2 from BSD-3 from BSD-4). */
   readonly none?: readonly string[]
 }
 
-/** Checked in order: the more specific relatives first. */
+/** Licenses with no title line of their own, recognised by phrases only they have. */
 const FINGERPRINTS: readonly Fingerprint[] = [
-  { id: 'AGPL-3.0', all: ['gnu affero general public license', 'version 3'] },
-  { id: 'LGPL-3.0', all: ['gnu lesser general public license', 'version 3'] },
-  { id: 'LGPL-2.1', all: ['gnu lesser general public license', 'version 2.1'] },
-  { id: 'GPL-3.0', all: ['gnu general public license', 'version 3'], none: ['gnu lesser general public license', 'gnu affero'] },
-  { id: 'GPL-2.0', all: ['gnu general public license', 'version 2'], none: ['gnu lesser general public license', 'gnu library general public license', 'gnu affero'] },
-  { id: 'Apache-2.0', all: ['apache license', 'version 2.0'] },
-  { id: 'MPL-2.0', all: ['mozilla public license', '2.0'] },
-  { id: 'EPL-2.0', all: ['eclipse public license - v 2.0'] },
-  { id: 'BSL-1.0', all: ['boost software license - version 1.0'] },
   { id: 'Unlicense', all: ['this is free and unencumbered software released into the public domain'] },
   { id: 'CC0-1.0', all: ['cc0 1.0 universal'] },
   { id: 'Zlib', all: ['altered source versions must be plainly marked as such', 'this notice may not be removed or altered from any source distribution'] },
-  { id: 'ISC', all: ['permission to use, copy, modify, and', 'distribute this software for any purpose with or without fee is hereby granted'] },
+  {
+    // 0BSD has the same grant without the notice condition: that condition is ISC's.
+    id: 'ISC',
+    all: [
+      'permission to use, copy, modify, and',
+      'distribute this software for any purpose with or without fee is hereby granted',
+      'provided that the above copyright notice and this permission notice appear in all copies',
+    ],
+  },
   {
     id: 'BSD-3-Clause',
     all: ['redistribution and use in source and binary forms', 'neither the name of'],
+    none: ['all advertising materials mentioning'],
   },
   {
     id: 'BSD-2-Clause',
     all: ['redistribution and use in source and binary forms', 'redistributions in binary form must reproduce the above copyright notice'],
-    none: ['neither the name of', 'endorse or promote'],
+    none: ['neither the name of', 'endorse or promote', 'all advertising materials mentioning'],
   },
   {
     id: 'MIT',
@@ -66,7 +84,9 @@ const FINGERPRINTS: readonly Fingerprint[] = [
  * says NOASSERTION for it too.
  */
 export function identifyLicense(text: string): string | null {
-  const t = normaliseLicense(text)
+  const t = normaliseLicense(text).trimStart()
+  const titled = TITLES.find(([title]) => t.startsWith(title))
+  if (titled !== undefined) return titled[1]
   const hits = FINGERPRINTS.filter((f) => f.all.every((p) => t.includes(p)) && !(f.none ?? []).some((p) => t.includes(p)))
   return hits.length === 1 ? (hits[0] as Fingerprint).id : null
 }

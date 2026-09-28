@@ -172,7 +172,8 @@ function RootBody({
   // The About card's LICENSE and language bar (F-5): worked out only once everything the page
   // shows has settled (list, README, commit count and column), so they never delay it.
   const key = repoKey(home.repo)
-  const settled = data !== null && !readme.loading && commits.data !== null && lastCommits.done
+  // The count settles when it fails too (it would never have data): the facts do not wait on it.
+  const settled = data !== null && !readme.loading && !commits.loading && lastCommits.done
   useEffect(() => {
     if (!settled || data === null) return
     const stop = new AbortController()
