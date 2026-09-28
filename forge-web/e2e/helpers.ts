@@ -85,6 +85,8 @@ export const SHOWCASE_OWNERS = {
 } as const
 
 const showcaseOwnerCache = new Map<string, Promise<string>>()
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let showcaseSdk: Promise<any> | undefined
 
 /**
  * A showcase repo `{ owner, name }` whose owner is the identity id its DPNS name resolves to
@@ -100,7 +102,8 @@ export async function showcaseRepo(
   let owner = showcaseOwnerCache.get(key)
   if (owner === undefined) {
     const label = `${SHOWCASE_OWNERS[key]}.dash`
-    owner = nodeSdk().then(async (sdk) => {
+    showcaseSdk ??= nodeSdk()
+    owner = showcaseSdk.then(async (sdk) => {
       const id = await sdk.dpns.resolveName(label)
       if (!id) throw new Error(`${label} does not resolve on ${E2E_DEVNET}: the showcase mirrors are not there (set E2E_SHOWCASE_${key})`)
       return String(id)
