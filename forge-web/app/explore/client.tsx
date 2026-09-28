@@ -7,8 +7,9 @@
  * section reads an index that answers it; where none exists the section says so rather than
  * implying it saw everything.
  *
- * Request budget, signed out: search 1 composite per page; most starred 1 composite; recent 1
- * composite per page (its pushes feed "Recently updated", its repos "Recently released").
+ * Request budget, signed out: search 1 composite per page; most starred 1 composite (up to 100
+ * stars, the repos they name, exact counts); recent 1 composite per page (its pushes feed
+ * "Recently updated", its first 24 repos "Recently released").
  */
 
 import Link from 'next/link'
@@ -166,19 +167,21 @@ export function ExploreClient(): JSX.Element {
         ) : null}
 
         <Section
-          title="Most starred"
+          title={starred.data === null || starred.data.complete ? 'Most starred' : `Most starred among ${starred.data.starsRead} stars read`}
+          testId="explore-most-starred"
           icon={Star}
           state={starred}
           empty="No repo on this network has a star yet."
-          note="Ranked from the repos' exact star counts. A ranked star index arrives with the next contract revision; until then this reads the stars 100 at a time."
-          partial={(d) => (d.complete ? null : `Ranked over the repos named by the first ${d.starsRead} stars read, not every star.`)}
+          note="Each repo's star count is exact (the star index counts them). Which repos are ranked comes from one read of up to 100 stars; a ranked star index arrives with the next contract revision."
+          partial={(d) => (d.complete ? null : `There are more than ${d.starsRead} stars, so this ranks only the repos those ${d.starsRead} name. A repo with many stars can be missing.`)}
         >
           {(d) => <RepoGrid repos={d.repos} />}
           {(d) => d.repos.length === 0}
         </Section>
 
         <Section
-          title="Recently updated"
+          title="Recently updated, among the repos on this page"
+          testId="explore-recently-updated"
           icon={History}
           state={updatedState(recent, starred, updated)}
           empty="None of the repos shown here was pushed to in the last week."
@@ -247,7 +250,7 @@ export function ExploreClient(): JSX.Element {
           </div>
         ) : null}
 
-        <Section title="Recent repos" icon={GitBranch} state={pagesState(recent)} empty="No repos on this network yet." emptyAction={<NewRepoLink />}>
+        <Section title="Recent repos" testId="explore-recent-repos" icon={GitBranch} state={pagesState(recent)} empty="No repos on this network yet." emptyAction={<NewRepoLink />}>
           {(d) => <PagedGrid repos={d} pages={recent} what="repos" />}
           {(d) => d.length === 0}
         </Section>

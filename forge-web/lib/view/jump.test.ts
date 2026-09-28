@@ -4,11 +4,19 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import { DEFAULT_NETWORK } from '../constants'
 import type { DiscoveredRepo } from './discovery'
 import { parseJump, resolveWord, wordTarget, type WordMatches } from './jump'
+
+// The unit-test build targets testnet, which has no forge-v2 deployment: read moutai's ids.
+vi.mock('../constants', async (orig) => {
+  const real = await orig<typeof import('../constants')>()
+  const { DEPLOYMENTS, forgeV2Ids } = await import('../deployments')
+  const devnet = { ...real.NETWORKS.devnet, key: 'devnet-moutai', v2: forgeV2Ids(DEPLOYMENTS['devnet-moutai']) }
+  return { ...real, NETWORKS: { ...real.NETWORKS, devnet } }
+})
+
 
 const ME = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
 const OTHER = '8unje8KNimvQ15NJeNTM15m7Dc4o7QJs4ZstWrbXdGxv'
@@ -88,7 +96,7 @@ describe('resolveWord', () => {
 
   it('finds a repo named the word, not a missing profile: two requests, in parallel', async () => {
     const { sdk: s, calls } = sdk([doc('ripgrep', OTHER)], {})
-    const m = await resolveWord(s, 'ripgrep', DEFAULT_NETWORK)
+    const m = await resolveWord(s, 'ripgrep', 'devnet')
     expect(m.repos.map((r) => [r.slug, r.ownerId])).toEqual([['ripgrep', OTHER]])
     expect(m.profile).toBeNull()
     expect(wordTarget(m)).toMatchObject({ kind: 'repo' })
@@ -97,17 +105,17 @@ describe('resolveWord', () => {
 
   it('shows both when the word is a repo and a name', async () => {
     const { sdk: s } = sdk([doc('alice', ME)], { 'alice.dash': OTHER })
-    const m = await resolveWord(s, 'alice', DEFAULT_NETWORK)
+    const m = await resolveWord(s, 'alice', 'devnet')
     expect(m.repos).toHaveLength(1)
     expect(m.profile).toBe(OTHER)
     expect(wordTarget(m).kind).toBe('choose')
   })
 
   it('keeps one side when the other fails, and fails only when both do', async () => {
-    const repoDown = await resolveWord(sdk([], { 'bob.dash': ME }, { repos: true }).sdk, 'bob', DEFAULT_NETWORK)
+    const repoDown = await resolveWord(sdk([], { 'bob.dash': ME }, { repos: true }).sdk, 'bob', 'devnet')
     expect(repoDown).toEqual({ repos: [], profile: ME })
-    const dpnsDown = await resolveWord(sdk([doc('bob', OTHER)], {}, { dpns: true }).sdk, 'bob', DEFAULT_NETWORK)
+    const dpnsDown = await resolveWord(sdk([doc('bob', OTHER)], {}, { dpns: true }).sdk, 'bob', 'devnet')
     expect(dpnsDown.repos).toHaveLength(1)
-    await expect(resolveWord(sdk([], {}, { repos: true, dpns: true }).sdk, 'carol', DEFAULT_NETWORK)).rejects.toThrow()
+    await expect(resolveWord(sdk([], {}, { repos: true, dpns: true }).sdk, 'carol', 'devnet')).rejects.toThrow()
   })
 })

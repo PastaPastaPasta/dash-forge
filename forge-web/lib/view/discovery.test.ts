@@ -5,9 +5,9 @@
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { NETWORKS, DEFAULT_NETWORK } from '../constants'
+import { NETWORKS } from '../constants'
 import type { DocumentQuery } from '../sdk'
 import type { CompositeQuery } from '../sdk/composite'
 import { cachedDpnsName, clearDpnsCache } from './dpns'
@@ -23,8 +23,17 @@ import {
   type DiscoveredRepo,
 } from './discovery'
 
+// The unit-test build targets testnet, which has no forge-v2 deployment: read moutai's ids.
+vi.mock('../constants', async (orig) => {
+  const real = await orig<typeof import('../constants')>()
+  const { DEPLOYMENTS, forgeV2Ids } = await import('../deployments')
+  const devnet = { ...real.NETWORKS.devnet, key: 'devnet-moutai', v2: forgeV2Ids(DEPLOYMENTS['devnet-moutai']) }
+  return { ...real, NETWORKS: { ...real.NETWORKS, devnet } }
+})
+
+
 type Doc = Record<string, unknown>
-const NET = DEFAULT_NETWORK
+const NET = 'devnet' as const
 const FORGE = NETWORKS[NET].v2!
 const DPNS = NETWORKS[NET].dpnsContractId
 const NOW = Date.now()
@@ -123,7 +132,7 @@ const OWNER_A = id('OwnerA')
 const OWNER_B = id('OwnerB')
 
 function repo(name: string, createdAt: number, ownerId = OWNER_A, extra: Doc = {}): Doc {
-  return { $id: id(`R${name}`), $ownerId: ownerId, $createdAt: createdAt, name, visibility: 'public', description: '', ...extra }
+  return { $id: id(`R${name}${ownerId === OWNER_B ? 'B' : ''}`), $ownerId: ownerId, $createdAt: createdAt, name, visibility: 'public', description: '', ...extra }
 }
 
 /** 60 repos: `demo-00` … `demo-59`, one a second, plus ripgrep and jq (two owners each for jq). */
@@ -132,16 +141,16 @@ function store(): Record<string, Record<string, Doc[]>> {
   for (let i = 0; i < 60; i++) repos.push(repo(`demo-${String(i).padStart(2, '0')}`, 1_000 + i * 1000))
   repos.push(repo('ripgrep', 500, OWNER_B), repo('jq', 400, OWNER_A), repo('jq', 400, OWNER_B))
   const star = (owner: string, target: string): Doc => ({ $id: id(`S${owner}${target}`), $ownerId: owner, repoId: target })
-  const stars = [star('X1', id('Rripgrep')), star('X2', id('Rripgrep')), star('X3', id('Rripgrep')), star('X1', id('Rjq')), star('X2', id('Rdemo-05'))]
+  const stars = [star('X1', id('RripgrepB')), star('X2', id('RripgrepB')), star('X3', id('RripgrepB')), star('X1', id('Rjq')), star('X2', id('Rdemo-05'))]
   const push = (target: string, at: number, n: number): Doc => ({ $id: id(`P${target}${n}`), $ownerId: OWNER_A, $createdAt: at, repoId: target })
   return {
     [FORGE.core]: {
       repo: repos,
-      packManifest: [push(id('Rdemo-59'), NOW - 60_000, 1), push(id('Rripgrep'), NOW - 10_000, 1), push(id('Rdemo-58'), NOW - 30 * 86_400_000, 1)],
+      packManifest: [push(id('Rdemo-59'), NOW - 60_000, 1), push(id('RripgrepB'), NOW - 10_000, 1), push(id('Rdemo-58'), NOW - 30 * 86_400_000, 1)],
     },
     [FORGE.collab]: {
       star: stars,
-      issue: [{ $id: id('I1'), repoId: id('Rripgrep') }, { $id: id('I2'), repoId: id('Rripgrep') }],
+      issue: [{ $id: id('I1'), repoId: id('RripgrepB') }, { $id: id('I2'), repoId: id('RripgrepB') }],
     },
     [DPNS]: {
       domain: [{ $id: id('D1'), label: 'burntsushi', normalizedParentDomainName: 'dash', records: { identity: OWNER_B } }],
@@ -301,7 +310,7 @@ describe('mostStarredRepos', () => {
 
   it('says it is partial when a full page of stars was read', async () => {
     const s = store()
-    s[FORGE.collab]!['star'] = Array.from({ length: 150 }, (_, i) => ({ $id: id(`S${i}`), $ownerId: id(`U${i}`), repoId: id('Rripgrep') }))
+    s[FORGE.collab]!['star'] = Array.from({ length: 150 }, (_, i) => ({ $id: id(`S${i}`), $ownerId: id(`U${i}`), repoId: id('RripgrepB') }))
     const r = await mostStarredRepos(mockSdk(s, fresh()), { network: NET })
     expect(r).toMatchObject({ starsRead: 100, complete: false })
     // The count is the exact one (150), not the 100 seen.
