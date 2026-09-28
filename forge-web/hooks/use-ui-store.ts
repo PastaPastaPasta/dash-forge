@@ -24,9 +24,27 @@ interface UiState {
   readonly loginView: LoginView | null
   openLogin: (view?: LoginView) => void
   closeLogin: () => void
+  /**
+   * "Sign in" was asked for while it was not yet known whether this browser's session resumes
+   * (a tap before hydration, or on the session-check placeholder). AppHeader opens the sheet once
+   * that settles, if nobody is signed in, and clears this.
+   */
+  readonly signInPending: boolean
+  requestSignIn: () => void
+  clearSignInRequest: () => void
   readonly topUp: TopUpReason | null
   openTopUp: (reason?: TopUpReason) => void
   closeTopUp: () => void
+}
+
+/**
+ * What to do with a pending "Sign in" request: wait while the session check runs, then open the
+ * sheet only if nobody is signed in (a session that resumed needs none); either way it is done.
+ */
+export function signInRequestOutcome(i: { pending: boolean; settled: boolean; signedIn: boolean }): 'wait' | 'open' | 'drop' | 'none' {
+  if (!i.pending) return 'none'
+  if (!i.settled) return 'wait'
+  return i.signedIn ? 'drop' : 'open'
 }
 
 export const useUiStore = create<UiState>((set) => ({
@@ -34,6 +52,9 @@ export const useUiStore = create<UiState>((set) => ({
   loginView: null,
   openLogin: (view) => set({ loginOpen: true, loginView: view ?? null }),
   closeLogin: () => set({ loginOpen: false, loginView: null }),
+  signInPending: false,
+  requestSignIn: () => set({ signInPending: true }),
+  clearSignInRequest: () => set({ signInPending: false }),
   topUp: null,
   openTopUp: (reason = { blocker: 'balance' }) => set({ topUp: reason }),
   closeTopUp: () => set({ topUp: null }),

@@ -22,6 +22,7 @@ export function SignInButton({
 }: Pick<ButtonProps, 'size' | 'variant' | 'className'> & { readonly label?: 'short' | 'long' }): JSX.Element {
   const { locked, resuming, vaultsLoaded, vaultsError } = useAuth()
   const openLogin = useUiStore((s) => s.openLogin)
+  const requestSignIn = useUiStore((s) => s.requestSignIn)
   const common = { size, variant, className }
   // Until it is known whether this browser holds a key (a few ms), neither label.
   if (resuming || (!vaultsLoaded && vaultsError === null)) {
@@ -30,7 +31,16 @@ export function SignInButton({
     // pre-hydration catcher and opens the sheet once the app knows the session
     // (lib/prehydration.ts, acted on in AppHeader).
     return (
-      <Button {...common} aria-disabled="true" aria-busy="true" aria-label="Checking this browser's session" data-replay="sign-in" className={cn(common.className, 'cursor-progress opacity-70')}>
+      // After hydration a tap here is kept too: the header opens the sheet once the check settles.
+      <Button
+        {...common}
+        onClick={requestSignIn}
+        aria-disabled="true"
+        aria-busy="true"
+        aria-label="Checking this browser's session"
+        data-replay="sign-in"
+        className={cn(common.className, 'cursor-progress opacity-70')}
+      >
         <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
       </Button>
     )
