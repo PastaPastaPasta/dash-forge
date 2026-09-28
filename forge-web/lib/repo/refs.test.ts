@@ -101,12 +101,15 @@ function mockDrive(rows: Doc[], opts: { dropOnKeyset?: string; ignoreRange?: boo
         else if (q.documentTypeName === DOC.refUpdate) {
           const where = q.where ?? []
           const gt = where.find((w) => w[1] === '>')
-          const le = where.find((w) => w[1] === '<=')
+          // Drive checks a `>`/`<=` pair's bounds as base64 text (not byte order) and refuses
+          // pairs that compare backwards: a reader must never send one.
+          if (where.filter((w) => w[0] === 'refNameHash' && w[1] !== '==').length > 1) {
+            return Promise.reject(new Error('query: multiple range clauses error: lower bounds must be under upper bounds'))
+          }
           // Every query is scoped `repoId ==` (one repo here); the ref equality is the other `==`.
           const eq = where.find((w) => w[1] === '==' && w[0] === 'refNameHash')
           let docs = sorted
           if (gt && !opts.ignoreRange) docs = docs.filter((d) => hexOf(d) > base64ToHex(gt[2] as string))
-          if (le && !opts.ignoreRange) docs = docs.filter((d) => hexOf(d) <= base64ToHex(le[2] as string))
           if (eq) docs = docs.filter((d) => hexOf(d) === base64ToHex(eq[2] as string))
           if (gt && opts.dropOnKeyset) docs = docs.filter((d) => d['$id'] !== opts.dropOnKeyset)
           if (!gt && !eq && q.orderBy?.[0]?.[0] === 'refNameHash' && opts.dropOnKeyset) {
