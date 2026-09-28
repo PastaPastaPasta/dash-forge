@@ -110,7 +110,7 @@ export interface FollowPage {
 const FIRST_ID = '11111111111111111111111111111111'
 
 /** Rows a follow list reads per page. */
-export const FOLLOW_PAGE = 50
+const FOLLOW_PAGE = 50
 
 /**
  * One page of who follows `identityId` (`follow.byTarget`, whose terminal is `$ownerId`) or

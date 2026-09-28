@@ -15,7 +15,7 @@ import { useRouter } from 'next/navigation'
 import { GitBranch } from 'lucide-react'
 
 import { createPatch, findForks, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
-import { commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
+import { branchName, commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
 import { preferring } from '@/lib/view/pull-diff'
 import { dropPrDraft, loadPrDraft, savePrDraft } from '@/lib/view/pr-draft'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
@@ -43,7 +43,7 @@ interface HeadOption {
   readonly label: string
 }
 
-const short = (refName: string): string => refName.replace(/^refs\/heads\//, '')
+const short = branchName
 
 export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const repo = home.repo

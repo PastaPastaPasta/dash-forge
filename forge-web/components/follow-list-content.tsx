@@ -12,11 +12,10 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { Users } from 'lucide-react'
 
-import { prefetchDpnsNames, resolveDpnsName } from '@/lib/view'
-import { plural } from '@/lib/view/format'
+import { plural, prefetchDpnsNames, resolveDpnsName } from '@/lib/view'
 import { readFollowCounts, readFollowPage, resolveOwner, type FollowPage, type FollowSide } from '@/lib/repo'
 import { NETWORKS } from '@/lib/constants'
-import { errorMessage } from '@/lib/utils'
+import { cn, errorMessage } from '@/lib/utils'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { Author } from '@/components/author'
@@ -24,9 +23,12 @@ import { Button } from '@/components/ui/button'
 import { IdentityPill } from '@/components/ui/identity-pill'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge'
-import { cn } from '@/lib/utils'
 
-const TITLE: Readonly<Record<FollowSide, string>> = { followers: 'Followers', following: 'Following' }
+/** Each list's words: its title, its count's noun, and its empty state. */
+const SIDE: Readonly<Record<FollowSide, { title: string; one: string; many?: string; emptyTitle: string; emptyBody: string }>> = {
+  followers: { title: 'Followers', one: 'follower', emptyTitle: 'No followers yet', emptyBody: 'Nobody follows this identity on this network.' },
+  following: { title: 'Following', one: 'following', many: 'following', emptyTitle: 'Not following anyone yet', emptyBody: 'This identity follows nobody on this network.' },
+}
 
 interface FirstPage extends FollowPage {
   readonly identityId: string
@@ -34,14 +36,21 @@ interface FirstPage extends FollowPage {
   readonly counts: { readonly followers: number | null; readonly following: number | null }
 }
 
+/** The pages "Load more" read, and its last failure, for one network and address. */
+interface More {
+  readonly key: string
+  readonly pages: readonly FollowPage[]
+  readonly error: string | null
+}
+
 export function FollowListContent({ address, side }: { address: string; side: FollowSide }): JSX.Element {
   const { sdk, ready, network } = useSdk()
   const forge = NETWORKS[network].v2
-  // Pages read by "Load more", for the current address and side only.
-  const [more, setMore] = useState<{ key: string; pages: FollowPage[] }>({ key: '', pages: [] })
+  // Each side is its own route, so a side change remounts this: the key needs no side.
+  const key = `${network}:${address}`
+  const [stored, setMore] = useState<More>({ key, pages: [], error: null })
+  const more: More = stored.key === key ? stored : { key, pages: [], error: null }
   const [loadingMore, setLoadingMore] = useState(false)
-  const [moreError, setMoreError] = useState<string | null>(null)
-  const key = `${network}:${side}:${address}`
 
   const withNames = async (page: FollowPage): Promise<FollowPage> => {
     await prefetchDpnsNames(sdk!, page.ids, network)
@@ -64,33 +73,31 @@ export function FollowListContent({ address, side }: { address: string; side: Fo
     { enabled: isForgeDeployed() && forge !== null && ready && sdk !== null && address !== '' },
   )
 
-  const pages = more.key === key ? more.pages : []
-  const next = pages.length > 0 ? pages[pages.length - 1]!.next : data?.next ?? null
+  const next = more.pages.length > 0 ? more.pages[more.pages.length - 1]!.next : data?.next ?? null
   const loadMore = async (): Promise<void> => {
     if (!data || next === null || loadingMore) return
     setLoadingMore(true)
-    setMoreError(null)
     try {
       const page = await withNames(await readFollowPage(sdk!, forge!, data.identityId, side, next))
-      setMore({ key, pages: [...pages, page] })
+      setMore({ key, pages: [...more.pages, page], error: null })
     } catch (e) {
-      setMoreError(errorMessage(e))
+      setMore({ ...more, error: errorMessage(e) })
     } finally {
       setLoadingMore(false)
     }
   }
 
+  const words = SIDE[side]
   if (!address) return <EmptyState icon={Users} title="No profile addressed" body="Add ?name= (an identity id or DPNS name) to the URL." />
   if (!isForgeDeployed() || forge === null) return <NotDeployedState />
-  if (loading && !data) return <LoadingBlock label={`Reading ${TITLE[side].toLowerCase()}`} />
+  if (loading && !data) return <LoadingBlock label={`Reading ${words.title.toLowerCase()}`} />
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (data === null && ready) {
     return <EmptyState icon={Users} title="No such identity" body={`"${address}" is not an identity id or a registered DPNS name on this network.`} />
   }
   if (!data) return <LoadingBlock />
 
-  const ids = [...data.ids, ...pages.flatMap((p) => p.ids)]
-  const profile = `/u?name=${encodeURIComponent(data.identityId)}`
+  const ids = [...data.ids, ...more.pages.flatMap((p) => p.ids)]
   const tab = (s: FollowSide): JSX.Element => {
     const count = data.counts[s]
     return (
@@ -102,7 +109,7 @@ export function FollowListContent({ address, side }: { address: string; side: Fo
           s === side ? 'bg-anvil-100 font-medium text-anvil-900 dark:bg-anvil-800 dark:text-anvil-50' : 'text-anvil-600 hover:text-forge-700 dark:text-anvil-300 dark:hover:text-forge-400',
         )}
       >
-        {count === null ? TITLE[s] : s === 'followers' ? plural(count, 'follower') : `${count.toLocaleString('en-US')} following`}
+        {count === null ? SIDE[s].title : plural(count, SIDE[s].one, SIDE[s].many)}
       </Link>
     )
   }
@@ -110,10 +117,10 @@ export function FollowListContent({ address, side }: { address: string; side: Fo
   return (
     <div className="mx-auto max-w-3xl space-y-4">
       <div className="flex flex-wrap items-center gap-3">
-        <Link href={profile} className="hit-area rounded-full">
+        <Link href={`/u?name=${encodeURIComponent(data.identityId)}`} className="hit-area rounded-full">
           <IdentityPill identityId={data.identityId} name={data.name ?? undefined} className="text-prose" />
         </Link>
-        <h1 className="text-prose">{TITLE[side]}</h1>
+        <h1 className="text-prose">{words.title}</h1>
         <nav aria-label="Follow lists" className="ml-auto flex items-center gap-1">
           {tab('followers')}
           {tab('following')}
@@ -121,13 +128,9 @@ export function FollowListContent({ address, side }: { address: string; side: Fo
       </div>
 
       {ids.length === 0 ? (
-        <EmptyState
-          icon={Users}
-          title={side === 'followers' ? 'No followers yet' : 'Not following anyone yet'}
-          body={side === 'followers' ? 'Nobody follows this identity on this network.' : 'This identity follows nobody on this network.'}
-        />
+        <EmptyState icon={Users} title={words.emptyTitle} body={words.emptyBody} />
       ) : (
-        <ul aria-label={TITLE[side]} className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="follow-list">
+        <ul aria-label={words.title} className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="follow-list">
           {ids.map((id) => (
             <li key={id} className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850" data-testid="follow-row" data-identity={id}>
               <Author identityId={id} link />
@@ -141,9 +144,9 @@ export function FollowListContent({ address, side }: { address: string; side: Fo
           <Button variant="outline" size="sm" onClick={() => void loadMore()} loading={loadingMore}>
             Load more
           </Button>
-          {moreError ? (
+          {more.error ? (
             <p role="alert" className="text-dense text-danger-700 dark:text-danger-400">
-              {moreError}
+              {more.error}
             </p>
           ) : null}
         </div>

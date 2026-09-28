@@ -19,6 +19,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { decodeIdentifier } from '../auth/base58'
 import { compareKey, isLegalRefName, matchesProtected } from '../rules'
 import type { Policy } from '../rules/v2'
+import { branchName } from '../view/format'
 import {
   createDocumentIdempotent,
   previewCreate,
@@ -62,9 +63,7 @@ export interface ConfigChange {
 }
 
 /** `refs/heads/main` → `main` (the form `config.defaultBranch` stores). */
-export function shortBranch(name: string): string {
-  return name.startsWith('refs/heads/') ? name.slice('refs/heads/'.length) : name
-}
+export const shortBranch = branchName
 
 /**
  * The full ref pattern a user entry protects: a bare branch (`main`, `release/*`) becomes

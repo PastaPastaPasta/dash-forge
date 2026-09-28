@@ -20,7 +20,7 @@ import type { DiscoveredRepo } from '@/lib/view'
 import { listReposByOwner, resolveDpnsName } from '@/lib/view'
 import { followFirsts, followRelation, readFollowCounts, resolveOwner } from '@/lib/repo'
 import { previewCreate, previewDelete } from '@/lib/sdk'
-import { creditsAsDash, plural } from '@/lib/view/format'
+import { creditsAsDash } from '@/lib/view/format'
 import { NETWORKS } from '@/lib/constants'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -52,14 +52,12 @@ interface ProfileData {
  * plural noun when it could not be read. With `href`, the whole phrase links to its list.
  */
 function Count({ value, one, many, href }: { value: number | null; one: string; many?: string; href?: string }): JSX.Element {
-  // An unread count takes the plural noun, as zero does.
-  const [number, ...noun] = plural(value ?? 0, one, many).split(' ')
   const phrase = (
     <>
       <span className="font-semibold text-anvil-900 dark:text-anvil-50" title={value === null ? "Couldn't read this count from Platform" : undefined}>
-        {value === null ? '–' : number}
+        {value === null ? '–' : value.toLocaleString('en-US')}
       </span>{' '}
-      {noun.join(' ')}
+      {value === 1 ? one : (many ?? `${one}s`)}
     </>
   )
   if (href === undefined) return <span>{phrase}</span>

@@ -342,7 +342,7 @@ function Thread({ thread, repo, pullId, onPosted, writeBlock, actions, suggestio
     return (
       <div className="flex flex-wrap items-center gap-2 rounded-md border border-anvil-200 bg-white px-3 py-1.5 text-[12px] text-anvil-600 dark:border-anvil-750 dark:bg-anvil-950 dark:text-anvil-400" data-testid="thread-collapsed" data-root={thread.root.id}>
         <CheckCircle2 className="h-3.5 w-3.5 text-verify-700 dark:text-verify-400" aria-hidden />
-        <span>Resolved conversation ({1 + thread.replies.length} comment{thread.replies.length === 0 ? '' : 's'})</span>
+        <span>Resolved conversation ({plural(1 + thread.replies.length, 'comment')})</span>
         <Button size="sm" variant="ghost" onClick={() => setExpanded(true)}>
           Show
         </Button>

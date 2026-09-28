@@ -35,7 +35,7 @@ import { publishMergeIndex } from '@/lib/merge/locator'
 import { useMergeUpload } from '@/components/repo/merge-upload'
 import { UnlockMore } from '@/components/auth/unlock-more'
 import { mergeIdentityValid } from '@/lib/view/prefs'
-import { tipOidOf, type DiffSides, type ObjectReader } from '@/lib/view'
+import { branchName, tipOidOf, type DiffSides, type ObjectReader } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
 import { useMinWidth, usePrefs } from '@/hooks/use-prefs'
 import { useAuth } from '@/contexts/auth-context'
@@ -274,7 +274,7 @@ export function MergePanel({
       <div className="flex flex-wrap items-center gap-3">
         <GitMerge className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
         <span className="text-dense text-anvil-700 dark:text-anvil-200">
-          Into <span className="font-mono">{baseRefName.replace(/^refs\/heads\//, '')}</span>
+          Into <span className="font-mono">{branchName(baseRefName)}</span>
           {baseTipOid ? (
             <>
               {' '}
