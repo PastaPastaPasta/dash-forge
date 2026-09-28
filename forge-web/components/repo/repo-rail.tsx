@@ -10,10 +10,12 @@
  * and the browse plane's content-check ledger (which updates live as the page reads objects).
  */
 
-import { useSyncExternalStore } from 'react'
+import { useLayoutEffect, useSyncExternalStore } from 'react'
 import Link from 'next/link'
+import { usePathname, useSearchParams } from 'next/navigation'
 import { GitBranch, Star, Tag, Users } from 'lucide-react'
 import {
+  beginView,
   contentChecks,
   deriveTrust,
   isLive,
@@ -52,6 +54,11 @@ export function RepoRail({
   const { role } = useViewerRole(home.repo)
   const isPrivate = home.repo.visibility === 'private'
   const key = repoKey(home.repo)
+  // Each page (a route and its query: another file, ref or tab) is a new view: the summary names
+  // the places that served ITS objects (L-18). A layout effect, so it runs before the page's own
+  // effects start reading.
+  const view = `${usePathname()}?${useSearchParams().toString()}`
+  useLayoutEffect(() => beginView(key), [key, view])
   const checks = useSyncExternalStore(
     subscribeContentChecks,
     () => contentChecks(key),

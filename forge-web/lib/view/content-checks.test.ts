@@ -9,13 +9,16 @@
 import { afterEach, describe, expect, it } from 'vitest'
 
 import {
+  beginView,
   contentChecks,
   externalSourceName,
   NO_CONTENT_CHECKS,
   noteContentCheck,
+  noteViewPack,
   objectObserver,
   resetContentChecks,
   subscribeContentChecks,
+  viewSources,
 } from './content-checks'
 
 afterEach(() => resetContentChecks())
@@ -64,6 +67,36 @@ describe('content-check ledger', () => {
     noteContentCheck('repo-a', { unavailablePack: 'ab'.repeat(32) })
     expect(contentChecks('repo-a')).toBe(snap)
     expect(snap.unavailablePacks).toEqual(['ab'.repeat(32)])
+  })
+
+  it("records which places served each pack, and the packs of the current view's objects (L-18)", () => {
+    let notified = 0
+    const unsubscribe = subscribeContentChecks(() => {
+      notified += 1
+    })
+    noteContentCheck('repo-a', { source: 'platform', pack: 'AA' })
+    noteContentCheck('repo-a', { source: 'files.example', pack: 'bb' })
+    noteContentCheck('repo-a', { source: 'files.example', pack: 'bb' }) // already recorded
+    expect(contentChecks('repo-a').packSources).toEqual({ aa: ['platform'], bb: ['files.example'] })
+    expect(contentChecks('repo-a').sources).toEqual(['platform', 'files.example'])
+
+    noteViewPack('repo-a', 'aa')
+    noteViewPack('repo-a', 'BB')
+    expect(viewSources(contentChecks('repo-a'))).toEqual(['platform', 'files.example'])
+    const before = notified
+    const snap = contentChecks('repo-a')
+    noteViewPack('repo-a', 'bb') // already in this view: no change, no notification
+    expect(contentChecks('repo-a')).toBe(snap)
+    expect(notified).toBe(before)
+
+    // A new view starts empty; the session's record of each pack stays.
+    beginView('repo-a')
+    expect(contentChecks('repo-a').viewPacks).toEqual([])
+    expect(viewSources(contentChecks('repo-a'))).toEqual([])
+    noteViewPack('repo-a', 'bb')
+    expect(viewSources(contentChecks('repo-a'))).toEqual(['files.example'])
+    expect(contentChecks('repo-b')).toBe(NO_CONTENT_CHECKS)
+    unsubscribe()
   })
 
   it('names an external source by its host', () => {

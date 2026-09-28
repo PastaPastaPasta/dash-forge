@@ -137,10 +137,21 @@ describe('file contents row', () => {
   })
 
   it('counts the objects that matched their git hash', () => {
-    const r = deriveTrust(inputs({ checks: checks({ objectsVerified: 214, sources: ['pub-9a1.r2.dev'] }) }))
+    const r = deriveTrust(inputs({ checks: checks({ objectsVerified: 214, sources: ['pub-9a1.r2.dev'], packSources: { aa: ['pub-9a1.r2.dev'] }, viewPacks: ['aa'] }) }))
     expect(r.content.state).toBe('verified')
     expect(r.content.detail).toBe('214 of 214 objects read this session matched their git hash.')
     expect(r.summary).toBe('Verified · refs by proof · 214 objects by hash · from pub-9a1.r2.dev')
+  })
+
+  it("names the places that served THIS view's objects, not the session's first (L-18)", () => {
+    const session = { objectsVerified: 9, sources: ['platform', 'files.example'], packSources: { aa: ['platform'], bb: ['files.example'] } }
+    // A file from the S3-stored pack, after the README came from Platform.
+    expect(deriveTrust(inputs({ checks: checks({ ...session, viewPacks: ['bb'] }) })).summary).toBe('Verified · refs by proof · 9 objects by hash · from files.example')
+    expect(deriveTrust(inputs({ checks: checks({ ...session, viewPacks: ['aa', 'bb'] }) })).summary).toBe('Verified · refs by proof · 9 objects by hash · from Platform, files.example')
+    // A view that read no object (issues, settings) names no place.
+    expect(deriveTrust(inputs({ checks: checks({ ...session, viewPacks: [] }) })).summary).toBe('Verified · refs by proof · 9 objects by hash')
+    // The row below still lists every place this session read from.
+    expect(deriveTrust(inputs({ checks: checks({ ...session, viewPacks: ['bb'] }) })).source.detail).toBe('Dash Platform (permanent), files.example.')
   })
 
   it('counts whole-pack sha256 checks from the fallback clone', () => {

@@ -138,7 +138,8 @@ export function restoreFallback(
       validatePacks(stored.packs, livePacks)
       // The stored copy passed the same sha256 check a fresh download does.
       noteContentCheck(repoKey(repo), { packsVerified: livePacks.length, source: 'browser cache' })
-      return await remember(repoKey(repo), manifestKey, contextFromStored(sdk, repo, stored))
+      for (const m of livePacks) noteContentCheck(repoKey(repo), { source: 'browser cache', pack: m.packHash })
+      return await remember(repoKey(repo), manifestKey, contextFromStored(sdk, repo, stored, livePacks))
     } catch {
       await deleteStoredFallback(repoKey(repo))
       return null
@@ -204,11 +205,11 @@ function validatePacks(packs: readonly Uint8Array[], livePacks: readonly PackMan
  * once, since a push since the clone was built may hold it. The published index, when that push
  * brought one, answers the read; a new pack list otherwise has the views build a new clone.
  */
-function contextFromStored(sdk: EvoSDK | null, repo: RepoRef, stored: StoredFallback): Promise<BrowseContext> {
+function contextFromStored(sdk: EvoSDK | null, repo: RepoRef, stored: StoredFallback, livePacks: readonly PackManifest[]): Promise<BrowseContext> {
   const locator = ObjectLocator.parse(stored.locator)
   return import('../browse/indexer').then(({ memoryPackSource }) => {
     const packs = memoryPackSource(stored.packs)
-    return { locator, packs, reader: repoReader(sdk, repo, locator, packs) }
+    return { locator, packs, reader: repoReader(sdk, repo, locator, packs, livePacks.map((m) => m.packHash)) }
   })
 }
 
@@ -347,7 +348,7 @@ async function runFallback(
   const locator = ObjectLocator.parse(locatorBytes)
   // The synthesized locator's packRef space is exactly the packs that downloaded.
   const packSource = memoryPackSource(packs)
-  const reader = repoReader(sdk, repo, locator, packSource, unavailable)
+  const reader = repoReader(sdk, repo, locator, packSource, manifests.map((m) => m.packHash), unavailable)
   // Only a complete clone is persisted. A skipped pack's mirror may come back, and a reload
   // is the natural moment to try it again; a persisted partial clone would never retry.
   // A private repo's clone is decrypted: it is never written to browser storage.

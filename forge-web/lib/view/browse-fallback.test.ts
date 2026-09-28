@@ -28,7 +28,7 @@ import type { PackManifest, RepoRef } from '../repo'
 import { base64ToHex, bytesToBase64 } from '../sdk'
 import { cachedFallback, startFallback, type FallbackProgress } from './browse-fallback'
 import { externalFetchUrls, resetExternalFetchState, StorageUnreachableError } from './browse-source'
-import { contentChecks, resetContentChecks } from './content-checks'
+import { beginView, contentChecks, resetContentChecks } from './content-checks'
 import { describeUnavailable, noteRepoGateways, overrideDefaultGateways, readGateways } from './storage-status'
 import { deriveTrust } from './trust'
 
@@ -232,6 +232,37 @@ describe('startFallback with external-storage packs', () => {
     await expect(read).rejects.not.toThrow(/external storage/)
     expect(describeUnavailable(ctx.unavailable ?? [], [])).toEqual(["the parent repo's chunks on Platform (missing)"])
     expect(contentChecks('FORK').unreachable).toEqual(["the parent repo's chunks on Platform (missing)"])
+  })
+
+  it('the summary names the place that served the file on view, not the session\'s first (L-18)', async () => {
+    const plat = blobPack('README, pushed to Platform\n')
+    const s3 = blobPack('a file pushed to S3\n')
+    const platform = manifestFor(plat.pack, 1, { createdAt: 1, documentId: 'a' })
+    const external = manifestFor(s3.pack, 1, { storage: 1, chunkCount: 0, uris: ['https://files.example/forge-byo/p.pack'], createdAt: 2, documentId: 'b' })
+    stubFetch({ 'https://files.example/forge-byo/p.pack': () => s3.pack })
+    const repo = testRepo('fallback-l18')
+    const ctx = await startFallback(mockSdk(new Map([[platform.packHash, plat.pack]])), repo, [platform, external])
+    const summary = (): string =>
+      deriveTrust({
+        network: 'devnet',
+        connection: 'trusted',
+        quorum: { state: 'agreed', primary: 'q', secondary: 'n', overlap: 4 },
+        tip: 'missing',
+        checks: contentChecks(repo.repoId),
+        configuredBackend: 'platform',
+      }).summary
+
+    // The repo home read the README (Platform), then the viewer opened the S3 file.
+    beginView(repo.repoId)
+    await ctx.reader.readObject(plat.oid)
+    expect(summary()).toMatch(/· from Platform$/)
+    beginView(repo.repoId)
+    await ctx.reader.readObject(s3.oid)
+    expect(summary()).toMatch(/· from files\.example$/)
+    // A memo hit still names its place: the second visit reads nothing new.
+    beginView(repo.repoId)
+    await ctx.reader.readObject(plat.oid)
+    expect(summary()).toMatch(/· from Platform$/)
   })
 
   it('reports a pack named by several manifests once', async () => {

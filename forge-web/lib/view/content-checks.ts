@@ -30,6 +30,13 @@ export interface ContentChecks {
   readonly packsFailed: number
   /** Where bytes actually came from: `platform`, `browser cache`, or an external host. */
   readonly sources: readonly string[]
+  /** Pack hash (hex, lowercase) → the places that served its bytes this session. */
+  readonly packSources: Readonly<Record<string, readonly string[]>>
+  /**
+   * The packs the CURRENT view's objects came from (memo hits included), since {@link beginView}.
+   * The summary names their places, not the session's first (L-18).
+   */
+  readonly viewPacks: readonly string[]
   /**
    * Live external packs (hash hex) the in-browser clone skipped because no mirror served
    * them. What is shown was checked, but it is not the whole repo: objects only those packs
@@ -55,19 +62,23 @@ export const NO_CONTENT_CHECKS: ContentChecks = {
   packsVerified: 0,
   packsFailed: 0,
   sources: [],
+  packSources: {},
+  viewPacks: [],
   unavailablePacks: [],
   corruptMirrorPacks: [],
   unreachable: [],
 }
 
-type Counter = Exclude<keyof ContentChecks, 'sources' | 'unavailablePacks' | 'corruptMirrorPacks' | 'unreachable'>
+type Counter = Exclude<keyof ContentChecks, 'sources' | 'packSources' | 'viewPacks' | 'unavailablePacks' | 'corruptMirrorPacks' | 'unreachable'>
 
 /**
- * A change to one repo's ledger: counter increments, a byte source seen, and/or a live pack
- * that could not be fetched (hash hex).
+ * A change to one repo's ledger: counter increments, a byte source seen (and the pack it served),
+ * and/or a live pack that could not be fetched (hash hex).
  */
 export type ContentCheckDelta = Partial<Record<Counter, number>> & {
   readonly source?: string
+  /** With `source`: the pack (hash hex) whose bytes it served. */
+  readonly pack?: string
   readonly unavailablePack?: string
   /** With `unavailablePack`: a mirror served bytes that failed the sha256 check. */
   readonly corruptMirror?: boolean
@@ -88,6 +99,9 @@ const listeners = new Set<() => void>()
 export function noteContentCheck(key: string, delta: ContentCheckDelta): void {
   const prev = ledger.get(key) ?? NO_CONTENT_CHECKS
   const newSource = delta.source !== undefined && !prev.sources.includes(delta.source)
+  const pack = delta.source !== undefined ? delta.pack?.toLowerCase() : undefined
+  const packPlaces = pack === undefined ? undefined : prev.packSources[pack] ?? []
+  const newPackSource = pack !== undefined && delta.source !== undefined && !packPlaces?.includes(delta.source)
   const counters: Counter[] = [
     'objectsVerified',
     'objectsUnchecked',
@@ -101,11 +115,14 @@ export function noteContentCheck(key: string, delta: ContentCheckDelta): void {
   const newCorrupt =
     missing !== undefined && delta.corruptMirror === true && !prev.corruptMirrorPacks.includes(missing)
   const newPlaces = (delta.unreachable ?? []).filter((p) => !prev.unreachable.includes(p))
-  if (!newSource && !bumped && !newMissing && !newCorrupt && newPlaces.length === 0) return
+  if (!newSource && !newPackSource && !bumped && !newMissing && !newCorrupt && newPlaces.length === 0) return
 
   const next: { -readonly [K in keyof ContentChecks]: ContentChecks[K] } = { ...prev }
   for (const k of counters) next[k] = prev[k] + Math.max(0, delta[k] ?? 0)
   if (newSource && delta.source !== undefined) next.sources = [...prev.sources, delta.source]
+  if (newPackSource && pack !== undefined && delta.source !== undefined) {
+    next.packSources = { ...prev.packSources, [pack]: [...(packPlaces ?? []), delta.source] }
+  }
   if (newMissing) next.unavailablePacks = [...prev.unavailablePacks, missing]
   if (newCorrupt) next.corruptMirrorPacks = [...prev.corruptMirrorPacks, missing]
   if (newPlaces.length > 0) next.unreachable = [...prev.unreachable, ...newPlaces]
@@ -122,6 +139,31 @@ export function clearUnreachable(key: string): void {
   if (prev === undefined || (prev.unreachable.length === 0 && prev.unavailablePacks.length === 0)) return
   ledger.set(key, { ...prev, unreachable: [], unavailablePacks: [], corruptMirrorPacks: [] })
   for (const l of listeners) l()
+}
+
+/**
+ * A new view of the repo starts (a route or its query changed): the objects it reads, and so the
+ * places the summary names, are counted from here. The session's totals are kept.
+ */
+export function beginView(key: string): void {
+  const prev = ledger.get(key)
+  if (prev === undefined || prev.viewPacks.length === 0) return
+  ledger.set(key, { ...prev, viewPacks: [] })
+  for (const l of listeners) l()
+}
+
+/** The current view read an object from pack `packHash` (hex). No-op when already counted. */
+export function noteViewPack(key: string, packHash: string): void {
+  const pack = packHash.toLowerCase()
+  const prev = ledger.get(key) ?? NO_CONTENT_CHECKS
+  if (prev.viewPacks.includes(pack)) return
+  ledger.set(key, { ...prev, viewPacks: [...prev.viewPacks, pack] })
+  for (const l of listeners) l()
+}
+
+/** The places that served the current view's objects, in first-seen order (L-18). */
+export function viewSources(checks: ContentChecks): string[] {
+  return [...new Set(checks.viewPacks.flatMap((p) => checks.packSources[p] ?? []))]
 }
 
 /** The repo's ledger (a stable reference until the next change). */

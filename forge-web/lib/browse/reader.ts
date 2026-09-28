@@ -172,6 +172,11 @@ export interface BrowseReaderOptions {
    * OID; null (or a reader that does not hold it either) fails the read as before.
    */
   readonly onMiss?: (oidHex: string) => Promise<BrowseReader | null>
+  /**
+   * Told the pack (`packRef`) of every object read, memo hits included: which packs a view's
+   * objects came from, so the trust summary names the places that served them (L-18).
+   */
+  readonly onRead?: (packRef: number) => void
 }
 
 /** Per-read limits for {@link BrowseReader.readObject}. */
@@ -326,9 +331,10 @@ export class BrowseReader {
   private async readBounded(oidHex: string, limits: Limits): Promise<GitObject> {
     const oidKey = oidHex.toLowerCase()
     const cached = this.objectsByOid.get(oidKey)
+    const entry = this.locate(oidHex)
+    if (entry !== null) this.opts.onRead?.(entry.packRef)
     if (cached !== undefined) return withinLimit(cached, limits.item)
 
-    const entry = this.locate(oidHex)
     if (entry === null) {
       const fresher = await this.opts.onMiss?.(oidHex)
       // The retry keeps this read's limits (a README image stays capped on the fresher reader).
