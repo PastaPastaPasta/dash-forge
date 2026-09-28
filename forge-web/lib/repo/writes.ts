@@ -745,6 +745,15 @@ export function starRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string
   }
 }
 
+/** The viewer's watch of a repo (forge-collab `watch`, C-1): the inbox follows it on every device. */
+export function watchRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string, repo: RepoRef): Relation {
+  return {
+    read: async () => (await findOwnIndexOnly(sdk, repo.forge, 'watch', viewer, repo.repoId)) !== null,
+    add: async () => (await createIndexOnly(sdk, need(auth), repo.forge, 'watch', repo.repoId)).confirmed,
+    remove: async () => (await deleteIndexOnly(sdk, need(auth), repo.forge, 'watch', repo.repoId)).deleted,
+  }
+}
+
 /**
  * The viewer's follow of `target` (forge-collab `follow`). `forge` null (not deployed): every
  * call refuses, so a caller can build the relation unconditionally and gate on deployment.

@@ -181,6 +181,7 @@ export {
   revokeMember,
   setTargetState,
   starRelation,
+  watchRelation,
   stateEventRoute,
   type CreateRepoInput,
   type PrivateCreate,
