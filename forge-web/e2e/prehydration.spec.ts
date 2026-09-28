@@ -23,7 +23,25 @@ async function hydrated(page: Page, selector: string): Promise<boolean> {
   return page.locator(selector).first().evaluate((el) => Object.keys(el).some((k) => k.startsWith('__reactProps')))
 }
 
+/** Console errors that a Content-Security-Policy refusal produces (in Chromium and WebKit). */
+function cspErrors(page: Page): string[] {
+  const seen: string[] = []
+  page.on('console', (m) => {
+    if (m.type() === 'error' && /content security policy|refused to (execute|load)/i.test(m.text())) seen.push(m.text())
+  })
+  return seen
+}
+
 test.describe('a tap before hydration', () => {
+  test('the head script runs under the page CSP (no refusal)', async ({ page }) => {
+    const csp = cspErrors(page)
+    await page.goto('/explore/', { waitUntil: 'domcontentloaded' })
+    expect(await page.evaluate((k) => typeof (window as unknown as Record<string, unknown>)[k], '__forgePrehydration')).toBe('object')
+    await expect(page.getByRole('banner').getByRole('button', { name: /^sign in$/i })).toBeVisible()
+    // `frame-ancestors` in a <meta> CSP is only ignored with a warning-level error: not a refusal.
+    expect(csp.filter((t) => !/frame-ancestors/i.test(t))).toEqual([])
+  })
+
   test('Sign in in the header opens the sign-in sheet once the app is ready', async ({ page }) => {
     const release = await holdScripts(page)
     await page.goto('/explore/', { waitUntil: 'domcontentloaded' })

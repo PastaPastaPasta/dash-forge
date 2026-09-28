@@ -9,6 +9,12 @@
  * progress cursor and a dimmed look). Once the app has hydrated, {@link replayPrehydrationClick}
  * stops catching and clicks the pending button again, now with its handler, if it is still on
  * the page. Everything is plain DOM: the nodes React hydrates are the same ones.
+ *
+ * CSP: it runs under `script-src 'unsafe-inline'`, which the layout's meta CSP grants for Next's
+ * own inline bootstrap scripts (`self.__next_f.push(…)`). A `'sha256-…'` source for this script
+ * alone cannot be added: a hash in `script-src` makes browsers ignore `'unsafe-inline'`, which
+ * refuses Next's scripts and stops the app hydrating (checked in Chromium and WebKit on the
+ * static export). A strict CSP needs every inline script hashed per page at export time.
  */
 
 /** The window property the inline script keeps its state on. */
