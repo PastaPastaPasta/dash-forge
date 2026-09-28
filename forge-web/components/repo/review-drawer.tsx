@@ -186,9 +186,9 @@ export function ReviewDrawer({
 
   // The summary and verdict are part of the draft: kept in this browser as they change (shortly
   // after typing stops), so closing the panel or reloading the page loses neither.
-  const frozenNow = draft !== null && submitStarted(draft)
+  const frozen = draft !== null && submitStarted(draft)
   useEffect(() => {
-    if (!loaded || frozenNow || progress !== null) return
+    if (!loaded || frozen || progress !== null) return
     const same = draft === null ? summary === '' && verdict === 'comment' : draft.summary === summary && draft.verdict === verdict
     if (same) return
     const t = setTimeout(() => {
@@ -196,10 +196,9 @@ export function ReviewDrawer({
       if (d !== null && !submitStarted(d)) update(setDraftVerdict(d, verdict, summary))
     }, 250)
     return () => clearTimeout(t)
-  }, [summary, verdict, draft, loaded, frozenNow, progress, ensure, update])
+  }, [summary, verdict, draft, loaded, frozen, progress, ensure, update])
 
   const count = draft?.comments.length ?? 0
-  const frozen = draft !== null && submitStarted(draft)
   const headMoved = draft !== null && draft.headOid !== headOid && !frozen
   const working: ReviewDraft | null =
     identity === null
@@ -218,10 +217,11 @@ export function ReviewDrawer({
     // The draft as it will be written, frozen before anything is: its attempt on record, the
     // chosen verdict and the trimmed summary. The page then offers no edits (pending.frozen) and
     // the auto-save stands down, so nothing re-saves an editable draft over the submit's.
-    const base = frozen ? null : ensure()
-    if (!frozen && base === null) return
-    const toSubmit: ReviewDraft = frozen ? planned : startSubmit(base!, verdict, summary, Date.now())
+    let toSubmit: ReviewDraft = planned
     if (!frozen) {
+      const base = ensure()
+      if (base === null) return
+      toSubmit = startSubmit(base, verdict, summary, Date.now())
       setSummary(toSubmit.summary)
       update(toSubmit)
     }
@@ -232,8 +232,6 @@ export function ReviewDrawer({
       update(null)
       setOpen(false)
       setProgress(null)
-      setSummary('')
-      setVerdict('comment')
       onSubmitted(r.reviewId)
     } catch (e) {
       // What landed is saved in the draft (IndexedDB or memory): read it back to say so.
@@ -331,8 +329,6 @@ export function ReviewDrawer({
                   disabled={progress !== null}
                   onClick={() => {
                     update(null)
-                    setSummary('')
-                    setVerdict('comment')
                     setError(null)
                     setOpen(false)
                   }}
