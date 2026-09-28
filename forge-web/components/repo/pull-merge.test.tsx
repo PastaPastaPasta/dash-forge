@@ -41,6 +41,7 @@ vi.mock('@/components/repo/merge-upload', async (importOriginal) => {
       choiceFor: (estimate: { bytes: number; objectCount: number } | null) =>
         storageChoice({ targets: ['chain'], replicas: 1, platformFallback: false }, [{ name: 'chain', settings: { kind: 'platform', provider: 'platform' }, secrets: {} } as never], estimate),
       question: null,
+      questionStep: 'upload',
       begin: (credits?: number | null) => void begun.push(credits),
       storageNeedsUnlock: false,
     }),
@@ -156,5 +157,37 @@ describe('the merge box through its own merge', () => {
     expect(host.querySelector('[data-testid="merge-done"]')?.textContent).toBe('Merged')
     expect(host.querySelector('#merge-method')).toBeNull()
     expect([...host.querySelectorAll('button')].some((b) => /merge/i.test(b.textContent ?? ''))).toBe(false)
+  })
+
+  it('a method switch re-sizes the pack without taking the controls away (the menu keeps focus)', async () => {
+    checkCount = 0
+    checks.mockClear()
+    // Every check says "merge"; the squash one sizes a smaller pack, and answers only when told.
+    let answer: () => void = () => undefined
+    const later = new Promise<void>((r) => (answer = r))
+    checks.mockImplementation(async () => {
+      const first = checks.mock.calls.length === 1
+      if (!first) await later
+      return { check: 'merge', conflictPaths: [] as string[], packEstimate: { bytes: first ? 4000 : 1000, objectCount: 4 } }
+    })
+    await act(async () => root.render(<Page onDelete={async () => undefined} />))
+    await act(async () => undefined)
+    const select = host.querySelector('#merge-method') as HTMLSelectElement
+    expect(select).not.toBeNull()
+    select.focus()
+    const price = (): string => host.querySelector('[data-testid="storage-row"] [data-testid="cost-preview"]')?.textContent ?? ''
+    const before = price()
+    await act(async () => {
+      select.value = 'squash'
+      select.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    // The same select is still mounted and focused; no "Checking the merge…" in between.
+    expect(host.querySelector('#merge-method')).toBe(select)
+    expect(document.activeElement).toBe(select)
+    expect(host.textContent).not.toMatch(/Checking the merge/)
+    await act(async () => answer())
+    // Sized again, for the squash.
+    expect(checks).toHaveBeenCalledTimes(2)
+    expect(price()).not.toBe(before)
   })
 })

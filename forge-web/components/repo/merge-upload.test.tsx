@@ -79,12 +79,28 @@ describe('the storage answer given before the merge', () => {
     expect(q).not.toBeNull()
     const alert = q!.querySelector('[role="alert"]')
     expect(alert?.textContent).toMatch(/Waiting for your choice/)
+    // It is the index asking, on its own step, at its own price.
+    expect(hook.questionStep).toBe('index')
+    expect(alert?.textContent).toMatch(/store the browse index/)
     expect(document.activeElement).toBe(alert)
     await act(async () => {
       ;(Array.from(q!.querySelectorAll('button')).find((b) => /sign & store/i.test(b.textContent ?? '')) as HTMLButtonElement).click()
       await stored
     })
     expect(host.querySelector('[data-testid="storage-question"]')).toBeNull()
+  })
+
+  it('does not take focus from a field being typed in', async () => {
+    const field = document.createElement('textarea')
+    document.body.appendChild(field)
+    field.focus()
+    act(() => hook.begin(null))
+    await act(async () => {
+      void hook.upload!(pack, { packHash: 'p', objectCount: 3 }).catch(() => undefined)
+    })
+    expect(host.querySelector('[data-testid="storage-question"] [role="alert"]')).not.toBeNull()
+    expect(document.activeElement).toBe(field)
+    field.remove()
   })
 
   it('a cap covering both stores both without a question', async () => {

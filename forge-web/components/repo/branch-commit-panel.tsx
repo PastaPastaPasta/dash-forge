@@ -93,7 +93,7 @@ export function useBranchCommit({
   const { signer } = useAuth()
   const guard = useWriteGuard()
   const uploadRepo = source ?? repo
-  const { upload, question, begin } = useMergeUpload(uploadRepo)
+  const { upload, question, questionStep, begin } = useMergeUpload(uploadRepo)
   const [label, setLabel] = useState<string | null>(null)
   const [steps, setSteps] = useState<Partial<Record<BranchStepId | 'build', StepState>>>({})
   const [details, setDetails] = useState<Partial<Record<BranchStepId | 'build', string>>>({})
@@ -189,7 +189,7 @@ export function useBranchCommit({
       <div className="space-y-2" data-testid="branch-commit">
         <ol aria-label={`${label}: steps`} className="space-y-1 rounded-md border border-anvil-200 p-3 dark:border-anvil-800">
           {[{ id: 'build' as const, label: 'Build the commit' }, ...BRANCH_STEPS].map(({ id, label: l }) => (
-            <StepRow key={id} id={id} label={l} state={steps[id] ?? 'todo'} detail={details[id]} question={id === 'upload' ? question : null} />
+            <StepRow key={id} id={id} label={l} state={steps[id] ?? 'todo'} detail={details[id]} question={id === questionStep ? question : null} />
           ))}
         </ol>
         {error ? (
