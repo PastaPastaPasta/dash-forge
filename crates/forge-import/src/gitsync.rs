@@ -176,11 +176,11 @@ pub fn parse_landed(stderr: &str) -> PushReport {
                     // An older helper sent no `message`: build one from its parts.
                     text("reason").map(|why| match text("fix") {
                         Some(fix) => format!(
-                            "the push landed but its browse index was not published ({why}); \
+                            "the pack was stored but its browse index was not published ({why}); \
                              run `{fix}`"
                         ),
                         None => format!(
-                            "the push landed but its browse index was not published ({why})"
+                            "the pack was stored but its browse index was not published ({why})"
                         ),
                     })
                 });
@@ -634,7 +634,7 @@ dash: some human line"#;
     #[test]
     fn a_skipped_browse_index_reaches_the_report() {
         let stderr = r#"{"event":"stored","packHash":"cd","bytes":900,"objects":3}
-{"event":"indexSkipped","message":"the push landed but its browse index was not published (not listed yet); the web cannot browse the new commits until `dg repo reindex o/r` publishes it","reason":"not listed yet","fix":"dg repo reindex o/r"}
+{"event":"indexSkipped","message":"the pack was stored but its browse index was not published (not listed yet); the web cannot browse the new commits until `dg repo reindex o/r` publishes it","reason":"not listed yet","fix":"dg repo reindex o/r"}
 {"event":"refUpdate","ref":"refs/heads/main","newOid":"1fe5ecd3"}"#;
         let w = parse_landed(stderr).index_skipped.expect("reported");
         assert!(w.contains("browse index was not published"), "{w}");

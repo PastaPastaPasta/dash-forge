@@ -1023,7 +1023,7 @@ fn configure_local(
 struct PushOutcome {
     /// The helper's measured (or estimated) Platform charge, in credits.
     charged: Option<u64>,
-    /// The helper's `indexSkipped` event: the push landed without its browse index (D-920).
+    /// The helper's `indexSkipped` event: the pack was stored without its browse index (D-920).
     index_skipped: Option<Value>,
 }
 
@@ -1116,12 +1116,12 @@ fn run_push(
         .rev()
         .find(|e| e["event"] == "done")
         .and_then(|e| e["chargedCredits"].as_u64());
+    let index_skipped = events
+        .iter()
+        .rev()
+        .find(|e| e["event"] == "indexSkipped")
+        .cloned();
     if status.success() {
-        let index_skipped = events
-            .iter()
-            .rev()
-            .find(|e| e["event"] == "indexSkipped")
-            .cloned();
         return Ok(PushOutcome {
             charged,
             index_skipped,
@@ -1140,12 +1140,16 @@ fn run_push(
         (codes::UNEXPECTED, cause)
     });
     let upstream = if track { "-u " } else { "" };
-    Err(UserError::new(code, format!("the push of {branch} failed"))
+    let mut err = UserError::new(code, format!("the push of {branch} failed"))
         .cause(cause)
         .fix(format!(
             "fix what the push reported, then `git push {upstream}{remote} {branch}` (or run the same command again)"
-        ))
-        .into())
+        ));
+    // The pack may be stored without its browse index (D-920): keep that, with its fix.
+    if let Some(fix) = index_skipped.as_ref().and_then(|e| e["fix"].as_str()) {
+        err = err.fix(format!("then publish the pack's browse index: `{fix}`"));
+    }
+    Err(err.into())
 }
 
 /// The helper's report-file variable (`git-remote-dash`'s `progress::REPORT_FILE_ENV`).

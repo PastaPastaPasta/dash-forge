@@ -294,13 +294,15 @@ pub fn index_skipped_line(why: &str, fix: Option<&str>) -> (String, Value) {
     let until = fix.map_or_else(String::new, |fix| {
         if fix.starts_with("dg repo reindex") {
             format!(" until `{fix}` publishes it")
-        } else {
+        } else if fix.starts_with("dg repack") {
             format!("; `{fix}` rebuilds the index")
+        } else {
+            format!("; `{fix}` shows which stored copy is unreadable")
         }
     });
     let message = format!(
-        "the push landed but its browse index was not published ({why}); the web cannot \
-         browse the new commits{until}"
+        "the pack was stored but its browse index was not published ({why}); the web cannot \
+         browse its commits{until}"
     );
     (
         format!("dash: warning: {message}"),
@@ -415,7 +417,10 @@ mod tests {
     fn a_skipped_index_is_a_warning_naming_the_fix() {
         let (text, event) =
             index_skipped_line("not listed yet", Some("dg repo reindex OwnerId/dash"));
-        assert!(text.starts_with("dash: warning: the push landed"), "{text}");
+        assert!(
+            text.starts_with("dash: warning: the pack was stored"),
+            "{text}"
+        );
         assert!(text.contains("`dg repo reindex OwnerId/dash`"), "{text}");
         assert_eq!(event["event"], "indexSkipped");
         assert_eq!(event["reason"], "not listed yet");

@@ -1296,7 +1296,7 @@ async fn upload_push_pack(
     if let Some(refs_only) = reuse_recorded(ctx, &job).await? {
         return Ok(Some(Uploaded {
             est_credits: refs_only,
-            index: None,
+            index: missing_index(ctx, &job, pack.parsed, externals).await,
         }));
     }
     policy::enforce(
@@ -1362,6 +1362,69 @@ fn retire_journal(ctx: &PushContext<'_>, jpath: &std::path::Path, replication: &
              re-push with dash.storage including platform to put them to use",
             jpath.display()
         ));
+    }
+}
+
+/// The browse index still owed for a pack an earlier push recorded: that push may have died
+/// between its manifest and its index (D-920). This clone holds the same pack, so it is
+/// published now if no fragment covers it, to where the recorded copies are.
+async fn missing_index(
+    ctx: &PushContext<'_>,
+    job: &PackJob<'_>,
+    parsed: forge_core::pack::ParsedPack,
+    externals: Vec<ExternalTarget>,
+) -> Option<PendingIndex> {
+    match ctx.svc.is_pack_indexed(ctx.repo, job.pack_hash).await {
+        Ok(true) => None,
+        Ok(false) => Some(PendingIndex {
+            pack_hash: job.pack_hash,
+            parsed,
+            replication: recorded_replication(ctx, job).await,
+            externals,
+        }),
+        Err(e) => {
+            tracing::info!(error = %e, "could not check the recorded pack's index");
+            None
+        }
+    }
+}
+
+/// Where this identity's recorded copy of the pack lives, as a [`Replication`]: Platform when
+/// its manifest is chunk-stored, else the external targets it names (the index goes to the same
+/// places as the pack). Empty on a read failure: the index then goes to Platform only if the
+/// policy includes it.
+async fn recorded_replication(ctx: &PushContext<'_>, job: &PackJob<'_>) -> Replication {
+    let mine = ctx
+        .svc
+        .read_pack_copies(ctx.repo, job.pack_hash)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|m| m.owner_id == ctx.identity);
+    let on_platform = mine
+        .as_ref()
+        .map_or(ctx.policy.resolved.platform, |m| m.storage == 0);
+    let mut replicas: Vec<forge_core::storage::Replica> = ctx
+        .policy
+        .resolved
+        .external
+        .iter()
+        .map(|(name, _)| forge_core::storage::Replica {
+            target: name.clone(),
+            uris: Vec::new(),
+            platform: false,
+        })
+        .collect();
+    if on_platform {
+        replicas.push(forge_core::storage::Replica {
+            target: forge_core::storage::PLATFORM_PROFILE.into(),
+            uris: Vec::new(),
+            platform: true,
+        });
+    }
+    Replication {
+        replicas,
+        failures: Vec::new(),
     }
 }
 
@@ -1764,10 +1827,9 @@ async fn reuse_recorded(ctx: &PushContext<'_>, job: &PackJob<'_>) -> Result<Opti
     }
     let refs_only = push_fees::estimate_ref_updates(ctx.refs.len() as u64);
     policy::enforce(refs_only, ctx.policy, false, policy::NOTE_NOTHING_STORED)?;
-    // The browse index is not published again here: the push that recorded the pack published
-    // it (it does so even when its refs fail), or said it did not, naming `dg repo reindex`,
-    // which publishes it without storing the pack again. The kept sealed bytes stay until the
-    // refs land ([`forget_sealed`]): this push may still fail at its refs.
+    // The caller publishes the pack's browse index when no fragment covers it yet (a push that
+    // recorded the pack and died before its index). The kept sealed bytes stay until the refs
+    // land ([`forget_sealed`]): this push may still fail at its refs.
     Ok(Some(refs_only))
 }
 

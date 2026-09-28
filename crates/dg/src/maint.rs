@@ -109,10 +109,10 @@ pub async fn repack(
 /// index fragment and its manifest: the packs themselves are never stored again, so it costs
 /// the index (36 bytes per object) rather than a repack's full upload (D-920).
 ///
-/// Where the index goes: `--profile a,b[,platform]` (each must confirm), else this clone's
-/// storage policy when run inside a clone of the repository, else Platform when the packs are
-/// stored there. A repository whose packs live only on its owner's storage is never given a
-/// Platform index it did not ask for: `--profile` names the storage then.
+/// Where the index goes: `--profile a,b[,platform]` (each must confirm), else Platform when the
+/// packs are stored there. `--profile` is required when they are not, and inside a clone of the
+/// repository whose storage policy names your own storage: a repository is never given a
+/// Platform index it did not ask for.
 pub async fn reindex(ctx: &Ctx, repo: &str, profile: Option<&str>) -> Result<()> {
     let s = crate::common::Session::open_for_write(ctx, repo, "nothing published").await?;
     let svc = RepoService::new(&s.client, &s.identity, &s.bridge);
@@ -160,23 +160,7 @@ pub async fn reindex(ctx: &Ctx, repo: &str, profile: Option<&str>) -> Result<()>
         platform.is_some(),
     );
     if !ctx.json {
-        let missing_bytes: u64 = plan.missing.iter().map(|p| p.size_bytes).sum();
-        println!(
-            "Reindex {}: {} pack(s) without a browse index ({missing_bytes} bytes, read not \
-             re-uploaded)",
-            s.repo.display(),
-            plan.missing.len()
-        );
-        println!(
-            "  uploads one index fragment over {index_objects} objects{} to {label} + its \
-             manifest   {}",
-            if plan.fold() {
-                " (folding the live fragments in)"
-            } else {
-                ""
-            },
-            cost_line(estimate, price)
-        );
+        print_reindex_plan(&s.repo, &plan, &label, &cost_line(estimate, price));
     }
     ctx.confirm_or_cancel(&format!(
         "Publish the browse index of {}?",
@@ -200,11 +184,53 @@ pub async fn reindex(ctx: &Ctx, repo: &str, profile: Option<&str>) -> Result<()>
         (Some(_), None) => Some(0),
         (None, _) => None,
     };
-    emit_reindex(ctx, &s.repo, &report, spent, price);
+    let body = reindex_body(&s.repo, &report, spent, price);
     if report.manifest_id.is_none() && !report.skipped.is_empty() {
-        bail!("no pack could be indexed; see the reasons above");
+        // One document: the body with the error, not a success-shaped body and then an error.
+        let err = forge_core::user_error::UserError::new(
+            forge_core::user_error::codes::UNEXPECTED,
+            "no pack could be indexed",
+        )
+        .cause(
+            report
+                .skipped
+                .iter()
+                .map(|(h, why)| format!("{h}: {why}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+        if !ctx.json {
+            print_reindex(&s.repo, &report, spent, price);
+        }
+        return Err(crate::errors::reported(err, body));
     }
+    ctx.emit(body, || print_reindex(&s.repo, &report, spent, price));
     Ok(())
+}
+
+/// What `dg repo reindex` is about to do, and its price, before the prompt.
+fn print_reindex_plan(
+    handle: &forge_core::scope::RepoRef,
+    plan: &forge_core::repo::ReindexPlan,
+    label: &str,
+    price: &str,
+) {
+    let missing_bytes: u64 = plan.missing.iter().map(|p| p.size_bytes).sum();
+    println!(
+        "Reindex {}: {} pack(s) without a browse index ({missing_bytes} bytes, read not \
+         re-uploaded)",
+        handle.display(),
+        plan.missing.len()
+    );
+    println!(
+        "  uploads one index fragment over {} objects{} to {label} + its manifest   {price}",
+        plan.index_objects(),
+        if plan.fold() {
+            " (folding the live fragments in)"
+        } else {
+            ""
+        },
+    );
 }
 
 /// Credits spent since `before`, read until the balance moves (a node a block behind still
@@ -278,56 +304,60 @@ fn reindex_estimate(
     chunks + MANIFEST_FIRST + URIS_PER_TARGET * external_targets
 }
 
-/// Print (or `--json`-emit) a finished reindex. `spent` is `None` when the balance could not
-/// be read.
-fn emit_reindex(
-    ctx: &Ctx,
+/// The `--json` body of a finished reindex. `spent` is `None` when the balance could not be
+/// read.
+fn reindex_body(
     handle: &forge_core::scope::RepoRef,
     report: &forge_core::repo::ReindexReport,
     spent: Option<u64>,
     price: f64,
-) {
+) -> serde_json::Value {
     let skipped: Vec<_> = report
         .skipped
         .iter()
         .map(|(h, why)| json!({ "packHash": h, "reason": why }))
         .collect();
-    ctx.emit(
-        json!({
-            "status": if report.manifest_id.is_some() { "reindexed" } else { "unchanged" },
-            "repoId": handle.id(),
-            "indexedPacks": report.indexed.len(),
-            "indexObjects": report.index_objects,
-            "skipped": skipped,
-            "locatorManifestId": report.manifest_id,
-            "cost": spent.map(|c| crate::fmt::cost_json(c, price)),
-        }),
-        || {
-            match &report.manifest_id {
-                Some(id) => {
-                    println!(
-                        "Published the browse index of {}: {} object(s) over {} pack(s).",
-                        handle.display(),
-                        report.index_objects,
-                        report.indexed.len()
-                    );
-                    println!("  index manifest:  {id}");
-                }
-                None => println!(
-                    "Nothing published for {}: an index published meanwhile covers the packs, \
-                     or none could be indexed.",
-                    handle.display()
-                ),
-            }
-            for (h, why) in &report.skipped {
-                println!("  not indexed:     {h}: {why}");
-            }
-            match spent {
-                Some(c) => println!("  cost:            {}", cost_line(c, price)),
-                None => println!("  cost:            unknown (the balance could not be read)"),
-            }
-        },
-    );
+    json!({
+        "status": if report.manifest_id.is_some() { "reindexed" } else { "unchanged" },
+        "repoId": handle.id(),
+        "indexedPacks": report.indexed.len(),
+        "indexObjects": report.index_objects,
+        "skipped": skipped,
+        "locatorManifestId": report.manifest_id,
+        "cost": spent.map(|c| crate::fmt::cost_json(c, price)),
+    })
+}
+
+/// Print a finished reindex for a person.
+fn print_reindex(
+    handle: &forge_core::scope::RepoRef,
+    report: &forge_core::repo::ReindexReport,
+    spent: Option<u64>,
+    price: f64,
+) {
+    match &report.manifest_id {
+        Some(id) => {
+            println!(
+                "Published the browse index of {}: {} object(s) over {} pack(s).",
+                handle.display(),
+                report.index_objects,
+                report.indexed.len()
+            );
+            println!("  index manifest:  {id}");
+        }
+        None => println!(
+            "Nothing published for {}: an index published meanwhile covers the packs, \
+             or none could be indexed.",
+            handle.display()
+        ),
+    }
+    for (h, why) in &report.skipped {
+        println!("  not indexed:     {h}: {why}");
+    }
+    match spent {
+        Some(c) => println!("  cost:            {}", cost_line(c, price)),
+        None => println!("  cost:            unknown (the balance could not be read)"),
+    }
 }
 
 /// Print (or `--json`-emit) a finished repack.

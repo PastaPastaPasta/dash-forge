@@ -333,8 +333,9 @@ pub enum RepoCommand {
         /// The repository (`owner/name`).
         repo: String,
         /// Storage profile(s) for the index (from `dg storage add`, or `platform`); every one
-        /// must confirm. Default: this clone's storage policy (dash.storage) inside a clone of
-        /// the repository, else Platform when the packs are stored there.
+        /// must confirm. Default: Platform, when the packs are stored there. Required when they
+        /// are not, and inside a clone of the repository whose dash.storage names your own
+        /// storage.
         #[arg(long)]
         profile: Option<String>,
     },

@@ -295,6 +295,10 @@ pub enum IndexRemedy {
     /// `dg repack`: the index cannot be extended as it stands (the pack space outgrew the
     /// 16-bit `packRef`, or a fragment was built over another pack space).
     Repack,
+    /// Restore the storage of an index fragment that cannot be read (`dg storage status`
+    /// finds it; `dg reseed` re-uploads it): until it reads, readers fall back, and neither a
+    /// reindex nor a repack changes that.
+    Restore,
     /// Nothing a user runs fixes it (the pushed hash is listed under another kind).
     None,
 }
@@ -312,6 +316,7 @@ impl IndexSkip {
         match self.remedy {
             IndexRemedy::Reindex => Some(format!("dg repo reindex {repo}")),
             IndexRemedy::Repack => Some(format!("dg repack {repo}")),
+            IndexRemedy::Restore => Some(format!("dg storage status {repo}")),
             IndexRemedy::None => None,
         }
     }
@@ -2032,8 +2037,20 @@ impl<'a> RepoService<'a> {
         // Oldest-first for a stable row order; rows are keyed by `(oid, packRef)`. Without a
         // fold the fragment is the pushed pack's rows alone.
         let folded_in = if fold {
-            self.read_live_fragments(repo, &manifests, &roles, &live_locators)
-                .await?
+            match self
+                .read_live_fragments(repo, &manifests, &roles, &live_locators)
+                .await
+            {
+                Ok(parts) => parts,
+                // A fold needs every live fragment's rows; one that cannot be read is a storage
+                // problem a reindex cannot repair (it refuses the same fragment).
+                Err(e) => {
+                    return Ok(PushIndexOutcome::Skipped(IndexSkip::new(
+                        format!("a live index fragment cannot be read to fold it: {e}"),
+                        IndexRemedy::Restore,
+                    )))
+                }
+            }
         } else {
             Vec::new()
         };
@@ -2072,6 +2089,29 @@ impl<'a> RepoService<'a> {
                 pack_ref,
             }
         })
+    }
+
+    /// Whether a fragment readers merge already covers git pack `pack_hash` (a retry of a push
+    /// that recorded the pack but died before its index, D-920). `Ok(false)` when the pack is
+    /// not listed at all. Reads the fragments a reader would (small artifacts).
+    pub async fn is_pack_indexed(&self, repo: &RepoRef, pack_hash: [u8; 32]) -> Result<bool> {
+        let manifests = self.read_pack_manifests(repo).await?;
+        let roles = self.copy_roles(repo).await?;
+        let space = locator_pack_space(&manifests, &roles, None);
+        let hash = hex::encode(pack_hash);
+        let Some(pack_ref) = space
+            .iter()
+            .find(|p| p.pack_hash == hash)
+            .and_then(|p| u16::try_from(p.pack_ref).ok())
+        else {
+            return Ok(false);
+        };
+        let merged = index_fragments(&manifests, &roles);
+        Ok(self
+            .read_fragments(repo, &manifests, &roles, &merged)
+            .await?
+            .iter()
+            .any(|(_, f)| f.pack_ref_iter().any(|r| r == pack_ref)))
     }
 
     /// Download and parse the live index fragments `live` (newest first), oldest first.
