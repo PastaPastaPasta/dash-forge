@@ -195,7 +195,12 @@ test('r4. the contributor applies the suggestion; the head follows', async ({ br
   await page.getByRole('button', { name: 'Apply suggestion' }).click({ timeout: 180_000 })
   await allowPlatformStorage(page)
   await expect(page.getByTestId('branch-commit').locator('[data-step="head"]')).toHaveAttribute('data-state', 'done', { timeout: 300_000 })
-  await expect(page.getByTestId('suggestion-applied')).toBeVisible({ timeout: 240_000 })
+  // The thread was made on the previous head, so it now sits under "comments on an older version"
+  // (collapsed, as on GitHub): open it to see the suggestion marked applied.
+  const applied = page.getByTestId('suggestion-applied')
+  await expect(applied).toBeAttached({ timeout: 240_000 })
+  await page.getByTestId('outdated-comments').locator('summary').click()
+  await expect(applied).toBeVisible()
   await expect(page.getByTestId('pr-tab-commits-count')).toHaveText('2', { timeout: 120_000 })
   await shot(page, 'review-rt-02-applied')
 })
