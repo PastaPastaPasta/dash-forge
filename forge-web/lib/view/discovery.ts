@@ -205,28 +205,25 @@ async function readRepoPage<T extends string | number>(
   after: Keyset<T> | null,
 ): Promise<RepoPage<T>> {
   const requested = Math.min(MAX_ROWS, limit + (after?.seen.length ?? 0))
-  const page = {
-    dataContractId: forge.core,
-    documentTypeName: DOC.repo,
-    where: where(after),
-    orderBy: [[order.field, order.direction]] as const,
-  }
+  const pageWhere = where(after)
+  const orderBy = [[order.field, order.direction]] as const
+  const pushesSince = order.direction === 'desc' ? Date.now() - PUSH_WINDOW_MS : null
   let rows: PlainDocument[]
   let res: CompositeResult | null = null
   try {
     res = await queryComposite(
       sdk,
-      { dataContractId: page.dataContractId, documentType: page.documentTypeName, where: page.where, orderBy: page.orderBy, limit: requested, subQueries: repoSubs(forge, network, 'page', order.direction === 'desc' ? Date.now() - PUSH_WINDOW_MS : null) },
+      { dataContractId: forge.core, documentType: DOC.repo, where: pageWhere, orderBy, limit: requested, subQueries: repoSubs(forge, network, 'page', pushesSince) },
       { plainFallback: false },
     )
     rows = res.page
   } catch (e) {
     if (!isRefused(e)) throw e
-    rows = (await queryDocumentsWithProof(sdk, { ...page, limit: requested })).documents
+    rows = (await queryDocumentsWithProof(sdk, { dataContractId: forge.core, documentTypeName: DOC.repo, where: pageWhere, orderBy, limit: requested })).documents
   }
   const cut = keysetPage<T>(rows, order.field, limit, requested, after)
-  if (res === null) return { repos: cut.rows.map((d) => fromRepoDoc(toRepoDoc(d))), next: cut.next, pushesComplete: false }
-  const { repos, pushesComplete } = reposOf(res, cut.rows, 0, network)
+  const { repos, pushesComplete } =
+    res === null ? { repos: cut.rows.map((d) => fromRepoDoc(toRepoDoc(d))), pushesComplete: false } : reposOf(res, cut.rows, 0, network)
   return { repos, next: cut.next, pushesComplete }
 }
 

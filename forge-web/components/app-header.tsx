@@ -22,6 +22,7 @@ import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
 import { resolveAnyRepo } from '@/lib/repo'
 import { creditsToDash, ensureSdk } from '@/lib/sdk'
 import { errorMessage } from '@/lib/utils'
+import type { DiscoveredRepo } from '@/lib/view/discovery'
 import { numberTargets, parseJump, resolveWord, wordTarget, type WordMatches } from '@/lib/view/jump'
 import { Author } from '@/components/author'
 import { balanceToDash, dashToUsd } from '@/lib/view/format'
@@ -181,8 +182,8 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
       const matches = await resolveWord(sdk, word, DEFAULT_NETWORK)
       if (!current()) return
       const target = wordTarget(matches)
-      if (target.kind === 'repo') go(repoHref('/repo', { owner: target.repo.ownerId, name: target.repo.slug, repoId: target.repo.key }))
-      else if (target.kind === 'profile') go(`/u/?name=${encodeURIComponent(target.identityId)}`)
+      if (target.kind === 'repo') go(discoveredRepoHref(target.repo))
+      else if (target.kind === 'profile') go(profileHref(target.identityId))
       else if (target.kind === 'choose') setNote(<WordChoices word={word} matches={target.matches} onPick={() => setQuery('')} />)
       else {
         setNote(
@@ -220,7 +221,7 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
         go(repoHref('/repo', { owner: jump.owner, name: jump.name }))
         return
       case 'profile':
-        go(`/u/?name=${encodeURIComponent(jump.name)}`)
+        go(profileHref(jump.name))
         return
       case 'word':
         void goWord(jump.word)
@@ -274,6 +275,15 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
   )
 }
 
+function profileHref(name: string): string {
+  return `/u/?name=${encodeURIComponent(name)}`
+}
+
+/** A found repo's page, pinned by its repo id. */
+function discoveredRepoHref(r: DiscoveredRepo): string {
+  return repoHref('/repo', { owner: r.ownerId, name: r.slug, repoId: r.key })
+}
+
 /** A bare word that names several things: each repo (by owner), then the profile. */
 function WordChoices({ word, matches, onPick }: { word: string; matches: WordMatches; onPick: () => void }): JSX.Element {
   return (
@@ -284,7 +294,7 @@ function WordChoices({ word, matches, onPick }: { word: string; matches: WordMat
           <li key={r.key} className="flex flex-wrap items-center gap-1">
             <Link
               className="hit-area font-mono underline"
-              href={repoHref('/repo', { owner: r.ownerId, name: r.slug, repoId: r.key })}
+              href={discoveredRepoHref(r)}
               onClick={onPick}
               aria-label={`repo ${r.slug} by ${r.ownerId}`}
             >
@@ -296,7 +306,7 @@ function WordChoices({ word, matches, onPick }: { word: string; matches: WordMat
         ))}
         {matches.profile !== null ? (
           <li>
-            <Link className="hit-area underline" href={`/u/?name=${encodeURIComponent(matches.profile)}`} onClick={onPick}>
+            <Link className="hit-area underline" href={profileHref(matches.profile)} onClick={onPick}>
               profile @{word}
             </Link>
           </li>

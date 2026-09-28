@@ -292,6 +292,8 @@ function NewRepoLink(): JSX.Element {
   )
 }
 
+type SectionState<T> = Pick<AsyncState<T>, 'data' | 'loading' | 'error' | 'reload'>
+
 /** A titled section over one async read: spinner, error with retry, honest empty, or data. */
 function Section<T>({
   title,
@@ -308,7 +310,7 @@ function Section<T>({
   /** The section's id and test id (default: from the title). */
   testId?: string
   icon: typeof Compass
-  state: Pick<AsyncState<T>, 'data' | 'loading' | 'error' | 'reload'>
+  state: SectionState<T>
   empty: string
   emptyAction?: ReactNode
   note?: string
@@ -336,9 +338,9 @@ function Section<T>({
             </p>
           ) : null}
           {isEmpty(state.data) ? (
-          <div className="rounded-lg border border-dashed border-anvil-300 px-4 py-4 text-dense text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-empty="true">
-            {empty} {emptyAction}
-          </div>
+            <div className="rounded-lg border border-dashed border-anvil-300 px-4 py-4 text-dense text-anvil-600 dark:border-anvil-700 dark:text-anvil-300" data-empty="true">
+              {empty} {emptyAction}
+            </div>
           ) : (
             render(state.data)
           )}
@@ -357,8 +359,6 @@ function FirstN({ shown, cap, what, order }: { shown: number; cap: number; what:
     </p>
   )
 }
-
-type SectionState<T> = Pick<AsyncState<T>, 'data' | 'loading' | 'error' | 'reload'>
 
 /** A paged list as a section's state: data once the first page settled. */
 function pagesState(p: RepoPages): SectionState<DiscoveredRepo[]> {

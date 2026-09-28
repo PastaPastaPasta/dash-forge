@@ -82,7 +82,8 @@ export function wordTarget(m: WordMatches): WordTarget {
   if (total === 0) return { kind: 'none' }
   if (total > 1) return { kind: 'choose', matches: m }
   const [repo] = m.repos
-  return repo !== undefined ? { kind: 'repo', repo } : { kind: 'profile', identityId: m.profile as string }
+  if (repo !== undefined) return { kind: 'repo', repo }
+  return m.profile !== null ? { kind: 'profile', identityId: m.profile } : { kind: 'none' }
 }
 
 /** Which of issue n and PR n exist in `repo` (a `(repoId, number)` lookup each). */
