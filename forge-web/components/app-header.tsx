@@ -12,6 +12,7 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Bell, ChevronDown, Compass, GitFork, Hammer, LogOut, Plus, Search, Wallet } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
+import { signInRequestOutcome, useUiStore } from '@/hooks/use-ui-store'
 import { useUnreadCount } from '@/hooks/use-inbox'
 import { addressFromParams, repoHref } from '@/hooks/use-query-param'
 import { SignInButton } from '@/components/sign-in-button'
@@ -25,6 +26,7 @@ import { errorMessage } from '@/lib/utils'
 import { numberTargets, parseJump } from '@/lib/view/jump'
 import { balanceToDash, dashToUsd } from '@/lib/view/format'
 import { FundsPill } from '@/components/funds-pill'
+import { consumePrehydrationIntent } from '@/lib/prehydration'
 
 /** The mirror guide (the `/mirror` wizard does not exist yet). */
 export const MIRROR_GUIDE_URL = 'https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/guides/mirror-a-github-repo.md'
@@ -56,8 +58,26 @@ function useSlashToSearch(): void {
 }
 
 export function AppHeader(): JSX.Element {
-  const { identity, balance, logout } = useAuth()
+  const { identity, balance, logout, resuming, vaultsLoaded, vaultsError } = useAuth()
+  const openLogin = useUiStore((s) => s.openLogin)
   useSlashToSearch()
+  // "Sign in" asked for before it was known whether this browser's kept session resumes: a tap
+  // before hydration (lib/prehydration.ts, taken on mount), or on the session-check placeholder.
+  // The request is kept in the store (a second mount effect in StrictMode, or a remount, cannot
+  // drop it) and acted on once the session check settles: a session that resumed needs no sheet.
+  const signInPending = useUiStore((s) => s.signInPending)
+  const requestSignIn = useUiStore((s) => s.requestSignIn)
+  const clearSignInRequest = useUiStore((s) => s.clearSignInRequest)
+  useEffect(() => {
+    if (consumePrehydrationIntent('sign-in')) requestSignIn()
+  }, [requestSignIn])
+  const settled = !resuming && (vaultsLoaded || vaultsError !== null)
+  useEffect(() => {
+    const outcome = signInRequestOutcome({ pending: signInPending, settled, signedIn: identity !== null })
+    if (outcome === 'none' || outcome === 'wait') return
+    clearSignInRequest()
+    if (outcome === 'open') openLogin()
+  }, [settled, signInPending, identity, openLogin, clearSignInRequest])
 
   return (
     <header className="sticky top-0 z-40 border-b border-anvil-200 bg-anvil-50/85 backdrop-blur dark:border-anvil-800 dark:bg-anvil-950/85">

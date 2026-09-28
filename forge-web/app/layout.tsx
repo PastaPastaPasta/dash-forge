@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import type { ReactNode } from 'react'
 import { Providers } from '@/components/providers'
+import { prehydrationScript } from '@/lib/prehydration'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -44,6 +45,8 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <head>
         <meta httpEquiv="Content-Security-Policy" content={CSP} />
+        {/* Before the body: a tap on a button before the app hydrates is kept and replayed. */}
+        <script dangerouslySetInnerHTML={{ __html: prehydrationScript() }} />
       </head>
       <body>
         <Providers>{children}</Providers>
