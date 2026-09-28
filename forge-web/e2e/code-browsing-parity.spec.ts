@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { collectPageErrors, countDapi, DEMO, E2E_DEVNET, repoUrl, shot, waitForRepoResolved } from './helpers'
+import { collectPageErrors, countDapi, DEMO, repoUrl, shot, waitForRepoResolved } from './helpers'
 
 /**
  * F-5 code browsing parity with GitHub, on moutai:
@@ -95,12 +95,11 @@ test.describe('permalinks and line anchors (read fixture)', () => {
     await page.goto(repoUrl(), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     await expect(page.getByRole('link', { name: 'README.md' }).first()).toBeVisible({ timeout: 60_000 })
+    await expect(page.locator('section[aria-label=README]')).toBeVisible({ timeout: 60_000 })
     await page.locator('body').press('y')
-    await expect(page).toHaveURL(/\/repo\/tree\/\?.*ref=[0-9a-f]{40}/)
+    // The home stays the home (README included), at the commit, as GitHub's /tree/<oid> does.
+    await expect(page).toHaveURL(/\/repo\/\?.*ref=[0-9a-f]{40}/)
     await expect(page.getByRole('link', { name: 'README.md' }).first()).toBeVisible({ timeout: 60_000 })
+    await expect(page.locator('section[aria-label=README]')).toBeVisible()
   })
-})
-
-test.describe('code browsing parity (showcase repos)', () => {
-  test.skip(E2E_DEVNET !== 'moutai', 'the showcase repos are imported on moutai')
 })

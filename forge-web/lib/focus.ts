@@ -16,7 +16,7 @@ const FOCUSABLE = [
 ].join(',')
 
 /** Whether a key press is typing into a field (where `/` or `y` must stay a character). */
-export function isTypingTarget(target: EventTarget | null): boolean {
+function isTypingTarget(target: EventTarget | null): boolean {
   if (typeof HTMLElement === 'undefined' || !(target instanceof HTMLElement)) return false
   return target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName)
 }

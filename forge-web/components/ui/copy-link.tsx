@@ -2,8 +2,8 @@
 
 /** Copy a short URL (`ux-dx-spec.md` §5.2): the app copies short links everywhere. */
 
-import { useState } from 'react'
 import { Check, Link2 } from 'lucide-react'
+import { useCopy } from '@/hooks/use-copy'
 import { shortRepoUrl, type ShortTarget } from '@/lib/short-url'
 import { cn } from '@/lib/utils'
 
@@ -16,22 +16,14 @@ export function CopyLinkButton({
   target?: ShortTarget
   className?: string
 }): JSX.Element {
-  const [copied, setCopied] = useState(false)
-  const copy = async (): Promise<void> => {
-    try {
-      await navigator.clipboard.writeText(shortRepoUrl(repo, target))
-      setCopied(true)
-      setTimeout(() => setCopied(false), 1200)
-    } catch {
-      /* insecure context: nothing to copy to */
-    }
-  }
+  const href = shortRepoUrl(repo, target)
+  const [copied, copy] = useCopy(href)
   return (
     <button
       type="button"
       onClick={copy}
       data-testid="copy-link"
-      data-href={shortRepoUrl(repo, target)}
+      data-href={href}
       className={cn(
         'inline-flex h-7 items-center gap-1 rounded-md border coarse:h-11 coarse:px-3 border-anvil-300 px-2 text-[12px] text-anvil-700 hover:bg-anvil-100 dark:border-anvil-700 dark:text-anvil-200 dark:hover:bg-anvil-800',
         className,

@@ -22,44 +22,65 @@ function route(href: string | null): { path: string; params: Record<string, stri
   return { path: u.pathname, params: Object.fromEntries(u.searchParams), hash: u.hash }
 }
 
-/** Run the 404 shim over `pathname` + `hash`, as a static host serving 404.html would. */
+/**
+ * Open `pathname` + `hash` as a browser would: the URL parser resolves the path (dot segments
+ * included), then a static host serves 404.html, whose shim rewrites it.
+ */
 function viaShim(pathname: string, hash = ''): string | null {
+  const resolved = new URL(pathname, 'https://x.invalid').pathname
   const replaced: string[] = []
-  const location = { pathname, search: '', hash, replace: (to: string) => replaced.push(to) }
+  const location = { pathname: resolved, search: '', hash, replace: (to: string) => replaced.push(to) }
   new Function('location', 'document', shortUrlShimScript(''))(location, { documentElement: { setAttribute: () => undefined } })
   return replaced[0] ?? null
 }
 
 describe('permalinkPath', () => {
   it('is the short blob URL at the commit, and the shim expands it to the pinned route', () => {
-    const short = permalinkPath(ALICE, 'blob', OID, 'src/a b.rs')
+    const short = permalinkPath(ALICE, 'blob', OID, 'src/a b.rs', false) as string
     expect(short).toBe(`/alice/project/blob/${OID}/src/a%20b.rs`)
     // The `#L` range survives the rewrite, so the expanded page selects and scrolls to it.
-    expect(route(viaShim(short, '#L10-L20'))).toEqual(route(`${pinnedHref(ALICE, 'blob', OID, 'src/a b.rs')}#L10-L20`))
+    expect(route(viaShim(short, '#L10-L20'))).toEqual(route(`${pinnedHref(ALICE, 'blob', OID, 'src/a b.rs', false)}#L10-L20`))
   })
 
   it('pins a directory, and the repo root, the same way', () => {
-    expect(permalinkPath(ALICE, 'tree', OID, 'crates/core')).toBe(`/alice/project/tree/${OID}/crates/core`)
-    expect(route(viaShim(permalinkPath(ALICE, 'tree', OID, '')))).toEqual(route(pinnedHref(ALICE, 'tree', OID, '')))
+    expect(permalinkPath(ALICE, 'tree', OID, 'crates/core', false)).toBe(`/alice/project/tree/${OID}/crates/core`)
+    expect(route(viaShim(permalinkPath(ALICE, 'tree', OID, '', false) as string))).toEqual(route(pinnedHref(ALICE, 'tree', OID, '', false)))
   })
 
   it('keeps the canonical route for an address the short form cannot carry', () => {
     // A `?repo=` pin, a DPNS owner with a dot, and an owner that is one of the app's own routes.
     for (const addr of [{ ...ALICE, repoId: 'R' }, { owner: 'alice.dash', name: 'project' }, { owner: RESERVED_SEGMENTS[0] as string, name: 'x' }]) {
-      const link = permalinkPath(addr, 'blob', OID, 'a.rs')
-      expect(link).toBe(pinnedHref(addr, 'blob', OID, 'a.rs'))
+      const link = permalinkPath(addr, 'blob', OID, 'a.rs', false)
+      expect(link).toBe(pinnedHref(addr, 'blob', OID, 'a.rs', false))
       expect(link).toContain(`ref=${OID}`)
     }
   })
 
+  it('keeps the canonical route for a path with a `.` or `..` segment (a browser would resolve it into another repo)', () => {
+    const path = 'src/../../../../../bob/x'
+    // As a short URL, the browser would open bob/x instead.
+    expect(route(viaShim(`/alice/project/blob/${OID}/${path}`))?.params).toMatchObject({ owner: 'bob', name: 'x' })
+    const link = permalinkPath(ALICE, 'blob', OID, path, false) as string
+    expect(route(link)).toEqual(route(pinnedHref(ALICE, 'blob', OID, path, false)))
+    expect(route(link)?.params['path']).toBe(path)
+  })
+
   it('never puts a private repo’s file name in the link', () => {
     const secret = { owner: 'bob', name: 'vault' }
+    // A private repo whose URLs are not sealed (the vault just locked): no link at all.
+    expect(permalinkPath(secret, 'blob', OID, 'plans/secret.md', true)).toBeNull()
+    expect(pinnedHref(secret, 'blob', OID, 'plans/secret.md', true)).toBeNull()
     sealRepoUrls(secret)
-    const link = permalinkPath(secret, 'blob', OID, 'plans/secret.md')
-    expect(link).not.toContain('secret.md')
-    const parsed = route(link)
-    expect(parsed?.path).toBe('/repo/blob/')
-    expect(parsed?.params['path']).toMatch(/^~[0-9a-f]{16}$/)
-    expect(parsed?.params['ref']).toMatch(/^~[0-9a-f]{16}$/)
+    for (const link of [permalinkPath(secret, 'blob', OID, 'plans/secret.md', true), pinnedHref(secret, 'blob', OID, 'plans/secret.md', true)]) {
+      expect(link).not.toContain('secret.md')
+      const parsed = route(link)
+      expect(parsed?.path).toBe('/repo/blob/')
+      expect(parsed?.params['path']).toMatch(/^~[0-9a-f]{16}$/)
+      expect(parsed?.params['ref']).toMatch(/^~[0-9a-f]{16}$/)
+    }
+  })
+
+  it('pins the repo home to the home route, so `y` keeps the README', () => {
+    expect(route(pinnedHref(ALICE, 'home', OID, '', false))).toEqual({ path: '/repo/', params: { owner: 'alice', name: 'project', ref: OID }, hash: '' })
   })
 })

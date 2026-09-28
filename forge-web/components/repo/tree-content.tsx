@@ -12,7 +12,7 @@ import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
 import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import type { RepoAddress } from '@/hooks/use-query-param'
-import { usePermalinkKey } from '@/components/repo/permalink'
+import { pinnedHref, usePermalinkKey } from '@/components/repo/permalink'
 import { FolderOpen } from 'lucide-react'
 
 async function loadDir(reader: BrowseReader, tipOid: string, path: string): Promise<TreeEntry[]> {
@@ -50,7 +50,9 @@ export function TreeContent({
         <PathBreadcrumb addr={addr} path={path} refParam={refParam} />
       </div>
       <BrowseBoundary repo={home.repo} addr={addr}>
-        {(reader, retry) => <DirBody reader={reader} retry={retry} tipOid={tipOid} path={path} addr={addr} refParam={refParam} />}
+        {(reader, retry) => (
+          <DirBody reader={reader} retry={retry} tipOid={tipOid} path={path} addr={addr} refParam={refParam} privateRepo={home.repo.visibility === 'private'} />
+        )}
       </BrowseBoundary>
     </div>
   )
@@ -63,6 +65,7 @@ function DirBody({
   path,
   addr,
   refParam,
+  privateRepo,
 }: {
   reader: BrowseReader
   retry: () => void
@@ -70,9 +73,10 @@ function DirBody({
   path: string
   addr: RepoAddress
   refParam: string
+  privateRepo: boolean
 }): JSX.Element {
   const { data, loading, error } = useAsync(() => loadDir(reader, tipOid, path), [tipOid, path])
-  usePermalinkKey(addr, 'tree', tipOid, path)
+  usePermalinkKey(pinnedHref(addr, 'tree', tipOid, path, privateRepo))
   if (loading) return <LoadingBlock label="Reading tree" />
   // A missing path is deterministic (common right after a ref switch) — no point retrying.
   if (error?.includes('path not found')) {

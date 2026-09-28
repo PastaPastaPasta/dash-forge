@@ -54,14 +54,14 @@ afterEach(() => {
 })
 
 describe('isPageShortcut (`/` to search, `y` for a permalink)', () => {
-  const field = (tagName: string): FakeEl => Object.assign(new FakeEl(tagName), { tagName, isContentEditable: false })
+  const field = (tagName: string, isContentEditable = false): EventTarget => Object.assign(new FakeEl(tagName), { tagName, isContentEditable }) as unknown as EventTarget
   const key = (k: string, more: Partial<KeyboardEvent> = {}): Parameters<typeof isPageShortcut>[0] => ({
     key: k,
     metaKey: false,
     ctrlKey: false,
     altKey: false,
     defaultPrevented: false,
-    target: field('BODY') as unknown as EventTarget,
+    target: field('BODY'),
     ...more,
   })
 
@@ -71,8 +71,8 @@ describe('isPageShortcut (`/` to search, `y` for a permalink)', () => {
   })
 
   it('leaves it to a field being typed in, a modifier chord, a handled key and an open modal', () => {
-    for (const tag of ['INPUT', 'TEXTAREA', 'SELECT']) expect(isPageShortcut(key('y', { target: field(tag) as unknown as EventTarget }), 'y')).toBe(false)
-    expect(isPageShortcut(key('y', { target: Object.assign(field('DIV'), { isContentEditable: true }) as unknown as EventTarget }), 'y')).toBe(false)
+    for (const tag of ['INPUT', 'TEXTAREA', 'SELECT']) expect(isPageShortcut(key('y', { target: field(tag) }), 'y')).toBe(false)
+    expect(isPageShortcut(key('y', { target: field('DIV', true) }), 'y')).toBe(false)
     expect(isPageShortcut(key('y', { metaKey: true }), 'y')).toBe(false)
     expect(isPageShortcut(key('y', { ctrlKey: true }), 'y')).toBe(false)
     expect(isPageShortcut(key('y', { defaultPrevented: true }), 'y')).toBe(false)
