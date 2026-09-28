@@ -392,7 +392,7 @@ async fn push_one(
     ledger.trace_cost(what, est.est_credits, traced).await;
     match pushed {
         Ok(report) => {
-            ledger.counts.add_push(&report);
+            count_push(ledger, &report, what);
             Ok(())
         }
         Err(e) => {
@@ -406,7 +406,7 @@ async fn push_one(
             // summary does not say "0 ref updates" (D-601). A re-run does not write it again
             // (git sees those refs up to date; the helper finds the pack recorded).
             if let Some(failed) = e.downcast_ref::<crate::gitsync::PushFailed>() {
-                ledger.counts.add_push(&failed.landed);
+                count_push(ledger, &failed.landed, what);
                 if failed.landed != PushReport::default() {
                     ledger.warn(format!(
                         "{what} failed after writing {} ref update(s) and {} pack(s); they \
@@ -417,6 +417,14 @@ async fn push_one(
             }
             Err(e)
         }
+    }
+}
+
+/// Count what a push wrote, and warn when it left its browse index behind (D-920).
+fn count_push(ledger: &mut Ledger<'_>, report: &PushReport, what: &str) {
+    ledger.counts.add_push(report);
+    if let Some(w) = &report.index_skipped {
+        ledger.warn(format!("{what}: {w}"));
     }
 }
 

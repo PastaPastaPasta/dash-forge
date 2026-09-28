@@ -159,15 +159,19 @@ impl ObjectLocator {
     /// The largest `packRef` any row carries — `None` for an empty locator. Lets a caller
     /// check a locator against the pack space it claims to index before trusting it.
     pub fn max_pack_ref(&self) -> Option<u16> {
-        (0..self.count)
-            .map(|i| {
-                u16::from_be_bytes(
-                    self.row(i)[OFF_PACKREF..OFF_PACKREF + 2]
-                        .try_into()
-                        .expect("fixed-width row"),
-                )
-            })
-            .max()
+        self.pack_ref_iter().max()
+    }
+
+    /// Every row's `packRef` (with repeats): the packs this locator covers, as forge-web's
+    /// `packRefsCovered` collects them to decide whether a repository reads as fully indexed.
+    pub fn pack_ref_iter(&self) -> impl Iterator<Item = u16> + '_ {
+        (0..self.count).map(|i| {
+            u16::from_be_bytes(
+                self.row(i)[OFF_PACKREF..OFF_PACKREF + 2]
+                    .try_into()
+                    .expect("fixed-width row"),
+            )
+        })
     }
 
     /// Assemble `fanout || rows` from rows already sorted ascending by OID.

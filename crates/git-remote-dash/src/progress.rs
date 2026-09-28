@@ -282,6 +282,39 @@ pub fn recorded_line(pack_hash: &str) -> (String, Value) {
     )
 }
 
+/// A push stored its pack but left the browse index behind (D-920): `dash: warning: …`.
+/// Printed whatever the verbosity and recorded in the report file, like an error, because a
+/// repository nobody can browse is not something a quiet push may hide. forge-import reads it
+/// from the event stream (`indexSkipped`) and puts it in its summary's warnings.
+/// `fix` is the command that repairs it (`dg repo reindex …` or `dg repack …`), when one does.
+pub fn index_skipped_line(why: &str, fix: Option<&str>) -> (String, Value) {
+    // `dg repo reindex` publishes the missing index. `dg repack` only rebuilds a consistent
+    // one: while the web honours no `supersedes`, a reader still merges the fragment that
+    // stopped this push, so it does not promise browsing is fixed.
+    let until = fix.map_or_else(String::new, |fix| {
+        if fix.starts_with("dg repo reindex") {
+            format!(" until `{fix}` publishes it")
+        } else if fix.starts_with("dg repack") {
+            format!("; `{fix}` rebuilds the index")
+        } else {
+            format!("; `{fix}` shows which stored copy is unreadable")
+        }
+    });
+    let message = format!(
+        "the pack was stored but its browse index was not published ({why}); the web cannot \
+         browse its commits{until}"
+    );
+    (
+        format!("dash: warning: {message}"),
+        json!({
+            "event": "indexSkipped",
+            "message": redact(&message),
+            "reason": redact(why),
+            "fix": fix,
+        }),
+    )
+}
+
 /// One ref update written on chain: `dash: updated main → 8f3e2a1`. Emitted after each
 /// `refUpdate` lands, before the push reads the refs back, so a push that fails part-way
 /// still says which refs moved (D-601).
@@ -376,6 +409,30 @@ mod tests {
             .unwrap()
             .resolve(&StorageProfiles::parse(PROFILES).unwrap())
             .unwrap()
+    }
+
+    /// D-920: a push that stored its pack without its browse index says so as a warning with
+    /// the command that fixes it, in text and as the `indexSkipped` event forge-import reads.
+    #[test]
+    fn a_skipped_index_is_a_warning_naming_the_fix() {
+        let (text, event) =
+            index_skipped_line("not listed yet", Some("dg repo reindex OwnerId/dash"));
+        assert!(
+            text.starts_with("dash: warning: the pack was stored"),
+            "{text}"
+        );
+        assert!(text.contains("`dg repo reindex OwnerId/dash`"), "{text}");
+        assert_eq!(event["event"], "indexSkipped");
+        assert_eq!(event["reason"], "not listed yet");
+        assert_eq!(event["fix"], "dg repo reindex OwnerId/dash");
+        assert_eq!(
+            format!("dash: warning: {}", event["message"].as_str().unwrap()),
+            text
+        );
+        // No command repairs it: none is named.
+        let (text, event) = index_skipped_line("listed under another kind", None);
+        assert!(!text.contains("dg "), "{text}");
+        assert!(event["fix"].is_null());
     }
 
     /// The spec §7.4 sample, line for line.

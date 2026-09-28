@@ -104,6 +104,262 @@ pub async fn repack(
     Ok(())
 }
 
+/// `dg repo reindex <repo>` — publish the browse index over the stored packs no index
+/// fragment covers. Downloads those packs (verified), indexes them locally and uploads ONE
+/// index fragment and its manifest: the packs themselves are never stored again, so it costs
+/// the index (36 bytes per object) rather than a repack's full upload (D-920).
+///
+/// Where the index goes: `--profile a,b[,platform]` (each must confirm), else Platform when the
+/// packs are stored there. `--profile` is required when they are not, and inside a clone of the
+/// repository whose storage policy names your own storage: a repository is never given a
+/// Platform index it did not ask for.
+pub async fn reindex(ctx: &Ctx, repo: &str, profile: Option<&str>) -> Result<()> {
+    let s = crate::common::Session::open_for_write(ctx, repo, "nothing published").await?;
+    let svc = RepoService::new(&s.client, &s.identity, &s.bridge);
+    let plan = svc
+        .plan_reindex(&s.repo)
+        .await
+        .context("reading the browse index")?;
+    if plan.missing.is_empty() {
+        ctx.emit(
+            json!({ "status": "indexed", "repoId": s.repo.id(), "missingPacks": 0 }),
+            || {
+                println!(
+                    "{}: every stored pack is already in the browse index; nothing to publish.",
+                    s.repo.display()
+                );
+            },
+        );
+        return Ok(());
+    }
+
+    let (external_names, platform) = reindex_targets(profile, repo, &s.repo, &plan)?;
+    let profile_targets = external_names
+        .iter()
+        .map(|n| external_profile_target(n))
+        .collect::<Result<Vec<_>>>()?;
+    let platform_target = platform.map(|name| PlatformChunkTarget::new(&svc, &s.repo, name));
+    let targets: Vec<&dyn StorageTarget> = profile_targets
+        .iter()
+        .map(|t| t as &dyn StorageTarget)
+        .chain(platform_target.as_ref().map(|t| t as &dyn StorageTarget))
+        .collect();
+    let label = external_names
+        .iter()
+        .copied()
+        .chain(platform)
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let price = dash_usd_price();
+    let index_objects = plan.index_objects();
+    let estimate = reindex_estimate(
+        index_objects,
+        s.repo.visibility == forge_core::rules::v2::Visibility::Private,
+        external_names.len() as u64,
+        platform.is_some(),
+    );
+    if !ctx.json {
+        print_reindex_plan(&s.repo, &plan, &label, &cost_line(estimate, price));
+    }
+    ctx.confirm_or_cancel(&format!(
+        "Publish the browse index of {}?",
+        s.repo.display()
+    ))?;
+    let before = s.client.get_balance(&s.identity.id()).await.ok();
+    let report = svc
+        .reindex(
+            &s.repo,
+            &plan,
+            RepackTarget::Replicated {
+                targets: &targets,
+                required: targets.len(),
+            },
+        )
+        .await
+        .context("publishing the browse index")?;
+    // A balance that cannot be read leaves the spend unknown: never the estimate, never 0.
+    let spent = match (before, &report.manifest_id) {
+        (Some(b), Some(_)) => measured_spend(&s, b).await,
+        (Some(_), None) => Some(0),
+        (None, _) => None,
+    };
+    let body = reindex_body(&s.repo, &report, spent, price);
+    if report.manifest_id.is_none() && !report.skipped.is_empty() {
+        // One document: the body with the error, not a success-shaped body and then an error.
+        let err = forge_core::user_error::UserError::new(
+            forge_core::user_error::codes::UNEXPECTED,
+            "no pack could be indexed",
+        )
+        .cause(
+            report
+                .skipped
+                .iter()
+                .map(|(h, why)| format!("{h}: {why}"))
+                .collect::<Vec<_>>()
+                .join("; "),
+        );
+        if !ctx.json {
+            print_reindex(&s.repo, &report, spent, price);
+        }
+        return Err(crate::errors::reported(err, body));
+    }
+    ctx.emit(body, || print_reindex(&s.repo, &report, spent, price));
+    Ok(())
+}
+
+/// What `dg repo reindex` is about to do, and its price, before the prompt.
+fn print_reindex_plan(
+    handle: &forge_core::scope::RepoRef,
+    plan: &forge_core::repo::ReindexPlan,
+    label: &str,
+    price: &str,
+) {
+    let missing_bytes: u64 = plan.missing.iter().map(|p| p.size_bytes).sum();
+    println!(
+        "Reindex {}: {} pack(s) without a browse index ({missing_bytes} bytes, read not \
+         re-uploaded)",
+        handle.display(),
+        plan.missing.len()
+    );
+    println!(
+        "  uploads one index fragment over {} objects{} to {label} + its manifest   {price}",
+        plan.index_objects(),
+        if plan.fold() {
+            " (folding the live fragments in)"
+        } else {
+            ""
+        },
+    );
+}
+
+/// Credits spent since `before`, read until the balance moves (a node a block behind still
+/// shows the old one); `None` when the balance cannot be read.
+async fn measured_spend(s: &crate::common::Session, before: u64) -> Option<u64> {
+    // A manifest was paid for, so a balance that has not moved is a node a block behind, not
+    // a free write: unknown, not 0.
+    for _ in 0..4 {
+        if let Ok(after) = s.client.get_balance(&s.identity.id()).await {
+            if after < before {
+                return Some(before - after);
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    }
+    None
+}
+
+/// Where `dg repo reindex` stores the index: `--profile`, else this clone's storage policy
+/// (inside a clone of `repo`), else Platform when the packs are stored there. Returns the
+/// external profile names and the Platform profile (if any).
+fn reindex_targets<'a>(
+    profile: Option<&'a str>,
+    asked: &str,
+    repo: &forge_core::scope::RepoRef,
+    plan: &forge_core::repo::ReindexPlan,
+) -> Result<(Vec<&'a str>, Option<&'a str>)> {
+    if let Some(list) = profile {
+        let names = profile_list(list)?;
+        let (external, platform) = split_platform(&names)?;
+        for name in &external {
+            refuse_unpublishable_profile(name, "nothing published")?;
+        }
+        return Ok((external, platform));
+    }
+    let owner_label = asked.split_once('/').map_or(asked, |(o, _)| o);
+    if crate::storage::dash_remote_is(repo, owner_label) {
+        let policy = crate::storage::push_policy()?;
+        if !policy.external.is_empty() {
+            return Err(crate::errors::usage(format!(
+                "this clone stores packs on {}; pass the same storage as --profile \
+                 (e.g. `--profile {}`) so the index goes where the packs are",
+                policy.target_names().join(", "),
+                policy.target_names().join(",")
+            )));
+        }
+    }
+    if plan.packs_on_platform() {
+        return Ok((Vec::new(), Some(forge_core::storage::PLATFORM_PROFILE)));
+    }
+    Err(crate::errors::usage(
+        "the packs of this repository are not stored on Platform; name the storage the \
+         index goes to with --profile <name>[,<name>…] (see `dg storage list`)",
+    ))
+}
+
+/// The on-chain price of a reindex: one index fragment's chunks when Platform stores it, and
+/// its manifest with each external target's URIs, as a push prices the same (an upper bound).
+fn reindex_estimate(
+    index_objects: u64,
+    sealed: bool,
+    external_targets: u64,
+    platform: bool,
+) -> u64 {
+    use forge_core::cost::push_fees::{index_chunks, MANIFEST_FIRST, URIS_PER_TARGET};
+    let chunks = if platform {
+        index_chunks(index_objects, sealed)
+    } else {
+        0
+    };
+    chunks + MANIFEST_FIRST + URIS_PER_TARGET * external_targets
+}
+
+/// The `--json` body of a finished reindex. `spent` is `None` when the balance could not be
+/// read.
+fn reindex_body(
+    handle: &forge_core::scope::RepoRef,
+    report: &forge_core::repo::ReindexReport,
+    spent: Option<u64>,
+    price: f64,
+) -> serde_json::Value {
+    let skipped: Vec<_> = report
+        .skipped
+        .iter()
+        .map(|(h, why)| json!({ "packHash": h, "reason": why }))
+        .collect();
+    json!({
+        "status": if report.manifest_id.is_some() { "reindexed" } else { "unchanged" },
+        "repoId": handle.id(),
+        "indexedPacks": report.indexed.len(),
+        "indexObjects": report.index_objects,
+        "skipped": skipped,
+        "locatorManifestId": report.manifest_id,
+        "cost": spent.map(|c| crate::fmt::cost_json(c, price)),
+    })
+}
+
+/// Print a finished reindex for a person.
+fn print_reindex(
+    handle: &forge_core::scope::RepoRef,
+    report: &forge_core::repo::ReindexReport,
+    spent: Option<u64>,
+    price: f64,
+) {
+    match &report.manifest_id {
+        Some(id) => {
+            println!(
+                "Published the browse index of {}: {} object(s) over {} pack(s).",
+                handle.display(),
+                report.index_objects,
+                report.indexed.len()
+            );
+            println!("  index manifest:  {id}");
+        }
+        None => println!(
+            "Nothing published for {}: an index published meanwhile covers the packs, \
+             or none could be indexed.",
+            handle.display()
+        ),
+    }
+    for (h, why) in &report.skipped {
+        println!("  not indexed:     {h}: {why}");
+    }
+    match spent {
+        Some(c) => println!("  cost:            {}", cost_line(c, price)),
+        None => println!("  cost:            unknown (the balance could not be read)"),
+    }
+}
+
 /// Print (or `--json`-emit) a finished repack.
 fn emit_repack_report(
     ctx: &Ctx,
@@ -552,6 +808,22 @@ fn build_external_backend(backend: Option<Backend>) -> Result<Option<Box<dyn Pac
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Review finding: a reindex onto the owner's storage pays no Platform chunks, only the
+    /// manifest and its URIs; onto Platform it pays the index chunks (about 3.3 DASH for
+    /// dashpay/dash's 268,015 objects), sealed a little more for a private repository.
+    #[test]
+    fn a_reindex_is_priced_for_where_the_index_goes() {
+        use forge_core::cost::push_fees::{MANIFEST_FIRST, URIS_PER_TARGET};
+        let byo = reindex_estimate(268_015, false, 2, false);
+        assert_eq!(byo, MANIFEST_FIRST + 2 * URIS_PER_TARGET);
+        let chain = reindex_estimate(268_015, false, 0, true);
+        assert!(
+            (320_000_000_000..350_000_000_000).contains(&chain),
+            "{chain}"
+        );
+        assert!(reindex_estimate(268_015, true, 0, true) > chain);
+    }
 
     #[test]
     fn profile_lists_refuse_empty_and_repeated_names() {
