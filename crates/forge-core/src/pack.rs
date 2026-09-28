@@ -26,6 +26,7 @@
 
 pub mod build;
 pub mod flatindex;
+pub mod fsck;
 pub mod locator;
 pub mod manifest;
 pub mod parse;
@@ -33,7 +34,7 @@ pub mod parse;
 #[cfg(test)]
 mod gittests;
 
-pub use build::{build_pack, ensure_safe_rev, repack_all, repack_from_packs, Pack};
+pub use build::{build_pack, ensure_safe_rev, repack_all, repack_from_packs, run_feeding, Pack};
 pub use flatindex::{FlatEntry, FlatIndex, MODE_GITLINK};
 pub use locator::{
     LocatorEntry, ObjectLocator, FANOUT_LEN, LOCATOR_ROW_LEN, SPAN_SENTINEL,

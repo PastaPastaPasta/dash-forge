@@ -737,11 +737,14 @@ fn index_fetched(
                 .into(),
         }
     };
+    // `.gitmodules` blobs a pack's trees name but a later pack holds: checked once all are in.
+    let mut unchecked = Vec::new();
     if let Some(filter) = options.filter.as_deref() {
         let scratch = ScratchRepo::init()?;
         for bytes in &downloaded {
-            scratch.index_pack(bytes)?;
+            unchecked.extend(scratch.index_pack(bytes)?.unchecked);
         }
+        scratch.check_blobs(&unchecked)?;
         if want_oids.is_empty() {
             return Ok(());
         }
@@ -753,15 +756,17 @@ fn index_fetched(
             }
             Err(e) => return Err(e),
         };
-        let sha = LocalRepo::index_pack(&filtered)?;
+        let sha = LocalRepo::index_pack(&filtered)?.sha;
         LocalRepo::write_promisor_marker(&sha)?;
         tracing::info!(filter, pack = %sha, "indexed filtered promisor pack");
         return Ok(());
     }
     for bytes in &downloaded {
-        let sha = LocalRepo::index_pack(bytes)?;
-        tracing::info!(pack = %sha, "indexed pack into local odb");
+        let indexed = LocalRepo::index_pack(bytes)?;
+        tracing::info!(pack = %indexed.sha, "indexed pack into local odb");
+        unchecked.extend(indexed.unchecked);
     }
+    LocalRepo::check_blobs(&unchecked)?;
     if set_aside && !want_oids.is_empty() && LocalRepo::history_has_gaps(want_oids) {
         return Err(incomplete());
     }

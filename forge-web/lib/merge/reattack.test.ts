@@ -299,16 +299,17 @@ describe('fsck parity on every new object, fast-forwards included', () => {
     expect(await verdict(s, m, head)).toBe('fast-forward')
   }, 120_000)
 
-  it('L1: a date git cannot hold (over 2^63 - 1)', async () => {
+  it('L1: a date git cannot hold (over 2^63 - 1) is a warning, as for git clone: it merges', async () => {
+    // badDateOverflow is relaxed with the other author/committer-line checks
+    // (crates/forge-core/src/pack/fsck.rs): the date is display metadata, and the walks read
+    // it as a number that only orders commits.
     const s = new Store()
     const base = s.commit(s.files({ 'a.txt': 'a\n' }))
     const t = s.files({ 'a.txt': 'b\n' })
-    for (const date of ['9223372036854775808', '99999999999999999999']) {
-      const head = rawCommit(s, `tree ${t}\nparent ${base}\nauthor A <a@b> ${date} +0000\ncommitter ${ID}\n\nm\n`)
-      expect(await verdict(s, base, head), date).toBe('malformed')
+    for (const date of ['9223372036854775807', '9223372036854775808', '99999999999999999999']) {
+      const head = rawCommit(s, `tree ${t}\nparent ${base}\nauthor A <a@b> ${date} +0000\ncommitter A <a@b> ${date} +0000\n\nm\n`)
+      expect(await verdict(s, base, head), date).toBe('fast-forward')
     }
-    const max = rawCommit(s, `tree ${t}\nparent ${base}\nauthor A <a@b> 9223372036854775807 +0000\ncommitter ${ID}\n\nm\n`)
-    expect(await verdict(s, base, max)).toBe('fast-forward')
   })
 
   it('a NUL byte anywhere in a commit, the message included (nulInCommit)', async () => {

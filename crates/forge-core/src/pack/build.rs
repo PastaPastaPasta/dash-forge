@@ -164,13 +164,20 @@ pub fn build_pack(repo: &Path, want_tips: &[&str], have_bases: &[&str]) -> Resul
 }
 
 /// Candidate 1: the push delta packed non-thin, so no external base is ever referenced.
+///
+/// Its every object is checked as the helper checks a fetch ([`super::fsck::push_checks`]):
+/// a history no clone would take (a `.git` look-alike, a hostile `.gitmodules`, a corrupt tree)
+/// is refused here, as E511, before anything is stored or paid for. This candidate is always
+/// built, and is indexed in `repo` itself, so every blob a check reads (a `.gitmodules` the
+/// push does not change) is at hand. Candidate 2 holds the same new objects plus bases the
+/// remote already has.
 fn build_direct(repo: &Path, revs: &str) -> Result<Pack> {
     let bytes = git_capture(
         repo,
         &["pack-objects", "--revs", "--stdout", "--delta-base-offset"],
         Some(revs.as_bytes()),
     )?;
-    index_pack_bytes(repo, &bytes)
+    index_pack_bytes(repo, &bytes, super::fsck::push_checks())
 }
 
 /// Candidate 2: thin pack → `--fix-thin` completion → re-emit the completed object set
@@ -228,26 +235,28 @@ fn build_completed_reordered(repo: &Path, revs: &str) -> Result<Pack> {
         &["pack-objects", "--stdout", "--delta-base-offset"],
         Some(oids.as_bytes()),
     )?;
-    index_pack_bytes(&odb, &bytes)
+    index_pack_bytes(&odb, &bytes, None)
 }
 
 /// Index a packfile into a scratch `.pack`/`.idx` pair and parse it. `repo` is only the cwd
-/// `index-pack` needs for the object-format config; the repo's odb is untouched.
-fn index_pack_bytes(repo: &Path, bytes: &[u8]) -> Result<Pack> {
+/// `index-pack` needs for the object-format config (and, with `checks`, the odb its object
+/// checks read blobs the pack does not carry from); the repo's odb is untouched. `checks`: an
+/// `index-pack` object-check argument.
+fn index_pack_bytes(repo: &Path, bytes: &[u8], checks: Option<&str>) -> Result<Pack> {
     let scratch = Scratch::new()?;
     let pack_path = scratch.dir.join("out.pack");
     let idx_path = scratch.dir.join("out.idx");
-    git_capture(
-        repo,
-        &[
-            "index-pack",
-            "--stdin",
-            "-o",
-            &idx_path.to_string_lossy(),
-            &pack_path.to_string_lossy(),
-        ],
-        Some(bytes),
-    )?;
+    let (idx, pack) = (idx_path.to_string_lossy(), pack_path.to_string_lossy());
+    let mut args = vec!["index-pack", "--stdin"];
+    args.extend(checks);
+    args.extend(["-o", &idx, &pack]);
+    let out = git_output(repo, &args, Some(bytes))?;
+    if !out.status.success() {
+        // An object git's checks refused (only a checking index-pack reports one): a push.
+        let refused =
+            checks.and_then(|_| super::fsck::refused(&String::from_utf8_lossy(&out.stderr), true));
+        return Err(refused.map_or_else(|| git_failed(&args, &out.stderr), Error::from));
+    }
     Pack::from_files(&pack_path, &idx_path)
 }
 
@@ -382,37 +391,64 @@ fn git_at(cwd: &Path, args: &[&str]) -> Command {
     cmd
 }
 
-/// Run `git -C <cwd> <args>` feeding `stdin`, returning captured stdout on success. The
-/// repository is exactly `cwd` — inherited repo-location variables are cleared.
-pub(super) fn git_capture(cwd: &Path, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
-    let mut cmd = git_at(cwd, args);
+/// Run `cmd` with `stdin` fed to it, capturing stdout and stderr: the output, and how writing
+/// stdin went. stdin is written from its own thread while this one drains stdout and stderr,
+/// so a child that writes a lot before it has read all its input (index-pack printing a line
+/// per object it warns about) cannot fill a pipe and deadlock with us. A child that stops
+/// reading early breaks the pipe; its exit status and stderr are then the real answer, so the
+/// write result is returned apart rather than as the error.
+pub fn run_feeding(
+    cmd: &mut Command,
+    stdin: Option<&[u8]>,
+) -> std::io::Result<(std::process::Output, std::io::Result<()>)> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.stdin(if stdin.is_some() {
         Stdio::piped()
     } else {
         Stdio::null()
     });
+    let mut child = cmd.spawn()?;
+    let pipe = child.stdin.take();
+    std::thread::scope(|s| {
+        // The pipe is dropped (closed) when the writer is done, so the child sees EOF.
+        let writer = s.spawn(move || match (pipe, stdin) {
+            (Some(mut pipe), Some(data)) => pipe.write_all(data),
+            _ => Ok(()),
+        });
+        let out = child.wait_with_output();
+        let written = writer
+            .join()
+            .unwrap_or_else(|_| Err(std::io::Error::other("the stdin writer panicked")));
+        Ok((out?, written))
+    })
+}
 
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| Error::Io(format!("spawn git: {e}")))?;
-    if let Some(data) = stdin {
-        child
-            .stdin
-            .take()
-            .ok_or_else(|| Error::Io("git stdin unavailable".into()))?
-            .write_all(data)
-            .map_err(|e| Error::Io(format!("write git stdin: {e}")))?;
+/// `git -C <cwd> <args>` fed `stdin`: its output, whether it succeeded or not. A stdin write
+/// error is only an error when git itself succeeded (see [`run_feeding`]).
+fn git_output(cwd: &Path, args: &[&str], stdin: Option<&[u8]>) -> Result<std::process::Output> {
+    let (out, written) = run_feeding(&mut git_at(cwd, args), stdin)
+        .map_err(|e| Error::Io(format!("running git: {e}")))?;
+    if out.status.success() {
+        written.map_err(|e| Error::Io(format!("write git stdin: {e}")))?;
     }
-    let out = child
-        .wait_with_output()
-        .map_err(|e| Error::Io(format!("wait git: {e}")))?;
+    Ok(out)
+}
+
+/// A failed `git <args>`, with its stderr.
+fn git_failed(args: &[&str], stderr: &[u8]) -> Error {
+    Error::Io(format!(
+        "git {} failed: {}",
+        args.first().copied().unwrap_or_default(),
+        String::from_utf8_lossy(stderr).trim()
+    ))
+}
+
+/// Run `git -C <cwd> <args>` feeding `stdin`, returning captured stdout on success. The
+/// repository is exactly `cwd` — inherited repo-location variables are cleared.
+pub(super) fn git_capture(cwd: &Path, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+    let out = git_output(cwd, args, stdin)?;
     if !out.status.success() {
-        return Err(Error::Io(format!(
-            "git {} failed: {}",
-            args.first().copied().unwrap_or_default(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
+        return Err(git_failed(args, &out.stderr));
     }
     Ok(out.stdout)
 }
@@ -425,10 +461,15 @@ struct Scratch {
 
 impl Scratch {
     fn new() -> Result<Self> {
+        // The clock alone is not unique: macOS ticks in microseconds, and two threads (tests
+        // run in parallel) can ask in the same tick.
+        static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
-        let dir = std::env::temp_dir().join(format!("forge-pack-{}-{}", std::process::id(), nanos));
+        let dir =
+            std::env::temp_dir().join(format!("forge-pack-{}-{nanos}-{seq}", std::process::id()));
         fs::create_dir_all(&dir).map_err(|e| Error::Io(e.to_string()))?;
         // Transient packfile bytes should not be world-readable.
         #[cfg(unix)]

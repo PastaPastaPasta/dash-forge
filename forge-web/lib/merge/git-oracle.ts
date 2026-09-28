@@ -31,13 +31,19 @@ export function writeLiterally(dir: string, objects: Iterable<GitObject>): void 
   }
 }
 
+/** `-c fsck.<id>=ignore` for each of `relaxed`: git's checks with those demoted. */
+function relaxing(relaxed: readonly string[]): string[] {
+  return relaxed.flatMap((id) => ['-c', `fsck.${id}=ignore`])
+}
+
 /**
  * The oids `git fsck --strict` reports an error or warning for, among the loose objects of
- * `dir` (every object, reachable or not), or null without git.
+ * `dir` (every object, reachable or not), or null without git. `relaxed`: msg-ids git is told
+ * to ignore (`-c fsck.<id>=ignore`), every other check at `--strict` severity.
  */
-export function gitStrictRejects(dir: string): Set<string> | null {
+export function gitStrictRejects(dir: string, relaxed: readonly string[] = []): Set<string> | null {
   if (!HAVE_GIT) return null
-  const r = spawnSync('git', ['fsck', '--strict', '--no-dangling', '--no-progress', '--unreachable'], { cwd: dir, maxBuffer: 1 << 26 })
+  const r = spawnSync('git', [...relaxing(relaxed), 'fsck', '--strict', '--no-dangling', '--no-progress', '--unreachable'], { cwd: dir, maxBuffer: 1 << 26 })
   const out = new Set<string>()
   for (const line of `${r.stdout.toString()}\n${r.stderr.toString()}`.split('\n')) {
     const m = /^(?:error|warning) in (?:commit|tree|blob|tag) ([0-9a-f]{40})/.exec(line)
@@ -78,10 +84,10 @@ export function gitMergeTrees(dir: string, pairs: readonly (readonly [string, st
 
 /**
  * Write `objects` into a scratch repository (literally, so git's checks run afterwards, not on
- * the way in), point `main` at `tip`, and report whether `git fsck --strict`, `git log` and a
- * `git clone` of it all succeed. Null without git.
+ * the way in), point `main` at `tip`, and report whether `git fsck --strict` (with the
+ * `relaxed` msg-ids ignored), `git log` and a `git clone` of it all succeed. Null without git.
  */
-export function gitAcceptsHistory(objects: Iterable<GitObject>, tip: string): { fsck: boolean; log: boolean; clone: boolean } | null {
+export function gitAcceptsHistory(objects: Iterable<GitObject>, tip: string, relaxed: readonly string[] = []): { fsck: boolean; log: boolean; clone: boolean } | null {
   if (!HAVE_GIT) return null
   const { dir, done } = scratchRepo()
   try {
@@ -90,7 +96,7 @@ export function gitAcceptsHistory(objects: Iterable<GitObject>, tip: string): { 
     const ok = (args: string[], cwd = dir): boolean => spawnSync('git', args, { cwd, stdio: 'ignore' }).status === 0
     const clone = join(dir, '..', `${dir.split('/').pop() as string}-clone`)
     const result = {
-      fsck: ok(['fsck', '--strict', '--no-dangling']),
+      fsck: ok([...relaxing(relaxed), 'fsck', '--strict', '--no-dangling']),
       log: ok(['log', '--format=%H', 'main']),
       clone: ok(['clone', '-q', `file://${dir}`, clone], tmpdir()),
     }

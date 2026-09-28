@@ -208,6 +208,13 @@ export async function mergeTrees(
   return { kind: 'merged', oid: root, written }
 }
 
+/**
+ * An ident line git's checks accept with none relaxed (`fsck_ident`): no stray `<`/`>`, one
+ * space before the email and the date, a date without leading zeros, a `±hhmm` zone. History
+ * the merge reads may break these (they are warnings, as for `git clone`); what it writes may not.
+ */
+const STRICT_IDENT = /^[^<>\n]* <[^<>\n]*> (0|[1-9]\d{0,17}) [+-]\d{4}$/
+
 /** `Name <email> <seconds> <±hhmm>` for a git commit header. */
 function identLine(who: MergeIdentity): string {
   const when = who.timestamp ?? Math.floor(Date.now() / 1000)
@@ -216,7 +223,11 @@ function identLine(who: MergeIdentity): string {
   const east = -offset
   const abs = Math.abs(east)
   const tz = `${east < 0 ? '-' : '+'}${String(Math.floor(abs / 60)).padStart(2, '0')}${String(abs % 60).padStart(2, '0')}`
-  return `${who.name} <${who.email}> ${when} ${tz}`
+  const line = `${who.name} <${who.email}> ${when} ${tz}`
+  if (!STRICT_IDENT.test(line)) {
+    throw new MalformedObjectError('0'.repeat(40), `the merge identity ${JSON.stringify(line)} is not one git accepts`)
+  }
+  return line
 }
 
 /**
