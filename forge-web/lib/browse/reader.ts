@@ -352,8 +352,7 @@ export class BrowseReader {
       const { type, size } = parseObjHeader(head, 0)
       // A delta's header gives the delta's own size, which is bounded differently.
       const isDelta = type === PACK_TYPE.OFS_DELTA || type === PACK_TYPE.REF_DELTA
-      const limit = isDelta ? deltaMaxBytes(maxBytes) : maxBytes
-      if (size > limit) throw new ObjectTooLargeError(size, limit)
+      if (size > (isDelta ? deltaMaxBytes(maxBytes) : maxBytes)) throw new ObjectTooLargeError(size, maxBytes)
     }
     return this.packs.fetchRange(e.packRef, e.offset, e.offset + e.length, copy)
   }

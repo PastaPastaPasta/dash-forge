@@ -403,18 +403,17 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
     const after = at(to)
     const left = leftFlanking(before, after)
     const right = leftFlanking(after, before)
+    // `_` also may not open or close inside a word (`snake_case_name`).
+    const canOpen = ch === '*' ? left : left && (!right || isPunctuation(before))
+    const canClose = ch === '*' ? right : right && (!left || isPunctuation(after))
+    if (!canOpen && !canClose) {
+      add(src.slice(from, to)) // can never pair: plain text, in the text around it
+      return
+    }
     flush()
-    delims.push({
-      item: out.length,
-      ch,
-      orig: to - from,
-      count: to - from,
-      // `_` also may not open or close inside a word (`snake_case_name`).
-      canOpen: ch === '*' ? left : left && (!right || isPunctuation(before)),
-      canClose: ch === '*' ? right : right && (!left || isPunctuation(after)),
-    })
-    // Not counted against the node budget: an unpaired run is merged back into its text.
+    delims.push({ item: out.length, ch, orig: to - from, count: to - from, canOpen, canClose })
     out.push({ t: 'text', v: src.slice(from, to) })
+    nodesLeft -= 1
   }
   /**
    * Whether `src[from..to)` holds a `[` that is not backslash-escaped. Each step is a binary
@@ -652,6 +651,19 @@ function leftFlanking(before: string | undefined, after: string | undefined): bo
   return !isWhitespace(after) && (!isPunctuation(after) || isWhitespace(before) || isPunctuation(before))
 }
 
+/** Depth of an inline node's subtree (text 0, a leaf span 1), computed once per node. */
+const inlineDepths = new WeakMap<Inline, number>()
+function inlineDepth(n: Inline): number {
+  if (n.t === 'text') return 0
+  let d = inlineDepths.get(n)
+  if (d === undefined) {
+    d = 1
+    if ('c' in n) for (const child of n.c) d = Math.max(d, 1 + inlineDepth(child))
+    inlineDepths.set(n, d)
+  }
+  return d
+}
+
 /**
  * CommonMark's "process emphasis" (appendix A of the spec): pair `*` / `_` runs into em and
  * strong nodes, closers left to right, each looking back for the nearest opener it may pair
@@ -659,8 +671,10 @@ function leftFlanking(before: string | undefined, after: string | undefined): bo
  * search already looked, so the whole pass is linear. Nodes are kept in a linked list, and a
  * pairing moves what lies between into the new node once.
  *
- * Emphasis nests at most `maxNest` deep: past that (a hostile `****…x****…`), pairing stops
- * and the remaining runs stay text.
+ * The result is at most `maxNest` deep, counting every span: a pairing that would go deeper
+ * (a hostile `****…x****…`) is skipped, and no later closer pairs with an opener before it
+ * (`floor`), which keeps the pass linear. A pairing is charged to the node budget exactly: one
+ * new node, less the delimiter runs it uses up; one that frees nodes is made even past it.
  */
 function processEmphasis(items: Inline[], delims: readonly Delim[], maxNest: number): Inline[] {
   const nodes: Inline[] = items.slice()
@@ -678,20 +692,20 @@ function processEmphasis(items: Inline[], delims: readonly Delim[], maxNest: num
     if (dPrev[d] !== -1) dNext[dPrev[d] as number] = dNext[d] as number
     if (dNext[d] !== -1) dPrev[dNext[d] as number] = dPrev[d] as number
   }
-  /** Emphasis nesting of the nodes this pass made (other nodes count as 0). */
-  const nest = new Map<Inline, number>()
   /** openers_bottom: per closer kind, the delimiter index a search need not go below. */
   const bottoms = new Map<string, number>()
 
+  /** Openers at or before this delimiter can no longer pair (a pairing there was too deep). */
+  let floor = -1
   let closer = delims.length > 0 ? 0 : -1
-  while (closer !== -1 && nodesLeft > 0) {
+  while (closer !== -1) {
     const c = delims[closer] as Delim
     if (!c.canClose) {
       closer = dNext[closer] as number
       continue
     }
     const kind = `${c.ch}${c.canOpen ? 1 : 0}${c.orig % 3}`
-    const bottom = bottoms.get(kind) ?? -1
+    const bottom = Math.max(bottoms.get(kind) ?? -1, floor)
     let opener = dPrev[closer] as number
     for (; opener > bottom; opener = dPrev[opener] as number) {
       const o = delims[opener] as Delim
@@ -709,15 +723,22 @@ function processEmphasis(items: Inline[], delims: readonly Delim[], maxNest: num
     }
     const o = delims[opener] as Delim
     const use = c.count >= 2 && o.count >= 2 ? 2 : 1
+    // One new node, less the runs this uses up (their text nodes go).
+    const cost = 1 - (o.count === use ? 1 : 0) - (c.count === use ? 1 : 0)
     // What lies between the two runs becomes the new node's children.
     const children: Inline[] = []
     let depthIn = 0
     for (let k = next[o.item] as number; k !== c.item; k = next[k] as number) {
       const node = nodes[k] as Inline
       children.push(node)
-      depthIn = Math.max(depthIn, nest.get(node) ?? 0)
+      depthIn = Math.max(depthIn, inlineDepth(node))
     }
-    if (depthIn + 1 > maxNest) break // too deep: the rest stays text
+    if (depthIn + 1 > maxNest || (nodesLeft <= 0 && cost > 0)) {
+      // Too deep, or no budget left: this closer stays text, and nothing before it pairs.
+      floor = closer
+      closer = dNext[closer] as number
+      continue
+    }
     o.count -= use
     c.count -= use
     nodes[o.item] = { t: 'text', v: o.ch.repeat(o.count) }
@@ -725,8 +746,7 @@ function processEmphasis(items: Inline[], delims: readonly Delim[], maxNest: num
     // GitHub's cmark-gfm does not nest strong directly in strong (`****foo****` is one strong).
     const flat = use === 2 ? children.flatMap((n) => (n.t === 'strong' ? n.c : [n])) : children
     const emph: Inline = { t: use === 2 ? 'strong' : 'em', c: mergeText(flat) }
-    nest.set(emph, depthIn + 1)
-    nodesLeft -= 1
+    nodesLeft -= cost
     const k = nodes.length
     nodes.push(emph)
     next.push(c.item)

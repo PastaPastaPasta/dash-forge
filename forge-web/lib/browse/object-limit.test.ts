@@ -190,7 +190,9 @@ describe('object size limit', () => {
     const entry = reader.locate(oids['d.png'] as string)
     expect(entry?.length).toBeGreaterThan(1024 * 1.001 + 64)
     const before = fetched.length
-    await expect(reader.readObject(oids['d.png'] as string, { maxBytes: 1024 })).rejects.toBeInstanceOf(ObjectTooLargeError)
+    const err = await reader.readObject(oids['d.png'] as string, { maxBytes: 1024 }).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ObjectTooLargeError)
+    expect((err as ObjectTooLargeError).maxBytes).toBe(1024) // the caller's limit, not the delta bound
     // The delta's entry was read for its header only, never whole.
     const ofDelta = fetched.slice(before).filter(([a]) => a === entry?.offset)
     expect(ofDelta.length).toBeGreaterThan(0)

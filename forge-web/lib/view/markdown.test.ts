@@ -229,7 +229,24 @@ describe('parseMarkdown node budget (SR-01)', () => {
     const last = para.c[para.c.length - 1]
     expect(last?.t).toBe('text')
     expect(last?.t === 'text' && last.v.endsWith('*x* *x*')).toBe(true)
-    expect(countNodes(blocks)).toBeLessThan(MARKDOWN_MAX_NODES * 2.5)
+    expect(countNodes(blocks)).toBeLessThanOrEqual(MARKDOWN_MAX_NODES + 2)
+    // The prefix before the cut keeps its emphasis.
+    expect(para.c.filter((n) => n.t === 'em').length).toBeGreaterThan(MARKDOWN_MAX_NODES / 8)
+  })
+
+  it('charges runs that can never pair as text, not as nodes', () => {
+    expect(countNodes(parseMarkdown('snake_case_name and my__var__name'))).toBe(2)
+    // 30,000 snake_case words spend none of the budget, so emphasis after them still renders.
+    const [p] = parseMarkdown('a_b '.repeat(30_000) + '*after*')
+    expect(p?.t === 'paragraph' && p.c[p.c.length - 1]).toEqual({ t: 'em', c: [{ t: 'text', v: 'after' }] })
+  })
+
+  it('bounds the inline tree\'s depth, and keeps pairing after a too-deep nest', () => {
+    const depth = (ns: readonly Inline[]): number => ns.reduce((d, n) => Math.max(d, 'c' in n ? 1 + depth(n.c) : 0), 0)
+    const nested = parseMarkdown('*a **b '.repeat(300) + 'x' + '** c*'.repeat(300))[0]
+    expect(nested?.t === 'paragraph' && depth(nested.c)).toBeLessThanOrEqual(33)
+    const later = parseMarkdown('*a '.repeat(40) + 'x' + ' b*'.repeat(40) + ' then *later em*')[0]
+    expect(later?.t === 'paragraph' && later.c[later.c.length - 1]).toEqual({ t: 'em', c: [{ t: 'text', v: 'later em' }] })
   })
 
   it('bounds blocks, list items and table rows the same way', () => {

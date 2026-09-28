@@ -141,7 +141,8 @@ export function inflateZlib(buf: Uint8Array, from: number, expected: number, max
   const out = new Uint8Array(expected)
   let got = 0
   // windowBits 15: zlib only (no gzip or raw-deflate detection).
-  const inflater = new Inflate({ chunkSize: INFLATE_CHUNK, windowBits: 15 })
+  // A small object needs no 64 KiB output chunk (one past `expected` still catches an overrun).
+  const inflater = new Inflate({ chunkSize: Math.min(INFLATE_CHUNK, expected + 1), windowBits: 15 })
   inflater.onData = (chunk: Uint8Array) => {
     if (got + chunk.length > expected) throw new Error('inflate size mismatch')
     out.set(chunk, got)
