@@ -9,8 +9,11 @@
  * node's serialized error into its own text, and the wasm error's `code` is -1. The result
  * wait's verdict carries the node's own numeric code, which is right. The protocol version
  * cannot tell the orders apart (beta.5 and beta.6 both run protocol 14), and every network
- * this app talks to uses the restored order, so the remap is keyed on the SDK: it applies while
- * {@link PINNED_WASM_SDK} is a 4.2 prerelease older than beta.6.
+ * this app talks to uses the restored order, so the remap is keyed on the SDK: it applies only
+ * while {@link PINNED_WASM_SDK} is exactly 4.2.0-beta.5, the version the table was measured
+ * against. A node still on 4.2.0-beta.5 (or an earlier 4.2 beta) would share the SDK's order,
+ * and the remap would then mislabel its refusals; no network this app reads runs one (moutai is
+ * on beta.6, testnet and mainnet on 4.1).
  *
  * The table is generated from `packages/rs-dpp/src/errors/consensus/basic/basic_error.rs` at
  * v4.2.0-beta.5 and v4.2.0-beta.6 with `codes.rs` (the two positions without a code are left
@@ -37,13 +40,8 @@ const SHIFTED: ReadonlyArray<readonly [number, number]> = [
   [11000, 11001], [11001, 10421], [10421, 10422], [10422, 10828],
 ]
 
-/** Whether an SDK of `version` decodes with the pre-#5053 order (4.2.0-beta.1 to beta.5). */
-export function decodesShifted(version: string): boolean {
-  const m = /^4\.2\.0-beta\.(\d+)$/.exec(version)
-  return m !== null && Number(m[1]) <= 5
-}
-
-const TRUE_CODE: ReadonlyMap<number, number> = decodesShifted(PINNED_WASM_SDK) ? new Map(SHIFTED) : new Map()
+/** The table holds for exactly the SDK it was measured against. */
+const TRUE_CODE: ReadonlyMap<number, number> = PINNED_WASM_SDK === '4.2.0-beta.5' ? new Map(SHIFTED) : new Map()
 
 /** The code the node sent, given the code whose text the pinned SDK rendered for it. */
 export function trueCodeOf(decoded: number): number {

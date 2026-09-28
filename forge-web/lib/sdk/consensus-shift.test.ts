@@ -2,8 +2,8 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import { decodesShifted, PINNED_WASM_SDK, trueCodeOf } from './consensus-shift'
-import { asConsensusRefusal } from './write'
+import { PINNED_WASM_SDK, trueCodeOf } from './consensus-shift'
+import { asConsensusRefusal, ConsensusRefusal, UNREADABLE_REFUSAL_CODE } from './write'
 import { writeFailure } from '../view/write-errors'
 
 /** A CheckTx refusal as the pinned SDK hands it over: its own decoded text, code -1. */
@@ -25,14 +25,6 @@ describe('platform#5053: the pinned SDK decodes a beta.6 error one variant off',
   it('pins the same wasm-sdk as package.json, so the remap is dropped with the bump', () => {
     const pkg = JSON.parse(readFileSync(join(__dirname, '../../package.json'), 'utf8')) as { dependencies: Record<string, string> }
     expect(pkg.dependencies['@dashevo/wasm-sdk']).toBe(PINNED_WASM_SDK)
-  })
-
-  it('applies only to 4.2 betas before beta.6', () => {
-    expect(decodesShifted('4.2.0-beta.4')).toBe(true)
-    expect(decodesShifted('4.2.0-beta.5')).toBe(true)
-    expect(decodesShifted('4.2.0-beta.6')).toBe(false)
-    expect(decodesShifted('4.2.0')).toBe(false)
-    expect(decodesShifted('4.1.1')).toBe(false)
   })
 
   it('maps each decoded code back to the one the node sent, one to one', () => {
@@ -61,9 +53,18 @@ describe('platform#5053: the pinned SDK decodes a beta.6 error one variant off',
     expect(writeFailure(asConsensusRefusal(wasm(SHIFTED_TEXTS[1]![1]))).message).toMatch(/longer than the contract allows/)
   })
 
-  it('a 10420 or 10424 the pinned SDK cannot decode stays unclassified, not mislabelled', () => {
+  it('a 10420 or 10424 the pinned SDK cannot decode is a refusal with an unknown reason, not a lost answer', () => {
     // Measured: the beta.6 payloads do not fit the variant the old order puts there
-    expect(asConsensusRefusal(wasm('Protocol error: platform deserialization error: unable to deserialize ConsensusError: UnexpectedEnd { additional: 18 }'))).toBeNull()
+    for (const tail of ['UnexpectedEnd { additional: 18 }', 'UnexpectedVariant { type_name: "BasicError", allowed: Range { min: 0, max: 199 }, found: 200 }']) {
+      const r = asConsensusRefusal(wasm(`Failed to broadcast: Protocol error: platform deserialization error: unable to deserialize ConsensusError: ${tail}`))
+      expect(r).toBeInstanceOf(ConsensusRefusal)
+      expect(r?.code).toBe(UNREADABLE_REFUSAL_CODE)
+      expect(r?.feeCharged).toBe(false)
+      const f = writeFailure(r)
+      expect(f.message).toMatch(/could not read the reason/)
+      expect(f.message).toMatch(/Nothing was charged/)
+      expect(f.message).not.toMatch(/^Sent/)
+    }
   })
 
   it("keeps the node's own code on a result-wait verdict (never remapped)", () => {
