@@ -22,6 +22,7 @@ import { ARCHIVED_REASON, resolveDpnsName } from '@/lib/view'
 import {
   DEFAULT_ISSUE_QUERY,
   ISSUE_PAGE_SIZE,
+  emptyIssuesBody,
   hasFilters,
   issueQueryParams,
   parseIssueQuery,
@@ -39,7 +40,7 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import { useIntent } from '@/hooks/use-intent'
 import { useFirstWrite } from '@/hooks/use-first-write'
-import { timeAgo } from '@/lib/view'
+import { plural, timeAgo } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
@@ -215,8 +216,8 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         ) : empty ? (
           <EmptyState
             icon={CircleDot}
-            title={filtered ? 'No issues match' : query.state === 'closed' ? 'No closed issues' : 'No open issues'}
-            body={filtered ? 'Try fewer filters.' : query.state === 'closed' ? 'Nothing has been closed yet.' : 'Everything is quiet. Open the first issue to start the conversation.'}
+            title={filtered ? 'No issues match' : query.state === 'closed' ? 'No closed issues' : query.state === 'all' ? 'No issues yet' : 'No open issues'}
+            body={emptyIssuesBody(filtered, query.state, data?.closedCount ?? null)}
             action={filtered || !canCompose || archived ? undefined : <Button variant="primary" onClick={() => setComposing(true)}><MessageSquarePlus className="h-4 w-4" aria-hidden /> New issue</Button>}
           />
         ) : (
@@ -253,7 +254,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                 <div className="flex shrink-0 items-center gap-3 pt-0.5">
                   <AssigneeAvatars ids={issue.state.assignees} />
                   {issue.comments ? (
-                    <span className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400" aria-label={`${issue.comments} comments`}>
+                    <span className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400" aria-label={plural(issue.comments, 'comment')}>
                       <MessageSquare className="h-3.5 w-3.5" aria-hidden /> {issue.comments}
                     </span>
                   ) : null}

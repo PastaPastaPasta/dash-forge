@@ -16,6 +16,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, KeyRound, ShieldAlert, Wrench } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
+import { plural } from '@/lib/view/format'
 import { base58Encode } from '@/lib/auth/base58'
 import { bytesToHex, type EpochAlert } from '@/lib/private'
 import { currentBurned, planRepair, repairCost, runRepair, type RepairPlan } from '@/lib/repo/private-members'
@@ -134,14 +135,14 @@ function MemberAlerts({ home, session }: { home: RepoHome; session: PrivateSessi
   if (maintainer && session.unanchoredDocs > 0) {
     parts.push(
       <Note key="unanchored" tone="info" icon={<AlertTriangle className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
-        {session.unanchoredDocs} documents under an unrecognised epoch.
+        {plural(session.unanchoredDocs, 'document')} under an unrecognised epoch.
       </Note>,
     )
   }
   if (maintainer && session.suspectManifests.size > 0) {
     parts.push(
       <Note key="suspect" tone="info" icon={<AlertTriangle className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />}>
-        {session.suspectManifests.size} {session.suspectManifests.size === 1 ? 'pack was' : 'packs were'} uploaded under an old key.
+        {plural(session.suspectManifests.size, 'pack')} {session.suspectManifests.size === 1 ? 'was' : 'were'} uploaded under an old key.
       </Note>,
     )
   }
@@ -177,7 +178,7 @@ function RepairNote({ home, session, self, plan }: { home: RepoHome; session: Pr
       ))}
       {plan.wrap.length > 0 ? (
         <p>
-          {plan.wrap.length} {plan.wrap.length === 1 ? 'member has' : 'members have'} no copy of the current key yet.
+          {plural(plan.wrap.length, 'member')} {plan.wrap.length === 1 ? 'has' : 'have'} no copy of the current key yet.
         </p>
       ) : null}
       {plan.waiting.map((id) => (

@@ -18,6 +18,7 @@ import {
   loadFilePatch,
   mapPooled,
   modeString,
+  plural,
   type CompactDiffLine,
   type DiffSides,
   type FileChange,
@@ -179,12 +180,11 @@ export function DiffView({
           <ChevronRight className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400 transition-transform group-open:rotate-90" aria-hidden />
           <FileDiff className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
           <span className="font-medium">
-            {changes.length}
-            {truncated ? '+' : ''} file{changes.length === 1 ? '' : 's'} changed
+            {plural(truncated ? `${changes.length}+` : changes.length, 'file')} changed
           </span>
           <DiffStat added={added} deleted={deleted} />
           {counted < textFiles ? (
-            <span className="text-[12px] text-anvil-500 dark:text-anvil-400">line counts cover {counted} of {textFiles} files</span>
+            <span className="text-[12px] text-anvil-500 dark:text-anvil-400">line counts cover {counted} of {plural(textFiles, 'file')}</span>
           ) : null}
         </summary>
         <ul className="max-h-80 overflow-y-auto border-t border-anvil-200 dark:border-anvil-800">
@@ -232,7 +232,7 @@ export function DiffView({
       {shown < changes.length ? (
         <div className="flex items-center justify-center gap-3 py-2">
           <span className="text-dense text-anvil-500 dark:text-anvil-400">
-            Showing {shown} of {changes.length} files
+            Showing {shown} of {plural(changes.length, 'file')}
           </span>
           <Button size="sm" onClick={() => setShown((n) => Math.min(changes.length, n + FILE_PAGE))}>
             Show {Math.min(FILE_PAGE, changes.length - shown)} more files
@@ -455,7 +455,7 @@ function PatchLines({ path, lines }: { path: string; lines: readonly CompactDiff
   const gap = (hidden: number, key: string, colSpan: number): JSX.Element => (
     <tr key={key} className="bg-dash/5 text-anvil-600 dark:text-anvil-400">
       <td colSpan={colSpan} className="px-3 py-0.5">
-        ⋯ {hidden} unchanged line{hidden === 1 ? '' : 's'}
+        ⋯ {plural(hidden, 'unchanged line')}
       </td>
     </tr>
   )

@@ -97,6 +97,52 @@ export async function readPublicRepoFacts(
   }
 }
 
+/** Which side of an identity's follow graph a list shows. */
+export type FollowSide = 'followers' | 'following'
+
+/** One page of a follow list, and the cursor that continues it (null: this was the last page). */
+export interface FollowPage {
+  readonly ids: readonly string[]
+  readonly next: string | null
+}
+
+/** The all-zero identifier: every real identity id sorts after it, so it opens a keyset walk. */
+const FIRST_ID = '11111111111111111111111111111111'
+
+/** Rows a follow list reads per page. */
+export const FOLLOW_PAGE = 50
+
+/**
+ * One page of who follows `identityId` (`follow.byTarget`, whose terminal is `$ownerId`) or
+ * whom it follows (`follow.byOwner`, terminal `identityId`). `follow` is `indexOnly`, so a
+ * page cannot continue from a `startAfter` document id (Drive refuses it: the synthesized id is
+ * a one-way hash); it continues with a range on the index's terminal, ordered by it
+ * (keyset pagination, `index-only-document-types.md`). The list is in identity-id order and
+ * carries no follow time. Proof-verified, like every read.
+ */
+export async function readFollowPage(
+  sdk: EvoSDK,
+  forge: ForgeIds,
+  identityId: string,
+  side: FollowSide,
+  after: string | null = null,
+  limit = FOLLOW_PAGE,
+): Promise<FollowPage> {
+  const [pinned, terminal] = side === 'followers' ? (['identityId', '$ownerId'] as const) : (['$ownerId', 'identityId'] as const)
+  const docs = await queryDocuments(sdk, {
+    dataContractId: forge.collab,
+    documentTypeName: DOC.follow,
+    where: [
+      [pinned, '==', identityId],
+      [terminal, '>', after ?? FIRST_ID],
+    ],
+    orderBy: [[terminal, 'asc']],
+    limit,
+  })
+  const ids = docs.map((d) => str(d, terminal)).filter((id) => id !== '')
+  return { ids, next: docs.length < limit ? null : ids[ids.length - 1] ?? null }
+}
+
 /** Follower count (`follow.byTarget`) and following count (`follow.byOwner`), both countable. */
 export async function readFollowCounts(
   sdk: EvoSDK,

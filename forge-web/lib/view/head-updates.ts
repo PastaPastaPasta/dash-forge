@@ -8,6 +8,7 @@
 import { newCommits } from '../merge/objects'
 import type { HeadUpdate } from '../rules/review'
 import type { ObjectReader } from './tree-nav'
+import { plural } from './format'
 
 /** Commits a phrase walk reads per update before it falls back to the plain wording. */
 const WALK_CAP = 500
@@ -30,7 +31,7 @@ export async function headUpdatePhrases(
         // The old head is in the new one's history when walking it back from the new head
         // finds nothing new.
         const descends = (await newCommits(reader, prev, [u.oid], WALK_CAP)).length === 0
-        text = descends ? `pushed ${added.length} commit${added.length === 1 ? '' : 's'} ${arrow}` : `force-pushed ${arrow}`
+        text = descends ? `pushed ${plural(added.length, 'commit')} ${arrow}` : `force-pushed ${arrow}`
       }
     } catch {
       // An unreadable commit or a history past the cap: keep the plain wording.

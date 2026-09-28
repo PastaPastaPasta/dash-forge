@@ -13,13 +13,14 @@
  */
 
 import { useState } from 'react'
+import Link from 'next/link'
 
 import { GitBranch, UserPlus, Users } from 'lucide-react'
 import type { DiscoveredRepo } from '@/lib/view'
 import { listReposByOwner, resolveDpnsName } from '@/lib/view'
 import { followFirsts, followRelation, readFollowCounts, resolveOwner } from '@/lib/repo'
 import { previewCreate, previewDelete } from '@/lib/sdk'
-import { creditsAsDash } from '@/lib/view/format'
+import { creditsAsDash, plural } from '@/lib/view/format'
 import { NETWORKS } from '@/lib/constants'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -46,12 +47,26 @@ interface ProfileData {
   readonly following: number | null
 }
 
-/** A count, or a dash (with the reason on hover) when it could not be read. */
-function Count({ value }: { value: number | null }): JSX.Element {
-  return value === null ? (
-    <span className="font-semibold text-anvil-900 dark:text-anvil-50" title="Couldn't read this count from Platform">–</span>
-  ) : (
-    <span className="font-semibold text-anvil-900 dark:text-anvil-50">{value}</span>
+/**
+ * A count and its noun (`1 follower`, `3 repos`), or a dash (with the reason on hover) and the
+ * plural noun when it could not be read. With `href`, the whole phrase links to its list.
+ */
+function Count({ value, one, many, href }: { value: number | null; one: string; many?: string; href?: string }): JSX.Element {
+  // An unread count takes the plural noun, as zero does.
+  const [number, ...noun] = plural(value ?? 0, one, many).split(' ')
+  const phrase = (
+    <>
+      <span className="font-semibold text-anvil-900 dark:text-anvil-50" title={value === null ? "Couldn't read this count from Platform" : undefined}>
+        {value === null ? '–' : number}
+      </span>{' '}
+      {noun.join(' ')}
+    </>
+  )
+  if (href === undefined) return <span>{phrase}</span>
+  return (
+    <Link href={href} className="hit-area rounded hover:text-forge-700 dark:hover:text-forge-400">
+      {phrase}
+    </Link>
   )
 }
 
@@ -124,9 +139,13 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
       <div className="flex flex-wrap items-center gap-4 rounded-lg border border-anvil-200 bg-white p-5 dark:border-anvil-750 dark:bg-anvil-900">
         <IdentityPill identityId={identityId} name={data.name ?? undefined} className="text-prose" />
         <div className="flex items-center gap-4 text-dense text-anvil-500 dark:text-anvil-400">
-          <span><Count value={data.followers === null ? null : Math.max(0, data.followers + follow.delta)} /> followers</span>
-          <span><Count value={data.following} /> following</span>
-          <span><span className="font-semibold text-anvil-900 dark:text-anvil-50">{data.repos.length}</span> repos</span>
+          <Count
+            value={data.followers === null ? null : Math.max(0, data.followers + follow.delta)}
+            one="follower"
+            href={`/u/followers?name=${encodeURIComponent(identityId)}`}
+          />
+          <Count value={data.following} one="following" many="following" href={`/u/following?name=${encodeURIComponent(identityId)}`} />
+          <Count value={data.repos.length} one="repo" />
         </div>
         {!isSelf && canFollow ? (
           <div className="ml-auto flex items-center gap-2">

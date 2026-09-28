@@ -15,7 +15,7 @@ import { estimateChunkCredits } from '@/lib/sdk/cost'
 import { FANOUT_LEN, LOCATOR_ROW_LEN } from '@/lib/browse'
 import { policyForRepo, storeArtifact, type PlatformQuestion } from '@/lib/storage'
 import type { UploadPack } from '@/lib/merge/runner'
-import { formatBytes } from '@/lib/view'
+import { formatBytes, plural } from '@/lib/view'
 import { useStorageConfig } from '@/hooks/use-storage-config'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAuth } from '@/contexts/auth-context'
@@ -87,7 +87,7 @@ export function useMergeUpload(repo: RepoRef): { upload: UploadPack | null; dial
         <CostPreview cost={previewCredits(question.estimateCredits + estimateChunkCredits(fragmentBytes))} />
         <ul className="mt-2 space-y-0.5 text-[12px] text-anvil-600 dark:text-anvil-400">
           <li>
-            The merge pack: {formatBytes(question.bytes)}, {packObjects.current} objects
+            The merge pack: {formatBytes(question.bytes)}, {plural(packObjects.current, 'object')}
           </li>
           <li>Its browse index: about {formatBytes(fragmentBytes)}</li>
         </ul>

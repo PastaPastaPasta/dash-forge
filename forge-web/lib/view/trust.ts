@@ -23,7 +23,7 @@ import { NETWORKS, QUORUM_KEY_ENDPOINT, type Network } from '../constants'
 import type { RefHead, RefState } from '../rules'
 import type { ContentChecks } from './content-checks'
 import type { QuorumCrossCheck } from './quorum-check'
-import { shortOid, timeAgo, urlHost } from './format'
+import { plural, shortOid, timeAgo, urlHost } from './format'
 import { readGateways } from './storage-status'
 
 export type TrustState = 'verified' | 'partial' | 'unverified' | 'pending' | 'failed'
@@ -122,10 +122,6 @@ export function worstOf(states: readonly TrustState[]): TrustState {
   let worst: TrustState = 'pending'
   for (const s of states) if (SEVERITY[s] > SEVERITY[worst]) worst = s
   return worst
-}
-
-function plural(n: number, one: string, many = `${one}s`): string {
-  return `${n} ${n === 1 ? one : many}`
 }
 
 function deriveChain(

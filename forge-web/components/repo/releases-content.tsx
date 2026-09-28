@@ -15,7 +15,7 @@ import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, CheckCircle2, Download, FileArchive, Loader2, Tag, XCircle } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { formatBytes, timeAgo } from '@/lib/view'
+import { formatBytes, plural, timeAgo } from '@/lib/view'
 import type { ReleaseAssetView, ReleaseView } from '@/lib/repo'
 import {
   AssetHashMismatchError,
@@ -95,8 +95,7 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
                 aria-expanded={showPrevious}
                 className="text-dense text-anvil-600 underline dark:text-anvil-300"
               >
-                {showPrevious ? 'Hide' : 'Show'} {data.previous.length} previous{' '}
-                {data.previous.length === 1 ? 'revision' : 'revisions'}
+                {showPrevious ? 'Hide' : 'Show'} {plural(data.previous.length, 'previous revision')}
               </button>
               {showPrevious ? (
                 <ul className="mt-2 space-y-3">
@@ -208,7 +207,7 @@ function ReleaseCard({
       ) : null}
       {r.badAssets > 0 ? (
         <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400">
-          {r.badAssets} {r.badAssets === 1 ? 'asset entry is' : 'asset entries are'} unreadable and not shown.
+          {plural(r.badAssets, 'asset entry', 'asset entries')} {r.badAssets === 1 ? 'is' : 'are'} unreadable and not shown.
         </p>
       ) : null}
     </article>

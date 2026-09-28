@@ -15,7 +15,7 @@ import type { RepoHome } from '@/lib/view'
 import type { Listed, PullView } from '@/lib/repo'
 import { HiddenNote } from '@/components/repo/hidden-note'
 import { listPullsCached, repoContractIds, repoKey } from '@/lib/repo'
-import { timeAgo } from '@/lib/view'
+import { branchName, timeAgo } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
@@ -104,7 +104,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
                   <span className="text-dense font-medium text-anvil-900 dark:text-anvil-50">{p.title || '(untitled)'}</span>
                   <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
                     <span className="font-mono">#{p.number}</span>
-                    <span>{st.label} · into <span className="font-mono">{p.baseRefName || '?'}</span> · {timeAgo(p.createdAt)} by</span>
+                    <span>{st.label} · into <span className="font-mono">{branchName(p.baseRefName) || '?'}</span> · {timeAgo(p.createdAt)} by</span>
                     <Author identityId={p.author} link={false} />
                     {p.headOid ? <Oid value={p.headOid} chars={7} copyable={false} /> : null}
                   </div>

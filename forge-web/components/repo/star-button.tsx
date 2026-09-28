@@ -4,7 +4,7 @@
  * Star button — toggles the viewer's star on a repo: a forge-collab `star` (indexOnly; unstar
  * is an index-only delete that returns its storage). The starred/unstarred state is read from
  * the viewer's own star before the button offers an action, and a failed read or write is
- * shown rather than swallowed. The price is on the button before the click (`ux-dx-spec.md`
+ * shown rather than swallowed. The price shows beside the button before the click (`ux-dx-spec.md`
  * §4 rule 1): the star's cost, or the unstar's refund (D-011); a refused write opens its fix.
  */
 
@@ -86,6 +86,12 @@ export function StarButton({
           {count === null ? '–' : Math.max(0, count + star.delta)}
         </span>
       </Button>
+      {/* The price in view before the one-click write (D-098, style guide rule 2), as Follow shows it. */}
+      {signedIn && star.on !== null ? (
+        <span className="font-mono text-[11px] text-anvil-500 dark:text-anvil-400" data-testid="star-cost">
+          {starred ? `+${creditsAsDash(-refund.credits)}` : `~${creditsAsDash(cost.credits)}`} DASH
+        </span>
+      ) : null}
     </span>
   )
 }

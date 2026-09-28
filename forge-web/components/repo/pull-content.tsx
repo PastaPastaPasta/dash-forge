@@ -47,7 +47,7 @@ import {
 } from 'lucide-react'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
-import { ACL_NAME, ARCHIVED_REASON, loadPullThread, policyOf, pullActions, timeAgo } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, loadPullThread, plural, policyOf, pullActions, timeAgo } from '@/lib/view'
 import { deleteBranchOffer, deleteBranchProblem } from '@/lib/view/pull-actions'
 import {
   addEvent,
@@ -134,6 +134,13 @@ const VERDICT_TEXT: Readonly<Record<VerdictInput, string>> = {
   approve: 'Approve',
   requestChanges: 'Request changes',
   comment: 'Comment only',
+}
+
+/** What the confirm dialog says each verdict records: "Records an approval on …". */
+const VERDICT_RECORDS: Readonly<Record<VerdictInput, string>> = {
+  approve: 'an approval',
+  requestChanges: 'a request for changes',
+  comment: 'a comment-only review',
 }
 
 /** The write the confirm dialog is about to sign. */
@@ -339,7 +346,7 @@ function PullPage({
     policy: rules.status,
     checksBlocking,
   })
-  const base = pull.baseRefName || 'the base branch'
+  const base = shortBranch(pull.baseRefName) || 'the base branch'
   const canAuthorOrMember = authorOrMember && !archived
   const canMember = identity !== null && isMember && !archived && guard.disabledReason === null
 
@@ -600,6 +607,10 @@ function PullPage({
         ? { label: 'Draft', icon: <GitPullRequestDraft className="h-4 w-4" aria-hidden />, bg: 'bg-anvil-600' }
         : { label: 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: 'bg-verify-700' }
   const linked = linkedIssues(pull.body)
+  // D-104: a merged PR's header says what happened ("2 commits merged into main"), not "wants to".
+  // Who signed the merge is in the timeline: the fold may have passed over earlier claims. A
+  // count only from a real comparison (not the first-parent fallback).
+  const mergedLead = counts.commits === null || cmp?.fellBack === true ? 'Merged' : `${plural(counts.commits, 'commit')} merged`
   const checkout = checkoutCommand(repo, pull.number)
   const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
 
@@ -644,14 +655,21 @@ function PullPage({
             {status.label}
           </span>
           <span className="text-anvil-500 dark:text-anvil-400">
-            <Author identityId={pull.author} link={false} /> wants to merge into <span className="font-mono">{shortBranch(pull.state.baseRef ?? pull.baseRefName) || '?'}</span>
+            {merged ? (
+              `${mergedLead} into`
+            ) : (
+              <>
+                <Author identityId={pull.author} link={false} /> wants to merge into
+              </>
+            )}{' '}
+            <span className="font-mono">{shortBranch(pull.state.baseRef ?? pull.baseRefName) || '?'}</span>
             {pull.sourceRefName ? (
               <>
                 {' '}
                 from <span className="font-mono">{crossRepo && sourceRef ? `${sourceRef.name}:` : ''}{shortBranch(pull.sourceRefName)}</span>
               </>
             ) : null}{' '}
-            · {timeAgo(pull.createdAt)}
+            · {merged ? `opened ${timeAgo(pull.createdAt)}` : timeAgo(pull.createdAt)}
           </span>
           {pull.headOid ? (
             <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400" data-testid="pr-head">
@@ -694,7 +712,7 @@ function PullPage({
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-caution/40 bg-caution/5 px-4 py-2 text-dense" data-testid="pending-review-banner">
           <MessageSquareDashed className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
           <span className="min-w-0 flex-1">
-            You have a pending review ({reviewDraft.draft.comments.length} comment{reviewDraft.draft.comments.length === 1 ? '' : 's'}), not yet submitted.{' '}
+            You have a pending review ({plural(reviewDraft.draft.comments.length, 'comment')}), not yet submitted.{' '}
             <span className="text-anvil-600 dark:text-anvil-400">{draftWhereabouts(repo.visibility === 'private')}</span>
           </span>
           {tab !== 'files' ? (
@@ -719,7 +737,7 @@ function PullPage({
           <Eye className="h-4 w-4 text-anvil-600 dark:text-anvil-300" aria-hidden />
           <span className="min-w-0 flex-1">
             New commits since your review: you reviewed <Oid value={since.reviewedOid} chars={7} copyable={false} />
-            {since.headUpdates > 0 ? `, and the head moved ${since.headUpdates} time${since.headUpdates === 1 ? '' : 's'} since` : ''}; it is now{' '}
+            {since.headUpdates > 0 ? `, and the head moved ${plural(since.headUpdates, 'time')} since` : ''}; it is now{' '}
             <Oid value={since.headOid} chars={7} copyable={false} />.
           </span>
           <Button size="sm" variant="outline" onClick={() => setTab('files')}>
@@ -1221,7 +1239,7 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
     case 'review':
       return {
         title: `${VERDICT_TEXT[pending.verdict]} PR #${number}`,
-        description: `Records a ${VERDICT_TEXT[pending.verdict].toLowerCase()} review on ${head.slice(0, 9)}${pending.body ? ', with your comment as its body' : ''}. New commits make it stale. Reviews can't be edited; a maintainer can dismiss one.`,
+        description: `Records ${VERDICT_RECORDS[pending.verdict]} on ${head.slice(0, 9)}${pending.body ? ', with your comment as its body' : ''}. New commits make it stale. Reviews can't be edited; a maintainer can dismiss one.`,
         label: 'Sign & submit review',
       }
     case 'draft':
@@ -1409,7 +1427,7 @@ function BranchRules({
         <p className="mt-1 flex items-center gap-2" data-testid="policy-status">
           {status.met ? <Check className="h-4 w-4 text-verify" aria-hidden /> : <X className="h-4 w-4 text-danger" aria-hidden />}
           <span>
-            {status.have} of {status.need} required approval{status.need === 1 ? '' : 's'}
+            {status.have} of {plural(status.need, 'required approval')}
             {policy.approverRole === 1 ? ' (maintainers)' : ''}
           </span>
         </p>

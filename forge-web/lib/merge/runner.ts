@@ -25,7 +25,7 @@ import type { WriteAuth } from '../sdk'
 import type { MergeInput } from './engine'
 import type { MergeResult } from './protocol'
 import { mergeRefProblem } from '../view/pull-actions'
-import { formatBytes } from '../view/format'
+import { formatBytes, plural } from '../view/format'
 
 export type MergeStepId = 'fetch' | 'merge' | 'pack' | 'upload' | 'manifest' | 'index' | 'ref' | 'event'
 
@@ -241,7 +241,7 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
     if (missing.length > 0) {
       throw new MergeStopped(`the merge pack would leave ${missing.length} object(s) unfetchable (${missing.slice(0, 3).map((o) => o.slice(0, 9)).join(', ')}); nothing was written. Merge with \`dg pr merge\``)
     }
-    mark('pack', { result: built }, 'done', `${built.objectCount} objects · ${formatBytes(built.pack.length)} · verified complete`)
+    mark('pack', { result: built }, 'done', `${plural(built.objectCount, 'object')} · ${formatBytes(built.pack.length)} · verified complete`)
   }
   const result = run.result as NonNullable<MergeRun['result']>
   const empty = result.objectCount === 0
@@ -252,7 +252,7 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
     } else {
       const upload = deps.upload
       // What is about to be stored, shown before any storage is written to.
-      onStep({ step: 'upload', state: 'running', detail: `${formatBytes(result.pack.length)}, ${result.objectCount} objects` })
+      onStep({ step: 'upload', state: 'running', detail: `${formatBytes(result.pack.length)}, ${plural(result.objectCount, 'object')}` })
       const stored = await attempt('upload', async () => {
         if (upload === null) throw new Error('this build cannot upload packs from the browser yet; merge with `dg pr merge`')
         return upload(result.pack, { packHash: result.packHash, objectCount: result.objectCount })

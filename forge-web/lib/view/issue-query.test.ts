@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   DEFAULT_ISSUE_QUERY,
+  emptyIssuesBody,
   hasFilters,
   issueQueryParams,
   parseIssueQuery,
@@ -112,5 +113,23 @@ describe('free-text match', () => {
   it('matches #n against the number', () => {
     expect(matchesText('#12', row)).toBe(true)
     expect(matchesText('#1', row)).toBe(false)
+  })
+})
+
+describe('emptyIssuesBody (L-37)', () => {
+  it('invites the first issue only when the repo has none', () => {
+    expect(emptyIssuesBody(false, 'open', 0)).toMatch(/Open the first issue/)
+    expect(emptyIssuesBody(false, 'all', 0)).toMatch(/Open the first issue/)
+  })
+
+  it('says the open list is empty when issues were closed, or the closed count is unknown', () => {
+    expect(emptyIssuesBody(false, 'open', 1)).toBe('No issue is open right now; 1 issue is closed.')
+    expect(emptyIssuesBody(false, 'open', 3)).toBe('No issue is open right now; 3 issues are closed.')
+    expect(emptyIssuesBody(false, 'open', null)).toBe('No issue is open right now.')
+  })
+
+  it('keeps the filtered and closed-tab lines', () => {
+    expect(emptyIssuesBody(true, 'open', 2)).toBe('Try fewer filters.')
+    expect(emptyIssuesBody(false, 'closed', 0)).toBe('Nothing has been closed yet.')
   })
 })

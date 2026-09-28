@@ -9,6 +9,7 @@
 
 import type { AnchorInput, DraftComment, ReviewDraft, VerdictInput } from '../repo'
 import { previewCreate, previewCredits, type CostPreview } from '../sdk'
+import { plural } from './format'
 
 /**
  * Where a pending review lives, said wherever one is shown: unlike a GitHub pending review it is
@@ -169,6 +170,6 @@ export function draftCost(d: ReviewDraft): { documents: number; cost: CostPrevie
 export function partialSubmitMessage(d: ReviewDraft, verdictLabel: string): string {
   const landed = d.comments.filter((c) => c.landedId !== undefined).length
   const total = d.comments.length
-  if (d.reviewId === undefined) return `Nothing was written yet; your ${verdictLabel} and its ${total} comment${total === 1 ? '' : 's'} are still pending in this browser.`
-  return `Your ${verdictLabel} is recorded with ${landed} of ${total} comment${total === 1 ? '' : 's'}; ${total - landed} ${total - landed === 1 ? 'is' : 'are'} still pending in this browser. Retry to finish it: nothing is written twice.`
+  if (d.reviewId === undefined) return `Nothing was written yet; your ${verdictLabel} and its ${plural(total, 'comment')} are still pending in this browser.`
+  return `Your ${verdictLabel} is recorded with ${landed} of ${plural(total, 'comment')}; ${total - landed} ${total - landed === 1 ? 'is' : 'are'} still pending in this browser. Retry to finish it: nothing is written twice.`
 }

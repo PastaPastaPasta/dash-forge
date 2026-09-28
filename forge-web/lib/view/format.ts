@@ -45,12 +45,26 @@ export function balanceToDash(balance: string): string {
   return formatDash(creditsToDash(credits))
 }
 
-/** Relative time from a ms epoch, e.g. `3d ago`, `just now`. */
+/**
+ * A count and its noun, singular only for exactly one: `plural(1, 'commit')` → `1 commit`,
+ * `plural(2, 'commit')` → `2 commits`, `plural(3, 'copy', 'copies')` → `3 copies`. `many`
+ * is the irregular plural (default: the noun plus `s`). A number is grouped for reading
+ * (`1,234 commits`); pass a string (`'100+'`) to show a count as given, which reads plural.
+ */
+export function plural(n: number | string, one: string, many = `${one}s`): string {
+  if (typeof n === 'string') return `${n} ${many}`
+  return `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`
+}
+
+/**
+ * Relative time from a ms epoch, e.g. `3d ago`, `just now`. Anything under a minute (and a
+ * time slightly in the future, from clock skew) reads `just now`: never `0m ago`.
+ */
 export function timeAgo(ms: number, now = Date.now()): string {
   if (!ms) return ''
   const diff = Math.max(0, now - ms)
   const s = Math.floor(diff / 1000)
-  if (s < 45) return 'just now'
+  if (s < 60) return 'just now'
   const m = Math.floor(s / 60)
   if (m < 60) return `${m}m ago`
   const h = Math.floor(m / 60)
@@ -60,6 +74,11 @@ export function timeAgo(ms: number, now = Date.now()): string {
   const mo = Math.floor(d / 30)
   if (mo < 12) return `${mo}mo ago`
   return `${Math.floor(mo / 12)}y ago`
+}
+
+/** A branch's short name for display: `refs/heads/main` → `main` (any other ref as given). */
+export function branchName(ref: string): string {
+  return ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref
 }
 
 /** Absolute date, e.g. `Jul 22, 2026`. */
