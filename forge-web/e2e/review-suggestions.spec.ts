@@ -142,7 +142,9 @@ test('s2. the author batches both into one commit; the head follows; "Applied in
   await shot(page, 'review-suggest-02-batch')
   await page.getByRole('button', { name: 'Apply 2 suggestions in one commit' }).click()
   const ask = page.getByRole('dialog', { name: /Store the merge pack .* on Platform\?/ })
-  if (await ask.isVisible({ timeout: 60_000 }).catch(() => false)) await ask.getByRole('button', { name: /sign & store on platform/i }).click()
+  // The sheet opens only once the pack is built (isVisible would not wait): wait for it or the upload.
+  await expect(ask.or(page.getByTestId('branch-commit').locator('[data-step="upload"]:is([data-state="done"],[data-state="skipped"])'))).toBeVisible({ timeout: 180_000 })
+  if (await ask.isVisible()) await ask.getByRole('button', { name: /sign & store on platform/i }).click()
   const steps = page.getByTestId('branch-commit')
   await expect(steps.locator('[data-step="head"]')).toHaveAttribute('data-state', 'done', { timeout: 300_000 })
   await shot(page, 'review-suggest-03-steps')
@@ -179,7 +181,9 @@ test('s3. the base moves; "Update branch" merges it into the PR branch', async (
   await expect(row).toBeVisible({ timeout: 240_000 })
   await row.getByRole('button', { name: 'Update branch' }).click()
   const ask = page.getByRole('dialog', { name: /Store the merge pack .* on Platform\?/ })
-  if (await ask.isVisible({ timeout: 60_000 }).catch(() => false)) await ask.getByRole('button', { name: /sign & store on platform/i }).click()
+  // The sheet opens only once the pack is built (isVisible would not wait): wait for it or the upload.
+  await expect(ask.or(page.getByTestId('branch-commit').locator('[data-step="upload"]:is([data-state="done"],[data-state="skipped"])'))).toBeVisible({ timeout: 180_000 })
+  if (await ask.isVisible()) await ask.getByRole('button', { name: /sign & store on platform/i }).click()
   await expect(page.getByTestId('branch-commit').locator('[data-step="head"]')).toHaveAttribute('data-state', 'done', { timeout: 300_000 })
   const after = String(dg('OWNER', 'pr', 'view', SLUG, String(prNumber))['headOid'])
   expect(after).not.toBe(before)
