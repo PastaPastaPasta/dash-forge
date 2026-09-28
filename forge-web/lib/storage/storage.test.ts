@@ -27,6 +27,7 @@ import {
 } from './profiles'
 import {
   EMPTY_STORAGE_CONFIG,
+  defaultPolicyDraft,
   discardStorageConfig,
   loadStorageConfig,
   policyForRepo,
@@ -34,6 +35,7 @@ import {
   saveStorageConfig,
   withProfile,
   withRenamedProfile,
+  withFirstDefault,
   withRepoPolicy,
   withoutProfile,
 } from './store'
@@ -172,6 +174,29 @@ describe('the stored configuration', () => {
     expect(policyProblem(c, policyFor(['nope'], 'one'))).toMatch(/no storage profile/)
     expect(policyProblem(c, { targets: ['r2-main'], replicas: 2, platformFallback: false })).toMatch(/copies/)
     expect(policyProblem(c, { targets: [], replicas: 1, platformFallback: false })).toMatch(/at least one/)
+  })
+
+  it('makes a newly added profile the default when there is none yet, and never replaces one (L-10)', () => {
+    const first = withFirstDefault(withProfile(EMPTY_STORAGE_CONFIG, S3), 'r2-main')
+    expect(first.defaultPolicy).toEqual({ targets: ['r2-main'], replicas: 1, platformFallback: false })
+    const second = withFirstDefault(withProfile(first, KUBO), 'kubo')
+    expect(second.defaultPolicy).toBe(first.defaultPolicy)
+  })
+
+  it('lets the default form save only a real, changed policy (L-10)', () => {
+    const c = withProfile(withProfile(EMPTY_STORAGE_CONFIG, S3), KUBO)
+    // Nothing ticked: nothing to save, and it says why (the old form saved a null policy, "Saved.").
+    const empty = defaultPolicyDraft(c, [], 'one')
+    expect(empty).toMatchObject({ state: 'empty', policy: null, targets: [] })
+    expect(empty.state === 'empty' && empty.reason).toMatch(/at least one/)
+    // A removed profile is not a target.
+    expect(defaultPolicyDraft(c, ['gone'], 'one').state).toBe('empty')
+    expect(defaultPolicyDraft(c, ['r2-main'], 'one')).toMatchObject({ state: 'changed', policy: policyFor(['r2-main'], 'one') })
+    // The saved default, unchanged: Save has nothing to do.
+    const saved = { ...c, defaultPolicy: policyFor(['r2-main'], 'one') }
+    expect(defaultPolicyDraft(saved, ['r2-main'], 'one').state).toBe('unchanged')
+    expect(defaultPolicyDraft(saved, ['r2-main'], 'fallback').state).toBe('changed')
+    expect(defaultPolicyDraft(saved, ['r2-main', 'kubo'], 'one').state).toBe('changed')
   })
 })
 
