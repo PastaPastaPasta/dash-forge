@@ -30,7 +30,7 @@ test.describe.configure({ mode: 'serial', timeout: 6 * 60_000 })
 
 const ROOT = resolve(__dirname, '../..')
 /** Someone to follow: the read fixture's seeder (following writes only to the follower). */
-const DEMO_OWNER = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
+const DEMO_OWNER = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const BROADCAST = '**/org.dash.platform.dapi.v0.Platform/broadcastStateTransition'
 
 /* eslint-disable @typescript-eslint/no-explicit-any -- evo-sdk is imported by path in Node */

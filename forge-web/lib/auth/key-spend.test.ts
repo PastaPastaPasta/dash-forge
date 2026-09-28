@@ -19,7 +19,7 @@ import { AuthController, KEY_SPEND_ESTIMATES } from './controller'
 import { encodeWif } from './wif'
 import { lockVault } from './vault'
 
-const ID = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
+const ID = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const NET = 'devnet' as const
 const wifOf = (n: number): string => encodeWif(new Uint8Array(32).fill(n), NET)
 const PASS = { passphrase: 'correct horse battery' }

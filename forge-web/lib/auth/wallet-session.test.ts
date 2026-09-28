@@ -50,7 +50,7 @@ vi.mock('./limited-key', async (orig) => {
 })
 vi.mock('./identity-file', async (orig) => {
   const real = await orig<typeof import('./identity-file')>()
-  return { ...real, masterMaterialFromFile: () => ({ identityId: '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp', networkKey: 'devnet-moutai', masterWif: 'MASTER', mnemonic: null }) }
+  return { ...real, masterMaterialFromFile: () => ({ identityId: 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr', networkKey: 'devnet-moutai', masterWif: 'MASTER', mnemonic: null }) }
 })
 vi.mock('@dashevo/evo-sdk', () => ({
   PrivateKey: { fromWIF: (wif: string) => ({ toBytes: () => new TextEncoder().encode(wif), free: () => undefined }) },
@@ -70,7 +70,7 @@ interface FakeKey {
 
 const NET = 'devnet' as const
 const FORGE = NETWORKS[NET].v2
-const ID = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
+const ID = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const wifOf = (n: number): string => encodeWif(new Uint8Array(32).fill(n), NET)
 
 function key(keyId: number, wif: string, bounds: { $type: string; id: string } | null, limits: Partial<FakeKey> = {}): FakeKey {

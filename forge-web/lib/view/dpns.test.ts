@@ -2,8 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { cachedDpnsName, clearDpnsCache, seedFromDomains } from './dpns'
 
-const A = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
-const B = 'AFbkc2KjmmGFvKUDTXqu94XU5BVrD3p7QQu19TSCqeHb'
+const A = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
+const B = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
 const domain = (id: string, label: string) => ({ label, normalizedParentDomainName: 'dash', records: { identity: id } })
 
 beforeEach(() => clearDpnsCache())

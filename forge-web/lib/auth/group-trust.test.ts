@@ -5,7 +5,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { DEPLOYMENTS, groupTrust, type GroupTrust } from '../deployments'
 import { MAX_PAGES, MAX_UNKNOWN_CONTRACTS, assertGroupHolds, checkMembers, checkOwnership, unknownMemberContracts, type GroupMemberSet } from './group-trust'
 
-const DEPLOYER = '7mRv16E77y5dPzhNhBBhUMqFNMoBNTNsBeEYCAtpLnTu'
+const DEPLOYER = 'E24SPCssqYzFQmjcQ1hNmiLXrzz1o9AqTv54tuWNkgHz'
 const STRANGER = 'H1DBHnGmX3tMrsnMjtjXr9fZzPRAyfnLXzqy78THTPxS'
 
 const TRUST: GroupTrust = { group: 'GROUP', core: 'CORE', collab: 'COLLAB', owner: DEPLOYER, superseded: ['OLDCOLLAB'] }
@@ -20,7 +20,7 @@ describe('group trust: the pinned owner', () => {
   })
 
   it('refuses a changed group owner', () => {
-    expect(() => checkOwnership(TRUST, 'GROUP', { ownerId: STRANGER, adminIds: [] })).toThrow(/refusing to bind.*owned by H1DB.*pins the Forge deployer 7mRv/)
+    expect(() => checkOwnership(TRUST, 'GROUP', { ownerId: STRANGER, adminIds: [] })).toThrow(/refusing to bind.*owned by H1DB.*pins the Forge deployer E24S/)
   })
 
   it('refuses any admin', () => {

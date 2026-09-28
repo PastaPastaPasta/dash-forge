@@ -16,7 +16,7 @@ forge-v2 (shared contracts forge-core + forge-collab, Platform protocol 14; [con
 
 | Env | Purpose |
 |---|---|
-| **Devnet moutai** (protocol 14, drive 4.2.0-beta.5) | All integration + e2e suites; contract re-registration rehearsals (`deploy-v2.mjs --force-new`) |
+| **Devnet moutai** (protocol 14, drive 4.2.0-beta.6) | All integration + e2e suites; contract re-registration rehearsals (`deploy-v2.mjs --force-new`) |
 | Testnet | The same suites once protocol 14 and forge-v2 are live there |
 | Mainnet | Production smoke (§8) after forge-v2 is registered there |
 

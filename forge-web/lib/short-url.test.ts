@@ -56,7 +56,7 @@ describe('shortRepoPath → shim → canonical route', () => {
 
   it('accepts a trailing slash and an identity id owner', () => {
     expect(expand('/alice/project/')).toBe('/repo/?owner=alice&name=project')
-    const id = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
+    const id = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
     expect(expand(`/${id}/forge-v2-demo`)).toBe(`/repo/?owner=${id}&name=forge-v2-demo`)
   })
 
@@ -147,7 +147,7 @@ describe('hasShortUrl', () => {
   it('is true exactly for the addresses the shim expands back to the same repo', () => {
     const cases = [
       { owner: 'alice', name: 'project' },
-      { owner: '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp', name: 'forge-v2-demo' },
+      { owner: 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr', name: 'forge-v2-demo' },
       { owner: 'alice', name: 'my.repo_1' },
       { owner: 'alice.dash', name: 'project' },
       { owner: 'alice', name: '.hidden' },

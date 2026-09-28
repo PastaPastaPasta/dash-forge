@@ -12,8 +12,8 @@ import type { RefState } from '../rules'
 import { forkManifest, planManifests, planRefs, type ForkCopy } from './fork'
 
 const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', group: 'G' }
-const PARENT = '6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux'
-const UPLOADER = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
+const PARENT = 'A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1'
+const UPLOADER = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 
 function manifest(id: string, hash: number, storage: 0 | 1, at: number, uris: string[], extra: Partial<ForkCopy> = {}): ForkCopy {
   return {
@@ -61,7 +61,7 @@ describe('fork_manifest', () => {
 
 describe('plan_manifests', () => {
   it('writes one manifest per pack with every copy, members first; skips locators and packs the fork has', () => {
-    const stranger = '8unje8KNimvQ15NJeNTM15m7Dc4o7QJs4ZstWrbXdGxv'
+    const stranger = '7Ej2YTftCL23mVwvhviak8ZJMmpqcsVj7CU5KPxzyy4h'
     const all = [
       // A former member's early, chunkless copy of pack 1 ...
       manifest('hostile', 1, 0, 1, [], { uploader: stranger, ownerRole: null }),

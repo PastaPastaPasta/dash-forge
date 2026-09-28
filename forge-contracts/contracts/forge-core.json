@@ -160,8 +160,8 @@
               "forkOf": "asc"
             }
           ],
-          "nullSearchable": false,
-          "countable": "countable"
+          "rangeCountable": true,
+          "rankedCountable": true
         },
         {
           "name": "recent",
@@ -177,7 +177,8 @@
         "name",
         "visibility"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "documentsCountable": true
     },
     "maintainer": {
       "type": "object",
@@ -423,7 +424,29 @@
         "refNameHash",
         "newOid"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "propertyConstraints": {
+        "noPlain": {
+          "anyOf": [
+            {
+              "absent": "enc"
+            },
+            {
+              "absent": "refName"
+            }
+          ]
+        },
+        "hasName": {
+          "anyOf": [
+            {
+              "present": "enc"
+            },
+            {
+              "present": "refName"
+            }
+          ]
+        }
+      }
     },
     "protectedRefUpdate": {
       "type": "object",
@@ -532,7 +555,29 @@
         "refNameHash",
         "newOid"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "propertyConstraints": {
+        "noPlain": {
+          "anyOf": [
+            {
+              "absent": "enc"
+            },
+            {
+              "absent": "refName"
+            }
+          ]
+        },
+        "hasName": {
+          "anyOf": [
+            {
+              "present": "enc"
+            },
+            {
+              "present": "refName"
+            }
+          ]
+        }
+      }
     },
     "config": {
       "type": "object",
@@ -632,7 +677,26 @@
         "$createdAtBlockHeight",
         "repoId"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "propertyConstraints": {
+        "noPlain": {
+          "anyOf": [
+            {
+              "absent": "enc"
+            },
+            {
+              "allOf": [
+                {
+                  "absent": "defaultBranch"
+                },
+                {
+                  "absent": "protectedPatterns"
+                }
+              ]
+            }
+          ]
+        }
+      }
     },
     "packManifest": {
       "type": "object",
@@ -1056,7 +1120,34 @@
         "repoId",
         "tagName"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "dependentRequired": {
+        "enc": [
+          "epoch"
+        ]
+      },
+      "propertyConstraints": {
+        "noPlain": {
+          "anyOf": [
+            {
+              "absent": "enc"
+            },
+            {
+              "allOf": [
+                {
+                  "absent": "name"
+                },
+                {
+                  "absent": "notes"
+                },
+                {
+                  "absent": "assets"
+                }
+              ]
+            }
+          ]
+        }
+      }
     },
     "label": {
       "type": "object",
@@ -1148,7 +1239,31 @@
         "repoId",
         "name"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "dependentRequired": {
+        "enc": [
+          "epoch"
+        ]
+      },
+      "propertyConstraints": {
+        "noPlain": {
+          "anyOf": [
+            {
+              "absent": "enc"
+            },
+            {
+              "allOf": [
+                {
+                  "absent": "color"
+                },
+                {
+                  "absent": "description"
+                }
+              ]
+            }
+          ]
+        }
+      }
     },
     "repoKey": {
       "type": "object",

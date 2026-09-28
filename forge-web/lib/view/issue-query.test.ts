@@ -13,7 +13,7 @@ import {
 } from './issue-query'
 import { matchesText } from '../repo/issue-index'
 
-const ID = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
+const ID = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const params = (s: string) => new URLSearchParams(s)
 
 describe('issue list URL state', () => {

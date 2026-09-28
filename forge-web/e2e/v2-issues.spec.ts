@@ -18,8 +18,8 @@ import { expectLanded, idFile, repoUrl, shot, signedIn, waitForRepoResolved } fr
  * QA harness's identities/f1-issues).
  */
 
-const F1OWNER = '9GgCNC4bY5Vrj8Z2VxQX2PmReAvJaLwYg9qiLNvrSHUw'
-const F1COLLAB = '2v2K2TfVBa1EbDELBWkxehMJsuUyaiKMaor617GgVzca'
+const F1OWNER = '8dn4mwXbdruHrRtMbk2KpNevAGSfRsxpcxYip8Uk4LsX'
+const F1COLLAB = 'Abjm1HbHNzLJbSxwJrrDd4vyUkm5ymiCZswodKrqpcYW'
 const PAGING = { owner: F1OWNER, name: 'issues-paging' } as const
 const SCRATCH = { owner: F1OWNER, name: 'f1-scratch' } as const
 process.env['E2E_ID_DIR'] ??= '/Users/pasta/workspace/dash-forge-qa/identities/f1-issues'

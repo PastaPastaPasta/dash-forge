@@ -34,7 +34,7 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target-contract-validate
     steps:
       - uses: actions/checkout@v4
-      # The toolchain platform v4.2.0-beta.5 pins (its rust-toolchain.toml)
+      # The toolchain platform v4.2.0-beta.6 pins (its rust-toolchain.toml)
       - name: Install Rust 1.98.1
         run: rustup toolchain install 1.98.1 --profile minimal
       - uses: actions/cache@v4
@@ -46,11 +46,10 @@ jobs:
           key: contract-validate-${{ hashFiles('tools/contract-validate/Cargo.lock') }}
       - name: Build the validator
         run: cargo +1.98.1 build -q --locked --manifest-path tools/contract-validate/Cargo.toml
-      - name: Validate forge-core (as an update of the registered schema) and forge-collab
+      - name: Validate forge-core and forge-collab
         run: |
           "$CARGO_TARGET_DIR/debug/contract-validate" \
             forge-contracts/contracts/forge-core.json \
-            --expect-update forge-contracts/contracts/registered/forge-core.v1.json \
             forge-contracts/contracts/forge-collab.json
       - name: Negative mutations are refused
         run: tools/contract-validate/negative.sh
