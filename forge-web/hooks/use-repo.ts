@@ -89,9 +89,11 @@ function startLoad(sdk: EvoSDK, key: string, network: Network, addr: RepoAddress
   const load = (): Promise<RepoHome | null> => loadRepoHome(sdk, { network, ...addr })
   // Zero extra reads unless this tab is waiting for its own ref move to show.
   const shows = (home: RepoHome | null): boolean => home === null || showsOwnRefMoves(home.repo, [...home.branches, ...home.tags])
-  const read = retryUntil(load, shows, awaitingOwnRefMoves() ? OWN_MOVE_ATTEMPTS : 0).then((home) => {
-    // One full run of re-reads is all a move gets: the next load takes the refs as they are.
-    if (home !== null && !shows(home)) forgetOwnRefMoves(home.repo)
+  const attempts = awaitingOwnRefMoves() ? OWN_MOVE_ATTEMPTS : 0
+  const read = retryUntil(load, shows, attempts).then((home) => {
+    // One full run of re-reads is all a move gets: the next load takes the refs as they are. A
+    // load that started before the move (no re-reads) leaves the expectation to the next one.
+    if (attempts > 0 && home !== null && !shows(home)) forgetOwnRefMoves(home.repo)
     return home
   })
   const entry: HomeCacheEntry = { at: Date.now(), promise: read }
