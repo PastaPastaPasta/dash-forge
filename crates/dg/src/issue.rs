@@ -67,7 +67,91 @@ pub async fn run(ctx: &Ctx, cmd: &IssueCommand) -> Result<()> {
         IssueCommand::Unassign { repo, number, who } => {
             assign(ctx, repo, *number, who, false).await
         }
+        IssueCommand::Milestone {
+            repo,
+            number,
+            title,
+            clear,
+        } => {
+            milestone(
+                ctx,
+                repo,
+                *number,
+                if *clear { None } else { title.as_deref() },
+            )
+            .await
+        }
+        IssueCommand::Pin { repo, number, off } => {
+            thread_flag(ctx, repo, *number, Flag::Pin, !off).await
+        }
+        IssueCommand::Lock { repo, number, off } => {
+            thread_flag(ctx, repo, *number, Flag::Lock, !off).await
+        }
     }
+}
+
+/// Put issue `number` in milestone `title` (`None`: take it out).
+async fn milestone(ctx: &Ctx, repo: &str, number: u64, title: Option<&str>) -> Result<()> {
+    let s = Session::open(ctx, repo).await?;
+    let target = target(&s, repo, number).await?;
+    let what = title.map_or_else(
+        || format!("Take issue #{number} out of its milestone"),
+        |t| format!("Put issue #{number} in milestone {t:?}"),
+    );
+    ctx.confirm_or_cancel(&format!("{what}? (one small document; members only)"))?;
+    let id = s.collab().set_milestone(&s.repo, &target, title).await?;
+    ctx.emit(
+        json!({ "status": if title.is_some() { "set" } else { "cleared" }, "issue": number, "milestone": title, "eventId": id }),
+        || match title {
+            Some(t) => println!("✓ issue #{number} is in milestone {t}"),
+            None => println!("✓ issue #{number} has no milestone"),
+        },
+    );
+    Ok(())
+}
+
+/// Which thread flag [`thread_flag`] sets.
+#[derive(Clone, Copy)]
+enum Flag {
+    Pin,
+    Lock,
+}
+
+/// Pin / unpin or lock / unlock issue `number`.
+async fn thread_flag(ctx: &Ctx, repo: &str, number: u64, flag: Flag, on: bool) -> Result<()> {
+    let s = Session::open(ctx, repo).await?;
+    let target = target(&s, repo, number).await?;
+    let verb = match (flag, on) {
+        (Flag::Pin, true) => "pin",
+        (Flag::Pin, false) => "unpin",
+        (Flag::Lock, true) => "lock",
+        (Flag::Lock, false) => "unlock",
+    };
+    let note = match (flag, on) {
+        (Flag::Lock, true) => "; clients then offer the comment box to members only",
+        _ => "",
+    };
+    ctx.confirm_or_cancel(&format!(
+        "{} issue #{number}? (one small document; members only{note})",
+        capitalize(verb)
+    ))?;
+    let collab = s.collab();
+    let id = match flag {
+        Flag::Pin => collab.set_pinned(&s.repo, &target, on).await?,
+        Flag::Lock => collab.set_locked(&s.repo, &target, on).await?,
+    };
+    ctx.emit(
+        json!({ "status": verb, "issue": number, "eventId": id }),
+        || println!("✓ {verb}ned issue #{number}"),
+    );
+    Ok(())
+}
+
+fn capitalize(s: &str) -> String {
+    let mut c = s.chars();
+    c.next()
+        .map(|f| f.to_uppercase().chain(c).collect())
+        .unwrap_or_default()
 }
 
 /// Label names as the web writes them: trimmed (the fold compares them exactly).

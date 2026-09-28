@@ -20,6 +20,7 @@ mod issue;
 mod keys;
 mod label;
 mod maint;
+mod milestone;
 mod pr;
 mod prompt;
 mod publish;
@@ -125,6 +126,9 @@ pub enum Command {
     /// Label definitions (apply one with `dg issue label`).
     #[command(subcommand)]
     Label(LabelCommand),
+    /// Milestones (put an issue in one with `dg issue milestone`).
+    #[command(subcommand)]
+    Milestone(MilestoneCommand),
     /// Repository members (writers and maintainers).
     #[command(subcommand)]
     Collab(CollabCommand),
@@ -299,6 +303,27 @@ pub enum RepoCommand {
     Unstar {
         /// The repository (`owner/name`).
         repo: String,
+    },
+    /// Watch a repo: `dg`'s and the web app's inboxes follow it, on every device.
+    Watch {
+        /// The repository (`owner/name`).
+        repo: String,
+    },
+    /// Stop watching a repo.
+    Unwatch {
+        /// The repository (`owner/name`).
+        repo: String,
+    },
+    /// A repository's topics: list them, or (maintainers) add and remove.
+    Topic {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// Topics to add.
+        #[arg(long = "add", value_name = "NAME")]
+        add: Vec<String>,
+        /// Topics to remove (your own tags).
+        #[arg(long = "remove", value_name = "NAME")]
+        remove: Vec<String>,
     },
     /// View repo metadata (`owner/name`).
     View {
@@ -556,6 +581,72 @@ pub enum IssueCommand {
         /// Who to unassign.
         #[arg(required = true)]
         who: Vec<String>,
+    },
+    /// Put an issue in a milestone, or take it out with `--clear`. Members only.
+    Milestone {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The issue number.
+        number: u64,
+        /// The milestone's title (see `dg milestone list`).
+        #[arg(required_unless_present = "clear")]
+        title: Option<String>,
+        /// Take the issue out of its milestone.
+        #[arg(long, conflicts_with = "title")]
+        clear: bool,
+    },
+    /// Pin an issue to the top of the repository's issue list (unpin with `--off`). Members only.
+    Pin {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The issue number.
+        number: u64,
+        /// Unpin.
+        #[arg(long)]
+        off: bool,
+    },
+    /// Lock an issue's conversation to members (unlock with `--off`). Members only.
+    Lock {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The issue number.
+        number: u64,
+        /// Unlock.
+        #[arg(long)]
+        off: bool,
+    },
+}
+
+/// `dg milestone` subcommands.
+#[derive(Debug, Subcommand)]
+pub enum MilestoneCommand {
+    /// List a repository's milestones with their open and closed issue counts.
+    List {
+        /// The repository (`owner/name`).
+        repo: String,
+    },
+    /// Define (or redefine: the newest per title wins) a milestone. Maintainers and writers.
+    Create {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The title (1-63 characters): what issues name it by.
+        title: String,
+        /// A description.
+        #[arg(long, default_value = "")]
+        description: String,
+        /// Due date, `YYYY-MM-DD` (UTC midnight).
+        #[arg(long)]
+        due: Option<String>,
+    },
+    /// Close a milestone (a new definition with `closed`), or reopen it with `--reopen`.
+    Close {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The title.
+        title: String,
+        /// Reopen instead.
+        #[arg(long)]
+        reopen: bool,
     },
 }
 
@@ -1381,6 +1472,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Pr(cmd) => Box::pin(pr::run(ctx, cmd)).await,
         Command::Release(cmd) => release::run(ctx, cmd).await,
         Command::Label(cmd) => label::run(ctx, cmd).await,
+        Command::Milestone(cmd) => milestone::run(ctx, cmd).await,
         Command::Collab(cmd) => collab::run(ctx, cmd).await,
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
