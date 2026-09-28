@@ -39,8 +39,10 @@ test.describe('code browsing (showcase repos)', () => {
   })
 
   test('cb-1b. the preact PR #5269 diff finishes loading every file (D-005, the ledger case)', async ({ page }) => {
-    await page.goto(repoUrl('pull', '&number=5269', PREACT), { waitUntil: 'domcontentloaded' })
+    // The diff is the PR page's "Files changed" tab (the page opens on the conversation).
+    await page.goto(repoUrl('pull', '&number=5269&tab=files', PREACT), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
+    await expect(page.getByRole('heading', { name: 'Files changed' })).toBeVisible({ timeout: 60_000 })
     await expect(page.getByText(/9 files changed/)).toBeVisible({ timeout: 90_000 })
     await expect(page.getByText('Reading file', { exact: true })).toHaveCount(0, { timeout: 30_000 })
     await expect(page.getByText(/line counts cover/)).toHaveCount(0)
