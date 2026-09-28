@@ -32,7 +32,7 @@ import type { Role } from '../rules/v2'
 import { queryDocumentsWithProof, type PlainDocument, type WhereClause } from '../sdk'
 import { countsAt, docsAt, queryComposite, type CompositeSub, type CompositeResult } from '../sdk/composite'
 import { DOC, readMemberRepoIds, toRepoDoc, type RepoDoc } from '../repo'
-import { readMostStarred, readTrending } from '../repo/trending'
+import { readMostStarred, readTrending, type TrendingWindow } from '../repo/trending'
 import { seedFromDomains } from './dpns'
 
 /** A repo row for the discovery feeds and profiles. */
@@ -345,7 +345,7 @@ export interface RankedRepos {
  */
 export async function rankedRepos(
   sdk: EvoSDK,
-  kind: 'trending-week' | 'trending-today' | 'most-starred',
+  kind: TrendingWindow | 'most-starred',
   opts: { network?: Network; limit?: number } = {},
 ): Promise<RankedRepos> {
   const network = opts.network ?? DEFAULT_NETWORK
@@ -355,7 +355,7 @@ export async function rankedRepos(
   const page =
     kind === 'most-starred'
       ? await readMostStarred(sdk, forge, limit)
-      : await readTrending(sdk, forge, kind === 'trending-week' ? 'week' : 'today', limit)
+      : await readTrending(sdk, forge, kind, limit)
   const ids = page.entries.map((e) => e.group).filter((id) => id !== '')
   if (ids.length === 0) return { repos: [], missing: 0, pushesComplete: true }
   let rows: DiscoveredRepo[]
@@ -367,7 +367,9 @@ export async function rankedRepos(
         dataContractId: forge.core,
         documentType: DOC.repo,
         where: [['$id', 'in', ids]],
-        orderBy: [['$id', 'asc']],
+        // Descending, as the pushes lookup is: a sub-query that disagrees with the page's
+        // direction is refused (and this would silently fall back to the plain read).
+        orderBy: [['$id', 'desc']],
         limit: ids.length,
         subQueries: repoSubs(forge, network, 'page', Date.now() - PUSH_WINDOW_MS),
       },

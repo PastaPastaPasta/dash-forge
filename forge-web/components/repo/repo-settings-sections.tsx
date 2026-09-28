@@ -270,7 +270,7 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
   }
   const changed = Object.keys(edit).length > 0
   const problem = descriptionProblem(description) ?? topicsProblem(topics)
-  const cost = previewRepoEdit(edit)
+  const cost = previewRepoEdit(edit, home.v2.topics)
   const run = async (): Promise<void> => {
     if (!sdk || !signer || pending === null) throw new Error('sign in to continue')
     await editRepoDoc(sdk, signer, home.repo, pending)
@@ -324,8 +324,8 @@ function RepoDocForm({ home, owner, onSaved }: { home: RepoHome; owner: boolean;
         open={pending !== null}
         onClose={() => setPending(null)}
         title="Edit the repo details"
-        description="Replaces the description and topics on the repo document. Its name, visibility and fork origin cannot change."
-        cost={pending ? previewRepoEdit(pending) : null}
+        description="Replaces the description and topics on the repo document; each topic added or removed is also one small topic document (what Explore counts per topic). Its name, visibility and fork origin cannot change."
+        cost={pending ? previewRepoEdit(pending, home.v2.topics) : null}
         confirmLabel="Sign & save"
         onConfirm={run}
       />

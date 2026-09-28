@@ -46,7 +46,7 @@ export function RepoCard({ repo }: { repo: DiscoveredRepo }): JSX.Element {
           <span>· {timeAgo(repo.createdAt)}</span>
         ) : null}
         {typeof repo.stars === 'number' ? (
-          <span className="inline-flex items-center gap-1" title="Stars (provable count)">
+          <span className="inline-flex items-center gap-1" title="Stars (provable count)" data-testid="repo-stars" data-stars={repo.stars}>
             <Star className="h-3 w-3" aria-hidden /> {repo.stars}
             <span className="sr-only">stars</span>
           </span>

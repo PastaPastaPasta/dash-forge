@@ -1,7 +1,7 @@
 /**
  * Milestones (forge-collab `milestone`, C-1): member-gated definitions, newest per title wins
  * (FORGE_RULES_V2 `foldMilestonesV2`). An issue or PR joins one with a member event (kind 17,
- * the title as its value). Topics (forge-core `topic`, owner-granted) are read here too.
+ * the title as its value).
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -26,10 +26,4 @@ export async function readMilestones(sdk: EvoSDK, repo: RepoRef, items: readonly
     createdAt: num(d, '$createdAt'),
   }))
   return foldMilestonesV2(rows, items)
-}
-
-/** A repo's topics (forge-core `topic`), sorted. */
-export async function readTopics(sdk: EvoSDK, repo: RepoRef): Promise<string[]> {
-  const docs = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.topic, { orderBy: [['repoId', 'asc'], ['name', 'asc']] }))
-  return [...new Set(docs.map((d) => str(d, 'name')).filter((n) => n !== ''))].sort()
 }

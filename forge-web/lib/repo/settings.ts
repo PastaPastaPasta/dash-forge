@@ -21,9 +21,14 @@ import { compareKey, isLegalRefName, matchesProtected } from '../rules'
 import type { Policy } from '../rules/v2'
 import { branchName } from '../view/format'
 import {
+  ConsensusRefusal,
+  DUPLICATE_UNIQUE_CODE,
+  sumPreviews,
   createDocumentIdempotent,
+  deleteDocumentIdempotent,
   previewCreate,
   previewCredits,
+  previewDelete,
   previewReplace,
   queryAllDocuments,
   replaceDocumentIdempotent,
@@ -34,7 +39,7 @@ import {
   type WriteResult,
 } from '../sdk'
 import { readConfigBundle, type RepoConfig } from './config'
-import { DOC, num, type RepoRef } from './contract'
+import { DOC, num, str, type RepoRef } from './contract'
 import { repoSource } from './source'
 
 // ---------------------------------------------------------------------------------------------
@@ -333,10 +338,46 @@ export function repoEditChanges(edit: RepoDocEdit): Record<string, unknown> {
   return changes
 }
 
-/** The pre-sign cost of an edit of the repo document. */
-export function previewRepoEdit(edit: RepoDocEdit): CostPreview {
+/**
+ * The pre-sign cost of an edit of the repo document, and of the `topic` documents a topics edit
+ * adds and removes (`current`: the topics it replaces) so Explore can count repos per topic.
+ */
+export function previewRepoEdit(edit: RepoDocEdit, current: readonly string[] = []): CostPreview {
   const changes = repoEditChanges(edit)
-  return Object.keys(changes).length === 0 ? previewCredits(0) : previewReplace(DOC.repo, changes)
+  if (Object.keys(changes).length === 0) return previewCredits(0)
+  const { added, removed } = topicChanges(current, edit.topics ?? current)
+  return sumPreviews([
+    previewReplace(DOC.repo, changes),
+    ...added.map((name) => previewCreate(DOC.topic, { name })),
+    ...removed.map(() => previewDelete(DOC.topic)),
+  ])
+}
+
+/** The topic names an edit from `before` to `after` adds and removes. */
+export function topicChanges(before: readonly string[], after: readonly string[]): { added: string[]; removed: string[] } {
+  return { added: after.filter((t) => !before.includes(t)), removed: before.filter((t) => !after.includes(t)) }
+}
+
+/**
+ * Bring the repo's `topic` documents (forge-core, owner-granted, C-1: what Explore counts per
+ * topic) in line with `topics`: create the missing ones, delete the extra ones. Idempotent; the
+ * owner only (consensus refuses anyone else).
+ */
+export async function syncTopicDocs(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, topics: readonly string[]): Promise<void> {
+  const docs = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.topic, { orderBy: [['repoId', 'asc'], ['name', 'asc']] }))
+  const held = new Map(docs.map((d) => [str(d, 'name'), str(d, '$id')]))
+  const { added, removed } = topicChanges([...held.keys()], topics)
+  for (const name of added) {
+    try {
+      await createDocumentIdempotent(sdk, auth, { contractId: repo.forge.core, documentType: DOC.topic, data: { repoId: repo.repoId, name } })
+    } catch (e) {
+      // Tagged in between (another device): the (repoId, name) index is unique.
+      if (!(e instanceof ConsensusRefusal && e.code === DUPLICATE_UNIQUE_CODE)) throw e
+    }
+  }
+  for (const name of removed) {
+    await deleteDocumentIdempotent(sdk, auth, { contractId: repo.forge.core, documentType: DOC.topic, documentId: held.get(name) as string, repo: repo.repoId })
+  }
 }
 
 /**
@@ -353,12 +394,14 @@ export async function editRepoDoc(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, e
     const problem = topicsProblem(edit.topics)
     if (problem) throw new Error(problem)
   }
-  return replaceDocumentIdempotent(sdk, auth, {
+  const result = await replaceDocumentIdempotent(sdk, auth, {
     contractId: repo.forge.core,
     documentType: DOC.repo,
     documentId: repo.repoId,
     changes: repoEditChanges(edit),
     repo: repo.repoId,
   })
+  if (edit.topics !== undefined) await syncTopicDocs(sdk, auth, repo, edit.topics)
+  return result
 }
 

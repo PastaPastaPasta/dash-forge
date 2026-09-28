@@ -32,6 +32,7 @@ import { useSdk } from '@/hooks/use-sdk'
 import { NETWORKS, type Network } from '@/lib/constants'
 import { listReposByOwner, plural, resolveDpnsName, timeAgo, type DiscoveredRepo } from '@/lib/view'
 import { rankedRepos, recentReposPage, recentlyUpdated, searchPrefix, searchRepos, PUSH_WINDOW_MS, type RankedRepos } from '@/lib/view/discovery'
+import type { TrendingWindow } from '@/lib/repo/trending'
 import {
   latestReleases,
   listMyTargets,
@@ -58,12 +59,12 @@ export function ExploreClient(): JSX.Element {
   const on = ready && sdk !== null && forge !== null
 
   const recent = useRepoPages<number>((after) => recentReposPage(sdk!, { network, after }), network, on)
-  const [trendWindow, setTrendWindow] = useState<'week' | 'today'>('week')
-  const trending = useAsync(() => rankedRepos(sdk!, trendWindow === 'week' ? 'trending-week' : 'trending-today', { network, limit: TOP_N }), [ready, network, trendWindow], { enabled: on })
+  const [trendWindow, setTrendWindow] = useState<TrendingWindow>('week')
+  const trending = useAsync(() => rankedRepos(sdk!, trendWindow, { network, limit: TOP_N }), [ready, network, trendWindow], { enabled: on })
   const starred = useAsync(() => rankedRepos(sdk!, 'most-starred', { network, limit: TOP_N }), [ready, network], { enabled: on })
   // Pushes rode along with the repos already read; rank those (the section says so).
   const updated = useMemo(
-    () => recentlyUpdated([recent.repos, [...(starred.data?.repos ?? [])], [...(trending.data?.repos ?? [])]], TOP_N),
+    () => recentlyUpdated([recent.repos, starred.data?.repos ?? [], trending.data?.repos ?? []], TOP_N),
     [recent.repos, starred.data, trending.data],
   )
   const recentRepos = recent.repos.slice(0, 24)
@@ -163,7 +164,7 @@ export function ExploreClient(): JSX.Element {
           title="Recently updated, among the repos on this page"
           testId="explore-recently-updated"
           icon={History}
-          state={updatedState(recent, starred, updated)}
+          state={updatedState(recent, [starred, trending], updated)}
           empty="None of the repos shown here was pushed to in the last week."
           note={`Pushes have no cross-repo index, so this ranks the recent, trending and most-starred repos above by their newest push that uploaded objects in the last ${Math.round(PUSH_WINDOW_MS / 86_400_000)} days. Load more recent repos to widen it.`}
           partial={() =>
@@ -406,14 +407,13 @@ function pagesState(p: RepoPages): SectionState<DiscoveredRepo[]> {
   return { data: p.settled ? p.repos : null, loading: p.loading, error: p.settled ? null : p.error, reload: p.reload }
 }
 
-/** "Recently updated" settles with the reads it ranks (recent and most starred). */
 /** A ranked repo the ranked read named but whose `repo` document could not be read. */
 function missingNote(d: RankedRepos): string | null {
   return d.missing > 0 ? `${plural(d.missing, 'ranked repo')} could not be read and ${d.missing === 1 ? 'is' : 'are'} not shown.` : null
 }
 
 /** Week (the oldest open window, a near-full trailing week) or today (the newest window). */
-function TrendWindowToggle({ value, onChange }: { value: 'week' | 'today'; onChange: (v: 'week' | 'today') => void }): JSX.Element {
+function TrendWindowToggle({ value, onChange }: { value: TrendingWindow; onChange: (v: TrendingWindow) => void }): JSX.Element {
   return (
     <div role="group" aria-label="Trending window" className="mb-3 inline-flex overflow-hidden rounded-md border border-anvil-200 text-dense dark:border-anvil-800">
       {(['week', 'today'] as const).map((w) => (
@@ -448,9 +448,10 @@ function RankedGrid({ repos, unit }: { repos: RankedRepos['repos']; unit: string
   )
 }
 
-function updatedState(recent: RepoPages, starred: AsyncState<unknown>, rows: DiscoveredRepo[]): SectionState<DiscoveredRepo[]> {
-  const settled = recent.settled && (starred.data !== null || starred.error !== null)
-  return { data: settled ? rows : null, loading: recent.loading || starred.loading, error: recent.settled ? null : recent.error, reload: recent.reload }
+/** "Recently updated" settles with the reads it ranks (recent, most starred and trending). */
+function updatedState(recent: RepoPages, ranked: readonly AsyncState<unknown>[], rows: DiscoveredRepo[]): SectionState<DiscoveredRepo[]> {
+  const settled = recent.settled && ranked.every((r) => r.data !== null || r.error !== null)
+  return { data: settled ? rows : null, loading: recent.loading || ranked.some((r) => r.loading), error: recent.settled ? null : recent.error, reload: recent.reload }
 }
 
 /** The repo-name search box: submits into `?q=` (Enter or the button; empty clears it). */

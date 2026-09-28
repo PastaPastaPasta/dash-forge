@@ -84,6 +84,11 @@ describe('planFeeds', () => {
     expect(on).toContain(`push:refUpdate:${REPO.id}`)
     expect(on).toContain('push:protectedRefUpdate:S')
   })
+  it('follows a watched repo (C-1 `watch`, every device) whatever the star preference', () => {
+    const watched = { repo: { ...REPO, id: 'W' }, reason: 'watched' as const }
+    const keys = planFeeds(subs({ repos: [watched], threads: [] }), DEFAULT_PREFS).map(feedKey)
+    expect(keys).toEqual(['new:issue:W', 'new:patch:W'])
+  })
 })
 
 describe('pickRound', () => {

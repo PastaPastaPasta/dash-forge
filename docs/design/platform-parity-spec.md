@@ -483,6 +483,14 @@ The live acceptance checks of §7 C-1 (`forge-contracts/scripts/verify-c1.mjs`, 
 - **Passed:** `runner` and `topic` are present; the runner check-run passes and is refused after revocation (40120); `requiredChecks`; `watch`; the topic count; the ranked starBeat order.
 - **Failed on the client side only: the `conclusionIfDone` check.** The node refused the run as it should, but the beta.5 JS SDK decoded the reason as a `maxBytes` error ("over its maxBytes"), because platform#5053 moved the basic consensus errors one place. The check matches the rule name, so it failed. It passes once the SDK is on beta.6.
 
+How the clients carry the C-1 types (PR (b)):
+
+- **Topics**: the owner writes both the `topic` documents (what Explore counts per topic) and `repo.topics` (what repo pages show); `dg repo topic --add/--remove` and the web Settings save keep the two in step (`Collab::sync_repo_topics`, `syncTopicDocs`).
+- **Watch**: the inbox reads `watch.byOwner` as a subscription source (reason `watched`, whatever the star preference), so a watch follows the viewer to every device.
+- **Pin**: the Issues tab shows the repo's pinned issues above the list (folded from the feed it already reads, `pinnedTargets`); `dg issue list` lists them first.
+- **Lock**: a client rule, like archiving. The web composer and `dg issue comment` refuse a non-member's comment on a locked thread before signing; consensus still admits one, and the web marks it "posted while locked".
+- **Milestones**: `dg issue milestone` accepts only an open milestone the repo defines (the web picker offers the same list); the web reads milestones for members only.
+
 **forge-collab's size is a lifetime budget:** every future additive change to forge-collab must fit the ≈ 1 KB left (an update carries the whole contract), or go in a new contract.
 
 ---

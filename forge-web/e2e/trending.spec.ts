@@ -21,7 +21,9 @@ import { collectPageErrors, countDocumentQueries, E2E_DEVNET, nodeSdk, shot } fr
  *      those counts (other repos on the devnet may interleave: only the relative order and the
  *      counts of the seeded ones are asserted);
  *   3. reads the same ranking in Node, independently of the app, and checks the page matches it;
- *   4. asserts the section's request budget: one ranked `starBeat` read per window.
+ *   4. asserts the section's request budget: one ranked `starBeat` read per window;
+ *   5. checks Most starred's cards carry the star counts the repos' composite read (a refused
+ *      composite falls back to a plain read that has none).
  */
 
 interface Seed {
@@ -107,5 +109,15 @@ test('t1. Trending this week matches a recount of the seeded stars in the window
   // Budget: Trending is ONE proved ranked read per window (`getDocuments` carries it), whatever
   // the number of stars: this week, then today.
   expect(beatReads.count()).toBe(2)
+
+  // Most starred: each card's star count came from the ranked repos' composite, so it is there
+  // and equals the ranked count (the same `star.byRepo` tree).
+  const starred = page.getByTestId('explore-most-starred')
+  await expect(starred.getByTestId('ranked-row').first()).toBeVisible({ timeout: 60_000 })
+  const cards = await starred.getByTestId('ranked-row').evaluateAll((els) =>
+    els.map((el) => ({ count: el.getAttribute('data-count'), stars: el.querySelector('[data-testid="repo-stars"]')?.getAttribute('data-stars') ?? null })),
+  )
+  expect(cards.length).toBeGreaterThan(0)
+  expect(cards.every((c) => c.stars === c.count), JSON.stringify(cards)).toBe(true)
   expect(errors, errors.join('\n')).toEqual([])
 })

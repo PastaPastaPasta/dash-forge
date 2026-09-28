@@ -87,6 +87,13 @@ function mockSdk(store: Record<string, Record<string, Doc[]>>, seen: Seen, opts:
   const rows = (c: string, t: string): Doc[] => store[c]?.[t] ?? []
   const composite = async (q: CompositeQuery) => {
     seen.composites.push(q)
+    // Every sub-query walks in the page's direction; an ordering that disagrees is refused.
+    const dir = (o: readonly (readonly [string, string])[] | undefined): string | undefined => o?.[o.length - 1]?.[1]
+    const pageDir = dir(q.orderBy as never)
+    for (const s of q.subQueries) {
+      const d = dir(s.orderBy as never)
+      if (pageDir !== undefined && d !== undefined && d !== pageDir) throw new Error('invalid argument: a sub-query ordering disagrees with the page direction')
+    }
     const page = run(rows(q.dataContractId, q.documentType), (q.where ?? []) as never, (q.orderBy ?? []) as never, q.limit)
     const subDocs: Doc[][] = []
     const subResults = q.subQueries.map((s, i) => {
@@ -333,8 +340,8 @@ describe('rankedRepos (C-1: proved ranked reads)', () => {
     const s = store()
     s[FORGE.collab]!['starBeat'] = [{ $id: id('B1'), $ownerId: id('U1'), repoId: id('Rjq') }]
     const seen = fresh()
-    const week = await rankedRepos(mockSdk(s, seen), 'trending-week', { network: NET })
-    await rankedRepos(mockSdk(s, seen), 'trending-today', { network: NET })
+    const week = await rankedRepos(mockSdk(s, seen), 'week', { network: NET })
+    await rankedRepos(mockSdk(s, seen), 'today', { network: NET })
     expect(names(week.repos)).toEqual(['jq'])
     expect(seen.ranked.map((q) => [q['documentTypeName'], (q['timeRange'] as { selector: string }[])[0]?.selector])).toEqual([
       ['starBeat', 'oldest'],
@@ -346,7 +353,7 @@ describe('rankedRepos (C-1: proved ranked reads)', () => {
     const s = store()
     s[FORGE.collab]!['starBeat'] = []
     const seen = fresh()
-    const r = await rankedRepos(mockSdk(s, seen), 'trending-week', { network: NET })
+    const r = await rankedRepos(mockSdk(s, seen), 'week', { network: NET })
     expect(r.repos).toEqual([])
     expect(requests(seen)).toBe(1)
   })

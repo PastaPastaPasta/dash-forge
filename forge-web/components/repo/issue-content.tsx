@@ -97,11 +97,12 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     { enabled: ready && sdk !== null && identity !== null && data !== null },
   )
 
-  // The repo's milestones, for the picker (members only: only they can set one).
+  // The repo's milestones, for the picker: read for members only (only they can set one).
+  const canSetMilestone = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const milestones = useAsync(
     () => readMilestones(sdk!, home.repo),
-    [ready, repoKey(home.repo), data === null ? 0 : 1],
-    { enabled: ready && sdk !== null && data !== null },
+    [ready, repoKey(home.repo), canSetMilestone ? 1 : 0],
+    { enabled: ready && sdk !== null && canSetMilestone },
   )
 
   const [comment, setComment] = useState('')
@@ -134,6 +135,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   if (!data) return <EmptyState icon={CircleDot} title={`Issue #${number} not found`} body="No issue with that number in this repo." />
 
   const { issue, timeline, labels, members, hidden, eventValues, meta } = data
+  const whileLocked = commentsWhileLocked(timeline, new Set(members.map((m) => m.identity)))
   const open = issue.state.open
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const isAuthor = identity !== null && identity === issue.author
@@ -142,7 +144,11 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   // member holding the current key can, so everyone else sees why not instead of a composer.
   // An archived repo takes no writes (client-side gate: consensus cannot enforce it).
   const archived = home.config?.archived === true
-  const composeBlock = archived ? ARCHIVED_REASON : privateComposeBlock(home)
+  const composeBlock = archived
+    ? ARCHIVED_REASON
+    : meta.locked && !isMember
+      ? 'This conversation is locked: only maintainers and writers can comment.'
+      : privateComposeBlock(home)
   const isPrivate = home.repo.visibility === 'private'
   const toggleHint =
     !canToggle && identity !== null && holdings.settled && holdings.data === null
@@ -330,8 +336,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           <Timeline
             items={timeline}
             links={links}
-            renderComment={(item) =>
-              commentSlots({
+            renderComment={(item) => {
+              const slots = commentSlots({
                 item,
                 viewer: identity,
                 editing: editingComment,
@@ -340,7 +346,19 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
                 onSave: (id, body) => setPending({ kind: 'editComment', id, body }),
                 links,
               })
-            }
+              if (!whileLocked.has(item.comment.id)) return slots
+              return {
+                ...slots,
+                header: (
+                  <>
+                    <span className="rounded-full bg-anvil-100 px-2 py-0.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300" data-testid="posted-while-locked" title="A non-member posted this while the conversation was locked to members (consensus cannot refuse it; Forge clients do not offer it).">
+                      posted while locked
+                    </span>
+                    {slots.header}
+                  </>
+                ),
+              }
+            }}
           />
         ) : null}
 
@@ -399,6 +417,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
           <MilestonePicker
             current={meta.milestone}
             choices={milestones.data ?? []}
+            loading={milestones.data === null && milestones.error === null}
+            canDefine={!isPrivate}
             canEdit={isMember && !archived && guard.disabledReason === null}
             onChoose={(title) => setPending({ kind: 'milestone', title })}
           />
@@ -463,9 +483,9 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
         title: `${verb} issue #${number}`,
         description:
           pending.flag === 'pin'
-            ? pending.on ? 'Appends a pin event: the issue is listed first on the repo\'s issues page.' : 'Appends an unpin event.'
+            ? pending.on ? 'Appends a pin event: the issue is listed first on the repo\'s issues page (and in dg issue list).' : 'Appends an unpin event.'
             : pending.on
-              ? 'Appends a lock event: clients offer the comment box to maintainers and writers only. Consensus cannot stop anyone else from commenting (fees are the only floor); such comments are shown as posted after the lock.'
+              ? 'Appends a lock event: Forge clients (this app and dg) then offer commenting to maintainers and writers only. Consensus cannot stop anyone else from commenting (fees are the only floor); a comment posted after the lock is marked so.'
               : 'Appends an unlock event: everyone is offered the comment box again.',
         label: `Sign & ${verb.toLowerCase()}`,
       }
@@ -537,6 +557,21 @@ function commentSlots({
       <Pencil className="h-3 w-3" aria-hidden /> Edit
     </button>
   ) }
+}
+
+/**
+ * The comments a non-member posted while the conversation was locked (the member `event`s
+ * kinds 21/22, in timeline order, as `foldThreadMetaV2` reads them). Consensus admits such a
+ * comment; readers mark it.
+ */
+function commentsWhileLocked(items: readonly TimelineItem[], members: ReadonlySet<string>): Set<string> {
+  const out = new Set<string>()
+  let locked = false
+  for (const it of [...items].sort((a, b) => a.at - b.at)) {
+    if (it.kind === 'event' && !it.byAuthor && (it.event.kind === 'lock' || it.event.kind === 'unlock')) locked = it.event.kind === 'lock'
+    else if (it.kind === 'comment' && locked && !members.has(it.comment.author)) out.add(it.comment.id)
+  }
+  return out
 }
 
 /** A comment of the timeline by id (the text an edit re-seals from). */
