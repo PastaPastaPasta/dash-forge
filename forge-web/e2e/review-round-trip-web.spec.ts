@@ -120,9 +120,6 @@ test.beforeAll(() => {
   repoId = String(dg('OWNER', 'repo', 'create', REPO, '--storage', 'platform')['repoId'])
   git('OWNER', src, ['push', '-q', `dash://${SLUG}`, 'main:refs/heads/main'])
   dg('CONTRIB', 'repo', 'fork', SLUG, '--name', FORK)
-  // The contributor lets the maintainer write the fork (as "allow edits by maintainers"): only
-  // a writer of the source repo is offered "Delete the branch after merging" (r6).
-  dg('CONTRIB', 'collab', 'add', FORK_SLUG, ids.owner, '--role', 'writer')
   const w = join(WORK, 'fork')
   git('CONTRIB', WORK, ['clone', '-q', `dash://${FORK_SLUG}`, w])
   const gw = (...a: string[]): void => void execFileSync('git', a, { cwd: w })
@@ -245,6 +242,13 @@ test('r5. the maintainer re-reviews: resolves, approves; checks gate the merge u
   await page.getByTestId('pr-tab-checks').click()
   await expect(page.getByTestId('check-run')).toHaveAttribute('data-outcome', 'passed')
   await shot(page, 'review-rt-04-checks-pass')
+  // OWNER cannot write the contributor's fork: "Delete the branch" shows disabled, with why.
+  await page.getByTestId('pr-tab-conversation').click()
+  const unavailable = page.getByTestId('delete-branch-unavailable')
+  await expect(unavailable).toContainText(/can't write the contributor's fork; ask them to allow edits by maintainers/, { timeout: 180_000 })
+  await expect(unavailable.getByRole('checkbox')).toBeDisabled()
+  // The contributor allows edits by maintainers (OWNER becomes a writer of the fork): r6 deletes it.
+  dg('CONTRIB', 'collab', 'add', FORK_SLUG, ids.owner, '--role', 'writer')
 })
 
 test('r6. squash and merge with an edited message; the branch is deleted', async ({ browser }) => {
