@@ -91,8 +91,10 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
   test('v2-4. issues list folds event + authorEvent', async ({ page }) => {
     await page.goto(url('issues'), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
-    await expectLanded(page, page.getByText('README should explain the event split'))
+    await expectLanded(page, page.getByRole('list', { name: 'Issues', exact: true }).getByText('README should explain the event split'))
     await expect(page.getByText('question').first()).toBeVisible()
+    // The fixture pins #1 (member event kind 19): it is also shown above the list.
+    await expect(page.getByTestId('pinned-issue').filter({ hasText: 'README should explain the event split' })).toBeVisible()
     await page.getByRole('tab', { name: /Closed/ }).click()
     await expect(page.getByText('Duplicate of #1')).toBeVisible()
     await expect(page.getByText('Add a rules page')).toBeVisible()
