@@ -362,9 +362,9 @@ The push prints where the pack went and what Platform charged:
 
 ```
 dash: 5NGj…/nas-demo ← main (864183b, 5 objects, 448 B)
-dash: storage      → nas · Platform stores manifest + refs only, est 0.000275 DASH
+dash: storage      → nas · Platform stores manifest + refs only, est 0.0032 DASH
 dash: nas          ████████████████ 448 B  verified   0.7 s
-dash: platform     manifest 2 · refUpdate 1     est 0.000275 DASH
+dash: platform     manifest 2 · refUpdate 1     est 0.0032 DASH
 dash: done · Platform charged ≈0.0028 DASH · remaining 0.9938 DASH · https://forge.dashhq.org/repo?owner=5NGj…&name=nas-demo
 ```
 

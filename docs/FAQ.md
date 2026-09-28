@@ -42,7 +42,7 @@ You, directly, and only for what you write. Platform fees come from your identit
 
 ## How much does it cost?
 
-Measured on devnet moutai: creating a repository costs about **0.0013 DASH**. A push to your own bucket costs about **0.0003–0.004 DASH**. An issue costs about 0.0006–0.0017 DASH, depending on its length. Storing packs on Platform costs about 0.28–0.30 DASH per MiB. A fork of a small repository costs about 0.01 DASH, and a first GitHub mirror of a small repository about 0.08 DASH. On devnet moutai all of it is paid in free test Dash. The full table is in [Costs](guides/costs.md).
+Measured on devnet moutai: creating a repository costs about **0.0013 DASH**. A push to your own bucket costs about **0.002–0.003 DASH**. An issue costs about 0.0006–0.0017 DASH, depending on its length. Storing packs on Platform costs about 0.33 DASH per MiB. A fork of a small repository costs about 0.01 DASH, and a first GitHub mirror of a small repository about 0.08 DASH. On devnet moutai all of it is paid in free test Dash. The full table is in [Costs](guides/costs.md).
 
 ## When is it on mainnet?
 

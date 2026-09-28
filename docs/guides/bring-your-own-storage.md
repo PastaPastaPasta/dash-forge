@@ -50,13 +50,13 @@ A push works like this:
 2. It prints what is pushed and where it goes, before anything is paid for:
    ```
    dash: alice/project ← main (8f3e2a1, 312 objects, 1.2 MiB)
-   dash: storage      → r2-main, kubo (need 2 of 2) · Platform stores manifest + refs only, est 0.000373 DASH
+   dash: storage      → r2-main, kubo (need 2 of 2) · Platform stores manifest + refs only, est 0.0032 DASH
    ```
 3. It uploads to every target **in parallel**. The object keys are content-addressed (`packs/<sha256>.pack`, or the CID for IPFS), so a re-push is idempotent. Each target gets a line as soon as its copy is stored and verified (`dash: r2-main      ████████████████ 1.2 MiB  verified   0.4 s`), or a `✗` line naming the failure.
 4. It **verifies each copy by reading it back**. Packs up to 16 MiB get a full GET plus SHA-256. Larger packs get a size check plus byte-exact head and tail ranges. The store also verified the whole body on upload (S3 checks `x-amz-content-sha256`; IPFS checks that kubo's CID matches a local re-derivation).
 5. If fewer than `dash.replicas` targets confirm, **the push fails before anything is written to Platform**: no manifest, no ref. The error ([E502](../errors.md#e502)) names each failing target.
-6. Otherwise it prints what Platform writes (`dash: platform     manifest 2 · refUpdate 1     est 0.000373 DASH`), writes the manifest with every confirmed URI, then the refs. It also publishes the browse-index fragment to the same targets. If an earlier push already recorded this exact pack, the helper first checks that at least one copy that manifest records is readable and hash-matches. If none is, it refuses to update any ref ([E507](../errors.md#e507)).
-7. It ends with what Platform charged, measured as the identity's balance change (`≈`), or the estimate when the balance has not moved yet: `dash: done · Platform charged ≈0.00029 DASH · remaining 0.4809 DASH · https://forge.dashhq.org/repo?owner=…&name=…`. With `-q` this line and its balance read are skipped.
+6. Otherwise it prints what Platform writes (`dash: platform     manifest 2 · refUpdate 1     est 0.0032 DASH`), writes the manifest with every confirmed URI, then the refs. It also publishes the browse-index fragment to the same targets. If an earlier push already recorded this exact pack, the helper first checks that at least one copy that manifest records is readable and hash-matches. If none is, it refuses to update any ref ([E507](../errors.md#e507)).
+7. It ends with what Platform charged, measured as the identity's balance change (`≈`), or the estimate when the balance has not moved yet: `dash: done · Platform charged ≈0.0028 DASH · remaining 0.4786 DASH · https://forge.dashhq.org/repo?owner=…&name=…`. With `-q` this line and its balance read are skipped.
 
 `git push --dry-run` builds the pack, prints the plan, target and Platform-estimate lines, then stops. With `GIT_DASH_JSON=1` each line is a JSON event instead (`{"event":"plan",…}`).
 
@@ -104,7 +104,7 @@ Keychain entries you created by hand (`security add-generic-password -s dash-for
 
 The web app has the same setup at **Settings → Storage** (`/settings/storage`) on forge.dashhq.org. It is what the browser uses when it uploads to your storage itself, for example a release's assets; `git push` keeps using `dg`'s profiles.
 
-- **Providers:** Cloudflare R2 (recommended: free egress), Backblaze B2, AWS S3, Garage / RustFS / other S3, IPFS (your kubo node), an IPFS pinning service, and Dash Platform last (permanent, about 0.28 DASH/MiB). Each field has a "where to find this" hint.
+- **Providers:** Cloudflare R2 (recommended: free egress), Backblaze B2, AWS S3, Garage / RustFS / other S3, IPFS (your kubo node), an IPFS pinning service, and Dash Platform last (permanent, about 0.33 DASH/MiB; see [Costs](costs.md)). Each field has a "where to find this" hint.
 - **A live test from the page**, so it checks exactly what the browser will do, CORS included. S3: signed PUT, signed GET, anonymous GET through the public URL, a ranged read, a CORS preflight for PUT, then the probe is deleted. IPFS: the kubo API, add with a CID check and pin, the gateway re-read, the public gateway, the pinning service, then unpin. A failing CORS row shows a copy-paste fix for your provider, filled in with your bucket and this app's origin; the browser needs PUT allowed from the app's origin, where the CLI needs no CORS at all.
 - **Credentials stay in this browser**, sealed in the same encrypted vault as your [limited key](identity-and-keys.md#the-browser-vault-and-its-limits), and are never sent anywhere else or written on chain. Lock the vault and they are unreadable.
 - **Replication:** one place, every chosen place, or Platform as a costed fallback that asks first. A repository's **Settings → Your browser pushes** overrides the default for that repository.
