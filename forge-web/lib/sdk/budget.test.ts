@@ -5,6 +5,8 @@ import {
   CALL_DEADLINE_MS,
   DOWN_MS,
   HEDGE_AFTER_MS,
+  HEDGE_GRACE_MS,
+  HEDGE_MAX_IN_FLIGHT,
   INTERVAL_MS,
   LOW_WATER,
   RequestBudget,
@@ -440,6 +442,112 @@ describe('gatedFetch', () => {
       expect(budget.waitFor(hedgeNode).ms).toBeGreaterThanOrEqual(29_000)
       await vi.advanceTimersByTimeAsync(5000)
       expect((await pending).headers.get('grpc-status')).toBe('0')
+    })
+
+    // A streamed reply (DapiCore.watch) is cancelled by aborting the caller's signal after the
+    // headers arrived: that must still reach the request the gate sent.
+    it('passes the caller’s abort through after the reply has begun, hedged path or not', async () => {
+      for (const url of [METHOD, `${NODE}//org.dash.platform.dapi.v0.Core/subscribeToTransactionsWithProofs`]) {
+        const budget = withNodes()
+        const base = vi.fn(async (_req: Request) => ok())
+        const caller = new AbortController()
+        await gatedFetch(base as unknown as typeof fetch, budget)(url, { method: 'POST', signal: caller.signal })
+        const sent = base.mock.calls[0]?.[0] as unknown as Request
+        expect(sent.signal.aborted).toBe(false)
+        caller.abort()
+        expect(sent.signal.aborted).toBe(true)
+      }
+    })
+
+    it('books the node’s own refusal that comes back while the hedge serves the read', async () => {
+      const budget = withNodes()
+      const base = vi.fn(async (req: Request) =>
+        new URL(req.url).origin === NODE
+          ? new Promise<Response>((resolve) => setTimeout(() => resolve(overLimit(30)), HEDGE_AFTER_MS + 10))
+          : new Promise<Response>((resolve) => setTimeout(() => resolve(ok()), 300)),
+      )
+      const pending = gatedFetch(base as unknown as typeof fetch, budget)(METHOD, { method: 'POST' })
+      await vi.advanceTimersByTimeAsync(HEDGE_AFTER_MS + 300)
+      expect((await pending).headers.get('grpc-status')).toBe('0')
+      expect(budget.waitFor(NODE).ms).toBeGreaterThanOrEqual(29_000)
+    })
+
+    it('passes the node’s own refusal back after a short grace when the hedge is still out', async () => {
+      const budget = withNodes()
+      const base = vi.fn(async (req: Request) =>
+        new URL(req.url).origin === NODE
+          ? new Promise<Response>((resolve) => setTimeout(() => resolve(overLimit(30)), HEDGE_AFTER_MS + 10))
+          : new Promise<Response>((_, reject) => req.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))),
+      )
+      const pending = gatedFetch(base as unknown as typeof fetch, budget)(METHOD, { method: 'POST' })
+      await vi.advanceTimersByTimeAsync(HEDGE_AFTER_MS + 10)
+      expect(await settled(pending)).toBe(false)
+      await vi.advanceTimersByTimeAsync(HEDGE_GRACE_MS)
+      // The refusal fails over (the SDK tries the next node); the hedge is cancelled, not booked.
+      expect((await pending).headers.get('grpc-status')).toBe('8')
+      const hedgeNode = new URL((base.mock.calls[1]?.[0] as Request).url).origin
+      expect((base.mock.calls[1]?.[0] as Request).signal.aborted).toBe(true)
+      expect(budget.isDown(hedgeNode)).toBe(false)
+    })
+
+    it('neither reply usable: the node’s own is passed back and the hedge node is booked', async () => {
+      const budget = withNodes()
+      const base = vi.fn(async (req: Request) =>
+        new URL(req.url).origin === NODE
+          ? new Promise<Response>((resolve) => setTimeout(() => resolve(grpcReply({ 'grpc-status': '14' })), HEDGE_AFTER_MS + 200))
+          : grpcReply({ 'grpc-status': '14' }),
+      )
+      const pending = gatedFetch(base as unknown as typeof fetch, budget)(METHOD, { method: 'POST' })
+      await vi.advanceTimersByTimeAsync(HEDGE_AFTER_MS + 200)
+      expect((await pending).headers.get('grpc-status')).toBe('14')
+      const hedgeNode = new URL((base.mock.calls[1]?.[0] as Request).url).origin
+      expect(budget.isDown(hedgeNode)).toBe(true)
+      expect(budget.isDown(NODE)).toBe(true)
+    })
+
+    it('holds the node that answered when its window is nearly spent', async () => {
+      const budget = withNodes()
+      const base = vi.fn(async (req: Request) =>
+        new URL(req.url).origin === NODE
+          ? new Promise<Response>((_, reject) => req.signal.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))))
+          : ok(LOW_WATER, 7),
+      )
+      const pending = gatedFetch(base as unknown as typeof fetch, budget)(METHOD, { method: 'POST' })
+      await vi.advanceTimersByTimeAsync(HEDGE_AFTER_MS)
+      await pending
+      const hedgeNode = new URL((base.mock.calls[1]?.[0] as Request).url).origin
+      expect(budget.waitFor(hedgeNode).ms).toBeGreaterThanOrEqual(7000)
+      expect(budget.waitFor(NODE).cause === 'rate-limit' && budget.waitFor(NODE).ms > 0).toBe(false)
+    })
+
+    it('keeps hedges within budget: two in flight, about a tenth of requests, none while nodes are impaired', async () => {
+      const budget = withNodes()
+      const never = vi.fn(async (req: Request) =>
+        new URL(req.url).origin === NODE
+          ? new Promise<Response>(() => undefined)
+          : new Promise<Response>(() => undefined),
+      )
+      const gated = gatedFetch(never as unknown as typeof fetch, budget)
+      for (let i = 0; i < 40; i++) void gated(METHOD, { method: 'POST' })
+      await vi.advanceTimersByTimeAsync(HEDGE_AFTER_MS)
+      const hedged = never.mock.calls.filter((c) => new URL((c[0] as Request).url).origin !== NODE).length
+      expect(hedged).toBe(HEDGE_MAX_IN_FLIGHT)
+
+      // Three nodes held or down: the network is impaired, no hedge (FOURTH is free).
+      const impaired = withNodes()
+      for (let i = 0; i < 20; i++) impaired.noteSent()
+      impaired.markDown(OTHER, Date.now() + DOWN_MS)
+      impaired.hold(THIRD, Date.now() + 60_000)
+      impaired.hold(NODE, Date.now() + 60_000)
+      expect(impaired.startHedge(NODE)).toBeNull()
+      // A healthy one with the same traffic does hedge, to the free node, up to the share.
+      const healthy = withNodes()
+      for (let i = 0; i < 20; i++) healthy.noteSent()
+      expect(healthy.startHedge(NODE)).not.toBeNull()
+      healthy.hedgeDone()
+      expect(healthy.startHedge(NODE)).not.toBeNull()
+      healthy.hedgeDone()
+      expect(healthy.startHedge(NODE)).toBeNull()
     })
 
     it('does not hedge when no other node is free', async () => {

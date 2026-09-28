@@ -277,11 +277,21 @@ export interface LastCommit {
 export const LAST_COMMIT_WALK = 400
 
 /**
- * A reader for one walk over many commits: the reader's own read-ahead walker when it has one
- * (one ranged read per block of neighbouring commits, not one per commit), else the reader.
+ * A reader for walks over many commits: the reader's own read-ahead walker when it has one (one
+ * ranged read per block of neighbouring commits, not one per commit), else the reader. Pass one
+ * walker to several walks of the same history (the repo home's commit count and commit column)
+ * so they share its blocks instead of each fetching them.
  */
-function walkerOf(reader: ObjectReader): ObjectReader & { flush?(): void } {
+export function historyWalker(reader: ObjectReader): ObjectReader & { flush?(): void } {
   return reader.forHistoryWalk?.() ?? reader
+}
+
+/** Options of a history walk. */
+export interface WalkOptions {
+  /** The walker to read through ({@link historyWalker}); default: a new one for this walk. */
+  readonly walker?: ObjectReader & { flush?(): void }
+  /** Stops the walk (it rejects with the signal's reason) before its next step. */
+  readonly signal?: AbortSignal
 }
 
 /**
@@ -297,10 +307,13 @@ export async function lastCommitsForDir(
   tipOid: string,
   dirPath: string,
   names: readonly string[],
-  limit = LAST_COMMIT_WALK,
-  onFound?: (found: ReadonlyMap<string, LastCommit>) => void,
+  {
+    limit = LAST_COMMIT_WALK,
+    onFound,
+    walker = historyWalker(reader),
+    signal,
+  }: WalkOptions & { readonly limit?: number; readonly onFound?: (found: ReadonlyMap<string, LastCommit>) => void } = {},
 ): Promise<Map<string, LastCommit>> {
-  const walker = walkerOf(reader)
   const segments = dirPath.split('/').filter((s) => s !== '')
   const dirOf = async (treeOid: string): Promise<Map<string, string> | null> => {
     let oid = treeOid
@@ -318,6 +331,7 @@ export async function lastCommitsForDir(
     let commit = await readCommit(walker, tipOid)
     let here = await dirOf(commit.tree)
     for (let steps = 0; here !== null && open.size > 0 && steps < limit; steps++) {
+      signal?.throwIfAborted()
       const parentOid = commit.parents[0]
       const parent = parentOid !== undefined ? await readCommit(walker, parentOid) : null
       const there = parent !== null ? await dirOf(parent.tree) : null
@@ -348,13 +362,14 @@ export async function countCommits(
   reader: ObjectReader,
   tipOid: string,
   cap = 1000,
+  { walker = historyWalker(reader), signal }: WalkOptions = {},
 ): Promise<{ count: number; capped: boolean }> {
-  const walker = walkerOf(reader)
   let count = 0
   let oid: string | undefined = tipOid
   const seen = new Set<string>()
   try {
     while (oid !== undefined && count < cap && !seen.has(oid)) {
+      signal?.throwIfAborted()
       seen.add(oid)
       count += 1
       oid = (await readCommit(walker, oid)).parents[0]

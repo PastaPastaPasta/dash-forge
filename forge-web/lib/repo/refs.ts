@@ -5,8 +5,11 @@
  * (`refNameHash, $createdAt`): pages of `refNameHash > last`, 100 rows each, with no
  * `startAfter` cursor. Every ref on a full page except the last is complete; the next page
  * starts after the last complete ref. A ref that fills a page by itself is read on its own
- * (an equality query, single-branch) and the scan moves past it. Cost: ⌈updates/100⌉
- * queries per type plus one per such ref. Parity: forge-core `refs::read_all_ref_updates`.
+ * (an equality query, single-branch) and the scan moves past it. When the first page is full,
+ * the rest of the key space is scanned as up to {@link KEYSET_SPLITS} ranges side by side, sized
+ * from how far that page reached ({@link keysetSplits}). Cost: ⌈updates/100⌉ queries per type,
+ * plus one per page-filling ref, plus at most one page per extra range (each range's last page
+ * reads past its ceiling). Parity: forge-core `refs::read_all_ref_updates` (serial).
  *
  * WHY NO CURSOR: paging `refState` with `startAfter` lost rows on protocol 13 — 32 of 229
  * updates on the old nightly repo. Drive's v0 lowering applies the cursor document's
@@ -152,9 +155,23 @@ const KEYSET_SPLITS = 4
 const HASH_MAX = 2n ** 256n - 1n
 
 /**
- * `KEYSET_SPLITS - 1` ceilings splitting `(afterHex, max]` into ranges of equal width, each a
- * 32-byte hex key strictly above `afterHex`. `refNameHash` is a sha256, so equal widths hold
- * roughly equal numbers of refs.
+ * How many ranges the rest of a scan is worth splitting into, after a full first page that reached
+ * `lastHex`: about as many as the pages still to read, estimated from the share of the key space
+ * that page covered (a sha256 spreads refs evenly), at most {@link KEYSET_SPLITS}. 1: read on, one
+ * page at a time (a split would only add the over-read of its extra ranges).
+ */
+export function keysetSplits(lastHex: string): number {
+  const reached = Number(BigInt(`0x${lastHex}`) >> 192n) / 2 ** 64
+  if (!(reached > 0)) return KEYSET_SPLITS
+  const pagesLeft = (1 - reached) / reached
+  return Math.max(1, Math.min(KEYSET_SPLITS, Math.ceil(pagesLeft)))
+}
+
+/**
+ * `splits - 1` ceilings splitting `(afterHex, max]` into ranges of equal width, each a 32-byte hex
+ * key strictly above `afterHex` and below the next. Together with `afterHex` and the end of the
+ * key space they cover it exactly. `refNameHash` is a sha256, so equal widths hold roughly equal
+ * numbers of refs.
  */
 export function splitHashRange(afterHex: string, splits = KEYSET_SPLITS): string[] {
   const floor = BigInt(`0x${afterHex}`)
@@ -177,10 +194,12 @@ export function splitHashRange(afterHex: string, splits = KEYSET_SPLITS): string
  * not byte order: a range whose bounds straddle `+`/`/`/digits/letters is refused.
  *
  * A scan over the whole key space reads its first page on its own; when that page is full, the
- * rest is split into {@link KEYSET_SPLITS} ranges scanned in parallel. The ranges are disjoint
- * and cover the rest exactly, so the rows are those of one serial scan.
+ * rest is split into {@link keysetSplits} ranges scanned in parallel. Each range keeps only the
+ * rows in `(start, ceiling]`: those are disjoint and cover the rest exactly, so the rows are those
+ * of one serial scan (the queries themselves overlap by up to a page).
  */
-async function keysetScan(
+/** @internal Exported for tests: one keyset scan (see above). */
+export async function keysetScan(
   sdk: EvoSDK,
   repo: RepoRef,
   documentTypeName: string,
@@ -236,7 +255,9 @@ async function keysetScan(
     after = next
     if (whole && round === 0) {
       // The first page was full: scan what is left as parallel ranges, each up to its ceiling.
-      const ceilings = splitHashRange(next.hex)
+      const splits = keysetSplits(next.hex)
+      if (splits === 1) continue
+      const ceilings = splitHashRange(next.hex, splits)
       const starts = [next, ...ceilings.map(hashKey)]
       const parts = await Promise.all(
         starts.map((start, i) => keysetScan(sdk, repo, documentTypeName, start, ceilings[i] ?? null)),

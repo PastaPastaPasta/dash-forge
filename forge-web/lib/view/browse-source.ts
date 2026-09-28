@@ -868,7 +868,7 @@ async function loadOneCopy(
     onProgress?.(total, total)
     return bytes
   }
-  const out = await loadPlatformWhole(sdk, repo, manifest, onProgress)
+  const out = await loadPlatformWhole(sdk, repo, manifest, onProgress, cancel)
   noteSource(repo)
   return out
 }

@@ -218,6 +218,47 @@ describe('whole-artifact load', () => {
     expect(peak).toBeGreaterThanOrEqual(4)
     expect(progress[progress.length - 1]).toBe(total)
   })
+
+  /** An artifact of `windows` full 100-chunk windows, and an sdk counting chunk queries. */
+  function windowed(windows: number, fail: (seq0: number) => boolean = () => false) {
+    const total = CHUNK_PAYLOAD_MAX * 100 * windows
+    const full = new Uint8Array(total).fill(7)
+    const inner = mockSdk(() => full) as unknown as { documents: { query: (q: { where?: readonly (readonly unknown[])[] }) => Promise<Map<string, unknown>> } }
+    let queries = 0
+    const sdk = {
+      documents: {
+        query: async (q: { where?: readonly (readonly unknown[])[] }): Promise<Map<string, unknown>> => {
+          queries++
+          await new Promise((r) => setTimeout(r, 2))
+          const seqs = ((q.where ?? []).find((w) => w[0] === 'seq')?.[2] as number[]) ?? []
+          if (fail(seqs[0] ?? 0)) throw new Error('chunk query failed')
+          return inner.documents.query(q)
+        },
+      },
+    } as unknown as EvoSDK
+    const manifest = { ...gitPack(bytesToHex(sha256(full)), 0, `w${windows}`), sizeBytes: total }
+    return { sdk, manifest, queries: () => queries }
+  }
+
+  it('stops reading windows once one fails', async () => {
+    const w = windowed(12, (seq0) => seq0 === 100)
+    const outcome = await loadArtifactBytesProgress(w.sdk, REPO, w.manifest).then(() => 'resolved', (e: unknown) => String(e))
+    expect(outcome).toMatch(/chunk query failed/)
+    await new Promise((r) => setTimeout(r, 100))
+    // The four windows in flight when window 1 failed, and no more of the twelve.
+    expect(w.queries()).toBeLessThanOrEqual(5)
+  })
+
+  it('stops reading windows once the load is cancelled', async () => {
+    const w = windowed(12)
+    const cancel = new AbortController()
+    const load = loadArtifactBytesProgress(w.sdk, REPO, w.manifest, (done) => {
+      if (done > 0) cancel.abort()
+    }, cancel.signal)
+    expect(await load.then(() => 'resolved', (e: unknown) => String(e))).toMatch(/cancelled/)
+    await new Promise((r) => setTimeout(r, 100))
+    expect(w.queries()).toBeLessThanOrEqual(8)
+  })
 })
 
 describe('packRef ordering (assumption a)', () => {

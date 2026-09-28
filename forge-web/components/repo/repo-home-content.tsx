@@ -31,7 +31,9 @@ import {
   selectedTip,
   type TreeEntry,
 } from '@/lib/view'
-import { countCommits, LAST_COMMIT_WALK, lastCommitsForDir, type LastCommit } from '@/lib/view/commit-log'
+import { countCommits, historyWalker, LAST_COMMIT_WALK, lastCommitsForDir, type LastCommit } from '@/lib/view/commit-log'
+
+type HistoryWalker = ReturnType<typeof historyWalker>
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
@@ -83,26 +85,32 @@ interface LastCommits {
 
 const WALKING: LastCommits = { found: new Map(), done: false, failed: false }
 
-function useLastCommits(reader: BrowseReader, tipOid: string, names: readonly string[] | null): LastCommits {
+function useLastCommits(
+  reader: BrowseReader,
+  walker: HistoryWalker,
+  tipOid: string,
+  names: readonly string[] | null,
+): LastCommits {
   const [state, setState] = useState<LastCommits & { readonly key: string }>({ key: '', ...WALKING })
   const key = names === null ? '' : `${tipOid}\0${names.join('\0')}`
   useEffect(() => {
     if (names === null) return
-    let live = true
-    const set = (found: ReadonlyMap<string, LastCommit>, done: boolean, failed = false): void => {
-      if (live) setState({ key, found, done, failed })
+    const stop = new AbortController()
+    let found: ReadonlyMap<string, LastCommit> = new Map()
+    const set = (next: ReadonlyMap<string, LastCommit>, done: boolean, failed = false): void => {
+      found = next
+      if (!stop.signal.aborted) setState({ key, found: next, done, failed })
     }
     set(new Map(), false)
-    lastCommitsForDir(reader, tipOid, '', names, LAST_COMMIT_WALK, (found) => set(found, false)).then(
-      (found) => set(found, true),
-      () => set(new Map(), true, true),
+    lastCommitsForDir(reader, tipOid, '', names, { walker, signal: stop.signal, onFound: (next) => set(next, false) }).then(
+      (next) => set(next, true),
+      // What the walk found before it failed stays; the rest read as not loaded.
+      () => set(found, true, true),
     )
-    return () => {
-      live = false
-    }
+    return () => stop.abort()
     // `key` covers `tipOid` and `names`.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reader, key])
+  }, [reader, walker, key])
   return state.key === key ? state : WALKING
 }
 
@@ -160,8 +168,10 @@ function RootBody({
   // The README, the commit column and the count load after the list paints and never block it.
   const names = useMemo(() => (data === null ? null : data.entries.map((e) => e.name)), [data])
   const readme = useAsync(() => loadReadme(reader, data?.entries ?? []), [data?.tree ?? ''], { enabled: data !== null })
-  const lastCommits = useLastCommits(reader, tipOid, names)
-  const commits = useAsync(() => countCommits(reader, tipOid, HOME_COMMIT_COUNT_CAP), [tipOid], { enabled: data !== null })
+  // One read-ahead walker for both walks of the history, so they share its blocks.
+  const walker = useMemo(() => historyWalker(reader), [reader])
+  const lastCommits = useLastCommits(reader, walker, tipOid, names)
+  const commits = useAsync(() => countCommits(reader, tipOid, HOME_COMMIT_COUNT_CAP, { walker }), [tipOid], { enabled: data !== null })
   const readmeRepo = useMemo<MarkdownRepoContext>(() => ({ addr, refParam, dir: '', reader, tipOid }), [addr, refParam, reader, tipOid])
 
   if (loading && !data) return <LoadingBlock label="Reading root tree" />

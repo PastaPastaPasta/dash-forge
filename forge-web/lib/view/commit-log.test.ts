@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { countCommits, lastCommitsForDir } from './commit-log'
+import { countCommits, historyWalker, lastCommitsForDir } from './commit-log'
 import { Store } from './diff-fixtures'
 
 describe('lastCommitsForDir', () => {
@@ -24,14 +24,14 @@ describe('lastCommitsForDir', () => {
   })
 
   it('leaves entries unchanged within the window blank', async () => {
-    const got = await lastCommitsForDir(s.reader(), c3, 'src', ['b.rs'], 2)
+    const got = await lastCommitsForDir(s.reader(), c3, 'src', ['b.rs'], { limit: 2 })
     expect(got.has('b.rs')).toBe(false)
   })
 
   // L-41: the column fills in as the walk goes instead of all at once at the end.
   it('reports each step that settles more entries, newest first', async () => {
     const seen: string[][] = []
-    await lastCommitsForDir(s.reader(), c3, '', ['README.md', 'src'], undefined, (found) => seen.push([...found.keys()].sort()))
+    await lastCommitsForDir(s.reader(), c3, '', ['README.md', 'src'], { onFound: (found) => seen.push([...found.keys()].sort()) })
     expect(seen).toEqual([['README.md'], ['README.md', 'src']])
   })
 
@@ -64,6 +64,33 @@ describe('lastCommitsForDir', () => {
     await countCommits(reader, c3)
     expect(walked).toBeGreaterThan(0)
     expect(flushed).toBe(2)
+  })
+
+  it('shares one walker between the count and the column when given one', async () => {
+    let made = 0
+    const base = s.reader()
+    const reader = { ...base, forHistoryWalk: () => (made++, { ...base, flush: () => undefined }) }
+    const walker = historyWalker(reader)
+    await Promise.all([lastCommitsForDir(reader, c3, '', ['README.md', 'src'], { walker }), countCommits(reader, c3, 100, { walker })])
+    expect(made).toBe(1)
+  })
+
+  it('stops when its signal aborts', async () => {
+    const big = new Store()
+    let tip = big.commit(big.files({ a: '0' }), [], 'root')
+    for (let i = 1; i <= 50; i++) tip = big.commit(big.files({ a: '0', b: String(i) }), [tip], `c${i}`)
+    const cancel = new AbortController()
+    let steps = 0
+    const base = big.reader()
+    const reader = {
+      readObject: (oid: string) => {
+        if (++steps === 10) cancel.abort()
+        return base.readObject(oid)
+      },
+    }
+    await expect(lastCommitsForDir(reader, tip, '', ['a'], { signal: cancel.signal })).rejects.toThrow()
+    expect(steps).toBeLessThan(20)
+    await expect(countCommits(reader, tip, 1000, { signal: cancel.signal })).rejects.toThrow()
   })
 })
 
