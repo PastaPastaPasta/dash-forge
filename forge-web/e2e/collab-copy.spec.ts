@@ -31,8 +31,12 @@ test('g17-1. a merged PR says what happened, with short branch names (L-37, D-10
   await expect(header).toContainText(/merged into main/i, { timeout: 60_000 })
   await expect(header).not.toContainText('wants to merge')
   await expect(header).not.toContainText('refs/heads/')
-  // The commit count lands with the comparison: "1 commit" / "2 commits", never "1 commits".
-  await expect(header).toContainText(/\b(1 commit|[02-9]\d* commits|\d{2,} commits) merged into main/, { timeout: 90_000 })
+  // A count only from a real comparison ("1 commit" / "2 commits", never "1 commits"); when the
+  // diff fell back to the head's first parent (this fixture: source and base are both main) the
+  // header claims none. Its time is the opening, not the merge.
+  await expect(header).toContainText(/^(Merged|(1 commit|[02-9]\d* commits|\d{2,} commits) merged) into main/, { timeout: 90_000 })
+  await expect(header).not.toContainText(/\b1 commits\b/)
+  await expect(header).toContainText(/opened (just now|\d+(m|h|d|mo|y) ago)/)
   await expect(page.locator('main')).not.toContainText(/\b0m ago\b/)
   await shot(page, 'g17-01-merged-pr')
 
