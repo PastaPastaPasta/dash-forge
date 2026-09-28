@@ -109,12 +109,12 @@ const INDENT_WEIGHT = 60
 const INDENT_HEURISTIC_MAX_SLIDING = 100
 
 /** A line's indent (tabs to multiples of 8), or -1 for a line of whitespace only. */
-function getIndent(rec: string): number {
+export function getIndent(rec: string): number {
   let ret = 0
   for (let i = 0; i < rec.length; i++) {
     const c = rec.charCodeAt(i)
-    // XDL_ISSPACE: space, \t, \n, \v, \f, \r.
-    if (!(c === 0x20 || (c >= 0x09 && c <= 0x0d))) return ret
+    // git's isspace (git-compat-util.h sane_ctype): space, \t, \n and \r only, not \v or \f.
+    if (!(c === 0x20 || c === 0x09 || c === 0x0a || c === 0x0d)) return ret
     if (c === 0x20) ret += 1
     else if (c === 0x09) ret += 8 - (ret % 8)
     if (ret >= MAX_INDENT) return MAX_INDENT

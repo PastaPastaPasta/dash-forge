@@ -14,7 +14,7 @@ import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
 import { selectedTip, selectRef, timeAgo, type LogEntry } from '@/lib/view'
 import { historyWalker } from '@/lib/view/commit-log'
-import { logPage, PATH_WALK_CAP } from '@/lib/view/path-history'
+import { logPage, PATH_WALK_CAP, type LogPage } from '@/lib/view/path-history'
 import { plural } from '@/lib/view/format'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
@@ -67,7 +67,7 @@ export function CommitsContent({
   )
 }
 
-interface LogState {
+export interface LogState {
   readonly entries: readonly LogEntry[]
   /** Where the next page starts; null once the walk reached the root (or the path's first commit). */
   readonly next: string | null
@@ -76,6 +76,24 @@ interface LogState {
   /** Commits examined so far by a path walk (for the "no change in the last n" note). */
   readonly examined: number
   readonly capped: boolean
+}
+
+/** A log before its first page. */
+export function freshLog(tipOid: string): LogState {
+  return { entries: [], next: tipOid, loading: true, error: null, examined: 0, capped: false }
+}
+
+/** `state` with one more page appended (a page that repeats what is shown adds nothing twice). */
+export function withPage(state: LogState, page: LogPage): LogState {
+  const shown = new Set(state.entries.map((e) => e.oid))
+  return {
+    entries: [...state.entries, ...page.entries.filter((e) => !shown.has(e.oid))],
+    next: page.next,
+    loading: false,
+    error: null,
+    examined: state.examined + page.examined,
+    capped: page.capped,
+  }
 }
 
 function LogBody({
@@ -93,7 +111,7 @@ function LogBody({
 }): JSX.Element {
   // One read-ahead walker for every page of this log, so an older page reuses its blocks.
   const walker = useMemo(() => historyWalker(reader), [reader])
-  const [state, setState] = useState<LogState>({ entries: [], next: tipOid, loading: true, error: null, examined: 0, capped: false })
+  const [state, setState] = useState<LogState>(() => freshLog(tipOid))
   const run = useRef<AbortController | null>(null)
 
   /** Walk one more page from where the last one stopped (a capped path walk resumes there too). */
@@ -107,14 +125,7 @@ function LogBody({
         (page) => {
           if (stop.signal.aborted) return
           run.current = null
-          setState((s) => ({
-            entries: [...s.entries, ...page.entries],
-            next: page.next,
-            loading: false,
-            error: null,
-            examined: s.examined + page.examined,
-            capped: page.capped,
-          }))
+          setState((s) => withPage(s, page))
         },
         (e: unknown) => {
           if (stop.signal.aborted) return
@@ -125,8 +136,11 @@ function LogBody({
     },
     [reader, walker, path],
   )
-  // The first page on mount; a remount (StrictMode) aborts the first run and starts again.
+  // The first page on mount, and again from scratch for a new reader (the same tip reached by
+  // another URL, a push that replaced the reader): a remount (StrictMode) aborts the first run and
+  // starts again. Never appended to what an earlier reader showed.
   useEffect(() => {
+    setState(freshLog(tipOid))
     loadMore(tipOid)
     return () => {
       run.current?.abort()

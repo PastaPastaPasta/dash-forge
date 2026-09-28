@@ -15,9 +15,8 @@ import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
 import { commitSubject, parseLineHash, selectedTip, selectRef, timeAgo } from '@/lib/view'
 import { ROW_PX, scrollToRow, useRowWindow } from '@/hooks/use-row-window'
-import { BLAME_MAX_VERSIONS, BlameRefusedError, blameFile, type BlameProgress, type BlameResult } from '@/lib/view/blame'
+import { BLAME_MAX_COMMITS, BLAME_MAX_VERSIONS, BlameRefusedError, blameFile, type BlameProgress, type BlameResult } from '@/lib/view/blame'
 import { plural } from '@/lib/view/format'
-import { PATH_WALK_CAP } from '@/lib/view/path-history'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
 import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
@@ -182,8 +181,9 @@ function BlameTable({ result, addr }: { result: BlameResult; addr: RepoAddress }
           {plural(lines.length, 'line')} · {plural(commits.size, 'commit')} · {plural(result.versions, 'version')} compared
         </span>
         {result.partial ? (
-          <span className="text-caution-700 dark:text-caution-400">
-            Partial: a limit stopped the walk (at most {BLAME_MAX_VERSIONS} versions, {PATH_WALK_CAP} commits a lookup, or a rename too large to trace), so the oldest lines may be older than shown.
+          <span className="text-caution-700 dark:text-caution-400" data-testid="blame-partial">
+            Partial: the walk hit a limit ({BLAME_MAX_VERSIONS} versions, {BLAME_MAX_COMMITS.toLocaleString('en-US')} commits, or a rename too large to look up), so the
+            oldest lines may be older than shown.
           </span>
         ) : null}
         {result.approximate ? <span className="text-caution-700 dark:text-caution-400">Some changes were too large to align line by line.</span> : null}
@@ -192,7 +192,18 @@ function BlameTable({ result, addr }: { result: BlameResult; addr: RepoAddress }
             Followed a rename from <span className="font-mono">{r.from}</span>
           </span>
         ))}
+        {result.unfollowedRename !== null ? (
+          <span data-testid="blame-unfollowed-rename">
+            Stopped where the file was added; it may have been renamed from <span className="font-mono">{result.unfollowedRename}</span> with edits, which is not
+            followed.
+          </span>
+        ) : null}
       </div>
+      <p className="border-b border-anvil-100 px-4 py-1.5 text-[11px] text-anvil-500 dark:border-anvil-850 dark:text-anvil-400" data-testid="blame-caveat">
+        Computed in your browser from the file’s history. It can attribute some lines differently from{' '}
+        <span className="font-mono">git blame</span> (lines that repeat and move, renames with edits); <span className="font-mono">git blame --first-parent</span> is the
+        authoritative answer.
+      </p>
       <ScrollRegion label="Blame" className="overflow-x-auto">
         <table ref={tableRef} className="w-full border-collapse font-mono text-[13px] leading-5" data-lines={lines.length} data-testid="blame-table">
           <tbody>

@@ -1,26 +1,34 @@
 /**
  * Blame (F-5): each line of a file at a commit, with the commit that last changed it, computed in
  * the browser over the file's first-parent history ({@link logPage} with a path, the same walk and
- * session memo as the History page), like `git blame --first-parent`.
+ * session memo as the History page), in the manner of `git blame --first-parent`.
  *
- * Bounded: files over {@link BLAME_MAX_BYTES} are refused, at most {@link BLAME_MAX_VERSIONS}
- * versions are compared (the lines still open after that are attributed to the oldest version
- * reached, and the result says it is partial), and each comparison is the line diff's own
- * bounded Myers. Between versions the walk yields to the event loop and reports progress, and an
- * AbortSignal stops it.
+ * Not always git's answer: the line alignment is our Myers diff with git's change compaction on
+ * top, not xdiff's own diff, so on some edits (a line that appears several times, moved around) a
+ * line can be given to a different commit than git gives it; and a rename with edits is not
+ * followed (git scores similarity; only exact renames are followed here). `git blame` is the
+ * authoritative answer.
+ *
+ * Bounded: files over {@link BLAME_MAX_BYTES} are refused; at most {@link BLAME_MAX_VERSIONS}
+ * versions are compared and {@link BLAME_MAX_COMMITS} commits examined, after which the lines
+ * still open are attributed to the oldest version reached and the result says it is partial; each
+ * comparison is the line diff's own bounded Myers. Between versions the walk yields to the event
+ * loop and reports progress, and an AbortSignal stops it.
  */
 
 import { ObjectTooLargeError } from '../browse'
 import { BlameState, lineMap } from './blame-core'
 import { diffTrees, historyWalker, type WalkOptions } from './commit-log'
 import { decodeTextBlob, type CommitObject } from './git-objects'
-import { commitVia, entryMode, entryOid, isFileMode, logPage, pathEntryAt } from './path-history'
+import { commitVia, entryMode, entryOid, isFileMode, logPage, PATH_WALK_CAP, pathEntryAt } from './path-history'
 import { readBlob, type ObjectReader } from './tree-nav'
 
 /** Largest file blamed (the spec's ≤ 2 MiB). */
 export const BLAME_MAX_BYTES = 2 * 1024 * 1024
 /** Most versions of the file compared before the rest are attributed to the oldest reached. */
 export const BLAME_MAX_VERSIONS = 200
+/** Most commits the walk examines in all (a file untouched for years must not walk all history). */
+export const BLAME_MAX_COMMITS = 10_000
 
 /** A run of consecutive lines blamed on one commit. */
 export interface BlameHunk {
@@ -37,14 +45,21 @@ export interface BlameResult {
   readonly commits: ReadonlyMap<string, CommitObject>
   /**
    * The walk stopped before every line reached the commit that added it (the version cap, the
-   * history walk's cap, or a rename it could not look up): the oldest hunks may name a later commit
-   * than git would. `approximate`: a change too large to align blamed its lines on the newer side.
+   * commit budget, or a rename too large to look up): the oldest hunks may name a later commit than
+   * the one that wrote them. `approximate`: a change too large to align blamed its lines on the
+   * newer side.
    */
   readonly partial: boolean
   readonly approximate: boolean
   readonly versions: number
   /** Exact renames the walk followed, newest first. */
   readonly renames: readonly BlameRename[]
+  /**
+   * The commit that added the path also deleted a file of the same name elsewhere, with other
+   * content: probably a rename with edits, which is not followed (the lines it brought are blamed
+   * on it). Null otherwise.
+   */
+  readonly unfollowedRename: string | null
 }
 
 /** `commit` moved the file from `from` to `to` without changing it. */
@@ -112,7 +127,15 @@ export async function blameFile(
     signal,
     onProgress,
     maxVersions = BLAME_MAX_VERSIONS,
-  }: WalkOptions & { readonly onProgress?: (p: BlameProgress) => void; readonly maxVersions?: number } = {},
+    maxCommits = BLAME_MAX_COMMITS,
+    pageCap = PATH_WALK_CAP,
+  }: WalkOptions & {
+    readonly onProgress?: (p: BlameProgress) => void
+    readonly maxVersions?: number
+    readonly maxCommits?: number
+    /** Commits one History page examines (the History page's cap; smaller in tests). */
+    readonly pageCap?: number
+  } = {},
 ): Promise<BlameResult> {
   const entry = await pathEntryAt(reader, walker, tipOid, path)
   if (!isFileEntry(entry)) throw new BlameRefusedError('not-a-file')
@@ -130,9 +153,18 @@ export async function blameFile(
   let current: { oid: string; text: string; blob: string } | null = null
   let at = path
   const renames: BlameRename[] = []
+  let unfollowedRename: string | null = null
+  // A page stops at its own cap without filling up (a file untouched for thousands of commits);
+  // the walk goes on from where it stopped, within the total commit budget.
+  let examined = 0
   try {
     outer: while (start !== null && state.pending > 0) {
-      const page = await logPage(reader, start, { path: at, walker, signal })
+      if (examined >= maxCommits) {
+        partial = true
+        break
+      }
+      const page = await logPage(reader, start, { path: at, walker, signal, cap: Math.min(pageCap, maxCommits - examined) })
+      examined += page.examined
       for (const e of page.entries) {
         signal?.throwIfAborted()
         seen.set(e.oid, e.commit)
@@ -156,17 +188,18 @@ export async function blameFile(
         }
         if (state.pending === 0) break outer
       }
-      if (page.capped) partial = true
       start = page.next
       // The History ended at the commit that added the path: follow it back through an exact
       // rename there, as blame in git does (the same blob, deleted from another path by that commit).
-      if (start === null && !page.capped && current !== null && state.pending > 0) {
+      if (start === null && current !== null && state.pending > 0) {
         const from = await renamedFrom(reader, walker, current.oid, at, current.blob)
         if (from === 'unknown') partial = true
-        else if (from !== null) {
+        else if ('path' in from) {
           renames.push({ commit: current.oid, from: from.path, to: at })
           at = from.path
           start = from.parent
+        } else if (from.sameName !== null) {
+          unfollowedRename = from.sameName
         }
       }
     }
@@ -185,14 +218,15 @@ export async function blameFile(
   onProgress?.({ versions, pending: 0, total: state.lines.length })
   const hunks = toHunks(state.owner as string[])
   const commits = new Map(hunks.map((h) => [h.oid, seen.get(h.oid) as CommitObject]))
-  return { lines: state.lines, hunks, commits, partial, approximate, versions, renames }
+  return { lines: state.lines, hunks, commits, partial, approximate, versions, renames, unfollowedRename }
 }
 
 /**
  * Where `commit` renamed `path` from, when it did so without changing it: a file its change
  * deleted whose blob is the one it added at `path` (preferring one with the same name, as rename
- * detection does). Null: `path` was new there, or renamed with edits (which similarity scoring
- * would follow and this does not). `'unknown'`: the change is over the tree diff's cap.
+ * detection does). Otherwise `sameName`: a deleted file of the same name with other content (a
+ * rename with edits, which similarity scoring would follow and this does not), or null.
+ * `'unknown'`: the change is over the tree diff's cap.
  */
 async function renamedFrom(
   reader: ObjectReader,
@@ -200,17 +234,19 @@ async function renamedFrom(
   commitOid: string,
   path: string,
   entry: string,
-): Promise<{ readonly path: string; readonly parent: string } | null | 'unknown'> {
+): Promise<{ readonly path: string; readonly parent: string } | { readonly sameName: string | null } | 'unknown'> {
   const commit = await commitVia(reader, walker, commitOid)
   const parent = commit.parents[0]
-  if (parent === undefined) return null
+  if (parent === undefined) return { sameName: null }
   const diff = await diffTrees({ base: walker, head: walker }, (await commitVia(reader, walker, parent)).tree, commit.tree)
   const blob = entryOid(entry)
-  const sources = diff.changes.filter((c) => c.status === 'deleted' && c.baseOid === blob && c.baseMode !== null && isFileMode(c.baseMode))
-  const name = path.slice(path.lastIndexOf('/') + 1)
-  const source = sources.find((c) => c.path.slice(c.path.lastIndexOf('/') + 1) === name) ?? sources[0]
+  const baseName = (p: string): string => p.slice(p.lastIndexOf('/') + 1)
+  const deleted = diff.changes.filter((c) => c.status === 'deleted' && c.baseMode !== null && isFileMode(c.baseMode))
+  const exact = deleted.filter((c) => c.baseOid === blob)
+  const source = exact.find((c) => baseName(c.path) === baseName(path)) ?? exact[0]
   if (source !== undefined) return { path: source.path, parent }
-  return diff.truncated ? 'unknown' : null
+  if (diff.truncated) return 'unknown'
+  return { sameName: deleted.find((c) => baseName(c.path) === baseName(path))?.path ?? null }
 }
 
 /** Consecutive lines with one owner, as hunks. */

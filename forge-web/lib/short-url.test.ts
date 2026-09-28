@@ -80,6 +80,10 @@ describe('GitHub URLs that map onto an existing page (L-27)', () => {
     ['/alice/project/releases/tag/rel%2F1', '/repo/release/?owner=alice&name=project&tag=rel%2F1'],
     // A tag literally named "tag" keeps its old URL.
     ['/alice/project/releases/tag', '/repo/release/?owner=alice&name=project&tag=tag'],
+    // HEAD is the default branch (GitHub's own links use it): no ref param.
+    ['/alice/project/blob/HEAD/src/a.rs', '/repo/blob/?owner=alice&name=project&path=src%2Fa.rs'],
+    ['/alice/project/blame/HEAD/src/a.rs', '/repo/blame/?owner=alice&name=project&path=src%2Fa.rs'],
+    ['/alice/project/commits/HEAD', '/repo/commits/?owner=alice&name=project'],
     // Already served: tree/blob with a path, the PR tabs, the issues search (its `?q=` rides along).
     ['/alice/project/tree/main/src/lib', '/repo/tree/?owner=alice&name=project&ref=main&path=src%2Flib'],
     ['/alice/project/pull/7/files', '/repo/pull/?owner=alice&name=project&number=7&tab=files'],

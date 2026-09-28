@@ -156,15 +156,17 @@ export const SHORT_URL_EXPAND_SOURCE = `function (pathname, base, reserved) {
   var number = /^[1-9][0-9]{0,9}$/.test(arg) ? arg : null;
   if (rest.length === 0) return q('/repo/', []);
   if (kind === 'releases' && arg === 'tag' && tail.length === 1) return q('/repo/release/', ['tag', tail[0]]);
+  // HEAD (the default branch in a GitHub URL) is the default ref: no ref param.
+  var ref = arg === 'HEAD' ? '' : arg;
   if ((kind === 'tree' || kind === 'blob' || kind === 'blame') && rest.length >= 2) {
-    return q('/repo/' + kind + '/', ['ref', arg, 'path', tail.join('/')]);
+    return q('/repo/' + kind + '/', ['ref', ref, 'path', tail.join('/')]);
   }
-  if (kind === 'commits' && tail.length > 0) return q('/repo/commits/', ['ref', arg === 'HEAD' ? '' : arg, 'path', tail.join('/')]);
+  if (kind === 'commits' && tail.length > 0) return q('/repo/commits/', ['ref', ref, 'path', tail.join('/')]);
   if ((kind === 'pull' || kind === 'pulls') && number && tail.length === 1 && /^(files|commits|checks)$/.test(tail[0])) {
     return q('/repo/pull/', ['number', number, 'tab', tail[0]]);
   }
   if (tail.length > 0) return null;
-  if (kind === 'commits') return q('/repo/commits/', ['ref', arg]);
+  if (kind === 'commits') return q('/repo/commits/', ['ref', ref]);
   if (kind === 'issues' && rest.length === 1) return q('/repo/issues/', []);
   if (kind === 'issues' && number) return q('/repo/issue/', ['number', number]);
   if (kind === 'pulls' && rest.length === 1) return q('/repo/pulls/', []);

@@ -94,6 +94,16 @@ describe('logPage', () => {
     expect(more.entries[0]?.oid).not.toBe(page.entries.at(-1)?.oid)
   })
 
+  it('forgets a failed read, so the next walk reads again', async () => {
+    const { s, tips } = history(5)
+    let fail = true
+    const base = s.reader()
+    const reader = { ...base, memoScope: {}, readObject: (oid: string) => (fail ? Promise.reject(new Error('offline')) : base.readObject(oid)) }
+    await expect(logPage(reader, tips[4] as string)).rejects.toThrow('offline')
+    fail = false
+    expect((await logPage(reader, tips[4] as string)).entries).toHaveLength(5)
+  })
+
   it('stops when its signal aborts', async () => {
     const { s, tips } = history(20)
     const stop = new AbortController()

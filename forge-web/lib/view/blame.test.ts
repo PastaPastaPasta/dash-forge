@@ -150,7 +150,55 @@ describe.skipIf(!HAVE_GIT)('blame matches git blame --first-parent', () => {
   }, 180_000)
 })
 
+describe('known differences from git blame (documented, not bugs to chase here)', () => {
+  // Our alignment is Myers + git's compaction, not xdiff's own diff: where a line repeats and moves,
+  // xdiff can pair different copies. This is the review's minimal case (git 2.52): git gives line 1
+  // to "one" and line 3 to "two", we give line 1 to "two" and line 3 to "one". The UI says blame
+  // can differ from git's; porting xdiff's diff for exact parity is in the backlog.
+  it.skipIf(!HAVE_GIT)('a repeated line that moves: git and we pair different copies', async () => {
+    const s = new Store()
+    const one = s.commit(s.files({ f: '\nc\na\n\ty\n\n}\n\ty\n' }), [], 'one')
+    const two = s.commit(s.files({ f: '\ty\nb\na\n\ty\na\n' }), [one], 'two')
+    const got = owners(await blameFile(s.reader(), two, 'f'))
+    expect(gitBlame(s.objects.values(), two, 'f')).toEqual([one, two, two, one, two])
+    expect(got).toEqual([two, two, one, one, two])
+  })
+})
+
 describe('blame bounds', () => {
+  it('a file untouched for more than a History page cap is exact, not partial', async () => {
+    // The file changes once, then 60 commits touch only other files; a small page cap (10) would
+    // stop each History page early. The walk goes on to the file's commits and says nothing is partial.
+    const s = new Store()
+    const c1 = s.commit(s.files({ f: 'a\n', g: '0' }), [], 'one')
+    const c2 = s.commit(s.files({ f: 'a\nb\n', g: '0' }), [c1], 'two')
+    let tip = c2
+    for (let i = 1; i <= 60; i++) tip = s.commit(s.files({ f: 'a\nb\n', g: String(i) }), [tip], `g ${i}`)
+    const got = await blameFile(s.reader(), tip, 'f', { pageCap: 10 })
+    expect(owners(got)).toEqual([c1, c2])
+    expect(got.partial).toBe(false)
+  })
+
+  it('stops at the total commit budget and says the result is partial', async () => {
+    const s = new Store()
+    const c1 = s.commit(s.files({ f: 'a\n', g: '0' }), [], 'one')
+    let tip = c1
+    for (let i = 1; i <= 50; i++) tip = s.commit(s.files({ f: 'a\n', g: String(i) }), [tip], `g ${i}`)
+    const got = await blameFile(s.reader(), tip, 'f', { maxCommits: 20 })
+    expect(got.partial).toBe(true)
+    // Nothing older than the budget was read: no commit of the first 30 was walked.
+    expect(s.reads).not.toContain(c1)
+  })
+
+  it('notes a rename with edits it does not follow', async () => {
+    const s = new Store()
+    const c1 = s.commit(s.files({ 'old/main.go': 'package main\nfunc a() {}\n' }), [], 'one')
+    const c2 = s.commit(s.files({ 'main.go': 'package main\nfunc a() { b() }\n' }), [c1], 'move and edit')
+    const got = await blameFile(s.reader(), c2, 'main.go')
+    expect(got.renames).toEqual([])
+    expect(got.unfollowedRename).toBe('old/main.go')
+  })
+
   it('refuses a file over the size cap and a binary file, reading neither whole', async () => {
     const s = new Store()
     const big = s.commit(s.files({ big: 'x'.repeat(BLAME_MAX_BYTES + 1), bin: 'a\u0000b' }))

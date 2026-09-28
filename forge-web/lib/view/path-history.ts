@@ -42,8 +42,11 @@ interface WalkMemo {
   readonly commits: Map<string, Promise<CommitObject>>
 }
 const memos = new WeakMap<object, WalkMemo>()
-/** Entries kept per reader before the oldest are dropped (a long session on a big repo). */
-const MEMO_MAX = 50_000
+/**
+ * Entries kept per map before the oldest are dropped: a parsed commit or a path entry is a few
+ * hundred bytes, so a full memo is a few MiB (a long session on a big repo).
+ */
+const MEMO_MAX = 20_000
 
 /** The memo of `reader`'s scope: every page's reader of one repo context shares it. */
 function memoOf(reader: ObjectReader): WalkMemo {
@@ -61,7 +64,10 @@ function remember<V>(map: Map<string, Promise<V>>, key: string, load: () => Prom
   if (hit !== undefined) return hit
   const p = load()
   map.set(key, p)
-  p.catch(() => map.delete(key))
+  // A failed load is forgotten, so the next read tries again (unless something newer took the key).
+  p.catch(() => {
+    if (map.get(key) === p) map.delete(key)
+  })
   if (map.size > MEMO_MAX) map.delete(map.keys().next().value as string)
   return p
 }

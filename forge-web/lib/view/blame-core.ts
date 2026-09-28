@@ -30,7 +30,14 @@ export function lineMap(before: string, after: string, limits: DiffLimits = DEFA
     if (l.kind === 'deleted' && l.oldLine !== null) oldChanged[l.oldLine - 1] = 1
     if (l.kind === 'added' && l.newLine !== null) newChanged[l.newLine - 1] = 1
   }
-  const compacted = compactChanges(oldRecs, newRecs, oldChanged, newChanged)
+  // A compaction that fails (a bug: the port asserts what xdiff asserts) must not fail the blame:
+  // the uncompacted alignment is still a valid one.
+  let compacted: { readonly oldChanged: Uint8Array; readonly newChanged: Uint8Array } = { oldChanged, newChanged }
+  try {
+    compacted = compactChanges(oldRecs, newRecs, oldChanged, newChanged)
+  } catch {
+    /* keep the Myers alignment */
+  }
   const map = new Int32Array(newRecs.length).fill(-1)
   for (let i = 0, j = 0; j < newRecs.length; ) {
     if (i < oldRecs.length && compacted.oldChanged[i] === 1) i++
