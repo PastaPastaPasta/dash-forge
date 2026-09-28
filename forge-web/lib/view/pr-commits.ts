@@ -6,7 +6,7 @@
  * `applied_ids`.
  */
 
-import { newCommits, WalkLimitError } from '../merge/objects'
+import { newCommits, WalkLimitError, WALK_COMMIT_CAP } from '../merge/objects'
 import { parseCommit, type CommitObject } from './git-objects'
 import { commitSubject, type ObjectReader } from './tree-nav'
 
@@ -22,9 +22,12 @@ export interface PrCommit {
 export interface PrCommits {
   /** Newest first (by committer time), at most {@link PR_COMMITS_CAP}. */
   readonly commits: readonly PrCommit[]
-  /** How many the walk found in all. */
-  readonly total: number
-  /** The walk hit its limit: the list is the newest part only. */
+  /**
+   * How many the PR adds, or null when the walk stopped at its limit before counting them all
+   * (then more than {@link WALK_COMMIT_CAP}: the count is unknown, never the few listed).
+   */
+  readonly total: number | null
+  /** Not every commit is listed: past {@link PR_COMMITS_CAP}, or the walk hit its limit. */
   readonly truncated: boolean
 }
 
@@ -33,9 +36,9 @@ export interface PrCommits {
  * branch's tip and the merge base, so a base merged into the PR branch is not listed. An empty
  * `have` lists the head's whole history.
  */
-export async function prCommits(reader: ObjectReader, have: readonly string[], headOid: string): Promise<PrCommits> {
+export async function prCommits(reader: ObjectReader, have: readonly string[], headOid: string, walkCap = WALK_COMMIT_CAP): Promise<PrCommits> {
   let oids: string[]
-  let truncated = false
+  let walkStopped = false
   // A "have" commit this reader cannot read (a base tip only the base repo holds, not loaded) is
   // left out rather than failing the whole list.
   const readable = (
@@ -51,11 +54,11 @@ export async function prCommits(reader: ObjectReader, have: readonly string[], h
     )
   ).filter((h): h is string => h !== null)
   try {
-    oids = await newCommits(reader, headOid, readable)
+    oids = await newCommits(reader, headOid, readable, walkCap)
   } catch (e) {
     if (!(e instanceof WalkLimitError)) throw e
     oids = [headOid]
-    truncated = true
+    walkStopped = true
   }
   const shown = oids.slice(0, PR_COMMITS_CAP)
   const commits = await Promise.all(
@@ -64,7 +67,7 @@ export async function prCommits(reader: ObjectReader, have: readonly string[], h
       return { oid, subject: commitSubject(commit.message), commit }
     }),
   )
-  return { commits, total: oids.length, truncated: truncated || oids.length > PR_COMMITS_CAP }
+  return { commits, total: walkStopped ? null : oids.length, truncated: walkStopped || oids.length > PR_COMMITS_CAP }
 }
 
 /**

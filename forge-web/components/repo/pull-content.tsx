@@ -75,6 +75,7 @@ import { pullSinceYourReview } from '@/lib/view/issues-view'
 import { headUpdatePhrases } from '@/lib/view/head-updates'
 import { inlineCommentIds } from '@/lib/view/inline-threads'
 import { prCommits, prHaveSet } from '@/lib/view/pr-commits'
+import { WALK_COMMIT_CAP } from '@/lib/merge/objects'
 import { tipOidOf } from '@/lib/view/refs'
 import type { ReviewerCardRow } from '@/lib/view/review-fold'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
@@ -480,7 +481,8 @@ function PullPage({
 
   const counts = {
     conversation: thread.comments.length + thread.reviews.length,
-    commits: commits.data?.total ?? null,
+    // A walk that stopped at its limit has no exact count: "many".
+    commits: commits.data === null ? null : commits.data.total ?? ('many' as const),
     // The runs that count (the summary's total), as the checks row says.
     checks: checkSummary?.total ?? null,
     files: cmp?.changes.length ?? null,
@@ -774,7 +776,21 @@ function PullPage({
               </div>
             </>
           ) : tab === 'commits' ? (
-            <CommitsTab commits={commits.data} error={comparison.error ?? commits.error} loading={commits.loading} addr={addr} sourceAddr={sourceAddr} onRetry={() => (comparison.error ? comparison.reload() : commits.reload())} />
+            <CommitsTab
+              commits={commits.data}
+              error={comparison.error ?? commits.error}
+              loading={commits.loading}
+              addr={addr}
+              sourceAddr={sourceAddr}
+              unavailable={
+                pull.headOid === ''
+                  ? 'This PR does not record a head commit.'
+                  : comparison.waiting === null && comparison.sides === null
+                    ? "Neither the base repo nor the repo holding the PR's head could be loaded, so there are no commits to list."
+                    : null
+              }
+              onRetry={() => (comparison.error ? comparison.reload() : commits.reload())}
+            />
           ) : tab === 'checks' ? (
             <ChecksTab runs={checks.data} summary={checkSummary} headOid={pull.headOid} error={checks.error} onRetry={checks.reload} />
           ) : (
@@ -911,7 +927,7 @@ function TabButton({
   onSelect: (t: PrTab) => void
   icon: ReactNode
   label: string
-  count: number | null
+  count: number | 'many' | null
 }): JSX.Element {
   const on = id === current
   return (
@@ -929,7 +945,7 @@ function TabButton({
       {icon}
       {label}
       <span className="rounded-full bg-anvil-100 px-1.5 text-[11px] text-anvil-700 dark:bg-anvil-800 dark:text-anvil-300" data-testid={`pr-tab-${id}-count`}>
-        {count === null ? '…' : count}
+        {count === null ? '…' : count === 'many' ? `${WALK_COMMIT_CAP.toLocaleString('en-US')}+` : count}
       </span>
     </button>
   )

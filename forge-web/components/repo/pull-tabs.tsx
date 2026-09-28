@@ -12,7 +12,7 @@
 import Link from 'next/link'
 import { CheckCircle2, CircleDashed, GitCommit, ListChecks, MinusCircle, XCircle } from 'lucide-react'
 
-import { checkOutcome, checksPhrase, safeDetailsUrl, type CheckRun, type ChecksSummary } from '@/lib/repo/checks'
+import { checkOutcome, checksPhrase, safeDetailsUrl, untrustedWords, type CheckRun, type ChecksSummary } from '@/lib/repo/checks'
 import type { PrCommits } from '@/lib/view/pr-commits'
 import { timeAgo } from '@/lib/view'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
@@ -26,17 +26,21 @@ export function CommitsTab({
   loading,
   addr,
   sourceAddr,
+  unavailable,
   onRetry,
 }: {
   commits: PrCommits | null
   error: string | null
   loading: boolean
+  /** Why the comparison cannot run at all (no head, or no side loaded), or null. */
+  unavailable: string | null
   addr: RepoAddress
   /** Where the head's commits browse (the fork), when not this repo. */
   sourceAddr: RepoAddress | null
   onRetry: () => void
 }): JSX.Element {
   if (error !== null) return <ErrorState message={error} onRetry={onRetry} />
+  if (commits === null && unavailable !== null) return <EmptyState icon={GitCommit} title="Commits unavailable" body={unavailable} />
   if (commits === null) return loading ? <LoadingBlock label="Walking the PR's commits" /> : <LoadingBlock label="Comparing the PR with its base" />
   if (commits.commits.length === 0) return <EmptyState icon={GitCommit} title="No commits" body="The base branch already contains this PR's head." />
   const at = sourceAddr ?? addr
@@ -61,7 +65,7 @@ export function CommitsTab({
       </div>
       {commits.truncated ? (
         <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-          Showing the newest {commits.commits.length} of {commits.total >= commits.commits.length ? `${commits.total}+` : 'many'} commits. `dg pr commits` lists them all.
+          Showing the newest {commits.commits.length} of {commits.total === null ? 'many' : commits.total.toLocaleString('en-US')} commits. `dg pr commits` lists them all.
         </p>
       ) : null}
     </div>
@@ -115,7 +119,7 @@ export function ChecksTab({
               <span className="font-medium">{r.name}</span>
               <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{state}</span>
               {r.summary ? <span className="min-w-0 flex-1 truncate text-[12px] text-anvil-500 dark:text-anvil-400">{r.summary}</span> : <span className="flex-1" />}
-              {!r.trusted ? <span className="text-[11px] text-anvil-500 dark:text-anvil-400">reporter is no longer a member: not counted</span> : null}
+              {!r.trusted ? <span className="text-[11px] text-anvil-500 dark:text-anvil-400">{untrustedWords(summary)}</span> : null}
               <span className="flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400">
                 by <Author identityId={r.reporter} link={false} /> · {timeAgo(r.createdAt)}
               </span>

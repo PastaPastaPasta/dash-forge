@@ -18,6 +18,18 @@ describe('prCommits', () => {
     expect(r.truncated).toBe(false)
   })
 
+  it('a walk past its limit gives no count (unknown), not the one commit it could list', async () => {
+    const s = new Store()
+    let tip = s.commit(s.files({ x: '0' }), [], 'root')
+    const reader = s.reader()
+    const limited = { readObject: reader.readObject.bind(reader) }
+    for (let i = 1; i <= 3; i++) tip = s.commit(s.files({ x: String(i) }), [tip], `c${i}`)
+    const r = await prCommits(limited, [], tip, 2)
+    expect(r.truncated).toBe(true)
+    expect(r.total).toBeNull()
+    expect(r.commits.map((c) => c.oid)).toEqual([tip])
+  })
+
   it('lists the whole history when the base is empty', async () => {
     const s = new Store()
     const a = s.commit(s.files({ x: '1' }), [], 'root')

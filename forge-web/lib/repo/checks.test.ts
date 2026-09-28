@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { checksPhrase, newestCheckRuns, summarizeChecks } from './checks'
+import { checksPhrase, newestCheckRuns, summarizeChecks, untrustedWords } from './checks'
 
 const doc = (id: string, name: string, owner: string, at: number, status: string, conclusion = '') => ({ $id: id, $ownerId: owner, $createdAt: at, name, status, conclusion })
 
@@ -24,5 +24,12 @@ describe('check runs on a head', () => {
     const s = summarizeChecks(runs, false)
     expect(checksPhrase(s)).toBe("Couldn't read the members, so which checks count is unknown")
     expect(checksPhrase(summarizeChecks([], true))).toBe('No checks reported')
+  })
+})
+
+describe('an uncounted run says why', () => {
+  it('a revoked reporter only when the members are known; otherwise that they could not be read', () => {
+    expect(untrustedWords({ membersKnown: true })).toBe('reporter is no longer a member: not counted')
+    expect(untrustedWords({ membersKnown: false })).toBe('members could not be read: not counted until they are')
   })
 })

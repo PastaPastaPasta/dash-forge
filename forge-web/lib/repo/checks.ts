@@ -114,3 +114,11 @@ export function safeDetailsUrl(url: string): string | null {
     return null
   }
 }
+
+/**
+ * Why a run is not counted, in its row: its reporter is no longer a member, or (the members could
+ * not be read) it cannot be told whether they are, which is not the same claim.
+ */
+export function untrustedWords(summary: Pick<ChecksSummary, 'membersKnown'>): string {
+  return summary.membersKnown ? 'reporter is no longer a member: not counted' : 'members could not be read: not counted until they are'
+}
