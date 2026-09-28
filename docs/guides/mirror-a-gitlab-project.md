@@ -41,6 +41,7 @@ Name the project as `gitlab.com/<group>/<project>` or by its URL. A project on y
 
 ```sh
 export GITLAB_TOKEN=glpat-…        # read_api
+export DASH_FORGE_NETWORK=devnet DASH_FORGE_DEVNET_NAME=moutai   # forge-import does not read dg's saved network
 forge-import gitlab.com/acme/widget --dry-run
 forge-import team/app --gitlab-url https://git.example.org --dry-run
 forge-import team/app --gitlab-url https://example.org/gitlab --dry-run   # a relative URL root

@@ -58,16 +58,16 @@ The estimate follows the same policy. With your own storage, the git part costs 
 **Always start with a dry run.** It reads everything, compares it with what the destination already holds, and prints what it would write and what that would cost. It writes nothing:
 
 ```sh
-forge-import alice/project --dry-run
+forge-import alice/project --network devnet --devnet-name moutai --dry-run
 ```
 
 Then run it with a spending cap:
 
 ```sh
-forge-import alice/project --max-spend 0.5 --state ./alice-project.sync.json
+forge-import alice/project --network devnet --devnet-name moutai --max-spend 0.5 --state ./alice-project.sync.json
 ```
 
-`dg import alice/project` takes the same core flags and uses `dg`'s network and identity defaults.
+Unlike `git` and `dg`, the standalone `forge-import` does not read the network `dg auth` recorded: without `--network` (or `DASH_FORGE_NETWORK` / `DASH_FORGE_DEVNET_NAME`) it uses testnet, which has no Forge deployment ([E702](../errors.md#e702)). `dg import alice/project` takes the same core flags and uses `dg`'s network and identity defaults.
 
 Useful flags (see `forge-import --help`):
 
@@ -99,6 +99,8 @@ Issues and PRs keep their GitHub numbers (Forge numbers issues and PRs separatel
 | `error` | 1 | by error | Failed. What was spent before the failure is still reported. |
 
 A run with `--limit` that left items out does not advance `--state` either, and warns: every run takes the same first `n` items, so a recurring job with `--limit` never reaches the rest. Use `--limit` for a trial only.
+
+**Refused history.** The importer pushes through `git-remote-dash`, so a history holding an object git itself refuses (a `.git` look-alike path, a hostile `.gitmodules`) stops the push before anything is stored or paid for ([E511](../errors.md#e511)). Old commits with malformed author or committer lines (a bad time zone, a broken email) are accepted, as a plain `git clone` accepts them; that needs git 2.44 or newer.
 
 **Not mirrored.** Edits to a title or body after the item was first mirrored, a PR's later retarget to another base, and a PR's later head moves (its `headOid` stays at the commit it was mirrored at; `refs/mirror/pull/<n>/head` follows the head while the PR is open). Reactions, milestones, assignees, projects and GitHub Discussions are not mirrored.
 

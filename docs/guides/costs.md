@@ -146,7 +146,7 @@ The audit trail grows forever: about 0.08 DASH per 1,000 pushes stays locked in 
 - **`git push` prints its estimate** before it writes to Platform, and what Platform actually charged when it is done. To make it ask:
   ```sh
   git config --global dash.costWarnThreshold 0.01   # ask above 0.01 DASH
-  git config --global dash.confirm auto             # auto | always | never
+  git config --global dash.confirm auto             # auto | always | never | refuse
   ```
   Without a terminal (CI), a push over the threshold stops with [`E801`](../errors.md#e801) rather than spending.
 - **`forge-import --dry-run`** estimates a whole GitHub import, and `--max-spend` caps it.

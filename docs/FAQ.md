@@ -60,9 +60,7 @@ An earlier version of Forge (forge-v1, one contract per repository) ran on testn
 
 ## Can I have private repositories?
 
-**Coming soon, in the first mainnet release.** Contents will be encrypted in the client with a per-repository key that only members hold. File, branch, issue and comment names will be encrypted too. Anyone will still be able to see that the repository exists, its size, when it changes, and how many members it has. Removing a member rotates the key for future content, but cannot take back what they could already read. The design is in [private-repos.md](security/private-repos.md) and [forge-v2.md §5](contracts/forge-v2.md#5-private-repositories). The cryptographic core and the contract fields are merged; creating and reading private repositories is not, and it will ship only after a separate security review.
-
-Today every repository is public.
+Yes, on devnet moutai today: `dg repo create --private` (or `dg init --private`), and **New → Repository → Private** in the web app. Contents are encrypted in the client with a per-repository key that only members hold, and branch names, issues, PRs, comments and reviews are encrypted too. Anyone can still see that the repository exists, its name, its members, its size and when it changes. Releases, forks and webhooks are refused on private repositories, because release notes and assets would not be encrypted. Label definitions are allowed but stay public. Removing a member rotates the key for future content, but cannot take back what they could already read. [Collaborating](guides/collaborating.md#private-repositories) lists exactly what is hidden and what is not; the design is in [private-repos.md](security/private-repos.md) and [forge-v2.md §5](contracts/forge-v2.md#5-private-repositories).
 
 ## How does this relate to GitHub?
 
@@ -71,11 +69,11 @@ Forge is not a GitHub clone, and it does not need you to leave GitHub.
 - **The commands are familiar.** `dg` is shaped like `gh`, and git itself is unchanged: `git clone dash://…`, `git push`, branches, tags. jj works too.
 - **You can mirror.** Keep working on GitHub, and keep an [unkillable mirror](guides/mirror-a-github-repo.md) on Forge. The Mirror Action keeps code, issues, PRs, releases and labels in sync on every GitHub event.
 - **CI can listen.** `dg webhook add` and a relay you run deliver GitHub-shaped webhooks, so existing CI receivers work ([Collaborating](guides/collaborating.md#webhooks-and-ci)).
-- **It is not at feature parity.** No CI runner, wiki, discussions, organizations or global search. No `https://` clone URLs (that would need a server); the web app offers a zip download instead. No shallow clones: use `git clone --filter=blob:none` instead. Opening a PR, inline comments, forks and merging code are still CLI-only: see [Collaborating](guides/collaborating.md#from-the-web-app).
+- **It is not at feature parity.** No CI runner, wiki, discussions, organizations or global search. No `https://` clone URLs (that would need a server); the web app offers a zip download instead. No shallow clones: use `git clone --filter=blob:none` instead. The web app opens, reviews and merges PRs and forks repositories, but some merges still need `dg`: changes both sides made to the same files, a private repository, a merge too large to build in the browser, and a history that changes `.gitmodules` or `.gitattributes` or holds an object git would reject. See [Collaborating](guides/collaborating.md#from-the-web-app). [Moving from GitHub or GitLab](guides/moving-from-github.md#10-github-features-with-no-forge-equivalent) lists what has no equivalent, and the workarounds.
 
 ## Can I use a username instead of the long identity id?
 
-In the web app, yes: register a DPNS username with `dg auth name register <label>` (or in the Dash bridge), and `forge.dashhq.org/alice/project` and `@alice` in the header's jump box resolve it. The CLI does not yet: `dash://` addresses and `dg` need the identity id. **Coming soon:** `dash://alice/project`, `dg … alice/project`, and granting access by name.
+Yes: register a DPNS username with `dg auth name register <label>` (or in the Dash bridge). Then `forge.dashhq.org/alice/project`, `@alice` in the web header's jump box, `git clone dash://alice/project` and `dg … alice/project` all resolve it, with a proof-verified DPNS read. `dg repo list --owner` and granting access (`dg collab add`) still take the identity id.
 
 ## I lost my laptop. Is my code gone?
 

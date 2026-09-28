@@ -116,17 +116,17 @@ Platform lets the MASTER key add new keys to an identity and disable old ones. A
 
 ```sh
 dg auth keys list                        # every key: purpose, level, budget left, expiry, this computer's
-dg auth keys add [--budget 0.25 --expires 180d] [--replace <id>]   # a new limited key for this computer
+dg auth keys add [--budget 0.25 --expires 180d] [--replace <id> | --keep-current]   # a new key for this computer; disables the one it replaces
 dg auth keys disable <id>                # disable one (limited keys; --force for others)
 dg auth logout [--disable]               # forget the key here (and disable it on chain)
 ```
 
-`add`, `disable` and `logout --disable` need the master key once: pass `--master <identity file>`, or type the 12 words when asked. `dg` never disables the MASTER key, and refuses keys that are not Forge limited keys unless you pass `--force`.
+`add`, `disable`, `logout --disable` and `export --new-key` need the master key once: pass `--master <identity file>`, or type the 12 words when asked. `dg` never disables the MASTER key, and refuses keys that are not Forge limited keys unless you pass `--force`.
 
 When to rotate:
 
 - a laptop or CI secret that held a key was lost or leaked: **disable that key**;
-- a limited key's budget is nearly spent or it is about to expire: `dg auth keys add --replace <old id>` (or `dg auth login … --replace <old id>`) registers a fresh one and disables the old in the same update.
+- a limited key's budget is nearly spent or it is about to expire: `dg auth keys add` registers a fresh one and disables this computer's current key in the same update (`--replace <id>` names another key to disable, `--keep-current` keeps the current one live on chain, though this computer no longer stores it; `dg auth login … --replace <old id>` does the same at sign-in).
 
 A browser's own key is managed in the web app: **Settings → This browser's key** can top it up, renew it or revoke it ([below](#limited-keys)).
 
