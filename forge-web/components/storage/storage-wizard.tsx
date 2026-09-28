@@ -13,11 +13,11 @@ import { Cloud, Database, HardDrive, Link2, Pencil, Server, Trash2, Waypoints } 
 import {
   PROVIDERS,
   choiceOf,
-  policyFor,
-  policyProblem,
+  defaultPolicyDraft,
   providerPreset,
   PLATFORM_PROFILE,
   profileProblem,
+  withFirstDefault,
   withProfile,
   withRenamedProfile,
   withoutProfile,
@@ -205,7 +205,7 @@ function AddProfile({
             onClick={async () => {
               setSaving(true)
               try {
-                await save(withProfile(config, { name: PLATFORM_PROFILE, settings: { kind: 'platform', provider: 'platform' }, secrets: {} }))
+                await save(withFirstDefault(withProfile(config, { name: PLATFORM_PROFILE, settings: { kind: 'platform', provider: 'platform' }, secrets: {} }), PLATFORM_PROFILE))
                 onDone()
               } catch (e) {
                 setSaveError(errText(e))
@@ -257,7 +257,9 @@ function AddProfile({
             setSaving(true)
             setSaveError(null)
             try {
-              let next = existing ? withRenamedProfile(config, existing.name, draft.profile) : withProfile(config, draft.profile)
+              // A first profile becomes the default: saved but unticked, it left release assets and
+              // browser pushes with nowhere to go (L-10).
+              let next = existing ? withRenamedProfile(config, existing.name, draft.profile) : withFirstDefault(withProfile(config, draft.profile), draft.profile.name)
               next = { ...next, lastTests: { ...next.lastTests, [draft.profile.name]: { at: Date.now(), ok: result } } }
               await save(next)
               onDone()
@@ -353,17 +355,31 @@ const CHOICES: readonly { id: ReplicationChoice; label: string }[] = [
   { id: 'fallback', label: 'Platform as fallback if my storage fails (costed, asks first)' },
 ]
 
-function DefaultPolicy({ config, storable, save }: { config: StorageConfig; storable: boolean; save: (c: StorageConfig) => Promise<void> }): JSX.Element | null {
+export function DefaultPolicy({ config, storable, save }: { config: StorageConfig; storable: boolean; save: (c: StorageConfig) => Promise<void> }): JSX.Element | null {
   const current = config.defaultPolicy
-  const [picked, setTargets] = useState<string[]>(() => current?.targets.slice() ?? [])
-  const [choice, setChoice] = useState<ReplicationChoice>(() => (current ? choiceOf(current) : 'one'))
+  // Unedited, the form shows the SAVED default, so a profile that just became the default (the
+  // first one added) shows ticked. Once edited, the edits hold until saved.
+  const [edits, setEdits] = useState<{ picked: readonly string[]; choice: ReplicationChoice } | null>(null)
+  const picked = edits?.picked ?? current?.targets ?? []
+  const choice = edits?.choice ?? (current ? choiceOf(current) : 'one')
+  // What Save did last; any edit clears it. "Saved." only ever follows a real write.
   const [saved, setSaved] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const statusId = useId()
   if (config.profiles.length === 0) return null
-  // A profile removed since the choice was made is no longer a target (unsaved edits survive).
-  const targets = picked.filter((t) => config.profiles.some((p) => p.name === t))
-  const policy = targets.length > 0 ? policyFor(targets, choice) : null
-  const problem = policy ? policyProblem(config, policy) : null
+  const draft = defaultPolicyDraft(config, picked, choice)
+  const edit = (next: { picked?: readonly string[]; choice?: ReplicationChoice }): void => {
+    setSaved(false)
+    setEdits({ picked: next.picked ?? picked, choice: next.choice ?? choice })
+  }
+  const status = saved
+    ? 'Saved.'
+    : draft.state === 'empty' || draft.state === 'invalid'
+      ? draft.reason
+      : draft.state === 'unchanged'
+        ? current === null ? '' : 'This is your saved default.'
+        : ''
+  const warn = !saved && (draft.state === 'empty' || draft.state === 'invalid')
 
   return (
     <section aria-labelledby="policy-title" className="space-y-3 rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-750 dark:bg-anvil-900">
@@ -380,11 +396,8 @@ function DefaultPolicy({ config, storable, save }: { config: StorageConfig; stor
             <input
               type="checkbox"
               className="h-4 w-4 accent-forge-700"
-              checked={targets.includes(p.name)}
-              onChange={(e) => {
-                setSaved(false)
-                setTargets((t) => (e.target.checked ? [...t, p.name] : t.filter((x) => x !== p.name)))
-              }}
+              checked={draft.targets.includes(p.name)}
+              onChange={(e) => edit({ picked: e.target.checked ? [...draft.targets, p.name] : draft.targets.filter((x) => x !== p.name) })}
             />
             <span className="font-mono">{p.name}</span>
           </label>
@@ -399,10 +412,7 @@ function DefaultPolicy({ config, storable, save }: { config: StorageConfig; stor
               name="replication"
               className="h-4 w-4 accent-forge-700"
               checked={choice === c.id}
-              onChange={() => {
-                setSaved(false)
-                setChoice(c.id)
-              }}
+              onChange={() => edit({ choice: c.id })}
             />
             {c.label}
           </label>
@@ -412,11 +422,15 @@ function DefaultPolicy({ config, storable, save }: { config: StorageConfig; stor
         <Button
           variant="primary"
           size="sm"
-          disabled={!storable || problem !== null}
+          // Only a real, changed policy saves: never a null one (L-10), never a no-op.
+          disabled={!storable || draft.state !== 'changed'}
+          aria-describedby={statusId}
           onClick={async () => {
+            if (draft.state !== 'changed') return
             setErr(null)
             try {
-              await save({ ...config, defaultPolicy: policy })
+              await save({ ...config, defaultPolicy: draft.policy })
+              setEdits(null)
               setSaved(true)
             } catch (e) {
               setErr(errText(e))
@@ -425,8 +439,14 @@ function DefaultPolicy({ config, storable, save }: { config: StorageConfig; stor
         >
           Save default
         </Button>
-        <span role="status" aria-live="polite" className={cn('text-[12px]', saved ? 'text-verify-700 dark:text-verify-400' : 'text-caution-700 dark:text-caution-400')}>
-          {saved ? 'Saved.' : problem && targets.length > 0 ? problem : ''}
+        <span
+          id={statusId}
+          role="status"
+          aria-live="polite"
+          data-testid="default-policy-status"
+          className={cn('text-[12px]', saved ? 'text-verify-700 dark:text-verify-400' : warn ? 'text-caution-700 dark:text-caution-400' : 'text-anvil-500 dark:text-anvil-400')}
+        >
+          {status}
         </span>
         {err ? <span role="alert" className="text-[12px] text-danger-700 dark:text-danger-400">{err}</span> : null}
       </div>

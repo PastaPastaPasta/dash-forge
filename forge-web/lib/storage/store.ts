@@ -16,10 +16,12 @@ import { z } from 'zod'
 import type { Network } from '../constants'
 import { discardStorageBlob, readStorageBlob, writeStorageBlob } from '../auth/vault'
 import {
+  policyFor,
   policySchema,
   renameInPolicy,
   profilePublicSchema,
   profileSecretsSchema,
+  type ReplicationChoice,
   type StoragePolicy,
   type StorageProfile,
 } from './profiles'
@@ -152,4 +154,46 @@ export function policyProblem(config: StorageConfig, policy: StoragePolicy): str
   if (missing.length > 0) return `no storage profile named ${missing.join(', ')}`
   if (policy.replicas > policy.targets.length) return `${policy.replicas} copies are required but only ${policy.targets.length} places are chosen`
   return null
+}
+
+/**
+ * `config` with profile `name` as the default for browser pushes when there is no default yet
+ * (L-10): a first profile that is not the default leaves every browser push, and every release
+ * asset, with nowhere to go. An existing default is never replaced.
+ */
+export function withFirstDefault(config: StorageConfig, name: string): StorageConfig {
+  if (config.defaultPolicy !== null || !config.profiles.some((p) => p.name === name)) return config
+  return { ...config, defaultPolicy: policyFor([name], 'one') }
+}
+
+/**
+ * What the "Where browser pushes go" form would save, for the ticked `picked` and `choice`:
+ * nothing ticked (`empty`: Save stays disabled and says why), the saved default as it is
+ * (`unchanged`), or a new policy (`changed`). Profiles removed since they were ticked drop out.
+ */
+export type DefaultPolicyDraft =
+  | { readonly state: 'empty' | 'invalid'; readonly targets: readonly string[]; readonly policy: StoragePolicy | null; readonly reason: string }
+  | { readonly state: 'unchanged' | 'changed'; readonly targets: readonly string[]; readonly policy: StoragePolicy }
+
+export function defaultPolicyDraft(config: StorageConfig, picked: readonly string[], choice: ReplicationChoice): DefaultPolicyDraft {
+  const targets = picked.filter((t) => config.profiles.some((p) => p.name === t))
+  if (targets.length === 0) {
+    return {
+      state: 'empty',
+      targets,
+      policy: null,
+      reason: 'Tick at least one place: with none, browser pushes have nowhere of yours to go and release assets cannot be attached.',
+    }
+  }
+  const policy = policyFor(targets, choice)
+  const problem = policyProblem(config, policy)
+  if (problem !== null) return { state: 'invalid', targets, policy, reason: problem }
+  const current = config.defaultPolicy
+  const same =
+    current !== null &&
+    current.replicas === policy.replicas &&
+    current.platformFallback === policy.platformFallback &&
+    current.targets.length === policy.targets.length &&
+    current.targets.every((t, i) => t === policy.targets[i])
+  return { state: same ? 'unchanged' : 'changed', targets, policy }
 }

@@ -18,7 +18,9 @@ import type { WriteAuth, WriteResult } from '../sdk'
 import {
   artifactKey,
   externalTargets,
+  policyForRepo,
   storeFile,
+  type StorageConfig,
   type StoragePolicy,
   type StorageProfile,
   type TargetFailure,
@@ -125,6 +127,39 @@ export function plannedAsset(name: string, size: number, policy: StoragePolicy |
   let uris = [...https, ...rest]
   if (uris.length > 4) uris = uris.filter((u) => !u.startsWith('s3://'))
   return { name, sha256: PLACEHOLDER_HASH, sizeBytes: size, uris: uris.slice(0, 4) }
+}
+
+/** Why release assets have no storage of the publisher's own to go to, and where that is fixed. */
+export interface ReleaseStorageGap {
+  readonly reason: 'no-profiles' | 'no-default' | 'platform-only'
+  /** `account`: `/settings/storage`; `repo`: this repo's Settings → Storage override. */
+  readonly fix: 'account' | 'repo'
+  readonly message: string
+}
+
+/**
+ * What stops release assets for `repoId` under `config`, or null when they have somewhere to go
+ * (L-10). The dialog used to say only "no storage chosen" when a profile existed but no default
+ * did, which read as a bug: it now names the missing step and links to it.
+ */
+export function releaseStorageGap(config: StorageConfig, repoId: string): ReleaseStorageGap | null {
+  const override = config.repoPolicies[repoId] ?? null
+  const policy = policyForRepo(config, repoId)
+  if (externalTargets(policy, config.profiles).length > 0) return null
+  const own = config.profiles.filter((p) => p.settings.kind !== 'platform').map((p) => p.name)
+  if (own.length === 0) {
+    return { reason: 'no-profiles', fix: 'account', message: 'Add storage of your own (S3 or IPFS) to attach assets: they never go to Platform.' }
+  }
+  if (policy === null) {
+    return {
+      reason: 'no-default',
+      fix: 'account',
+      message: `You have storage (${own.join(', ')}) but no default for browser pushes: tick it under "Where browser pushes go" to attach assets.`,
+    }
+  }
+  return override !== null
+    ? { reason: 'platform-only', fix: 'repo', message: "This repo's storage choice has only Platform, and release assets never go there: choose your own storage for it." }
+    : { reason: 'platform-only', fix: 'account', message: `Your default for browser pushes has only Platform, and release assets never go there: tick ${own.join(', ')} instead.` }
 }
 
 /**
