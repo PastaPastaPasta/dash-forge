@@ -429,7 +429,13 @@ async function main() {
     const before = await balance();
     coreRec.pendingUpdate = { version, identityNonce: nonce.toString(), sizeBytes: size, schemaHash: hash, previousSchemaHash: coreRec.schemaHash ?? null, balanceBefore: before.toString() };
     record();
-    await sdk.stateTransitions.broadcastAndWait(st, PUT_SETTINGS);
+    try {
+      await sdk.stateTransitions.broadcastAndWait(st, PUT_SETTINGS);
+    } catch (e) {
+      // evo-sdk proves a contract update by the state it affected, and its strict wait refuses
+      // that result ("affected state only"): the update landed; the version check below decides.
+      if (!/affected state only|VerifiedDataContract snapshot/i.test(String(e?.message ?? e))) throw e;
+    }
     const after = await settledBalance(before);
     const fetched = await sdk.contracts.fetch(coreRec.contractId);
     if (!fetched || Number(fetched.version) !== version) throw new Error(`forgeCore: update broadcast but the chain shows version ${fetched ? fetched.version : 'none'}`);

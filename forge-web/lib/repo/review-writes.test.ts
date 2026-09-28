@@ -79,7 +79,7 @@ const ALICE = '5999iJiaZLMEb6KbjXYFDDYjwGWssatToUTJbXvXhxBp'
 const BOB = 'Bq2aZ3xzfN46kruWXhGWHzFBUQrRpnBauHAAfUD5g4W9'
 const PR = 'AFbkc2KjmmGFvKUDTXqu94XU5BVrD3p7QQu19TSCqeHb'
 const REPO: RepoRef = {
-  forge: { core: '6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux', collab: '6BbENuf3uZhkntw9DSsxQcTu9a5fATxQoSe6Ph1JxHkS', group: 'FtHLFE1xLqn7s6FzS56GbY6Hh6KgLjCezNJ8HLUNJ3mc' },
+  forge: { core: '6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux', collab: '8QRpVzGbGaGTxUKp2Z7eRDfyWxs9HRGXWX9N8KREZgsJ', group: 'FtHLFE1xLqn7s6FzS56GbY6Hh6KgLjCezNJ8HLUNJ3mc' },
   repoId: '8H5JaQm8Z765UunuttoUuVsVMCmDoy2EBKgmGKYpdB2z',
   ownerId: ALICE,
   name: 'demo',

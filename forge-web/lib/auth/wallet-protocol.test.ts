@@ -31,7 +31,7 @@ import { decodeWif, encodeWif } from './wif'
 
 const FORGE: ForgeIds = {
   core: '6DJ3px1ZDGpx9kvLEMDuLdLtHo4WYirWzyJ2GVWegGux',
-  collab: '6BbENuf3uZhkntw9DSsxQcTu9a5fATxQoSe6Ph1JxHkS',
+  collab: '8QRpVzGbGaGTxUKp2Z7eRDfyWxs9HRGXWX9N8KREZgsJ',
   group: 'FtHLFE1xLqn7s6FzS56GbY6Hh6KgLjCezNJ8HLUNJ3mc',
 }
 const LEGACY = 'LegacyKeyExchange1111111111111111111111111111'.slice(0, 44)
