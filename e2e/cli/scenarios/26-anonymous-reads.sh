@@ -12,7 +12,8 @@
 #   4. `dg release list` and `dg release download --output <dir>` on a public repo made for the
 #      run: both assets land in the directory by name, hash-verified. The download used to
 #      fail with "Is a directory" and fetch only the first asset. The publish prints "1 copy"
-#      for one storage profile, and a second download refuses to overwrite with E201.
+#      for one storage profile. A rerun keeps the files already there; another file under an
+#      asset's name is refused with E201 and kept.
 #
 # Writes (under an identity minted for the run; E2E_S26_OWNER=<identity file> skips the mint):
 # a public repo `e2e-anon-<run-id>` with one release of two small assets on the local RustFS,
@@ -222,12 +223,22 @@ if anon "$LOG-dl.json" "$LOG-dl.err" "DASH_FORGE_STORAGE_CONFIG=${READER_CFG}" -
 else
   cat "$LOG-dl.err" >&2; bad "anonymous dg release download --output <dir>"
 fi
-# A second download into the same directory keeps the files there: the names came from the
-# release, and nothing is overwritten without an explicit --output file.
-anon_once "$LOG-dl2.json" "$LOG-dl2.err" "DASH_FORGE_STORAGE_CONFIG=${READER_CFG}" -- \
+# A rerun into the same directory resumes: files already holding an asset's bytes are kept.
+if anon "$LOG-dl2.json" "$LOG-dl2.err" "DASH_FORGE_STORAGE_CONFIG=${READER_CFG}" -- \
+     --json release download "${WID}/${NAME}" "$TAG" --output "$OUT"; then
+  check "a rerun keeps both files (already there)" \
+    assert_eq "True True" "$(jq_py "$LOG-dl2.json" '" ".join(str(a.get("alreadyThere")) for a in d["assets"])')"
+else
+  cat "$LOG-dl2.err" >&2; bad "a rerun of the download"
+fi
+# A different file under an asset's name is never overwritten: the names came from the
+# release, and nothing is replaced without an explicit --output file.
+printf 'mine\n' >"$OUT/$(basename "$A2")"
+anon_once "$LOG-dl3.json" "$LOG-dl3.err" "DASH_FORGE_STORAGE_CONFIG=${READER_CFG}" -- \
   --json release download "${WID}/${NAME}" "$TAG" --output "$OUT"
-check "a second download refuses to overwrite (E201)" assert_eq "E201" "$(jq_py "$LOG-dl2.json" 'd["error"]["code"]')"
+check "another file of that name is refused (E201)" assert_eq "E201" "$(jq_py "$LOG-dl3.json" 'd["error"]["code"]')"
+check "and kept" assert_eq "mine" "$(cat "$OUT/$(basename "$A2")")"
 check "and its headline is not \"could not read releases\"" \
-  assert_not_file_contains "$LOG-dl2.json" "could not read releases"
+  assert_not_file_contains "$LOG-dl3.json" "could not read releases"
 
 finish_scenario
