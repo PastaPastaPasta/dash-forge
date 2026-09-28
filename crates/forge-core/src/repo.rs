@@ -328,31 +328,49 @@ pub struct ReindexPlan {
     /// The stored git packs with objects that no live index fragment covers, in `packRef`
     /// order. Empty: the repository is fully indexed.
     pub missing: Vec<V2Pack>,
-    /// Whether the new fragment also folds the live ones in (they are at the cap).
-    pub fold: bool,
-    /// Objects the published fragment will index (what its size, and price, follow).
-    pub index_objects: u64,
     live: Vec<PackManifestInfo>,
     fragments: Vec<crate::pack::ObjectLocator>,
     manifests: Vec<PackManifestInfo>,
     roles: RoleMap,
 }
 
+impl ReindexPlan {
+    /// Whether the new fragment also folds the live ones in (they are at the cap).
+    pub fn fold(&self) -> bool {
+        !self.missing.is_empty() && self.live.len() >= MAX_LOCATOR_FRAGMENTS
+    }
+
+    /// Objects the published fragment will index (what its size, and price, follow).
+    pub fn index_objects(&self) -> u64 {
+        let folded: u64 = if self.fold() {
+            self.fragments.iter().map(|f| f.object_count() as u64).sum()
+        } else {
+            0
+        };
+        self.missing.iter().map(|p| p.object_count).sum::<u64>() + folded
+    }
+}
+
+/// Why an index is not published or folded when a fragment's rows name a pack past the end of
+/// the pack space: it was built over another space.
+const FRAGMENT_OUTSIDE_SPACE: &str = "a published index fragment addresses a pack outside the \
+     pack set — run `dg repack` to rebuild the index";
+
 /// The packs of `space` that hold objects but have no row in the live fragments (`covered`
 /// is the set of `packRef`s they index). An index row naming a pack past the end of the
 /// space means a fragment was built over another space: refused, like a push would.
 fn uncovered_packs(space: &[V2Pack], covered: &BTreeSet<u16>) -> Result<Vec<V2Pack>> {
     if covered.iter().any(|&r| usize::from(r) >= space.len()) {
-        return Err(Error::Config(
-            "a published index fragment addresses a pack outside the pack set — run \
-             `dg repack` to rebuild the index"
-                .into(),
-        ));
+        return Err(Error::Config(FRAGMENT_OUTSIDE_SPACE.into()));
     }
     Ok(space
         .iter()
         .filter(|p| p.object_count > 0)
-        .filter(|p| u16::try_from(p.pack_ref).map_or(true, |r| !covered.contains(&r)))
+        .filter(|p| {
+            u16::try_from(p.pack_ref)
+                .ok()
+                .is_none_or(|r| !covered.contains(&r))
+        })
         .cloned()
         .collect())
 }
@@ -1841,70 +1859,81 @@ impl<'a> RepoService<'a> {
         })
         .await?;
         let space_len = locator_pack_space(&manifests, &roles, None).len();
-        let (pack_ref, live_locators) = match plan {
+        let (pack_ref, live_locators, fold) = match plan {
             PushIndexPlan::NotListed => {
                 return Ok(PushIndexOutcome::Skipped(
-                    "the pack's manifest is not listed yet by the nodes read; run \
-                     `dg repo reindex` to publish its browse index"
-                        .into(),
+                    "the pack's manifest is not listed yet by the nodes read".into(),
                 ))
             }
             PushIndexPlan::Skip(why) => return Ok(PushIndexOutcome::Skipped(why)),
             PushIndexPlan::Publish {
                 pack_ref,
-                fold: false,
-                ..
-            } => {
-                let fragment = crate::pack::ObjectLocator::build(pack, pack_ref)?;
-                let manifest_id = self
-                    .store_locator(repo, &fragment, Vec::new(), target)
-                    .await?;
-                return Ok(PushIndexOutcome::Fragment {
-                    manifest_id,
-                    pack_ref,
-                });
-            }
-            PushIndexPlan::Publish {
-                pack_ref,
                 live_locators,
-                fold: true,
-            } => (pack_ref, live_locators),
+                fold,
+            } => (pack_ref, live_locators, fold),
         };
 
-        // Fold. Oldest-first for a stable row order; rows are keyed by `(oid, packRef)`.
+        // Oldest-first for a stable row order; rows are keyed by `(oid, packRef)`. Without a
+        // fold the fragment is the pushed pack's rows alone.
+        let folded_in = if fold {
+            self.read_live_fragments(repo, &manifests, &roles, &live_locators)
+                .await?
+        } else {
+            Vec::new()
+        };
+        let own = crate::pack::ObjectLocator::build(pack, pack_ref)?;
+        let parts: Vec<&crate::pack::ObjectLocator> =
+            folded_in.iter().chain(std::iter::once(&own)).collect();
+        let locator = crate::pack::ObjectLocator::merge(&parts);
+        // A row naming a pack past the end of the live space means one fragment was built
+        // over a different space — publish nothing rather than supersede the parts with an
+        // index that addresses packs the reader cannot resolve.
+        if locator
+            .max_pack_ref()
+            .is_some_and(|r| usize::from(r) >= space_len)
+        {
+            return Ok(PushIndexOutcome::Skipped(FRAGMENT_OUTSIDE_SPACE.into()));
+        }
+        let supersedes = if fold {
+            live_locators.iter().map(|m| m.pack_hash).collect()
+        } else {
+            Vec::new()
+        };
+        let manifest_id = self
+            .store_locator(repo, &locator, supersedes, target)
+            .await?;
+        Ok(if fold {
+            PushIndexOutcome::Consolidated {
+                manifest_id,
+                folded: live_locators.len(),
+            }
+        } else {
+            PushIndexOutcome::Fragment {
+                manifest_id,
+                pack_ref,
+            }
+        })
+    }
+
+    /// Download and parse the live index fragments `live` (newest first), oldest first.
+    async fn read_live_fragments(
+        &self,
+        repo: &RepoRef,
+        manifests: &[PackManifestInfo],
+        roles: &RoleMap,
+        live: &[PackManifestInfo],
+    ) -> Result<Vec<crate::pack::ObjectLocator>> {
         let contract = self.repo_contract(repo).await?;
-        let reader = self.repo_reader(repo, &manifests, &roles).await;
-        let mut parts = Vec::with_capacity(live_locators.len() + 1);
-        for m in live_locators.iter().rev() {
+        let reader = self.repo_reader(repo, manifests, roles).await;
+        let mut parts = Vec::with_capacity(live.len());
+        for m in live.iter().rev() {
             let sealed = self
                 .fetch_artifact_from(repo, &contract, m, &reader)
                 .await?;
             let bytes = self.open_artifact(repo, m, sealed).await?;
             parts.push(crate::pack::ObjectLocator::parse(&bytes)?);
         }
-        parts.push(crate::pack::ObjectLocator::build(pack, pack_ref)?);
-        let folded = crate::pack::ObjectLocator::merge(&parts.iter().collect::<Vec<_>>());
-        // A row naming a pack past the end of the live space means one fragment was built
-        // over a different space — publish nothing rather than supersede the parts with an
-        // index that addresses packs the reader cannot resolve.
-        if folded
-            .max_pack_ref()
-            .is_some_and(|r| usize::from(r) >= space_len)
-        {
-            return Ok(PushIndexOutcome::Skipped(
-                "a published index fragment addresses a pack outside the pack set — \
-                 run `dg repack` to rebuild the index"
-                    .into(),
-            ));
-        }
-        let supersedes = live_locators.iter().map(|m| m.pack_hash).collect();
-        let manifest_id = self
-            .store_locator(repo, &folded, supersedes, target)
-            .await?;
-        Ok(PushIndexOutcome::Consolidated {
-            manifest_id,
-            folded: live_locators.len(),
-        })
+        Ok(parts)
     }
 
     /// What [`Self::reindex`] would publish: the stored git packs (with objects) that no live
@@ -1918,31 +1947,16 @@ impl<'a> RepoService<'a> {
         if !fragments_index_prefixes(&manifests, &roles, &space, &live) {
             return Err(Error::Config(FRAGMENT_MISMATCH.into()));
         }
-        let contract = self.repo_contract(repo).await?;
-        let reader = self.repo_reader(repo, &manifests, &roles).await;
-        let mut covered = BTreeSet::new();
-        let mut fragments = Vec::with_capacity(live.len());
-        for m in live.iter().rev() {
-            let sealed = self
-                .fetch_artifact_from(repo, &contract, m, &reader)
-                .await?;
-            let locator =
-                crate::pack::ObjectLocator::parse(&self.open_artifact(repo, m, sealed).await?)?;
-            covered.extend(locator.pack_refs());
-            fragments.push(locator);
-        }
+        let fragments = self
+            .read_live_fragments(repo, &manifests, &roles, &live)
+            .await?;
+        let covered = fragments
+            .iter()
+            .flat_map(crate::pack::ObjectLocator::pack_ref_iter)
+            .collect();
         let missing = uncovered_packs(&space, &covered)?;
-        let fold = !missing.is_empty() && live.len() >= MAX_LOCATOR_FRAGMENTS;
-        let index_objects = missing.iter().map(|p| p.object_count).sum::<u64>()
-            + if fold {
-                fragments.iter().map(|f| f.object_count() as u64).sum()
-            } else {
-                0
-            };
         Ok(ReindexPlan {
             missing,
-            fold,
-            index_objects,
             live,
             fragments,
             manifests,
@@ -1950,30 +1964,29 @@ impl<'a> RepoService<'a> {
         })
     }
 
-    /// Publish the browse index for the packs `plan` found unindexed: download each (its best
-    /// verifying copy), index it at its `packRef`, and store ONE index fragment over them all,
-    /// folding the live fragments in when they are at [`MAX_LOCATOR_FRAGMENTS`]. Only the index
-    /// is written: the packs are read, never stored again. `None` when nothing was missing.
+    /// Publish the browse index for the packs `plan` found unindexed (`plan.missing` must not
+    /// be empty): download each (its best verifying copy), index it at its `packRef`, and
+    /// store ONE index fragment over them all, folding the live fragments in when they are at
+    /// [`MAX_LOCATOR_FRAGMENTS`]. Only the index is written: the packs are read, never stored
+    /// again. Returns the index manifest's id.
     pub async fn reindex(
         &self,
         repo: &RepoRef,
         plan: &ReindexPlan,
         target: RepackTarget<'_>,
-    ) -> Result<Option<String>> {
-        if plan.missing.is_empty() {
-            return Ok(None);
-        }
+    ) -> Result<String> {
         let contract = self.repo_contract(repo).await?;
-        let git = git_pack_manifests(&plan.manifests);
         let reader = self.repo_reader(repo, &plan.manifests, &plan.roles).await;
+        let git = u64::from(crate::pack::KIND_GIT_PACK);
         let mut built = Vec::with_capacity(plan.missing.len());
         for p in &plan.missing {
-            let hash = hex::decode(&p.pack_hash)
-                .ok()
-                .and_then(|h| <[u8; 32]>::try_from(h).ok())
-                .ok_or_else(|| Error::Config(format!("pack hash {} is not hex", p.pack_hash)))?;
-            let copies: Vec<&PackManifestInfo> =
-                git.iter().filter(|m| m.pack_hash == hash).collect();
+            let hash = <[u8; 32] as hex::FromHex>::from_hex(&p.pack_hash)
+                .map_err(|_| Error::Config(format!("pack hash {} is not hex", p.pack_hash)))?;
+            let copies: Vec<&PackManifestInfo> = plan
+                .manifests
+                .iter()
+                .filter(|m| m.kind == git && m.pack_hash == hash)
+                .collect();
             let (sealed, m) = self
                 .fetch_best_copy(repo, &contract, &copies, &plan.roles, &reader)
                 .await
@@ -1992,15 +2005,12 @@ impl<'a> RepoService<'a> {
             built.push(crate::pack::ObjectLocator::build(&parsed, pack_ref)?);
         }
         let mut parts: Vec<&crate::pack::ObjectLocator> = built.iter().collect();
-        if plan.fold {
+        let mut supersedes = Vec::new();
+        if plan.fold() {
             parts.extend(&plan.fragments);
+            supersedes = plan.live.iter().map(|m| m.pack_hash).collect();
         }
         let locator = crate::pack::ObjectLocator::merge(&parts);
-        let supersedes = if plan.fold {
-            plan.live.iter().map(|m| m.pack_hash).collect()
-        } else {
-            Vec::new()
-        };
         // A pack or fragment that landed while this ran changes nothing already built: new
         // packs only append to the space, so every packRef above still means the same pack.
         // A repack in between does not, and is caught the way a push catches it.
@@ -2014,9 +2024,7 @@ impl<'a> RepoService<'a> {
         {
             return Err(Error::Config(FRAGMENT_MISMATCH.into()));
         }
-        self.store_locator(repo, &locator, supersedes, target)
-            .await
-            .map(Some)
+        self.store_locator(repo, &locator, supersedes, target).await
     }
 
     /// Upload a locator artifact and record its `packManifest` (kind 1).

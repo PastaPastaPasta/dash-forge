@@ -168,32 +168,15 @@ pub fn parse_landed(stderr: &str) -> PushReport {
         match v.get("event").and_then(Value::as_str) {
             Some("stored") => r.add_pack(num("bytes"), num("objects")),
             Some("refUpdate") => r.refs += 1,
+            // The push left its browse index unpublished (D-920): the helper's own message,
+            // which names the fix.
+            Some("indexSkipped") => {
+                r.index_skipped = v.get("message").and_then(Value::as_str).map(str::to_string);
+            }
             _ => {}
         }
     }
-    r.index_skipped = index_skipped(stderr);
     r
-}
-
-/// The helper's `indexSkipped` event, as a warning a person can act on (D-920).
-fn index_skipped(stderr: &str) -> Option<String> {
-    events(stderr)
-        .filter(|v| v.get("event").and_then(Value::as_str) == Some("indexSkipped"))
-        .last()
-        .map(|v| {
-            let s = |k: &str| {
-                v.get(k)
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string()
-            };
-            format!(
-                "the push landed but its browse index was not published ({}); the web cannot \
-                 browse it until `{}` publishes it",
-                s("reason"),
-                s("fix")
-            )
-        })
 }
 
 /// A push that failed, with what it still wrote before failing ([`parse_landed`]).
@@ -639,11 +622,11 @@ dash: some human line"#;
     #[test]
     fn a_skipped_browse_index_reaches_the_report() {
         let stderr = r#"{"event":"stored","packHash":"cd","bytes":900,"objects":3}
-{"event":"indexSkipped","reason":"the pack's manifest is not listed yet","fix":"dg repo reindex o/r"}
+{"event":"indexSkipped","message":"the push landed but its browse index was not published (not listed yet); the web cannot browse the new commits until `dg repo reindex o/r` publishes it","reason":"not listed yet","fix":"dg repo reindex o/r"}
 {"event":"refUpdate","ref":"refs/heads/main","newOid":"1fe5ecd3"}"#;
         let w = parse_landed(stderr).index_skipped.expect("reported");
         assert!(w.contains("browse index was not published"), "{w}");
-        assert!(w.contains("the pack's manifest is not listed yet"), "{w}");
+        assert!(w.contains("not listed yet"), "{w}");
         assert!(w.contains("`dg repo reindex o/r`"), "{w}");
         // A push that published its index says nothing.
         assert_eq!(

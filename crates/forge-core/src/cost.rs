@@ -159,22 +159,31 @@ pub mod push_fees {
     /// this prices every push as a first write, so the estimate is an upper bound for all of
     /// them. git-remote-dash's guard and forge-import's cap both use it.
     pub fn estimate_push(shape: &PushShape) -> PushEstimate {
-        let stored = |bytes: u64| {
-            if shape.sealed {
-                crate::private::pack::sealed_upper_bound(bytes)
-            } else {
-                bytes
-            }
-        };
         let manifest = MANIFEST_FIRST + URIS_PER_TARGET * shape.external_targets;
         let index_objects = shape.index_objects.max(shape.objects);
         PushEstimate {
             metadata_credits: manifest * 2 + estimate_ref_updates(shape.refs),
             chunk_credits: if shape.platform_bytes {
-                chunks(stored(shape.pack_bytes)) + chunks(stored(locator_bytes(index_objects)))
+                chunks(stored(shape.pack_bytes, shape.sealed))
+                    + index_chunks(index_objects, shape.sealed)
             } else {
                 0
             },
+        }
+    }
+
+    /// The credits of a browse-index fragment over `objects` objects stored as `chunk`
+    /// documents, sealed when the repository is private (`dg repo reindex` prices the same).
+    pub fn index_chunks(objects: u64, sealed: bool) -> u64 {
+        chunks(stored(locator_bytes(objects), sealed))
+    }
+
+    /// The bytes a `plain`-byte artifact takes stored: sealed ones are a little larger.
+    fn stored(plain: u64, sealed: bool) -> u64 {
+        if sealed {
+            crate::private::pack::sealed_upper_bound(plain)
+        } else {
+            plain
         }
     }
 

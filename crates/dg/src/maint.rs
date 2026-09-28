@@ -115,9 +115,6 @@ pub async fn reindex(ctx: &Ctx, repo: &str) -> Result<()> {
         .plan_reindex(&s.repo)
         .await
         .context("reading the browse index")?;
-    let price = dash_usd_price();
-    let missing_bytes: u64 = plan.missing.iter().map(|p| p.size_bytes).sum();
-    let estimate = reindex_estimate(plan.index_objects, s.repo.visibility);
     if plan.missing.is_empty() {
         ctx.emit(
             json!({ "status": "indexed", "repoId": s.repo.id(), "missingPacks": 0 }),
@@ -130,7 +127,13 @@ pub async fn reindex(ctx: &Ctx, repo: &str) -> Result<()> {
         );
         return Ok(());
     }
+    let price = dash_usd_price();
+    let index_objects = plan.index_objects();
+    let sealed = s.repo.visibility == forge_core::rules::v2::Visibility::Private;
+    let estimate = forge_core::cost::push_fees::index_chunks(index_objects, sealed)
+        + forge_core::cost::push_fees::MANIFEST_FIRST;
     if !ctx.json {
+        let missing_bytes: u64 = plan.missing.iter().map(|p| p.size_bytes).sum();
         println!(
             "Reindex {}: {} pack(s) without a browse index ({missing_bytes} bytes, read not \
              re-uploaded)",
@@ -138,9 +141,8 @@ pub async fn reindex(ctx: &Ctx, repo: &str) -> Result<()> {
             plan.missing.len()
         );
         println!(
-            "  uploads one index fragment over {} objects{} + its manifest   {}",
-            plan.index_objects,
-            if plan.fold {
+            "  uploads one index fragment over {index_objects} objects{} + its manifest   {}",
+            if plan.fold() {
                 " (folding the live fragments in)"
             } else {
                 ""
@@ -152,53 +154,33 @@ pub async fn reindex(ctx: &Ctx, repo: &str) -> Result<()> {
         "Publish the browse index of {}?",
         s.repo.display()
     ))?;
-    let before = s.client.get_balance(&s.identity.id()).await.ok();
+    let before = s.balance().await;
     let manifest_id = svc
         .reindex(&s.repo, &plan, RepackTarget::Platform)
         .await
         .context("publishing the browse index")?;
-    let after = s.client.get_balance(&s.identity.id()).await.ok();
-    let spent = match (before, after) {
-        (Some(b), Some(a)) if b > a => b - a,
-        _ => estimate,
-    };
+    let spent = s.spent_since(before).await;
     ctx.emit(
         json!({
             "status": "reindexed",
             "repoId": s.repo.id(),
             "missingPacks": plan.missing.len(),
-            "indexObjects": plan.index_objects,
-            "folded": plan.fold,
+            "indexObjects": index_objects,
+            "folded": plan.fold(),
             "locatorManifestId": manifest_id,
             "cost": crate::fmt::cost_json(spent, price),
         }),
         || {
             println!(
-                "Published the browse index of {}: {} object(s) over {} pack(s).",
+                "Published the browse index of {}: {index_objects} object(s) over {} pack(s).",
                 s.repo.display(),
-                plan.index_objects,
                 plan.missing.len()
             );
-            if let Some(id) = &manifest_id {
-                println!("  index manifest:  {id}");
-            }
+            println!("  index manifest:  {manifest_id}");
             println!("  cost:            {}", cost_line(spent, price));
         },
     );
     Ok(())
-}
-
-/// The on-chain price of a reindex: the index fragment's chunks and its manifest, as a push
-/// prices the same fragment (an upper bound).
-fn reindex_estimate(index_objects: u64, visibility: forge_core::rules::v2::Visibility) -> u64 {
-    use forge_core::cost::push_fees::{chunks, locator_bytes, MANIFEST_FIRST};
-    let bytes = locator_bytes(index_objects);
-    let stored = if visibility == forge_core::rules::v2::Visibility::Private {
-        forge_core::private::pack::sealed_upper_bound(bytes)
-    } else {
-        bytes
-    };
-    chunks(stored) + MANIFEST_FIRST
 }
 
 /// Print (or `--json`-emit) a finished repack.

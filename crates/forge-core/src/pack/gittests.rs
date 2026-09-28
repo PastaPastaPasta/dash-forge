@@ -523,12 +523,10 @@ fn a_stored_pack_indexes_from_its_bytes_like_the_push_did() {
             .as_bytes(),
         ObjectLocator::build(&pushed.parsed, 3).unwrap().as_bytes()
     );
-    assert_eq!(
-        ObjectLocator::build(&from_bytes.parsed, 3)
-            .unwrap()
-            .pack_refs(),
-        [3].into_iter().collect()
-    );
+    assert!(ObjectLocator::build(&from_bytes.parsed, 3)
+        .unwrap()
+        .pack_ref_iter()
+        .all(|r| r == 3));
 
     let head = git_str(p, &["rev-parse", "HEAD~1"]);
     let base = git_str(p, &["rev-parse", "HEAD~2"]);

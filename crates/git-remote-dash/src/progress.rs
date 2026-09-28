@@ -282,22 +282,21 @@ pub fn recorded_line(pack_hash: &str) -> (String, Value) {
     )
 }
 
-/// The fix a push prints when it stored its pack but published no browse index for it.
-pub const REINDEX_FIX: &str = "dg repo reindex <owner>/<repo>";
-
 /// A push stored its pack but left the browse index behind (D-920): `dash: warning: …`.
 /// Printed whatever the verbosity and recorded in the report file, like an error, because a
 /// repository nobody can browse is not something a quiet push may hide. forge-import reads it
 /// from the event stream (`indexSkipped`) and puts it in its summary's warnings.
 pub fn index_skipped_line(repo: &str, why: &str) -> (String, Value) {
-    let fix = REINDEX_FIX.replace("<owner>/<repo>", repo);
+    let fix = format!("dg repo reindex {repo}");
+    let message = format!(
+        "the push landed but its browse index was not published ({why}); the web cannot \
+         browse the new commits until `{fix}` publishes it"
+    );
     (
-        format!(
-            "dash: warning: the push landed but its browse index was not published ({why}); \
-             the web cannot browse the new commits until `{fix}` publishes it"
-        ),
+        format!("dash: warning: {message}"),
         json!({
             "event": "indexSkipped",
+            "message": redact(&message),
             "reason": redact(why),
             "fix": fix,
         }),
@@ -400,7 +399,6 @@ mod tests {
             .unwrap()
     }
 
-    /// The spec §7.4 sample, line for line.
     /// D-920: a push that stored its pack without its browse index says so as a warning with
     /// the command that fixes it, in text and as the `indexSkipped` event forge-import reads.
     #[test]
@@ -411,8 +409,13 @@ mod tests {
         assert_eq!(event["event"], "indexSkipped");
         assert_eq!(event["reason"], "not listed yet");
         assert_eq!(event["fix"], "dg repo reindex OwnerId/dash");
+        assert_eq!(
+            format!("dash: warning: {}", event["message"].as_str().unwrap()),
+            text
+        );
     }
 
+    /// The spec §7.4 sample, line for line.
     #[test]
     fn matches_the_spec_sample() {
         let (plan, ev) = plan_line(&PlanFacts {

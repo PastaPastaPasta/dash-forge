@@ -972,8 +972,8 @@ async fn wire_and_push(
         "cost": cost_json(push_cost, price),
     });
     // The helper printed it already in human mode; --json keeps it in the result.
-    if let Some(skipped) = &outcome.index_skipped {
-        body["push"]["indexSkipped"] = skipped.clone();
+    if let Some(skipped) = outcome.index_skipped {
+        body["push"]["indexSkipped"] = skipped;
     }
     body["balanceCredits"] = json!(after);
     if !ctx.json {
