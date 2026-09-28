@@ -56,6 +56,20 @@ describe('repoContentWritten', () => {
     expect(heard).toEqual([{ repo: PARENT.repoId, moved: { refName: 'refs/heads/main', newOid: '12'.repeat(20) } }])
   })
 
+  it('a listener that throws neither hides the write result nor stops the other listeners', async () => {
+    const off = onRepoContentWritten(() => {
+      throw new Error('listener bug')
+    })
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    try {
+      await expect(writeRefUpdate(sdk, auth, PARENT, { refName: 'refs/heads/main', newOid: '12'.repeat(20) })).resolves.toMatchObject({ documentId: 'doc' })
+      expect(heard).toHaveLength(1)
+    } finally {
+      off()
+      quiet.mockRestore()
+    }
+  })
+
   it('a failed write still drops the caches (it may have landed) but names no move', async () => {
     write.mockRejectedValueOnce(new Error('timed out'))
     await expect(writeRefUpdate(sdk, auth, PARENT, { refName: 'refs/heads/main', newOid: '12'.repeat(20) })).rejects.toThrow('timed out')

@@ -80,7 +80,16 @@ export function onRepoContentWritten(listener: ContentListener): () => void {
 
 /** Tell the {@link onRepoContentWritten} listeners that `repo`'s stored content changed. */
 export function repoContentWritten(repo: RepoRef, moved?: MovedRef): void {
-  for (const listener of contentListeners) listener(repo, moved)
+  // Called from the writes' `finally`: a listener that throws must neither stop the others nor
+  // replace the write's own result or error (a landed write retried as failed).
+  for (const listener of contentListeners) {
+    try {
+      listener(repo, moved)
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error('repoContentWritten listener failed', e)
+    }
+  }
 }
 
 /** Why `uris` does not fit the manifest's typed array, or null (`uris` ≤ 8 × ≤ 300 bytes). */
