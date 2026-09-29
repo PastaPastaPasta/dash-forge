@@ -8,6 +8,9 @@
  * "New pull request" (forge-v2) opens `/repo/pulls/new` to propose an already-pushed branch.
  */
 
+import { Byline } from '@/components/repo/byline'
+import { useMirrorTrust } from '@/hooks/use-mirror-trust'
+import { trustedOrigin } from '@/lib/repo/provenance'
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
 import { GitPullRequest, GitMerge, GitPullRequestClosed } from 'lucide-react'
@@ -16,11 +19,10 @@ import type { Listed, PullView } from '@/lib/repo'
 import { HiddenNote } from '@/components/repo/hidden-note'
 import { MirrorNote } from '@/components/repo/mirror-note'
 import { listPullsCached, repoContractIds, repoKey } from '@/lib/repo'
-import { branchName, timeAgo } from '@/lib/view'
+import { branchName } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
-import { Author } from '@/components/author'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
@@ -41,6 +43,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   const { sdk, ready } = useSdk(repoContractIds(home.repo))
   const [filter, setFilter] = useState<Filter>('open')
   const generation = useRepoWriteGeneration(home.repo)
+  const trust = useMirrorTrust(home.repo)
   const { data, loading, error, reload } = useAsync<Listed<PullView>>(
     // Through the session cache the header's open count reads, and re-read after each
     // count-changing write the header refolds on, so the two agree.
@@ -106,8 +109,8 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
                   <span className="text-dense font-medium text-anvil-900 dark:text-anvil-50">{p.title || '(untitled)'}</span>
                   <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
                     <span className="font-mono">#{p.number}</span>
-                    <span>{st.label} · into <span className="font-mono">{branchName(p.baseRefName) || '?'}</span> · {timeAgo(p.createdAt)} by</span>
-                    <Author identityId={p.author} link={false} />
+                    <span>{st.label} · into <span className="font-mono">{branchName(p.baseRefName) || '?'}</span> · opened by</span>
+                    <Byline author={p.author} createdAt={p.createdAt} origin={trustedOrigin(p.origin, p.author, trust)} link={false} />
                     {p.headOid ? <Oid value={p.headOid} chars={7} copyable={false} /> : null}
                   </div>
                 </div>

@@ -8,6 +8,7 @@
  * approvals (`countApprovals`, `forge-v2.md` §6).
  */
 
+import { originOf, type Origin } from '../repo/provenance'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import {
@@ -72,6 +73,8 @@ export interface CommentView {
   readonly revision?: number
   /** An imported comment's provenance as read, for re-sealing an edit. */
   readonly importedRaw?: Readonly<Record<string, unknown>> | null
+  /** See `IssueView.origin`. */
+  readonly origin?: Origin | null
 }
 
 /** A comment document as a {@link CommentView}. */
@@ -98,6 +101,7 @@ export function toCommentView(d: PlainDocument): CommentView {
     updatedAt: updatedAtOf(d),
     revision: revisionOf(d),
     importedRaw: typeof d['imported'] === 'object' && d['imported'] !== null ? (d['imported'] as Readonly<Record<string, unknown>>) : null,
+    origin: originOf(d),
   }
 }
 

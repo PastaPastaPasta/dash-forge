@@ -11,11 +11,12 @@
  * storage, hashed and verified, then one `release` document names them.
  */
 
+import { Time } from '@/components/repo/byline'
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, CheckCircle2, Download, FileArchive, Loader2, Tag, XCircle } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { formatBytes, plural, timeAgo } from '@/lib/view'
+import { formatBytes, plural } from '@/lib/view'
 import type { ReleaseAssetView, ReleaseView } from '@/lib/repo'
 import {
   AssetHashMismatchError,
@@ -191,7 +192,17 @@ function ReleaseCard({
         {full ? <CopyLinkButton repo={addr} target={{ kind: 'release', tag: r.tagName }} className="ml-auto" /> : null}
       </header>
       <p className="mt-1 flex flex-wrap items-center gap-1 text-[12px] text-anvil-600 dark:text-anvil-300">
-        Published by <Author identityId={r.publisher} /> · {timeAgo(r.createdAt)}
+        {r.published !== null ? (
+          <>
+            Published <Time ms={r.published.at} dateOnly /> on {r.published.host}
+            {r.published.author ? <> by <span className="font-medium text-anvil-800 dark:text-anvil-100">@{r.published.author}</span></> : null} · mirrored by{' '}
+            <Author identityId={r.publisher} /> <Time ms={r.createdAt} />
+          </>
+        ) : (
+          <>
+            Published by <Author identityId={r.publisher} /> · <Time ms={r.createdAt} />
+          </>
+        )}
       </p>
       {r.notesBody && (full || !previous) ? (
         <div className={cn('mt-3 text-prose', !full && 'line-clamp-6')}>

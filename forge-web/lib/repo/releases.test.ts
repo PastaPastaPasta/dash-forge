@@ -52,6 +52,7 @@ describe('newestPerTag', () => {
     badAssets: 0,
     notesBody: '',
     omitted: null,
+    published: null,
     publisher: 'p',
     createdAt: at,
   })

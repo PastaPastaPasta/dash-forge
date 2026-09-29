@@ -10,6 +10,7 @@
  * and the browse plane's content-check ledger (which updates live as the page reads objects).
  */
 
+import { Time } from '@/components/repo/byline'
 import { useEffect, useLayoutEffect, useSyncExternalStore } from 'react'
 import Link from 'next/link'
 import { GitBranch, Scale, Star, Tag, Users } from 'lucide-react'
@@ -24,7 +25,6 @@ import {
   refParamFor,
   selectedTip,
   subscribeContentChecks,
-  timeAgo,
   type RepoHome,
   type SelectedRef,
 } from '@/lib/view'
@@ -243,7 +243,9 @@ function LatestRelease({ home, addr }: { home: RepoHome; addr: RepoAddress }): J
               <span className="font-mono">{latest.data.tagName}</span>
               {latest.data.name ? <span className="truncate font-normal">{latest.data.name}</span> : null}
             </span>
-            <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{timeAgo(latest.data.createdAt)}</span>
+            <span className="text-[12px] text-anvil-500 dark:text-anvil-400">
+              {latest.data.published ? <Time ms={latest.data.published.at} dateOnly /> : <Time ms={latest.data.createdAt} />}
+            </span>
           </Link>
         )}
       </div>
