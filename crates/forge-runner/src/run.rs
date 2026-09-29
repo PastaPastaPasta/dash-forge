@@ -273,15 +273,18 @@ pub fn run_push(cfg: &Config, repo: &RepoConfig, push: &Push) -> Result<Ran> {
     let secs = started.elapsed().as_secs();
     let logs = work.join("logs");
     std::fs::create_dir_all(&logs)?;
+    let secret_values = secrets
+        .as_deref()
+        .map(read_secret_values)
+        .transpose()?
+        .unwrap_or_default();
     let mut ran = Ran::default();
     for j in &jobs {
         let outcome = results.outcome(&j.id);
         let conclusion = outcome.conclusion(timed_out);
         let log_path = logs.join(format!("{}.log", j.id));
-        std::fs::write(
-            &log_path,
-            results.logs.get(&j.id).map_or("", String::as_str),
-        )?;
+        let raw = results.logs.get(&j.id).map_or("", String::as_str);
+        std::fs::write(&log_path, redact(raw, &secret_values))?;
         let summary = format!(
             "forge-runner: {} on {} in {secs}s{}{}",
             conclusion,
@@ -309,6 +312,27 @@ pub fn run_push(cfg: &Config, repo: &RepoConfig, push: &Push) -> Result<Ran> {
         ran.jobs.push((j.clone(), conclusion));
     }
     Ok(ran)
+}
+
+/// The values of a `KEY=value` secrets file (act's format), for [`redact`].
+fn read_secret_values(path: &Path) -> Result<Vec<String>> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading the secrets file {}", path.display()))?;
+    Ok(text
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .map(|(_, v)| v.trim().trim_matches('"').to_string())
+        .filter(|v| v.len() >= 4)
+        .collect())
+}
+
+/// `log` with every secret value replaced by `***`. act masks secrets in its own output
+/// already; this is a second fence before a log leaves the machine (logs are public).
+pub fn redact(log: &str, secrets: &[String]) -> String {
+    secrets
+        .iter()
+        .fold(log.to_string(), |acc, s| acc.replace(s.as_str(), "***"))
 }
 
 /// Run `cmd`, capturing stdout, killing it after `limit`. Returns (stdout, timed out).
@@ -405,6 +429,24 @@ mod tests {
         assert_eq!(e["after"], "ab".repeat(20));
         assert_eq!(e["before"], "0".repeat(40));
         assert_eq!(e["repository"]["name"], "p");
+    }
+
+    #[test]
+    fn secret_values_never_reach_a_log() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("s");
+        std::fs::write(
+            &f,
+            "# comment\nTOKEN=abcd1234\nSHORT=ab\nQUOTED=\"xyz789\"\n",
+        )
+        .unwrap();
+        let v = read_secret_values(&f).unwrap();
+        assert_eq!(
+            v,
+            ["abcd1234", "xyz789"],
+            "too-short values are not redacted (they would eat the log)"
+        );
+        assert_eq!(redact("t=abcd1234 q=xyz789 ab", &v), "t=*** q=*** ab");
     }
 
     #[test]
