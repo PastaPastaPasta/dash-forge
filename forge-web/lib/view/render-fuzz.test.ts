@@ -221,6 +221,10 @@ describe('renderers terminate quickly on hostile input', () => {
   it('parseMarkdown: 1 MiB worst cases stay under budget', async () => {
     const calls = MIB_UNITS.map((u) => [fill(MIB, u)])
     calls.push(['a|b\n---|---\n' + fill(MIB, 'c|d\n')], ['a|b\n---|---\n' + fill(MIB, '|')], [fill(MIB, '- ', 'x')])
+    // FG-2 review: `[^` runs with a footnote defined (each `[^` once normalized ~1,000 chars),
+    // bare and inside nested spans.
+    const note = '\n\n[^' + 'a'.repeat(900) + ']: x'
+    calls.push([fill(MIB - 1000, '[^') + ']' + note], ['['.repeat(31) + fill(MIB - 2000, '[^') + ']' + '](x)'.repeat(31) + note], ['~~' + fill(MIB - 1000, '[^') + ']~~' + note])
     await expectFast(markdownUrl, 'parseMarkdown', calls, 'parseMarkdown 1 MiB', MIB_CALL_MS)
   }, 120_000)
 

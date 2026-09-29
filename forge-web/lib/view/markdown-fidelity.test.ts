@@ -211,6 +211,21 @@ describe('lists: continuation, nesting, looseness (L-41)', () => {
   })
 })
 
+describe('review findings: lazy lines and fences in containers', () => {
+  it('a lazy line follows only a paragraph: not a closed fence, heading or rule in an item', () => {
+    expect(md('- item\n  ```\n  code\n  ```\nNext paragraph')).toEqual([{ ul: [['item', 'code():code']] }, 'p:Next paragraph'])
+    expect(md('- # h\nfoo')).toEqual([{ ul: [['', 'h1:h']] }, 'p:foo'])
+    expect(md('> ```\n> code\n> ```\nfoo')).toEqual([{ quote: ['code():code'] }, 'p:foo'])
+  })
+
+  it('a fence opened on a list marker line does not hide later reference definitions', () => {
+    const blocks = parseMarkdown('- ```sh\n  make\n  ```\n\nSee [docs].\n\n[docs]: https://example.com')
+    const para = blocks[1] as Extract<Block, { t: 'paragraph' }>
+    expect(para.c.find((n) => n.t === 'link')).toMatchObject({ t: 'link', href: 'https://example.com' })
+    expect(blocks).toHaveLength(2)
+  })
+})
+
 describe('blockquotes and GitHub alerts (L-75)', () => {
   it('GFM 233: a lazy line continues the quote\'s paragraph', () => {
     expect(md('> foo\nbar\n\nbaz')).toEqual([{ quote: ['p:foo bar'] }, 'p:baz'])

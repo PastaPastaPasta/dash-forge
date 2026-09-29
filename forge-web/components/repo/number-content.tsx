@@ -14,9 +14,9 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { ExternalLink, Hash } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { repoContractIds, repoKey } from '@/lib/repo'
+import { readNumberTrust, repoContractIds, repoKey } from '@/lib/repo'
 import { isUpstreamItem, numberRows, type NumberRow } from '@/lib/view/jump'
-import { upstreamItemUrl } from '@/lib/view/ref-targets'
+import { upstreamItemUrl, type ForgeRepo } from '@/lib/view/ref-targets'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import type { RepoAddress } from '@/hooks/use-query-param'
@@ -24,16 +24,25 @@ import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { issueHref, mirrorRepo, pullHref } from '@/components/repo/target-href'
 
 export function NumberContent({ home, addr, number, upstream }: { home: RepoHome; addr: RepoAddress; number: number; upstream: boolean }): JSX.Element {
-  const { sdk, ready } = useSdk(repoContractIds(home.repo))
+  const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const router = useRouter()
   const valid = Number.isSafeInteger(number) && number > 0
-  const { data, error, reload } = useAsync(() => numberRows(sdk!, home.repo, number), [ready, repoKey(home.repo), number], {
-    enabled: ready && sdk !== null && valid,
-  })
-  // Imported content's `#N` is the source's number: only the row its import wrote for N is it.
-  const counts = (row: NumberRow | null): boolean => row !== null && (!upstream || isUpstreamItem(row.importedUrl, number))
-  const issue = data !== null && counts(data.issue)
-  const pull = data !== null && counts(data.pull)
+  const source = mirrorRepo(home.description)
+  // Imported content's `#N` is the source's number: only the row the import wrote for N is it
+  // (so the trusted authors are read too). Elsewhere any row at N is.
+  const checkUpstream = upstream && source !== null
+  const { data, error, reload } = useAsync(
+    async () => {
+      const [rows, trusted] = await Promise.all([numberRows(sdk!, home.repo, number), checkUpstream ? readNumberTrust(sdk!, home.repo, network) : []])
+      return { rows, trusted: new Set(trusted) }
+    },
+    [ready, repoKey(home.repo), number, checkUpstream],
+    { enabled: ready && sdk !== null && valid },
+  )
+  const counts = (row: NumberRow | null): boolean =>
+    row !== null && (!checkUpstream || isUpstreamItem(row, number, source as ForgeRepo, data?.trusted ?? new Set()))
+  const issue = data !== null && counts(data.rows.issue)
+  const pull = data !== null && counts(data.rows.pull)
   const only = issue !== pull ? (issue ? issueHref(addr, number) : pullHref(addr, number)) : null
   useEffect(() => {
     if (only !== null) router.replace(only)
@@ -42,7 +51,6 @@ export function NumberContent({ home, addr, number, upstream }: { home: RepoHome
   if (!valid) return <EmptyState icon={Hash} title="No number addressed" body="Add &number= to the URL." />
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (data === null || only !== null) return <LoadingBlock label={`Finding #${number}`} />
-  const source = mirrorRepo(home.description)
   const upstreamUrl = upstreamItemUrl(source, number)
   if (issue && pull) {
     return (

@@ -118,6 +118,23 @@ describe('autolinks (L-39, L-40, L-51)', () => {
     expect(link('#5017').getAttribute('href')).toContain('number=5017&upstream=1')
   })
 
+  it('never autolinks inside link text: no <a> inside an <a> (review finding 1)', async () => {
+    await render(<MarkdownView source={'[fixes #12 by @bob](https://example.com) ([#123](https://github.com/o/r/issues/123)) ([abc1234](https://github.com/o/r/commit/abc1234))'} links={NATIVE} />)
+    expect(host.querySelectorAll('a a')).toHaveLength(0)
+    expect(hrefs()).toEqual(['https://example.com', 'https://github.com/o/r/issues/123', 'https://github.com/o/r/commit/abc1234'])
+  })
+
+  it('stops autolinking past the per-document budget (review finding 4)', async () => {
+    // One text node holding more references than the budget stays text (fail closed)…
+    await render(<MarkdownView source={'#1 '.repeat(3000)} links={NATIVE} />)
+    expect(host.querySelectorAll('a[data-autolink]')).toHaveLength(0)
+    // …and across many nodes, linking stops once the budget is spent.
+    await render(<MarkdownView source={'**#1** '.repeat(3000)} links={NATIVE} />)
+    const n = host.querySelectorAll('a[data-autolink]').length
+    expect(n).toBeGreaterThan(0)
+    expect(n).toBeLessThanOrEqual(1000)
+  })
+
   it('leaves references as text where the page gives no links', async () => {
     await render(<MarkdownView source="#12 @alice 1898d8f7ac7" />)
     expect(hrefs()).toEqual([])

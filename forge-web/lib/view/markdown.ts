@@ -636,8 +636,12 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
     }
     // footnote reference [^label], when the document defines that note
     if (ch === '[' && next === '^' && footnoteDefs.size > 0) {
+      // Only a span no longer than the longest defined label, holding no `[` (a binary search),
+      // is normalized: `[^[^[^…` never is, and the spans that are are disjoint, so the work is
+      // linear in total. (Nested spans rescan, at most MAX_INLINE_DEPTH deep, as elsewhere.)
       const close = find(']', i + 2)
-      const label = close > i + 2 && close - i <= MAX_LABEL ? normalizeLabel(src.slice(i + 2, close)) : ''
+      const ok = close > i + 2 && close - (i + 2) <= footnoteLabelMax && doc.find('[', i + 2, close) === -1
+      const label = ok ? normalizeLabel(src.slice(i + 2, close)) : ''
       if (footnoteDefs.has(label)) {
         let use = footnoteUse.get(label)
         if (use === undefined) {
@@ -1139,6 +1143,8 @@ const HR = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/
 const SETEXT = /^ {0,3}(=+|-+)[ \t]*$/
 /** A code fence (``` indented at most 3 spaces) and its info string's first word. */
 const FENCE = /^ {0,3}```(\w*)/
+/** A fence line in any container: after any indent, list markers and quote markers. */
+const ANY_FENCE = /^[ \t]*(?:(?:[-*+]|\d{1,9}[.)]|>)[ \t]*)*```/
 const QUOTE = /^ {0,3}>/
 /** A list item's marker: `-`, `*`, `+`, or `1.` / `1)`, then spaces and the item's text (or nothing). */
 const LIST_ITEM = /^([ \t]*)([-*+]|\d{1,9}[.)])(?:([ \t]+)([\s\S]*))?$/
@@ -1175,6 +1181,7 @@ export function parseMarkdown(src: string, options: MarkdownOptions = {}): Block
     references = new Map()
     footnoteDefs = new Map()
     footnoteUse = new Map()
+    footnoteLabelMax = 0
     softBreaks = false
   }
 }
@@ -1183,6 +1190,11 @@ export function parseMarkdown(src: string, options: MarkdownOptions = {}): Block
 let footnoteDefs: ReadonlyMap<string, readonly string[]> = new Map()
 /** Footnotes referenced so far, in order of first reference, and how often. */
 let footnoteUse = new Map<string, { n: number; refs: number }>()
+/**
+ * The longest footnote label defined (as written): a `[^…]` longer than it names no note, so
+ * it is not normalized (a hostile `[^[^[^…` would otherwise normalize ~1,000 characters each).
+ */
+let footnoteLabelMax = 0
 
 /**
  * The referenced footnotes, numbered in order of first reference (as GitHub numbers them).
@@ -1254,7 +1266,9 @@ function collectReferences(lines: string[]): { refs: Map<string, string>; footno
   let mayStart = true
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] as string
-    const fence = FENCE.test(line)
+    // Any fence line, also one opened in a list item or quote (`- ```sh`) and its indented
+    // close: fences pair up whatever container holds them.
+    const fence = ANY_FENCE.test(line)
     if (fence) fenced = !fenced
     const note = !fenced && !fence && line.length < 2048 ? FOOTNOTE_DEF.exec(line) : null
     if (note !== null && footnotes.size < MAX_REFERENCES) {
@@ -1279,6 +1293,7 @@ function collectReferences(lines: string[]): { refs: Map<string, string>; footno
       }
       const label = normalizeLabel(note[1] as string)
       if (!footnotes.has(label)) footnotes.set(label, body)
+      footnoteLabelMax = Math.max(footnoteLabelMax, (note[1] as string).length)
       i = j - 1
       mayStart = true
       continue
@@ -1474,7 +1489,18 @@ function interruptsParagraph(line: string): boolean {
  * after a paragraph line outside fenced code.
  */
 function isLazyLine(line: string, prev: string | undefined, inFence: boolean): boolean {
-  return !inFence && prev !== undefined && prev.trim() !== '' && line.trim() !== '' && !isBlockStart(line) && !SETEXT.test(line)
+  return (
+    !inFence &&
+    prev !== undefined &&
+    prev.trim() !== '' &&
+    // Only a paragraph continues: not after a fence, heading or rule line.
+    !FENCE.test(prev) &&
+    !HEADING.test(prev) &&
+    !HR.test(prev) &&
+    line.trim() !== '' &&
+    !isBlockStart(line) &&
+    !SETEXT.test(line)
+  )
 }
 
 /**

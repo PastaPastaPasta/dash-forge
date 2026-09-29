@@ -87,9 +87,11 @@ interface RenderContext {
   readonly refs: RefContext
   /** Prefix of this document's footnote ids, unique on the page (several bodies may say `[^1]`). */
   readonly notes: string
+  /** Autolinks this document may still render ({@link MAX_AUTOLINKS}); spent as text nodes render. */
+  readonly budget: { left: number }
 }
 
-const EMPTY_CTX: RenderContext = { repo: null, images: 'ask', links: null, suggestion: null, refs: { source: null, imported: null }, notes: '' }
+const EMPTY_CTX: RenderContext = { repo: null, images: 'ask', links: null, suggestion: null, refs: { source: null, imported: null }, notes: '', budget: { left: 0 } }
 const Ctx = createContext<RenderContext>(EMPTY_CTX)
 
 /** How references resolve for `links`, in content whose `imported.url` is `imported`. */
@@ -148,6 +150,7 @@ function RefLink({ piece, links }: { piece: Exclude<RefPiece, { t: 'text' }>; li
   const { refs } = useContext(Ctx)
   const target = refTarget(piece, refs)
   const label = refLabel(piece)
+  if (target === null) return <>{label}</>
   const cls = cn(LINK, piece.t === 'mention' && 'font-medium', piece.t === 'commit' && 'font-mono text-[0.9em]')
   if (target.kind === 'external') {
     return (
@@ -163,12 +166,23 @@ function RefLink({ piece, links }: { piece: Exclude<RefPiece, { t: 'text' }>; li
   )
 }
 
+/**
+ * Most autolinked references one document renders (each is an element; a hostile body of
+ * `abc1234 abc1234 …` would otherwise make hundreds of thousands). Past it, text stays text.
+ */
+export const MAX_AUTOLINKS = 1000
+
+/** Longest plain text {@link LinkifiedText} links (a commit message); longer is shown as written. */
+const MAX_LINKIFIED_CHARS = 64 * 1024
+
 /** Plain text with its references linked (when the page gave `links`). */
 function AutolinkedText({ text }: { text: string }): JSX.Element {
-  const { links } = useContext(Ctx)
-  if (links === null) return <>{text}</>
+  const { links, budget } = useContext(Ctx)
+  if (links === null || budget.left <= 0) return <>{text}</>
   const pieces = splitRefs(text)
   if (pieces.length === 1 && pieces[0]?.t === 'text') return <>{text}</>
+  budget.left -= pieces.length
+  if (budget.left < 0) return <>{text}</>
   return (
     <>
       {pieces.map((p, i) => (p.t === 'text' ? <Fragment key={i}>{p.v}</Fragment> : <RefLink key={i} piece={p} links={links} />))}
@@ -181,7 +195,10 @@ function AutolinkedText({ text }: { text: string }): JSX.Element {
  * commit message: no Markdown, the text as written.
  */
 export function LinkifiedText({ text, links, imported = null }: { text: string; links: MarkdownLinks; imported?: string | null }): JSX.Element {
-  const ctx = useMemo<RenderContext>(() => ({ ...EMPTY_CTX, links, refs: refsOf(links, imported) }), [links, imported])
+  const ctx = useMemo<RenderContext>(() => ({ ...EMPTY_CTX, links, refs: refsOf(links, imported), budget: { left: MAX_AUTOLINKS } }), [links, imported])
+  ctx.budget.left = MAX_AUTOLINKS
+  // A commit message is unbounded git data: past this, it is shown as written, unlinked.
+  if (text.length > MAX_LINKIFIED_CHARS) return <>{text}</>
   return (
     <Ctx.Provider value={ctx}>
       {splitUrls(text).map((p, i) =>
@@ -199,6 +216,17 @@ export function LinkifiedText({ text, links, imported = null }: { text: string; 
 
 /** A link: an in-page anchor, a repo path (to the blob or tree view), or an external URL. */
 function MdLink({ href, id, children }: { href: string; id?: string; children: ReactNode }): JSX.Element {
+  const ctx = useContext(Ctx)
+  // Text inside a link is not autolinked (as on GitHub): no `<a>` inside an `<a>`.
+  const inner = useMemo<RenderContext>(() => (ctx.links === null ? ctx : { ...ctx, links: null }), [ctx])
+  return (
+    <LinkTarget href={href} id={id}>
+      <Ctx.Provider value={inner}>{children}</Ctx.Provider>
+    </LinkTarget>
+  )
+}
+
+function LinkTarget({ href, id, children }: { href: string; id?: string; children: ReactNode }): JSX.Element {
   const { repo, refs } = useContext(Ctx)
   // An `<a href name>` is also an in-page target; a link that goes nowhere keeps only that.
   const target = id === undefined ? undefined : anchorTarget(id)
@@ -254,6 +282,25 @@ function isRepoPath(repo: MarkdownRepoContext | null, href: string): boolean {
 /** A last path segment with no extension (`doc`, `test`): perhaps a directory, so worth looking up. */
 const MAYBE_DIR = /(^|\/)[^./]+$/
 
+/** Most distinct directories a commit's Markdown links may read to tell a folder from a file. */
+const MAX_DIR_LOOKUPS = 32
+
+/** Directories looked up per (reader, commit), so hundreds of `/a/b/c` links cost a bounded number of reads. */
+const dirLookups = new WeakMap<BrowseReader, Map<string, Set<string>>>()
+
+/** Whether `path`'s parent may be read (already read, or under the cap). Past it, a link is a blob link. */
+function mayLookUp(reader: BrowseReader, tipOid: string, path: string): boolean {
+  const byTip = dirLookups.get(reader) ?? new Map<string, Set<string>>()
+  dirLookups.set(reader, byTip)
+  const dirs = byTip.get(tipOid) ?? new Set<string>()
+  byTip.set(tipOid, dirs)
+  const dir = path.slice(0, Math.max(0, path.lastIndexOf('/')))
+  if (dirs.has(dir)) return true
+  if (dirs.size >= MAX_DIR_LOOKUPS) return false
+  dirs.add(dir)
+  return true
+}
+
 /**
  * A link to a path in the repo: the tree view when the path is a directory (written with a
  * trailing `/`, or found to be one in the commit's tree), else the blob view. Only an
@@ -262,7 +309,13 @@ const MAYBE_DIR = /(^|\/)[^./]+$/
  */
 function RepoPathLink({ repo, path, href, id, children }: { repo: MarkdownRepoContext; path: string; href: string; id?: string; children: ReactNode }): JSX.Element {
   const written = /\/$/.test(href.split(/[?#]/)[0] ?? '')
-  const lookup = !written && path !== '' && MAYBE_DIR.test(path) && repo.reader !== undefined && repo.tipOid !== undefined
+  const lookup =
+    !written &&
+    path !== '' &&
+    MAYBE_DIR.test(path) &&
+    repo.reader !== undefined &&
+    repo.tipOid !== undefined &&
+    mayLookUp(repo.reader, repo.tipOid, path)
   const [isDir, setIsDir] = useState<{ key: string; dir: boolean } | null>(null)
   const key = `${repo.tipOid ?? ''}:${path}`
   useEffect(() => {
@@ -942,9 +995,11 @@ export const MarkdownView = memo(function MarkdownView({
 }): JSX.Element {
   const notes = useId().replace(/[^a-zA-Z0-9]/g, '')
   const ctx = useMemo<RenderContext>(
-    () => ({ repo, images, links, suggestion, refs: refsOf(links, imported), notes: `${notes}-` }),
+    () => ({ repo, images, links, suggestion, refs: refsOf(links, imported), notes: `${notes}-`, budget: { left: MAX_AUTOLINKS } }),
     [repo, images, links, suggestion, imported, notes],
   )
+  // Every render of the document spends a full budget (its text nodes render in this pass).
+  ctx.budget.left = MAX_AUTOLINKS
   const blocks = useMemo(
     () => (source.length > MARKDOWN_MAX_CHARS ? null : parseMarkdown(source, { breaks: mode === 'comment' })),
     [source, mode],

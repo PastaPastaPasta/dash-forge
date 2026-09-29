@@ -83,11 +83,12 @@ export function upstreamItemUrl(source: ForgeRepo | null, n: number): string | n
   return source === null ? null : forgeUrl(source.host, source.path, 'issue', String(n))
 }
 
-/** Where `piece` links. */
-export function refTarget(piece: Exclude<RefPiece, { t: 'text' }>, ctx: RefContext): RefTarget {
+/** Where `piece` links, or null for text (a `[bot]` mention in native content: a GitHub app, no Forge profile). */
+export function refTarget(piece: Exclude<RefPiece, { t: 'text' }>, ctx: RefContext): RefTarget | null {
   const { imported, source } = ctx
   if (piece.t === 'mention') {
-    return imported !== null ? { kind: 'external', url: userUrl(imported, piece.label, piece.bot === true) } : { kind: 'profile', name: piece.name }
+    if (imported !== null) return { kind: 'external', url: userUrl(imported, piece.label, piece.bot === true) }
+    return piece.bot ? null : { kind: 'profile', name: piece.name }
   }
   // `owner/name` naming the repo this one mirrors is this repo.
   const named = piece.repo === undefined ? '' : `${piece.repo.owner}/${piece.repo.name}`
