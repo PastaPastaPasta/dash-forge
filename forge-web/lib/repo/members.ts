@@ -106,6 +106,20 @@ export function invalidateMembers(repo: RepoRef, network: Network = DEFAULT_NETW
   membersCache.delete(membersKey(network, repo))
 }
 
+/**
+ * The identities whose issue and PR numbers a repo's allocation trusts (`forge-v2.md` §6), and
+ * whose `imported` provenance the lists show: the owner and its current maintainers, the
+ * owner first, once each. When the membership cannot be read, the owner alone: a numbering
+ * gap or a missing note is better than a failed create.
+ */
+export async function readNumberTrust(sdk: EvoSDK, repo: RepoRef, network: Network = DEFAULT_NETWORK): Promise<string[]> {
+  const maintainers = await readMembershipsCached(sdk, repo, network).then(
+    (ms) => ms.filter((m) => m.role === 'maintainer').map((m) => m.identity),
+    () => [],
+  )
+  return [...new Set([repo.ownerId, ...maintainers])]
+}
+
 /** A repo's {@link RoleOracle}, from the cached membership. */
 export async function readRoleOracle(
   sdk: EvoSDK,

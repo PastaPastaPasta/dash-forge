@@ -202,19 +202,29 @@ pub fn number_ceiling(count: u64) -> u64 {
 /// to the end of that run (the first gap), not stop after one page, or it hands in a run cut
 /// short and gets back a number that is already taken.
 ///
+/// `trusted_max` is the largest number among the repo's issues written by its owner or a
+/// current maintainer (the `author` index, one `number desc, limit 1` read each), or 0.
+/// Those numbers are trusted wherever they sit: a mirror's owner writes the upstream numbers
+/// (#7761 with 15 issues on chain), and the ceiling alone would call them squatters.
+///
 /// 1. `ceiling = min(2 × count + 100, 2^32 − 1)`.
-/// 2. `base` = the largest taken number `≤ ceiling`, or 0.
+/// 2. `base` = the larger of the largest taken number `≤ ceiling` (or 0) and `trusted_max`.
 /// 3. Claim the first number `> base` that is not taken. Below the ceiling that is always
-///    `base + 1`. Only when `base` is the ceiling itself can squatters just above it be in
-///    the way, and the probe steps over them.
+///    `base + 1`. Only when `base` is at or above the ceiling can squatters just above it be
+///    in the way, and the probe steps over them.
 ///
 /// `None` when every number from `base + 1` to `2^32 − 1` is taken. Gaps below `base` are never
 /// filled.
 #[must_use]
-pub fn allocate_number(count: u64, taken_numbers_desc: &[u32]) -> Option<u32> {
+pub fn allocate_number(count: u64, taken_numbers_desc: &[u32], trusted_max: u32) -> Option<u32> {
     let ceiling = number_ceiling(count);
     let taken: BTreeSet<u64> = taken_numbers_desc.iter().map(|&n| u64::from(n)).collect();
-    let base = taken.range(..=ceiling).next_back().copied().unwrap_or(0);
+    let base = taken
+        .range(..=ceiling)
+        .next_back()
+        .copied()
+        .unwrap_or(0)
+        .max(u64::from(trusted_max));
     let mut candidate = base + 1;
     while taken.contains(&candidate) {
         candidate += 1;

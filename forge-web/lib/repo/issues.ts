@@ -78,6 +78,10 @@ export interface IssueView {
   readonly updatedAt: number
   /** The document revision (1 = never edited): an edit names it to refuse a concurrent one. */
   readonly revision: number
+  /** Archived from another forge (`imported` provenance present) rather than opened here. */
+  readonly imported: boolean
+  /** The original issue's URL when the import recorded one, else `''`. */
+  readonly importedUrl: string
   /** The `imported` provenance object as read, for re-sealing an edit. */
   readonly importedRaw?: Readonly<Record<string, unknown>> | null
   readonly state: IssueState
@@ -114,7 +118,7 @@ export function issueViewOf(issueDoc: PlainDocument, log: TargetLog): IssueView 
     createdAt: num(issueDoc, '$createdAt'),
     updatedAt: updatedAtOf(issueDoc),
     revision: revisionOf(issueDoc),
-    importedRaw: typeof issueDoc['imported'] === 'object' && issueDoc['imported'] !== null ? (issueDoc['imported'] as Readonly<Record<string, unknown>>) : null,
+    ...readImported(issueDoc),
     state: foldIssueStateV2(log.events, log.authorEvents, author),
     stateComplete: true,
   }
@@ -655,6 +659,7 @@ function incompleteIssueView(doc: PlainDocument): IssueView {
     createdAt: num(doc, '$createdAt'),
     updatedAt: updatedAtOf(doc),
     revision: revisionOf(doc),
+    ...readImported(doc),
     state: { open: true, labels: [], assignees: [] },
     stateComplete: false,
   }
@@ -671,7 +676,7 @@ export function historicalTipsPredicate(baseRefNewOidsHex: readonly string[]): I
   return (oid) => tips.has(oid)
 }
 
-/** A patch's `imported` provenance (present on PRs archived from another forge). */
+/** An issue's or patch's `imported` provenance (present on items archived from another forge). */
 function readImported(doc: PlainDocument): { imported: boolean; importedUrl: string; importedRaw: Readonly<Record<string, unknown>> | null } {
   const value = doc['imported']
   if (typeof value !== 'object' || value === null) return { imported: false, importedUrl: '', importedRaw: null }

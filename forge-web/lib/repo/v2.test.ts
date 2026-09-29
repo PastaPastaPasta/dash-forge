@@ -11,7 +11,7 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { base58Decode } from '../auth/base58'
 import type { ForgeIds } from '../deployments'
@@ -27,6 +27,7 @@ import {
   listIssues,
   listIssuesCached,
   listPulls,
+  nextNumber,
   openCountFor,
   openCountOf,
   openCounts,
@@ -467,21 +468,61 @@ describe('BrowseReader copy failover', () => {
 })
 
 describe('issue numbering (allocate_number over the live index)', () => {
+  // Membership is cached per repo: every case reads its own store's.
+  beforeEach(() => invalidateMembers(DEMO))
   const issues = (...numbers: number[]): Store => ({
     COLLAB: { issue: numbers.map((n) => doc({ $ownerId: AUTHOR, repoId: REPO, number: n, title: `#${n}` })) },
   })
   it('claims base + 1, ignoring a far squatter', async () => {
-    const { nextNumber } = await import('./writes')
     expect(await nextNumber(mockSdk(issues(1, 2, 3, 4_294_967_295)), DEMO, 'issue')).toBe(4)
   })
   it('starts at 1 in an empty repo', async () => {
-    const { nextNumber } = await import('./writes')
     expect(await nextNumber(mockSdk(issues()), DEMO, 'issue')).toBe(1)
   })
   it('steps over squatters sitting on and just above the ceiling', async () => {
-    const { nextNumber } = await import('./writes')
     // count 4 → ceiling 108; 108, 109, 110 are taken, 111 is free.
     expect(await nextNumber(mockSdk(issues(1, 108, 109, 110)), DEMO, 'issue')).toBe(111)
+  })
+
+  // Issues by author, and the repo's maintainers: the owner's and maintainers' numbers are
+  // trusted past the ceiling.
+  const by = (rows: [string, number][], maintainers: string[] = []): Store => ({
+    CORE: { maintainer: maintainers.map((id) => doc({ $ownerId: OWNER, repoId: REPO, memberId: id })) },
+    COLLAB: { issue: rows.map(([author, n]) => doc({ $ownerId: author, repoId: REPO, number: n, title: `#${n}` })) },
+  })
+
+  it('continues a mirror’s upstream numbering: the owner’s #7761 is trusted, not a squatter', async () => {
+    // 14 imported issues #2142..#7761 plus the owner's own #1: 15 issues, ceiling 130.
+    const imported = [2142, 6935, 7000, 7100, 7200, 7300, 7400, 7500, 7600, 7650, 7700, 7703, 7708, 7761]
+    const store = by([...imported.map((n): [string, number] => [OWNER, n]), [OWNER, 1]])
+    expect(await nextNumber(mockSdk(store), DEMO, 'issue')).toBe(7762)
+  })
+
+  it('trusts a maintainer’s high number and steps over a squatter right above it', async () => {
+    const store = by([[AUTHOR, 1], [MAINT, 900], [STRANGER, 901]], [OWNER, MAINT])
+    expect(await nextNumber(mockSdk(store), DEMO, 'issue')).toBe(902)
+  })
+
+  it('ignores a far number by a non-member or a writer: only the owner and maintainers are trusted', async () => {
+    // WRITER holds no maintainer document (writers are not trusted, whatever their role doc).
+    const store = by([[AUTHOR, 1], [AUTHOR, 2], [STRANGER, 5000], [WRITER, 6000]])
+    expect(await nextNumber(mockSdk(store), DEMO, 'issue')).toBe(3)
+  })
+
+  it('trusts the owner alone when the membership cannot be read, instead of failing', async () => {
+    const sdk = mockSdk(by([[OWNER, 7761], [MAINT, 9000]], [MAINT]))
+    const query = sdk.documents.query.bind(sdk.documents)
+    ;(sdk.documents as { query: typeof query }).query = (q) =>
+      q.documentTypeName === 'maintainer' ? Promise.reject(new Error('DAPI unavailable')) : query(q)
+    expect(await nextNumber(sdk, DEMO, 'issue')).toBe(7762)
+  })
+
+  it('refuses a trustedMax outside u32 (the Rust port’s type)', async () => {
+    const { allocateNumber } = await import('../rules/v2')
+    expect(() => allocateNumber(1, [], -1)).toThrow(RangeError)
+    expect(() => allocateNumber(1, [], 2 ** 32)).toThrow(RangeError)
+    expect(() => allocateNumber(1, [], 1.5)).toThrow(RangeError)
+    expect(allocateNumber(1, [], 2 ** 32 - 1)).toBeNull()
   })
 })
 

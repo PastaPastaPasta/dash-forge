@@ -34,9 +34,12 @@ vi.mock('../sdk/query', async (orig) => {
   return {
     ...real,
     countDocuments: async () => visible.length,
+    // The repo has no maintainer documents: the owner alone is trusted (and wrote nothing).
+    queryAllDocuments: async () => [],
     queryDocumentsWithProof: async (_sdk: unknown, q: { where?: [string, string, unknown][]; orderBy?: [string, string][] }) => {
       let docs = rows()
       for (const [field, op, v] of q.where ?? []) {
+        if (field === '$ownerId') docs = docs.filter((d) => d['$ownerId'] === v)
         if (field !== 'number') continue
         docs = docs.filter((d) => {
           const n = d['number'] as number
