@@ -477,7 +477,11 @@ jobs:
         let (w, _) = wf("on: push\njobs:\n  a:\n    runs-on: x\n  bad:\n    container: { image: x, options: --privileged }\n  b:\n    needs: [a, bad]\n  c:\n    needs: bad\n").unwrap();
         let doc = w.without_refused().unwrap();
         let jobs = doc["jobs"].as_object().unwrap();
-        assert_eq!(jobs.keys().collect::<Vec<_>>(), ["a", "b", "c"]);
+        // Key order depends on serde_json's `preserve_order` (another workspace crate turns it
+        // on); act does not care about job order.
+        let mut keys: Vec<_> = jobs.keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["a", "b", "c"]);
         assert_eq!(jobs["b"]["needs"], serde_json::json!(["a"]));
         assert!(jobs["c"].get("needs").is_none());
         let (ok, _) = wf("on: push\njobs:\n  a:\n    runs-on: x\n").unwrap();
