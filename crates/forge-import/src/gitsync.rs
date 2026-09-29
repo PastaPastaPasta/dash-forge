@@ -415,6 +415,8 @@ fn fetch_proof_base(
     cmd.arg("-C")
         .arg(git_dir)
         .env("GIT_TERMINAL_PROMPT", "0")
+        // git's own words, whatever the user's locale: "couldn't find remote ref" is matched.
+        .env("LC_ALL", "C")
         .stdin(std::process::Stdio::null())
         .args(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head"]);
     if treeless {

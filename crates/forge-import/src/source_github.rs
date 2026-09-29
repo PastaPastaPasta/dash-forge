@@ -79,11 +79,19 @@ impl Source for GithubSource {
                 .map(|&n| u64::from(n))
                 .collect();
             if !missing.is_empty() {
-                // Each one in full (no `since`: its thread is diffed on chain anyway).
-                let items = missing
-                    .iter()
-                    .map(|&n| self.gh.issue(n))
-                    .collect::<Result<Vec<_>>>()?;
+                // Each one in full (no `since`: its thread is diffed on chain anyway). One that
+                // cannot be read (deleted at GitHub) is warned about and dropped: it must not
+                // fail every later run.
+                let mut items = Vec::with_capacity(missing.len());
+                for &n in &missing {
+                    match self.gh.issue(n) {
+                        Ok(i) => items.push(i),
+                        Err(e) => out.warnings.push(format!(
+                            "#{n} (a merge to prove again) could not be read, so it is not \
+                             revisited any more: {e:#}"
+                        )),
+                    }
+                }
                 out.targets
                     .extend(targets(&self.gh, &self.repo, &items, classes, None, true)?);
                 out.targets.sort_by_key(|t| t.number);

@@ -231,23 +231,7 @@ pub fn collect(
 
     let mut items = items(gl, classes, since, limit, &mut out)?;
     if classes.prs && since.is_some() {
-        // Merge requests whose merge the last run could not prove: read again in full.
-        for &iid in revisit {
-            if items
-                .iter()
-                .any(|i| i.kind == TargetKind::Patch && i.gl.iid == u64::from(iid))
-            {
-                continue;
-            }
-            if let Some(gl) =
-                out.readable(gl.merge_request(u64::from(iid))?, "a merge request", repo)
-            {
-                items.push(Item {
-                    kind: TargetKind::Patch,
-                    gl,
-                });
-            }
-        }
+        add_revisits(gl, revisit, &mut items, &mut out);
     }
     // Which merge requests GitLab still has a head for (it deletes the ref 14 days after
     // one closes or merges). Unknown (the git read failed) is never reported as gone.
@@ -317,6 +301,36 @@ pub fn collect(
         ));
     }
     Ok(out)
+}
+
+/// The merge requests numbered in `revisit` (a merge the last run could not prove) that the
+/// `since` listing did not return, read again in full into `items`. One that cannot be read is
+/// warned about and dropped (a 401/403 makes the run partial instead, so the state, and this
+/// list, stay as they are for the next run).
+fn add_revisits(gl: &GitlabClient, revisit: &[u32], items: &mut Vec<Item>, out: &mut SrcCollab) {
+    for &iid in revisit {
+        let iid = u64::from(iid);
+        if items
+            .iter()
+            .any(|i| i.kind == TargetKind::Patch && i.gl.iid == iid)
+        {
+            continue;
+        }
+        match gl.merge_request(iid) {
+            Ok(r) => {
+                if let Some(gl) = out.readable(r, "a merge request", gl.repo()) {
+                    items.push(Item {
+                        kind: TargetKind::Patch,
+                        gl,
+                    });
+                }
+            }
+            Err(e) => out.warnings.push(format!(
+                "!{iid} (a merge to prove again) could not be read, so it is not revisited any \
+                 more: {e:#}"
+            )),
+        }
+    }
 }
 
 /// The issues and merge requests to mirror, oldest first; `out.truncated` when `limit` left

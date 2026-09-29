@@ -537,7 +537,9 @@ impl<'a> Sink<'a> {
     ///
     /// Hashed newest first, so a run's hashing budget goes to the releases people download;
     /// written oldest first (sources list newest first), so the documents' `$createdAt`
-    /// follows the releases' own order; readers order by version anyway (L-14).
+    /// follows the releases' own order; readers order by version anyway (L-14). Every release is
+    /// hashed (up to [`crate::assets::RUN_BYTES`] downloaded) before the first is written, so a
+    /// run interrupted while hashing writes none; the next run finds the same work to do.
     ///
     /// A release listing more assets than its 4096-byte field holds keeps the checksum files,
     /// signatures and common platform builds first ([`crate::model::fit_assets`]), and its

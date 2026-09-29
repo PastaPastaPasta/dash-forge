@@ -329,7 +329,7 @@ fn asset_rank(name: &str) -> u8 {
         0
     } else if linux && x86_64 {
         1
-    } else if windows {
+    } else if windows && !arm64 && !has(&["win32", "i686", "i386", "x86"]) {
         2
     } else if mac && arm64 {
         3
@@ -340,6 +340,7 @@ fn asset_rank(name: &str) -> u8 {
     } else if matches!(ext, "gz" | "xz" | "tgz" | "zip")
         && !linux
         && !mac
+        && !windows
         && !has(&[
             "arm", "armhf", "armel", "i686", "i386", "x86", "android", "freebsd",
         ])
@@ -704,6 +705,11 @@ mod tests {
         assert_eq!(asset_rank("linuxkit-docs.pdf"), 7, "not Linux");
         assert_eq!(asset_rank("tool-x86-64-linux.tar.gz"), 1);
         assert_eq!(asset_rank("SHA256SUMS.asc"), 0);
+        // Only Windows x64 ranks as the common Windows build.
+        assert_eq!(asset_rank("tool-1.0-aarch64-pc-windows-msvc.zip"), 7);
+        assert_eq!(asset_rank("tool-1.0-i686-pc-windows-msvc.zip"), 7);
+        assert_eq!(asset_rank("tool-1.0-win32.zip"), 7);
+        assert_eq!(asset_rank("tool-1.0-win64-setup.exe"), 2);
         assert_eq!(signed_subject("a.tar.gz.asc"), Some("a.tar.gz"));
         assert_eq!(signed_subject("a.tar.gz"), None);
     }
