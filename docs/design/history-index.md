@@ -103,11 +103,11 @@ The UI says where the numbers come from: the cell's and the count's tooltips nam
 
 | repository | paths | commits (all / first-parent) | referenced commits | index (gz) | chunks | quoted fee, Platform |
 |---|---|---|---|---|---|---|
-| dashpay/dash `develop` @ 3ba0805c | 5,117 | 33,553 / 7,979 | 613 | 66,965 B | 5 | ~0.0245 DASH |
-| junegunn/fzf `master` | 178 | 3,746 / 3,488 | 106 | 6,925 B | 1 | ~0.0040 DASH |
-| dtolnay/anyhow `master` | 62 | 931 / 668 | 43 | 2,490 B | 1 | ~0.0028 DASH |
+| dashpay/dash `develop` @ 3ba0805c | 5,117 | 33,553 / 7,979 | 613 | 66,965 B | 5 | ~0.0249 DASH (measured 0.02479) |
+| junegunn/fzf `master` | 178 | 3,746 / 3,488 | 106 | 6,925 B | 1 | ~0.0044 DASH |
+| dtolnay/anyhow `master` | 62 | 931 / 668 | 43 | 2,490 B | 1 | ~0.0032 DASH |
 
-A delta on dash: 202 B at 1 commit, 1.4 KB at 10 and 6.5 KB at 50, all one chunk. With your own storage only the manifest is on chain (~0.0012 DASH). More in [`docs/guides/costs.md`](../guides/costs.md#history-index).
+A delta on dash: 202 B at 1 commit, 1.4 KB at 10 and 6.5 KB at 50, all one chunk. With your own storage only the manifest is on chain (~0.0016 DASH quoted). More in [`docs/guides/costs.md`](../guides/costs.md#history-index).
 
 ## Contract proposal for the fresh registration
 
