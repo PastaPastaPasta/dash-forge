@@ -43,7 +43,6 @@ export const DOC = {
   starBeat: 'starBeat',
   watch: 'watch',
   milestone: 'milestone',
-  transition: 'transition',
   profile: 'profile',
   // forge-core (C-1)
   runner: 'runner',
