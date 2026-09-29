@@ -106,6 +106,32 @@ test('totals: topics, chunks and releases', async () => {
   await write(OWNER, 'release', { ...release, delta: 0 });
 });
 
+test('a retry after a write that landed resolves to it, not to a second write', async () => {
+  const { chain, R } = await repoChain();
+  const evo = chain.evo();
+  const sdk = new evo.EvoSDK();
+  let calls = 0;
+  // The first attempt lands and then times out; the retry is refused (dense), and the writer
+  // finds the document it built by its id.
+  const flaky = {
+    version: () => sdk.version(),
+    documents: {
+      ...sdk.documents,
+      create: async (args) => {
+        calls++;
+        const created = await sdk.documents.create(args);
+        if (calls === 1) throw new Error('request timeout');
+        return created;
+      },
+    },
+  };
+  const write = documentWriter(flaky, evo, { ids: chain.ids }, { pauseMs: 0 });
+  const id = (await write(OWNER, 'issue', issue(R, 1))).id.toBase58();
+  assert.equal(calls, 2);
+  assert.equal(chain.live('issue').length, 1);
+  assert.equal(chain.live('issue')[0].id, id);
+});
+
 test('a document goes to the contract that holds its type', async () => {
   const chain = new OfflineChain();
   const evo = chain.evo();

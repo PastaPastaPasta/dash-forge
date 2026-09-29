@@ -120,7 +120,6 @@ export function loadIdentity(evo, file, name = undefined) {
 }
 
 const TRANSIENT = /timeout|timed out|unavailable|no available|ResourceExhausted|rate.?limit|too many requests/i;
-const ALREADY_THERE = /already (exists|present)|duplicate/i;
 
 /**
  * `write(who, type, data)`: one document create signed by `who`, in the contract that holds
@@ -128,8 +127,9 @@ const ALREADY_THERE = /already (exists|present)|duplicate/i;
  *
  * The document is built once, and evo-sdk fixes its `$id` and `$entropy` at construction. A
  * transient failure (a timeout, an unavailable node, a rate limit) is retried with that same
- * document, `retries` times with a growing pause. A retry refused because the document already
- * exists means an earlier attempt landed, and resolves to it.
+ * document, `retries` times with a growing pause. When a retry fails, the document is looked up
+ * by its own id: an earlier attempt may have landed, and a repeat of it is refused (as already
+ * present, or first by a rule such as `dense` or c1..c6, which the chain judges before that).
  */
 export function documentWriter(sdk, evo, net, { retries = 3, pauseMs = 15000 } = {}) {
   const version = sdk.version();
@@ -141,7 +141,10 @@ export function documentWriter(sdk, evo, net, { retries = 3, pauseMs = 15000 } =
         return await sdk.documents.create({ document, identityKey: who.identityKey, signer: who.signer });
       } catch (e) {
         const msg = String(e?.message ?? e);
-        if (attempt > 0 && ALREADY_THERE.test(msg) && document.id) return { id: document.id };
+        if (attempt > 0 && document.id) {
+          const landed = await sdk.documents.query({ dataContractId: contractIdOf(net, type), documentTypeName: type, where: [['$id', '==', document.id.toBase58()]], limit: 1 });
+          if ([...landed.values()].some(Boolean)) return { id: document.id };
+        }
         if (attempt >= retries || !TRANSIENT.test(msg)) throw e;
         log(`${type}: retry ${attempt + 1} after: ${msg.slice(0, 120)}`);
         await sleep(pauseMs * (attempt + 1));

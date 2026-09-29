@@ -72,6 +72,7 @@ export class OfflineChain {
     this.records = [];
     this.script = 'unnamed';
     this.height = 1;
+    this.built = 0;
   }
 
   live(type) {
@@ -213,7 +214,7 @@ export class OfflineChain {
   create({ document }) {
     const { type: t, contractId, owner } = document.meta;
     const type = this.typeIn(contractId, t);
-    const id = b58encode(createHash('sha256').update(`offline doc ${this.docs.length} ${type} ${owner}`).digest());
+    const id = document.meta.id;
     const height = this.height++;
     const view = {
       ...normalize(document.data),
@@ -272,15 +273,17 @@ export class OfflineChain {
   evo() {
     const chain = this;
     class Document {
-      constructor({ documentTypeName, dataContractId, ownerId }) {
-        this.meta = { type: documentTypeName, contractId: dataContractId, owner: ownerId };
+      // Like evo-sdk, a document's id is fixed when it is built, so a resubmission keeps it.
+      constructor({ documentTypeName, dataContractId, ownerId }, id = b58encode(createHash('sha256').update(`offline doc ${chain.built++}`).digest())) {
+        this.meta = { type: documentTypeName, contractId: dataContractId, owner: ownerId, id };
+        this.id = { toBase58: () => id };
         this.data = {};
       }
       toObject() {
         return { __meta: this.meta };
       }
       static fromObject({ __meta, ...data }) {
-        const d = new Document({ documentTypeName: __meta.type, dataContractId: __meta.contractId, ownerId: __meta.owner });
+        const d = new Document({ documentTypeName: __meta.type, dataContractId: __meta.contractId, ownerId: __meta.owner }, __meta.id);
         d.data = data;
         return d;
       }
