@@ -7,12 +7,12 @@
  * folded behind a disclosure so the main list shows only what can be browsed.
  */
 
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { GitBranch, Search, Tag } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { isDiverged, isLive, matchesRefQuery, plural, refParamFor, tipOidOf } from '@/lib/view'
-import { compareTagNames, type ResolvedRef } from '@/lib/repo'
+import { compareTagNames, naturalRuns, type ResolvedRef } from '@/lib/repo'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState } from '@/components/ui/states'
 import { TagCommit, useTagPeeler } from '@/components/repo/tag-commit'
@@ -50,40 +50,33 @@ export function RefListContent({
   }
   const refs = kind === 'branches' ? home.branches : home.tags
   const defaultRefName = `refs/heads/${home.defaultBranch}`
-  const short = (ref: ResolvedRef): string =>
-    ref.refName.startsWith(prefix) ? ref.refName.slice(prefix.length) : ref.refName
+  const short = useCallback(
+    (ref: ResolvedRef): string => (ref.refName.startsWith(prefix) ? ref.refName.slice(prefix.length) : ref.refName),
+    [prefix],
+  )
 
   const [query, setQuery] = useState('')
   // Tags are usually named for a version, so version order (newest first) is the useful default
   // there; branches usually are not, so name order (default branch first, then alphabetical).
   const [sort, setSort] = useState<SortMode>(kind === 'tags' ? 'version' : 'name')
 
-  // Default branch first, then alphabetical.
-  const byName = (a: ResolvedRef, b: ResolvedRef): number => {
-    if (a.refName === defaultRefName) return -1
-    if (b.refName === defaultRefName) return 1
-    return a.refName.localeCompare(b.refName)
-  }
-  // Version-aware: a name with a parseable version (L-13/L-53), newest first; the default branch
-  // still leads even under version sort, so it never scrolls out of view.
-  const byVersion = (a: ResolvedRef, b: ResolvedRef): number => {
-    if (a.refName === defaultRefName) return -1
-    if (b.refName === defaultRefName) return 1
-    return compareTagNames(short(a), short(b))
-  }
-  const comparator = sort === 'version' ? byVersion : byName
-  const matches = (ref: ResolvedRef): boolean => matchesRefQuery(short(ref), query)
-
-  const live = useMemo(
-    () => refs.filter(isLive).filter(matches).sort(comparator),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [refs, query, sort],
-  )
-  const deleted = useMemo(
-    () => refs.filter((r) => !isLive(r)).filter(matches).sort(comparator),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [refs, query, sort],
-  )
+  // The default branch always leads, so it never scrolls out of view. After it: name order
+  // (alphabetical), or version order (L-13/L-53: a name with a parseable version, newest first).
+  const { live, deleted } = useMemo(() => {
+    // Natural order (digit runs as numbers), not localeCompare: "branch-9" belongs before
+    // "branch-10", and it matches the tags page's Version mode closely enough that switching
+    // between the two sort modes doesn't reshuffle unrelated names.
+    const byName = (a: ResolvedRef, b: ResolvedRef): number => naturalRuns(short(a), short(b))
+    const byVersion = (a: ResolvedRef, b: ResolvedRef): number => compareTagNames(short(a), short(b))
+    const order = sort === 'version' ? byVersion : byName
+    const comparator = (a: ResolvedRef, b: ResolvedRef): number => {
+      if (a.refName === defaultRefName) return -1
+      if (b.refName === defaultRefName) return 1
+      return order(a, b)
+    }
+    const shown = refs.filter((r) => matchesRefQuery(short(r), query)).sort(comparator)
+    return { live: shown.filter(isLive), deleted: shown.filter((r) => !isLive(r)) }
+  }, [refs, query, sort, defaultRefName, short])
 
   if (refs.length === 0) {
     return (
@@ -121,9 +114,7 @@ export function RefListContent({
         </select>
       </div>
 
-      {live.length === 0 && deleted.length === 0 ? (
-        <EmptyState icon={Icon} title={`No ${kind} match`} body={`No ${kind} match "${query}". Clear the search to see them all.`} />
-      ) : live.length > 0 ? (
+      {live.length > 0 ? (
         <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
           {live.map((ref) => {
             const shortName = short(ref)
@@ -157,7 +148,11 @@ export function RefListContent({
             )
           })}
         </div>
+      ) : query.trim() !== '' ? (
+        <EmptyState icon={Icon} title={`No ${kind} match`} body={`No ${kind} match "${query}". Clear the search to see them all.`} />
       ) : (
+        // Only reachable with an empty query: every live ref was filtered out by the search
+        // above, not (necessarily) by deletion, so "every X was deleted" would be misleading.
         <EmptyState
           icon={Icon}
           title={`No active ${kind}`}

@@ -5,7 +5,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { describe, expect, it } from 'vitest'
 
 import { AssetHashMismatchError, browserReadable, downloadVerifiedAsset } from '../view/release-download'
-import { UNVERIFIABLE_ASSET, assetVerifiable, compareTagNames, isPrerelease, latestRelease, newestPerTag, parseReleaseAssets, type ReleaseView } from './releases'
+import { UNVERIFIABLE_ASSET, assetVerifiable, compareTagNames, isPrerelease, latestRelease, newestPerTag, parseReleaseAssets, releaseOrder, type ReleaseView } from './releases'
 
 const H = 'ab'.repeat(32)
 
@@ -110,9 +110,31 @@ describe('compareTagNames', () => {
     expect([...names].sort(compareTagNames)).toEqual(['alpha-v1.0.0', 'zeta-v1.0.0'])
   })
 
-  it('agrees with releaseOrder on a mixed real-world tag set', () => {
+  // Both compareTagNames (name-only, for the ref switcher and tags/branches pages) and
+  // releaseOrder (ReleaseView-based, for the releases page) share the same version comparison
+  // (versionDesc); they only differ in how they break a tie between two equal versions
+  // (natural-sort the name vs. newestFirst by createdAt/id). This fixture has no true ties, so
+  // that difference cannot show up here, and the two orders genuinely agree — proven by actually
+  // running releaseOrder, not by asserting a second hand-copied expectation.
+  it('agrees with releaseOrder on a mixed real-world tag set with no version ties', () => {
     const tags = ['v24.0.0-rc.1', 'v23.1.2', 'v23.1.10', 'v24.0.0-rc.10', 'v0.9.13.15', 'nightly', 'jq-1.7.1']
-    expect([...tags].sort(compareTagNames)).toEqual(['v24.0.0-rc.10', 'v24.0.0-rc.1', 'v23.1.10', 'v23.1.2', 'jq-1.7.1', 'v0.9.13.15', 'nightly'])
+    const releases: ReleaseView[] = tags.map((tag, i) => ({
+      id: tag,
+      tagName: tag,
+      name: '',
+      notes: '',
+      yanked: false,
+      assets: [],
+      badAssets: 0,
+      notesBody: '',
+      omitted: null,
+      published: null,
+      publisher: 'p',
+      createdAt: i + 1,
+    }))
+    const byCompareTagNames = [...tags].sort(compareTagNames)
+    const byReleaseOrder = [...releases].sort(releaseOrder).map((r) => r.tagName)
+    expect(byCompareTagNames).toEqual(byReleaseOrder)
   })
 })
 

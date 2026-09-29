@@ -75,6 +75,7 @@ export {
   compareTagNames,
   isPrerelease,
   latestRelease,
+  naturalRuns,
   newestPerTag,
   parseReleaseAssets,
   readReleases,

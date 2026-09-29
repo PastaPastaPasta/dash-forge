@@ -229,8 +229,10 @@ export function isPrerelease(tag: string): boolean {
  * `a` vs `b` by their runs of digits and of other characters (`.`, `-`, `_` separate runs and
  * are dropped): digits compare as numbers and sort before text, text compares lower-cased. So
  * `rc.10` > `rc.9`, `rc.1` = `rc1`, `RC1` = `rc1`, `1` < `beta`. Parity: forge-core `natural`.
+ * Exported so callers that want plain name order (branch names in the ref switcher, which are
+ * usually not version-like) can use it directly instead of {@link compareTagNames}.
  */
-function naturalRuns(a: string, b: string): number {
+export function naturalRuns(a: string, b: string): number {
   const runs = (s: string): (number | string)[] =>
     (s.match(/\d+|[^\d._-]+/g) ?? []).map((r) => (/^\d/.test(r) ? Number(r) : r.toLowerCase()))
   const ra = runs(a)

@@ -6,23 +6,24 @@
  * canonical URLs clean) and preserves the `path` param so a switch stays on the same file/dir.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { Check, ChevronDown, GitBranch, Search, Tag } from 'lucide-react'
 import type { RepoHome, SelectedRef } from '@/lib/view'
 import { findBranch, isLive, matchesRefQuery, refParamFor } from '@/lib/view'
-import { compareTagNames } from '@/lib/repo'
+import { compareTagNames, naturalRuns } from '@/lib/repo'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/states'
 import { cn } from '@/lib/utils'
 
-/** One flattened, filterable, keyboard-navigable entry of the switcher's open list. */
+/** One entry of the switcher's open list, flattened across both groups for keyboard navigation. */
 interface RefEntry {
   readonly name: string
   readonly isTag: boolean
-  readonly href: string
+  /** Position in the flattened (branches-then-tags) list; ties an option's id to `active`. */
+  readonly index: number
 }
 
 export function RefSwitcher({
@@ -39,10 +40,16 @@ export function RefSwitcher({
 }): JSX.Element {
   const pathname = usePathname()
   const router = useRouter()
+  const uid = useId()
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+
+  const listboxId = `${uid}-listbox`
+  const branchHeadingId = `${uid}-branches-heading`
+  const tagHeadingId = `${uid}-tags-heading`
+  const optionId = (index: number): string => `${uid}-option-${index}`
 
   const hrefFor = (shortName: string, isTag: boolean): string => {
     const ref = refParamFor(shortName, isTag, home.defaultBranch)
@@ -58,88 +65,92 @@ export function RefSwitcher({
   // branch is injected only when it has no enumerated entry at all (a fresh repo, before the
   // first push); an entry that exists but is not live means the default branch was DELETED,
   // and listing it as pickable would repaint the deletion as a fresh repo.
-  const branchNames = home.branches
-    .filter(isLive)
-    .map((b) => b.refName.replace(/^refs\/heads\//, ''))
-  if (!findBranch(home.branches, home.defaultBranch) && !branchNames.includes(home.defaultBranch)) {
-    branchNames.unshift(home.defaultBranch)
-  }
-  const tagNames = home.tags.filter(isLive).map((t) => t.refName.replace(/^refs\/tags\//, ''))
+  // Sorted once per ref set, not per keystroke (L-13/L-14: 575 tags): branches in plain
+  // name/natural order (branch names are rarely version-like), tags version-aware
+  // (compareTagNames: v23.1.10 above v23.1.8), with the default branch always first among the
+  // branches.
+  const { branchNames, tagNames } = useMemo(() => {
+    const branchNames = home.branches.filter(isLive).map((b) => b.refName.replace(/^refs\/heads\//, ''))
+    if (!findBranch(home.branches, home.defaultBranch) && !branchNames.includes(home.defaultBranch)) {
+      branchNames.push(home.defaultBranch)
+    }
+    branchNames.sort((a, b) => {
+      if (a === home.defaultBranch) return -1
+      if (b === home.defaultBranch) return 1
+      return naturalRuns(a, b)
+    })
+    const tagNames = home.tags.filter(isLive).map((t) => t.refName.replace(/^refs\/tags\//, '')).sort(compareTagNames)
+    return { branchNames, tagNames }
+  }, [home.branches, home.tags, home.defaultBranch])
 
-  // Filtered (L-13/L-14: a filter box, so 575 tags stay findable) and version-aware sorted
-  // (compareTagNames: v23.1.10 above v23.1.8, natural sort for names with no version), with
-  // branches ahead of tags and the default branch always first within its group.
+  // Branches ahead of tags; the filter box narrows both, filtering keeps the sorted order above.
+  // Each surviving entry keeps a global index into the flattened list, shared by keyboard
+  // navigation (`active`), option ids, and aria-activedescendant.
   const branches: RefEntry[] = useMemo(
-    () =>
-      branchNames
-        .filter((n) => matchesRefQuery(n, query))
-        .sort((a, b) => (a === home.defaultBranch ? -1 : b === home.defaultBranch ? 1 : compareTagNames(a, b)))
-        .map((name) => ({ name, isTag: false, href: hrefFor(name, false) })),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [branchNames.join('\0'), query, home.defaultBranch, pathname, addr, path],
+    () => branchNames.filter((n) => matchesRefQuery(n, query)).map((name, i) => ({ name, isTag: false, index: i })),
+    [branchNames, query],
   )
-  const tags: RefEntry[] = useMemo(
-    () =>
-      tagNames
-        .filter((n) => matchesRefQuery(n, query))
-        .sort(compareTagNames)
-        .map((name) => ({ name, isTag: true, href: hrefFor(name, true) })),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tagNames.join('\0'), query, pathname, addr, path],
-  )
+  const tags: RefEntry[] = useMemo(() => {
+    const offset = branches.length
+    return tagNames.filter((n) => matchesRefQuery(n, query)).map((name, i) => ({ name, isTag: true, index: offset + i }))
+  }, [tagNames, query, branches.length])
   const flat = useMemo(() => [...branches, ...tags], [branches, tags])
+  const activeId = flat.length > 0 ? optionId(active) : undefined
 
+  const toggle = (): void => {
+    if (!open) {
+      setQuery('')
+      setActive(0)
+    }
+    setOpen(!open)
+  }
+  const close = (): void => setOpen(false)
+
+  // Scroll the keyboard-highlighted row into view as it moves past the popover's visible edge.
   useEffect(() => {
     if (!open) return
-    setQuery('')
-    setActive(0)
-    // Autofocus the filter box when the popover opens, so typing narrows the list immediately.
-    const id = window.setTimeout(() => inputRef.current?.focus(), 0)
-    return () => window.clearTimeout(id)
-  }, [open])
-
-  useEffect(() => {
-    setActive(0)
-  }, [query])
-
-  const close = (): void => setOpen(false)
-  // A mouse click on the <Link> navigates on its own (only the popover needs closing); Enter on
-  // the filter box has no href to follow, so it navigates itself.
-  const pick = (entry: RefEntry): void => {
-    close()
-    router.push(entry.href)
-  }
+    document.getElementById(optionId(active))?.scrollIntoView({ block: 'nearest' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- optionId is a stable closure over uid
+  }, [open, active])
 
   const onKeyDown = (e: React.KeyboardEvent): void => {
-    if (e.key === 'Escape') {
-      e.preventDefault()
-      close()
-      return
-    }
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      setActive((i) => (flat.length === 0 ? 0 : (i + 1) % flat.length))
-      return
-    }
-    if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      setActive((i) => (flat.length === 0 ? 0 : (i - 1 + flat.length) % flat.length))
-      return
-    }
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      const entry = flat[active]
-      if (entry) pick(entry)
+    switch (e.key) {
+      case 'Escape':
+        e.preventDefault()
+        close()
+        triggerRef.current?.focus()
+        break
+      case 'ArrowDown':
+        e.preventDefault()
+        setActive((i) => (flat.length === 0 ? 0 : (i + 1) % flat.length))
+        break
+      case 'ArrowUp':
+        e.preventDefault()
+        setActive((i) => (flat.length === 0 ? 0 : (i - 1 + flat.length) % flat.length))
+        break
+      case 'Enter': {
+        // Ignore an Enter that's confirming an IME composition (e.g. picking a candidate while
+        // typing Japanese/Chinese/Korean), not choosing a ref. A mouse click on the <Link>
+        // navigates on its own (only the popover needs closing); Enter here has no href to
+        // follow, so it navigates itself.
+        if (e.nativeEvent.isComposing) return
+        e.preventDefault()
+        const entry = flat[active]
+        if (entry) {
+          close()
+          router.push(hrefFor(entry.name, entry.isTag))
+        }
+        break
+      }
     }
   }
-
-  const activeId = flat[active] ? `ref-switcher-option-${flat[active].isTag ? 'tag' : 'branch'}-${flat[active].name}` : undefined
 
   return (
     <div className="relative">
       <button
+        ref={triggerRef}
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={toggle}
         aria-haspopup="listbox"
         aria-expanded={open}
         className="inline-flex items-center gap-1.5 rounded-md border border-anvil-200 bg-white px-2.5 py-1 text-dense coarse:min-h-11 text-anvil-700 transition-colors hover:border-anvil-300 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-200 dark:hover:border-anvil-600"
@@ -155,14 +166,18 @@ export function RefSwitcher({
           <div className="absolute left-0 z-20 mt-1 w-72 rounded-lg border border-anvil-200 bg-white shadow-lg dark:border-anvil-750 dark:bg-anvil-900">
             <div className="relative border-b border-anvil-100 p-1.5 dark:border-anvil-850">
               <Search className="pointer-events-none absolute left-4 top-4 h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
+              {/* Focused on open, so typing narrows the list immediately. */}
               <input
-                ref={inputRef}
+                autoFocus
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(e) => {
+                  setQuery(e.target.value)
+                  setActive(0)
+                }}
                 onKeyDown={onKeyDown}
                 role="combobox"
                 aria-expanded={open}
-                aria-controls="ref-switcher-listbox"
+                aria-controls={listboxId}
                 aria-activedescendant={activeId}
                 aria-autocomplete="list"
                 aria-label="Find a branch or tag"
@@ -170,25 +185,39 @@ export function RefSwitcher({
                 className="w-full rounded-md border border-anvil-200 bg-white py-1 pl-7 pr-2 text-dense font-mono text-anvil-900 outline-none focus:border-forge-500 dark:border-anvil-750 dark:bg-anvil-950 dark:text-anvil-50"
               />
             </div>
-            <div
-              id="ref-switcher-listbox"
-              role="listbox"
-              aria-label="Switch branch or tag"
-              className="max-h-72 overflow-y-auto py-1"
-            >
-              {flat.length === 0 ? (
-                <p className="px-3 py-2 text-dense text-anvil-500 dark:text-anvil-400">No branch or tag matches &ldquo;{query}&rdquo;.</p>
-              ) : (
-                <>
-                  {branches.length > 0 ? (
-                    <RefGroup label="Branches" entries={branches} offset={0} active={active} current={current} onPick={close} />
-                  ) : null}
-                  {tags.length > 0 ? (
-                    <RefGroup label="Tags" entries={tags} offset={branches.length} active={active} current={current} onPick={close} />
-                  ) : null}
-                </>
-              )}
+            {/* A listbox's only valid children are options and labelled groups of options — the
+                empty-search message lives outside it, not as a stray child. */}
+            <div id={listboxId} role="listbox" aria-label="Switch branch or tag" className="max-h-72 overflow-y-auto py-1">
+              {branches.length > 0 ? (
+                <RefGroup
+                  headingId={branchHeadingId}
+                  label="Branches"
+                  entries={branches}
+                  active={active}
+                  current={current}
+                  optionId={optionId}
+                  hrefFor={hrefFor}
+                  onPick={close}
+                  onHover={setActive}
+                />
+              ) : null}
+              {tags.length > 0 ? (
+                <RefGroup
+                  headingId={tagHeadingId}
+                  label="Tags"
+                  entries={tags}
+                  active={active}
+                  current={current}
+                  optionId={optionId}
+                  hrefFor={hrefFor}
+                  onPick={close}
+                  onHover={setActive}
+                />
+              ) : null}
             </div>
+            {flat.length === 0 ? (
+              <p className="px-3 py-2 text-dense text-anvil-500 dark:text-anvil-400">No branch or tag matches &ldquo;{query}&rdquo;.</p>
+            ) : null}
           </div>
         </>
       ) : null}
@@ -247,36 +276,50 @@ export function RefNotFoundState({
 }
 
 function RefGroup({
+  headingId,
   label,
   entries,
-  offset,
   active,
   current,
+  optionId,
+  hrefFor,
   onPick,
+  onHover,
 }: {
+  headingId: string
   label: string
   entries: readonly RefEntry[]
-  /** This group's index of `entries[0]` within the switcher's flattened, keyboard-navigated list. */
-  offset: number
+  /** The global index (see {@link RefEntry.index}) of the keyboard-highlighted option. */
   active: number
   current: SelectedRef
+  optionId: (index: number) => string
+  hrefFor: (shortName: string, isTag: boolean) => string
   onPick: () => void
+  onHover: (index: number) => void
 }): JSX.Element {
-  const Icon = label === 'Tags' ? Tag : GitBranch
   return (
-    <div>
-      <div className="px-3 pb-1 pt-2 text-[11px] uppercase tracking-wide text-anvil-500 dark:text-anvil-400">{label}</div>
-      {entries.map((entry, i) => {
+    <div role="group" aria-labelledby={headingId}>
+      <div id={headingId} className="px-3 pb-1 pt-2 text-[11px] uppercase tracking-wide text-anvil-500 dark:text-anvil-400">
+        {label}
+      </div>
+      {entries.map((entry) => {
+        // The current ref (checkmark + aria-current) and the keyboard-highlighted row
+        // (aria-selected, the row combobox users are about to Enter on) are different things —
+        // opening the switcher on v1.2.0 highlights the top of the list, not v1.2.0 itself.
         const selected = current.isTag === entry.isTag && current.name === entry.name
-        const highlighted = offset + i === active
+        const highlighted = entry.index === active
+        const Icon = entry.isTag ? Tag : GitBranch
         return (
           <Link
             key={entry.name}
-            id={`ref-switcher-option-${entry.isTag ? 'tag' : 'branch'}-${entry.name}`}
+            id={optionId(entry.index)}
             role="option"
-            aria-selected={selected}
-            href={entry.href}
+            tabIndex={-1}
+            aria-selected={highlighted}
+            aria-current={selected ? 'true' : undefined}
+            href={hrefFor(entry.name, entry.isTag)}
             onClick={onPick}
+            onMouseEnter={() => onHover(entry.index)}
             className={cn(
               'flex items-center gap-2 px-3 py-1.5 text-dense',
               highlighted ? 'bg-anvil-50 dark:bg-anvil-850' : 'hover:bg-anvil-50 dark:hover:bg-anvil-850',
