@@ -39,7 +39,10 @@ export interface PullComparisonInput {
   readonly headOid: string
   /** The PR is merged: its base now contains the head, so compare from the tip at open first. */
   readonly merged: boolean
-  /** An archived PR from another forge — never shown with an inexact baseline. */
+  /**
+   * An archived PR from another forge: its source's recorded base is tried first, and a
+   * fallback diff links the source's own (the view's job).
+   */
   readonly imported: boolean
   /**
    * An imported PR's base commit at the source (the merge base GitHub or GitLab diffs from),

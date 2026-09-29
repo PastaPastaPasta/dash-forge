@@ -263,11 +263,19 @@ pub fn fit_text(text: &str, max: usize, full_at: &str) -> String {
         return text.to_string();
     }
     let note = format!("\n\n… (truncated; the full text is at {full_at})");
-    // Room for the note and for closing a fence (`\n```\n`) or a span (`` ` ``).
-    let room = max.saturating_sub(note.len() + 5);
-    let clipped = clip(text, room, room);
-    let cut = boundary_cut(&clipped);
-    format!("{}{note}", close_code(cut))
+    // Room for the note; the closer (a fence of any length, a span of N backticks) is measured
+    // after the cut, and the cut shortened by what it overflows until everything fits. Each round
+    // shrinks `room`, so it ends (at worst with an empty cut and no closer).
+    let mut room = max.saturating_sub(note.len());
+    loop {
+        let clipped = clip(text, room, room);
+        let closed = close_code(boundary_cut(&clipped));
+        let len = closed.len() + note.len();
+        if len <= max || room == 0 {
+            return format!("{closed}{note}");
+        }
+        room = room.saturating_sub(len - max);
+    }
 }
 
 /// `s` shortened to its last paragraph break, else line break, else space, when one falls in
@@ -693,6 +701,23 @@ mod tests {
             "```\ncode\n```\nafter `x`"
         );
         assert_eq!(close_code("done `x` and ``y``"), "done `x` and ``y``");
+    }
+
+    /// Review (High): a long opening fence or span run made the closer longer than the 5 bytes
+    /// once reserved, and the text overflowed the field (the write refused, the item skipped, the
+    /// cursor stuck). The result always fits, whatever the run's length.
+    #[test]
+    fn a_long_fence_or_span_never_overflows_the_bound() {
+        for n in 3..=200 {
+            for c in ["`", "~"] {
+                let fenced = format!("{}\n{}", c.repeat(n), "x".repeat(6000));
+                let out = fit_text(&fenced, 5120, "u");
+                assert!(out.len() <= 5120, "{c} x{n}: {}", out.len());
+            }
+            let span = format!("a {}{}", "`".repeat(n), "y".repeat(6000));
+            let out = fit_text(&span, 5120, "u");
+            assert!(out.len() <= 5120, "span x{n}: {}", out.len());
+        }
     }
 
     /// Review: an unparseable release date (0) writes no line, never "on 1970-01-01".

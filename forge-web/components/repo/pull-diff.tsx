@@ -23,7 +23,6 @@ import {
   formatBytes,
   invalidateBrowseContext,
   loadPullComparison,
-  MergeBaseCancelledError,
   tipOidOf,
   type DiffSides,
   type ObjectReader,
@@ -392,7 +391,7 @@ export function ComparisonView({
   /** Extra controls beside the heading. */
   action?: ReactNode
 }): JSX.Element {
-  const { spec, sides, problems, waiting, sidesKey, data, loading, error, cause, reload, tryAgain, commitsRead } = state
+  const { spec, sides, problems, waiting, sidesKey, data, loading, error, reload, tryAgain, commitsRead } = state
   const pull = { headOid: spec.headOid, imported: spec.imported, importedUrl: spec.importedUrl }
   const searching = loading && commitsRead > 0
   const searchProgress = (
@@ -448,19 +447,6 @@ export function ComparisonView({
     )
   }
   if (loading && data === null) return <Frame>{searchProgress}</Frame>
-  if (cause instanceof MergeBaseCancelledError) {
-    // A stopped search normally falls back to the head's first parent (`searchStopped`); this is
-    // the defensive path for a comparison that ended on the cancellation itself.
-    return (
-      <Frame>
-        <Unavailable title="Search stopped" message={`${cause.message}. An imported PR is only shown against its exact base.`} problems={problems}>
-          <Button size="sm" onClick={reload}>
-            Search again
-          </Button>
-        </Unavailable>
-      </Frame>
-    )
-  }
   if (error !== null || data === null) {
     const original = pull.imported ? originalDiffUrl(pull.importedUrl) : null
     return (
