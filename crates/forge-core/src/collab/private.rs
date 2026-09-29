@@ -629,6 +629,7 @@ mod tests {
             "/../../forge-contracts/contracts/forge-community.json"
         ));
         let c: serde_json::Value = serde_json::from_str(text).unwrap();
+        // `event` is a forge-community type (RC1 layout O-01)
         let e = c.get("documentSchemas").unwrap_or(&c)["event"].clone();
         assert_eq!(e["documentsMutable"], false);
         assert_eq!(e["canBeDeleted"], false);

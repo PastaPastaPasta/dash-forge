@@ -191,6 +191,8 @@ pub fn wrap_envelope(
 #[cfg(test)]
 pub(crate) fn test_contract() -> LoadedContract {
     use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
+    // `repoKey` is a forge-collab type (RC1 layout O-03); its gates name forge-core, whose id the
+    // deploy script substitutes (any valid id parses)
     let raw = include_str!("../../../../forge-contracts/contracts/forge-collab.json").replace(
         "FORGE_CORE_CONTRACT_ID",
         &super::encode_identifier([0x0c; 32]),

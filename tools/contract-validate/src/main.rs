@@ -27,8 +27,9 @@
 //!   5. with `--vectors <dir>`, judges the contract's document vectors (`<dir>/<name>.json`,
 //!      forge-contracts/vectors/rc1) against the parsed types (JSON schema, maxBytes and every
 //!      `propertyConstraints` rule that reads no total, time or height: the document-property
-//!      validation every create and replace runs): each accepted case must pass and each refused
-//!      one must fail for the reason it names;
+//!      validation every create and replace runs), then, as a node does on a create, the
+//!      `distinctFrom` and `encryptedFor` shape checks: each accepted case must pass and each
+//!      refused one must fail for the reason it names;
 //!   6. serializes the contract and a signed-shape `DataContractCreateTransition` v1 and reports
 //!      both sizes against `max_state_transition_size` and the registration fee.
 //!
@@ -294,14 +295,21 @@ fn validate_one(
         let cases = read_cases(&dir.join(format!("{name}.json")))?;
         let mut wrong = Vec::new();
         for case in &cases {
-            let system = DocumentSystemValues::owned_by(case.owner.unwrap_or(owner));
-            let result = contract
-                .validate_document_properties(&case.doc_type, case_value(&case.doc)?, &system, pv)
-                .map_err(|e| anyhow!("{} ({}): {e}", case.name, case.doc_type))?;
-            let reason = result.errors.first().map(refusal_reason);
-            let fine = match (case.expect.as_str(), &reason) {
+            let signer = case.owner.unwrap_or(owner);
+            let system = DocumentSystemValues::owned_by(signer);
+            let data = case_value(&case.doc)?;
+            let mut errors = contract
+                .validate_document_properties(&case.doc_type, data.clone(), &system, pv)
+                .map_err(|e| anyhow!("{} ({}): {e}", case.name, case.doc_type))?
+                .errors;
+            if errors.is_empty() {
+                errors = create_structure_errors(&contract, &case.doc_type, data, signer, pv)
+                    .map_err(|e| anyhow!("{} ({}): {e}", case.name, case.doc_type))?;
+            }
+            let first = errors.first();
+            let fine = match (case.expect.as_str(), first) {
                 ("ok", None) => true,
-                ("refused", Some(got)) => case.why.as_deref().is_none_or(|want| want == got),
+                ("refused", Some(e)) => case.why.as_deref() == Some(refusal_reason(e).as_str()),
                 _ => false,
             };
             if !fine {
@@ -315,9 +323,9 @@ fn validate_one(
                         .as_deref()
                         .map(|w| format!(" by {w}"))
                         .unwrap_or_default(),
-                    match (&reason, result.errors.first()) {
-                        (Some(r), Some(e)) => format!("refused by {r}: {e}"),
-                        _ => "accepted".to_string(),
+                    match first {
+                        Some(e) => format!("refused by {}: {e}", refusal_reason(e)),
+                        None => "accepted".to_string(),
                     }
                 ));
             }
@@ -773,12 +781,20 @@ fn read_cases(path: &std::path::Path) -> Result<Vec<Case>> {
                     .map(str::to_string)
                     .with_context(|| format!("{}: a case without {k}", path.display()))
             };
+            let expect = field("expect")?;
+            let why = c["why"].as_str().map(str::to_string);
+            // A refusal names its reason (so a case cannot pass by failing for another one);
+            // an accepted case has none
+            match (expect.as_str(), &why) {
+                ("refused", Some(_)) | ("ok", None) => {}
+                _ => bail!("{}: case {:?} expects {expect:?}: a refused case names its `why`, an accepted one none", path.display(), c["name"]),
+            }
             Ok(Case {
                 item: field("item")?,
                 name: field("name")?,
                 doc_type: field("type")?,
-                expect: field("expect")?,
-                why: c["why"].as_str().map(str::to_string),
+                expect,
+                why,
                 owner: c.get("owner").map(case_identifier).transpose()?,
                 doc: c["doc"].clone(),
             })
@@ -829,6 +845,36 @@ fn case_value(j: &Json) -> Result<dpp::platform_value::Value> {
         Json::Array(a) => Value::Array(a.iter().map(case_value).collect::<Result<_>>()?),
         other => other.clone().into(),
     })
+}
+
+/// The document-only checks a node runs on a create right after the document schema
+/// (drive-abci `document_create_transition_action` advanced structure v1): a `distinctFrom`
+/// property differs from its sibling or the writer (10419), and an `encryptedFor` ciphertext has
+/// its scheme's shape (10420).
+fn create_structure_errors(
+    contract: &DataContract,
+    doc_type: &str,
+    data: dpp::platform_value::Value,
+    signer: Identifier,
+    pv: &PlatformVersion,
+) -> Result<Vec<dpp::consensus::ConsensusError>> {
+    use dpp::data_contract::document_type::methods::{
+        DocumentTypeBasicMethods, DocumentTypeV0Methods,
+    };
+    let dt = contract
+        .document_type_for_name(doc_type)
+        .map_err(|e| anyhow!("{e}"))?;
+    let data = data.into_btree_string_map().map_err(|e| anyhow!("{e}"))?;
+    let distinct = dt
+        .validate_distinct_from_properties(&data, signer, pv)
+        .map_err(|e| anyhow!("{e}"))?;
+    if !distinct.is_valid() {
+        return Ok(distinct.errors);
+    }
+    Ok(dt
+        .validate_encrypted_property_shapes(&data, pv)
+        .map_err(|e| anyhow!("{e}"))?
+        .errors)
 }
 
 /// A refusal's reason as the vectors name it: the JSON Schema keyword, the broken

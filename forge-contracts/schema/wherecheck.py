@@ -98,9 +98,21 @@ def flattened(contract, doc_type):
 
 
 def can_disappear(contract, doc_type):
+    """`documents_can_disappear`: deletable by its owner, by moderators, or through a `ttl`."""
     d = contract['documentSchemas'][doc_type]
-    default = contract.get('config', {}).get('canBeDeleted', True)
-    return bool(d.get('canBeDeleted', default)) or 'moderatorAbilities' in d or 'ttl' in d
+    default = contract.get('config', {}).get('documentsCanBeDeletedContractDefault', True)
+    return bool(d.get('canBeDeleted', default)) or bool(d.get('moderatorAbilities', {}).get('delete')) or 'ttl' in d
+
+
+# The value kinds of the system properties a `findBy` key or a `where` side may name
+SYSTEM_KINDS = {'$ownerId': 'identifier', '$creatorId': 'identifier', '$id': 'identifier',
+                '$createdAt': 'date', '$updatedAt': 'date', '$transferredAt': 'date',
+                '$createdAtBlockHeight': 'u64', '$updatedAtBlockHeight': 'u64', '$transferredAtBlockHeight': 'u64',
+                '$createdAtCoreBlockHeight': 'u32', '$updatedAtCoreBlockHeight': 'u32', '$transferredAtCoreBlockHeight': 'u32'}
+# Fixed once a document is written, whatever the type says (a findBy key must not move)
+SYSTEM_FIXED = {'$ownerId', '$id', '$createdAt', '$createdAtBlockHeight', '$createdAtCoreBlockHeight'}
+# Declaration features this mirror does not port: it refuses them rather than pass them unchecked
+UNPORTED = ('inList', 'creatorRefersTo', 'revealed', 'consume', 'minimumAgeBlocks')
 
 
 def leaves(decl):
@@ -121,14 +133,21 @@ def declarations(contract, doc_type):
         if 'refersTo' in s:
             yield path, path, s['refersTo']
         items = s.get('items')
-        if isinstance(items, dict) and 'refersTo' in resolve(contract, items):
-            yield path + '[]', path, resolve(contract, items)['refersTo']
+        if isinstance(items, dict):
+            item = resolve(contract, items)
+            if 'refersTo' in item:
+                yield path + '[]', path, item['refersTo']
 
 
 def check(contracts):
     """Problems as `code path: reason` lines; `contracts` maps name -> parsed JSON, in registration order."""
     problems = []
+    order = list(contracts)
     for name, c in contracts.items():
+        text = json.dumps(c)
+        for feature in UNPORTED:
+            if f'"{feature}"' in text:
+                problems.append(f'unported {name}: `{feature}` is not mirrored here; extend wherecheck.py before relying on it')
         for t in c['documentSchemas']:
             props = flattened(c, t)
             for path, ref_prop, decl in declarations(c, t):
@@ -136,8 +155,9 @@ def check(contracts):
                     if leaf.get('type') not in ('permanentDocument', 'deletableDocument'):
                         continue
                     at = f'{name}.{t}.{path}'
-                    target_name = PLACEHOLDERS.get(leaf.get('contractId'), name) if 'contractId' in leaf else name
-                    tc = contracts.get(target_name)
+                    target_name = PLACEHOLDERS.get(leaf['contractId']) if 'contractId' in leaf else name
+                    # only a contract registered before this one (or this one) is in state
+                    tc = contracts.get(target_name) if target_name in order[:order.index(name) + 1] else None
                     rt = leaf['documentType']
                     if tc is None or rt not in tc['documentSchemas']:
                         problems.append(f'40121 {at}: no document type {target_name}.{rt}')
@@ -156,21 +176,27 @@ def check(contracts):
                             s = props[ref_prop]
                             return kind(c, s['items']) if path.endswith('[]') else kind(c, s)
                         if src.startswith('$'):
-                            return 'identifier'
+                            return SYSTEM_KINDS.get(src)
                         return kind(c, props[src]) if src in props else None
 
                     if 'findBy' in leaf and target_name != name:
+                        # (one into the declaring contract is checked by the contract parse)
                         keys = leaf['findBy']
-                        want = set(keys)
-                        uniq = [i for i in tc['documentSchemas'][rt].get('indices', [])
-                                if i.get('unique') and {next(iter(p)) for p in i['properties']} == want]
+                        td = tc['documentSchemas'][rt]
+                        uniq = [i for i in td.get('indices', [])
+                                if i.get('unique') and {next(iter(p)) for p in i['properties']} == set(keys)]
                         if not uniq:
-                            problems.append(f'40137 {at}: no unique index of {target_name}.{rt} over exactly {sorted(want)}')
+                            problems.append(f'40137 {at}: no unique index of {target_name}.{rt} over exactly {sorted(keys)}')
+                        if td.get('indexOnly'):
+                            problems.append(f'40137 {at}: {rt} is indexOnly, which findBy cannot reference')
+                        fixed = SYSTEM_FIXED | set(td.get('immutable', []))
                         for k, src in keys.items():
-                            dk = 'identifier' if k.startswith('$') else (kind(tc, target_props[k]) if k in target_props else None)
+                            dk = SYSTEM_KINDS.get(k) if k.startswith('$') else (kind(tc, target_props[k]) if k in target_props else None)
                             sk = source_kind(src)
-                            if dk is None or sk is None or dk != sk:
+                            if dk is None or dk != sk:
                                 problems.append(f'40137 {at}: findBy {k} ({dk}) from {src} ({sk})')
+                            if td.get('documentsMutable', True) and k not in fixed:
+                                problems.append(f'40137 {at}: findBy names {rt}.{k}, which a replace can change')
                     for referenced, referring in leaf.get('where', {}).items():
                         bad = lambda why: problems.append(f'40126 {at}: where {referenced} = {referring}: {why}')
                         if ref_prop is not None and referring == ref_prop:
@@ -232,6 +258,11 @@ def self_test(d):
         ('40122', 'permanent names a deletable type', lambda cs: cs['forge-community']['documentSchemas']['checkRun']['properties']['repoId']['refersTo'].update({"documentType": "maintainer"})),
         ('40121', 'unknown type', lambda cs: cs['forge-community']['documentSchemas']['checkRun']['properties']['repoId']['refersTo'].update({"documentType": "nope"})),
         ('40137', 'findBy with no unique index', lambda cs: cs['forge-community']['documentSchemas']['webhook']['ownerRefersTo']['findBy'].update({"repoId": "repoId", "memberId": ".", "vis": "vis"})),
+        ('40137', 'findBy into a type whose key can move', lambda cs: cs['forge-core']['documentSchemas']['maintainer'].update({"documentsMutable": True})),
+        ('40126', 'where on an element reference', lambda cs: cs['forge-community']['documentSchemas']['policy']['properties']['requiredCheckSources']['items']['refersTo']['anyOf'][1].update({"where": {"vis": "requiredApprovals"}})),
+        ('40121', 'a collab-placeholder leaf naming a missing type', lambda cs: cs['forge-community']['documentSchemas']['event']['properties']['targetId']['refersTo']['anyOf'][0].update({"documentType": "nope"})),
+        ('40121', 'a reference to a contract registered later', lambda cs: cs['forge-core']['documentSchemas']['repo']['properties']['forkOf']['refersTo'].update({"contractId": "FORGE_COLLAB_CONTRACT_ID", "documentType": "issue"})),
+        ('unported', 'an inList reference', lambda cs: cs['forge-community']['documentSchemas']['star']['properties']['repoId'].update({"refersTo": {"type": "permanentDocument", "documentType": "event", "inList": "x"}})),
     ]
     bad = 0
     for code, what, fn in cases:
