@@ -11,7 +11,7 @@
 
 | Network | Platform protocol | Forge |
 |---|---|---|
-| **Devnet moutai** | 14 | **Live.** forge-v2 is registered, and the whole product runs on it: `dg`, `git-remote-dash`, `forge-import`, the Mirror Action, the relay, and the web app at [forge.dashhq.org](https://forge.dashhq.org). Test Dash is free from the [moutai faucet](https://faucet.moutai.networks.dash.org). |
+| **Devnet moutai** | 14 | **Moving to devnet bonsia.** Moutai was upgraded in place to Platform v4.2.0-beta.7, which retired the forge-v2 contracts; forge-v2 is being re-registered on devnet bonsia, the new public devnet. The web app at [forge.dashhq.org](https://forge.dashhq.org) is down until the cut-over. |
 | **Testnet** | 13 | **Not deployed yet.** forge-v2 is registered on testnet as soon as Platform protocol 14 reaches it, which is expected soon. |
 | **Mainnet** | 13 | **Not deployed yet.** After protocol 14 activates on mainnet, the project owner registers the forge-v2 contracts ([runbook](docs/mainnet-runbook.md)). |
 
@@ -132,7 +132,7 @@ network's ids. See [BUILDING.md § Networks](docs/BUILDING.md#networks).
 
 ### Verification
 
-The web app is live at **https://forge.dashhq.org** (GitHub Pages), built for devnet moutai; its header badge says "devnet · moutai". The CLI end-to-end suite (`e2e/cli/`) and the Playwright specs (`forge-web/e2e/`) run nightly against moutai ("Devnet Nightly"); see [e2e/README.md](e2e/README.md).
+The web app at **https://forge.dashhq.org** (GitHub Pages) is down: it was built for devnet moutai, whose forge-v2 contracts were retired when moutai was upgraded to Platform v4.2.0-beta.7. It comes back once the site cuts over to devnet bonsia. The CLI end-to-end suite (`e2e/cli/`) and the Playwright specs (`forge-web/e2e/`) run nightly against moutai ("Devnet Nightly"); see [e2e/README.md](e2e/README.md).
 
 Proven end-to-end on moutai: `git clone dash://…` / `git push` byte-identical round-trip; a revoked writer's push and a non-member's push rejected at consensus; third-party "no trust in any server" verification; issue and PR lifecycles, including a PR from a fork with a real merge; the browser app rendering proof-verified data with the Verification card; `dg init` publishing to a bucket; an import re-run costing 0; relay deliveries surviving a restart; CLI↔web parity via the shared conformance vectors. See [forge-v2.md](docs/contracts/forge-v2.md) for the contract design and [mainnet-runbook.md](docs/mainnet-runbook.md) for the (not-yet-executed) mainnet deployment.
 
