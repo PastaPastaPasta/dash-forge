@@ -2,9 +2,10 @@
  * RepoSource — where a repo's documents live and how a query is scoped to one repo.
  *
  * Every reader in `lib/repo` and `lib/view` builds its queries here. Every repo shares
- * forge-core (code: refs, config, packs, members, releases, labels), forge-collab (issues,
- * PRs, transitions, comments, reviews, events, milestones) and forge-community (stars,
- * watches, follows, check runs, policies, webhooks, profiles). Indexes that list a repo's documents lead
+ * forge-core (code: refs, config, packs, members, releases, labels, topics), forge-collab (issues,
+ * PRs, transitions, comments, reviews, repo keys) and forge-community (events, milestones,
+ * runners, stars, watches, follows, check runs, policies, webhooks, profiles; the RC1 layout,
+ * `forge-v2.md` §2). Indexes that list a repo's documents lead
  * with `repoId`, so {@link RepoSource.repoQuery} prefixes `repoId ==` (`forge-v2.md` §2).
  * Indexes keyed by a document id (`targetId`, `patchId`) need no prefix — consensus ties
  * those references to the same repo — and go through {@link RepoSource.targetQuery}.
@@ -25,18 +26,20 @@ const CORE_TYPES: ReadonlySet<string> = new Set([
   DOC.refUpdate,
   DOC.protectedRefUpdate,
   DOC.config,
-  DOC.repoKey,
   DOC.packManifest,
   DOC.manifestPart,
   DOC.chunk,
   DOC.release,
   DOC.label,
-  DOC.runner,
   DOC.topic,
 ])
 
 /** The forge-v2 document types held by forge-community; the rest is forge-collab. */
 export const COMMUNITY_TYPES: ReadonlySet<string> = new Set([
+  DOC.event,
+  DOC.authorEvent,
+  DOC.milestone,
+  DOC.runner,
   DOC.star,
   DOC.starBeat,
   DOC.watch,

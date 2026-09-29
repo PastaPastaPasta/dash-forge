@@ -1,0 +1,2347 @@
+[
+ {
+  "item": "base",
+  "name": "issue ok",
+  "type": "issue",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "title": "A bug",
+   "body": "text",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "base",
+  "name": "patch ok",
+  "type": "patch",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 2,
+   "tk": 1,
+   "title": "A fix",
+   "vis": "public",
+   "baseRefNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "baseRefName": "refs/heads/main",
+   "sourceRepoId": {
+    "$id": 1
+   },
+   "sourceRefNameHash": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "sourceRefName": "refs/heads/fix",
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "base",
+  "name": "transition ok",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 1,
+   "delta": 1,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "base",
+  "name": "comment ok",
+  "type": "comment",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "base",
+  "name": "review ok",
+  "type": "review",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "patchId": {
+    "$id": 3
+   },
+   "verdict": 3,
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "body": "looks fine",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "base",
+  "name": "repoKey ok",
+  "type": "repoKey",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 7
+   },
+   "epoch": 0,
+   "recipientKeyId": 1,
+   "senderKeyId": 1,
+   "wrapped": {
+    "$b": [
+     9,
+     48
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "patch base ref a..b",
+  "type": "patch",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 2,
+   "tk": 1,
+   "title": "A fix",
+   "vis": "public",
+   "baseRefNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "baseRefName": "refs/heads/a..b",
+   "sourceRepoId": {
+    "$id": 1
+   },
+   "sourceRefNameHash": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "sourceRefName": "refs/heads/fix",
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "patch source ref with a newline",
+  "type": "patch",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 2,
+   "tk": 1,
+   "title": "A fix",
+   "vis": "public",
+   "baseRefNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "baseRefName": "refs/heads/main",
+   "sourceRepoId": {
+    "$id": 1
+   },
+   "sourceRefNameHash": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "sourceRefName": "refs/heads/a\nb",
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "patch source ref without refs/",
+  "type": "patch",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 2,
+   "tk": 1,
+   "title": "A fix",
+   "vis": "public",
+   "baseRefNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "baseRefName": "refs/heads/main",
+   "sourceRepoId": {
+    "$id": 1
+   },
+   "sourceRefNameHash": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "sourceRefName": "feature/x",
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-10",
+  "name": "patch headOid 25",
+  "type": "patch",
+  "expect": "refused",
+  "why": "oidWidth",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 2,
+   "tk": 1,
+   "title": "A fix",
+   "vis": "public",
+   "baseRefNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "baseRefName": "refs/heads/main",
+   "sourceRepoId": {
+    "$id": 1
+   },
+   "sourceRefNameHash": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "sourceRefName": "refs/heads/fix",
+   "headOid": {
+    "$b": [
+     1,
+     25
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-10",
+  "name": "merge oid 25",
+  "type": "transition",
+  "expect": "refused",
+  "why": "oidWidth",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 13,
+   "delta": 2,
+   "asAuthor": 0,
+   "oid": {
+    "$b": [
+     1,
+     25
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-10",
+  "name": "merge oid 20",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 13,
+   "delta": 2,
+   "asAuthor": 0,
+   "oid": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-10",
+  "name": "comment commitOid 25",
+  "type": "comment",
+  "expect": "refused",
+  "why": "oidWidth",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "commitOid": {
+    "$b": [
+     1,
+     25
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-10",
+  "name": "review commitOid 30",
+  "type": "review",
+  "expect": "refused",
+  "why": "oidWidth",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "patchId": {
+    "$id": 3
+   },
+   "verdict": 3,
+   "commitOid": {
+    "$b": [
+     1,
+     30
+    ]
+   },
+   "body": "looks fine",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "INV-11",
+  "name": "enc of 28 B",
+  "type": "issue",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "vis": "private",
+   "enc": {
+    "$b": [
+     5,
+     28
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "INV-11",
+  "name": "enc of 29 B",
+  "type": "issue",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "vis": "private",
+   "enc": {
+    "$b": [
+     5,
+     29
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "R-03",
+  "name": "sealed private issue",
+  "type": "issue",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "vis": "private",
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "R-03",
+  "name": "private issue with a plaintext title",
+  "type": "issue",
+  "expect": "refused",
+  "why": "p_sealedIfPrivate",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "title": "A bug",
+   "body": "text",
+   "vis": "private"
+  }
+ },
+ {
+  "item": "R-03",
+  "name": "issue without vis",
+  "type": "issue",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "title": "A bug",
+   "body": "text"
+  }
+ },
+ {
+  "item": "R-03",
+  "name": "issue vis internal",
+  "type": "issue",
+  "expect": "refused",
+  "why": "enum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "title": "A bug",
+   "body": "text",
+   "vis": "internal"
+  }
+ },
+ {
+  "item": "R-03",
+  "name": "private patch in plaintext",
+  "type": "patch",
+  "expect": "refused",
+  "why": "p_sealedIfPrivate",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 2,
+   "tk": 1,
+   "title": "A fix",
+   "vis": "private",
+   "baseRefNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "baseRefName": "refs/heads/main",
+   "sourceRepoId": {
+    "$id": 1
+   },
+   "sourceRefNameHash": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "sourceRefName": "refs/heads/fix",
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-03",
+  "name": "sealed private comment",
+  "type": "comment",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "vis": "private",
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "R-03",
+  "name": "private comment in plaintext",
+  "type": "comment",
+  "expect": "refused",
+  "why": "p_sealedIfPrivate",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "private"
+  }
+ },
+ {
+  "item": "R-03",
+  "name": "private inline comment with a plaintext path and enc",
+  "type": "comment",
+  "expect": "refused",
+  "why": "noPlain",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "vis": "private",
+   "path": "src/a.rs",
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "R-03",
+  "name": "private bodyless member approval",
+  "type": "review",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "patchId": {
+    "$id": 3
+   },
+   "verdict": 1,
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "private",
+   "asMember": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "R-03",
+  "name": "private imported comment verdict with createdAt only",
+  "type": "review",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "patchId": {
+    "$id": 3
+   },
+   "verdict": 3,
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "private",
+   "imported": {
+    "createdAt": 1
+   }
+  }
+ },
+ {
+  "item": "R-03",
+  "name": "private review with a plaintext body",
+  "type": "review",
+  "expect": "refused",
+  "why": "p_sealedIfPrivate",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "patchId": {
+    "$id": 3
+   },
+   "verdict": 3,
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "body": "looks fine",
+   "vis": "private"
+  }
+ },
+ {
+  "item": "R-04",
+  "name": "imported issue with a proof",
+  "type": "issue",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "title": "A bug",
+   "body": "text",
+   "vis": "public",
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/issues/7761"
+   },
+   "upstreamNumber": 7761,
+   "asMember": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "R-04",
+  "name": "empty imported counts as absent",
+  "type": "issue",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "title": "A bug",
+   "body": "text",
+   "vis": "public",
+   "imported": {}
+  }
+ },
+ {
+  "item": "R-04",
+  "name": "imported issue without a proof",
+  "type": "issue",
+  "expect": "refused",
+  "why": "i_provenance",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "title": "A bug",
+   "body": "text",
+   "vis": "public",
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/issues/7761"
+   }
+  }
+ },
+ {
+  "item": "R-04",
+  "name": "upstreamNumber without a proof",
+  "type": "issue",
+  "expect": "refused",
+  "why": "i_provenance",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "title": "A bug",
+   "body": "text",
+   "vis": "public",
+   "upstreamNumber": 7761
+  }
+ },
+ {
+  "item": "R-04",
+  "name": "imported patch without a proof",
+  "type": "patch",
+  "expect": "refused",
+  "why": "i_provenance",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 2,
+   "tk": 1,
+   "title": "A fix",
+   "vis": "public",
+   "baseRefNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "baseRefName": "refs/heads/main",
+   "sourceRepoId": {
+    "$id": 1
+   },
+   "sourceRefNameHash": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "sourceRefName": "refs/heads/fix",
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/issues/7761"
+   }
+  }
+ },
+ {
+  "item": "R-04",
+  "name": "imported patch with a proof",
+  "type": "patch",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 2,
+   "tk": 1,
+   "title": "A fix",
+   "vis": "public",
+   "baseRefNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "baseRefName": "refs/heads/main",
+   "sourceRepoId": {
+    "$id": 1
+   },
+   "sourceRefNameHash": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "sourceRefName": "refs/heads/fix",
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/issues/7761"
+   },
+   "upstreamNumber": 12,
+   "asMember": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "R-04",
+  "name": "imported comment without a proof",
+  "type": "comment",
+  "expect": "refused",
+  "why": "i_provenance",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/issues/7761"
+   }
+  }
+ },
+ {
+  "item": "R-04",
+  "name": "imported comment with a proof",
+  "type": "comment",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/issues/7761"
+   },
+   "asMember": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "R-04",
+  "name": "proof naming another identity",
+  "type": "issue",
+  "expect": "refused",
+  "why": "m_self",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "title": "A bug",
+   "body": "text",
+   "vis": "public",
+   "asMember": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "R-04",
+  "name": "patch proof naming another identity",
+  "type": "patch",
+  "expect": "refused",
+  "why": "m_self",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 2,
+   "tk": 1,
+   "title": "A fix",
+   "vis": "public",
+   "baseRefNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "baseRefName": "refs/heads/main",
+   "sourceRepoId": {
+    "$id": 1
+   },
+   "sourceRefNameHash": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "sourceRefName": "refs/heads/fix",
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "asMember": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "R-04",
+  "name": "sealed private import without a proof",
+  "type": "issue",
+  "expect": "refused",
+  "why": "i_provenance",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "vis": "private",
+   "imported": {
+    "createdAt": 1
+   },
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "R-14",
+  "name": "reply to a root",
+  "type": "comment",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "replyTo": {
+    "$id": 6
+   }
+  }
+ },
+ {
+  "item": "R-14",
+  "name": "line range",
+  "type": "comment",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "path": "a.rs",
+   "line": 5,
+   "startLine": 3,
+   "side": 1
+  }
+ },
+ {
+  "item": "R-14",
+  "name": "outdated import with no line",
+  "type": "comment",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "path": "a.rs",
+   "side": 1
+  }
+ },
+ {
+  "item": "R-14",
+  "name": "noParent set",
+  "type": "comment",
+  "expect": "refused",
+  "why": "noParentSet",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "noParent": {
+    "$id": 6
+   }
+  }
+ },
+ {
+  "item": "R-14",
+  "name": "range start after end",
+  "type": "comment",
+  "expect": "refused",
+  "why": "rangeOrder",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "path": "a.rs",
+   "line": 3,
+   "startLine": 5
+  }
+ },
+ {
+  "item": "R-14",
+  "name": "range start without a line",
+  "type": "comment",
+  "expect": "refused",
+  "why": "rangeOrder",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "path": "a.rs",
+   "startLine": 5
+  }
+ },
+ {
+  "item": "R-15",
+  "name": "issue lock",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 3,
+   "delta": 16,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "R-15",
+  "name": "issue unlock",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 4,
+   "delta": -16,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "R-15",
+  "name": "PR lock",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 18,
+   "delta": 16,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "R-15",
+  "name": "PR unlock",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 19,
+   "delta": -16,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "R-15",
+  "name": "author close still ok",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 1,
+   "delta": 1,
+   "asAuthor": 7
+  }
+ },
+ {
+  "item": "R-15",
+  "name": "lock with delta 1",
+  "type": "transition",
+  "expect": "refused",
+  "why": "b4_lockDelta",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 3,
+   "delta": 1,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "R-15",
+  "name": "unlock with delta 16",
+  "type": "transition",
+  "expect": "refused",
+  "why": "b4_lockDelta",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 4,
+   "delta": 16,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "R-15",
+  "name": "issue lock on a PR target",
+  "type": "transition",
+  "expect": "refused",
+  "why": "a_kindOfTarget",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 3,
+   "delta": 16,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "R-15",
+  "name": "lock by the author",
+  "type": "transition",
+  "expect": "refused",
+  "why": "g_memberLock",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 3,
+   "delta": 16,
+   "asAuthor": 7
+  }
+ },
+ {
+  "item": "R-15",
+  "name": "delta 17",
+  "type": "transition",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 3,
+   "delta": 17,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "R-15",
+  "name": "kind 5 is no transition",
+  "type": "transition",
+  "expect": "refused",
+  "why": "enum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 5,
+   "delta": 0,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "R-15",
+  "name": "comment proof of another identity",
+  "type": "comment",
+  "expect": "refused",
+  "why": "m_self",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "asMember": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "R-15",
+  "name": "member comment with a proof",
+  "type": "comment",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "hi",
+   "vis": "public",
+   "asMember": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "state",
+  "name": "issue close",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 1,
+   "delta": 1,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "state",
+  "name": "issue close with delta 0",
+  "type": "transition",
+  "expect": "refused",
+  "why": "b1_closeDelta",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 0,
+   "kind": 1,
+   "delta": 0,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "state",
+  "name": "issue close on a PR target",
+  "type": "transition",
+  "expect": "refused",
+  "why": "a_kindOfTarget",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 1,
+   "delta": 1,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "state",
+  "name": "PR close",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 11,
+   "delta": 1,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "state",
+  "name": "PR reopen",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 12,
+   "delta": -1,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "state",
+  "name": "PR reopen with delta 1",
+  "type": "transition",
+  "expect": "refused",
+  "why": "b2_reopenDelta",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 12,
+   "delta": 1,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "state",
+  "name": "PR merge",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 13,
+   "delta": 2,
+   "asAuthor": 0,
+   "oid": {
+    "$b": [
+     170,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "state",
+  "name": "PR merge without oid",
+  "type": "transition",
+  "expect": "refused",
+  "why": "e_mergeOid",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 13,
+   "delta": 2,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "state",
+  "name": "PR merge by its author",
+  "type": "transition",
+  "expect": "refused",
+  "why": "f_authorNoMerge",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 13,
+   "delta": 2,
+   "asAuthor": 7,
+   "oid": {
+    "$b": [
+     170,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "state",
+  "name": "PR draft",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 14,
+   "delta": 8,
+   "asAuthor": 7
+  }
+ },
+ {
+  "item": "state",
+  "name": "PR ready",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 15,
+   "delta": -8,
+   "asAuthor": 7
+  }
+ },
+ {
+  "item": "state",
+  "name": "PR draft with delta 1",
+  "type": "transition",
+  "expect": "refused",
+  "why": "b3_otherDelta",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 14,
+   "delta": 1,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "state",
+  "name": "draft PR close",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 16,
+   "delta": 1,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "state",
+  "name": "draft PR reopen",
+  "type": "transition",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "targetKind": 1,
+   "kind": 17,
+   "delta": -1,
+   "asAuthor": 0
+  }
+ },
+ {
+  "item": "state",
+  "name": "issue with the PR tk",
+  "type": "issue",
+  "expect": "refused",
+  "why": "enum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 1,
+   "title": "A bug",
+   "body": "text",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-16",
+  "name": "member approve with a proof",
+  "type": "review",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "patchId": {
+    "$id": 3
+   },
+   "verdict": 1,
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "body": "looks fine",
+   "vis": "public",
+   "asMember": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "R-16",
+  "name": "member request changes with a proof",
+  "type": "review",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "patchId": {
+    "$id": 3
+   },
+   "verdict": 2,
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "body": "looks fine",
+   "vis": "public",
+   "asMember": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "R-16",
+  "name": "member comment verdict with a proof",
+  "type": "review",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "patchId": {
+    "$id": 3
+   },
+   "verdict": 3,
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "body": "looks fine",
+   "vis": "public",
+   "asMember": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "R-16",
+  "name": "non-member approve",
+  "type": "review",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "patchId": {
+    "$id": 3
+   },
+   "verdict": 4,
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "body": "looks fine",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-16",
+  "name": "non-member request changes",
+  "type": "review",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "patchId": {
+    "$id": 3
+   },
+   "verdict": 5,
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "body": "looks fine",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-16",
+  "name": "approve without a proof",
+  "type": "review",
+  "expect": "refused",
+  "why": "memberVerdict",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "patchId": {
+    "$id": 3
+   },
+   "verdict": 1,
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "body": "looks fine",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-16",
+  "name": "request changes without a proof",
+  "type": "review",
+  "expect": "refused",
+  "why": "memberVerdict",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "patchId": {
+    "$id": 3
+   },
+   "verdict": 2,
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "body": "looks fine",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-16",
+  "name": "non-member verdict with a proof",
+  "type": "review",
+  "expect": "refused",
+  "why": "memberVerdict",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "patchId": {
+    "$id": 3
+   },
+   "verdict": 4,
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "body": "looks fine",
+   "vis": "public",
+   "asMember": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "R-16",
+  "name": "proof of another identity",
+  "type": "review",
+  "expect": "refused",
+  "why": "m_self",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "patchId": {
+    "$id": 3
+   },
+   "verdict": 1,
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "body": "looks fine",
+   "vis": "public",
+   "asMember": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "R-16",
+  "name": "verdict 6",
+  "type": "review",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "patchId": {
+    "$id": 3
+   },
+   "verdict": 6,
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "body": "looks fine",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-13",
+  "name": "self wrap",
+  "type": "repoKey",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 7
+   },
+   "epoch": 0,
+   "recipientKeyId": 1,
+   "senderKeyId": 1,
+   "wrapped": {
+    "$b": [
+     9,
+     48
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-13",
+  "name": "wrap of 16 B",
+  "type": "repoKey",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 7
+   },
+   "epoch": 0,
+   "recipientKeyId": 1,
+   "senderKeyId": 1,
+   "wrapped": {
+    "$b": [
+     9,
+     16
+    ]
+   }
+  }
+ },
+ {
+  "item": "CL-7",
+  "name": "title with inner spaces",
+  "type": "issue",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "title": "a  b",
+   "body": "text",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "CL-7",
+  "name": "title ' '",
+  "type": "issue",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "title": " ",
+   "body": "text",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "CL-7",
+  "name": "title '\\xa0\\xa0'",
+  "type": "issue",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "title": "  ",
+   "body": "text",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "CL-7",
+  "name": "title 'a\\tb'",
+  "type": "issue",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "title": "a\tb",
+   "body": "text",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "CL-7",
+  "name": "title 'a\\nb'",
+  "type": "issue",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "title": "a\nb",
+   "body": "text",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "CL-7",
+  "name": "body of spaces",
+  "type": "comment",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "   ",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "CL-7",
+  "name": "body with newlines",
+  "type": "comment",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "a\n\nb",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "base",
+  "name": "issue with neither title nor enc",
+  "type": "issue",
+  "expect": "refused",
+  "why": "hasTitle",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "body": "text",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "base",
+  "name": "patch with neither title nor enc",
+  "type": "patch",
+  "expect": "refused",
+  "why": "hasTitle",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 2,
+   "tk": 1,
+   "vis": "public",
+   "baseRefNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "baseRefName": "refs/heads/main",
+   "sourceRepoId": {
+    "$id": 1
+   },
+   "sourceRefNameHash": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "sourceRefName": "refs/heads/fix",
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "base",
+  "name": "comment with neither body nor enc",
+  "type": "comment",
+  "expect": "refused",
+  "why": "hasBody",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "base",
+  "name": "sealed issue with a plaintext title",
+  "type": "issue",
+  "expect": "refused",
+  "why": "noPlain",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "title": "A bug",
+   "body": "text",
+   "vis": "public",
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "base",
+  "name": "sealed patch with a plaintext base ref",
+  "type": "patch",
+  "expect": "refused",
+  "why": "noPlain",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 2,
+   "tk": 1,
+   "vis": "public",
+   "baseRefNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "baseRefName": "refs/heads/main",
+   "sourceRepoId": {
+    "$id": 1
+   },
+   "sourceRefNameHash": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "sourceRefName": "refs/heads/fix",
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "base",
+  "name": "sealed review with a plaintext body",
+  "type": "review",
+  "expect": "refused",
+  "why": "noPlain",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "patchId": {
+    "$id": 3
+   },
+   "verdict": 3,
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "body": "looks fine",
+   "vis": "public",
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "R-04",
+  "name": "imported issue proved by its signer 9",
+  "type": "issue",
+  "expect": "ok",
+  "owner": 9,
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "title": "A bug",
+   "body": "text",
+   "vis": "public",
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/issues/7761"
+   },
+   "asMember": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "base",
+  "name": "body over the 5120-byte field limit",
+  "type": "comment",
+  "expect": "refused",
+  "why": "10417",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "body": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "base",
+  "name": "enc without epoch",
+  "type": "issue",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "vis": "private",
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-13",
+  "name": "a 40-byte wrap (not a multiple of 16)",
+  "type": "repoKey",
+  "expect": "refused",
+  "why": "10420",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 7
+   },
+   "epoch": 0,
+   "recipientKeyId": 1,
+   "senderKeyId": 1,
+   "wrapped": {
+    "$b": [
+     9,
+     40
+    ]
+   }
+  }
+ }
+]

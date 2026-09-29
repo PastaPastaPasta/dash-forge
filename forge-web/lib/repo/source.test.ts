@@ -30,8 +30,8 @@ describe('which contract holds a type', () => {
     expect(three.repoQuery('config').dataContractId).toBe('CORE')
     expect(three.repoQuery('issue').dataContractId).toBe('COLLAB')
     expect(three.repoQuery('transition').dataContractId).toBe('COLLAB')
-    expect(three.repoQuery('milestone').dataContractId).toBe('COLLAB')
-    for (const t of ['star', 'starBeat', 'watch', 'follow', 'checkRun', 'policy', 'webhook', 'profile']) {
+    expect(three.repoQuery('repoKey').dataContractId).toBe('COLLAB')
+    for (const t of ['event', 'authorEvent', 'milestone', 'runner', 'star', 'starBeat', 'watch', 'follow', 'checkRun', 'policy', 'webhook', 'profile']) {
       expect(three.repoQuery(t).dataContractId, t).toBe('COMMUNITY')
     }
   })

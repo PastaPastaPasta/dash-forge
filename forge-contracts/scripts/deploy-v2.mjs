@@ -43,10 +43,15 @@
 //   1. forge-core: a DataContractCreate v1 that registers the contract group AND enrols
 //      forge-core in it (the group id derives from the owner and the same nonce, so the
 //      transition can name the group it creates);
-//   2. forge-collab, then 3. forge-community: substitute forge-core's id for
-//      FORGE_CORE_CONTRACT_ID in the schema, then a DataContractCreate v1 enrolling it in the
-//      group. The order is fixed: each takes the deployer's next identity nonce (1, 2, 3 for a
-//      deployer with no earlier transitions), and the ids derive from those nonces.
+//   2. forge-collab, then 3. forge-community: substitute the ids of the contracts registered
+//      before it for their placeholders (forge-core's for FORGE_CORE_CONTRACT_ID, and in
+//      forge-community also forge-collab's for FORGE_COLLAB_CONTRACT_ID: its events refer to
+//      collab's issues and PRs), then a DataContractCreate v1 enrolling it in the group. The
+//      order is fixed: each takes the deployer's next identity nonce (1, 2, 3 for a deployer
+//      with no earlier transitions), and the ids derive from those nonces. With --only
+//      community, forge-collab's recorded id is substituted; a forge-collab re-registered with
+//      --only collab --force-new leaves forge-community naming the old one until forge-community
+//      is re-registered too (--only community --force-new --same-group).
 // All are signed with the deployer's CRITICAL authentication key (contract create needs
 // CRITICAL or HIGH; CRITICAL is used). The deployer owns the
 // contracts and the group; no moderation, not readonly (flip readonly in a later update once
@@ -79,7 +84,9 @@ export async function loadEvoSdk() {
 }
 const PROTOCOL_VERSION = 14;
 const MAX_STATE_TRANSITION_SIZE = 20480;
-const PLACEHOLDER = 'FORGE_CORE_CONTRACT_ID';
+/** `forge-core` -> `FORGE_CORE_CONTRACT_ID`: the placeholder a later schema names a contract by. */
+export const placeholderFor = (schemaName) => `${schemaName.toUpperCase().replace(/-/g, '_')}_CONTRACT_ID`;
+const PLACEHOLDER = placeholderFor('forge-core');
 const GROUP = { name: 'dash-forge', description: 'Dash Forge v2: forge-core, forge-collab and forge-community' };
 // The contracts that name forge-core's id, registered after it in this order. `key` is the
 // record's name under `v2` (its superseded list is `${key}Superseded`), `only` the --only value.
@@ -138,7 +145,7 @@ export function contractGroupId(ownerB58, nonce) {
 }
 
 // Offline checks, run before every deploy and alone with --self-test: the id derivation against
-// rs-dpp's known answer, and every schema loading with forge-core's id substituted.
+// rs-dpp's known answer, and every schema loading with the earlier contracts' ids substituted.
 function selfTest() {
   // Printed by tools/contract-validate for owner 0x07 * 32, nonce 1
   const owner = b58encode(Buffer.alloc(32, 7));
@@ -153,10 +160,16 @@ function selfTest() {
   }
   const core = loadSchema('forge-core');
   if (JSON.stringify(core).includes(PLACEHOLDER)) throw new Error('forge-core must not name its own id');
+  if (!readFileSync(join(ROOT, 'contracts', 'forge-community.json'), 'utf8').includes(placeholderFor('forge-collab'))) {
+    throw new Error('forge-community names no FORGE_COLLAB_CONTRACT_ID: its events would not refer to this forge-collab');
+  }
+  const ids = { [PLACEHOLDER]: want.contract };
   for (const { schemaName } of DEPENDENT_CONTRACTS) {
     const raw = readFileSync(join(ROOT, 'contracts', `${schemaName}.json`), 'utf8');
     if (!raw.includes(PLACEHOLDER)) throw new Error(`${schemaName} names no ${PLACEHOLDER}: it would not refer to this forge-core`);
-    loadSchema(schemaName, { [PLACEHOLDER]: want.contract }, raw);
+    // Only a contract registered before it may be named (loadSchema refuses an unresolved one)
+    loadSchema(schemaName, ids, raw);
+    ids[placeholderFor(schemaName)] = want.contract;
   }
   log(`schemas self-test: ok (forge-core + ${DEPENDENT_CONTRACTS.map((c) => c.schemaName).join(', ')})`);
 }
@@ -563,8 +576,19 @@ async function main() {
   }
 
   const substitutions = { [PLACEHOLDER]: coreId };
-  // Register the contracts that name forge-core's id, in order (all, or the one --only names)
+  // Register the contracts that name forge-core's id, in order (all, or the one --only names).
+  // Each registered id is substituted into the ones after it; one --only skips lends its
+  // recorded id once it is confirmed on chain.
   const dependents = DEPENDENT_CONTRACTS.filter((c) => only === null || c.only === only);
+  // (only the ones registered before the first this run registers can be named by it)
+  for (const c of DEPENDENT_CONTRACTS) {
+    if (dependents.includes(c)) break;
+    if (!v2[c.key]?.contractId) continue;
+    // Only a contract found on chain may be named (reconcile also settles an interrupted record)
+    const found = await reconcile(c.key, schemaHash(loadSchema(c.schemaName, substitutions)));
+    if (!found) throw new Error(`--only ${only}: ${c.key} is recorded but not on chain; run --only ${c.only} first`);
+    substitutions[placeholderFor(c.schemaName)] = found;
+  }
   for (const { key, schemaName } of dependents) {
     if (forceNew && v2[key]?.contractId) {
       const old = v2[key];
@@ -584,13 +608,17 @@ async function main() {
         }
       }
     }
-    await registerContract({
+    const id = await registerContract({
       key,
       schemaName,
       substitutions,
       registerGroup: false,
       groupIdFor: () => groupIdFinal,
     });
+    substitutions[placeholderFor(schemaName)] = id;
+  }
+  if (only === 'collab' && v2.forgeCommunity?.contractId && schemaHash(loadSchema('forge-community', substitutions)) !== v2.forgeCommunity.schemaHash) {
+    log(`forgeCommunity: WARNING ${v2.forgeCommunity.contractId} names another forge-collab than ${substitutions[placeholderFor('forge-collab')]}; --only community --force-new --same-group registers one that names it`);
   }
   Object.assign(v2, restoreAfterDryRun);
 
