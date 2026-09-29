@@ -53,6 +53,7 @@ impl Recorded {
         ));
     }
 
+    /// Every recorded document of `doc_type`, in write order.
     fn of(&self, doc_type: &str) -> Vec<FetchedDocument> {
         self.docs
             .iter()
@@ -81,6 +82,7 @@ impl Recorded {
     }
 }
 
+/// Run `git` in `dir` with a fixed identity and no user config; its trimmed stdout.
 fn git(dir: &Path, args: &[&str]) -> String {
     let out = Command::new("git")
         .arg("-C")
@@ -102,6 +104,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
+/// Write `file` and commit it; the new commit's oid.
 fn commit(dir: &Path, file: &str, body: &str, msg: &str) -> String {
     std::fs::write(dir.join(file), body).unwrap();
     git(dir, &["add", "-A"]);
@@ -169,15 +172,13 @@ async fn push(
 
 /// Read a pack back as the helper does: from its `platform://` locator's chunks, or from the
 /// first external URI whose bytes hash to it.
-async fn read_pack(
-    rec: &Recorded,
-    m: &super::PackManifestInfo,
-    external: Option<&dyn PackBackend>,
-) -> Vec<u8> {
+async fn read_pack(rec: &Recorded, m: &super::PackManifestInfo, store: &Store<'_>) -> Vec<u8> {
     let hash_hex = hex::encode(m.pack_hash);
     if m.storage == 1 {
-        let backend = external.expect("an external copy needs its backend");
-        return crate::backends::verify_and_get(backend, &Uri(m.uris[0].clone()), &hash_hex)
+        let Store::External(backend) = store else {
+            panic!("an external copy needs its backend");
+        };
+        return crate::backends::verify_and_get(*backend, &Uri(m.uris[0].clone()), &hash_hex)
             .await
             .unwrap();
     }
@@ -205,7 +206,7 @@ async fn read_pack(
 
 /// Clone what `rec` holds into a new bare repository: every git pack indexed, every ref the
 /// public fold resolves, `HEAD` at the config's default branch.
-async fn clone(rec: &Recorded, dst: &Path, external: Option<&dyn PackBackend>) {
+async fn clone(rec: &Recorded, dst: &Path, store: &Store<'_>) {
     git(dst, &["init", "-q", "--bare"]);
     let mut manifests: Vec<_> = rec
         .of("packManifest")
@@ -214,7 +215,7 @@ async fn clone(rec: &Recorded, dst: &Path, external: Option<&dyn PackBackend>) {
         .collect();
     manifests.sort_by_key(|m| m.created_at);
     for m in manifests.iter().filter(|m| m.kind == 0) {
-        let bytes = read_pack(rec, m, external).await;
+        let bytes = read_pack(rec, m, store).await;
         let mut child = Command::new("git")
             .arg("-C")
             .arg(dst)
@@ -260,7 +261,7 @@ async fn clone(rec: &Recorded, dst: &Path, external: Option<&dyn PackBackend>) {
 /// The source repository and the pushes of the round trip: `main` and an annotated tag, then
 /// `main` moved on (an incremental pack over the first) with a branch whose name exercises
 /// the grammar (`@` without `{`, a `.` inside a component, a slash).
-async fn round_trip(store: &Store<'_>, external: Option<&dyn PackBackend>) {
+async fn round_trip(store: &Store<'_>) {
     let src = tempfile::TempDir::new().unwrap();
     let dst = tempfile::TempDir::new().unwrap();
     let work = tempfile::TempDir::new().unwrap();
@@ -276,9 +277,8 @@ async fn round_trip(store: &Store<'_>, external: Option<&dyn PackBackend>) {
         repo_id: [1; 32],
     };
     let mut rec = Recorded::default();
-    let mut config = crate::create::config_props(&crate::create::CreateRepoOpts::public("rt"));
-    config = scope.scoped(std::mem::take(&mut config));
-    rec.create("config", config);
+    let config = crate::create::config_props(&crate::create::CreateRepoOpts::public("rt"));
+    rec.create("config", scope.scoped(config));
     push(
         &mut rec,
         &scope,
@@ -327,7 +327,7 @@ async fn round_trip(store: &Store<'_>, external: Option<&dyn PackBackend>) {
         }
     }
 
-    clone(&rec, dst.path(), external).await;
+    clone(&rec, dst.path(), store).await;
     git(dst.path(), &["fsck", "--strict", "--no-dangling"]);
     for r in [
         "refs/heads/main",
@@ -361,14 +361,16 @@ async fn round_trip(store: &Store<'_>, external: Option<&dyn PackBackend>) {
     );
 }
 
+/// Packs stored as `chunk` documents clone back to the source.
 #[tokio::test]
 async fn a_push_round_trips_through_platform_chunks_offline() {
-    round_trip(&Store::Platform, None).await;
+    round_trip(&Store::Platform).await;
 }
 
 /// The local S3 fixture's anonymous bucket (`infra/docker-compose.yml`, `make infra-up`).
 const LOCAL_S3: &str = "http://127.0.0.1:9000";
 
+/// Packs stored on the local S3 fixture clone back to the source; skipped when it is down.
 #[tokio::test]
 async fn a_push_round_trips_through_the_local_s3_store() {
     if std::net::TcpStream::connect("127.0.0.1:9000").is_err() {
@@ -379,5 +381,5 @@ async fn a_push_round_trips_through_the_local_s3_store() {
         LOCAL_S3,
         "forge-packs",
     ));
-    round_trip(&Store::External(&backend), Some(&backend)).await;
+    round_trip(&Store::External(&backend)).await;
 }

@@ -4749,6 +4749,7 @@ mod rc1_tests {
     use crate::rules;
     use serde_json::Value;
 
+    /// A JSON file of the `forge-contracts` checkout, by its path in it.
     fn forge_contracts_json(rel: &str) -> Value {
         let path = format!("{}/../../forge-contracts/{rel}", env!("CARGO_MANIFEST_DIR"));
         serde_json::from_str(&std::fs::read_to_string(&path).expect(&path)).expect(&path)
@@ -4761,6 +4762,8 @@ mod rc1_tests {
         Some(vec![fill; usize::try_from(b[1].as_u64()?).ok()?])
     }
 
+    /// One accept/refuse vector: a document of type `ty`, and whether (and by which rule,
+    /// `why`) the contract refuses it.
     struct Case {
         name: String,
         ty: String,
@@ -4769,6 +4772,7 @@ mod rc1_tests {
         doc: Value,
     }
 
+    /// Every frozen RC1 `forge-core` vector.
     fn cases() -> Vec<Case> {
         forge_contracts_json("vectors/rc1/forge-core.json")
             .as_array()
@@ -4860,13 +4864,12 @@ mod rc1_tests {
             let supersedes = d.get("supersedes").and_then(bytes).unwrap_or_default();
             // A negative size or a partial hash is not representable here, and
             // `offsetIndexParts` is a field this client no longer has.
-            let (Some(size), true, false) = (
-                d["sizeBytes"].as_u64(),
-                supersedes.len() % 32 == 0,
-                c.why == "additionalProperties",
-            ) else {
+            let Some(size) = d["sizeBytes"].as_u64() else {
                 continue;
             };
+            if supersedes.len() % 32 != 0 || c.why == "additionalProperties" {
+                continue;
+            }
             let input = PackManifestInput {
                 pack_hash: [4; 32],
                 kind: d["kind"].as_u64().unwrap(),
@@ -4881,13 +4884,8 @@ mod rc1_tests {
                     .collect(),
                 tips: d.get("tips").and_then(bytes).into_iter().collect(),
             };
-            assert_eq!(
-                input.check().is_ok(),
-                c.ok,
-                "{}: {:?}",
-                c.name,
-                input.check()
-            );
+            let checked = input.check();
+            assert_eq!(checked.is_ok(), c.ok, "{}: {checked:?}", c.name);
             seen += 1;
         }
         assert!(seen >= 14, "only {seen} manifest vectors");

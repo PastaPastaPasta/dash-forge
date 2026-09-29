@@ -3971,7 +3971,7 @@ impl<'a> Collab<'a> {
                 &[QueryOrder::asc("$createdAt")],
             )
             .await?;
-        let live = tag_sum(revisions.iter().map(release_from_doc).map(|r| r.delta)) >= 1;
+        let live = tag_is_live(revisions.iter().map(|d| release_from_doc(d).delta));
         p.insert("delta".to_string(), FieldValue::signed(release_delta(live)));
         crate::layout::stamp_vis(&mut p, repo.visibility);
         self.write(repo, &core, DOC_RELEASE, p).await
@@ -4425,10 +4425,10 @@ fn newest_first(a: &Release, b: &Release) -> std::cmp::Ordering {
     (b.created_at, &b.document_id).cmp(&(a.created_at, &a.document_id))
 }
 
-/// A tag's `release.delta` sum, as the contract's `perTag` summable index holds it: 1 while
-/// the tag is live, 0 before its first publish and after an unpublish.
-fn tag_sum(deltas: impl IntoIterator<Item = i64>) -> i64 {
-    deltas.into_iter().sum()
+/// Whether a tag is live: its `release.delta` sum, as the contract's `perTag` summable index
+/// holds it, is 1 while the tag is live, 0 before its first publish and after an unpublish.
+fn tag_is_live(deltas: impl IntoIterator<Item = i64>) -> bool {
+    deltas.into_iter().sum::<i64>() >= 1
 }
 
 /// The `delta` of a new public revision of a tag (RC1 `oneLive`: the tag's sum after the write
@@ -4463,7 +4463,7 @@ fn newest_per_tag(all: Vec<Release>) -> (Vec<Release>, Vec<Release>) {
     let mut previous = Vec::new();
     for (_, mut revs) in by_tag {
         revs.sort_by(newest_first);
-        let live = tag_sum(revs.iter().map(|r| r.delta)) >= 1;
+        let live = tag_is_live(revs.iter().map(|r| r.delta));
         let mut it = revs.into_iter();
         if live {
             current.extend(it.next());
@@ -5388,10 +5388,9 @@ mod tests {
             (vec![1, -1], 1),
             (vec![1, -1, 1], 0),
         ] {
-            let live = tag_sum(history.iter().copied()) >= 1;
-            let delta = release_delta(live);
+            let delta = release_delta(tag_is_live(history.iter().copied()));
             assert_eq!(delta, want, "{history:?}");
-            assert_eq!(tag_sum(history.into_iter().chain([delta])), 1);
+            assert_eq!(history.into_iter().chain([delta]).sum::<i64>(), 1);
         }
     }
 

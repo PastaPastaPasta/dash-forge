@@ -875,9 +875,12 @@ impl<'a> Sink<'a> {
             // The destination refusing this release (a rule such as `oneLive` after a concurrent
             // publish, or its content) skips it; spend-cap and network errors stop the run.
             if let Err(e) = written {
-                let skipped = format!("release {} not mirrored this run: {e:#}", r.tag_name);
+                if !item_error(&e) {
+                    return Err(e);
+                }
+                let tag = &r.tag_name;
                 self.ledger
-                    .skip(item_error(&e).then_some(skipped).ok_or(e)?);
+                    .skip(format!("release {tag} not mirrored this run: {e:#}"));
             }
         }
         Ok(())
