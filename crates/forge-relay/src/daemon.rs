@@ -1401,14 +1401,12 @@ fn note_transition(s: &mut RepoState, d: &FetchedDocument) {
     let Some(tid) = note_activity(s, d) else {
         return;
     };
-    match d.field_u64("kind").and_then(ingest::transition_action) {
-        Some((_, false, _)) => {
+    if let Some((_, open, _)) = d.field_u64("kind").and_then(ingest::transition_action) {
+        if open {
+            s.closed.remove(&tid);
+        } else {
             s.closed.insert(tid);
         }
-        Some((_, true, _)) => {
-            s.closed.remove(&tid);
-        }
-        None => {}
     }
 }
 

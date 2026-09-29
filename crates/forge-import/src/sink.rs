@@ -251,19 +251,10 @@ fn state_after(thread: &Result<()>) -> bool {
 }
 
 /// A target's state on chain: its state code (the sum of its transitions) and its labels.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Current {
     code: i64,
     labels: BTreeSet<String>,
-}
-
-impl Current {
-    fn new_target() -> Self {
-        Self {
-            code: 0,
-            labels: BTreeSet::new(),
-        }
-    }
 }
 
 /// The state code `t` has at the source: an issue open (0) or closed (1); a PR open (0),
@@ -330,13 +321,6 @@ fn label_events(t: &SrcTarget, current: &Current) -> Vec<StateEvent> {
         .difference(&t.labels)
         .map(|l| (EventKind::LabelRemove, l));
     add.chain(remove).map(|(k, l)| (k, l.clone())).collect()
-}
-
-/// The source items of one kind this run would create below the highest source number the
-/// destination already holds (`held`): with dense numbers they would land after it, out of
-/// source order.
-fn out_of_order(new: &[u32], held: u32) -> Vec<u32> {
-    new.iter().copied().filter(|&n| n < held).collect()
 }
 
 /// Whether a destination document keyed `url` is the mirrored copy of the source item
@@ -634,7 +618,6 @@ impl<'a> Sink<'a> {
                     missing.push(t.number);
                 }
             }
-            let missing = out_of_order(&missing, held);
             let Some(first) = missing.first() else {
                 continue;
             };
@@ -859,7 +842,7 @@ impl<'a> Sink<'a> {
             return Ok(());
         }
         let current = if fresh {
-            Current::new_target()
+            Current::default()
         } else {
             self.current(&target).await?
         };
@@ -1550,15 +1533,6 @@ mod tests {
             }
         )
         .is_empty());
-    }
-
-    /// An incremental run refuses items below the highest source number held (they would
-    /// land out of order); items above it are fine.
-    #[test]
-    fn items_below_the_held_upstream_number_are_out_of_order() {
-        assert_eq!(out_of_order(&[3, 12, 15], 12), vec![3]);
-        assert!(out_of_order(&[13, 14], 12).is_empty());
-        assert!(out_of_order(&[1, 2], 0).is_empty(), "nothing held yet");
     }
 
     #[test]

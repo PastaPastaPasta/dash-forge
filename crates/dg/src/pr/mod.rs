@@ -881,8 +881,8 @@ async fn set_open(ctx: &Ctx, repo: &str, number: u64, close: bool) -> Result<()>
         }),
         || {
             println!(
-                "✓ {}d PR #{number} {}",
-                verb.to_lowercase(),
+                "✓ {} PR #{number} {}",
+                if close { "closed" } else { "reopened" },
                 transition_route_text(change.route)
             );
         },

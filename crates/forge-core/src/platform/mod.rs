@@ -2882,10 +2882,6 @@ pub fn encode_identifier(bytes: [u8; 32]) -> String {
     Identifier::from(bytes).to_string(Encoding::Base58)
 }
 
-/// The smallest-width unsigned `Value` holding `n` — the canonical CBOR integer form
-/// (integer `0` decodes back as `U8(0)`, not `U64(0)`). Matching it keeps a nested-object
-/// integer's signed value equal to what the network stores and the proof returns; a
-/// top-level integer field (typed `I64`) coerces from any width, so this is safe there too.
 /// A read integer: non-negative ones stay [`FieldValue::Integer`] (every existing reader), a
 /// negative one is [`FieldValue::Signed`] (sized integer types store `transition.delta` as `I8`).
 fn signed_or_unsigned(n: i64) -> FieldValue {
@@ -2908,6 +2904,10 @@ fn minimal_int(n: i64) -> Value {
     }
 }
 
+/// The smallest-width unsigned `Value` holding `n` — the canonical CBOR integer form
+/// (integer `0` decodes back as `U8(0)`, not `U64(0)`). Matching it keeps a nested-object
+/// integer's signed value equal to what the network stores and the proof returns; a
+/// top-level integer field (typed `I64`) coerces from any width, so this is safe there too.
 fn minimal_uint(n: u64) -> Value {
     if let Ok(v) = u8::try_from(n) {
         Value::U8(v)

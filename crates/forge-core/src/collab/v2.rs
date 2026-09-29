@@ -697,17 +697,6 @@ pub enum StateRoute {
     Author,
 }
 
-impl StateRoute {
-    /// The transition actor this route is.
-    #[must_use]
-    pub fn actor(self) -> Actor {
-        match self {
-            StateRoute::Member => Actor::Member,
-            StateRoute::Author => Actor::Author,
-        }
-    }
-}
-
 /// A state change written ([`Collab::set_state`]).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1535,28 +1524,15 @@ pub fn kind_route(
     }
 }
 
-/// How a create that must hold the dense next number ended after one attempt.
-#[derive(Debug, PartialEq, Eq)]
-enum NumberOutcome {
-    /// Consensus refused the number (the `dense` rule, or the unique `number` index): another
-    /// create took it between the count read and the write. Nothing landed; count again.
-    Taken,
-    /// Anything else: returned as it is.
-    Other,
-}
-
-/// Whether `e` says the dense number was taken ([`NumberOutcome::Taken`]): a 10422 naming
-/// `dense`, or the unique-index refusal a same-number create gets once rules pass.
-fn number_outcome(e: &Error) -> NumberOutcome {
+/// Whether `e` says the dense number was taken: consensus refused the number (a 10422 naming
+/// `dense`, or the unique `number` index once the rules pass) because another create took it
+/// between the count read and the write. Nothing landed; count again.
+fn number_taken(e: &Error) -> bool {
     match e {
-        Error::DuplicateUniqueIndex(_) => NumberOutcome::Taken,
-        Error::RuleRefused { rule, .. } if rule == crate::rules::v2::DENSE_RULE => {
-            NumberOutcome::Taken
-        }
-        Error::RuleRefused { detail, .. } | Error::Platform(detail) if names_dense_rule(detail) => {
-            NumberOutcome::Taken
-        }
-        _ => NumberOutcome::Other,
+        Error::DuplicateUniqueIndex(_) => true,
+        Error::RuleRefused { rule, .. } if rule == crate::rules::v2::DENSE_RULE => true,
+        Error::RuleRefused { detail, .. } | Error::Platform(detail) => names_dense_rule(detail),
+        _ => false,
     }
 }
 
@@ -3218,7 +3194,7 @@ impl<'a> Collab<'a> {
                     });
                 }
                 // Another create took the number: nothing landed; count again.
-                Err(e) if number_outcome(&e) == NumberOutcome::Taken => {
+                Err(e) if number_taken(&e) => {
                     forget();
                     floor = number.saturating_add(1);
                     tracing::warn!(number, attempt, "number taken; counting again");
@@ -4698,24 +4674,16 @@ mod tests {
             rule: "dense".into(),
             detail: "A document of type \"issue\" breaks its propertyConstraints rule \"dense\": it does not hold".into(),
         };
-        assert_eq!(number_outcome(&dense), NumberOutcome::Taken);
-        assert_eq!(
-            number_outcome(&Error::DuplicateUniqueIndex("number".into())),
-            NumberOutcome::Taken
-        );
+        assert!(number_taken(&dense));
+        assert!(number_taken(&Error::DuplicateUniqueIndex("number".into())));
         // The message alone (an error the SDK did not decode) still counts.
-        assert_eq!(
-            number_outcome(&Error::Platform(
-                "state transition broadcast error: A document of type \"patch\" breaks its propertyConstraints rule \"dense\": it does not hold".into()
-            )),
-            NumberOutcome::Taken
-        );
+        assert!(number_taken(&Error::Platform("state transition broadcast error: A document of type \"patch\" breaks its propertyConstraints rule \"dense\": it does not hold".into())));
         let title = Error::RuleRefused {
             document_type: "issue".into(),
             rule: "hasTitle".into(),
             detail: "…".into(),
         };
-        assert_eq!(number_outcome(&title), NumberOutcome::Other);
+        assert!(!number_taken(&title));
         assert!(!is_state_rule_refusal(&dense));
         let closed = Error::RuleRefused {
             document_type: "transition".into(),
@@ -4723,7 +4691,7 @@ mod tests {
             detail: "…".into(),
         };
         assert!(is_state_rule_refusal(&closed));
-        assert_eq!(number_outcome(&closed), NumberOutcome::Other);
+        assert!(!number_taken(&closed));
     }
 
     /// The per-target codes of a grouped sum (keys: the 32 id bytes) and the per-kind counts
