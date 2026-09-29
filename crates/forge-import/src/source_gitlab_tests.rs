@@ -532,3 +532,26 @@ fn incremental_reads_ask_for_updated_after() {
         .iter()
         .all(|u| u.contains("updated_after=2026-01-01T00:00:00Z")));
 }
+
+/// Review: a revisited merge request GitLab no longer has (404) is warned about and dropped
+/// (`Ok(None)`); it never fails the run, which would fail every later run too.
+#[test]
+fn a_revisited_merge_request_gitlab_no_longer_has_is_none() {
+    let (gl, _) = serve(Recorded {
+        overrides: vec![(
+            "/merge_requests/424242",
+            GlResponse::status(404, br#"{"message":"404 Not found"}"#.to_vec(), None),
+        )],
+        ..Default::default()
+    });
+    assert!(matches!(gl.merge_request(424_242), Ok(Ok(None))));
+    // A refusal is not "gone": it stays a Readable error (the run is partial, the list kept).
+    let (gl, _) = serve(Recorded {
+        overrides: vec![(
+            "/merge_requests/7",
+            GlResponse::status(403, Vec::new(), None),
+        )],
+        ..Default::default()
+    });
+    assert!(matches!(gl.merge_request(7), Ok(Err(_))));
+}

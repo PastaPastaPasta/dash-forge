@@ -535,6 +535,22 @@ mod tests {
         (gh, log)
     }
 
+    /// Review: a revisited PR is dropped only when GitHub says it is gone. The texts are what
+    /// `gh api` prints (checked 2026-09-28: `gh: Not Found (HTTP 404)`), as the retry wrapper
+    /// keeps them in the error.
+    #[test]
+    fn only_a_404_or_410_drops_a_revisit() {
+        let gone = anyhow::anyhow!("`gh api repos/o/r/issues/9` failed: gh: Not Found (HTTP 404)");
+        assert!(gone_at_github(&gone));
+        assert!(gone_at_github(&anyhow::anyhow!("gh: Gone (HTTP 410)")));
+        let flaky =
+            anyhow::anyhow!("`gh api repos/o/r/issues/9` failed: read: operation timed out");
+        assert!(!gone_at_github(&flaky));
+        assert!(!gone_at_github(&anyhow::anyhow!(
+            "gh: Server Error (HTTP 502)"
+        )));
+    }
+
     /// F-10: `--limit 2` on a large repository read every comment of the repository (tens
     /// of thousands on `octocat/Spoon-Knife`). It must read only the chosen items' threads,
     /// and only the first page of the listing.
