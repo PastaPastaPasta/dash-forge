@@ -1808,6 +1808,9 @@ impl<'a> WriteEngine<'a> {
             // execution-proved outcomes too, so nothing weakens for the other types, and for a
             // sign-once write "the proven state holds it" is exactly the success condition — a
             // duplicate of the same signed bytes is rejected on its nonce, not proved again.
+            // Still needed on v4.2.0-beta.7: platform#5136 made the SDK's own document put and
+            // delete wait this way for an indexOnly type, but this engine broadcasts and waits
+            // itself, and the strict `wait_for_response` still refuses such an outcome.
             || async {
                 state_transition
                     .wait_for_affected_state::<StateTransitionProofResult>(
