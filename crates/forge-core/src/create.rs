@@ -250,8 +250,9 @@ fn repo_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
     p
 }
 
-/// The initial `config` document's properties (no protected patterns: an empty list is the
-/// same as none, and omitting it keeps the document small).
+/// The initial `config` document's properties of a PUBLIC repository (no protected patterns:
+/// an empty list is the same as none, and omitting it keeps the document small). A private
+/// repository's first config is its sealed anchor (`private_epoch_zero`).
 pub(crate) fn config_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
     let mut p = BTreeMap::new();
     p.insert(

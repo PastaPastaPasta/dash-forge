@@ -431,8 +431,9 @@ fn cycle_to_break(block: &[&RefUpdate], placed: &[bool]) -> usize {
 /// It is also the fold's and the helper's rule: a ref name reaches the git wire protocol,
 /// so one carrying a newline (`refs/heads/x\n<oid> refs/heads/main`) would **inject a
 /// spoofed ref-advertisement line** into every clone/fetch, and a NUL/space would corrupt
-/// parsing. Anything outside the contract's grammar is inert on read. forge-web's
-/// `isLegalRefName` is the same predicate.
+/// parsing. Anything outside the contract's grammar is inert on read, including a sealed
+/// private ref name (consensus cannot see inside `enc`). forge-web's `isLegalRefName` must
+/// apply the same predicate (PR-4).
 #[must_use]
 pub fn is_legal_ref_name(name: &str) -> bool {
     name.len() <= MAX_REF_NAME_BYTES

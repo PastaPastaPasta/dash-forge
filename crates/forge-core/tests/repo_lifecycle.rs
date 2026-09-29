@@ -234,7 +234,7 @@ async fn forge_v2_repo_lifecycle_on_moutai() {
         .unwrap();
     let mut backend = std::collections::BTreeMap::new();
     backend.insert("mode".into(), forge_core::platform::FieldValue::integer(0));
-    let props = repo.scope().unwrap().props([
+    let mut props = repo.scope().unwrap().props([
         (
             "defaultBranch",
             forge_core::platform::FieldValue::text("main"),
@@ -245,6 +245,7 @@ async fn forge_v2_repo_lifecycle_on_moutai() {
         ),
         ("backend", forge_core::platform::FieldValue::Object(backend)),
     ]);
+    forge_core::layout::stamp_public(&mut props);
     forge_core::platform::WriteEngine::new(&client, &owner, owner_b.doc_op_key().unwrap())
         .unwrap()
         .create_document(&core, "config", props)

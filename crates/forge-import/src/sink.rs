@@ -872,17 +872,23 @@ impl<'a> Sink<'a> {
                     || async move { collab.create_release(need(repo)?, input).await },
                 )
                 .await;
-            // The destination refusing this release (a rule such as `oneLive` after a concurrent
-            // publish, or its content) skips it; spend-cap and network errors stop the run.
             if let Err(e) = written {
-                if !item_error(&e) {
-                    return Err(e);
-                }
-                let tag = &r.tag_name;
-                self.ledger
-                    .skip(format!("release {tag} not mirrored this run: {e:#}"));
+                self.refused_release(&r.tag_name, e)?;
             }
         }
+        Ok(())
+    }
+
+    /// A release write that failed: the destination refusing this release (its content, or a
+    /// rule such as `oneLive` after a concurrent publish) skips it, uncounted as written;
+    /// spend-cap and network errors stop the run.
+    fn refused_release(&mut self, tag: &str, e: anyhow::Error) -> Result<()> {
+        if !item_error(&e) {
+            return Err(e);
+        }
+        self.ledger.counts.releases = self.ledger.counts.releases.saturating_sub(1);
+        self.ledger
+            .skip(format!("release {tag} not mirrored this run: {e:#}"));
         Ok(())
     }
 

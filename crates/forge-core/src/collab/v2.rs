@@ -3929,8 +3929,8 @@ impl<'a> Collab<'a> {
         // release notes and assets are not encrypted in this release (§7, §12.5)
         repo.require_public("releases")?;
         check_tag_name(&input.tag_name)?;
-        check_len("release name", &input.name, 120)?;
-        check_len("release notes", &input.notes, 5120)?;
+        check_text("release name", &input.name, 120, 480)?;
+        check_text("release notes", &input.notes, 5120, 5120)?;
         let mut p = BTreeMap::new();
         p.insert("tagName".to_string(), FieldValue::text(&input.tag_name));
         if !input.name.is_empty() {
@@ -3972,14 +3972,27 @@ impl<'a> Collab<'a> {
             )
             .await?;
         let live = tag_is_live(revisions.iter().map(|d| release_from_doc(d).delta));
-        p.insert("delta".to_string(), FieldValue::signed(release_delta(live)));
         crate::layout::stamp_vis(&mut p, repo.visibility);
-        self.write(repo, &core, DOC_RELEASE, p).await
+        let with_delta = |live: bool| {
+            let mut p = p.clone();
+            p.insert("delta".to_string(), FieldValue::signed(release_delta(live)));
+            p
+        };
+        match self.write(repo, &core, DOC_RELEASE, with_delta(live)).await {
+            // The node that answered the read had not seen the tag's newest revision (a
+            // publish, or another client's unpublish): `oneLive` refused the delta it implied,
+            // which proves the other one. Nothing was written; retry once with it.
+            Err(Error::RuleRefused { rule, .. }) if rule == ONE_LIVE_RULE => {
+                self.write(repo, &core, DOC_RELEASE, with_delta(!live))
+                    .await
+            }
+            other => other,
+        }
     }
 
-    /// Every release of `repo`: the newest revision of each live tag (its `delta`s sum to 1),
-    /// in [`release_order`]; `previous` holds the other revisions, an unpublished tag's
-    /// included, newest first.
+    /// Every release of `repo`: the newest revision of each tag not unpublished (see
+    /// [`newest_per_tag`]), in [`release_order`]; `previous` holds the other revisions, an
+    /// unpublished tag's included, newest first.
     pub async fn releases(&self, repo: &RepoRef) -> Result<(Vec<Release>, Vec<Release>)> {
         let core = self.core_contract(repo).await?;
         let docs = self
@@ -4425,8 +4438,12 @@ fn newest_first(a: &Release, b: &Release) -> std::cmp::Ordering {
     (b.created_at, &b.document_id).cmp(&(a.created_at, &a.document_id))
 }
 
-/// Whether a tag is live: its `release.delta` sum, as the contract's `perTag` summable index
-/// holds it, is 1 while the tag is live, 0 before its first publish and after an unpublish.
+/// The RC1 `release` rule that keeps one live release per tag.
+const ONE_LIVE_RULE: &str = "oneLive";
+
+/// Whether a public tag is live: its `release.delta` sum, as the contract's `perTag` summable
+/// index holds it, is 1 while the tag is live, 0 before its first publish and after an
+/// unpublish.
 fn tag_is_live(deltas: impl IntoIterator<Item = i64>) -> bool {
     deltas.into_iter().sum::<i64>() >= 1
 }
@@ -4452,8 +4469,10 @@ pub fn check_tag_name(tag: &str) -> Result<()> {
 }
 
 /// Split release revisions into the newest per live tag (in [`release_order`]) and the rest
-/// (newest first). A tag whose revisions sum to less than 1 is unpublished: every revision of
-/// it is previous.
+/// (newest first). A tag whose newest revision unpublishes it (`delta` −1) is not live: every
+/// revision of it is previous. For a public tag this is exactly "its deltas sum below 1"
+/// (`oneLive` admits only +1 after an unpublish); a sealed release always has `delta` 0, so it
+/// stays shown.
 fn newest_per_tag(all: Vec<Release>) -> (Vec<Release>, Vec<Release>) {
     let mut by_tag: BTreeMap<String, Vec<Release>> = BTreeMap::new();
     for r in all {
@@ -4463,9 +4482,8 @@ fn newest_per_tag(all: Vec<Release>) -> (Vec<Release>, Vec<Release>) {
     let mut previous = Vec::new();
     for (_, mut revs) in by_tag {
         revs.sort_by(newest_first);
-        let live = tag_is_live(revs.iter().map(|r| r.delta));
-        let mut it = revs.into_iter();
-        if live {
+        let mut it = revs.into_iter().peekable();
+        if it.peek().is_some_and(|newest| newest.delta >= 0) {
             current.extend(it.next());
         }
         previous.extend(it);
@@ -5361,13 +5379,15 @@ mod tests {
             // Published, then unpublished: every revision is previous.
             rel("v3", 4, "d", 1),
             rel("v3", 5, "e", -1),
+            // A sealed release (another client's): delta 0 always, still shown.
+            rel("v4", 6, "f", 0),
         ]);
         assert_eq!(
             cur.iter()
                 .map(|r| r.document_id.as_str())
                 .collect::<Vec<_>>(),
-            ["c", "b"],
-            "v2 before v1, by version; v3 is unpublished"
+            ["f", "c", "b"],
+            "by version; v3 is unpublished"
         );
         assert_eq!(
             prev.iter()

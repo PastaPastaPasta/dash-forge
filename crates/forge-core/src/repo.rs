@@ -3513,8 +3513,17 @@ pub fn credits_to_dash(credits: u64) -> f64 {
 /// `@{` and `noLock` included), or an oid that is not exactly 20 or 32 bytes (`oidWidth`).
 /// The name is also the injection defense (with [`rules::is_update_valid`] on the fold): a
 /// control char or newline could inject a spoofed ref-advertisement line into every clone.
+///
+/// A delete (an all-zero `new_oid`) only needs the contract's grammar, so a maintainer can
+/// remove a ref another client created that git itself could not (a middle `.lock` component).
 fn check_ref_write(ref_name: &str, new_oid: &[u8], prev_oid: Option<&[u8]>) -> Result<()> {
-    if !rules::is_git_ref_name(ref_name) {
+    let delete = new_oid.iter().all(|&b| b == 0);
+    let legal = if delete {
+        rules::is_legal_ref_name(ref_name)
+    } else {
+        rules::is_git_ref_name(ref_name)
+    };
+    if !legal {
         return Err(Error::Config(format!(
             "illegal ref name {ref_name:?}: it must pass `git check-ref-format` (refs/…, at most \
              255 bytes; no spaces, control characters, `~^:?*[\\`, `..`, `@{{`, or a component \
@@ -4012,6 +4021,11 @@ mod tests {
         let oid = [1u8; 20];
         assert!(super::check_ref_write("refs/heads/ok", &oid, None).is_ok());
         assert!(super::check_ref_write("refs/heads/bad\nname", &oid, None).is_err());
+        // git cannot create a middle `.lock` component, but a ref another client wrote with
+        // one (the contract accepts it) can still be deleted.
+        assert!(super::check_ref_write("refs/heads/x.lock/y", &oid, None).is_err());
+        assert!(super::check_ref_write("refs/heads/x.lock/y", &[0; 20], Some(&oid)).is_ok());
+        assert!(super::check_ref_write("refs/heads/bad\nname", &[0; 20], None).is_err());
     }
 
     #[test]
@@ -4811,7 +4825,7 @@ mod rc1_tests {
             };
             let grammar = matches!(
                 c.why.as_str(),
-                "pattern" | "minLength" | "maxLength" | "noLock"
+                "pattern" | "minLength" | "maxLength" | "maxBytes" | "noLock"
             );
             assert_eq!(rules::is_legal_ref_name(name), !grammar, "{}", c.name);
             // The git pre-check is the contract's grammar plus no `.lock` component anywhere.
@@ -4844,9 +4858,13 @@ mod rc1_tests {
             }
             if c.ty == "release" {
                 let tag = c.doc["tagName"].as_str().unwrap();
+                let refused_tag = matches!(
+                    c.why.as_str(),
+                    "pattern" | "minLength" | "maxLength" | "maxBytes"
+                );
                 assert_eq!(
                     crate::collab::v2::check_tag_name(tag).is_ok(),
-                    c.why != "pattern",
+                    !refused_tag,
                     "{}",
                     c.name
                 );
