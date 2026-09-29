@@ -35,6 +35,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use forge_core::layout::ForgeContract;
 use forge_core::platform::{
     decode_identifier, FetchedDocument, FieldValue, LoadedContract, PlatformClient, QueryFilter,
     QueryOrder,
@@ -85,13 +86,24 @@ const ROTATING_THREADS: usize = 10;
 /// At most this many head oids tracked per repo for `checkRun` streams (newest kept).
 const MAX_HEADS: usize = 50;
 
-/// The two forge-v2 contracts.
+/// The three forge-v2 contracts.
 struct Contracts {
     core: LoadedContract,
     collab: LoadedContract,
-    /// forge-community: `checkRun` and `webhook` (forge-collab's id on a deployment that
-    /// predates the three-contract split).
+    /// forge-community: `event`, `authorEvent`, `checkRun` and `webhook` (RC1 layout).
     community: LoadedContract,
+}
+
+impl Contracts {
+    /// The contract that holds `doc_type` in the RC1 layout ([`forge_core::layout`]): `event`
+    /// and `authorEvent` moved to forge-community.
+    fn of(&self, doc_type: &str) -> &LoadedContract {
+        match ForgeContract::of(doc_type) {
+            Some(ForgeContract::Collab) => &self.collab,
+            Some(ForgeContract::Community) => &self.community,
+            Some(ForgeContract::Core) | None => &self.core,
+        }
+    }
 }
 
 /// What every task shares.
@@ -716,9 +728,9 @@ async fn fold_head_updates(
     targets: &mut BTreeMap<String, TargetInfo>,
     heads: &mut BTreeMap<String, Head>,
 ) -> Result<()> {
-    let collab = &shared.contracts.collab;
     for (doc_type, author_path) in [(DOC_EVENT, false), (DOC_AUTHOR_EVENT, true)] {
-        for d in read_all(shared, collab, doc_type, repo_id).await? {
+        let contract = shared.contracts.of(doc_type);
+        for d in read_all(shared, contract, doc_type, repo_id).await? {
             let Some(t) = d
                 .field_bytes32("targetId")
                 .map(forge_core::platform::encode_identifier)
@@ -1139,19 +1151,19 @@ async fn poll_repo_rest(
     deadline: Instant,
 ) -> (u64, bool) {
     let prefix = [rf.clone()];
-    let (core, collab) = (&shared.contracts.core, &shared.contracts.collab);
     let base = st.baseline;
     let mut high = 0;
 
-    let streams: [(&str, &LoadedContract); 6] = [
-        (DOC_RELEASE, core),
-        (DOC_ISSUE, collab),
-        (DOC_PATCH, collab),
-        (DOC_TRANSITION, collab),
-        (DOC_EVENT, collab),
-        (DOC_AUTHOR_EVENT, collab),
+    let streams = [
+        DOC_RELEASE,
+        DOC_ISSUE,
+        DOC_PATCH,
+        DOC_TRANSITION,
+        DOC_EVENT,
+        DOC_AUTHOR_EVENT,
     ];
-    for (doc_type, contract) in streams {
+    for doc_type in streams {
+        let contract = shared.contracts.of(doc_type);
         if Instant::now() >= deadline {
             return (high, false);
         }
@@ -1200,7 +1212,7 @@ async fn poll_repo_rest(
                 DOC_TRANSITION => {
                     let on_base = st.merge_on_base(d);
                     note_transition(st, d);
-                    ingest::translate_transition(&st.meta, d, &st.targets, on_base)
+                    ingest::translate_transition(&st.meta, d, &st.targets, on_base, &st.closed)
                 }
                 _ => {
                     note_activity(st, d);
@@ -1463,7 +1475,9 @@ fn note_transition(s: &mut RepoState, d: &FetchedDocument) {
         return;
     };
     let kind = d.field_u64("kind");
-    if let (Some(t), Some(k)) = (s.targets.get_mut(&tid), kind) {
+    // A lock or unlock is no state move: it leaves the draft flag and open / closed alone.
+    let state_kind = kind.and_then(ingest::transition_action).is_some();
+    if let (Some(t), Some(k), true) = (s.targets.get_mut(&tid), kind, state_kind) {
         t.draft = t.is_pr && ingest::draft_after(k);
     }
     if let Some((_, open, _)) = kind.and_then(ingest::transition_action) {
