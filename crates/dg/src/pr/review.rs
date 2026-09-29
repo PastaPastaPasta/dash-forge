@@ -728,7 +728,6 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
     let head = hex::decode(&view.head).context("PR head oid")?;
     // A reply names its thread's root (RC1 `reply_thread`: a reply to a reply is refused), so
     // `--reply-to` any comment of a thread replies to the thread.
-    let mut reply_root = None;
     let (anchor, kind) = if let Some(reply) = &a.reply_to {
         let comments = collab.comments(&s.repo, &view.patch.document_id).await?;
         let Some(root) = super::threads::root_id(&comments, reply) else {
@@ -740,7 +739,6 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
                 ),
             ));
         };
-        reply_root = Some(root.clone());
         (
             Some(CommentAnchor {
                 reply_to: Some(root),
@@ -777,7 +775,7 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
             "pr": a.number,
             "commentId": id,
             "kind": kind,
-            "replyTo": reply_root,
+            "replyTo": anchor.as_ref().and_then(|a| a.reply_to.as_ref()),
             "location": location,
             "commitOid": (kind == "inline").then(|| view.head.clone()),
         }),

@@ -174,14 +174,13 @@ async fn thread_flag(ctx: &Ctx, repo: &str, number: u64, flag: Flag, on: bool) -
     ctx.confirm_or_cancel(&format!(
         "{verb} issue #{number}? (one small document; members only{note})"
     ))?;
-    let id = match flag {
-        Flag::Pin => collab.set_pinned(&s.repo, &target, on).await?,
-        Flag::Lock => collab.set_locked(&s.repo, &target, on).await?,
-    };
     // A pin is an event; a lock or unlock is a transition (RC1 kinds 3 / 4).
-    let key = match flag {
-        Flag::Pin => "eventId",
-        Flag::Lock => "transitionId",
+    let (key, id) = match flag {
+        Flag::Pin => ("eventId", collab.set_pinned(&s.repo, &target, on).await?),
+        Flag::Lock => (
+            "transitionId",
+            collab.set_locked(&s.repo, &target, on).await?,
+        ),
     };
     ctx.emit(json!({ "status": done, "issue": number, key: id }), || {
         println!("✓ {done} issue #{number}");

@@ -118,19 +118,7 @@ pub(crate) async fn membership_doc(
     doc_type: &str,
     identity: &str,
 ) -> Result<Option<FetchedDocument>> {
-    let (scope, contract) = scoped(client, repo, doc_type).await?;
-    let member = FieldValue::identifier(platform::decode_identifier(identity)?);
-    let docs = client
-        .query_documents(
-            &contract,
-            doc_type,
-            &scope.filters([QueryFilter::eq("memberId", member)]),
-            &[],
-            1,
-            None,
-        )
-        .await?;
-    Ok(docs.into_iter().next())
+    doc_naming(client, repo, doc_type, "memberId", identity).await
 }
 
 /// `identity`'s `consent` document for `repo`, if any (the `(repoId, $ownerId)` index is
@@ -140,13 +128,24 @@ pub async fn consent_doc(
     repo: &RepoRef,
     identity: &str,
 ) -> Result<Option<FetchedDocument>> {
-    let (scope, core) = scoped(client, repo, DOC_CONSENT).await?;
-    let owner = FieldValue::identifier(platform::decode_identifier(identity)?);
+    doc_naming(client, repo, DOC_CONSENT, "$ownerId", identity).await
+}
+
+/// The first `doc_type` document of `repo` whose identifier `field` is `identity`, if any.
+async fn doc_naming(
+    client: &PlatformClient,
+    repo: &RepoRef,
+    doc_type: &str,
+    field: &str,
+    identity: &str,
+) -> Result<Option<FetchedDocument>> {
+    let (scope, contract) = scoped(client, repo, doc_type).await?;
+    let id = FieldValue::identifier(platform::decode_identifier(identity)?);
     let docs = client
         .query_documents(
-            &core,
-            DOC_CONSENT,
-            &scope.filters([QueryFilter::eq("$ownerId", owner)]),
+            &contract,
+            doc_type,
+            &scope.filters([QueryFilter::eq(field, id)]),
             &[],
             1,
             None,
@@ -366,6 +365,10 @@ impl<'a> ConsentService<'a> {
         }
     }
 
+    fn engine(&self) -> Result<WriteEngine<'a>> {
+        WriteEngine::new(self.client, self.identity, self.bridge.doc_op_key()?)
+    }
+
     /// Consent to be made a member of `repo`: write the signer's `consent {repoId}`. Idempotent:
     /// an existing consent is returned (`false`: nothing written). Returns its document id and
     /// whether it was written now. The owner needs none, so accepting one's own repository is
@@ -382,8 +385,8 @@ impl<'a> ConsentService<'a> {
             return Ok((d.id, false));
         }
         let (scope, core) = scoped(self.client, repo, DOC_CONSENT).await?;
-        let engine = WriteEngine::new(self.client, self.identity, self.bridge.doc_op_key()?)?;
-        match engine
+        match self
+            .engine()?
             .create_document(&core, DOC_CONSENT, scope.props([]))
             .await
         {
@@ -404,7 +407,7 @@ impl<'a> ConsentService<'a> {
             return Ok(false);
         };
         let (_, core) = scoped(self.client, repo, DOC_CONSENT).await?;
-        WriteEngine::new(self.client, self.identity, self.bridge.doc_op_key()?)?
+        self.engine()?
             .delete_document(&core, DOC_CONSENT, &d.id)
             .await?;
         Ok(true)

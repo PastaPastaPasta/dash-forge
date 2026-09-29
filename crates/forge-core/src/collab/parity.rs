@@ -16,9 +16,8 @@ use std::collections::BTreeMap;
 use super::v2::{Collab, Target, DOC_MILESTONE, DOC_WATCH};
 use crate::error::{Error, Result};
 use crate::platform::{FieldValue, QueryOrder};
-use crate::rules::v2::Role;
-use crate::rules::v2::StateAction;
 use crate::rules::v2::{fold_milestones_v2, MilestoneDoc, MilestoneItem};
+use crate::rules::v2::{Role, StateAction};
 use crate::rules::EventKind;
 use crate::scope::RepoRef;
 

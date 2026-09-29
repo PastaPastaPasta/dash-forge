@@ -1394,20 +1394,14 @@ fn no_move(target: &Target, code: i64, action: StateAction, actor: Actor) -> Err
                 needs: "writer".into(),
             };
         }
-        let locked = status_of_code(code).locked;
-        return UserError::new(
-            codes::REJECTED,
-            format!(
-                "cannot {what}: it is {}",
-                if locked {
-                    "already locked"
-                } else {
-                    "not locked"
-                }
-            ),
-        )
-        .note("checked before anything was signed; nothing was written or paid")
-        .into();
+        let state = if status_of_code(code).locked {
+            "already locked"
+        } else {
+            "not locked"
+        };
+        return UserError::new(codes::REJECTED, format!("cannot {what}: it is {state}"))
+            .note("checked before anything was signed; nothing was written or paid")
+            .into();
     }
     let hint = match (action, status_of_code(code)) {
         (StateAction::Merge, s) if s.draft && s.open => " (mark it ready first)",
@@ -2203,17 +2197,29 @@ impl<'a> Collab<'a> {
         } else {
             props
         };
-        let base = Self::with_repo(repo, props)?;
+        let engine = self.engine()?;
+        self.create_stamped(repo, doc_type, Self::with_repo(repo, props)?, async |all| {
+            engine.create_document(contract, doc_type, all).await
+        })
+        .await
+    }
+
+    /// Run `create` on `props` stamped for `doc_type` ([`Self::stamp`]). When consensus refuses
+    /// an optional `asMember` ([`Self::proof_refused`]), the props are re-stamped without it and
+    /// `create` runs once more; a required proof keeps the refusal.
+    async fn create_stamped<T>(
+        &self,
+        repo: &RepoRef,
+        doc_type: &str,
+        props: BTreeMap<String, FieldValue>,
+        mut create: impl AsyncFnMut(BTreeMap<String, FieldValue>) -> Result<T>,
+    ) -> Result<T> {
         let mut retried = false;
         loop {
-            let mut all = base.clone();
+            let mut all = props.clone();
             self.stamp(repo, doc_type, &mut all).await?;
             let optional = !proof_required(&all);
-            match self
-                .engine()?
-                .create_document(contract, doc_type, all)
-                .await
-            {
+            match create(all).await {
                 Err(e) if !retried && optional && self.proof_refused(repo, &e) => retried = true,
                 res => return res,
             }
@@ -2228,11 +2234,7 @@ impl<'a> Collab<'a> {
         let refused =
             matches!(e, Error::NotAMember { detail, .. } if detail.ends_with("for path asMember"));
         if refused {
-            *self
-                .member
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                Some((repo.id().to_string(), false));
+            *crate::history::lock(&self.member) = Some((repo.id().to_string(), false));
         }
         refused
     }
@@ -2240,20 +2242,14 @@ impl<'a> Collab<'a> {
     /// Whether the signer holds a maintainer or writer document of `repo` now (read once per
     /// `Collab` and repository).
     pub async fn is_member(&self, repo: &RepoRef) -> Result<bool> {
-        if let Some((_, m)) = self
-            .member
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        if let Some((_, m)) = crate::history::lock(&self.member)
             .as_ref()
             .filter(|(id, _)| id == repo.id())
         {
             return Ok(*m);
         }
         let m = self.signer_role(repo).await?.is_some();
-        *self
-            .member
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((repo.id().to_string(), m));
+        *crate::history::lock(&self.member) = Some((repo.id().to_string(), m));
         Ok(m)
     }
 
@@ -3973,17 +3969,14 @@ impl<'a> Collab<'a> {
         imported: Option<&Imported>,
     ) -> Result<String> {
         let collab = self.collab_contract(repo).await?;
-        let rooted;
-        let anchor = match anchor.and_then(|a| a.reply_to.as_deref()) {
-            Some(parent) => {
-                let mut a = anchor.cloned().unwrap_or_default();
+        // A reply names its thread's root ([`Self::thread_root`]).
+        let mut anchor = anchor.cloned();
+        if let Some(a) = &mut anchor {
+            if let Some(parent) = &a.reply_to {
                 a.reply_to = Some(self.thread_root(repo, &collab, target_id, parent).await?);
-                rooted = a;
-                Some(&rooted)
             }
-            None => anchor,
-        };
-        let p = comment_props(target_id, body, anchor, imported)?;
+        }
+        let p = comment_props(target_id, body, anchor.as_ref(), imported)?;
         self.require_unlocked_or_member(repo, target_id).await?;
         let p = self.seal_if_private(repo, ContentKind::Comment, p).await?;
         self.write(repo, &collab, DOC_COMMENT, p).await
@@ -4095,23 +4088,16 @@ impl<'a> Collab<'a> {
         }
         // Sealed only when signing afresh: a replay re-broadcasts the saved (sealed) bytes.
         let props = self.seal_if_private(repo, kind, props).await?;
-        let base = Self::with_repo(repo, props)?;
-        let mut retried = false;
-        loop {
-            let mut all = base.clone();
-            self.stamp(repo, doc_type, &mut all).await?;
-            let optional = !proof_required(&all);
-            match engine
-                .create_journaled(&collab, doc_type, all, |p| {
-                    persist(&WriteIntent::for_prepared(0, p))
-                })
-                .await
-            {
-                Ok(prepared) => return Ok(prepared.document_id().to_string()),
-                Err(e) if !retried && optional && self.proof_refused(repo, &e) => retried = true,
-                Err(e) => return Err(e),
-            }
-        }
+        let prepared = self
+            .create_stamped(repo, doc_type, Self::with_repo(repo, props)?, async |all| {
+                engine
+                    .create_journaled(&collab, doc_type, all, |p| {
+                        persist(&WriteIntent::for_prepared(0, p))
+                    })
+                    .await
+            })
+            .await?;
+        Ok(prepared.document_id().to_string())
     }
 
     // --- writes: events ------------------------------------------------------------------
@@ -5342,8 +5328,6 @@ mod tests {
         assert!(!is_own_copy(&doc(ME, edited), ME, &plain));
     }
 
-    /// A create refused because another took the number counts again; so does the unique
-    /// index; a state-rule refusal is recognised apart from both.
     #[test]
     fn only_imports_upstream_numbers_and_member_verdicts_require_the_proof() {
         let with = |k: &str, v: FieldValue| BTreeMap::from([(k.to_string(), v)]);
@@ -5365,6 +5349,8 @@ mod tests {
         }
     }
 
+    /// A create refused because another took the number counts again; so does the unique
+    /// index; a state-rule refusal is recognised apart from both.
     #[test]
     fn a_dense_or_duplicate_refusal_means_count_again() {
         let dense = Error::RuleRefused {
