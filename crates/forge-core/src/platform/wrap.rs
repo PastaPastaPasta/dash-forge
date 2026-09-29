@@ -190,10 +190,16 @@ pub fn wrap_envelope(
 #[cfg(test)]
 pub(crate) fn test_contract() -> LoadedContract {
     use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
-    let raw = include_str!("../../../../forge-contracts/contracts/forge-core.json");
-    let json: serde_json::Value = serde_json::from_str(raw).expect("forge-core.json");
+    // `repoKey` is a forge-collab type (RC1 layout O-03); its gates name forge-core, whose id the
+    // deploy script substitutes (any valid id parses)
+    let raw = include_str!("../../../../forge-contracts/contracts/forge-collab.json").replace(
+        "FORGE_CORE_CONTRACT_ID",
+        "A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1",
+    );
+    let json: serde_json::Value = serde_json::from_str(&raw).expect("forge-collab.json");
     let pv = dash_sdk::dpp::version::PlatformVersion::get(14).expect("protocol 14");
-    let c = dash_sdk::platform::DataContract::from_json(json, true, pv).expect("forge-core parses");
+    let c =
+        dash_sdk::platform::DataContract::from_json(json, true, pv).expect("forge-collab parses");
     LoadedContract(std::sync::Arc::new(c))
 }
 

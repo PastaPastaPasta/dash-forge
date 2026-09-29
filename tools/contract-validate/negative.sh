@@ -16,14 +16,19 @@ cargo +1.98.1 build -q --locked --manifest-path "$here/Cargo.toml"
 bin="$CARGO_TARGET_DIR/debug/contract-validate"
 
 fails=0
-# expect_reject <label> <which: core|collab|community> <jq filter>
+# expect_reject <label> <which: core|collab|community> <jq filter> [<reason regex>]
+# With a reason, the validator's output must also match it: a mutation refused for another
+# reason proves nothing about the one it names.
 expect_reject() {
-  local label="$1" which="$2" filter="$3" dir="$work/$1"
+  local label="$1" which="$2" filter="$3" want="${4:-}" dir="$work/$1"
   mkdir -p "$dir"
   cp "$contracts/forge-core.json" "$contracts/forge-collab.json" "$contracts/forge-community.json" "$dir/"
   jq "$filter" "$contracts/forge-$which.json" > "$dir/forge-$which.json"
   if "$bin" --vectors "$vectors" "$dir/forge-core.json" "$dir/forge-collab.json" "$dir/forge-community.json" > "$dir/out" 2>&1; then
     echo "NOT REJECTED: $label"
+    fails=$((fails + 1))
+  elif [ -n "$want" ] && ! grep -qE "$want" "$dir/out"; then
+    echo "REJECTED FOR ANOTHER REASON: $label (want /$want/): $(grep -m1 FAIL "$dir/out" | sed 's/^ *FAIL: //' | cut -c1-160)"
     fails=$((fails + 1))
   else
     echo "rejected: $label -> $(grep -m1 FAIL "$dir/out" | sed 's/^ *FAIL: //' | cut -c1-160)"
@@ -81,14 +86,21 @@ expect_reject rule-const-outside-enum community '.documentSchemas.checkRun.prope
 # answering index, a summed property is a required integer, and a skip property is optional
 expect_reject dense-without-countable-patch-index collab '.documentSchemas.patch.indices |= map(if .name == "perRepo" then del(.countable) else . end)'
 # Each rule is load-bearing: without it, a vector that breaks only that rule is accepted. One
-# mutation per (type, rule) that some refused vector names as its reason.
-while read -r which type rule; do
-  expect_reject "without-$type-$rule" "$which" "del(.documentSchemas.$type.propertyConstraints.$rule)"
-done < <(for c in core collab community; do
+# mutation per (type, rule) that some refused vector names as its reason; a type left with no
+# rule loses the empty propertyConstraints too, so the schema itself stays valid.
+rules=()
+while IFS= read -r line; do rules+=("$line"); done < <(for c in core collab community; do
   jq -r --arg c "$c" --slurpfile k "$contracts/forge-$c.json" \
     '.[] | select(.expect == "refused") | select(.why as $w | ($k[0].documentSchemas[.type].propertyConstraints // {}) | has($w)) | "\($c) \(.type) \(.why)"' \
     "$vectors/forge-$c.json"
 done | sort -u)
+[ "${#rules[@]}" -gt 0 ] || { echo "no rule is named by a refused vector: the vectors did not load"; exit 1; }
+for line in "${rules[@]}"; do
+  read -r which type rule <<<"$line"
+  expect_reject "without-$type-$rule" "$which" \
+    "del(.documentSchemas.$type.propertyConstraints.$rule) | if .documentSchemas.$type.propertyConstraints == {} then del(.documentSchemas.$type.propertyConstraints) else . end" \
+    "expected refused by $rule, got accepted"
+done
 expect_reject dense-without-countable-index collab '.documentSchemas.issue.indices |= map(if .name == "perRepo" then del(.countable) else . end)'
 expect_reject sum-without-summable-index collab '.documentSchemas.transition.indices |= map(if .name == "perTarget" then del(.summable) else . end)'
 expect_reject summed-property-optional collab '.documentSchemas.transition.required -= ["delta"]'
@@ -99,7 +111,7 @@ expect_reject allow-setting-a-mutable-property community '.documentSchemas.check
 expect_reject vis-where-missing-on-member community '.documentSchemas.webhook.ownerRefersTo.where = {"visibility": "vis"}'
 expect_reject vis-where-kind-mismatch collab '.documentSchemas.issue.properties.repoId.refersTo.where = {"visibility": "number"}'
 expect_reject reply-where-missing-prop collab '.documentSchemas.comment.properties.replyTo.refersTo.where.replyTo = "nope"'
-expect_reject beat-where-owner-non-id community '.documentSchemas.starBeat.properties.repoId.refersTo.where."$ownerId" = "vis"'
+expect_reject beat-where-owner-non-id community '.documentSchemas.starBeat.properties.repoId.refersTo.where = {"$ownerId": "vis"}' '40126'
 expect_reject consent-findby-non-unique core '.documentSchemas.consent.indices[0].unique = false'
 expect_reject asmember-findby-non-unique collab '.schemaDefs.member.refersTo.anyOf[0].findBy = {"memberId": "."}'
 expect_reject check-source-cross-permanent community '.documentSchemas.policy.properties.requiredCheckSources.items.refersTo.anyOf[1].type = "permanentDocument"'
