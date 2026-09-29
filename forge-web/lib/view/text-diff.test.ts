@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { compactDiffLines, diffStat, diffTextLines, type TextDiffLine } from './text-diff'
+import { compactDiffLines, diffStat, diffTextLines, expandGap, splitRows, type DiffGap, type TextDiffLine } from './text-diff'
 
 /** Rebuild both sides from a diff: the invariant every correct line diff satisfies. */
 function sides(lines: readonly TextDiffLine[]): { before: string[]; after: string[] } {
@@ -95,8 +95,12 @@ describe('diffTextLines', () => {
     const before = Array.from({ length: 100 }, (_, i) => `a${i}`).join('\n')
     const after = Array.from({ length: 100 }, (_, i) => `b${i}`).join('\n')
     expect(diffTextLines(before, after, { maxEdits: 50, maxWork: 1_000_000 })).toBeNull()
-    expect(diffTextLines(before, after, { maxEdits: 1000, maxWork: 10 })).toBeNull()
     expect(diffTextLines(before, after)).not.toBeNull()
+    // The work bound: lines that do match (repeated ones) need a search, which is cut off.
+    const x = Array.from({ length: 100 }, (_, i) => `l${i % 7}`).join('\n')
+    const y = Array.from({ length: 100 }, (_, i) => `l${(i * 3) % 7}`).join('\n')
+    expect(diffTextLines(x, y, { maxEdits: 1000, maxWork: 10 })).toBeNull()
+    expect(diffTextLines(x, y, { maxEdits: 1000, maxWork: 1_000_000 })).not.toBeNull()
   })
 })
 
@@ -105,12 +109,12 @@ describe('compactDiffLines', () => {
     const lines = diffTextLines('a\nb\nc\nd\ne\nf\ng\n', 'a\nb\nC\nd\ne\nf\nG\n')
     expect(lines).not.toBeNull()
     expect(compactDiffLines(lines!, 1)).toEqual([
-      { kind: 'gap', hidden: 1 },
+      { kind: 'gap', hidden: 1, from: 0 },
       { kind: 'context', oldLine: 2, newLine: 2, text: 'b' },
       { kind: 'deleted', oldLine: 3, newLine: null, text: 'c' },
       { kind: 'added', oldLine: null, newLine: 3, text: 'C' },
       { kind: 'context', oldLine: 4, newLine: 4, text: 'd' },
-      { kind: 'gap', hidden: 1 },
+      { kind: 'gap', hidden: 1, from: 5 },
       { kind: 'context', oldLine: 6, newLine: 6, text: 'f' },
       { kind: 'deleted', oldLine: 7, newLine: null, text: 'g' },
       { kind: 'added', oldLine: null, newLine: 7, text: 'G' },
@@ -119,6 +123,26 @@ describe('compactDiffLines', () => {
 
   it('emits a trailing gap after the last change', () => {
     const lines = diffTextLines('x\na\nb\nc\nd\n', 'y\na\nb\nc\nd\n')
-    expect(compactDiffLines(lines!, 1).at(-1)).toEqual({ kind: 'gap', hidden: 3 })
+    expect(compactDiffLines(lines!, 1).at(-1)).toEqual({ kind: 'gap', hidden: 3, from: 3 })
+  })
+
+  // L-69: "⋯ N unchanged lines" expands, 20 lines at a time from either end, or all at once.
+  it('reveals a gap from either end, or all of it', () => {
+    const before = Array.from({ length: 100 }, (_, i) => `l${i}`).join('\n') + '\n'
+    const after = before.replace('l50\n', 'L50\n')
+    const lines = diffTextLines(before, after)!
+    const [top] = compactDiffLines(lines, 3) as [DiffGap]
+    expect(top).toEqual({ kind: 'gap', hidden: 47, from: 0 })
+    expect(expandGap(top, 'up')).toEqual([27, 47])
+    expect(expandGap(top, 'down')).toEqual([0, 20])
+    const once = compactDiffLines(lines, 3, [expandGap(top, 'up')])
+    expect(once[0]).toEqual({ kind: 'gap', hidden: 27, from: 0 })
+    expect(once[1]).toMatchObject({ kind: 'context', oldLine: 28, text: 'l27' })
+    const all = compactDiffLines(lines, 3, [expandGap(top, 'all')])
+    expect(all[0]).toMatchObject({ kind: 'context', oldLine: 1 })
+    // A gap of 20 or fewer lines opens whole.
+    expect(expandGap({ kind: 'gap', hidden: 12, from: 5 }, 'up')).toEqual([5, 17])
+    // Split rows keep the gap's position.
+    expect(splitRows(once)[0]).toEqual({ kind: 'gap', hidden: 27, from: 0 })
   })
 })

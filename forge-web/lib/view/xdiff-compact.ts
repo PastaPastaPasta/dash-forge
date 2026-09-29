@@ -20,11 +20,10 @@ interface Group {
 class CompactFile {
   /** `rchg[i + 1]` is record `i`'s mark: slots 0 and n + 1 are the unchanged sentinels. */
   private readonly rchg: Uint8Array
+  readonly recs: readonly string[]
 
-  constructor(
-    readonly recs: readonly string[],
-    changed: ArrayLike<number | boolean>,
-  ) {
+  constructor(recs: readonly string[], changed: ArrayLike<number | boolean>) {
+    this.recs = recs
     this.rchg = new Uint8Array(recs.length + 2)
     for (let i = 0; i < recs.length; i++) this.rchg[i + 1] = changed[i] ? 1 : 0
   }

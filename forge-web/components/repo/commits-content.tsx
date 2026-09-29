@@ -5,16 +5,25 @@
  * ("Older" continues the walk where the last page stopped), and with `path` a file's or a
  * directory's History: only the commits that changed it. Pages walk one shared read-ahead walker
  * and the session memo of `lib/view/path-history.ts`, so an older page reads only what it adds.
+ *
+ * How many pages are shown is in the URL (`?pages=3`, L-31), and the scroll position is kept for
+ * the tab, so Back from a commit returns to the same place in the list. Each row's date is the
+ * author date, labelled so, with the exact time on hover (L-27). The footer says how many commits
+ * are shown, out of how many when a history index gives the count (L-35).
  */
 
 import Link from 'next/link'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { GitCommit, History } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
-import { selectedTip, selectRef, timeAgo, type LogEntry } from '@/lib/view'
+import { selectedTip, selectRef, type LogEntry } from '@/lib/view'
 import { historyWalker } from '@/lib/view/commit-log'
-import { logPage, PATH_WALK_CAP, type LogPage } from '@/lib/view/path-history'
+import { LOG_PAGE, logPage, PATH_WALK_CAP, type LogPage } from '@/lib/view/path-history'
+import { historyOf } from '@/lib/view/history-source'
+import { useAsync } from '@/hooks/use-async'
+import { Time } from '@/components/repo/byline'
 import { plural } from '@/lib/view/format'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { ResolvedTip } from '@/components/repo/resolved-tip'
@@ -81,11 +90,31 @@ export interface LogState {
   /** Commits examined so far by a path walk (for the "no change in the last n" note). */
   readonly examined: number
   readonly capped: boolean
+  /** Pages loaded so far. */
+  readonly pages: number
 }
 
 /** A log before its first page. */
 export function freshLog(tipOid: string): LogState {
-  return { entries: [], next: tipOid, loading: true, error: null, examined: 0, capped: false }
+  return { entries: [], next: tipOid, loading: true, error: null, examined: 0, capped: false, pages: 0 }
+}
+
+/** Most pages a `?pages=` link loads on open (40 commits each). */
+export const MAX_URL_PAGES = 50
+
+/** The pages a `?pages=` value asks for: 1 to {@link MAX_URL_PAGES}, 1 for anything else. */
+export function pagesParam(raw: string | null): number {
+  const n = Number(raw)
+  return Number.isInteger(n) && n >= 1 ? Math.min(n, MAX_URL_PAGES) : 1
+}
+
+/** The footer's count (L-35): what is shown, and of how many when that is known; for a path's History, what changed it. */
+export function logStatus(state: Pick<LogState, 'entries' | 'next'>, total: number | null, path = ''): string {
+  const n = state.entries.length
+  if (path) return state.next === null ? `The whole history of ${path}: ${plural(n, 'commit')}` : `Showing ${plural(n, 'commit')} that changed ${path}`
+  if (state.next === null) return `The whole history: ${plural(n, 'commit')}`
+  if (total !== null && total >= n) return `Showing ${n.toLocaleString('en-US')} of ${plural(total, 'commit')}`
+  return `Showing the newest ${plural(n, 'commit')}`
 }
 
 /** `state` with one more page appended (a page that repeats what is shown adds nothing twice). */
@@ -98,8 +127,12 @@ export function withPage(state: LogState, page: LogPage): LogState {
     error: null,
     examined: state.examined + page.examined,
     capped: page.capped,
+    pages: state.pages + 1,
   }
 }
+
+/** Where the list was scrolled, per URL, for this tab. */
+const scrollKey = (): string => `forge:log-scroll:${window.location.pathname}${window.location.search}`
 
 function LogBody({
   reader,
@@ -118,6 +151,15 @@ function LogBody({
   const walker = useMemo(() => historyWalker(reader), [reader])
   const [state, setState] = useState<LogState>(() => freshLog(tipOid))
   const run = useRef<AbortController | null>(null)
+  const params = useSearchParams()
+  const router = useRouter()
+  const pathname = usePathname()
+  const wanted = pagesParam(params.get('pages'))
+  // The first-parent count, when a history index covers this tip: the log's "of N".
+  const history = historyOf(reader)
+  const total = useAsync(async () => (await history!.load(tipOid)).firstParentCount, [tipOid, history !== null], {
+    enabled: path === '' && history?.covers(tipOid) === true,
+  })
 
   /** Walk one more page from where the last one stopped (a capped path walk resumes there too). */
   const loadMore = useCallback(
@@ -153,6 +195,29 @@ function LogBody({
     }
   }, [loadMore, tipOid])
 
+  // A `?pages=` link (Back from a commit) loads that many pages again, one after another.
+  useEffect(() => {
+    if (!state.loading && state.error === null && state.pages > 0 && state.pages < wanted) loadMore(state.next)
+  }, [state.loading, state.error, state.pages, state.next, wanted, loadMore])
+  // Back to where the list was: once the pages the URL names are in, scroll to the kept position.
+  const restored = useRef(false)
+  useEffect(() => {
+    if (restored.current || state.loading || (state.pages < wanted && state.next !== null)) return
+    restored.current = true
+    // Used once: a later visit by a plain link starts at the top.
+    const y = Number(sessionStorage.getItem(scrollKey()))
+    sessionStorage.removeItem(scrollKey())
+    if (y > 0) window.scrollTo(0, y)
+  }, [state.loading, state.pages, state.next, wanted])
+  const older = (): void => {
+    const q = new URLSearchParams(params.toString())
+    q.set('pages', String(Math.min(state.pages + 1, MAX_URL_PAGES)))
+    router.replace(`${pathname}?${q.toString()}`, { scroll: false })
+    loadMore(state.next)
+  }
+  // Leaving for a commit (or anywhere): keep the position for Back.
+  const keepScroll = (): void => sessionStorage.setItem(scrollKey(), String(Math.round(window.scrollY)))
+
   if (state.error !== null && state.entries.length === 0) return <ErrorState message={state.error} onRetry={retry} />
   if (state.entries.length === 0 && state.loading) return <LoadingBlock label={path ? `Walking the history of ${path}` : 'Walking history'} />
   if (state.entries.length === 0) {
@@ -167,7 +232,7 @@ function LogBody({
 
   return (
     <div className="space-y-3">
-      <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="commit-log">
+      <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="commit-log" onClickCapture={keepScroll}>
         {state.entries.map((entry) => (
           <div key={entry.oid} className="flex items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850" data-testid="commit-row">
             {/* Touch: the message link stretches over its whole text column (both lines and the
@@ -178,7 +243,9 @@ function LogBody({
               </Link>
               <div className="mt-0.5 flex items-center gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
                 <span>{entry.commit.author.name || 'unknown'}</span>
-                <span>· {timeAgo(entry.commit.author.when)}</span>
+                <span>
+                  · <Time ms={entry.commit.author.when} prefix="authored " />
+                </span>
               </div>
             </div>
             <Oid value={entry.oid} chars={7} />
@@ -187,13 +254,12 @@ function LogBody({
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
         <span data-testid="log-status">
-          {plural(state.entries.length, 'commit')}
+          {logStatus(state, total.data, path)}
           {path && state.capped ? ` · searched the last ${plural(state.examined, 'commit')} (up to ${PATH_WALK_CAP} a page)` : ''}
-          {state.next === null ? ' · the whole history' : ''}
         </span>
         {state.error !== null ? <span className="text-danger-700 dark:text-danger-400">{state.error}</span> : null}
         {state.next !== null ? (
-          <Button size="sm" loading={state.loading} onClick={() => loadMore(state.next)} data-testid="older-commits">
+          <Button size="sm" loading={state.loading} onClick={older} data-testid="older-commits" title={`The next ${LOG_PAGE} commits`}>
             Older
           </Button>
         ) : null}

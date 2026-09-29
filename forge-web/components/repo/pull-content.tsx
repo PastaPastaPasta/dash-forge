@@ -862,7 +862,7 @@ function PullPage({
                 <>
                   {thread.approvals !== null ? <Approvals approvals={thread.approvals} headOid={pull.headOid} /> : null}
                   <ChecksRow summary={checkSummary} headOid={pull.headOid} onOpen={() => setTab('checks')} />
-                  {open && baseTipOid !== '' && cmp !== null && cmp.comparedBaseOid !== baseTipOid && (suggest.write.can || isAuthor) ? (
+                  {open && baseTipOid !== '' && cmp !== null && cmp.upToDate !== true && cmp.comparedBaseOid !== baseTipOid && (suggest.write.can || isAuthor) ? (
                     <section aria-label="Update branch" className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 px-4 py-2 text-dense dark:border-anvil-800" data-testid="update-branch">
                       <RefreshCw className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
                       <span className="min-w-0 flex-1">
@@ -1080,7 +1080,7 @@ function PullPage({
                   pullId={pull.id}
                   headOid={pull.headOid}
                   comments={thread.comments}
-                  changedPaths={new Set(c.changes.map((x) => x.path))}
+                  changedPaths={new Set(c.changes.flatMap((x) => (x.oldPath !== undefined ? [x.path, x.oldPath] : [x.path])))}
                   onPosted={onInlinePosted}
                   actions={threadActions}
                   onLinesKnown={rememberLines}

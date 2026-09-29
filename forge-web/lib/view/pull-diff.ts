@@ -9,7 +9,7 @@
  * wrong bytes, only fail to answer.
  */
 
-import { diffTrees, type DiffSides, type TreeDiff } from './commit-log'
+import { diffTreesWithRenames, type DiffSides, type TreeDiff } from './commit-log'
 import type { ReadObjectOptions } from '../browse'
 import { readCommit, type ObjectReader } from './tree-nav'
 
@@ -62,6 +62,11 @@ export interface PullComparison extends TreeDiff {
   readonly searchStopped?: true
   /** No merge base was found: `comparedBaseOid` is the head's first parent, not the merge base. */
   readonly fellBack?: true
+  /**
+   * An open PR's base branch already contains its head (L-47): nothing to compare, and no diff
+   * is made up from the head's parent.
+   */
+  readonly upToDate?: true
 }
 
 /**
@@ -142,7 +147,7 @@ export async function loadPullComparison(
 
   const compare = async (baseOid: string, comparisonNote: string | null): Promise<PullComparison> => {
     const baseTree = baseOid === '' ? null : (await readCommit(sides.base, baseOid)).tree
-    const diff = await diffTrees(sides, baseTree, headCommit.tree)
+    const diff = await diffTreesWithRenames(sides, baseTree, headCommit.tree)
     return { ...diff, comparedBaseOid: baseOid, comparisonNote, sides }
   }
 
@@ -158,6 +163,7 @@ export async function loadPullComparison(
   )
   const failed: string[] = []
   let cancelled: MergeBaseCancelledError | null = null
+  let tipContainsHead = false
   // The merge-base walk reads commits only, often thousands of them, through read-ahead. The
   // walker (and its block cache) lives for this comparison only.
   const walk = historyWalker(raw.head, raw.base)
@@ -181,7 +187,10 @@ export async function loadPullComparison(
         continue
       }
       if (mergeBase === null) failed.push(`${which}: no common ancestor`)
-      else if (mergeBase === headOid) failed.push(`${which}: it already contains this head`)
+      else if (mergeBase === headOid) {
+        if (which === 'current tip') tipContainsHead = true
+        failed.push(`${which}: it already contains this head`)
+      }
       else {
         found = { oid, which, mergeBase }
         break
@@ -203,6 +212,12 @@ export async function loadPullComparison(
             ? `Compared against the base branch's current tip${why}.`
             : null
     return compare(mergeBase, note)
+  }
+
+  // A PR not yet merged whose base branch has its head (the New PR form comparing a branch the base
+  // is ahead of): there is nothing to compare. Only a merged or imported PR falls back to a diff.
+  if (tipContainsHead && !input.merged && !input.imported && cancelled === null) {
+    return { changes: [], truncated: false, comparedBaseOid: headOid, comparisonNote: null, sides, upToDate: true }
   }
 
   const why =
