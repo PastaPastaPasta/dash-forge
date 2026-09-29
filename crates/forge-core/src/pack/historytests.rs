@@ -105,12 +105,13 @@ fn fixture() -> TempDir {
     commit(p, "rename old to new", 5_000);
     std::fs::remove_file(p.join("src/a.rs")).unwrap();
     commit(p, "delete a", 6_000);
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let perms = std::fs::Permissions::from_mode(0o755);
-        std::fs::set_permissions(p.join("src/deep/b.rs"), perms).unwrap();
-    }
-    commit(p, "chmod b", 7_000);
+    // The mode change in the index alone (every platform; `add -A` would reset it from a work
+    // tree without an executable bit).
+    git(p, &["update-index", "--chmod=+x", "src/deep/b.rs"]);
+    commit_index(p, "chmod b", 7_000);
+    // Bring the work tree to the index's mode, so a later `add -A` does not revert it (where
+    // the file system has no executable bit, `core.fileMode` is off and git keeps the index's).
+    git(p, &["checkout", "--", "src/deep/b.rs"]);
     let head = git(p, &["rev-parse", "HEAD"]);
     git(
         p,
