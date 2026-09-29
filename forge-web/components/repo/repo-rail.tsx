@@ -160,7 +160,6 @@ function Facts({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
   // The license file at the ref the page shows (a pinned commit stays pinned).
   const refParam = selected.pinned ?? refParamFor(selected.name, selected.isTag, home.defaultBranch)
   const licenseHref = license ? repoHref('/repo/blob', addr, { path: license.file, ...(refParam ? { ref: refParam } : {}) }) : undefined
-  const pending = license === undefined || languages === undefined
   return (
     <div ref={ref}>
       {license ? (
@@ -169,12 +168,12 @@ function Facts({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
         </Row>
       ) : null}
       {languages ? <LanguageBar stats={languages} /> : null}
-      {pending ? (
-        <div className="mt-1 space-y-1.5 py-1" role="status" data-testid="facts-skeleton">
-          <span className="sr-only">Reading the license and languages</span>
-          {license === undefined ? <div className="h-3.5 w-full animate-pulse rounded bg-anvil-100 dark:bg-anvil-800" /> : null}
-          {languages === undefined ? <div className="h-2 w-full animate-pulse rounded-full bg-anvil-100 dark:bg-anvil-800" /> : null}
-        </div>
+      {license === undefined || languages === undefined ? (
+        <Skeleton
+          label="Reading the license and languages"
+          testId="facts-skeleton"
+          bars={[...(license === undefined ? ['h-3.5 w-full'] : []), ...(languages === undefined ? ['h-2 w-full'] : [])]}
+        />
       ) : null}
     </div>
   )
@@ -220,36 +219,43 @@ function Members({ repo }: { repo: RepoRef }): JSX.Element {
 function LatestRelease({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   // Below the fold on most screens: read once the card is in view (S-1), a skeleton until then.
   const [ref, inView] = useInView<HTMLDivElement>()
-  const releases = useLatestRelease(home.repo, inView)
-  const latest = releases.data ?? undefined
+  const latest = useLatestRelease(home.repo, inView)
   return (
     <Card title="Latest release">
       <div ref={ref}>
-      {releases.error ? (
-        <p className="text-anvil-500 dark:text-anvil-400">Couldn&apos;t read the releases.</p>
-      ) : !releases.settled ? (
-        <div className="space-y-1.5 py-1" role="status" data-testid="latest-release-skeleton">
-          <span className="sr-only">Reading the latest release</span>
-          <div className="h-3.5 w-28 animate-pulse rounded bg-anvil-100 dark:bg-anvil-800" />
-          <div className="h-3 w-16 animate-pulse rounded bg-anvil-100 dark:bg-anvil-800" />
-        </div>
-      ) : latest === undefined ? (
-        <p className="text-anvil-500 dark:text-anvil-400">No releases yet.</p>
-      ) : (
-        <Link
-          href={repoHref('/repo/release', addr, { tag: latest.tagName })}
-          className="-mx-1 block rounded px-1 py-1 hover:bg-anvil-50 dark:hover:bg-anvil-850"
-        >
-          <span className="flex items-center gap-1.5 font-medium text-anvil-800 dark:text-anvil-100">
-            <Tag className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
-            <span className="font-mono">{latest.tagName}</span>
-            {latest.name ? <span className="truncate font-normal">{latest.name}</span> : null}
-          </span>
-          <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{timeAgo(latest.createdAt)}</span>
-        </Link>
-      )}
+        {latest.error ? (
+          <p className="text-anvil-500 dark:text-anvil-400">Couldn&apos;t read the releases.</p>
+        ) : !latest.settled ? (
+          <Skeleton label="Reading the latest release" testId="latest-release-skeleton" bars={['h-3.5 w-28', 'h-3 w-16']} />
+        ) : latest.data === null ? (
+          <p className="text-anvil-500 dark:text-anvil-400">No releases yet.</p>
+        ) : (
+          <Link
+            href={repoHref('/repo/release', addr, { tag: latest.data.tagName })}
+            className="-mx-1 block rounded px-1 py-1 hover:bg-anvil-50 dark:hover:bg-anvil-850"
+          >
+            <span className="flex items-center gap-1.5 font-medium text-anvil-800 dark:text-anvil-100">
+              <Tag className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
+              <span className="font-mono">{latest.data.tagName}</span>
+              {latest.data.name ? <span className="truncate font-normal">{latest.data.name}</span> : null}
+            </span>
+            <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{timeAgo(latest.data.createdAt)}</span>
+          </Link>
+        )}
       </div>
     </Card>
+  )
+}
+
+/** A card's placeholder while its data is read: pulsing bars (Tailwind size classes), announced once. */
+function Skeleton({ label, testId, bars }: { label: string; testId: string; bars: readonly string[] }): JSX.Element {
+  return (
+    <div className="space-y-1.5 py-1" role="status" data-testid={testId}>
+      <span className="sr-only">{label}</span>
+      {bars.map((size, i) => (
+        <div key={i} className={`${size} animate-pulse rounded bg-anvil-100 dark:bg-anvil-800`} />
+      ))}
+    </div>
   )
 }
 

@@ -32,7 +32,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { compositeOf, countsAt, docsAt, queryComposite, type CompositeSub } from '../sdk/composite'
-import { queryAllDocuments, type PlainDocument, type WhereClause } from '../sdk'
+import { queryAllDocuments, shareInFlight, type PlainDocument, type WhereClause } from '../sdk'
 import { DOC, type RepoRef } from './contract'
 import { membershipsFromDocs, seedMemberships } from './members'
 import { repoRefOf, toRepoDoc, type RepoDoc } from './resolveRepo'
@@ -61,13 +61,15 @@ interface StoreEntry {
   /** When the read behind `promise` started (0: out of date, read again before use). */
   at: number
   readonly promise: Promise<RepoTimelines>
-  /** `promise` once it has settled (a later reader of a settled read checks its age). */
-  settledPromise?: Promise<RepoTimelines>
+  /** The read is still out (a later reader joins it rather than checking its age). */
+  pending: boolean
   /** The newest complete timelines known (this read's once it settles, else the previous one's). */
   settled?: RepoTimelines
 }
 
 const store = new Map<string, StoreEntry>()
+/** Chrome reads in flight, per repo address. */
+const chromeInFlight = new Map<string, Promise<RepoChrome | null>>()
 
 /** A repo's store key: its address, which both a route and a {@link RepoRef} know. */
 function keyOf(forge: ForgeIds, ownerId: string, name: string): string {
@@ -86,30 +88,23 @@ export interface RepoChrome {
   readonly timelines: Promise<RepoTimelines> | null
 }
 
-/** The newest `$createdAt` among `rows`, or null. */
-function newestAt(rows: readonly PlainDocument[]): number | null {
-  let newest: number | null = null
-  for (const d of rows) {
-    const at = d['$createdAt']
-    if (typeof at === 'number' && (newest === null || at > newest)) newest = at
-  }
-  return newest
-}
+const createdAtOf = (d: PlainDocument): number => (typeof d['$createdAt'] === 'number' ? d['$createdAt'] : 0)
 
-/** The plain query a timeline sub-query stands for (its continuation pages use it). */
-function timelineQuery(repo: RepoRef, type: TimelineType, since: number | null) {
-  return repoSource(repo).repoQuery(type, {
-    ...(since === null ? {} : { where: [['$createdAt', '>=', since]] as WhereClause[] }),
-    orderBy: [['$createdAt', 'asc']],
-  })
+/**
+ * The `$createdAt >=` clause a timeline's read carries: none on a first read, else from the newest
+ * row held (`>=`, so a row of that same block is not missed). The composite's first page and its
+ * plain continuation pages must use the same bound, so both take it from here.
+ */
+function sinceWhere(known: RepoTimelines | undefined, type: TimelineType): { where?: WhereClause[] } {
+  const rows = known?.[type] ?? []
+  return rows.length === 0 ? {} : { where: [['$createdAt', '>=', Math.max(...rows.map(createdAtOf))]] }
 }
 
 /** `known` plus `fresh`, each `$id` once, oldest first (`$createdAt`, then `$id`). */
 function mergeRows(known: readonly PlainDocument[], fresh: readonly PlainDocument[]): PlainDocument[] {
   const byId = new Map<string, PlainDocument>()
   for (const d of [...known, ...fresh]) byId.set(String(d['$id']), d)
-  const at = (d: PlainDocument): number => (typeof d['$createdAt'] === 'number' ? d['$createdAt'] : 0)
-  return [...byId.values()].sort((a, b) => at(a) - at(b) || (String(a['$id']) < String(b['$id']) ? -1 : 1))
+  return [...byId.values()].sort((a, b) => createdAtOf(a) - createdAtOf(b) || (String(a['$id']) < String(b['$id']) ? -1 : 1))
 }
 
 /**
@@ -119,17 +114,14 @@ function mergeRows(known: readonly PlainDocument[], fresh: readonly PlainDocumen
 function chromeSubs(forge: ForgeIds, network: Network, known: RepoTimelines | undefined): CompositeSub[] {
   const bind = { sourceProperty: '$id', field: 'repoId' }
   const ordered = (field: string) => [['repoId', 'asc'], [field, 'asc']] as const
-  const timeline = (type: TimelineType): CompositeSub => {
-    const since = known === undefined ? null : newestAt(known[type])
-    return {
-      dataContractId: forge.core,
-      documentType: type,
-      bind,
-      ...(since === null ? {} : { where: [['$createdAt', '>=', since]] as WhereClause[] }),
-      orderBy: ordered('$createdAt'),
-      limit: PAGE,
-    }
-  }
+  const timeline = (type: TimelineType): CompositeSub => ({
+    dataContractId: forge.core,
+    documentType: type,
+    bind,
+    ...sinceWhere(known, type),
+    orderBy: ordered('$createdAt'),
+    limit: PAGE,
+  })
   return [
     { dataContractId: forge.collab, documentType: DOC.star, kind: 'counts', bind },
     { dataContractId: forge.collab, documentType: DOC.issue, kind: 'counts', bind },
@@ -162,8 +154,9 @@ async function completeTimelines(
   const read = await Promise.all(
     TIMELINE_TYPES.map(async (type, i) => {
       const page = pages[i] ?? []
-      const since = known === undefined ? null : newestAt(known[type])
-      const rows = page.length < PAGE ? page : await queryAllDocuments(sdk, timelineQuery(repo, type, since), { firstPage: page })
+      const rest = (): Promise<PlainDocument[]> =>
+        queryAllDocuments(sdk, repoSource(repo).repoQuery(type, { ...sinceWhere(known, type), orderBy: [['$createdAt', 'asc']] }), { firstPage: page })
+      const rows = page.length < PAGE ? page : await rest()
       return [type, mergeRows(known?.[type] ?? [], rows)] as const
     }),
   )
@@ -185,28 +178,17 @@ export function readRepoChrome(
   // Two readers at once (the home revalidating, and its browse context re-resolving behind a
   // stale reader) share one request: both started after whatever they are checking.
   const key = keyOf(forge, ownerId, name)
-  const held = chromeInFlight.get(key)
-  if (held !== undefined) return held
-  const read = readChrome(sdk, forge, ownerId, name, network)
-  chromeInFlight.set(key, read)
-  const done = (): void => {
-    if (chromeInFlight.get(key) === read) chromeInFlight.delete(key)
-  }
-  read.then(done, done)
-  return read
+  return shareInFlight(chromeInFlight, key, () => readChrome(sdk, key, forge, ownerId, name, network))
 }
-
-/** Chrome reads in flight, per repo address. */
-const chromeInFlight = new Map<string, Promise<RepoChrome | null>>()
 
 async function readChrome(
   sdk: EvoSDK,
+  key: string,
   forge: ForgeIds,
   ownerId: string,
   name: string,
   network: Network,
 ): Promise<RepoChrome | null> {
-  const key = keyOf(forge, ownerId, name)
   const started = Date.now()
   const held = store.get(key)
   const known = held?.settled
@@ -226,7 +208,7 @@ async function readChrome(
   // old repo's, and the deltas were asked relative to it. Read the new one from the start.
   if (known !== undefined && held?.repoId !== repo.repoId) {
     if (store.get(key) === held) store.delete(key)
-    return readChrome(sdk, forge, ownerId, name, network)
+    return readChrome(sdk, key, forge, ownerId, name, network)
   }
   const count = (i: number): number => countsAt(res, i)?.get(repo.repoId) ?? 0
 
@@ -247,12 +229,12 @@ async function readChrome(
 
 /** Put a read in the store; a failed one is dropped (the next reader reads again). */
 function remember(key: string, repoId: string, at: number, promise: Promise<RepoTimelines>): void {
-  const entry: StoreEntry = { repoId, at, promise, settled: store.get(key)?.settled }
+  const entry: StoreEntry = { repoId, at, promise, pending: true, settled: store.get(key)?.settled }
   store.set(key, entry)
   promise.then(
     (settled) => {
       entry.settled = settled
-      entry.settledPromise = promise
+      entry.pending = false
     },
     () => {
       if (store.get(key) === entry) store.delete(key)
@@ -277,7 +259,7 @@ export async function repoTimelines(
   if (hit === undefined || hit.repoId !== repo.repoId) return null
   // A read in flight is joined (as the browse cache joins a re-resolve in flight), a settled one
   // answers within `maxAgeMs`; `at` 0 is a read a write made stale, in flight or not.
-  if (hit.at !== 0 && (hit.promise !== hit.settledPromise || Date.now() - hit.at < maxAgeMs)) return hit.promise
+  if (hit.at !== 0 && (hit.pending || Date.now() - hit.at < maxAgeMs)) return hit.promise
   const chrome = await readRepoChrome(sdk, repo.forge, repo.ownerId, repo.name, network)
   return chrome?.repo.repoId === repo.repoId ? chrome.timelines : null
 }

@@ -71,6 +71,7 @@ export {
   queryDocuments,
   queryDocumentsWithProof,
   rankedDocuments,
+  shareInFlight,
   tieProbeAllowed,
   type DocumentQuery,
   type RankedEntry,

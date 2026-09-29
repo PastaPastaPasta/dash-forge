@@ -121,7 +121,7 @@ export function shot(page: Page, name: string) {
   return page.screenshot({ path: join(SCREENSHOT_DIR, `${name}.png`), fullPage: true })
 }
 
-const DAPI_METHOD = /\/org\.dash\.platform\.dapi\.v0\.Platform\/(\w+)$/
+export const DAPI_METHOD = /\/org\.dash\.platform\.dapi\.v0\.Platform\/(\w+)$/
 
 /** Count the DAPI requests of `page` by gRPC method, from now on (P-1, #72). */
 export function countDapi(page: Page): Map<string, number> {
@@ -167,18 +167,16 @@ function readVarint(b: Uint8Array, at: number): [number, number] {
   }
 }
 
-/** The length-delimited fields of a protobuf message: `[field number, bytes]`; varints as `null` bytes. */
-function protoFields(b: Uint8Array): [number, Uint8Array | null][] {
-  const out: [number, Uint8Array | null][] = []
+/** The length-delimited fields of a protobuf message, `[field number, bytes]`; other wire types are skipped. */
+function protoFields(b: Uint8Array): [number, Uint8Array][] {
+  const out: [number, Uint8Array][] = []
   let at = 0
   while (at < b.length) {
     let key: number
     ;[key, at] = readVarint(b, at)
     const wire = key & 7
-    if (wire === 0) {
-      ;[, at] = readVarint(b, at)
-      out.push([key >>> 3, null])
-    } else if (wire === 2) {
+    if (wire === 0) [, at] = readVarint(b, at)
+    else if (wire === 2) {
       let len: number
       ;[len, at] = readVarint(b, at)
       out.push([key >>> 3, b.subarray(at, at + len)])
@@ -190,6 +188,9 @@ function protoFields(b: Uint8Array): [number, Uint8Array | null][] {
   return out
 }
 
+const fieldOf = (fields: readonly [number, Uint8Array][], n: number): Uint8Array | undefined => fields.find(([f]) => f === n)?.[1]
+const text = (b: Uint8Array | undefined): string => (b ? Buffer.from(b).toString('utf8') : '')
+
 /**
  * Decode a `getDocuments` gRPC-web body (5-byte frame header, then `GetDocumentsRequest`) as
  * `platform.proto` defines v1: `document_type` 2, `where_clauses` 3 (`WhereClause`: `field` 1,
@@ -197,19 +198,19 @@ function protoFields(b: Uint8Array): [number, Uint8Array | null][] {
  */
 export function decodeDocumentsRequest(body: Buffer | null): DocumentsRequest | null {
   if (body === null || body.length < 6) return null
-  const [version, inner] = protoFields(body.subarray(5))[0] ?? []
-  if (version !== 2 || !inner) return null
-  const text = (b: Uint8Array | null | undefined): string => (b ? Buffer.from(b).toString('utf8') : '')
+  const [versionField, inner] = protoFields(body.subarray(5))[0] ?? []
+  if (versionField !== 2 || !inner) return null
   const fields = protoFields(inner)
   return {
-    documentType: text(fields.find(([f]) => f === 2)?.[1]),
+    documentType: text(fieldOf(fields, 2)),
     where: fields
-      .filter(([f, v]) => f === 3 && v !== null)
+      .filter(([f]) => f === 3)
       .map(([, clause]) => {
-        const c = protoFields(clause as Uint8Array)
-        const value = c.find(([f]) => f === 3)?.[1]
-        const list = value ? protoFields(value).find(([f]) => f === 7)?.[1] : undefined
-        return { field: text(c.find(([f]) => f === 1)?.[1]), inCount: list ? protoFields(list).filter(([f]) => f === 1).length : null }
+        const c = protoFields(clause)
+        const value = fieldOf(c, 3)
+        const list = value ? fieldOf(protoFields(value), 7) : undefined
+        const inCount = list ? protoFields(list).filter(([f]) => f === 1).length : null
+        return { field: text(fieldOf(c, 1)), inCount }
       }),
   }
 }

@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Request } from '@playwright/test'
-import { collectPageErrors, decodeDocumentsRequest, E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
+import { collectPageErrors, DAPI_METHOD, decodeDocumentsRequest, E2E_DEVNET, repoUrl, shot, showcaseRepo, waitForRepoResolved } from './helpers'
 
 /**
  * S-1 (`platform-parity-spec.md`): every page ≤ 25 DAPI requests cold and ≤ 8 warm, counted
@@ -17,8 +17,6 @@ import { collectPageErrors, decodeDocumentsRequest, E2E_DEVNET, repoUrl, shot, s
  * pb-1 checks that scrolling there reads them.
  */
 
-const DAPI_METHOD = /\/org\.dash\.platform\.dapi\.v0\.Platform\/(\w+)$/
-
 /** S-1's cold page budget. */
 const COLD_BUDGET = 25
 /** S-1's warm budget: a page of a repo already open in the tab. */
@@ -33,9 +31,11 @@ const DEMO_COLD_ISSUES = 12
  */
 const COLUMN_WALK_MAX = 30
 
-/** Requests `page` sends to DAPI from now on, each with the document type a `getDocuments` names. */
-function recordDapi(page: Page): { readonly all: () => { method: string; body: Buffer | null }[] } {
-  const seen: { method: string; body: Buffer | null }[] = []
+type DapiRequest = { readonly method: string; readonly body: Buffer | null }
+
+/** Requests `page` sends to DAPI from now on, each with its body (decoded where a check needs it). */
+function recordDapi(page: Page): { readonly all: () => DapiRequest[] } {
+  const seen: DapiRequest[] = []
   page.on('request', (r: Request) => {
     const method = DAPI_METHOD.exec(r.url())?.[1]
     if (method !== undefined) seen.push({ method, body: r.postDataBuffer() })
@@ -156,6 +156,7 @@ test.describe('page request budget (S-1)', () => {
  */
 function blockSized(body: Buffer | null): boolean {
   const q = decodeDocumentsRequest(body)
-  const seqs = q?.documentType === 'chunk' ? q.where.find((w) => w.field === 'seq')?.inCount ?? null : null
-  return seqs !== null && seqs >= 17 && seqs <= 19
+  if (q?.documentType !== 'chunk') return false
+  const seqs = q.where.find((w) => w.field === 'seq')?.inCount ?? 0
+  return seqs >= 17 && seqs <= 19
 }

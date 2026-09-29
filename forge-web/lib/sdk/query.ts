@@ -97,7 +97,7 @@ export type PlainDocument = Record<string, unknown>
 let platformVersion = 1
 
 /** The protocol version from which a `startAfter` page never skips rows tied with its cursor. */
-export const CURSOR_PADDED_FROM = 14
+const CURSOR_PADDED_FROM = 14
 
 /**
  * Whether the network pages tie-safely by itself (protocol {@link CURSOR_PADDED_FROM}+), as far
@@ -215,25 +215,26 @@ function inFlightKey(kind: string, query: unknown): string | null {
   }
 }
 
-/** Run `read`, or join an identical one already in flight on `sdk`. */
-function joinInFlight<T>(sdk: EvoSDK, kind: string, query: unknown, read: () => Promise<T>): Promise<T> {
-  const key = inFlightKey(kind, query)
-  if (key === null) return read()
-  let bySdk = inFlight.get(sdk)
-  if (bySdk === undefined) {
-    bySdk = new Map()
-    inFlight.set(sdk, bySdk)
-  }
-  const held = bySdk.get(key)
-  if (held !== undefined) return held as Promise<T>
+/** `read()`, or the read under `key` already in flight in `map` (dropped from it once it settles). */
+export function shareInFlight<T>(map: Map<string, Promise<T>>, key: string, read: () => Promise<T>): Promise<T> {
+  const held = map.get(key)
+  if (held !== undefined) return held
   const promise = read()
-  const map = bySdk
   map.set(key, promise)
   const done = (): void => {
     if (map.get(key) === promise) map.delete(key)
   }
   promise.then(done, done)
   return promise
+}
+
+/** Run `read`, or join an identical one already in flight on `sdk`. */
+function joinInFlight<T>(sdk: EvoSDK, kind: string, query: unknown, read: () => Promise<T>): Promise<T> {
+  const key = inFlightKey(kind, query)
+  if (key === null) return read()
+  const bySdk = inFlight.get(sdk) ?? new Map<string, Promise<unknown>>()
+  inFlight.set(sdk, bySdk)
+  return shareInFlight(bySdk, key, read) as Promise<T>
 }
 
 /** Raw query (no proof). Prefer {@link queryDocumentsWithProof} for trust-minimized reads. */

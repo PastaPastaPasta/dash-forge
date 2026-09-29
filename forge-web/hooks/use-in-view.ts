@@ -24,5 +24,5 @@ export function useInView<T extends Element>(): readonly [React.RefObject<T>, bo
     io.observe(el)
     return () => io.disconnect()
   }, [seen])
-  return [ref, seen] as const
+  return [ref, seen]
 }
