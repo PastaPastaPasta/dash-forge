@@ -18,12 +18,12 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useMemo, useState, type FormEvent } from 'react'
+import { useMemo, useRef, useState, type FormEvent } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import { GitMerge, GitPullRequest, GitPullRequestClosed, MessageSquare, Search, X } from 'lucide-react'
+import { GitMerge, GitPullRequest, GitPullRequestClosed, Loader2, MessageSquare, Search, X } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { branchName, plural } from '@/lib/view'
+import { branchName, plural, resolveDpnsId } from '@/lib/view'
 import {
   DEFAULT_PULL_QUERY,
   PULL_PAGE_SIZE,
@@ -36,7 +36,7 @@ import {
   unresolvedPullQualifiers,
   type PullListQuery,
 } from '@/lib/view/pull-query'
-import { withQuery } from '@/lib/view/issue-query'
+import { droppedQualifiersReason, resolveSearchNames, withQuery } from '@/lib/view/issue-query'
 import { queryPulls, repoContractIds, repoKey, type PullListPage, type PullRow, type PullSelection } from '@/lib/repo'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -80,7 +80,12 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
     for (const [k, v] of pullQueryParams(next)) q.append(k, v)
     router.replace(`${pathname}?${q.toString()}`, { scroll: false })
   }
-  const change = (c: Partial<PullListQuery>): void => setQuery(withQuery(query, c))
+  // A tab, filter or page change wins over a name lookup still in flight from an earlier submit.
+  const submitId = useRef(0)
+  const change = (c: Partial<PullListQuery>): void => {
+    submitId.current++
+    setQuery(withQuery(query, c))
+  }
 
   // `me` needs a signed-in viewer; signed out, a `me` filter shows nothing rather than everything.
   const needsViewer = query.author === 'me' || query.assignee === 'me'
@@ -108,14 +113,34 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   const searchValue = search ?? pullSearchText(query)
   // Qualifiers typed (or linked in `?q=`) that could not be used: said, not silently dropped.
   const [dropped, setDropped] = useState<string[]>(() => unresolvedPullQualifiers(params.get('q') ?? ''))
-  const submitSearch = (e: FormEvent): void => {
+  // DPNS names DPNS was asked for and does not know (said as such, not as a malformed value).
+  const [notFound, setNotFound] = useState<readonly string[]>([])
+  const [searching, setSearching] = useState(false)
+  // As on the Issues list (L-43): `author:`/`assignee:` DPNS names are resolved to ids first; the
+  // state tab survives a submit, every other filter is what the box says now; the newest submit wins.
+  const submitSearch = async (e: FormEvent): Promise<void> => {
     e.preventDefault()
-    setDropped(unresolvedPullQualifiers(searchValue))
-    setQuery(parsePullSearch(searchValue))
-    setSearch(null)
+    const text = searchValue
+    const id = ++submitId.current
+    setSearching(true)
+    const resolved = sdk
+      ? await resolveSearchNames(text, (name) => resolveDpnsId(sdk, name, network)).catch(() => ({ text, notFound: [] as string[] }))
+      : { text, notFound: [] as string[] }
+    if (submitId.current !== id) return
+    setSearching(false)
+    setDropped(unresolvedPullQualifiers(resolved.text))
+    setNotFound(resolved.notFound)
+    setQuery(parsePullSearch(resolved.text, { ...DEFAULT_PULL_QUERY, state: query.state }))
+    setSearch((current) => (current === text ? null : current))
   }
+  const droppedMentions = dropped.filter((t) => /^mentions:/i.test(t))
+  const droppedReason = [
+    droppedQualifiersReason(dropped.filter((t) => !droppedMentions.includes(t)), notFound),
+    droppedMentions.length > 0 ? 'mentions: is an Issues filter.' : '',
+  ].filter((r) => r !== '').join(' ')
 
   const count = (n: number | null | undefined): string => (n == null ? '' : `${n} `)
+  const SearchIcon = searching ? Loader2 : Search
   const filtered = hasPullFilters(query)
   const counts = data?.counts
   const settled = counts?.merged != null && counts.closed != null ? counts.merged + counts.closed : null
@@ -126,7 +151,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         <form onSubmit={submitSearch} className="flex min-w-[16rem] flex-1 items-center gap-2" role="search">
           <label htmlFor="pull-search" className="sr-only">Search pull requests</label>
           <div className="relative flex-1">
-            <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
+            <SearchIcon className={cn('pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-anvil-500 dark:text-anvil-400', searching && 'animate-spin')} aria-hidden />
             <Input id="pull-search" value={searchValue} onChange={(e) => setSearch(e.target.value)} className="pl-8 font-mono text-[13px]" placeholder="is:open label:bug author:@me" />
           </div>
         </form>
@@ -139,7 +164,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
       </div>
       {dropped.length > 0 ? (
         <p role="note" className="mb-3 text-[12px] text-caution-700 dark:text-caution-400" data-testid="pull-search-dropped">
-          Not applied: {dropped.join(' ')}. Authors and assignees take an identity id or @me; mentions: is an Issues filter.
+          Not applied: {dropped.join(' ')}. {droppedReason}
         </p>
       ) : null}
 
@@ -149,7 +174,9 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         <button
           type="button"
           onClick={() => {
+            submitId.current++
             setDropped([])
+            setNotFound([])
             setQuery({ ...DEFAULT_PULL_QUERY, state: query.state })
           }}
           className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-500 hover:text-forge-700 dark:text-anvil-400 dark:hover:text-forge-400"

@@ -30,6 +30,12 @@ vi.mock('@/components/repo/use-repo-totals', () => ({ useRepoTotals: () => 203 }
 vi.mock('@/components/repo/mirror-note', () => ({ MirrorNote: () => null }))
 vi.mock('@/components/repo/byline', () => ({ Byline: () => <span>someone</span> }))
 
+const ALICE = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
+vi.mock('@/lib/view', async (importOriginal) => {
+  const real = await importOriginal<typeof import('@/lib/view')>()
+  return { ...real, resolveDpnsId: async (_sdk: unknown, name: string) => (name.toLowerCase().startsWith('alice') ? ALICE : null) }
+})
+
 const asked: PullSelection[] = []
 let answer: PullListPage
 vi.mock('@/lib/repo', async (importOriginal) => {
@@ -144,17 +150,37 @@ describe('PullsContent (L-44)', () => {
     expect(replaced.at(-1)).toBe('/repo/pulls/?owner=o&name=n&page=2')
   })
 
-  it('applies a search with qualifiers, and says which it could not apply', async () => {
-    await render()
+  const submit = async (text: string): Promise<void> => {
     const input = el.querySelector('#pull-search') as HTMLInputElement
     const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
     act(() => {
-      setValue.call(input, 'is:merged label:bug author:alice parser')
+      setValue.call(input, text)
       input.dispatchEvent(new Event('input', { bubbles: true }))
     })
     act(() => (el.querySelector('form[role="search"]') as HTMLFormElement).requestSubmit())
-    expect(replaced.at(-1)).toBe('/repo/pulls/?owner=o&name=n&state=merged&label=bug&q=parser')
-    expect(el.querySelector('[data-testid="pull-search-dropped"]')?.textContent).toContain('author:alice')
+    await settle()
+  }
+
+  it('applies a search with qualifiers, a DPNS author resolved to its id (L-43 parity)', async () => {
+    await render()
+    await submit('is:merged label:bug author:alice.dash parser')
+    expect(replaced.at(-1)).toBe(`/repo/pulls/?owner=o&name=n&state=merged&label=bug&author=${ALICE}&q=parser`)
+    expect(el.querySelector('[data-testid="pull-search-dropped"]')).toBeNull()
+  })
+
+  it('says which qualifiers it could not apply, and why', async () => {
+    await render()
+    await submit('author:bobby mentions:@me fix')
+    const note = el.querySelector('[data-testid="pull-search-dropped"]')?.textContent ?? ''
+    expect(note).toContain('author:bobby')
+    expect(note).toContain('bobby')
+    expect(note).toContain('mentions: is an Issues filter.')
+    expect(replaced.at(-1)).toBe('/repo/pulls/?owner=o&name=n&q=fix')
+    // Clear filters drops the note with the filters.
+    search = 'owner=o&name=n&q=fix'
+    await render()
+    act(() => button('Clear filters').click())
+    expect(el.querySelector('[data-testid="pull-search-dropped"]')).toBeNull()
   })
 
   it('an empty Open tab does not invite the first PR while some are merged or closed', async () => {
