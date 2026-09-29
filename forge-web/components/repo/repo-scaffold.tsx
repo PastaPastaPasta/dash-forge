@@ -127,6 +127,7 @@ export function RepoScaffold({
   if (privateHome === null || privateHome.pending) {
     return (
       <>
+        <RepoShellHeader addr={addr} />
         <LoadingBlock label="Checking membership and keys" />
       </>
     )

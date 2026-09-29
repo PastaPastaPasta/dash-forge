@@ -211,7 +211,14 @@ function BlameTable({
           {first && commit ? (
             <span className="flex items-center gap-2">
               {/* On a phone the column is an age gutter linking the commit; the subject shows from sm up (L-34). */}
-              <Link href={repoHref('/repo/commit', addr, { oid: hunk.oid })} className="shrink-0 tabular-nums hover:text-forge-800 dark:hover:text-forge-400" data-tap-exempt="code-line">
+              <Link
+                href={repoHref('/repo/commit', addr, { oid: hunk.oid })}
+                className="shrink-0 tabular-nums hover:text-forge-800 dark:hover:text-forge-400"
+                data-tap-exempt="code-line"
+                // The subject beside it is the commit's link (and tab stop); this one is for phones.
+                tabIndex={-1}
+                aria-label={`Commit ${hunk.oid.slice(0, 7)}: ${commitSubject(commit.message) || '(no message)'}`}
+              >
                 {timeAgo(commit.author.when)}
               </Link>
               {/* One per hunk, inside a 20 px code row (e2e/mobile.spec.ts exempts it, as the diff gutter). */}

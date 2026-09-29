@@ -1,6 +1,6 @@
 # History index v2: per-path version lists for blame and History (proposal)
 
-Status: proposed. It follows v1 (`docs/design/history-index.md`, branch `feat/last-change-index`) once v1 merges. Until then, blame and a file's History page walk first-parent history in the browser, behind one function, `pathVersions(reader, tip, path)` (`forge-web/lib/view/path-history.ts`). An index can then replace the walk without touching the views.
+Status: proposed. It follows v1 (`docs/design/history-index.md`, branch `feat/last-change-index`) once v1 merges. Until then, blame walks first-parent history in the browser behind one function, `pathVersions(reader, tip, path)` (`forge-web/lib/view/path-history.ts`), and a file's History page still calls `logPage` directly (moving it onto `pathVersions` is the follow-up). An index can then replace the walk without touching the views.
 
 ## Problem
 

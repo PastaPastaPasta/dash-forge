@@ -25,9 +25,10 @@ const TABS = [
   { key: 'releases', label: 'Releases', path: '/repo/releases', icon: Tag, refAware: false },
 ] as const
 
-/** An address's owner as the URL gives it: a long id shortened, a name as written. */
+/** An address's owner as the URL gives it: an identity id shortened, a DPNS name as written. */
 function ownerLabel(owner: string): string {
-  return owner.length > 20 ? `${owner.slice(0, 8)}…` : owner.replace(/^@/, '')
+  // An identity id is 43-44 base58 characters; a DPNS name has a dot or is not base58.
+  return /^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(owner) ? `${owner.slice(0, 8)}…` : owner.replace(/^@/, '')
 }
 
 export function RepoShellHeader({ addr }: { addr: RepoAddress }): JSX.Element {

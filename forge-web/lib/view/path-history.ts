@@ -176,9 +176,9 @@ export interface PathVersionsPage {
 }
 
 /**
- * The commits that changed `path`, newest first, from `startOid`: the one lookup Blame (and a
- * file's History) needs, behind a single function so a push-time index can answer it later
- * (`docs/design/last-change-index-v2.md`) without the views changing. Today it walks first-parent
+ * The commits that changed `path`, newest first, from `startOid`: the lookup Blame needs (a
+ * file's History to follow), behind a single function so a push-time index can answer it later
+ * (`docs/design/last-change-index-v2.md`) without the view changing. Today it walks first-parent
  * history ({@link logPage}); `onExamined` is told the running count of commits examined, so a long
  * search shows progress before any version is found.
  */

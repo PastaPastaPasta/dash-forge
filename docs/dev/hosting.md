@@ -25,14 +25,16 @@ Every file under `/_next/static/` has a content hash in its name (Next's `[conte
 Rules → **Cache Rules** → Create rule:
 - **When:** URI Path starts with `/_next/static/`
 - **Cache eligibility:** Eligible for cache
-- **Edge TTL:** Ignore cache-control header and use this TTL → 1 year
+- **Edge TTL:** Ignore cache-control header and use this TTL → 1 year, with a **Status Code TTL** for `400`–`599` → No cache. Without the status override a path requested before a deploy published it would stay a cached 404 for a year.
 - **Browser TTL:** Override origin → 1 year
 
 Rules → **Transform Rules** → Modify Response Header → Create rule:
-- **When:** URI Path starts with `/_next/static/`
+- **When:** URI Path starts with `/_next/static/` **and** Response status code (`http.response.code`) equals `200`
 - **Set static:** `Cache-Control` = `public, max-age=31536000, immutable`
 
-The second rule matters because the browser TTL override alone does not add `immutable`. Without it, a reload revalidates every chunk.
+The second rule matters because the browser TTL override alone does not add `immutable`. Without it, a reload revalidates every chunk. The status condition keeps `immutable` off a 404 and off Cloudflare's own error pages, which response header rules also reach. Header rules run after the cache decision, so they change what the browser keeps, not what the edge caches.
+
+Cloudflare lists `http.response.code` as a response field, and says response fields are readable in the response-header phase, but availability "depends on the exact Cloudflare feature and your plan". If the expression builder does not offer it for this rule, leave the Transform Rule out. Browsers then get the 1-year browser TTL without `immutable`: a reload revalidates, but a normal navigation still reads the cache.
 
 ### 2. Cache the wasm at the edge
 
@@ -46,9 +48,17 @@ Expect `cf-cache-status: HIT` on a second request, `content-encoding: br`, and t
 
 ### 3. Compression
 
-Speed → Optimization → Content Optimization: **Brotli on**. It is on today. Check that the Cache Rule doesn't disable it: `content-encoding: br` for `.wasm` and `.js`.
+Cloudflare compresses what it serves by default (Brotli, falling back to gzip), and `application/wasm` is among the types it compresses: the measurements above show `br` served. To choose the algorithms explicitly, use **Rules → Compression Rules** (the older Speed → Optimization toggle is superseded by them):
+- **When:** URI Path starts with `/_next/static/`
+- **Then:** Custom, in this order: Zstandard, Brotli, Auto. `Auto` must be last: a list with no algorithm the browser accepts sends the response uncompressed.
 
-`application/wasm` must be in the compressed types. Cloudflare compresses it by default, and the measurements above show br served.
+Verify what a current browser gets (it offers all of them):
+
+```sh
+curl -s -o /dev/null -D - -H 'Accept-Encoding: gzip, deflate, br, zstd' https://forge.dashhq.org/_next/static/wasm/<file>.wasm | grep -i -E 'content-encoding|cf-cache-status'
+```
+
+Cloudflare asks the origin for gzip or Brotli only and recompresses at the edge, so zstd needs no origin support.
 
 - **Brotli sizes:** Cloudflare's on-the-fly brotli gives 7.19 MB for the wasm. A precompressed brotli-11 file is 5.2 MB, but Cloudflare does not serve precompressed files from a GitHub Pages origin.
 - **To go below 7.19 MB,** host the static assets somewhere that serves `.br` files, for example Cloudflare Pages or R2 with `Content-Encoding: br` set on upload. That is a hosting change, not a setting.
@@ -75,13 +85,22 @@ The same rules apply:
 - `application/wasm` as the wasm MIME type, which the browser needs to compile while streaming
 - HTML short-lived
 
-For nginx:
+For nginx. `add_header` in a `location` replaces every `add_header` inherited from the `server`, so a location that sets Cache-Control must repeat the other headers the site sends:
 
 ```nginx
-location /_next/static/ {
-  add_header Cache-Control "public, max-age=31536000, immutable";
-  brotli_static on;   # ngx_brotli; serve .br files built next to the originals
-  gzip_static on;
+server {
+  add_header Cross-Origin-Opener-Policy "same-origin" always;
+  add_header Cross-Origin-Embedder-Policy "credentialless" always;
+
+  location /_next/static/ {
+    # Repeated here: this location's add_header replaces the server's.
+    add_header Cross-Origin-Opener-Policy "same-origin" always;
+    add_header Cross-Origin-Embedder-Policy "credentialless" always;
+    add_header Cache-Control "public, max-age=31536000, immutable";
+    brotli_static on;   # ngx_brotli; serves .br files built next to the originals
+    gzip_static on;
+  }
 }
-types { application/wasm wasm; }
 ```
+
+nginx's stock `mime.types` maps `.wasm` to `application/wasm` (added in May 2021, nginx ticket #1606; check your `mime.types` for the line). If it is missing, add `application/wasm wasm;` to that file rather than a `types { … }` block in a `server` or `location`, which would replace the inherited map instead of extending it.

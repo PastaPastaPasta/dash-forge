@@ -232,6 +232,8 @@ class Search {
       // (its distance from the box's corner less its distance from the mid diagonal) beats
       // XDL_K_HEUR times the cost, if it ends in a snake of XDL_SNAKE_CNT matching records.
       if (gotSnake && ec > XDL_HEUR_MIN_COST) {
+        // Both scans below walk every diagonal of this round, with a snake probe each.
+        this.spend((fmax - fmin + 1) * XDL_SNAKE_CNT + (bmax - bmin + 1) * XDL_SNAKE_CNT)
         let best = 0
         let at: Split | null = null
         for (let d = fmax; d >= fmin; d -= 2) {
@@ -272,6 +274,7 @@ class Search {
 
       // Enough: split at the furthest-reaching point, by i1 + i2, of either search.
       if (ec >= this.mxcost) {
+        this.spend(fmax - fmin + 1 + (bmax - bmin + 1))
         let fbest = -1
         let fbest1 = -1
         for (let d = fmax; d >= fmin; d -= 2) {
