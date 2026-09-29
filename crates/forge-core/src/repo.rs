@@ -73,6 +73,9 @@ pub struct PackManifestInfo {
     pub uris: Vec<String>,
     /// Prior `packHash`es this manifest supersedes (parsed from the packed `byteArray`).
     pub supersedes: Vec<[u8; 32]>,
+    /// Tip commits the artifact describes (parsed from the packed `byteArray`): a history
+    /// index's `[tip]` or `[tip, baseTip]`.
+    pub tips: Vec<[u8; 20]>,
     /// `$createdAtBlockHeight` (the private-repo late-content rule, §8.2); 0 when unknown.
     pub created_at_block_height: u64,
 }
@@ -3101,6 +3104,10 @@ fn manifest_info(d: &FetchedDocument) -> Result<PackManifestInfo> {
         offset_index_parts: d.field_u64("offsetIndexParts").unwrap_or_default(),
         uris,
         supersedes,
+        tips: d
+            .field_bytes("tips")
+            .map(|raw| raw.as_chunks::<20>().0.to_vec())
+            .unwrap_or_default(),
         created_at_block_height: d.created_at_block_height.unwrap_or_default(),
     })
 }
@@ -3249,6 +3256,7 @@ mod tests {
             offset_index_parts: 0,
             uris: Vec::new(),
             supersedes: Vec::new(),
+            tips: Vec::new(),
             created_at_block_height: 0,
         }
     }

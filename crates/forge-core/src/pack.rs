@@ -19,7 +19,9 @@
 //! - [`locator`] — the `objectLocator` artifact (fanout + OID-sorted rows) with an
 //!   `O(1/256)` [`lookup`](locator::ObjectLocator::lookup).
 //! - [`flatindex`] — the `flatIndex` recursive tree listing (incl. gitlinks).
-//! - [`manifest`] — `packManifest` (kind 0/1/2) types + the repack supersedes planner.
+//! - [`historyindex`] — the history index (kind 3): each path's last first-parent change
+//!   and the exact commit count of a tip, computed at push time.
+//! - [`manifest`] — `packManifest` (kind 0/1/2/3) types + the repack supersedes planner.
 //!
 //! The chunker is pure, so it is fully implemented here and covered by round-trip and
 //! bounds unit tests.
@@ -27,12 +29,15 @@
 pub mod build;
 pub mod flatindex;
 pub mod fsck;
+pub mod historyindex;
 pub mod locator;
 pub mod manifest;
 pub mod parse;
 
 #[cfg(test)]
 mod gittests;
+#[cfg(test)]
+mod historytests;
 
 pub use build::{
     build_pack, ensure_safe_rev, index_stored_pack, repack_all, repack_from_packs, run_feeding,
@@ -43,8 +48,10 @@ pub use locator::{
     LocatorEntry, ObjectLocator, FANOUT_LEN, LOCATOR_ROW_LEN, SPAN_SENTINEL,
     SPAN_SINGLE_READ_THRESHOLD,
 };
+pub use historyindex::HistoryIndex;
 pub use manifest::{
-    plan_supersedes, PackManifest, KIND_FLAT_INDEX, KIND_GIT_PACK, KIND_OBJECT_LOCATOR,
+    plan_supersedes, PackManifest, KIND_FLAT_INDEX, KIND_GIT_PACK, KIND_HISTORY_INDEX,
+    KIND_OBJECT_LOCATOR,
 };
 pub use parse::{git_oid, GitObjType, PackObject, ParsedPack, OID_LEN};
 
