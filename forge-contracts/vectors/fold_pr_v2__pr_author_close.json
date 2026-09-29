@@ -1,0 +1,29 @@
+{
+  "name": "pr_author_close",
+  "description": "The PR author's close closes it.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "transitions": [
+      {
+        "id": "t1",
+        "kind": 11,
+        "actor": "alice",
+        "asAuthor": 7,
+        "createdAt": 100
+      }
+    ],
+    "events": [],
+    "baseTip": "T",
+    "ancestry": []
+  },
+  "expected": {
+    "open": false,
+    "merged": false,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": [],
+    "mergeOnBase": null
+  }
+}

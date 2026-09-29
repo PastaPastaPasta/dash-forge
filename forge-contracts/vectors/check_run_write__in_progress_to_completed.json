@@ -1,0 +1,26 @@
+{
+  "name": "in_progress_to_completed",
+  "description": "In progress to completed: a replace that sets completedAt and the conclusion; the stored startedAt stays.",
+  "case": "check_run_write",
+  "rules": "v2",
+  "input": {
+    "stored": {
+      "status": "in_progress",
+      "startedAt": 100,
+      "completedAt": null,
+      "conclusion": null
+    },
+    "report": {
+      "status": "completed",
+      "conclusion": "failure"
+    },
+    "now": 1000
+  },
+  "expected": {
+    "action": "replace",
+    "startedAt": null,
+    "completedAt": 1000,
+    "conclusion": "failure",
+    "externalId": null
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "completed_rerun",
+  "description": "A completed run reported in progress again is a re-run: a new document with a new start.",
+  "case": "check_run_write",
+  "rules": "v2",
+  "input": {
+    "stored": {
+      "status": "completed",
+      "startedAt": 100,
+      "completedAt": 200,
+      "conclusion": "failure"
+    },
+    "report": {
+      "status": "in_progress",
+      "conclusion": null
+    },
+    "now": 1000
+  },
+  "expected": {
+    "action": "create",
+    "startedAt": 1000,
+    "completedAt": null,
+    "conclusion": null,
+    "externalId": null
+  }
+}

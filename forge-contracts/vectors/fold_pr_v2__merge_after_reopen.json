@@ -1,0 +1,82 @@
+{
+  "name": "merge_after_reopen",
+  "description": "A closed PR cannot be merged (c3 needs state 0 before); reopened, it can: close, reopen, merge naming a valid base tip is merged and on the base.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "transitions": [
+      {
+        "id": "t1",
+        "kind": 11,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 450
+      },
+      {
+        "id": "t2",
+        "kind": 12,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 500
+      },
+      {
+        "id": "t3",
+        "kind": 13,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 600,
+        "oid": "T3"
+      }
+    ],
+    "events": [],
+    "baseHistory": {
+      "updates": [
+        {
+          "id": "u1",
+          "refNameHash": "H",
+          "refName": "refs/heads/main",
+          "prevOid": "",
+          "newOid": "A",
+          "force": false,
+          "protected": false,
+          "author": "w",
+          "createdAt": 50
+        },
+        {
+          "id": "u2",
+          "refNameHash": "H",
+          "refName": "refs/heads/main",
+          "prevOid": "A",
+          "newOid": "T2",
+          "force": false,
+          "protected": false,
+          "author": "w",
+          "createdAt": 300
+        },
+        {
+          "id": "u3",
+          "refNameHash": "H",
+          "refName": "refs/heads/main",
+          "prevOid": "T2",
+          "newOid": "T3",
+          "force": false,
+          "protected": false,
+          "author": "w",
+          "createdAt": 400
+        }
+      ],
+      "configHistory": [],
+      "refNameHash": "H",
+      "openedAt": 100
+    }
+  },
+  "expected": {
+    "open": false,
+    "merged": true,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": [],
+    "mergeOnBase": true
+  }
+}

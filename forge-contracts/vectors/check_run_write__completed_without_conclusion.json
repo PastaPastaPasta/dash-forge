@@ -1,0 +1,20 @@
+{
+  "name": "completed_without_conclusion",
+  "description": "conclusionIfDone: a completed report without a conclusion is refused whatever is stored.",
+  "case": "check_run_write",
+  "rules": "v2",
+  "input": {
+    "stored": {
+      "status": "in_progress",
+      "startedAt": 100,
+      "completedAt": null,
+      "conclusion": null
+    },
+    "report": {
+      "status": "completed",
+      "conclusion": null
+    },
+    "now": 1000
+  },
+  "expected": null
+}

@@ -1,0 +1,26 @@
+{
+  "name": "backwards_is_a_rerun",
+  "description": "In progress back to queued would break runningIfStarted: a new run.",
+  "case": "check_run_write",
+  "rules": "v2",
+  "input": {
+    "stored": {
+      "status": "in_progress",
+      "startedAt": 100,
+      "completedAt": null,
+      "conclusion": null
+    },
+    "report": {
+      "status": "queued",
+      "conclusion": null
+    },
+    "now": 1000
+  },
+  "expected": {
+    "action": "create",
+    "startedAt": null,
+    "completedAt": null,
+    "conclusion": null,
+    "externalId": null
+  }
+}

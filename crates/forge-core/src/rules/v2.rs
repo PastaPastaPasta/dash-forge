@@ -36,16 +36,22 @@ use std::collections::BTreeSet;
 use super::review::merged_log;
 
 pub use super::parity::{
-    checks_state, fold_milestones_v2, fold_thread_meta_v2, pinned_targets, trending_recount,
-    trending_window, CheckRunRow, CheckState, ChecksPolicy, ChecksState, Milestone, MilestoneDoc,
-    MilestoneItem, PinnedTarget, RequiredCheck, StarBeat, ThreadMeta, TimeGrid, TrendingEntry,
-    TrendingSelector, Window, PASSING_CONCLUSIONS, STAR_BEAT_GRID,
+    check_run_write, checks_state, fold_milestones_v2, fold_thread_meta_v2, pinned_targets,
+    trending_recount, trending_window, CheckRunRow, CheckState, ChecksPolicy, ChecksState,
+    Milestone, MilestoneDoc, MilestoneItem, PinnedTarget, RequiredCheck, RunReport, RunWrite,
+    RunWriteAction, StarBeat, StoredRun, ThreadMeta, TimeGrid, TrendingEntry, TrendingSelector,
+    Window, PASSING_CONCLUSIONS, STAR_BEAT_GRID,
 };
 pub use super::review::{
     anchor_of, apply_suggestion, fold_pr_review_v2, group_review_comments, is_author_kind,
     linked_issues, meets_policy, parse_suggestions, Anchor, AnchorFields, Dismissal, HeadUpdate,
     Policy, PolicyStatus, PrReviewState, RequestedReviewer, ReviewComment, ReviewGroup, Suggestion,
     SuggestionError,
+};
+pub use super::transition::{
+    delta_of, dense_number, merge_transition, names_dense_rule, next_transition, repo_counts,
+    state_code, status_of_code, Actor, RepoCounts, StateAction, StateStatus, Transition,
+    TransitionMove, TransitionTarget, DENSE_RULE, TRANSITION_KINDS,
 };
 
 use serde::{Deserialize, Serialize};
@@ -128,7 +134,97 @@ impl RoleOracle {
 }
 
 // ===========================================================================
-// Issue / PR fold
+// Issue / PR state (transitions) and metadata fold
+// ===========================================================================
+
+/// Whether `kind` is one of the state kinds (close, reopen, merge, draft, ready) that live only
+/// in `transition` on the fresh registration. The contract refuses them on `event` (`kind ≥ 4`,
+/// `noState`) and `authorEvent` (its enum); handed one anyway, the metadata fold ignores it.
+#[must_use]
+pub fn is_state_kind(kind: EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::Close
+            | EventKind::Reopen
+            | EventKind::Merge
+            | EventKind::Draft
+            | EventKind::Ready
+    )
+}
+
+/// The member events that fold into labels, assignees and the base ref, in `(createdAt, id)`
+/// order. State kinds are dropped ([`is_state_kind`]).
+fn meta_log(events: &[Event]) -> Vec<&Event> {
+    let mut log: Vec<&Event> = events.iter().filter(|e| !is_state_kind(e.kind)).collect();
+    log.sort_by(|a, b| super::event_order(a, b));
+    log
+}
+
+/// An issue's state: open or closed from its state code (the proved `transition.delta` sum,
+/// [`super::transition`]), labels and assignees from its member `event`s.
+#[must_use]
+pub fn issue_state_v2(state_code: i64, events: &[Event]) -> IssueState {
+    let mut state = IssueState::default();
+    for e in meta_log(events) {
+        apply_issue_event(&mut state, e);
+    }
+    state.open = super::transition::status_of_code(state_code).open;
+    state
+}
+
+/// A PR's state: open, merged and draft from its state code, labels, assignees and the base
+/// ref from its member `event`s.
+///
+/// "Merged" is the chain fact (a member recorded a merge, D-9). `merge_oid` is that merge
+/// transition's `oid` when the reader has it; [`PrState::merge_on_base`] then says whether it
+/// was a valid tip of the base (`is_ancestor(oid, base_tip)`, the historical-tips predicate).
+/// A merge that fails it is still merged and is labelled "merge commit not found on the base".
+///
+/// A reader that has not loaded the base ref's history must pass `merge_oid = None` (the answer
+/// is then "unknown", `None`), never a `base_tip` of `None` with an oid: that reads as "the base
+/// has no tip", so the merge would be labelled not found.
+#[must_use]
+pub fn pr_state_v2(
+    state_code: i64,
+    merge_oid: Option<&str>,
+    events: &[Event],
+    base_tip: Option<&str>,
+    is_ancestor: impl Fn(&str, &str) -> bool,
+) -> PrState {
+    let mut state = PrState::default();
+    for e in meta_log(events) {
+        apply_pr_event(&mut state, e);
+    }
+    let status = super::transition::status_of_code(state_code);
+    state.open = status.open;
+    state.merged = status.merged;
+    state.draft = status.draft;
+    // An empty oid is "not known", as in the TS port.
+    let merge_oid = merge_oid.filter(|o| !o.is_empty());
+    state.merge_on_base = match (status.merged, merge_oid, base_tip) {
+        (false, _, _) | (true, None, _) => None,
+        (true, Some(_), None) => Some(false),
+        (true, Some(oid), Some(tip)) => Some(is_ancestor(oid, tip)),
+    };
+    state
+}
+
+/// The upstream number to show beside a mirrored issue's or PR's own (`#12 · upstream #7761`),
+/// and to resolve `#7761` in a body through: `upstreamNumber` is a free field, so it is trusted
+/// only from the repo owner (the mirror signer) or a current maintainer or writer.
+#[must_use]
+pub fn trusted_upstream_number(
+    upstream_number: Option<u32>,
+    author: &str,
+    repo_owner: &str,
+    oracle: &RoleOracle,
+) -> Option<u32> {
+    let n = upstream_number.filter(|&n| n > 0)?;
+    (author == repo_owner || oracle.current_role(author).is_some()).then_some(n)
+}
+
+// ===========================================================================
+// Issue / PR fold (event-state, retired with the fresh registration)
 // ===========================================================================
 
 /// Fold an issue's `event` and `authorEvent` documents into its [`IssueState`].

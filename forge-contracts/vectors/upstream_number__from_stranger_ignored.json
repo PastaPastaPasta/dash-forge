@@ -1,0 +1,24 @@
+{
+  "name": "from_stranger_ignored",
+  "description": "A stranger's upstreamNumber is a free field: ignored (ISS-02).",
+  "case": "upstream_number",
+  "rules": "v2",
+  "input": {
+    "upstreamNumber": 7761,
+    "author": "mallory",
+    "repoOwner": "owner",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ]
+  },
+  "expected": null
+}

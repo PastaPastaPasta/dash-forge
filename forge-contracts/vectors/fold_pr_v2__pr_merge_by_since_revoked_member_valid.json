@@ -1,0 +1,35 @@
+{
+  "name": "pr_merge_by_since_revoked_member_valid",
+  "description": "A merge by a member whose document was deleted later stands: a stored transition is its own authorization.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "transitions": [
+      {
+        "id": "t1",
+        "kind": 13,
+        "actor": "exwriter",
+        "asAuthor": 0,
+        "createdAt": 100,
+        "oid": "M"
+      }
+    ],
+    "events": [],
+    "baseTip": "T",
+    "ancestry": [
+      [
+        "M",
+        "T"
+      ]
+    ]
+  },
+  "expected": {
+    "open": false,
+    "merged": true,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": [],
+    "mergeOnBase": true
+  }
+}

@@ -25,10 +25,12 @@ import {
 } from './fold'
 import { compareKey, compareStrings, refNameHashMatches } from './oid'
 import { mergedLog } from './review'
-import type { Event, IsAncestor, IssueState, Oid, PrState } from './types'
+import { statusOfCode } from './transition'
+import type { Event, EventKind, IsAncestor, IssueState, Oid, PrState } from './types'
 
 export * from './review'
 export * from './parity'
+export * from './transition'
 
 /** The versioned rules identifier for forge-v2 repositories. */
 export const FORGE_RULES_V2 = 'FORGE_RULES_V2' as const
@@ -82,7 +84,69 @@ export class RoleOracle {
 }
 
 // ---------------------------------------------------------------------------
-// Issue / PR fold
+// Issue / PR state (transitions) and metadata fold
+// ---------------------------------------------------------------------------
+
+const STATE_KINDS: ReadonlySet<EventKind> = new Set<EventKind>(['close', 'reopen', 'merge', 'draft', 'ready'])
+
+/** A state kind lives only in `transition`; handed one on an `event`, the metadata fold ignores it. */
+export function isStateKind(kind: EventKind): boolean {
+  return STATE_KINDS.has(kind)
+}
+
+function metaLog(events: readonly Event[]): Event[] {
+  return events.filter((e) => !isStateKind(e.kind)).sort(compareKey)
+}
+
+/** An issue's state: open from its state code, labels and assignees from its member events. */
+export function issueStateV2(stateCode: number, events: readonly Event[]): IssueState {
+  const s = newIssueAcc()
+  for (const e of metaLog(events)) applyIssueEvent(s, e)
+  s.open = statusOfCode(stateCode).open
+  return issueStateOf(s)
+}
+
+/**
+ * A PR's state: open, merged and draft from its state code; labels, assignees and base ref
+ * from its member events. `mergeOnBase` (merged PRs whose merge oid is known) says whether the
+ * merge named a valid base tip; a merge that did not is still merged, and labelled.
+ * Parity: forge-core `pr_state_v2`.
+ */
+export function prStateV2(
+  stateCode: number,
+  mergeOid: string | null | undefined,
+  events: readonly Event[],
+  baseTip: string | undefined,
+  isAncestor: IsAncestor,
+): PrState {
+  const s = newPrAcc()
+  for (const e of metaLog(events)) applyPrEvent(s, e)
+  const status = statusOfCode(stateCode)
+  s.open = status.open
+  s.merged = status.merged
+  s.draft = status.draft
+  const mergeOnBase =
+    !status.merged || mergeOid == null || mergeOid === '' ? null : baseTip === undefined ? false : isAncestor(mergeOid, baseTip)
+  return { ...prStateOf(s), mergeOnBase }
+}
+
+/**
+ * The upstream number to show and resolve through (`#12 · upstream #7761`): trusted only from
+ * the repo owner (the mirror signer) or a current member. Parity: forge-core
+ * `trusted_upstream_number`.
+ */
+export function trustedUpstreamNumber(
+  upstreamNumber: number | null | undefined,
+  author: string,
+  repoOwner: string,
+  oracle: RoleOracle,
+): number | null {
+  if (upstreamNumber == null || upstreamNumber <= 0) return null
+  return author === repoOwner || oracle.currentRole(author) !== null ? upstreamNumber : null
+}
+
+// ---------------------------------------------------------------------------
+// Issue / PR fold (event-state, retired with the fresh registration)
 // ---------------------------------------------------------------------------
 
 /** Fold an issue's `event` and `authorEvent` documents into its {@link IssueState}. */

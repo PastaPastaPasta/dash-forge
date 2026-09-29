@@ -1,0 +1,24 @@
+{
+  "name": "absent",
+  "description": "A native item has none.",
+  "case": "upstream_number",
+  "rules": "v2",
+  "input": {
+    "upstreamNumber": null,
+    "author": "owner",
+    "repoOwner": "owner",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ]
+  },
+  "expected": null
+}

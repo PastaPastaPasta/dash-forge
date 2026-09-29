@@ -515,3 +515,161 @@ pub fn trending_recount(
     rows.truncate(limit);
     rows
 }
+
+// ===========================================================================
+// Check-run reports: monotonic status and times
+// ===========================================================================
+
+/// The stored run a report would update, as far as the monotonic rules read it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredRun {
+    /// `queued`, `in_progress` or `completed`.
+    pub status: String,
+    /// `startedAt` (ms), once set.
+    #[serde(default)]
+    pub started_at: Option<u64>,
+    /// `completedAt` (ms), once set.
+    #[serde(default)]
+    pub completed_at: Option<u64>,
+    /// `conclusion`, once set.
+    #[serde(default)]
+    pub conclusion: Option<String>,
+    /// `externalId` (the CI's own run id), once set.
+    #[serde(default)]
+    pub external_id: Option<String>,
+}
+
+/// What a reporter says now.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunReport {
+    /// `queued`, `in_progress` or `completed`.
+    pub status: String,
+    /// The conclusion of a completed run.
+    #[serde(default)]
+    pub conclusion: Option<String>,
+    /// A start time the CI gives (ms); else the report's time is used.
+    #[serde(default)]
+    pub started_at: Option<u64>,
+    /// A completion time the CI gives (ms); else the report's time is used.
+    #[serde(default)]
+    pub completed_at: Option<u64>,
+    /// The CI's own run id, when it gives one.
+    #[serde(default)]
+    pub external_id: Option<String>,
+}
+
+/// How a report is written ([`check_run_write`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RunWriteAction {
+    /// A new `checkRun` document.
+    Create,
+    /// A replace of the stored run.
+    Replace,
+}
+
+/// The write a report makes: create or replace, and the immutable-once-set fields it carries.
+/// On a replace, only a field the stored run does not have yet is set (`None` keeps the stored
+/// value: `startedAt`, `completedAt`, `conclusion` and `externalId` are `immutableAllowSetting`,
+/// so a set value never changes).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunWrite {
+    /// Create or replace.
+    pub action: RunWriteAction,
+    /// `startedAt` to write, if any.
+    pub started_at: Option<u64>,
+    /// `completedAt` to write, if any.
+    pub completed_at: Option<u64>,
+    /// `conclusion` to write, if any.
+    pub conclusion: Option<String>,
+    /// `externalId` to write, if any.
+    pub external_id: Option<String>,
+}
+
+fn status_rank(status: &str) -> Option<u8> {
+    match status {
+        "queued" => Some(0),
+        "in_progress" => Some(1),
+        "completed" => Some(2),
+        _ => None,
+    }
+}
+
+/// Whether `stored` can take `report` as a replace: same run (an `externalId` never changes)
+/// moving forwards, and a completed run's conclusion unchanged.
+fn continues(stored: &StoredRun, report: &RunReport, rank: u8) -> bool {
+    let Some(held) = status_rank(&stored.status) else {
+        return false;
+    };
+    let same_run = match (&stored.external_id, &report.external_id) {
+        (Some(a), Some(b)) => a == b,
+        _ => true,
+    };
+    let conclusion_kept = stored.conclusion.is_none() || stored.conclusion == report.conclusion;
+    same_run && rank >= held && conclusion_kept
+}
+
+/// The write that records `report` against `stored` (the reporter's run it would update, or
+/// none) at `now_ms`, so the forge-community `checkRun` rules hold (`conclusionIfDone`,
+/// `doneIfConclusion`, `startedIfRunning`, `runningIfStarted`, `completedAtIfDone`,
+/// `doneIfCompletedAt`, D-5):
+///
+/// * a conclusion comes with `completed` and only with it;
+/// * `startedAt` is set on the first report that is not `queued`, `completedAt` on the first
+///   `completed` one: the CI's own time when given, else `now_ms`; a completion never precedes
+///   the start it is paired with;
+/// * a stored time, conclusion or `externalId` is never changed or dropped;
+/// * a report that would move a run backwards (in progress to queued, completed to anything
+///   else), change a completed run's conclusion, or name another `externalId` is a re-run: a
+///   new document.
+///
+/// `None` when consensus would refuse the report whatever is stored: an unknown status, a
+/// `completed` without a conclusion, or a conclusion on a run that is not completed.
+#[must_use]
+pub fn check_run_write(
+    stored: Option<&StoredRun>,
+    report: &RunReport,
+    now_ms: u64,
+) -> Option<RunWrite> {
+    let rank = status_rank(&report.status)?;
+    if (rank == 2) != report.conclusion.is_some() {
+        return None;
+    }
+    let stored = stored.filter(|s| continues(s, report, rank));
+    let held_start = stored.and_then(|s| s.started_at);
+    let held_end = stored.and_then(|s| s.completed_at);
+    let start = held_start.or_else(|| (rank >= 1).then(|| report.started_at.unwrap_or(now_ms)));
+    let end = held_end.or_else(|| {
+        (rank == 2).then(|| {
+            let end = report.completed_at.unwrap_or(now_ms);
+            start.map_or(end, |s| end.max(s))
+        })
+    });
+    let unset = |held: Option<&String>, given: &Option<String>| {
+        if held.is_some() {
+            None
+        } else {
+            given.clone()
+        }
+    };
+    Some(RunWrite {
+        action: if stored.is_some() {
+            RunWriteAction::Replace
+        } else {
+            RunWriteAction::Create
+        },
+        started_at: if held_start.is_some() { None } else { start },
+        completed_at: if held_end.is_some() { None } else { end },
+        conclusion: unset(
+            stored.and_then(|s| s.conclusion.as_ref()),
+            &report.conclusion,
+        ),
+        external_id: unset(
+            stored.and_then(|s| s.external_id.as_ref()),
+            &report.external_id,
+        ),
+    })
+}

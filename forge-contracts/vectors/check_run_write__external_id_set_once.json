@@ -1,0 +1,27 @@
+{
+  "name": "external_id_set_once",
+  "description": "The first report naming an externalId sets it on the stored run.",
+  "case": "check_run_write",
+  "rules": "v2",
+  "input": {
+    "stored": {
+      "status": "queued",
+      "startedAt": null,
+      "completedAt": null,
+      "conclusion": null
+    },
+    "report": {
+      "status": "in_progress",
+      "conclusion": null,
+      "externalId": "gh-1"
+    },
+    "now": 1000
+  },
+  "expected": {
+    "action": "replace",
+    "startedAt": 1000,
+    "completedAt": null,
+    "conclusion": null,
+    "externalId": "gh-1"
+  }
+}

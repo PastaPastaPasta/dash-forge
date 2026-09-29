@@ -1,0 +1,11 @@
+{
+  "name": "first",
+  "description": "An empty repo: the first issue or PR is #1.",
+  "case": "dense_number",
+  "rules": "v2",
+  "input": {
+    "issues": 0,
+    "patches": 0
+  },
+  "expected": 1
+}

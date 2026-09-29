@@ -1,0 +1,11 @@
+{
+  "name": "last_number",
+  "description": "One below the u32 limit in total: the next is 4294967295.",
+  "case": "dense_number",
+  "rules": "v2",
+  "input": {
+    "issues": 4294967294,
+    "patches": 0
+  },
+  "expected": 4294967295
+}

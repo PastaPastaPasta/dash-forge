@@ -1,0 +1,23 @@
+{
+  "name": "issue_transition_by_since_revoked_member_valid",
+  "description": "A member's close stays valid after their membership document is deleted: the fold takes no membership input, a stored transition is its own authorization.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "transitions": [
+      {
+        "id": "t1",
+        "kind": 1,
+        "actor": "exmaint",
+        "asAuthor": 0,
+        "createdAt": 100
+      }
+    ],
+    "events": []
+  },
+  "expected": {
+    "open": false,
+    "labels": [],
+    "assignees": []
+  }
+}

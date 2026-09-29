@@ -1,0 +1,21 @@
+{
+  "name": "pr_merged_from_sum_without_oid",
+  "description": "A list row with only the sum (2) and no merge oid: merged; whether it is on the base is not known (null).",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "sum": 2,
+    "events": [],
+    "baseTip": "T",
+    "ancestry": []
+  },
+  "expected": {
+    "open": false,
+    "merged": true,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": [],
+    "mergeOnBase": null
+  }
+}

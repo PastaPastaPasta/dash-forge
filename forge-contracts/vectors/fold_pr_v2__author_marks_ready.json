@@ -1,25 +1,28 @@
 {
   "name": "author_marks_ready",
-  "description": "The author's authorEvent ready (kind 10) clears the draft the document opened with.",
+  "description": "A PR opened as a draft (patch + kind 14) that its author marks ready (kind 15) is ready.",
   "case": "fold_pr",
   "rules": "v2",
   "input": {
-    "events": [],
-    "authorEvents": [
+    "transitions": [
       {
-        "id": "a1",
-        "targetId": "T",
-        "kind": "ready",
+        "id": "t1",
+        "kind": 14,
         "actor": "alice",
-        "value": null,
-        "oid": null,
+        "asAuthor": 7,
+        "createdAt": 90
+      },
+      {
+        "id": "t2",
+        "kind": 15,
+        "actor": "alice",
+        "asAuthor": 7,
         "createdAt": 100
       }
     ],
-    "targetAuthor": "alice",
+    "events": [],
     "baseTip": "B",
-    "ancestry": [],
-    "initialDraft": true
+    "ancestry": []
   },
   "expected": {
     "open": true,
@@ -27,6 +30,7 @@
     "draft": false,
     "baseRef": null,
     "labels": [],
-    "assignees": []
+    "assignees": [],
+    "mergeOnBase": null
   }
 }

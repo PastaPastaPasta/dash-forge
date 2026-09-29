@@ -1,0 +1,35 @@
+{
+  "name": "pr_merge_without_base_tip_labelled",
+  "description": "With no base tip the merge cannot be found on the base: merged, labelled.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "transitions": [
+      {
+        "id": "t1",
+        "kind": 13,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 100,
+        "oid": "M"
+      }
+    ],
+    "events": [],
+    "baseTip": null,
+    "ancestry": [
+      [
+        "M",
+        "T"
+      ]
+    ]
+  },
+  "expected": {
+    "open": false,
+    "merged": true,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": [],
+    "mergeOnBase": false
+  }
+}

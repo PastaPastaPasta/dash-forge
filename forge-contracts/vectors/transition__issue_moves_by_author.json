@@ -1,0 +1,224 @@
+{
+  "name": "issue_moves_by_author",
+  "description": "Every issue action by the author: the same moves, asAuthor = the issue number.",
+  "case": "transition_moves",
+  "rules": "v2",
+  "input": {
+    "cases": [
+      {
+        "target": "issue",
+        "code": 0,
+        "action": "close",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 0,
+        "action": "reopen",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 0,
+        "action": "merge",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 0,
+        "action": "draft",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 0,
+        "action": "ready",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 1,
+        "action": "close",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 1,
+        "action": "reopen",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 1,
+        "action": "merge",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 1,
+        "action": "draft",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 1,
+        "action": "ready",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 2,
+        "action": "close",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 2,
+        "action": "reopen",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 2,
+        "action": "merge",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 2,
+        "action": "draft",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 2,
+        "action": "ready",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 8,
+        "action": "close",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 8,
+        "action": "reopen",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 8,
+        "action": "merge",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 8,
+        "action": "draft",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 8,
+        "action": "ready",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 9,
+        "action": "close",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 9,
+        "action": "reopen",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 9,
+        "action": "merge",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 9,
+        "action": "draft",
+        "actor": "author",
+        "targetNumber": 7
+      },
+      {
+        "target": "issue",
+        "code": 9,
+        "action": "ready",
+        "actor": "author",
+        "targetNumber": 7
+      }
+    ]
+  },
+  "expected": [
+    {
+      "kind": 1,
+      "delta": 1,
+      "targetKind": 0,
+      "asAuthor": 7,
+      "after": 1
+    },
+    null,
+    null,
+    null,
+    null,
+    null,
+    {
+      "kind": 2,
+      "delta": -1,
+      "targetKind": 0,
+      "asAuthor": 7,
+      "after": 0
+    },
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null
+  ]
+}

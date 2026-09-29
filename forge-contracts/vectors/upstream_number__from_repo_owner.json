@@ -1,0 +1,24 @@
+{
+  "name": "from_repo_owner",
+  "description": "The mirror signer (the repo owner) wrote the item: upstream #7761 is trusted.",
+  "case": "upstream_number",
+  "rules": "v2",
+  "input": {
+    "upstreamNumber": 7761,
+    "author": "owner",
+    "repoOwner": "owner",
+    "memberships": [
+      {
+        "identity": "maint",
+        "role": "maintainer",
+        "createdAt": 10
+      },
+      {
+        "identity": "writ",
+        "role": "writer",
+        "createdAt": 10
+      }
+    ]
+  },
+  "expected": 7761
+}

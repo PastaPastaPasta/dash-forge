@@ -1,0 +1,23 @@
+{
+  "name": "issue_author_close",
+  "description": "The author's close (asAuthor = 7) closes the issue.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "transitions": [
+      {
+        "id": "t1",
+        "kind": 1,
+        "actor": "alice",
+        "asAuthor": 7,
+        "createdAt": 100
+      }
+    ],
+    "events": []
+  },
+  "expected": {
+    "open": false,
+    "labels": [],
+    "assignees": []
+  }
+}
