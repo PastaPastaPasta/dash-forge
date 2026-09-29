@@ -92,7 +92,7 @@ import { commentsShown, draftIsEmpty, draftWhereabouts, reviewShows, SUBMIT_WAIT
 import { tipOidOf } from '@/lib/view/refs'
 import type { ReviewerCardRow } from '@/lib/view/review-fold'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
-import { readUntil, retryWhileMissing } from '@/lib/view/retry'
+import { readOnceThenUntil } from '@/lib/view/retry'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useIntent } from '@/hooks/use-intent'
@@ -188,15 +188,22 @@ export function PullContent({
   // A longer wait asked for by the newest write (a submitted review), used for its reads.
   const waitFor = useRef<{ attempts: number; delayMs: number; backoff: number; maxDelayMs: number } | null>(null)
   const current = useRef<{ aborted: boolean }>({ aborted: false })
+  // Set by a refresh: from then on the base ref's history is read afresh, not the repo chrome's.
+  const refreshed = useRef(false)
   const { data, loading, error, reload } = useAsync<PullThread | null>(
     async () => {
       current.current.aborted = true
       const signal = { aborted: false }
       current.current = signal
       const want = [...expectations.current]
-      const load = () => loadPullThread(sdk!, home.repo, number, network)
-      const first = await retryWhileMissing(load, justCreated ? 8 : 0)
-      const t = first === null ? null : await readUntil(async () => (signal.aborted ? first : load()), want, { ...(waitFor.current ?? {}), signal })
+      let latest: PullThread | null = null
+      const load = async (): Promise<PullThread | null> => {
+        if (signal.aborted) return latest
+        latest = await loadPullThread(sdk!, home.repo, number, network, { fresh: refreshed.current })
+        return latest
+      }
+      // One read on a cold load; re-reads only while a write this page made has not shown (L-77).
+      const t = await readOnceThenUntil(load, want, { ...(waitFor.current ?? {}), signal, missingAttempts: justCreated ? 8 : 0 })
       if (!signal.aborted && t !== null) {
         expectations.current = expectations.current.filter((w) => !w(t))
         if (expectations.current.length === 0) waitFor.current = null
@@ -210,6 +217,7 @@ export function PullContent({
     (want?: (t: PullThread) => boolean, wait?: { attempts: number; delayMs: number; backoff: number; maxDelayMs: number }) => {
       if (want) expectations.current.push(want)
       if (wait) waitFor.current = wait
+      refreshed.current = true
       reload()
     },
     [reload],

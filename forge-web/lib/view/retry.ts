@@ -40,10 +40,19 @@ export async function readUntil<T>(
     backoff = 1,
     maxDelayMs = 10_000,
     signal,
-  }: { attempts?: number; delayMs?: number; backoff?: number; maxDelayMs?: number; signal?: { readonly aborted: boolean } } = {},
+    first,
+  }: {
+    attempts?: number
+    delayMs?: number
+    backoff?: number
+    maxDelayMs?: number
+    signal?: { readonly aborted: boolean }
+    /** A value the caller has just read: checked first, instead of reading again at once. */
+    first?: T | null
+  } = {},
 ): Promise<T | null> {
   const stopped = (): boolean => signal?.aborted === true
-  let v = await read()
+  let v = first !== undefined ? first : await read()
   let wait = delayMs
   for (let i = 0; v !== null && !want.every((w) => w(v as T)) && i < attempts && !stopped(); i++) {
     await new Promise((r) => setTimeout(r, wait))
@@ -52,4 +61,20 @@ export async function readUntil<T>(
     v = await read()
   }
   return v
+}
+
+/**
+ * A page's load: read once (re-reading a not-found `missingAttempts` times, a node one block
+ * behind), then re-read only while an expectation in `want` does not hold of it. With nothing
+ * expected that is ONE read: the PR page used to drop the first read's value and let
+ * {@link readUntil} read again at once, two full thread reads per cold load (L-77).
+ */
+export async function readOnceThenUntil<T>(
+  read: () => Promise<T | null>,
+  want: readonly ((v: T) => boolean)[],
+  { missingAttempts = 0, ...opts }: { missingAttempts?: number } & Omit<NonNullable<Parameters<typeof readUntil<T>>[2]>, 'first'> = {},
+): Promise<T | null> {
+  const first = await retryWhileMissing(read, missingAttempts, opts.delayMs)
+  if (first === null) return null
+  return readUntil(read, want, { ...opts, first })
 }

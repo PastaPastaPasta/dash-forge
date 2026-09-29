@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { readUntil } from './retry'
+import { readOnceThenUntil, readUntil } from './retry'
 
 describe('readUntil: re-read after a write until it shows', () => {
   it('re-reads until every expectation holds', async () => {
@@ -44,5 +44,31 @@ describe('readUntil: re-read after a write until it shows', () => {
     let n = 0
     expect(await readUntil(async () => ++n, [() => false], { attempts: 3, delayMs: 0 })).toBe(4)
     expect(await readUntil(async () => null, [() => false], { attempts: 3, delayMs: 0 })).toBeNull()
+  })
+})
+
+describe('readOnceThenUntil: a page load reads once unless it waits for a write (L-77)', () => {
+  it('reads exactly once when nothing is expected', async () => {
+    let n = 0
+    expect(await readOnceThenUntil(async () => ++n, [], { delayMs: 0 })).toBe(1)
+    expect(n).toBe(1)
+  })
+
+  it('checks the first read before reading again, and re-reads only while an expectation fails', async () => {
+    let n = 0
+    expect(await readOnceThenUntil(async () => ++n, [(v) => v >= 1], { delayMs: 0 })).toBe(1)
+    expect(n).toBe(1)
+    n = 0
+    expect(await readOnceThenUntil(async () => ++n, [(v) => v >= 3], { delayMs: 0 })).toBe(3)
+    expect(n).toBe(3)
+  })
+
+  it('rides out a not-found before believing it, and returns null without polling', async () => {
+    let n = 0
+    const read = async (): Promise<number | null> => (++n < 3 ? null : n)
+    expect(await readOnceThenUntil(read, [], { missingAttempts: 5, delayMs: 0 })).toBe(3)
+    let m = 0
+    expect(await readOnceThenUntil(async () => (++m, null), [() => false])).toBeNull()
+    expect(m).toBe(1)
   })
 })

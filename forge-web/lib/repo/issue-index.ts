@@ -30,12 +30,11 @@ import { compositeOf, countsAt, docsAt, queryComposite, siblingOf, type Composit
 import { IncompleteReadError, queryAllDocuments, type DocumentQuery, type PlainDocument } from '../sdk'
 import { DOC, asIdentifierString, repoKey, str, type RepoRef } from './contract'
 import {
-  groupFeed,
+  feedQuery,
   issueViewOf,
   onRepoInvalidated,
-  seedRepoFeed,
+  readRepoFeedFrom,
   settleIssueCount,
-  toLog,
   type IssueView,
   type TargetLog,
 } from './issues'
@@ -52,8 +51,6 @@ export interface IssueRow extends IssueView {
 
 /** Issues per keyset chunk (the page limit of one composite). */
 const CHUNK = 100
-/** Pages of each feed type read before the fold is declared incomplete. */
-const FEED_MAX_PAGES = 30
 /** Chunks one call may read to satisfy a query (a sort by comments reads every chunk up to this). */
 const MAX_CHUNKS = 30
 
@@ -189,29 +186,16 @@ async function rest(sdk: EvoSDK, query: Parameters<typeof queryAllDocuments>[1],
 /** First load: one composite, then the rest of the feed and labels when their pages were full. */
 async function loadIndex(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<IndexState> {
   const source = repoSource(repo)
-  const feedQuery = (type: string) => source.repoQuery(type, { orderBy: [['$createdAt', 'asc']] })
   const labelQuery = source.repoQuery(DOC.label, { orderBy: [['name', 'asc'], ['$createdAt', 'asc']] })
   const page = source.repoQuery(DOC.issue, { orderBy: [['$createdAt', 'desc']] })
   const res = await queryComposite(
     sdk,
-    compositeOf(page, CHUNK, [...chunkSubs(network), siblingOf(feedQuery(DOC.event), CHUNK), siblingOf(feedQuery(DOC.authorEvent), CHUNK), siblingOf(labelQuery, CHUNK)]),
+    compositeOf(page, CHUNK, [...chunkSubs(network), siblingOf(feedQuery(repo, 'event'), CHUNK), siblingOf(feedQuery(repo, 'authorEvent'), CHUNK), siblingOf(labelQuery, CHUNK)]),
   )
 
-  let feed: Map<string, TargetLog> | null
-  try {
-    const [allEvents, allAuthorEvents] = await Promise.all([
-      rest(sdk, feedQuery(DOC.event), docsAt(res, 2), FEED_MAX_PAGES),
-      rest(sdk, feedQuery(DOC.authorEvent), docsAt(res, 3), FEED_MAX_PAGES),
-    ])
-    // A private repo's member events are read through `readableEvents` (values opened).
-    const log = await toLog(repo, allEvents, allAuthorEvents)
-    feed = groupFeed(log.events, log.authorEvents)
-    // The pulls page and the header's PR count fold from the same feed.
-    seedRepoFeed(repo, feed)
-  } catch (e) {
-    if (!(e instanceof IncompleteReadError)) throw e
-    feed = null
-  }
+  // The rest of the feed, read once for the repo: the pull index and the header's counts join this
+  // read (or this joins theirs). A private repo's member events come with their values opened.
+  const feed = await readRepoFeedFrom(sdk, repo, { event: docsAt(res, 2), authorEvent: docsAt(res, 3) })
   let labelDocs = docsAt(res, 4)
   let labelsComplete = true
   try {
