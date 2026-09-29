@@ -5,6 +5,7 @@ import {
   E2E_DEVNET,
   EMPTY,
   expectLanded,
+  loadSeedPulls,
   MAINTAINER,
   repoUrl as url,
   shot,
@@ -20,10 +21,11 @@ import {
  * The fixture: repo `forge-v2-demo` owned by OWNER (maintainers OWNER + MAINTAINER, writer
  * COLLAB), main = 3 files + docs/, a feature branch, tag v0.1.0; issue #1 open + labelled by a
  * writer, #2 closed by its author (a `transition` written as the author), #3 closed + labelled by a
- * maintainer; PR #1
- * open with a maintainer approval, PR #2 merged; issue #4 open; PR #3 the review-parity
- * fixture (below); a branch `policy`; one star. `forge-v2-empty` (MAINTAINER) has
- * nothing pushed. The axe checks over these pages live in a11y.spec.ts.
+ * maintainer, #4 open; then, in the same dense shared sequence (forge-v2.md §6.2), three PRs
+ * (numbers from the seed summary, see `loadSeedPulls`): the approved PR open with a maintainer
+ * approval, the merged PR, and the review-parity fixture (below); a branch `policy`; one star.
+ * `forge-v2-empty` (MAINTAINER) has nothing pushed. The axe checks over these pages live in
+ * a11y.spec.ts.
  */
 
 const { owner: OWNER, name: NAME } = DEMO
@@ -116,7 +118,8 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
   })
 
   test('v2-6. PR detail: counted approval, diff, merged PR', async ({ page }) => {
-    await page.goto(url('pull', '&number=1'), { waitUntil: 'domcontentloaded' })
+    const pulls = loadSeedPulls()
+    await page.goto(url('pull', `&number=${pulls.approved}`), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     await expectLanded(page, page.getByRole('heading', { name: /Greet by name/ }))
     const approvals = page.getByRole('region', { name: 'Approvals' })
@@ -129,7 +132,7 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await expect(page.getByText(/hello, \{name\}/).first()).toBeVisible({ timeout: 45_000 })
     await shot(page, 'v2-06-pull')
 
-    await page.goto(url('pull', '&number=2'), { waitUntil: 'domcontentloaded' })
+    await page.goto(url('pull', `&number=${pulls.merged}`), { waitUntil: 'domcontentloaded' })
     await expectLanded(page, page.getByRole('heading', { name: /Document the fold rules/ }))
     await expect(page.getByText('Merged', { exact: true }).first()).toBeVisible()
   })

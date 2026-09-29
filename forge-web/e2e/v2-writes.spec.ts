@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test'
 import { existsSync } from 'node:fs'
-import { fixtureWriteBlocked, idFile, idOrEmpty, repoUrl, shot, signedIn, unlock } from './helpers'
+import { fixtureWriteBlocked, idFile, idOrEmpty, loadSeedPulls, repoUrl, shot, signedIn, unlock } from './helpers'
 
 /**
  * forge-v2 WRITES, live on a devnet (real spend, a few thousandths of a DASH per run):
@@ -16,8 +16,9 @@ import { fixtureWriteBlocked, idFile, idOrEmpty, repoUrl, shot, signedIn, unlock
  * its cost preview, and the spend ledger in /settings records it.
  */
 
-// The identities it signs as (E2E_IDENTITY_DIR, else the fixture pool); w6 approves PR #1 of the
-// read fixture (`DEMO`), so a run under minted identities points E2E_V2_OWNER at their own copy.
+// The identities it signs as (E2E_IDENTITY_DIR, else the fixture pool); w6 approves the read
+// fixture's open PR (`DEMO`, `loadSeedPulls().approved`), so a run under minted identities
+// points E2E_V2_OWNER at their own copy.
 const OWNER = idOrEmpty('OWNER')
 const COLLAB = idOrEmpty('COLLAB')
 const REPO = `e2e-${Date.now().toString(36)}`
@@ -107,7 +108,7 @@ test('w5. contributor stars and unstars the repo (index-only delete)', async ({ 
 })
 
 test('w6. owner approves the fixture PR, then removes the writer', async ({ browser }) => {
-  const page = await signedIn(browser, 'OWNER', repoUrl('pull', '&number=1'))
+  const page = await signedIn(browser, 'OWNER', repoUrl('pull', `&number=${loadSeedPulls().approved}`))
   await page.getByRole('button', { name: /^approve$/i }).click()
   await confirmWrite(page, /submit review/i)
   await expect(page.getByRole('region', { name: 'Approvals' })).toBeVisible()
