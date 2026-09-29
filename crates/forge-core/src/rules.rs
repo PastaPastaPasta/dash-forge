@@ -1834,6 +1834,39 @@ mod tests {
 
     /// The transition, count and numbering cases (`transition__*`, `dense_number__*`,
     /// `upstream_number__*`).
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct Codes {
+        codes: Vec<i64>,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct Transitions {
+        transitions: Vec<v2::Transition>,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct Totals {
+        issues: u64,
+        patches: u64,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct Messages {
+        messages: Vec<String>,
+    }
+
+    #[derive(Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct Input {
+        stored: Option<v2::StoredRun>,
+        report: v2::RunReport,
+        now: u64,
+    }
+
     fn run_transition_case(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
@@ -1853,22 +1886,12 @@ mod tests {
                 );
             }
             "transition_status" => {
-                #[derive(Deserialize, Serialize)]
-                #[serde(deny_unknown_fields)]
-                struct Codes {
-                    codes: Vec<i64>,
-                }
                 let inp: Codes = input(v);
                 let got: Vec<v2::StateStatus> =
                     inp.codes.iter().map(|&c| v2::status_of_code(c)).collect();
                 assert_eq!(got, expected::<Vec<v2::StateStatus>>(v), "vector `{ctx}`");
             }
             "transition_sum" => {
-                #[derive(Deserialize, Serialize)]
-                #[serde(deny_unknown_fields)]
-                struct Transitions {
-                    transitions: Vec<v2::Transition>,
-                }
                 let inp: Transitions = input(v);
                 let got = serde_json::json!({
                     "code": v2::state_code(&inp.transitions),
@@ -1892,22 +1915,11 @@ mod tests {
                 assert_eq!(got, expected::<v2::RepoCounts>(v), "vector `{ctx}`");
             }
             "dense_number" => {
-                #[derive(Deserialize, Serialize)]
-                #[serde(deny_unknown_fields)]
-                struct Totals {
-                    issues: u64,
-                    patches: u64,
-                }
                 let inp: Totals = input(v);
                 let got = v2::dense_number(inp.issues, inp.patches);
                 assert_eq!(got, expected::<Option<u32>>(v), "vector `{ctx}`");
             }
             "dense_refusal" => {
-                #[derive(Deserialize, Serialize)]
-                #[serde(deny_unknown_fields)]
-                struct Messages {
-                    messages: Vec<String>,
-                }
                 let inp: Messages = input(v);
                 let got: Vec<bool> = inp
                     .messages
@@ -1927,11 +1939,17 @@ mod tests {
                 );
                 assert_eq!(got, expected::<Option<u32>>(v), "vector `{ctx}`");
             }
+            "check_run_write" => {
+                let inp: Input = input(v);
+                let got = v2::check_run_write(inp.stored.as_ref(), &inp.report, inp.now);
+                assert_eq!(got, expected::<Option<v2::RunWrite>>(v), "vector `{ctx}`");
+            }
             other => panic!("vector `{ctx}`: not a transition case `{other}`"),
         }
     }
 
-    fn run_case_v2(v: &Vector) {
+    /// The issue / PR state cases (`fold_issue_v2__*`, `fold_pr_v2__*`).
+    fn run_fold_case(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
             "fold_issue" => {
@@ -1963,8 +1981,18 @@ mod tests {
                 );
                 assert_eq!(got, expected::<PrState>(v), "vector `{ctx}`");
             }
+            other => panic!("vector `{ctx}`: not a fold case `{other}`"),
+        }
+    }
+
+    fn run_case_v2(v: &Vector) {
+        let ctx = &v.name;
+        match v.case.as_str() {
+            "fold_issue" | "fold_pr" => run_fold_case(v),
             "transition_moves" | "transition_status" | "transition_sum" | "repo_counts"
-            | "dense_number" | "dense_refusal" | "upstream_number" => run_transition_case(v),
+            | "dense_number" | "dense_refusal" | "upstream_number" | "check_run_write" => {
+                run_transition_case(v);
+            }
             "pack_copies" => run_pack_copies(v),
             "v2_pack_list" => {
                 let inp: V2PackListInput = input(v);

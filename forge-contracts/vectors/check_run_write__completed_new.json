@@ -1,0 +1,19 @@
+{
+  "name": "completed_new",
+  "description": "A run reported only on completion gets both times (completedAtIfDone, startedIfRunning).",
+  "case": "check_run_write",
+  "rules": "v2",
+  "input": {
+    "stored": null,
+    "report": {
+      "status": "completed",
+      "conclusion": "success"
+    },
+    "now": 1000
+  },
+  "expected": {
+    "action": "create",
+    "startedAt": 1000,
+    "completedAt": 1000
+  }
+}

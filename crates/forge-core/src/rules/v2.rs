@@ -36,10 +36,11 @@ use std::collections::BTreeSet;
 use super::review::merged_log;
 
 pub use super::parity::{
-    checks_state, fold_milestones_v2, fold_thread_meta_v2, pinned_targets, trending_recount,
-    trending_window, CheckRunRow, CheckState, ChecksPolicy, ChecksState, Milestone, MilestoneDoc,
-    MilestoneItem, PinnedTarget, RequiredCheck, StarBeat, ThreadMeta, TimeGrid, TrendingEntry,
-    TrendingSelector, Window, PASSING_CONCLUSIONS, STAR_BEAT_GRID,
+    check_run_write, checks_state, fold_milestones_v2, fold_thread_meta_v2, pinned_targets,
+    trending_recount, trending_window, CheckRunRow, CheckState, ChecksPolicy, ChecksState,
+    Milestone, MilestoneDoc, MilestoneItem, PinnedTarget, RequiredCheck, RunReport, RunWrite,
+    RunWriteAction, StarBeat, StoredRun, ThreadMeta, TimeGrid, TrendingEntry, TrendingSelector,
+    Window, PASSING_CONCLUSIONS, STAR_BEAT_GRID,
 };
 pub use super::review::{
     anchor_of, apply_suggestion, fold_pr_review_v2, group_review_comments, is_author_kind,

@@ -275,6 +275,13 @@ function runCaseV2(v: Vector): void {
       expect((v.input as { readonly messages: readonly string[] }).messages.map(v2.namesDenseRule)).toEqual(v.expected)
       break
     }
+    case 'check_run_write': {
+      const run = ['status', 'startedAt', 'completedAt', 'conclusion']
+      onlyKeys(v, ['stored', 'report', 'now'], { stored: run, report: run })
+      const inp = v.input as { readonly stored: v2.StoredRun | null; readonly report: v2.RunReport; readonly now: number }
+      expect(v2.checkRunWrite(inp.stored, inp.report, inp.now)).toEqual(v.expected)
+      break
+    }
     case 'upstream_number': {
       onlyKeys(v, ['upstreamNumber', 'author', 'repoOwner', 'memberships'])
       const inp = v.input as {

@@ -1,0 +1,25 @@
+{
+  "name": "completion_never_before_start",
+  "description": "A completion time earlier than the stored start is raised to it.",
+  "case": "check_run_write",
+  "rules": "v2",
+  "input": {
+    "stored": {
+      "status": "in_progress",
+      "startedAt": 2000,
+      "completedAt": null,
+      "conclusion": null
+    },
+    "report": {
+      "status": "completed",
+      "conclusion": "success",
+      "completedAt": 1500
+    },
+    "now": 1000
+  },
+  "expected": {
+    "action": "replace",
+    "startedAt": null,
+    "completedAt": 2000
+  }
+}

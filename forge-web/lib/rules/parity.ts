@@ -307,3 +307,60 @@ export function trendingRecount(beats: readonly StarBeat[], grid: TimeGrid, nowM
     .sort((a, b) => b.count - a.count || compareStrings(b.repo, a.repo))
     .slice(0, limit)
 }
+
+// ---------------------------------------------------------------------------
+// Check-run reports: monotonic status and times
+// ---------------------------------------------------------------------------
+
+/** The stored run a report would update, as the monotonic rules read it. */
+export interface StoredRun {
+  readonly status: string
+  readonly startedAt?: number | null
+  readonly completedAt?: number | null
+  readonly conclusion?: string | null
+}
+
+/** What a reporter says now. */
+export interface RunReport {
+  readonly status: string
+  readonly conclusion?: string | null
+  readonly startedAt?: number | null
+  readonly completedAt?: number | null
+}
+
+/** The write a report makes; on a replace only a time the stored run lacks is set (null keeps it). */
+export interface RunWrite {
+  readonly action: 'create' | 'replace'
+  readonly startedAt: number | null
+  readonly completedAt: number | null
+}
+
+const STATUS_RANK: Readonly<Record<string, number>> = { queued: 0, in_progress: 1, completed: 2 }
+
+/**
+ * The write that records `report` against `stored` at `nowMs`, so the forge-community `checkRun`
+ * rules hold (D-5): `startedAt` on the first non-queued report, `completedAt` on the first
+ * completed one (the CI's own time when given, never before the start), a stored time never
+ * changed or dropped, and a backwards move or a changed conclusion is a new run. Null for an
+ * unknown status. Parity: forge-core `check_run_write`.
+ */
+export function checkRunWrite(stored: StoredRun | null, report: RunReport, nowMs: number): RunWrite | null {
+  const rank = STATUS_RANK[report.status]
+  if (rank === undefined) return null
+  const held = stored === null ? undefined : STATUS_RANK[stored.status]
+  const keeps =
+    stored !== null && held !== undefined && rank >= held && !(held === 2 && stored.conclusion != null && stored.conclusion !== (report.conclusion ?? null))
+  const heldStart = keeps ? stored.startedAt ?? null : null
+  const heldEnd = keeps ? stored.completedAt ?? null : null
+  const start = heldStart ?? (rank >= 1 ? report.startedAt ?? nowMs : null)
+  let end = heldEnd
+  if (end === null && rank === 2) {
+    const e = report.completedAt ?? nowMs
+    end = start === null ? e : Math.max(e, start)
+  }
+  return {
+    action: keeps ? 'replace' : 'create',
+    startedAt: heldStart !== null ? null : start,
+    completedAt: heldEnd !== null ? null : end,
+  }
+}

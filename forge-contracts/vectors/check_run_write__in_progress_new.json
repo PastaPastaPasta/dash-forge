@@ -1,0 +1,19 @@
+{
+  "name": "in_progress_new",
+  "description": "A first in-progress report sets startedAt to now (startedIfRunning).",
+  "case": "check_run_write",
+  "rules": "v2",
+  "input": {
+    "stored": null,
+    "report": {
+      "status": "in_progress",
+      "conclusion": null
+    },
+    "now": 1000
+  },
+  "expected": {
+    "action": "create",
+    "startedAt": 1000,
+    "completedAt": null
+  }
+}

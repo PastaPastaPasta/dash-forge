@@ -1,0 +1,19 @@
+{
+  "name": "queued_new",
+  "description": "A first queued report creates a run with no times (runningIfStarted).",
+  "case": "check_run_write",
+  "rules": "v2",
+  "input": {
+    "stored": null,
+    "report": {
+      "status": "queued",
+      "conclusion": null
+    },
+    "now": 1000
+  },
+  "expected": {
+    "action": "create",
+    "startedAt": null,
+    "completedAt": null
+  }
+}

@@ -515,3 +515,121 @@ pub fn trending_recount(
     rows.truncate(limit);
     rows
 }
+
+// ===========================================================================
+// Check-run reports: monotonic status and times
+// ===========================================================================
+
+/// The stored run a report would update, as far as the monotonic rules read it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredRun {
+    /// `queued`, `in_progress` or `completed`.
+    pub status: String,
+    /// `startedAt` (ms), once set.
+    #[serde(default)]
+    pub started_at: Option<u64>,
+    /// `completedAt` (ms), once set.
+    #[serde(default)]
+    pub completed_at: Option<u64>,
+    /// `conclusion`, once set.
+    #[serde(default)]
+    pub conclusion: Option<String>,
+}
+
+/// What a reporter says now.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunReport {
+    /// `queued`, `in_progress` or `completed`.
+    pub status: String,
+    /// The conclusion of a completed run.
+    #[serde(default)]
+    pub conclusion: Option<String>,
+    /// A start time the CI gives (ms); else the report's time is used.
+    #[serde(default)]
+    pub started_at: Option<u64>,
+    /// A completion time the CI gives (ms); else the report's time is used.
+    #[serde(default)]
+    pub completed_at: Option<u64>,
+}
+
+/// How a report is written ([`check_run_write`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RunWriteAction {
+    /// A new `checkRun` document.
+    Create,
+    /// A replace of the stored run.
+    Replace,
+}
+
+/// The write a report makes: create or replace, and the `startedAt` / `completedAt` it
+/// carries. On a replace, only a time the stored run does not have yet is set (`None` keeps
+/// the stored value; both are `immutableAllowSetting`, so a set time never changes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunWrite {
+    /// Create or replace.
+    pub action: RunWriteAction,
+    /// `startedAt` to write, if any.
+    pub started_at: Option<u64>,
+    /// `completedAt` to write, if any.
+    pub completed_at: Option<u64>,
+}
+
+fn status_rank(status: &str) -> Option<u8> {
+    match status {
+        "queued" => Some(0),
+        "in_progress" => Some(1),
+        "completed" => Some(2),
+        _ => None,
+    }
+}
+
+/// The write that records `report` against `stored` (the reporter's run it would update, or
+/// none) at `now_ms`, so the forge-community `checkRun` rules hold (`startedIfRunning`,
+/// `runningIfStarted`, `completedAtIfDone`, `doneIfCompletedAt`, D-5):
+///
+/// * `startedAt` is set on the first report that is not `queued`, `completedAt` on the first
+///   `completed` one: the CI's own time when given, else `now_ms`; a completion never precedes
+///   the start it is paired with.
+/// * A stored time is never changed or dropped.
+/// * A report that would move a run backwards (in progress to queued, completed to anything
+///   else) or change a completed run's conclusion is a re-run: a new document.
+///
+/// `None` when the report's status is not one of the three.
+#[must_use]
+pub fn check_run_write(
+    stored: Option<&StoredRun>,
+    report: &RunReport,
+    now_ms: u64,
+) -> Option<RunWrite> {
+    let rank = status_rank(&report.status)?;
+    let stored = stored.filter(|s| {
+        let Some(held) = status_rank(&s.status) else {
+            return false;
+        };
+        let conclusion_changes =
+            held == 2 && s.conclusion.is_some() && s.conclusion != report.conclusion;
+        rank >= held && !conclusion_changes
+    });
+    let held_start = stored.and_then(|s| s.started_at);
+    let held_end = stored.and_then(|s| s.completed_at);
+    let start = held_start.or_else(|| (rank >= 1).then(|| report.started_at.unwrap_or(now_ms)));
+    let end = held_end.or_else(|| {
+        (rank == 2).then(|| {
+            let end = report.completed_at.unwrap_or(now_ms);
+            start.map_or(end, |s| end.max(s))
+        })
+    });
+    Some(RunWrite {
+        action: if stored.is_some() {
+            RunWriteAction::Replace
+        } else {
+            RunWriteAction::Create
+        },
+        started_at: if held_start.is_some() { None } else { start },
+        completed_at: if held_end.is_some() { None } else { end },
+    })
+}

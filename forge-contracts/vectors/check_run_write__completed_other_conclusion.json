@@ -1,0 +1,24 @@
+{
+  "name": "completed_other_conclusion",
+  "description": "A completed run cannot change its conclusion (immutable once set): a new run.",
+  "case": "check_run_write",
+  "rules": "v2",
+  "input": {
+    "stored": {
+      "status": "completed",
+      "startedAt": 100,
+      "completedAt": 200,
+      "conclusion": "failure"
+    },
+    "report": {
+      "status": "completed",
+      "conclusion": "success"
+    },
+    "now": 1000
+  },
+  "expected": {
+    "action": "create",
+    "startedAt": 1000,
+    "completedAt": 1000
+  }
+}

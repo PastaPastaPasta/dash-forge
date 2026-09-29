@@ -1,0 +1,21 @@
+{
+  "name": "ci_times_used",
+  "description": "The CI's own start and completion times are used when given.",
+  "case": "check_run_write",
+  "rules": "v2",
+  "input": {
+    "stored": null,
+    "report": {
+      "status": "completed",
+      "conclusion": "success",
+      "startedAt": 900,
+      "completedAt": 950
+    },
+    "now": 1000
+  },
+  "expected": {
+    "action": "create",
+    "startedAt": 900,
+    "completedAt": 950
+  }
+}
