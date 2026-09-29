@@ -57,6 +57,8 @@ pub mod network;
 pub mod pack;
 pub mod platform;
 pub mod private;
+#[cfg(test)]
+pub(crate) mod rc1;
 pub mod refs;
 pub mod repo;
 pub mod resolve;

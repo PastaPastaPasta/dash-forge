@@ -109,6 +109,9 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "te
 tempfile = "3"
 hex = "0.4"
 serde_json = { workspace = true }
+# The RC1 conformance runner (`src/rc1.rs`): the SDK's own rs-dpp with document-property
+# validation and JSON contract parsing switched on, in test builds only.
+dpp = { workspace = true, features = ["validation", "json-conversion"] }
 
 [lints]
 workspace = true

@@ -2608,7 +2608,7 @@ impl FieldValue {
         }
     }
 
-    fn into_value(self) -> Value {
+    pub(crate) fn into_value(self) -> Value {
         match self {
             FieldValue::Bytes(b) => Value::Bytes(b),
             FieldValue::Bytes32(b) => Value::Bytes32(b),
