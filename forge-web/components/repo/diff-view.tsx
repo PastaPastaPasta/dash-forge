@@ -26,13 +26,12 @@ import {
   mapPooled,
   modeString,
   plural,
-  type CompactDiffLine,
   type DiffSides,
   type FileChange,
   type FilePatch,
   type TextDiffLine,
 } from '@/lib/view'
-import { compactDiffLines, EXPAND_STEP, expandGap, splitRows, type DiffGap, type Revealed } from '@/lib/view/text-diff'
+import { compactDiffLines, DIFF_CONTEXT, EXPAND_STEP, expandGap, splitRows, type DiffGap, type Revealed } from '@/lib/view/text-diff'
 import { createBatcher } from '@/lib/view/batcher'
 import { DIFF_PALETTES, type DiffPalette } from '@/lib/view/prefs'
 import { lineKey } from '@/lib/view/inline-threads'
@@ -100,7 +99,7 @@ function ChangePath({ change }: { change: FileChange }): JSX.Element {
 
 /**
  * Hide whitespace: `?w=1` / `?w=0` when the URL says, else the reader's preference. Setting it
- * writes both, so a copied link shows what its sender saw (L-71).
+ * writes both (`w=0` too), so a copied link shows what its sender saw (L-71).
  */
 function useIgnoreWhitespace(): [boolean, (on: boolean) => void] {
   const [prefs, update] = usePrefs()
@@ -108,12 +107,11 @@ function useIgnoreWhitespace(): [boolean, (on: boolean) => void] {
   const router = useRouter()
   const pathname = usePathname()
   const w = params.get('w')
-  const on = w === '1' ? true : w === '0' ? false : prefs.ignoreWhitespace
+  const on = w === '1' || (w !== '0' && prefs.ignoreWhitespace)
   const set = (next: boolean): void => {
     update({ ignoreWhitespace: next })
     const q = new URLSearchParams(params.toString())
-    if (next) q.set('w', '1')
-    else q.delete('w')
+    q.set('w', next ? '1' : '0')
     router.replace(`${pathname}?${q.toString()}${window.location.hash}`, { scroll: false })
   }
   return [on, set]
@@ -135,11 +133,11 @@ export function DiffView({
   /** Where a file's path links (omit for no links). Not called for deleted files. */
   fileHref?: (path: string) => string
   /** Why renames with edits may not be shown (`TreeDiff.renameLimit`). */
-  renameLimit?: string | null
+  renameLimit?: string | null | undefined
 }): JSX.Element {
   const [shown, setShown] = useState(Math.min(FILE_PAGE, changes.length))
   const [{ palette }] = usePrefs()
-  const [ignoreWhitespace] = useIgnoreWhitespace()
+  const [ignoreWhitespace, setIgnoreWhitespace] = useIgnoreWhitespace()
   // Every file's patch is loaded to count the totals: at once for a small change, on request for a big one.
   const [countAll, setCountAll] = useState(changes.length <= AUTO_COUNT)
   // Patches are keyed by mode + path: toggling whitespace loads the other mode's patches
@@ -211,7 +209,7 @@ export function DiffView({
 
   return (
     <div className="space-y-3">
-      <DiffToolbar />
+      <DiffToolbar ignoreWhitespace={ignoreWhitespace} setIgnoreWhitespace={setIgnoreWhitespace} />
       <details open={changes.length <= FILE_PAGE} className="group rounded-lg border border-anvil-200 dark:border-anvil-800">
         <summary className="flex cursor-pointer list-none flex-wrap items-center gap-2 px-3 py-2 text-dense coarse:min-h-11 [&::-webkit-details-marker]:hidden">
           <ChevronRight className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400 transition-transform group-open:rotate-90" aria-hidden />
@@ -222,6 +220,7 @@ export function DiffView({
           {totals.pending === 0 ? (
             <span className="flex items-center gap-2" data-testid="diff-totals">
               <DiffStat added={totals.added} deleted={totals.deleted} />
+              {truncated ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">in the {plural(changes.length, 'listed file')}</span> : null}
               {totals.uncounted > 0 ? (
                 <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{plural(totals.uncounted, 'file')} not counted</span>
               ) : null}
@@ -271,7 +270,7 @@ export function DiffView({
         </ul>
       </details>
 
-      {renameLimit !== null ? (
+      {renameLimit != null ? (
         <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="rename-limit">
           {renameLimit}
         </p>
@@ -321,9 +320,8 @@ function DiffStat({ added, deleted }: { added: number; deleted: number }): JSX.E
 }
 
 /** Layout, whitespace and palette switches; remembered in this browser (whitespace also in the URL). */
-function DiffToolbar(): JSX.Element {
+function DiffToolbar({ ignoreWhitespace, setIgnoreWhitespace }: { ignoreWhitespace: boolean; setIgnoreWhitespace: (on: boolean) => void }): JSX.Element {
   const [prefs, update] = usePrefs()
-  const [ignoreWhitespace, setIgnoreWhitespace] = useIgnoreWhitespace()
   const wide = useMinWidth(1024)
   const toggle = (label: string, pressed: boolean, onClick: () => void, title?: string): JSX.Element => (
     <button
@@ -425,14 +423,15 @@ function FilePatchView({
                 </Button>
               ) : null}
             </div>
-          ) : patch.lines.length === 0 ? (
+          ) : patch.full.length === 0 ? (
             <p className="px-4 py-4 text-dense text-anvil-500 dark:text-anvil-400">Empty file.</p>
           ) : ignoreWhitespace && patch.added + patch.deleted === 0 && change.status !== 'added' && change.status !== 'deleted' ? (
             <p className="px-4 py-4 text-dense text-anvil-500 dark:text-anvil-400" data-testid="whitespace-only">
               Only whitespace changed in this file. Turn off Hide whitespace to see it.
             </p>
           ) : (
-            <PatchLines path={change.path} lines={patch.lines} full={patch.full} />
+            // Keyed by mode: expanded ranges index one mode's lines, never the other's.
+            <PatchLines key={ignoreWhitespace ? 'w' : 'x'} path={change.path} oldPath={change.oldPath} full={patch.full} />
           )}
         </div>
       ) : null}
@@ -491,10 +490,10 @@ function LineNumber({ path, side, line }: { path: string; side: 0 | 1; line: num
 }
 
 /** The inline threads (and an open composer) under a row, if any. */
-function ThreadRow({ path, keys, colSpan }: { path: string; keys: readonly (readonly [0 | 1, number | null])[]; colSpan: number }): JSX.Element | null {
+function ThreadRow({ pathOf, keys, colSpan }: { pathOf: (side: 0 | 1) => string; keys: readonly (readonly [0 | 1, number | null])[]; colSpan: number }): JSX.Element | null {
   const inline = useContext(InlineCommentsContext)
   if (inline === null) return null
-  const parts = keys.filter((k): k is readonly [0 | 1, number] => k[1] !== null).map(([side, line]) => inline.render(path, side, line)).filter((n) => n !== null)
+  const parts = keys.filter((k): k is readonly [0 | 1, number] => k[1] !== null).map(([side, line]) => inline.render(pathOf(side), side, line)).filter((n) => n !== null)
   if (parts.length === 0) return null
   return (
     <tr>
@@ -542,25 +541,35 @@ function GapRow({ gap, colSpan, total, onExpand }: { gap: DiffGap; colSpan: numb
   )
 }
 
-function PatchLines({ path, lines: folded, full }: { path: string; lines: readonly CompactDiffLine[]; full: readonly TextDiffLine[] }): JSX.Element {
+/**
+ * A text patch's rows. A renamed file's old side is its old path: inline comments on it anchor
+ * there (as they did when the file showed as deleted), and its new side at its new path.
+ */
+function PatchLines({ path, oldPath = path, full }: { path: string; oldPath?: string | undefined; full: readonly TextDiffLine[] }): JSX.Element {
   const [limit, setLimit] = useState(LINE_PAGE)
   const [revealed, setRevealed] = useState<Revealed>([])
-  const lines = useMemo(() => (revealed.length === 0 ? folded : compactDiffLines(full, 3, revealed)), [folded, full, revealed])
+  const lines = useMemo(() => compactDiffLines(full, DIFF_CONTEXT, revealed), [full, revealed])
+  const pathOf = (side: 0 | 1): string => (side === 0 ? oldPath : path)
   const expand = (range: readonly [number, number]): void => setRevealed((r) => [...r, range])
   const inline = useContext(InlineCommentsContext)
   // Report the rows on screen (not past the "show more" cut), and withdraw them on unmount
   // (a collapsed file), so threads under lines nobody can see are listed elsewhere.
   useEffect(() => {
     if (inline === null) return
-    const keys = new Set<string>()
+    const shown = new Map<string, Set<string>>([
+      [oldPath, new Set()],
+      [path, new Set()],
+    ])
     for (const l of lines.slice(0, limit)) {
       if (l.kind === 'gap') continue
-      if (l.kind !== 'added' && l.oldLine !== null) keys.add(lineKey(path, 0, l.oldLine))
-      if (l.kind !== 'deleted' && l.newLine !== null) keys.add(lineKey(path, 1, l.newLine))
+      if (l.kind !== 'added' && l.oldLine !== null) shown.get(oldPath)!.add(lineKey(oldPath, 0, l.oldLine))
+      if (l.kind !== 'deleted' && l.newLine !== null) shown.get(path)!.add(lineKey(path, 1, l.newLine))
     }
-    inline.report(path, keys)
-    return () => inline.report(path, null)
-  }, [inline, path, lines, limit])
+    for (const [p, keys] of shown) inline.report(p, keys)
+    return () => {
+      for (const p of shown.keys()) inline.report(p, null)
+    }
+  }, [inline, path, oldPath, lines, limit])
   const [prefs] = usePrefs()
   const wide = useMinWidth(1024)
   const split = wide && prefs.diffLayout === 'split'
@@ -594,7 +603,7 @@ function PatchLines({ path, lines: folded, full }: { path: string; lines: readon
                   return (
                     <Fragment key={`${left?.oldLine ?? 'n'}-${right?.newLine ?? 'n'}-${index}`}>
                       <tr>
-                        <LineNumber path={path} side={0} line={left?.oldLine ?? null} />
+                        <LineNumber path={pathOf(0)} side={0} line={left?.oldLine ?? null} />
                         <td className={cn('overflow-hidden whitespace-pre-wrap break-all px-2 text-anvil-800 dark:text-anvil-200', lineTint(same ? null : left?.kind ?? null, palette), left === null && 'bg-anvil-100 dark:bg-anvil-900')}>
                           {left ? (
                             <>
@@ -611,7 +620,7 @@ function PatchLines({ path, lines: folded, full }: { path: string; lines: readon
                           ) : null}
                         </td>
                       </tr>
-                      <ThreadRow path={path} colSpan={4} keys={[[0, left?.oldLine ?? null], [1, right?.newLine ?? null]]} />
+                      <ThreadRow pathOf={pathOf} colSpan={4} keys={[[0, left?.oldLine ?? null], [1, right?.newLine ?? null]]} />
                     </Fragment>
                   )
                 })
@@ -620,14 +629,14 @@ function PatchLines({ path, lines: folded, full }: { path: string; lines: readon
                   return (
                     <Fragment key={`${line.oldLine ?? 'n'}-${line.newLine ?? 'n'}`}>
                       <tr className={lineTint(line.kind, palette)}>
-                        <LineNumber path={path} side={0} line={line.kind === 'added' ? null : line.oldLine} />
+                        <LineNumber path={pathOf(0)} side={0} line={line.kind === 'added' ? null : line.oldLine} />
                         <LineNumber path={path} side={1} line={line.kind === 'deleted' ? null : line.newLine} />
                         <td className="whitespace-pre px-3 text-anvil-800 dark:text-anvil-200">
                           <Marker kind={line.kind} palette={palette} />
                           <LineText line={line} />
                         </td>
                       </tr>
-                      <ThreadRow path={path} colSpan={3} keys={[[0, line.oldLine], [1, line.kind === 'deleted' ? null : line.newLine]]} />
+                      <ThreadRow pathOf={pathOf} colSpan={3} keys={[[0, line.oldLine], [1, line.kind === 'deleted' ? null : line.newLine]]} />
                     </Fragment>
                   )
                 })}

@@ -417,7 +417,7 @@ export function ComparisonView({
   )
 
   const range =
-    data !== null ? (
+    data !== null && data.upToDate !== true ? (
       <div className="flex flex-wrap items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
         {data.comparedBaseOid ? <Oid value={data.comparedBaseOid} chars={7} copyable={false} /> : <span>(empty tree)</span>}
         <span>…</span>
@@ -528,7 +528,7 @@ export function ComparisonView({
             sides={data.sides}
             changes={data.changes}
             truncated={data.truncated}
-            renameLimit={data.renameLimit ?? null}
+            renameLimit={data.renameLimit}
           />
         )
         return wrap ? wrap(data, diff) : diff

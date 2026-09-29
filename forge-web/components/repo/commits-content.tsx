@@ -108,10 +108,11 @@ export function pagesParam(raw: string | null): number {
   return Number.isInteger(n) && n >= 1 ? Math.min(n, MAX_URL_PAGES) : 1
 }
 
-/** The footer's count (L-35): what is shown, and of how many when that is known. */
-export function logStatus(state: Pick<LogState, 'entries' | 'next'>, total: number | null): string {
+/** The footer's count (L-35): what is shown, and of how many when that is known; for a path's History, what changed it. */
+export function logStatus(state: Pick<LogState, 'entries' | 'next'>, total: number | null, path = ''): string {
   const n = state.entries.length
-  if (state.next === null) return n === 1 ? 'The whole history: 1 commit' : `The whole history: ${plural(n, 'commit')}`
+  if (path) return state.next === null ? `The whole history of ${path}: ${plural(n, 'commit')}` : `Showing ${plural(n, 'commit')} that changed ${path}`
+  if (state.next === null) return `The whole history: ${plural(n, 'commit')}`
   if (total !== null && total >= n) return `Showing ${n.toLocaleString('en-US')} of ${plural(total, 'commit')}`
   return `Showing the newest ${plural(n, 'commit')}`
 }
@@ -203,7 +204,9 @@ function LogBody({
   useEffect(() => {
     if (restored.current || state.loading || (state.pages < wanted && state.next !== null)) return
     restored.current = true
+    // Used once: a later visit by a plain link starts at the top.
     const y = Number(sessionStorage.getItem(scrollKey()))
+    sessionStorage.removeItem(scrollKey())
     if (y > 0) window.scrollTo(0, y)
   }, [state.loading, state.pages, state.next, wanted])
   const older = (): void => {
@@ -251,7 +254,7 @@ function LogBody({
       </div>
       <div className="flex flex-wrap items-center justify-between gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
         <span data-testid="log-status">
-          {path ? (state.next === null ? `The whole history of ${path}: ${plural(state.entries.length, 'commit')}` : `Showing ${plural(state.entries.length, 'commit')} that changed ${path}`) : logStatus(state, total.data)}
+          {logStatus(state, total.data, path)}
           {path && state.capped ? ` · searched the last ${plural(state.examined, 'commit')} (up to ${PATH_WALK_CAP} a page)` : ''}
         </span>
         {state.error !== null ? <span className="text-danger-700 dark:text-danger-400">{state.error}</span> : null}

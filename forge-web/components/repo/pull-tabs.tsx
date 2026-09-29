@@ -33,7 +33,6 @@ export function CommitsTab({
   sourceAddr,
   unavailable,
   onRetry,
-  allHint = '`dg pr commits` lists them all.',
 }: {
   commits: PrCommits | null
   error: string | null
@@ -44,14 +43,16 @@ export function CommitsTab({
   /** Where the head's commits browse (the fork), when not this repo. */
   sourceAddr: RepoAddress | null
   onRetry: () => void
-  /** How to see every commit when the list is cut. */
-  allHint?: string
 }): JSX.Element {
   if (error !== null) return <ErrorState message={error} onRetry={onRetry} />
   if (commits === null && unavailable !== null) return <EmptyState icon={GitCommit} title="Commits unavailable" body={unavailable} />
   if (commits === null) return loading ? <LoadingBlock label="Walking the PR's commits" /> : <LoadingBlock label="Comparing the PR with its base" />
   if (commits.commits.length === 0) return <EmptyState icon={GitCommit} title="No commits" body="The base branch already contains this PR's head." />
-  const at = sourceAddr ?? addr
+  return <CommitList commits={commits} addr={sourceAddr ?? addr} allHint="`dg pr commits` lists them all." />
+}
+
+/** Commits, newest first, each linking to its page in the repo at `addr`; `allHint` says how to see a cut list whole. */
+export function CommitList({ commits, addr: at, allHint }: { commits: PrCommits; addr: RepoAddress; allHint: string }): JSX.Element {
   return (
     <div data-testid="pr-commits">
       <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">

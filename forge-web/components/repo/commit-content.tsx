@@ -95,7 +95,7 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
           sides={sides}
           changes={changes}
           truncated={truncated}
-          renameLimit={data.renameLimit ?? null}
+          renameLimit={data.renameLimit}
           fileHref={(path) => repoHref('/repo/blob', addr, { path, ref: full })}
         />
       )}

@@ -95,8 +95,12 @@ describe('diffTextLines', () => {
     const before = Array.from({ length: 100 }, (_, i) => `a${i}`).join('\n')
     const after = Array.from({ length: 100 }, (_, i) => `b${i}`).join('\n')
     expect(diffTextLines(before, after, { maxEdits: 50, maxWork: 1_000_000 })).toBeNull()
-    expect(diffTextLines(before, after, { maxEdits: 1000, maxWork: 10 })).toBeNull()
     expect(diffTextLines(before, after)).not.toBeNull()
+    // The work bound: lines that do match (repeated ones) need a search, which is cut off.
+    const x = Array.from({ length: 100 }, (_, i) => `l${i % 7}`).join('\n')
+    const y = Array.from({ length: 100 }, (_, i) => `l${(i * 3) % 7}`).join('\n')
+    expect(diffTextLines(x, y, { maxEdits: 1000, maxWork: 10 })).toBeNull()
+    expect(diffTextLines(x, y, { maxEdits: 1000, maxWork: 1_000_000 })).not.toBeNull()
   })
 })
 

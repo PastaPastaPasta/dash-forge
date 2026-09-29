@@ -11,7 +11,8 @@ import { describe, expect, it } from 'vitest'
 
 import { HAVE_GIT, scratchRepo, writeLiterally } from '../merge/git-oracle'
 import { Store } from './diff-fixtures'
-import { branchRefName, headKeyOf, loadComparison, sortBranches } from './compare'
+import { loadComparison } from './compare'
+import { branchRefName, headKeyOf, sortBranches } from './refs'
 
 function prng(seed: number): () => number {
   let x = seed >>> 0 || 1

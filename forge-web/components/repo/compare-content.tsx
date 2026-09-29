@@ -23,7 +23,7 @@ import { useAsync } from '@/hooks/use-async'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { DiffView } from '@/components/repo/diff-view'
-import { CommitsTab } from '@/components/repo/pull-tabs'
+import { CommitList } from '@/components/repo/pull-tabs'
 import { ReadErrorState } from '@/components/repo/resolved-tip'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -51,7 +51,7 @@ export function CompareContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         <EmptyState icon={GitCompare} title="Nothing to compare" body={`No branch, tag or commit named ${missing.name} in ${home.repo.name}.`} />
       ) : (
         <BrowseBoundary repo={home.repo} addr={addr}>
-          {(reader, retry) => <Resolve reader={reader} retry={retry} home={home} addr={addr} base={base} head={head} />}
+          {(reader, retry) => <Resolve reader={reader} retry={retry} home={home} addr={addr} base={base} head={head} params={[baseParam, headParam]} />}
         </BrowseBoundary>
       )}
     </div>
@@ -105,6 +105,7 @@ function Resolve({
   addr,
   base,
   head,
+  params,
 }: {
   reader: BrowseReader
   retry: () => void
@@ -112,6 +113,8 @@ function Resolve({
   addr: RepoAddress
   base: SelectedRef
   head: SelectedRef
+  /** The refs as the URL names them (`tags/v1`, a full commit id), for links that keep them. */
+  params: readonly [string, string]
 }): JSX.Element {
   const key = repoKey(home.repo)
   const baseTip = selectedTip(base) as string
@@ -127,9 +130,9 @@ function Resolve({
   if (tips.error !== null) return <ReadErrorState cause={tips.cause} retry={retry} addr={addr} repo={home.repo} />
   if (tips.data === null) return <Progress label="Reading both refs" />
   const [b, h] = tips.data
-  const notCommit = b.type !== 'commit' ? base : h.type !== 'commit' ? head : null
-  if (notCommit !== null) return <EmptyState icon={GitCompare} title={`${notCommit.name} is not a commit`} body="Only commits (a branch, a tag of a commit, a commit id) have a history to compare." />
-  return <Compared key={`${b.oid}...${h.oid}`} reader={reader} addr={addr} base={base} head={head} baseOid={b.oid} headOid={h.oid} />
+  const notCommit = ([[b, base], [h, head]] as const).find(([tip]) => tip.type !== 'commit')?.[1]
+  if (notCommit !== undefined) return <EmptyState icon={GitCompare} title={`${notCommit.name} is not a commit`} body="Only commits (a branch, a tag of a commit, a commit id) have a history to compare." />
+  return <Compared key={`${b.oid}...${h.oid}`} reader={reader} addr={addr} base={base} head={head} params={params} baseOid={b.oid} headOid={h.oid} />
 }
 
 function Progress({ label, onStop }: { label: string; onStop?: () => void }): JSX.Element {
@@ -150,6 +153,7 @@ function Compared({
   addr,
   base,
   head,
+  params: [baseParam, headParam],
   baseOid,
   headOid,
 }: {
@@ -157,10 +161,12 @@ function Compared({
   addr: RepoAddress
   base: SelectedRef
   head: SelectedRef
+  params: readonly [string, string]
   baseOid: string
   headOid: string
 }): JSX.Element {
   const [read, setRead] = useState(0)
+  const [searching, setSearching] = useState(true)
   const stop = useRef<AbortController | null>(null)
   const cmp = useAsync(
     (signal) => {
@@ -168,7 +174,12 @@ function Compared({
       stop.current = c
       signal.addEventListener('abort', () => c.abort())
       setRead(0)
-      return loadComparison(reader, baseOid, headOid, { signal: c.signal, onProgress: (n) => c.signal.aborted || setRead(n) })
+      setSearching(true)
+      return loadComparison(reader, baseOid, headOid, {
+        signal: c.signal,
+        onProgress: (n) => c.signal.aborted || setRead(n),
+        onMergeBase: () => c.signal.aborted || setSearching(false),
+      })
     },
     [baseOid, headOid],
   )
@@ -178,9 +189,12 @@ function Compared({
   }
   const data = cmp.data
   if (data === null) {
-    return <Progress label={read > 0 ? `Finding where the histories meet: ${read.toLocaleString('en-US')} commits read` : 'Comparing'} onStop={read > 0 ? () => stop.current?.abort() : undefined} />
+    return searching && read > 0 ? (
+      <Progress label={`Finding where the histories meet: ${read.toLocaleString('en-US')} commits read`} onStop={() => stop.current?.abort()} />
+    ) : (
+      <Progress label={searching ? 'Comparing' : 'Reading the commits and changed files'} />
+    )
   }
-  const swap = repoHref('/repo/compare', addr, { base: head.name, head: base.name })
   if (data.kind === 'identical') return <EmptyState icon={GitCompare} title="Nothing to compare" body={`${base.name} and ${head.name} are the same commit.`} />
   if (data.kind === 'unrelated') return <EmptyState icon={GitCompare} title="Nothing to compare" body={`${base.name} and ${head.name} have entirely different histories.`} />
   if (data.kind === 'up-to-date') {
@@ -190,7 +204,7 @@ function Compared({
         title="There isn't anything to compare"
         body={`${base.name} is up to date with all commits from ${head.name}.`}
         action={
-          <Link href={swap} className="text-dense font-medium text-forge-700 underline underline-offset-2 dark:text-forge-400">
+          <Link href={repoHref('/repo/compare', addr, { base: headParam, head: baseParam })} className="text-dense font-medium text-forge-700 underline underline-offset-2 dark:text-forge-400">
             Compare {head.name}...{base.name} instead
           </Link>
         }
@@ -198,12 +212,13 @@ function Compared({
     )
   }
   const { diff, commits, mergeBase } = data
+  const commitCount = plural(commits.total ?? `${commits.commits.length}+`, 'commit')
   const branches = base.ref !== undefined && !base.isTag && head.ref !== undefined && !head.isTag && base.ref.refName !== head.ref.refName
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-anvil-200 px-4 py-3 text-dense dark:border-anvil-800" data-testid="compare-summary">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-anvil-600 dark:text-anvil-300">
-          <span className="font-medium text-anvil-800 dark:text-anvil-100">{plural(commits.total ?? `${commits.commits.length}+`, 'commit')}</span>
+          <span className="font-medium text-anvil-800 dark:text-anvil-100">{commitCount}</span>
           <span>{plural(diff.truncated ? `${diff.changes.length.toLocaleString('en-US')}+` : diff.changes.length, 'file')} changed</span>
           <span className="flex items-center gap-1 text-[12px]">
             from merge base <Oid value={mergeBase} chars={7} copyable={false} />
@@ -211,7 +226,7 @@ function Compared({
         </div>
         {branches ? (
           <Link
-            href={repoHref('/repo/pulls/new', addr, { base: base.name, head: head.name })}
+            href={repoHref('/repo/pulls/new', addr, { base: baseParam, head: headParam })}
             className="inline-flex h-8 items-center gap-1.5 rounded-md bg-forge-700 px-3 text-dense font-medium text-white hover:bg-forge-800"
             data-testid="compare-create-pr"
           >
@@ -221,16 +236,16 @@ function Compared({
       </div>
       <details open={commits.commits.length <= 10} className="group">
         <summary className="mb-2 cursor-pointer text-dense font-semibold text-anvil-700 dark:text-anvil-200">
-          Commits ({plural(commits.total ?? `${commits.commits.length}+`, 'commit')})
+          Commits ({commitCount})
         </summary>
-        <CommitsTab commits={commits} error={null} loading={false} unavailable={null} addr={addr} sourceAddr={null} onRetry={() => undefined} allHint={`Clone the repo and run git log ${shortOid(mergeBase)}..${head.name} to see them all.`} />
+        <CommitList commits={commits} addr={addr} allHint={`Clone the repo and run git log ${shortOid(mergeBase)}..${shortOid(headOid)} to see them all.`} />
       </details>
       <DiffView
         key={`${mergeBase}...${headOid}`}
         sides={{ base: reader, head: reader }}
         changes={diff.changes}
         truncated={diff.truncated}
-        renameLimit={diff.renameLimit ?? null}
+        renameLimit={diff.renameLimit}
         fileHref={(path) => repoHref('/repo/blob', addr, { path, ref: headOid })}
       />
     </div>

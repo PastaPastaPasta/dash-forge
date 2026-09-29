@@ -6,10 +6,7 @@
 
 import type { CommitObject, GitIdent } from './git-objects'
 
-export interface Person {
-  readonly name: string
-  readonly email: string
-}
+export type Person = Pick<GitIdent, 'name' | 'email'>
 
 export interface CommitPeople {
   readonly author: GitIdent
@@ -40,10 +37,11 @@ const samePerson = (a: Person, b: Person): boolean => a.name === b.name && a.ema
 export function commitPeople(commit: CommitObject): CommitPeople {
   const { author, committer } = commit
   const committerIsAuthor = samePerson(author, committer)
-  const seen: Person[] = [author]
+  const seen = new Set([author.email.toLowerCase()])
   const coAuthors = coAuthorsOf(commit.message).filter((p) => {
-    if (seen.some((q) => q.email.toLowerCase() === p.email.toLowerCase())) return false
-    seen.push(p)
+    const key = p.email.toLowerCase()
+    if (seen.has(key)) return false
+    seen.add(key)
     return true
   })
   return {

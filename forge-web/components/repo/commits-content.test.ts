@@ -58,4 +58,8 @@ describe('logStatus', () => {
   it('as the whole history once the walk reached the root', () => {
     expect(logStatus(withPage(shown, page(['c1'], null)), null)).toBe('The whole history: 3 commits')
   })
+  it("as a path's History", () => {
+    expect(logStatus(shown, 99, 'src/a.c')).toBe('Showing 2 commits that changed src/a.c')
+    expect(logStatus(withPage(shown, page(['c1'], null)), null, 'src/a.c')).toBe('The whole history of src/a.c: 3 commits')
+  })
 })

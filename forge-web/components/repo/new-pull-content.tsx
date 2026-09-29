@@ -18,7 +18,7 @@ import { GitBranch } from 'lucide-react'
 import { createPatch, findForks, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
 import { branchName, commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
 import { preferring, type PullComparison } from '@/lib/view/pull-diff'
-import { branchRefName, headKeyOf, sortBranches } from '@/lib/view/compare'
+import { branchRefName, headKeyOf, sortBranches } from '@/lib/view/refs'
 import { dropPrDraft, loadPrDraft, savePrDraft } from '@/lib/view/pr-draft'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
 import { useAuth } from '@/contexts/auth-context'
@@ -112,7 +112,6 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   const sameBranch = head !== null && head.repo.repoId === repo.repoId && head.refName === base
   // The comparison below says whether the base already contains the head (nothing to merge).
   const [comparison, setComparison] = useState<PullComparison | null>(null)
-  const onResult = useCallback((c: PullComparison | null) => setComparison(c), [])
   const nothing = head !== null && (head.oid === baseTip || comparison?.upToDate === true)
 
   // The head commit's subject becomes the title until the author types one (L-16). It is read
@@ -332,7 +331,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
           spec={{ baseTipOid: baseTip, baseOidAtOpen: baseTip, headOid: head.oid, merged: false, imported: false, importedUrl: '', sourceBaseOid: '' }}
           noHead="Pick a branch to compare."
           onSides={onSides}
-          onResult={onResult}
+          onResult={setComparison}
         />
       ) : null}
     </div>

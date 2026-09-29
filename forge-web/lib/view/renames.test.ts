@@ -156,6 +156,9 @@ describe.skipIf(!HAVE_GIT)('rename detection matches git diff -M', () => {
       expect(limited, `case ${c}`).toBeNull()
       expect(ours(changes), `case ${c}`).toEqual(want[c])
       renames += changes.filter((x) => x.status === 'renamed').length
+      // A tight read budget may find fewer renames, never one git does not make.
+      const tight = await detectRenames({ base: r, head: r }, (await diffTrees({ base: r, head: r }, a, b)).changes, { readBudget: 3 })
+      for (const line of ours(tight.changes).filter((l) => l.startsWith('R'))) expect(want[c], `case ${c}, budget 3`).toContain(line)
     }
     // The generator must actually exercise renames (exact and with edits).
     expect(renames).toBeGreaterThan(CASES / 2)
@@ -203,7 +206,7 @@ describe('detectRenames', () => {
     expect(got.changes[0]).toMatchObject({ status: 'renamed', path: 'new/name.txt', oldPath: 'old/name.txt', similarity: 96 })
   })
 
-  it('skips the inexact phases past its read budget and says so; exact renames still pair', async () => {
+  it('within its read budget, pairs what it can read and says the rest was not compared; exact renames still pair', async () => {
     const s = new Store()
     const files = (prefix: string, n: number): Record<string, string> => Object.fromEntries(Array.from({ length: n }, (_, i) => [`${prefix}${i}.txt`, `file ${i}\n${'body\n'.repeat(i + 3)}`]))
     const moved = { 'same.txt': 'identical\n' }
@@ -213,9 +216,10 @@ describe('detectRenames', () => {
     const { changes } = await diffTrees({ base: r, head: r }, a, b)
     const before = s.reads.length
     const got = await detectRenames({ base: r, head: r }, changes, { readBudget: 4 })
-    expect(s.reads.length - before).toBe(0)
-    expect(got.limited).toMatch(/too many files/)
-    expect(ours(got.changes).filter((l) => l.startsWith('R'))).toEqual(['R100 same.txt dir/same.txt'])
+    // Four blobs: the first two same-named pairs, each a pair git makes too; no similarity matrix.
+    expect(s.reads.length - before).toBe(4)
+    expect(got.limited).toMatch(/too many files in the browser, so only 2 of them were compared/)
+    expect(ours(got.changes).filter((l) => l.startsWith('R'))).toEqual(['R075 a/0.txt b/0.txt', 'R079 a/1.txt b/1.txt', 'R100 same.txt dir/same.txt'])
   })
 
   it('a blob that cannot be read is not scored, and the result says renames may be missing', async () => {

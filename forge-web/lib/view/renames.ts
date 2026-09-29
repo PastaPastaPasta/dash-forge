@@ -21,9 +21,9 @@
  */
 
 import type { DiffSides, FileChange } from './commit-log'
-import { plural } from './format'
+import { ObjectTooLargeError } from '../browse'
+import { formatBytes, plural } from './format'
 import { mapPooled } from './pool'
-import type { ObjectReader } from './tree-nav'
 
 /** git's MAX_SCORE (diffcore.h): similarity is a score out of this. */
 const MAX_SCORE = 60000
@@ -41,19 +41,20 @@ const FIRST_FEW_BYTES = 8000
 const HASHBASE = 107927
 
 /** Blobs the inexact phases may read (each a ranged read over the network). */
-export const RENAME_READ_BUDGET = 64
+const RENAME_READ_BUDGET = 64
 /** A blob larger than this is not scored for similarity. */
-export const RENAME_MAX_BLOB_BYTES = 1024 * 1024
+const RENAME_MAX_BLOB_BYTES = 1024 * 1024
+const NOT_LOOKED = 'Renames with edits were not all looked for:'
 /** Blob reads in flight at once. */
 const READ_POOL = 6
 
 const S_IFMT = 0o170000
 const S_IFREG = 0o100000
-const isRegular = (mode: number | null): boolean => mode !== null && (mode & S_IFMT) === S_IFREG
+const isRegular = (mode: number): boolean => (mode & S_IFMT) === S_IFREG
 
 export interface RenameOptions {
+  /** Blobs the inexact phases may read (default {@link RENAME_READ_BUDGET}). */
   readonly readBudget?: number
-  readonly maxBlobBytes?: number
 }
 
 export interface RenameResult {
@@ -63,7 +64,7 @@ export interface RenameResult {
   readonly limited: string | null
 }
 
-/** A side of a candidate pair: its path, blob, mode, and (once read) its content. */
+/** A side of a candidate pair: its path, blob and mode. */
 interface Spec {
   /** Its index in its side's list. */
   readonly index: number
@@ -74,8 +75,19 @@ interface Spec {
   used: boolean
 }
 
-/** git's path order for the diff queue: byte order of the full path (UTF-16 order is the same for any BMP name). */
-const byPath = (a: FileChange, b: FileChange): number => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)
+/** git's path order for the diff queue: byte (UTF-8) order of the full path, which is code point order. */
+function byPath(a: FileChange, b: FileChange): number {
+  const x = a.path
+  const y = b.path
+  for (let i = 0, j = 0; i < x.length && j < y.length; ) {
+    const cx = x.codePointAt(i) as number
+    const cy = y.codePointAt(j) as number
+    if (cx !== cy) return cx - cy
+    i += cx > 0xffff ? 2 : 1
+    j += cy > 0xffff ? 2 : 1
+  }
+  return x.length - y.length
+}
 
 /** basename_same: whether two paths end in the same file name. */
 export function basenameSame(src: string, dst: string): boolean {
@@ -134,7 +146,7 @@ interface Scored {
  * estimate_similarity: how much of `dst` came from `src`, out of {@link MAX_SCORE}. Only regular
  * files are scored, and a pair whose sizes differ by more than `minScore` allows is 0 unread.
  */
-export function similarity(src: Scored, dst: Scored, minScore: number): number {
+function similarity(src: Scored, dst: Scored, minScore: number): number {
   const max = Math.max(src.size, dst.size)
   const base = Math.min(src.size, dst.size)
   if (max * (MAX_SCORE - minScore) < (max - base) * MAX_SCORE) return 0
@@ -145,7 +157,7 @@ export function similarity(src: Scored, dst: Scored, minScore: number): number {
 }
 
 /** git's similarity index (`R087`): the score as a whole percentage, rounded down. */
-export const similarityPercent = (score: number): number => Math.trunc((score * 100) / MAX_SCORE)
+const similarityPercent = (score: number): number => Math.trunc((score * 100) / MAX_SCORE)
 
 /** One candidate pair of the matrix (struct diff_score). */
 interface Candidate {
@@ -169,7 +181,7 @@ function scoreCompare(a: Candidate | null, b: Candidate | null): number {
  * blob that cannot be read is not scored, and the result says renames may be missing.
  */
 export async function detectRenames(sides: DiffSides, changes: readonly FileChange[], options: RenameOptions = {}): Promise<RenameResult> {
-  const { readBudget = RENAME_READ_BUDGET, maxBlobBytes = RENAME_MAX_BLOB_BYTES } = options
+  const { readBudget = RENAME_READ_BUDGET } = options
   const sorted = [...changes].sort(byPath)
   const srcs: Spec[] = []
   const dsts: Spec[] = []
@@ -193,11 +205,7 @@ export async function detectRenames(sides: DiffSides, changes: readonly FileChan
 
   // 1. find_exact_renames: sources are tried in queue order; up to 100 per destination.
   const byOid = new Map<string, number[]>()
-  srcs.forEach((s, i) => {
-    const list = byOid.get(s.oid) ?? []
-    list.push(i)
-    byOid.set(s.oid, list)
-  })
+  for (const x of srcs) byOid.set(x.oid, [...(byOid.get(x.oid) ?? []), x.index])
   dsts.forEach((d, di) => {
     let best = -1
     let bestScore = -1
@@ -217,88 +225,95 @@ export async function detectRenames(sides: DiffSides, changes: readonly FileChan
     if (best !== -1) record(di, best, MAX_SCORE)
   })
 
-  // Blobs, read on demand for scoring (at most the budget, over both inexact phases).
-  const scored = new Map<string, Promise<Scored | null>>()
-  let reads = 0
-  /** A phase was skipped for this browser's read budget (git would have run it). */
+  // Blobs for scoring, read before each inexact phase (at most the budget over both phases).
+  const blobs = new Map<string, Scored | null>()
+  /** A phase was cut short for this browser's read budget (git would have run it all). */
   let skipped: string | null = null
   let unreadable = false
-  const scoreOf = (reader: ObjectReader, oid: string): Promise<Scored | null> => {
-    let p = scored.get(oid)
-    if (p === undefined) {
-      reads += 1
-      p = reader.readObject(oid, { maxBytes: maxBlobBytes }).then(
-        (o) => (o.type === 'blob' ? { size: o.bytes.length, spans: spanHash(o.bytes) } : null),
-        () => {
-          unreadable = true
-          return null
-        },
-      )
-      scored.set(oid, p)
-    }
-    return p
+  let tooLarge = false
+  /** The regular files' blobs among `specs` not read yet, each once. */
+  const unread = (specs: readonly Spec[]): Spec[] => {
+    const seen = new Set<string>()
+    return specs.filter((s) => isRegular(s.mode) && !blobs.has(s.oid) && !seen.has(s.oid) && (seen.add(s.oid), true))
   }
-  /** Blobs of `specs` not read yet. */
-  const unread = (specs: readonly Spec[]): number => new Set(specs.filter((s) => isRegular(s.mode) && !scored.has(s.oid)).map((s) => s.oid)).size
-  const readAll = async (specs: readonly { spec: Spec; reader: ObjectReader }[]): Promise<void> => {
-    await mapPooled(specs, READ_POOL, ({ spec, reader }) => (isRegular(spec.mode) ? scoreOf(reader, spec.oid) : Promise.resolve(null)))
+  const readAll = async (base: readonly Spec[], head: readonly Spec[]): Promise<void> => {
+    const todo = [...unread(base).map((spec) => ({ spec, reader: sides.base })), ...unread(head).map((spec) => ({ spec, reader: sides.head }))]
+    await mapPooled(todo, READ_POOL, async ({ spec, reader }) => {
+      if (blobs.has(spec.oid)) return
+      try {
+        const o = await reader.readObject(spec.oid, { maxBytes: RENAME_MAX_BLOB_BYTES })
+        blobs.set(spec.oid, o.type === 'blob' ? { size: o.bytes.length, spans: spanHash(o.bytes) } : null)
+      } catch (e) {
+        if (e instanceof ObjectTooLargeError) tooLarge = true
+        else unreadable = true
+        blobs.set(spec.oid, null)
+      }
+    })
   }
-  const score = async (s: Spec, d: Spec, minScore: number): Promise<number> => {
+  const score = (s: Spec, d: Spec, minScore: number): number => {
     if (!isRegular(s.mode) || !isRegular(d.mode)) return 0
-    const [a, b] = await Promise.all([scoreOf(sides.base, s.oid), scoreOf(sides.head, d.oid)])
-    return a === null || b === null ? 0 : similarity(a, b, minScore)
+    const a = blobs.get(s.oid)
+    const b = blobs.get(d.oid)
+    return a == null || b == null ? 0 : similarity(a, b, minScore)
   }
 
   // 2. find_basename_matches: a basename unique among the remaining sources and destinations.
-  let left = srcs.filter((s) => !s.used)
-  const uniqueBy = (specs: readonly Spec[]): Map<string, number> => {
-    const m = new Map<string, number>()
-    specs.forEach((s, i) => m.set(basename(s.path), m.has(basename(s.path)) ? -1 : i))
+  // Each such pair stands alone, so when the budget does not reach every pair, the ones it does
+  // reach (in queue order) are still pairs git makes; the matrix is then skipped.
+  const uniqueBy = (specs: readonly Spec[]): Map<string, Spec | null> => {
+    const m = new Map<string, Spec | null>()
+    for (const x of specs) m.set(basename(x.path), m.has(basename(x.path)) ? null : x)
     return m
   }
-  const openDsts = dsts.map((d, i) => [d, i] as const).filter(([d]) => !d.used)
-  const srcByName = uniqueBy(left)
-  const dstByName = new Map<string, number>()
-  for (const [d, i] of openDsts) dstByName.set(basename(d.path), dstByName.has(basename(d.path)) ? -1 : i)
-  const byName: [Spec, number][] = []
-  for (const [si, s] of left.entries()) {
-    const base = basename(s.path)
-    const di = dstByName.get(base)
-    if (di === undefined || di === -1 || srcByName.get(base) !== si) continue
-    byName.push([s, di])
+  const srcByName = uniqueBy(srcs.filter((x) => !x.used))
+  const dstByName = uniqueBy(dsts.filter((x) => !x.used))
+  const byName: (readonly [Spec, Spec])[] = []
+  for (const [name, src] of srcByName) {
+    const dst = dstByName.get(name)
+    if (src !== null && dst != null) byName.push([src, dst])
   }
-  if (byName.length > 0) {
-    const need = unread([...byName.map(([s]) => s), ...byName.map(([, di]) => dsts[di] as Spec)])
-    if (reads + need > readBudget) {
-      skipped = `Renames with edits were not looked for: comparing the ${plural(byName.length, 'file')} that kept their names would read too many files in the browser.`
-    } else {
-      await readAll([...byName.map(([s]) => ({ spec: s, reader: sides.base })), ...byName.map(([, di]) => ({ spec: dsts[di] as Spec, reader: sides.head }))])
-      for (const [s, di] of byName) {
-        const d = dsts[di] as Spec
-        if (d.used) continue
-        const sc = await score(s, d, MIN_BASENAME_SCORE)
-        if (sc < MIN_BASENAME_SCORE) continue
-        record(di, s.index, sc)
-      }
+  byName.sort(([a], [b]) => a.index - b.index)
+  // The longest run of pairs, in queue order, whose blobs fit the budget.
+  const willRead = new Set<string>()
+  let n = 0
+  for (const pair of byName) {
+    const add = new Set(pair.filter((x) => isRegular(x.mode) && !willRead.has(x.oid)).map((x) => x.oid))
+    if (willRead.size + add.size > readBudget) break
+    for (const o of add) willRead.add(o)
+    n += 1
+  }
+  const reachable = byName.slice(0, n)
+  if (n < byName.length) {
+    skipped = `${NOT_LOOKED} comparing the ${plural(byName.length, 'file')} that kept their names would read too many files in the browser, so ${n === 0 ? 'none' : `only ${n}`} of them ${n === 1 ? 'was' : 'were'} compared.`
+  }
+  if (reachable.length > 0) {
+    await readAll(
+      reachable.map(([x]) => x),
+      reachable.map(([, y]) => y),
+    )
+    for (const [src, dst] of reachable) {
+      if (dst.used) continue // git's "already used in a rename"; cannot happen with unique names.
+      const sc = score(src, dst, MIN_BASENAME_SCORE)
+      if (sc >= MIN_BASENAME_SCORE) record(dst.index, src.index, sc)
     }
   }
 
   // 3. The matrix, over what is left, unless it is over diff.renameLimit or this browser's budget.
-  left = srcs.filter((s) => !s.used)
-  const rest = dsts.map((d, i) => [d, i] as const).filter(([d]) => !d.used)
+  const left = srcs.filter((x) => !x.used)
+  const rest = dsts.filter((x) => !x.used)
   if (left.length > 0 && rest.length > 0 && skipped === null) {
     if (left.length * rest.length > RENAME_LIMIT * RENAME_LIMIT) {
       // git skips this phase too (and warns): the same answer as `git diff -M`.
-      skipped = `Renames with edits were not looked for: ${left.length} deleted and ${rest.length} added files are over git's rename limit.`
-    } else if (reads + unread([...left, ...rest.map(([d]) => d)]) > readBudget) {
-      skipped = `Renames with edits were not looked for: comparing ${plural(left.length, 'deleted file')} with ${plural(rest.length, 'added file')} would read too many files in the browser.`
+      skipped = `${NOT_LOOKED} ${left.length} deleted and ${rest.length} added files are over git's rename limit.`
+    } else if (blobs.size + unread([...left, ...rest]).length > readBudget) {
+      skipped = `${NOT_LOOKED} comparing ${plural(left.length, 'deleted file')} with ${plural(rest.length, 'added file')} would read too many files in the browser.`
     } else {
-      await readAll([...left.map((s) => ({ spec: s, reader: sides.base })), ...rest.map(([d]) => ({ spec: d, reader: sides.head }))])
+      await readAll(left, rest)
       const matrix: (Candidate | null)[] = []
-      for (const [d, di] of rest) {
-        const m: (Candidate | null)[] = new Array<Candidate | null>(CANDIDATES).fill(null)
-        for (const s of left) {
-          const o: Candidate = { src: s.index, dst: di, score: await score(s, d, MIN_SCORE), nameScore: basenameSame(s.path, d.path) ? 1 : 0 }
+      for (const d of rest) {
+        const m = new Array<Candidate | null>(CANDIDATES).fill(null)
+        for (const src of left) {
+          const o: Candidate = { src: src.index, dst: d.index, score: score(src, d, MIN_SCORE), nameScore: basenameSame(src.path, d.path) ? 1 : 0 }
           // record_if_better: replace the worst slot (the first of equals) when `o` beats it.
           let worst = 0
           for (let i = 1; i < CANDIDATES; i++) if (scoreCompare(m[i] ?? null, m[worst] ?? null) > 0) worst = i
@@ -315,7 +330,13 @@ export async function detectRenames(sides: DiffSides, changes: readonly FileChan
     }
   }
 
-  const limited = skipped ?? (unreadable ? 'Some files could not be read to compare them, so renames among them may not be shown.' : null)
+  const limited =
+    skipped ??
+    (unreadable
+      ? 'Some files could not be read to compare them, so renames among them may not be shown.'
+      : tooLarge
+        ? `Files over ${formatBytes(RENAME_MAX_BLOB_BYTES)} are not compared in the browser, so renames among them may not be shown.`
+        : null)
   if (pairs.size === 0) return { changes: [...changes], limited }
   const gone = new Set<FileChange>()
   const renamed = new Map<FileChange, FileChange>()
