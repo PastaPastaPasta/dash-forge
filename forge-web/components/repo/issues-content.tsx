@@ -16,7 +16,7 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { CheckCircle2, ChevronLeft, ChevronRight, CircleDot, MessageSquare, MessageSquarePlus, Pin, Search, X } from 'lucide-react'
@@ -334,11 +334,24 @@ function StateTab({ active, onClick, children }: { active: boolean; onClick: () 
 /** Label filter: a multi-select of the repo's defined labels (every selected label must match). */
 function LabelFilter({ labels, selected, onChange }: { labels: readonly LabelDef[]; selected: readonly string[]; onChange: (l: string[]) => void }): JSX.Element {
   const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
   const names = [...new Set([...labels.filter((l) => !l.retired).map((l) => l.name), ...selected])]
   const byName = new Map(labels.map((l) => [l.name, l]))
+  const close = (): void => setOpen(false)
   return (
-    <div className="relative">
+    // L-72: a backdrop (outside click) and an Escape handler (bubbles up from the trigger or any
+    // option, whichever has focus) — this popover previously only ever toggled on the button.
+    <div
+      className="relative"
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape') return
+        e.preventDefault()
+        close()
+        triggerRef.current?.focus()
+      }}
+    >
       <button
+        ref={triggerRef}
         type="button"
         aria-expanded={open}
         aria-haspopup="listbox"
@@ -348,25 +361,28 @@ function LabelFilter({ labels, selected, onChange }: { labels: readonly LabelDef
         Label{selected.length ? ` (${selected.length})` : ''}
       </button>
       {open ? (
-        <div role="listbox" aria-label="Filter by label" aria-multiselectable className="absolute right-0 z-20 mt-1 max-h-72 w-60 overflow-auto rounded-md border border-anvil-200 bg-white p-1 shadow-lg dark:border-anvil-750 dark:bg-anvil-950">
-          {names.length === 0 ? <p className="px-2 py-1.5 text-dense text-anvil-500 dark:text-anvil-400">No labels defined.</p> : null}
-          {names.map((n) => {
-            const on = selected.includes(n)
-            return (
-              <button
-                key={n}
-                type="button"
-                role="option"
-                aria-selected={on}
-                onClick={() => onChange(on ? selected.filter((x) => x !== n) : [...selected, n])}
-                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-dense hover:bg-anvil-100 dark:hover:bg-anvil-850 coarse:min-h-11"
-              >
-                <input type="checkbox" readOnly checked={on} tabIndex={-1} aria-hidden className="accent-forge-600" />
-                <LabelChip name={n} def={byName.get(n)} />
-              </button>
-            )
-          })}
-        </div>
+        <>
+          <div className="fixed inset-0 z-10" aria-hidden onClick={close} />
+          <div role="listbox" aria-label="Filter by label" aria-multiselectable className="absolute right-0 z-20 mt-1 max-h-72 w-60 overflow-auto rounded-md border border-anvil-200 bg-white p-1 shadow-lg dark:border-anvil-750 dark:bg-anvil-950">
+            {names.length === 0 ? <p className="px-2 py-1.5 text-dense text-anvil-500 dark:text-anvil-400">No labels defined.</p> : null}
+            {names.map((n) => {
+              const on = selected.includes(n)
+              return (
+                <button
+                  key={n}
+                  type="button"
+                  role="option"
+                  aria-selected={on}
+                  onClick={() => onChange(on ? selected.filter((x) => x !== n) : [...selected, n])}
+                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-dense hover:bg-anvil-100 dark:hover:bg-anvil-850 coarse:min-h-11"
+                >
+                  <input type="checkbox" readOnly checked={on} tabIndex={-1} aria-hidden className="accent-forge-600" />
+                  <LabelChip name={n} def={byName.get(n)} />
+                </button>
+              )
+            })}
+          </div>
+        </>
       ) : null}
     </div>
   )
@@ -388,17 +404,38 @@ function PersonFilter({
 }): JSX.Element {
   const choice = value === null ? '' : value === 'me' || value === 'none' ? value : 'id'
   const [id, setId] = useState(choice === 'id' ? value ?? '' : '')
+  // L-42: `choice` only changes once a typed id is committed (blur/Enter), so picking "identity
+  // id…" from the select needs its own flag — otherwise the select has nothing new to show and
+  // snaps back to "anyone" with no input ever appearing.
+  const [editingId, setEditingId] = useState(choice === 'id')
   const selectId = `filter-${label.toLowerCase()}`
+
+  // An external reset (e.g. "Clear filters") changes `value` without going through this
+  // component's own commit path: drop out of id-entry mode when that lands us back on "anyone".
+  useEffect(() => {
+    if (value === null) {
+      setEditingId(false)
+      setId('')
+    } else if (value !== 'me' && value !== 'none') {
+      setId(value)
+    }
+  }, [value])
+
   return (
     <span className="inline-flex items-center gap-1">
       <label htmlFor={selectId} className="text-dense text-anvil-600 dark:text-anvil-300">{label}</label>
       <select
         id={selectId}
-        value={choice}
+        value={editingId ? 'id' : choice}
         onChange={(e) => {
           const v = e.target.value
-          if (v === 'id') setId('')
-          else onChange(v === '' ? null : v)
+          if (v === 'id') {
+            setEditingId(true)
+            if (choice !== 'id') setId('')
+          } else {
+            setEditingId(false)
+            onChange(v === '' ? null : v)
+          }
         }}
         className="rounded-md border border-anvil-300 bg-white px-2 py-1 text-dense dark:border-anvil-700 dark:bg-anvil-950 coarse:h-11"
       >
@@ -407,7 +444,7 @@ function PersonFilter({
         {allowNone ? <option value="none">nobody</option> : null}
         <option value="id">identity id…</option>
       </select>
-      {choice === 'id' || (choice === '' && id !== '') ? (
+      {editingId ? (
         <Input
           aria-label={`${label} identity id`}
           value={id}
@@ -418,6 +455,7 @@ function PersonFilter({
           }}
           className="h-7 w-44 py-0 font-mono text-[12px]"
           placeholder="base58 id"
+          autoFocus
         />
       ) : null}
     </span>
