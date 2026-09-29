@@ -17,6 +17,7 @@
  * lifts into the structured query; what is left is the free text.
  */
 
+import { displayDpnsName, looksLikeDpnsName } from './dpns'
 import { plural } from './format'
 import { isIdentityId } from '../utils'
 
@@ -62,11 +63,13 @@ export function utf8Length(s: string): number {
   return new TextEncoder().encode(s).length
 }
 
+/** `me`/`none` (and any other keyword in `extra`) match case-insensitively; a real id does not. */
 function identityParam(v: string | null, extra: readonly string[]): string | null {
   if (v === null) return null
   const t = v.trim()
-  if (extra.includes(t) || isIdentityId(t)) return t
-  return null
+  const low = t.toLowerCase()
+  if (extra.includes(low)) return low
+  return isIdentityId(t) ? t : null
 }
 
 /** Parse the list query from URL search params; anything invalid falls back to its default. */
@@ -110,6 +113,21 @@ export function withQuery(q: IssueListQuery, change: Partial<IssueListQuery>): I
   return 'page' in change ? next : { ...next, page: 1 }
 }
 
+/**
+ * The `base` for a plain search-box submit (typed text + Enter, or a fresh submit of the box's
+ * current text): only the state tab survives from the current query — every other filter
+ * (label/author/assignee/mentions/sort) is exactly what the submitted text's qualifiers say,
+ * because {@link searchText} always writes the *whole* current query back into the box as text
+ * when it is not being actively edited. So if the viewer deletes `label:bug` from the box before
+ * hitting Enter, that filter must actually go away, not silently survive because `base` still
+ * carried it. This is different from the once-per-load resolution of a *linked* `?q=` (a shared
+ * URL carries only its own free text, never the other params' filters), which correctly uses the
+ * full `query` as `base` to keep `label=`/`sort=`/etc that its own separate URL params set.
+ */
+export function searchSubmitBase(q: IssueListQuery): IssueListQuery {
+  return { ...DEFAULT_ISSUE_QUERY, state: q.state }
+}
+
 /** Whether any filter narrows the list beyond the state tab. */
 export function hasFilters(q: IssueListQuery): boolean {
   return q.labels.length > 0 || q.author !== null || q.assignee !== null || q.mentions || q.q.trim() !== ''
@@ -146,8 +164,10 @@ const KNOWN_KEYS = new Set(['is', 'state', 'label', 'author', 'assignee', 'no', 
  * kept): `is:open|closed`, `state:…`, `label:x` (repeatable, quotes for spaces), `author:x`,
  * `assignee:x`, `no:assignee`, `mentions:@me`, `sort:created-desc|created-asc|comments-desc`.
  * `@me` means the viewer. A qualifier with a known key overrides `base` only when its value
- * resolves; one that does not (`author:alice`: only ids and `@me` work) is dropped from the
- * free text and reported by {@link unresolvedQualifiers}. An unknown key stays free text.
+ * resolves; one that does not (`author:` and `assignee:` only take an identity id, `@me`, or a
+ * value already rewritten to an id by {@link withResolvedNames} — a DPNS name this function is
+ * handed as-is does not resolve here) is dropped from the free text and reported by
+ * {@link unresolvedQualifiers}. An unknown key stays free text.
  */
 export function parseSearchText(text: string, base: IssueListQuery = DEFAULT_ISSUE_QUERY): IssueListQuery {
   return liftQualifiers(text, base).query
@@ -156,6 +176,117 @@ export function parseSearchText(text: string, base: IssueListQuery = DEFAULT_ISS
 /** The known qualifiers in `text` whose values could not be used (for a note under the box). */
 export function unresolvedQualifiers(text: string): string[] {
   return liftQualifiers(text, DEFAULT_ISSUE_QUERY).unresolved
+}
+
+/**
+ * The `author:`/`assignee:` values in `text` that are not an id, `me`/`none` (either case, with
+ * or without a leading `@`) and are shaped like a DPNS label ({@link looksLikeDpnsName}) —
+ * anything else is a literal (a label, a sort spelling, …) or could not be a name at all, and is
+ * never worth a lookup. Each is a candidate for {@link withResolvedNames} (L-43: `author:`
+ * previously only accepted a base58 id or `@me`, so a typed or linked DPNS name like
+ * `author:unofficial-dashpay-dash-mirror.dash` silently matched nothing).
+ */
+export function dpnsAuthorCandidates(text: string): string[] {
+  const out = new Set<string>()
+  for (const tok of tokens(text)) {
+    const value = personQualifier(tok)?.value
+    if (value === undefined || value === '') continue
+    const low = value.toLowerCase()
+    if (low === 'me' || low === 'none' || isIdentityId(value) || !looksLikeDpnsName(value)) continue
+    out.add(value)
+  }
+  return [...out]
+}
+
+/**
+ * `text` with every `author:`/`assignee:` value that has an entry in `resolved` (a DPNS name ->
+ * id map, from {@link dpnsAuthorCandidates} + a lookup) rewritten to that id; every other token,
+ * including an author/assignee value with no entry, is left exactly as typed so
+ * {@link unresolvedQualifiers} still reports a name that failed to resolve.
+ */
+export function withResolvedNames(text: string, resolved: ReadonlyMap<string, string>): string {
+  return tokens(text)
+    .map((tok) => {
+      const person = personQualifier(tok)
+      const id = person ? resolved.get(person.value) : undefined
+      return person && id ? `${person.key}:${id}` : tok
+    })
+    .join(' ')
+}
+
+/**
+ * Resolve every DPNS-name candidate in `text` through the injected `resolveId`. It holds no
+ * shared state, so overlapping calls (an out-of-order submit) never interfere; the caller decides
+ * which result is still wanted. Returns `text` with every found name rewritten to its id, and the
+ * candidates that were not found (for a "no such name" note, distinct from a non-candidate).
+ */
+export async function resolveSearchNames(
+  text: string,
+  resolveId: (name: string) => Promise<string | null>,
+): Promise<{ readonly text: string; readonly notFound: readonly string[] }> {
+  const candidates = dpnsAuthorCandidates(text)
+  if (candidates.length === 0) return { text, notFound: [] }
+  const resolved = new Map<string, string>()
+  const notFound: string[] = []
+  await Promise.all(
+    candidates.map(async (name) => {
+      const id = await resolveId(name)
+      if (id) resolved.set(name, id)
+      else notFound.push(name)
+    }),
+  )
+  return { text: resolved.size > 0 ? withResolvedNames(text, resolved) : text, notFound }
+}
+
+/** An `author:`/`assignee:` token's lowercased key and its value (quotes and a leading `@` stripped); null for any other token. */
+function personQualifier(tok: string): { key: string; value: string } | null {
+  const at = tok.indexOf(':')
+  if (at <= 0) return null
+  const key = tok.slice(0, at).toLowerCase()
+  if (key !== 'author' && key !== 'assignee') return null
+  return { key, value: unquote(tok.slice(at + 1)).replace(/^@/, '') }
+}
+
+/** Why a known qualifier's value could not be used, by key (see {@link droppedQualifiersReason}). */
+const QUALIFIER_REASON: Readonly<Record<string, string>> = {
+  is: 'is: and state: take open, closed, all or issue.',
+  state: 'is: and state: take open, closed, all or issue.',
+  author: 'Authors and assignees take an identity id, a DPNS name, or @me.',
+  assignee: 'Authors and assignees take an identity id, a DPNS name, or @me.',
+  label: `A label is 1-${LABEL_MAX} characters.`,
+  no: 'no: only takes assignee.',
+  mentions: 'mentions: only takes @me.',
+  sort: 'sort: takes created-desc, created-asc or comments-desc.',
+}
+
+/**
+ * The reason to show under the search box for `dropped` (as {@link unresolvedQualifiers} returns
+ * it), one sentence per distinct cause. `is:pr`/`state:pr` (L-43) is not a filter this list has
+ * at all — issues and pull requests are separate lists here — so it gets its own explanation
+ * instead of sharing the generic `is:`/`state:` one, which would wrongly suggest `pr` is close to
+ * a valid value. An `author:`/`assignee:` value in `notFound` (a {@link resolveSearchNames}
+ * candidate DPNS actually looked up and could not find) names the specific name that was not
+ * found, rather than the generic "take an id, a name, or @me" reason, which would wrongly
+ * suggest the value's shape (not its non-existence) was the problem.
+ */
+export function droppedQualifiersReason(dropped: readonly string[], notFound: readonly string[] = []): string {
+  const notFoundLower = new Set(notFound.map((n) => n.toLowerCase()))
+  const reasons = new Set<string>()
+  for (const tok of dropped) {
+    if (/^(is|state):pr$/i.test(tok)) {
+      reasons.add('is:pr is not a filter here — open the Pull requests tab to search pull requests.')
+      continue
+    }
+    const person = personQualifier(tok)
+    if (person && notFoundLower.has(person.value.toLowerCase())) {
+      reasons.add(`No DPNS name \`${displayDpnsName(person.value)}\` was found.`)
+      continue
+    }
+    const key = tok.slice(0, tok.indexOf(':')).toLowerCase()
+    const reason = QUALIFIER_REASON[key]
+    if (reason) reasons.add(reason)
+  }
+  return [...reasons].join(' ')
 }
 
 function liftQualifiers(text: string, base: IssueListQuery): { query: IssueListQuery; unresolved: string[] } {
@@ -167,7 +298,9 @@ function liftQualifiers(text: string, base: IssueListQuery): { query: IssueListQ
   let sort = base.sort
   const free: string[] = []
   const unresolved: string[] = []
-  const who = (v: string, extra: readonly string[] = []): string | null => identityParam(v === '@me' ? 'me' : v.replace(/^@/, ''), ['me', ...extra])
+  // identityParam already matches 'me'/'none' case-insensitively, so stripping a leading `@`
+  // (never mind its case) is all this needs — `@me`, `@ME`, `me` and `ME` all land on 'me'.
+  const who = (v: string, extra: readonly string[] = []): string | null => identityParam(v.replace(/^@/, ''), ['me', ...extra])
   for (const tok of tokens(text)) {
     const at = tok.indexOf(':')
     const key = at > 0 ? tok.slice(0, at).toLowerCase() : ''

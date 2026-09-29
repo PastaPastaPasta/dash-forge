@@ -15,6 +15,9 @@ import { z } from 'zod'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { DOC, str, type RepoRef } from './contract'
 import { repoSource } from './source'
+import { isPrerelease, tagVersion, versionDesc } from './ref-order'
+
+export { compareRefNames, compareTagNames, isPrerelease, naturalRuns, tagVersion, type TagVersion } from './ref-order'
 
 /** One downloadable asset of a release. */
 export interface ReleaseAssetView {
@@ -198,66 +201,6 @@ function toRelease(doc: PlainDocument): ReleaseView {
 
 const newestFirst = (a: ReleaseView, b: ReleaseView): number =>
   b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
-
-/**
- * A tag's version (`v1.2.3`, `1.2`, `jq-1.7.1`, `v0.9.13.15`, `v24.0.0-rc.1`): the
- * `digits(.digits)*` run starting at the tag's first digit, and the pre-release suffix after it,
- * if any. `null` when the tag holds no number. Parity: forge-core `tag_version`.
- */
-export interface TagVersion {
-  /** The numeric dot-separated parts (`[24, 0, 0]`). */
-  readonly parts: readonly number[]
-  /** The pre-release suffix (`rc.1`), `''` for a release. */
-  readonly pre: string
-}
-
-export function tagVersion(tag: string): TagVersion | null {
-  const m = /(\d+(?:\.\d+)*)(.*)$/.exec(tag)
-  if (m === null) return null
-  const parts = m[1]!.split('.').map(Number)
-  // `-rc.1`, `-beta`, `rc1`, `a1`: a suffix is a pre-release; `+build` metadata is not.
-  const pre = m[2]!.replace(/\+.*$/, '').replace(/^[-.]/, '')
-  return { parts, pre }
-}
-
-/** Whether `tag` names a pre-release (a version with a suffix such as `-rc.1`, `-beta`). */
-export function isPrerelease(tag: string): boolean {
-  return (tagVersion(tag)?.pre ?? '') !== ''
-}
-
-/**
- * `a` vs `b` by their runs of digits and of other characters (`.`, `-`, `_` separate runs and
- * are dropped): digits compare as numbers and sort before text, text compares lower-cased. So
- * `rc.10` > `rc.9`, `rc.1` = `rc1`, `RC1` = `rc1`, `1` < `beta`. Parity: forge-core `natural`.
- */
-function naturalRuns(a: string, b: string): number {
-  const runs = (s: string): (number | string)[] =>
-    (s.match(/\d+|[^\d._-]+/g) ?? []).map((r) => (/^\d/.test(r) ? Number(r) : r.toLowerCase()))
-  const ra = runs(a)
-  const rb = runs(b)
-  for (let i = 0; i < Math.min(ra.length, rb.length); i++) {
-    const x = ra[i]!
-    const y = rb[i]!
-    if (typeof x === 'number' && typeof y === 'number') {
-      if (x !== y) return x - y
-    } else if (typeof x === 'number') return -1
-    else if (typeof y === 'number') return 1
-    else if (x !== y) return x < y ? -1 : 1
-  }
-  return ra.length - rb.length
-}
-
-/** `a` vs `b` by version, highest first: numbers compared as numbers, a release above its pre-releases. */
-function versionDesc(a: TagVersion, b: TagVersion): number {
-  for (let i = 0; i < Math.max(a.parts.length, b.parts.length); i++) {
-    const d = (b.parts[i] ?? 0) - (a.parts[i] ?? 0)
-    if (d !== 0) return d
-  }
-  if (a.pre === b.pre) return 0
-  if (a.pre === '') return -1
-  if (b.pre === '') return 1
-  return naturalRuns(b.pre, a.pre)
-}
 
 /**
  * The releases page's order (L-14): tags with a version, highest first; then the rest, newest

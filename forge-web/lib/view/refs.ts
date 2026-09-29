@@ -101,3 +101,13 @@ export function refParamFor(shortName: string, isTag: boolean, defaultBranch: st
   if (isTag) return `tags/${shortName}`
   return shortName === defaultBranch ? '' : shortName
 }
+
+/**
+ * Whether a ref's short name matches the ref switcher / tags / branches filter box (L-13,
+ * L-14, L-53): case-insensitive substring, so typing "23.1" narrows a 575-tag list to those
+ * containing it. An empty (or whitespace-only) query matches every name.
+ */
+export function matchesRefQuery(name: string, query: string): boolean {
+  const q = query.trim().toLowerCase()
+  return q === '' || name.toLowerCase().includes(q)
+}
