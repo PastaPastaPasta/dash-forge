@@ -88,9 +88,8 @@ describe('BlameBody in StrictMode', () => {
       renames: [],
       unfollowedRename: null,
     }
-    // The run answers its abort with what it had (the real blameFile does); rejected first, so the
-    // mock's own AbortError on the signal comes too late to count.
-    calls[0]!.signal.addEventListener('abort', () => undefined)
+    // The run answers its abort with what it had (the real blameFile does); rejected before the
+    // click, so the mock's own AbortError on the signal comes too late to count.
     await act(async () => {
       const run = calls[0]!
       run.reject(new BlameStoppedError(partial as never))

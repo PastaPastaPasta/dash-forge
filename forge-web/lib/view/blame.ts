@@ -174,13 +174,17 @@ export async function blameFile(
   let examined = 0
   const report = (searched: number): void =>
     onProgress?.({ examined: examined + searched, versions, pending: state.pending, total: state.lines.length })
-  // What the walk has, as a result: the open lines go to the oldest version reached.
-  const partialResult = (): BlameResult | null => {
-    if (current === null) return null
-    const owner = [...(state.owner as (string | null)[])].map((o) => o ?? current!.oid)
+  // The result for a final attribution: the hunks and the commits they name.
+  const resultOf = (owner: readonly string[], isPartial: boolean): BlameResult => {
     const hunks = toHunks(owner as string[])
     const commits = new Map(hunks.map((h) => [h.oid, seen.get(h.oid) as CommitObject]))
-    return { lines: state.lines, hunks, commits, partial: true, approximate, versions, renames, unfollowedRename }
+    return { lines: state.lines, hunks, commits, partial: isPartial, approximate, versions, renames, unfollowedRename }
+  }
+  // What a stopped walk has: the open lines go to the oldest version reached.
+  const partialResult = (): BlameResult | null => {
+    if (current === null) return null
+    const oldest = current.oid
+    return resultOf(state.owner.map((o) => o ?? oldest), true)
   }
   try {
     outer: while (start !== null && state.pending > 0) {
@@ -244,9 +248,7 @@ export async function blameFile(
   }
   state.finish(current.oid)
   onProgress?.({ examined, versions, pending: 0, total: state.lines.length })
-  const hunks = toHunks(state.owner as string[])
-  const commits = new Map(hunks.map((h) => [h.oid, seen.get(h.oid) as CommitObject]))
-  return { lines: state.lines, hunks, commits, partial, approximate, versions, renames, unfollowedRename }
+  return resultOf(state.owner as string[], partial)
 }
 
 /**

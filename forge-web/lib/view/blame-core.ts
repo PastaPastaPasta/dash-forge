@@ -22,6 +22,32 @@ export type LineMap = Int32Array
  * the change is too large for the diff's work bound (`limits.maxWork`).
  */
 export function lineMap(before: string, after: string, limits: DiffLimits = DEFAULT_DIFF_LIMITS): LineMap | null {
+  const marks = gitChangeMarks(before, after, limits)
+  if (marks === null) return null
+  const { oldRecs, newRecs, tail, oldChanged, newChanged } = marks
+  const map = new Int32Array(newRecs.length + tail).fill(-1)
+  let i = 0
+  let j = 0
+  while (j < newRecs.length) {
+    if (i < oldRecs.length && oldChanged[i] === 1) i++
+    else if (newChanged[j] === 1) j++
+    else map[j++] = i++
+  }
+  for (let k = 0; k < tail; k++) map[newRecs.length + k] = oldRecs.length + k
+  return map
+}
+
+/**
+ * Which records of each file git blame counts as changed: the common tail trimmed (in whole 1 KiB
+ * blocks) as git does before it diffs, xdiff's alignment of the rest, then git's compaction. The
+ * marks cover the records before the tail (`oldRecs` / `newRecs`); the `tail` records after them
+ * are unchanged. Null past `limits`. Exported so the git-oracle tests check this very pipeline.
+ */
+export function gitChangeMarks(
+  before: string,
+  after: string,
+  limits: DiffLimits = DEFAULT_DIFF_LIMITS,
+): { oldRecs: string[]; newRecs: string[]; tail: number; oldChanged: Uint8Array; newChanged: Uint8Array } | null {
   const oldAll = splitLines(before)
   const newAll = splitLines(after)
   // git drops the files' common tail (in whole 1 KiB blocks) before it diffs: those lines are
@@ -33,22 +59,12 @@ export function lineMap(before: string, after: string, limits: DiffLimits = DEFA
   if (diff === null) return null
   // A compaction that fails (a bug: the port asserts what xdiff asserts) must not fail the blame:
   // the uncompacted alignment is still a valid one.
-  let compacted = diff
   try {
-    compacted = compactChanges(oldRecs, newRecs, diff.oldChanged, diff.newChanged)
+    const c = compactChanges(oldRecs, newRecs, diff.oldChanged, diff.newChanged)
+    return { oldRecs, newRecs, tail, oldChanged: c.oldChanged, newChanged: c.newChanged }
   } catch {
-    /* keep the uncompacted alignment */
+    return { oldRecs, newRecs, tail, oldChanged: diff.oldChanged, newChanged: diff.newChanged }
   }
-  const map = new Int32Array(newAll.length).fill(-1)
-  let i = 0
-  let j = 0
-  while (j < newRecs.length) {
-    if (i < oldRecs.length && compacted.oldChanged[i] === 1) i++
-    else if (compacted.newChanged[j] === 1) j++
-    else map[j++] = i++
-  }
-  for (let k = 0; k < tail; k++) map[newRecs.length + k] = oldRecs.length + k
-  return map
 }
 
 /**

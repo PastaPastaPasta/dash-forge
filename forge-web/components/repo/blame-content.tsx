@@ -86,7 +86,10 @@ export function BlameBody({
   const stopRef = useRef<AbortController | null>(null)
   // `y` pins the address to this commit (as the file view does), keeping the `#L` selection (L-33).
   usePermalinkKey(pinnedHref(addr, 'blame', tipOid, path, privateRepo))
-  const permalink = permalinkPath(addr, 'blame', tipOid, path, privateRepo)
+  // A full URL, as the file view copies (null in the instant a private repo's vault locks).
+  const pinned = permalinkPath(addr, 'blame', tipOid, path, privateRepo)
+  const permalink = pinned === null ? null : `${typeof window === 'undefined' ? '' : window.location.origin}${pinned}`
+  const restart = (): void => setAttempt((n) => n + 1)
 
   useEffect(() => {
     const stop = new AbortController()
@@ -121,11 +124,11 @@ export function BlameBody({
 
   if (run.kind === 'failed') {
     if (run.error instanceof BlameRefusedError) return <EmptyState icon={FileText} title="Can't blame this file" body={run.error.message} />
-    return <ErrorState message={errorMessage(run.error)} onRetry={() => setAttempt((n) => n + 1)} />
+    return <ErrorState message={errorMessage(run.error)} onRetry={restart} />
   }
   if (run.kind === 'cancelled' && run.partial !== null) {
     // Cancel keeps what was worked out (L-23): the table, marked stopped, and a way to run again.
-    return <BlameTable result={run.partial} addr={addr} permalink={permalink} stopped onRestart={() => setAttempt((n) => n + 1)} />
+    return <BlameTable result={run.partial} addr={addr} permalink={permalink} stopped onRestart={restart} />
   }
   if (run.kind === 'cancelled') {
     return (
@@ -137,7 +140,7 @@ export function BlameBody({
             ? `Stopped after examining ${plural(run.progress.examined, 'commit')}, before any version was found.`
             : 'Stopped before any commit was examined.'
         }
-        action={<Button onClick={() => setAttempt((n) => n + 1)}>Start again</Button>}
+        action={<Button onClick={restart}>Start again</Button>}
       />
     )
   }

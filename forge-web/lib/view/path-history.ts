@@ -163,6 +163,9 @@ export async function logPage(
   return { entries, next: oid ?? null, examined, capped }
 }
 
+/** Commits {@link pathVersions} examines per step: short, so the progress it reports moves while nothing is found. */
+const VERSIONS_STRIDE = 50
+
 /** One page of a path's versions: the commits that changed it, newest first. */
 export interface PathVersionsPage {
   readonly entries: readonly LogEntry[]
@@ -186,18 +189,16 @@ export async function pathVersions(
   {
     limit = LOG_PAGE,
     cap = PATH_WALK_CAP,
-    walker,
+    walker = historyWalker(reader),
     signal,
     onExamined,
   }: WalkOptions & { readonly limit?: number; readonly cap?: number; readonly onExamined?: (examined: number) => void } = {},
 ): Promise<PathVersionsPage> {
-  // The walk is paged in short strides so the count moves while nothing has been found yet.
-  const STRIDE = 50
   const entries: LogEntry[] = []
   let examined = 0
   let next: string | null = startOid
   while (next !== null && entries.length < limit && examined < cap) {
-    const page = await logPage(reader, next, { path, limit: limit - entries.length, cap: Math.min(STRIDE, cap - examined), walker, signal })
+    const page = await logPage(reader, next, { path, limit: limit - entries.length, cap: Math.min(VERSIONS_STRIDE, cap - examined), walker, signal })
     entries.push(...page.entries)
     examined += page.examined
     next = page.next

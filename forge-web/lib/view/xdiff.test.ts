@@ -17,26 +17,19 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { HAVE_GIT } from '../merge/git-oracle'
-import { lineMap } from './blame-core'
+import { gitChangeMarks, lineMap } from './blame-core'
 import { DEFAULT_DIFF_LIMITS, splitLines } from './text-diff'
 import { commonTailRecords, xdiffChanges } from './xdiff'
-import { compactChanges } from './xdiff-compact'
 
 const CASES = Number(process.env['FORGE_XDIFF_CASES'] ?? '600')
 const SEED = Number(process.env['FORGE_XDIFF_SEED'] ?? '20260929')
 
 /** Changed marks of both files as git blame would see them: tail trim, xdiff, compaction. */
 function ourMarks(before: string, after: string): { old: number[]; new: number[] } | null {
-  const a = splitLines(before)
-  const b = splitLines(after)
-  const tail = commonTailRecords(a, b)
-  const oldRecs = a.slice(0, a.length - tail)
-  const newRecs = b.slice(0, b.length - tail)
-  const raw = xdiffChanges(oldRecs, newRecs, DEFAULT_DIFF_LIMITS)
-  if (raw === null) return null
-  const c = compactChanges(oldRecs, newRecs, raw.oldChanged, raw.newChanged)
-  const pad = (m: Uint8Array, n: number): number[] => [...m, ...new Array<number>(n - m.length).fill(0)]
-  return { old: pad(c.oldChanged, a.length), new: pad(c.newChanged, b.length) }
+  const m = gitChangeMarks(before, after, DEFAULT_DIFF_LIMITS)
+  if (m === null) return null
+  const pad = (marks: Uint8Array): number[] => [...marks, ...new Array<number>(m.tail).fill(0)]
+  return { old: pad(m.oldChanged), new: pad(m.newChanged) }
 }
 
 /** Changed marks from each file pair's `@@ -os,oc +ns,nc @@` headers in a `git diff -U0`. */

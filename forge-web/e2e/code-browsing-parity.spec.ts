@@ -163,7 +163,7 @@ test.describe('commits, History and Blame (read fixture)', () => {
     await expect(page.locator('#L3')).toHaveAttribute('data-selected', 'true')
     // Copy permalink names the commit and the range; `y` puts the pinned address in the bar.
     const copy = page.getByTestId('copy-permalink')
-    await expect(copy).toHaveAttribute('data-href', /\/blame\/[0-9a-f]{40}\/src\/main\.rs#L2-L4$/)
+    await expect(copy).toHaveAttribute('data-href', /^https?:\/\/[^/]+\/.*blame\/[0-9a-f]{40}\/src\/main\.rs#L2-L4$/)
     await page.locator('body').press('y')
     await expect(page).toHaveURL(/\/repo\/blame\/\?.*ref=[0-9a-f]{40}.*#L2-L4$/)
     await shot(page, 'fg4-blame-permalink')
