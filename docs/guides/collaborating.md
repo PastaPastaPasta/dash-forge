@@ -143,7 +143,7 @@ dg issue assign <owner>/<repo> 12 me alice         # or: unassign; ids or DPNS n
 
 **Listing.** `dg issue list` reads every issue and the repository's event feed once, then filters, so a filter sees the whole repository rather than the newest page. The web issue list has the same filters, keeps them in the URL, and pages 50 at a time.
 
-**Numbers.** Issue numbers are claimed by the client, by a rule every client shares: the count of issues bounds how far ahead a number can be, so someone squatting #4294967295 does not move numbering. If two people take the same number at once, consensus rejects the second one, and `dg` retries with the next free number. An interrupted `dg issue create` resumes when run again rather than opening a second issue.
+**Numbers.** Issue numbers are claimed by the client, by a rule every client shares: the count of issues bounds how far ahead a number can be, so someone squatting #4294967295 does not move numbering. Numbers written by the repo's owner or a maintainer are trusted wherever they sit, so a mirror continues its source's numbering: after an imported #7761, the next issue is #7762. If two people take the same number at once, consensus rejects the second one, and `dg` retries with the next free number. An interrupted `dg issue create` resumes when run again rather than opening a second issue.
 
 **No deletes.** Issues, PRs and their state events cannot be deleted, so nobody can rewrite a thread's history. Comments can be deleted by their author.
 

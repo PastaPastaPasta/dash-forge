@@ -93,9 +93,19 @@ impl<'a> MemberReader<'a> {
 
     /// Every current `maintainer` and `writer` document of `repo`, complete.
     pub async fn list(&self, repo: &RepoRef) -> Result<Vec<Member>> {
+        self.list_roles(repo, &[Role::Maintainer, Role::Writer])
+            .await
+    }
+
+    /// Every current `maintainer` document of `repo`, complete.
+    pub async fn maintainers(&self, repo: &RepoRef) -> Result<Vec<Member>> {
+        self.list_roles(repo, &[Role::Maintainer]).await
+    }
+
+    async fn list_roles(&self, repo: &RepoRef, roles: &[Role]) -> Result<Vec<Member>> {
         let (scope, core) = core(self.client, repo).await?;
         let mut out = Vec::new();
-        for role in [Role::Maintainer, Role::Writer] {
+        for &role in roles {
             let docs = self
                 .client
                 .query_all_documents(

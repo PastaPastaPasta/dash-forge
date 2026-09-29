@@ -1,0 +1,15 @@
+{
+  "name": "non_member_squatter_not_trusted",
+  "description": "A non-member's #5000 is above the ceiling (2*4+100 = 108) and is not trusted; the owner's and maintainers' largest number is 2, below base 3: allocate 4.",
+  "case": "allocate_number",
+  "rules": "v2",
+  "input": {
+    "count": 4,
+    "takenNumbersDesc": [
+      5000,
+      3
+    ],
+    "trustedMax": 2
+  },
+  "expected": 4
+}
