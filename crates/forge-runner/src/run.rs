@@ -6,7 +6,7 @@
 //! reports share one run id (`--external-id`, a hash of the repo, ref, commit, workflow file and
 //! job), so its queued, in-progress and completed reports update one check run.
 
-use std::io::{BufRead as _, BufReader};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -315,7 +315,8 @@ pub fn run_push(cfg: &Config, repo: &RepoConfig, push: &Push, run_dir: &Path) ->
         refname: &push.refname,
         changed: changed.as_deref(),
     };
-    let plan = workflow::plan(&co, &wf_dir, &facts, repo.allow_container_options);
+    let labels: Vec<&str> = cfg.platforms.keys().map(String::as_str).collect();
+    let plan = workflow::plan(&co, &wf_dir, &facts, repo.allow_container_options, &labels);
     for b in &plan.broken {
         let name: String = format!("{} (invalid workflow)", b.file.display())
             .chars()
@@ -510,12 +511,14 @@ fn run_act(cfg: &Config, args: &[String], limit: Duration) -> (Results, bool, bo
         return (Results::default(), false, true);
     };
     let reader = std::thread::spawn(move || {
+        use std::io::BufRead as _;
         let mut r = Results::default();
-        for line in BufReader::new(stdout)
-            .lines()
-            .map_while(std::result::Result::ok)
-        {
-            r.take_line(&line);
+        let mut reader = BufReader::new(stdout);
+        let mut buf = Vec::new();
+        // Bytes, not `lines()`: a job's invalid UTF-8 must not end the capture.
+        while reader.read_until(b'\n', &mut buf).is_ok_and(|n| n > 0) {
+            r.take_line(String::from_utf8_lossy(&buf).trim_end_matches('\n'));
+            buf.clear();
         }
         r
     });

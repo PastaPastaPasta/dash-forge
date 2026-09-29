@@ -114,7 +114,13 @@ pub struct PushFacts<'a> {
 const MAX_WORKFLOW_BYTES: u64 = 512 * 1024;
 
 /// Read every `*.yml` / `*.yaml` directly in `dir` (sorted), and decide what runs.
-pub fn plan(checkout: &Path, dir: &Path, push: &PushFacts<'_>, allow_container: bool) -> Plan {
+pub fn plan(
+    checkout: &Path,
+    dir: &Path,
+    push: &PushFacts<'_>,
+    allow_container: bool,
+    labels: &[&str],
+) -> Plan {
     let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
         .map(|rd| {
             rd.filter_map(Result::ok)
@@ -135,7 +141,7 @@ pub fn plan(checkout: &Path, dir: &Path, push: &PushFacts<'_>, allow_container: 
             Ok(_) => std::fs::read_to_string(&path).map_err(|e| e.to_string()),
             Err(e) => Err(e.to_string()),
         };
-        match text.and_then(|t| read_workflow(&rel, &t, allow_container)) {
+        match text.and_then(|t| read_workflow(&rel, &t, allow_container, labels)) {
             Ok((wf, on)) => {
                 if runs_on_push(&on, push) {
                     plan.run.push(wf);
@@ -152,6 +158,7 @@ pub fn read_workflow(
     rel: &Path,
     text: &str,
     allow_container: bool,
+    labels: &[&str],
 ) -> Result<(Workflow, Value), String> {
     let v: Value = yaml_serde::from_str(text).map_err(|e| format!("not valid YAML: {e}"))?;
     // YAML merge keys (`<<: *anchor`): this parser keeps `<<` as a plain key, act's expands it,
@@ -182,7 +189,10 @@ pub fn read_workflow(
         out.push(Job {
             id: id.clone(),
             check_name,
-            refused: (!allow_container).then(|| refusal(job)).flatten(),
+            refused: (!allow_container)
+                .then(|| refusal(job))
+                .flatten()
+                .or_else(|| unknown_label(job, labels)),
         });
     }
     // A key named `on` parses as the string "on" in YAML 1.2; YAML 1.1 readers may make it true.
@@ -205,6 +215,24 @@ pub fn read_workflow(
 /// The keys a job's `container`, or one of its `services`, may have. Anything else (`options`,
 /// `volumes`, keys a newer act might add) is refused: fail closed.
 const CONTAINER_KEYS: [&str; 4] = ["image", "env", "ports", "credentials"];
+
+/// Why a job's `runs-on` is refused: it must name labels the runner maps to an image
+/// (`[platforms]`). act would otherwise pick its own default images, unpinned and old.
+fn unknown_label(job: &Value, labels: &[&str]) -> Option<String> {
+    let runs_on = job.get("runs-on")?;
+    let names: Vec<&str> = match runs_on {
+        Value::String(s) => vec![s.as_str()],
+        Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
+        _ => return Some("`runs-on` is not a label or a list of labels".into()),
+    };
+    if names.iter().any(|n| n.contains("${{")) {
+        return Some("`runs-on` uses an expression".into());
+    }
+    names
+        .iter()
+        .find(|n| !labels.contains(n))
+        .map(|n| format!("`runs-on: {n}` is not a label this runner has an image for ([platforms] in runner.toml)"))
+}
 
 /// Whether any mapping in `v` has a `<<` key (a YAML merge key, left unexpanded here).
 fn has_merge_key(v: &Value) -> bool {
@@ -382,7 +410,12 @@ mod tests {
     }
 
     fn wf(text: &str) -> Result<(Workflow, Value), String> {
-        read_workflow(Path::new(".forge/workflows/ci.yml"), text, false)
+        read_workflow(
+            Path::new(".forge/workflows/ci.yml"),
+            text,
+            false,
+            &["x", "ubuntu-latest"],
+        )
     }
 
     #[test]
@@ -431,8 +464,9 @@ jobs:
         );
         let (w, _) = read_workflow(
             Path::new("x.yml"),
-            "on: push\njobs:\n  p:\n    container: { image: x, options: --privileged }\n",
+            "on: push\njobs:\n  p:\n    runs-on: x\n    container: { image: x, options: --privileged }\n",
             true,
+            &["x"],
         )
         .unwrap();
         assert!(w.jobs[0].refused.is_none(), "allowed per repo");
@@ -448,6 +482,22 @@ jobs:
         assert!(jobs["c"].get("needs").is_none());
         let (ok, _) = wf("on: push\njobs:\n  a:\n    runs-on: x\n").unwrap();
         assert!(ok.without_refused().is_none());
+    }
+
+    #[test]
+    fn runs_on_must_be_a_configured_label() {
+        let r = |ro: &str| {
+            wf(&format!("on: push\njobs:\n  j:\n    runs-on: {ro}\n"))
+                .unwrap()
+                .0
+                .jobs[0]
+                .refused
+                .clone()
+        };
+        assert!(r("ubuntu-latest").is_none());
+        assert!(r("[x, ubuntu-latest]").is_none());
+        assert!(r("ubuntu-22.04").is_some_and(|w| w.contains("[platforms]")));
+        assert!(r("${{ matrix.os }}").is_some());
     }
 
     #[test]
@@ -550,7 +600,7 @@ jobs:
         std::fs::write(w.join("notes.txt"), "x").unwrap();
         #[cfg(unix)]
         std::os::unix::fs::symlink("/etc/hosts", w.join("d.yml")).unwrap();
-        let p = plan(d.path(), &w, &facts("refs/heads/main", None), false);
+        let p = plan(d.path(), &w, &facts("refs/heads/main", None), false, &["x"]);
         assert_eq!(p.run.len(), 1);
         assert_eq!(p.run[0].file, Path::new(".forge/workflows/a.yml"));
         let broken: Vec<_> = p

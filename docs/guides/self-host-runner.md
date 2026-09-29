@@ -13,7 +13,14 @@ On every poll (every `interval_secs`, default 120 s), for each repository:
 3. **Reads the workflows before act does.** It reads every `*.yml` / `*.yaml` directly in `.forge/workflows`:
    - A file that is not valid YAML becomes one failed check, named after the file, with the reason.
    - A workflow runs only if its `on:` includes `push` and its `on.push` filters (`branches`, `branches-ignore`, `tags`, `tags-ignore`, `paths`, `paths-ignore`, GitHub's rules) match this push.
-   - A job that sets `container.options`, `container.volumes`, `services.<name>.options` or `services.<name>.volumes`, or that calls a reusable workflow (`uses:`), is **refused**. It becomes a failed check saying why, and act never sees it. The exception is a repository with `allow_container_options = true`.
+   - A job is **refused** if it:
+     - puts anything but `image`, `env`, `ports` and `credentials` in its `container` or in a service (so no `options` or `volumes`);
+     - uses an expression (`${{ … }}`) anywhere in `container` or `services`;
+     - calls a reusable workflow (`uses:`);
+     - names a `runs-on` label that `[platforms]` does not map to an image.
+
+     A refused job becomes a failed check saying why, and act never sees it. `allow_container_options = true` lifts the container and service rules for one repository; the label rule always applies.
+   - A workflow that uses a YAML merge key (`<<:`) is refused as a whole. The runner's YAML reader and act's disagree about it.
 4. **Runs act once per workflow file** that runs, with one container per job:
    - Every job is reported as `queued`, then `in_progress`, then `completed`, with `success`, `failure`, `skipped` or `timed_out`.
    - A job act never finished counts as `failure`.
@@ -103,7 +110,12 @@ The runner executes code from the repository: anyone who can push to a watched r
 **What the runner enforces on top:**
 
 - **No Docker socket in jobs.** Job containers do not get the daemon's socket (act's `--container-daemon-socket -`). `mount_docker_socket = true` turns that off, for trusted repositories only.
-- **No docker options from a workflow.** A job's `container.options`, `container.volumes`, `services.*.options` and `services.*.volumes`, and a reusable workflow call (`uses:`), are refused before act runs, because each can reach past the container: `--privileged`, a mounted socket, a host path, or a workflow the runner never read. `allow_container_options = true` allows them for one repository. Turn it on only if you would trust everyone who can push there with the daemon itself. The runner owner's own `container_options` still apply to every job.
+- **No docker options from a workflow.** These are refused before act runs:
+  - a job's `container` or `services` with anything but `image`, `env`, `ports` and `credentials`;
+  - any expression in `container` or `services`, which act evaluates at run time;
+  - a reusable workflow call (`uses:`).
+
+  Each can reach past the container: `--privileged`, a mounted socket, a host path, or a workflow the runner never read. Because of the expression rule, a registry password must be a literal in the workflow, or the image must be public or pulled in advance; `${{ secrets.… }}` in `container.credentials` is refused. `allow_container_options = true` allows them for one repository. Turn it on only if you would trust everyone who can push there with the daemon itself. The runner owner's own `container_options` still apply to every job.
 - **No host execution.** A `[platforms]` entry of `-self-hosted`, which would make act run steps directly on the runner's machine, is refused at startup.
 - **Not the host network.** Job containers join Docker's `bridge` network (`container_network`), not act's default `host`. Put the daemon where jobs cannot reach what they must not, such as cloud metadata endpoints and your LAN.
 - **Secrets only for trusted refs.**
@@ -115,6 +127,7 @@ The runner executes code from the repository: anyone who can push to a watched r
 - **Never a fork's code with secrets.** The runner runs pushes to the watched repository's own refs, which only its members can make. A pull request from a fork is a ref in the fork, which the runner does not watch. To test fork PRs, watch the fork as its own `[[repo]]` without `trusted_refs`.
 - **The checkout cannot configure act.**
   - act is given `/dev/null` for its `.env`, `.secrets`, `.vars` and `.input` files, and is run with `-C <checkout>` from the runner's own directory. A `.actrc`, `.secrets` or `.env` committed to the repository is never read; the end-to-end test plants all three.
+  - act has no flag to turn `.actrc` off: it reads it from its working directory, `HOME` and `XDG_CONFIG_HOME`. So run the runner from a directory with no `.actrc`, and keep none in the runner user's home.
   - A workflow file act runs is either the file as read, or, when jobs were refused, a copy without them outside the checkout.
 - **A clean environment.** act runs with its environment cleared except `PATH`, `HOME`, `TMPDIR`, `USER`, `LANG`, `TZ`, `DOCKER_*` and `XDG_*`. The runner's `DASH_FORGE_KEY` and cloud credentials never reach act or a job.
 - **No shared caches.** act's cache server is off (`--no-cache-server`), and act's action cache and workspaces are per run. One run cannot read or poison another's.
@@ -128,7 +141,7 @@ The runner executes code from the repository: anyone who can push to a watched r
 - **Only `push` runs.** There are no `pull_request`, `schedule` or `workflow_dispatch` events.
 - **No artefacts.** `actions/upload-artifact` needs act's artifact server, which the runner does not start.
 - **One push at a time.** The workflow files of a push run one after another, within one `job_timeout_secs`.
-- **Other `runs-on` labels.** Labels other than those in `[platforms]` fall back to act's own image choice.
+- **Only configured `runs-on` labels.** A job whose `runs-on` label is not in `[platforms]` is refused, rather than run on act's own default image.
 
 ## Test it locally
 
