@@ -1,12 +1,16 @@
 //! `packManifest` types (data-contracts §2.3) and the repack supersedes planner.
 //!
 //! A `packManifest` is metadata the platform / backends layers store; `pack` only
-//! *produces* it. One `kind` field distinguishes the three artifacts that share the
-//! entire pack storage/transport machinery:
+//! *produces* it. One `kind` field distinguishes the artifacts that share the entire
+//! pack storage/transport machinery:
 //!
 //! - `0` — a git packfile (kind-0 packs mandate `offset_index_parts >= 1`).
 //! - `1` — an `objectLocator` (locates itself; `offset_index_parts == 0`).
 //! - `2` — a `flatIndex` (locates itself; carries the indexed tip in `tips`).
+//! - `3` — a history index (locates itself; `tips` = `[tip]`, or `[tip, baseTip]` for a
+//!   delta over an earlier full index). `kind` is a plain `0..=255` integer in forge-core,
+//!   so this needed no contract change, and older clients, which select kinds 0 and 1,
+//!   ignore it.
 //!
 //! Hashes and OIDs are held as lowercase hex strings — the form the platform layer
 //! serializes (as JSON-in-string / packed byteArray; §0) — never native arrays.
@@ -21,6 +25,8 @@ pub const KIND_GIT_PACK: u8 = 0;
 pub const KIND_OBJECT_LOCATOR: u8 = 1;
 /// `packManifest.kind == 2`: a flatIndex browse artifact.
 pub const KIND_FLAT_INDEX: u8 = 2;
+/// `packManifest.kind == 3`: a history index ([`super::historyindex`]).
+pub const KIND_HISTORY_INDEX: u8 = 3;
 
 /// Bytes of one packed `manifestPart` offset-index payload (`d0..d2`, 3 × 4900 B).
 const OFFSET_PART_CAPACITY: usize = 4900 * 3;

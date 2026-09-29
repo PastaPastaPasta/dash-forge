@@ -296,6 +296,7 @@ mod tests {
             offset_index_parts: 0,
             uris: uris.iter().map(|u| (*u).to_string()).collect(),
             supersedes: Vec::new(),
+            tips: Vec::new(),
             created_at_block_height: 0,
         }
     }

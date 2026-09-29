@@ -73,6 +73,9 @@ pub struct PackManifestInfo {
     pub uris: Vec<String>,
     /// Prior `packHash`es this manifest supersedes (parsed from the packed `byteArray`).
     pub supersedes: Vec<[u8; 32]>,
+    /// Tip commits the artifact describes (parsed from the packed `byteArray`): a history
+    /// index's `[tip]` or `[tip, baseTip]`.
+    pub tips: Vec<[u8; 20]>,
     /// `$createdAtBlockHeight` (the private-repo late-content rule, §8.2); 0 when unknown.
     pub created_at_block_height: u64,
 }
@@ -399,6 +402,20 @@ impl ReindexPlan {
                 .iter()
                 .any(|m| m.kind == git && m.storage == 0 && hex::encode(m.pack_hash) == p.pack_hash)
         })
+    }
+
+    /// Whether any copy of any git pack is stored as Platform chunks: where a history index may
+    /// go when no pack is missing its locator.
+    pub fn any_pack_on_platform(&self) -> bool {
+        let git = u64::from(crate::pack::KIND_GIT_PACK);
+        self.manifests
+            .iter()
+            .any(|m| m.kind == git && m.storage == 0)
+    }
+
+    /// The history index plan for `tip`, from the same manifests ([`plan_history_index`]).
+    pub fn history_plan(&self, tip: [u8; 20]) -> HistoryPlan {
+        plan_history_index(&self.manifests, &self.roles, tip)
     }
 
     /// Objects the published fragment will index (what its size, and price, follow).
@@ -2346,10 +2363,25 @@ impl<'a> RepoService<'a> {
         supersedes: Vec<[u8; 32]>,
         target: RepackTarget<'_>,
     ) -> Result<String> {
-        let bytes = self
-            .pack_codec(repo)
-            .await?
-            .seal(locator.as_bytes().to_vec())?;
+        let artifact = Artifact {
+            kind: crate::pack::KIND_OBJECT_LOCATOR,
+            plain: locator.as_bytes().to_vec(),
+            rows: locator.object_count() as u64,
+            supersedes,
+            tips: Vec::new(),
+        };
+        self.store_artifact(repo, artifact, target).await
+    }
+
+    /// Seal (for a private repository) and upload a browse artifact that locates itself, then
+    /// record its `packManifest`. Returns the manifest id.
+    async fn store_artifact(
+        &self,
+        repo: &RepoRef,
+        artifact: Artifact,
+        target: RepackTarget<'_>,
+    ) -> Result<String> {
+        let bytes = self.pack_codec(repo).await?.seal(artifact.plain)?;
         let meta = PackMeta::for_bytes(&bytes);
         let pack_hash = meta.pack_hash_bytes()?;
         let stored = match target {
@@ -2365,20 +2397,270 @@ impl<'a> RepoService<'a> {
             repo,
             &PackManifestInput {
                 pack_hash,
-                kind: u64::from(crate::pack::KIND_OBJECT_LOCATOR),
+                kind: u64::from(artifact.kind),
                 size_bytes: bytes.len() as u64,
-                object_count: locator.object_count() as u64,
+                object_count: artifact.rows,
                 chunk_count: stored.chunk_count,
                 storage: stored.storage,
-                // No separate `manifestPart` offset-index doc is written for the locator
-                // itself; never claim a part that was not stored.
+                // A browse artifact locates itself: no `manifestPart` offset index is
+                // written for it, so none is claimed.
                 offset_index_parts: 0,
                 uris: stored.uris,
-                supersedes,
-                tips: Vec::new(),
+                supersedes: artifact.supersedes,
+                tips: artifact.tips.iter().map(|t| t.to_vec()).collect(),
             },
         )
         .await
+    }
+
+    /// What the next history index of `tip` should be (see [`plan_history_index`]), from the
+    /// manifests and the repository's current members. Reads no artifact.
+    pub async fn plan_history_publish(&self, repo: &RepoRef, tip: [u8; 20]) -> Result<HistoryPlan> {
+        let manifests = self.read_pack_manifests(repo).await?;
+        let roles = self.copy_roles(repo).await?;
+        Ok(plan_history_index(&manifests, &roles, tip))
+    }
+
+    /// Store a history index [`prepare_history_index`] computed, through `target`, and record
+    /// its `packManifest` (kind 3).
+    pub async fn store_history_index(
+        &self,
+        repo: &RepoRef,
+        prepared: PreparedHistory,
+        target: RepackTarget<'_>,
+    ) -> Result<HistoryPublished> {
+        let PreparedHistory {
+            index, artifact, ..
+        } = prepared;
+        let manifest_id = self.store_artifact(repo, artifact, target).await?;
+        Ok(HistoryPublished {
+            manifest_id,
+            rows: index.paths.len() as u64,
+            delta: index.base.is_some(),
+            commit_count: index.commit_count,
+        })
+    }
+}
+
+/// A self-locating browse artifact to store ([`RepoService::store_artifact`]).
+struct Artifact {
+    kind: u8,
+    /// The plaintext bytes (sealed on the way out for a private repository).
+    plain: Vec<u8>,
+    /// `objectCount`: rows the artifact holds.
+    rows: u64,
+    supersedes: Vec<[u8; 32]>,
+    tips: Vec<[u8; 20]>,
+}
+
+/// A live history index, as the manifests describe it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryEntry {
+    /// The artifact's `packHash`.
+    pub pack_hash: [u8; 32],
+    /// The tip it describes.
+    pub tip: [u8; 20],
+    /// For a delta: the tip of the full index it extends.
+    pub base_tip: Option<[u8; 20]>,
+    /// Its stored size (sealed, for a private repository).
+    pub size_bytes: u64,
+}
+
+/// What the next history index publish should do.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HistoryPlan {
+    /// An index already covers the tip: nothing to publish.
+    pub covered: bool,
+    /// The live FULL indexes by current members, newest first: the bases a delta may extend
+    /// (the first on the new tip's first-parent chain).
+    pub bases: Vec<HistoryEntry>,
+    /// Every live history index by a current member: what a full index supersedes, and the
+    /// deltas of a base a new delta supersedes.
+    pub live: Vec<HistoryEntry>,
+    /// The repository has no history index manifest at all yet: this one is its first, which
+    /// pays the first-of-kind fee ([`crate::cost::push_fees::HISTORY_FIRST_EXTRA`]).
+    pub first: bool,
+}
+
+impl HistoryPlan {
+    /// The plan for a repository with no history index yet (a first push into a new one): a
+    /// full index, its first.
+    pub fn fresh() -> Self {
+        Self {
+            first: true,
+            ..Self::default()
+        }
+    }
+}
+
+/// What [`RepoService::store_history_index`] published.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryPublished {
+    /// The manifest document id.
+    pub manifest_id: String,
+    /// Path rows it holds.
+    pub rows: u64,
+    /// A delta over a full index (else a full index).
+    pub delta: bool,
+    /// `git rev-list --count` of the tip.
+    pub commit_count: u64,
+}
+
+/// A history index computed and ready to store ([`RepoService::store_history_index`]).
+pub struct PreparedHistory {
+    index: crate::pack::HistoryIndex,
+    artifact: Artifact,
+    /// The repository's first history index (it pays the first-of-kind fee).
+    first: bool,
+}
+
+impl PreparedHistory {
+    /// The plaintext artifact size (what the push prices; sealing adds a little).
+    pub fn plain_len(&self) -> u64 {
+        self.artifact.plain.len() as u64
+    }
+
+    /// The price of storing it (an upper bound), sealed or not, with `external_targets` URIs
+    /// and, when `platform`, its chunks.
+    pub fn credits(&self, sealed: bool, external_targets: u64, platform: bool) -> u64 {
+        crate::cost::push_fees::history_index(
+            self.plain_len(),
+            sealed,
+            external_targets,
+            platform,
+            self.first,
+        )
+    }
+
+    /// The computed index.
+    pub fn index(&self) -> &crate::pack::HistoryIndex {
+        &self.index
+    }
+
+    /// Whether it is the repository's first history index.
+    pub fn is_first(&self) -> bool {
+        self.first
+    }
+}
+
+/// Plan the history index publish for `tip` from the repository's manifests: which live
+/// indexes (kind 3, by a current member, not superseded by a member's manifest) exist, whether
+/// one already covers `tip`, and the newest full index a delta could extend.
+pub fn plan_history_index(
+    manifests: &[PackManifestInfo],
+    roles: &RoleMap,
+    tip: [u8; 20],
+) -> HistoryPlan {
+    let kind = u64::from(crate::pack::KIND_HISTORY_INDEX);
+    let member = |m: &PackManifestInfo| roles.contains_key(&m.owner_id);
+    let superseded: BTreeSet<[u8; 32]> = manifests
+        .iter()
+        .filter(|m| member(m))
+        .flat_map(|m| m.supersedes.iter().copied())
+        .collect();
+    // Newest first (the manifest list's order), one entry per packHash.
+    let mut seen = BTreeSet::new();
+    let live: Vec<HistoryEntry> = manifests
+        .iter()
+        .filter(|m| m.kind == kind && member(m) && !superseded.contains(&m.pack_hash))
+        .filter(|m| seen.insert(m.pack_hash))
+        .filter_map(|m| {
+            Some(HistoryEntry {
+                pack_hash: m.pack_hash,
+                tip: *m.tips.first()?,
+                base_tip: m.tips.get(1).copied(),
+                size_bytes: m.size_bytes,
+            })
+        })
+        .collect();
+    // A delta covers its tip only while a live full index of its base tip stands behind it:
+    // a reader could not overlay it otherwise (forge-web `historySource` applies the same rule).
+    let full_tips: BTreeSet<[u8; 20]> = live
+        .iter()
+        .filter(|e| e.base_tip.is_none())
+        .map(|e| e.tip)
+        .collect();
+    let covers = |e: &HistoryEntry| e.base_tip.is_none_or(|b| full_tips.contains(&b));
+    HistoryPlan {
+        covered: live.iter().any(|e| e.tip == tip && covers(e)),
+        bases: live
+            .iter()
+            .filter(|e| e.base_tip.is_none())
+            .cloned()
+            .collect(),
+        first: !manifests.iter().any(|m| m.kind == kind),
+        live,
+    }
+}
+
+/// Compute the history index for `tip` in the local repository `git_dir` as `plan` says: a
+/// delta over the newest of `plan.bases` on `tip`'s first-parent chain when the delta is under
+/// half that base's size, else a full index superseding the live ones. `None` when `plan` says an
+/// index already covers `tip`. Local only: nothing is read from or written to the network.
+pub fn prepare_history_index(
+    git_dir: &std::path::Path,
+    tip: [u8; 20],
+    plan: &HistoryPlan,
+) -> Result<Option<PreparedHistory>> {
+    use crate::pack::historyindex::compute;
+    if plan.covered {
+        return Ok(None);
+    }
+    let tip_hex = hex::encode(tip);
+    // A delta over the newest live full index whose tip is on the new tip's first-parent chain
+    // (and the local repository holds it), when the delta is under half that base's size.
+    for base in &plan.bases {
+        let Ok(Some(mut delta)) = compute(git_dir, &tip_hex, Some(&hex::encode(base.tip))) else {
+            continue;
+        };
+        delta.base = Some(base.pack_hash);
+        let bytes = delta.to_compressed()?;
+        if (bytes.len() as u64) * 2 <= base.size_bytes {
+            // A delta is cumulative: it replaces the earlier deltas of the same base.
+            let earlier = plan.live.iter().filter(|e| e.base_tip == Some(base.tip));
+            return Ok(Some(prepared(
+                delta,
+                bytes,
+                vec![tip, base.tip],
+                earlier,
+                plan.first,
+            )));
+        }
+        // The newest base on the chain is too far behind: a full index, not an older base.
+        break;
+    }
+    let index = compute(git_dir, &tip_hex, None)?
+        .ok_or_else(|| Error::Config("history index: no full index computed".into()))?;
+    let bytes = index.to_compressed()?;
+    Ok(Some(prepared(
+        index,
+        bytes,
+        vec![tip],
+        plan.live.iter(),
+        plan.first,
+    )))
+}
+
+/// A computed index as the artifact to store, superseding `replaces` (at most
+/// [`MAX_SUPERSEDES`]).
+fn prepared<'e>(
+    index: crate::pack::HistoryIndex,
+    plain: Vec<u8>,
+    tips: Vec<[u8; 20]>,
+    replaces: impl Iterator<Item = &'e HistoryEntry>,
+    first: bool,
+) -> PreparedHistory {
+    let artifact = Artifact {
+        kind: crate::pack::KIND_HISTORY_INDEX,
+        rows: index.paths.len() as u64,
+        plain,
+        supersedes: replaces.take(MAX_SUPERSEDES).map(|e| e.pack_hash).collect(),
+        tips,
+    };
+    PreparedHistory {
+        index,
+        artifact,
+        first,
     }
 }
 
@@ -3101,6 +3383,10 @@ fn manifest_info(d: &FetchedDocument) -> Result<PackManifestInfo> {
         offset_index_parts: d.field_u64("offsetIndexParts").unwrap_or_default(),
         uris,
         supersedes,
+        tips: d
+            .field_bytes("tips")
+            .map(|raw| raw.as_chunks::<20>().0.to_vec())
+            .unwrap_or_default(),
         created_at_block_height: d.created_at_block_height.unwrap_or_default(),
     })
 }
@@ -3249,8 +3535,281 @@ mod tests {
             offset_index_parts: 0,
             uris: Vec::new(),
             supersedes: Vec::new(),
+            tips: Vec::new(),
             created_at_block_height: 0,
         }
+    }
+
+    /// A history index manifest (kind 3) by `owner` for `tip` (and `base_tip` for a delta).
+    fn history(
+        id: &str,
+        at: u64,
+        hash: u8,
+        owner: &str,
+        tip: u8,
+        base_tip: Option<u8>,
+    ) -> PackManifestInfo {
+        let mut m = manifest(id, at, crate::pack::KIND_HISTORY_INDEX, hash);
+        m.owner_id = owner.into();
+        m.tips = std::iter::once(tip)
+            .chain(base_tip)
+            .map(|t| [t; 20])
+            .collect();
+        m.size_bytes = 1000;
+        m
+    }
+
+    /// Review M1: a delta covers its tip only while a live full index of its base tip stands
+    /// behind it. A delta whose base was superseded (or was never a member's) covers nothing, so
+    /// the tip gets an index again.
+    #[test]
+    fn an_orphaned_delta_does_not_cover_its_tip() {
+        use super::plan_history_index;
+        let roles: RoleMap = [("w".to_string(), Role::Writer)].into();
+        let delta = history("d", 20, 2, "w", 0xb0, Some(0xa0));
+        let base = history("f", 10, 1, "w", 0xa0, None);
+        assert!(plan_history_index(&[delta.clone(), base.clone()], &roles, [0xb0; 20]).covered);
+        // The base's only copy is a stranger's: it is not live, so the delta is orphaned.
+        let mut stranger_base = base.clone();
+        stranger_base.owner_id = "x".into();
+        assert!(!plan_history_index(&[delta.clone(), stranger_base], &roles, [0xb0; 20]).covered);
+        // A newer full index of another tip superseded the base: orphaned too.
+        let mut newer = history("g", 30, 3, "w", 0xc0, None);
+        newer.supersedes = vec![base.pack_hash];
+        assert!(!plan_history_index(&[newer, delta, base], &roles, [0xb0; 20]).covered);
+    }
+
+    /// Review M2: the delta's base is the newest live full index on the new tip's first-parent
+    /// chain, tried newest first: a newer full index of a side branch's tip (not on the chain)
+    /// is skipped for an older one that is.
+    #[test]
+    fn a_delta_extends_the_newest_full_index_on_the_chain() {
+        use super::{plan_history_index, prepare_history_index};
+        let d = tempfile::TempDir::new().unwrap();
+        let p = d.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(p)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@e.x")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@e.x")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let oid = |rev: &str| -> [u8; 20] {
+            hex::decode(git(&["rev-parse", rev]))
+                .unwrap()
+                .try_into()
+                .unwrap()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        for i in 0..400 {
+            std::fs::write(p.join(format!("f{i}.txt")), format!("{i}")).unwrap();
+        }
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "many files"]);
+        let on_chain = oid("HEAD");
+        git(&["checkout", "-q", "-b", "side"]);
+        std::fs::write(p.join("side.txt"), "s").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "side"]);
+        let side = oid("HEAD");
+        git(&["checkout", "-q", "main"]);
+        std::fs::write(p.join("f1.txt"), "changed").unwrap();
+        git(&["commit", "-q", "-am", "edit f1"]);
+        let tip = oid("HEAD");
+        let roles: RoleMap = [("w".to_string(), Role::Writer)].into();
+        let full = |id: &str, at: u64, hash: u8, t: [u8; 20]| {
+            let mut m = history(id, at, hash, "w", 0, None);
+            m.tips = vec![t];
+            m.size_bytes = 100_000;
+            m
+        };
+        // Newest first: the side branch's full index, then the one on main's chain.
+        let manifests = [full("s", 20, 9, side), full("m", 10, 1, on_chain)];
+        let plan = plan_history_index(&manifests, &roles, tip);
+        let got = prepare_history_index(p, tip, &plan).unwrap().unwrap();
+        assert_eq!(
+            got.index().base,
+            Some([1; 32]),
+            "extends the index on the chain"
+        );
+        assert_eq!(got.artifact.tips, vec![tip, on_chain]);
+    }
+
+    #[test]
+    fn a_history_plan_finds_the_covering_index_the_base_and_the_live_set() {
+        use super::plan_history_index;
+        let roles: RoleMap = [("w".to_string(), Role::Writer)].into();
+        // Newest first, as read_pack_manifests answers.
+        let mut delta_old = history("d1", 20, 2, "w", 0xb0, Some(0xa0));
+        let delta_new = {
+            let mut d = history("d2", 30, 3, "w", 0xc0, Some(0xa0));
+            d.supersedes = vec![delta_old.pack_hash];
+            d
+        };
+        delta_old.created_at = 20;
+        let stranger = history("x", 40, 9, "stranger", 0xee, None);
+        let all = [
+            stranger,
+            delta_new.clone(),
+            delta_old,
+            history("f", 10, 1, "w", 0xa0, None),
+        ];
+
+        let plan = plan_history_index(&all, &roles, [0xc0; 20]);
+        assert!(plan.covered, "the newest delta covers its tip");
+        let plan = plan_history_index(&all, &roles, [0xd0; 20]);
+        assert!(!plan.covered);
+        // The base is the newest full index by a member: never a stranger's.
+        let bases: Vec<[u8; 20]> = plan.bases.iter().map(|b| b.tip).collect();
+        assert_eq!(bases, [[0xa0; 20]]);
+        assert!(!plan.first);
+        assert!(plan_history_index(&[], &roles, [0xd0; 20]).first);
+        // The superseded delta is not live; the stranger's index never counts.
+        let live: Vec<[u8; 32]> = plan.live.iter().map(|e| e.pack_hash).collect();
+        assert_eq!(live, [delta_new.pack_hash, [1; 32]]);
+        assert!(!plan_history_index(&all, &roles, [0xee; 20]).covered);
+    }
+
+    #[test]
+    fn a_delta_over_a_nearby_base_is_published_and_supersedes_the_bases_earlier_deltas() {
+        use super::{plan_history_index, prepare_history_index};
+        let d = tempfile::TempDir::new().unwrap();
+        let p = d.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(p)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@e.x")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@e.x")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        for i in 0..400 {
+            std::fs::write(p.join(format!("f{i}.txt")), format!("{i}")).unwrap();
+        }
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "many files"]);
+        let tip = |git: &dyn Fn(&[&str]) -> String| -> [u8; 20] {
+            hex::decode(git(&["rev-parse", "HEAD"]))
+                .unwrap()
+                .try_into()
+                .unwrap()
+        };
+        let base_tip = tip(&git);
+        let roles: RoleMap = [("w".to_string(), Role::Writer)].into();
+
+        // No index yet: a full one.
+        let plan = plan_history_index(&[], &roles, base_tip);
+        let full = prepare_history_index(p, base_tip, &plan).unwrap().unwrap();
+        assert!(full.index().base.is_none());
+        assert_eq!(full.index().paths.len(), 400);
+        assert_eq!(full.artifact.tips, vec![base_tip]);
+
+        // One file changes: a delta over the full index, superseding the base's older delta.
+        std::fs::write(p.join("f3.txt"), "changed").unwrap();
+        git(&["commit", "-q", "-am", "edit f3"]);
+        let new_tip = tip(&git);
+        let mut base = history("f", 10, 1, "w", 0, None);
+        base.tips = vec![base_tip];
+        base.size_bytes = full.plain_len();
+        let mut older = history("d", 20, 2, "w", 0x11, None);
+        older.tips = vec![[0x11; 20], base_tip];
+        let manifests = [older, base];
+        let plan = plan_history_index(&manifests, &roles, new_tip);
+        let delta = prepare_history_index(p, new_tip, &plan).unwrap().unwrap();
+        assert_eq!(delta.index().base, Some([1; 32]));
+        let rows: Vec<&[u8]> = delta.index().paths.keys().map(Vec::as_slice).collect();
+        assert_eq!(rows, [b"f3.txt".as_slice()]);
+        assert_eq!(delta.artifact.tips, vec![new_tip, base_tip]);
+        assert_eq!(delta.artifact.supersedes, vec![[2; 32]]);
+        assert_eq!(delta.index().commit_count, 2);
+
+        // Covered: nothing to do.
+        let mut covering = history("c", 30, 3, "w", 0, None);
+        covering.tips = vec![new_tip];
+        let plan = plan_history_index(&[covering], &roles, new_tip);
+        assert!(prepare_history_index(p, new_tip, &plan).unwrap().is_none());
+    }
+
+    #[test]
+    fn a_base_off_the_chain_or_a_big_delta_gets_a_full_index_superseding_the_live_set() {
+        use super::{plan_history_index, prepare_history_index};
+        let d = tempfile::TempDir::new().unwrap();
+        let p = d.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(p)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@e.x")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@e.x")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(p.join("a"), "1").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "one"]);
+        std::fs::write(p.join("a"), "2").unwrap();
+        git(&["commit", "-q", "-am", "two"]);
+        let head: [u8; 20] = hex::decode(git(&["rev-parse", "HEAD"]))
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let roles: RoleMap = [("w".to_string(), Role::Writer)].into();
+        // A base whose tip this clone does not hold: full.
+        let unknown = history("f", 10, 1, "w", 0x42, None);
+        let plan = plan_history_index(std::slice::from_ref(&unknown), &roles, head);
+        let got = prepare_history_index(p, head, &plan).unwrap().unwrap();
+        assert!(got.index().base.is_none());
+        assert_eq!(got.artifact.supersedes, vec![[1; 32]]);
+        // A base on the chain but tiny: the delta (every path) is not under half of it.
+        let parent: [u8; 20] = hex::decode(git(&["rev-parse", "HEAD~1"]))
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let mut small = history("f", 10, 1, "w", 0, None);
+        small.tips = vec![parent];
+        small.size_bytes = 10;
+        let plan = plan_history_index(&[small], &roles, head);
+        assert!(prepare_history_index(p, head, &plan)
+            .unwrap()
+            .unwrap()
+            .index()
+            .base
+            .is_none());
     }
 
     #[test]

@@ -224,6 +224,9 @@ pub struct PlatformWrites {
     pub ref_updates: usize,
     /// Estimated credits for all of it.
     pub est_credits: u64,
+    /// Plaintext bytes of the history index the push publishes (0: none). A caller budgeting
+    /// a Platform fallback prices its chunks from this.
+    pub history_bytes: u64,
 }
 
 /// `dash: platform     manifest 1 · refUpdate 1     est 0.00031 DASH`.
@@ -248,6 +251,7 @@ pub fn platform_line(w: &PlatformWrites) -> (String, Value) {
             "refUpdates": w.ref_updates,
             // Every document's full fee (`forge_core::cost::push_fees`, an upper bound).
             "estCredits": w.est_credits,
+            "historyBytes": w.history_bytes,
         }),
     )
 }
@@ -472,6 +476,7 @@ mod tests {
             manifests: 1,
             ref_updates: 1,
             est_credits: 31_000_000,
+            history_bytes: 0,
         });
         assert_eq!(
             p,
@@ -534,6 +539,7 @@ mod tests {
             manifests: 2,
             ref_updates: 2,
             est_credits: 100_000_000,
+            history_bytes: 0,
         });
         assert!(p.contains("chunk 3 · manifest 2 · refUpdate 2"), "{p}");
         assert_eq!(

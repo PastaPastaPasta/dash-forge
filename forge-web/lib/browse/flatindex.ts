@@ -11,10 +11,12 @@
  * filename-search (it is O(files); the home view rides the locator instead).
  */
 
-import { ungzip } from 'pako'
+import { inflateBounded } from './history-index'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
 const OID_LEN = 20
+/** The most a flatIndex may inflate to: ~4.5 MB at 100k files (S0.5), so 64 MB is far past any tree. */
+const FLAT_INDEX_MAX_INFLATED = 64 * 1024 * 1024
 /** git file mode of a gitlink (submodule) entry — numeric value of octal 160000. */
 export const MODE_GITLINK = 0o160_000
 /** git file mode of a tree (directory) node — numeric value of octal 40000. */
@@ -67,7 +69,8 @@ export class FlatIndex {
 
   /** Parse a gzip-compressed flatIndex artifact. */
   static parse(compressed: Uint8Array): FlatIndex {
-    const body = ungzip(compressed) // pako: the reader's inflater, so only one ships
+    // pako: the reader's inflater, so only one ships. Bounded: a gzip bomb stops at the cap.
+    const body = inflateBounded(compressed, FLAT_INDEX_MAX_INFLATED)
     const pos = { i: 0 }
     if (body.length < OID_LEN) throw new Error('flatIndex truncated (tip)')
     const tip = bytesToHex(body.subarray(0, OID_LEN))

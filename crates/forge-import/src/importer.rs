@@ -174,6 +174,7 @@ async fn run_inner<'a>(
         network: cfg.network.clone(),
         refs: refs.clone(),
         fallback,
+        default_branch: meta.default_branch.clone(),
     };
     let mut push_estimates = Vec::with_capacity(pushes.len());
     let mut heads_unpriced = None;
@@ -185,7 +186,7 @@ async fn run_inner<'a>(
             // A new repo (or no identity to ask the helper with): build the pack and price
             // what the storage policy writes on chain (all of it on Platform, or only the
             // manifests and refs when your own storage holds the pack).
-            crate::gitsync::estimate_fresh(&work, refs, storage)
+            crate::gitsync::estimate_fresh(&work, refs, storage, &meta.default_branch)
         };
         push_estimates.push(match (refs, est) {
             (_, Ok(e)) => e,
@@ -317,7 +318,10 @@ async fn run_inner<'a>(
             Some(e) => e,
             None => p.estimate()?,
         };
-        push_one(ledger, &p, est, "the git push (branches and tags)").await?;
+        let published = push_one(ledger, &p, est, "the git push (branches and tags)").await?;
+        if !published {
+            backfill_history(ledger, client, signer, &repo, &work, &meta.default_branch).await;
+        }
     }
 
     // 3. Issues, PRs, comments, reviews, events, labels, releases (required).
@@ -354,6 +358,40 @@ async fn run_inner<'a>(
     sync_state.save(started, revisit)
 }
 
+/// After the code push, when it did not publish one itself: publish the default branch's history
+/// index from the work mirror when none covers its tip (the helper's own publish can miss one: a just-created repository's
+/// config a lagging node did not list, a pack an earlier run recorded). Optional: priced, fitted
+/// under the cap, and a failure is a warning, never a failed import.
+async fn backfill_history(
+    ledger: &mut Ledger<'_>,
+    client: &PlatformClient,
+    signer: &Signer,
+    repo: &forge_core::scope::RepoRef,
+    work: &std::path::Path,
+    default_branch: &str,
+) {
+    if default_branch.is_empty() {
+        return;
+    }
+    let svc = forge_core::repo::RepoService::new(client, &signer.identity, &signer.bridge);
+    let outcome =
+        crate::gitsync::history_backfill(&svc, repo, work, default_branch, &mut |credits| {
+            ledger.budget.fits(credits)
+        })
+        .await;
+    match outcome {
+        Ok(Some(credits)) => {
+            let _ = ledger.budget.charge(credits, "the history index");
+            ledger.reconcile().await;
+        }
+        Ok(None) => {}
+        Err(e) => ledger.warn(format!(
+            "the history index was not published ({e:#}); the web walks history for the \
+             file list's commit column until `dg repo reindex` publishes it"
+        )),
+    }
+}
+
 /// The optional PR-heads push: re-priced now, admitted only if it fits the cap AND the
 /// signer's balance (an uncapped run must not drain the identity for it either); any
 /// failure is a git skip (the run is partial, the state still advances).
@@ -384,9 +422,9 @@ async fn push_one(
     p: &GitPusher,
     est: PushReport,
     what: &str,
-) -> Result<()> {
+) -> Result<bool> {
     if est.refs == 0 {
-        return Ok(());
+        return Ok(false);
     }
     let before = ledger.budget.remaining();
     ledger.budget.charge(est.est_credits, what)?;
@@ -407,7 +445,7 @@ async fn push_one(
     match pushed {
         Ok(report) => {
             count_push(ledger, &report, what);
-            Ok(())
+            Ok(report.history_published)
         }
         Err(e) => {
             // Refund the charge only when nothing can have been paid for without the ledger
@@ -437,7 +475,10 @@ async fn push_one(
 /// Count what a push wrote, and warn when it left its browse index behind (D-920).
 fn count_push(ledger: &mut Ledger<'_>, report: &PushReport, what: &str) {
     ledger.counts.add_push(report);
-    if let Some(w) = &report.index_skipped {
+    for w in [&report.index_skipped, &report.history_skipped]
+        .into_iter()
+        .flatten()
+    {
         ledger.warn(format!("{what}: {w}"));
     }
 }
