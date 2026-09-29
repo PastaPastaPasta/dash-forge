@@ -1635,6 +1635,8 @@ impl<'a> WriteEngine<'a> {
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
             creator_id: None,
+            moderated_at: None,
+            moderated_by: None,
             // Assigned by Drive on create; not part of the client-built document.
             contract_version: None,
         });
@@ -1715,6 +1717,8 @@ impl<'a> WriteEngine<'a> {
             updated_at_core_block_height: None,
             transferred_at_core_block_height: None,
             creator_id: None,
+            moderated_at: None,
+            moderated_by: None,
             // Assigned by Drive on create; not part of the client-built document.
             contract_version: None,
         });

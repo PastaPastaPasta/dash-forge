@@ -452,7 +452,11 @@ fn registration_references(
                 ReferenceHolder::Owner | ReferenceHolder::Creator => None,
             };
             let target = match reference {
-                PropertyReference::Value(t) | PropertyReference::Elements { target: t, .. } => t,
+                // A revealed property (a `findBy` function's param, platform#5041) is checked
+                // like an identifier's, as drive-abci does
+                PropertyReference::Value(t)
+                | PropertyReference::Revealed(t)
+                | PropertyReference::Elements { target: t, .. } => t,
                 PropertyReference::KeyId(key_ref) => {
                     check_key_id_reference(contract, dt, holder.path(), key_ref, pv)
                         .map_err(|e| anyhow!("{type_name}.{}: {e} (40125)", holder.path()))?;
@@ -622,7 +626,10 @@ fn check_leaf(
     if is_foreign {
         if let Some(lookup) = decl.lookup {
             if let Some(reason) = lookup.referenced_side_error(declaring, referenced) {
-                bail!("{at}: lookup {} invalid (40137): {reason}", lookup.index);
+                bail!(
+                    "{at}: findBy {{{}}} invalid (40137): {reason}",
+                    lookup.find_by_names()
+                );
             }
         }
         if let Some(list) = leaf.as_list_element_reference() {
