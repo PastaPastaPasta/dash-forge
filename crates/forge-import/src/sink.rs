@@ -392,9 +392,9 @@ impl<'a> Sink<'a> {
         // it ever counts (D-501); naming one would be re-posted, and paid for, every run.
         let base_counts = tips.tip.is_some() || !self.opened.contains_key(target_id);
         // Never provable: the PR was opened against a base with no tip on chain (read from
-        // chain), or this run pushes nothing and the base has no tip at all, so the PR it just
+        // chain), or this run pushes nothing and the base never had a tip, so the PR it just
         // created is opened against a base that is no branch (D-501).
-        if !base_counts || (!pushed && tips.tip.is_none()) {
+        if !base_counts || (!pushed && tips.historical.is_empty()) {
             self.never_provable.insert(target_id.to_string());
         }
         if self.ledger.dry_run {

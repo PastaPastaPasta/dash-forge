@@ -940,17 +940,17 @@ impl GitlabClient {
         )
     }
 
-    /// One merge request.
-    pub fn merge_request(&self, iid: u64) -> Result<Readable<GlItem>> {
-        Ok(
-            match self.get(
-                &self.url(&format!("merge_requests/{iid}")),
-                "a merge request",
-            )? {
-                Ok(r) => Ok(serde_json::from_slice(&r.body).context("parsing a merge request")?),
-                Err(d) => Err(d),
-            },
-        )
+    /// One merge request; `Ok(Ok(None))` when GitLab has no such merge request (404).
+    pub fn merge_request(&self, iid: u64) -> Result<Readable<Option<GlItem>>> {
+        let url = self.url(&format!("merge_requests/{iid}"));
+        Ok(match self.get(&url, "a merge request") {
+            Ok(Ok(r)) => Ok(Some(
+                serde_json::from_slice(&r.body).context("parsing a merge request")?,
+            )),
+            Ok(Err(d)) => Err(d),
+            Err(e) if format!("{e:#}").contains("answered 404") => Ok(None),
+            Err(e) => return Err(e),
+        })
     }
 
     /// [`Self::issues`] for merge requests.

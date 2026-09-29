@@ -304,9 +304,9 @@ pub fn collect(
 }
 
 /// The merge requests numbered in `revisit` (a merge the last run could not prove) that the
-/// `since` listing did not return, read again in full into `items`. One that cannot be read is
-/// warned about and dropped (a 401/403 makes the run partial instead, so the state, and this
-/// list, stay as they are for the next run).
+/// `since` listing did not return, read again in full into `items`. One GitLab no longer has
+/// (404) is warned about and dropped; any other failure, or a 401/403, makes the run partial
+/// instead, so the state, and this list, stay as they are for the next run.
 fn add_revisits(gl: &GitlabClient, revisit: &[u32], items: &mut Vec<Item>, out: &mut SrcCollab) {
     for &iid in revisit {
         let iid = u64::from(iid);
@@ -317,18 +317,25 @@ fn add_revisits(gl: &GitlabClient, revisit: &[u32], items: &mut Vec<Item>, out: 
             continue;
         }
         match gl.merge_request(iid) {
-            Ok(r) => {
-                if let Some(gl) = out.readable(r, "a merge request", gl.repo()) {
-                    items.push(Item {
-                        kind: TargetKind::Patch,
-                        gl,
-                    });
-                }
+            Ok(r) => match out.readable(r, "a merge request", gl.repo()) {
+                Some(Some(gl)) => items.push(Item {
+                    kind: TargetKind::Patch,
+                    gl,
+                }),
+                Some(None) => out.warnings.push(format!(
+                    "!{iid} (a merge to prove again) is gone from GitLab, so it is not revisited \
+                     any more"
+                )),
+                None => {}
+            },
+            Err(e) => {
+                // Kept for the next run: the run is partial, so the state (and the list) do not
+                // advance.
+                out.incomplete = true;
+                out.warnings.push(format!(
+                    "!{iid} (a merge to prove again) could not be read this run: {e:#}"
+                ));
             }
-            Err(e) => out.warnings.push(format!(
-                "!{iid} (a merge to prove again) could not be read, so it is not revisited any \
-                 more: {e:#}"
-            )),
         }
     }
 }

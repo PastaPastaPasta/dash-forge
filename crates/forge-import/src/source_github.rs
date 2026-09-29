@@ -86,10 +86,18 @@ impl Source for GithubSource {
                 for &n in &missing {
                     match self.gh.issue(n) {
                         Ok(i) => items.push(i),
-                        Err(e) => out.warnings.push(format!(
-                            "#{n} (a merge to prove again) could not be read, so it is not \
+                        Err(e) if gone_at_github(&e) => out.warnings.push(format!(
+                            "#{n} (a merge to prove again) is gone from GitHub, so it is not \
                              revisited any more: {e:#}"
                         )),
+                        Err(e) => {
+                            // Kept for the next run: the run is partial, so the state (and
+                            // the list) do not advance.
+                            out.incomplete = true;
+                            out.warnings.push(format!(
+                                "#{n} (a merge to prove again) could not be read this run: {e:#}"
+                            ));
+                        }
                     }
                 }
                 out.targets
@@ -122,6 +130,13 @@ impl Source for GithubSource {
     fn pull_head_prefix(&self) -> &'static str {
         "refs/pull/"
     }
+}
+
+/// Whether `e` says the item no longer exists at GitHub (HTTP 404 or 410, as `gh api` reports
+/// them), rather than a failure a later run may not meet.
+fn gone_at_github(e: &anyhow::Error) -> bool {
+    let s = format!("{e:#}");
+    s.contains("HTTP 404") || s.contains("HTTP 410")
 }
 
 /// The repository's label definitions.
