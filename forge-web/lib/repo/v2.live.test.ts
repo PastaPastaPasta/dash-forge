@@ -47,7 +47,7 @@ import { PR_DRAFT } from '../rules/v2'
 import { asConsensusRefusal, evoSdkService } from '../sdk'
 import { commitRootTree, loadBrowseContext, loadIssueThread, loadPullThread, loadRepoHome, readTree } from '../view'
 import { listRecentRepos, listReposByOwner } from '../view/discovery'
-import { listIssues, listPulls, readMemberships } from './index'
+import { queryIssues, queryPulls, readMemberships } from './index'
 import { readTargetCounts } from './social'
 
 const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet'
@@ -113,13 +113,13 @@ describe.skipIf(!LIVE)('live forge-v2 reads (moutai fixture)', () => {
         [`maintainer:${OWNER}`, `maintainer:${MAINTAINER}`, `writer:${COLLAB}`].sort(),
       )
 
-      const issues = await listIssues(sdk, home.repo)
+      const issues = (await queryIssues(sdk, home.repo, { state: 'all', labels: [], author: null, assignee: null, mentions: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null)).rows
       const byNumber = new Map(issues.map((i) => [i.number, i]))
       expect(byNumber.get(1)?.state).toMatchObject({ open: true, labels: ['question'] })
       expect(byNumber.get(2)?.state.open).toBe(false) // the author's own authorEvent close
       expect(byNumber.get(3)?.state).toMatchObject({ open: false, labels: ['docs'] })
 
-      const prList = await listPulls(sdk, home.repo)
+      const prList = (await queryPulls(sdk, home.repo, { state: 'all', labels: [], author: null, assignee: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null)).rows
       const pr = new Map(prList.map((p) => [p.number, p]))
       expect(pr.get(pulls.approved)?.state).toMatchObject({ open: true, merged: false })
       expect(pr.get(pulls.merged)?.state.merged).toBe(true)

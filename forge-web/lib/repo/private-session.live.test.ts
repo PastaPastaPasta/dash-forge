@@ -24,7 +24,7 @@ import { DEFAULT_NETWORK, NETWORKS } from '../constants'
 import { hexToBytes } from '../private'
 import { evoSdkService, queryDocuments } from '../sdk'
 import { loadPrivateHome, loadRepoHome } from '../view'
-import { listIssues } from './issues'
+import { queryIssues } from './issue-index'
 import { loadPrivateSession, sdkSessionSource, sessionUnwrapper } from './private-session'
 
 const LIVE = process.env['FORGE_LIVE'] === '1' && DEFAULT_NETWORK === 'devnet'
@@ -84,7 +84,7 @@ describe.skipIf(!LIVE)('live private-repo reads (moutai)', () => {
       expect(session.config?.defaultBranch).toBe('main')
       const decrypted = await loadPrivateHome(sdk, home, session)
       expect(decrypted.branches.map((b) => b.refName).sort()).toEqual(['refs/heads/dev', 'refs/heads/main'])
-      const issues = await listIssues(sdk, decrypted.repo, 20)
+      const issues = (await queryIssues(sdk, decrypted.repo, { state: 'all', labels: [], author: null, assignee: null, mentions: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null)).rows
       expect(issues.map((i) => i.title)).toContain('secret title')
       lockVault()
 
@@ -98,7 +98,7 @@ describe.skipIf(!LIVE)('live private-repo reads (moutai)', () => {
         unwrapper: null,
       })
       expect(outsider.resolution.keys.size).toBe(0)
-      const sealed = await listIssues(sdk, { ...home.repo, session: outsider }, 20)
+      const sealed = (await queryIssues(sdk, { ...home.repo, session: outsider }, { state: 'all', labels: [], author: null, assignee: null, mentions: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null)).rows
       expect(sealed).toHaveLength(0)
       expect(JSON.stringify(sealed)).not.toContain('secret')
     },

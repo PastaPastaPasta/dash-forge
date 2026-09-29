@@ -5,6 +5,7 @@
  */
 
 import type { ResolvedRef } from '../repo'
+import { compareRefNames } from '../repo/ref-order'
 
 /** The provisional tip oid of a resolved ref (diverged → newest head), or null if unborn. */
 export function tipOidOf(ref: ResolvedRef | undefined): string | null {
@@ -110,4 +111,36 @@ export function refParamFor(shortName: string, isTag: boolean, defaultBranch: st
 export function matchesRefQuery(name: string, query: string): boolean {
   const q = query.trim().toLowerCase()
   return q === '' || name.toLowerCase().includes(q)
+}
+
+/* The New PR form's params (L-30, L-47): `?base=master&head=develop` as GitHub writes them. */
+
+/** A branch name as a ref name: `develop`, `heads/develop` or `refs/heads/develop` → `refs/heads/develop`. */
+export function branchRefName(param: string): string {
+  const name = param.trim().replace(/^(refs\/)?heads\//, '')
+  return name === '' ? '' : `refs/heads/${name}`
+}
+
+/**
+ * The New PR form's head key (`<repoId>:refs/heads/<name>`) for a `?head=` param: a short or full
+ * branch name of this repo, or already a key (`<repoId>:<branch>`, a fork's branch).
+ */
+export function headKeyOf(param: string, repoId: string): string {
+  const p = param.trim()
+  if (p === '') return ''
+  const colon = p.indexOf(':')
+  // A key names a repo id (base58, no slash) before the colon; a ref name never holds one.
+  if (colon > 0 && !p.slice(0, colon).includes('/')) return `${p.slice(0, colon)}:${branchRefName(p.slice(colon + 1))}`
+  return `${repoId}:${branchRefName(p)}`
+}
+
+/** Branches for a picker: the default branch first, then by name. */
+export function sortBranches<T extends Pick<ResolvedRef, 'refName'>>(branches: readonly T[], defaultBranch: string): T[] {
+  const def = `refs/heads/${defaultBranch}`
+  return [...branches].sort((a, b) => {
+    if (a.refName === def) return -1
+    if (b.refName === def) return 1
+    // The ref switcher's order (L-53), so both pickers list branches alike.
+    return compareRefNames(a.refName, b.refName)
+  })
 }

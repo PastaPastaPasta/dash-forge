@@ -60,6 +60,12 @@ export interface PackManifest {
   readonly copies?: readonly PackManifest[]
   /** Raw copies: the uploader's current role (null: not a member). */
   readonly ownerRole?: Role | null
+  /**
+   * A history index's (kind 3) format version: 2 lists each path's versions, 0 is a v1 writer's.
+   * Carried in `offsetIndexParts`, which a self-locating artifact does not otherwise use (forge-core
+   * `HistoryEntry::format`; to move when the contract rework drops that field).
+   */
+  readonly historyFormat?: number
 }
 
 /**
@@ -103,6 +109,7 @@ function toManifest(doc: PlainDocument): PackManifest {
     documentId: str(doc, '$id'),
     uploader: str(doc, '$ownerId'),
     ...(height !== undefined ? { createdAtBlockHeight: height } : {}),
+    ...(num('kind') === 3 ? { historyFormat: num('offsetIndexParts') } : {}),
   }
 }
 
