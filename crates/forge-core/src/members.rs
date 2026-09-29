@@ -133,11 +133,6 @@ impl<'a> MemberReader<'a> {
             .await
     }
 
-    /// Every current `maintainer` document of `repo`, complete.
-    pub async fn maintainers(&self, repo: &RepoRef) -> Result<Vec<Member>> {
-        self.list_roles(repo, &[Role::Maintainer]).await
-    }
-
     async fn list_roles(&self, repo: &RepoRef, roles: &[Role]) -> Result<Vec<Member>> {
         let mut out = Vec::new();
         for &role in roles {

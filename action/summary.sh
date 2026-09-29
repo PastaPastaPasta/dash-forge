@@ -100,7 +100,7 @@ esac
     esac
     printf '| Ref updates | %s |\n' "$(num .counts.refs 0)"
     printf '| Packs | %s (%s MiB) |\n' "$(num .counts.packs 0)" "$(awk -v b="$pack_bytes" 'BEGIN { printf "%.2f", b / 1048576 }')"
-    for pair in issues:Issues prs:PRs comments:Comments reviews:Reviews events:Events releases:Releases labels:Labels; do
+    for pair in issues:Issues prs:PRs comments:Comments reviews:Reviews events:Events transitions:Transitions releases:Releases labels:Labels; do
         printf '| %s | %s |\n' "${pair#*:}" "$(num ".counts.${pair%%:*}" 0)"
     done
     [ "$skipped" -eq 0 ] || printf '| Skipped (retried next run) | %s |\n' "$skipped"

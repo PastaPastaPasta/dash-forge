@@ -24,7 +24,7 @@ use forge_core::keystore::{self, BridgeIdentity};
 use forge_core::platform::identity::{DocTypeKeySpec, FreshKey, KeySpec};
 use forge_core::rules::v2::Visibility;
 
-use crate::auth::{dash_to_credits, expiry_ms, now_ms, parse_days};
+use crate::auth::{dash_to_credits, expiry_ms, parse_days};
 use crate::common::{Reader, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, credits_to_dash, dash_amount, dash_usd_price};
@@ -509,7 +509,10 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
         None => a.summary.clone(),
     }
     .filter(|s| !s.is_empty());
-    let now = now_ms();
+    // `startedAt` / `completedAt` are set by the write itself (`CheckReport::write`): the first
+    // report that is not queued starts the run, the first completed one ends it, whatever the
+    // report skipped (a run that jumps straight to completed gets both), and a stored time is
+    // never moved.
     let mut r = CheckReport {
         head_oid: a.sha.to_ascii_lowercase(),
         name: a.name.clone(),
@@ -518,8 +521,6 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
         details_url: a.details_url.clone(),
         summary,
         external_id: a.external_id.clone(),
-        started_at: (a.status == "in_progress").then_some(now),
-        completed_at: (a.status == "completed").then_some(now),
         ..CheckReport::default()
     };
     // Refused before anything is uploaded or signed.

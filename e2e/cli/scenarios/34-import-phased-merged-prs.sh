@@ -11,8 +11,9 @@
 #   4. The issues/PRs pass again with the same state writes nothing.
 #   5. Issues/PRs BEFORE any code, into a second repo `e2e-phase2-<run>`: the base is no branch
 #      on chain when the PRs are mirrored, so their merges can never count (forge-v2 §6, D-501).
-#      Each is recorded closed, counted unproved, warned about with that reason, and NOT kept to
-#      revisit (it could never be proved).
+#      Each is still recorded MERGED (D-9: merged is what a member recorded), naming the
+#      upstream merge commit, counted unproved, warned about with that reason (readers label
+#      it "merge commit not found on the base"), and nothing is kept to revisit.
 #
 # Reads GitHub (gh logged in, or GH_TOKEN). A new repo per run (~0.02 DASH; the code is ~3 KB).
 # The identity is OWNER unless E2E_IMPORT_IDENTITY names another identity file. Not in the
@@ -80,7 +81,7 @@ check "nothing new to push" assert_eq "0" "$(jq_py "$LOG-code2.json" 'd["counts"
 step "4. the same issues/PRs pass writes nothing more"
 imported "$LOG-prs2" issues,prs "$FRESH" --state "$STATE"
 check "nothing written" assert_eq "0 0 0 0" \
-  "$(jq_py "$LOG-prs2.json" '" ".join(str(d["counts"][k]) for k in ("refs","events","prs","unprovedMerges"))')"
+  "$(jq_py "$LOG-prs2.json" '" ".join(str(d["counts"][k]) for k in ("refs","transitions","prs","unprovedMerges"))')"
 
 step "5. issues and PRs before any code (a second repo)"
 NAME2="$(printf 'e2e-phase2-%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
@@ -90,6 +91,7 @@ DASH_FORGE_KEY="$ID" RUST_LOG=error NO_COLOR=1 _tmo_for 900 "$IMPORT" "$SRC" --r
   >"$LOG-early.out" 2>"$LOG-early.err" || { cat "$LOG-early.err" >&2; is_flake "$LOG-early.err" && skip_scenario "forge-import flaked"; bad "the early issues/PRs run failed"; finish_scenario; }
 check "every merged PR counted unproved (${merged_gh})" assert_eq "$merged_gh" "$(jq_py "$LOG-early.json" 'd["counts"].get("unprovedMerges")')"
 check "the warning names the rule (D-501)" test "$(grep -c 'D-501' "$LOG-early.json")" -ge 1
-check "not kept to revisit (never provable)" assert_eq "0" "$(jq_py "$STATE2" 'len(d.get("revisit", []))')"
+check "each merge recorded as a transition (D-9)" test "$(jq_py "$LOG-early.json" 'd["counts"]["transitions"]')" -ge "$merged_gh"
+check "nothing kept to revisit" assert_eq "0" "$(jq_py "$STATE2" 'len(d.get("revisit", []))')"
 
 finish_scenario

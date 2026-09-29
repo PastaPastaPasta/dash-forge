@@ -24,17 +24,14 @@ use super::{event_order, Event, EventKind, Oid};
 // The review fold
 // ===========================================================================
 
-/// The kinds an `authorEvent` may carry (the forge-collab schema's `kind` enum): close, reopen,
-/// draft, ready, thread resolve / unresolve, review request / remove, head update.
+/// The kinds an `authorEvent` may carry (the forge-collab schema's `kind` enum, 11–14 and 16):
+/// thread resolve / unresolve, review request / remove, head update. An author's close, reopen,
+/// draft and ready are `transition`s ([`super::transition`]).
 #[must_use]
 pub fn is_author_kind(kind: EventKind) -> bool {
     matches!(
         kind,
-        EventKind::Close
-            | EventKind::Reopen
-            | EventKind::Draft
-            | EventKind::Ready
-            | EventKind::ThreadResolve
+        EventKind::ThreadResolve
             | EventKind::ThreadUnresolve
             | EventKind::ReviewRequest
             | EventKind::ReviewRequestRemove
@@ -132,8 +129,8 @@ pub(crate) fn merged_log<'a>(
 
 /// Fold a PR's `event` and `authorEvent` documents into its [`PrReviewState`].
 ///
-/// * Ordering is `(createdAt, id)` over both types, `event`s first at equal keys (as
-///   [`super::v2::fold_pr_state_v2`]); an `authorEvent` applies only if its kind is an author
+/// * Ordering is `(createdAt, id)` over both types, `event`s first at equal keys; an
+///   `authorEvent` applies only if its kind is an author
 ///   kind ([`is_author_kind`]) and its writer is `target_author`.
 /// * `headUpdate` (16) needs an `oid`; the newest applied one is the head.
 /// * `reviewRequest` / `reviewRequestRemove` (13/14) need a `ref_id` (the reviewer); the newest

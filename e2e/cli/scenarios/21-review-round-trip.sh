@@ -97,7 +97,8 @@ N="$(jq_py "$LOG-pr.json" 'd["number"]')"
 check "opened as a draft" assert_eq "True" "$(jq_py "$LOG-pr.json" 'd["draft"]')"
 view_until "$S_OWNER" "$LOG-v0" "the PR reads as a draft" 'd["draft"] and d["headOid"]=="'"$HEAD1"'"'
 must "$S_CONTRIB" "$LOG-ready" "pr ready" pr ready "$REPO" "$N"
-check "ready went through the author's authorEvent" assert_eq "author" "$(jq_py "$LOG-ready.json" 'd["via"]')"
+check "the draft is a transition after the create (kind 14)" test -n "$(jq_py "$LOG-pr.json" 'd["draftTransitionId"] or ""')"
+check "ready is the author's transition (kind 15)" assert_eq "author 15" "$(jq_py "$LOG-ready.json" 'd["via"] + " " + str(d["kind"])')"
 view_until "$S_OWNER" "$LOG-v1" "the PR is ready for review" 'not d["draft"]'
 
 step "OWNER builds a pending review (writes nothing), then submits it as request changes"

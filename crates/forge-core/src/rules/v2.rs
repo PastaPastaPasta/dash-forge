@@ -2,16 +2,18 @@
 //! forge-collab contracts, `docs/contracts/forge-v2.md`).
 //!
 //! Consensus does most of the authorization: an `event` exists only if its
-//! writer held a `maintainer`/`writer` document for the repo when it was written, and an
+//! writer held a `maintainer`/`writer` document for the repo when it was written, an
 //! `authorEvent` exists only if its writer authored the target and its kind is one the author
-//! may use (close, reopen, draft, ready, thread resolve/unresolve, review request/remove, head
-//! update). What is left client-side, and must be identical in every client, is here:
+//! may use (thread resolve/unresolve, review request/remove, head update), and a `transition`
+//! (close, reopen, merge, draft, ready) only if it is a legal move by a member or the author.
+//! What is left client-side, and must be identical in every client, is here:
 //!
 //! * [`RoleOracle`] — membership as the set of *current* `maintainer`/`writer` documents
 //!   (a revoked member's document is deleted, so it is simply absent).
-//! * [`fold_issue_state_v2`] / [`fold_pr_state_v2`] — the issue/PR fold over `event` and
-//!   `authorEvent` (§3).
-//! * [`allocate_number`] — issue/PR numbering that tolerates squatters (§6).
+//! * [`issue_state_v2`] / [`pr_state_v2`] — issue/PR state from the transitions' state code,
+//!   labels, assignees and the base ref from `event` (§3); the moves themselves are
+//!   [`super::transition`].
+//! * [`dense_number`] — the dense next issue/PR number (§6).
 //! * [`order_pack_copies`] / [`select_pack_copy`] / [`pack_read_order`] — the pack reader
 //!   rule (§4), over copies whose hash the caller has already checked.
 //! * [`count_approvals`] — PR approvals from members only, dismissed reviews skipped (§6).
@@ -25,15 +27,13 @@
 //! * [`is_valid_repo_name`] / [`normalize_repo_name`] — the `repo.name` slug (§2).
 //!
 //! The event ordering and per-kind state changes are the parent module's base rules
-//! (`apply_issue_event`, `apply_pr_event`, `event_order`, `merge_reachable`), alongside ref
+//! (`apply_issue_event`, `apply_pr_event`, `event_order`), alongside ref
 //! resolution and protected-pattern matching.
 //!
 //! Every function is pure. The conformance vectors with `"rules": "v2"` in
 //! `forge-contracts/vectors/` are the parity suite, shared with `forge-web/lib/rules/v2.ts`.
 
 use std::collections::BTreeSet;
-
-use super::review::merged_log;
 
 pub use super::parity::{
     check_run_write, checks_state, fold_milestones_v2, fold_thread_meta_v2, pinned_targets,
@@ -57,8 +57,7 @@ pub use super::transition::{
 use serde::{Deserialize, Serialize};
 
 use super::{
-    apply_issue_event, apply_pr_event, merge_reachable, Event, EventKind, IssueState, Oid, PrState,
-    Verdict,
+    apply_issue_event, apply_pr_event, Event, EventKind, IssueState, Oid, PrState, Verdict,
 };
 
 /// The versioned rules identifier for forge-v2 repositories.
@@ -221,111 +220,6 @@ pub fn trusted_upstream_number(
 ) -> Option<u32> {
     let n = upstream_number.filter(|&n| n > 0)?;
     (author == repo_owner || oracle.current_role(author).is_some()).then_some(n)
-}
-
-// ===========================================================================
-// Issue / PR fold (event-state, retired with the fresh registration)
-// ===========================================================================
-
-/// Fold an issue's `event` and `authorEvent` documents into its [`IssueState`].
-///
-/// * Every `event` applies, whoever wrote it and whatever has happened to their membership
-///   since (PR-only kinds do nothing to an issue).
-/// * An `authorEvent` applies only if it is an author kind by `target_author` (of those only
-///   close and reopen change an issue).
-/// * Both are applied as one log ordered by `(createdAt, id)`, with the base per-kind effects.
-#[must_use]
-pub fn fold_issue_state_v2(
-    events: &[Event],
-    author_events: &[Event],
-    target_author: &str,
-) -> IssueState {
-    let mut state = IssueState::default();
-    for e in merged_log(events, author_events, target_author) {
-        apply_issue_event(&mut state, e);
-    }
-    state
-}
-
-/// Fold a PR's `event` and `authorEvent` documents into its [`PrState`].
-///
-/// As [`fold_issue_state_v2`], and a `merge` (which can only come from `event`) applies only
-/// if its `oid` is reachable from `base_tip`. A merged PR cannot be reopened. `initial_draft`
-/// is the patch's `draft` (opened as a draft); `draft` / `ready` events, from members or the
-/// author, override it in order. Review kinds (11–18) do not change [`PrState`].
-#[must_use]
-pub fn fold_pr_state_v2(
-    events: &[Event],
-    author_events: &[Event],
-    target_author: &str,
-    base_tip: Option<&str>,
-    is_ancestor: impl Fn(&str, &str) -> bool,
-    initial_draft: bool,
-) -> PrState {
-    let mut state = PrState {
-        draft: initial_draft,
-        ..PrState::default()
-    };
-    for e in merged_log(events, author_events, target_author) {
-        if e.kind == EventKind::Merge && !merge_reachable(e, base_tip, &is_ancestor) {
-            continue;
-        }
-        apply_pr_event(&mut state, e);
-    }
-    state
-}
-
-// ===========================================================================
-// Numbering
-// ===========================================================================
-
-/// The numbering ceiling for a repo with `count` issues (or PRs): `min(2 × count + 100,
-/// 2^32 − 1)`. Taken numbers above it are ignored as squatters.
-#[must_use]
-pub fn number_ceiling(count: u64) -> u64 {
-    count
-        .saturating_mul(2)
-        .saturating_add(100)
-        .min(u64::from(u32::MAX))
-}
-
-/// The number to claim for a new issue (or PR), `forge-v2.md` §6.
-///
-/// `count` is the provable count of the repo's issues (the rangeCountable `number` index).
-/// `taken_numbers_desc` are claimed numbers as the `number` index returns them (descending;
-/// the order is not relied on). It must hold `base` (below) and every taken number in the
-/// contiguous run directly above it: a caller that queries ascending from `base + 1` must page
-/// to the end of that run (the first gap), not stop after one page, or it hands in a run cut
-/// short and gets back a number that is already taken.
-///
-/// `trusted_max` is the largest number among the repo's issues written by its owner or a
-/// current maintainer (the `author` index, one `number desc, limit 1` read each), or 0.
-/// Those numbers are trusted wherever they sit: a mirror's owner writes the upstream numbers
-/// (#7761 with 15 issues on chain), and the ceiling alone would call them squatters.
-///
-/// 1. `ceiling = min(2 × count + 100, 2^32 − 1)`.
-/// 2. `base` = the larger of the largest taken number `≤ ceiling` (or 0) and `trusted_max`.
-/// 3. Claim the first number `> base` that is not taken. Below the ceiling that is always
-///    `base + 1`. Only when `base` is at or above the ceiling can squatters just above it be
-///    in the way, and the probe steps over them.
-///
-/// `None` when every number from `base + 1` to `2^32 − 1` is taken. Gaps below `base` are never
-/// filled.
-#[must_use]
-pub fn allocate_number(count: u64, taken_numbers_desc: &[u32], trusted_max: u32) -> Option<u32> {
-    let ceiling = number_ceiling(count);
-    let taken: BTreeSet<u64> = taken_numbers_desc.iter().map(|&n| u64::from(n)).collect();
-    let base = taken
-        .range(..=ceiling)
-        .next_back()
-        .copied()
-        .unwrap_or(0)
-        .max(u64::from(trusted_max));
-    let mut candidate = base + 1;
-    while taken.contains(&candidate) {
-        candidate += 1;
-    }
-    u32::try_from(candidate).ok()
 }
 
 // ===========================================================================

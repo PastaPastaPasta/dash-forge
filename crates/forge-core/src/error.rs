@@ -125,6 +125,19 @@ pub enum Error {
         detail: String,
     },
 
+    /// Consensus refused a document because a rule of its type's `propertyConstraints` does not
+    /// hold (code 10422): refused before execution, so nothing landed. `rule` is the rule's name
+    /// (forge-v2 `dense`, `c1_closedAfter`, …), `detail` the node's message.
+    #[error("{detail}")]
+    RuleRefused {
+        /// The refused document type.
+        document_type: String,
+        /// The broken rule's key in `propertyConstraints`.
+        rule: String,
+        /// The consensus message.
+        detail: String,
+    },
+
     /// The signer may not perform `action`, decided before anything was signed: the client
     /// read the repository's membership (or the target's author) and found no role that
     /// consensus would admit. Consensus remains the authority; this only saves the fee.

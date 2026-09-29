@@ -1,13 +1,17 @@
 //! PR state commands: `edit` (P5), `sync` (R14, C6), `ready` / `draft` (P6, C7), `resolve` /
 //! `unresolve` (R7, C8), `request-review` (R9, C9), `dismiss-review` (R11, C10), `checks`
-//! (P3, C4), `commits` (P2, C5). Each state change is one `event` (a member) or `authorEvent`
-//! (the PR author, for the author kinds), through `Collab::post_target_event`, which refuses
-//! before signing what consensus would refuse (E601).
+//! (P3, C4), `commits` (P2, C5). `ready` / `draft` are one `transition` each (a member's, or
+//! the author's), through `Collab::set_state`; the review kinds are one `event` (a member) or
+//! `authorEvent` (the PR author, for the author kinds), through `Collab::post_target_event`.
+//! Both refuse before signing what consensus would refuse (E601, E604).
 
 use anyhow::{Context, Result};
 use serde_json::json;
 
-use forge_core::collab::v2::{kind_route, Collab, EventPayload, PatchView, StateRoute};
+use forge_core::collab::v2::{
+    kind_route, state_actor, Collab, EventPayload, PatchView, StateRoute,
+};
+use forge_core::rules::v2::{Actor, StateAction};
 use forge_core::rules::EventKind;
 use forge_core::scope::RepoRef as Repo;
 use forge_core::user_error::{codes, UserError};
@@ -15,7 +19,7 @@ use forge_core::user_error::{codes, UserError};
 use super::{estimate, event_estimate, open_pr, open_pr_read, Est, Pr};
 use crate::common::Session;
 use crate::context::Ctx;
-use crate::fmt::{cost_line, dash_usd_price, route_text, safe, short};
+use crate::fmt::{cost_line, dash_usd_price, route_text, safe, short, transition_route_text};
 use crate::git;
 
 /// The route an event of `kind` by the signer takes, or E601 before anything is signed.
@@ -50,8 +54,6 @@ async fn route_for(
 
 fn verb(kind: EventKind) -> &'static str {
     match kind {
-        EventKind::Draft => "convert to a draft",
-        EventKind::Ready => "mark ready",
         EventKind::ThreadResolve => "resolve a conversation on",
         EventKind::ThreadUnresolve => "unresolve a conversation on",
         EventKind::ReviewRequest => "request a review on",
@@ -263,13 +265,14 @@ pub async fn sync(ctx: &Ctx, repo: &str, number: u64, head: Option<&str>) -> Res
 // ready / draft
 // ---------------------------------------------------------------------------
 
-/// `dg pr ready` / `dg pr draft`.
+/// `dg pr ready` / `dg pr draft`: one transition (kind 14 draft, 15 ready; a closed PR takes
+/// neither: reopen it first), by a member or the PR's author.
 pub async fn set_draft(ctx: &Ctx, repo: &str, number: u64, draft: bool) -> Result<()> {
     let pr = open_pr(ctx, repo, number, "pull request state not changed").await?;
-    let (kind, word) = if draft {
-        (EventKind::Draft, "a draft")
+    let (action, word) = if draft {
+        (StateAction::Draft, "a draft")
     } else {
-        (EventKind::Ready, "ready for review")
+        (StateAction::Ready, "ready for review")
     };
     if pr.view.state.draft == draft {
         unchanged(
@@ -281,24 +284,35 @@ pub async fn set_draft(ctx: &Ctx, repo: &str, number: u64, draft: bool) -> Resul
         );
         return Ok(());
     }
-    let (route, id) = post(
-        ctx,
-        &pr,
-        kind,
-        &EventPayload::default(),
-        &format!("Mark PR #{number} {word}"),
-    )
-    .await?;
+    let collab = pr.s.collab();
+    let target = pr.view.patch.target();
+    let me = collab.signer_id()?;
+    let role = collab.signer_role(&pr.s.repo).await?;
+    let est = match state_actor(role, &me, &target) {
+        Actor::Author => estimate(Est::AuthorEvent, 0),
+        _ => estimate(Est::Event, 0),
+    };
+    ctx.confirm_or_cancel(&format!(
+        "Mark PR #{number} {word}? (one transition, {})",
+        cost_line(est, dash_usd_price())
+    ))?;
+    let change = collab.set_state(&pr.s.repo, &target, action, None).await?;
     ctx.emit(
         json!({
             "status": if draft { "draft" } else { "ready" },
             "pr": number,
             "written": true,
             "draft": draft,
-            "via": route,
-            "eventId": id,
+            "via": change.route,
+            "transitionId": change.transition_id,
+            "kind": change.kind,
         }),
-        || println!("✓ PR #{number} is {word} {}", route_text(route)),
+        || {
+            println!(
+                "✓ PR #{number} is {word} {}",
+                transition_route_text(change.route)
+            );
+        },
     );
     Ok(())
 }

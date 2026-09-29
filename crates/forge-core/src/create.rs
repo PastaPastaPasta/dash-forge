@@ -286,7 +286,10 @@ fn backend_props(opts: &CreateRepoOpts) -> FieldValue {
 /// * `NonceConsumed`: this transition landed earlier, or another write by the identity took
 ///   its nonce; a proved read decides.
 /// * A consensus refusal that proves nothing executed (a stale protocol version, a unique
-///   index already taken, a gate): it never landed; re-deciding adopts or re-signs.
+///   index already taken, a gate, a `propertyConstraints` rule such as forge-v2's `dense`
+///   when another create took the saved number): it never landed; re-deciding adopts or
+///   re-signs. A rule refusal is conclusive because CheckTx checks the nonce before the
+///   rules, so the refused bytes still held a free nonce and never executed.
 /// * Anything else (the network) is returned: the transition may still land.
 pub(crate) async fn replay_landed(
     engine: &WriteEngine<'_>,
@@ -294,17 +297,27 @@ pub(crate) async fn replay_landed(
     doc_type: &str,
     intent: &WriteIntent,
 ) -> Result<bool> {
-    match engine.replay(doc_type, intent).await {
+    replay_verdict(engine.replay(doc_type, intent).await, || {
+        engine.landed(contract, doc_type, &intent.document_id, true)
+    })
+    .await
+}
+
+/// [`replay_landed`]'s decision over a replay's outcome; `landed` is the proved read asked
+/// after a consumed nonce.
+async fn replay_verdict<F, Fut>(outcome: Result<BroadcastOutcome>, landed: F) -> Result<bool>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<bool>>,
+{
+    match outcome {
         Ok(BroadcastOutcome::Applied | BroadcastOutcome::AlreadyExists) => Ok(true),
-        Ok(BroadcastOutcome::NonceConsumed) => {
-            engine
-                .landed(contract, doc_type, &intent.document_id, true)
-                .await
-        }
+        Ok(BroadcastOutcome::NonceConsumed) => landed().await,
         Err(
             Error::StaleProtocolVersion(_)
             | Error::DuplicateUniqueIndex(_)
-            | Error::NotAMember { .. },
+            | Error::NotAMember { .. }
+            | Error::RuleRefused { .. },
         ) => Ok(false),
         Err(e) => Err(e),
     }
@@ -558,6 +571,36 @@ async fn find_repo_after_create(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A saved create refused on replay by a rule (forge-v2 `dense`: another create took its
+    /// number) never landed: it is dropped, not retried with the same bytes forever.
+    #[tokio::test]
+    async fn a_replayed_create_refused_by_a_rule_never_landed() {
+        let no_read = || async { panic!("a refusal needs no read") };
+        let dense = Error::RuleRefused {
+            document_type: "issue".into(),
+            rule: "dense".into(),
+            detail: "A document of type \"issue\" breaks its propertyConstraints rule \"dense\": it does not hold".into(),
+        };
+        assert!(!super::replay_verdict(Err(dense), no_read).await.unwrap());
+        for e in [
+            Error::DuplicateUniqueIndex("number".into()),
+            Error::StaleProtocolVersion("13".into()),
+        ] {
+            assert!(!super::replay_verdict(Err(e), no_read).await.unwrap());
+        }
+        // A consumed nonce asks the proved read; a network error may still land: returned.
+        assert!(
+            super::replay_verdict(Ok(BroadcastOutcome::NonceConsumed), || async { Ok(true) })
+                .await
+                .unwrap()
+        );
+        assert!(
+            super::replay_verdict(Err(Error::Platform("timeout".into())), no_read)
+                .await
+                .is_err()
+        );
+    }
 
     fn intent(id: &str) -> WriteIntent {
         WriteIntent {

@@ -77,7 +77,7 @@ fn is_null_oid(oid: &str) -> bool {
 /// commit *A*") is an **input**: a precomputed set of `(ancestor, descendant)` pairs
 /// (typically the transitive closure over the relevant commits). This keeps ref
 /// resolution and merge-reachability pure and lets the vectors pin exactly which
-/// ancestry facts are in play. [`resolve_ref`]/[`v2::fold_pr_state_v2`] also accept any
+/// ancestry facts are in play. [`resolve_ref`]/[`v2::pr_state_v2`] also accept any
 /// `Fn(&str, &str) -> bool` directly for callers that have a real graph.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -913,19 +913,6 @@ impl Default for PrState {
     }
 }
 
-/// Whether a `merge` event's `oid` is reachable from (an ancestor of, or equal to) the base
-/// tip. No merge oid or no base tip means reachability cannot be proven, so the merge is inert.
-fn merge_reachable(
-    e: &Event,
-    base_tip: Option<&str>,
-    is_ancestor: &impl Fn(&str, &str) -> bool,
-) -> bool {
-    match (e.oid.as_deref(), base_tip) {
-        (Some(oid), Some(tip)) => is_ancestor(oid, tip),
-        _ => false,
-    }
-}
-
 /// Apply one authorized event to an issue's state. PR-only kinds
 /// (merge/retarget/draft/ready) do not apply to issues.
 fn apply_issue_event(state: &mut IssueState, e: &Event) {
@@ -1150,50 +1137,26 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use std::path::PathBuf;
 
-    /// A merge event by `actor` on `target` with merge commit `oid`.
-    fn merge_event(actor: &str, target: &str, oid: &str, created_at: u64) -> Event {
-        Event {
-            id: format!("merge-{oid}"),
-            target_id: target.into(),
-            kind: EventKind::Merge,
-            actor: actor.into(),
-            value: None,
-            oid: Some(oid.into()),
-            ref_id: None,
-            created_at,
-        }
-    }
-
-    /// BLOCKER-1 regression: a merge whose oid was ever a base tip must stay `merged` once
-    /// the base ref advances past it. The service supplies a monotonic historical-tips
-    /// membership predicate; the old reflexive `|a,b| a==b` stand-in wrongly flipped it back
-    /// to open the instant `base_tip != merge_oid`.
+    /// BLOCKER-1 regression, on the transition reader: a merge whose oid was ever a base tip
+    /// stays "on the base" once the base ref advances past it. The service supplies a
+    /// monotonic historical-tips membership predicate; the old reflexive `|a,b| a==b` stand-in
+    /// flipped it the instant `base_tip != merge_oid`.
     #[test]
     fn pr_merge_stays_merged_after_base_advances() {
-        let events = vec![merge_event("maint1", "pr1", "M", 10)];
-
         // The merge oid `M` and a later base commit `T` are both historical base tips.
         let historical: std::collections::BTreeSet<String> =
             ["M".to_string(), "T".to_string()].into_iter().collect();
-
-        // Base has advanced to `T` (T != M). Monotonic predicate keeps the PR merged.
-        let good = v2::fold_pr_state_v2(
-            &events,
-            &[],
-            "author1",
-            Some("T"),
-            |oid, _tip| historical.contains(oid),
-            false,
-        );
-        assert!(good.merged, "merge stays merged after base advances");
+        // State code 2 (merged); the base has advanced to `T` (T != M).
+        let good = v2::pr_state_v2(2, Some("M"), &[], Some("T"), |oid, _tip| {
+            historical.contains(oid)
+        });
+        assert!(good.merged, "merged is the chain fact");
         assert!(!good.open, "a merged PR is closed");
-
-        // The buggy reflexive stand-in rejects the merge once base_tip != merge_oid.
-        let bad = v2::fold_pr_state_v2(&events, &[], "author1", Some("T"), |a, b| a == b, false);
-        assert!(
-            !bad.merged,
-            "reflexive a==b wrongly un-merges once the base advances (the fixed bug)"
-        );
+        assert_eq!(good.merge_on_base, Some(true), "found on the base");
+        // The reflexive stand-in labels it "not found on the base", never un-merges it.
+        let bad = v2::pr_state_v2(2, Some("M"), &[], Some("T"), |a, b| a == b);
+        assert!(bad.merged);
+        assert_eq!(bad.merge_on_base, Some(false));
     }
 
     /// MAJOR-4 defense-in-depth: an illegal `Retarget` base ref name (injection shape) is
@@ -1221,17 +1184,10 @@ mod tests {
             ref_id: None,
             created_at: 10,
         };
-        let s1 = v2::fold_pr_state_v2(
-            std::slice::from_ref(&legal),
-            &[],
-            "a",
-            None,
-            |_, _| false,
-            false,
-        );
+        let s1 = v2::pr_state_v2(0, None, std::slice::from_ref(&legal), None, |_, _| false);
         assert_eq!(s1.base_ref.as_deref(), Some("refs/heads/dev"));
         // The newer illegal retarget must NOT overwrite with the injection payload.
-        let s2 = v2::fold_pr_state_v2(&[legal, illegal], &[], "a", None, |_, _| false, false);
+        let s2 = v2::pr_state_v2(0, None, &[legal, illegal], None, |_, _| false);
         assert_eq!(
             s2.base_ref.as_deref(),
             Some("refs/heads/dev"),
