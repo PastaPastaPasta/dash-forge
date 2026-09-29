@@ -21,17 +21,14 @@
 // and beats still missing (a beat is once per identity and repo, ever).
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
-import { VIS, connect, documentWriter, idBytes, loadIdentity, log, membership, parseArgs, resolveNetwork, runIfMain, sdkModule, sleep } from './lib/seed-io.mjs';
+import { VIS, idBytes, loadIdentity, log, membership, openSession, parseArgs, runIfMain, until } from './lib/seed-io.mjs';
 
 export async function main(argv, injected) {
   const opt = parseArgs(argv, ['identity']);
   if (!opt.out || !opt.owner || opt.identity.length !== 3) {
     throw new Error('usage: --out <seed.json> --owner <D> --identity <A> --identity <B> --identity <C> (the owner makes the repos and never stars them)');
   }
-  const net = resolveNetwork(opt);
-  const evo = await sdkModule(injected);
-  const sdk = await connect(net, evo);
-  const write = documentWriter(sdk, evo, net);
+  const { evo, write, read } = await openSession(opt, injected);
   const D = loadIdentity(evo, opt.owner, 'D');
   const [A, B, C] = opt.identity.map((f, i) => loadIdentity(evo, f, 'ABC'[i]));
   if (new Set([D, A, B, C].map((w) => w.id)).size !== 4) throw new Error('the owner and the three stargazers must be four different identities');
@@ -47,13 +44,11 @@ export async function main(argv, injected) {
   // unless the write straddles midnight, which the seed refuses.
   async function beat(w, repoId) {
     if (state.beats.some((b) => b.repoId === repoId && b.owner === w.id)) return;
-    const own = async (type) =>
-      (await sdk.documents.query({ dataContractId: net.ids.community, documentTypeName: type, where: [['$ownerId', '==', w.id], ['repoId', '==', repoId]], orderBy: [['$ownerId', 'asc']], limit: 1 })).size > 0;
+    const own = (type) => read.owns(w, type, repoId);
     const before = Date.now();
     if (!(await own('star'))) await write(w, 'star', { repoId: idBytes(repoId) });
     if (!(await own('starBeat'))) await write(w, 'starBeat', { repoId: idBytes(repoId), vis: VIS, repoOwner: idBytes(D.id) });
-    for (let i = 0; i < 12 && !(await own('starBeat')); i++) await sleep(2500);
-    if (!(await own('starBeat'))) throw new Error(`the beat of ${w.id} on ${repoId} did not land`);
+    if (!(await until(() => own('starBeat')))) throw new Error(`the beat of ${w.id} on ${repoId} did not land`);
     const after = Date.now();
     const day = 86_400_000;
     if (Math.floor(before / day) !== Math.floor(after / day)) throw new Error('the beat straddled 00:00 UTC; rerun (the window test needs its day)');

@@ -15,17 +15,12 @@
 // `ranked`) answer from the same store with `==` filters only.
 
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 
-import { CONTRACT_OF, ROOT, b58decode, b58encode, expectedRefusal } from './seed-io.mjs';
+import { CONTRACTS as contracts, CONTRACT_OF, b58decode, b58encode, expectedRefusal, isConsensusCode } from './seed-io.mjs';
 
 const IDENTIFIER = 'application/x.dash.dpp.identifier';
 const SYSTEM_IDS = new Set(['$id', '$ownerId']);
 
-const contracts = Object.fromEntries(
-  ['core', 'collab', 'community'].map((c) => [c, JSON.parse(readFileSync(join(ROOT, 'contracts', `forge-${c}.json`), 'utf8'))]),
-);
 const schemaOf = (type) => contracts[CONTRACT_OF[type]].documentSchemas[type];
 
 /** A property schema with its `$ref` into the contract's `schemaDefs` resolved. */
@@ -46,6 +41,7 @@ function normalize(v) {
 }
 const hexOfId = (b58) => b58decode(b58).toString('hex');
 const get = (view, path) => path.split('.').reduce((o, k) => (o == null ? undefined : o[k]), view);
+const compare = (p, q) => (p < q ? -1 : p > q ? 1 : 0);
 
 /** A document's data in the rc1 vector notation: identifiers as base58 `$id`, other bytes as `$hex`. */
 export function vectorDoc(type, data) {
@@ -121,7 +117,12 @@ export class OfflineChain {
       case 'const': return arg;
       case 'present': return get(view, arg) !== undefined;
       case 'absent': return get(view, arg) === undefined;
-      case 'count': { const v = get(view, arg); return v === undefined ? 0 : typeof v === 'string' ? v.length / 2 : v.length; }
+      case 'count': {
+        // A byte array is held as hex: two characters a byte.
+        const v = get(view, arg);
+        if (v === undefined) return 0;
+        return typeof v === 'string' ? v.length / 2 : v.length;
+      }
       case 'countOf': return pool(arg[0]).filter((t) => matches(t, arg[1])).length;
       case 'sumOf': return pool(arg[0]).filter((t) => matches(t, arg[2])).reduce((s, t) => s + (get(t.view, arg[1]) ?? 0), 0);
       case 'add': return nums().reduce((p, q) => p + q);
@@ -207,7 +208,7 @@ export class OfflineChain {
     if (refusal) throw refusal;
     // A refusal by a rule rs-dpp judges (a schema keyword or a rule name) is checked by
     // contract-validate on the exported vector; here the write simply does not land.
-    if (why && !/^\d+$/.test(why)) throw new Refusal('offline', why, 'left to rs-dpp (contract-validate --vectors)');
+    if (why && !isConsensusCode(why)) throw new Refusal('offline', why, 'left to rs-dpp (contract-validate --vectors)');
     this.docs.push(doc);
     return this.view(doc);
   }
@@ -238,7 +239,7 @@ export class OfflineChain {
     );
     for (const [f, dir] of [...orderBy].reverse()) {
       const key = (d) => (f === '$createdAt' ? d.seq : get(d.view, f));
-      rows = [...rows].sort((p, q) => (key(p) < key(q) ? -1 : key(p) > key(q) ? 1 : 0) * (dir === 'desc' ? -1 : 1));
+      rows = [...rows].sort((p, q) => compare(key(p), key(q)) * (dir === 'desc' ? -1 : 1));
     }
     if (startAfter) rows = rows.slice(rows.findIndex((d) => d.id === startAfter) + 1);
     return limit ? rows.slice(0, limit) : rows;
@@ -279,7 +280,7 @@ export class OfflineChain {
           counts.set(g, (counts.get(g) ?? 0n) + 1n);
         }
         const entries = [...counts].map(([groupValue, value]) => ({ groupValue, value }));
-        return { entries: entries.sort((p, q) => (q.value > p.value ? 1 : q.value < p.value ? -1 : 0)) };
+        return { entries: entries.sort((p, q) => compare(q.value, p.value)) };
       },
     };
     class EvoSDK {

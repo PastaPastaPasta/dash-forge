@@ -15,7 +15,6 @@ import { b58decode, b58encode, loadEvoSdk } from '../deploy-v2.mjs';
 export { b58decode, b58encode };
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const CONTRACTS = ['core', 'collab', 'community'];
 
 export const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}`);
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -23,12 +22,22 @@ export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** An identifier's 32 bytes, from its base58 form. */
 export const idBytes = (b58) => b58decode(b58);
 
-/** The contract (`core`, `collab`, `community`) that holds each document type, from the RC1 JSONs. */
-export const CONTRACT_OF = Object.fromEntries(
-  CONTRACTS.flatMap((c) =>
-    Object.keys(JSON.parse(readFileSync(join(ROOT, 'contracts', `forge-${c}.json`), 'utf8')).documentSchemas).map((t) => [t, c]),
-  ),
+/** The RC1 contract JSONs (contracts/forge-{core,collab,community}.json), by contract. */
+export const CONTRACTS = Object.fromEntries(
+  ['core', 'collab', 'community'].map((c) => [c, JSON.parse(readFileSync(join(ROOT, 'contracts', `forge-${c}.json`), 'utf8'))]),
 );
+
+/** The contract (`core`, `collab`, `community`) that holds each document type. */
+export const CONTRACT_OF = Object.fromEntries(
+  Object.entries(CONTRACTS).flatMap(([c, json]) => Object.keys(json.documentSchemas).map((t) => [t, c])),
+);
+
+/** The id, on `net`, of the contract that holds `type`. */
+function contractIdOf(net, type) {
+  const contract = CONTRACT_OF[type];
+  if (!contract) throw new Error(`no RC1 contract holds a ${type}`);
+  return net.ids[contract];
+}
 
 /**
  * `--key value` pairs; a key named in `multi` may repeat and collects into an array. A flag
@@ -72,8 +81,14 @@ export function resolveNetwork(a, env = process.env) {
   return { network, devnetName, key, dep, ids };
 }
 
-/** A connected SDK for the network (evo-sdk 4.2.0-beta.7, protocol 14; or the offline chain). */
-export async function connect(net, evo) {
+/**
+ * The network the arguments name (`resolveNetwork`) and a connected SDK for it, with a writer
+ * and a reader bound to it. `injected` is the SDK module to use (the offline chain), else the
+ * pinned evo-sdk (4.2.0-beta.7, protocol 14). The reader waits `pace` ms between pages.
+ */
+export async function openSession(a, injected, { pace = 0 } = {}) {
+  const net = resolveNetwork(a);
+  const evo = injected ?? (await loadEvoSdk());
   const sdk = new evo.EvoSDK({
     network: net.network,
     trusted: true,
@@ -83,11 +98,8 @@ export async function connect(net, evo) {
     settings: { connectTimeoutMs: 10000, timeoutMs: 60000, retries: 3 },
   });
   await sdk.connect();
-  return sdk;
+  return { net, evo, sdk, write: documentWriter(sdk, evo, net), read: documentReader(sdk, net, pace) };
 }
-
-/** The SDK module: the injected one (the offline chain), else the pinned evo-sdk. */
-export const sdkModule = async (evo) => evo ?? (await loadEvoSdk());
 
 /** An identity from a `mint-identity` file, with its HIGH authentication key as the signer. */
 export function loadIdentity(evo, file, name = undefined) {
@@ -114,12 +126,57 @@ export function loadIdentity(evo, file, name = undefined) {
 export function documentWriter(sdk, evo, net) {
   const version = sdk.version();
   return async (who, type, data) => {
-    const contract = CONTRACT_OF[type];
-    if (!contract) throw new Error(`no RC1 contract holds a ${type}`);
-    const base = new evo.Document({ properties: {}, documentTypeName: type, dataContractId: net.ids[contract], ownerId: who.id });
+    const base = new evo.Document({ properties: {}, documentTypeName: type, dataContractId: contractIdOf(net, type), ownerId: who.id });
     const document = evo.Document.fromObject({ ...base.toObject(), ...data }, version);
     return sdk.documents.create({ document, identityKey: who.identityKey, signer: who.signer });
   };
+}
+
+/** Queries in the contract that holds each type; documents come back as JSON. */
+export function documentReader(sdk, net, pace = 0) {
+  const version = sdk.version();
+  const query = (type, q) => sdk.documents.query({ dataContractId: contractIdOf(net, type), documentTypeName: type, ...q });
+  const ownRows = (who, type, repoId) =>
+    query(type, { where: [['$ownerId', '==', who.id], ['repoId', '==', repoId]], orderBy: [['$ownerId', 'asc']], limit: 1 });
+  return {
+    /** Every document of `type` that matches, in pages of 100 queried `pace` ms apart. */
+    async all(type, where, orderBy) {
+      const out = [];
+      let startAfter;
+      for (;;) {
+        const res = await query(type, { where, orderBy, limit: 100, ...(startAfter ? { startAfter } : {}) });
+        const page = [...res.values()].filter(Boolean).map((d) => d.toJSON(version));
+        out.push(...page);
+        if (page.length < 100) return out;
+        startAfter = page[page.length - 1].$id;
+        await sleep(pace);
+      }
+    },
+    /** The first document of `type` that matches, or undefined. */
+    async first(type, where) {
+      const rows = await query(type, { where, limit: 1 });
+      return [...rows.values()].find(Boolean)?.toJSON(version);
+    },
+    /**
+     * The rows (at most one, as SDK documents) of `who`'s own index-only entry (`star`,
+     * `starBeat`, `watch`) on a repo, which has no id to look it up by.
+     */
+    ownRows,
+    /** Whether `who` holds its own index-only entry of `type` on the repo. */
+    owns: async (who, type, repoId) => (await ownRows(who, type, repoId)).size > 0,
+  };
+}
+
+/**
+ * Check `f`, then re-check it up to `retries` times, `ms` apart, until it holds: resolves to
+ * whether it did. A node answering a read may lag the one that confirmed a write.
+ */
+export async function until(f, retries = 12, ms = 2500) {
+  for (let i = 0; ; i++) {
+    if (await f()) return true;
+    if (i === retries) return false;
+    await sleep(ms);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -183,6 +240,19 @@ let expecting = null;
 /** The refusal the running `expectRefused` call expects (read by the offline chain). */
 export const expectedRefusal = () => expecting;
 
+/** Whether an expected refusal is named by its consensus code: a rule that reads chain state. */
+export const isConsensusCode = (why) => /^\d+$/.test(why);
+
+/** Run a write: resolves to its refusal message, or null when it was accepted. */
+export async function refusalOf(fn) {
+  try {
+    await fn();
+    return null;
+  } catch (e) {
+    return String(e?.message ?? e);
+  }
+}
+
 /**
  * Run a write that consensus must refuse: resolves to the refusal message, or null when it was
  * accepted. `why` names the reason (the rule, the schema keyword, or the consensus code) so the
@@ -191,10 +261,7 @@ export const expectedRefusal = () => expecting;
 export async function expectRefused(why, fn) {
   expecting = why;
   try {
-    await fn();
-    return null;
-  } catch (e) {
-    return String(e?.message ?? e);
+    return await refusalOf(fn);
   } finally {
     expecting = null;
   }

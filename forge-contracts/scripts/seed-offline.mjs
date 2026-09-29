@@ -27,7 +27,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createHash } from 'node:crypto';
 
 import { OfflineChain, vectorDoc } from './lib/offline-chain.mjs';
-import { CONTRACT_OF, b58encode, parseArgs, runIfMain } from './lib/seed-io.mjs';
+import { CONTRACT_OF, b58encode, isConsensusCode, parseArgs, runIfMain } from './lib/seed-io.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -49,9 +49,7 @@ async function quietly(fn) {
   try {
     return await fn();
   } catch (e) {
-    console.log = log;
-    console.error = error;
-    console.error(held.join('\n'));
+    error(held.join('\n'));
     throw e;
   } finally {
     console.log = log;
@@ -105,7 +103,7 @@ export async function main(argv) {
 
   // Expected refusals by a chain-state rule must have happened, for that reason.
   for (const r of chain.records) {
-    if (r.why && /^\d+$/.test(r.why) && String(r.refusal?.code) !== r.why) {
+    if (r.why && isConsensusCode(r.why) && String(r.refusal?.code) !== r.why) {
       problems.push(`${r.script}: a ${r.type} was expected to be refused with ${r.why}, got ${r.refusal ? r.refusal.message : 'accepted'}`);
     }
   }
@@ -121,7 +119,7 @@ export async function main(argv) {
     for (const r of chain.records) {
       // A refusal for a rule rs-dpp judges becomes a refuse vector; a chain-state refusal (a
       // numeric code, judged above) leaves a document rs-dpp must accept.
-      const refused = r.why && !/^\d+$/.test(r.why);
+      const refused = r.why && !isConsensusCode(r.why);
       const n = (seen.get(`${r.script} ${r.type}`) ?? 0) + 1;
       seen.set(`${r.script} ${r.type}`, n);
       cases[CONTRACT_OF[r.type]].push({

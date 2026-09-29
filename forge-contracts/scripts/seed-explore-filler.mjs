@@ -12,35 +12,28 @@
 //
 // Idempotent: a repo the identity already owns under that name is skipped (its enrolment is
 // written if it is missing). Cost: about 0.001 DASH per repo.
-import { VIS, connect, documentWriter, idBytes, loadIdentity, log, membership, parseArgs, resolveNetwork, runIfMain, sdkModule, sleep } from './lib/seed-io.mjs';
+import { VIS, idBytes, loadIdentity, log, membership, openSession, parseArgs, runIfMain, sleep } from './lib/seed-io.mjs';
 
 export async function main(argv, injected) {
   const a = { count: '25', 'pace-ms': '700', ...parseArgs(argv) };
   if (!a.identity) throw new Error('--identity <file> is required');
   const count = Number(a.count);
   const pace = Number(a['pace-ms']);
-  const net = resolveNetwork(a);
-  const evo = await sdkModule(injected);
-  const sdk = await connect(net, evo);
-  const write = documentWriter(sdk, evo, net);
+  const { net, evo, write, read } = await openSession(a, injected);
   const me = loadIdentity(evo, a.identity, 'FILLER');
-  const version = sdk.version();
-  const first = async (contract, type, where) => {
-    const rows = await sdk.documents.query({ dataContractId: net.ids[contract], documentTypeName: type, where, limit: 1 });
-    return [...rows.values()].find(Boolean)?.toJSON(version);
+  const create = async (type, data) => {
+    const created = await write(me, type, data);
+    await sleep(pace);
+    return created.id.toBase58();
   };
 
   const repos = [];
   for (let i = 1; i <= count; i++) {
     const name = `explore-fill-${String(i).padStart(2, '0')}`;
-    let repoId = (await first('core', 'repo', [['$ownerId', '==', me.id], ['name', '==', name]]))?.$id;
-    if (!repoId) {
-      repoId = (await write(me, 'repo', { name, visibility: VIS, description: 'Explore paging filler (forge-web e2e g2)' })).id.toBase58();
-      await sleep(pace);
-    }
-    if (!(await first('core', 'maintainer', [['repoId', '==', repoId], ['memberId', '==', me.id]]))) {
-      await write(me, 'maintainer', membership(idBytes(repoId), me.id, me.id));
-      await sleep(pace);
+    let repoId = (await read.first('repo', [['$ownerId', '==', me.id], ['name', '==', name]]))?.$id;
+    if (!repoId) repoId = await create('repo', { name, visibility: VIS, description: 'Explore paging filler (forge-web e2e g2)' });
+    if (!(await read.first('maintainer', [['repoId', '==', repoId], ['memberId', '==', me.id]]))) {
+      await create('maintainer', membership(idBytes(repoId), me.id, me.id));
     }
     repos.push({ name, repoId });
     log(`${name} ${repoId}`);

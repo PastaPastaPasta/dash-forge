@@ -63,8 +63,8 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
-  CONTRACT_OF, EVENT, ROOT, TRANSITION, VIS, checkOutcome, connect, documentWriter, idBytes, loadIdentity, log,
-  membership, parseArgs, resolveNetwork, runIfMain, sdkModule, sleep, transition,
+  CONTRACT_OF, EVENT, ROOT, TRANSITION, VIS, checkOutcome, idBytes, loadIdentity, log, membership, openSession, parseArgs,
+  runIfMain, transition, until,
 } from './lib/seed-io.mjs';
 
 const DEMO = 'forge-v2-demo';
@@ -194,11 +194,8 @@ function split(data) {
 
 export async function main(argv, injected) {
   const a = parseArgs(argv);
-  const net = resolveNetwork(a);
+  const { net, evo, sdk, write, read } = await openSession(a, injected);
   const { key, ids } = net;
-  const evo = await sdkModule(injected);
-  const sdk = await connect(net, evo);
-  const write = documentWriter(sdk, evo, net);
 
   const idDir = a.identities ?? join(homedir(), '.config/dash-forge/test-identities', key);
   const load = (name) => loadIdentity(evo, join(idDir, `${name}.identity.json`), name);
@@ -277,18 +274,13 @@ export async function main(argv, injected) {
   }
 
   // indexOnly documents (star, starBeat, watch) have no id to record. The write is confirmed by
-  // a read of the writer's own entry, and a node answering the next read may lag the one that
-  // confirmed the write.
+  // a read of the writer's own entry.
   async function createIndexOnly(step, who, type, data) {
     if (state[step]) return;
-    const own = async () => {
-      const rows = await sdk.documents.query({ dataContractId: ids.community, documentTypeName: type, where: [['$ownerId', '==', who.id], ['repoId', '==', repoId]], orderBy: [['$ownerId', 'asc']], limit: 1 });
-      return rows.size > 0;
-    };
+    const own = () => read.owns(who, type, repoId);
     if (!(await own())) {
       await write(who, type, data);
-      for (let i = 0; i < 10 && !(await own()); i++) await sleep(2000);
-      if (!(await own())) throw new Error(`${step} did not land`);
+      if (!(await until(own, 10, 2000))) throw new Error(`${step} did not land`);
     }
     state[step] = 'indexOnly';
     state.types[step] = type;

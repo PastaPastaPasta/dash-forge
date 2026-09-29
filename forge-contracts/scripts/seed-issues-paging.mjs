@@ -29,8 +29,7 @@
 // Cost: about N × 0.00058 + 25 × 0.0005 DASH (≈ 0.08 DASH for 112).
 
 import {
-  EVENT, TRANSITION, VIS, connect, documentWriter, idBytes, loadIdentity, log, membership, parseArgs, resolveNetwork,
-  runIfMain, sdkModule, sleep, transition,
+  EVENT, TRANSITION, VIS, idBytes, loadIdentity, log, membership, openSession, parseArgs, runIfMain, sleep, transition,
 } from './lib/seed-io.mjs';
 
 const LABELS = [
@@ -43,26 +42,10 @@ export async function main(argv, injected) {
   if (!a.identity) throw new Error('--identity <file> is required');
   const count = Number(a.count);
   const pace = Number(a['pace-ms']);
-  const net = resolveNetwork(a);
-  const { ids } = net;
-  const evo = await sdkModule(injected);
-  const sdk = await connect(net, evo);
-  const write = documentWriter(sdk, evo, net);
+  const { net, evo, write, read } = await openSession(a, injected, { pace });
   const me = loadIdentity(evo, a.identity, 'OWNER');
-  const version = sdk.version();
 
-  const docs = async (contract, type, where, orderBy) => {
-    const out = [];
-    let startAfter;
-    for (;;) {
-      const res = await sdk.documents.query({ dataContractId: ids[contract], documentTypeName: type, where, orderBy, limit: 100, ...(startAfter ? { startAfter } : {}) });
-      const page = [...res.values()].filter(Boolean).map((d) => d.toJSON(version));
-      out.push(...page);
-      if (page.length < 100) return out;
-      startAfter = page[page.length - 1].$id;
-      await sleep(pace);
-    }
-  };
+  // A write is paced, and retried on a transient gateway error.
   const create = async (type, data) => {
     for (let attempt = 1; ; attempt++) {
       try {
@@ -78,8 +61,7 @@ export async function main(argv, injected) {
     }
   };
 
-  const found = await docs('core', 'repo', [['$ownerId', '==', me.id], ['name', '==', a.repo]]);
-  let repoId = found[0]?.$id;
+  let repoId = (await read.first('repo', [['$ownerId', '==', me.id], ['name', '==', a.repo]]))?.$id;
   if (!repoId) {
     repoId = await create('repo', { name: a.repo, visibility: VIS, description: 'Issue-list paging fixture (forge-web/e2e/v2-issues.spec.ts)' });
     log(`created repo ${a.repo}`);
@@ -87,11 +69,10 @@ export async function main(argv, injected) {
   const R = idBytes(repoId);
   log(`repo ${a.repo} = ${repoId}`);
   // The owner enrols itself (no consent needed): its issues, labels and events are a member's.
-  const members = await docs('core', 'maintainer', [['repoId', '==', repoId], ['memberId', '==', me.id]]);
-  if (members.length === 0) await create('maintainer', membership(R, me.id, me.id));
+  if (!(await read.first('maintainer', [['repoId', '==', repoId], ['memberId', '==', me.id]]))) await create('maintainer', membership(R, me.id, me.id));
 
   // Labels: define each once (newest per name wins; an identical definition is not rewritten).
-  const labels = await docs('core', 'label', [['repoId', '==', repoId]]);
+  const labels = await read.all('label', [['repoId', '==', repoId]]);
   for (const l of LABELS) {
     if (labels.some((d) => d.name === l.name && d.color === l.color)) continue;
     await create('label', { repoId: R, ...l, retired: false });
@@ -99,9 +80,9 @@ export async function main(argv, injected) {
   }
 
   // Issues: the next dense number is one past every issue and PR the repo holds.
-  const issues = await docs('collab', 'issue', [['repoId', '==', repoId]], [['number', 'asc']]);
+  const issues = await read.all('issue', [['repoId', '==', repoId]], [['number', 'asc']]);
   const byNumber = new Map(issues.map((d) => [d.number, d]));
-  const held = issues.length + (await docs('collab', 'patch', [['repoId', '==', repoId]], [['number', 'asc']])).length;
+  const held = issues.length + (await read.all('patch', [['repoId', '==', repoId]], [['number', 'asc']])).length;
   if (held > 0 && held !== issues.length) throw new Error(`${a.repo} holds pull requests: the paging fixture needs a repo of issues only`);
   for (let n = held + 1; n <= count; n++) {
     const id = await create('issue', { repoId: R, number: n, tk: 0, title: `Paging fixture issue #${n}`, body: `Issue ${n} of the paging fixture.`, vis: VIS, asMember: idBytes(me.id) });
@@ -110,7 +91,7 @@ export async function main(argv, injected) {
   }
 
   // Events (forge-community): only those whose effect is missing from the repo feed.
-  const feed = await docs('community', 'event', [['repoId', '==', repoId]], [['$createdAt', 'asc']]);
+  const feed = await read.all('event', [['repoId', '==', repoId]], [['$createdAt', 'asc']]);
   const has = (targetId, kind, value) => feed.some((e) => e.targetId === targetId && e.kind === kind && (value === undefined || e.value === value));
   const event = async (n, kind, extra = {}) => {
     const t = byNumber.get(n);
@@ -123,7 +104,7 @@ export async function main(argv, injected) {
   if (a.assignee) await event(7, EVENT.assign, { value: a.assignee, refId: idBytes(a.assignee) });
 
   // Closes (forge-collab transitions, by the owner as a member): only on issues not closed yet.
-  const moves = await docs('collab', 'transition', [['repoId', '==', repoId]], [['$createdAt', 'asc']]);
+  const moves = await read.all('transition', [['repoId', '==', repoId]], [['$createdAt', 'asc']]);
   for (const n of [3, 33, 103]) {
     const t = byNumber.get(n);
     if (!t || moves.some((m) => m.targetId === t.$id && m.kind === TRANSITION.issueClose)) continue;

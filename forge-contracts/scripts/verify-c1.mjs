@@ -23,8 +23,7 @@
 //      beat the first repo, MEMBER the second.
 // Writes only to repos it creates (`c1-verify-<run>`), about 0.02 DASH per identity.
 import {
-  VIS, checkOutcome, connect, documentWriter, expectRefused, idBytes, loadIdentity, log, membership, parseArgs, resolveNetwork,
-  runIfMain, sdkModule, sleep,
+  VIS, checkOutcome, expectRefused, idBytes, loadIdentity, log, membership, openSession, parseArgs, refusalOf, runIfMain, until,
 } from './lib/seed-io.mjs';
 
 const MOVED = {
@@ -36,11 +35,8 @@ const MOVED = {
 export async function main(argv, injected) {
   const a = parseArgs(argv);
   if (!a.owner || !a.member || !a.third) throw new Error('usage: --owner <A> --member <B> --third <C>');
-  const net = resolveNetwork(a);
+  const { net, evo, sdk, write: create, read } = await openSession(a, injected);
   const { ids } = net;
-  const evo = await sdkModule(injected);
-  const sdk = await connect(net, evo);
-  const create = documentWriter(sdk, evo, net);
   const OWNER = loadIdentity(evo, a.owner, 'OWNER');
   const MEMBER = loadIdentity(evo, a.member, 'MEMBER');
   const THIRD = loadIdentity(evo, a.third, 'THIRD');
@@ -49,22 +45,6 @@ export async function main(argv, injected) {
   const check = (name, ok, detail = '') => {
     results.push({ name, ok });
     console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`);
-  };
-  /** A write that should land: resolves to the refusal message, or null. */
-  const accepted = async (fn) => {
-    try {
-      await fn();
-      return null;
-    } catch (e) {
-      return String(e?.message ?? e);
-    }
-  };
-  const until = async (f, tries = 12) => {
-    for (let i = 0; i < tries; i++) {
-      if (await f()) return true;
-      await sleep(2500);
-    }
-    return false;
   };
 
   const run = Date.now().toString(36);
@@ -89,7 +69,7 @@ export async function main(argv, injected) {
   // 2. runner: accepted, then refused after revocation
   const runnerDoc = await create(OWNER, 'runner', { repoId: R, memberId: idBytes(MEMBER.id) });
   const head = Buffer.alloc(20, 7);
-  const run1 = await accepted(() =>
+  const run1 = await refusalOf(() =>
     create(MEMBER, 'checkRun', { repoId: R, headOid: head, name: 'build', status: 'in_progress', outcome: checkOutcome('in_progress'), startedAt: Date.now(), vis: VIS }),
   );
   check('a runner posts a checkRun', run1 === null, run1 ?? '');
@@ -105,19 +85,17 @@ export async function main(argv, injected) {
   check('a completed checkRun without a conclusion is refused (conclusionIfDone)', noConclusion !== null && /conclusionIfDone|constraint/i.test(noConclusion), (noConclusion ?? 'accepted').slice(0, 160));
 
   // 4. policy.requiredChecks, each pinned to its source (the owner, a maintainer)
-  const pol = await accepted(() =>
+  const pol = await refusalOf(() =>
     create(OWNER, 'policy', { repoId: R, requiredApprovals: 0, requireChecks: true, requiredChecks: ['build', 'test'], requiredCheckSources: [idBytes(OWNER.id), idBytes(OWNER.id)] }),
   );
   check('a policy with requiredChecks and their sources is accepted', pol === null, pol ?? '');
 
   // 5. watch create + delete by values
-  const ownRows = (w, t, id) => sdk.documents.query({ dataContractId: ids.community, documentTypeName: t, where: [['$ownerId', '==', w.id], ['repoId', '==', id]], orderBy: [['$ownerId', 'asc']], limit: 1 });
-  const own = async (w, t, id) => (await ownRows(w, t, id)).size > 0;
   await create(OWNER, 'watch', { repoId: R });
-  const watched = await until(() => own(OWNER, 'watch', repoId));
-  const doc = [...(await ownRows(OWNER, 'watch', repoId)).values()][0];
+  const watched = await until(() => read.owns(OWNER, 'watch', repoId));
+  const doc = [...(await read.ownRows(OWNER, 'watch', repoId)).values()][0];
   await sdk.documents.delete({ document: doc, identityKey: OWNER.identityKey, signer: OWNER.signer });
-  const unwatched = await until(async () => !(await own(OWNER, 'watch', repoId)));
+  const unwatched = await until(async () => !(await read.owns(OWNER, 'watch', repoId)));
   check('a watch is created and deleted by its values', watched && unwatched);
 
   // 6. topic count (the name matches the topic pattern: lowercase base36)
