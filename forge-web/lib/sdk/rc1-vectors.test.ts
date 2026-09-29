@@ -6,13 +6,17 @@
  * rule). So forge-web and the reference judge agree on what RC1 accepts, and the judge the
  * writer tests use (`expectRc1Valid`) is itself checked against the reference.
  *
- * In a case's `doc`, `{"$id": n}` is the identifier of 32 bytes of `n` and `{"$b": [fill, len]}`
- * is `len` bytes of `fill` (b7gate's `to_value`); both become `Uint8Array`s, as writers pass them.
+ * In a case's `doc` (`forge-contracts/vectors/rc1/README.md`), `{"$id": n}` is the identifier of
+ * 32 bytes of `n` or `{"$id": "<base58>"}` that id, `{"$b": [fill, len]}` is `len` bytes of `fill`
+ * and `{"$hex": "…"}` those bytes; all become `Uint8Array`s, as writers pass them. A case's
+ * `owner` (a byte `n` or a base58 id) is its signer, `0x07 × 32` when absent.
  */
 
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { hexToBytes } from '@noble/hashes/utils.js'
+import { base58Decode, base58Encode } from '../auth/base58'
 import { rc1ContractOf, rc1Contracts, validateRc1, type Rc1ContractName } from './rc1-validate'
 
 interface VectorCase {
@@ -21,19 +25,27 @@ interface VectorCase {
   type: string
   expect: 'ok' | 'refused'
   why?: string
+  owner?: number | string
   doc: Record<string, unknown>
 }
 
 const CONTRACTS: readonly Rc1ContractName[] = ['forge-core', 'forge-collab', 'forge-community']
 /** The number of cases vectors.py writes; a dropped or truncated file changes it. */
-const TOTAL_CASES = 353
+const TOTAL_CASES = 376
 
-/** A vector value with its `$id` / `$b` placeholders as bytes. */
+/** A case's signer as base58: a byte `n` is 32 bytes of `n`; absent is the vectors' default. */
+function ownerOf(owner: number | string | undefined): string | undefined {
+  if (owner === undefined) return undefined
+  return typeof owner === 'string' ? owner : base58Encode(new Uint8Array(32).fill(owner))
+}
+
+/** A vector value with its `$id` / `$b` / `$hex` placeholders as bytes. */
 function materialise(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(materialise)
   if (value === null || typeof value !== 'object') return value
   const o = value as Record<string, unknown>
-  if ('$id' in o) return new Uint8Array(32).fill(o.$id as number)
+  if ('$id' in o) return typeof o.$id === 'string' ? base58Decode(o.$id) : new Uint8Array(32).fill(o.$id as number)
+  if ('$hex' in o) return hexToBytes(o.$hex as string)
   if ('$b' in o) {
     const [fill, len] = o.$b as [number, number]
     return new Uint8Array(len).fill(fill)
@@ -69,7 +81,8 @@ describe('RC1 conformance vectors', () => {
   for (const name of CONTRACTS) {
     describe(name, () => {
       it.each(vectors[name].map((c) => [`${c.item} ${c.type}: ${c.name}`, c] as const))('%s', async (_label, c) => {
-        const verdict = await validateRc1(c.type, materialise(c.doc) as Record<string, unknown>)
+        const owner = ownerOf(c.owner)
+        const verdict = await validateRc1(c.type, materialise(c.doc) as Record<string, unknown>, owner === undefined ? {} : { owner })
         if (c.expect === 'ok') {
           expect(verdict).toEqual({ ok: true })
         } else {

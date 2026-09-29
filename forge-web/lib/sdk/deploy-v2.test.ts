@@ -11,9 +11,11 @@ import { DEPENDENT_CONTRACTS, communityId, dependentSupersedeError, loadSchema, 
 import { snapshotIds } from '../../../forge-contracts/scripts/snapshot-contracts.mjs'
 
 const CORE_ID = '4xQ1gLbVttHSnHSNAexse7ByXJd7BQCRLgLYuPevrcTW'
+const COLLAB_ID = 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS'
 
+/** A schema with the ids of the contracts registered before it substituted (forge-community also names forge-collab, RC1 O-01). */
 const withCore = (name: string, coreId = CORE_ID) =>
-  loadSchema(name, { FORGE_CORE_CONTRACT_ID: coreId }) as { documentSchemas: Record<string, unknown> }
+  loadSchema(name, { FORGE_CORE_CONTRACT_ID: coreId, FORGE_COLLAB_CONTRACT_ID: COLLAB_ID }) as { documentSchemas: Record<string, unknown> }
 
 describe('deploy-v2: the three forge-v2 contracts', () => {
   it('registers forge-collab, then forge-community, after forge-core', () => {
@@ -41,8 +43,9 @@ describe('deploy-v2: the three forge-v2 contracts', () => {
     const types = (name: string) => Object.keys(withCore(name).documentSchemas).sort()
     const collab = types('forge-collab')
     const community = types('forge-community')
-    expect(collab).toEqual(['authorEvent', 'comment', 'event', 'issue', 'milestone', 'patch', 'review', 'transition'])
-    expect(community).toEqual(['checkRun', 'follow', 'policy', 'profile', 'star', 'starBeat', 'watch', 'webhook'])
+    // The RC1 layout (O-01 events and milestones, O-02 runners to forge-community; O-03 repoKey to forge-collab).
+    expect(collab).toEqual(['comment', 'issue', 'patch', 'repoKey', 'review', 'transition'])
+    expect(community).toEqual(['authorEvent', 'checkRun', 'event', 'follow', 'milestone', 'policy', 'profile', 'runner', 'star', 'starBeat', 'watch', 'webhook'])
     expect(types('forge-core').filter((t) => collab.includes(t) || community.includes(t))).toEqual([])
   })
 
