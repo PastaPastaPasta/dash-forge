@@ -105,19 +105,22 @@ def doc(t, /, **kw):
     return d
 
 
-def case(item, label, t, expect, why, kw):
-    owner = kw.pop('signer', None)  # another signer than OWNER (contract-validate judges these; b7gate skips them)
-    c = {"item": item, "name": label, "type": t, "expect": expect, **({"why": why} if why else {}),
-         **({"owner": owner} if owner is not None else {}), "doc": doc(t, **kw)}
+def case(item, label, t, expect, why, /, signer=None, **kw):
+    c = {"item": item, "name": label, "type": t, "expect": expect}
+    if why:
+        c["why"] = why
+    if signer is not None:  # another signer than OWNER (contract-validate judges these; b7gate skips them)
+        c["owner"] = signer
+    c["doc"] = doc(t, **kw)
     CASES.append(c)
 
 
 def ok(item, label, t, /, **kw):
-    case(item, label, t, "ok", None, kw)
+    case(item, label, t, "ok", None, **kw)
 
 
 def no(item, label, t, why, /, **kw):
-    case(item, label, t, "refused", why, kw)
+    case(item, label, t, "refused", why, **kw)
 
 
 SEALED = dict(enc=b(5, 61), epoch=0)
@@ -141,9 +144,9 @@ no('R-01', 'ref ending .lock', 'refUpdate', 'noLock', refName='refs/heads/x.lock
 no('R-01', 'protected ref ending .lock', 'protectedRefUpdate', 'noLock', refName='refs/heads/main.lock')
 ok('R-01', 'ref .lock in a middle component (reader rule)', 'refUpdate', refName='refs/heads/x.lock/y')
 ok('R-01', 'zero-oid delete', 'refUpdate', newOid=b(0, 20), prevOid=b(1, 20))
-for n in ('main', 'release/1.x', 'refs/heads/main', 'ünï', '@', 'a@b'):
+for n in ('main', 'release/1.x', 'refs/heads/main', 'ünï', '@x', 'a@b'):
     ok('R-01', f'defaultBranch {n!r}', 'repo', defaultBranch=n)
-for n in ('-main', 'ma in', '.main', 'main/', 'a..b', 'a@{1}', 'x.'):
+for n in ('-main', 'ma in', '.main', 'main/', 'a..b', 'a@{1}', 'x.', '@'):
     no('R-01', f'defaultBranch {n!r}', 'repo', 'pattern', defaultBranch=n)
 no('R-01', 'config defaultBranch -x', 'config', 'pattern', defaultBranch='-x')
 for n in ('v1.2.3', 'release/2026', '-Ab3_x9QkZ', 'v1@b'):
@@ -467,6 +470,17 @@ no('R-06', 'a stranger enrols someone else', 'writer', 'ownerOrConsented', conse
 ok('R-04', 'imported issue proved by its signer 9', 'issue', imported=IMP, asMember=i(9), signer=9)
 ok('base', 'hex oid and base58 repo id', 'refUpdate', repoId={"$id": "A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1"}, newOid={"$hex": "ab" * 20})
 no('R-10', 'hex oid of 21 bytes', 'refUpdate', 'oidWidth', newOid={"$hex": "ab" * 21})
+
+# ---------------- byte caps and shapes the older samples covered ----------------
+WIDE = '\U0001F600' * 1300   # 1300 four-byte characters: within maxLength 5120, over maxBytes 5120
+no('base', 'body over the 5120-byte field limit', 'comment', '10417', body=WIDE)
+no('base', 'label name over maxBytes', 'label', 'maxBytes', name='\U0001F600' * 16)
+no('base', 'repo description over maxBytes', 'repo', 'maxBytes', description='\U0001F600' * 251)
+no('base', 'release notes over the 5120-byte field limit', 'release', '10417', notes='\U0001F600' * 1281)
+no('base', 'enc without epoch', 'issue', 'required', title=DROP, body=DROP, vis='private', enc=b(5, 61))
+no('base', 'chunk part over 4900 bytes', 'chunk', 'maxItems', d0=b(0, 4901))
+no('base', 'checkRun status outside its enum', 'checkRun', 'enum', status='done')
+no('base', 'checkRun conclusion outside its enum', 'checkRun', 'enum', conclusion='passed')
 
 # Rules that read a total, a time or a height: judged on chain only (forge-contracts/scripts/rc1-live.mjs).
 LIVE_ONLY = {('issue', 'dense'), ('patch', 'dense'), ('transition', 'c1_closedAfter'), ('transition', 'c2_openAfter'),

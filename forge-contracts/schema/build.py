@@ -108,13 +108,14 @@ def leaves(decl):
     return decl['anyOf'] if 'anyOf' in decl else [decl]
 
 
-def member_leaf(doc_type, contract=None):
+def find_leaf(doc_type, contract=None):
+    """A `findBy {repoId, memberId: "."}` leaf: the writer (or the value) holds a `doc_type` of the repo."""
     leaf = {"type": "deletableDocument", "documentType": doc_type, "findBy": {"repoId": "repoId", "memberId": "."}}
     return dict({"type": "deletableDocument", "contractId": contract}, **leaf) if contract else leaf
 
 
 def member_ref(contract=None):
-    return {"anyOf": [member_leaf("maintainer", contract), member_leaf("writer", contract)]}
+    return {"anyOf": [find_leaf("maintainer", contract), find_leaf("writer", contract)]}
 
 
 # ---- R-01 patterns ----------------------------------------------------------------------------
@@ -129,7 +130,7 @@ def ref_patterns(at_brace):
     if at_brace:
         d = r'[^\x00- \x7f~^:?*\[\\/.@{]'
         comp = r'(?:(?:@*' + d + r'|\{)+@*|@+)'
-        first = r'(?:(?:@+' + d + r'|\{|[^\x00- \x7f~^:?*\[\\/.@{\-])(?:@*' + d + r'|\{)*@*|@+)'
+        first = r'(?:@+' + d + r'|\{|[^\x00- \x7f~^:?*\[\\/.@{\-])(?:@*' + d + r'|\{)*@*'
     else:
         comp = r'[^\x00- \x7f~^:?*\[\\/.]'
         first = r'[^\x00- \x7f~^:?*\[\\/.\-]'
@@ -161,6 +162,13 @@ def build(flags):
     core, collab, comm = (copy.deepcopy(base[n]) for n in NAMES)
     cd, ld, md = core['documentSchemas'], collab['documentSchemas'], comm['documentSchemas']
     f = flags
+    # Flags that only register together: a `where` naming a stamp needs the stamp (else 40126 at
+    # registration), and collab's provenance and stamps only fit with events moved out (O-01).
+    needs = {'hook_public': 'vis_core', 'vis_collab': 'layout_events_out', 'import_provenance': 'layout_events_out',
+             'thread_lock': 'import_provenance', 'member_verdicts': 'import_provenance', 'wrap_member': 'vis_core'}
+    for flag, dep in needs.items():
+        if f[flag] and not f[dep]:
+            sys.exit(f'{flag} needs {dep}')
 
     # ======================= layout (D-11) =======================
     if f['layout_events_out']:
@@ -191,6 +199,7 @@ def build(flags):
         ld['repoKey'] = rk
     rk_home = ld if f['layout_repokey_collab'] else cd
     rk_contract = CORE if f['layout_repokey_collab'] else None
+    ev_home = md if f['layout_events_out'] else ld
 
     # ======================= forge-core =======================
     if f['ref_grammar']:
@@ -331,8 +340,7 @@ def build(flags):
         # R-13. The wrap's recipient must hold a member document; its key reference moves to
         # recipientKeyId.
         rk = rk_home['repoKey']
-        mem = rk['properties']['memberId']
-        mem['refersTo'] = member_ref(rk_contract)
+        rk['properties']['memberId']['refersTo'] = member_ref(rk_contract)
         rk['properties']['recipientKeyId']['refersTo'] = {
             "type": "identityPublicKey", "identityProperty": "memberId", "keyRequirements": {"purpose": "encryption"}}
 
@@ -378,8 +386,7 @@ def build(flags):
                           ('comment', 'commitOid', True), ('review', 'commitOid', False)):
             ld[t].setdefault('propertyConstraints', {})['oidWidth'] = oid_rule(p, opt)
         for t in ('event', 'authorEvent'):
-            home = md if f['layout_events_out'] else ld
-            home[t]['propertyConstraints']['oidWidth'] = oid_rule('oid', True)
+            ev_home[t]['propertyConstraints']['oidWidth'] = oid_rule('oid', True)
 
     if f['reply_thread']:
         # R-14. A reply names a live comment of the same target that is itself no reply
@@ -415,8 +422,7 @@ def build(flags):
         as_member('review')
         ld['review']['propertyConstraints']['lockGate'] = {"anyOf": [
             {"present": "asMember"}, {"lessThan": [tsum('patchId'), 16]}]}
-        ev = (md if f['layout_events_out'] else ld)['event']
-        ev['propertyConstraints']['noState'] = {"notIn": ["kind", [9, 10, 21, 22]]}
+        ev_home['event']['propertyConstraints']['noState'] = {"notIn": ["kind", [9, 10, 21, 22]]}
 
     if f['member_verdicts']:
         # R-16. 1/2 = a member's approve / request changes (proved), 3 = comment, 4/5 = a
@@ -445,11 +451,9 @@ def build(flags):
     if f['check_sources']:
         pol = md['policy']
         pol['properties']['mergeMethods']['maximum'] = 15
-        runner_leaf = {"type": "deletableDocument", "documentType": "runner", "findBy": {"repoId": "repoId", "memberId": "."}}
-        if not f['layout_runner_out']:
-            runner_leaf = dict({"type": "deletableDocument", "contractId": CORE}, **runner_leaf)
+        runner_leaf = find_leaf("runner", None if f['layout_runner_out'] else CORE)
         add_prop(pol, 'requiredCheckSources', {"type": "array", "maxItems": 10, "items": ident(
-            refersTo={"anyOf": [runner_leaf, member_leaf("maintainer", CORE)]})})
+            refersTo={"anyOf": [runner_leaf, find_leaf("maintainer", CORE)]})})
         pol['propertyConstraints'] = {"sourcesMatchNames": {"anyOf": [
             {"equal": [{"count": "requiredCheckSources"}, 0]},
             {"equal": [{"count": "requiredCheckSources"}, {"count": "requiredChecks"}]}]}}
@@ -558,6 +562,8 @@ def main():
     if not a.out and not a.off:
         targets['registered'] = os.path.join(CONTRACTS, 'registered', 'forge-core.v1.json')
     texts = {k: dumps(contracts['forge-core' if k == 'registered' else k]) for k in targets}
+    if a.check and a.off:
+        sys.exit('--check compares the full build: use it without --off')
     if a.check:
         stale = [p for k, p in targets.items() if not os.path.exists(p) or open(p).read() != texts[k]]
         for p in stale:
@@ -569,16 +575,16 @@ def main():
         for k, p in targets.items():
             open(p, 'w').write(texts[k])
     if a.gate:
-        worst = 0
+        failed = False
         for name, n in gate(a.gate, contracts).items():
-            if isinstance(n, int):
-                worst = max(worst, n)
-                note = 'over the ceiling' if n > CEILING else 'over the target' if n > TARGET else 'ok'
-                print(f'{name:16} {n:6} B  target {TARGET} ({TARGET - n:+}), ceiling {CEILING} ({CEILING - n:+})  {note}')
-            else:
+            if isinstance(n, str):
                 print(f'{name:16} {n[:1500]}')
-                worst = CEILING + 1
-        sys.exit(1 if worst > CEILING else 0)
+                failed = True
+                continue
+            note = 'over the ceiling' if n > CEILING else 'over the target' if n > TARGET else 'ok'
+            failed = failed or n > CEILING
+            print(f'{name:16} {n:6} B  target {TARGET} ({TARGET - n:+}), ceiling {CEILING} ({CEILING - n:+})  {note}')
+        sys.exit(1 if failed else 0)
 
 
 if __name__ == '__main__':

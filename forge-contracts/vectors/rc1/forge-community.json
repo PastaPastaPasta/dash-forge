@@ -2733,5 +2733,61 @@
    "summary": "ok",
    "externalId": "gh-1"
   }
+ },
+ {
+  "item": "base",
+  "name": "checkRun status outside its enum",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "enum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "done",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "base",
+  "name": "checkRun conclusion outside its enum",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "enum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "passed",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
  }
 ]
