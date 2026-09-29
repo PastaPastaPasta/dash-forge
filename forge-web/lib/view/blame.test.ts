@@ -20,7 +20,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { gitBlame, gitBlameMany, HAVE_GIT } from '../merge/git-oracle'
-import { BLAME_MAX_BYTES, BlameRefusedError, blameFile, toHunks, type BlameResult } from './blame'
+import { BLAME_MAX_BYTES, BlameRefusedError, BlameStoppedError, blameFile, toHunks, type BlameResult } from './blame'
 import { lineMap } from './blame-core'
 import { Store } from './diff-fixtures'
 import { logPage } from './path-history'
@@ -216,7 +216,8 @@ describe('blame bounds', () => {
       tip = s.commit(s.files({ f: text }), [tip], `add ${i}`)
     }
     const seen: number[] = []
-    const got = await blameFile(s.reader(), tip, 'f', { maxVersions: 5, onProgress: (p) => seen.push(p.versions) })
+    // Searching reports too (versions 0, commits examined): the compared versions come in order.
+    const got = await blameFile(s.reader(), tip, 'f', { maxVersions: 5, onProgress: (p) => p.versions > 0 && !seen.includes(p.versions) && seen.push(p.versions) })
     expect(got.partial).toBe(true)
     expect(got.versions).toBe(5)
     expect(seen.slice(0, 5)).toEqual([1, 2, 3, 4, 5])
@@ -240,6 +241,46 @@ describe('blame bounds', () => {
     })
     await expect(run).rejects.toThrow()
     expect(last).toBe(3)
+  })
+
+  it('a stopped run hands back what it attributed: the compared versions exact, the rest on the oldest reached (L-23)', async () => {
+    const s = new Store()
+    const commits: string[] = []
+    let text = 'root\n'
+    let tip = s.commit(s.files({ f: text }))
+    commits.push(tip)
+    for (let i = 1; i < 20; i++) {
+      tip = s.commit(s.files({ f: (text = `${i}\n${text}`) }), [tip])
+      commits.push(tip)
+    }
+    const stop = new AbortController()
+    const run = blameFile(s.reader(), tip, 'f', {
+      signal: stop.signal,
+      onProgress: (p) => {
+        if (p.versions === 3) stop.abort()
+      },
+    })
+    const err = await run.catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(BlameStoppedError)
+    const partial = (err as BlameStoppedError).partial!
+    expect(partial.partial).toBe(true)
+    const got = owners(partial)
+    // The newest three lines are exact (their commits were compared); the rest sit on the oldest reached.
+    expect(got.slice(0, 3)).toEqual([commits[19], commits[18], commits[17]])
+    expect(new Set(got.slice(3)).size).toBe(1)
+  })
+
+  it('reports progress while it searches, before any version is found (L-23)', async () => {
+    // The file changed once, long ago: the walk examines many commits before the first version.
+    const s = new Store()
+    const c1 = s.commit(s.files({ f: 'a\n', g: '0' }), [], 'one')
+    const c2 = s.commit(s.files({ f: 'a\nb\n', g: '0' }), [c1], 'two')
+    let tip = c2
+    for (let i = 1; i <= 120; i++) tip = s.commit(s.files({ f: 'a\nb\n', g: String(i) }), [tip], `g ${i}`)
+    const searching: number[] = []
+    await blameFile(s.reader(), tip, 'f', { onProgress: (p) => p.versions === 0 && searching.push(p.examined) })
+    expect(searching.length).toBeGreaterThanOrEqual(2)
+    expect(searching.at(-1)).toBeGreaterThanOrEqual(100)
   })
 
   it('shares its reads with the History walk of the same file (no object read twice)', async () => {

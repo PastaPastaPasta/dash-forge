@@ -162,3 +162,46 @@ export async function logPage(
   const capped = filtered && examined >= cap && oid !== undefined && entries.length < limit
   return { entries, next: oid ?? null, examined, capped }
 }
+
+/** One page of a path's versions: the commits that changed it, newest first. */
+export interface PathVersionsPage {
+  readonly entries: readonly LogEntry[]
+  /** Where the next page starts, or null when the path's history ended (its adding commit). */
+  readonly next: string | null
+  /** Commits examined for this page. */
+  readonly examined: number
+}
+
+/**
+ * The commits that changed `path`, newest first, from `startOid`: the one lookup Blame (and a
+ * file's History) needs, behind a single function so a push-time index can answer it later
+ * (`docs/design/last-change-index-v2.md`) without the views changing. Today it walks first-parent
+ * history ({@link logPage}); `onExamined` is told the running count of commits examined, so a long
+ * search shows progress before any version is found.
+ */
+export async function pathVersions(
+  reader: ObjectReader,
+  startOid: string,
+  path: string,
+  {
+    limit = LOG_PAGE,
+    cap = PATH_WALK_CAP,
+    walker,
+    signal,
+    onExamined,
+  }: WalkOptions & { readonly limit?: number; readonly cap?: number; readonly onExamined?: (examined: number) => void } = {},
+): Promise<PathVersionsPage> {
+  // The walk is paged in short strides so the count moves while nothing has been found yet.
+  const STRIDE = 50
+  const entries: LogEntry[] = []
+  let examined = 0
+  let next: string | null = startOid
+  while (next !== null && entries.length < limit && examined < cap) {
+    const page = await logPage(reader, next, { path, limit: limit - entries.length, cap: Math.min(STRIDE, cap - examined), walker, signal })
+    entries.push(...page.entries)
+    examined += page.examined
+    next = page.next
+    onExamined?.(examined)
+  }
+  return { entries, next, examined }
+}

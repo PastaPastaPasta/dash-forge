@@ -11,7 +11,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('next/link', () => ({ default: ({ href, children }: { href: string; children: React.ReactNode }) => <a href={href}>{children}</a> }))
-vi.mock('next/navigation', () => ({ usePathname: () => '/repo/blame/', useSearchParams: () => new URLSearchParams() }))
+vi.mock('next/navigation', () => ({ usePathname: () => '/repo/blame/', useSearchParams: () => new URLSearchParams(), useRouter: () => ({ replace: () => undefined, push: () => undefined }) }))
 
 /** Each call's deferred result; the test settles them in the order it wants. */
 const calls: { signal: AbortSignal; resolve: (v: unknown) => void; reject: (e: unknown) => void }[] = []
@@ -70,5 +70,35 @@ describe('BlameBody in StrictMode', () => {
       ;(el.querySelector('[data-testid="blame-cancel"]') as HTMLButtonElement).click()
     })
     expect(el.textContent).toContain('Blame stopped')
+  })
+
+  it('Cancel after some versions keeps the partial table, marked stopped, with Run again (L-23)', async () => {
+    const { BlameStoppedError } = await import('@/lib/view/blame')
+    await act(async () => {
+      root.render(<BlameBody reader={{} as never} tipOid={'a'.repeat(40)} path="f" addr={{ owner: 'o', name: 'n' }} />)
+    })
+    const c = 'c'.repeat(40)
+    const partial = {
+      lines: ['one\n', 'two\n'],
+      hunks: [{ start: 1, count: 2, oid: c }],
+      commits: new Map([[c, { message: 'subject', author: { name: 'a', when: 0 } }]]),
+      partial: true,
+      approximate: false,
+      versions: 3,
+      renames: [],
+      unfollowedRename: null,
+    }
+    // The run answers its abort with what it had (the real blameFile does); rejected first, so the
+    // mock's own AbortError on the signal comes too late to count.
+    calls[0]!.signal.addEventListener('abort', () => undefined)
+    await act(async () => {
+      const run = calls[0]!
+      run.reject(new BlameStoppedError(partial as never))
+      ;(el.querySelector('[data-testid="blame-cancel"]') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    expect(el.querySelector('[data-testid="blame-table"]')).not.toBeNull()
+    expect(el.querySelector('[data-testid="blame-stopped"]')?.textContent).toContain('Run again')
+    expect(el.textContent).not.toContain('Stopped before')
   })
 })
