@@ -8,10 +8,16 @@
 //! 1/2/3) and the ids of the earlier contracts substituted for their placeholders
 //! (`FORGE_CORE_CONTRACT_ID`, `FORGE_COLLAB_CONTRACT_ID`), as `tools/contract-validate` does.
 //!
-//! A document is judged by `validate_document_properties` with only its signer known: the JSON
-//! schema, `maxBytes` and every `propertyConstraints` rule that reads no total, time, height or
-//! other document. The checks that do (dense, c1..c6, lockGate, platformChunks, oneLive,
-//! atMost20, notFuture, starBeat's distinctFrom, every `refersTo` / `where` / `findBy`
+//! A document is judged by the create's structure checks that read the document and its signer
+//! alone, in the order drive-abci's `advanced_structure_v1` runs them:
+//! - `validate_document_properties`: the JSON schema, `maxBytes`, and every
+//!   `propertyConstraints` rule that reads no total, time or height;
+//! - `validate_distinct_from_properties` (10419, `distinctFrom`);
+//! - `validate_encrypted_property_shapes` (10420, an `encryptedFor` ciphertext's shape);
+//! - `first_unrevealable_lookup_key` (10423; the RC1 contracts have no computed keys).
+//!
+//! The rules that read a total, the block or another document (dense, c1..c6, lockGate,
+//! platformChunks, oneLive, atMost20, notFuture, every `refersTo` / `where` / `findBy`
 //! reference) are consensus's, covered by the live suite (`forge-contracts/scripts/rc1-live.mjs`).
 //!
 //! [`validate_props`] is the entry point; [`assert_valid`] / [`assert_refused`] /
@@ -21,16 +27,21 @@
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
+use dpp::consensus::basic::document::DocumentReferencePreimageInvalidError;
 use dpp::consensus::basic::BasicError;
 use dpp::consensus::codes::ErrorWithCode;
 use dpp::consensus::ConsensusError;
+use dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
+use dpp::data_contract::document_type::first_unrevealable_lookup_key;
+use dpp::data_contract::document_type::methods::{DocumentTypeBasicMethods, DocumentTypeV0Methods};
 use dpp::data_contract::document_type::property_constraints::DocumentSystemValues;
 use dpp::data_contract::validate_document::DataContractDocumentValidationMethodsV0;
 use dpp::data_contract::DataContract;
 use dpp::identifier::Identifier;
 use dpp::platform_value::string_encoding::Encoding;
 use dpp::platform_value::Value;
+use dpp::validation::SimpleConsensusValidationResult;
 use dpp::version::PlatformVersion;
 use serde_json::Value as Json;
 
@@ -110,9 +121,14 @@ fn reason(e: &ConsensusError) -> String {
     }
 }
 
-/// Judge `properties` as a create of `doc_type` signed by `signer`: `None` when RC1 accepts it,
-/// else the first error as `(reason, message)`.
-fn judge(doc_type: &str, properties: Value, signer: Identifier) -> Option<(String, String)> {
+/// Judge `data` as a create of `doc_type` signed by `signer`, running the structure checks a
+/// node runs in `advanced_structure_v1` that need no state: `None` when RC1 accepts it, else
+/// the first error as `(reason, message)`.
+fn judge(
+    doc_type: &str,
+    data: BTreeMap<String, Value>,
+    signer: Identifier,
+) -> Option<(String, String)> {
     let Some(contract) = ForgeContract::of(doc_type) else {
         return Some((
             "documentType".to_string(),
@@ -123,15 +139,45 @@ fn judge(doc_type: &str, properties: Value, signer: Identifier) -> Option<(Strin
         .iter()
         .position(|c| *c == contract)
         .expect("listed");
-    let result = contracts()[i]
-        .validate_document_properties(
-            doc_type,
-            properties,
-            &DocumentSystemValues::owned_by(signer),
-            platform_version(),
-        )
-        .unwrap_or_else(|e| panic!("{doc_type}: validation could not run: {e}"));
-    result.errors.first().map(|e| (reason(e), e.to_string()))
+    let contract = &contracts()[i];
+    let pv = platform_version();
+    let ran = |r: Result<SimpleConsensusValidationResult, _>| {
+        r.unwrap_or_else(|e| panic!("{doc_type}: validation could not run: {e}"))
+    };
+    let document_type = contract
+        .document_type_for_name(doc_type)
+        .unwrap_or_else(|e| panic!("{doc_type}: {e}"));
+    let first =
+        |r: SimpleConsensusValidationResult| r.errors.first().map(|e| (reason(e), e.to_string()));
+    let system = DocumentSystemValues::owned_by(signer);
+    first(ran(contract.validate_document_properties(
+        doc_type,
+        data.clone().into(),
+        &system,
+        pv,
+    )))
+    .or_else(|| {
+        first(ran(
+            document_type.validate_distinct_from_properties(&data, signer, pv)
+        ))
+    })
+    .or_else(|| {
+        first(ran(
+            document_type.validate_encrypted_property_shapes(&data, pv)
+        ))
+    })
+    .or_else(|| {
+        first_unrevealable_lookup_key(document_type, &data, signer).map(|(path, e)| {
+            let e: ConsensusError = DocumentReferencePreimageInvalidError::new(
+                doc_type.to_string(),
+                path,
+                e.param,
+                e.reason,
+            )
+            .into();
+            (reason(&e), e.to_string())
+        })
+    })
 }
 
 fn judge_props(
@@ -139,13 +185,11 @@ fn judge_props(
     props: &BTreeMap<String, FieldValue>,
     owner: [u8; 32],
 ) -> Option<(String, String)> {
-    let value = Value::Map(
-        props
-            .iter()
-            .map(|(k, v)| (Value::Text(k.clone()), v.clone().into_value()))
-            .collect(),
-    );
-    judge(doc_type, value, Identifier::from(owner))
+    let data = props
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone().into_value()))
+        .collect();
+    judge(doc_type, data, Identifier::from(owner))
 }
 
 /// Judge `props` as a create of `doc_type` signed by `owner`. `Err("<reason>: <message>")` for
@@ -204,10 +248,10 @@ mod vectors {
     /// Cases judged by the live suite only, never offline, by `(type, name)`.
     ///
     /// None: `vectors.py` keeps every check that reads a total, the block or another document
-    /// (dense, c1..c6, lockGate, platformChunks, oneLive, atMost20, notFuture, starBeat's
-    /// distinctFrom, every `refersTo` / `where` / `findBy` reference) out of these sets (its
-    /// `LIVE_ONLY` list) and in `forge-contracts/scripts/rc1-live.mjs`, so every committed case
-    /// is judged here. A case added to this list must say why.
+    /// (dense, c1..c6, lockGate, platformChunks, oneLive, atMost20, notFuture, every
+    /// `refersTo` / `where` / `findBy` reference) out of these sets (its `LIVE_ONLY` list) and
+    /// in `forge-contracts/scripts/rc1-live.mjs`, so every committed case is judged here. A case
+    /// added to this list must say why.
     const LIVE_ONLY: [(&str, &str); 0] = [];
 
     /// An identifier written as a byte `n` (32 bytes of n) or a base58 string.
@@ -229,6 +273,14 @@ mod vectors {
 
     /// A vector document (the README's format): `{"$id": n | "<base58>"}` is an identifier,
     /// `{"$b": [fill, len]}` is `len` bytes of `fill` and `{"$hex": "…"}` is bytes.
+    fn doc_data(j: &Json) -> BTreeMap<String, Value> {
+        j.as_object()
+            .expect("a vector document is an object")
+            .iter()
+            .map(|(k, v)| (k.clone(), doc_value(v)))
+            .collect()
+    }
+
     fn doc_value(j: &Json) -> Value {
         match j {
             Json::Object(m) if m.contains_key("$b") => {
@@ -284,7 +336,7 @@ mod vectors {
                     continue;
                 }
                 let signer = c.get("owner").map_or(Identifier::from(OWNER), identifier);
-                let got = judge(ty, doc_value(&c["doc"]), signer);
+                let got = judge(ty, doc_data(&c["doc"]), signer);
                 let verdict = match (expect, &got) {
                     ("ok", None) => None,
                     ("ok", Some((why, msg))) => {
@@ -345,6 +397,66 @@ mod vectors {
         assert_eq!(validate_props("maintainer", &member, [9; 32]), Ok(()));
         let e = validate_props("maintainer", &member, OWNER).unwrap_err();
         assert!(e.starts_with("ownerOrConsented: "), "{e}");
+    }
+
+    fn doc(fields: &[(&str, FieldValue)]) -> BTreeMap<String, FieldValue> {
+        fields
+            .iter()
+            .map(|(k, v)| ((*k).to_string(), v.clone()))
+            .collect()
+    }
+
+    /// `distinctFrom` (10419): a starBeat of your own repo and a follow of yourself are refused
+    /// on the create's structure, like any node refuses them. (Local until the shared vectors
+    /// carry these cases.)
+    #[test]
+    fn distinct_from_is_judged() {
+        let beat = |owner: u8| {
+            doc(&[
+                ("repoId", FieldValue::Identifier([1; 32])),
+                ("vis", FieldValue::text("public")),
+                ("repoOwner", FieldValue::Identifier([owner; 32])),
+            ])
+        };
+        assert_eq!(validate_props("starBeat", &beat(8), OWNER), Ok(()));
+        assert_eq!(first_error("starBeat", &beat(7)).as_deref(), Some("10419"));
+        let follow = |who: u8| doc(&[("identityId", FieldValue::Identifier([who; 32]))]);
+        assert_eq!(validate_props("follow", &follow(9), OWNER), Ok(()));
+        assert_eq!(first_error("follow", &follow(7)).as_deref(), Some("10419"));
+    }
+
+    /// `encryptedFor` shapes (10420): a ciphertext is at least 32 bytes and a multiple of 16, so a
+    /// 40-byte wrap and a 33-byte webhook secret are refused though the schema admits their
+    /// lengths.
+    #[test]
+    fn encrypted_shapes_are_judged() {
+        let wrap = |len: usize| {
+            doc(&[
+                ("repoId", FieldValue::Identifier([1; 32])),
+                ("memberId", FieldValue::Identifier(OWNER)),
+                ("epoch", FieldValue::integer(0)),
+                ("recipientKeyId", FieldValue::integer(1)),
+                ("senderKeyId", FieldValue::integer(1)),
+                ("wrapped", FieldValue::bytes(vec![9; len])),
+            ])
+        };
+        assert_eq!(validate_props("repoKey", &wrap(48), OWNER), Ok(()));
+        assert_eq!(first_error("repoKey", &wrap(40)).as_deref(), Some("10420"));
+        let hook = |len: usize| {
+            doc(&[
+                ("repoId", FieldValue::Identifier([1; 32])),
+                ("hookId", FieldValue::bytes32([3; 32])),
+                ("url", FieldValue::text("https://hooks.example.com/dash")),
+                ("events", FieldValue::text_list(["push".to_string()])),
+                ("relayIdentityId", FieldValue::Identifier([13; 32])),
+                ("relayKeyId", FieldValue::integer(1)),
+                ("senderKeyId", FieldValue::integer(1)),
+                ("secret", FieldValue::bytes(vec![9; len])),
+                ("vis", FieldValue::text("public")),
+            ])
+        };
+        assert_eq!(validate_props("webhook", &hook(48), OWNER), Ok(()));
+        assert_eq!(first_error("webhook", &hook(33)).as_deref(), Some("10420"));
     }
 }
 
