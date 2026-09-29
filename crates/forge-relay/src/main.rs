@@ -20,6 +20,7 @@
 //!  * [`daemon`] — the discover → poll → translate → deliver loop.
 //!  * [`health`] — optional liveness listener.
 
+mod checkruns;
 mod config;
 mod daemon;
 mod deliver;
@@ -127,7 +128,9 @@ struct RunArgs {
     #[arg(long)]
     listen: Option<String>,
 
-    /// forge-web base URL for synthesized html_url / compare links.
+    /// forge-web base URL for synthesized html_url / compare links [default:
+    /// https://forge.dashhq.org]. Include the base path of a sub-path deploy
+    /// (e.g. https://owner.github.io/dash-forge).
     #[arg(long = "web-base-url")]
     web_base_url: Option<String>,
 
