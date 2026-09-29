@@ -91,6 +91,19 @@ pub fn event_json(repo: &str, push: &Push) -> serde_json::Value {
     })
 }
 
+/// act, without the runner's Forge key or config in its environment. act does not forward its
+/// environment into job containers (checked with 0.2.89); this keeps the key out of act's own
+/// process too, whatever a future act does.
+fn act_command(cfg: &Config) -> Command {
+    let mut c = Command::new(&cfg.bin.act);
+    for (k, _) in std::env::vars_os() {
+        if k.to_string_lossy().starts_with("DASH_FORGE_") {
+            c.env_remove(k);
+        }
+    }
+    c
+}
+
 /// Runs a command, returning stdout; stderr goes to the runner's log.
 fn output(cmd: &mut Command, what: &str) -> Result<String> {
     let out = cmd
@@ -253,7 +266,7 @@ pub fn run_push(cfg: &Config, repo: &RepoConfig, push: &Push) -> Result<Ran> {
         );
         return Ok(Ran::default());
     };
-    let mut list = Command::new(&cfg.bin.act);
+    let mut list = act_command(cfg);
     list.args(["push", "-l", "-C"])
         .arg(&co)
         .arg("-W")
@@ -284,7 +297,7 @@ pub fn run_push(cfg: &Config, repo: &RepoConfig, push: &Push) -> Result<Ran> {
     let args = act::run_args(cfg, &co, &wf, &event, secrets.as_deref(), None);
     let started = Instant::now();
     let (log, timed_out) = run_with_timeout(
-        Command::new(&cfg.bin.act).args(&args),
+        act_command(cfg).args(&args),
         Duration::from_secs(cfg.job_timeout_secs),
     )?;
     let results = act::parse_json_log(&log);

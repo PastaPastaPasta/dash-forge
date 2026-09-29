@@ -91,7 +91,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo "building $GITHUB_REF at $GITHUB_SHA"; test ! -e /var/run/docker.sock && echo NO-DOCKER-SOCKET
-      - run: echo "secret=[${{ secrets.E2E_SECRET }}]"
+      - run: echo "secret=[${{ secrets.E2E_SECRET }}]"; env | grep -c DASH_FORGE_ || echo NO-FORGE-KEY
   test:
     runs-on: ubuntu-latest
     steps:
@@ -113,6 +113,7 @@ check "the completed report uploads the job's log to the storage profile" test "
 check "the job sees the pushed ref and commit" test "$(q "'building refs/heads/feature at $SHA' in [r for r in rs if r['status']=='completed' and r['name']=='ci / build'][0]['log_text']")" = True
 check "no Docker socket in the job container" test "$(q "'NO-DOCKER-SOCKET' in [r for r in rs if r['status']=='completed' and r['name']=='ci / build'][0]['log_text']")" = True
 check "no secrets on an untrusted ref (and none from the planted .secrets)" test "$(q "'secret=[]' in [r for r in rs if r['status']=='completed' and r['name']=='ci / build'][0]['log_text']")" = True
+check "the runner's Forge key never reaches a job" test "$(q "'NO-FORGE-KEY' in [r for r in rs if r['status']=='completed' and r['name']=='ci / build'][0]['log_text']")" = True
 check "dg is called with the runner key from the environment" test "$(q "{r['env_key'] for r in rs}")" = "{'dfk1:devnet:fake:9:fake'}"
 
 echo "== 3. a push to the trusted branch gets the secrets"
