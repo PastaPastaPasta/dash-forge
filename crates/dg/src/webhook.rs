@@ -45,8 +45,9 @@ pub enum WebhookCommand {
 pub struct AddArgs {
     /// The repository (`owner/name`, a bare name of yours, or a repo id).
     repo: String,
-    /// Where to deliver (http:// or https://; the relay refuses private addresses unless it
-    /// runs with --allow-private). The URL is stored publicly on chain.
+    /// Where to deliver: https:// to a DNS name, with an optional port (forge-community refuses
+    /// http, IP addresses, localhost and user:password@). The URL is stored publicly on chain.
+    /// Public repositories only.
     #[arg(long)]
     url: String,
     /// The relay identity (base58) that delivers; the secret is encrypted to its key.
@@ -64,7 +65,7 @@ pub struct AddArgs {
     /// random hook id.
     #[arg(long)]
     name: Option<String>,
-    /// Accept a URL with a query string or user:password@ (it is public on chain).
+    /// Accept a URL with a query string (it is public on chain).
     #[arg(long)]
     force: bool,
 }
