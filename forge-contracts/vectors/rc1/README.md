@@ -13,14 +13,16 @@ Accept and refuse cases for the RC1 contracts (`forge-contracts/contracts/`), on
 ```
 
 - **`item`** is the RC1 item the case covers: an id from `RULES-PROPOSAL.md` or `OPPORTUNITIES.md` (R-xx, O-xx, INV-11, CL-7, CL-8, COMM-9), `D-5`, `state` (the transition rules) or `base`.
-- **`expect`** is `ok` or `refused`. A document is judged as a create. The checks are:
+- **`expect`** is `ok` or `refused`. A document is judged as a create, in the order a node's structure validation runs the checks:
   - the JSON schema and `maxBytes`;
-  - every `propertyConstraints` rule that reads no total, time or height.
+  - every `propertyConstraints` rule that reads no total, time or height;
+  - `distinctFrom` (10419), for example a `starBeat` on your own repo or following yourself;
+  - the `encryptedFor` ciphertext shape (10420): at least 32 bytes and a multiple of 16.
 - **`why`** gives the reason for a refusal: the reason the first error gives. It is one of:
   - the JSON Schema keyword (`pattern`, `enum`, `required`, `maxItems`, `additionalProperties`, …);
   - the name of the broken rule (`noPlain`, `oidWidth`, …);
   - `maxBytes`;
-  - the consensus error code.
+  - the consensus error code (`10419`, `10420`, or `10417` for the 5,120-byte field limit).
 - **`owner`** is the signer, given as a byte `n` (32 bytes of `n`) or as a base58 id. It is `0x07 × 32` when absent.
 - **`doc`** writes an identifier as `{"$id": n}` (32 bytes of `n`) or `{"$id": "<base58>"}`, and a byte array as `{"$b": [fill, len]}` (`len` bytes of `fill`) or `{"$hex": "…"}`.
 
@@ -36,6 +38,6 @@ Some rules read a total or the block, and those are judged only on chain:
 - `atMost20`;
 - `notFuture`.
 
-Two more checks are also chain-only: starBeat's `distinctFrom`, and every `refersTo` / `where` / `findBy` reference. The live suite covers all of these (`forge-contracts/scripts/rc1-live.mjs`, run against devnet bonsia).
+Every `refersTo` / `where` / `findBy` reference is also judged only on chain. The live suite covers all of these (`forge-contracts/scripts/rc1-live.mjs`, run against devnet bonsia).
 
 `vectors.py` fails when a rule has neither a refusing vector nor an entry in its `LIVE_ONLY` list.

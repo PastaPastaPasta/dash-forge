@@ -8,10 +8,10 @@ forge-contracts/vectors/rc1/<contract>.json (see its README for the format).
 --gate   also judge every case with b7gate --cases (rs-dpp v4.2.0-beta.7) against the committed
          contracts and fail on any mismatch.
 
-Every case is a document create judged the way a client pre-check (and a node's basic
-validation) judges it: the JSON schema, maxBytes and every `propertyConstraints` rule that reads
-no total, time or height. The rules that do (dense, c1..c6, lockGate, platformChunks, oneLive,
-atMost20, notFuture), starBeat's distinctFrom and the registration `where` checks are the live suite's
+Every case is a document create judged the way a node's structure validation judges it: the JSON
+schema, maxBytes, every `propertyConstraints` rule that reads no total, time or height, then the
+`distinctFrom` (10419) and `encryptedFor` shape (10420) checks. The rules that read one (dense,
+c1..c6, lockGate, platformChunks, oneLive, atMost20, notFuture) and every reference are the live suite's
 (forge-contracts/scripts/rc1-live.mjs). A refused case names the item it covers and, in `why`,
 a substring of the first error (a rule name, or a schema keyword), so a conformance runner can
 check it refuses for the same reason.
@@ -481,6 +481,13 @@ no('base', 'enc without epoch', 'issue', 'required', title=DROP, body=DROP, vis=
 no('base', 'chunk part over 4900 bytes', 'chunk', 'maxItems', d0=b(0, 4901))
 no('base', 'checkRun status outside its enum', 'checkRun', 'enum', status='done')
 no('base', 'checkRun conclusion outside its enum', 'checkRun', 'enum', conclusion='passed')
+
+
+# ---------------- a node's create structure checks after the schema: distinctFrom, encryptedFor ----------------
+no('O-08', "a beat on the signer's own repo (distinctFrom)", 'starBeat', '10419', repoOwner=i(OWNER))
+no('base', 'following yourself (distinctFrom)', 'follow', '10419', identityId=i(OWNER))
+no('R-13', 'a 40-byte wrap (not a multiple of 16)', 'repoKey', '10420', wrapped=b(9, 40))
+no('R-19', 'a 33-byte webhook secret (not a multiple of 16)', 'webhook', '10420', secret=b(9, 33))
 
 # Rules that read a total, a time or a height: judged on chain only (forge-contracts/scripts/rc1-live.mjs).
 LIVE_ONLY = {('issue', 'dense'), ('patch', 'dense'), ('transition', 'c1_closedAfter'), ('transition', 'c2_openAfter'),
