@@ -349,6 +349,9 @@ mod tests {
             + 64 * (CollabDoc::Review.index_overhead() - 45_000_000)
             + 112 * (CollabDoc::Event.index_overhead() - 45_000_000);
         let paid = 25_566_132_540_u64;
-        assert!(est >= paid, "dash window: estimate {est} vs paid {paid}");
+        assert!(
+            est >= paid && est <= paid + paid * 15 / 100,
+            "dash window: estimate {est} vs paid {paid}"
+        );
     }
 }
