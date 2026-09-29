@@ -293,7 +293,7 @@ test('g3. on a file served from S3 the Verification summary names S3, not Platfo
   await shot(page, 'g5-05-s3-file-from-s3')
 })
 
-test('g4. a PR watched after it merged shows "marked merged" in the inbox, for one backfill query (L-17)', async ({ browser }) => {
+test('g4. a PR watched after it merged shows "merged" in the inbox, for one backfill query (L-17)', async ({ browser }) => {
   // J4, as QA hit it: CONTRIB watches this repo (an issue CONTRIB opened) and its inbox has read
   // the repo's state feed. Then CONTRIB opens a PR and OWNER merges it. The tab's own poll reads
   // the state feed past the merge while its watch list (kept 15 min) predates the PR.
@@ -304,15 +304,15 @@ test('g4. a PR watched after it merged shows "marked merged" in the inbox, for o
   // How many threads CONTRIB watches (an identity reused across runs already watches some).
   const threads = async (): Promise<number> => Number(/(\d+) issues and pull requests you opened or commented on/.exec((await watching.textContent()) ?? '')?.[1] ?? NaN)
   const feedsTotal = async (): Promise<number> => Number(/of (\d+) feeds this round/.exec((await watching.textContent()) ?? '')?.[1] ?? 12)
-  // Every document read, and the state-feed backfills among them: `event`/`authorEvent` reads
-  // ('vent' is in both names) keyed by `targetId` (the feeds themselves read by `repoId`).
+  // Every document read, and the state-feed backfills among them: `event`/`transition` reads keyed
+  // by `targetId` (the feeds themselves read by `repoId`).
   let reads = 0
   let backfills = 0
   page.on('request', (r) => {
     if (!/\/org\.dash\.platform\.dapi\.v0\.Platform\/getDocuments$/.test(r.url())) return
     reads++
     const body = r.postDataBuffer()
-    if (body !== null && body.includes(Buffer.from('vent')) && body.includes(Buffer.from('targetId'))) backfills++
+    if (body !== null && (body.includes(Buffer.from('event')) || body.includes(Buffer.from('transition'))) && body.includes(Buffer.from('targetId'))) backfills++
   })
   /** One poll that keeps the watch list (as the tab's 60 s timer does): a visibility change. */
   const poll = async (): Promise<void> => {
@@ -351,7 +351,7 @@ test('g4. a PR watched after it merged shows "marked merged" in the inbox, for o
   await pollAll()
   expect(await threads()).toBe(n0 + 1)
   // (The saved browser state keeps this identity's inbox from earlier runs: only THIS PR counts.)
-  const merged = list.locator('li', { hasText: `Greet by name ${RUN}` }).filter({ hasText: 'marked merged' })
+  const merged = list.locator('li', { hasText: `Greet by name ${RUN}` }).filter({ hasText: 'merged' })
   await expect(merged).toHaveCount(0)
   expect(backfills).toBe(0)
   await shot(page, 'g18-01-inbox-feed-past-the-merge')
@@ -367,8 +367,8 @@ test('g4. a PR watched after it merged shows "marked merged" in the inbox, for o
   }).toPass({ timeout: 300_000, intervals: [1_000] })
   await expect(merged).toContainText(`#${prNumber}`)
   await shot(page, 'g18-02-inbox-marked-merged')
-  // Request budget: ONE backfill query in all (the `event` feed read past the merge; the
-  // `authorEvent` feed read nothing past the PR's start, so it needs none), never repeated.
+  // Request budget: ONE backfill query in all (the `transition` feed read past the merge; the
+  // `event` feed read nothing past the PR's start, so it needs none), never repeated.
   expect(backfills).toBe(1)
   await pollAll()
   expect(backfills).toBe(1)
