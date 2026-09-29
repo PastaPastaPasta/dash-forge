@@ -44,6 +44,7 @@ export {
   readMemberRepoIds,
   readMemberships,
   readMembershipsCached,
+  readNumberTrust,
   readRoleOracle,
   readViewerPermissions,
 } from './members'

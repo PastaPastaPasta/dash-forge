@@ -17,7 +17,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { hexToBytes } from '@noble/hashes/utils.js'
 
-import type { Network } from '../constants'
+import { DEFAULT_NETWORK, type Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
@@ -41,8 +41,9 @@ import {
   type WriteResult,
 } from '../sdk'
 import { DOC, num, str, type RepoRef } from './contract'
-import { invalidateMembers, readMembershipsCached } from './members'
+import { invalidateMembers, readNumberTrust } from './members'
 import { refNameHash, repoContentWritten } from './push'
+import { mapPooled } from '../view/pool'
 import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
 import { invalidateRepoFeed } from './issues'
@@ -259,24 +260,23 @@ async function firstNumber(sdk: EvoSDK, query: DocumentQuery): Promise<number> {
   return documents[0] ? numberOf(documents[0]) ?? 0 : 0
 }
 
+/** Concurrent `author`-index reads one allocation makes (one per trusted identity). */
+const TRUSTED_READS = 8
+
 /**
- * The largest number among `repo`'s issues (or PRs) written by its owner or a current
- * maintainer, or 0: one `number desc, limit 1` read of the `author` index
- * (`$ownerId, repoId, number`) per trusted identity.
+ * The largest number among `repo`'s issues (or PRs) written by one of `trusted`, or 0: one
+ * `number desc, limit 1` read of the `author` index (`$ownerId, repoId, number`) each, at most
+ * {@link TRUSTED_READS} at a time.
  */
-async function trustedMaxNumber(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch'): Promise<number> {
-  const maintainers = (await readMembershipsCached(sdk, repo)).filter((m) => m.role === 'maintainer').map((m) => m.identity)
-  const trusted = [...new Set([repo.ownerId, ...maintainers])]
+async function trustedMaxNumber(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch', trusted: readonly string[]): Promise<number> {
   const source = repoSource(repo)
-  const highest = await Promise.all(
-    trusted.map((author) =>
-      firstNumber(sdk, {
-        ...source.targetQuery(DOC[type]),
-        where: [['$ownerId', '==', author], ['repoId', '==', repo.repoId]],
-        orderBy: [['number', 'desc']],
-        limit: 1,
-      }),
-    ),
+  const highest = await mapPooled(trusted, TRUSTED_READS, (author) =>
+    firstNumber(sdk, {
+      ...source.targetQuery(DOC[type]),
+      where: [['$ownerId', '==', author], ['repoId', '==', repo.repoId]],
+      orderBy: [['number', 'desc']],
+      limit: 1,
+    }),
   )
   return Math.max(0, ...highest)
 }
@@ -288,9 +288,16 @@ async function trustedMaxNumber(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'pat
  * above the ceiling — the contiguous run of taken numbers above it, paged to its end. Null
  * when nothing is left to allocate.
  */
-export async function nextNumber(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch'): Promise<number | null> {
+export async function nextNumber(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  type: 'issue' | 'patch',
+  network: Network = DEFAULT_NETWORK,
+  trusted?: readonly string[],
+): Promise<number | null> {
   const source = repoSource(repo)
-  const [count, trustedMax] = await Promise.all([countDocuments(sdk, source.repoQuery(DOC[type])), trustedMaxNumber(sdk, repo, type)])
+  const trust = trusted ?? (await readNumberTrust(sdk, repo, network))
+  const [count, trustedMax] = await Promise.all([countDocuments(sdk, source.repoQuery(DOC[type])), trustedMaxNumber(sdk, repo, type, trust)])
   const ceiling = numberCeiling(count)
   const belowCeiling = await firstNumber(
     sdk,
@@ -437,7 +444,9 @@ async function createNumbered(
     }
     writer = await privateWriter(sdk, auth, repo)
   }
-  const next = (): Promise<number | null> => nextNumber(sdk, repo, type)
+  // Whose numbers are trusted is read once per action, not once per renumbered retry.
+  const trusted = await readNumberTrust(sdk, repo, auth.network)
+  const next = (): Promise<number | null> => nextNumber(sdk, repo, type, auth.network, trusted)
   // A retry of this action first finishes the number its last attempt signed: once that
   // attempt is visible, allocation would hand out the next number, a new cache key, and a
   // second issue (the pending write under the old number would never be looked at).

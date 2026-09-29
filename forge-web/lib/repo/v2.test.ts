@@ -508,6 +508,22 @@ describe('issue numbering (allocate_number over the live index)', () => {
     const store = by([[AUTHOR, 1], [AUTHOR, 2], [STRANGER, 5000], [WRITER, 6000]])
     expect(await nextNumber(mockSdk(store), DEMO, 'issue')).toBe(3)
   })
+
+  it('trusts the owner alone when the membership cannot be read, instead of failing', async () => {
+    const sdk = mockSdk(by([[OWNER, 7761], [MAINT, 9000]], [MAINT]))
+    const query = sdk.documents.query.bind(sdk.documents)
+    ;(sdk.documents as { query: typeof query }).query = (q) =>
+      q.documentTypeName === 'maintainer' ? Promise.reject(new Error('DAPI unavailable')) : query(q)
+    expect(await nextNumber(sdk, DEMO, 'issue')).toBe(7762)
+  })
+
+  it('refuses a trustedMax outside u32 (the Rust port’s type)', async () => {
+    const { allocateNumber } = await import('../rules/v2')
+    expect(() => allocateNumber(1, [], -1)).toThrow(RangeError)
+    expect(() => allocateNumber(1, [], 2 ** 32)).toThrow(RangeError)
+    expect(() => allocateNumber(1, [], 1.5)).toThrow(RangeError)
+    expect(allocateNumber(1, [], 2 ** 32 - 1)).toBeNull()
+  })
 })
 
 describe('open counts for the Issues / Pull requests tabs', () => {

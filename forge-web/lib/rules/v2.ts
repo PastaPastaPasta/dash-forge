@@ -146,6 +146,10 @@ export function allocateNumber(count: number, takenNumbersDesc: readonly number[
   if (!Number.isSafeInteger(count) || count < 0) {
     throw new RangeError(`allocateNumber: count must be a non-negative integer, got ${count}`)
   }
+  // The Rust port takes a `u32`.
+  if (!Number.isSafeInteger(trustedMax) || trustedMax < 0 || trustedMax > MAX_NUMBER) {
+    throw new RangeError(`allocateNumber: trustedMax must be an integer in [0, 2^32 - 1], got ${trustedMax}`)
+  }
   const ceiling = numberCeiling(count)
   const taken = new Set(takenNumbersDesc)
   let base = trustedMax

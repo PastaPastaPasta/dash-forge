@@ -17,7 +17,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use forge_core::collab::v2::{Collab, Numbered, PatchInput, PrBase, Target, TargetKind};
+use forge_core::collab::v2::{
+    Collab, NumberTrust, Numbered, PatchInput, PrBase, Target, TargetKind,
+};
 use forge_core::collab::{ReleaseInput, Verdict};
 use forge_core::history::Freshness;
 use forge_core::platform::PlatformClient;
@@ -249,6 +251,14 @@ fn copy_rule(same_kind: bool, mine: bool, member: bool, url: &str, wanted: &str)
         } else {
             member && same_item(url, wanted)
         }
+}
+
+/// The summary line for an item stored away from its source number.
+fn moved_note(noun: &str, t: &SrcTarget, stored: u32) -> String {
+    format!(
+        "upstream {noun} #{} stored as #{stored} (number taken on Forge): {}",
+        t.number, t.imported.url
+    )
 }
 
 /// What [`Sink::create`] ended with.
@@ -758,15 +768,23 @@ impl<'a> Sink<'a> {
         Ok(None)
     }
 
-    /// Create `t`: at its source number when free, else at the next free number (the body's
+    /// Create `t`: at its source number when free, else at a low free number (the body's
     /// header keeps the source number, and `imported.url` finds it again next run). A
-    /// squatter on a number therefore costs the mirror nothing but the number. In a dry run
-    /// the returned target is a placeholder (nothing reads it).
+    /// squatter on a number therefore costs the mirror nothing but the number. The moved
+    /// item is numbered by the ceiling rule alone ([`NumberTrust::Nobody`]): trusting the
+    /// mirror's own high numbers would put it at the next upstream number, which the next
+    /// upstream item then finds taken, and so on for every later item. The move is recorded
+    /// in the summary. In a dry run the returned target is a placeholder (nothing reads it).
     async fn create(&mut self, t: &SrcTarget, noun: &str) -> Result<Created> {
         let mut number = t.number;
         for _ in 0..MAX_NUMBER_TRIES {
             match self.create_at(t, noun, number).await? {
-                Ok(target) => return Ok(Created::New(target)),
+                Ok(target) => {
+                    if number != t.number {
+                        self.ledger.warn(moved_note(noun, t, number));
+                    }
+                    return Ok(Created::New(target));
+                }
                 Err(why) => {
                     // Mirrored earlier at another number: the full index (loaded on the
                     // taken number) finds it.
@@ -775,7 +793,10 @@ impl<'a> Sink<'a> {
                     }
                     tracing::info!(number, %why, "{noun} number taken; allocating another");
                     let repo = need(self.repo.as_ref())?;
-                    number = self.collab.next_number(repo, t.kind).await?;
+                    number = self
+                        .collab
+                        .next_number(repo, t.kind, &NumberTrust::Nobody)
+                        .await?;
                 }
             }
         }
@@ -1126,6 +1147,59 @@ fn fingerprint(name: &str, notes: &str, assets: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The importer's number choice over an in-memory repo: each upstream number where it is
+    /// free, else the §6 rule with `trusted_max` (what [`Sink::create`]'s fallback asks for).
+    /// Returns where each upstream item landed.
+    fn mirror_into(
+        taken: &mut BTreeSet<u32>,
+        upstream: &[u32],
+        trusted_max: impl Fn(&BTreeSet<u32>) -> u32,
+    ) -> Vec<u32> {
+        upstream
+            .iter()
+            .map(|&n| {
+                let at = if taken.contains(&n) {
+                    let all: Vec<u32> = taken.iter().rev().copied().collect();
+                    let count = taken.len() as u64;
+                    forge_core::rules::v2::allocate_number(count, &all, trusted_max(taken)).unwrap()
+                } else {
+                    n
+                };
+                taken.insert(at);
+                at
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_native_squatter_on_the_next_upstream_number_moves_one_item_only() {
+        // A mirror of 15 upstream issues up to #7761, then someone opens #7762 natively (the
+        // web continues the mirror's numbering). Upstream then files #7762, #7763, #7764.
+        let before: BTreeSet<u32> = (0..14).map(|i| 7748 + i).chain([7762]).collect();
+        let upstream = [7762, 7763, 7764];
+        // The fallback trusts nobody: #7762 moves to a low number, #7763 and #7764 land exact.
+        let landed = mirror_into(&mut before.clone(), &upstream, |_| 0);
+        assert_eq!(landed, vec![1, 7763, 7764]);
+        // Trusting the mirror's own numbers instead would cascade: #7762 → #7763, which then
+        // takes #7763's place, and every later upstream item moves too.
+        let cascade = mirror_into(&mut before.clone(), &upstream, |t| {
+            *t.iter().next_back().unwrap()
+        });
+        assert_eq!(cascade, vec![7763, 7764, 7765]);
+    }
+
+    #[test]
+    fn a_moved_item_names_its_upstream_number_and_url() {
+        let mut t = target(TargetKind::Issue);
+        t.number = 7762;
+        t.imported.url = "https://github.com/dashpay/dash/issues/7762".into();
+        assert_eq!(
+            moved_note("issue", &t, 16),
+            "upstream issue #7762 stored as #16 (number taken on Forge): \
+             https://github.com/dashpay/dash/issues/7762"
+        );
+    }
 
     #[test]
     fn a_stranger_squatting_an_imported_url_is_not_the_mirror_copy() {

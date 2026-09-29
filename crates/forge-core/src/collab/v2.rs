@@ -106,6 +106,28 @@ pub fn precheck_enabled() -> bool {
 // Types
 // ===========================================================================
 
+/// Concurrent `author`-index reads one allocation makes (one per trusted identity).
+const TRUSTED_READS: usize = 8;
+
+/// Whose numbers an allocation trusts past the ceiling (§6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NumberTrust {
+    /// These identities' (the owner and the current maintainers, [`Collab::numbering_trust`]).
+    Of(Vec<String>),
+    /// Nobody's: the ceiling rule alone. The importer allocates a moved item this way, so one
+    /// squatted upstream number does not push every later mirrored number up.
+    Nobody,
+}
+
+/// The owner, then each other maintainer once (sorted).
+fn trusted_authors<'a>(owner: &str, maintainers: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let rest: BTreeSet<&str> = maintainers.into_iter().filter(|m| *m != owner).collect();
+    std::iter::once(owner)
+        .chain(rest)
+        .map(str::to_string)
+        .collect()
+}
+
 /// Issue or pull request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2466,59 +2488,79 @@ impl<'a> Collab<'a> {
 
     // --- numbering --------------------------------------------------------------------
 
-    /// The largest number among `repo`'s issues (or PRs) written by its owner or a current
-    /// maintainer, or 0 (§6): one `number desc, limit 1` read of the `author` index
-    /// (`$ownerId, repoId, number`) per trusted identity.
+    /// The identities whose numbers a repo's allocation trusts (§6): the owner and its current
+    /// maintainers, once each. When the maintainers cannot be read, the owner alone: a
+    /// numbering gap is better than a failed create.
+    pub async fn numbering_trust(&self, repo: &RepoRef) -> NumberTrust {
+        let maintainers = match MemberReader::new(self.client).maintainers(repo).await {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!(error = %e, "maintainers unread; trusting the owner's numbers only");
+                Vec::new()
+            }
+        };
+        NumberTrust::Of(trusted_authors(
+            repo.owner_id(),
+            maintainers.iter().map(|m| m.identity_id.as_str()),
+        ))
+    }
+
+    /// The largest number among `repo`'s issues (or PRs) written by one of `trusted`, or 0:
+    /// one `number desc, limit 1` read of the `author` index (`$ownerId, repoId, number`)
+    /// each, at most [`TRUSTED_READS`] at a time.
     async fn trusted_max_number(
         &self,
         collab: &LoadedContract,
-        repo: &RepoRef,
         repo_filter: &QueryFilter,
         kind: TargetKind,
+        trusted: &[String],
     ) -> Result<u32> {
-        let oracle = self.member_oracle(repo).await?;
-        let mut trusted: BTreeSet<&str> = oracle
-            .memberships
-            .iter()
-            .filter(|m| m.role == Role::Maintainer)
-            .map(|m| m.identity.as_str())
-            .collect();
-        trusted.insert(repo.owner_id());
-        let reads = trusted.into_iter().map(|author| async move {
-            let owner = FieldValue::identifier(platform::decode_identifier(author)?);
-            Ok::<u32, Error>(
-                self.client
-                    .query_documents(
-                        collab,
-                        kind.doc_type(),
-                        &[QueryFilter::eq("$ownerId", owner), repo_filter.clone()],
-                        &[QueryOrder::desc("number")],
-                        1,
-                        None,
-                    )
-                    .await?
-                    .first()
-                    .map_or(0, number_of),
-            )
-        });
-        Ok(futures::future::try_join_all(reads)
-            .await?
-            .into_iter()
-            .max()
-            .unwrap_or(0))
+        use futures::{StreamExt as _, TryStreamExt as _};
+        let highest: Vec<u32> = futures::stream::iter(trusted)
+            .map(|author| async move {
+                let owner = FieldValue::identifier(platform::decode_identifier(author)?);
+                Ok::<u32, Error>(
+                    self.client
+                        .query_documents(
+                            collab,
+                            kind.doc_type(),
+                            &[QueryFilter::eq("$ownerId", owner), repo_filter.clone()],
+                            &[QueryOrder::desc("number")],
+                            1,
+                            None,
+                        )
+                        .await?
+                        .first()
+                        .map_or(0, number_of),
+                )
+            })
+            .buffer_unordered(TRUSTED_READS)
+            .try_collect()
+            .await?;
+        Ok(highest.into_iter().max().unwrap_or(0))
     }
 
-    /// The number a new issue or PR would claim now (§6).
-    pub async fn next_number(&self, repo: &RepoRef, kind: TargetKind) -> Result<u32> {
+    /// The number a new issue or PR would claim now (§6), trusting the numbers of `trust`
+    /// ([`Self::numbering_trust`], read once per action and reused across its retries).
+    pub async fn next_number(
+        &self,
+        repo: &RepoRef,
+        kind: TargetKind,
+        trust: &NumberTrust,
+    ) -> Result<u32> {
         let collab = self.collab_contract(repo).await?;
         let repo_filter = Self::repo_filter(repo)?;
+        let trusted: &[String] = match trust {
+            NumberTrust::Of(ids) => ids,
+            NumberTrust::Nobody => &[],
+        };
         let (count, trusted_max) = futures::future::try_join(
             self.client.count_documents(
                 &collab,
                 kind.doc_type(),
                 std::slice::from_ref(&repo_filter),
             ),
-            self.trusted_max_number(&collab, repo, &repo_filter, kind),
+            self.trusted_max_number(&collab, &repo_filter, kind, trusted),
         )
         .await?;
         let ceiling = number_ceiling(count);
@@ -2722,8 +2764,9 @@ impl<'a> Collab<'a> {
         // A read right after a collision can lag the block that took the number, so never
         // try a number at or below one already refused.
         let mut floor = 0u32;
+        let trust = self.numbering_trust(repo).await;
         for attempt in 0..MAX_NUMBER_ATTEMPTS {
-            let number = self.next_number(repo, kind).await?.max(floor);
+            let number = self.next_number(repo, kind, &trust).await?.max(floor);
             // sealed per number: the AD binds it (§4.4), so a renumbered retry re-seals
             let sealed = self
                 .seal_if_private(repo, kind.content_kind(), props(number)?)
@@ -4270,6 +4313,17 @@ mod tests {
             .await
             .unwrap();
         assert!(run.is_empty());
+    }
+
+    #[test]
+    fn numbering_trusts_the_owner_and_each_maintainer_once() {
+        // The owner is trusted without a maintainer document of its own.
+        assert_eq!(trusted_authors("owner", []), vec!["owner"]);
+        // Duplicates, and the owner's own maintainer document, collapse.
+        assert_eq!(
+            trusted_authors("owner", ["m2", "owner", "m1", "m2"]),
+            vec!["owner", "m1", "m2"]
+        );
     }
 
     #[test]
