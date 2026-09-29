@@ -9,6 +9,12 @@
  *
  * Detected once, app-wide (`useContractsMissing` in hooks/use-sdk.ts): the app shell shows this
  * state in place of the page instead of each view failing with its own read error.
+ *
+ * devnet moutai is a special case, not a generic reset: it was upgraded in place to Platform
+ * v4.2.0-beta.7, which retired every contract this build reads, and the forge is moving to a new
+ * devnet (bonsia) rather than being redeployed on moutai. This is gated on the same detected
+ * condition — devnet moutai's contracts missing — not a hard-coded date, so it stops matching on
+ * its own once bonsia becomes the default network.
  */
 
 import { Unplug } from 'lucide-react'
@@ -31,6 +37,7 @@ export function ContractsMissingState({
 }): JSX.Element {
   const devnet = config.network === 'devnet'
   const where = networkName(config)
+  const movingToBonsia = devnet && config.devnetName === 'moutai'
   return (
     <div
       role="alert"
@@ -41,12 +48,18 @@ export function ContractsMissingState({
         <Unplug className="h-5 w-5" aria-hidden />
       </span>
       <h2 className="text-prose font-medium text-anvil-900 dark:text-anvil-50">
-        {devnet ? `Dash Forge isn't deployed on ${where} right now` : `This build's contracts were not found on ${where}`}
+        {movingToBonsia
+          ? 'Dash Forge is moving to a new devnet'
+          : devnet
+            ? `Dash Forge isn't deployed on ${where} right now`
+            : `This build's contracts were not found on ${where}`}
       </h2>
       <p className="mt-1.5 max-w-md text-dense text-anvil-600 dark:text-anvil-300">
-        {devnet
-          ? `${where} is a development network, and devnets are reset from time to time. This one was most likely reset, so the contracts Dash Forge reads are gone until it is redeployed. This page works again once a build with the new contracts is published.`
-          : `${where} has no contracts with the ids this build reads, so nothing can be read here. The build may be misconfigured or made for another network.`}
+        {movingToBonsia
+          ? 'Devnet moutai was upgraded to Platform v4.2.0-beta.7, which retired the old contracts. The forge is being re-registered on devnet bonsia with a new contract design; repos will be back shortly.'
+          : devnet
+            ? `${where} is a development network, and devnets are reset from time to time. This one was most likely reset, so the contracts Dash Forge reads are gone until it is redeployed. This page works again once a build with the new contracts is published.`
+            : `${where} has no contracts with the ids this build reads, so nothing can be read here. The build may be misconfigured or made for another network.`}
       </p>
       <div className="mt-4 flex flex-wrap items-center justify-center gap-3">
         <Button variant="outline" size="sm" onClick={() => window.location.reload()}>
