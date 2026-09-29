@@ -51,8 +51,8 @@ describe('parseHistoryIndex', () => {
     expect(() => parseHistoryIndex(gzip(tiny([[0xfe], [0xff]])))).toThrow(/duplicate/)
     const big = Uint8Array.from([0x44, 0x46, 0x48, 0x49, 1, ...new Array(52).fill(0), 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f])
     expect(() => parseHistoryIndex(gzip(big))).toThrow(/overflow/)
-    const bomb = gzip(new Uint8Array(MAX_INFLATED + 1))
-    expect(() => parseHistoryIndex(bomb)).toThrow(/size limit/)
+    expect(() => parseHistoryIndex(gzip(new Uint8Array(4097)), 4096)).toThrow(/size limit/)
+    expect(MAX_INFLATED).toBe(64 * 1024 * 1024)
   })
 
   it('skips a later version\'s extension sections', () => {

@@ -495,7 +495,7 @@ impl Helper {
             .collect();
         let mut sealed_cache = None;
         let mut pending_index = None;
-        let mut history_paid = false;
+        let mut history_paid = HistoryTarget::None;
         let mut stored: Option<StoredWith> = None;
         // Computed before anything is priced, so the push's estimate and cost guard include it.
         let history = if !want_tips.is_empty() && (dry_run || publishes_browse_index()) {
@@ -569,8 +569,8 @@ impl Helper {
         } else {
             read_refs_until_converged(conn, &planned).await?
         };
-        if let (Some(ctx), Some(history), true) = (ctx.as_ref(), history, history_paid) {
-            publish_history_after_refs(ctx, history, stored, &final_refs).await;
+        if let (Some(ctx), Some(history)) = (ctx.as_ref(), history) {
+            publish_history_after_refs(ctx, history, history_paid, stored, &final_refs).await;
         }
         // The branches that moved: the PRs following them get a head update (review-parity
         // R14). Read before `finalize_outcomes` consumes the plan.
@@ -1289,7 +1289,18 @@ async fn upload_push_pack(
 
     if pack.parsed.object_count() == 0 {
         tracing::info!("push adds no new objects; skipping pack upload and browse index");
-        return Ok(None);
+        // A fast-forward to a commit already stored still moves the default branch: its history
+        // index goes where the policy stores (priced on top of the refs).
+        if ctx.dry_run || ctx.history_bytes.is_none() {
+            return Ok(None);
+        }
+        let refs_only = push_fees::estimate_ref_updates(ctx.refs.len() as u64);
+        let (est_credits, history) = history_alone(ctx, refs_only, policy_replication(ctx))?;
+        return Ok(Some(Uploaded {
+            est_credits,
+            index: None,
+            history,
+        }));
     }
 
     // A private repository stores the pack sealed under the current write epoch, resolved
@@ -1330,7 +1341,8 @@ async fn upload_push_pack(
     // here, not after a "y" at the cost prompt.
     let externals = external_targets(ctx)?;
     if let Some(refs_only) = reuse_recorded(ctx, &job).await? {
-        let (est_credits, history) = refs_only_history(ctx, refs_only);
+        let replication = recorded_replication(ctx, &job).await;
+        let (est_credits, history) = history_alone(ctx, refs_only, replication)?;
         return Ok(Some(Uploaded {
             est_credits,
             index: missing_index(ctx, &job, pack.parsed, externals).await,
@@ -1381,7 +1393,7 @@ async fn upload_push_pack(
             replication,
             externals,
         }),
-        history: true,
+        history: HistoryTarget::WithPack,
     }))
 }
 
@@ -1518,7 +1530,18 @@ struct Uploaded {
     /// recorded by an earlier push).
     index: Option<PendingIndex>,
     /// The push paid (its estimate and guard included) for the history index.
-    history: bool,
+    history: HistoryTarget,
+}
+
+/// Where a push's history index goes, when the push priced it in.
+enum HistoryTarget {
+    /// Not published (none computed, or the cost guard declined it).
+    None,
+    /// With the pack this push stored.
+    WithPack,
+    /// The push stored no pack (a recorded one reused, or no new objects): to these copies'
+    /// places, as priced.
+    Alone(Replication),
 }
 
 /// A stored pack whose browse index is still to be published ([`publish_browse_index`]).
@@ -1915,12 +1938,11 @@ async fn reuse_recorded(ctx: &PushContext<'_>, job: &PackJob<'_>) -> Result<Opti
     if !already_recorded(ctx, job).await? {
         return Ok(None);
     }
-    let refs_only = push_fees::estimate_ref_updates(ctx.refs.len() as u64);
-    policy::enforce(refs_only, ctx.policy, false, policy::NOTE_NOTHING_STORED)?;
-    // The caller publishes the pack's browse index when no fragment covers it yet (a push that
-    // recorded the pack and died before its index). The kept sealed bytes stay until the refs
-    // land ([`forget_sealed`]): this push may still fail at its refs.
-    Ok(Some(refs_only))
+    // The caller guards the refs (with the history index, one question) and publishes the
+    // pack's browse index when no fragment covers it yet (a push that recorded the pack and died
+    // before its index). The kept sealed bytes stay until the refs land ([`forget_sealed`]): this
+    // push may still fail at its refs.
+    Ok(Some(push_fees::estimate_ref_updates(ctx.refs.len() as u64)))
 }
 
 /// Whether this identity already wrote a `packManifest` for this pack (one indexed read, no
@@ -2214,6 +2236,27 @@ struct PushHistory {
     branch: String,
 }
 
+/// Say, on every push's output and in the report file, that the history index was not published
+/// and how to publish it (the `historySkipped` event; forge-import turns it into a warning).
+fn history_skipped(ctx: &PushContext<'_>, why: &str) {
+    let fix = format!("dg repo reindex {}", ctx.repo_label);
+    let message = format!(
+        "the history index was not published ({why}); the web walks history for this tip until \
+         `{fix}` publishes it"
+    );
+    let event = serde_json::json!({
+        "event": "historySkipped",
+        "message": forge_core::user_error::redact(&message),
+        "fix": fix,
+    });
+    Progress {
+        enabled: true,
+        ..ctx.progress
+    }
+    .emit(&format!("dash: warning: {message}"), &event);
+    progress::report(&event);
+}
+
 /// The default branch forge-import names for a repository it created a moment ago
 /// (`DASH_FORGE_DEFAULT_BRANCH`), honoured only in a push forge-import spawned
 /// (`DASH_FORGE_SPAWNED_BY=forge-import`): a stray variable in a user's shell never picks the
@@ -2226,21 +2269,71 @@ fn default_branch_hint() -> Option<String> {
         .filter(|b| !b.is_empty())
 }
 
-/// A push that reuses a recorded pack pays for its refs; the history index is one more write on
-/// top of them, which the guard weighs too. A guard that declines it leaves it to `dg repo
-/// reindex` (the refs still land). Returns the push's price and whether it publishes the index.
-fn refs_only_history(ctx: &PushContext<'_>, refs_only: u64) -> (u64, bool) {
-    let platform = ctx.policy.resolved.platform;
-    let with_history = refs_only + history_credits(ctx, platform);
-    let history = ctx.history_bytes.is_some()
-        && policy::enforce(
-            with_history,
-            ctx.policy,
-            platform,
-            policy::NOTE_NOTHING_STORED,
-        )
-        .is_ok();
-    (if history { with_history } else { refs_only }, history)
+/// A push that stores no pack of its own pays for its refs; the history index is one more write
+/// on top of them, to `replication`'s places and priced for them. One question weighs both
+/// (under `dash.confirm=always`, one prompt, not one per write). A guard that declines them
+/// together is asked again for the refs alone: then the index is skipped with a
+/// `historySkipped` event and left to `dg repo reindex`, and the refs still land. A guard that
+/// declines the refs alone refuses the push, as before. Returns the push's price and where the
+/// index goes.
+fn history_alone(
+    ctx: &PushContext<'_>,
+    refs_only: u64,
+    replication: Replication,
+) -> Result<(u64, HistoryTarget)> {
+    if ctx.history_bytes.is_none() {
+        policy::enforce(refs_only, ctx.policy, false, policy::NOTE_NOTHING_STORED)?;
+        return Ok((refs_only, HistoryTarget::None));
+    }
+    let platform = replication.has_platform();
+    let external = replication.replicas.iter().filter(|r| !r.platform).count() as u64;
+    let with_history = refs_only
+        + ctx.history_bytes.map_or(0, |bytes| {
+            push_fees::history_index(
+                bytes,
+                ctx.repo.visibility == forge_core::rules::v2::Visibility::Private,
+                external,
+                platform,
+                ctx.history_first,
+            )
+        });
+    match policy::enforce(
+        with_history,
+        ctx.policy,
+        platform,
+        policy::NOTE_NOTHING_STORED,
+    ) {
+        Ok(()) => Ok((with_history, HistoryTarget::Alone(replication))),
+        Err(e) => {
+            policy::enforce(refs_only, ctx.policy, false, policy::NOTE_NOTHING_STORED)?;
+            history_skipped(ctx, &format!("the cost guard declined it: {}", e.message));
+            Ok((refs_only, HistoryTarget::None))
+        }
+    }
+}
+
+/// Where the policy stores a new artifact: its external targets, and Platform when it
+/// includes Platform.
+fn policy_replication(ctx: &PushContext<'_>) -> Replication {
+    let resolved = &ctx.policy.resolved;
+    let replicas = resolved
+        .external
+        .iter()
+        .map(|(name, _)| forge_core::storage::Replica {
+            target: name.clone(),
+            uris: Vec::new(),
+            platform: false,
+        })
+        .chain(resolved.platform.then(|| forge_core::storage::Replica {
+            target: forge_core::storage::PLATFORM_PROFILE.into(),
+            uris: Vec::new(),
+            platform: true,
+        }))
+        .collect();
+    Replication {
+        replicas,
+        failures: Vec::new(),
+    }
 }
 
 /// The history index names the tip the default branch has now: published once the refs
@@ -2249,19 +2342,28 @@ fn refs_only_history(ctx: &PushContext<'_>, refs_only: u64) -> (u64, bool) {
 async fn publish_history_after_refs(
     ctx: &PushContext<'_>,
     history: PushHistory,
+    target: HistoryTarget,
     stored: Option<StoredWith>,
     final_refs: &[(String, RefState)],
 ) {
-    if !history_tip_landed(&history, final_refs) {
-        ctx.say(
-            "the default branch did not land at the pushed tip; its history index is not \
-             published (the web walks history until `dg repo reindex` publishes it)",
-        );
+    if matches!(target, HistoryTarget::None) {
         return;
     }
-    match stored {
-        Some(stored) => publish_history(ctx, history.prepared, stored).await,
-        None => publish_history_to_recorded(ctx, history.prepared).await,
+    if !history_tip_landed(&history, final_refs) {
+        history_skipped(ctx, "the default branch did not land at the pushed tip");
+        return;
+    }
+    match (target, stored) {
+        (HistoryTarget::WithPack, Some(stored)) => {
+            publish_history(ctx, history.prepared, stored).await;
+        }
+        (HistoryTarget::Alone(replication), _) => {
+            publish_history_alone(ctx, history.prepared, replication).await;
+        }
+        // Priced with a pack whose browse index was not handed back: nowhere known to put it.
+        (HistoryTarget::WithPack | HistoryTarget::None, _) => {
+            history_skipped(ctx, "the pack's storage targets were not available");
+        }
     }
 }
 
@@ -2273,46 +2375,29 @@ fn history_tip_landed(history: &PushHistory, final_refs: &[(String, RefState)]) 
     })
 }
 
-/// Publish the history index when this push stored no pack of its own (a recorded pack
-/// reused): to where this identity's recorded copy of the default branch's packs is, Platform
-/// when the policy includes it, else the policy's external targets.
-async fn publish_history_to_recorded(ctx: &PushContext<'_>, history: PreparedHistory) {
+/// Publish the history index of a push that stored no pack of its own, to `replication`'s
+/// places (the ones it was priced for).
+async fn publish_history_alone(
+    ctx: &PushContext<'_>,
+    history: PreparedHistory,
+    replication: Replication,
+) {
     let externals = match external_targets(ctx) {
         Ok(t) => t,
         Err(e) => {
-            ctx.say(&format!("the history index was not published ({e:#})"));
+            history_skipped(ctx, &format!("{e:#}"));
             return;
         }
     };
-    let replicas = ctx
-        .policy
-        .resolved
-        .external
-        .iter()
-        .map(|(name, _)| forge_core::storage::Replica {
-            target: name.clone(),
-            uris: Vec::new(),
-            platform: false,
-        })
-        .chain(
-            ctx.policy
-                .resolved
-                .platform
-                .then(|| forge_core::storage::Replica {
-                    target: forge_core::storage::PLATFORM_PROFILE.into(),
-                    uris: Vec::new(),
-                    platform: true,
-                }),
-        )
-        .collect();
-    let stored = StoredWith {
-        replication: Replication {
-            replicas,
-            failures: Vec::new(),
+    publish_history(
+        ctx,
+        history,
+        StoredWith {
+            replication,
+            externals,
         },
-        externals,
-    };
-    publish_history(ctx, history, stored).await;
+    )
+    .await;
 }
 
 /// Publish the history index this push computed, to where its pack went. Best-effort and
@@ -2342,24 +2427,7 @@ async fn publish_history(ctx: &PushContext<'_>, history: PreparedHistory, stored
                 }),
             );
         }
-        Err(e) => {
-            let fix = format!("dg repo reindex {}", ctx.repo_label);
-            let message = format!(
-                "the history index was not published ({e:#}); the web walks history for this \
-                 tip until `{fix}` publishes it"
-            );
-            let event = serde_json::json!({
-                "event": "historySkipped",
-                "message": forge_core::user_error::redact(&message),
-                "fix": fix,
-            });
-            Progress {
-                enabled: true,
-                ..ctx.progress
-            }
-            .emit(&format!("dash: warning: {message}"), &event);
-            progress::report(&event);
-        }
+        Err(e) => history_skipped(ctx, &format!("{e:#}")),
     }
 }
 

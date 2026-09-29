@@ -454,6 +454,18 @@ fn replace_refs_are_ignored() {
     assert_eq!(after, before);
 }
 
+/// Review N4: an `info/grafts` file rewrites parents as a shallow boundary does: refused.
+#[test]
+fn a_grafted_repository_is_refused() {
+    let d = fixture();
+    let p = d.path();
+    let head = git(p, &["rev-parse", "HEAD"]);
+    std::fs::create_dir_all(p.join(".git/info")).unwrap();
+    std::fs::write(p.join(".git/info/grafts"), format!("{head}\n")).unwrap();
+    let err = compute(p, "HEAD", None).unwrap_err();
+    assert!(format!("{err}").contains("grafts"), "{err}");
+}
+
 /// Review L1: the log is read as it streams and git is stopped once every path is settled; a
 /// long history of commits that touch nothing the tip has left does not change the answer.
 #[test]
@@ -477,13 +489,11 @@ fn a_long_tail_of_old_history_is_not_read_to_its_end() {
 #[test]
 fn hostile_bytes_are_bounded() {
     let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
-    let zeros = vec![0u8; 1 << 20];
-    for _ in 0..=(super::historyindex::MAX_INFLATED / (1 << 20)) {
-        std::io::Write::write_all(&mut e, &zeros).unwrap();
-    }
+    std::io::Write::write_all(&mut e, &[0u8; 4097]).unwrap();
     let bomb = e.finish().unwrap();
-    let err = HistoryIndex::parse(&bomb).unwrap_err();
+    let err = HistoryIndex::parse_bounded(&bomb, 4096).unwrap_err();
     assert!(format!("{err}").contains("size limit"), "{err}");
+    assert_eq!(super::historyindex::MAX_INFLATED, 64 * 1024 * 1024);
     // "DFHI" v1, a tip, a zero base, then a commitCount varint of 11 continuation bytes.
     let mut body = b"DFHI\x01".to_vec();
     body.extend_from_slice(&[0; 52]);

@@ -137,12 +137,17 @@ impl HistoryIndex {
 
     /// Parse a gzip-compressed index. Refuses anything malformed rather than guessing.
     pub fn parse(compressed: &[u8]) -> Result<Self> {
+        Self::parse_bounded(compressed, MAX_INFLATED)
+    }
+
+    /// [`Self::parse`] refusing a body that inflates past `max_inflated` bytes.
+    pub fn parse_bounded(compressed: &[u8], max_inflated: u64) -> Result<Self> {
         let mut body = Vec::new();
         GzDecoder::new(compressed)
-            .take(MAX_INFLATED + 1)
+            .take(max_inflated + 1)
             .read_to_end(&mut body)
             .map_err(|e| Error::Io(format!("history index: {e}")))?;
-        if body.len() as u64 > MAX_INFLATED {
+        if body.len() as u64 > max_inflated {
             return Err(bad("inflates past its size limit"));
         }
         let mut r = Cursor { buf: &body, pos: 0 };
@@ -226,6 +231,18 @@ pub fn compute(repo: &Path, tip: &str, since: Option<&str>) -> Result<Option<His
     if capture(repo, &["rev-parse", "--is-shallow-repository"], None)?.trim_ascii() == b"true" {
         return Err(bad(
             "the repository is a shallow clone; its history is incomplete",
+        ));
+    }
+    // The repository's own grafts file, in its common git dir (`git_real` points
+    // GIT_GRAFT_FILE elsewhere, which `--git-path info/grafts` would report instead).
+    let common = capture(repo, &["rev-parse", "--git-common-dir"], None)?;
+    let grafts = repo
+        .join(String::from_utf8_lossy(&common).trim())
+        .join("info")
+        .join("grafts");
+    if grafts.exists() {
+        return Err(bad(
+            "the repository has an info/grafts file; its history is rewritten",
         ));
     }
     let tip_oid = rev_parse(repo, tip)?;
@@ -312,7 +329,8 @@ pub fn compute(repo: &Path, tip: &str, since: Option<&str>) -> Result<Option<His
 fn git_real(repo: &Path, args: &[&str]) -> std::process::Command {
     let mut cmd = git_at(repo, &[]);
     cmd.env("GIT_NO_REPLACE_OBJECTS", "1")
-        .env_remove("GIT_GRAFT_FILE")
+        // A grafts file that cannot exist: git reads none, whatever the repository holds.
+        .env("GIT_GRAFT_FILE", "/nonexistent/dash-forge-no-grafts")
         .arg("--no-replace-objects")
         .args(args);
     cmd

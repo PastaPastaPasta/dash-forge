@@ -318,8 +318,10 @@ async fn run_inner<'a>(
             Some(e) => e,
             None => p.estimate()?,
         };
-        push_one(ledger, &p, est, "the git push (branches and tags)").await?;
-        backfill_history(ledger, client, signer, &repo, &work, &meta.default_branch).await;
+        let published = push_one(ledger, &p, est, "the git push (branches and tags)").await?;
+        if !published {
+            backfill_history(ledger, client, signer, &repo, &work, &meta.default_branch).await;
+        }
     }
 
     // 3. Issues, PRs, comments, reviews, events, labels, releases (required).
@@ -356,8 +358,8 @@ async fn run_inner<'a>(
     sync_state.save(started, revisit)
 }
 
-/// After the code push: publish the default branch's history index from the work mirror when
-/// none covers its tip (the helper's own publish can miss one: a just-created repository's
+/// After the code push, when it did not publish one itself: publish the default branch's history
+/// index from the work mirror when none covers its tip (the helper's own publish can miss one: a just-created repository's
 /// config a lagging node did not list, a pack an earlier run recorded). Optional: priced, fitted
 /// under the cap, and a failure is a warning, never a failed import.
 async fn backfill_history(
@@ -420,9 +422,9 @@ async fn push_one(
     p: &GitPusher,
     est: PushReport,
     what: &str,
-) -> Result<()> {
+) -> Result<bool> {
     if est.refs == 0 {
-        return Ok(());
+        return Ok(false);
     }
     let before = ledger.budget.remaining();
     ledger.budget.charge(est.est_credits, what)?;
@@ -443,7 +445,7 @@ async fn push_one(
     match pushed {
         Ok(report) => {
             count_push(ledger, &report, what);
-            Ok(())
+            Ok(report.history_published)
         }
         Err(e) => {
             // Refund the charge only when nothing can have been paid for without the ledger

@@ -116,8 +116,8 @@ export function inflateBounded(compressed: Uint8Array, max: number): Uint8Array 
 }
 
 /** Parse a gzip-compressed history index; throws on anything malformed. */
-export function parseHistoryIndex(compressed: Uint8Array): HistoryIndex {
-  const c = new Cursor(inflateBounded(compressed, MAX_INFLATED))
+export function parseHistoryIndex(compressed: Uint8Array, maxInflated = MAX_INFLATED): HistoryIndex {
+  const c = new Cursor(inflateBounded(compressed, maxInflated))
   const head = c.take(5)
   if (MAGIC.some((m, i) => head[i] !== m) || (head[4] as number) < VERSION) throw new Error('not a history index')
   const tip = bytesToHex(c.take(OID_LEN))

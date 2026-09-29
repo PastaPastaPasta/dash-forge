@@ -104,6 +104,9 @@ pub struct PushReport {
     /// Plaintext bytes of the history index the push publishes (the `platform` event's
     /// `historyBytes`): a Platform fallback stores its chunks too.
     pub history_bytes: u64,
+    /// The push published the default branch's history index (the helper's `historyIndex`
+    /// event): forge-import's own backfill has nothing to do.
+    pub history_published: bool,
 }
 
 impl PushReport {
@@ -196,6 +199,7 @@ pub fn parse_landed(stderr: &str) -> PushReport {
             Some("historySkipped") => {
                 r.history_skipped = v.get("message").and_then(Value::as_str).map(str::to_string);
             }
+            Some("historyIndex") => r.history_published = true,
             _ => {}
         }
     }
@@ -831,6 +835,7 @@ impl GitPusher {
                 (landed.packs, landed.pack_bytes, landed.objects);
             report.index_skipped = landed.index_skipped;
             report.history_skipped = landed.history_skipped;
+            report.history_published = landed.history_published;
         }
         Ok(report)
     }
@@ -890,6 +895,7 @@ dash: some human line"#;
                 index_skipped: None,
                 history_skipped: None,
                 history_bytes: 0,
+                history_published: false,
             }
         );
     }
@@ -1161,6 +1167,21 @@ dash: push failed: ref did not converge to pushed tip"#;
         );
     }
 
+    /// Review N1: the helper's `historyIndex` event says the push published the index, so the
+    /// import does not publish (and pay for) a second one; a `historySkipped` event says it did not.
+    #[test]
+    fn the_push_reports_whether_it_published_the_history_index() {
+        let published = r#"{"event":"stored","packHash":"ab","bytes":10,"objects":1}
+{"event":"historyIndex","delta":false,"paths":3,"commits":2}"#;
+        let got = parse_landed(published);
+        assert!(got.history_published);
+        assert!(got.history_skipped.is_none());
+        let skipped = r#"{"event":"historySkipped","message":"the history index was not published (x)","fix":"dg repo reindex o/r"}"#;
+        let got = parse_landed(skipped);
+        assert!(!got.history_published);
+        assert!(got.history_skipped.is_some());
+    }
+
     /// F-9: with the pack going to your own bucket, the first push into a new repository
     /// was priced as if Platform chunks held it (~3x the real cost), so `--max-spend`
     /// refused imports it could afford. It is priced by the policy the helper will apply.
@@ -1263,6 +1284,7 @@ dash: push failed: ref did not converge to pushed tip"#;
                     index_skipped: None,
                     history_skipped: None,
                     history_bytes: 0,
+                    history_published: false,
                 },
                 false,
             )
@@ -1364,6 +1386,7 @@ dash: push failed: ref did not converge to pushed tip"#;
             index_skipped: None,
             history_skipped: None,
             history_bytes: 0,
+            history_published: false,
         };
         let plain = price_helper_estimate(r.clone(), false);
         let armed = price_helper_estimate(r, true);

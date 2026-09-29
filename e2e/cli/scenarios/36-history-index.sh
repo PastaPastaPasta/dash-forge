@@ -101,6 +101,23 @@ reindex_json "$OWNER_ID/$NAME" "$SRC" "$LOG-2r" || { cat "$LOG-2r.err" >&2; bad 
 check "reindex: the history index already covers the tip" assert_eq "covered" \
   "$(jq_py "$LOG-2r.json" 'd["history"]["status"]')"
 
+step "2b. a fast-forward to commits already stored publishes the index too (review N5)"
+# A side branch pushed first stores the commits; main then moves to them with no new objects.
+git -C "$SRC" checkout -q -b ff-side
+commit_in "$SRC" alpha.txt "fifth" "fifth"
+if ! GIT_DASH_JSON=1 git_dash "$ID" "$LOG-2f" -C "$SRC" push "dash://$OWNER_ID/$NAME" ff-side:ff-side; then
+  cat "$LOG-2f.err" >&2; is_flake "$LOG-2f.err" && skip_scenario "push flaked"
+  bad "the side-branch push failed"; finish_scenario
+fi
+check "a side branch publishes no history index" assert_eq "" "$(event_of "$LOG-2f.err" historyIndex commits)"
+git -C "$SRC" checkout -q main && git -C "$SRC" merge -q --ff-only ff-side
+if ! GIT_DASH_JSON=1 git_dash "$ID" "$LOG-2g" -C "$SRC" push "dash://$OWNER_ID/$NAME" main:main; then
+  cat "$LOG-2g.err" >&2; is_flake "$LOG-2g.err" && skip_scenario "push flaked"
+  bad "the fast-forward push failed"; finish_scenario
+fi
+check "the fast-forward stored no pack" assert_eq "" "$(event_of "$LOG-2g.err" stored packHash)"
+check "…and published the history index (5 commits)" assert_eq "commits=5" "$(event_of "$LOG-2g.err" historyIndex commits)"
+
 step "3. dg repo reindex backfills a repository pushed without one"
 BARE="$(printf 'e2e-hist-bare-%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]')"
 new_repo "$BARE" 3c || { cat "$LOG-3c.err" >&2; bad "repo create failed"; finish_scenario; }
@@ -111,7 +128,7 @@ fi
 check "no history index yet" assert_eq "0" "$(history_tips "$OWNER_ID/$BARE" 3s)"
 reindex_json "$OWNER_ID/$BARE" "$SRC" "$LOG-3r" || { cat "$LOG-3r.err" "$LOG-3r.json" >&2; bad "reindex failed"; finish_scenario; }
 check "reindex published the history index" assert_eq "published" "$(jq_py "$LOG-3r.json" 'd["history"]["status"]')"
-check "…a full one of 4 commits" assert_eq "4 False" \
+check "…a full one of 5 commits" assert_eq "5 False" \
   "$(jq_py "$LOG-3r.json" 'str(d["history"]["commits"]) + " " + str(d["history"]["delta"])')"
 spent="$(jq_py "$LOG-3r.json" '"" if d["cost"] is None else d["cost"]["credits"]')"
 check "the spend was measured" test -n "$spent"
