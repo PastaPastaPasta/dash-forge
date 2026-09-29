@@ -3562,6 +3562,7 @@ impl<'a> Collab<'a> {
                 // create, so the journal stays and the next run resumes it.
                 Err(
                     e @ (Error::NotAMember { .. }
+                    | Error::ReferenceNotFound { .. }
                     | Error::StaleProtocolVersion(_)
                     | Error::RuleRefused { .. }),
                 ) => {

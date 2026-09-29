@@ -81,6 +81,7 @@ printf 'feature %s\n' "$RUN_ID" >"$SRC/feature.txt"
 git -C "$SRC" add -A && git -C "$SRC" commit -q -m "feature ${RUN_ID}"
 FEATURE="$(git -C "$SRC" rev-parse HEAD)"
 if git_dash_retry "$P_OWNER" "$LOG-push" -C "$SRC" push "$REMOTE" "refs/heads/main:refs/heads/main" "refs/heads/feature:refs/heads/feature" \
+   && collab_accept "$P_MEMBER" "$REPO" "$LOG-add" \
    && dg_as "$P_OWNER" -y --json collab add "$REPO" "$ID_P_MEMBER" >"$LOG-add.json" 2>"$LOG-add.err"; then
   ok "created, pushed main and feature @ ${FEATURE:0:12}, added P_MEMBER"
 else

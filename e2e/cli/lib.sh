@@ -145,6 +145,12 @@ dg_as() { # dg_as <identity_file> <dg args...>
   DASH_FORGE_KEY="$id" RUST_LOG="${RUST_LOG:-error}" NO_COLOR=1 _tmo "${DG}" "$@"
 }
 
+# The member's consent before an owner's `dg collab add` (RC1 member_consent): the member
+# writes its own `consent` document for the repo. Idempotent. stdout/stderr -> <log>.accept.*
+collab_accept() { # collab_accept <member_identity_file> <repo> <log-prefix>
+  dg_as "$1" -y --json collab accept "$2" >"$3.accept.json" 2>"$3.accept.err"
+}
+
 # A READ-ONLY dg command as a given identity, retried like git_dash_retry.
 # stdout -> <out>, stderr -> <err>. Never use this for a write: a dg write is not
 # guaranteed idempotent to re-run (a second `collab add` mints again).
