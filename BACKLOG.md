@@ -4,7 +4,7 @@ Small follow-ups that are known and accepted, not yet scheduled. Larger work is 
 
 ## Platform SDK
 
-- **TODO: move the JS SDK back to npm once dashpay publishes `@dashevo/wasm-sdk@4.2.0-beta.6` (or a later 4.2).** forge-web, `tools/mint-identity` and `forge-contracts/sdk-v2` run on 4.2.0-beta.6 built from the tag and installed from the `vendor-sdk-v4.2.0-beta.6` release assets (the tag's npm job failed: "Required runner group 'platform-npm-releases' not found", fixed for later tags by dashpay/platform#5077). [docs/dev/sdk-vendoring.md](docs/dev/sdk-vendoring.md) has the steps, including the contents check against the published tarballs.
+- **TODO: price writes with `documentCreateCost` after the fresh contract registration.** evo-sdk 4.2.0-beta.7 computes a document create's storage (exact, per index, new vs known index values) and processing (estimated) locally (platform#5159). Once forge-core and forge-collab are registered in the findBy syntax, compare it with the measured table in `forge-web/lib/sdk/cost.ts` and retire the per-type constants it matches within the headroom ([docs/dev/sdk-vendoring.md](docs/dev/sdk-vendoring.md), "From beta.6 to beta.7").
 
 ## Cost estimates
 

@@ -1,13 +1,19 @@
 /**
- * The pinned SDK parses contracts with the propertyConstraints forms of 4.2.0-beta.6 (`countOf`,
+ * The pinned SDK parses contracts with the propertyConstraints forms added in 4.2.0-beta.6 (`countOf`,
  * `sumOf`, `ifThen`, `notIn`, `$ownerId`, `$createdAtBlockHeight`, ...), and judges a document
  * against them locally. The fixture is the forge-collab draft for the next moutai registration
  * (dash-forge-qa design/state-counts, with per-repo counts and dense issue numbering); wasm-sdk
  * 4.2.0-beta.5 refuses it ("names "notIn", which is not a comparison ..."), so this fails on any
  * SDK older than beta.6.
  *
- * TODO(contract rework): once forge-collab is registered fresh from these rules, read
- * forge-contracts/contracts/forge-collab.json instead of the fixture, and delete the fixture.
+ * The fixture's references still use the pre-beta.7 `refersTo.lookup` / `propertyAgreement`
+ * keywords, which 4.2.0-beta.7 refuses on every parse (platform#5197: now `findBy` / `where`).
+ * This test is about the rules, not references, so every `refersTo` and `ownerRefersTo` is dropped
+ * before parsing (the rules read properties, never a reference's target).
+ *
+ * TODO(contract rework): once forge-collab is registered fresh from these rules (with findBy),
+ * read forge-contracts/contracts/forge-collab.json instead of the fixture, keep its references,
+ * and delete the fixture.
  */
 
 import { readFileSync } from 'node:fs'
@@ -22,9 +28,16 @@ const CONTRACT_ID = 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS'
 const OWNER = 'E24SPCssqYzFQmjcQ1hNmiLXrzz1o9AqTv54tuWNkgHz'
 const REPO = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 
+/** `value` with every `refersTo` and `ownerRefersTo` declaration removed (see the header). */
+function withoutReferences(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutReferences)
+  if (value === null || typeof value !== 'object') return value
+  return Object.fromEntries(Object.entries(value).filter(([k]) => k !== 'refersTo' && k !== 'ownerRefersTo').map(([k, v]) => [k, withoutReferences(v)]))
+}
+
 function fixture(): Record<string, unknown> {
   const text = readFileSync(resolve(__dirname, 'fixtures', 'forge-collab-state-counts.json'), 'utf8')
-  const json = JSON.parse(text.split('FORGE_CORE_CONTRACT_ID').join(FORGE_CORE)) as Record<string, unknown>
+  const json = withoutReferences(JSON.parse(text.split('FORGE_CORE_CONTRACT_ID').join(FORGE_CORE))) as Record<string, unknown>
   return { ...json, id: CONTRACT_ID, ownerId: OWNER }
 }
 
