@@ -205,6 +205,17 @@ grep -q '^document-id=' "$tmp/out" && fail "no empty outputs published"
 resolve INPUT_JOB_STATUS=success
 if report FORGE_ARGS_FILE="$(args_file)" DASH_FORGE_KEY=dfk1:x DG_BIN="$tmp/bin/dg-garbage" FORGE_FAIL_ON_ERROR=true; then fail "fail-on-error must fail"; fi
 
+case="a success without a url is not published"
+cat >"$tmp/bin/dg-nourl" <<'EOF'
+#!/usr/bin/env bash
+echo '{"status":"created","documentId":"Doc1"}'
+EOF
+chmod +x "$tmp/bin/dg-nourl"
+resolve INPUT_JOB_STATUS=success
+report FORGE_ARGS_FILE="$(args_file)" DASH_FORGE_KEY=dfk1:x DG_BIN="$tmp/bin/dg-nourl" || fail "must warn, not fail"
+grep -q 'output could not be read' "$tmp/stdout" || fail "says the output is unreadable"
+grep -q '^url=' "$tmp/out" && fail "no empty url published"
+
 case="report without key"
 resolve INPUT_JOB_STATUS=success
 report FORGE_ARGS_FILE="$(args_file)" || fail "a missing key warns, not fails"

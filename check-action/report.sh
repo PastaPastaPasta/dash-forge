@@ -43,7 +43,7 @@ fi
 doc=$(jq -r '.documentId // empty' "$out" 2>/dev/null) || doc=""
 url=$(jq -r '.url // empty' "$out" 2>/dev/null) || url=""
 action=$(jq -r '.status // empty' "$out" 2>/dev/null) || action=""
-[[ -n "$doc" && -n "$action" ]] || warn_or_fail "dg reported success but its output could not be read: $(head -c 300 "$out" | tr '\n' ' ')"
+[[ -n "$doc" && -n "$action" && -n "$url" ]] || warn_or_fail "dg reported success but its output could not be read: $(head -c 300 "$out" | tr '\n' ' ')"
 {
   echo "document-id=$doc"
   echo "url=$url"
