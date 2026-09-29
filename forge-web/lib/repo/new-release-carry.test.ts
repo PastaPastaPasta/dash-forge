@@ -28,6 +28,7 @@ const current: ReleaseView = {
   badAssets: 0,
   notesBody: 'first notes',
   omitted: null,
+  published: null,
   publisher: 'M',
   createdAt: 1,
 }

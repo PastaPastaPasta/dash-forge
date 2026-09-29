@@ -41,6 +41,11 @@ export interface PullComparisonInput {
   readonly merged: boolean
   /** An archived PR from another forge — never shown with an inexact baseline. */
   readonly imported: boolean
+  /**
+   * An imported PR's base commit at the source (the merge base GitHub or GitLab diffs from),
+   * recorded in its provenance block by forge-import (FG-6, L-36), or `''`.
+   */
+  readonly sourceBaseOid?: string
 }
 
 export interface PullComparison extends TreeDiff {
@@ -99,8 +104,6 @@ export function preferring(primary: ObjectReader, fallback: ObjectReader): Objec
   }
 }
 
-export const IMPORTED_BASE_ERROR = 'the imported record did not preserve its original target commit'
-
 const short = (oid: string): string => oid.slice(0, 7)
 
 type Baseline = 'current tip' | 'tip when opened'
@@ -137,6 +140,17 @@ export async function loadPullComparison(
     const baseTree = baseOid === '' ? null : (await readCommit(sides.base, baseOid)).tree
     const diff = await diffTrees(sides, baseTree, headCommit.tree)
     return { ...diff, comparedBaseOid: baseOid, comparisonNote, sides }
+  }
+
+  // An imported PR whose source base commit is in the mirror: the diff the source shows, with no
+  // merge-base search (the mirrored base branch has moved on, and a merged PR's head is already in
+  // it, so a search from its tips finds nothing to diff).
+  if (input.imported && input.sourceBaseOid) {
+    try {
+      return await compare(input.sourceBaseOid, `Compared against the base commit the source records for this PR, ${short(input.sourceBaseOid)}.`)
+    } catch {
+      // Not in the mirror (a commit on a branch that was never mirrored): search as for any PR.
+    }
   }
 
   const tip = { oid: input.baseTipOid, which: 'current tip' as Baseline }
@@ -192,7 +206,7 @@ export async function loadPullComparison(
   }
 
   // A stopped search is the user's choice, not missing history: say so.
-  if (input.imported) throw cancelled ?? new Error(IMPORTED_BASE_ERROR)
+  if (input.imported && cancelled !== null) throw cancelled
   const why =
     failed.length > 0
       ? `Could not find where this PR branched from its base (${failed.join('; ')}).`

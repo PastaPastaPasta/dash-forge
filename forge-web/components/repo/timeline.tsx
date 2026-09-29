@@ -8,6 +8,8 @@
  * here as the audit trail it is.
  */
 
+import { Byline } from '@/components/repo/byline'
+import { importedVerdictOf, trustedOrigin } from '@/lib/repo/provenance'
 import { Check, CheckCircle2, Eye, GitCommit, GitMerge, Lock, LockOpen, Milestone, MessageSquare, Pin, Tag, UserPlus, X } from 'lucide-react'
 import type { TimelineItem } from '@/lib/view'
 import { branchName, plural, timeAgo } from '@/lib/view'
@@ -101,6 +103,7 @@ export function Timeline({
   links,
   renderComment,
   eventText,
+  trust,
 }: {
   items: readonly TimelineItem[]
   /** Where `#n` / `@name` in bodies link (omit: plain text). Keep it referentially stable. */
@@ -109,6 +112,8 @@ export function Timeline({
   renderComment?: (item: Extract<TimelineItem, { kind: 'comment' }>) => CommentSlots
   /** A page's own wording for an event (the PR page counts the commits a head update pushed), or null. */
   eventText?: (e: Event) => string | null
+  /** Who may mirror (`useMirrorTrust`): their imported comments and reviews show the original author and date. */
+  trust?: ReadonlySet<string> | null
 }): JSX.Element {
   return (
     <div className="space-y-3">
@@ -118,16 +123,12 @@ export function Timeline({
           return (
             <div key={`c-${item.comment.id}-${i}`} className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="timeline-comment">
               <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
-                <Author identityId={item.comment.author} />
-                <span className="text-anvil-500 dark:text-anvil-400">
-                  {item.orphaned === 'deleted' ? 'replied to a deleted comment' : item.orphaned === 'hidden' ? 'replied to a comment you cannot read' : 'commented'}{item.comment.anchor ? (
-                    <>
-                      {' '}
-                      on <span className="font-mono text-[12px]">{anchorLabel(item.comment.anchor)}</span>
-                    </>
-                  ) : null}{' '}
-                  {timeAgo(item.comment.createdAt)}
-                </span>
+                <Byline
+                  author={item.comment.author}
+                  createdAt={item.comment.createdAt}
+                  origin={trustedOrigin(item.comment.origin, item.comment.author, trust ?? null)}
+                  verb={`${item.orphaned === 'deleted' ? 'replied to a deleted comment' : item.orphaned === 'hidden' ? 'replied to a comment you cannot read' : 'commented'}${item.comment.anchor ? ` on ${anchorLabel(item.comment.anchor)}` : ''}`}
+                />
                 <EditedMarker createdAt={item.comment.createdAt} updatedAt={item.comment.updatedAt} />
                 {slot.header}
               </div>
@@ -147,8 +148,27 @@ export function Timeline({
                 <span className="flex h-6 w-6 items-center justify-center rounded-full bg-anvil-100 dark:bg-anvil-800">
                   {verdictIcon(review.verdict)}
                 </span>
-                <Author identityId={review.reviewer} />
-                <span className="text-anvil-500 dark:text-anvil-400">{VERDICT_LABEL[review.verdict]} {timeAgo(review.createdAt)}</span>
+                {(() => {
+                  // A mirrored review records its source verdict in its provenance line; the
+                  // document's own verdict is a comment (a mirror identity's approval would count
+                  // as a maintainer's). Shown as what the source reviewer did, never as counted.
+                  const origin = trustedOrigin(review.origin, review.reviewer, trust ?? null)
+                  const source = origin !== null ? importedVerdictOf(review.body) : null
+                  return (
+                    <>
+                      <Byline author={review.reviewer} createdAt={review.createdAt} origin={origin} verb={source ?? VERDICT_LABEL[review.verdict]} />
+                      {source !== null && source !== 'commented' ? (
+                        <span
+                          data-testid="imported-verdict"
+                          className="rounded-full border border-anvil-300 px-2 py-0.5 text-[11px] text-anvil-700 dark:border-anvil-700 dark:text-anvil-200"
+                          title="The verdict on the source forge. It does not count toward approvals here: only reviews by this repo's maintainers and writers do."
+                        >
+                          {source} on {origin?.host || 'the source'} · not counted here
+                        </span>
+                      ) : null}
+                    </>
+                  )
+                })()}
                 {/* Which commit was reviewed: a verdict on an older head is not a verdict on
                     the current one, and only the oid says which. */}
                 {review.commitOid ? (

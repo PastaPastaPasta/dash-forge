@@ -20,6 +20,9 @@
  * plaintext by design.
  */
 
+import { Byline, OriginAuthor, Time } from '@/components/repo/byline'
+import { useMirrorTrust } from '@/hooks/use-mirror-trust'
+import { pullOriginOf, trustedOrigin } from '@/lib/repo/provenance'
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
@@ -247,6 +250,10 @@ function PullPage({
 
   const { pull, timeline, review } = thread
   const repo = home.repo
+  // Who may mirror: an imported PR of theirs shows its original author, date, base and head (FG-6).
+  const trust = useMirrorTrust(repo)
+  const origin = trustedOrigin(pull.origin, pull.author, trust)
+  const pullOrigin = origin !== null ? pullOriginOf(pull.body) : null
   const holdings = useAsync<Holdings | null>(
     () => readViewerPermissions(sdk!, repo, identity!, network),
     [ready, repoKey(repo), identity ?? '', network],
@@ -278,7 +285,7 @@ function PullPage({
   }
 
   // ---- the comparison (Files changed, the tab counts, the commit list) -----------------------
-  const spec = pullSpec(pull, home)
+  const spec = pullSpec(pull, home, trust)
   const comparison = usePullComparison(repo, pull.sourceId, spec)
   const cmp = comparison.data
   const headReader = cmp?.sides.head ?? null
@@ -660,7 +667,9 @@ function PullPage({
               `${mergedLead} into`
             ) : (
               <>
-                <Author identityId={pull.author} link={false} /> wants to merge into
+                {origin !== null ? <OriginAuthor origin={origin} /> : <Author identityId={pull.author} link={false} />}{' '}
+                {/* A closed PR no longer wants anything (L-76). */}
+                {open ? 'wants to merge into' : 'wanted to merge into'}
               </>
             )}{' '}
             <span className="font-mono">{shortBranch(pull.state.baseRef ?? pull.baseRefName) || '?'}</span>
@@ -669,8 +678,14 @@ function PullPage({
                 {' '}
                 from <span className="font-mono">{crossRepo && sourceRef ? `${sourceRef.name}:` : ''}{shortBranch(pull.sourceRefName)}</span>
               </>
+            ) : pullOrigin?.headLabel ? (
+              // A mirrored PR's head branch at the source, a fork's as `owner:branch` (L-37).
+              <>
+                {' '}
+                from <span className="font-mono" data-testid="pr-origin-head">{pullOrigin.headLabel}</span>
+              </>
             ) : null}{' '}
-            · {merged ? `opened ${timeAgo(pull.createdAt)}` : timeAgo(pull.createdAt)}
+            · <Time ms={origin?.createdAt || pull.createdAt} prefix={merged || !open ? 'opened ' : ''} />
           </span>
           {pull.headOid ? (
             <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400" data-testid="pr-head">
@@ -765,8 +780,7 @@ function PullPage({
               {/* Description */}
               <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
                 <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
-                  <Author identityId={pull.author} />
-                  <span className="text-anvil-500 dark:text-anvil-400">opened this {timeAgo(pull.createdAt)}</span>
+                  <Byline author={pull.author} createdAt={pull.createdAt} origin={origin} verb="opened this" />
                   <EditedMarker createdAt={pull.createdAt} updatedAt={pull.updatedAt} />
                 </div>
                 <div className="px-4 py-3">
@@ -784,6 +798,7 @@ function PullPage({
                 <Timeline
                   items={conversation}
                   links={links}
+                  trust={trust}
                   eventText={eventText}
                   renderComment={(item) =>
                     commentSlots({

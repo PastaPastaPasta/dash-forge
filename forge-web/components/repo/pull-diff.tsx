@@ -15,6 +15,7 @@
  * shows "Diff unavailable" only when the objects genuinely are not reachable.
  */
 
+import { pullOriginOf, trustedOrigin } from '@/lib/repo/provenance'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { FileDiff, Files, HardDriveDownload } from 'lucide-react'
 
@@ -272,6 +273,8 @@ export interface ComparisonSpec {
   readonly merged: boolean
   readonly imported: boolean
   readonly importedUrl: string
+  /** See `PullComparisonInput.sourceBaseOid`. */
+  readonly sourceBaseOid: string
 }
 
 /** A comparison being computed: the sides' readers and the merge-base diff (see {@link usePullComparison}). */
@@ -317,11 +320,11 @@ export function usePullComparison(baseRepo: RepoRef, sourceId: string, spec: Com
       setCommitsRead(0)
       return loadPullComparison(
         sides as DiffSides,
-        { baseTipOid, baseOidAtOpen, headOid: spec.headOid, merged: spec.merged, imported: spec.imported },
+        { baseTipOid, baseOidAtOpen, headOid: spec.headOid, merged: spec.merged, imported: spec.imported, sourceBaseOid: spec.sourceBaseOid },
         { signal: controller.signal, onProgress: (n) => controller.signal.aborted || setCommitsRead(n) },
       )
     },
-    [baseRepo.repoId, repoKey(baseRepo), sourceId, crossRepo, sidesKey, baseTipOid, baseOidAtOpen, spec.headOid, spec.merged, spec.imported],
+    [baseRepo.repoId, repoKey(baseRepo), sourceId, crossRepo, sidesKey, baseTipOid, baseOidAtOpen, spec.headOid, spec.merged, spec.imported, spec.sourceBaseOid],
     { enabled: waiting === null && sides !== null && spec.headOid !== '' },
   )
   // A disabled comparison (a side reloading) must not keep walking history in the background.
@@ -340,9 +343,12 @@ export function usePullComparison(baseRepo: RepoRef, sourceId: string, spec: Com
 }
 
 /** The base, head and flags of a PR's comparison. */
-export function pullSpec(pull: PullView, home: RepoHome): ComparisonSpec {
+export function pullSpec(pull: PullView, home: RepoHome, trust: ReadonlySet<string> | null = null): ComparisonSpec {
   const { baseTipOid, baseOidAtOpen } = pullBase(pull, home)
-  return { baseTipOid, baseOidAtOpen, headOid: pull.headOid, merged: pull.state.merged, imported: pull.imported, importedUrl: pull.importedUrl }
+  // Only a trusted mirror's record names the base to diff from: anyone can write that text.
+  const origin = trustedOrigin(pull.origin, pull.author, trust)
+  const sourceBaseOid = origin !== null ? (pullOriginOf(pull.body)?.baseOid ?? '') : ''
+  return { baseTipOid, baseOidAtOpen, headOid: pull.headOid, merged: pull.state.merged, imported: pull.imported, importedUrl: pull.importedUrl, sourceBaseOid }
 }
 
 /** A head compared with its merge base against a base branch, across two repos. */
