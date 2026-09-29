@@ -342,3 +342,49 @@ fn the_shared_decoder_fixture_matches() {
     assert_eq!(std::fs::read_to_string(path).unwrap(), hex_body, "run with FORGE_BLESS=1");
     assert_eq!(HistoryIndex::parse(&ix.to_compressed().unwrap()).unwrap(), ix);
 }
+
+/// Size and price of a real repository's history index (docs/guides/costs.md): run with
+/// `HISTORY_MEASURE_REPO=<git dir> HISTORY_MEASURE_TIP=<rev> cargo test -p forge-core --lib
+/// measure_a_real_repository -- --ignored --nocapture`.
+#[test]
+#[ignore = "measures a local repository named in the environment"]
+fn measure_a_real_repository() {
+    let repo = std::env::var("HISTORY_MEASURE_REPO").expect("HISTORY_MEASURE_REPO");
+    let tip = std::env::var("HISTORY_MEASURE_TIP").unwrap_or_else(|_| "HEAD".into());
+    let t = std::time::Instant::now();
+    let ix = compute(Path::new(&repo), &tip, None).unwrap().unwrap();
+    let elapsed = t.elapsed();
+    let bytes = ix.to_compressed().unwrap();
+    let credits = crate::cost::push_fees::history_index(bytes.len() as u64, false, 0, true);
+    let byo = crate::cost::push_fees::history_index(bytes.len() as u64, false, 1, false);
+    println!(
+        "MEASURE repo={repo} tip={} paths={} commits={} (first-parent {}) referenced={} \
+         gz_bytes={} chunks={} platform_credits={credits} byo_credits={byo} compute_ms={}",
+        hex::encode(ix.tip),
+        ix.paths.len(),
+        ix.commit_count,
+        ix.first_parent_count,
+        ix.commits.len(),
+        bytes.len(),
+        crate::pack::split(&bytes).len(),
+        elapsed.as_millis()
+    );
+}
+
+/// A delta's size on a real repository: the index of `HISTORY_MEASURE_TIP` over a full index of
+/// `HISTORY_MEASURE_BASE` (a first-parent ancestor).
+#[test]
+#[ignore = "measures a local repository named in the environment"]
+fn measure_a_real_delta() {
+    let repo = std::env::var("HISTORY_MEASURE_REPO").expect("HISTORY_MEASURE_REPO");
+    let tip = std::env::var("HISTORY_MEASURE_TIP").unwrap_or_else(|_| "HEAD".into());
+    let base = std::env::var("HISTORY_MEASURE_BASE").expect("HISTORY_MEASURE_BASE");
+    let d = compute(Path::new(&repo), &tip, Some(&base)).unwrap().unwrap();
+    let bytes = d.to_compressed().unwrap();
+    println!(
+        "MEASURE delta base={base} paths={} gz_bytes={} platform_credits={}",
+        d.paths.len(),
+        bytes.len(),
+        crate::cost::push_fees::history_index(bytes.len() as u64, false, 0, true)
+    );
+}

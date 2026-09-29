@@ -249,7 +249,10 @@ describe('the commit column with a history index', () => {
       if (more === undefined) break
       const before = states.length
       more()
-      await vi.waitFor(() => expect(states.length).toBeGreaterThan(before) && expect(states[states.length - 1]?.done).toBe(true))
+      await vi.waitFor(() => {
+        expect(states.length).toBeGreaterThan(before)
+        expect(states[states.length - 1]?.done).toBe(true)
+      })
     }
     last = states[states.length - 1] as LastCommitColumn
     expect(last.found.get('b')?.subject).toBe('b changed')
