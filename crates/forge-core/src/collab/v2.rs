@@ -1600,6 +1600,18 @@ fn beats(repo: &RepoRef, signer: &str) -> bool {
     repo.visibility == Visibility::Public && signer != repo.owner_id()
 }
 
+/// Whether a document's `asMember` proof is required rather than optional: an import or an
+/// upstream number (`i_provenance`), or a member verdict (1 / 2, `memberVerdict`). (A post to a
+/// locked thread needs it too, `lockGate`, which a write cannot see from its properties.)
+fn proof_required(props: &BTreeMap<String, FieldValue>) -> bool {
+    props.contains_key("imported")
+        || props.contains_key("upstreamNumber")
+        || props
+            .get("verdict")
+            .and_then(FieldValue::as_u64)
+            .is_some_and(|v| Verdict::from_code(v).needs_member_proof())
+}
+
 /// Refuse a write of `doc_type` into a contract the RC1 layout does not put it in.
 fn check_layout(repo: &RepoRef, contract: &LoadedContract, doc_type: &str) -> Result<()> {
     match repo.forge().contract_id_of(doc_type) {
@@ -2191,11 +2203,38 @@ impl<'a> Collab<'a> {
         } else {
             props
         };
-        let mut all = Self::with_repo(repo, props)?;
-        self.stamp(repo, doc_type, &mut all).await?;
-        self.engine()?
-            .create_document(contract, doc_type, all)
-            .await
+        let base = Self::with_repo(repo, props)?;
+        let mut retried = false;
+        loop {
+            let mut all = base.clone();
+            self.stamp(repo, doc_type, &mut all).await?;
+            let optional = !proof_required(&all);
+            match self
+                .engine()?
+                .create_document(contract, doc_type, all)
+                .await
+            {
+                Err(e) if !retried && optional && self.proof_refused(repo, &e) => retried = true,
+                res => return res,
+            }
+        }
+    }
+
+    /// Whether `e` refused the write's `asMember` (40120 on it: the signer's membership was
+    /// removed after this `Collab` read it). The membership is then known to be gone, so the
+    /// cache says so: a write whose proof was optional is re-stamped without it and retried
+    /// once; one that needs the proof keeps the refusal.
+    fn proof_refused(&self, repo: &RepoRef, e: &Error) -> bool {
+        let refused =
+            matches!(e, Error::NotAMember { detail, .. } if detail.ends_with("for path asMember"));
+        if refused {
+            *self
+                .member
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some((repo.id().to_string(), false));
+        }
+        refused
     }
 
     /// Whether the signer holds a maintainer or writer document of `repo` now (read once per
@@ -2245,9 +2284,7 @@ impl<'a> Collab<'a> {
         ) {
             return Ok(());
         }
-        let needs = props.contains_key("imported")
-            || props.contains_key("upstreamNumber")
-            || verdict.is_some_and(Verdict::needs_member_proof);
+        let needs = proof_required(props);
         let member = self.is_member(repo).await?;
         if member || (needs && !precheck_enabled()) {
             props.insert(
@@ -3544,6 +3581,7 @@ impl<'a> Collab<'a> {
     /// CheckTx for free) or, when the count moved on after the rules ran, by the unique
     /// `number` index. `journal` (a directory and the content's fingerprint) makes it
     /// resumable: the signed create is saved before its first broadcast.
+    #[allow(clippy::too_many_lines)] // one numbered-create loop, its outcomes side by side
     async fn create_dense(
         &self,
         repo: &RepoRef,
@@ -3567,6 +3605,7 @@ impl<'a> Collab<'a> {
         // Every create this call signs, with its number (a retry re-signs with fresh entropy,
         // so a number can have several): only these may be adopted as landed.
         let mut signed: Vec<(u32, String)> = Vec::new();
+        let mut proof_retried = false;
         for attempt in 0..MAX_NUMBER_ATTEMPTS {
             let number = self.next_number(repo).await?.max(floor);
             let plain = props(number)?;
@@ -3576,6 +3615,7 @@ impl<'a> Collab<'a> {
                 .await?;
             let mut all = Self::with_repo(repo, sealed)?;
             self.stamp(repo, kind.doc_type(), &mut all).await?;
+            let optional_proof = !proof_required(&all);
             let res = engine
                 .create_journaled(&collab, kind.doc_type(), all, |p| {
                     signed.push((number, p.document_id().to_string()));
@@ -3617,6 +3657,12 @@ impl<'a> Collab<'a> {
                     }
                     floor = number.saturating_add(1);
                     tracing::warn!(number, attempt, "number taken; counting again");
+                }
+                // The membership was removed since it was read: nothing landed; once, sign
+                // again without the (optional) proof.
+                Err(e) if !proof_retried && optional_proof && self.proof_refused(repo, &e) => {
+                    forget();
+                    proof_retried = true;
                 }
                 // Refusals that prove nothing landed: forget the transition, or the same
                 // command would replay it (and be refused) forever. Anything else — a failed
@@ -4049,14 +4095,23 @@ impl<'a> Collab<'a> {
         }
         // Sealed only when signing afresh: a replay re-broadcasts the saved (sealed) bytes.
         let props = self.seal_if_private(repo, kind, props).await?;
-        let mut all = Self::with_repo(repo, props)?;
-        self.stamp(repo, doc_type, &mut all).await?;
-        let prepared = engine
-            .create_journaled(&collab, doc_type, all, |p| {
-                persist(&WriteIntent::for_prepared(0, p))
-            })
-            .await?;
-        Ok(prepared.document_id().to_string())
+        let base = Self::with_repo(repo, props)?;
+        let mut retried = false;
+        loop {
+            let mut all = base.clone();
+            self.stamp(repo, doc_type, &mut all).await?;
+            let optional = !proof_required(&all);
+            match engine
+                .create_journaled(&collab, doc_type, all, |p| {
+                    persist(&WriteIntent::for_prepared(0, p))
+                })
+                .await
+            {
+                Ok(prepared) => return Ok(prepared.document_id().to_string()),
+                Err(e) if !retried && optional && self.proof_refused(repo, &e) => retried = true,
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     // --- writes: events ------------------------------------------------------------------
@@ -5289,6 +5344,27 @@ mod tests {
 
     /// A create refused because another took the number counts again; so does the unique
     /// index; a state-rule refusal is recognised apart from both.
+    #[test]
+    fn only_imports_upstream_numbers_and_member_verdicts_require_the_proof() {
+        let with = |k: &str, v: FieldValue| BTreeMap::from([(k.to_string(), v)]);
+        assert!(!proof_required(&with("body", FieldValue::text("hi"))));
+        assert!(proof_required(&with(
+            "upstreamNumber",
+            FieldValue::integer(3)
+        )));
+        assert!(proof_required(&with(
+            "imported",
+            FieldValue::Object(BTreeMap::new())
+        )));
+        for (code, needs) in [(1, true), (2, true), (3, false), (4, false), (5, false)] {
+            assert_eq!(
+                proof_required(&with("verdict", FieldValue::integer(code))),
+                needs,
+                "verdict {code}"
+            );
+        }
+    }
+
     #[test]
     fn a_dense_or_duplicate_refusal_means_count_again() {
         let dense = Error::RuleRefused {
