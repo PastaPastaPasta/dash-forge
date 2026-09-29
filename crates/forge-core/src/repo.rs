@@ -168,6 +168,34 @@ impl PackManifestInput {
         }
         Ok(())
     }
+
+    /// The `packManifest` document properties in `scope`, after [`Self::check`]: `packHash`
+    /// as an identifier, and `tips` / `supersedes` as packed byteArrays (concatenated
+    /// fixed-width entries).
+    pub fn props(&self, scope: &DocScope) -> Result<BTreeMap<String, FieldValue>> {
+        self.check()?;
+        let mut props = scope.props([
+            ("packHash", FieldValue::identifier(self.pack_hash)),
+            ("kind", FieldValue::integer(self.kind)),
+            ("sizeBytes", FieldValue::integer(self.size_bytes)),
+            ("objectCount", FieldValue::integer(self.object_count)),
+            ("chunkCount", FieldValue::integer(self.chunk_count)),
+            ("storage", FieldValue::integer(self.storage)),
+        ]);
+        if !self.uris.is_empty() {
+            props.insert("uris".into(), FieldValue::text_list(self.uris.clone()));
+        }
+        if !self.tips.is_empty() {
+            props.insert("tips".into(), FieldValue::bytes(self.tips.concat()));
+        }
+        if !self.supersedes.is_empty() {
+            props.insert(
+                "supersedes".into(),
+                FieldValue::bytes(self.supersedes.concat()),
+            );
+        }
+        Ok(props)
+    }
 }
 
 /// Live index fragments tolerated before a push folds them into one locator.
@@ -1324,29 +1352,8 @@ impl<'a> RepoService<'a> {
         repo: &RepoRef,
         manifest: &PackManifestInput,
     ) -> Result<String> {
-        manifest.check()?;
         let (scope, contract) = self.writable(repo).await?;
-        let mut props = scope.props([
-            ("packHash", FieldValue::identifier(manifest.pack_hash)),
-            ("kind", FieldValue::integer(manifest.kind)),
-            ("sizeBytes", FieldValue::integer(manifest.size_bytes)),
-            ("objectCount", FieldValue::integer(manifest.object_count)),
-            ("chunkCount", FieldValue::integer(manifest.chunk_count)),
-            ("storage", FieldValue::integer(manifest.storage)),
-        ]);
-        if !manifest.uris.is_empty() {
-            props.insert("uris".into(), FieldValue::text_list(manifest.uris.clone()));
-        }
-        // `tips` / `supersedes` are packed byteArrays (concatenated fixed-width entries).
-        if !manifest.tips.is_empty() {
-            props.insert("tips".into(), FieldValue::bytes(manifest.tips.concat()));
-        }
-        if !manifest.supersedes.is_empty() {
-            props.insert(
-                "supersedes".into(),
-                FieldValue::bytes(manifest.supersedes.concat()),
-            );
-        }
+        let props = manifest.props(&scope)?;
         self.doc_engine()?
             .create_document(&contract, DOC_PACK_MANIFEST, props)
             .await
@@ -4916,3 +4923,7 @@ mod rc1_tests {
         assert_eq!(p.get("vis"), Some(&FieldValue::text("public")));
     }
 }
+
+#[cfg(test)]
+#[path = "repo_roundtrip_tests.rs"]
+mod roundtrip_tests;

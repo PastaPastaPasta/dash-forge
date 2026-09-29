@@ -252,7 +252,7 @@ fn repo_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
 
 /// The initial `config` document's properties (no protected patterns: an empty list is the
 /// same as none, and omitting it keeps the document small).
-fn config_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
+pub(crate) fn config_props(opts: &CreateRepoOpts) -> BTreeMap<String, FieldValue> {
     let mut p = BTreeMap::new();
     p.insert(
         "defaultBranch".into(),
