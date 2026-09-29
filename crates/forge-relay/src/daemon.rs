@@ -1397,10 +1397,7 @@ fn note_transition(s: &mut RepoState, d: &FetchedDocument) {
     let Some(tid) = note_activity(s, d) else {
         return;
     };
-    match d
-        .field_u64("kind")
-        .and_then(|k| ingest::transition_action(k))
-    {
+    match d.field_u64("kind").and_then(ingest::transition_action) {
         Some((_, false, _)) => {
             s.closed.insert(tid);
         }
