@@ -2214,7 +2214,7 @@ impl<'a> Collab<'a> {
 
     /// Refuse, before signing, a non-member's post to a locked conversation (`lockGate`: only a
     /// write with `asMember` passes). Off when [`SKIP_PRECHECK_ENV`] is set.
-    async fn require_unlocked_or_member(&self, repo: &RepoRef, target_id: &str) -> Result<()> {
+    pub async fn require_unlocked_or_member(&self, repo: &RepoRef, target_id: &str) -> Result<()> {
         if !precheck_enabled() || self.is_member(repo).await? {
             return Ok(());
         }
@@ -3725,26 +3725,58 @@ impl<'a> Collab<'a> {
         } else {
             changes
         };
-        if kind == DocKind::Comment && self.orphaned(collab, &stored).await? {
-            // The root this reply named was deleted: a replace re-checks `replyTo` against a
-            // live root, so the edit drops it (the reply becomes a root of its own).
-            changes.insert("replyTo".to_string(), None);
+        for field in self.dead_references(repo, collab, &stored).await? {
+            changes.insert(field.to_string(), None);
         }
         self.engine()?
             .replace_document_guarded(collab, doc_type, id, &changes, Some(revision))
             .await
     }
 
-    /// Whether reply `stored` names a root comment that no longer exists.
-    async fn orphaned(&self, collab: &LoadedContract, stored: &FetchedDocument) -> Result<bool> {
-        let Some(parent) = id_field(stored, "replyTo") else {
-            return Ok(false);
-        };
-        Ok(self
-            .client
-            .fetch_document(collab, DOC_COMMENT, &parent)
-            .await?
-            .is_none())
+    /// The references of the signer's stored document that no longer hold, which a replace
+    /// must clear: a replace re-checks every reference to a deletable document, touched or not,
+    /// and an immutable one may be cleared once its target is gone. `replyTo` (the root was
+    /// deleted: the reply becomes a root of its own), `reviewId` (the review was deleted) and
+    /// `asMember` (the signer is no longer a member: what they wrote as one stays editable).
+    /// An imported item or one with an upstream number needs the proof (`i_provenance`), so its
+    /// former member cannot edit it: refused here, before signing.
+    async fn dead_references(
+        &self,
+        repo: &RepoRef,
+        collab: &LoadedContract,
+        stored: &FetchedDocument,
+    ) -> Result<Vec<&'static str>> {
+        let mut dead = Vec::new();
+        for (field, doc_type) in [("replyTo", DOC_COMMENT), ("reviewId", DOC_REVIEW)] {
+            if let Some(id) = id_field(stored, field) {
+                if self
+                    .client
+                    .fetch_document(collab, doc_type, &id)
+                    .await?
+                    .is_none()
+                {
+                    dead.push(field);
+                }
+            }
+        }
+        let proved = stored.fields.contains_key(crate::layout::AS_MEMBER);
+        if proved && !self.is_member(repo).await? {
+            if stored.fields.contains_key("imported")
+                || stored.fields.contains_key("upstreamNumber")
+            {
+                return Err(Error::NotPermitted {
+                    action: "edit this imported item".into(),
+                    reason: format!(
+                        "an imported item carries its importer's membership proof, and you are no \
+                         longer a member of {}",
+                        repo.display()
+                    ),
+                    needs: "writer".into(),
+                });
+            }
+            dead.push(crate::layout::AS_MEMBER);
+        }
+        Ok(dead)
     }
 
     /// The changes a private edit of the signer's `kind` document `stored` writes
@@ -3880,7 +3912,21 @@ impl<'a> Collab<'a> {
                 "comment {comment_id} is not on this issue or pull request"
             )));
         }
-        Ok(id_field(&parent, "replyTo").unwrap_or(parent.id))
+        let Some(root) = id_field(&parent, "replyTo") else {
+            return Ok(parent.id);
+        };
+        if self
+            .client
+            .fetch_document(collab, DOC_COMMENT, &root)
+            .await?
+            .is_none()
+        {
+            return Err(Error::Config(format!(
+                "the first comment of the thread of {comment_id} was deleted, so the thread takes \
+                 no replies; post a new comment instead"
+            )));
+        }
+        Ok(root)
     }
 
     /// Review a PR: `verdict` on `commit_oid` (the head a reviewer saw). Un-gated; only
@@ -3905,12 +3951,9 @@ impl<'a> Collab<'a> {
     }
 
     /// The code `verdict` is written as by the signer ([`Verdict::as_written_by`]): a member's
-    /// approve / request changes is 1 / 2, anyone else's 4 / 5. With the pre-check off the
-    /// verdict is written as asked, and consensus judges it.
+    /// approve / request changes is 1 / 2, anyone else's 4 / 5. This decides what a legal
+    /// document looks like, not who may write it, so it holds with the pre-check off too.
     pub async fn verdict_for(&self, repo: &RepoRef, verdict: Verdict) -> Result<Verdict> {
-        if !precheck_enabled() {
-            return Ok(verdict);
-        }
         Ok(verdict.as_written_by(self.is_member(repo).await?))
     }
 

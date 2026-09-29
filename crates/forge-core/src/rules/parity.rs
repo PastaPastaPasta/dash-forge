@@ -206,7 +206,9 @@ pub struct ThreadMeta {
     pub pinned: bool,
     /// When the standing pin was made (ms); `None` when not pinned.
     pub pinned_at: Option<u64>,
-    /// Locked: clients offer the composer to members only.
+    /// Locked, from the retired lock events (kinds 21/22, refused on chain since RC1 by
+    /// `noState`). Kept for the shared vectors only: read a thread's lock from its transitions
+    /// (`TargetLog::locked`, a sum of 16 or more).
     pub locked: bool,
 }
 

@@ -1286,7 +1286,14 @@ async fn self_wrap(
     match signer.post_wrap(w, epoch, &key, w.me).await? {
         WrapOutcome::Posted | WrapOutcome::Same => Ok((key, false)),
         WrapOutcome::Different(Some(standing)) => Ok((standing, true)),
-        WrapOutcome::Different(None) | WrapOutcome::NoRecipientKey | WrapOutcome::NotAMember => Err(UserError::new(
+        WrapOutcome::NotAMember => Err(UserError::new(
+            codes::NOT_A_WRITER,
+            format!("you are not a maintainer of this repository any more (epoch {epoch})"),
+        )
+        .cause("a key wrap names a current member, and yours was removed")
+        .fix("ask the owner to add you again, or rotate from another maintainer")
+        .into()),
+        WrapOutcome::Different(None) | WrapOutcome::NoRecipientKey => Err(UserError::new(
             codes::ROTATION_PENDING,
             format!("your own key wrap for epoch {epoch} stands and cannot be read back"),
         )

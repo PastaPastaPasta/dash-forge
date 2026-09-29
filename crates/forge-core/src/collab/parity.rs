@@ -108,6 +108,12 @@ impl Collab<'_> {
         if repo.visibility == crate::rules::v2::Visibility::Private {
             return Ok(false);
         }
+        if names.len() > crate::repo::MAX_TOPICS {
+            return Err(Error::Config(format!(
+                "a repository has at most {} topics",
+                crate::repo::MAX_TOPICS
+            )));
+        }
         if let Some(bad) = names.iter().find(|n| !crate::repo::is_topic_name(n)) {
             return Err(Error::Config(format!(
                 "topic {bad:?}: use 1-30 of a-z and 0-9, words joined by single '-'"

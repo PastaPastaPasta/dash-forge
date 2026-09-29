@@ -21,7 +21,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use forge_core::backends::PackMeta;
 use forge_core::create::{create_repo, CreateRepoOpts, StepOutcome};
 use forge_core::keystore::BridgeIdentity;
-use forge_core::members::{MemberReader, MemberService};
+use forge_core::members::{ConsentService, MemberReader, MemberService};
 use forge_core::network::NetworkSettings;
 use forge_core::platform::{LoadedIdentity, PlatformClient};
 use forge_core::repo::{credits_to_dash, PackManifestInput, RepoService};
@@ -184,6 +184,11 @@ async fn forge_v2_repo_lifecycle_on_moutai() {
     assert_eq!(got, payload);
 
     // --- 4. writer grant → write → revoke → 40120 ---
+    // RC1 member_consent: the collaborator accepts first.
+    ConsentService::new(&client, &collab, &collab_b)
+        .accept(&repo)
+        .await
+        .expect("accept");
     let members = MemberService::new(&client, &owner, &owner_b);
     members
         .grant(&repo, &collab.id(), Role::Writer)

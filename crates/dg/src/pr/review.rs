@@ -453,6 +453,10 @@ async fn submit(
         }
     };
     let collab = s.collab();
+    // A locked PR takes reviews from members only (`lockGate`): refused before the prompt.
+    collab
+        .require_unlocked_or_member(&s.repo, &view.patch.document_id)
+        .await?;
     // A member's approve / request changes is written as 1 / 2 (with its proof), anyone
     // else's as 4 / 5: shown, never counted (RC1 `member_verdicts`).
     let v = collab

@@ -147,8 +147,15 @@ async fn add(ctx: &Ctx, repo: &str, member: &str, role: RoleArg, wait: Option<u6
     let s = Session::open(ctx, repo).await?;
     let (client, handle) = (&s.client, &s.repo);
     let signer = crate::keys::signer(&s);
-    // The member's consent comes first (checked before any cost prompt or key work).
-    require_consent(ctx, client, handle, member, wait).await?;
+    // The member's consent comes first (checked before any cost prompt or key work), unless
+    // they already hold the role: re-running an add to finish its key wrap needs none.
+    if MemberReader::new(client)
+        .role_doc(handle, member, role)
+        .await?
+        .is_none()
+    {
+        require_consent(ctx, client, handle, member, wait).await?;
+    }
     let private = handle.visibility == Visibility::Private;
     if private {
         // Checked before anything is written: a member with no encryption key could be
