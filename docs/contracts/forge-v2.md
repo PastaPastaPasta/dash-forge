@@ -369,7 +369,34 @@ From `tools/contract-validate` (rs-dpp v4.2.0-beta.7, `PlatformVersion` 14) on t
 
 `estimated_contract_max_serialized_size` (16,384 B) is not a limit. It is the size Drive's fee *estimation* assumes when it prices reading a stored contract (`apply_contract_with_serialization` v0). forge-core is under it; forge-collab and forge-community are just over it, which is allowed.
 
-Total one-time registration fees are **≈ 1.67 DASH**, paid once by the deployer, plus storage. A new repository is three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate. `dg repo create` quotes an upper bound of 0.002 DASH before signing and reports the measured cost afterwards. Per-write costs measured on bonsia are recorded here after the RC1 registration, together with the step-8 fee gates (D-3 `chunk.documentsCountable`, COMM-9, the `outcome` index; `dash-forge-qa/WIPE-PLAN.md` §3 step 8).
+Total one-time registration fees are **≈ 1.67 DASH**, paid once by the deployer, plus storage. A new repository is three documents (`repo`, the owner's `maintainer`, the first `config`), about 0.001 DASH in storage by the 27,000 credits/byte rate. `dg repo create` quotes an upper bound of 0.002 DASH before signing and reports the measured cost afterwards. The RC1 registration on devnet bonsia (2026-09-29) cost 0.647 + 0.436 + 0.607 = **1.690 DASH** (balance deltas, `deployments/devnet-bonsia.json`), plus 0.141 DASH for the key-exchange copy.
+
+**Per-write costs on bonsia** (credits; 10¹¹ credits = 1 DASH; `forge-contracts/scripts/rc1-live.mjs`, balance before and after each write once two reads agree; small documents):
+
+| write | credits | write | credits |
+|---|---|---|---|
+| repo | 59.7 M | issue | 97.1 M |
+| maintainer (self) | 39.8 M | patch | 129.7 M |
+| consent | 30.3 M | comment | 49.0 M |
+| writer (consented) | 40.4 M | review (member approve) | 65.0 M |
+| refUpdate | 87.8 M | transition: member close / reopen | 45.3 M / 51.7 M |
+| packManifest | 127.2 M | transition: member lock / merge | 51.9 M / 52.7 M |
+| chunk (100 B) | 49.2 M | transition: first on a PR (draft) | 61.4 M |
+| release | 72.0 M | transition: author close (first on the issue) | 72.5 M |
+| topic | 58.7 M | event (community → collab issue) | 58.0 M |
+| runner | 39.6 M | checkRun | 112.7 M |
+| policy | 36.9 M | star / watch | 37.2 M / 37.2 M |
+| starBeat | 17.7 M | repoKey | 56.1 M |
+
+**Step-8 fee gates** (`forge-contracts/scripts/rc1-fee-probe.mjs`: two probe contracts that differ in one index feature, the same documents written to both, three samples each):
+
+| feature | with | without | added | gate |
+|---|---|---|---|---|
+| `chunk.documentsCountable` (D-3), a full 14.7 KB chunk | 469.4 M | 466.8 M | +0.56 % | ≤ +5 %: kept |
+| `star.byOwner` countable (COMM-9) | 40.0 M | 39.2 M | +2.07 % | ≤ +5 %: kept |
+| `checkRun.outcome (repoId, headOid, outcome)` rangeCountable (O-07) | 111.9 M | 89.9 M | +24.5 % | reported (no kill switch) |
+
+A member transition costs 45–53 M, within 1.15 × the beta.6 close event (59.6 M → 68.5 M). The first transition on a target costs more: it creates the target's sum-tree entry, and the author path also tries the member operands first. A member's first transition on a PR costs 61.4 M; an author's first close costs 72.5 M (1.22 ×).
 
 ## 8. Deploying
 

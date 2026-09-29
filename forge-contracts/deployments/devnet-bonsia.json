@@ -93,5 +93,10 @@
     "copyOf": "7UaqHGBJBbRLJ4fUWS45cnud8PPUugJWoGTt1SKwHJ2P",
     "deployedAt": "2026-09-29T22:36:34.092Z",
     "costDash": 0.140795056
+  },
+  "rc1": {
+    "frozen": "contracts-rc1-frozen",
+    "note": "RC1 registration (WIPE-DECISIONS D-10..D-13): these ids stay until the owner's demo repos exist; a JSON change before then re-registers with deploy-v2 --force-new and moves this tag",
+    "liveVectors": "forge-contracts/scripts/rc1-live.mjs: 131 of 131 verdicts pass (2026-09-29)"
   }
 }

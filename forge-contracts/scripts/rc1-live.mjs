@@ -260,6 +260,7 @@ if (want('state') && I1 && PR3) {
   await ok('R-15', 'reopen while locked', M, COLLAB, 'transition', T(I1, 1, 0, 2, -1));
   await ok('R-15', 'unlock', M, COLLAB, 'transition', T(I1, 1, 0, 4, -16));
   await no('R-15', 'unlock an unlocked issue (c6)', M, COLLAB, 'transition', T(I1, 1, 0, 4, -16), [10422], 'c6_lockedAfter');
+  await sleep(A_BLOCK);
   await ok('R-15', "stranger's comment after the unlock", S, COLLAB, 'comment', { repoId: R, targetId: id(docId(I1)), body: 'thanks', vis: 'public' }, 'comment');
   // PR: draft, ready, lock, review gate, merge, and the terminal merged state
   await ok('state', 'draft', M, COLLAB, 'transition', T(PR3, 3, 1, 14, 8), 'transition: member draft (first on the PR)');
@@ -270,6 +271,7 @@ if (want('state') && I1 && PR3) {
   await ok('R-16', "member approval on a locked PR (asMember)", O, COLLAB, 'review', { repoId: R, patchId: id(docId(PR3)), verdict: 1, commitOid: bytes(20, 2), vis: 'public', asMember: id(O.id) }, 'review');
   await no('R-16', "a stranger's approve claiming membership", S, COLLAB, 'review', { repoId: R, patchId: id(docId(PR3)), verdict: 1, commitOid: bytes(20, 2), vis: 'public', asMember: id(S.id) }, [40120, 10422]);
   await ok('R-15', 'PR unlock', O, COLLAB, 'transition', T(PR3, 3, 1, 19, -16));
+  await sleep(A_BLOCK);
   await ok('R-16', "a stranger's approve (verdict 4)", S, COLLAB, 'review', { repoId: R, patchId: id(docId(PR3)), verdict: 4, commitOid: bytes(20, 2), vis: 'public' });
   await no('R-03', 'review stamped private on a public PR', S, COLLAB, 'review', { repoId: R, patchId: id(docId(PR3)), verdict: 3, commitOid: bytes(20, 2), vis: 'private' }, WHERE);
   await ok('state', 'merge', M, COLLAB, 'transition', T(PR3, 3, 1, 13, 2, { oid: bytes(20, 3) }), 'transition: member merge');
