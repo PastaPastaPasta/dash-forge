@@ -7,11 +7,11 @@ import { readTargetCounts, repoContractIds, repoKey, type RepoRef } from '@/lib/
 import { sessionCached } from '@/lib/view/session-cache'
 
 /**
- * The repo's issue total (the countable `issue.number` index), through the same session-cache
- * key the header's tab counts read, so the Issues tab costs no second count. Null until read,
- * or when the read failed.
+ * The repo's issue (or PR) total (the countable `issue.number` / `patch.number` index), through
+ * the same session-cache key the header's tab counts read, so the Issues and Pull requests tabs
+ * cost no second count. Null until read, or when the read failed.
  */
-export function useRepoTotals(repo: RepoRef): number | null {
+export function useRepoTotals(repo: RepoRef, type: 'issues' | 'pulls' = 'issues'): number | null {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const generation = useRepoWriteGeneration(repo)
   const { data } = useAsync(
@@ -19,5 +19,5 @@ export function useRepoTotals(repo: RepoRef): number | null {
     [ready, repoKey(repo), network, generation],
     { enabled: ready && sdk !== null },
   )
-  return data?.issues ?? null
+  return data?.[type] ?? null
 }

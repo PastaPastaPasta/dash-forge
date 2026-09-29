@@ -108,7 +108,7 @@ export function issueQueryParams(q: IssueListQuery): [string, string][] {
 }
 
 /** A change to the query; any change but a page move returns to page 1. */
-export function withQuery(q: IssueListQuery, change: Partial<IssueListQuery>): IssueListQuery {
+export function withQuery<Q extends { readonly page: number }>(q: Q, change: Partial<Q>): Q {
   const next = { ...q, ...change }
   return 'page' in change ? next : { ...next, page: 1 }
 }

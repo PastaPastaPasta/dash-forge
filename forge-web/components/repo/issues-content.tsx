@@ -99,6 +99,8 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   // of overwriting this change.
   const change = (c: Partial<IssueListQuery>): void => {
     submitIdRef.current++
+    // The overtaken lookup no longer clears the spinner itself (it is not `stillWanted`).
+    setSearching(false)
     setQuery(withQuery(query, c))
   }
 
@@ -254,6 +256,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           type="button"
           onClick={() => {
             submitIdRef.current++
+            setSearching(false)
             setQuery({ ...DEFAULT_ISSUE_QUERY, state: query.state })
           }}
           className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400"
@@ -398,7 +401,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   )
 }
 
-function StateTab({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }): JSX.Element {
+export function StateTab({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }): JSX.Element {
   return (
     <button
       role="tab"
@@ -415,7 +418,7 @@ function StateTab({ active, onClick, children }: { active: boolean; onClick: () 
 }
 
 /** Label filter: a multi-select of the repo's defined labels (every selected label must match). */
-function LabelFilter({ labels, selected, onChange }: { labels: readonly LabelDef[]; selected: readonly string[]; onChange: (l: string[]) => void }): JSX.Element {
+export function LabelFilter({ labels, selected, onChange }: { labels: readonly LabelDef[]; selected: readonly string[]; onChange: (l: string[]) => void }): JSX.Element {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const names = [...new Set([...labels.filter((l) => !l.retired).map((l) => l.name), ...selected])]
@@ -472,7 +475,7 @@ function LabelFilter({ labels, selected, onChange }: { labels: readonly LabelDef
 }
 
 /** Author / assignee filter: anyone, me, an identity id, or (assignee) nobody. */
-function PersonFilter({
+export function PersonFilter({
   label,
   value,
   signedIn,
@@ -565,10 +568,22 @@ function PersonFilter({
   )
 }
 
-function Pager({ page, hasNext, pages, onPage }: { page: number; hasNext: boolean; pages: number | null; onPage: (p: number) => void }): JSX.Element | null {
+export function Pager({
+  page,
+  hasNext,
+  pages,
+  onPage,
+  label = 'Issue pages',
+}: {
+  page: number
+  hasNext: boolean
+  pages: number | null
+  onPage: (p: number) => void
+  label?: string
+}): JSX.Element | null {
   if (page === 1 && !hasNext) return null
   return (
-    <nav aria-label="Issue pages" className="mt-4 flex items-center justify-center gap-3 text-dense">
+    <nav aria-label={label} className="mt-4 flex items-center justify-center gap-3 text-dense">
       <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => onPage(page - 1)}>
         <ChevronLeft className="h-3.5 w-3.5" aria-hidden /> Previous
       </Button>
