@@ -488,37 +488,64 @@ pub struct CheckRunObj {
     pub details_url: String,
     /// Summary text.
     pub summary: String,
+    /// The CI's own run id (`externalId`), empty when absent.
+    pub external_id: String,
     /// Runner identity id (who attested — the check is as trustworthy as this identity).
     pub runner_id: String,
 }
 
-/// Build a `check_run` event. `action` is `completed` when the run has a terminal
-/// status, else `created`.
+/// The `check_run` actions the relay sends. GitHub has four (`created`, `completed`,
+/// `rerequested`, `requested_action`); a repository webhook receives only the first two, and
+/// the other two are requests from GitHub's UI to a GitHub App, which Forge has no analogue
+/// of. A replace that moves a run to `in_progress` has no action of its own on GitHub either,
+/// so it is not delivered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckRunAction {
+    /// The run's document appeared (whatever its status).
+    Created,
+    /// The run's status became `completed` (on creation or by a replace).
+    Completed,
+}
+
+impl CheckRunAction {
+    /// The GitHub `action` string.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Completed => "completed",
+        }
+    }
+}
+
+/// Build a `check_run` event with `action`. `source_doc_id` is the dedup key (the delivery id
+/// seed): distinct per action and revision of one document, see `daemon::poll_check_runs`.
 pub fn check_run_event(
     repo: &RepositoryMeta,
     source_doc_id: &str,
+    action: CheckRunAction,
     cr: &CheckRunObj,
 ) -> WebhookEvent {
-    let action = if cr.status == "completed" {
-        "completed"
-    } else {
-        "created"
-    };
-    let conclusion = if cr.conclusion.is_empty() {
-        Value::Null
-    } else {
-        Value::String(cr.conclusion.clone())
+    let action = action.as_str();
+    let opt = |s: &str| {
+        if s.is_empty() {
+            Value::Null
+        } else {
+            Value::String(s.to_string())
+        }
     };
     let payload = json!({
         "action": action,
         "check_run": {
-            "id": cr.document_id,
+            "id": github_id(&cr.document_id),
             "node_id": cr.document_id,
             "head_sha": cr.head_oid,
+            "external_id": opt(&cr.external_id),
             "name": cr.name,
             "status": cr.status,
-            "conclusion": conclusion,
-            "details_url": cr.details_url,
+            "conclusion": opt(&cr.conclusion),
+            // forge-web has no page per check run: its commit's page is the nearest.
+            "html_url": repo.commit_url(&cr.head_oid),
+            "details_url": opt(&cr.details_url),
             "output": { "title": cr.name, "summary": cr.summary },
             "app": repo.user_json(&cr.runner_id),
         },
@@ -537,10 +564,12 @@ pub fn check_run_event(
 mod tests {
     use super::*;
 
+    const OWNER: &str = "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB";
+
     fn repo() -> RepositoryMeta {
         RepositoryMeta {
             repo_id: "5rrwgjjVUqMghnessfiXPXubpiM2QLNNXH142Hv4PDyX".into(),
-            owner_id: "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB".into(),
+            owner_id: OWNER.into(),
             name: "dash-forge".into(),
             default_branch: "main".into(),
             web_base_url: "https://forge.example".into(),
@@ -581,7 +610,10 @@ mod tests {
             p["pusher"]["name"],
             "8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB"
         );
-        assert!(p["compare"].as_str().unwrap().contains("compare/1111"));
+        assert!(p["compare"]
+            .as_str()
+            .unwrap()
+            .ends_with("&oid=2222222222222222222222222222222222222222"));
     }
 
     #[test]
@@ -627,6 +659,7 @@ mod tests {
             title: "Bug".into(),
             body: String::new(),
             open: true,
+            is_pr: false,
         };
         let e = issue_comment_event(&repo(), "cmt1", &issue, "cmt1", "commenter1", "looks good");
         assert_eq!(e.event, "issue_comment");
@@ -646,18 +679,32 @@ mod tests {
             conclusion: "success".into(),
             details_url: "https://ci.example/1".into(),
             summary: "ok".into(),
+            external_id: "gh-run-42".into(),
             runner_id: "runner1".into(),
         };
-        let e = check_run_event(&repo(), "cr1", &cr);
+        let e = check_run_event(&repo(), "cr1:completed:3", CheckRunAction::Completed, &cr);
         assert_eq!(e.event, "check_run");
+        assert_eq!(e.action, Some("completed"));
         assert_eq!(e.payload["action"], "completed");
-        assert_eq!(e.payload["check_run"]["head_sha"], "deadbeef");
-        assert_eq!(e.payload["check_run"]["conclusion"], "success");
-        assert_eq!(e.payload["check_run"]["status"], "completed");
+        assert_eq!(e.source_doc_id, "cr1:completed:3");
+        let run = &e.payload["check_run"];
+        assert_eq!(run["id"], github_id("cr1"));
+        assert_eq!(run["node_id"], "cr1");
+        assert_eq!(run["head_sha"], "deadbeef");
+        assert_eq!(run["external_id"], "gh-run-42");
+        assert_eq!(run["conclusion"], "success");
+        assert_eq!(run["status"], "completed");
+        assert_eq!(run["details_url"], "https://ci.example/1");
+        assert_eq!(
+            run["html_url"],
+            format!(
+                "https://forge.example/repo/commit/?owner={OWNER}&name=dash-forge&oid=deadbeef"
+            )
+        );
     }
 
     #[test]
-    fn check_run_created_when_not_completed() {
+    fn check_run_created_is_the_action_asked_for() {
         let cr = CheckRunObj {
             document_id: "cr2".into(),
             head_oid: "d".into(),
@@ -666,11 +713,14 @@ mod tests {
             conclusion: String::new(),
             details_url: String::new(),
             summary: String::new(),
+            external_id: String::new(),
             runner_id: "runner1".into(),
         };
-        let e = check_run_event(&repo(), "cr2", &cr);
+        let e = check_run_event(&repo(), "cr2", CheckRunAction::Created, &cr);
         assert_eq!(e.payload["action"], "created");
         assert!(e.payload["check_run"]["conclusion"].is_null());
+        assert!(e.payload["check_run"]["external_id"].is_null());
+        assert!(e.payload["check_run"]["details_url"].is_null());
     }
 
     #[test]
@@ -682,6 +732,7 @@ mod tests {
             title: "T".into(),
             body: "B".into(),
             open: false,
+            is_pr: false,
         };
         let e = issues_event(&repo(), "i12", "closed", &issue);
         assert_eq!(e.event, "issues");
@@ -735,7 +786,7 @@ mod tests {
         assert!(e.payload["release"]["html_url"]
             .as_str()
             .unwrap()
-            .ends_with("/releases/tag/v1.0.0"));
+            .ends_with("/repo/release/?owner=8hJmcHWTsdvkHyCrk4UgjbyugDAmE7QfuCTQXpXAc7nB&name=dash-forge&tag=v1.0.0"));
         assert_eq!(
             e.payload["repository"]["dash_repo_id"],
             "5rrwgjjVUqMghnessfiXPXubpiM2QLNNXH142Hv4PDyX"
@@ -747,5 +798,268 @@ mod tests {
         let a = repo().to_json()["id"].as_u64().unwrap();
         let b = repo().to_json()["id"].as_u64().unwrap();
         assert_eq!(a, b);
+    }
+
+    /// One event of every kind the relay sends, with real-length base58 ids.
+    fn every_event() -> Vec<WebhookEvent> {
+        let r = repo();
+        let doc = "9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD";
+        let who = "Dd1m1JJM3M5DjBaXaCbC5hXBsU6248KHpGcBAtaHsqc7";
+        let pr = PullRequestObj {
+            number: 6,
+            document_id: doc.into(),
+            author: who.into(),
+            title: "T".into(),
+            body: String::new(),
+            base_ref: "refs/heads/main".into(),
+            head_oid: "ab".repeat(20),
+            open: true,
+            merged: false,
+        };
+        let issue = |is_pr| IssueObj {
+            number: 1,
+            document_id: doc.into(),
+            author: who.into(),
+            title: "T".into(),
+            body: String::new(),
+            open: true,
+            is_pr,
+        };
+        let rel = ReleaseObj {
+            document_id: doc.into(),
+            tag_name: "v2.0.0".into(),
+            name: "Two".into(),
+            body: String::new(),
+            yanked: false,
+            author: who.into(),
+            assets: json!([]),
+        };
+        let cr = CheckRunObj {
+            document_id: doc.into(),
+            head_oid: "ab".repeat(20),
+            name: "build".into(),
+            status: "completed".into(),
+            conclusion: "success".into(),
+            details_url: String::new(),
+            summary: String::new(),
+            external_id: String::new(),
+            runner_id: who.into(),
+        };
+        vec![
+            push_event(
+                &r,
+                doc,
+                "refs/heads/main",
+                ZERO_OID,
+                &"ab".repeat(20),
+                false,
+                who,
+            ),
+            pull_request_event(&r, doc, "opened", &pr),
+            issues_event(&r, doc, "opened", &issue(false)),
+            issue_comment_event(&r, doc, &issue(false), doc, who, "x"),
+            issue_comment_event(&r, doc, &issue(true), doc, who, "x"),
+            pull_request_review_event(&r, doc, &pr, who, 1, "", ""),
+            release_event(&r, doc, "published", &rel),
+            check_run_event(&r, doc, CheckRunAction::Created, &cr),
+        ]
+    }
+
+    /// Every `id` anywhere in `v`, with its JSON path.
+    fn ids<'a>(v: &'a Value, path: &str, out: &mut Vec<(String, &'a Value)>) {
+        match v {
+            Value::Object(m) => {
+                for (k, x) in m {
+                    let p = format!("{path}.{k}");
+                    if k == "id" {
+                        out.push((p.clone(), x));
+                    }
+                    ids(x, &p, out);
+                }
+            }
+            Value::Array(a) => a.iter().for_each(|x| ids(x, path, out)),
+            _ => {}
+        }
+    }
+
+    /// D-605: go-github decodes every `id` as `int64` and JavaScript's `JSON.parse` rounds
+    /// integers above 2^53 − 1. Before the fix, `repository.id` was a full u64 and the others
+    /// were base58 strings.
+    #[test]
+    fn every_id_is_a_js_safe_integer_and_node_id_keeps_the_platform_id() {
+        for e in every_event() {
+            let mut found = Vec::new();
+            ids(&e.payload, e.event, &mut found);
+            assert!(
+                found.len() >= 3,
+                "{}: repository, owner, sender at least",
+                e.event
+            );
+            for (path, id) in found {
+                let n = id
+                    .as_u64()
+                    .unwrap_or_else(|| panic!("{path} is not an integer: {id}"));
+                assert!(
+                    (1..=MAX_SAFE_ID).contains(&n),
+                    "{path} = {n} is not JS-safe"
+                );
+                assert!(i64::try_from(n).is_ok(), "{path} fits int64");
+            }
+            assert!(e.payload["repository"]["node_id"].is_string());
+        }
+        // The id is derived from the Platform id alone, and keeps it in `node_id`.
+        let e = &every_event()[1];
+        let pr = &e.payload["pull_request"];
+        assert_eq!(
+            pr["node_id"],
+            "9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD"
+        );
+        assert_eq!(
+            pr["id"],
+            github_id("9r27eDsuXEqoMNymW1A2MKFrpBhzSkepVKwXrGzq9dUD")
+        );
+        assert_eq!(
+            e.payload["repository"]["dash_repo_id"],
+            e.payload["repository"]["node_id"]
+        );
+        // Stable across relay instances: a fixed input, a fixed value.
+        assert_eq!(
+            github_id("5rrwgjjVUqMghnessfiXPXubpiM2QLNNXH142Hv4PDyX"),
+            u64::from_be_bytes(
+                Sha256::digest(b"5rrwgjjVUqMghnessfiXPXubpiM2QLNNXH142Hv4PDyX")[..8]
+                    .try_into()
+                    .unwrap()
+            ) & MAX_SAFE_ID
+        );
+        assert_ne!(github_id("a"), github_id("b"));
+    }
+
+    /// D-605, end to end: go-github's `ParseWebHook` (v66, `testdata/webhook-parse`) decodes
+    /// every payload into its typed event. Before the fix it refused push (`repository.id`
+    /// over int64) and issues/pull_request (string ids): the same checker run on the QA
+    /// pass's recorded deliveries fails all 52. Needs `go` and the module (cached, or fetched
+    /// from the proxy). It is skipped with a note when `go` is absent or cannot build the
+    /// checker (offline, no module cache); the numeric bounds above hold regardless.
+    #[test]
+    fn payloads_parse_with_go_github() {
+        if std::process::Command::new("go")
+            .arg("version")
+            .output()
+            .is_err()
+        {
+            eprintln!("skipping: go is not available");
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("relay-gogh-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (i, e) in every_event().iter().enumerate() {
+            std::fs::write(
+                dir.join(format!("{}.{i}.json", e.event)),
+                serde_json::to_vec(&e.payload).unwrap(),
+            )
+            .unwrap();
+        }
+        let out = std::process::Command::new("go")
+            .args(["run", "."])
+            .arg(&dir)
+            .current_dir(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/testdata/webhook-parse"
+            ))
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        // The checker prints one line per payload once it runs; nothing on stdout means `go`
+        // could not build it (no network and no module cache), not a refused payload.
+        if stdout.trim().is_empty() && !out.status.success() {
+            eprintln!("skipping: the go-github checker did not build: {stderr}");
+            return;
+        }
+        assert!(
+            out.status.success(),
+            "go-github refused payloads:\n{stdout}{stderr}"
+        );
+        assert_eq!(
+            stdout.matches(": ok").count(),
+            every_event().len(),
+            "{stdout}"
+        );
+    }
+
+    /// D-606: every synthesized link is a forge-web route (`repoHref`'s shape: route with a
+    /// trailing slash, `owner`/`name` query params). Before, they were `/<owner>/<name>/…`
+    /// paths that 404, `compare` and `#comment-` anchors included.
+    #[test]
+    fn links_are_forge_web_query_routes() {
+        let base = format!("https://forge.example/repo/?owner={OWNER}&name=dash-forge");
+        let at = |route: &str, extra: &str| {
+            format!("https://forge.example/repo/{route}/?owner={OWNER}&name=dash-forge&{extra}")
+        };
+        let who = "https://forge.example/u/?name=Dd1m1JJM3M5DjBaXaCbC5hXBsU6248KHpGcBAtaHsqc7";
+        let ev = every_event();
+        assert_eq!(ev[0].payload["repository"]["html_url"], base);
+        assert_eq!(
+            ev[0].payload["compare"],
+            at("commit", &format!("oid={}", "ab".repeat(20))),
+            "no compare page: the pushed commit"
+        );
+        assert_eq!(ev[0].payload["sender"]["html_url"], who);
+        assert_eq!(
+            ev[1].payload["pull_request"]["html_url"],
+            at("pull", "number=6")
+        );
+        assert_eq!(ev[2].payload["issue"]["html_url"], at("issue", "number=1"));
+        assert_eq!(
+            ev[3].payload["comment"]["html_url"],
+            at("issue", "number=1")
+        );
+        assert_eq!(
+            ev[4].payload["comment"]["html_url"],
+            at("pull", "number=1"),
+            "a comment on a PR links the PR route"
+        );
+        assert!(ev[4].payload["issue"]["pull_request"].is_object());
+        assert!(ev[3].payload["issue"].get("pull_request").is_none());
+        assert_eq!(ev[5].payload["review"]["html_url"], at("pull", "number=6"));
+        assert_eq!(
+            ev[6].payload["release"]["html_url"],
+            at("release", "tag=v2.0.0")
+        );
+        for e in &ev {
+            let s = e.payload.to_string();
+            assert!(
+                !s.contains("#comment-") && !s.contains("#review-"),
+                "no anchors"
+            );
+            assert!(!s.contains("/compare/") && !s.contains("/releases/tag/"));
+        }
+
+        // A deletion links the repo; values are query-encoded; a trailing slash is ignored.
+        let mut r = repo();
+        r.web_base_url = "https://forge.example/".into();
+        r.name = "a b&c".into();
+        let del = push_event(&r, "d", "refs/heads/x", "aa", ZERO_OID, false, "x");
+        assert_eq!(
+            del.payload["compare"],
+            format!("https://forge.example/repo/?owner={OWNER}&name=a+b%26c")
+        );
+        let rel = ReleaseObj {
+            document_id: "d".into(),
+            tag_name: "v1.0/rc+1".into(),
+            name: String::new(),
+            body: String::new(),
+            yanked: false,
+            author: "x".into(),
+            assets: json!([]),
+        };
+        assert!(
+            release_event(&r, "d", "published", &rel).payload["release"]["html_url"]
+                .as_str()
+                .unwrap()
+                .ends_with("&tag=v1.0%2Frc%2B1")
+        );
     }
 }
