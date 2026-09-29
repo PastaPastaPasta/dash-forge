@@ -1243,8 +1243,8 @@ export async function loadBrowseContext(
  * commit column and the commit count read it instead of walking history. From the manifests the
  * resolve already read, so it costs nothing until a view loads an index.
  */
-export function attachRepoHistory(sdk: EvoSDK | null, repo: RepoRef, reader: BrowseReader, manifests: readonly PackManifest[]): void {
-  attachHistory(reader.memoScope, sdk === null ? null : historySource(manifests, (m) => loadArtifactBytes(sdk, repo, m)))
+function attachRepoHistory(sdk: EvoSDK, repo: RepoRef, reader: BrowseReader, manifests: readonly PackManifest[]): void {
+  attachHistory(reader.memoScope, historySource(manifests, (m) => loadArtifactBytes(sdk, repo, m)))
 }
 
 /**

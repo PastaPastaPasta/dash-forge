@@ -9,7 +9,10 @@
  *   commitCount v | firstParentCount v | rootTime v | tipTime v
  *   nCommits v | (oid (20) | authorTime v | subjectLen v | subject)*
  *   nPaths v   | (shared v | suffixLen v | suffix | commit v)*      byte-sorted, front-coded
+ *   (tag v | len v | bytes)*                                          extension sections
  *
+ * The layout up to the paths is fixed for every version; a later version adds tagged sections
+ * after them, which this reader skips (it accepts any version from 1 on).
  * `v` is an LEB128 varint, times are author times in seconds. A delta (non-zero base) lists
  * only the paths changed since its base's tip, with its own tip's counts.
  */
@@ -84,7 +87,7 @@ const utf8 = new TextDecoder('utf-8', { fatal: false })
 export function parseHistoryIndex(compressed: Uint8Array): HistoryIndex {
   const c = new Cursor(ungzip(compressed))
   const head = c.take(5)
-  if (MAGIC.some((m, i) => head[i] !== m) || head[4] !== VERSION) throw new Error('not a v1 history index')
+  if (MAGIC.some((m, i) => head[i] !== m) || (head[4] as number) < VERSION) throw new Error('not a history index')
   const tip = bytesToHex(c.take(OID_LEN))
   const baseBytes = c.take(32)
   const base = baseBytes.every((b) => b === 0) ? null : bytesToHex(baseBytes)
@@ -113,7 +116,11 @@ export function parseHistoryIndex(compressed: Uint8Array): HistoryIndex {
     paths.set(utf8.decode(path), commit)
     prev = path
   }
-  if (!c.done) throw new Error('history index has trailing bytes')
+  // A later version's extension sections: whole `(tag, len, bytes)` records, skipped.
+  while (!c.done) {
+    c.varint()
+    c.take(c.varint())
+  }
   return { tip, base, commitCount, firstParentCount, rootWhen, tipWhen, paths }
 }
 

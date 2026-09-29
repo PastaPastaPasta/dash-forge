@@ -411,14 +411,9 @@ impl ReindexPlan {
         self.manifests.iter().any(|m| m.kind == git && m.storage == 0)
     }
 
-    /// The manifests the plan was made from (newest first).
-    pub fn manifests(&self) -> &[PackManifestInfo] {
-        &self.manifests
-    }
-
-    /// The members whose copies count.
-    pub fn roles(&self) -> &RoleMap {
-        &self.roles
+    /// The history index plan for `tip`, from the same manifests ([`plan_history_index`]).
+    pub fn history_plan(&self, tip: [u8; 20]) -> HistoryPlan {
+        plan_history_index(&self.manifests, &self.roles, tip)
     }
 
     /// Objects the published fragment will index (what its size, and price, follow).
@@ -2373,19 +2368,17 @@ impl<'a> RepoService<'a> {
             supersedes,
             tips: Vec::new(),
         };
-        self.store_artifact(repo, artifact, target)
-            .await
-            .map(|(id, _)| id)
+        self.store_artifact(repo, artifact, target).await
     }
 
     /// Seal (for a private repository) and upload a browse artifact that locates itself, then
-    /// record its `packManifest`. Returns the manifest id and the stored bytes' `packHash`.
+    /// record its `packManifest`. Returns the manifest id.
     async fn store_artifact(
         &self,
         repo: &RepoRef,
         artifact: Artifact,
         target: RepackTarget<'_>,
-    ) -> Result<(String, [u8; 32])> {
+    ) -> Result<String> {
         let bytes = self.pack_codec(repo).await?.seal(artifact.plain)?;
         let meta = PackMeta::for_bytes(&bytes);
         let pack_hash = meta.pack_hash_bytes()?;
@@ -2398,8 +2391,7 @@ impl<'a> RepoService<'a> {
             }
             other => self.store_consolidated(repo, &bytes, &meta, other).await?,
         };
-        let id = self
-            .write_pack_manifest(
+        self.write_pack_manifest(
                 repo,
                 &PackManifestInput {
                     pack_hash,
@@ -2416,8 +2408,7 @@ impl<'a> RepoService<'a> {
                     tips: artifact.tips.iter().map(|t| t.to_vec()).collect(),
                 },
             )
-            .await?;
-        Ok((id, pack_hash))
+            .await
     }
 
     /// What the next history index of `tip` should be (see [`plan_history_index`]), from the
@@ -2441,10 +2432,9 @@ impl<'a> RepoService<'a> {
         target: RepackTarget<'_>,
     ) -> Result<HistoryPublished> {
         let PreparedHistory { index, artifact } = prepared;
-        let (manifest_id, pack_hash) = self.store_artifact(repo, artifact, target).await?;
+        let manifest_id = self.store_artifact(repo, artifact, target).await?;
         Ok(HistoryPublished {
             manifest_id,
-            pack_hash,
             rows: index.paths.len() as u64,
             delta: index.base.is_some(),
             commit_count: index.commit_count,
@@ -2488,13 +2478,11 @@ pub struct HistoryPlan {
     pub live: Vec<HistoryEntry>,
 }
 
-/// What [`RepoService::publish_history_index`] published.
+/// What [`RepoService::store_history_index`] published.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryPublished {
     /// The manifest document id.
     pub manifest_id: String,
-    /// The artifact's `packHash`.
-    pub pack_hash: [u8; 32],
     /// Path rows it holds.
     pub rows: u64,
     /// A delta over a full index (else a full index).
@@ -2572,58 +2560,41 @@ pub fn prepare_history_index(
         return Ok(None);
     }
     let tip_hex = hex::encode(tip);
-    let full = |plan: &HistoryPlan| -> Result<Option<PreparedHistory>> {
-        let index = compute(git_dir, &tip_hex, None)?
-            .ok_or_else(|| Error::Config("history index: no full index computed".into()))?;
-        let plain = index.to_compressed()?;
-        let artifact = Artifact {
-            kind: crate::pack::KIND_HISTORY_INDEX,
-            rows: index.paths.len() as u64,
-            plain,
-            supersedes: plan
-                .live
-                .iter()
-                .take(MAX_SUPERSEDES)
-                .map(|e| e.pack_hash)
-                .collect(),
-            tips: vec![tip],
-        };
-        Ok(Some(PreparedHistory { index, artifact }))
-    };
-    let Some(base) = &plan.base else {
-        return full(plan);
-    };
-    // A delta over the base, when the base's tip is on the new tip's first-parent chain and
-    // the local repository still holds it.
-    let delta = match compute(git_dir, &tip_hex, Some(&hex::encode(base.tip))) {
-        Ok(Some(mut d)) => {
-            d.base = Some(base.pack_hash);
-            d
+    // A delta over the base, when the base's tip is on the new tip's first-parent chain (and the
+    // local repository holds it) and the delta is under half the base's size.
+    if let Some(base) = &plan.base {
+        if let Ok(Some(mut delta)) = compute(git_dir, &tip_hex, Some(&hex::encode(base.tip))) {
+            delta.base = Some(base.pack_hash);
+            let plain = delta.to_compressed()?;
+            if (plain.len() as u64) * 2 <= base.size_bytes {
+                // A delta is cumulative: it replaces the earlier deltas of the same base.
+                let earlier = plan.live.iter().filter(|e| e.base_tip == Some(base.tip));
+                return Ok(Some(prepared(delta, plain, vec![tip, base.tip], earlier)));
+            }
         }
-        Ok(None) | Err(_) => return full(plan),
-    };
-    let plain = delta.to_compressed()?;
-    if plain.len() as u64 * 2 > base.size_bytes {
-        return full(plan);
     }
+    let index = compute(git_dir, &tip_hex, None)?
+        .ok_or_else(|| Error::Config("history index: no full index computed".into()))?;
+    let plain = index.to_compressed()?;
+    Ok(Some(prepared(index, plain, vec![tip], plan.live.iter())))
+}
+
+/// A computed index as the artifact to store, superseding `replaces` (at most
+/// [`MAX_SUPERSEDES`]).
+fn prepared<'e>(
+    index: crate::pack::HistoryIndex,
+    plain: Vec<u8>,
+    tips: Vec<[u8; 20]>,
+    replaces: impl Iterator<Item = &'e HistoryEntry>,
+) -> PreparedHistory {
     let artifact = Artifact {
         kind: crate::pack::KIND_HISTORY_INDEX,
-        rows: delta.paths.len() as u64,
+        rows: index.paths.len() as u64,
         plain,
-        // The earlier deltas of the same base: a delta is cumulative.
-        supersedes: plan
-            .live
-            .iter()
-            .filter(|e| e.base_tip == Some(base.tip))
-            .take(MAX_SUPERSEDES)
-            .map(|e| e.pack_hash)
-            .collect(),
-        tips: vec![tip, base.tip],
+        supersedes: replaces.take(MAX_SUPERSEDES).map(|e| e.pack_hash).collect(),
+        tips,
     };
-    Ok(Some(PreparedHistory {
-        index: delta,
-        artifact,
-    }))
+    PreparedHistory { index, artifact }
 }
 
 /// Every tip (hex `newOid`) that a **valid** update of `ref_name` in `repo` ever set: updates

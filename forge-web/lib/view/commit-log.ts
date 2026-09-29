@@ -428,10 +428,13 @@ export interface LastCommitColumn {
   readonly more?: () => void
 }
 
-/** The history index a column may read: its tips, and the index of one of them. */
-export interface ColumnHistory {
+/**
+ * The push-time history index as the column and the count read it (a `HistorySource`): which
+ * tips an index covers, and the index of one of them.
+ */
+export interface IndexedHistory {
   covers(tip: string): boolean
-  lastChanges(tip: string, paths: readonly string[]): Promise<Map<string, LastCommit>>
+  load(tip: string): Promise<{ readonly paths: ReadonlyMap<string, LastCommit>; readonly commitCount: number }>
 }
 
 /**
@@ -457,7 +460,7 @@ export function walkCommitColumn(
     limit = LAST_COMMIT_WALK,
     dirPath = '',
     history = null,
-  }: WalkOptions & { readonly limit?: number; readonly dirPath?: string; readonly history?: ColumnHistory | null } = {},
+  }: WalkOptions & { readonly limit?: number; readonly dirPath?: string; readonly history?: IndexedHistory | null } = {},
 ): Promise<void> {
   const found = new Map<string, LastCommit>()
   const report = (state: Omit<LastCommitColumn, 'found'>): void => {
@@ -466,9 +469,9 @@ export function walkCommitColumn(
   const pathOf = (name: string): string => (dirPath === '' ? name : `${dirPath}/${name}`)
   const fromIndex = async (tip: string, open: readonly string[]): Promise<void> => {
     if (history === null || open.length === 0) return
-    const got = await history.lastChanges(tip, open.map(pathOf))
+    const { paths } = await history.load(tip)
     for (const name of open) {
-      const c = got.get(pathOf(name))
+      const c = paths.get(pathOf(name))
       if (c !== undefined) found.set(name, c)
     }
   }
@@ -476,6 +479,9 @@ export function walkCommitColumn(
 
   const step = async (from: WalkCursor | undefined): Promise<void> => {
     const open = names.filter((n) => !found.has(n))
+    // A continued walk is under way again: its open cells read as pending, and no second
+    // `more` is offered while it runs.
+    if (from !== undefined) report({ done: false, failed: false, source: 'walk' })
     try {
       if (from === undefined && history?.covers(tipOid) === true) {
         await fromIndex(tipOid, open)
@@ -515,25 +521,6 @@ export function walkCommitColumn(
   return step(undefined)
 }
 
-/** A column history over a {@link HistorySource}-like loader (the browse context's). */
-export function columnHistory(source: {
-  readonly byTip: ReadonlyMap<string, unknown>
-  load(tip: string): Promise<{ readonly paths: ReadonlyMap<string, LastCommit> }>
-}): ColumnHistory {
-  return {
-    covers: (tip) => source.byTip.has(tip),
-    async lastChanges(tip, paths) {
-      const ix = await source.load(tip)
-      const out = new Map<string, LastCommit>()
-      for (const p of paths) {
-        const c = ix.paths.get(p)
-        if (c !== undefined) out.set(p, c)
-      }
-      return out
-    },
-  }
-}
-
 /**
  * The ref bar's `n commits`. `exact`: the count is every commit reachable from the tip, as
  * `git rev-list --count` gives it (a history index said so). Otherwise it is a lower bound shown
@@ -559,8 +546,8 @@ export async function countCommits(
   {
     walker = historyWalker(reader),
     signal,
-    counts,
-  }: WalkOptions & { readonly counts?: { covers(tip: string): boolean; count(tip: string): Promise<number> } | null } = {},
+    history,
+  }: WalkOptions & { readonly history?: IndexedHistory | null } = {},
 ): Promise<CommitCount> {
   let count = 0
   let merges = false
@@ -569,8 +556,8 @@ export async function countCommits(
   try {
     while (oid !== undefined && count < cap && !seen.has(oid)) {
       signal?.throwIfAborted()
-      if (counts?.covers(oid) === true) {
-        const base = await counts.count(oid)
+      if (history?.covers(oid) === true) {
+        const base = (await history.load(oid)).commitCount
         return { count: base + count, capped: merges, fromIndex: true }
       }
       seen.add(oid)

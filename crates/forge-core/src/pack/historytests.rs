@@ -230,9 +230,14 @@ fn round_trips_and_refuses_damaged_bytes() {
         e.finish().unwrap()
     };
     assert!(HistoryIndex::parse(&gz(&body[..body.len() - 1])).is_err());
-    let mut longer = body.clone();
-    longer.push(0);
-    assert!(HistoryIndex::parse(&gz(&longer)).is_err());
+    // A later version's extension section is skipped; a torn one is refused.
+    let mut extended = body.clone();
+    extended[4] = 2;
+    extended.extend_from_slice(&[7, 3, 0xaa, 0xbb, 0xcc]);
+    assert_eq!(HistoryIndex::parse(&gz(&extended)).unwrap(), ix);
+    let mut torn = body.clone();
+    torn.extend_from_slice(&[7, 3, 0xaa]);
+    assert!(HistoryIndex::parse(&gz(&torn)).is_err());
     let mut wrong = body;
     wrong[0] = b'X';
     assert!(HistoryIndex::parse(&gz(&wrong)).is_err());

@@ -6,14 +6,12 @@
  * in the browser.
  */
 
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import {
-  columnHistory,
   countCommits,
   LAST_COMMIT_WALK,
   walkCommitColumn,
-  type ColumnHistory,
   type CommitCount,
   type LastCommit,
   type LastCommitColumn,
@@ -29,14 +27,6 @@ export const HISTORY_INDEX_NOTE = "from the history index the repository's pushe
 
 const WALKING: LastCommitColumn = { found: new Map(), done: false, failed: false }
 
-/** The history index of the context `reader` belongs to, as the column and the count read it. */
-export function useColumnHistory(reader: ObjectReader): ColumnHistory | null {
-  return useMemo(() => {
-    const source = historyOf(reader)
-    return source === null ? null : columnHistory(source)
-  }, [reader])
-}
-
 /**
  * The commit column of the listing of `dirPath` at `tipOid`, looked up again for a new tip or
  * listing. `names` null: the listing is not read yet (nothing starts).
@@ -48,7 +38,7 @@ export function useLastCommits(
   names: readonly string[] | null,
   walker?: WalkOptions['walker'],
 ): LastCommitColumn {
-  const history = useColumnHistory(reader)
+  const history = historyOf(reader)
   const [state, setState] = useState<LastCommitColumn & { readonly key: string }>({ key: '', ...WALKING })
   const key = names === null ? '' : `${tipOid}\0${dirPath}\0${names.join('\0')}`
   useEffect(() => {
@@ -74,12 +64,7 @@ export function countWithHistory(
   cap: number,
   opts: WalkOptions,
 ): Promise<CommitCount> {
-  const source = historyOf(reader)
-  const counts =
-    source === null
-      ? null
-      : { covers: (tip: string) => source.byTip.has(tip), count: async (tip: string) => (await source.load(tip)).commitCount }
-  return countCommits(reader, tipOid, cap, { ...opts, counts })
+  return countCommits(reader, tipOid, cap, { ...opts, history: historyOf(reader) })
 }
 
 /** `12,345 commits`, `100+ commits`, or `Commits` while unknown. */

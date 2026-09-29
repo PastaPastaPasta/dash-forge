@@ -657,7 +657,7 @@ fn fresh_history_credits(git_dir: &Path, refs: &Refs, storage: PackStorage, defa
     };
     let Some(tip) = tips
         .first()
-        .and_then(|t| <[u8; 20]>::try_from(hex::decode(t).ok()?).ok())
+        .and_then(|t| forge_core::pack::historyindex::parse_hex_oid(t.as_bytes()).ok())
     else {
         return 0;
     };

@@ -22,7 +22,14 @@
 //! commitCount v | firstParentCount v | rootTime v | tipTime v
 //! nCommits v | (oid (20) | authorTime v | subjectLen v | subject)*
 //! nPaths v   | (shared v | suffixLen v | suffix | commit v)*      byte-sorted, front-coded
+//! (tag v | len v | bytes)*                                          extension sections
 //! ```
+//!
+//! **Extending it.** Everything up to the paths is fixed for every version. What a later
+//! version adds goes in a tagged section after them; a reader skips a tag it does not know, so
+//! v1 readers read a v2 index (the last-change column and the counts) and ignore what v2 added.
+//! `version` names the newest layout the writer used; a reader accepts any version from 1 on.
+//! v1 writes no section.
 //!
 //! `v` is an LEB128 varint; times are author times in seconds. A **delta** index (non-zero
 //! base) lists only the paths changed since its base's tip; its counts are its own tip's.
@@ -133,8 +140,8 @@ impl HistoryIndex {
             buf: &body,
             pos: 0,
         };
-        if r.take(4)? != MAGIC || r.take(1)?[0] != VERSION {
-            return Err(bad("not a v1 history index"));
+        if r.take(4)? != MAGIC || r.take(1)?[0] < VERSION {
+            return Err(bad("not a history index"));
         }
         let tip: [u8; OID_LEN] = r.take(OID_LEN)?.try_into().expect("20 bytes");
         let base: [u8; 32] = r.take(32)?.try_into().expect("32 bytes");
@@ -178,8 +185,11 @@ impl HistoryIndex {
             paths.insert(path.clone(), commit);
             prev = path;
         }
-        if r.pos != body.len() {
-            return Err(bad("trailing bytes"));
+        // Extension sections a later version adds: whole `(tag, len, bytes)` records, skipped.
+        while r.pos < body.len() {
+            let _tag = r.varint()?;
+            let len = r.len()?;
+            r.take(len)?;
         }
         Ok(Self {
             tip,
@@ -290,20 +300,22 @@ pub fn compute(repo: &Path, tip: &str, since: Option<&str>) -> Result<Option<His
         &["rev-list", "--first-parent", "--max-parents=0", "--end-of-options", &tip_hex],
         None,
     )?;
-    let root_hex = String::from_utf8_lossy(&root)
-        .lines()
-        .last()
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    let times = author_times(repo, &[tip_hex.clone(), root_hex])?;
+    let root_oid = parse_hex_oid(
+        String::from_utf8_lossy(&root)
+            .lines()
+            .last()
+            .unwrap_or_default()
+            .trim()
+            .as_bytes(),
+    )?;
+    let times = commit_meta(repo, &[tip_oid, root_oid])?;
     Ok(Some(HistoryIndex {
         tip: tip_oid,
         base: None,
         commit_count,
         first_parent_count,
-        tip_time: times.first().copied().unwrap_or(0),
-        root_time: times.get(1).copied().unwrap_or(0),
+        tip_time: times[0].0,
+        root_time: times[1].0,
         commits,
         paths,
     }))
@@ -412,15 +424,6 @@ fn clip(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
-/// Author times (seconds) of `revs`, in order.
-fn author_times(repo: &Path, revs: &[String]) -> Result<Vec<u64>> {
-    let oids = revs
-        .iter()
-        .map(|r| rev_parse(repo, r))
-        .collect::<Result<Vec<_>>>()?;
-    Ok(commit_meta(repo, &oids)?.into_iter().map(|(t, _)| t).collect())
-}
-
 /// Whether `ancestor` is on `tip`'s first-parent chain.
 fn on_first_parent_chain(repo: &Path, tip: &str, ancestor: &str) -> Result<bool> {
     if tip == ancestor {
@@ -460,7 +463,8 @@ fn rev_parse(repo: &Path, rev: &str) -> Result<[u8; OID_LEN]> {
     parse_hex_oid(String::from_utf8_lossy(&out).trim().as_bytes())
 }
 
-fn parse_hex_oid(hex_bytes: &[u8]) -> Result<[u8; OID_LEN]> {
+/// A 40-hex commit id as bytes.
+pub fn parse_hex_oid(hex_bytes: &[u8]) -> Result<[u8; OID_LEN]> {
     let bytes = hex::decode(hex_bytes).map_err(|_| bad("not a hex oid"))?;
     bytes.try_into().map_err(|_| bad("an oid is not 20 bytes"))
 }

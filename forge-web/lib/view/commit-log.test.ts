@@ -2,7 +2,7 @@
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { countCommits, historyWalker, lastCommitsForDir, walkCommitColumn, type ColumnHistory, type LastCommit, type LastCommitColumn } from './commit-log'
+import { countCommits, historyWalker, lastCommitsForDir, walkCommitColumn, type IndexedHistory, type LastCommit, type LastCommitColumn } from './commit-log'
 import { Store } from './diff-fixtures'
 
 describe('lastCommitsForDir', () => {
@@ -172,14 +172,13 @@ describe('the commit column with a history index', () => {
   /** An index of `indexTip` answering every path it is asked for, counting loads. */
   function index(indexTip: string, old: string) {
     let loads = 0
-    const h: ColumnHistory = {
+    const paths = new Map<string, LastCommit>(['a', 'b', 'c'].map((p) => [p, { oid: old, subject: `indexed ${p}`, when: 5_000 }]))
+    const h: IndexedHistory = {
       covers: (tip) => tip === indexTip,
-      async lastChanges(tip, paths) {
+      async load(tip) {
         loads++
         expect(tip).toBe(indexTip)
-        const out = new Map<string, LastCommit>()
-        for (const p of paths) out.set(p, { oid: old, subject: `indexed ${p}`, when: 5_000 })
-        return out
+        return { paths, commitCount: 0 }
       },
     }
     return { h, loads: () => loads }
@@ -220,17 +219,13 @@ describe('the commit column with a history index', () => {
   it('in a subdirectory the index is asked for full paths', async () => {
     const st = new Store()
     const tip = st.commit(st.files({ 'src/x.rs': '1' }), [], 'root')
-    let asked: readonly string[] = []
-    const h: ColumnHistory = {
+    const h: IndexedHistory = {
       covers: () => true,
-      async lastChanges(_tip, paths) {
-        asked = paths
-        return new Map(paths.map((p) => [p, { oid: tip, subject: 's', when: 1 }]))
-      },
+      // Keyed by full path: `x.rs` alone would not be found.
+      load: async () => ({ paths: new Map([['src/x.rs', { oid: tip, subject: 's', when: 1 }]]), commitCount: 1 }),
     }
     const states: LastCommitColumn[] = []
     await walkCommitColumn(st.reader(), tip, ['x.rs'], (s) => states.push(s), { history: h, dirPath: 'src' })
-    expect(asked).toEqual(['src/x.rs'])
     expect(states[states.length - 1]?.found.get('x.rs')?.subject).toBe('s')
   })
 
@@ -249,6 +244,9 @@ describe('the commit column with a history index', () => {
       if (more === undefined) break
       const before = states.length
       more()
+      // The continued walk reads as under way at once (cells pending, no second control).
+      expect(states[before]).toMatchObject({ done: false })
+      expect(states[before]?.more).toBeUndefined()
       await vi.waitFor(() => {
         expect(states.length).toBeGreaterThan(before)
         expect(states[states.length - 1]?.done).toBe(true)
@@ -263,6 +261,10 @@ describe('the commit column with a history index', () => {
 })
 
 describe('countCommits with a history index', () => {
+  const counted = (covers: (tip: string) => boolean, commitCount: number): IndexedHistory => ({
+    covers,
+    load: async () => ({ paths: new Map(), commitCount }),
+  })
   function chain(n: number) {
     const s = new Store()
     const tips: string[] = []
@@ -274,14 +276,14 @@ describe('countCommits with a history index', () => {
 
   it('is exact from an index of the tip', async () => {
     const { s, tip } = chain(3)
-    const got = await countCommits(s.reader(), tip, 100, { counts: { covers: (t) => t === tip, count: async () => 33_553 } })
+    const got = await countCommits(s.reader(), tip, 100, { history: counted((t) => t === tip, 33_553) })
     expect(got).toEqual({ count: 33_553, capped: false, fromIndex: true })
   })
 
   it('adds the commits since an older index, exact without merges', async () => {
     const { s, tips, tip } = chain(6)
     const at = tips[2] as string
-    const got = await countCommits(s.reader(), tip, 100, { counts: { covers: (t) => t === at, count: async () => 1_000 } })
+    const got = await countCommits(s.reader(), tip, 100, { history: counted((t) => t === at, 1_000) })
     expect(got).toEqual({ count: 1_003, capped: false, fromIndex: true })
   })
 
@@ -290,7 +292,7 @@ describe('countCommits with a history index', () => {
     const root = s.commit(s.files({ a: '0' }))
     const side = s.commit(s.files({ a: '0', b: '1' }), [root], 'side')
     const merge = s.commit(s.files({ a: '0', b: '1' }), [root, side], 'merge')
-    const got = await countCommits(s.reader(), merge, 100, { counts: { covers: (t) => t === root, count: async () => 10 } })
+    const got = await countCommits(s.reader(), merge, 100, { history: counted((t) => t === root, 10) })
     expect(got).toEqual({ count: 11, capped: true, fromIndex: true })
   })
 })

@@ -22,8 +22,12 @@ import { collectPageErrors, countDapi, E2E_DEVNET, repoUrl, shot } from './helpe
 
 const [OWNER, NAME] = (process.env['E2E_HISTORY_REPO'] ?? 'unofficial-dashpay-dash-mirror/dash').split('/') as [string, string]
 const REPO = { owner: OWNER, name: NAME } as const
-/** DAPI requests one cold home may make with the history index (every kind, incl. the connect). */
-const MAX_DAPI = Number(process.env['E2E_HISTORY_MAX_DAPI'] ?? 60)
+/**
+ * DAPI requests one cold home may make with the history index (every kind, incl. the connect).
+ * dashpay/dash measured 100 before the index (the column's 400-commit walk) and 75 with it on
+ * 2026-09-29; the rest is the repo chrome, which S-1 cuts separately.
+ */
+const MAX_DAPI = Number(process.env['E2E_HISTORY_MAX_DAPI'] ?? 80)
 
 const pendingCells = (page: Page) => page.getByTestId('commit-cell-pending')
 const commitCells = (page: Page) => page.getByTestId('commit-cell')

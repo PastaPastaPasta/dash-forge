@@ -40,7 +40,10 @@ nCommits varint
   oid (20) | authorTime varint (s) | subjectLen varint | subject (≤ 200 B, UTF-8 boundary)
 nPaths varint                 byte-sorted, front-coded
   shared varint | suffixLen varint | suffix | commit varint (index into the commit table)
+(tag varint | len varint | bytes)*   extension sections (v1 writes none)
 ```
+
+**Versioning.** Everything up to the paths is fixed for every version. A later version adds data in tagged sections after them, and a reader skips any tag it does not know. So a v1 reader reads a v2 index's last-change column and counts, and ignores the rest: no flag day. `version` names the newest layout the writer used, and readers accept any version from 1 on. One candidate for v2 is per-path version lists for Blame and History (FG-4, `last-change-index-v2.md`).
 
 Each commit is stored once, with its subject and author time, so the column needs no commit reads. The subject is the first line of the message, trimmed, exactly as the web's `commitSubject` computes it.
 

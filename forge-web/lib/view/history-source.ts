@@ -25,6 +25,8 @@ export interface HistoryEntry {
 export interface HistorySource {
   /** Live indexes by tip (a full index and a delta of the same tip: the full one). */
   readonly byTip: ReadonlyMap<string, HistoryEntry>
+  /** Whether an index covers `tip`. */
+  covers(tip: string): boolean
   /** The index of `tip` (a delta overlaid on its base), downloaded once and cached. */
   load(tip: string): Promise<HistoryIndex>
 }
@@ -72,6 +74,7 @@ export function historySource(
   }
   return {
     byTip,
+    covers: (tip) => byTip.has(tip),
     async load(tip: string): Promise<HistoryIndex> {
       const e = byTip.get(tip)
       if (e === undefined) throw new Error(`no history index covers ${tip.slice(0, 12)}`)

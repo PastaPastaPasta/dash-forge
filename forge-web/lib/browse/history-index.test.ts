@@ -28,12 +28,18 @@ describe('parseHistoryIndex', () => {
     expect(ix.paths.get('src/walletx.h')?.subject).toBe('docs: naïve résumé ✓')
   })
 
-  it('refuses truncated, extended or foreign bytes', () => {
+  it('refuses truncated, torn or foreign bytes', () => {
     expect(() => parseHistoryIndex(gzip(body.subarray(0, body.length - 1)))).toThrow()
-    expect(() => parseHistoryIndex(gzip(Uint8Array.from([...body, 0])))).toThrow()
+    expect(() => parseHistoryIndex(gzip(Uint8Array.from([...body, 7, 3, 0xaa])))).toThrow()
     const foreign = Uint8Array.from(body)
     foreign[0] = 0x58
-    expect(() => parseHistoryIndex(gzip(foreign))).toThrow(/not a v1 history index/)
+    expect(() => parseHistoryIndex(gzip(foreign))).toThrow(/not a history index/)
+  })
+
+  it('skips a later version\'s extension sections', () => {
+    const v2 = Uint8Array.from([...body, 7, 3, 0xaa, 0xbb, 0xcc])
+    v2[4] = 2
+    expect(parseHistoryIndex(gzip(v2))).toEqual(parseHistoryIndex(gzip(body)))
   })
 
   it('overlays a delta on its full index', () => {

@@ -495,9 +495,10 @@ impl Helper {
         let mut pending_index = None;
         let mut history_paid = false;
         // Computed before anything is priced, so the push's estimate and cost guard include it.
-        let history = match (want_tips.is_empty(), dry_run || publishes_browse_index()) {
-            (false, true) => prepare_push_history(&svc, &conn.repo, &planned, &git_dir, progress).await,
-            _ => None,
+        let history = if !want_tips.is_empty() && (dry_run || publishes_browse_index()) {
+            prepare_push_history(&svc, &conn.repo, &planned, &git_dir, progress).await
+        } else {
+            None
         };
         let ctx = match (want_tips.is_empty(), push_policy.as_ref()) {
             (false, Some(push_policy)) => Some(PushContext {
@@ -553,9 +554,8 @@ impl Helper {
             refs?;
             // The history index names the tip the default branch now has: only after its ref
             // landed, and only when this push stored (and priced) a pack with it.
-            if let (Some(ctx), Some(history), Some(stored), true) =
-                (ctx.as_ref(), history, stored, history_paid)
-            {
+            let history = history.filter(|_| history_paid);
+            if let (Some(ctx), Some(history), Some(stored)) = (ctx.as_ref(), history, stored) {
                 publish_history(ctx, history, stored).await;
             }
         }
@@ -2165,7 +2165,7 @@ async fn prepare_push_history(
         .iter()
         .filter(|p| p.reject.is_none() && p.spec.dst == want)
         .find_map(|p| p.new_oid.clone())?;
-    let tip: [u8; 20] = hex::decode(&tip_hex).ok()?.try_into().ok()?;
+    let tip = forge_core::pack::historyindex::parse_hex_oid(tip_hex.as_bytes()).ok()?;
     let prepared = async {
         let plan = svc.plan_history_publish(repo, tip).await?;
         let dir = git_dir.to_path_buf();

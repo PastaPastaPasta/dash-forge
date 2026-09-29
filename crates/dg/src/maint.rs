@@ -290,7 +290,7 @@ async fn plan_history(
         .iter()
         .find(|(n, _)| *n == want)
         .and_then(|(_, st)| forge_core::rules::tip_of(st))
-        .and_then(|h| <[u8; 20]>::try_from(hex::decode(h).ok()?).ok());
+        .and_then(|h| forge_core::pack::historyindex::parse_hex_oid(h.as_bytes()).ok());
     let Some(tip) = tip else {
         return Ok(HistoryReindex {
             prepared: None,
@@ -298,7 +298,7 @@ async fn plan_history(
             note: Some(format!("the default branch {default} has no tip")),
         });
     };
-    let hplan = forge_core::repo::plan_history_index(plan.manifests(), plan.roles(), tip);
+    let hplan = plan.history_plan(tip);
     if hplan.covered {
         return Ok(HistoryReindex {
             prepared: None,
@@ -320,14 +320,7 @@ async fn plan_history(
         )),
     };
     let tip_hex = hex::encode(tip);
-    let holds = std::process::Command::new("git")
-        .arg("-C")
-        .arg(&dir)
-        .args(["cat-file", "-e", &format!("{tip_hex}^{{commit}}")])
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-    if !holds {
+    if !crate::git::has_object(&dir, &tip_hex) {
         return Ok(no_clone(format!(
             "{} does not hold the tip",
             dir.display()
