@@ -39,9 +39,7 @@ describe('asConsensusRefusal decodes the SDK text (D-007)', () => {
     ['Protocol error: Current credits balance 10 is not enough to pay 20 fee', 30000],
     ['Protocol error: Document Abc has duplicate unique properties ["repoId", "number"] with other documents', 40105],
     ['Protocol error: referenced document Xyz not found for path repoId', 40120],
-    // The pinned SDK renders a beta.6 node's 10422 with the 10421 text (platform#5053,
-    // lib/sdk/consensus-shift.ts); a real 10421 arrives as the 11001 text.
-    ['Protocol error: Property body is 6000 bytes in UTF-8, over its maxBytes of 5120', 10422],
+    ['Protocol error: Property body is 6000 bytes in UTF-8, over its maxBytes of 5120', 10421],
   ])('reads %s', (message, code) => {
     expect(asConsensusRefusal(wasm(message))?.code).toBe(code)
   })
@@ -59,6 +57,42 @@ describe('asConsensusRefusal decodes the SDK text (D-007)', () => {
     expect(asConsensusRefusal(wasm(BUDGET))?.charged).toBe(false)
     expect(asConsensusRefusal(wasm('Protocol error: referenced document Xyz not found for path repoId'))?.feeCharged).toBe(false)
     expect(asConsensusRefusal(wasm('gate', 40120))?.feeCharged).toBe(true)
+  })
+})
+
+/**
+ * wasm-sdk 4.2.0-beta.6 (platform#5112): a refusal at the broadcast check carries the node's
+ * code on a `Protocol` error; a block's verdict is a `StateTransitionBroadcastError`.
+ */
+const checkTx = (message: string, code: number) => ({ name: 'Protocol', kind: 3, code, message, isRetriable: false })
+const verdict = (message: string, code: number) => ({ name: 'StateTransitionBroadcastError', kind: 22, code, message, isRetriable: false })
+const RULE = 'Failed to broadcast: Protocol error: Document checkRun breaks its propertyConstraints rule conclusionIfDone: the rule does not hold'
+
+describe('beta.6 coded refusals (platform#5112)', () => {
+  it('a coded refusal at the broadcast check is the code the node sent, and charged nothing', () => {
+    const r = asConsensusRefusal(checkTx(RULE, 10422))
+    expect(r?.code).toBe(10422)
+    expect(r?.charged).toBe(false)
+    expect(r?.feeCharged).toBe(false)
+    expect(writeFailure(r).message).toMatch(/breaks one of the contract's rules/)
+    expect(writeFailure(r).message).toMatch(/Nothing was charged/)
+  })
+  it('a coded maxBytes refusal at the broadcast check still says the field is too long', () => {
+    const r = asConsensusRefusal(checkTx('Failed to broadcast: Protocol error: Property body is 6000 bytes in UTF-8, over its maxBytes of 5120', 10421))
+    expect(r?.code).toBe(10421)
+    expect(writeFailure(r).message).toMatch(/longer than the contract allows/)
+    expect(r?.feeCharged).toBe(false)
+  })
+  it('keeps the figures of a coded key-budget refusal at the broadcast check', () => {
+    const r = asConsensusRefusal(checkTx(BUDGET, 40218))
+    expect(r?.code).toBe(40218)
+    expect(r?.figures).toEqual({ remaining: 1_000_000n, required: 48_654_000n })
+    expect(r?.charged).toBe(false)
+  })
+  it("a block's verdict is charged, unless Drive leaves that refusal unpaid", () => {
+    expect(asConsensusRefusal(verdict(RULE, 10422))?.feeCharged).toBe(true)
+    expect(asConsensusRefusal(verdict('gate', 40120))?.feeCharged).toBe(true)
+    expect(asConsensusRefusal(verdict(BUDGET, 40218))?.feeCharged).toBe(false)
   })
   it('leaves transport failures and the rate-limit gate unclassified', () => {
     expect(asConsensusRefusal(wasm('no available addresses to use'))).toBeNull()

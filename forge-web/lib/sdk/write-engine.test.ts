@@ -859,7 +859,7 @@ describe('a damaged cached transition, and 10002 (protocol 14)', () => {
     }
   })
 
-  it('a refusal whose reason the SDK cannot decode (platform#5053) is discarded, never left pending', async () => {
+  it('a refusal whose reason the SDK cannot decode (a newer error variant) is discarded, never left pending', async () => {
     const store = new Map<string, string>()
     const { sdk, signed } = lostAttempt(store, () => {
       throw sdkRefusal('platform deserialization error: unable to deserialize ConsensusError: UnexpectedEnd { additional: 18 }')

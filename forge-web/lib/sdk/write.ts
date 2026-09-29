@@ -34,7 +34,6 @@ import type { Network } from '../constants'
 import { base58Encode } from '../auth/base58'
 import { controlsKey } from '../auth/wif'
 import { previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview } from './cost'
-import { trueCodeOf } from './consensus-shift'
 import { base64ToBytes, bytesToBase64, followSdkVersion, noteSdkWrite } from './query'
 
 export type { CostPreview } from './cost'
@@ -516,9 +515,8 @@ const UNPAID_CODES: ReadonlySet<number> = new Set([40204, 10002])
 
 /**
  * A refusal at the broadcast check whose reason the pinned SDK could not decode ("unable to
- * deserialize ConsensusError": an error variant newer than the SDK, or one platform#5053 moved
- * onto a variant of another shape, e.g. 10420 or 10424 from a beta.6 node). The node refused
- * the transition, so it is a refusal (its cached bytes are dropped and the next attempt signs
+ * deserialize ConsensusError": an error variant newer than the SDK). The node refused the
+ * transition, so it is a refusal (its cached bytes are dropped and the next attempt signs
  * afresh), not a lost answer; only the reason is unknown.
  */
 export const UNREADABLE_REFUSAL_CODE = 0
@@ -559,10 +557,11 @@ export const INVALID_REVISION_CODE = 40106
 
 /**
  * The consensus refusals a write can meet, by the text Drive's error renders (`#[error(...)]`
- * in rs-dpp 4.2.0-beta.5, `packages/rs-dpp/src/errors/consensus`). A refusal at broadcast
- * (CheckTx) reaches the browser as the SDK's `Protocol error: <that text>` with no numeric
- * code (the wasm error's `code` is -1), so the text is how it is recognised. Named groups
- * carry the figures the UI shows (`remaining`, `balance`, `required`).
+ * in rs-dpp 4.2.0-beta.6, `packages/rs-dpp/src/errors/consensus`). From wasm-sdk 4.2.0-beta.6
+ * (platform#5112) a refusal at broadcast (CheckTx) carries the node's numeric code as well as
+ * its `Protocol error: <that text>`, so the code decides and the text is a fallback for errors
+ * that still arrive without one (`code` -1). Named groups carry the figures the UI shows
+ * (`remaining`, `balance`, `required`), which only the text holds.
  *
  * A nonce refusal (40204) is deliberately not among them: for a rebroadcast of bytes already
  * sent it means "a transition with this nonce is in", possibly this very one, so callers
@@ -588,11 +587,6 @@ const REFUSAL_PATTERNS: ReadonlyArray<readonly [number, RegExp]> = [
   [40140, /expired at \d+, its \$createdAt plus the type's time to live/i],
   [40141, /already has \d+ contenders, the most a contest accepts/i],
   [10002, /Parsing of serialized object failed due to/i],
-  // Texts only a shifted decode produces here (platform#5053, see ./consensus-shift): the SDK
-  // renders a beta.6 node's 10421 as the 11001 text and its 10419 as the 10904 text (its 10422
-  // as the 10421 text above). `asConsensusRefusal` maps each to the code the node sent.
-  [11001, /The moderation charter's reward split of/i],
-  [10904, /The documents a contract moderation reason cites are invalid/i],
   [UNREADABLE_REFUSAL_CODE, /unable to deserialize ConsensusError/i],
 ]
 
@@ -608,6 +602,21 @@ function consensusCodeOf(e: unknown): number | null {
   return null
 }
 
+/**
+ * Whether a coded wasm error is the SDK's `Protocol` kind: a consensus error the node sent at
+ * the broadcast check (CheckTx), or one the SDK caught before sending. Neither reached a block,
+ * so neither was charged. A block's verdict comes from the result wait as the
+ * `StateTransitionBroadcastError` kind (wasm-sdk 4.2.0-beta.6, `WasmSdkError::with_context`
+ * keeps the kind of the error it wraps, platform#5112).
+ */
+function isProtocolKind(e: unknown): boolean {
+  try {
+    return (e as { name?: unknown }).name === 'Protocol'
+  } catch {
+    return false
+  }
+}
+
 function figuresOf(groups: Record<string, string> | undefined): RefusalFigures {
   const out: { remaining?: bigint; balance?: bigint; required?: bigint } = {}
   if (groups?.['remaining']) out.remaining = BigInt(groups['remaining'])
@@ -619,23 +628,22 @@ function figuresOf(groups: Record<string, string> | undefined): RefusalFigures {
 /**
  * The consensus refusal `e` is, or null when it is transport noise or unclassified.
  *
- * Where it came from sets `charged`: a numeric code is the SDK's `StateTransitionBroadcastError`
- * from a result wait, i.e. the transition's verdict in a block; Drive's text without a code is
- * the SDK's `Protocol error` for a refusal at the broadcast check (CheckTx), where nothing is
- * charged (measured live on moutai: a refused write leaves the balance unchanged).
+ * Where it came from sets `charged`: a code on the SDK's `StateTransitionBroadcastError` is the
+ * transition's verdict in a block (a result wait); a `Protocol` error, coded or not, is a
+ * refusal at the broadcast check (CheckTx) or before sending, where nothing is charged
+ * (measured live on moutai: a refused write leaves the balance unchanged).
  */
 export function asConsensusRefusal(e: unknown): ConsensusRefusal | null {
   if (e instanceof ConsensusRefusal) return e
   const message = errorMessage(e)
   const code = consensusCodeOf(e)
+  const charged = code !== null && !isProtocolKind(e)
   for (const [patternCode, re] of REFUSAL_PATTERNS) {
     if (code !== null && code !== patternCode) continue
     const m = re.exec(message)
-    // Without a code the text is the SDK's own decode of the node's error, which the pinned
-    // SDK may have shifted by one variant (platform#5053); a coded verdict is the node's own.
-    if (m) return new ConsensusRefusal(code ?? trueCodeOf(patternCode), message, figuresOf(m.groups), code !== null)
+    if (m) return new ConsensusRefusal(code ?? patternCode, message, figuresOf(m.groups), charged)
   }
-  return code === null ? null : new ConsensusRefusal(code, message, {}, true)
+  return code === null ? null : new ConsensusRefusal(code, message, {}, charged)
 }
 
 /**
