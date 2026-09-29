@@ -1,6 +1,7 @@
 //! The daemon: discover the repos with hooks addressed to this relay, poll their documents,
-//! translate, and hand events to the delivery workers (PRD 05). Stateless across restarts:
-//! cursors live in memory and are re-baselined on startup ([`crate::ingest`]).
+//! translate, and hand events to the delivery workers (PRD 05). Cursors live in memory and
+//! are re-baselined on startup ([`crate::ingest`]); only the check runs seen per watched head
+//! are kept in the state dir ([`crate::checkruns`]), because a run changes in place.
 //!
 //! Two loops run side by side:
 //!
@@ -30,7 +31,7 @@
 //! earliest hook that wants that event.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -42,6 +43,7 @@ use forge_core::repo::config_doc;
 use forge_core::rules::{self, v2::Visibility, ConfigDoc};
 use forge_core::scope::RepoRef;
 
+use crate::checkruns;
 use crate::config::RelayConfig;
 use crate::deliver::{DeliverConfig, Deliverer, Dispatcher};
 use crate::error::{RelayError, Result};
@@ -50,7 +52,7 @@ use crate::ingest::{
     DOC_COMMENT, DOC_EVENT, DOC_ISSUE, DOC_PATCH, DOC_PROTECTED_REF_UPDATE, DOC_REF_UPDATE,
     DOC_RELEASE, DOC_REVIEW,
 };
-use crate::payload::{RepositoryMeta, ALL_EVENTS};
+use crate::payload::{CheckRunAction, RepositoryMeta, ALL_EVENTS};
 use crate::queue::RetryQueue;
 use crate::subscriptions::{self, RelayIdentity, WebhookSub};
 
@@ -97,15 +99,27 @@ struct Shared {
     cfg: RelayConfig,
     /// When this relay started (ms since the epoch).
     started_ms: u64,
+    /// Where the check runs seen are kept across restarts.
+    check_runs: checkruns::Store,
 }
 
-/// A head oid whose `checkRun` stream is read.
+/// A head oid whose `checkRun`s are read.
 #[derive(Debug, Clone, Copy)]
 struct Head {
     /// When it was seen (block time, ms): pruning keeps the newest.
     seen: u64,
-    /// Where its stream starts.
+    /// Runs created before it are not announced.
     baseline: Baseline,
+}
+
+impl Head {
+    /// A head first seen at `t` (block time, ms), whose runs count from then.
+    fn since(t: u64) -> Self {
+        Self {
+            seen: t,
+            baseline: Baseline::Since(t),
+        }
+    }
 }
 
 /// One served repository and its stream cursors (locked by the poll task that owns it).
@@ -113,14 +127,20 @@ struct RepoState {
     meta: RepositoryMeta,
     /// Where repo-level streams start.
     baseline: Baseline,
-    /// Cursor per stream key (`refUpdate`, `comment:<targetId>`, `checkRun:<oid>`, ...).
+    /// Cursor per stream key (`refUpdate`, `comment:<targetId>`, ...).
     cursors: BTreeMap<String, Cursor>,
     /// Issues and PRs by `$id` (for event/comment/review translation).
     targets: BTreeMap<String, TargetInfo>,
     /// Closed targets (a close or merge seen; a reopen removes).
     closed: BTreeSet<String>,
-    /// Head oids (hex) whose `checkRun` streams are read.
+    /// Head oids (hex) whose `checkRun`s are read.
     heads: BTreeMap<String, Head>,
+    /// Per watched head, the runs seen (persisted: [`checkruns::Store`]).
+    runs: BTreeMap<String, checkruns::HeadRuns>,
+    /// What was last saved of `heads`/`runs` (a save is skipped when nothing changed).
+    saved_runs: Option<checkruns::Saved>,
+    /// Set when the repo stops being served: nothing is saved any more.
+    retired: Arc<AtomicBool>,
     /// The repo's `config` history (for protected-ref routing).
     configs: Vec<ConfigDoc>,
     /// Every tip a valid update set, by `refNameHash` (hex), for the base refs of known PRs only
@@ -128,6 +148,8 @@ struct RepoState {
     tips: BTreeMap<String, BTreeSet<String>>,
     /// Round-robin position over the non-priority threads.
     rotation: usize,
+    /// The head whose check runs were read last: the next poll starts after it.
+    last_head: String,
     /// Which stage group a poll starts at (it resumes where the deadline last stopped it).
     next_stage: usize,
 }
@@ -139,6 +161,9 @@ struct RepoSlot {
     wants: Mutex<BTreeMap<&'static str, u64>>,
     /// The newest `$createdAt` read (block time), for resuming after a gap.
     high_water: AtomicU64,
+    /// No longer served: a poll still running must not save its check runs (shared with the
+    /// state, [`RepoState::retired`]).
+    retired: Arc<AtomicBool>,
 }
 
 /// The served repos.
@@ -200,6 +225,12 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
     }
 
     let queue = Arc::new(open_queue(&cfg)?);
+    // Only in a state dir this relay holds (the queue's lock): two relays must not share it.
+    let check_runs = if queue.is_durable() {
+        checkruns::Store::open(cfg.state_dir.as_deref())
+    } else {
+        checkruns::Store::default()
+    };
     if let Some(addr) = cfg.listen.clone() {
         let durable = queue.is_durable();
         tokio::spawn(async move {
@@ -220,6 +251,7 @@ pub async fn run(cfg: RelayConfig) -> Result<()> {
             Some(queue),
         ),
         started_ms: now_ms(),
+        check_runs,
         cfg,
     });
     tracing::info!(
@@ -488,6 +520,16 @@ impl Discovery {
                 if !keep {
                     self.resume_at
                         .insert(id.clone(), slot.high_water.load(Ordering::Relaxed));
+                    // Its check runs seen are dropped: a hook added later starts from its
+                    // own time, not from completions of runs seen before it existed. Retired
+                    // first, so a poll still running saves nothing more; removed under the
+                    // state lock, after that poll (and any save it was in) finished.
+                    slot.retired.store(true, Ordering::SeqCst);
+                    let (slot, shared, id) = (Arc::clone(slot), Arc::clone(&shared), id.clone());
+                    tokio::spawn(async move {
+                        let _state = slot.state.lock().await;
+                        shared.check_runs.remove(&id);
+                    });
                 }
                 keep
             });
@@ -569,6 +611,7 @@ impl Discovery {
                     ready.push((
                         repo_id,
                         Arc::new(RepoSlot {
+                            retired: Arc::clone(&state.retired),
                             state: tokio::sync::Mutex::new(state),
                             wants: Mutex::new(BTreeMap::new()),
                             high_water: AtomicU64::new(high),
@@ -770,7 +813,26 @@ async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result
         }
     }
     fold_head_updates(shared, repo_id, baseline, recent, &mut targets, &mut heads).await?;
-    prune_heads(&mut heads, &mut cursors);
+    // The heads and runs the relay watched before a restart: a run seen then is not
+    // re-sent, and one that completed meanwhile is sent now (`completed`). Runs created
+    // while the relay was down are not replayed, like every other stream: a stream never
+    // starts before the relay does (`wants_of`). Heads first seen before the active window
+    // are not restored, as they would not be watched from scratch either.
+    // Only at startup (a `Tail` baseline): a repo set up later is one that was not served
+    // (or dropped out), whose runs seen belong to hooks that are gone.
+    let saved = match baseline {
+        Baseline::Tail { .. } => shared.check_runs.load(repo_id),
+        Baseline::Since(_) | Baseline::Beginning => checkruns::Saved::default(),
+    };
+    let mut runs = BTreeMap::new();
+    for (oid, saved) in saved.heads {
+        if saved.seen < recent && !heads.contains_key(&oid) {
+            continue;
+        }
+        heads.entry(oid.clone()).or_insert(Head::since(saved.seen));
+        runs.insert(oid, saved.runs);
+    }
+    prune_heads(&mut heads, &mut runs);
     tracing::info!(repo = %repo_id, name = %name, owner = %owner_id, targets = targets.len(), ?baseline, "serving repo");
     let mut state = RepoState {
         meta: RepositoryMeta {
@@ -785,9 +847,13 @@ async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result
         targets,
         closed: BTreeSet::new(),
         heads,
+        runs,
+        saved_runs: None,
+        retired: Arc::default(),
         configs,
         tips: BTreeMap::new(),
         rotation: 0,
+        last_head: String::new(),
         next_stage: 0,
     };
     // Valid tips of the PRs' base refs only (what merges are checked against).
@@ -888,6 +954,32 @@ impl RepoState {
             .filter_map(|d| d.created_at)
             .max()
             .unwrap_or(0)
+    }
+
+    /// Save the watched heads and their runs, if they changed since the last save.
+    async fn save_check_runs(&mut self, shared: &Shared) {
+        let now = checkruns::Saved {
+            heads: self
+                .heads
+                .iter()
+                .map(|(oid, h)| {
+                    (
+                        oid.clone(),
+                        checkruns::SavedHead {
+                            seen: h.seen,
+                            runs: self.runs.get(oid).cloned().unwrap_or_default(),
+                        },
+                    )
+                })
+                .collect(),
+        };
+        // Recorded only once written, so a failed write is retried next cycle.
+        if !self.retired.load(Ordering::SeqCst)
+            && self.saved_runs.as_ref() != Some(&now)
+            && shared.check_runs.save(&self.meta.repo_id, &now).await
+        {
+            self.saved_runs = Some(now);
+        }
     }
 
     /// Enqueue `event` for the repo's hooks.
@@ -1029,11 +1121,8 @@ async fn poll_pushes(shared: &Shared, st: &mut RepoState, prefix: &[QueryFilter]
                     // Runs on this commit from the push on; an oid already watched keeps its
                     // baseline (older runs are never replayed).
                     let t = d.created_at.unwrap_or(0);
-                    st.heads.entry(oid).or_insert(Head {
-                        seen: t,
-                        baseline: Baseline::Since(t),
-                    });
-                    prune_heads(&mut st.heads, &mut st.cursors);
+                    st.heads.entry(oid).or_insert(Head::since(t));
+                    prune_heads(&mut st.heads, &mut st.runs);
                 }
             }
             st.emit(shared, ingest::translate_ref_update(&st.meta, d));
@@ -1098,11 +1187,10 @@ async fn poll_repo_rest(
                     };
                     if doc_type == DOC_PATCH && !t.head_oid.is_empty() {
                         let seen = t.last_activity;
-                        st.heads.entry(t.head_oid.clone()).or_insert(Head {
-                            seen,
-                            baseline: Baseline::Since(seen),
-                        });
-                        prune_heads(&mut st.heads, &mut st.cursors);
+                        st.heads
+                            .entry(t.head_oid.clone())
+                            .or_insert(Head::since(seen));
+                        prune_heads(&mut st.heads, &mut st.runs);
                     }
                     st.targets.insert(d.id.clone(), t);
                     if doc_type == DOC_PATCH {
@@ -1228,9 +1316,12 @@ async fn poll_threads(
     (high, finished)
 }
 
-/// Check runs, per watched head oid (the newest [`MAX_HEADS`]). New `checkRun` documents only:
-/// a run updated in place (status progression) is not observed, because the index is keyed
-/// on `$createdAt`.
+/// Check runs, per watched head oid (the newest [`MAX_HEADS`]): each head's runs from
+/// [`checkruns::read_from`] on (the `head (repoId, headOid, $createdAt)` index, paged to the
+/// end), compared by `$revision` with what was seen, so a run replaced in place is observed
+/// ([`checkruns::diff`]: `created`, then `completed`). The runs seen are saved when they
+/// change, after their events were enqueued. While no hook wants `check_run`, they are
+/// dropped: a hook added later starts from its own time, not from stale completions.
 async fn poll_check_runs(
     shared: &Shared,
     st: &mut RepoState,
@@ -1239,14 +1330,20 @@ async fn poll_check_runs(
     deadline: Instant,
 ) -> (u64, bool) {
     let Some(since) = wants.get("check_run").copied() else {
+        if !st.runs.is_empty() {
+            st.runs.clear();
+            st.save_check_runs(shared).await;
+        }
         return (0, true);
     };
     let mut high = 0;
-    let heads: Vec<(String, Head)> = st.heads.iter().map(|(k, v)| (k.clone(), *v)).collect();
-    for (oid, head) in heads {
+    let mut finished = true;
+    for (oid, head) in heads_after(&st.heads, &st.last_head) {
         if Instant::now() >= deadline {
-            return (high, false);
+            finished = false;
+            break;
         }
+        st.last_head.clone_from(&oid);
         let Ok(bytes) = hex::decode(&oid) else {
             continue;
         };
@@ -1254,25 +1351,36 @@ async fn poll_check_runs(
             rf.clone(),
             QueryFilter::eq("headOid", FieldValue::bytes(bytes)),
         ];
-        let Some(r) = st
-            .read(
-                shared,
-                format!("{DOC_CHECK_RUN}:{oid}"),
-                DOC_CHECK_RUN,
-                &shared.contracts.collab,
-                &prefix,
-                no_earlier_than(head.baseline, since),
-            )
-            .await
-        else {
-            continue;
+        let source = LiveStream {
+            client: &shared.client,
+            contract: &shared.contracts.collab,
+            doc_type: DOC_CHECK_RUN,
+            prefix: &prefix,
         };
-        for d in &r.docs {
-            st.emit(shared, ingest::translate_check_run(&st.meta, d));
+        let Baseline::Since(floor) = no_earlier_than(head.baseline, since) else {
+            unreachable!("no_earlier_than returns a Since")
+        };
+        let prev = st.runs.remove(&oid).unwrap_or_default();
+        let from = checkruns::read_from(&prev, floor);
+        let docs = match checkruns::read_runs(&source, from, || Instant::now() >= deadline).await {
+            Ok(docs) => docs,
+            Err(e) => {
+                tracing::warn!(repo = %st.meta.repo_id, head = %oid, error = %e, "check-run read failed; retrying next cycle");
+                st.runs.insert(oid, prev);
+                continue;
+            }
+        };
+        let (events, next) = checkruns::diff(&prev, &docs, floor, from);
+        for (action, d) in events {
+            if action == CheckRunAction::Created {
+                high = high.max(d.created_at.unwrap_or(0));
+            }
+            st.emit(shared, ingest::translate_check_run(&st.meta, d, action));
         }
-        high = high.max(st.commit(r));
+        st.runs.insert(oid, next);
     }
-    (high, true)
+    st.save_check_runs(shared).await;
+    (high, finished)
 }
 
 /// Record an event's effect on its target: activity time, and open/closed.
@@ -1313,25 +1421,36 @@ fn follow_head(s: &mut RepoState, d: &FetchedDocument, author_path: bool) -> boo
         return false;
     };
     let seen = d.created_at.unwrap_or(t.last_activity);
-    s.heads.entry(head).or_insert(Head {
-        seen,
-        baseline: Baseline::Since(seen),
-    });
-    prune_heads(&mut s.heads, &mut s.cursors);
+    s.heads.entry(head).or_insert(Head::since(seen));
+    prune_heads(&mut s.heads, &mut s.runs);
     true
 }
 
-/// Keep the newest [`MAX_HEADS`] head oids.
-fn prune_heads(heads: &mut BTreeMap<String, Head>, cursors: &mut BTreeMap<String, Cursor>) {
-    if heads.len() <= MAX_HEADS {
-        return;
+/// Every head, starting after `last` (the one read last) and wrapping around, so a poll the
+/// deadline cuts short resumes with the heads it did not reach.
+fn heads_after(heads: &BTreeMap<String, Head>, last: &String) -> Vec<(String, Head)> {
+    use std::ops::Bound::{Excluded, Unbounded};
+    heads
+        .range::<String, _>((Excluded(last), Unbounded))
+        .chain(heads.range::<String, _>(..=last))
+        .map(|(k, v)| (k.clone(), *v))
+        .collect()
+}
+
+/// Keep the newest [`MAX_HEADS`] head oids (and only their runs).
+fn prune_heads(
+    heads: &mut BTreeMap<String, Head>,
+    runs: &mut BTreeMap<String, checkruns::HeadRuns>,
+) {
+    if heads.len() > MAX_HEADS {
+        let mut by_time: Vec<(u64, String)> =
+            heads.iter().map(|(k, v)| (v.seen, k.clone())).collect();
+        by_time.sort();
+        for (_, k) in &by_time[..heads.len() - MAX_HEADS] {
+            heads.remove(k);
+        }
     }
-    let mut by_time: Vec<(u64, String)> = heads.iter().map(|(k, v)| (v.seen, k.clone())).collect();
-    by_time.sort();
-    for (_, k) in by_time.iter().take(heads.len() - MAX_HEADS) {
-        heads.remove(k);
-        cursors.remove(&format!("{DOC_CHECK_RUN}:{k}"));
-    }
+    runs.retain(|k, _| heads.contains_key(k));
 }
 
 #[cfg(test)]
@@ -1467,9 +1586,13 @@ mod tests {
             closed: targets.keys().cloned().collect(),
             targets,
             heads: BTreeMap::new(),
+            runs: BTreeMap::new(),
+            saved_runs: None,
+            retired: Arc::default(),
             configs: Vec::new(),
             tips: BTreeMap::new(),
             rotation: 0,
+            last_head: String::new(),
             next_stage: 0,
         }
     }
@@ -1582,6 +1705,26 @@ mod tests {
         assert!(st.repeats_a_close(&event(1)), "a second close is not");
     }
 
+    /// A poll the deadline cuts short resumes after the last head it read, so later heads are
+    /// not starved by the ones before them.
+    #[test]
+    fn check_run_heads_rotate() {
+        let heads: BTreeMap<String, Head> = ["a", "b", "c", "d"]
+            .iter()
+            .map(|k| (k.to_string(), Head::since(0)))
+            .collect();
+        let order = |last: &str| -> Vec<String> {
+            heads_after(&heads, &last.to_string())
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect()
+        };
+        assert_eq!(order(""), ["a", "b", "c", "d"]);
+        assert_eq!(order("b"), ["c", "d", "a", "b"]);
+        assert_eq!(order("d"), ["a", "b", "c", "d"]);
+        assert_eq!(order("bb"), ["c", "d", "a", "b"], "a pruned head");
+    }
+
     #[test]
     fn heads_are_bounded_newest_first() {
         let mut heads: BTreeMap<String, Head> = (0..(MAX_HEADS as u64 + 10))
@@ -1595,17 +1738,12 @@ mod tests {
                 )
             })
             .collect();
-        let mut cursors: BTreeMap<String, Cursor> = heads
+        let mut runs: BTreeMap<String, checkruns::HeadRuns> = heads
             .keys()
-            .map(|k| {
-                (
-                    format!("{DOC_CHECK_RUN}:{k}"),
-                    Cursor::new(Baseline::Beginning),
-                )
-            })
+            .map(|k| (k.clone(), checkruns::HeadRuns::new()))
             .collect();
-        prune_heads(&mut heads, &mut cursors);
-        assert_eq!(cursors.len(), MAX_HEADS, "pruned heads lose their cursors");
+        prune_heads(&mut heads, &mut runs);
+        assert_eq!(runs.len(), MAX_HEADS, "pruned heads lose their runs");
         assert_eq!(heads.len(), MAX_HEADS);
         assert!(!heads.contains_key(&format!("{:040x}", 0)));
         assert!(heads.contains_key(&format!("{:040x}", MAX_HEADS as u64 + 9)));

@@ -145,17 +145,31 @@ An imported release shows the import time (`$createdAt`) as its date. `imported`
 "imported": {
   "type": "object",
   "properties": {
-    "author": { "type": "string", "maxLength": 64, "position": 0 },
-    "createdAt": { "$ref": "#/$defs/u64", "position": 1 },
-    "url": { "type": "string", "maxLength": 300, "position": 2 }
+    "author": { "type": "string", "maxLength": 120, "maxBytes": 480, "position": 0 },
+    "createdAt": { "type": "integer", "minimum": 0, "position": 1 },
+    "url": { "type": "string", "maxLength": 300, "maxBytes": 300, "position": 2 }
   },
-  "required": ["url"],
   "additionalProperties": false,
   "position": 10
 }
 ```
 
-This is tracked with FG-6. It is listed here so the registration picks up all release fields at once.
+This is the same shape as forge-collab's `$defs/imported`, so one reader serves both. The `noPlain` constraint gains `imported` too: a sealed release's provenance goes inside `enc`.
+
+**Until then (FG-6).** forge-import opens an imported release's notes with a provenance line, and forge-web shows it as the release's date and publisher (`lib/repo/provenance.ts` `releasePublishedOf`):
+
+```
+> Published on github.com by @UdjinM6 on 2026-08-03
+```
+
+Only a maintainer can write a release, so the line is the repo's own account, and needs no trust check beyond that. Once `release.imported` exists, the importer writes the field instead. Readers then prefer the field and keep parsing the line for releases written before.
+
+The same applies to two things a mirrored PR records in its body today:
+
+- its base commit;
+- a fork's head branch.
+
+It uses the line `> Base <oid> · head <owner:branch>`. The fresh `patch` type could carry these as `imported.baseOid` (`$defs/oid`) and `imported.headLabel` (string, 200). The field is the better home: readers could then diff and label without parsing the body.
 
 ## 5. Also for the fresh registration: a chunk count for the push estimate
 

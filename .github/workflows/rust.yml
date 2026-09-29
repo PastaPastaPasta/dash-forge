@@ -92,6 +92,20 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # forge-relay's `payloads_parse_with_go_github` test parses the relay's webhook bodies with
+      # go-github (D-605). Its module is fetched here, with a timeout, so `cargo test` runs the
+      # checker offline (GOPROXY=off) and a stalled proxy cannot hang the test step.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: crates/forge-relay/testdata/webhook-parse/go.mod
+          cache-dependency-path: crates/forge-relay/testdata/webhook-parse/go.sum
+          cache: true
+
+      - name: Fetch the go-github checker's module
+        working-directory: crates/forge-relay/testdata/webhook-parse
+        timeout-minutes: 5
+        run: go mod download
+
       # `--locked` on EVERY cargo invocation, not as a trailing check: cargo re-resolves and
       # rewrites Cargo.lock in place, so a check placed after clippy/test would compare the
       # lockfile against a copy cargo had already fixed up and could never fail. With

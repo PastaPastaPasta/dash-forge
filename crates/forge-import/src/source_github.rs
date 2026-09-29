@@ -230,13 +230,28 @@ fn targets(
         };
         let mut t = target(src, i, number);
         let mut thread = threads.remove(&i.number).unwrap_or_default();
-        thread.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
-        t.comments = thread.iter().map(|c| comment(src, number, c)).collect();
-        if i.is_pull_request() {
-            let pull = match pulls.remove(&i.number) {
+        let pull = if i.is_pull_request() {
+            Some(match pulls.remove(&i.number) {
                 Some(p) => p,
                 None => gh.pull(i.number)?,
-            };
+            })
+        } else {
+            None
+        };
+        // L-05 for review comments: the issues listing counts only conversation comments, so a
+        // PR whose line comments at the source outnumber those the `since` window returned is
+        // read in full too. The count is the detail endpoint's (`pulls/{n}`); a PR taken from the
+        // `pulls` listing has none (GitHub leaves it out there), so its line comments older than
+        // the window stay unread until the item is next read on its own.
+        if let Some(p) = &pull {
+            let lines = thread.iter().filter(|c| c.path.is_some()).count() as u64;
+            if since.is_some() && !per_item && p.review_comments > lines {
+                thread = full_thread(gh, i)?;
+            }
+        }
+        thread.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        t.comments = thread.iter().map(|c| comment(src, number, c)).collect();
+        if let Some(pull) = pull {
             t.kind = TargetKind::Patch;
             t.draft = pull.draft;
             t.merged_oid = pull
@@ -250,6 +265,20 @@ fn targets(
             } else {
                 pull.base.ref_name.clone()
             };
+            // Where it branched from, and the head branch when it is on a fork (L-36, L-37):
+            // the patch has no field for either, so the body's provenance block names them.
+            // GitHub's names are case-insensitive: `dashpay/Dash` is `dashpay/dash`.
+            let from_fork = pull
+                .head
+                .repo
+                .as_ref()
+                .is_none_or(|r| !r.full_name.eq_ignore_ascii_case(&src.slug()));
+            let head_label = if from_fork && !pull.head.label.is_empty() {
+                pull.head.label.clone()
+            } else {
+                pull.head.ref_name.clone()
+            };
+            t.body = model::with_pull_origin(&t.body, &pull.base.sha, &head_label, &i.html_url);
             // Only open PRs' heads are pushed (a closed PR's objects are not the mirror's to
             // pay for), so only they name a checkoutable source ref.
             let open_head = classes.code && !i.is_closed();
@@ -272,6 +301,12 @@ fn targets(
 /// Every comment (conversation and review) on `items`, by parent number. `per_item` (a
 /// `--limit` run) reads each item's own thread; otherwise the repository-wide listings are
 /// read once and filtered (100 per request beats a request per item).
+///
+/// With `since` those listings hold only the comments updated in the window, so an item seen
+/// for the first time (or whose older comments were never mirrored) would get a fraction of its
+/// thread (L-05: 1 of 24 on dashpay/dash#6935). An item whose conversation count at the source
+/// is more than the window returned is therefore read in full, on its own; comments already on
+/// chain are found by URL and not written again.
 fn threads(
     gh: &GithubClient,
     items: &[GhIssue],
@@ -282,13 +317,7 @@ fn threads(
     let mut out: BTreeMap<u64, Vec<GhComment>> = BTreeMap::new();
     if per_item {
         for i in items {
-            let thread = out.entry(i.number).or_default();
-            if i.comments > 0 {
-                thread.extend(gh.comments_on(i.number, since)?);
-            }
-            if i.is_pull_request() {
-                thread.extend(gh.review_comments_on(i.number, since)?);
-            }
+            out.insert(i.number, full_thread(gh, i)?);
         }
         return Ok(out);
     }
@@ -305,7 +334,30 @@ fn threads(
             out.entry(n).or_default().push(c);
         }
     }
+    if since.is_some() {
+        for i in items {
+            let got = out
+                .get(&i.number)
+                .map_or(0, |t| t.iter().filter(|c| c.path.is_none()).count() as u64);
+            if i.comments > got {
+                out.insert(i.number, full_thread(gh, i)?);
+            }
+        }
+    }
     Ok(out)
+}
+
+/// One item's whole thread: its conversation comments, and a PR's review (line) comments.
+fn full_thread(gh: &GithubClient, i: &GhIssue) -> Result<Vec<GhComment>> {
+    let mut thread = if i.comments > 0 {
+        gh.comments_on(i.number, None)?
+    } else {
+        Vec::new()
+    };
+    if i.is_pull_request() {
+        thread.extend(gh.review_comments_on(i.number, None)?);
+    }
+    Ok(thread)
 }
 
 fn header(src: &GithubRepoRef, number: u32, login: &str, created: u64, kind: &str) -> String {
@@ -426,12 +478,22 @@ fn release(r: &crate::github::GhRelease) -> SrcRelease {
             uri: None,
         })
         .collect();
+    let published = r.published_at.as_deref().map(|at| model::Published {
+        host: "github.com".into(),
+        author: r
+            .author
+            .as_ref()
+            .map(|a| a.login.clone())
+            .unwrap_or_default(),
+        at: iso8601_to_unix(at),
+    });
     model::release(
         &r.tag_name,
         r.name.as_deref(),
         r.body.as_deref(),
         assets,
         r.html_url.clone(),
+        published.as_ref(),
     )
 }
 
@@ -473,9 +535,18 @@ mod tests {
     }
 
     fn pull_json(n: u64) -> serde_json::Value {
+        // Every sixth PR is from a fork.
+        let head_repo = if n.is_multiple_of(6) {
+            "someone/r"
+        } else {
+            "o/r"
+        };
         serde_json::json!({
-            "number": n, "head": {"ref": "f", "sha": "ab".repeat(20)},
-            "base": {"ref": "main", "sha": "cd".repeat(20)},
+            "number": n,
+            "head": {"ref": "f", "label": format!("{}:f", head_repo.split('/').next().unwrap()),
+                     "sha": "ab".repeat(20), "repo": {"full_name": head_repo}},
+            "base": {"ref": "main", "label": "o:main", "sha": "cd".repeat(20),
+                     "repo": {"full_name": "o/r"}},
         })
     }
 
@@ -586,8 +657,83 @@ mod tests {
         let (gh, log) = big_repo();
         let out = collect(&gh, &src(), all, None, 3).unwrap();
         assert_eq!(out.targets[2].kind, TargetKind::Patch);
+        // Its body names the base commit (L-36) and its own branch.
+        assert!(
+            out.targets[2]
+                .body
+                .contains(&format!("> Base {} · head f", "cd".repeat(20))),
+            "{}",
+            out.targets[2].body
+        );
         assert!(!log.borrow().iter().any(repo_wide));
         assert!(log.borrow().iter().any(|p| p.ends_with("pulls/3")));
+    }
+
+    /// L-05: dashpay/dash#6935 (24 comments) was mirrored by a `--state` run whose window held
+    /// one of them, and got just that one. An item whose source comment count is more than the
+    /// window returned is read in full.
+    struct Windowed(std::rc::Rc<std::cell::RefCell<Vec<String>>>);
+
+    impl crate::github::GhApi for Windowed {
+        fn json(&self, path: &str) -> Result<Vec<u8>> {
+            self.0.borrow_mut().push(path.to_string());
+            Ok(b"{}".to_vec())
+        }
+
+        fn list(&self, path: &str) -> Result<Vec<String>> {
+            self.0.borrow_mut().push(path.to_string());
+            let rest = path.strip_prefix("repos/o/r/").unwrap();
+            let (route, _) = rest.split_once('?').unwrap_or((rest, ""));
+            let c = |n: u64, id: u64| {
+                serde_json::json!({
+                    "id": id, "body": format!("c{id}"), "user": {"login": "bob"},
+                    "html_url": format!("https://github.com/o/r/issues/{n}#issuecomment-{id}"),
+                    "created_at": "2020-01-02T03:04:05Z",
+                    "issue_url": format!("https://api.github.com/repos/o/r/issues/{n}"),
+                })
+                .to_string()
+            };
+            Ok(match route {
+                // #1 has 3 comments, #2 has 1: the window returns one of each.
+                "issues" => [(1, 3), (2, 1)]
+                    .iter()
+                    .map(|&(n, k)| {
+                        serde_json::json!({"number": n, "title": "t", "state": "open",
+                            "user": {"login": "bob"}, "comments": k,
+                            "html_url": format!("https://github.com/o/r/issues/{n}"),
+                            "created_at": "2020-01-02T03:04:05Z"})
+                        .to_string()
+                    })
+                    .collect(),
+                "issues/comments" => vec![c(1, 13), c(2, 21)],
+                "issues/1/comments" => vec![c(1, 11), c(1, 12), c(1, 13)],
+                other => panic!("unexpected {other}"),
+            })
+        }
+    }
+
+    #[test]
+    fn an_item_whose_window_missed_comments_is_read_in_full() {
+        let log = std::rc::Rc::default();
+        let gh = GithubClient::with_api(src(), Box::new(Windowed(std::rc::Rc::clone(&log))));
+        let out = collect(
+            &gh,
+            &src(),
+            Classes::parse("issues").unwrap(),
+            Some("2026-09-08T00:00:00Z"),
+            0,
+        )
+        .unwrap();
+        let counts: Vec<usize> = out.targets.iter().map(|t| t.comments.len()).collect();
+        assert_eq!(counts, [3, 1], "#1 in full, #2 already whole");
+        let log = log.borrow();
+        assert!(log
+            .iter()
+            .any(|p| p.contains("issues/1/comments") && !p.contains("since=")));
+        assert!(
+            !log.iter().any(|p| p.contains("issues/2/comments")),
+            "{log:#?}"
+        );
     }
 
     /// `--sync prs --limit`: the pulls listing, never the issue listing.

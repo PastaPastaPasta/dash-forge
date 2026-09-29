@@ -42,9 +42,10 @@ use crate::platform::{
 };
 use crate::private::DocKind;
 use crate::rules::v2::{
-    allocate_number, count_approvals, fold_issue_state_v2, fold_pr_review_v2, fold_pr_state_v2,
-    is_author_kind, is_well_formed, number_ceiling, Approvals, ContentDoc, ContentKind, Policy,
-    PrReviewState, Review as RuleReview, Role, RoleOracle, Visibility,
+    allocate_number, checks_state, count_approvals, fold_issue_state_v2, fold_pr_review_v2,
+    fold_pr_state_v2, is_author_kind, is_well_formed, number_ceiling, Approvals, CheckRunRow,
+    ChecksPolicy, ChecksState, ContentDoc, ContentKind, Policy, PrReviewState,
+    Review as RuleReview, Role, RoleOracle, Visibility,
 };
 use crate::rules::{self, Event, EventKind, IssueState, PrState};
 use crate::scope::RepoRef;
@@ -505,33 +506,48 @@ pub struct CheckRun {
     pub summary: String,
     /// Who reported it (`$ownerId`).
     pub reporter: String,
-    /// Whether the reporter is a current maintainer or writer of the repo. Consensus admitted
-    /// the document from a member; a member removed since is no longer trusted (the approvals
-    /// rule). When `runner` memberships land (platform-parity C-1), runners count too.
+    /// Whether the reporter is a current maintainer, writer or runner of the repo. Consensus
+    /// admitted the document from one; a member removed since is no longer trusted (the
+    /// approvals rule).
     pub trusted: bool,
+    /// When the run started / completed (ms), as the reporter says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<u64>,
+    /// When the run completed (ms), as the reporter says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<u64>,
+    /// Where the log is, and its SHA-256 (hex): a reader verifies the bytes against it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_url: Option<String>,
+    /// The log's SHA-256 (hex).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_sha256: Option<String>,
     /// Consensus `$createdAt` (ms).
     pub created_at: u64,
 }
 
-/// The newest check run per name among `docs` (a head's `checkRun` documents), trusting a run
-/// only when `is_member(reporter)`. Sorted by name.
+/// One check run per name among `docs` (a head's `checkRun` documents), sorted by name: the
+/// newest run whose reporter `is_member`, which is what a merge counts ([`checks_state`]); an
+/// untrusted run never shadows it. A name with no trusted run shows its newest run, untrusted.
+/// Parity: forge-web `newestCheckRuns`.
 pub fn newest_check_runs(
     docs: &[FetchedDocument],
     is_member: impl Fn(&str) -> bool,
 ) -> Vec<CheckRun> {
-    let mut newest: BTreeMap<String, &FetchedDocument> = BTreeMap::new();
+    let mut newest: BTreeMap<String, (&FetchedDocument, bool)> = BTreeMap::new();
     for d in docs {
         let Some(name) = d.field_str("name").filter(|n| !n.is_empty()) else {
             continue;
         };
-        let key = (d.created_at.unwrap_or_default(), &d.id);
-        if newest
-            .get(&name)
-            .is_none_or(|e| key > (e.created_at.unwrap_or_default(), &e.id))
-        {
-            newest.insert(name, d);
+        let trusted = is_member(&d.owner_id);
+        let key = (trusted, d.created_at.unwrap_or_default(), &d.id);
+        if newest.get(&name).is_none_or(|(e, e_trusted)| {
+            key > (*e_trusted, e.created_at.unwrap_or_default(), &e.id)
+        }) {
+            newest.insert(name, (d, trusted));
         }
     }
+    let newest = newest.into_iter().map(|(name, (d, _))| (name, d));
     newest
         .into_iter()
         .map(|(name, d)| CheckRun {
@@ -544,8 +560,36 @@ pub fn newest_check_runs(
             trusted: is_member(&d.owner_id),
             reporter: d.owner_id.clone(),
             created_at: d.created_at.unwrap_or_default(),
+            started_at: d.field_u64("startedAt"),
+            completed_at: d.field_u64("completedAt"),
+            log_url: d.field_str("logUrl"),
+            log_sha256: d.field_hex("logSha256"),
         })
         .collect()
+}
+
+/// Every `checkRun` on commit `oid` in `repo` (the `head (repoId, headOid, $createdAt)` index).
+pub(crate) async fn check_run_docs(
+    client: &PlatformClient,
+    collab: &LoadedContract,
+    repo: &RepoRef,
+    oid: Vec<u8>,
+) -> Result<Vec<FetchedDocument>> {
+    client
+        .query_all_documents(
+            collab,
+            DOC_CHECK_RUN,
+            &[
+                Collab::repo_filter(repo)?,
+                QueryFilter::eq("headOid", FieldValue::bytes(oid)),
+            ],
+            &[
+                QueryOrder::asc("repoId"),
+                QueryOrder::asc("headOid"),
+                QueryOrder::asc("$createdAt"),
+            ],
+        )
+        .await
 }
 
 /// The payload of a state event (forge-v2.md §3 kinds table).
@@ -2445,35 +2489,64 @@ impl<'a> Collab<'a> {
     }
 
     /// The check runs reported on `head_oid` in `repo` (the `checkRun` `head` index): the
-    /// newest per `name`, each marked trusted when its reporter is a current maintainer or
-    /// writer ([`newest_check_runs`]).
+    /// newest per `name`, each marked trusted when its reporter is a current maintainer,
+    /// writer or runner ([`newest_check_runs`]).
     pub async fn check_runs(&self, repo: &RepoRef, head_oid: &str) -> Result<Vec<CheckRun>> {
-        let collab = self.collab_contract(repo).await?;
-        let oid = hex::decode(head_oid)
-            .map_err(|_| Error::Config(format!("{head_oid:?} is not a hex commit id")))?;
-        let docs = self
-            .client
-            .query_all_documents(
-                &collab,
-                DOC_CHECK_RUN,
-                &[
-                    Self::repo_filter(repo)?,
-                    QueryFilter::eq("headOid", FieldValue::bytes(oid)),
-                ],
-                &[
-                    QueryOrder::asc("repoId"),
-                    QueryOrder::asc("headOid"),
-                    QueryOrder::asc("$createdAt"),
-                ],
-            )
-            .await?;
+        let docs = self.check_run_docs(repo, head_oid).await?;
         if docs.is_empty() {
             return Ok(Vec::new());
         }
         let oracle = self.member_oracle(repo).await?;
+        let runners = self.runner_ids(repo).await?;
         Ok(newest_check_runs(&docs, |who| {
-            oracle.current_role(who).is_some()
+            oracle.current_role(who).is_some() || runners.contains(who)
         }))
+    }
+
+    /// Whether the check runs on `head_oid` meet `policy`'s check rules ([`checks_state`], the
+    /// rule the web merge box applies too): the newest **trusted** run per name decides it.
+    pub async fn head_checks(
+        &self,
+        repo: &RepoRef,
+        head_oid: &str,
+        oracle: &RoleOracle,
+        policy: &ChecksPolicy,
+    ) -> Result<ChecksState> {
+        let docs = self.check_run_docs(repo, head_oid).await?;
+        let rows: Vec<CheckRunRow> = docs
+            .iter()
+            .map(|d| CheckRunRow {
+                id: d.id.clone(),
+                head_oid: head_oid.to_ascii_lowercase(),
+                name: d.field_str("name").unwrap_or_default(),
+                status: d.field_str("status").unwrap_or_default(),
+                conclusion: d.field_str("conclusion"),
+                reporter: d.owner_id.clone(),
+                created_at: d.created_at.unwrap_or_default(),
+            })
+            .collect();
+        let runners = if rows.is_empty() {
+            BTreeSet::new()
+        } else {
+            self.runner_ids(repo).await?
+        };
+        Ok(checks_state(&rows, head_oid, oracle, &runners, policy))
+    }
+
+    async fn check_run_docs(&self, repo: &RepoRef, head_oid: &str) -> Result<Vec<FetchedDocument>> {
+        let collab = self.collab_contract(repo).await?;
+        let oid = hex::decode(head_oid)
+            .map_err(|_| Error::Config(format!("{head_oid:?} is not a hex commit id")))?;
+        check_run_docs(self.client, &collab, repo, oid).await
+    }
+
+    async fn runner_ids(&self, repo: &RepoRef) -> Result<BTreeSet<String>> {
+        Ok(crate::ci::RunnerReader::new(self.client)
+            .list(repo)
+            .await?
+            .into_iter()
+            .map(|r| r.identity_id)
+            .collect())
     }
 
     // --- numbering --------------------------------------------------------------------

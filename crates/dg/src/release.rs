@@ -44,7 +44,7 @@ pub async fn run(ctx: &Ctx, cmd: &ReleaseCommand) -> Result<()> {
 }
 
 /// The external targets assets go to, and how many must confirm.
-fn asset_targets(storage: Option<&str>) -> Result<(Vec<ExternalTarget>, usize)> {
+pub(crate) fn asset_targets(storage: Option<&str>) -> Result<(Vec<ExternalTarget>, usize)> {
     let (list, replicas) = match storage {
         Some(s) => (Some(s.to_string()), None),
         None => (
@@ -83,7 +83,7 @@ fn asset_targets(storage: Option<&str>) -> Result<(Vec<ExternalTarget>, usize)> 
 /// Upload one asset file and describe it, with how many copies were stored: one per storage
 /// profile that confirmed it, however many URIs each records (an S3 copy has an `https` and an
 /// `s3` one: "2 cop(ies)" for one profile was L-35).
-async fn upload_asset(
+pub(crate) async fn upload_asset(
     path: &Path,
     targets: &[ExternalTarget],
     required: usize,

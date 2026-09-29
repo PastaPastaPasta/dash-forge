@@ -201,7 +201,7 @@ impl RelayConfig {
                 .web_base_url
                 .clone()
                 .or(file.web_base_url)
-                .unwrap_or_else(|| "https://forge.dash".to_string()),
+                .unwrap_or_else(|| forge_core::user_error::WEB_ORIGIN.to_string()),
             use_platform_webhooks: file.use_platform_webhooks.unwrap_or(true),
             listen: cli.listen.clone().or(file.listen),
             static_webhooks: file.webhook,
@@ -408,5 +408,8 @@ secret = "s3cr3t"
         assert!(!cfg.allow_private);
         assert!(cfg.use_platform_webhooks);
         assert!(cfg.repos.is_empty());
+        // D-606: the default was https://forge.dash, which does not resolve.
+        assert_eq!(cfg.web_base_url, "https://forge.dashhq.org");
+        assert_eq!(cfg.web_base_url, forge_core::user_error::WEB_ORIGIN);
     }
 }

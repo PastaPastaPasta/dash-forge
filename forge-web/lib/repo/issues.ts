@@ -11,6 +11,7 @@
  * everywhere.
  */
 
+import { originOf, type Origin } from './provenance'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import {
@@ -91,6 +92,11 @@ export interface IssueView {
    * #7761") only when its writer is trusted: see `trustedUpstreamNumber`.
    */
   readonly upstreamNumber: number | null
+  /**
+   * The original author and time an import recorded (`imported`), or null. Shown only when the
+   * signer is trusted to mirror ({@link trustedOrigin}).
+   */
+  readonly origin?: Origin | null
   readonly state: IssueState
   /**
    * False when the event log could not be read to completion, so `state` is a fold over a
@@ -191,6 +197,8 @@ export interface PullView {
   readonly importedRaw?: Readonly<Record<string, unknown>> | null
   /** See {@link IssueView.upstreamNumber}. */
   readonly upstreamNumber: number | null
+  /** See {@link IssueView.origin}. */
+  readonly origin?: Origin | null
   readonly state: PrState
   /** See {@link IssueView.stateComplete}. */
   readonly stateComplete: boolean
@@ -243,6 +251,8 @@ export interface ReviewView {
   /** How many `reviewId` comments the review announced (`commentCount`), or null. */
   readonly commentCount: number | null
   readonly createdAt: number
+  /** See {@link IssueView.origin}. */
+  readonly origin?: Origin | null
 }
 
 
@@ -506,6 +516,7 @@ export function reviewViewOf(d: PlainDocument): ReviewView {
     body: str(d, 'body'),
     commentCount: typeof d['commentCount'] === 'number' ? d['commentCount'] : null,
     createdAt: num(d, '$createdAt'),
+    origin: originOf(d),
   }
 }
 
@@ -672,13 +683,20 @@ function readImported(doc: PlainDocument): {
   importedUrl: string
   importedRaw: Readonly<Record<string, unknown>> | null
   upstreamNumber: number | null
+  origin: Origin | null
 } {
   const up = doc['upstreamNumber']
   const upstreamNumber = typeof up === 'number' && Number.isInteger(up) && up > 0 ? up : null
   const value = doc['imported']
-  if (typeof value !== 'object' || value === null) return { imported: false, importedUrl: '', importedRaw: null, upstreamNumber }
+  if (typeof value !== 'object' || value === null) return { imported: false, importedUrl: '', importedRaw: null, upstreamNumber, origin: null }
   const url = (value as PlainDocument)['url']
-  return { imported: true, importedUrl: typeof url === 'string' ? url : '', importedRaw: value as Readonly<Record<string, unknown>>, upstreamNumber }
+  return {
+    imported: true,
+    importedUrl: typeof url === 'string' ? url : '',
+    importedRaw: value as Readonly<Record<string, unknown>>,
+    upstreamNumber,
+    origin: originOf(doc),
+  }
 }
 
 /** A patch's source pointer (`sourceRepoId`). */

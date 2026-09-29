@@ -50,9 +50,14 @@ pub const WEB_ORIGIN: &str = crate::storage::cors::PROBE_ORIGIN;
 
 /// A repo's page in the web app.
 pub fn web_url(owner_id: &str, name: &str) -> String {
+    web_page_url("repo", owner_id, name)
+}
+
+/// A page of a repo in the web app (`repo`, `repo/commit/`, …), addressed by owner and name.
+pub fn web_page_url(page: &str, owner_id: &str, name: &str) -> String {
     use crate::backends::sigv4::uri_encode;
     format!(
-        "{WEB_ORIGIN}/repo?owner={}&name={}",
+        "{WEB_ORIGIN}/{page}?owner={}&name={}",
         uri_encode(owner_id, false),
         uri_encode(name, false)
     )
@@ -791,6 +796,23 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
             UserError::new(codes::KEY_EXPIRED, ctx.headline("this key has expired"))
                 .cause(one_line(msg))
                 .fix("register a fresh limited key (uses your master key once): `dg auth login <identity file>` or `dg auth login --mnemonic`"),
+        );
+    }
+    // A contract-bound key used outside its bounds: ContractBoundedKeyOutOfBoundsError (20014),
+    // or ContractBoundedKeyNonBatchError for a transition that is not a document batch. rs-dpp
+    // checks both before signing too, so nothing is broadcast. A CI runner's key is bound to
+    // `checkRun` only.
+    if m.contains("outside the contract bounds of key")
+        || m.contains("cannot sign a non-batch transition")
+    {
+        return Some(
+            UserError::new(codes::KEY_CANNOT_SIGN, ctx.headline("this key can't sign that"))
+                .cause(format!(
+                    "the key is bound to one contract or document type, and this write is outside it: {}",
+                    one_line(msg)
+                ))
+                .fix("sign this with a key whose bounds cover it: your own limited key (`dg auth login`), not a key bound to another contract or document type")
+                .note("a CI runner key (`dg ci runner new`) can only write check runs"),
         );
     }
     // PublicKeyIsDisabledError ("Identity key N is disabled"), or the same caught before signing.
@@ -1565,6 +1587,24 @@ mod tests {
             let u = from_platform_text(text, &ctx).expect(text);
             assert_eq!(u.code, code, "{text}");
             assert!(u.fix.iter().any(|f| f.contains("dg auth login")), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_bound_key_outside_its_bounds_is_e302_not_a_generic_rejection() {
+        let ctx = ErrorContext::default();
+        for text in [
+            "Batch member is outside the contract bounds of key 6",
+            "Contract-bound authentication key 6 cannot sign a non-batch transition",
+        ] {
+            let u = from_platform_text(text, &ctx).expect(text);
+            assert_eq!(u.code, codes::KEY_CANNOT_SIGN, "{text}");
+            assert!(
+                u.note
+                    .as_deref()
+                    .is_some_and(|n| n.contains("dg ci runner new")),
+                "{text}"
+            );
         }
     }
 

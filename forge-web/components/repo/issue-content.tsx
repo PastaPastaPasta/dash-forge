@@ -16,10 +16,13 @@
  * label definitions, the members and the authors' names under one proof.
  */
 
+import { Byline } from '@/components/repo/byline'
+import { useMirrorTrust } from '@/hooks/use-mirror-trust'
+import { trustedOrigin } from '@/lib/repo/provenance'
 import { useMemo, useState } from 'react'
 import { CheckCircle2, CircleDot, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
-import { ACL_NAME, ARCHIVED_REASON, loadIssueThread, timeAgo } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, loadIssueThread } from '@/lib/view'
 import {
   commentFirsts,
   createComment,
@@ -47,7 +50,6 @@ import { CopyLinkButton } from '@/components/ui/copy-link'
 import { retryWhileMissing } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
-import { Author } from '@/components/author'
 import { Timeline, type CommentSlots } from '@/components/repo/timeline'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
@@ -91,6 +93,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     { enabled: ready && sdk !== null && Number.isFinite(number) },
   )
 
+  // Who may mirror: an imported item of theirs shows its original author and date (FG-6).
+  const trust = useMirrorTrust(home.repo)
   // A current maintainer/writer document (seeded by the composite above: no extra read).
   const holdings = useAsync<Holdings | null>(
     () => readViewerPermissions(sdk!, home.repo, identity!, network),
@@ -141,6 +145,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   if (!data) return <EmptyState icon={CircleDot} title={`Issue #${number} not found`} body="No issue with that number in this repo." />
 
   const { issue, timeline, labels, members, hidden, eventValues, meta } = data
+  const origin = trustedOrigin(issue.origin, issue.author, trust)
   const whileLocked = commentsWhileLocked(timeline, new Set(members.map((m) => m.identity)))
   const open = issue.state.open
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
@@ -312,8 +317,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
               {open ? <CircleDot className="h-3.5 w-3.5" aria-hidden /> : <CheckCircle2 className="h-3.5 w-3.5" aria-hidden />}
               {open ? 'Open' : 'Closed'}
             </span>
-            <span className="text-anvil-500 dark:text-anvil-400">
-              <Author identityId={issue.author} link={false} /> opened this {timeAgo(issue.createdAt)}
+            <span className="inline-flex flex-wrap items-center gap-1.5 text-anvil-500 dark:text-anvil-400">
+              <Byline author={issue.author} createdAt={issue.createdAt} origin={origin} verb="opened this" link={false} />
             </span>
             {addr ? <CopyLinkButton repo={addr} target={{ kind: 'issue', number: issue.number }} className="ml-auto" /> : null}
           </div>
@@ -322,8 +327,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         {/* Body */}
         <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
           <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 dark:border-anvil-800 dark:bg-anvil-900">
-            <Author identityId={issue.author} />
-            <span className="text-anvil-500 dark:text-anvil-400">authored {timeAgo(issue.createdAt)}</span>
+            <Byline author={issue.author} createdAt={issue.createdAt} origin={origin} verb="authored" />
             <EditedMarker createdAt={issue.createdAt} updatedAt={issue.updatedAt} />
           </div>
           <div className="px-4 py-3">
@@ -343,6 +347,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             items={timeline}
             links={links}
             commentLinks={(c) => (bodyRefsUpstream(c, home.repo, members) ? upstreamLinks : undefined)}
+            trust={trust}
             renderComment={(item) => {
               const slots = commentSlots({
                 item,

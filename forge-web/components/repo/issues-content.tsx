@@ -13,6 +13,9 @@
  * shown with its cost before signing.
  */
 
+import { Byline } from '@/components/repo/byline'
+import { useMirrorTrust } from '@/hooks/use-mirror-trust'
+import { trustedOrigin } from '@/lib/repo/provenance'
 import { useMemo, useState, type FormEvent } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
@@ -40,11 +43,10 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import { useIntent } from '@/hooks/use-intent'
 import { useFirstWrite } from '@/hooks/use-first-write'
-import { plural, timeAgo } from '@/lib/view'
+import { plural } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
-import { Author } from '@/components/author'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { Field, Input } from '@/components/ui/input'
@@ -69,6 +71,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const pathname = usePathname()
   const params = useSearchParams()
   const generation = useRepoWriteGeneration(home.repo)
+  const trust = useMirrorTrust(home.repo)
   const totals = useRepoTotals(home.repo)
   // A private repo's issues are sealed on write (`lib/repo/private-writes.ts`); only a member
   // holding the current key can open one, and non-members see no button (ux-dx-spec §9).
@@ -260,8 +263,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                   </div>
                   <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
                     <span className="font-mono">#{issue.number}</span>
-                    <span>opened {timeAgo(issue.createdAt)} by</span>
-                    <Author identityId={issue.author} link={false} />
+                    <Byline author={issue.author} createdAt={issue.createdAt} origin={trustedOrigin(issue.origin, issue.author, trust)} verb="opened" link={false} />
                     {!issue.stateComplete ? (
                       <span className="rounded-full bg-danger/10 px-2 py-0.5 text-[11px] text-danger-700 dark:text-danger-400" title="This repository's event history could not be read completely, so the open/closed state, labels and assignees are unverified.">
                         state unverified
