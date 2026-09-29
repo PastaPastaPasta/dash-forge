@@ -356,4 +356,6 @@ dg webhook remove <owner>/<repo> ci      # by the name it was added with, or its
 
 The URL and event list are public on chain. The HMAC secret is encrypted to the relay identity's encryption key, so only that relay can read it; without `--secret-env <VAR>`, `dg` generates one and prints it once. The relay (`forge-relay run`, or its Docker image) needs only that encryption key, never signs and never spends. A delivery that fails is kept in a durable retry queue on the relay's disk and retried for up to 48 hours, across restarts (given a writable state dir; without one the relay warns and keeps the queue in memory); `forge-relay deliveries` lists the queue. Every delivery carries a stable `X-GitHub-Delivery` id, so receivers can drop duplicates.
 
+Check results go the other way: CI reports them with `dg ci report` under a runner key that can sign nothing else. See [CI and check runs](ci.md).
+
 A relay is trusted for availability only: a receiver that must not be fooled checks what a webhook says against Platform. [`crates/forge-relay/README.md`](../../crates/forge-relay/README.md) covers running one, the delivery guarantees, and a CI consumer that verifies the pushed ref.

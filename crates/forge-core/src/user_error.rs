@@ -1593,7 +1593,10 @@ mod tests {
         ] {
             let u = from_platform_text(text, &ctx).expect(text);
             assert_eq!(u.code, codes::KEY_CANNOT_SIGN, "{text}");
-            assert!(u.fix.iter().any(|f| f.contains("dg ci runner new")), "{text}");
+            assert!(
+                u.fix.iter().any(|f| f.contains("dg ci runner new")),
+                "{text}"
+            );
         }
     }
 

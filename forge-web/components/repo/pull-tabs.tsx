@@ -5,14 +5,17 @@
  *
  * - Commits: every commit the PR adds (`base..head`, newest first, capped at 250), each linking
  *   to its diff; the commits that applied review suggestions say so (`Forge-Suggestion:`).
- * - Checks: the newest `checkRun` per name on the PR head, by current members; a run whose
- *   reporter is no longer a member is listed but not counted (parity: `dg pr checks`).
+ * - Checks: the newest `checkRun` per name on the PR head (or a commit), by current members and
+ *   runners; a run whose reporter is no longer one is listed but not counted (parity: `dg pr
+ *   checks`, `dg ci status`). A run's log is read from the reporter's storage and shown only
+ *   with whether it hashed to the SHA-256 the run records.
  */
 
 import Link from 'next/link'
+import { useState } from 'react'
 import { CheckCircle2, CircleDashed, GitCommit, ListChecks, MinusCircle, XCircle } from 'lucide-react'
 
-import { checkOutcome, checksPhrase, safeDetailsUrl, untrustedWords, type CheckRun, type ChecksSummary } from '@/lib/repo/checks'
+import { checkOutcome, checksPhrase, fetchVerifiedLog, runDuration, safeDetailsUrl, safeLogUrl, untrustedWords, type CheckRun, type ChecksSummary, type VerifiedLog } from '@/lib/repo/checks'
 import type { PrCommits } from '@/lib/view/pr-commits'
 import { plural, timeAgo } from '@/lib/view'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
@@ -80,18 +83,58 @@ function CheckIcon({ run }: { run: CheckRun }): JSX.Element {
   return <CircleDashed className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
 }
 
+/** A run's log, fetched on demand and checked against its recorded SHA-256. */
+function RunLog({ run }: { run: CheckRun }): JSX.Element | null {
+  const [state, setState] = useState<{ kind: 'idle' } | { kind: 'loading' } | { kind: 'done'; log: VerifiedLog } | { kind: 'error'; message: string }>({ kind: 'idle' })
+  if (safeLogUrl(run.logUrl) === null || run.logSha256 === '') return null
+  if (state.kind === 'idle' || state.kind === 'loading') {
+    return (
+      <button
+        type="button"
+        className="text-[12px] text-forge-700 underline underline-offset-2 dark:text-forge-400"
+        data-testid="check-log-open"
+        disabled={state.kind === 'loading'}
+        onClick={() => {
+          setState({ kind: 'loading' })
+          fetchVerifiedLog(run).then(
+            (log) => setState({ kind: 'done', log }),
+            (e: unknown) => setState({ kind: 'error', message: e instanceof Error ? e.message : String(e) }),
+          )
+        }}
+      >
+        {state.kind === 'loading' ? 'Reading log…' : 'Log'}
+      </button>
+    )
+  }
+  if (state.kind === 'error') return <span className="basis-full text-[12px] text-danger-700 dark:text-danger-400" data-testid="check-log-error">Log: {state.message}</span>
+  const { log } = state
+  return (
+    <div className="basis-full" data-testid="check-log" data-verified={log.verified}>
+      <p className={log.verified ? 'text-[12px] text-verify-700 dark:text-verify-400' : 'text-[12px] font-medium text-danger-700 dark:text-danger-400'}>
+        {log.verified
+          ? `Log verified: its SHA-256 matches the one the run records (${log.bytes} bytes)`
+          : `Not the reported log: these bytes hash to ${log.sha256.slice(0, 12)}…, the run records ${run.logSha256.slice(0, 12)}…`}
+      </p>
+      {log.verified ? <pre className="mt-1 max-h-96 overflow-auto rounded border border-anvil-200 bg-anvil-50 p-2 font-mono text-[12px] dark:border-anvil-800 dark:bg-anvil-950">{log.text}</pre> : null}
+    </div>
+  )
+}
+
 export function ChecksTab({
   runs,
   summary,
   headOid,
   error,
   onRetry,
+  subject = 'PR head',
 }: {
   runs: readonly CheckRun[] | null
   summary: ChecksSummary | null
   headOid: string
   error: string | null
   onRetry: () => void
+  /** What `headOid` is, for the empty state: the PR head or a commit. */
+  subject?: string
 }): JSX.Element {
   if (error !== null) return <ErrorState message={error} onRetry={onRetry} />
   if (runs === null || summary === null) return <LoadingBlock label="Reading check runs" />
@@ -100,7 +143,7 @@ export function ChecksTab({
       <EmptyState
         icon={ListChecks}
         title={`No checks reported for ${headOid.slice(0, 7)}`}
-        body="A CI integration (the forge-relay or the GitHub Action) records check runs for the PR head. They are written by the repo's maintainers and writers."
+        body={`CI records check runs for the ${subject}: a runner the owner enrolled (\`dg ci runner new\`), the GitHub Action, or a maintainer or writer with \`dg ci report\`.`}
       />
     )
   }
@@ -118,6 +161,7 @@ export function ChecksTab({
               <CheckIcon run={r} />
               <span className="font-medium">{r.name}</span>
               <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{state}</span>
+              {runDuration(r) ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{runDuration(r)}</span> : null}
               {r.summary ? <span className="min-w-0 flex-1 truncate text-[12px] text-anvil-500 dark:text-anvil-400">{r.summary}</span> : <span className="flex-1" />}
               {!r.trusted ? <span className="text-[11px] text-anvil-500 dark:text-anvil-400">{untrustedWords(summary)}</span> : null}
               <span className="flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400">
@@ -128,6 +172,7 @@ export function ChecksTab({
                   Details
                 </a>
               ) : null}
+              <RunLog run={r} />
             </li>
           )
         })}

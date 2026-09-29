@@ -74,7 +74,7 @@ import {
   type RepoRef,
   type VerdictInput,
 } from '@/lib/repo'
-import { checksPhrase, newestCheckRuns, readCheckRunDocs, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
+import { checksPhrase, readCheckRuns, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
 import { headSync, readBranchState, readBranchTip } from '@/lib/repo/source-branch'
 import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
 import { linkedIssues, type Policy, type PolicyStatus } from '@/lib/rules/v2'
@@ -301,7 +301,7 @@ function PullPage({
   const checks = useAsync(
     async () => {
       const members = new Set(memberKey === '' ? [] : memberKey.split(','))
-      return newestCheckRuns(await readCheckRunDocs(sdk!, repo, pull.headOid), (who) => members.has(who))
+      return readCheckRuns(sdk!, repo, pull.headOid, members)
     },
     [ready, repoKey(repo), pull.headOid, memberKey],
     { enabled: ready && sdk !== null && pull.headOid !== '' },

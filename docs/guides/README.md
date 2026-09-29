@@ -11,6 +11,7 @@ Task-oriented guides for using Dash Forge. For how it is built, see the [documen
 | [Bring your own storage](bring-your-own-storage.md) | keep pack bytes in your own R2, B2, S3, Storj, self-hosted S3 or IPFS instead of on Platform, from the CLI or the browser |
 | [Storage on your home NAS](home-nas-storage.md) | run RustFS or Garage (or kubo) on a Synology, TrueNAS or Linux box, publish it safely with a Cloudflare Tunnel, and keep a second copy |
 | [Collaborating](collaborating.md) | add members, work with issues, pull requests, reviews, merges, releases and webhooks |
+| [CI and check runs](ci.md) | enrol a CI runner with a key that can only report check runs, report results with `dg ci report`, and see them on commits and PRs |
 | [Identity and keys](identity-and-keys.md) | understand your identity and limited keys, back it up, recover it, and keep keys safe |
 | [What things cost](costs.md) | know what each action costs (measured), what comes back, and how to see it before you pay |
 | [Check that Forge isn't lying to you](verify-forge.md) | read the Verification card, verify proofs and hashes yourself, and run your own copy of the web app |

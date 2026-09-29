@@ -59,6 +59,13 @@ pub enum CiCommand {
 pub enum RunnerCommand {
     /// Register a checkRun-only key for a runner identity and enrol it as a runner of the repo.
     New(Box<RunnerNewArgs>),
+    /// Enrol an identity that already has a key as a runner of the repo (the owner signs).
+    Add {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The runner identity id (base58).
+        runner: String,
+    },
     /// List the repo's runners.
     List {
         /// The repository (`owner/name`).
@@ -141,6 +148,9 @@ impl CiCommand {
     pub fn context(&self) -> (&'static str, Option<&String>) {
         match self {
             CiCommand::Runner(RunnerCommand::New(a)) => ("runner not created", Some(&a.repo)),
+            CiCommand::Runner(RunnerCommand::Add { repo, .. }) => {
+                ("runner not enrolled", Some(repo))
+            }
             CiCommand::Runner(RunnerCommand::List { repo }) => {
                 ("could not list runners", Some(repo))
             }
@@ -157,6 +167,9 @@ impl CiCommand {
 pub async fn run(ctx: &Ctx, cmd: &CiCommand) -> Result<()> {
     match cmd {
         CiCommand::Runner(RunnerCommand::New(a)) => runner_new(ctx, a).await,
+        CiCommand::Runner(RunnerCommand::Add { repo, runner }) => {
+            runner_add(ctx, repo, runner).await
+        }
         CiCommand::Runner(RunnerCommand::List { repo }) => runner_list(ctx, repo).await,
         CiCommand::Runner(RunnerCommand::Revoke { repo, runner }) => {
             runner_revoke(ctx, repo, runner).await
@@ -347,6 +360,29 @@ async fn verify_key(
         .context("verifying the runner key on chain")
 }
 
+async fn runner_add(ctx: &Ctx, repo: &str, runner: &str) -> Result<()> {
+    let s = Session::open(ctx, repo).await?;
+    s.client
+        .fetch_identity(runner)
+        .await
+        .with_context(|| format!("{runner} is not an identity on this network"))?;
+    ctx.confirm_or_cancel(&format!(
+        "Enrol {runner} as a runner of {}? ({})",
+        s.repo.display(),
+        cost_line(RUNNER_NEW_ESTIMATE_CREDITS, dash_usd_price())
+    ))?;
+    let before = s.balance().await;
+    let m = RunnerService::new(&s.client, &s.identity, &s.bridge)
+        .enrol(&s.repo, runner)
+        .await?;
+    let spent = s.spent_since(before).await;
+    ctx.emit(
+        json!({ "status": "enrolled", "runner": runner, "documentId": m.document_id, "cost": cost_json(spent, dash_usd_price()) }),
+        || println!("✓ {runner} is a runner of {} ({})", s.repo.display(), cost_line(spent, dash_usd_price())),
+    );
+    Ok(())
+}
+
 async fn runner_list(ctx: &Ctx, repo: &str) -> Result<()> {
     let r = Reader::open(ctx, repo).await?;
     let runners = RunnerReader::new(&r.client).list(&r.repo).await?;
@@ -426,7 +462,13 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
         ..CheckReport::default()
     };
     // Refused before anything is uploaded or signed.
-    r.validate()?;
+    r.validate().map_err(|e| {
+        crate::errors::usage(
+            e.to_string()
+                .trim_start_matches("configuration error: ")
+                .to_string(),
+        )
+    })?;
     let s = Session::open_for_write(ctx, &a.repo, "check run not reported").await?;
     if let Some(p) = &a.log {
         r.log = Some(upload_log(p, a.storage.as_deref()).await?);
