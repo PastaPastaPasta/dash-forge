@@ -71,13 +71,18 @@ pub fn oracle(members: &[Member]) -> RoleOracle {
     )
 }
 
-/// `repo`'s document scope and the forge-core contract its membership lives in.
-async fn core(
+/// `repo`'s document scope and the contract `doc_type` lives in (RC1: `maintainer`, `writer`
+/// and `consent` in forge-core, `runner` in forge-community).
+async fn scoped(
     client: &PlatformClient,
     repo: &RepoRef,
+    doc_type: &str,
 ) -> Result<(crate::scope::DocScope, LoadedContract)> {
-    let forge = repo.forge();
-    Ok((repo.scope()?, client.fetch_contract(&forge.core).await?))
+    let id = repo
+        .forge()
+        .contract_id_of(doc_type)
+        .ok_or_else(|| Error::Config(format!("{doc_type} is not a forge-v2 document type")))?;
+    Ok((repo.scope()?, client.fetch_contract(id).await?))
 }
 
 /// Every `doc_type` membership document of `repo` (`maintainer`, `writer`, `runner`), complete.
@@ -87,9 +92,9 @@ pub(crate) async fn membership_docs(
     doc_type: &str,
     order: &[QueryOrder],
 ) -> Result<Vec<FetchedDocument>> {
-    let (scope, core) = core(client, repo).await?;
+    let (scope, contract) = scoped(client, repo, doc_type).await?;
     client
-        .query_all_documents(&core, doc_type, &scope.filters([]), order)
+        .query_all_documents(&contract, doc_type, &scope.filters([]), order)
         .await
 }
 
@@ -101,11 +106,11 @@ pub(crate) async fn membership_doc(
     doc_type: &str,
     identity: &str,
 ) -> Result<Option<FetchedDocument>> {
-    let (scope, core) = core(client, repo).await?;
+    let (scope, contract) = scoped(client, repo, doc_type).await?;
     let member = FieldValue::identifier(platform::decode_identifier(identity)?);
     let docs = client
         .query_documents(
-            &core,
+            &contract,
             doc_type,
             &scope.filters([QueryFilter::eq("memberId", member)]),
             &[],
@@ -226,7 +231,7 @@ impl<'a> MemberService<'a> {
         if let Some(existing) = reader.role_doc(repo, member, role).await? {
             return Ok(existing);
         }
-        let (scope, core) = core(self.client, repo).await?;
+        let (scope, core) = scoped(self.client, repo, doc_type(role)).await?;
         let props = scope.props([(
             "memberId",
             FieldValue::identifier(platform::decode_identifier(member)?),
@@ -263,7 +268,7 @@ impl<'a> MemberService<'a> {
         else {
             return Ok(false);
         };
-        let (_, core) = core(self.client, repo).await?;
+        let (_, core) = scoped(self.client, repo, doc_type(role)).await?;
         self.engine()?
             .delete_document(&core, doc_type(role), &existing.document_id)
             .await?;

@@ -1,6 +1,6 @@
 //! CI on forge-v2 (`docs/design/platform-parity-spec.md` §2): runner memberships and check runs.
 //!
-//! * **Runner** = a forge-core `runner` document `{repoId, memberId}`. Only the repo owner can
+//! * **Runner** = a forge-community `runner` document (RC1 O-02 moved it out of forge-core) `{repoId, memberId}`. Only the repo owner can
 //!   create it (`propertyAgreement {"$ownerId": "$ownerId"}` against `repo`, like `maintainer`),
 //!   the `(repoId, memberId)` index is unique, and deleting it revokes the runner: the checkRun
 //!   gate (`ownerRefersTo anyOf [runner, maintainer, writer]`) refuses its next create or
@@ -41,7 +41,7 @@ use crate::platform::{
 use crate::rules::v2::{check_run_write, RunReport, RunWrite, RunWriteAction, StoredRun};
 use crate::scope::RepoRef;
 
-/// forge-core: a CI runner's membership of a repo.
+/// forge-community: a CI runner's membership of a repo.
 pub const DOC_RUNNER: &str = "runner";
 
 /// `status` values (the schema's enum).
@@ -165,13 +165,13 @@ impl<'a> RunnerService<'a> {
         if let Some(existing) = reader.get(repo, member).await? {
             return Ok(existing);
         }
-        let core = self.client.fetch_contract(&repo.forge().core).await?;
+        let community = self.client.fetch_contract(&repo.forge().community).await?;
         let props = repo.scope()?.props([(
             "memberId",
             FieldValue::identifier(platform::decode_identifier(member)?),
         )]);
         let engine = doc_engine(self.client, self.identity, self.bridge)?;
-        match engine.create_document(&core, DOC_RUNNER, props).await {
+        match engine.create_document(&community, DOC_RUNNER, props).await {
             Ok(document_id) => Ok(Runner {
                 identity_id: member.to_string(),
                 document_id,
@@ -191,9 +191,9 @@ impl<'a> RunnerService<'a> {
         let Some(existing) = RunnerReader::new(self.client).get(repo, member).await? else {
             return Ok(false);
         };
-        let core = self.client.fetch_contract(&repo.forge().core).await?;
+        let community = self.client.fetch_contract(&repo.forge().community).await?;
         doc_engine(self.client, self.identity, self.bridge)?
-            .delete_document(&core, DOC_RUNNER, &existing.document_id)
+            .delete_document(&community, DOC_RUNNER, &existing.document_id)
             .await?;
         Ok(true)
     }
