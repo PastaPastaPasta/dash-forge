@@ -2578,5 +2578,160 @@
    },
    "kind": 1
   }
+ },
+ {
+  "item": "base",
+  "name": "sealed event with a plaintext value",
+  "type": "event",
+  "expect": "refused",
+  "why": "noPlain",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 4,
+   "value": "bug",
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "base",
+  "name": "label event without a value",
+  "type": "event",
+  "expect": "refused",
+  "why": "needValue",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 4
+  }
+ },
+ {
+  "item": "base",
+  "name": "assignee event without refId",
+  "type": "event",
+  "expect": "refused",
+  "why": "needAssignee",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 6,
+   "value": "bug"
+  }
+ },
+ {
+  "item": "base",
+  "name": "resolve event without refId",
+  "type": "event",
+  "expect": "refused",
+  "why": "needRefId",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 11
+  }
+ },
+ {
+  "item": "base",
+  "name": "headUpdate event without oid",
+  "type": "event",
+  "expect": "refused",
+  "why": "needOid",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 16
+  }
+ },
+ {
+  "item": "base",
+  "name": "author resolve without refId",
+  "type": "authorEvent",
+  "expect": "refused",
+  "why": "needRefId",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 11
+  }
+ },
+ {
+  "item": "base",
+  "name": "author headUpdate without oid",
+  "type": "authorEvent",
+  "expect": "refused",
+  "why": "needOid",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 16
+  }
+ },
+ {
+  "item": "D-5",
+  "name": "conclusion while running",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "doneIfConclusion",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "in_progress",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
  }
 ]

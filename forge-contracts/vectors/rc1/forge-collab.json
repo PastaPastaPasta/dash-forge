@@ -919,6 +919,48 @@
  },
  {
   "item": "R-04",
+  "name": "patch proof naming another identity",
+  "type": "patch",
+  "expect": "refused",
+  "why": "m_self",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 2,
+   "tk": 1,
+   "title": "A fix",
+   "vis": "public",
+   "baseRefNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "baseRefName": "refs/heads/main",
+   "sourceRepoId": {
+    "$id": 1
+   },
+   "sourceRefNameHash": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "sourceRefName": "refs/heads/fix",
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "asMember": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "R-04",
   "name": "sealed private import without a proof",
   "type": "issue",
   "expect": "refused",
@@ -2043,6 +2085,201 @@
    },
    "body": "a\n\nb",
    "vis": "public"
+  }
+ },
+ {
+  "item": "base",
+  "name": "issue with neither title nor enc",
+  "type": "issue",
+  "expect": "refused",
+  "why": "hasTitle",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "body": "text",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "base",
+  "name": "patch with neither title nor enc",
+  "type": "patch",
+  "expect": "refused",
+  "why": "hasTitle",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 2,
+   "tk": 1,
+   "vis": "public",
+   "baseRefNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "baseRefName": "refs/heads/main",
+   "sourceRepoId": {
+    "$id": 1
+   },
+   "sourceRefNameHash": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "sourceRefName": "refs/heads/fix",
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "base",
+  "name": "comment with neither body nor enc",
+  "type": "comment",
+  "expect": "refused",
+  "why": "hasBody",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "base",
+  "name": "sealed issue with a plaintext title",
+  "type": "issue",
+  "expect": "refused",
+  "why": "noPlain",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "title": "A bug",
+   "body": "text",
+   "vis": "public",
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "base",
+  "name": "sealed patch with a plaintext base ref",
+  "type": "patch",
+  "expect": "refused",
+  "why": "noPlain",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 2,
+   "tk": 1,
+   "vis": "public",
+   "baseRefNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "baseRefName": "refs/heads/main",
+   "sourceRepoId": {
+    "$id": 1
+   },
+   "sourceRefNameHash": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "sourceRefName": "refs/heads/fix",
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "base",
+  "name": "sealed review with a plaintext body",
+  "type": "review",
+  "expect": "refused",
+  "why": "noPlain",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "patchId": {
+    "$id": 3
+   },
+   "verdict": 3,
+   "commitOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "body": "looks fine",
+   "vis": "public",
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "R-04",
+  "name": "imported issue proved by its signer 9",
+  "type": "issue",
+  "expect": "ok",
+  "owner": 9,
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "number": 1,
+   "tk": 0,
+   "title": "A bug",
+   "body": "text",
+   "vis": "public",
+   "imported": {
+    "author": "a",
+    "createdAt": 1,
+    "url": "https://github.com/x/y/issues/7761"
+   },
+   "asMember": {
+    "$id": 9
+   }
   }
  }
 ]
