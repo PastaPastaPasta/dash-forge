@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { hasShortUrl, RESERVED_SEGMENTS, SHORT_URL_EXPAND_SOURCE, shortRepoPath, shortUrlShimScript, type ShortTarget } from './short-url'
+import { hasShortUrl, RESERVED_SEGMENTS, SHORT_URL_EXPAND_SOURCE, shortRepoPath, shortRepoUrl, shortUrlShimScript, type ShortTarget } from './short-url'
 
 type Expand = (pathname: string, base: string, reserved: readonly string[]) => string | null
 // The shim is plain JS in a string; evaluate it as the page does.
@@ -179,5 +179,29 @@ describe('shortUrlShimScript', () => {
     expect(script).not.toContain('</script')
     // It parses as a script.
     expect(() => new Function(script)).not.toThrow()
+  })
+})
+
+describe('Copy link and DPNS-form short URLs (L-55, L-82)', () => {
+  it('expands an owner written as a full DPNS name', () => {
+    expect(expand('/unofficial-dashpay-dash-mirror.dash/dash')).toBe('/repo/?owner=unofficial-dashpay-dash-mirror.dash&name=dash')
+    expect(expand('/alice.dash/project/issues/3')).toBe('/repo/issue/?owner=alice.dash&name=project&number=3')
+  })
+
+  it('keeps the repo pin as the short URL’s query, which the shim carries through', () => {
+    const id = 'Bdx8pb9VYHqoeWDoY96HNNrjoQyZvaoBjSqZJ5fajRDB'
+    const url = shortRepoUrl({ owner: id, name: 'dash', repoId: 'R1' })
+    expect(url).toBe(`/${id}/dash?repo=R1`)
+    // The page does `location.replace(expanded + '&' + search)`.
+    const [path, search] = url.split('?') as [string, string]
+    expect(`${expand(path)}&${search}`).toBe(`/repo/?owner=${id}&name=dash&repo=R1`)
+    expect(shortRepoUrl({ owner: 'alice', name: 'p', repoId: 'R1' }, { kind: 'issue', number: 4 })).toBe('/alice/p/issues/4?repo=R1')
+  })
+
+  it('falls back to the canonical route when the owner or name has no short form', () => {
+    expect(shortRepoUrl({ owner: 'repo', name: 'x' })).toBe('/repo/?owner=repo&name=x')
+    expect(shortRepoUrl({ owner: 'alice', name: '.hidden', repoId: 'R' }, { kind: 'pull', number: 2, tab: 'files' })).toBe(
+      '/repo/pull/?owner=alice&name=.hidden&repo=R&number=2&tab=files',
+    )
   })
 })

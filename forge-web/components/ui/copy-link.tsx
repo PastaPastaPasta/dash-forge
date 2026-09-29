@@ -12,7 +12,7 @@ export function CopyLinkButton({
   target,
   className,
 }: {
-  repo: { readonly owner: string; readonly name: string }
+  repo: { readonly owner: string; readonly name: string; readonly repoId?: string }
   target?: ShortTarget
   className?: string
 }): JSX.Element {

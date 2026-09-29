@@ -110,6 +110,7 @@ import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
 import { Oid } from '@/components/ui/oid'
 import { CopyLinkButton } from '@/components/ui/copy-link'
+import { TabStrip } from '@/components/ui/tab-strip'
 import { CopyRow } from '@/components/ui/copy-row'
 import { Field, Input } from '@/components/ui/input'
 import { CostPreview } from '@/components/ui/cost-preview'
@@ -769,12 +770,12 @@ function PullPage({
       ) : null}
 
       {/* Tabs */}
-      <div role="tablist" aria-label="Pull request" className="flex gap-1 overflow-x-auto border-b border-anvil-200 dark:border-anvil-800">
+      <TabStrip role="tablist" label="Pull request" activeKey={tab}>
         <TabButton id="conversation" current={tab} onSelect={setTab} icon={<MessageSquare className="h-4 w-4" aria-hidden />} label="Conversation" count={counts.conversation} />
         <TabButton id="commits" current={tab} onSelect={setTab} icon={<GitCommit className="h-4 w-4" aria-hidden />} label="Commits" count={counts.commits} />
         <TabButton id="checks" current={tab} onSelect={setTab} icon={<ListChecks className="h-4 w-4" aria-hidden />} label="Checks" count={counts.checks} />
         <TabButton id="files" current={tab} onSelect={setTab} icon={<FileDiff className="h-4 w-4" aria-hidden />} label="Files changed" count={counts.files} />
-      </div>
+      </TabStrip>
 
       <div className={cn('grid gap-6', tab !== 'files' && 'lg:grid-cols-[minmax(0,1fr)_16rem]')}>
         <div role="tabpanel" aria-label={tab} className="min-w-0 space-y-4">

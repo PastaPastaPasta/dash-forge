@@ -96,31 +96,77 @@ export function shortRepoPath(repo: { readonly owner: string; readonly name: str
   }
 }
 
-/** An owner (identity id or DPNS label) and a repo name the shim accepts ({@link SHORT_URL_EXPAND_SOURCE}). */
-const OWNER_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9-]*$/
+/**
+ * An owner (identity id, DPNS label, or full DPNS name such as `alice.dash`, L-82) and a repo
+ * name the shim accepts ({@link SHORT_URL_EXPAND_SOURCE}).
+ */
+const OWNER_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9.-]*$/
 const NAME_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
 /**
- * Whether `repo` has a short URL the shim expands back to it: an owner or name the shim refuses
- * (`alice.dash`), a reserved owner (`repo`), or a `?repo=` pin (the short form cannot carry it)
- * needs the canonical query route instead.
+ * Whether `repo`'s owner and name have a short path the shim expands back to them: an owner or
+ * name the shim refuses (`.hidden`) or a reserved owner (`repo`) needs the canonical route.
+ */
+function hasShortPath(repo: { readonly owner: string; readonly name: string }): boolean {
+  return OWNER_SEGMENT.test(repo.owner) && NAME_SEGMENT.test(repo.name) && !RESERVED_SEGMENTS.includes(repo.owner.toLowerCase())
+}
+
+/**
+ * Whether `repo` has a short URL with no query string: {@link hasShortPath}, and no `?repo=` pin
+ * (permalinks, which add their own path segments, need it bare).
  */
 export function hasShortUrl(repo: { readonly owner: string; readonly name: string; readonly repoId?: string }): boolean {
-  return (
-    !repo.repoId &&
-    OWNER_SEGMENT.test(repo.owner) &&
-    NAME_SEGMENT.test(repo.name) &&
-    !RESERVED_SEGMENTS.includes(repo.owner.toLowerCase())
-  )
+  return !repo.repoId && hasShortPath(repo)
 }
 
 /** The base path this build is served under (`NEXT_PUBLIC_BASE_PATH`, e.g. `/dash-forge`). */
 export const BASE_PATH = (process.env.NEXT_PUBLIC_BASE_PATH ?? '').replace(/\/+$/, '')
 
-/** The absolute short URL for the current origin (browser only; the path alone elsewhere). */
-export function shortRepoUrl(repo: { readonly owner: string; readonly name: string }, target?: ShortTarget): string {
-  const path = `${BASE_PATH}${shortRepoPath(repo, target)}`
+/**
+ * The link Copy link copies (L-55), absolute for the current origin in a browser: the short URL,
+ * keeping a `?repo=` pin as its query string (the shim carries the query through, so the link
+ * still opens that exact repo); the canonical query route when the owner or name has no short
+ * form.
+ */
+export function shortRepoUrl(repo: { readonly owner: string; readonly name: string; readonly repoId?: string }, target?: ShortTarget): string {
+  const pin = repo.repoId ? `?repo=${encodeURIComponent(repo.repoId)}` : ''
+  const path = hasShortPath(repo) ? `${BASE_PATH}${shortRepoPath(repo, target)}${pin}` : `${BASE_PATH}${canonicalPath(repo, target)}`
   return typeof window === 'undefined' ? path : `${window.location.origin}${path}`
+}
+
+/** The canonical query route of a short target (what the shim would expand it to). */
+function canonicalPath(repo: { readonly owner: string; readonly name: string; readonly repoId?: string }, target: ShortTarget = { kind: 'home' }): string {
+  const q = new URLSearchParams({ owner: repo.owner, name: repo.name })
+  if (repo.repoId) q.set('repo', repo.repoId)
+  const route = (r: string, extra: Record<string, string | undefined> = {}): string => {
+    for (const [k, v] of Object.entries(extra)) if (v) q.set(k, v)
+    return `/repo${r}/?${q.toString()}`
+  }
+  switch (target.kind) {
+    case 'home':
+      return route('')
+    case 'tree':
+    case 'blob':
+    case 'blame':
+      return route(`/${target.kind}`, { ref: target.ref, path: target.path })
+    case 'commits':
+      return route('/commits', { ref: target.ref, path: target.path })
+    case 'issues':
+    case 'pulls':
+    case 'releases':
+    case 'branches':
+    case 'tags':
+    case 'stargazers':
+      return route(`/${target.kind}`)
+    case 'issue':
+      return route('/issue', { number: String(target.number) })
+    case 'pull':
+      return route('/pull', { number: String(target.number), tab: target.tab })
+    case 'release':
+      return route('/release', { tag: target.tag })
+    case 'commit':
+      return route('/commit', { oid: target.oid })
+  }
 }
 
 /**
