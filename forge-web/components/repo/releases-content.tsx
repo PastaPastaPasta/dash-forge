@@ -201,7 +201,7 @@ function ReleaseCard({
       {r.assets.length > 0 ? (
         <ul className="mt-3 divide-y divide-anvil-100 rounded-md border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800" aria-label="Assets">
           {r.assets.map((a) => (
-            <AssetRow key={`${a.name}${a.sha256}`} asset={a} imported={r.omitted !== null} />
+            <AssetRow key={`${a.name}${a.sha256}`} asset={a} />
           ))}
         </ul>
       ) : null}
@@ -238,8 +238,9 @@ export function OmittedAssetsNote({ omitted }: { omitted: OmittedAssets }): JSX.
 
 /**
  * How this page can offer an asset. `unverified`: an IMPORTED asset with no recorded hash yet
- * (the import's hashing budget ran out; a later run records it) whose original is on the source
- * forge: linked there, marked not verified. `unverifiable`: any other asset with no recorded hash
+ * (the import's hashing budget ran out; a later run records it), known by its URL being a
+ * GitHub or GitLab release download ({@link importedAssetUrl}; never by text in the notes, which
+ * any publisher writes): linked there, marked not verified. `unverifiable`: any other asset with no recorded hash
  * (D-517): never handed out, so a release published here can never offer an unchecked file. `browser`: the page reads it
  * and verifies as it downloads. `origin`: only a host that sends no CORS header has it (GitHub and
  * GitLab release downloads, L-13), so the page links to it and the hash check is a step on the
@@ -248,12 +249,9 @@ export function OmittedAssetsNote({ omitted }: { omitted: OmittedAssets }): JSX.
  */
 type AssetAccess = 'unverified' | 'unverifiable' | 'browser' | 'origin' | 'none'
 
-function assetAccess(asset: ReleaseAssetView, imported: boolean): AssetAccess {
+function assetAccess(asset: ReleaseAssetView): AssetAccess {
   const linkable = directDownloadUrls(asset).length > 0
-  if (!assetVerifiable(asset)) {
-    const fromImport = imported || asset.uris.some(importedAssetUrl)
-    return fromImport && linkable ? 'unverified' : 'unverifiable'
-  }
+  if (!assetVerifiable(asset)) return asset.uris.some(importedAssetUrl) && linkable ? 'unverified' : 'unverifiable'
   if (browserReadable(asset)) return 'browser'
   return linkable ? 'origin' : 'none'
 }
@@ -266,7 +264,7 @@ type AssetState =
   | { readonly kind: 'error'; readonly message: string }
 
 /** One asset of a release: how this page can offer it, and the download or its fallback. */
-export function AssetRow({ asset, imported = false }: { asset: ReleaseAssetView; imported?: boolean }): JSX.Element {
+export function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
   const [state, setState] = useState<AssetState>({ kind: 'idle' })
   const run = async (): Promise<void> => {
     setState({ kind: 'working', progress: null })
@@ -283,7 +281,7 @@ export function AssetRow({ asset, imported = false }: { asset: ReleaseAssetView;
     }
   }
   const bad = state.kind === 'mismatch'
-  const access = assetAccess(asset, imported)
+  const access = assetAccess(asset)
   const unhashed = access === 'unverifiable' || access === 'unverified'
   return (
     <li

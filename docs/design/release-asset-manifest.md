@@ -2,7 +2,7 @@
 
 **Status:** proposal, for the forge-core registration after the moutai wipe (and mainnet's first registration). Nothing here changes the contracts registered on moutai today. Those stay as they are until the chain goes away.
 
-**Why.** A `release` lists its assets in `assets`, one JSON string of at most 4,096 bytes. An imported asset entry (name, SHA-256, size, one URI) is about 255 bytes, so a release holds about 16. The showcase rebuild on moutai beta.6 (2026-09-28) hit the limit on 6 of its 15 mirrors:
+**Why.** A `release` lists its assets in `assets`, one JSON string of at most 4,096 bytes. An imported asset entry (name, SHA-256, size, one URI) is about 255 bytes, so a release holds about 16. The showcase rebuild on moutai beta.6 (2026-09-28) hit the limit on 7 of its 15 mirrors:
 
 | mirror | releases | releases over the limit | assets left out |
 |---|---|---|---|
@@ -111,7 +111,7 @@ Size: about 255 B per imported entry, so dashpay/dash's largest release (21 asse
   3. lists every asset, each with the existing verified-download row.
   - If the fetch fails, it keeps the preview and says "N more assets: list unavailable (retry)".
 - **`dg release list/download`**: the same. `download --all` walks the full list.
-- **The trust model is unchanged.** Every asset is still checked against its recorded SHA-256, and the list itself against `assetManifest`, which the maintainer signed.
+- **The trust model is unchanged.** Every asset with a recorded SHA-256 is checked against it, and the list itself against `assetManifest`, which the maintainer signed. An imported asset recorded with `sha256: ""` (not hashed yet) is never verified: readers show it as "not verified yet" and link its original, as they do today.
 
 ## 2. Alternatives considered
 

@@ -92,9 +92,8 @@ describe('an imported asset not hashed yet', () => {
     const row = host.querySelector<HTMLElement>('[data-testid="release-asset"]')!
     expect(row.dataset['state']).toBe('unverifiable')
     expect(row.querySelector('a')).toBeNull()
-    // The same file in a release the importer marked (its omitted-assets footer) is imported.
-    act(() => root.render(<AssetRow asset={native} imported />))
-    expect(host.querySelector<HTMLElement>('[data-testid="release-asset"]')!.dataset['state']).toBe('unverified')
+    // Notes text is never evidence: only the asset's own URL on a source forge's release
+    // downloads marks it imported (review: a publisher can write the footer into any notes).
   })
 
   it('recognises the forges an import copies from', () => {
