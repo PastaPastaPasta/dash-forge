@@ -49,9 +49,10 @@ pub use super::review::{
     SuggestionError,
 };
 pub use super::transition::{
-    delta_of, dense_number, merge_transition, names_dense_rule, next_transition, repo_counts,
-    state_code, status_of_code, Actor, RepoCounts, StateAction, StateStatus, Transition,
-    TransitionMove, TransitionTarget, DENSE_RULE, TRANSITION_KINDS,
+    delta_of, dense_number, fold_sum, is_locked, merge_transition, names_dense_rule,
+    next_transition, repo_counts, state_code, state_sum, status_of_code, Actor, RepoCounts,
+    StateAction, StateStatus, Transition, TransitionMove, TransitionTarget, DENSE_RULE, LOCK_DELTA,
+    TRANSITION_KINDS,
 };
 
 use serde::{Deserialize, Serialize};
@@ -136,8 +137,8 @@ impl RoleOracle {
 // Issue / PR state (transitions) and metadata fold
 // ===========================================================================
 
-/// Whether `kind` is one of the state kinds (close, reopen, merge, draft, ready) that live only
-/// in `transition` on the fresh registration. The contract refuses them on `event` (`kind ≥ 4`,
+/// Whether `kind` is one of the state kinds (close, reopen, merge, draft, ready, and since RC1
+/// lock and unlock) that live only in `transition` on the fresh registration. The contract refuses them on `event` (`kind ≥ 4`,
 /// `noState`) and `authorEvent` (its enum); handed one anyway, the metadata fold ignores it.
 #[must_use]
 pub fn is_state_kind(kind: EventKind) -> bool {
@@ -148,6 +149,8 @@ pub fn is_state_kind(kind: EventKind) -> bool {
             | EventKind::Merge
             | EventKind::Draft
             | EventKind::Ready
+            | EventKind::Lock
+            | EventKind::Unlock
     )
 }
 

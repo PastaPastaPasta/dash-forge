@@ -626,7 +626,7 @@ mod tests {
     fn event_schema_is_member_gated_and_append_only() {
         let text = include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../forge-contracts/contracts/forge-collab.json"
+            "/../../forge-contracts/contracts/forge-community.json"
         ));
         let c: serde_json::Value = serde_json::from_str(text).unwrap();
         let e = c.get("documentSchemas").unwrap_or(&c)["event"].clone();

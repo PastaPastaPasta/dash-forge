@@ -1127,7 +1127,8 @@ pub enum LabelCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum CollabCommand {
-    /// Add a member (the repo owner creates a writer/maintainer document).
+    /// Add a member (the repo owner creates a writer/maintainer document). The member must
+    /// have run `dg collab accept <repo>` first.
     Add {
         /// The repository (`owner/name`).
         repo: String,
@@ -1136,6 +1137,19 @@ pub enum CollabCommand {
         /// The role to grant.
         #[arg(long, value_enum, default_value = "writer")]
         role: RoleArg,
+        /// Wait up to this many seconds for the member to accept (`dg collab accept`) before
+        /// adding them. Without it, an add the member has not accepted yet is refused.
+        #[arg(long, value_name = "SECONDS")]
+        wait: Option<u64>,
+    },
+    /// Accept membership of a repository (write your consent), so its owner can add you.
+    Accept {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// Withdraw an earlier acceptance instead (a membership already granted stands until
+        /// the owner removes it).
+        #[arg(long)]
+        withdraw: bool,
     },
     /// Remove a member (the owner deletes their document; their next push is refused).
     Remove {
@@ -1661,7 +1675,9 @@ mod tests {
             "maintain",
         ]);
         match cli.command {
-            Command::Collab(CollabCommand::Add { repo, member, role }) => {
+            Command::Collab(CollabCommand::Add {
+                repo, member, role, ..
+            }) => {
                 assert_eq!(repo, "o/r");
                 assert_eq!(member, "member123");
                 assert!(matches!(role, RoleArg::Maintainer));

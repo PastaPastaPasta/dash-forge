@@ -452,7 +452,12 @@ async fn submit(
             d
         }
     };
-    let v = Verdict::from_code(draft.verdict.unwrap_or(3));
+    let collab = s.collab();
+    // A member's approve / request changes is written as 1 / 2 (with its proof), anyone
+    // else's as 4 / 5: shown, never counted (RC1 `member_verdicts`).
+    let v = collab
+        .verdict_for(&s.repo, Verdict::from_code(draft.verdict.unwrap_or(3)))
+        .await?;
     let n = draft.comments.len();
     let count = u16::try_from(n)
         .map_err(|_| crate::errors::usage("a review holds at most 65535 comments"))?;
@@ -504,7 +509,6 @@ async fn submit(
         cost_line(est, price)
     ))?;
 
-    let collab = s.collab();
     let before = s.balance().await;
     // Not saved here: the first save is the one that records the review's signed transition
     // (`write_all`). Until then the file keeps what `--pending` saved, so a submit that fails
@@ -567,7 +571,7 @@ async fn submit(
         ));
     }
     let _ = std::fs::remove_file(path);
-    let member = collab.signer_role(&s.repo).await.ok().flatten().is_some();
+    let member = collab.is_member(&s.repo).await.unwrap_or(false);
     let mut body = body;
     body["counts"] = json!(member);
     ctx.emit(body, || {
@@ -718,9 +722,12 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
     let p = patch(&collab, &s.repo, &a.repo, a.number).await?;
     let view = collab.patch_view(&s.repo, p).await?;
     let head = hex::decode(&view.head).context("PR head oid")?;
+    // A reply names its thread's root (RC1 `reply_thread`: a reply to a reply is refused), so
+    // `--reply-to` any comment of a thread replies to the thread.
+    let mut reply_root = None;
     let (anchor, kind) = if let Some(reply) = &a.reply_to {
         let comments = collab.comments(&s.repo, &view.patch.document_id).await?;
-        if !comments.iter().any(|c| &c.document_id == reply) {
+        let Some(root) = super::threads::root_id(&comments, reply) else {
             return Err(crate::errors::not_found(
                 format!("comment {reply} is not on PR #{}", a.number),
                 format!(
@@ -728,10 +735,11 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
                     a.repo, a.number
                 ),
             ));
-        }
+        };
+        reply_root = Some(root.clone());
         (
             Some(CommentAnchor {
-                reply_to: Some(reply.clone()),
+                reply_to: Some(root),
                 ..CommentAnchor::default()
             }),
             "reply",
@@ -765,7 +773,7 @@ pub async fn comment(ctx: &Ctx, a: &PrCommentArgs) -> Result<()> {
             "pr": a.number,
             "commentId": id,
             "kind": kind,
-            "replyTo": a.reply_to,
+            "replyTo": reply_root,
             "location": location,
             "commitOid": (kind == "inline").then(|| view.head.clone()),
         }),
