@@ -50,6 +50,17 @@ describe('looksLikeDpnsName / displayDpnsName', () => {
     expect(looksLikeDpnsName('has spaces')).toBe(false)
   })
 
+  // L-72: the platform's own DPNS contract requires a 3-63 character label (both dpns-contract
+  // schema v1 and v2 set `label`'s minLength to 3); a value too short to ever resolve should
+  // never spend a read on one.
+  it('requires a label of at least 3 characters (the contract minimum), up to 63', () => {
+    expect(looksLikeDpnsName('a')).toBe(false)
+    expect(looksLikeDpnsName('ab')).toBe(false)
+    expect(looksLikeDpnsName('abc')).toBe(true)
+    expect(looksLikeDpnsName('a'.repeat(63))).toBe(true)
+    expect(looksLikeDpnsName('a'.repeat(64))).toBe(false)
+  })
+
   it('displays a bare label defaulted to .dash, and label.parent unchanged', () => {
     expect(displayDpnsName('alice')).toBe('alice.dash')
     expect(displayDpnsName('alice.dash')).toBe('alice.dash')

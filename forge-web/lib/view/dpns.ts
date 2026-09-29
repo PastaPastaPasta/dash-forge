@@ -134,12 +134,15 @@ function splitDpnsName(name: string): { label: string; parent: string } {
 }
 
 /**
- * A DPNS label's shape — the same pattern `splitRefs` (markdown.ts) uses to recognize an
- * `@name` mention: 1-63 characters, alphanumeric at each end, hyphens allowed between. Checked
- * before a value is normalized and queried, so a value that plainly cannot be a label (spaces,
- * punctuation, an empty string) never spends a read.
+ * A DPNS label's shape: 3-63 characters (the platform's own minimum label length), alphanumeric
+ * at each end, hyphens allowed between — close to but stricter than the pattern `splitRefs`
+ * (markdown.ts) uses to recognize an `@name` mention for rendering (that one allows a 1-2
+ * character label too, since a too-short mention still renders as a mention even though it can
+ * never resolve to a real name). Checked before a value is normalized and queried, so a value
+ * that plainly cannot be a label (spaces, punctuation, too short, an empty string) never spends a
+ * read.
  */
-const LABEL_SHAPE = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/
+const LABEL_SHAPE = /^[a-zA-Z0-9][a-zA-Z0-9-]{1,61}[a-zA-Z0-9]$/
 
 /** Whether `name` (a bare label, or `label.parent`) is shaped like a name worth a DPNS lookup. */
 export function looksLikeDpnsName(name: string): boolean {
