@@ -317,6 +317,39 @@ pub async fn set_draft(ctx: &Ctx, repo: &str, number: u64, draft: bool) -> Resul
     Ok(())
 }
 
+/// `dg pr lock` (`--off`: unlock): a lock transition (kinds 18 / 19, members only). On a
+/// locked PR only members can comment or review (`lockGate`).
+pub async fn set_locked(ctx: &Ctx, repo: &str, number: u64, lock: bool) -> Result<()> {
+    let pr = open_pr(ctx, repo, number, "lock not changed").await?;
+    let (verb, done) = if lock {
+        ("Lock", "locked")
+    } else {
+        ("Unlock", "unlocked")
+    };
+    if pr.view.log.locked() == lock {
+        unchanged(
+            ctx,
+            done,
+            number,
+            &format!("PR #{number} is already {done}"),
+            json!({ "locked": lock }),
+        );
+        return Ok(());
+    }
+    ctx.confirm_or_cancel(&format!(
+        "{verb} the conversation of PR #{number}? (one transition, {}; members only)",
+        cost_line(estimate(Est::Event, 0), dash_usd_price())
+    ))?;
+    let collab = pr.s.collab();
+    let target = pr.view.patch.target();
+    let id = collab.set_locked(&pr.s.repo, &target, lock).await?;
+    ctx.emit(
+        json!({ "status": done, "pr": number, "locked": lock, "transitionId": id }),
+        || println!("✓ {done} PR #{number}"),
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // resolve / unresolve
 // ---------------------------------------------------------------------------

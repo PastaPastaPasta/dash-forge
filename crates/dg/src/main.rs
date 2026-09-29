@@ -782,6 +782,16 @@ pub enum PrCommand {
         /// The PR number.
         number: u64,
     },
+    /// Lock a pull request's conversation to members (unlock with `--off`). Members only.
+    Lock {
+        /// The repository (`owner/name`).
+        repo: String,
+        /// The PR number.
+        number: u64,
+        /// Unlock.
+        #[arg(long)]
+        off: bool,
+    },
     /// Resolve a conversation (the thread of `comment_id`).
     Resolve {
         /// The repository (`owner/name`).

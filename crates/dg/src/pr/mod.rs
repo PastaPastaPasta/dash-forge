@@ -85,6 +85,7 @@ pub async fn run(ctx: &Ctx, cmd: &PrCommand) -> Result<()> {
         }
         PrCommand::Ready { repo, number } => state::set_draft(ctx, repo, *number, false).await,
         PrCommand::Draft { repo, number } => state::set_draft(ctx, repo, *number, true).await,
+        PrCommand::Lock { repo, number, off } => state::set_locked(ctx, repo, *number, !off).await,
         PrCommand::Resolve {
             repo,
             number,
