@@ -793,6 +793,22 @@ fn from_platform_text(msg: &str, ctx: &ErrorContext<'_>) -> Option<UserError> {
                 .fix("register a fresh limited key (uses your master key once): `dg auth login <identity file>` or `dg auth login --mnemonic`"),
         );
     }
+    // A contract-bound key used outside its bounds: ContractBoundedKeyOutOfBoundsError (20014),
+    // or ContractBoundedKeyNonBatchError for a transition that is not a document batch. rs-dpp
+    // checks both before signing too, so nothing is broadcast. A CI runner's key is bound to
+    // `checkRun` only.
+    if m.contains("outside the contract bounds of key")
+        || m.contains("cannot sign a non-batch transition")
+    {
+        return Some(
+            UserError::new(codes::KEY_CANNOT_SIGN, ctx.headline("this key can't sign that"))
+                .cause(format!(
+                    "the key is bound to one contract or document type, and this write is outside it: {}",
+                    one_line(msg)
+                ))
+                .fix("a CI runner key (`dg ci runner new`) can only report check runs; sign anything else with your own key (`dg auth login`)"),
+        );
+    }
     // PublicKeyIsDisabledError ("Identity key N is disabled"), or the same caught before signing.
     if m.contains("is disabled")
         && (m.contains("identity key") || m.contains("identity public key"))
@@ -1565,6 +1581,19 @@ mod tests {
             let u = from_platform_text(text, &ctx).expect(text);
             assert_eq!(u.code, code, "{text}");
             assert!(u.fix.iter().any(|f| f.contains("dg auth login")), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_bound_key_outside_its_bounds_is_e302_not_a_generic_rejection() {
+        let ctx = ErrorContext::default();
+        for text in [
+            "Batch member is outside the contract bounds of key 6",
+            "Contract-bound authentication key 6 cannot sign a non-batch transition",
+        ] {
+            let u = from_platform_text(text, &ctx).expect(text);
+            assert_eq!(u.code, codes::KEY_CANNOT_SIGN, "{text}");
+            assert!(u.fix.iter().any(|f| f.contains("dg ci runner new")), "{text}");
         }
     }
 

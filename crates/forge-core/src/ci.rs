@@ -340,10 +340,15 @@ impl CheckReport {
             ("externalId", text(&self.external_id)),
             ("startedAt", self.started_at.map(FieldValue::integer)),
             ("completedAt", self.completed_at.map(FieldValue::integer)),
-            ("logUrl", self.log.as_ref().map(|(u, _)| FieldValue::text(u))),
+            (
+                "logUrl",
+                self.log.as_ref().map(|(u, _)| FieldValue::text(u)),
+            ),
             (
                 "logSha256",
-                self.log.as_ref().map(|(_, h)| FieldValue::bytes(h.to_vec())),
+                self.log
+                    .as_ref()
+                    .map(|(_, h)| FieldValue::bytes(h.to_vec())),
             ),
             ("artifacts", text(&self.artifacts)),
         ];
@@ -498,7 +503,10 @@ mod tests {
     #[test]
     fn a_report_is_checked_against_the_schema_rules_before_signing() {
         assert_eq!(
-            report("completed", Some("success")).validate().unwrap().len(),
+            report("completed", Some("success"))
+                .validate()
+                .unwrap()
+                .len(),
             20
         );
         assert!(report("queued", None).validate().is_ok());
@@ -508,7 +516,7 @@ mod tests {
         };
         assert_eq!(sha256_head.validate().unwrap().len(), 32);
         for bad in [
-            report("completed", None),       // conclusionIfDone
+            report("completed", None),         // conclusionIfDone
             report("queued", Some("success")), // doneIfConclusion
             report("done", None),
             report("completed", Some("passed")),
@@ -539,15 +547,28 @@ mod tests {
         let docs = [
             doc("a", me, 1, &[("name", "build"), ("status", "completed")]),
             doc("b", me, 2, &[("name", "build"), ("status", "in_progress")]),
-            doc("c", "someone-else", 3, &[("name", "build"), ("status", "queued")]),
+            doc(
+                "c",
+                "someone-else",
+                3,
+                &[("name", "build"), ("status", "queued")],
+            ),
             doc("d", me, 4, &[("name", "test"), ("status", "queued")]),
         ];
         let r = report("completed", Some("success"));
-        assert_eq!(run_to_update(&docs, me, &r).map(|d| d.id.as_str()), Some("b"));
+        assert_eq!(
+            run_to_update(&docs, me, &r).map(|d| d.id.as_str()),
+            Some("b")
+        );
         // Another identity's run is never replaced (consensus would refuse it anyway).
         assert_eq!(run_to_update(&docs, "nobody", &r), None);
         // Completed newest: a re-run starts a new document.
-        let done = [doc("a", me, 1, &[("name", "build"), ("status", "completed")])];
+        let done = [doc(
+            "a",
+            me,
+            1,
+            &[("name", "build"), ("status", "completed")],
+        )];
         assert_eq!(run_to_update(&done, me, &r), None);
     }
 
@@ -559,18 +580,29 @@ mod tests {
                 "a",
                 me,
                 1,
-                &[("name", "build"), ("status", "completed"), ("externalId", "gh-1")],
+                &[
+                    ("name", "build"),
+                    ("status", "completed"),
+                    ("externalId", "gh-1"),
+                ],
             ),
             doc(
                 "b",
                 me,
                 2,
-                &[("name", "build"), ("status", "queued"), ("externalId", "gh-2")],
+                &[
+                    ("name", "build"),
+                    ("status", "queued"),
+                    ("externalId", "gh-2"),
+                ],
             ),
         ];
         let mut r = report("completed", Some("failure"));
         r.external_id = Some("gh-1".into());
-        assert_eq!(run_to_update(&docs, me, &r).map(|d| d.id.as_str()), Some("a"));
+        assert_eq!(
+            run_to_update(&docs, me, &r).map(|d| d.id.as_str()),
+            Some("a")
+        );
         r.external_id = Some("gh-3".into());
         assert_eq!(run_to_update(&docs, me, &r), None);
     }

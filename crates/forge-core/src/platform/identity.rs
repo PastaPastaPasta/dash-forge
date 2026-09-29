@@ -1048,8 +1048,7 @@ impl LoadedIdentity {
         if k.purpose() != Purpose::AUTHENTICATION || k.security_level() != SecurityLevel::HIGH {
             return Err(bad("not an AUTHENTICATION / HIGH key"));
         }
-        if self.key_doc_type(key_id) != Some((spec.contract.clone(), spec.document_type.clone()))
-        {
+        if self.key_doc_type(key_id) != Some((spec.contract.clone(), spec.document_type.clone())) {
             return Err(bad("not bound to the requested document type"));
         }
         if k.total_budget() != Some(spec.budget_credits)
