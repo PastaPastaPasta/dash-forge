@@ -284,18 +284,45 @@ describe('write engine', () => {
     expect(r.deleted).toBe(true)
   })
 
-  it('a stored document never uses the affected-state wait', async () => {
+  it('a replace whose refusal the SDK cannot decode has an unknown charge, never "nothing was charged"', async () => {
+    const spends: SpendEvent[] = []
     const script: Script = {
       platformNonce: 1n,
       broadcast: () => undefined,
       wait: async () => ({}),
+      exists: async () => storedDoc('old'),
+      replace: async () => {
+        throw sdkRefusal('platform deserialization error: unable to deserialize ConsensusError: UnexpectedEnd { additional: 18 }')
+      },
+    }
+    const err = await replaceDocumentIdempotent(sdkOf(script, []), auth(spends), {
+      contractId: 'I5', documentType: 'issue', documentId: 'D', changes: { title: 'new' }, confirmTimeoutMs: 0,
+    }).catch((e: unknown) => e)
+    expect((err as ConsensusRefusal).code).toBe(UNREADABLE_REFUSAL_CODE)
+    expect((err as ConsensusRefusal).charged).toBeNull()
+    expect((err as ConsensusRefusal).feeCharged).toBeNull()
+  })
+
+  it('a stored document never uses the affected-state wait', async () => {
+    let affected = 0
+    let strict = 0
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => {
+        strict += 1
+        return {}
+      },
       affected: async () => {
-        throw new Error('a stored document must wait strictly')
+        affected += 1
+        return {}
       },
       exists: async () => ({}),
     }
     const r = await createDocumentIdempotent(sdkOf(script, []), auth([]), { ...write, contractId: 'I4' })
     expect(r.confirmed).toBe(true)
+    expect(strict).toBe(1)
+    expect(affected).toBe(0)
   })
 
   it('does not read an index-only snapshot as landed for a stored document', async () => {
@@ -657,6 +684,28 @@ describe('a stale document id (10405) is re-prepared, then thrown as is', () => 
     const r = await createDocumentIdempotent(sdkOf(script, signed), auth([]), { ...write, contractId: 'S1' })
     expect(r.confirmed).toBe(true)
     expect(signed).toEqual([2n, 2n])
+  })
+
+  it('a coded refusal whose figures contain "10405" is a refusal, not a stale id', async () => {
+    const restore = withStorage()
+    try {
+      const signed: bigint[] = []
+      const script: Script = {
+        platformNonce: 1n,
+        broadcast: () => {
+          throw sdkRefusal(`Insufficient identity ${OWNER} balance 1 required 104050000`, 40210)
+        },
+        wait: async () => ({}),
+        exists: async () => undefined,
+      }
+      const err = await createDocumentIdempotent(sdkOf(script, signed), auth([]), { ...write, contractId: 'S3', intent: 'i' }).catch((e: unknown) => e)
+      expect((err as ConsensusRefusal).code).toBe(40210)
+      expect((err as ConsensusRefusal).isBalance).toBe(true)
+      // Refused once, never re-prepared as a stale id
+      expect(signed).toEqual([2n])
+    } finally {
+      restore()
+    }
   })
 
   it('a coded 10405 again on the second attempt is the stale-id error, not a plain refusal', async () => {

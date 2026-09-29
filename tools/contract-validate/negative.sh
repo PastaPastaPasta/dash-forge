@@ -43,9 +43,8 @@ expect_reject cross-permanent-on-deletable collab '.documentSchemas.webhook.owne
 expect_reject cross-missing-type collab '.documentSchemas.star.properties.repoId.refersTo.documentType = "nope"'
 expect_reject cross-deletable-on-permanent collab '.documentSchemas.issue.properties.repoId.refersTo.type = "deletableDocument"'
 expect_reject issue-deletable-under-author-lookup collab '.documentSchemas.issue.canBeDeleted = true | del(.documentSchemas.issue.documentsKeepHistory)'
-# the author operand finds by the unique author index ($ownerId, repoId, number); without
-# $ownerId the writer is not bound
-expect_reject author-findby-wrong-index collab '.documentSchemas.authorEvent.ownerRefersTo.anyOf[0].findBy |= del(."$ownerId")'
+# the author operand must bind the writer: findBy has to read "." (the writer) exactly once
+expect_reject author-findby-without-writer collab '.documentSchemas.authorEvent.ownerRefersTo.anyOf[0].findBy |= del(."$ownerId")'
 expect_reject author-lookup-optional-key collab '.documentSchemas.authorEvent.required -= ["targetNumber"]'
 expect_reject author-lookup-optional-repo collab '.documentSchemas.authorEvent.required -= ["repoId"]'
 # `where` keyed by the found document's $id needs an identifier on the referring side

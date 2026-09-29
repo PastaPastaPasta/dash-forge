@@ -651,7 +651,10 @@ export function asConsensusRefusal(e: unknown): ConsensusRefusal | null {
   for (const [patternCode, re] of REFUSAL_PATTERNS) {
     if (code !== null && code !== patternCode) continue
     const m = re.exec(message)
-    if (m) return new ConsensusRefusal(code ?? patternCode, message, figuresOf(m.groups), charged)
+    // An error the SDK could not decode may be a CheckTx refusal or a block's verdict (both reach
+    // JS as kind Protocol, code -1): its charge is unknown. A broadcast's own catch still says
+    // "not charged" (`atBroadcast`).
+    if (m) return new ConsensusRefusal(code ?? patternCode, message, figuresOf(m.groups), patternCode === UNREADABLE_REFUSAL_CODE ? null : charged)
   }
   return code === null ? null : new ConsensusRefusal(code, message, {}, charged)
 }
@@ -697,11 +700,9 @@ async function awaitOutcome(sdk: EvoSDK, st: StateTransition, indexOnly: boolean
     // A nonce answer is settled by reading the chain (the caller's `settleUnanswered`).
     const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
     // The result wait answers with the transition's verdict in a block, whatever shape the
-    // error takes: charged (unless Drive leaves that refusal unpaid). A verdict the SDK could
-    // not decode has no code to tell an unpaid refusal by: its charge is unknown.
-    if (refusal !== null) {
-      throw new ConsensusRefusal(refusal.code, refusal.message, refusal.figures, refusal.code === UNREADABLE_REFUSAL_CODE ? null : true)
-    }
+    // error takes: charged (unless Drive leaves that refusal unpaid), or unknown when the SDK
+    // could not decode it (`asConsensusRefusal` already says null for that).
+    if (refusal !== null) throw new ConsensusRefusal(refusal.code, refusal.message, refusal.figures, refusal.charged === null ? null : true)
     return 'unknown'
   } finally {
     clearTimeout(timer)
@@ -1361,7 +1362,9 @@ const STALE_DOCUMENT_ID_CODE = 10405
 
 /** Consensus refused a create because its id was derived at another protocol version. */
 export function isStaleDocumentIdError(e: unknown): boolean {
-  if (consensusCodeOf(e) === STALE_DOCUMENT_ID_CODE) return true
+  // A coded error is that code, whatever figures its text holds ("required 104050000")
+  const code = consensusCodeOf(e)
+  if (code !== null) return code === STALE_DOCUMENT_ID_CODE
   const m = errorMessage(e).toLowerCase()
   return m.includes('invalid document transition id') || m.includes(String(STALE_DOCUMENT_ID_CODE))
 }

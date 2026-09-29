@@ -3,7 +3,7 @@
 Two shared data contracts, **forge-core** and **forge-collab**, registered once per network and joined by a PV14 contract group. Every repository is a set of documents in these two contracts, keyed by the `repo` document's id (`repoId`). This is the only data model Dash Forge implements.
 
 - Schemas: `forge-contracts/contracts/forge-core.json`, `forge-contracts/contracts/forge-collab.json`
-- Offline validation: `tools/contract-validate` (rs-dpp `v4.2.0-beta.6`, `PlatformVersion` 14)
+- Offline validation: `tools/contract-validate` (rs-dpp `v4.2.0-beta.7`, `PlatformVersion` 14)
 - Registration: `forge-contracts/scripts/deploy-v2.mjs` (evo-sdk `4.2.0-beta.7`)
 - Decision record: roadmap D-A (owner decision of 2026-09-24, reviewed by a protocol architect)
 
