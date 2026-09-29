@@ -66,7 +66,7 @@ export function ContractsMissingState({
         <div className="mt-1 space-y-1 break-words font-mono text-[12px]">
           {config.v2 !== null ? (
             <p>
-              This build reads forge-core {config.v2.core} and forge-collab {config.v2.collab} on {config.key}.
+              This build reads forge-core {config.v2.core}, forge-collab {config.v2.collab} and forge-community {config.v2.community} on {config.key}.
             </p>
           ) : null}
           <p>{detail}</p>

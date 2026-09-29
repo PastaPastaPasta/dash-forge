@@ -1,6 +1,6 @@
 //! `forge-relay` — the availability-only webhook daemon (PRD 05), for forge-v2 repositories.
 //!
-//! A maintainer writes a forge-collab `webhook` document (`dg webhook add`) naming a URL, the
+//! A maintainer writes a forge-community `webhook` document (`dg webhook add`) naming a URL, the
 //! events it wants, and a relay identity, with the HMAC secret encrypted to that relay's
 //! encryption key. A relay started with that identity finds every hook addressed to it
 //! (`relay` index), decrypts the secrets in memory, polls those repos' documents (Platform has

@@ -304,7 +304,7 @@ fn report_fork(
     Ok(())
 }
 
-/// Star or unstar `repo` (forge-collab `star`, `indexOnly`; unstar is the values-carrying
+/// Star or unstar `repo` (forge-community `star`, `indexOnly`; unstar is the values-carrying
 /// delete). A new star also writes a `starBeat` when `trending` and the config allow it.
 async fn star(ctx: &Ctx, repo: &str, on: bool, trending: bool) -> Result<()> {
     let s = Session::open(ctx, repo).await?;
@@ -368,7 +368,7 @@ async fn star(ctx: &Ctx, repo: &str, on: bool, trending: bool) -> Result<()> {
     Ok(())
 }
 
-/// Watch or stop watching `repo` (forge-collab `watch`, indexOnly).
+/// Watch or stop watching `repo` (forge-community `watch`, indexOnly).
 async fn watch(ctx: &Ctx, repo: &str, on: bool) -> Result<()> {
     // Not a write to the repo: an archived repo can be watched, as it can be starred.
     let s = Session::open(ctx, repo).await?;

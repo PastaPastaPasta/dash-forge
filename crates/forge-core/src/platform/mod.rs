@@ -646,7 +646,7 @@ impl PlatformClient {
     /// build records for the network; `None` for any other contract (a repository's own).
     fn forge_contract_missing(&self, contract_id: &str, detail: &str) -> Option<Error> {
         let forge = self.target.v2.as_ref()?;
-        if contract_id != forge.core && contract_id != forge.collab {
+        if !forge.contains(contract_id) {
             return None;
         }
         let network = &self.target.network;

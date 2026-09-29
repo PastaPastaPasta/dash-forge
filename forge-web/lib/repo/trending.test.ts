@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 import type { ForgeIds } from '../deployments'
 import { TRENDING_DEFAULT, TRENDING_PREF_KEY, readMostFollowed, readMostStarred, readTrending, setTrendingPref, trendingPref } from './trending'
 
-const FORGE = { core: 'CORE', collab: 'COLLAB', group: 'G' } as unknown as ForgeIds
+const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', community: 'COMMUNITY', group: 'G' }
 
 function memoryStore(): Pick<Storage, 'getItem' | 'setItem'> & { data: Map<string, string> } {
   const data = new Map<string, string>()
@@ -57,8 +57,8 @@ describe('ranked reads', () => {
     const page = await readTrending(rankedSdk(seen), FORGE, 'week', 25)
     await readTrending(rankedSdk(seen), FORGE, 'today', 10)
     expect(seen).toEqual([
-      { dataContractId: 'COLLAB', documentTypeName: 'starBeat', groupBy: 'repoId', aggregate: { type: 'count' }, limit: 25, direction: 'desc', timeRange: [{ field: '$createdAt', selector: 'oldest' }] },
-      { dataContractId: 'COLLAB', documentTypeName: 'starBeat', groupBy: 'repoId', aggregate: { type: 'count' }, limit: 10, direction: 'desc', timeRange: [{ field: '$createdAt', selector: 'newest' }] },
+      { dataContractId: 'COMMUNITY', documentTypeName: 'starBeat', groupBy: 'repoId', aggregate: { type: 'count' }, limit: 25, direction: 'desc', timeRange: [{ field: '$createdAt', selector: 'oldest' }] },
+      { dataContractId: 'COMMUNITY', documentTypeName: 'starBeat', groupBy: 'repoId', aggregate: { type: 'count' }, limit: 10, direction: 'desc', timeRange: [{ field: '$createdAt', selector: 'newest' }] },
     ])
     expect(page.entries).toEqual([
       { group: 'RepoB', keyHex: 'b2'.repeat(32), count: 3, rank: 0 },
@@ -71,8 +71,8 @@ describe('ranked reads', () => {
     await readMostStarred(rankedSdk(seen), FORGE)
     await readMostFollowed(rankedSdk(seen), FORGE)
     expect(seen).toEqual([
-      { dataContractId: 'COLLAB', documentTypeName: 'star', groupBy: 'repoId', aggregate: { type: 'count' }, limit: 25, direction: 'desc' },
-      { dataContractId: 'COLLAB', documentTypeName: 'follow', groupBy: 'identityId', aggregate: { type: 'count' }, limit: 25, direction: 'desc' },
+      { dataContractId: 'COMMUNITY', documentTypeName: 'star', groupBy: 'repoId', aggregate: { type: 'count' }, limit: 25, direction: 'desc' },
+      { dataContractId: 'COMMUNITY', documentTypeName: 'follow', groupBy: 'identityId', aggregate: { type: 'count' }, limit: 25, direction: 'desc' },
     ])
   })
 })

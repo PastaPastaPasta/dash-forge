@@ -395,7 +395,7 @@ fn key_v0(
 /// A key bound to one document type of one contract (`ContractBounds::SingleContractDocumentType`,
 /// protocol 14 admits it on AUTHENTICATION keys): consensus refuses every batch member outside
 /// that type with `ContractBoundedKeyOutOfBoundsError` (20014). A CI runner's key is bound to
-/// `(forge-collab, checkRun)` this way (platform-parity-spec §2.2).
+/// `(forge-community, checkRun)` this way (platform-parity-spec §2.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DocTypeKeySpec {
     /// Total credits the key may spend.

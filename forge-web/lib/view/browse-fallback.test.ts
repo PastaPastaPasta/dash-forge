@@ -34,7 +34,7 @@ import { deriveTrust } from './trust'
 
 /** A repo whose session caches key by `repoId` (each test uses its own). */
 function testRepo(repoId: string): RepoRef {
-  return { forge: { core: 'CORE', collab: 'COLLAB', group: 'G' }, repoId, ownerId: 'owner', name: '', visibility: 'public' }
+  return { forge: { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'G' }, repoId, ownerId: 'owner', name: '', visibility: 'public' }
 }
 
 /** Mock SDK serving each pack's bytes as `chunk` docs split at CHUNK_PAYLOAD_MAX. */
@@ -207,7 +207,7 @@ describe('startFallback with external-storage packs', () => {
     const plat = blobPack("the fork's own pack\n")
     const inherited = blobPack('only the parent had this\n')
     const fork: RepoRef = {
-      forge: { core: 'CORE', collab: 'COLLAB', group: 'GROUP' },
+      forge: { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' },
       repoId: 'FORK',
       ownerId: 'forker',
       name: 'proj',

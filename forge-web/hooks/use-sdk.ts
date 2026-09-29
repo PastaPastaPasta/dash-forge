@@ -16,8 +16,8 @@
 import { useCallback, useEffect, useSyncExternalStore } from 'react'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { DEFAULT_NETWORK, NETWORKS, type Network } from '@/lib/constants'
-import { evoSdkService, type SdkStatus } from '@/lib/sdk'
+import { DEFAULT_NETWORK, type Network } from '@/lib/constants'
+import { evoSdkService, preloadContractIds, type SdkStatus } from '@/lib/sdk'
 import { connectionTrust, type ConnectionTrust } from '@/lib/view/trust'
 
 interface SdkState {
@@ -71,15 +71,7 @@ export function useSdk(extraContractIds: readonly string[] = []): SdkState {
   const key = extraContractIds.join(',')
 
   useEffect(() => {
-    const { dpnsContractId: dpns, v2 } = NETWORKS[network]
-    const extras = key.length > 0 ? key.split(',') : []
-    const contractIds = [
-      ...new Set(
-        [dpns, v2?.core, v2?.collab, ...extras].filter(
-          (id): id is string => typeof id === 'string' && id.length > 0,
-        ),
-      ),
-    ]
+    const contractIds = preloadContractIds(network, key.length > 0 ? key.split(',') : [])
     // The outcome reaches every caller through the service's status.
     evoSdkService.initialize({ network, contractIds, timeoutMs: 15000 }).catch(() => undefined)
   }, [key, network])

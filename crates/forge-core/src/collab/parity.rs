@@ -2,7 +2,7 @@
 //! topics, milestones, and pinning / locking an issue or PR. A second `impl` of
 //! [`super::v2::Collab`], so each stays next to its reads and folds.
 //!
-//! * `watch` (forge-collab, indexOnly): the signer's watched repos, on every device.
+//! * `watch` (forge-community, indexOnly): the signer's watched repos, on every device.
 //! * `topic` (forge-core, owner-granted): a repo's tags, countable per name.
 //! * `milestone` (forge-collab, maintainer- or writer-gated): newest definition per title;
 //!   an issue or PR joins one by a member event (kind 17, the title as its value).
@@ -29,21 +29,23 @@ impl Collab<'_> {
 
     /// Watch `repo`. `false` when already watching (nothing written).
     pub async fn watch(&self, repo: &RepoRef) -> Result<bool> {
-        let collab = self.collab_contract(repo).await?;
-        self.create_own_index_only(&collab, repo, DOC_WATCH).await
+        let community = self.community_contract(repo).await?;
+        self.create_own_index_only(&community, repo, DOC_WATCH)
+            .await
     }
 
     /// Stop watching `repo` (the values-carrying indexOnly delete). `false` when not watching.
     pub async fn unwatch(&self, repo: &RepoRef) -> Result<bool> {
-        let collab = self.collab_contract(repo).await?;
-        self.delete_own_index_only(&collab, repo, DOC_WATCH).await
+        let community = self.community_contract(repo).await?;
+        self.delete_own_index_only(&community, repo, DOC_WATCH)
+            .await
     }
 
     /// How many identities watch `repo` (the countable `byRepo` index).
     pub async fn watcher_count(&self, repo: &RepoRef) -> Result<u64> {
-        let collab = self.collab_contract(repo).await?;
+        let community = self.community_contract(repo).await?;
         self.client()
-            .count_documents(&collab, DOC_WATCH, &[Self::repo_filter(repo)?])
+            .count_documents(&community, DOC_WATCH, &[Self::repo_filter(repo)?])
             .await
     }
 

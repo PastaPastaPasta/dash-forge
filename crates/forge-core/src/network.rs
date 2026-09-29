@@ -260,12 +260,18 @@ struct V2Record {
     forge_core: Option<ContractRecord>,
     #[serde(default)]
     forge_collab: Option<ContractRecord>,
+    /// Absent on a deployment that predates the three-contract split (its community types
+    /// live in forge-collab).
+    #[serde(default)]
+    forge_community: Option<ContractRecord>,
     #[serde(default)]
     contract_group_id: Option<String>,
     #[serde(default)]
     forge_core_superseded: Vec<SupersededRecord>,
     #[serde(default)]
     forge_collab_superseded: Vec<SupersededRecord>,
+    #[serde(default)]
+    forge_community_superseded: Vec<SupersededRecord>,
     /// The group `deploy-v2.mjs` verified on chain: its id and owner (the deployer).
     #[serde(default)]
     contract_group: Option<GroupRecord>,
@@ -325,14 +331,18 @@ impl ContractRecord {
 }
 
 impl V2Record {
-    /// Every forge-v2 id, or `None` unless both contracts are registered and the group is
-    /// recorded — a half-finished deploy is not a usable deployment.
+    /// Every forge-v2 id, or `None` unless every contract is registered and the group is
+    /// recorded — a half-finished deploy is not a usable deployment. A deployment that predates
+    /// the three-contract split records no forge-community: its community types are in
+    /// forge-collab, so `community` is forge-collab's id. A forge-community record that is not
+    /// (yet) registered is a half-finished deploy.
     fn ids(&self) -> Option<ForgeIds> {
         let group = self.contract_group_id.clone().filter(|s| !s.is_empty())?;
         let superseded_in_group = self
             .forge_core_superseded
             .iter()
             .chain(&self.forge_collab_superseded)
+            .chain(&self.forge_community_superseded)
             .filter(|r| r.contract_group_id.as_deref() == Some(group.as_str()))
             .filter_map(|r| r.contract_id.clone())
             .collect();
@@ -346,9 +356,15 @@ impl V2Record {
             .and_then(|g| g.owner.clone())
             .or_else(|| self.forge_core.as_ref().and_then(|c| c.owner_id.clone()))
             .filter(|s| !s.is_empty());
+        let collab = self.forge_collab.as_ref()?.registered_id()?;
+        let community = match &self.forge_community {
+            Some(record) => record.registered_id()?,
+            None => collab.clone(),
+        };
         Some(ForgeIds {
             core: self.forge_core.as_ref()?.registered_id()?,
-            collab: self.forge_collab.as_ref()?.registered_id()?,
+            collab,
+            community,
             group,
             superseded_in_group,
             group_owner,
@@ -362,11 +378,14 @@ impl V2Record {
 pub struct ForgeIds {
     /// The forge-core contract (repos, refs, packs).
     pub core: String,
-    /// The forge-collab contract (issues, PRs, reviews, social graph).
+    /// The forge-collab contract (issues, PRs, transitions, reviews, events, milestones).
     pub collab: String,
-    /// The contract group both contracts belong to.
+    /// The forge-community contract (profiles, stars, watches, follows, check runs, policies,
+    /// webhooks). forge-collab's id on a deployment that predates the three-contract split.
+    pub community: String,
+    /// The contract group every contract belongs to.
     pub group: String,
-    /// Earlier forge-core / forge-collab contracts `deploy-v2.mjs` superseded but left in the
+    /// Earlier forge-core / forge-collab / forge-community contracts `deploy-v2.mjs` superseded but left in the
     /// same group (a group cannot drop a member). A group-bound key can sign for them too;
     /// they are Forge's own, so the group check accepts them.
     pub superseded_in_group: Vec<String>,
@@ -375,6 +394,36 @@ pub struct ForgeIds {
     /// neither the group's owner nor forge-core's.
     /// The group must also have no admins (`deploy-v2.mjs` registers none).
     pub group_owner: Option<String>,
+}
+
+impl ForgeIds {
+    /// forge-core, forge-collab and forge-community, labelled (forge-community repeats
+    /// forge-collab's id on a deployment that predates the split).
+    pub fn all(&self) -> [(&'static str, &str); 3] {
+        [
+            ("forge-core", &self.core),
+            ("forge-collab", &self.collab),
+            ("forge-community", &self.community),
+        ]
+    }
+
+    /// Whether `contract_id` is one of the current Forge contracts.
+    pub fn contains(&self, contract_id: &str) -> bool {
+        self.all().iter().any(|(_, id)| *id == contract_id)
+    }
+
+    /// Placeholder ids for tests: `CORE`, `COLLAB`, `COMMUNITY`, group `G`.
+    #[doc(hidden)]
+    pub fn test_forge() -> Self {
+        Self {
+            core: "CORE".into(),
+            collab: "COLLAB".into(),
+            community: "COMMUNITY".into(),
+            group: "G".into(),
+            superseded_in_group: vec![],
+            group_owner: None,
+        }
+    }
 }
 
 /// What an embedded deployment file records for one network.
@@ -722,20 +771,21 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
         let on_disk = |p: &str| v.pointer(p).unwrap().as_str().unwrap().to_string();
+        let collab = on_disk("/v2/forgeCollab/contractId");
+        let community = v
+            .pointer("/v2/forgeCommunity/contractId")
+            .and_then(|c| c.as_str())
+            .map_or_else(|| collab.clone(), str::to_string);
+        let superseded = |key: &str| v["v2"][key].as_array().cloned().unwrap_or_default();
         ForgeIds {
             core: on_disk("/v2/forgeCore/contractId"),
-            collab: on_disk("/v2/forgeCollab/contractId"),
+            collab,
+            community,
             group: on_disk("/v2/contractGroupId"),
-            superseded_in_group: v["v2"]["forgeCoreSuperseded"]
-                .as_array()
+            superseded_in_group: superseded("forgeCoreSuperseded")
                 .into_iter()
-                .flatten()
-                .chain(
-                    v["v2"]["forgeCollabSuperseded"]
-                        .as_array()
-                        .into_iter()
-                        .flatten(),
-                )
+                .chain(superseded("forgeCollabSuperseded"))
+                .chain(superseded("forgeCommunitySuperseded"))
                 .filter(|r| r["contractGroupId"] == v["v2"]["contractGroupId"])
                 .filter_map(|r| r["contractId"].as_str().map(str::to_string))
                 .collect(),
@@ -836,10 +886,36 @@ mod tests {
             Some(ForgeIds {
                 core: "C".into(),
                 collab: "L".into(),
+                community: "L".into(),
                 group: "G".into(),
                 superseded_in_group: vec![],
                 group_owner: None,
             })
+        );
+        // Three contracts: forge-community's own id, and its superseded ones in the group
+        let three = r#"{"v2":{"forgeCore":{"contractId":"C","status":"registered"},
+            "forgeCollab":{"contractId":"L","status":"registered"},
+            "forgeCommunity":{"contractId":"M","status":"registered"},
+            "forgeCommunitySuperseded":[{"contractId":"OLDM","contractGroupId":"G"}],
+            "contractGroupId":"G"}}"#;
+        assert_eq!(
+            parse(three),
+            Some(ForgeIds {
+                core: "C".into(),
+                collab: "L".into(),
+                community: "M".into(),
+                group: "G".into(),
+                superseded_in_group: vec!["OLDM".into()],
+                group_owner: None,
+            })
+        );
+        // A forge-community still in flight is a half-finished deploy, not a two-contract one
+        assert_eq!(
+            parse(&three.replace(
+                r#""M","status":"registered""#,
+                r#""M","status":"broadcasting""#
+            )),
+            None
         );
         // In flight, missing a contract, or missing the group: no ids.
         assert_eq!(parse(&full.replacen("registered", "broadcasting", 1)), None);

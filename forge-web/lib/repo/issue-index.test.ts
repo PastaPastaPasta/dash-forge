@@ -16,7 +16,7 @@ import { queryIssues, foldIssueOpenCount, type IssueSelection } from './issue-in
 import { openCounts } from './issues'
 import type { RepoRef } from './contract'
 
-const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', group: 'GROUP' }
+const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' }
 const REPO = 'C8XSf6R4shR1kqFKUZQnuaEZ5DkW7uoe9qtQYZpS5SRd'
 const OWNER = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const MAINT = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'

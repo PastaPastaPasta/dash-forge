@@ -56,7 +56,7 @@ const { createIssue } = await import('./writes')
 const { SupersededWriteError, UnconfirmedWriteError } = await import('../sdk/write')
 
 const REPO: RepoRef = {
-  forge: { core: 'CORE', collab: 'COLLAB', group: 'GROUP' },
+  forge: { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' },
   repoId: base58Encode(new Uint8Array(32).fill(0x11)),
   ownerId: base58Encode(new Uint8Array(32).fill(0x21)),
   name: 'repo',

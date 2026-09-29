@@ -48,7 +48,7 @@ import {
   type RepoRef,
 } from './index'
 
-const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', group: 'GROUP' }
+const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' }
 // Real-shaped base58 ids (32 bytes): the resolver tells ids from DPNS names by decoding them.
 const OWNER = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const MAINT = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'

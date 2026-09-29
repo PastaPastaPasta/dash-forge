@@ -194,16 +194,24 @@ async fn verify_and_check_run(
     let engine = WriteEngine::new(&client, &identity, bridge.doc_op_key()?)?;
 
     let after_bytes = hex::decode(&after).unwrap_or_default();
+    let now_ms = u64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis(),
+    )?;
     let props: BTreeMap<String, FieldValue> = scope.props([
         ("headOid", FieldValue::bytes(after_bytes)),
         ("name", FieldValue::text("dash-forge-ci")),
         ("status", FieldValue::text("completed")),
+        // A completed run records both times (forge-community checkRun rules; set once)
+        ("startedAt", FieldValue::integer(now_ms)),
+        ("completedAt", FieldValue::integer(now_ms)),
         ("conclusion", FieldValue::text(conclusion)),
         ("summary", FieldValue::text(summary)),
     ]);
-    let collab = client.fetch_contract(&forge.collab).await?;
+    let community = client.fetch_contract(&forge.community).await?;
 
-    match engine.create_document(&collab, "checkRun", props).await {
+    match engine.create_document(&community, "checkRun", props).await {
         Ok(id) => {
             tracing::info!(check_run_doc = %id, conclusion, "wrote checkRun back to Platform (CI loop closed)");
         }

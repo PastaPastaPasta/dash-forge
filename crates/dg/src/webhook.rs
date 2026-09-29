@@ -1,6 +1,6 @@
 //! `dg webhook` — forge-v2 webhooks: add / list / remove.
 //!
-//! A webhook is a forge-collab `webhook` document a maintainer writes: a URL, the events it
+//! A webhook is a forge-community `webhook` document a maintainer writes: a URL, the events it
 //! wants, the relay identity that delivers them, and the HMAC secret encrypted to that relay's
 //! encryption key (`forge_core::webhooks`). The relay reads it from Platform, so pointing a
 //! repo at another relay is `dg webhook add` again with `--relay <other>` and the same

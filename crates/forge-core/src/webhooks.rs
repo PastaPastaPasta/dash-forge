@@ -1,4 +1,4 @@
-//! forge-v2 webhooks: the forge-collab `webhook` document (`docs/contracts/forge-v2.md` §2).
+//! forge-v2 webhooks: the forge-community `webhook` document (`docs/contracts/forge-v2.md` §2).
 //!
 //! A webhook asks a relay identity to POST GitHub-shaped events for one repository to a URL.
 //! It is a document `{repoId, hookId, url, events, relayIdentityId, relayKeyId, senderKeyId,
@@ -39,7 +39,7 @@ use crate::platform::{
 use crate::rules::v2::Role;
 use crate::scope::RepoRef;
 
-/// The forge-collab document type.
+/// The forge-community document type.
 pub const DOC_WEBHOOK: &str = "webhook";
 
 /// The shortest secret accepted: a short HMAC key is weak, and the printable-ASCII check that
@@ -328,8 +328,8 @@ pub fn decrypt_secret(
     Ok(secret)
 }
 
-/// The forge-collab contract of `client`'s network.
-async fn collab(client: &PlatformClient) -> Result<LoadedContract> {
+/// The forge-community contract of `client`'s network (where `webhook` lives).
+async fn community(client: &PlatformClient) -> Result<LoadedContract> {
     let forge = client
         .target()
         .v2
@@ -337,7 +337,7 @@ async fn collab(client: &PlatformClient) -> Result<LoadedContract> {
         .ok_or_else(|| Error::V2NotDeployed {
             network: client.network().key(),
         })?;
-    client.fetch_contract(&forge.collab).await
+    client.fetch_contract(&forge.community).await
 }
 
 /// Read access to `webhook` documents.
@@ -352,7 +352,7 @@ impl<'a> WebhookReader<'a> {
     }
 
     async fn read(&self, filters: &[QueryFilter]) -> Result<Vec<Webhook>> {
-        let contract = collab(self.client).await?;
+        let contract = community(self.client).await?;
         Ok(self
             .client
             .query_all_documents(
@@ -498,7 +498,7 @@ impl<'a> WebhookService<'a> {
                 other => other,
             })?;
         let relay_keys = relay.public_keys();
-        let recipient = select_recipient_key(&relay_keys, &forge.collab).ok_or_else(|| {
+        let recipient = select_recipient_key(&relay_keys, &forge.community).ok_or_else(|| {
             Error::Config(format!(
                 "relay {} has no enabled ECDSA_SECP256K1 ENCRYPTION key to encrypt the secret to",
                 input.relay_identity_id
@@ -507,7 +507,7 @@ impl<'a> WebhookService<'a> {
         let mine = held_encryption_keys(
             envelope::encryption_keys(self.bridge),
             &self.identity.public_keys(),
-            &forge.collab,
+            &forge.community,
         );
         let (sender_key_id, sender) = mine.iter().next_back().ok_or_else(|| {
             Error::Config(
@@ -562,7 +562,7 @@ impl<'a> WebhookService<'a> {
     /// Write a prepared webhook document; returns its id.
     pub async fn send(&self, repo: &RepoRef, prepared: &PreparedWebhook) -> Result<String> {
         let forge = repo.forge();
-        let contract = self.client.fetch_contract(&forge.collab).await?;
+        let contract = self.client.fetch_contract(&forge.community).await?;
         WriteEngine::new(self.client, self.identity, self.bridge.doc_op_key()?)?
             .create_document(&contract, DOC_WEBHOOK, prepared.properties.clone())
             .await
@@ -578,7 +578,7 @@ impl<'a> WebhookService<'a> {
     /// Then delete every other document of the hook the signer wrote.
     pub async fn remove(&self, repo: &RepoRef, hook_id: [u8; 32]) -> Result<RemoveReport> {
         let forge = repo.forge();
-        let contract = self.client.fetch_contract(&forge.collab).await?;
+        let contract = self.client.fetch_contract(&forge.community).await?;
         let me = self.identity.id();
         let history = WebhookReader::new(self.client)
             .history(repo.id(), hook_id)

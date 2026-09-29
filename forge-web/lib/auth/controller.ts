@@ -29,7 +29,7 @@ import type { Network } from '../constants'
 import { DEFAULT_NETWORK, NETWORKS } from '../constants'
 import { errorMessage } from '../utils'
 import { stepClock, timed } from '../step-timing'
-import { DEPLOYMENTS, groupTrust, type ForgeIds, type GroupTrust } from '../deployments'
+import { DEPLOYMENTS, FORGE_CONTRACT_KINDS, contractKind, groupTrust, type ForgeIds, type GroupTrust } from '../deployments'
 import { assertGroupHolds, type GroupCheck } from './group-trust'
 import { SECURITY_LEVEL, WriteAuthError, findSigningKey, measureActual, readIdentityBalance, serialized, type SpendEvent, type WriteAuth } from '../sdk/write'
 import { KEY_LIMITS_UPDATE_CREDITS, KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS } from '../sdk/cost'
@@ -43,7 +43,7 @@ import { deriveMasterKey, isValidMnemonic } from './hd'
 import { identityOfMasterKey } from './identity-lookup'
 import { PLATFORM_READ_MS } from './connect'
 import { withTimeout } from '../timeout'
-import { checkWalletKey, hasNoLimits, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
+import { checkWalletKey, hasNoLimits, isForgeContract, keyScope, scopeCovers, type KeyScope, type WalletKey } from './key-registration'
 import { PRIVATE_REPOS_FLOW, encryptionMaterialFromFile, importEncryptionKey, wipeMaterial, type EncryptionMaterial } from './encryption-key'
 import {
   disableHeldKeys,
@@ -116,7 +116,7 @@ export interface AuthSession {
   /** `vault`: a stored limited key; `session`: a tab-only key (advanced raw key). */
   readonly storage: 'vault' | 'session'
   /** Which Forge contracts this session's keys can sign on. */
-  readonly grants?: { readonly core: boolean; readonly collab: boolean }
+  readonly grants?: { readonly core: boolean; readonly collab: boolean; readonly community: boolean }
   /**
    * A key this session holds has no budget or no expiry (a shipped wallet's key): whoever copies
    * it can spend until it is disabled. The UI warns.
@@ -150,7 +150,7 @@ const FULL_UNLOCK_NEEDED =
 /** A write to a Forge contract no key of this session covers: ask the wallet for that grant. */
 export class MissingGrantError extends WriteAuthError {
   constructor(readonly contractId: string) {
-    super('This sign-in only covers repositories and pushes. Approve issues, pull requests and stars in your wallet too.')
+    super('This sign-in does not cover this write yet. Approve it in your wallet (issues and pull requests, or stars, watches and CI runs).')
     this.name = 'MissingGrantError'
   }
 }
@@ -235,7 +235,7 @@ interface SessionHint {
 
 function isScope(v: unknown): v is KeyScope {
   const s = v as Partial<KeyScope> | null
-  return typeof s === 'object' && s !== null && typeof s.core === 'boolean' && typeof s.collab === 'boolean' && typeof s.unbounded === 'boolean'
+  return typeof s === 'object' && s !== null && typeof s.core === 'boolean' && typeof s.collab === 'boolean' && typeof s.community === 'boolean' && typeof s.unbounded === 'boolean'
 }
 
 /**
@@ -451,9 +451,9 @@ export class AuthController {
       if (!secret) throw new WriteAuthError('this browser is locked — unlock it to sign')
       // A pasted key (tab-only, advanced) is the user's own choice of power: no scoping.
       if (current.storage !== 'vault') return secret.wif
-      // A vault key only ever signs on Forge's two contracts, named by the write.
+      // A vault key only ever signs on Forge's contracts, named by the write.
       const forge = NETWORKS[network].v2
-      if (forge === null || (contractId !== forge.core && contractId !== forge.collab)) {
+      if (forge === null || !isForgeContract(forge, contractId)) {
         throw new WriteAuthError(`this browser's key signs only Dash Forge writes${contractId ? ` (not ${contractId})` : ''}`)
       }
       if (this.scopes.main && scopeCovers(this.scopes.main, forge, contractId)) {
@@ -676,6 +676,7 @@ export class AuthController {
     const extraScopes = new Map<number, KeyScope>()
     let core = main.core
     let collab = main.collab
+    let community = main.community
     let unbounded = main.unbounded
     let unlimited = hasNoLimits(mainKey)
     for (const e of secret.extra ?? []) {
@@ -693,11 +694,12 @@ export class AuthController {
       extraScopes.set(e.keyId, scope)
       core ||= scope.core
       collab ||= scope.collab
+      community ||= scope.community
       unbounded ||= scope.unbounded
       unlimited ||= hasNoLimits(k)
     }
     this.scopes = { main, extra: extraScopes }
-    return { grants: { core, collab }, unlimited, unbounded }
+    return { grants: { core, collab, community }, unlimited, unbounded }
   }
 
   /**
@@ -992,8 +994,8 @@ export class AuthController {
       if (!secret) throw new VaultLockedError('unlock to continue')
       try {
         const opened = await this.open(secret, 'vault', session.keyLimits ?? undefined, false)
-        const want = requested === forge.collab ? 'collab' : 'core'
-        if (!opened.grants?.[want]) throw new Error('the granted key is not live on the identity yet')
+        const want = contractKind(forge, requested)
+        if (want === null || !opened.grants?.[want]) throw new Error('the granted key is not live on the identity yet')
         return opened
       } catch (e) {
         // The grant is stored; keep the session that was working (unless it locked meanwhile:
@@ -1440,6 +1442,7 @@ function keyFailure(identity: WasmIdentity, keyId: number): KeyNotUsableError {
  * forge-collab grant), else under the one Forge contract it covers.
  */
 function toExtraKey(key: WalletKey, forge: ForgeIds, requested?: string): ExtraKey {
-  const contractId = requested !== undefined && scopeCovers(key.scope, forge, requested) ? requested : key.scope.core ? forge.core : forge.collab
+  const covered = FORGE_CONTRACT_KINDS.find((k) => key.scope[k]) ?? 'community'
+  const contractId = requested !== undefined && scopeCovers(key.scope, forge, requested) ? requested : forge[covered]
   return { contractId, keyId: key.keyId, wif: key.wif }
 }

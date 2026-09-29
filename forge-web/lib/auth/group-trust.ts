@@ -58,7 +58,7 @@ function refuse(cause: string): Error {
 }
 
 function isKnown(trust: GroupTrust, contractId: string): boolean {
-  return contractId === trust.core || contractId === trust.collab || trust.superseded.includes(contractId)
+  return contractId === trust.core || contractId === trust.collab || contractId === trust.community || trust.superseded.includes(contractId)
 }
 
 /** Every member contract (whole, or through a document type or token) Forge does not know. */
@@ -89,10 +89,15 @@ export function checkOwnership(trust: GroupTrust, group: string, info: GroupOwne
   if (info.adminIds.length > 0) throw refuse(`group ${group} lets ${info.adminIds.join(', ')} add members besides its owner; the Forge group has no admins`)
 }
 
-/** Rule 2: forge-core and forge-collab are whole-contract members. Throws otherwise. */
+/**
+ * Rule 2: forge-core, forge-collab and forge-community are whole-contract members (forge-community
+ * is forge-collab on a deployment that predates the split). Throws otherwise.
+ */
 export function checkPair(trust: GroupTrust, members: GroupMemberSet): void {
-  if (!members.contracts.includes(trust.core) || !members.contracts.includes(trust.collab)) {
-    throw refuse(`group ${trust.group} does not hold forge-core ${trust.core} and forge-collab ${trust.collab} as whole contracts`)
+  if (![trust.core, trust.collab, trust.community].every((c) => members.contracts.includes(c))) {
+    throw refuse(
+      `group ${trust.group} does not hold forge-core ${trust.core}, forge-collab ${trust.collab} and forge-community ${trust.community} as whole contracts`,
+    )
   }
 }
 

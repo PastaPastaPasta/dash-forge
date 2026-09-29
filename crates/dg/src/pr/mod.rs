@@ -2084,13 +2084,7 @@ mod tests {
 
     fn dummy_repo() -> Repo {
         Repo {
-            forge: forge_core::network::ForgeIds {
-                core: "c".into(),
-                collab: "l".into(),
-                group: "g".into(),
-                superseded_in_group: Vec::new(),
-                group_owner: None,
-            },
+            forge: forge_core::network::ForgeIds::test_forge(),
             repo_id: "r".into(),
             owner_id: "o".into(),
             name: "n".into(),

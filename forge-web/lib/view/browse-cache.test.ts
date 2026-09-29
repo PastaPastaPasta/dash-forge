@@ -33,7 +33,7 @@ import {
 import { setIndexArtifactStore } from './index-cache'
 
 const REPO: RepoRef = {
-  forge: { core: 'CORE', collab: 'COLLAB', group: 'GROUP' },
+  forge: { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' },
   repoId: 'CACHEREPO',
   ownerId: 'owner',
   name: 'proj',

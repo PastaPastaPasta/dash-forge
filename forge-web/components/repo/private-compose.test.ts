@@ -10,7 +10,7 @@ import type { RepoRef } from '@/lib/repo'
 import type { RepoHome } from '@/lib/view'
 import { composeCost, privateWriteBlock } from './private-compose'
 
-const FORGE = { core: 'C', collab: 'L', group: 'G' }
+const FORGE = { core: 'C', collab: 'L', community: 'L', group: 'G' }
 const PRIV: RepoRef = { forge: FORGE, repoId: 'R', ownerId: 'O', name: 'r', visibility: 'private' }
 const PUB: RepoRef = { ...PRIV, visibility: 'public' }
 

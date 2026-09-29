@@ -181,6 +181,14 @@ export function writeDep(file, dep) {
 
 export { b58decode, b58encode, selfTest };
 
+/**
+ * A deployment record's forge-community id: its own, or forge-collab's on a deployment that
+ * predates the three-contract split (the community types were in forge-collab there).
+ */
+export function communityId(dep) {
+  return dep?.v2?.forgeCommunity?.contractId ?? dep?.v2?.forgeCollab?.contractId;
+}
+
 export function loadSchema(name, substitutions = {}, text = readFileSync(join(ROOT, 'contracts', `${name}.json`), 'utf8')) {
   for (const [k, v] of Object.entries(substitutions)) text = text.split(k).join(v);
   if (text.includes('_CONTRACT_ID"')) throw new Error(`${name}: unresolved contract id placeholder`);

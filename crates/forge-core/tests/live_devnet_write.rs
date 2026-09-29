@@ -10,7 +10,7 @@
 //! identity-contract nonce of the create transition as well as the entropy. `WriteEngine`
 //! reports the id before broadcast (the resumable-push journal is keyed on it), so on a
 //! protocol-14 network a stale derivation would name a document that never exists. This
-//! creates a `profile` in the devnet's forge-collab contract, checks the reported id is the one
+//! creates a `profile` in the devnet's forge-community contract, checks the reported id is the one
 //! that landed, re-broadcasts the same signed bytes (must be `AlreadyExists`), and deletes it.
 //!
 //! `profile` is a stored document type. The `indexOnly` types (`star`, `follow`) need a
@@ -55,9 +55,9 @@ async fn protocol_14_create_reports_the_landed_id_and_is_idempotent() {
 
     let client = PlatformClient::connect(target).await.expect("connect");
     let contract = client
-        .fetch_contract(&ids.collab)
+        .fetch_contract(&ids.community)
         .await
-        .expect("fetch forge-collab");
+        .expect("fetch forge-community");
     let identity = client
         .fetch_identity(&bridge.identity_id)
         .await
