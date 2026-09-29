@@ -1,6 +1,6 @@
 module forge-relay/testdata/webhook-parse
 
-go 1.21
+go 1.22
 
 require github.com/google/go-github/v66 v66.0.0
 

@@ -12,11 +12,12 @@
 //! | `event`, `authorEvent` | forge-collab | `feed (repoId)` | `issues` / `pull_request` closed, reopened, merged, labeled, ... |
 //! | `comment` | forge-collab | `target (targetId)`, per issue/PR | `issue_comment` created |
 //! | `review` | forge-collab | `patch (patchId)`, per PR | `pull_request_review` submitted |
-//! | `checkRun` | forge-collab | `head (repoId, headOid)`, per head seen, newest page compared by `$revision` ([`crate::checkruns`]) | `check_run` created, completed |
+//! | `checkRun` | forge-collab | `head (repoId, headOid)`, per head seen; not a cursor stream: re-read from the oldest open run and compared by `$revision` ([`crate::checkruns`]) | `check_run` created, completed |
 //!
 //! ## Cursors
 //!
-//! Stateless across restarts. A stream's first read establishes its baseline ([`Baseline`]):
+//! Not persisted (only the check runs seen are, [`crate::checkruns`]). A stream's first read
+//! establishes its baseline ([`Baseline`]):
 //!
 //! * [`Baseline::Tail`] (repos found at startup): the newest document becomes the cursor and
 //!   nothing older is delivered, except the last `lookback` documents when one is configured.

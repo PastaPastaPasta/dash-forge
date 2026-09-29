@@ -513,6 +513,9 @@ impl Discovery {
                 if !keep {
                     self.resume_at
                         .insert(id.clone(), slot.high_water.load(Ordering::Relaxed));
+                    // Its check runs seen are dropped: a hook added later starts from its
+                    // own time, not from completions of runs seen before it existed.
+                    shared.check_runs.remove(id);
                 }
                 keep
             });
@@ -800,8 +803,14 @@ async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result
     // while the relay was down are not replayed, like every other stream: a stream never
     // starts before the relay does (`wants_of`). Heads first seen before the active window
     // are not restored, as they would not be watched from scratch either.
+    // Only at startup (a `Tail` baseline): a repo set up later is one that was not served
+    // (or dropped out), whose runs seen belong to hooks that are gone.
+    let saved = match baseline {
+        Baseline::Tail { .. } => shared.check_runs.load(repo_id),
+        Baseline::Since(_) | Baseline::Beginning => checkruns::Saved::default(),
+    };
     let mut runs = BTreeMap::new();
-    for (oid, saved) in shared.check_runs.load(repo_id).heads {
+    for (oid, saved) in saved.heads {
         if saved.seen < recent && !heads.contains_key(&oid) {
             continue;
         }
@@ -1328,13 +1337,12 @@ async fn poll_check_runs(
             doc_type: DOC_CHECK_RUN,
             prefix: &prefix,
         };
-        let floor = match head.baseline {
-            Baseline::Since(t) => t.max(since),
-            Baseline::Tail { .. } | Baseline::Beginning => since,
+        let Baseline::Since(floor) = no_earlier_than(head.baseline, since) else {
+            unreachable!("no_earlier_than returns a Since")
         };
         let prev = st.runs.remove(&oid).unwrap_or_default();
         let from = checkruns::read_from(&prev, floor);
-        let docs = match checkruns::read_runs(&source, from).await {
+        let docs = match checkruns::read_runs(&source, from, || Instant::now() >= deadline).await {
             Ok(docs) => docs,
             Err(e) => {
                 tracing::warn!(repo = %st.meta.repo_id, head = %oid, error = %e, "check-run read failed; retrying next cycle");

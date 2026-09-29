@@ -932,10 +932,10 @@ mod tests {
     /// D-605, end to end: go-github's `ParseWebHook` (v66, `testdata/webhook-parse`) decodes
     /// every payload into its typed event. Before the fix it refused push (`repository.id`
     /// over int64) and issues/pull_request (string ids): the same checker run on the QA
-    /// pass's recorded deliveries fails all 52. Needs `go` and the module (cached, or fetched
-    /// from the proxy). Locally it is skipped with a note when `go` is absent or cannot build
-    /// the checker (offline, no module cache); the numeric bounds above hold regardless. In CI
-    /// (`CI` set; GitHub's ubuntu runners ship `go`) it must run.
+    /// pass's recorded deliveries fails all 52. Needs `go` and the module in the module cache
+    /// (`go mod download` in `testdata/webhook-parse`; the test itself never fetches). Locally
+    /// it is skipped with a note when either is missing; the numeric bounds above hold
+    /// regardless. In CI (`CI` set; `rust.yml` installs Go and fetches the module) it must run.
     #[test]
     fn payloads_parse_with_go_github() {
         let skip = |why: &str| {
@@ -972,6 +972,9 @@ mod tests {
             .env("GOFLAGS", "")
             .env("GOTOOLCHAIN", "local")
             .env("GOVCS", "*:off")
+            // The module cache only (CI fetches it in a step of its own, with a timeout): a
+            // stalled proxy cannot hang the test.
+            .env("GOPROXY", "off")
             .current_dir(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/testdata/webhook-parse"

@@ -167,31 +167,38 @@ octokit) reads them:
   of the others in rotation, so a quiet closed thread is read every few cycles (with N such
   threads, every N/10 cycles).
 - Check runs: for the 50 most recent heads (pushed commits, PR heads seen live or opened in the
-  last 7 days), each cycle reads the head's `checkRun` documents, paged, from the older of its
-  oldest run not yet completed and its newest 99 runs (but never past its newest 500), and
-  compares each one's `$revision` with the last seen. So a run a runner replaces in place
-  (`queued` → `in_progress` → `completed`) is observed even behind up to 500 newer runs, a
-  re-run of a recent run is seen, and a quiet head costs one read (at most five). A run that
-  was open when it disappeared (deleted) stops holding the read's start. GitHub's `check_run` has four actions; a
-  repository webhook gets only `created` and `completed` (`rerequested` and
-  `requested_action` are GitHub-UI requests to a GitHub App, which Forge has no analogue of).
-  The relay sends `created` for a run first seen (created after the head was first watched),
-  and `completed` when its status becomes `completed`: on a run created already completed
-  (after its `created`), or on a replace of one that was not. A replace to `in_progress`, or
-  an edit of a completed run, has no GitHub action and is not sent. A run completed again
-  after a re-run (`completed` → `queued` → `completed`) sends `completed` again, with a new
-  delivery id (the document id plus the `$revision` seen completed; two relays that first see
-  a completed run at different revisions send different ids, so dedupe on `check_run.id` and
-  `status` as well). Who may post: consensus admits a
-  `checkRun` create and every replace only from a current `runner`, `maintainer` or
-  `writer` of the repo, so a revoked runner cannot advance its runs, and the relay adds no
-  filter of its own.
-  **Persisted:** the watched heads and the runs seen are kept in
-  `<state dir>/check-runs/<repo id>.json` (when the retry queue is durable), so a restart
-  does not re-send a run, and a run it knew that completed while it was down is sent
-  `completed`. Runs created while it was down are not replayed, as for every other stream.
-  Heads first seen more than 7 days ago are not restored. While no hook of a repo wants
-  `check_run`, what was seen is dropped, so a hook added later is not sent older completions.
+  last 7 days), each cycle reads the head's `checkRun` documents from its oldest run not yet
+  completed (or its newest run, when all have completed; never past its newest 400), at most
+  5 pages per head and cycle, and compares each one's `$revision` with the last seen. So a run
+  a runner replaces in place (`queued` → `in_progress` → `completed`) is observed even behind
+  hundreds of newer runs, and a quiet head costs one short read. A run that disappears while
+  open (deleted) stops holding the read's start; an open run with more than 400 newer runs
+  behind it is given up.
+  - Actions: GitHub's `check_run` has four; a repository webhook gets only `created` and
+    `completed` (`rerequested` and `requested_action` are GitHub-UI requests to a GitHub App,
+    which Forge has no analogue of). The relay sends `created` for a run first seen (created
+    after the head was first watched), and `completed` when its status becomes `completed`:
+    on a run created already completed (after its `created`), or on a replace of one that was
+    not. A replace to `in_progress`, or an edit of a completed run, has no GitHub action and is
+    not sent.
+  - Re-runs: a re-run is a new `checkRun` document, as on GitHub (re-running a check creates a
+    new check run), and gets its own `created` and `completed`. A completed document replaced
+    back to `queued` is re-read only while it is the head's newest run (or behind an open one).
+  - Delivery ids: `created` uses the document id, `completed` the document id plus the
+    `$revision` seen completed. Two relays that first see a completed run at different
+    revisions send different ids, so dedupe on `check_run.id` and `status` as well.
+  - Who may post: consensus admits a `checkRun` create and every replace only from a current
+    `runner`, `maintainer` or `writer` of the repo, so a revoked runner cannot advance its
+    runs, and the relay adds no filter of its own.
+  - **Persisted:** the watched heads and the runs seen are kept in
+    `<state dir>/check-runs/<repo id>.json` (when the retry queue is durable) and restored at
+    startup, so a restart does not re-send a run, and a run it knew that completed while it
+    was down is sent `completed`. Runs created while it was down are not replayed, as for
+    every other stream. Heads first seen more than 7 days ago are not restored.
+  - **Hooks removed and re-added:** while no hook of a repo wants `check_run` (or the repo is
+    no longer served), what was seen is dropped. A hook added later starts from its own time:
+    runs created before it are not sent, and a run that was already open when it was added
+    does not get `completed` either.
 - SSRF guard: http(s) only, no userinfo, private/loopback/link-local/CGNAT/multicast and
   IPv6 forms embedding them (mapped, 6to4, NAT64, Teredo) refused, DNS resolved once and the
   connection pinned to the validated addresses, redirects and proxies off. Bodies are capped
