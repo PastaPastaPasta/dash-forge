@@ -80,7 +80,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         </Link>
       </div>
 
-      <MirrorNote kind="pull" urls={(data ?? []).map((p) => p.importedUrl)} />
+      <MirrorNote home={home} kind="pull" />
       {loading ? (
         <LoadingBlock label="Folding PR state" />
       ) : error ? (
