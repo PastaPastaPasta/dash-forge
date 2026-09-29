@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { test } from 'node:test';
 
 import { OfflineChain } from './offline-chain.mjs';
-import { TRANSITION, VIS, b58encode, documentWriter, idBytes, membership, transition } from './seed-io.mjs';
+import { TRANSITION, VIS, b58encode, documentReader, documentWriter, idBytes, membership, transition } from './seed-io.mjs';
 
 const person = (name) => ({ name, id: b58encode(createHash('sha256').update(name).digest()) });
 const OWNER = person('owner');
@@ -49,7 +49,8 @@ test('a non-member cannot write an event; the repo owner cannot beat its own rep
   await write(OWNER, 'event', label);
   await assert.rejects(write(OWNER, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(OWNER.id) }), refusedWith(10419));
   await write(OTHER, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(OWNER.id) });
-  await assert.rejects(write(OTHER, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(OTHER.id) }), refusedWith(40120, 'starBeat.repoId'));
+  // The repo is found, but its owner is not the beat's repoOwner: a `where` mismatch.
+  await assert.rejects(write(OTHER, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(person('third').id) }), refusedWith(40127, 'starBeat.repoId'));
 });
 
 test('transitions move only from the state their rules name', async () => {
@@ -61,13 +62,37 @@ test('transitions move only from the state their rules name', async () => {
   await write(OWNER, 'transition', transition(R, target, TRANSITION.issueLock));
   await assert.rejects(write(OWNER, 'transition', transition(R, target, TRANSITION.issueLock)), refusedWith(10422, 'c6_lockedAfter'));
   await write(OWNER, 'transition', transition(R, target, TRANSITION.issueReopen));
+
+  // Unlocking a closed issue that is not locked: the sum would be -15, and the chain's
+  // Euclidean division puts it below 0 (-1), where a truncating one would say 0.
+  const other = { id: (await write(OTHER, 'issue', issue(R, 2))).id.toBase58(), number: 2 };
+  await write(OWNER, 'transition', transition(R, other, TRANSITION.issueClose));
+  await assert.rejects(write(OWNER, 'transition', transition(R, other, TRANSITION.issueUnlock)), refusedWith(10422, 'c6_lockedAfter'));
+});
+
+test('a rerun adopts what landed: by a unique index, or by the target of a transition', async () => {
+  const { chain, write, R, repoId } = await repoChain();
+  const evo = chain.evo();
+  const read = documentReader(new evo.EvoSDK(), { ids: chain.ids });
+  const i1 = issue(R, 1);
+  const id = (await write(OWNER, 'issue', i1)).id.toBase58();
+  assert.equal(await read.existing(OWNER, 'issue', i1), id);
+  assert.equal(await read.existing(OWNER, 'issue', { ...i1, title: 'another' }), null);
+  assert.equal(await read.existing(OTHER, 'issue', i1), null);
+  const close = transition(R, { id, number: 1 }, TRANSITION.issueClose);
+  assert.equal(await read.existing(OWNER, 'transition', close), null);
+  const moved = (await write(OWNER, 'transition', close)).id.toBase58();
+  assert.equal(await read.existing(OWNER, 'transition', close), moved);
+  assert.equal(await read.existing(OWNER, 'maintainer', membership(R, OWNER.id, OWNER.id)), (await read.first('maintainer', [['repoId', '==', repoId]])).$id);
 });
 
 test('totals: topics, chunks and releases', async () => {
   const { write, R } = await repoChain();
-  for (let i = 0; i < 20; i++) await write(OWNER, 'topic', { repoId: R, name: `t${i}`, vis: VIS });
-  await assert.rejects(write(OWNER, 'topic', { repoId: R, name: 't20', vis: VIS }), refusedWith(10422, 'atMost20'));
+  await write(OWNER, 'topic', { repoId: R, name: 't0', vis: VIS });
   await assert.rejects(write(OWNER, 'topic', { repoId: R, name: 't0', vis: VIS }), refusedWith(40105));
+  for (let i = 1; i < 20; i++) await write(OWNER, 'topic', { repoId: R, name: `t${i}`, vis: VIS });
+  // The chain judges the rules before the unique indices: a 21st topic is refused by the cap.
+  await assert.rejects(write(OWNER, 'topic', { repoId: R, name: 't20', vis: VIS }), refusedWith(10422, 'atMost20'));
 
   const packHash = Buffer.alloc(32, 9);
   await write(OWNER, 'chunk', { repoId: R, packHash, seq: 0, d0: Buffer.alloc(10) });

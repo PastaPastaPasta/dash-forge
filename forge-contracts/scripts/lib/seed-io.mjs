@@ -6,9 +6,9 @@
 // `seed-offline.mjs` can run each one against an in-memory chain (`offline-chain.mjs`) and check
 // every document it writes against RC1 without a network.
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 import { b58decode, b58encode, loadEvoSdk } from '../deploy-v2.mjs';
 
@@ -119,18 +119,42 @@ export function loadIdentity(evo, file, name = undefined) {
   return { name: name ?? rec.label ?? rec.identityId.slice(0, 6), id: rec.identityId, identityKey, signer };
 }
 
+const TRANSIENT = /timeout|timed out|unavailable|no available|ResourceExhausted|rate.?limit|too many requests/i;
+const ALREADY_THERE = /already (exists|present)|duplicate/i;
+
 /**
- * `create(who, type, data)`: one document create signed by `who`, in the contract that holds
+ * `write(who, type, data)`: one document create signed by `who`, in the contract that holds
  * `type`. Resolves to the created document (its id is `.id.toBase58()`).
+ *
+ * The document is built once, and evo-sdk fixes its `$id` and `$entropy` at construction. A
+ * transient failure (a timeout, an unavailable node, a rate limit) is retried with that same
+ * document, `retries` times with a growing pause. A retry refused because the document already
+ * exists means an earlier attempt landed, and resolves to it.
  */
-export function documentWriter(sdk, evo, net) {
+export function documentWriter(sdk, evo, net, { retries = 3, pauseMs = 15000 } = {}) {
   const version = sdk.version();
   return async (who, type, data) => {
     const base = new evo.Document({ properties: {}, documentTypeName: type, dataContractId: contractIdOf(net, type), ownerId: who.id });
     const document = evo.Document.fromObject({ ...base.toObject(), ...data }, version);
-    return sdk.documents.create({ document, identityKey: who.identityKey, signer: who.signer });
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await sdk.documents.create({ document, identityKey: who.identityKey, signer: who.signer });
+      } catch (e) {
+        const msg = String(e?.message ?? e);
+        if (attempt > 0 && ALREADY_THERE.test(msg) && document.id) return { id: document.id };
+        if (attempt >= retries || !TRANSIENT.test(msg)) throw e;
+        log(`${type}: retry ${attempt + 1} after: ${msg.slice(0, 120)}`);
+        await sleep(pauseMs * (attempt + 1));
+      }
+    }
   };
 }
+
+/**
+ * Where a rerun looks for a document of a type with no unique index whose repeat a rule
+ * refuses: a second close or merge (c1..c6), a second publish of a tag (oneLive).
+ */
+const REPEAT_REFUSED = { transition: ['targetId'], release: ['repoId', 'tagName'] };
 
 /** Queries in the contract that holds each type; documents come back as JSON. */
 export function documentReader(sdk, net, pace = 0) {
@@ -138,19 +162,42 @@ export function documentReader(sdk, net, pace = 0) {
   const query = (type, q) => sdk.documents.query({ dataContractId: contractIdOf(net, type), documentTypeName: type, ...q });
   const ownRows = (who, type, repoId) =>
     query(type, { where: [['$ownerId', '==', who.id], ['repoId', '==', repoId]], orderBy: [['$ownerId', 'asc']], limit: 1 });
+  /** Every document of `type` that matches, in pages of 100 queried `pace` ms apart. */
+  async function all(type, where, orderBy) {
+    const out = [];
+    let startAfter;
+    for (;;) {
+      const res = await query(type, { where, orderBy, limit: 100, ...(startAfter ? { startAfter } : {}) });
+      const page = [...res.values()].filter(Boolean).map((d) => d.toJSON(version));
+      out.push(...page);
+      if (page.length < 100) return out;
+      startAfter = page[page.length - 1].$id;
+      await sleep(pace);
+    }
+  }
   return {
-    /** Every document of `type` that matches, in pages of 100 queried `pace` ms apart. */
-    async all(type, where, orderBy) {
-      const out = [];
-      let startAfter;
-      for (;;) {
-        const res = await query(type, { where, orderBy, limit: 100, ...(startAfter ? { startAfter } : {}) });
-        const page = [...res.values()].filter(Boolean).map((d) => d.toJSON(version));
-        out.push(...page);
-        if (page.length < 100) return out;
-        startAfter = page[page.length - 1].$id;
-        await sleep(pace);
+    all,
+    /**
+     * The id of a document `who` already wrote with `data`'s values, or null. It is found
+     * through one of the type's unique indices, or through `REPEAT_REFUSED` for a type whose
+     * repeat a rule refuses. This is how a write that landed after its confirmation failed is
+     * adopted: writing it again would be refused.
+     */
+    async existing(who, type, data) {
+      const view = { ...data, $ownerId: who.id };
+      const operand = (v) => (v instanceof Uint8Array ? b58encode(v) : v);
+      const lookups = (CONTRACTS[CONTRACT_OF[type]].documentSchemas[type].indices ?? [])
+        .filter((index) => index.unique)
+        .map((index) => index.properties.map((p) => Object.keys(p)[0]));
+      if (REPEAT_REFUSED[type]) lookups.push(REPEAT_REFUSED[type]);
+      for (const keys of lookups) {
+        if (keys.some((k) => view[k] === undefined)) continue;
+        const rows = await all(type, keys.map((k) => [k, '==', operand(view[k])]));
+        // Plain values must agree; bytes and nested objects are left out of the comparison.
+        const same = rows.find((d) => d.$ownerId === who.id && Object.entries(data).every(([k, v]) => (v !== null && typeof v === 'object') || d[k] === v));
+        if (same) return same.$id;
       }
+      return null;
     },
     /** The first document of `type` that matches, or undefined. */
     async first(type, where) {
@@ -271,9 +318,20 @@ export async function expectRefused(why, fn) {
 // Running
 // ---------------------------------------------------------------------------------------------
 
-/** Run `main` when the module is the process entry point; exit 1 on an error. */
+/**
+ * Run `main` when the module is the process entry point; exit 1 on an error. Both paths are
+ * compared as real paths, because Node reports a module's URL with symlinks resolved (macOS
+ * /tmp is one).
+ */
 export function runIfMain(url, main) {
-  if (url !== pathToFileURL(resolve(process.argv[1] ?? '')).href) return;
+  const real = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  if (!process.argv[1] || real(fileURLToPath(url)) !== real(resolve(process.argv[1]))) return;
   main(process.argv.slice(2)).then(
     (code) => process.exit(typeof code === 'number' ? code : 0),
     (e) => {

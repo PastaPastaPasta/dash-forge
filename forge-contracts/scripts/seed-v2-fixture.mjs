@@ -45,13 +45,15 @@
 // each base.
 //
 // The summary (ids, numbers, commits) is printed and written to --summary (default
-// deployments/fixtures/<network>.json, which the specs read).
+// deployments/fixtures/<network>.json, committed by the bring-up for the specs to read).
 //
 // Idempotent: the result of every step is recorded in --state (default
-// ~/.cache/dash-forge/seed-v2-<network>.json) and a rerun skips what is recorded. The state
-// records which forge-collab and forge-community it seeded (`collabContract`). After either is
-// re-registered (forge-core unchanged), their steps are archived to `supersededCollab` and seeded
-// again under the new contracts, while the repo, membership, pack and refs (forge-core) are kept.
+// ~/.cache/dash-forge/seed-v2-<network>.json) and a rerun skips what is recorded. A write that
+// landed after its confirmation failed is adopted, not written again (the chain would refuse the
+// repeat). The state records the contracts it seeded under (`contracts`). After forge-collab or
+// forge-community is re-registered (forge-core unchanged), the steps that wrote into it are
+// archived to `superseded` and seeded again. forge-community names forge-collab's id, so a new
+// forge-collab re-seeds both. The repo, membership, pack and refs (forge-core) are kept.
 // Without the state file (a fresh CI runner), a fixture that already exists on chain is left
 // alone: the run checks `forge-v2-demo` resolves and exits. To seed from scratch, delete the file
 // and pick new repo names.
@@ -242,30 +244,39 @@ export async function main(argv, injected) {
   }
   const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : {};
   const save = () => writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
-  // A state file from before forge-collab or forge-community was re-registered (or from before
-  // this field existed) names documents under another contract: archive the steps that wrote
-  // them and seed those again. Every step records its type (`types`).
-  const seededUnder = `${ids.collab}+${ids.community}`;
-  if (state.collabContract !== seededUnder) {
-    const stale = Object.keys(state.types ?? {}).filter((k) => CONTRACT_OF[state.types[k]] !== 'core' && state[k]);
-    if (stale.length > 0) {
-      state.supersededCollab = [
-        ...(state.supersededCollab ?? []),
-        { contract: state.collabContract ?? 'unrecorded', steps: Object.fromEntries(stale.map((k) => [k, state[k]])) },
-      ];
-      for (const k of stale) delete state[k];
-      log(`forge-collab / forge-community are now ${seededUnder}: re-seeding ${stale.length} steps`);
-    }
-    state.collabContract = seededUnder;
-    save();
-  }
+  // A state file from before a contract was re-registered names documents under the old one:
+  // archive the steps that wrote into it and seed those again. Every step records its type
+  // (`types`), so its contract is known.
+  state.contracts ??= { ...ids };
   state.types ??= {};
+  const changed = new Set(Object.keys(ids).filter((c) => state.contracts[c] !== ids[c]));
+  if (changed.has('core')) {
+    throw new Error(`${statePath} seeded forge-core ${state.contracts.core}, not ${ids.core}: a new forge-core needs a new fixture (delete the state file and pick new repo names)`);
+  }
+  // forge-community's events name forge-collab's issues and PRs
+  if (changed.has('collab')) changed.add('community');
+  if (changed.size > 0) {
+    const stale = Object.keys(state.types).filter((k) => changed.has(CONTRACT_OF[state.types[k]]) && state[k]);
+    state.superseded = [...(state.superseded ?? []), { contracts: state.contracts, steps: Object.fromEntries(stale.map((k) => [k, state[k]])) }];
+    for (const k of stale) delete state[k];
+    log(`${[...changed].map((c) => `forge-${c}`).join(' and ')} re-registered: re-seeding ${stale.length} steps`);
+    state.contracts = { ...ids };
+  }
+  save();
 
   /** Create one document (once: the step name is recorded with its id). */
   async function create(step, who, type, data) {
     if (state[step]) return state[step];
-    const created = await write(who, type, data);
-    const id = created.id.toBase58();
+    let id;
+    try {
+      id = (await write(who, type, data)).id.toBase58();
+    } catch (e) {
+      // It may have landed before the error (and a rerun of an unrecorded step would be
+      // refused): adopt what landed.
+      id = await read.existing(who, type, data);
+      if (!id) throw e;
+      log(`${step}: adopting ${type} ${id}, which landed before: ${String(e?.message ?? e).slice(0, 100)}`);
+    }
     state[step] = id;
     state.types[step] = type;
     save();

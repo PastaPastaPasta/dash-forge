@@ -17,8 +17,9 @@
 // A repo's owner may not beat its own repo (starBeat `repoOwner` is distinctFrom the signer), so
 // the owner never stars.
 //
-// Idempotent: a rerun with the same --out reuses the repos it recorded and writes only the stars
-// and beats still missing (a beat is once per identity and repo, ever).
+// Idempotent: a rerun with the same --out reuses its run's repos (found on chain by name, so an
+// unrecorded one is adopted) and writes only the stars and beats still missing (a beat is once
+// per identity and repo, ever).
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 import { VIS, idBytes, loadIdentity, log, membership, openSession, parseArgs, runIfMain, until } from './lib/seed-io.mjs';
@@ -47,7 +48,8 @@ export async function main(argv, injected) {
     const own = (type) => read.owns(w, type, repoId);
     const before = Date.now();
     if (!(await own('star'))) await write(w, 'star', { repoId: idBytes(repoId) });
-    if (!(await own('starBeat'))) await write(w, 'starBeat', { repoId: idBytes(repoId), vis: VIS, repoOwner: idBytes(D.id) });
+    if (await own('starBeat')) log(`the beat of ${w.id.slice(0, 6)} on ${repoId.slice(0, 6)} landed in an earlier run: its time is taken as now`);
+    else await write(w, 'starBeat', { repoId: idBytes(repoId), vis: VIS, repoOwner: idBytes(D.id) });
     if (!(await until(() => own('starBeat')))) throw new Error(`the beat of ${w.id} on ${repoId} did not land`);
     const after = Date.now();
     const day = 86_400_000;
@@ -59,12 +61,13 @@ export async function main(argv, injected) {
 
   const run = state.run ?? Date.now().toString(36);
   state.run = run;
+  save();
   for (const suffix of ['a', 'b', 'c']) {
     const name = `trend-${run}-${suffix}`;
     if (state.repos.some((r) => r.name === name)) continue;
-    const repo = await write(D, 'repo', { name, visibility: VIS, description: 'Trending e2e fixture (forge-web/e2e/trending.spec.ts)' });
-    const id = repo.id.toBase58();
-    await write(D, 'maintainer', membership(idBytes(id), D.id, D.id));
+    const found = await read.first('repo', [['$ownerId', '==', D.id], ['name', '==', name]]);
+    const id = found?.$id ?? (await write(D, 'repo', { name, visibility: VIS, description: 'Trending e2e fixture (forge-web/e2e/trending.spec.ts)' })).id.toBase58();
+    if (!(await read.first('maintainer', [['repoId', '==', id], ['memberId', '==', D.id]]))) await write(D, 'maintainer', membership(idBytes(id), D.id, D.id));
     state.repos.push({ id, name });
     save();
     log(`repo ${name} ${id}`);

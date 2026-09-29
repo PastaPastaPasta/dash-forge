@@ -93,16 +93,30 @@ export class OfflineChain {
 
   // --- the rules that read chain state ------------------------------------------------
 
-  /** Whether `ref` (a refersTo / ownerRefersTo) finds a live document for `value` from `view`. */
-  refFound(ref, value, view) {
-    if (ref.anyOf) return ref.anyOf.some((r) => this.refFound(r, value, view));
-    if (ref.type === 'identity' || ref.type === 'identityPublicKey') return true;
-    return this.live(ref.documentType).some((t) => {
-      const found = ref.findBy
+  /**
+   * Null when `ref` (a refersTo / ownerRefersTo) finds a live document for `value` from `view`,
+   * else the chain's code: 40120 when none is found, 40127 when one is found but its `where`
+   * disagrees. An `anyOf` fails with its last operand's code. Identities are not modelled: an
+   * identity reference always holds here.
+   */
+  refError(ref, value, view) {
+    if (ref.anyOf) {
+      let code = null;
+      for (const r of ref.anyOf) {
+        code = this.refError(r, value, view);
+        if (code === null) return null;
+      }
+      return code;
+    }
+    if (ref.type === 'identity' || ref.type === 'identityPublicKey') return null;
+    const found = this.live(ref.documentType).filter((t) =>
+      ref.findBy
         ? Object.entries(ref.findBy).every(([k, e]) => get(t.view, k) === (e === '.' ? value : get(view, e)))
-        : t.view.$id === value;
-      return found && Object.entries(ref.where ?? {}).every(([k, e]) => get(t.view, k) === get(view, e));
-    });
+        : t.view.$id === value,
+    );
+    if (found.length === 0) return 40120;
+    const agrees = (t) => Object.entries(ref.where ?? {}).every(([k, e]) => get(t.view, k) === get(view, e));
+    return found.some(agrees) ? null : 40127;
   }
 
   /** Evaluate a rule-language expression (the operators the total-reading rules use). */
@@ -128,8 +142,9 @@ export class OfflineChain {
       case 'add': return nums().reduce((p, q) => p + q);
       case 'subtract': { const [p, q] = nums(); return p - q; }
       case 'multiply': return nums().reduce((p, q) => p * q);
-      case 'divide': { const [p, q] = nums(); return Math.trunc(p / q); }
-      case 'modulo': { const [p, q] = nums(); return p % q; }
+      // rs-dpp divides and takes remainders the Euclidean way (checked_div_euclid / rem_euclid)
+      case 'divide': { const [p, q] = nums(); return Math.floor(p / q) + (q < 0 && p % q !== 0 ? 1 : 0); }
+      case 'modulo': { const [p, q] = nums(); return ((p % q) + Math.abs(q)) % Math.abs(q); }
       case 'min': return Math.min(...nums());
       case 'max': return Math.max(...nums());
       case 'ifAbsent': return get(view, arg[0]) ?? ev(arg[1]);
@@ -150,23 +165,25 @@ export class OfflineChain {
     }
   }
 
-  /** The first chain-state rule `doc` breaks, as a Refusal, or null. */
+  /**
+   * The first chain-state rule `doc` breaks, as a Refusal, or null. The checks run in the
+   * chain's order: the rules (by name), distinctFrom, unique indices, ownerRefersTo, then each
+   * property's references.
+   */
   judge(doc) {
     const { type, view } = doc;
     const schema = schemaOf(type);
-    for (const [prop, raw] of Object.entries(schema.properties ?? {})) {
-      const s = resolveRef(type, raw);
-      const value = view[prop];
-      if (value === undefined) continue;
-      if (s.distinctFrom && value === get(view, s.distinctFrom)) return new Refusal(10419, `${type}.${prop}`, `must differ from ${s.distinctFrom}`);
-      const refs = s.refersTo ? [value] : s.items?.refersTo ? value : [];
-      const ref = s.refersTo ?? s.items?.refersTo;
-      for (const v of refs) {
-        if (!this.refFound(ref, v, view)) return new Refusal(40120, `${type}.${prop}`, `refers to no ${JSON.stringify(ref.documentType ?? ref.anyOf?.map((r) => r.documentType))}`);
-      }
+    const pool = (t) => [...this.live(t), ...(t === type ? [doc] : [])];
+    for (const [rule, expr] of Object.entries(schema.propertyConstraints ?? {}).sort(([p], [q]) => (p < q ? -1 : p > q ? 1 : 0))) {
+      const text = JSON.stringify(expr);
+      if (!text.includes('"countOf"') && !text.includes('"sumOf"')) continue;
+      if (!this.evaluate(expr, view, pool)) return new Refusal(10422, rule, `${type} breaks ${rule}`);
     }
-    if (schema.ownerRefersTo && !this.refFound(schema.ownerRefersTo, view.$ownerId, view)) {
-      return new Refusal(40120, `${type}.ownerRefersTo`, 'the signer holds none of the documents it needs');
+    const props = Object.entries(schema.properties ?? {})
+      .map(([prop, raw]) => [prop, resolveRef(type, raw)])
+      .filter(([prop]) => view[prop] !== undefined);
+    for (const [prop, s] of props) {
+      if (s.distinctFrom && view[prop] === get(view, s.distinctFrom)) return new Refusal(10419, `${type}.${prop}`, `must differ from ${s.distinctFrom}`);
     }
     for (const index of schema.indices ?? []) {
       if (!index.unique) continue;
@@ -176,11 +193,17 @@ export class OfflineChain {
         return new Refusal(40105, `${type}.${index.name}`, 'a document with these values exists');
       }
     }
-    const pool = (t) => [...this.live(t), ...(t === type ? [doc] : [])];
-    for (const [rule, expr] of Object.entries(schema.propertyConstraints ?? {})) {
-      const text = JSON.stringify(expr);
-      if (!text.includes('"countOf"') && !text.includes('"sumOf"')) continue;
-      if (!this.evaluate(expr, view, pool)) return new Refusal(10422, rule, `${type} breaks ${rule}`);
+    if (schema.ownerRefersTo) {
+      const code = this.refError(schema.ownerRefersTo, view.$ownerId, view);
+      if (code) return new Refusal(code, `${type}.ownerRefersTo`, 'the signer holds none of the documents it needs');
+    }
+    for (const [prop, s] of props) {
+      const ref = s.refersTo ?? s.items?.refersTo;
+      if (!ref) continue;
+      for (const v of s.refersTo ? [view[prop]] : view[prop]) {
+        const code = this.refError(ref, v, view);
+        if (code) return new Refusal(code, `${type}.${prop}`, `refers to no ${JSON.stringify(ref.documentType ?? ref.anyOf?.map((r) => r.documentType))} that agrees`);
+      }
     }
     return null;
   }

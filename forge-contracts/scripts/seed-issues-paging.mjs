@@ -45,20 +45,11 @@ export async function main(argv, injected) {
   const { net, evo, write, read } = await openSession(a, injected, { pace });
   const me = loadIdentity(evo, a.identity, 'OWNER');
 
-  // A write is paced, and retried on a transient gateway error.
+  // A write is paced (the writer retries a transient gateway error with the same document).
   const create = async (type, data) => {
-    for (let attempt = 1; ; attempt++) {
-      try {
-        const created = await write(me, type, data);
-        await sleep(pace);
-        return created.id.toBase58();
-      } catch (e) {
-        const msg = e?.message ?? String(e);
-        if (attempt >= 4 || !/timeout|unavailable|no available|ResourceExhausted|rate/i.test(msg)) throw e;
-        log(`retry ${attempt} after: ${msg.slice(0, 120)}`);
-        await sleep(15000 * attempt);
-      }
-    }
+    const created = await write(me, type, data);
+    await sleep(pace);
+    return created.id.toBase58();
   };
 
   let repoId = (await read.first('repo', [['$ownerId', '==', me.id], ['name', '==', a.repo]]))?.$id;
