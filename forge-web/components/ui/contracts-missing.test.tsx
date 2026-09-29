@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 /**
  * The "contracts not on this network" state: plain words naming the network, devnet and mainnet
- * worded differently, the raw error only under Details, and no endless retry.
+ * worded differently, moutai's in-place upgrade worded as a move to bonsia rather than a generic
+ * reset, the raw error only under Details, and no endless retry.
  */
 
 import { act } from 'react'
@@ -25,6 +26,7 @@ const MOUTAI: NetworkConfig = {
   v2: forge,
 }
 const MAINNET: NetworkConfig = { ...MOUTAI, network: 'mainnet', devnetName: null, key: 'mainnet' }
+const OTHER_DEVNET: NetworkConfig = { ...MOUTAI, devnetName: 'bonsia', key: 'devnet-bonsia' }
 
 let root: Root
 let el: HTMLDivElement
@@ -50,9 +52,17 @@ function render(config: NetworkConfig): { title: string; body: string; details: 
 }
 
 describe('ContractsMissingState', () => {
-  it('on a devnet: names it, says devnets are reset and it is being redeployed', () => {
+  it('on devnet moutai specifically: says the forge is moving to bonsia, not a generic reset', () => {
     const { title, body } = render(MOUTAI)
-    expect(title).toBe("Dash Forge isn't deployed on devnet moutai right now")
+    expect(title).toBe('Dash Forge is moving to a new devnet')
+    expect(body).toContain('Platform v4.2.0-beta.7')
+    expect(body).toContain('devnet bonsia')
+    expect(body).not.toMatch(/reset/i)
+  })
+
+  it('on another devnet: names it, says devnets are reset and it is being redeployed', () => {
+    const { title, body } = render(OTHER_DEVNET)
+    expect(title).toBe("Dash Forge isn't deployed on devnet bonsia right now")
     expect(body).toContain('devnets are reset from time to time')
     expect(body).toContain('redeployed')
   })
@@ -73,5 +83,12 @@ describe('ContractsMissingState', () => {
     const buttons = [...el.querySelectorAll('button')].map((b) => b.textContent)
     expect(buttons).toEqual(['Reload for a newer build'])
     expect(el.textContent).not.toContain('Try again')
+  })
+
+  it('on moutai: links to GitHub for status', () => {
+    act(() => root.render(<ContractsMissingState detail={RAW} config={MOUTAI} />))
+    const link = el.querySelector('a')
+    expect(link?.getAttribute('href')).toBe('https://github.com/PastaPastaPasta/dash-forge#readme')
+    expect(link?.textContent).toContain('GitHub')
   })
 })
