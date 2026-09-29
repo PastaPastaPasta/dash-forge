@@ -40,6 +40,7 @@ import type { Membership, Role } from '../rules/v2'
 import {
   ConsensusRefusal,
   DUPLICATE_UNIQUE_CODE,
+  GATE_REFUSED_CODE,
   createDocumentIdempotent,
   previewCreate,
   queryDocumentsWithProof,
@@ -371,6 +372,16 @@ export type WrapOutcome =
   | { readonly kind: 'different' }
   /** This signer's wrap stands and cannot be read back (sealed from a key this browser lacks). */
   | { readonly kind: 'unreadable' }
+  /**
+   * The recipient holds no maintainer or writer document any more (removed since the plan was
+   * read; consensus refused the wrap, 40120 on `memberId`, RC1 R-13): nothing was written.
+   */
+  | { readonly kind: 'not-a-member' }
+
+/** Whether a refusal is RC1 `wrap_member`'s: the wrap names no current maintainer or writer. */
+export function isWrapNotAMember(e: unknown): boolean {
+  return e instanceof ConsensusRefusal && e.code === GATE_REFUSED_CODE && /not found for path memberId\b/.test(e.message)
+}
 
 /** The outcome of a standing wrap read back as (its key's commitment, its recipient key id). */
 export function wrapOutcome(
@@ -444,6 +455,9 @@ async function postWrap(
     })
     return { kind: 'same' }
   } catch (e) {
+    // Removed since the plan was read: the caller re-plans without them (parity: forge-core
+    // `WrapOutcome::NotAMember`).
+    if (isWrapNotAMember(e)) return { kind: 'not-a-member' }
     if (!(e instanceof ConsensusRefusal && e.code === DUPLICATE_UNIQUE_CODE)) throw e
   }
   return standingOutcome(c, session, keys, identity, keyId)
@@ -506,12 +520,14 @@ function requireSame(outcome: WrapOutcome, identity: string, epoch: number): voi
 }
 
 function unusableWrap(outcome: WrapOutcome, identity: string, epoch: number): PrivateMembersError {
-  return new PrivateMembersError(
-    outcome.kind === 'unreadable'
-      ? `your key wrap of epoch ${epoch} for ${short(identity)} stands and cannot be read back from this browser`
-      : `key epoch ${epoch} already holds another key of yours for ${short(identity)}; run the rotation again`,
-    'E310',
-  )
+  switch (outcome.kind) {
+    case 'not-a-member':
+      return new PrivateMembersError(`${short(identity)} is not a maintainer or writer of this repo any more; the key was not wrapped to them`, 'E310')
+    case 'unreadable':
+      return new PrivateMembersError(`your key wrap of epoch ${epoch} for ${short(identity)} stands and cannot be read back from this browser`, 'E310')
+    default:
+      return new PrivateMembersError(`key epoch ${epoch} already holds another key of yours for ${short(identity)}; run the rotation again`, 'E310')
+  }
 }
 
 /**
@@ -684,6 +700,8 @@ async function rotateWith(
               ? await standingOutcome(c, session, next.keys, r.identity, r.keyId)
               : await postWrap(c, session, next.keys, next.raw, r.identity, r.keyId, intent)
             tried.add(r.identity)
+            // Removed since the plan was read: re-planned out (they get no key; nothing leaked).
+            if (outcome.kind === 'not-a-member') continue
             if (outcome.kind !== 'same') {
               leak = true
               break
@@ -810,6 +828,8 @@ async function ownEpochKey(
     const outcome = await postWrap(c, session, fresh.keys, fresh.raw, self.identity, self.keyId, intent)
     if (outcome.kind === 'same') return { ...fresh, resumed: false }
     if (outcome.kind === 'unreadable') throw unusableWrap(outcome, self.identity, epoch)
+    // Removed as a maintainer meanwhile: this signer cannot rotate any more.
+    if (outcome.kind === 'not-a-member') throw new PrivateMembersError('you are not a maintainer of this repo any more; ask the owner to add you again, or rotate from another maintainer', 'E310')
     const standing = await readOwnWrap(c, session, epoch, self.identity)
     if (standing === null) throw unusableWrap({ kind: 'unreadable' }, self.identity, epoch)
     if (standing.recipientKeyId !== c.ops.keyId) {
