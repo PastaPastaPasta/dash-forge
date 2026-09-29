@@ -81,7 +81,7 @@ function sourceOfRow(doc: PlainDocument, kind: MirrorKind): MirrorSource | null 
 }
 
 /** Rows read per trusted author: a native issue or two on top of the import is skipped over. */
-const ROWS_PER_AUTHOR = 10
+const ROWS_PER_AUTHOR = 3
 
 /**
  * The repo's mirror source, or null when it is not a mirror: the owner-written description

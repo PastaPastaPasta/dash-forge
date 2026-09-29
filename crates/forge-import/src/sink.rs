@@ -17,9 +17,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
-use forge_core::collab::v2::{
-    Collab, NumberTrust, Numbered, PatchInput, PrBase, Target, TargetKind,
-};
+use forge_core::collab::v2::{Collab, Numbered, PatchInput, PrBase, Target, TargetKind};
 use forge_core::collab::{ReleaseInput, Verdict};
 use forge_core::history::Freshness;
 use forge_core::platform::PlatformClient;
@@ -768,15 +766,18 @@ impl<'a> Sink<'a> {
         Ok(None)
     }
 
-    /// Create `t`: at its source number when free, else at a low free number (the body's
-    /// header keeps the source number, and `imported.url` finds it again next run). A
-    /// squatter on a number therefore costs the mirror nothing but the number. The moved
-    /// item is numbered by the ceiling rule alone ([`NumberTrust::Nobody`]): trusting the
-    /// mirror's own high numbers would put it at the next upstream number, which the next
-    /// upstream item then finds taken, and so on for every later item. The move is recorded
-    /// in the summary. In a dry run the returned target is a placeholder (nothing reads it).
+    /// Create `t`: at its source number when free, else at the lowest free number (the
+    /// body's header keeps the source number, and `imported.url` finds it again next run). A
+    /// squatter on a number therefore costs the mirror nothing but the number. The moved item
+    /// goes low, not after the mirror's highest number: that is the next upstream number,
+    /// which the next upstream item would then find taken, and so on for every later item.
+    /// On GitHub, issues and PRs share one number space, so the lowest free number is one
+    /// the other kind holds upstream and no later item needs. The move is recorded in the
+    /// summary. In a dry run the returned target is a placeholder (nothing reads it).
     async fn create(&mut self, t: &SrcTarget, noun: &str) -> Result<Created> {
         let mut number = t.number;
+        // Refused low numbers: a read right after a refusal can lag the block that took it.
+        let mut above = 0u32;
         for _ in 0..MAX_NUMBER_TRIES {
             match self.create_at(t, noun, number).await? {
                 Ok(target) => {
@@ -792,11 +793,11 @@ impl<'a> Sink<'a> {
                         return Ok(Created::Found(found));
                     }
                     tracing::info!(number, %why, "{noun} number taken; allocating another");
+                    if number != t.number {
+                        above = above.max(number);
+                    }
                     let repo = need(self.repo.as_ref())?;
-                    number = self
-                        .collab
-                        .next_number(repo, t.kind, &NumberTrust::Nobody)
-                        .await?;
+                    number = self.collab.lowest_free_number(repo, t.kind, above).await?;
                 }
             }
         }
@@ -1149,20 +1150,14 @@ mod tests {
     use super::*;
 
     /// The importer's number choice over an in-memory repo: each upstream number where it is
-    /// free, else the §6 rule with `trusted_max` (what [`Sink::create`]'s fallback asks for).
-    /// Returns where each upstream item landed.
-    fn mirror_into(
-        taken: &mut BTreeSet<u32>,
-        upstream: &[u32],
-        trusted_max: impl Fn(&BTreeSet<u32>) -> u32,
-    ) -> Vec<u32> {
+    /// free, else the lowest free number (what [`Sink::create`]'s fallback asks
+    /// [`Collab::lowest_free_number`] for). Returns where each upstream item landed.
+    fn mirror_into(taken: &mut BTreeSet<u32>, upstream: &[u32]) -> Vec<u32> {
         upstream
             .iter()
             .map(|&n| {
                 let at = if taken.contains(&n) {
-                    let all: Vec<u32> = taken.iter().rev().copied().collect();
-                    let count = taken.len() as u64;
-                    forge_core::rules::v2::allocate_number(count, &all, trusted_max(taken)).unwrap()
+                    (1..=u32::MAX).find(|c| !taken.contains(c)).unwrap()
                 } else {
                     n
                 };
@@ -1174,19 +1169,49 @@ mod tests {
 
     #[test]
     fn a_native_squatter_on_the_next_upstream_number_moves_one_item_only() {
-        // A mirror of 15 upstream issues up to #7761, then someone opens #7762 natively (the
-        // web continues the mirror's numbering). Upstream then files #7762, #7763, #7764.
-        let before: BTreeSet<u32> = (0..14).map(|i| 7748 + i).chain([7762]).collect();
         let upstream = [7762, 7763, 7764];
-        // The fallback trusts nobody: #7762 moves to a low number, #7763 and #7764 land exact.
-        let landed = mirror_into(&mut before.clone(), &upstream, |_| 0);
-        assert_eq!(landed, vec![1, 7763, 7764]);
-        // Trusting the mirror's own numbers instead would cascade: #7762 → #7763, which then
-        // takes #7763's place, and every later upstream item moves too.
-        let cascade = mirror_into(&mut before.clone(), &upstream, |t| {
-            *t.iter().next_back().unwrap()
-        });
+        // A windowed mirror (15 recent issues up to #7761), then someone opens #7762 natively
+        // (the web continues the mirror's numbering). Upstream then files #7762..#7764.
+        let window: BTreeSet<u32> = (0..14).map(|i| 7748 + i).chain([7762]).collect();
+        assert_eq!(
+            mirror_into(&mut window.clone(), &upstream),
+            vec![1, 7763, 7764]
+        );
+        // A full GitHub mirror: the issues hold only some numbers (PRs hold the rest), so the
+        // moved item takes a PR's number and later issues still land exactly.
+        let full: BTreeSet<u32> = (1..=7761).filter(|n| n % 3 != 0).chain([7762]).collect();
+        assert_eq!(
+            mirror_into(&mut full.clone(), &upstream),
+            vec![3, 7763, 7764]
+        );
+        // Allocating after the mirror's highest number instead cascades: every later upstream
+        // item moves by one.
+        let mut after = window.clone();
+        let cascade: Vec<u32> = upstream
+            .iter()
+            .map(|&n| {
+                let at = if after.contains(&n) {
+                    after.iter().next_back().unwrap() + 1
+                } else {
+                    n
+                };
+                after.insert(at);
+                at
+            })
+            .collect();
         assert_eq!(cascade, vec![7763, 7764, 7765]);
+    }
+
+    #[test]
+    fn a_dense_source_has_no_safe_number_and_moves_each_later_item() {
+        // A source whose kind holds every number (a GitLab project's issues): no free number
+        // is below the frontier, so the moved item takes the next one and each later item
+        // moves too, every move reported (the documented limit).
+        let dense: BTreeSet<u32> = (1..=7762).collect();
+        assert_eq!(
+            mirror_into(&mut dense.clone(), &[7762, 7763]),
+            vec![7763, 7764]
+        );
     }
 
     #[test]
