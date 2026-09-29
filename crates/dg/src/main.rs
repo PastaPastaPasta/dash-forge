@@ -6,6 +6,7 @@
 //! DASH (primary) / USD (secondary) estimate and prompt unless `--yes`.
 
 mod auth;
+mod ci;
 mod collab;
 mod common;
 mod config;
@@ -176,6 +177,9 @@ pub enum Command {
     /// Webhooks a relay delivers (forge-v2).
     #[command(subcommand)]
     Webhook(webhook::WebhookCommand),
+    /// CI: runner keys and memberships, and check runs on commits.
+    #[command(subcommand)]
+    Ci(ci::CiCommand),
     /// Import (or re-sync) a GitHub repository or GitLab project into forge-v2: code, issues, PRs/MRs, releases.
     Import(Box<import::ImportArgs>),
     /// Diagnose the identity, network, contracts, storage, git config and toolchain.
@@ -1489,6 +1493,7 @@ async fn dispatch(ctx: &Ctx, cli: &Cli) -> Result<()> {
         Command::Cost(cmd) => cost::run(ctx, cmd).await,
         Command::Storage(cmd) => storage::run(ctx, cmd).await,
         Command::Webhook(cmd) => webhook::run(ctx, cmd).await,
+        Command::Ci(cmd) => ci::run(ctx, cmd).await,
         Command::Repack {
             repo,
             backend,

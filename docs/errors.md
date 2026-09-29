@@ -129,7 +129,7 @@ Fix: `dg auth new` creates an identity and stores a limited key for this compute
 
 ## E302
 
-**This key can't sign that.** The key in use cannot sign this kind of operation. Document writes (every `dg` and `git push` write) need a HIGH or CRITICAL AUTHENTICATION key. Registering or disabling keys needs the MASTER key, and a DPNS name needs an unbound CRITICAL or HIGH key: a Forge limited key is bound to the forge contracts and cannot sign either.
+**This key can't sign that.** The key in use cannot sign this kind of operation. Document writes (every `dg` and `git push` write) need a HIGH or CRITICAL AUTHENTICATION key. Registering or disabling keys needs the MASTER key, and a DPNS name needs an unbound CRITICAL or HIGH key: a Forge limited key is bound to the forge contracts and cannot sign either. A CI runner key (`dg ci runner new`) is bound to the `checkRun` document type alone. Any other write it signs is refused with "Batch member is outside the contract bounds of key N" (consensus error 20014), before anything is broadcast.
 
 Fix: pass the identity file with `--master <file>`, or type the recovery words when asked. The master key is used for that one signature and not stored.
 

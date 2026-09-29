@@ -230,10 +230,11 @@ pub fn parse_days(s: &str) -> Result<u64> {
     Ok(days)
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+pub(crate) use forge_core::cache::now_ms;
+
+/// `days` from now, in Unix ms.
+pub fn expiry_ms(days: u64) -> u64 {
+    now_ms() + days * DAY_MS
 }
 
 /// DASH to credits (1 DASH = 1e11 credits), refusing nonsense.
@@ -266,7 +267,7 @@ pub fn key_spec(
     };
     Ok(LimitedKeySpec {
         budget_credits: dash_to_credits(args.budget.unwrap_or(default_budget))?,
-        expires_at_ms: now_ms() + days * DAY_MS,
+        expires_at_ms: expiry_ms(days),
         group: forge.group.clone(),
     })
 }
@@ -553,7 +554,30 @@ pub async fn disable_key(
     Ok(())
 }
 
-/// Read a new key back from the chain (a node may be a block behind) and check it.
+/// Read a new key back from the chain (a node may be a block behind) until `check` accepts it.
+pub async fn await_key(
+    client: &PlatformClient,
+    identity_id: &str,
+    what: &str,
+    check: impl Fn(&LoadedIdentity) -> forge_core::error::Result<()>,
+) -> Result<()> {
+    let mut last = None;
+    for attempt in 0..8u64 {
+        match client
+            .fetch_identity(identity_id)
+            .await
+            .and_then(|i| check(&i))
+        {
+            Ok(()) => return Ok(()),
+            Err(e) => last = Some(e),
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1500 * (attempt + 1))).await;
+    }
+    Err(last.map_or_else(|| anyhow::anyhow!("the new key was not found"), Into::into))
+        .with_context(|| format!("verifying the {what} on chain"))
+}
+
+/// Read a new limited key back from the chain and check it.
 pub async fn verify_key(
     client: &PlatformClient,
     identity_id: &str,
@@ -562,19 +586,10 @@ pub async fn verify_key(
     ctx: &Ctx,
     spec: &LimitedKeySpec,
 ) -> Result<()> {
-    let mut last = None;
-    for attempt in 0..8u64 {
-        match client.fetch_identity(identity_id).await {
-            Ok(i) => match i.check_limited_key(key_id, wif.expose(), ctx.network(), spec) {
-                Ok(()) => return Ok(()),
-                Err(e) => last = Some(e),
-            },
-            Err(e) => last = Some(e),
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(1500 * (attempt + 1))).await;
-    }
-    Err(last.map_or_else(|| anyhow::anyhow!("the new key was not found"), Into::into))
-        .context("verifying the new key on chain")
+    await_key(client, identity_id, "new key", |i| {
+        i.check_limited_key(key_id, wif.expose(), ctx.network(), spec)
+    })
+    .await
 }
 
 /// A devnet's DAPI list worth persisting: `None` when it is empty (discovery) or is exactly

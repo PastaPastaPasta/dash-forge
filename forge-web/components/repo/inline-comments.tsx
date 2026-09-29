@@ -16,12 +16,15 @@
  *   diff no longer shows, collapse under "n comments on an older version".
  */
 
+import { Byline } from '@/components/repo/byline'
+import { useMirrorTrust } from '@/hooks/use-mirror-trust'
+import { trustedOrigin } from '@/lib/repo/provenance'
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { CheckCircle2, MessageSquare, Pencil, Trash2 } from 'lucide-react'
 
 import { commentFirsts, postComment, type AnchorInput, type RepoRef } from '@/lib/repo'
 import type { DraftComment } from '@/lib/repo'
-import { plural, timeAgo, type CommentView } from '@/lib/view'
+import { plural, type CommentView } from '@/lib/view'
 import { anchorLabel, extendSelection, lineKey, placeThreads, rangeKeys, type InlineThread, type LineSelection } from '@/lib/view/inline-threads'
 import { useAuth } from '@/contexts/auth-context'
 import { useSdk } from '@/hooks/use-sdk'
@@ -29,7 +32,6 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useIntent } from '@/hooks/use-intent'
 import { useFirstWrite } from '@/hooks/use-first-write'
 import { InlineCommentsContext, type InlineComments } from '@/components/repo/diff-view'
-import { Author } from '@/components/author'
 import { MarkdownView } from '@/components/markdown-view'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/input'
@@ -352,7 +354,7 @@ function Thread({ thread, repo, pullId, onPosted, writeBlock, actions, suggestio
   return (
     <div className="rounded-md border border-anvil-200 bg-white dark:border-anvil-750 dark:bg-anvil-950" data-testid="thread" data-root={thread.root.id} data-resolved={resolved ? 'true' : 'false'}>
       {[thread.root, ...thread.replies].map((c) => (
-        <CommentBlock key={c.id} comment={c} actions={actions} writeBlock={writeBlock} {...(suggestions ? { suggestions } : {})} />
+        <CommentBlock key={c.id} repo={repo} comment={c} actions={actions} writeBlock={writeBlock} {...(suggestions ? { suggestions } : {})} />
       ))}
       <div className="flex flex-wrap items-center gap-2 px-3 py-1.5">
         {replying ? (
@@ -392,14 +394,27 @@ function Thread({ thread, repo, pullId, onPosted, writeBlock, actions, suggestio
 }
 
 /** One comment of a thread, with its author's Edit and Delete. */
-function CommentBlock({ comment: c, actions, writeBlock, suggestions }: { comment: CommentView; actions?: ThreadActions; writeBlock: string | null; suggestions?: SuggestionActions }): JSX.Element {
+function CommentBlock({
+  repo,
+  comment: c,
+  actions,
+  writeBlock,
+  suggestions,
+}: {
+  repo: RepoRef
+  comment: CommentView
+  actions?: ThreadActions
+  writeBlock: string | null
+  suggestions?: SuggestionActions
+}): JSX.Element {
   const [editing, setEditing] = useState<string | null>(null)
+  // An imported line comment from a trusted mirror shows its original author and date (FG-6).
+  const origin = trustedOrigin(c.origin, c.author, useMirrorTrust(repo))
   const own = actions !== undefined && actions.viewer !== null && actions.viewer === c.author && writeBlock === null
   return (
     <div className="border-b border-anvil-100 px-3 py-2 last:border-b-0 dark:border-anvil-850" data-testid="thread-comment" data-id={c.id}>
       <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
-        <Author identityId={c.author} link={false} />
-        <span>{timeAgo(c.createdAt)}</span>
+        <Byline author={c.author} createdAt={c.createdAt} origin={origin} link={false} />
         <EditedMarker createdAt={c.createdAt} updatedAt={c.updatedAt} />
         {own && editing === null ? (
           <span className="ml-auto flex items-center gap-2">

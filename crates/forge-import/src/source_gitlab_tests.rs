@@ -90,6 +90,18 @@ impl GlApi for Recorded {
             ),
             "/issues/2/notes" => ok(fixture("issue-2-notes.json"), None),
             "/merge_requests/5/discussions" => ok(fixture("mr-5-discussions.json"), None),
+            // One merge request with its `diff_refs` (the listing has none).
+            r if r.starts_with("/merge_requests/") && r[16..].parse::<u64>().is_ok() => {
+                let iid: u64 = r[16..].parse().unwrap();
+                let all: Vec<serde_json::Value> =
+                    serde_json::from_str(&fixture("merge_requests.json")).unwrap();
+                let mut m = all
+                    .into_iter()
+                    .find(|m| m["iid"] == iid)
+                    .unwrap_or_else(|| panic!("no merge request {iid}"));
+                m["diff_refs"] = serde_json::json!({"base_sha": format!("{iid:02}").repeat(20)});
+                ok(m.to_string(), None)
+            }
             r if r.ends_with("/notes") || r.ends_with("/discussions") => ok("[]".into(), None),
             other => panic!("unexpected request {other}"),
         })
@@ -554,4 +566,45 @@ fn a_revisited_merge_request_gitlab_no_longer_has_is_none() {
         ..Default::default()
     });
     assert!(matches!(gl.merge_request(7), Ok(Err(_))));
+}
+
+/// L-36/L-37 on GitLab: a merged or closed merge request is read once more for its `diff_refs`
+/// (the listing has none), and its body names its base; a fork's head is `fork:<branch>`, and
+/// only when the source and target projects are both known and differ.
+#[test]
+fn closed_merge_requests_record_their_base_and_fork_head() {
+    let (gl, log) = client(false);
+    let out = collect(&gl, all(), None, 0).unwrap();
+    let mr = |n| by_number(&out, TargetKind::Patch, n).body.clone();
+    // !1: merged, same project unknown (no source id): not a fork; base read from its own MR.
+    assert!(
+        mr(1).contains(&format!("> Base {} · head patch-1", "01".repeat(20))),
+        "{}",
+        mr(1)
+    );
+    // !2: closed, from another project: a fork.
+    assert!(
+        mr(2).contains(&format!("> Base {} · head fork:patch-1", "02".repeat(20))),
+        "{}",
+        mr(2)
+    );
+    // !5: open: no extra read (its diff comes from its pushed head), same project.
+    assert!(
+        mr(5).contains("> head 20-warning-output-compares-files-free-to-space"),
+        "{}",
+        mr(5)
+    );
+    let singles = log
+        .borrow()
+        .iter()
+        .filter(|u| {
+            u.contains("/merge_requests/") && !u.contains("discussions") && !u.contains('?')
+        })
+        .count();
+    assert_eq!(
+        singles,
+        5,
+        "one read per closed or merged merge request: {:#?}",
+        log.borrow()
+    );
 }

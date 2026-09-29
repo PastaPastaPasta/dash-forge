@@ -12,11 +12,12 @@
 //! | `event`, `authorEvent` | forge-collab | `feed (repoId)` | `issues` / `pull_request` closed, reopened, merged, labeled, ... |
 //! | `comment` | forge-collab | `target (targetId)`, per issue/PR | `issue_comment` created |
 //! | `review` | forge-collab | `patch (patchId)`, per PR | `pull_request_review` submitted |
-//! | `checkRun` | forge-collab | `head (repoId, headOid)`, per head seen | `check_run` |
+//! | `checkRun` | forge-collab | `head (repoId, headOid)`, per head seen; not a cursor stream: re-read from the oldest open run and compared by `$revision` ([`crate::checkruns`]) | `check_run` created, completed |
 //!
 //! ## Cursors
 //!
-//! Stateless across restarts. A stream's first read establishes its baseline ([`Baseline`]):
+//! Not persisted (only the check runs seen are, [`crate::checkruns`]). A stream's first read
+//! establishes its baseline ([`Baseline`]):
 //!
 //! * [`Baseline::Tail`] (repos found at startup): the newest document becomes the cursor and
 //!   nothing older is delivered, except the last `lookback` documents when one is configured.
@@ -52,8 +53,8 @@ use forge_core::rules::{self, ConfigDoc};
 use crate::error::Result;
 use crate::payload::{
     check_run_event, is_zero_oid, issue_comment_event, issues_event, pull_request_event,
-    pull_request_review_event, push_event, release_event, CheckRunObj, IssueObj, PullRequestObj,
-    ReleaseObj, RepositoryMeta, WebhookEvent,
+    pull_request_review_event, push_event, release_event, CheckRunAction, CheckRunObj, IssueObj,
+    PullRequestObj, ReleaseObj, RepositoryMeta, WebhookEvent,
 };
 
 /// forge-core document types the relay reads.
@@ -358,6 +359,7 @@ impl TargetInfo {
             title: self.title.clone(),
             body: String::new(),
             open,
+            is_pr: self.is_pr,
         }
     }
 
@@ -426,6 +428,7 @@ pub fn translate_issue(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<Web
         title: d.field_str("title").unwrap_or_default(),
         body: d.field_str("body").unwrap_or_default(),
         open: true,
+        is_pr: false,
     };
     Some(issues_event(repo, &d.id, "opened", &issue))
 }
@@ -461,6 +464,7 @@ pub fn translate_comment(
             title: String::new(),
             body: String::new(),
             open: true,
+            is_pr: false,
         },
         |t| t.issue_obj(&target_id, true),
     );
@@ -512,8 +516,13 @@ pub fn translate_release(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<W
     Some(release_event(repo, &d.id, action, &r))
 }
 
-/// A `checkRun` → `check_run`. `None` without a head oid.
-pub fn translate_check_run(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<WebhookEvent> {
+/// A `checkRun` → `check_run` with `action` (chosen by [`crate::checkruns::diff`]). `None`
+/// without a head oid. The dedup key is [`crate::checkruns::event_key`].
+pub fn translate_check_run(
+    repo: &RepositoryMeta,
+    d: &FetchedDocument,
+    action: CheckRunAction,
+) -> Option<WebhookEvent> {
     let cr = CheckRunObj {
         document_id: d.id.clone(),
         head_oid: d.field_hex("headOid")?,
@@ -524,9 +533,15 @@ pub fn translate_check_run(repo: &RepositoryMeta, d: &FetchedDocument) -> Option
         conclusion: d.field_str("conclusion").unwrap_or_default(),
         details_url: d.field_str("detailsUrl").unwrap_or_default(),
         summary: d.field_str("summary").unwrap_or_default(),
+        external_id: d.field_str("externalId").unwrap_or_default(),
         runner_id: d.owner_id.clone(),
     };
-    Some(check_run_event(repo, &d.id, &cr))
+    Some(check_run_event(
+        repo,
+        &crate::checkruns::event_key(d, action),
+        action,
+        &cr,
+    ))
 }
 
 /// An event `kind` (`forge-v2.md` §3) as a GitHub action for an issue or a PR:
@@ -813,9 +828,16 @@ mod tests {
                 ("conclusion", FieldValue::text("success")),
             ],
         );
-        let e = translate_check_run(&meta(), &d).unwrap();
+        let e = translate_check_run(&meta(), &d, CheckRunAction::Completed).unwrap();
         assert_eq!(e.payload["check_run"]["head_sha"], "dead");
         assert_eq!(e.payload["action"], "completed");
+        assert_eq!(e.source_doc_id, "cr1:completed:1");
+        let e = translate_check_run(&meta(), &d, CheckRunAction::Created).unwrap();
+        assert_eq!(e.payload["action"], "created");
+        assert_eq!(
+            e.source_doc_id, "cr1",
+            "created keeps the document id as its key"
+        );
     }
 
     #[test]

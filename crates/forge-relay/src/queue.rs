@@ -433,9 +433,19 @@ fn private_dir() -> std::fs::DirBuilder {
     b
 }
 
+/// Create `dir` (mode 0700) if missing, then require it to be a real directory this user owns
+/// ([`check_private_dir`]). Its parent must exist.
+pub(crate) fn ensure_private_dir(dir: &Path) -> std::io::Result<()> {
+    match private_dir().create(dir) {
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => return Err(e),
+        _ => {}
+    }
+    check_private_dir(dir)
+}
+
 /// Write one entry durably: a stale temp file is unlinked, a fresh one created exclusively
 /// (never through a symlink), synced, then renamed over the entry.
-fn write_entry(dir: &Path, id: &str, bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn write_entry(dir: &Path, id: &str, bytes: &[u8]) -> std::io::Result<()> {
     let path = dir.join(format!("{id}.json"));
     let tmp = dir.join(format!(".{id}.tmp"));
     match std::fs::remove_file(&tmp) {
@@ -590,13 +600,7 @@ impl RetryQueue {
                 .create(state_dir)
                 .map_err(|e| io("creating", e))?;
         }
-        match private_dir().create(&dir) {
-            Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => {
-                return Err(io("creating", e));
-            }
-            _ => {}
-        }
-        check_private_dir(&dir).map_err(|e| io("refusing to use", e))?;
+        ensure_private_dir(&dir).map_err(|e| io("refusing to use", e))?;
         let lock_path = dir.join(".lock");
         let lock = private_file()
             .create(true)

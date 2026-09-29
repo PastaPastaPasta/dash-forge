@@ -321,7 +321,9 @@ async fn disable(ctx: &Ctx, id: u32, master: Option<&std::path::Path>, force: bo
     if info.security_level == "MASTER" {
         return Err(crate::errors::usage("the MASTER key cannot be disabled"));
     }
-    if !identity.is_limited_key(id) && !force {
+    // A CI runner key (bound to one document type, `dg ci runner new`) is a Forge key too.
+    let forge_key = identity.is_limited_key(id) || identity.key_doc_type(id).is_some();
+    if !forge_key && !force {
         return Err(crate::errors::usage(format!(
             "key #{id} is not a Forge limited key ({} / {}); pass --force to disable it anyway",
             info.purpose, info.security_level

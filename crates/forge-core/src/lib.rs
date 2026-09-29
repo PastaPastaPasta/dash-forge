@@ -35,6 +35,7 @@
 pub mod backends;
 pub mod budget;
 pub mod cache;
+pub mod ci;
 pub mod collab;
 pub mod config_file;
 pub mod cost;

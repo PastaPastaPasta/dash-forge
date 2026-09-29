@@ -14,7 +14,7 @@ import { BASE_PATH, hasShortUrl, shortRepoPath } from '@/lib/short-url'
 import { isSealedRepo } from '@/lib/view/private-nav'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 
-export type PermalinkRoute = 'blob' | 'tree'
+export type PermalinkRoute = 'blob' | 'tree' | 'blame'
 
 /**
  * The in-app route (no base path) of `path` at commit `commitOid`, or null for a private repo

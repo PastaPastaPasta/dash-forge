@@ -97,7 +97,32 @@ retry queue, due at once, and flushes it to disk, within 5 s of the signal.
 | `--listen <addr>` | off | Health endpoint: `200` with `{"status":"ok","durable":true}` (`durable` is false when the retry queue fell back to memory). |
 | `--allow-private` | off | Deliver to private and loopback addresses. **Local testing only**: without it, any maintainer of any repo could make a public relay probe its network. |
 | `--state-dir <dir>` | `$FORGE_RELAY_STATE_DIR` (`/state` in the images), else `$XDG_STATE_HOME/dash-forge/relay`, else `~/.local/state/dash-forge/relay` | Where the retry queue lives (`<dir>/deliveries`: a real directory owned by the relay user, created or tightened to mode 0700). Setting it explicitly makes an unusable dir fatal instead of a fallback to memory. One relay per state dir: a second relay on the same dir refuses to start. |
+| `--web-base-url <url>` | `https://forge.dashhq.org` | The forge-web origin that the payloads' `html_url`, `compare` and profile links point at. Include the base path of a sub-path deploy (`https://<owner>.github.io/dash-forge`). File key: `web-base-url`. See [Payloads](#payloads). |
 | `--config <toml>` | none | The same settings as a file, plus static `[[webhook]]` blocks (`repo`, `url`, `events`, plaintext `secret`) for local testing, and `retry-schedule-secs = [60, 300, ...]`. |
+
+## Payloads
+
+The bodies reuse GitHub's field names and shapes, so a GitHub webhook parser (go-github,
+octokit) reads them:
+
+- **Ids are integers.** Every `id` (repository, issue, pull request, comment, review,
+  release, check run, user) is an integer from 1 to 2^53 − 1: the first 8 bytes of
+  `sha256(<base58 Platform id>)`, big-endian, masked to 53 bits. It fits `int64`, JavaScript
+  reads it exactly, and every relay derives the same one. The base58 document or identity id
+  is in `node_id` (GitHub's opaque global id), and `repository.dash_repo_id` repeats the repo's.
+  Verify against the Platform id you configured, never the payload's.
+- **Links** point at forge-web's routes under `--web-base-url`:
+
+  | Field | Link |
+  |---|---|
+  | `repository.html_url`, `repository.url` | `/repo/?owner=<owner id>&name=<name>` |
+  | `issue.html_url` | `/repo/issue/?owner=…&name=…&number=<n>` |
+  | `pull_request.html_url` (and `issue.html_url` of a PR) | `/repo/pull/?owner=…&name=…&number=<n>` |
+  | `comment.html_url`, `review.html_url` | the issue or PR (forge-web has no per-comment anchor) |
+  | `release.html_url` | `/repo/release/?owner=…&name=…&tag=<tag>` |
+  | `push.compare` | the pushed commit, `/repo/commit/?owner=…&name=…&oid=<after>` (forge-web has no compare page); the repo for a branch deletion |
+  | `check_run.html_url` | its commit, `/repo/commit/?…&oid=<head_sha>` (no page per check run) |
+  | `sender.html_url`, `user.html_url`, `owner.html_url` | `/u/?name=<identity id>` |
 
 ## Delivery semantics
 
@@ -127,8 +152,8 @@ retry queue, due at once, and flushes it to disk, within 5 s of the signal.
 - Repos are polled concurrently (8 at a time), each within a 20 s budget per cycle, checked
   between streams; a poll cut short resumes at the stage it stopped in. Discovery runs in its
   own task, and a new repo is polled only once its hooks are registered.
-- No cursor state on disk (only the retry queue). A restart starts from "now" (or `--lookback` for the repo-level
-  streams). A repo first served while the relay runs is read from its earliest hook's
+- No cursor state on disk (only the retry queue, and the check runs seen, below). A restart
+  starts from "now" (or `--lookback` for the repo-level streams). A repo first served while the relay runs is read from its earliest hook's
   `$createdAt`, never from before the relay started; a repo that drops out and returns
   resumes where it stopped, but not before its hook's own `$createdAt` (nothing from while a
   hook was disabled). A stream only some hooks need (comments, reviews, check runs) starts no
@@ -142,8 +167,38 @@ retry queue, due at once, and flushes it to disk, within 5 s of the signal.
   of the others in rotation, so a quiet closed thread is read every few cycles (with N such
   threads, every N/10 cycles).
 - Check runs: for the 50 most recent heads (pushed commits, PR heads seen live or opened in the
-  last 7 days), runs created after the head was first watched. A `checkRun` updated in place
-  (status progression) is not observed; only new documents are seen.
+  last 7 days), each cycle reads the head's `checkRun` documents from its oldest run not yet
+  completed (or its newest run, when all have completed; never past its newest 400), at most
+  5 pages per head and cycle, and compares each one's `$revision` with the last seen. So a run
+  a runner replaces in place (`queued` → `in_progress` → `completed`) is observed even behind
+  hundreds of newer runs, and a quiet head costs one short read. A run that disappears while
+  open (deleted) stops holding the read's start; an open run with more than 400 newer runs
+  behind it is given up.
+  - Actions: GitHub's `check_run` has four; a repository webhook gets only `created` and
+    `completed` (`rerequested` and `requested_action` are GitHub-UI requests to a GitHub App,
+    which Forge has no analogue of). The relay sends `created` for a run first seen (created
+    after the head was first watched), and `completed` when its status becomes `completed`:
+    on a run created already completed (after its `created`), or on a replace of one that was
+    not. A replace to `in_progress`, or an edit of a completed run, has no GitHub action and is
+    not sent.
+  - Re-runs: a re-run is a new `checkRun` document, as on GitHub (re-running a check creates a
+    new check run), and gets its own `created` and `completed`. A completed document replaced
+    back to `queued` is re-read only while it is the head's newest run (or behind an open one).
+  - Delivery ids: `created` uses the document id, `completed` the document id plus the
+    `$revision` seen completed. Two relays that first see a completed run at different
+    revisions send different ids, so dedupe on `check_run.id` and `status` as well.
+  - Who may post: consensus admits a `checkRun` create and every replace only from a current
+    `runner`, `maintainer` or `writer` of the repo, so a revoked runner cannot advance its
+    runs, and the relay adds no filter of its own.
+  - **Persisted:** the watched heads and the runs seen are kept in
+    `<state dir>/check-runs/<repo id>.json` (when the retry queue is durable) and restored at
+    startup, so a restart does not re-send a run, and a run it knew that completed while it
+    was down is sent `completed`. Runs created while it was down are not replayed, as for
+    every other stream. Heads first seen more than 7 days ago are not restored.
+  - **Hooks removed and re-added:** while no hook of a repo wants `check_run` (or the repo is
+    no longer served), what was seen is dropped. A hook added later starts from its own time:
+    runs created before it are not sent, and a run that was already open when it was added
+    does not get `completed` either.
 - SSRF guard: http(s) only, no userinfo, private/loopback/link-local/CGNAT/multicast and
   IPv6 forms embedding them (mapped, 6to4, NAT64, Teredo) refused, DNS resolved once and the
   connection pinned to the validated addresses, redirects and proxies off. Bodies are capped

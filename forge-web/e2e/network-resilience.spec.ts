@@ -1,6 +1,6 @@
 import { test, expect, type Page, type Route } from '@playwright/test'
 import { existsSync } from 'node:fs'
-import { EMPTY, collectPageErrors, idFile, repoUrl, shot, signedIn, unlock } from './helpers'
+import { DEMO, EMPTY, collectPageErrors, idFile, repoUrl, shot, signedIn, unlock } from './helpers'
 
 /**
  * Network resilience, against the moutai read fixture (e2e/helpers.ts `DEMO`):
@@ -77,6 +77,10 @@ test.describe('network resilience', () => {
     // Budget 2: download progress is on screen while the SDK loads, and it advances.
     const bar = page.getByRole('progressbar', { name: /Platform verifier download/ })
     await expect(bar).toBeVisible({ timeout: 60_000 })
+    // L-54: the repo's name and tabs are there while the SDK still downloads (from the address).
+    const shell = page.getByTestId('repo-shell-header')
+    await expect(shell).toContainText(DEMO.name)
+    await expect(shell.getByRole('link', { name: 'Issues' })).toBeVisible()
     const first = Number(await bar.getAttribute('aria-valuenow'))
     await expect.poll(async () => Number(await bar.getAttribute('aria-valuenow')), { timeout: 60_000 }).toBeGreaterThan(first)
     await shot(page, 'nr-1-slow3g-progress')
