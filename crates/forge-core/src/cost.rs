@@ -211,13 +211,15 @@ pub mod push_fees {
         sealed: bool,
         external_targets: u64,
         platform: bool,
+        first: bool,
     ) -> u64 {
         let chunk_credits = if platform {
             chunks(stored(plain_bytes, sealed))
         } else {
             0
         };
-        chunk_credits + MANIFEST_FIRST + HISTORY_FIRST_EXTRA + URIS_PER_TARGET * external_targets
+        let first_extra = if first { HISTORY_FIRST_EXTRA } else { 0 };
+        chunk_credits + MANIFEST_FIRST + first_extra + URIS_PER_TARGET * external_targets
     }
 
     /// What a repository's first history index costs beyond [`MANIFEST_FIRST`] and its chunks:

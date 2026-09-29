@@ -360,8 +360,8 @@ fn measure_a_real_repository() {
     let ix = compute(Path::new(&repo), &tip, None).unwrap().unwrap();
     let elapsed = t.elapsed();
     let bytes = ix.to_compressed().unwrap();
-    let credits = crate::cost::push_fees::history_index(bytes.len() as u64, false, 0, true);
-    let byo = crate::cost::push_fees::history_index(bytes.len() as u64, false, 1, false);
+    let credits = crate::cost::push_fees::history_index(bytes.len() as u64, false, 0, true, true);
+    let byo = crate::cost::push_fees::history_index(bytes.len() as u64, false, 1, false, true);
     println!(
         "MEASURE repo={repo} tip={} paths={} commits={} (first-parent {}) referenced={} \
          gz_bytes={} chunks={} platform_credits={credits} byo_credits={byo} compute_ms={}",
@@ -390,6 +390,79 @@ fn measure_a_real_delta() {
         "MEASURE delta base={base} paths={} gz_bytes={} platform_credits={}",
         d.paths.len(),
         bytes.len(),
-        crate::cost::push_fees::history_index(bytes.len() as u64, false, 0, true)
+        crate::cost::push_fees::history_index(bytes.len() as u64, false, 0, true, false)
     );
+}
+
+/// Review M5: a shallow clone's history stops at its boundary: refused, not indexed wrong.
+#[test]
+fn a_shallow_clone_is_refused() {
+    let d = fixture();
+    let shallow = TempDir::new().unwrap();
+    let src = format!("file://{}", d.path().display());
+    let out = Command::new("git")
+        .args(["clone", "-q", "--depth", "2", &src])
+        .arg(shallow.path().join("s"))
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let err = compute(&shallow.path().join("s"), "HEAD", None).unwrap_err();
+    assert!(format!("{err}").contains("shallow"), "{err}");
+}
+
+/// Review M5: a replace ref does not change what the index describes: it reads the real
+/// object graph, the one the pushed packs hold.
+#[test]
+fn replace_refs_are_ignored() {
+    let d = fixture();
+    let p = d.path();
+    let before = compute(p, "HEAD", None).unwrap().unwrap();
+    // Replace the tip's parent with the root commit: `git log` would skip most of history.
+    let parent = git(p, &["rev-parse", "HEAD~1"]);
+    let root = git(p, &["rev-list", "--max-parents=0", "HEAD"]);
+    git(p, &["replace", &parent, &root]);
+    let after = compute(p, "HEAD", None).unwrap().unwrap();
+    assert_eq!(after, before);
+}
+
+/// Review L1: the log is read as it streams and git is stopped once every path is settled; a
+/// long history of commits that touch nothing the tip has left does not change the answer.
+#[test]
+fn a_long_tail_of_old_history_is_not_read_to_its_end() {
+    let d = TempDir::new().unwrap();
+    let p = d.path();
+    git(p, &["init", "-q", "-b", "main"]);
+    for i in 0..300 {
+        write(p, "old.txt", &format!("{i}"));
+        commit(p, &format!("old {i}"), i);
+    }
+    std::fs::remove_file(p.join("old.txt")).unwrap();
+    write(p, "new.txt", "n");
+    commit(p, "replace old with new", 1_000);
+    let ix = compute(p, "HEAD", None).unwrap().unwrap();
+    assert_eq!(as_map(&ix), reference(p, "HEAD"));
+    assert_eq!(ix.commit_count, 301);
+}
+
+/// Review L2 / L4: a gzip bomb stops at the size cap; a varint past 64 bits is refused.
+#[test]
+fn hostile_bytes_are_bounded() {
+    let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
+    let zeros = vec![0u8; 1 << 20];
+    for _ in 0..(super::historyindex::MAX_INFLATED / (1 << 20) + 1) {
+        std::io::Write::write_all(&mut e, &zeros).unwrap();
+    }
+    let bomb = e.finish().unwrap();
+    let err = HistoryIndex::parse(&bomb).unwrap_err();
+    assert!(format!("{err}").contains("size limit"), "{err}");
+    // "DFHI" v1, a tip, a zero base, then a commitCount varint of 11 continuation bytes.
+    let mut body = b"DFHI\x01".to_vec();
+    body.extend_from_slice(&[0; 52]);
+    body.extend_from_slice(&[0xff; 9]);
+    body.push(0x02);
+    let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    std::io::Write::write_all(&mut e, &body).unwrap();
+    let err = HistoryIndex::parse(&e.finish().unwrap()).unwrap_err();
+    assert!(format!("{err}").contains("overflow"), "{err}");
 }

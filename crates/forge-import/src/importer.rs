@@ -319,6 +319,7 @@ async fn run_inner<'a>(
             None => p.estimate()?,
         };
         push_one(ledger, &p, est, "the git push (branches and tags)").await?;
+        backfill_history(ledger, client, signer, &repo, &work, &meta.default_branch).await;
     }
 
     // 3. Issues, PRs, comments, reviews, events, labels, releases (required).
@@ -353,6 +354,39 @@ async fn run_inner<'a>(
         .map(|l| l.unproved.clone())
         .unwrap_or_default();
     sync_state.save(started, revisit)
+}
+
+/// After the code push: publish the default branch's history index from the work mirror when
+/// none covers its tip (the helper's own publish can miss one: a just-created repository's
+/// config a lagging node did not list, a pack an earlier run recorded). Optional: priced, fitted
+/// under the cap, and a failure is a warning, never a failed import.
+async fn backfill_history(
+    ledger: &mut Ledger<'_>,
+    client: &PlatformClient,
+    signer: &Signer,
+    repo: &forge_core::scope::RepoRef,
+    work: &std::path::Path,
+    default_branch: &str,
+) {
+    if default_branch.is_empty() {
+        return;
+    }
+    let svc = forge_core::repo::RepoService::new(client, &signer.identity, &signer.bridge);
+    let outcome = crate::gitsync::history_backfill(&svc, repo, work, default_branch, &mut |credits| {
+        ledger.budget.fits(credits)
+    })
+    .await;
+    match outcome {
+        Ok(Some(credits)) => {
+            let _ = ledger.budget.charge(credits, "the history index");
+            ledger.reconcile().await;
+        }
+        Ok(None) => {}
+        Err(e) => ledger.warn(format!(
+            "the history index was not published ({e:#}); the web walks history for the \
+             file list's commit column until `dg repo reindex` publishes it"
+        )),
+    }
 }
 
 /// The optional PR-heads push: re-priced now, admitted only if it fits the cap AND the

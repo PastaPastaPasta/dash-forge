@@ -2431,7 +2431,7 @@ impl<'a> RepoService<'a> {
         prepared: PreparedHistory,
         target: RepackTarget<'_>,
     ) -> Result<HistoryPublished> {
-        let PreparedHistory { index, artifact } = prepared;
+        let PreparedHistory { index, artifact, .. } = prepared;
         let manifest_id = self.store_artifact(repo, artifact, target).await?;
         Ok(HistoryPublished {
             manifest_id,
@@ -2471,11 +2471,15 @@ pub struct HistoryEntry {
 pub struct HistoryPlan {
     /// An index already covers the tip: nothing to publish.
     pub covered: bool,
-    /// The newest live FULL index by a current member (the base a delta may extend).
-    pub base: Option<HistoryEntry>,
+    /// The live FULL indexes by current members, newest first: the bases a delta may extend
+    /// (the first on the new tip's first-parent chain).
+    pub bases: Vec<HistoryEntry>,
     /// Every live history index by a current member: what a full index supersedes, and the
-    /// deltas of `base` a new delta supersedes.
+    /// deltas of a base a new delta supersedes.
     pub live: Vec<HistoryEntry>,
+    /// The repository has no history index manifest at all yet: this one is its first, which
+    /// pays the first-of-kind fee ([`crate::cost::push_fees::HISTORY_FIRST_EXTRA`]).
+    pub first: bool,
 }
 
 /// What [`RepoService::store_history_index`] published.
@@ -2495,6 +2499,8 @@ pub struct HistoryPublished {
 pub struct PreparedHistory {
     index: crate::pack::HistoryIndex,
     artifact: Artifact,
+    /// The repository's first history index (it pays the first-of-kind fee).
+    first: bool,
 }
 
 impl PreparedHistory {
@@ -2503,9 +2509,26 @@ impl PreparedHistory {
         self.artifact.plain.len() as u64
     }
 
+    /// The price of storing it (an upper bound), sealed or not, with `external_targets` URIs
+    /// and, when `platform`, its chunks.
+    pub fn credits(&self, sealed: bool, external_targets: u64, platform: bool) -> u64 {
+        crate::cost::push_fees::history_index(
+            self.plain_len(),
+            sealed,
+            external_targets,
+            platform,
+            self.first,
+        )
+    }
+
     /// The computed index.
     pub fn index(&self) -> &crate::pack::HistoryIndex {
         &self.index
+    }
+
+    /// Whether it is the repository's first history index.
+    pub fn is_first(&self) -> bool {
+        self.first
     }
 }
 
@@ -2539,16 +2562,25 @@ pub fn plan_history_index(
             })
         })
         .collect();
+    // A delta covers its tip only while a live full index of its base tip stands behind it:
+    // a reader could not overlay it otherwise (forge-web `historySource` applies the same rule).
+    let full_tips: BTreeSet<[u8; 20]> = live
+        .iter()
+        .filter(|e| e.base_tip.is_none())
+        .map(|e| e.tip)
+        .collect();
+    let covers = |e: &HistoryEntry| e.base_tip.is_none_or(|b| full_tips.contains(&b));
     HistoryPlan {
-        covered: live.iter().any(|e| e.tip == tip),
-        base: live.iter().find(|e| e.base_tip.is_none()).cloned(),
+        covered: live.iter().any(|e| e.tip == tip && covers(e)),
+        bases: live.iter().filter(|e| e.base_tip.is_none()).cloned().collect(),
+        first: !manifests.iter().any(|m| m.kind == kind),
         live,
     }
 }
 
 /// Compute the history index for `tip` in the local repository `git_dir` as `plan` says: a
-/// delta over `plan.base` when its tip is on `tip`'s first-parent chain and the delta is under
-/// half the base's size, else a full index superseding the live ones. `None` when `plan` says an
+/// delta over the newest of `plan.bases` on `tip`'s first-parent chain when the delta is under
+/// half that base's size, else a full index superseding the live ones. `None` when `plan` says an
 /// index already covers `tip`. Local only: nothing is read from or written to the network.
 pub fn prepare_history_index(
     git_dir: &std::path::Path,
@@ -2560,23 +2592,26 @@ pub fn prepare_history_index(
         return Ok(None);
     }
     let tip_hex = hex::encode(tip);
-    // A delta over the base, when the base's tip is on the new tip's first-parent chain (and the
-    // local repository holds it) and the delta is under half the base's size.
-    if let Some(base) = &plan.base {
-        if let Ok(Some(mut delta)) = compute(git_dir, &tip_hex, Some(&hex::encode(base.tip))) {
-            delta.base = Some(base.pack_hash);
-            let plain = delta.to_compressed()?;
-            if (plain.len() as u64) * 2 <= base.size_bytes {
-                // A delta is cumulative: it replaces the earlier deltas of the same base.
-                let earlier = plan.live.iter().filter(|e| e.base_tip == Some(base.tip));
-                return Ok(Some(prepared(delta, plain, vec![tip, base.tip], earlier)));
-            }
+    // A delta over the newest live full index whose tip is on the new tip's first-parent chain
+    // (and the local repository holds it), when the delta is under half that base's size.
+    for base in &plan.bases {
+        let Ok(Some(mut delta)) = compute(git_dir, &tip_hex, Some(&hex::encode(base.tip))) else {
+            continue;
+        };
+        delta.base = Some(base.pack_hash);
+        let plain = delta.to_compressed()?;
+        if (plain.len() as u64) * 2 <= base.size_bytes {
+            // A delta is cumulative: it replaces the earlier deltas of the same base.
+            let earlier = plan.live.iter().filter(|e| e.base_tip == Some(base.tip));
+            return Ok(Some(prepared(delta, plain, vec![tip, base.tip], earlier, plan.first)));
         }
+        // The newest base on the chain is too far behind: a full index, not an older base.
+        break;
     }
     let index = compute(git_dir, &tip_hex, None)?
         .ok_or_else(|| Error::Config("history index: no full index computed".into()))?;
     let plain = index.to_compressed()?;
-    Ok(Some(prepared(index, plain, vec![tip], plan.live.iter())))
+    Ok(Some(prepared(index, plain, vec![tip], plan.live.iter(), plan.first)))
 }
 
 /// A computed index as the artifact to store, superseding `replaces` (at most
@@ -2586,6 +2621,7 @@ fn prepared<'e>(
     plain: Vec<u8>,
     tips: Vec<[u8; 20]>,
     replaces: impl Iterator<Item = &'e HistoryEntry>,
+    first: bool,
 ) -> PreparedHistory {
     let artifact = Artifact {
         kind: crate::pack::KIND_HISTORY_INDEX,
@@ -2594,7 +2630,11 @@ fn prepared<'e>(
         supersedes: replaces.take(MAX_SUPERSEDES).map(|e| e.pack_hash).collect(),
         tips,
     };
-    PreparedHistory { index, artifact }
+    PreparedHistory {
+        index,
+        artifact,
+        first,
+    }
 }
 
 /// Every tip (hex `newOid`) that a **valid** update of `ref_name` in `repo` ever set: updates
@@ -3482,6 +3522,81 @@ mod tests {
         m
     }
 
+    /// Review M1: a delta covers its tip only while a live full index of its base tip stands
+    /// behind it. A delta whose base was superseded (or was never a member's) covers nothing, so
+    /// the tip gets an index again.
+    #[test]
+    fn an_orphaned_delta_does_not_cover_its_tip() {
+        use super::plan_history_index;
+        let roles: RoleMap = [("w".to_string(), Role::Writer)].into();
+        let delta = history("d", 20, 2, "w", 0xb0, Some(0xa0));
+        let base = history("f", 10, 1, "w", 0xa0, None);
+        assert!(plan_history_index(&[delta.clone(), base.clone()], &roles, [0xb0; 20]).covered);
+        // The base's only copy is a stranger's: it is not live, so the delta is orphaned.
+        let mut stranger_base = base.clone();
+        stranger_base.owner_id = "x".into();
+        assert!(!plan_history_index(&[delta.clone(), stranger_base], &roles, [0xb0; 20]).covered);
+        // A newer full index of another tip superseded the base: orphaned too.
+        let mut newer = history("g", 30, 3, "w", 0xc0, None);
+        newer.supersedes = vec![base.pack_hash];
+        assert!(!plan_history_index(&[newer, delta, base], &roles, [0xb0; 20]).covered);
+    }
+
+    /// Review M2: the delta's base is the newest live full index on the new tip's first-parent
+    /// chain, tried newest first: a newer full index of a side branch's tip (not on the chain)
+    /// is skipped for an older one that is.
+    #[test]
+    fn a_delta_extends_the_newest_full_index_on_the_chain() {
+        use super::{plan_history_index, prepare_history_index};
+        let d = tempfile::TempDir::new().unwrap();
+        let p = d.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(p)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@e.x")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@e.x")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let oid = |rev: &str| -> [u8; 20] { hex::decode(git(&["rev-parse", rev])).unwrap().try_into().unwrap() };
+        git(&["init", "-q", "-b", "main"]);
+        for i in 0..400 {
+            std::fs::write(p.join(format!("f{i}.txt")), format!("{i}")).unwrap();
+        }
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "many files"]);
+        let on_chain = oid("HEAD");
+        git(&["checkout", "-q", "-b", "side"]);
+        std::fs::write(p.join("side.txt"), "s").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "side"]);
+        let side = oid("HEAD");
+        git(&["checkout", "-q", "main"]);
+        std::fs::write(p.join("f1.txt"), "changed").unwrap();
+        git(&["commit", "-q", "-am", "edit f1"]);
+        let tip = oid("HEAD");
+        let roles: RoleMap = [("w".to_string(), Role::Writer)].into();
+        let full = |id: &str, at: u64, hash: u8, t: [u8; 20]| {
+            let mut m = history(id, at, hash, "w", 0, None);
+            m.tips = vec![t];
+            m.size_bytes = 100_000;
+            m
+        };
+        // Newest first: the side branch's full index, then the one on main's chain.
+        let manifests = [full("s", 20, 9, side), full("m", 10, 1, on_chain)];
+        let plan = plan_history_index(&manifests, &roles, tip);
+        let got = prepare_history_index(p, tip, &plan).unwrap().unwrap();
+        assert_eq!(got.index().base, Some([1; 32]), "extends the index on the chain");
+        assert_eq!(got.artifact.tips, vec![tip, on_chain]);
+    }
+
     #[test]
     fn a_history_plan_finds_the_covering_index_the_base_and_the_live_set() {
         use super::plan_history_index;
@@ -3502,7 +3617,10 @@ mod tests {
         let plan = plan_history_index(&all, &roles, [0xd0; 20]);
         assert!(!plan.covered);
         // The base is the newest full index by a member: never a stranger's.
-        assert_eq!(plan.base.as_ref().map(|b| b.tip), Some([0xa0; 20]));
+        let bases: Vec<[u8; 20]> = plan.bases.iter().map(|b| b.tip).collect();
+        assert_eq!(bases, [[0xa0; 20]]);
+        assert!(!plan.first);
+        assert!(plan_history_index(&[], &roles, [0xd0; 20]).first);
         // The superseded delta is not live; the stranger's index never counts.
         let live: Vec<[u8; 32]> = plan.live.iter().map(|e| e.pack_hash).collect();
         assert_eq!(live, [delta_new.pack_hash, [1; 32]]);

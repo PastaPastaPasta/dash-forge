@@ -179,14 +179,10 @@ pub async fn reindex(
             platform.is_some(),
         )
     };
-    let history_estimate = history.prepared.as_ref().map_or(0, |h| {
-        forge_core::cost::push_fees::history_index(
-            h.plain_len(),
-            sealed,
-            external_names.len() as u64,
-            platform.is_some(),
-        )
-    });
+    let history_estimate = history
+        .prepared
+        .as_ref()
+        .map_or(0, |h| h.credits(sealed, external_names.len() as u64, platform.is_some()));
     if !ctx.json {
         if !plan.missing.is_empty() {
             print_reindex_plan(&s.repo, &plan, &label, &cost_line(locator_estimate, price));

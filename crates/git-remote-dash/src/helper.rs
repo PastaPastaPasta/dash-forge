@@ -494,6 +494,7 @@ impl Helper {
         let mut sealed_cache = None;
         let mut pending_index = None;
         let mut history_paid = false;
+        let mut stored: Option<StoredWith> = None;
         // Computed before anything is priced, so the push's estimate and cost guard include it.
         let history = if !want_tips.is_empty() && (dry_run || publishes_browse_index()) {
             prepare_push_history(&svc, &conn.repo, &planned, &git_dir, progress).await
@@ -516,7 +517,8 @@ impl Helper {
                 dry_run,
                 identity: conn.identity().id(),
                 sealed: std::cell::RefCell::default(),
-                history_bytes: history.as_ref().map(PreparedHistory::plain_len),
+                history_bytes: history.as_ref().map(|h| h.prepared.plain_len()),
+                history_first: history.as_ref().is_some_and(|h| h.prepared.is_first()),
             }),
             _ => None,
         };
@@ -550,14 +552,8 @@ impl Helper {
             if refs.is_ok() {
                 forget_sealed(sealed_cache.as_deref());
             }
-            let stored = publish_index_after_refs(ctx.as_ref(), pending_index).await;
+            stored = publish_index_after_refs(ctx.as_ref(), pending_index).await;
             refs?;
-            // The history index names the tip the default branch now has: only after its ref
-            // landed, and only when this push stored (and priced) a pack with it.
-            let history = history.filter(|_| history_paid);
-            if let (Some(ctx), Some(history), Some(stored)) = (ctx.as_ref(), history, stored) {
-                publish_history(ctx, history, stored).await;
-            }
         }
 
         // Post-push re-read: a same-prevOid race lost to a concurrent pusher surfaces here
@@ -569,8 +565,22 @@ impl Helper {
         let final_refs = if dry_run {
             remote_refs
         } else {
-            self.read_refs_until_converged(&planned).await?
+            read_refs_until_converged(conn, &planned).await?
         };
+        // The history index names the tip the default branch has now: published only once the
+        // refs converged and the default branch reads at the tip it was computed for (a
+        // rejected or raced default ref gets none), and only when this push priced it.
+        if let (Some(ctx), Some(history), true) = (ctx.as_ref(), history, history_paid) {
+            let landed = history_tip_landed(&history, &final_refs);
+            match (landed, stored) {
+                (true, Some(stored)) => publish_history(ctx, history.prepared, stored).await,
+                (true, None) => publish_history_to_recorded(ctx, history.prepared).await,
+                (false, _) => ctx.say(
+                    "the default branch did not land at the pushed tip; its history index is not \
+                     published (the web walks history until `dg repo reindex` publishes it)",
+                ),
+            }
+        }
         // The branches that moved: the PRs following them get a head update (review-parity
         // R14). Read before `finalize_outcomes` consumes the plan.
         let moved = moved_branches(&planned, &final_refs);
@@ -644,46 +654,42 @@ impl Helper {
         progress.emit(&text, &event);
         progress::report(&event);
     }
+}
 
-    /// Re-read refs, retrying briefly until every accepted non-delete spec resolves to its
-    /// pushed tip (tolerating read-after-write lag), or the retry budget is spent.
-    async fn read_refs_until_converged(
-        &self,
-        planned: &[Planned],
-    ) -> Result<Vec<(String, RefState)>> {
-        const MAX_ATTEMPTS: usize = 6;
-        let conn = self.conn.as_ref().expect("connected before finalize");
-        let svc = conn.service();
-        // `None` = a delete, converged once the ref reads as gone. Deletes wait too: a node
-        // that has not applied the delete yet would otherwise make a landed delete read as
-        // "did not take effect" (the nightly's 03 scenario hit exactly that).
-        let expected: Vec<(&str, Option<&str>)> = planned
-            .iter()
-            .filter(|p| p.reject.is_none())
-            .map(|p| (p.spec.dst.as_str(), p.new_oid.as_deref()))
-            .collect();
+/// Re-read refs, retrying briefly until every accepted non-delete spec resolves to its pushed
+/// tip (tolerating read-after-write lag), or the retry budget is spent.
+async fn read_refs_until_converged(conn: &Conn, planned: &[Planned]) -> Result<Vec<(String, RefState)>> {
+    const MAX_ATTEMPTS: usize = 6;
+    let svc = conn.service();
+    // `None` = a delete, converged once the ref reads as gone. Deletes wait too: a node
+    // that has not applied the delete yet would otherwise make a landed delete read as
+    // "did not take effect" (the nightly's 03 scenario hit exactly that).
+    let expected: Vec<(&str, Option<&str>)> = planned
+        .iter()
+        .filter(|p| p.reject.is_none())
+        .map(|p| (p.spec.dst.as_str(), p.new_oid.as_deref()))
+        .collect();
 
-        let mut last = svc.read_refs(&conn.repo).await?;
-        for attempt in 1..=MAX_ATTEMPTS {
-            let converged = expected.iter().all(|(dst, want)| {
-                let state = last.iter().find(|(n, _)| n == dst).map(|(_, s)| s);
-                match want {
-                    Some(oid) => {
-                        matches!(state, Some(RefState::Resolved { oid: got, .. }) if got == oid)
-                    }
-                    None => matches!(state, None | Some(RefState::Unborn)),
+    let mut last = svc.read_refs(&conn.repo).await?;
+    for attempt in 1..=MAX_ATTEMPTS {
+        let converged = expected.iter().all(|(dst, want)| {
+            let state = last.iter().find(|(n, _)| n == dst).map(|(_, s)| s);
+            match want {
+                Some(oid) => {
+                    matches!(state, Some(RefState::Resolved { oid: got, .. }) if got == oid)
                 }
-            });
-            if converged || expected.is_empty() {
-                break;
+                None => matches!(state, None | Some(RefState::Unborn)),
             }
-            if attempt < MAX_ATTEMPTS {
-                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                last = svc.read_refs(&conn.repo).await?;
-            }
+        });
+        if converged || expected.is_empty() {
+            break;
         }
-        Ok(last)
+        if attempt < MAX_ATTEMPTS {
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+            last = svc.read_refs(&conn.repo).await?;
+        }
     }
+    Ok(last)
 }
 
 /// The accepted, non-delete updates of `planned` that `final_refs` shows landed.
@@ -1218,6 +1224,8 @@ struct PushContext<'a> {
     sealed: std::cell::RefCell<Option<std::path::PathBuf>>,
     /// The plaintext size of the history index this push publishes, if any: priced with it.
     history_bytes: Option<u64>,
+    /// It is the repository's first history index (it pays the first-of-kind fee).
+    history_first: bool,
 }
 
 /// The on-chain price of the history index a push publishes (`ctx.history_bytes`), stored where
@@ -1229,6 +1237,7 @@ fn history_credits(ctx: &PushContext<'_>, platform_bytes: bool) -> u64 {
             ctx.repo.visibility == forge_core::rules::v2::Visibility::Private,
             ctx.policy.resolved.external.len() as u64,
             platform_bytes,
+            ctx.history_first,
         )
     })
 }
@@ -1312,6 +1321,7 @@ async fn upload_push_pack(
             manifests: 2 + u32::from(ctx.history_bytes.is_some()),
             ref_updates: ctx.refs.len(),
             est_credits: est.total(),
+            history_bytes: ctx.history_bytes.unwrap_or(0),
         })
     };
     if ctx.dry_run {
@@ -1324,11 +1334,16 @@ async fn upload_push_pack(
     // here, not after a "y" at the cost prompt.
     let externals = external_targets(ctx)?;
     if let Some(refs_only) = reuse_recorded(ctx, &job).await? {
+        // The history index is one more write on top of the refs: the guard weighs it too, and
+        // a guard that declines it leaves it to `dg repo reindex` (the refs still land).
+        let with_history = refs_only + history_credits(ctx, resolved.platform);
+        let history = ctx.history_bytes.is_some()
+            && policy::enforce(with_history, ctx.policy, resolved.platform, policy::NOTE_NOTHING_STORED)
+                .is_ok();
         return Ok(Some(Uploaded {
-            est_credits: refs_only,
+            est_credits: if history { with_history } else { refs_only },
             index: missing_index(ctx, &job, pack.parsed, externals).await,
-            // Priced for the refs only: the history index is left to `dg repo reindex`.
-            history: false,
+            history,
         }));
     }
     policy::enforce(
@@ -1890,11 +1905,14 @@ async fn dry_run_writes(
     }
     let (text, event) = progress::recorded_line(&job.meta.pack_hash);
     progress.emit(&text, &event);
+    // A recorded pack: the refs, and the history index a real push would add to them.
+    let history = history_credits(ctx, ctx.policy.resolved.platform);
     progress::platform_line(&PlatformWrites {
         chunks: 0,
-        manifests: 0,
+        manifests: u32::from(ctx.history_bytes.is_some()),
         ref_updates: ctx.refs.len(),
-        est_credits: push_fees::estimate_ref_updates(ctx.refs.len() as u64),
+        est_credits: push_fees::estimate_ref_updates(ctx.refs.len() as u64) + history,
+        history_bytes: ctx.history_bytes.unwrap_or(0),
     })
 }
 
@@ -2149,17 +2167,21 @@ async fn prepare_push_history(
     planned: &[Planned],
     git_dir: &Path,
     progress: Progress,
-) -> Option<PreparedHistory> {
-    // The repository's config names the default branch. A caller that knows it (forge-import,
-    // pushing into a repository it created a moment ago, whose config a lagging node may not
-    // list yet) passes it in `DASH_FORGE_DEFAULT_BRANCH`, used only when the config is not read.
-    let default = svc
-        .read_default_branch(repo)
-        .await
-        .ok()
-        .flatten()
-        .or_else(|| std::env::var("DASH_FORGE_DEFAULT_BRANCH").ok().filter(|b| !b.is_empty()))
-        .unwrap_or_else(|| forge_core::repo::DEFAULT_BRANCH.to_string());
+) -> Option<PushHistory> {
+    // The repository's config names the default branch. A config that cannot be read skips the
+    // index (a guess could index the wrong branch). A repository with no default branch in its
+    // config (a lagging node that does not list a just-created repo's config yet) uses the one
+    // forge-import names when it spawned this push, else `main`.
+    let default = match svc.read_default_branch(repo).await {
+        Ok(Some(b)) => b,
+        Ok(None) => default_branch_hint().unwrap_or_else(|| forge_core::repo::DEFAULT_BRANCH.to_string()),
+        Err(e) => {
+            progress.note(&format!(
+                "the default branch could not be read ({e}); no history index this push"
+            ));
+            return None;
+        }
+    };
     let want = format!("refs/heads/{default}");
     let tip_hex = planned
         .iter()
@@ -2175,7 +2197,10 @@ async fn prepare_push_history(
     }
     .await;
     match prepared {
-        Ok(p) => p,
+        Ok(p) => p.map(|prepared| PushHistory {
+            prepared,
+            branch: want,
+        }),
         Err(e) => {
             progress.note(&format!(
                 "the history index was not computed ({e}); the web walks history for this tip"
@@ -2183,6 +2208,69 @@ async fn prepare_push_history(
             None
         }
     }
+}
+
+/// The history index a push computed, with the ref (`refs/heads/<default>`) it describes.
+struct PushHistory {
+    prepared: PreparedHistory,
+    branch: String,
+}
+
+/// The default branch forge-import names for a repository it created a moment ago
+/// (`DASH_FORGE_DEFAULT_BRANCH`), honoured only in a push forge-import spawned
+/// (`DASH_FORGE_SPAWNED_BY=forge-import`): a stray variable in a user's shell never picks the
+/// branch an index describes.
+fn default_branch_hint() -> Option<String> {
+    let spawned = std::env::var("DASH_FORGE_SPAWNED_BY").is_ok_and(|v| v == "forge-import");
+    spawned
+        .then(|| std::env::var("DASH_FORGE_DEFAULT_BRANCH").ok())
+        .flatten()
+        .filter(|b| !b.is_empty())
+}
+
+/// Whether the refs read after the push show the index's branch at the index's tip.
+fn history_tip_landed(history: &PushHistory, final_refs: &[(String, RefState)]) -> bool {
+    let want = hex::encode(history.prepared.index().tip);
+    final_refs.iter().any(|(name, state)| {
+        *name == history.branch && matches!(state, RefState::Resolved { oid, .. } if *oid == want)
+    })
+}
+
+/// Publish the history index when this push stored no pack of its own (a recorded pack
+/// reused): to where this identity's recorded copy of the default branch's packs is, Platform
+/// when the policy includes it, else the policy's external targets.
+async fn publish_history_to_recorded(ctx: &PushContext<'_>, history: PreparedHistory) {
+    let externals = match external_targets(ctx) {
+        Ok(t) => t,
+        Err(e) => {
+            ctx.say(&format!("the history index was not published ({e:#})"));
+            return;
+        }
+    };
+    let replicas = ctx
+        .policy
+        .resolved
+        .external
+        .iter()
+        .map(|(name, _)| forge_core::storage::Replica {
+            target: name.clone(),
+            uris: Vec::new(),
+            platform: false,
+        })
+        .chain(ctx.policy.resolved.platform.then(|| forge_core::storage::Replica {
+            target: forge_core::storage::PLATFORM_PROFILE.into(),
+            uris: Vec::new(),
+            platform: true,
+        }))
+        .collect();
+    let stored = StoredWith {
+        replication: Replication {
+            replicas,
+            failures: Vec::new(),
+        },
+        externals,
+    };
+    publish_history(ctx, history, stored).await;
 }
 
 /// Publish the history index this push computed, to where its pack went. Best-effort and
@@ -2686,6 +2774,7 @@ fn resolve_key_path(url: &DashUrl, owner_id: &str) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use super::{default_branch_hint, history_tip_landed, PushHistory};
     use super::{
         archived_refusal, blames_set_aside_packs, forget_sealed, head_outcome, hidden_packs_needed,
         is_head, list_lines, oid_to_bytes, packs_unreadable, protected_denied, resolve_network,
@@ -2954,6 +3043,91 @@ mod tests {
         assert!(head_outcome(spec("refs/heads/main"))
             .wire()
             .starts_with("error HEAD "));
+    }
+
+    /// A real one-commit history index of `main` in a scratch repository, and its tip (hex).
+    fn scratch_history() -> (tempfile::TempDir, PushHistory, String) {
+        let d = tempfile::TempDir::new().unwrap();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(d.path())
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@e.x")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@e.x")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write(d.path().join("a"), "1").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "one"]);
+        let tip = git(&["rev-parse", "HEAD"]);
+        let oid = forge_core::pack::historyindex::parse_hex_oid(tip.as_bytes()).unwrap();
+        let plan = forge_core::repo::HistoryPlan::default();
+        let prepared = forge_core::repo::prepare_history_index(d.path(), oid, &plan)
+            .unwrap()
+            .unwrap();
+        let history = PushHistory {
+            prepared,
+            branch: "refs/heads/main".into(),
+        };
+        (d, history, tip)
+    }
+
+    /// Review H1: the history index is published only when the refs read after the push show
+    /// the default branch at the tip it was computed for. A multi-ref push whose `main` update
+    /// was rejected (non-fast-forward, a lost race) leaves `main` elsewhere: no index, even
+    /// though the push's other refs landed.
+    #[test]
+    fn the_history_index_needs_the_default_branch_at_its_tip() {
+        let (_d, history, tip) = scratch_history();
+        let other = "c".repeat(40);
+        // main landed at the tip (and a feature branch with it): publish.
+        let landed = vec![
+            ("refs/heads/main".to_string(), resolved(&tip)),
+            ("refs/heads/feature".to_string(), resolved(&other)),
+        ];
+        assert!(history_tip_landed(&history, &landed));
+        // main was rejected and still reads at its old tip; the feature branch landed.
+        let rejected = vec![
+            ("refs/heads/main".to_string(), resolved(&other)),
+            ("refs/heads/feature".to_string(), resolved(&tip)),
+        ];
+        assert!(!history_tip_landed(&history, &rejected));
+        // main diverged (a concurrent pusher) or is gone: no index either.
+        let diverged = vec![("refs/heads/main".to_string(), RefState::Unborn)];
+        assert!(!history_tip_landed(&history, &diverged));
+        assert!(!history_tip_landed(&history, &[]));
+    }
+
+    /// Review H2: the default branch forge-import names is honoured only in a push it spawned.
+    #[test]
+    fn the_default_branch_hint_needs_forge_import() {
+        let _env = ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let saved: Vec<_> = ["DASH_FORGE_DEFAULT_BRANCH", "DASH_FORGE_SPAWNED_BY"]
+            .iter()
+            .map(|k| (*k, std::env::var_os(k)))
+            .collect();
+        // ENV_LOCK serializes every test in this binary that touches these variables.
+        std::env::set_var("DASH_FORGE_DEFAULT_BRANCH", "develop");
+        std::env::remove_var("DASH_FORGE_SPAWNED_BY");
+        assert_eq!(default_branch_hint(), None);
+        std::env::set_var("DASH_FORGE_SPAWNED_BY", "forge-import");
+        assert_eq!(default_branch_hint().as_deref(), Some("develop"));
+        for (k, v) in saved {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
     }
 
     /// Serializes tests that change process environment variables.

@@ -101,6 +101,9 @@ pub struct PushReport {
     /// The push left the default branch's history index unpublished (the helper's
     /// `historySkipped` event): the web walks history for the file list's commit column.
     pub history_skipped: Option<String>,
+    /// Plaintext bytes of the history index the push publishes (the `platform` event's
+    /// `historyBytes`): a Platform fallback stores its chunks too.
+    pub history_bytes: u64,
 }
 
 impl PushReport {
@@ -141,6 +144,7 @@ pub fn parse_push(stdout: &str, stderr: &str) -> PushReport {
                 r.docs += num("chunks") + num("manifests") + num("refUpdates");
                 r.est_credits += num("estCredits");
                 r.helper_credits += num("estCredits");
+                r.history_bytes += num("historyBytes");
             }
             _ => {}
         }
@@ -270,7 +274,13 @@ pub fn price_helper_estimate(mut r: PushReport, fallback: bool) -> PushReport {
         return r;
     }
     if fallback && r.chunks == 0 && r.pack_bytes > 0 {
-        let chunks = worst(&r).chunk_credits;
+        // The pack's chunks and the history index's (it goes where the pack does), sealed.
+        let history = if r.history_bytes > 0 {
+            push_fees::chunks(forge_core::private::pack::sealed_upper_bound(r.history_bytes))
+        } else {
+            0
+        };
+        let chunks = worst(&r).chunk_credits + history;
         r.est_credits = r.est_credits.saturating_add(chunks);
         r.fallback_credits = chunks;
     }
@@ -669,7 +679,72 @@ fn fresh_history_credits(git_dir: &Path, refs: &Refs, storage: PackStorage, defa
         PackStorage::Platform { external_targets } => (external_targets, true),
         PackStorage::External { targets } => (targets, false),
     };
-    push_fees::history_index(prepared.plain_len(), false, external_targets, platform)
+    prepared.credits(false, external_targets, platform)
+}
+
+/// Publish the history index of `default_branch`'s tip in the mirror at `git_dir` when no
+/// published index covers it and `fits(credits)` admits its price (the storage the repository's
+/// packs use: Platform chunks when its policy says so). `Ok(Some(quoted credits))` when it
+/// published, `Ok(None)` when there was nothing to do or it did not fit.
+pub async fn history_backfill(
+    svc: &forge_core::repo::RepoService<'_>,
+    repo: &forge_core::scope::RepoRef,
+    git_dir: &Path,
+    default_branch: &str,
+    fits: &mut dyn FnMut(u64) -> bool,
+) -> Result<Option<u64>> {
+    let Some(tip) = local_tips(git_dir, &[format!("refs/heads/{default_branch}")])?
+        .first()
+        .and_then(|t| forge_core::pack::historyindex::parse_hex_oid(t.as_bytes()).ok())
+    else {
+        return Ok(None);
+    };
+    let plan = svc.plan_history_publish(repo, tip).await?;
+    let Some(prepared) = forge_core::repo::prepare_history_index(git_dir, tip, &plan)? else {
+        return Ok(None);
+    };
+    let policy = storage_policy(git_dir)?;
+    let resolved = if policy.is_platform_only() {
+        forge_core::storage::StoragePolicy::platform_only()
+            .resolve(&forge_core::storage::StorageProfiles::default())?
+    } else {
+        policy.resolve(&forge_core::storage::StorageProfiles::load()?)?
+    };
+    let credits = prepared.credits(
+        repo.visibility == forge_core::rules::v2::Visibility::Private,
+        resolved.external.len() as u64,
+        resolved.platform,
+    );
+    if !fits(credits) {
+        return Ok(None);
+    }
+    let http = forge_core::storage::http_client();
+    let externals = resolved
+        .external
+        .iter()
+        .map(|(name, profile)| forge_core::storage::ExternalTarget::from_profile(name, profile, &http))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    let chain = resolved.platform.then(|| {
+        forge_core::repo::PlatformChunkTarget::new(svc, repo, forge_core::storage::PLATFORM_PROFILE)
+    });
+    let mut targets: Vec<&dyn forge_core::storage::StorageTarget> = externals
+        .iter()
+        .map(|t| t as &dyn forge_core::storage::StorageTarget)
+        .collect();
+    if let Some(c) = &chain {
+        targets.push(c);
+    }
+    let required = resolved.replicas.min(targets.len()).max(1);
+    svc.store_history_index(
+        repo,
+        prepared,
+        forge_core::repo::RepackTarget::Replicated {
+            targets: &targets,
+            required,
+        },
+    )
+    .await?;
+    Ok(Some(credits))
 }
 
 impl GitPusher {
@@ -716,6 +791,7 @@ impl GitPusher {
             .env("GIT_DASH_JSON", "1")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("DASH_FORGE_DEFAULT_BRANCH", &self.default_branch)
+            .env("DASH_FORGE_SPAWNED_BY", "forge-import")
             .envs(self.network.env_vars());
         let out = cmd.output().context("running git")?;
         let stdout = String::from_utf8_lossy(&out.stdout);
@@ -804,6 +880,7 @@ dash: some human line"#;
                 fallback_credits: 0,
                 index_skipped: None,
                 history_skipped: None,
+                history_bytes: 0,
             }
         );
     }
@@ -1065,8 +1142,10 @@ dash: push failed: ref did not converge to pushed tip"#;
             .unwrap();
         assert_eq!(
             with.est_credits - other.est_credits,
-            push_fees::history_index(prepared.plain_len(), false, 0, true)
+            prepared.credits(false, 0, true)
         );
+        // A fresh repository's index is its first: priced with the first-of-kind fee.
+        assert!(prepared.is_first());
         assert_eq!(fresh_history_credits(d, &Refs::PullHeads(vec![1]), PackStorage::PLATFORM, "main"), 0);
     }
 
@@ -1112,7 +1191,7 @@ dash: push failed: ref did not converge to pushed tip"#;
         assert_eq!(
             byo.est_credits,
             fresh_push_credits(0, 0, 2, PackStorage::External { targets: 1 })
-                + push_fees::history_index(0, false, 1, false)
+                + push_fees::history_index(0, false, 1, false, true)
         );
         // A fallback to Platform keeps the Platform price (an upper bound).
         git(d, &["config", "dash.platformFallback", "true"]);
@@ -1171,6 +1250,7 @@ dash: push failed: ref did not converge to pushed tip"#;
                     fallback_credits: 0,
                     index_skipped: None,
                     history_skipped: None,
+                    history_bytes: 0,
                 },
                 false,
             )
@@ -1271,6 +1351,7 @@ dash: push failed: ref did not converge to pushed tip"#;
             fallback_credits: 0,
             index_skipped: None,
             history_skipped: None,
+            history_bytes: 0,
         };
         let plain = price_helper_estimate(r.clone(), false);
         let armed = price_helper_estimate(r, true);

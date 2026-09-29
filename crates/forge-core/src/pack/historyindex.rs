@@ -34,14 +34,14 @@
 //! `v` is an LEB128 varint; times are author times in seconds. A **delta** index (non-zero
 //! base) lists only the paths changed since its base's tip; its counts are its own tip's.
 
-use super::build::{ensure_safe_rev, git_capture};
+use super::build::{ensure_safe_rev, git_at};
 use super::parse::OID_LEN;
 use crate::error::{Error, Result};
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::io::{Read as _, Write as _};
+use std::io::{BufRead as _, Read as _, Write as _};
 use std::path::Path;
 
 const MAGIC: &[u8; 4] = b"DFHI";
@@ -52,6 +52,8 @@ pub const SUBJECT_MAX: usize = 200;
 /// Paths and commits one index may hold: far past any real tree, and a bound for a reader
 /// parsing hostile bytes.
 const MAX_ROWS: u64 = 4_000_000;
+/// The most a history index may inflate to (dashpay/dash's is 128 KB): a gzip bomb stops here.
+pub const MAX_INFLATED: u64 = 64 * 1024 * 1024;
 
 /// One commit an index refers to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,8 +136,12 @@ impl HistoryIndex {
     pub fn parse(compressed: &[u8]) -> Result<Self> {
         let mut body = Vec::new();
         GzDecoder::new(compressed)
+            .take(MAX_INFLATED + 1)
             .read_to_end(&mut body)
             .map_err(|e| Error::Io(format!("history index: {e}")))?;
+        if body.len() as u64 > MAX_INFLATED {
+            return Err(bad("inflates past its size limit"));
+        }
         let mut r = Cursor {
             buf: &body,
             pos: 0,
@@ -211,8 +217,15 @@ impl HistoryIndex {
 /// changed (still present at `tip`), with `base` left for the caller to set (the base's
 /// `packHash`). When it is not on the chain, `None` is returned for the caller to publish a
 /// full index instead. `since == None` computes a full index.
+///
+/// Reads the repository's real object graph: replace refs and grafts are ignored (they would
+/// make git describe a history the published packs do not hold). A shallow repository is
+/// refused: its history stops at the shallow boundary, so its commits and counts would be wrong.
 pub fn compute(repo: &Path, tip: &str, since: Option<&str>) -> Result<Option<HistoryIndex>> {
     ensure_safe_rev(tip)?;
+    if capture(repo, &["rev-parse", "--is-shallow-repository"], None)?.trim_ascii() == b"true" {
+        return Err(bad("the repository is a shallow clone; its history is incomplete"));
+    }
     let tip_oid = rev_parse(repo, tip)?;
     let tip_hex = hex::encode(tip_oid);
     let since_hex = match since {
@@ -228,7 +241,7 @@ pub fn compute(repo: &Path, tip: &str, since: Option<&str>) -> Result<Option<His
     };
 
     // Every path of the tip (files, symlinks, gitlinks and directories).
-    let listing = git_capture(
+    let listing = capture(
         repo,
         &["ls-tree", "-r", "-t", "-z", "--name-only", "--end-of-options", &tip_hex],
         None,
@@ -239,53 +252,11 @@ pub fn compute(repo: &Path, tip: &str, since: Option<&str>) -> Result<Option<His
         .map(<[u8]>::to_vec)
         .collect();
 
-    // One first-parent pass, newest first; each commit record starts with \x01<oid>.
     let range = match &since_hex {
         Some(s) => format!("{s}..{tip_hex}"),
         None => tip_hex.clone(),
     };
-    let log = git_capture(
-        repo,
-        &[
-            "-c",
-            "log.showSignature=false",
-            "log",
-            "--first-parent",
-            "--diff-merges=first-parent",
-            "--no-renames",
-            "--no-relative",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--root",
-            "-t",
-            "--raw",
-            "--no-abbrev",
-            "-z",
-            "--format=%x01%H",
-            "--end-of-options",
-            &range,
-        ],
-        None,
-    )?;
-    let mut found: BTreeMap<Vec<u8>, [u8; OID_LEN]> = BTreeMap::new();
-    let mut current: Option<[u8; OID_LEN]> = None;
-    let mut toks = log.split(|&b| b == 0).peekable();
-    while let Some(tok) = toks.next() {
-        if open.is_empty() {
-            break;
-        }
-        let tok = tok.strip_prefix(b"\n").unwrap_or(tok);
-        if let Some(oid) = tok.strip_prefix(b"\x01") {
-            current = Some(parse_hex_oid(oid)?);
-        } else if tok.first() == Some(&b':') {
-            // `:<mode> <mode> <oid> <oid> <status>` then the path as the next token.
-            let path = toks.next().ok_or_else(|| bad("git log: a raw line has no path"))?;
-            let commit = current.ok_or_else(|| bad("git log: a change before any commit"))?;
-            if open.remove(path) {
-                found.insert(path.to_vec(), commit);
-            }
-        }
-    }
+    let found = first_parent_changes(repo, &range, &mut open)?;
     if since_hex.is_none() && !open.is_empty() {
         // A full walk reaches the root commit, which adds every path it has: a path no commit
         // added cannot exist.
@@ -295,7 +266,7 @@ pub fn compute(repo: &Path, tip: &str, since: Option<&str>) -> Result<Option<His
     let (commits, paths) = commit_table(repo, &found)?;
     let commit_count = rev_count(repo, &tip_hex, false)?;
     let first_parent_count = rev_count(repo, &tip_hex, true)?;
-    let root = git_capture(
+    let root = capture(
         repo,
         &["rev-list", "--first-parent", "--max-parents=0", "--end-of-options", &tip_hex],
         None,
@@ -319,6 +290,124 @@ pub fn compute(repo: &Path, tip: &str, since: Option<&str>) -> Result<Option<His
         commits,
         paths,
     }))
+}
+
+/// `git` in `repo` reading the real object graph: no replace refs, no grafts.
+fn git_real(repo: &Path, args: &[&str]) -> std::process::Command {
+    let mut cmd = git_at(repo, &[]);
+    cmd.env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env_remove("GIT_GRAFT_FILE")
+        .arg("--no-replace-objects")
+        .args(args);
+    cmd
+}
+
+/// Run [`git_real`] fed `stdin`, returning its stdout on success.
+fn capture(repo: &Path, args: &[&str], stdin: Option<&[u8]>) -> Result<Vec<u8>> {
+    let (out, written) = super::build::run_feeding(&mut git_real(repo, args), stdin)
+        .map_err(|e| Error::Io(format!("running git: {e}")))?;
+    if !out.status.success() {
+        return Err(Error::Io(format!(
+            "git {} failed: {}",
+            args.first().copied().unwrap_or_default(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    written.map_err(|e| Error::Io(format!("write git stdin: {e}")))?;
+    Ok(out.stdout)
+}
+
+/// One first-parent pass over `range`, newest first, settling each path of `open` at the
+/// first commit that changed it; it moves from `open` into the result. The log is read as it
+/// streams, and git is stopped as soon as `open` is empty: an old repository's early commits
+/// are never listed (dashpay/dash's full log is tens of MB; its paths settle far sooner).
+fn first_parent_changes(
+    repo: &Path,
+    range: &str,
+    open: &mut BTreeSet<Vec<u8>>,
+) -> Result<BTreeMap<Vec<u8>, [u8; OID_LEN]>> {
+    let mut child = git_real(
+        repo,
+        &[
+            "-c",
+            "log.showSignature=false",
+            "log",
+            "--first-parent",
+            "--diff-merges=first-parent",
+            "--no-renames",
+            "--no-relative",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=none",
+            "--root",
+            "-t",
+            "--raw",
+            "--no-abbrev",
+            "-z",
+            "--format=%x01%H",
+            "--end-of-options",
+            range,
+        ],
+    )
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::piped())
+    .spawn()
+    .map_err(|e| Error::Io(format!("running git log: {e}")))?;
+    let stdout = child.stdout.take().expect("piped");
+    let mut reader = std::io::BufReader::with_capacity(1 << 16, stdout);
+    let mut found = BTreeMap::new();
+    let mut current: Option<[u8; OID_LEN]> = None;
+    let mut tok = Vec::new();
+    let read = |reader: &mut std::io::BufReader<_>, tok: &mut Vec<u8>| -> Result<bool> {
+        tok.clear();
+        let n = reader
+            .read_until(0, tok)
+            .map_err(|e| Error::Io(format!("reading git log: {e}")))?;
+        if tok.last() == Some(&0) {
+            tok.pop();
+        }
+        Ok(n > 0)
+    };
+    let walked = (|| -> Result<()> {
+        while !open.is_empty() && read(&mut reader, &mut tok)? {
+            let t = tok.strip_prefix(b"\n").unwrap_or(&tok);
+            if let Some(oid) = t.strip_prefix(b"\x01") {
+                current = Some(parse_hex_oid(oid)?);
+            } else if t.first() == Some(&b':') {
+                // `:<mode> <mode> <oid> <oid> <status>`, then the path as the next token.
+                if !read(&mut reader, &mut tok)? {
+                    return Err(bad("git log: a raw line has no path"));
+                }
+                let commit = current.ok_or_else(|| bad("git log: a change before any commit"))?;
+                if open.remove(tok.as_slice()) {
+                    found.insert(tok.clone(), commit);
+                }
+            }
+        }
+        Ok(())
+    })();
+    // Every path settled with git still writing: stop it rather than read the rest.
+    let stopped_early = open.is_empty();
+    if stopped_early {
+        let _ = child.kill();
+    }
+    drop(reader);
+    let mut stderr = Vec::new();
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_end(&mut stderr);
+    }
+    let status = child
+        .wait()
+        .map_err(|e| Error::Io(format!("waiting for git log: {e}")))?;
+    walked?;
+    if !stopped_early && !status.success() {
+        return Err(Error::Io(format!(
+            "git log failed: {}",
+            String::from_utf8_lossy(&stderr).trim()
+        )));
+    }
+    Ok(found)
 }
 
 /// Build the commit table (each referenced commit once, with its subject and author time) and
@@ -358,7 +447,7 @@ fn commit_meta(repo: &Path, oids: &[[u8; OID_LEN]]) -> Result<Vec<(u64, String)>
         return Ok(Vec::new());
     }
     let input: String = oids.iter().map(|o| format!("{}\n", hex::encode(o))).collect();
-    let out = git_capture(repo, &["cat-file", "--batch"], Some(input.as_bytes()))?;
+    let out = capture(repo, &["cat-file", "--batch"], Some(input.as_bytes()))?;
     let mut pos = 0;
     let mut meta = Vec::with_capacity(oids.len());
     for _ in oids {
@@ -430,7 +519,7 @@ fn on_first_parent_chain(repo: &Path, tip: &str, ancestor: &str) -> Result<bool>
         return Ok(true);
     }
     // The first-parent chain is one oid per commit (8k lines for dashpay/dash): cheap.
-    let chain = git_capture(
+    let chain = capture(
         repo,
         &["rev-list", "--first-parent", "--end-of-options", tip],
         None,
@@ -446,7 +535,7 @@ fn rev_count(repo: &Path, tip: &str, first_parent: bool) -> Result<u64> {
         args.push("--first-parent");
     }
     args.extend(["--end-of-options", tip]);
-    let out = git_capture(repo, &args, None)?;
+    let out = capture(repo, &args, None)?;
     String::from_utf8_lossy(&out)
         .trim()
         .parse()
@@ -455,7 +544,7 @@ fn rev_count(repo: &Path, tip: &str, first_parent: bool) -> Result<u64> {
 
 fn rev_parse(repo: &Path, rev: &str) -> Result<[u8; OID_LEN]> {
     let spec = format!("{rev}^{{commit}}");
-    let out = git_capture(
+    let out = capture(
         repo,
         &["rev-parse", "--verify", "--end-of-options", &spec],
         None,
@@ -502,7 +591,12 @@ impl<'a> Cursor<'a> {
         let mut r = 0u64;
         for shift in (0..64).step_by(7) {
             let b = self.take(1)?[0];
-            r |= u64::from(b & 0x7f) << shift;
+            let bits = u64::from(b & 0x7f);
+            // The tenth byte holds bit 63 alone: anything more does not fit a u64.
+            if shift == 63 && bits > 1 {
+                return Err(bad("varint overflow"));
+            }
+            r |= bits << shift;
             if b & 0x80 == 0 {
                 return Ok(r);
             }
