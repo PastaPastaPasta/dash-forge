@@ -230,12 +230,12 @@ describe('sealed writes to a private repo', () => {
     expect(chain['issue']).toBeUndefined()
   })
 
-  it('a label event seals its name bound to the issue; a close carries nothing to seal', async () => {
+  it('a label event seals its name bound to the issue; a pin carries nothing to seal', async () => {
     await createIssue(sdk, auth, REPO_REF, { title: 't', body: '' })
     const issue = chain['issue']?.[0] as Doc
     const target = { id: String(issue['$id']), number: 1 }
     await addEvent(sdk, auth, REPO_REF, { target, kind: 'labelAdd', value: 'security' })
-    await addEvent(sdk, auth, REPO_REF, { target, kind: 'close' })
+    await addEvent(sdk, auth, REPO_REF, { target, kind: 'pin' })
     const [label, close] = chain['event'] as Doc[]
     expect(label?.['value']).toBeUndefined()
     expect(label?.['epoch']).toBe(0)
@@ -243,7 +243,7 @@ describe('sealed writes to a private repo', () => {
     expect(close?.['enc']).toBeUndefined()
     const repo = { ...REPO_REF, session: await session() }
     const read = await readableEvents(repo, [label as Doc, close as Doc])
-    expect(read.docs.map((d) => [d['kind'], d['value']])).toEqual([[4, 'security'], [1, undefined]])
+    expect(read.docs.map((d) => [d['kind'], d['value']])).toEqual([[4, 'security'], [19, undefined]])
     expect([read.hiddenValues, read.plaintextValues]).toEqual([0, 0])
   })
 

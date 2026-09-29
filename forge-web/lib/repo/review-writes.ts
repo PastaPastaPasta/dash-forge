@@ -42,6 +42,7 @@ import type { PrivateSession } from './private-session'
 import {
   EVENT_KIND_CODE,
   LOCKED_REASON,
+  TRANSITION_EVENT_KINDS,
   VERDICT_INT,
   commentProof,
   contractFor,
@@ -77,6 +78,8 @@ const ASSIGN_KINDS: ReadonlySet<EventKind> = new Set<EventKind>(['assign', 'unas
  * value. Parity: forge-core `event_payload_props`.
  */
 export function targetEventData(target: WriteTarget, kind: EventKind, payload: EventPayload = {}): Record<string, unknown> {
+  // RC1: state changes and locks are transitions; the contract refuses them as events (`noState`, kind ≥ 4).
+  if (TRANSITION_EVENT_KINDS.has(kind)) throw new Error(`${kind} is a transition, not an event`)
   if (REF_KINDS.has(kind) && !payload.refId) throw new Error(`a ${kind} event needs a refId`)
   const oid = payload.oidHex ? hexToBytes(payload.oidHex) : null
   // The folds read only 40- or 64-hex heads (SHA-1 or SHA-256): anything else would be inert.

@@ -539,12 +539,19 @@ export async function createComment(
 /** Why a non-member cannot comment on or review a locked thread. */
 export const LOCKED_REASON = 'This conversation is locked: only maintainers and writers can comment.'
 
-/** The document data of a state event on `target`. */
+/**
+ * The event kinds RC1 refuses as a member `event` (`kind` ≥ 4, `noState`): close, reopen and
+ * merge, draft and ready, lock and unlock are transitions.
+ */
+export const TRANSITION_EVENT_KINDS: ReadonlySet<EventKindName> = new Set<EventKindName>(['close', 'reopen', 'merge', 'draft', 'ready', 'lock', 'unlock'])
+
+/** The document data of an event on `target`. */
 function eventData(
   target: WriteTarget,
   kind: EventKindName,
   extra: { value?: string; oidHex?: string } = {},
 ): Record<string, unknown> {
+  if (TRANSITION_EVENT_KINDS.has(kind)) throw new Error(`${kind} is a transition, not an event`)
   const data: Record<string, unknown> = {
     targetId: decodeIdentifier(target.id),
     targetNumber: target.number,
@@ -556,8 +563,8 @@ function eventData(
 }
 
 /**
- * Append a member `event` (close / reopen / label / assign / merge mark, …). Consensus admits
- * it only from a current maintainer or writer (40120 otherwise).
+ * Append a member `event` (a label, an assignee, a milestone, a pin, …). Consensus admits it only
+ * from a current maintainer or writer (40120 otherwise).
  */
 export async function addEvent(
   sdk: EvoSDK,
