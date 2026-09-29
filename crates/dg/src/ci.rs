@@ -10,7 +10,10 @@
 //!   document, and consensus refuses the runner's next report (40120).
 //! * `report` creates a `checkRun`, or replaces the reporter's open run of that name on that
 //!   commit (queued → in_progress → completed), optionally uploading a log to a storage profile
-//!   and recording its URL and SHA-256.
+//!   and recording its URL (https or `ipfs://`) and SHA-256. On a private repository the run
+//!   records only its name, status, conclusion and times: the summary, details link, external
+//!   id and log are left out with a warning (forge-community `privateNoText`), and no log is
+//!   uploaded.
 //! * `status` lists the newest run per name on a commit.
 
 use std::path::{Path, PathBuf};
@@ -19,10 +22,15 @@ use anyhow::{Context as _, Result};
 use clap::Subcommand;
 use serde_json::json;
 
-use forge_core::ci::{commit_web_url, CheckReport, CheckRuns, RunnerReader, RunnerService};
+use forge_core::ci::{
+    commit_web_url, is_log_url, CheckReport, CheckRuns, RunnerReader, RunnerService,
+};
 use forge_core::keystore::{self, BridgeIdentity};
 use forge_core::platform::identity::{DocTypeKeySpec, FreshKey, KeySpec};
 use forge_core::rules::v2::Visibility;
+use forge_core::storage::policy::git_config_scoped;
+use forge_core::storage::{Profile, StoragePolicy, StorageProfiles};
+use forge_core::user_error::{codes, UserError};
 
 use crate::auth::{dash_to_credits, expiry_ms, parse_days};
 use crate::common::{Reader, Session};
@@ -127,28 +135,32 @@ pub struct ReportArgs {
     /// action_required or stale.
     #[arg(long, value_parser = forge_core::ci::CONCLUSIONS)]
     pub conclusion: Option<String>,
-    /// A link to the run (https), e.g. the GitHub Actions run.
+    /// A link to the run (https:// only), e.g. the GitHub Actions run. Left out on a private
+    /// repository.
     #[arg(long)]
     pub details_url: Option<String>,
-    /// A one-line summary (≤ 1000 characters).
+    /// A one-line summary (≤ 1000 characters). Left out on a private repository.
     #[arg(long, conflicts_with = "summary_file")]
     pub summary: Option<String>,
     /// Read the summary from a file.
     #[arg(long, value_name = "FILE")]
     pub summary_file: Option<PathBuf>,
     /// The CI's own run id: reporting it again updates that run until it completes (a completed
-    /// run is final on forge-community; a report after that is a new run).
+    /// run is final on forge-community; a report after that is a new run). Left out on a
+    /// private repository, where your open run of that name is the one updated.
     #[arg(long)]
     pub external_id: Option<String>,
     /// Upload this log file to your storage (content-addressed) and record its URL and SHA-256.
+    /// The storage must give an https (S3 `public_url`) or IPFS address. Not uploaded on a
+    /// private repository.
     #[arg(long, value_name = "FILE")]
     pub log: Option<PathBuf>,
     /// The storage profile(s) for --log (default: the repository's dash.storage).
     #[arg(long, requires = "log")]
     pub storage: Option<String>,
-    /// For a private repository: upload the log anyway. The log goes to your bucket unencrypted
-    /// and its URL is public on chain; without this, `--log` is refused on a private repository.
-    #[arg(long, requires = "log")]
+    /// No longer has any effect: a private repository's check run cannot carry a log URL
+    /// (forge-community refuses one), so `--log` is not uploaded there.
+    #[arg(long, requires = "log", hide = true)]
     pub public_log: bool,
 }
 
@@ -456,46 +468,98 @@ async fn runner_revoke(ctx: &Ctx, repo: &str, runner: &str) -> Result<()> {
     Ok(())
 }
 
-/// The log's first https URL and its SHA-256, after uploading it to `storage`.
+/// The URL a check run records for a log stored at `uris`: the first https one the contract's
+/// `logUrl` pattern accepts (a browser reads it), else an `ipfs://` one. Never `http://` or
+/// `s3://`, which forge-community refuses.
+fn log_url(uris: &[String]) -> Option<&String> {
+    uris.iter()
+        .find(|u| u.starts_with("https://") && is_log_url(u))
+        .or_else(|| uris.iter().find(|u| is_log_url(u)))
+}
+
+/// Whether a storage profile records an address a check run's `logUrl` accepts: an S3 bucket
+/// with an https `public_url`, or IPFS (`ipfs://<cid>`).
+fn gives_log_url(profile: &Profile) -> bool {
+    match profile {
+        Profile::S3(p) => p
+            .public_url
+            .as_deref()
+            .is_some_and(|u| is_log_url(&format!("{}/log", u.trim_end_matches('/')))),
+        Profile::IpfsKubo(_) | Profile::IpfsPinningService(_) => true,
+        Profile::Platform(_) => false,
+    }
+}
+
+/// Refuse, before anything is uploaded, storage none of whose profiles records an https or
+/// IPFS address (a plain-http or private bucket): the check run could not name the log.
+fn check_log_storage(storage: Option<&str>) -> Result<()> {
+    let (list, replicas) = match storage {
+        Some(s) => (Some(s.to_string()), None),
+        None => (
+            git_config_scoped("dash.storage").map(|(_, v)| v),
+            git_config_scoped("dash.replicas").map(|(_, v)| v),
+        ),
+    };
+    let policy = StoragePolicy::from_git_values(list.as_deref(), replicas.as_deref(), None)?
+        .resolve(&StorageProfiles::load()?)?;
+    if policy.external.is_empty() || policy.external.iter().any(|(_, p)| gives_log_url(p)) {
+        // No external storage at all: `asset_targets` explains that.
+        return Ok(());
+    }
+    Err(UserError::new(
+        codes::STORAGE_CONFIG,
+        "the log's storage gives no https or IPFS address",
+    )
+    .cause(format!(
+        "a check run's log URL must be https:// or ipfs:// (forge-community), and {} records \
+         neither (a bucket without a public_url, or a plain-http one)",
+        policy
+            .external
+            .iter()
+            .map(|(n, _)| n.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+    .fix("give the bucket an https public_url (`dg storage add … --public-url https://…`), or pass --storage with an IPFS profile")
+    .note("nothing was uploaded or written")
+    .into())
+}
+
+/// The log's https (else `ipfs://`) URL and its SHA-256, after uploading it to `storage`.
 async fn upload_log(path: &Path, storage: Option<&str>) -> Result<(String, [u8; 32])> {
     let (targets, required) = crate::release::asset_targets(storage)?;
     let (asset, _) = crate::release::upload_asset(path, &targets, required).await?;
-    let url = asset
-        .uris
-        .iter()
-        .find(|u| u.starts_with("https://"))
-        .or_else(|| asset.uris.iter().find(|u| u.starts_with("http://")))
+    let url = log_url(&asset.uris)
         .cloned()
-        .context("the log's storage recorded no http(s) URL a browser can read")?;
+        .context("the log's storage recorded no https or ipfs:// URL a check run can name")?;
     let mut sha = [0u8; 32];
     hex::decode_to_slice(&asset.sha256, &mut sha).context("the log's SHA-256")?;
     Ok((url, sha))
 }
 
-/// E207 for `--log` on a private repository unless `--public-log` (then a warning): the log is
-/// stored unencrypted and its URL is public on chain.
-fn refuse_private_log(a: &ReportArgs, s: &Session) -> Result<()> {
-    if a.log.is_none() || s.repo.visibility != Visibility::Private {
-        return Ok(());
+/// Warn that a private repository's run leaves out `fields` (forge-community `privateNoText`),
+/// and that `--public-log` no longer does anything.
+fn warn_private(a: &ReportArgs, s: &Session, fields: &[&str]) {
+    if a.public_log {
+        eprintln!(
+            "warning: --public-log has no effect any more: a private repository's check run \
+             cannot carry a log URL"
+        );
     }
-    if !a.public_log {
-        return Err(forge_core::user_error::UserError::new(
-            forge_core::user_error::codes::PRIVATE_UNSUPPORTED,
-            format!(
-                "{} is private; --log would publish the log",
-                s.repo.display()
-            ),
-        )
-        .cause("a log is stored unencrypted in your bucket, and its URL is public on chain")
-        .fix("leave out --log, or pass --public-log if the log may be public")
-        .note("nothing was uploaded or written")
-        .into());
+    if !fields.is_empty() {
+        eprintln!(
+            "warning: {} is private; its check run records only the name, status, conclusion \
+             and times, so {} {} left out{}",
+            s.repo.display(),
+            fields.join(", "),
+            if fields.len() == 1 { "is" } else { "are" },
+            if a.log.is_some() {
+                " (the log is not uploaded)"
+            } else {
+                ""
+            }
+        );
     }
-    eprintln!(
-        "warning: {} is private; the log is uploaded unencrypted and its URL is public on chain",
-        s.repo.display()
-    );
-    Ok(())
 }
 
 async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
@@ -529,10 +593,20 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
         other => other.into(),
     })?;
     let s = Session::open_for_write(ctx, &a.repo, "check run not reported").await?;
-    refuse_private_log(a, &s)?;
+    let private = s.repo.visibility == Visibility::Private;
+    if a.log.is_some() && !private {
+        check_log_storage(a.storage.as_deref())?;
+    }
     let runs = CheckRuns::new(&s.client, &s.identity, &s.bridge);
     // Decided before the prompt, so it prices the write that happens.
     let plan = runs.plan(&s.repo, &r).await?;
+    let mut left_out = plan.dropped().to_vec();
+    if private && a.log.is_some() {
+        left_out.push("logUrl");
+    }
+    warn_private(a, &s, &left_out);
+    let (kept, _) = r.for_visibility(s.repo.visibility);
+    r = kept;
     let (verb, estimate) = if plan.replaces() {
         ("update", REPLACE_ESTIMATE_CREDITS)
     } else {
@@ -546,7 +620,7 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
         s.repo.display(),
         cost_line(estimate, dash_usd_price())
     ))?;
-    if let Some(p) = &a.log {
+    if let Some(p) = a.log.as_ref().filter(|_| !private) {
         r.log = Some(upload_log(p, a.storage.as_deref()).await?);
     }
     let before = s.balance().await;
@@ -567,6 +641,8 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
             "headOid": r.head_oid,
             "logUrl": r.log.as_ref().map(|(u, _)| u.clone()),
             "logSha256": r.log.as_ref().map(|(_, h)| hex::encode(h)),
+            // What a private repository's run left out (forge-community `privateNoText`).
+            "leftOut": left_out,
             "url": url,
             "cost": cost_json(spent, dash_usd_price()),
         }),
@@ -618,4 +694,49 @@ async fn status(ctx: &Ctx, repo: &str, sha: &str) -> Result<()> {
         },
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_log_is_named_by_an_https_or_ipfs_url_only() {
+        let uris = |u: &[&str]| u.iter().map(|s| (*s).to_string()).collect::<Vec<_>>();
+        // https first (a browser reads it), then ipfs; never http or s3.
+        assert_eq!(
+            log_url(&uris(&[
+                "s3://b/k",
+                "ipfs://bafy1",
+                "http://127.0.0.1:9000/b/k",
+                "https://pub.example/b/k"
+            ])),
+            Some(&"https://pub.example/b/k".to_string())
+        );
+        assert_eq!(
+            log_url(&uris(&["s3://b/k", "http://x/k", "ipfs://bafy1"])),
+            Some(&"ipfs://bafy1".to_string())
+        );
+        assert_eq!(log_url(&uris(&["s3://b/k", "http://x/k"])), None);
+    }
+
+    #[test]
+    fn only_storage_with_an_https_or_ipfs_address_can_hold_a_log() {
+        let profile = |v: serde_json::Value| serde_json::from_value::<Profile>(v).unwrap();
+        let s3 = |public: Option<&str>| {
+            let mut v = json!({"kind": "s3", "endpoint": "https://s3.example", "bucket": "b"});
+            if let Some(p) = public {
+                v["public_url"] = json!(p);
+            }
+            profile(v)
+        };
+        assert!(gives_log_url(&s3(Some("https://pub-1.r2.dev"))));
+        assert!(gives_log_url(&s3(Some("https://pub-1.r2.dev/"))));
+        assert!(!gives_log_url(&s3(Some("http://127.0.0.1:9000/b"))));
+        assert!(!gives_log_url(&s3(None)));
+        assert!(gives_log_url(&profile(
+            json!({"kind": "ipfs-kubo", "api": "http://127.0.0.1:5001"})
+        )));
+        assert!(!gives_log_url(&profile(json!({"kind": "platform"}))));
+    }
 }

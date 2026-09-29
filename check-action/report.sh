@@ -32,7 +32,8 @@ err=$(mktemp)
 trap 'rm -f "$out" "$err"' EXIT
 "$dg" "${args[@]}" >"$out" 2>"$err"
 rc=$?
-# dg's stderr carries warnings (a private repository's public log, a spent budget): show them.
+# dg's stderr carries warnings (what a private repository's run leaves out, a spent budget):
+# show them.
 [[ -s "$err" ]] && sed 's/^/dg: /' "$err" >&2
 if [[ $rc -ne 0 ]]; then
   msg=$(jq -r '.error | "\(.code): \(.message) — \(.cause // "")"' "$out" 2>/dev/null || true)

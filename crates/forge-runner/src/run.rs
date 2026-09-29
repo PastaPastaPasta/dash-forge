@@ -58,6 +58,8 @@ pub fn report_args(cfg: &Config, r: &Report<'_>) -> Vec<String> {
     if let Some(s) = &r.summary {
         a.extend(["--summary".into(), s.chars().take(1000).collect()]);
     }
+    // On a private repository `dg` leaves the summary, the run id and the log out (a private
+    // repository's check run carries none) and does not upload the log.
     if let (Some(log), Some(storage)) = (&r.log, &cfg.log_storage) {
         a.extend([
             "--log".into(),
@@ -65,9 +67,6 @@ pub fn report_args(cfg: &Config, r: &Report<'_>) -> Vec<String> {
             "--storage".into(),
             storage.clone(),
         ]);
-        if cfg.public_log {
-            a.push("--public-log".into());
-        }
     }
     a
 }
@@ -649,7 +648,8 @@ mod tests {
         let with = report_args(&cfg("log_storage = \"logs\"\npublic_log = true"), &r);
         assert!(with.windows(2).any(|w| w == ["--log", "/l/build.log"]));
         assert!(with.windows(2).any(|w| w == ["--storage", "logs"]));
-        assert!(with.contains(&"--public-log".to_string()));
+        // A private repository's run cannot carry a log URL any more: `public_log` is inert.
+        assert!(!with.contains(&"--public-log".to_string()));
     }
 
     #[test]

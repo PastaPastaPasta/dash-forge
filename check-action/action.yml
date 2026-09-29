@@ -31,7 +31,7 @@ inputs:
     description: "A one-line summary (≤ 1000 characters). Default: the workflow, job and run attempt."
     default: ""
   details-url:
-    description: "Link back to the run (default: this workflow run on GitHub)."
+    description: "Link back to the run, https only (default: this workflow run on GitHub). Left out on a private repository."
     default: ""
   log:
     description: "A file to upload as the run's log (with log-storage). Content-addressed; the check run records its URL and SHA-256."
@@ -40,7 +40,7 @@ inputs:
     description: "The storage profile the log goes to: its name in a storage.toml the job provides (see check-action/README.md)."
     default: ""
   public-log:
-    description: "true: upload the log even for a private repository (it is unencrypted, and its URL is public)."
+    description: "No longer has any effect: a private repository's check run cannot carry a log, so none is uploaded there."
     default: "false"
   network:
     description: "mainnet, testnet or devnet."
