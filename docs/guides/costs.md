@@ -82,7 +82,7 @@ A write that is the first of its kind somewhere (a repository's first push or fi
 | Issue | ~0.0006 DASH with a short body in a busy repository, ~0.001 DASH for a repository's first; ~0.0017 DASH with a 4 KB body |
 | Comment | ~0.0005 DASH short, ~0.0007 DASH as a thread's first, ~0.0016 DASH at 4 KB |
 | Pull request | ~0.0007–0.0013 DASH |
-| Close, reopen, label, merge event | ~0.0004–0.0006 DASH (a close measured 0.00059 DASH) |
+| Close, reopen, label, merge event | ~0.0004–0.0006 DASH (a close measured 0.00059 DASH; a merge event 0.00058 DASH on beta.6) |
 | Review | ~0.00035–0.0004 DASH |
 | Release (the document; assets go to your storage) | ~0.0007 DASH |
 | Add a member / remove one | ~0.0004 DASH / refunds ~0.0002 DASH |
