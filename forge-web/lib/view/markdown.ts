@@ -10,10 +10,15 @@
  * is XSS-safe by construction — untrusted README/issue bodies cannot inject markup. Links
  * are restricted to safe schemes.
  *
- * Supported: ATX headings, fenced + inline code, bold/italic/strikethrough, links (inline and
- * reference), images, badges (an image inside a link), backslash escapes, entity references,
- * hard line breaks, autolinks (GFM's trailing-punctuation rule, and `<url>`), task lists,
- * unordered/ordered lists, blockquotes, horizontal rules, GFM tables, and paragraphs.
+ * Supported: ATX and setext headings, fenced + inline code, bold/italic/strikethrough, links
+ * (inline and reference), images, badges (an image inside a link), backslash escapes, entity
+ * references, hard line breaks, autolinks (GFM's trailing-punctuation rule, and `<url>`), task
+ * lists, unordered/ordered lists (nested, with continuation and lazy lines, tight or loose),
+ * blockquotes (with lazy lines), GitHub alerts (`> [!NOTE]`), footnotes, emoji shortcodes,
+ * horizontal rules, GFM tables, and paragraphs.
+ *
+ * Two modes, as GitHub has: a document (README, `.md` file) keeps a single newline as a space;
+ * a comment (issue, PR, comment, review, release notes: `{ breaks: true }`) makes it a `<br>`.
  *
  * Raw HTML is handled as GitHub's sanitizer does (`markdown-html.ts`): an allowlist of
  * elements becomes typed nodes (`img`, `br`, `kbd`, `sub`, `sup`, `details`/`summary`,
@@ -33,6 +38,7 @@ import {
   SPAN_ALIASES,
   type TagToken,
 } from './markdown-html.ts'
+import { EMOJI } from './emoji.ts'
 
 export type Inline =
   | { readonly t: 'text'; readonly v: string }
@@ -59,6 +65,11 @@ export type Inline =
   | { readonly t: 'tag'; readonly tag: 'kbd' | 'sub' | 'sup'; readonly c: readonly Inline[] }
   /** `<a name="x">` / `<a id="x">`: an in-page anchor target (the renderer prefixes `user-content-`). */
   | { readonly t: 'anchor'; readonly id: string; readonly c: readonly Inline[] }
+  /**
+   * `[^label]`: a reference to footnote `n` (numbered in order of first reference). `k` counts
+   * the references to that note so far (1 for the first), for the back links.
+   */
+  | { readonly t: 'fnref'; readonly label: string; readonly n: number; readonly k: number }
 
 export type Block =
   | { readonly t: 'heading'; readonly level: number; readonly c: readonly Inline[] }
@@ -67,11 +78,22 @@ export type Block =
   | {
       readonly t: 'list'
       readonly ordered: boolean
+      /** Per item: its first paragraph's text (empty when the item starts with another block). */
       readonly items: readonly (readonly Inline[])[]
       /** Per item: `true`/`false` for a task (`- [x]` / `- [ ]`), null for a plain item. Absent when no item is a task. */
       readonly tasks?: readonly (boolean | null)[]
+      /** Per item: the blocks after its first paragraph (a nested list, code…). Absent when no item has any. */
+      readonly blocks?: readonly (readonly Block[])[]
+      /** A blank line separates items or their blocks: each item's text is a paragraph. */
+      readonly loose?: true
+      /** An ordered list's first number, when not 1. */
+      readonly start?: number
     }
   | { readonly t: 'quote'; readonly c: readonly Block[] }
+  /** A GitHub alert: a blockquote opening with `[!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]` or `[!CAUTION]`. */
+  | { readonly t: 'alert'; readonly kind: AlertKind; readonly c: readonly Block[] }
+  /** The document's footnotes, in reference order (only notes that are referenced). */
+  | { readonly t: 'footnotes'; readonly items: readonly Footnote[] }
   | {
       readonly t: 'table'
       readonly header: readonly (readonly Inline[])[]
@@ -104,31 +126,107 @@ export type ElementTag =
 
 export type TableAlignment = 'left' | 'center' | 'right' | null
 
+export type AlertKind = 'note' | 'tip' | 'important' | 'warning' | 'caution'
+
+export interface Footnote {
+  /** The normalized label (`[^Label]` → `label`). */
+  readonly label: string
+  /** Its number: the order of its first reference. */
+  readonly n: number
+  /** How many times it is referenced (one back link each). */
+  readonly refs: number
+  readonly c: readonly Block[]
+}
+
+/** Another repository a reference names (`owner/name#12`, `owner/name@sha`). */
+export interface RefRepo {
+  readonly owner: string
+  readonly name: string
+}
+
 /** A piece of plain text split by {@link splitRefs}. */
 export type RefPiece =
   | { readonly t: 'text'; readonly v: string }
-  /** `#12`: issue or PR 12 of the current repo. */
-  | { readonly t: 'ref'; readonly n: number }
-  /** `@alice` / `@alice.dash`: a DPNS name. */
-  | { readonly t: 'mention'; readonly name: string }
+  /** `#12` (this repo) or `owner/name#12`: issue or PR 12. */
+  | { readonly t: 'ref'; readonly n: number; readonly repo?: RefRepo }
+  /** A commit id (7–40 hex), bare or as `owner/name@sha`. */
+  | { readonly t: 'commit'; readonly oid: string; readonly repo?: RefRepo }
+  /**
+   * `@alice`, `@alice.dash` or `@name[bot]`: `name` is lowercased (a DPNS label), `label` is as
+   * written (a GitHub login keeps its case). `bot`: written with GitHub's `[bot]` suffix.
+   */
+  | { readonly t: 'mention'; readonly name: string; readonly label: string; readonly bot?: true }
 
 /**
- * `#n` (1–10 digits) and `@name` (a DPNS label, optionally `.dash`) in plain text, the GitHub
- * way: only at a word boundary (not inside `a#1`, `x@y.com` or a URL fragment), and a `#n`
- * followed by a letter or digit is not a reference. Code spans and links are never split (the
+ * The references GitHub autolinks in plain text:
+ * - `#n` (1–10 digits) and `owner/name#n`;
+ * - a commit id, 7–40 lowercase hex holding a digit and a letter (so `1234567` and `deadbeef`
+ *   are words, as GitHub leaves them), bare or as `owner/name@sha`;
+ * - `@name` (optionally `.dash`, or GitHub's `[bot]`).
+ * Only at a word boundary (not inside `a#1`, `x@y.com`, a path or a URL fragment), and a
+ * reference followed by a letter or digit is not one. Code spans and links are never split (the
  * caller applies this to text nodes only). Pure, so the parser stays render-agnostic.
  */
 export function splitRefs(text: string): RefPiece[] {
   const out: RefPiece[] = []
-  const re = /(^|[^\w/#@.&-])(?:#(\d{1,10})(?![\w-])|@([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)(?:\.dash)?(?![\w.@-]*[\w@]))/g
+  const pushText = (v: string): void => {
+    const prev = out[out.length - 1]
+    if (prev?.t === 'text') out[out.length - 1] = { t: 'text', v: prev.v + v }
+    else out.push({ t: 'text', v })
+  }
   let last = 0
-  for (const m of text.matchAll(re)) {
+  for (const m of text.matchAll(REF_RE)) {
     const lead = m[1] ?? ''
     const start = (m.index ?? 0) + lead.length
-    if (start > last) out.push({ t: 'text', v: text.slice(last, start) })
-    if (m[2] !== undefined) out.push({ t: 'ref', n: Number(m[2]) })
-    else out.push({ t: 'mention', name: (m[3] ?? '').toLowerCase() })
-    last = (m.index ?? 0) + m[0].length
+    const end = (m.index ?? 0) + m[0].length
+    let piece: RefPiece | null
+    if (m[4] !== undefined) {
+      piece = { t: 'ref', n: Number(m[4]), ...(m[2] !== undefined ? { repo: { owner: m[2], name: m[3] as string } } : {}) }
+    } else if (m[7] !== undefined) {
+      const oid = m[7]
+      piece = /\d/.test(oid) && /[a-f]/.test(oid) ? { t: 'commit', oid, ...(m[5] !== undefined ? { repo: { owner: m[5], name: m[6] as string } } : {}) } : null
+    } else {
+      const label = m[8] as string
+      piece = { t: 'mention', name: label.toLowerCase(), label, ...(m[9] === '[bot]' ? { bot: true as const } : {}) }
+    }
+    if (piece === null || (piece.t === 'ref' && piece.n === 0)) continue // stays text
+    if (start > last) pushText(text.slice(last, start))
+    out.push(piece)
+    last = end
+  }
+  if (last < text.length) pushText(text.slice(last))
+  return out
+}
+
+/** `owner/name` as GitHub spells them: a login (alphanumerics and hyphens) and a repo name. */
+const REPO_PREFIX = '([A-Za-z0-9][A-Za-z0-9-]{0,38})/([A-Za-z0-9._-]{1,100})'
+const REF_RE = new RegExp(
+  '(^|[^\\w/#@.&-])(?:' +
+    `(?:${REPO_PREFIX})?#(\\d{1,10})(?![\\w-])` +
+    `|(?:${REPO_PREFIX}@)?([0-9a-f]{7,40})(?![\\w@-])` +
+    '|@([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)(\\.dash|\\[bot\\])?(?![\\w.@-]*[\\w@])' +
+    ')',
+  'g',
+)
+
+/** A piece of a commit message: plain text (split further by {@link splitRefs}) or a bare URL. */
+export type PlainPiece = { readonly t: 'text'; readonly v: string } | { readonly t: 'url'; readonly href: string }
+
+/**
+ * Plain text (a commit message) with its bare `http(s)://` URLs split out, ending where GFM's
+ * autolinks end (no trailing punctuation). Linear: one pass over the URL starts.
+ */
+export function splitUrls(text: string): PlainPiece[] {
+  const out: PlainPiece[] = []
+  let last = 0
+  for (const m of text.matchAll(/https?:\/\//g)) {
+    const at = m.index ?? 0
+    if (at < last || isWordChar(text[at - 1])) continue
+    const end = autolinkEnd(text, at + m[0].length, text.length)
+    if (end === at + m[0].length) continue
+    if (at > last) out.push({ t: 'text', v: text.slice(last, at) })
+    out.push({ t: 'url', href: safeHref(text.slice(at, end)) })
+    last = end
   }
   if (last < text.length) out.push({ t: 'text', v: text.slice(last) })
   return out
@@ -487,9 +585,10 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
         continue
       }
     }
-    // hard break: two or more spaces before a line end; a plain line end is a space
+    // hard break: two or more spaces before a line end (or any line end in comment mode); a
+    // plain line end is a space
     if (ch === '\n') {
-      const hard = !htmlOnly && pendingSpaces >= 2
+      const hard = !htmlOnly && (pendingSpaces >= 2 || softBreaks)
       pendingSpaces = 0
       if (hard) push({ t: 'br' })
       else add(' ')
@@ -534,6 +633,33 @@ function parseSpan(doc: InlineDoc, start: number, end: number, depth: number, ht
       if (r) {
         push({ t: 'image', src: safeHref(r.href), alt: plain(src.slice(i + 2, refClose)) })
         i = r.end
+        continue
+      }
+    }
+    // footnote reference [^label], when the document defines that note
+    if (ch === '[' && next === '^' && footnoteDefs.size > 0) {
+      const close = find(']', i + 2)
+      const label = close > i + 2 && close - i <= MAX_LABEL ? normalizeLabel(src.slice(i + 2, close)) : ''
+      if (footnoteDefs.has(label)) {
+        let use = footnoteUse.get(label)
+        if (use === undefined) {
+          use = { n: footnoteUse.size + 1, refs: 0 }
+          footnoteUse.set(label, use)
+        }
+        use.refs += 1
+        push({ t: 'fnref', label, n: use.n, k: use.refs })
+        i = close + 1
+        continue
+      }
+    }
+    // emoji shortcode :name: (GitHub converts one even inside a word: `foo:smile:bar`)
+    if (ch === ':' && !htmlOnly) {
+      let j = i + 1
+      while (j < end && j - i <= MAX_EMOJI_NAME && isEmojiNameChar(src.charCodeAt(j))) j += 1
+      const emoji = j > i + 1 && src[j] === ':' && j < end ? EMOJI.get(src.slice(i + 1, j)) : undefined
+      if (emoji !== undefined) {
+        add(emoji)
+        i = j + 1
         continue
       }
     }
@@ -802,6 +928,14 @@ function mergeText(nodes: readonly Inline[]): Inline[] {
 /** Nesting cap for spans inside spans (a hostile `[[[[…](x)](x)…` stays shallow). */
 const MAX_INLINE_DEPTH = 32
 
+/** Longest emoji shortcode name looked for (GitHub's longest in use is under 40). */
+const MAX_EMOJI_NAME = 40
+
+/** `[a-z0-9_+-]`: the characters of an emoji shortcode name. */
+function isEmojiNameChar(c: number): boolean {
+  return (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c === 95 || c === 43 || c === 45
+}
+
 const isWordChar = (ch: string | undefined): boolean => ch !== undefined && /[\p{L}\p{N}]/u.test(ch)
 
 /** Drop backslash escapes: `\*` → `*`. */
@@ -998,49 +1132,158 @@ const LINE_ENDINGS = /\r\n?/g
  */
 const SPACE_LIKE = /[\u000b\u000c\u0085\u2028\u2029]/g
 
-/** Blockquotes nest by recursion; past this depth the rest of a quote is plain text. */
-const MAX_QUOTE_DEPTH = 16
+/** Blockquotes and list items nest by recursion; past this depth the rest is plain text. */
+const MAX_NEST_DEPTH = 16
 
-const HEADING = /^(#{1,6})\s+([\s\S]*)$/
-const HR = /^(\s*[-*_]){3,}\s*$/
-const UL_ITEM = /^[ \t]*[-*+][ \t]+([\s\S]*)$/
-const OL_ITEM = /^[ \t]*\d+\.[ \t]+([\s\S]*)$/
+const HEADING = /^ {0,3}(#{1,6})(?:[ \t]+([\s\S]*))?$/
+const HR = /^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/
+/** A setext heading's underline (`===` for h1, `---` for h2), right after paragraph lines. */
+const SETEXT = /^ {0,3}(=+|-+)[ \t]*$/
+/** A code fence (``` indented at most 3 spaces) and its info string's first word. */
+const FENCE = /^ {0,3}```(\w*)/
+const QUOTE = /^ {0,3}>/
+/** A list item's marker: `-`, `*`, `+`, or `1.` / `1)`, then spaces and the item's text (or nothing). */
+const LIST_ITEM = /^([ \t]*)([-*+]|\d{1,9}[.)])(?:([ \t]+)([\s\S]*))?$/
+/** A GitHub alert's first line (`> [!NOTE]`). */
+const ALERT = /^\[!(note|tip|important|warning|caution)\][ \t]*$/i
+
+/** Comment mode (GitHub's issue/PR/comment rendering): every line end in a paragraph is a `<br>`. */
+let softBreaks = false
+
+/** Options of {@link parseMarkdown}. */
+export interface MarkdownOptions {
+  /**
+   * GitHub's comment mode (issues, PRs, comments, reviews, release notes): a single newline
+   * inside a paragraph is a line break. Off for documents (README, `.md` files), where it is a
+   * space.
+   */
+  readonly breaks?: boolean
+}
 
 /** Parse a markdown document into a block AST. */
-export function parseMarkdown(src: string): Block[] {
+export function parseMarkdown(src: string, options: MarkdownOptions = {}): Block[] {
   nodesLeft = MARKDOWN_MAX_NODES
+  softBreaks = options.breaks === true
   const lines = src.replace(LINE_ENDINGS, '\n').replace(SPACE_LIKE, ' ').split('\n')
-  references = collectReferences(lines)
+  const defs = collectReferences(lines)
+  references = defs.refs
+  footnoteDefs = defs.footnotes
   try {
-    return parseBlocks(lines, 0)
+    const blocks = parseBlocks(lines, 0)
+    const notes = parseFootnotes()
+    if (notes.length > 0) blocks.push({ t: 'footnotes', items: notes })
+    return blocks
   } finally {
     references = new Map()
+    footnoteDefs = new Map()
+    footnoteUse = new Map()
+    softBreaks = false
   }
 }
 
-/** Most reference definitions one document may declare. */
+/** Footnote definitions of the document being parsed: label → the note's lines. */
+let footnoteDefs: ReadonlyMap<string, readonly string[]> = new Map()
+/** Footnotes referenced so far, in order of first reference, and how often. */
+let footnoteUse = new Map<string, { n: number; refs: number }>()
+
+/**
+ * The referenced footnotes, numbered in order of first reference (as GitHub numbers them).
+ * A note referenced only from another note is parsed too: the map grows while it is walked,
+ * and a JS map iteration visits entries added during it. Each note is parsed once.
+ */
+function parseFootnotes(): Footnote[] {
+  const parsed: { label: string; n: number; c: Block[] }[] = []
+  for (const [label, use] of footnoteUse) {
+    if (nodesLeft <= 0) break
+    parsed.push({ label, n: use.n, c: parseBlocks(footnoteDefs.get(label) ?? [], 1) })
+  }
+  return parsed.map((p) => ({ ...p, refs: footnoteUse.get(p.label)?.refs ?? 1 }))
+}
+
+/** Most reference (and footnote) definitions one document may declare. */
 const MAX_REFERENCES = 1000
 
 /**
  * `[label]: url "title"`, on its own line. Linear: `[ \t]*` and the destination's `[^\s<>]`
- * cannot overlap, and the title is matched by a plain `.*`.
+ * cannot overlap, and the title is matched by a plain `.*`. A `[^label]:` is a footnote.
  */
-const REFERENCE_DEF = /^ {0,3}\[([^\]\n]{1,999})\]:[ \t]*<?([^\s<>]+)>?(?:[ \t]+.*)?$/
+const REFERENCE_DEF = /^ {0,3}\[(?!\^)([^\]\n]{1,999})\]:[ \t]*<?([^\s<>]+)>?(?:[ \t]+.*)?$/
+
+/** `[^label]: text`: a footnote definition (GitHub's; it may interrupt a paragraph). */
+const FOOTNOTE_DEF = /^ {0,3}\[\^([^\]\s]{1,999})\]:[ \t]?([\s\S]*)$/
+
+/** Columns of a line's leading whitespace (a tab to the next multiple of 4). */
+function indentOf(line: string): number {
+  let col = 0
+  for (let k = 0; k < line.length; k++) {
+    const c = line[k]
+    if (c === ' ') col += 1
+    else if (c === '\t') col += 4 - (col % 4)
+    else break
+  }
+  return col
+}
+
+/** `line` without `cols` columns of leading whitespace (tabs expanded as {@link indentOf} counts them). */
+function stripCols(line: string, cols: number): string {
+  let col = 0
+  let k = 0
+  while (k < line.length && col < cols) {
+    const c = line[k]
+    if (c === ' ') col += 1
+    else if (c === '\t') col += 4 - (col % 4)
+    else break
+    k += 1
+  }
+  // A tab that spans past `cols` leaves its remaining columns as spaces.
+  return ' '.repeat(Math.max(0, col - cols)) + line.slice(k)
+}
 
 /**
  * Collect reference definitions (first one wins, as in CommonMark) and blank their lines so
  * they render as nothing. Only a paragraph's line keeps the next line from being one (a
  * definition cannot interrupt a paragraph): after a blank line, a heading, a fence, a rule or
  * another definition it may start. Fenced code holds none.
+ *
+ * Footnote definitions (`[^1]: note`) are collected the same way, with their continuation:
+ * lines indented 4 or more (blank lines between them included) and lazy paragraph lines.
  */
-function collectReferences(lines: string[]): Map<string, string> {
+function collectReferences(lines: string[]): { refs: Map<string, string>; footnotes: Map<string, string[]> } {
   const refs = new Map<string, string>()
+  const footnotes = new Map<string, string[]>()
   let fenced = false
   let mayStart = true
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] as string
-    const fence = line.startsWith('```')
+    const fence = FENCE.test(line)
     if (fence) fenced = !fenced
+    const note = !fenced && !fence && line.length < 2048 ? FOOTNOTE_DEF.exec(line) : null
+    if (note !== null && footnotes.size < MAX_REFERENCES) {
+      const body = [note[2] as string]
+      lines[i] = ''
+      let j = i + 1
+      while (j < lines.length) {
+        const l = lines[j] as string
+        if (l.trim() === '') {
+          // Blank lines belong to the note only when an indented line follows them.
+          let k = j
+          while (k < lines.length && (lines[k] as string).trim() === '') k += 1
+          if (k === lines.length || indentOf(lines[k] as string) < 4) break
+          for (; j < k; j++) body.push('')
+          continue
+        }
+        if (indentOf(l) >= 4) body.push(stripCols(l, 4))
+        else if ((body[body.length - 1] ?? '').trim() !== '' && !isBlockStart(l) && !FOOTNOTE_DEF.test(l)) body.push(l)
+        else break
+        lines[j] = ''
+        j += 1
+      }
+      const label = normalizeLabel(note[1] as string)
+      if (!footnotes.has(label)) footnotes.set(label, body)
+      i = j - 1
+      mayStart = true
+      continue
+    }
     const m = !fenced && !fence && mayStart && line.length < 2048 ? REFERENCE_DEF.exec(line) : null
     if (m !== null && refs.size < MAX_REFERENCES) {
       const label = normalizeLabel(m[1] as string)
@@ -1050,7 +1293,7 @@ function collectReferences(lines: string[]): Map<string, string> {
     }
     mayStart = fence || line.trim() === '' || HEADING.test(line) || HR.test(line)
   }
-  return refs
+  return { refs, footnotes }
 }
 
 /** A run of lines as one paragraph of plain text: the fail-closed rendering. */
@@ -1182,8 +1425,144 @@ function buildTree(items: readonly Item[]): Block[] {
 const TASK = /^\[([ xX])\][ \t]/
 
 function parseBlocks(lines: readonly string[], depth: number): Block[] {
+  return parseBlockRun(lines, depth).blocks
+}
+
+/** A list item's marker: its type (a bullet character, or an ordered list's `.` / `)`) and where its content starts. */
+interface ListMarker {
+  readonly ordered: boolean
+  /** `-`, `*`, `+`, `.` or `)`: items of one list share it. */
+  readonly kind: string
+  readonly number: number
+  /** The content's column: continuation lines indented this far belong to the item. */
+  readonly width: number
+  /** The first line's content. */
+  readonly content: string
+}
+
+function listMarker(line: string): ListMarker | null {
+  const m = LIST_ITEM.exec(line)
+  if (m === null) return null
+  const indent = indentOf(m[1] as string)
+  const marker = m[2] as string
+  const ordered = marker.length > 1 || /\d/.test(marker)
+  const markerEnd = indent + marker.length
+  const spaces = m[3] === undefined ? 0 : indentOf(' '.repeat(markerEnd) + m[3]) - markerEnd
+  const text = m[4] ?? ''
+  // No content, or 5+ spaces after the marker (indented code there): content starts one past it.
+  const width = text === '' || spaces > 4 ? markerEnd + 1 : markerEnd + spaces
+  return {
+    ordered,
+    kind: ordered ? marker.slice(-1) : marker,
+    number: ordered ? Number(marker.slice(0, -1)) : 0,
+    width,
+    content: spaces > 4 ? ' '.repeat(spaces - 1) + text : text,
+  }
+}
+
+/**
+ * Whether a list item may interrupt a paragraph (CommonMark §5.2): it has content, is indented
+ * less than 4, and an ordered one starts at 1 (so `2012. A year` in a sentence stays text).
+ */
+function interruptsParagraph(line: string): boolean {
+  const m = listMarker(line)
+  return m !== null && m.content.trim() !== '' && indentOf(line) < 4 && (!m.ordered || m.number === 1)
+}
+
+/**
+ * Lines of a container (a quote, a list item) that continue its paragraph without its marker
+ * or indent: not blank, not the start of another block, not a setext underline, and only right
+ * after a paragraph line outside fenced code.
+ */
+function isLazyLine(line: string, prev: string | undefined, inFence: boolean): boolean {
+  return !inFence && prev !== undefined && prev.trim() !== '' && line.trim() !== '' && !isBlockStart(line) && !SETEXT.test(line)
+}
+
+/** A container's lines, tracking whether they are inside fenced code (lazy lines are not). */
+function fenceTracker(): (line: string) => boolean {
+  let open = false
+  return (line) => {
+    if (FENCE.test(line)) open = !open
+    return open
+  }
+}
+
+/**
+ * Blocks of `lines`, and whether a blank line separates two of them (a list item holding such
+ * a gap makes its list loose).
+ */
+function parseBlockRun(lines: readonly string[], depth: number): { blocks: Block[]; gap: boolean } {
   const blocks: Item[] = []
   let i = 0
+  let gap = false
+
+  /**
+   * A list whose first item's marker is `first` (at `lines[i]`), advancing `i` past it. An
+   * item holds the lines indented to its content column, and lazy lines continuing its
+   * paragraph; its content is parsed as blocks (nested lists, code, quotes…). The list is loose
+   * (its items' text in paragraphs) when a blank line separates two items, or two blocks of
+   * one item.
+   */
+  const parseList = (first: ListMarker): Block => {
+    const items: Inline[][] = []
+    const tasks: (boolean | null)[] = []
+    const rest: Block[][] = []
+    let loose = false
+    let marker: ListMarker | null = first
+    while (marker !== null && nodesLeft > 0) {
+      nodesLeft -= 1
+      const task = TASK.exec(marker.content)
+      tasks.push(task === null ? null : task[1] !== ' ')
+      const body = [task === null ? marker.content : marker.content.slice(task[0].length)]
+      const inFence = fenceTracker()
+      let fenced = inFence(body[0] as string)
+      let blanks = 0
+      i += 1
+      while (i < lines.length) {
+        const l = lines[i] ?? ''
+        if (l.trim() === '') {
+          blanks += 1
+          body.push('')
+        } else if (indentOf(l) >= marker.width) {
+          blanks = 0
+          body.push(stripCols(l, marker.width))
+          fenced = inFence(body[body.length - 1] as string)
+        } else if (blanks === 0 && listMarker(l) === null && isLazyLine(l, body[body.length - 1], fenced)) {
+          body.push(l)
+        } else break
+        i += 1
+      }
+      // Trailing blank lines are between this item and whatever follows, not in it: they are
+      // left for the next item or the enclosing block (whose looseness they decide).
+      while (body.length > 1 && (body[body.length - 1] as string).trim() === '') {
+        body.pop()
+        i -= 1
+      }
+      const run = depth + 1 < MAX_NEST_DEPTH ? parseBlockRun(body, depth + 1) : { blocks: [plainParagraph(body)], gap: false }
+      if (run.gap) loose = true
+      const head = run.blocks[0]
+      items.push(head?.t === 'paragraph' ? [...head.c] : [])
+      rest.push(head?.t === 'paragraph' ? run.blocks.slice(1) : run.blocks)
+      // The next item: the same kind of marker, after any blank lines (which make the list loose).
+      let k = i
+      while (k < lines.length && (lines[k] ?? '').trim() === '') k += 1
+      const next = k < lines.length && !HR.test(lines[k] ?? '') ? listMarker(lines[k] ?? '') : null
+      marker = next !== null && next.ordered === first.ordered && next.kind === first.kind ? next : null
+      if (marker !== null) {
+        if (k > i) loose = true
+        i = k
+      }
+    }
+    return {
+      t: 'list',
+      ordered: first.ordered,
+      items,
+      ...(tasks.some((t) => t !== null) ? { tasks } : {}),
+      ...(rest.some((r) => r.length > 0) ? { blocks: rest } : {}),
+      ...(loose ? { loose: true as const } : {}),
+      ...(first.ordered && first.number !== 1 ? { start: first.number } : {}),
+    }
+  }
 
   /** Append lines to `buf` through the first one that `holds` (or to the end), advancing `i`. */
   const takeThrough = (buf: string[], holds: (line: string) => boolean): void => {
@@ -1198,14 +1577,15 @@ function parseBlocks(lines: readonly string[], depth: number): Block[] {
       i += 1
       return
     }
-    // fenced code
-    const fence = line.match(/^```(\w*)/)
+    // fenced code (its lines lose up to the opening fence's indent)
+    const fence = FENCE.exec(line)
     if (fence) {
       const lang = fence[1] ?? ''
+      const indent = indentOf(line)
       i += 1
       const buf: string[] = []
-      while (i < lines.length && !(lines[i] ?? '').startsWith('```')) {
-        buf.push(lines[i] ?? '')
+      while (i < lines.length && !FENCE.test(lines[i] ?? '')) {
+        buf.push(stripCols(lines[i] ?? '', indent))
         i += 1
       }
       i += 1 // closing fence
@@ -1243,7 +1623,7 @@ function parseBlocks(lines: readonly string[], depth: number): Block[] {
       return
     }
     // heading
-    const h = line.match(HEADING)
+    const h = HEADING.exec(line)
     if (h) {
       blocks.push({ t: 'heading', level: h[1]?.length ?? 1, c: parseInline(stripClosingHashes(h[2] ?? '').trim()) })
       i += 1
@@ -1262,50 +1642,59 @@ function parseBlocks(lines: readonly string[], depth: number): Block[] {
       i += 1
       return
     }
-    // blockquote
-    if (line.startsWith('>')) {
+    // blockquote: `>` lines, and lazy lines continuing its paragraph (GitHub alerts at the top level)
+    if (QUOTE.test(line)) {
       const buf: string[] = []
-      while (i < lines.length && (lines[i] ?? '').startsWith('>')) {
-        buf.push((lines[i] ?? '').replace(/^>\s?/, ''))
+      const inFence = fenceTracker()
+      let fenced = false
+      while (i < lines.length) {
+        const l = lines[i] ?? ''
+        if (QUOTE.test(l)) buf.push(l.replace(/^ {0,3}> ?/, ''))
+        else if (isLazyLine(l, buf[buf.length - 1], fenced)) buf.push(l)
+        else break
+        fenced = inFence(buf[buf.length - 1] as string)
         i += 1
       }
-      const inner = depth + 1 < MAX_QUOTE_DEPTH ? parseBlocks(buf, depth + 1) : [plainParagraph(buf)]
-      blocks.push({ t: 'quote', c: inner })
+      if (depth + 1 >= MAX_NEST_DEPTH) {
+        blocks.push({ t: 'quote', c: [plainParagraph(buf)] })
+        return
+      }
+      const alert = depth === 0 ? ALERT.exec(buf[0] ?? '') : null
+      if (alert !== null && buf.slice(1).some((l) => l.trim() !== '')) {
+        blocks.push({ t: 'alert', kind: (alert[1] as string).toLowerCase() as AlertKind, c: parseBlocks(buf.slice(1), depth + 1) })
+      } else {
+        blocks.push({ t: 'quote', c: parseBlocks(buf, depth + 1) })
+      }
       return
     }
     // list (GitHub task-list items: `- [ ] todo`, `- [x] done`)
-    const ordered = OL_ITEM.test(line)
-    if (ordered || UL_ITEM.test(line)) {
-      const item = ordered ? OL_ITEM : UL_ITEM
-      const items: Inline[][] = []
-      const tasks: (boolean | null)[] = []
-      while (i < lines.length && nodesLeft > 0) {
-        const mm = (lines[i] ?? '').match(item)
-        if (!mm) break
-        nodesLeft -= 1
-        const body = mm[1] ?? ''
-        const task = TASK.exec(body)
-        tasks.push(task === null ? null : task[1] !== ' ')
-        items.push(parseInline(task === null ? body : body.slice(task[0].length)))
-        i += 1
-      }
-      blocks.push(tasks.some((t) => t !== null) ? { t: 'list', ordered, items, tasks } : { t: 'list', ordered, items })
+    const first = listMarker(line)
+    if (first !== null) {
+      blocks.push(parseList(first))
       return
     }
-    // paragraph: this line, plus following lines until a blank line or another block starts.
-    // Lines are joined with `\n` so the inline parser can see hard breaks.
+    // paragraph: this line, plus following lines until a blank line or another block starts,
+    // or a setext underline (`===`, `---`) that makes the lines a heading. Lines are joined
+    // with `\n` so the inline parser can see hard breaks.
     const buf = [line]
     i += 1
-    while (
-      i < lines.length &&
-      lines[i]?.trim() !== '' &&
-      !isBlockStart(lines[i] ?? '') &&
-      tableStart(lines, i) === null
-    ) {
+    let setext = 0
+    while (i < lines.length && lines[i]?.trim() !== '') {
+      const underline = SETEXT.exec(lines[i] ?? '')
+      if (underline !== null) {
+        setext = underline[1]?.startsWith('=') ? 1 : 2
+        i += 1
+        break
+      }
+      if (isBlockStart(lines[i] ?? '') || tableStart(lines, i) !== null) break
       buf.push(lines[i] ?? '')
       i += 1
     }
     const c = parseInline(buf.map((l) => l.replace(/^[ \t]+/, '')).join('\n').trim())
+    if (setext !== 0) {
+      blocks.push({ t: 'heading', level: setext, c })
+      return
+    }
     // A paragraph of only comments shows nothing, and one of only `<a name>` targets is no
     // paragraph (GitHub's `<a name="install"></a>` lines): the anchors stay, the gap goes.
     if (c.every((n) => n.t === 'anchor' && n.c.length === 0)) {
@@ -1315,6 +1704,7 @@ function parseBlocks(lines: readonly string[], depth: number): Block[] {
     }
   }
 
+  let blank = false // a blank line since the last block
   while (i < lines.length) {
     if (nodesLeft <= 0) {
       blocks.push(plainParagraph(lines.slice(i))) // node budget spent: fail closed to text
@@ -1322,8 +1712,13 @@ function parseBlocks(lines: readonly string[], depth: number): Block[] {
     }
     const start = i
     const before = blocks.length
+    if ((lines[i] ?? '').trim() === '') blank = true
     step()
     nodesLeft -= blocks.length - before
+    if (blocks.length > before) {
+      if (blank && before > 0) gap = true
+      blank = false
+    }
     // Every step must consume a line. If a future rule ever disagrees with another about
     // where a block starts, fail closed — render the rest as text — rather than spin forever.
     if (i <= start) {
@@ -1331,16 +1726,16 @@ function parseBlocks(lines: readonly string[], depth: number): Block[] {
       break
     }
   }
-  return buildTree(blocks)
+  return { blocks: buildTree(blocks), gap }
 }
 
+/** Whether `line` starts a block that interrupts a paragraph. */
 function isBlockStart(line: string): boolean {
   return (
-    /^#{1,6}\s/.test(line) ||
-    line.startsWith('```') ||
-    line.startsWith('>') ||
-    UL_ITEM.test(line) ||
-    OL_ITEM.test(line) ||
+    HEADING.test(line) ||
+    FENCE.test(line) ||
+    QUOTE.test(line) ||
+    interruptsParagraph(line) ||
     HR.test(line) ||
     htmlBlockStart(line) === 'strong'
   )
