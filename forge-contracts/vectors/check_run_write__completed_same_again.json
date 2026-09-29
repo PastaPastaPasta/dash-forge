@@ -1,6 +1,6 @@
 {
   "name": "completed_same_again",
-  "description": "The same completion reported twice keeps the stored times.",
+  "description": "The same completion reported twice keeps the stored times and conclusion.",
   "case": "check_run_write",
   "rules": "v2",
   "input": {
@@ -19,6 +19,8 @@
   "expected": {
     "action": "replace",
     "startedAt": null,
-    "completedAt": null
+    "completedAt": null,
+    "conclusion": null,
+    "externalId": null
   }
 }

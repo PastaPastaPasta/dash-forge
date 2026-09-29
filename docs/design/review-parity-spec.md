@@ -240,7 +240,7 @@ Registered on moutai as forge-collab `BMfPmaEiMqDp64NDa4Am79VoRpZ9MPVNnCUy6i3Uiy
 
 ### 3.12 Rules and writers as implemented (PR 2)
 
-The functions of §5 exist in both ports with the signatures below; the vectors (`fold_pr_v2__*`, `fold_issue_v2__issue_author_draft_inert`, `fold_review_v2__*`, `approvals__dismiss*`, `policy__*`, `anchor__*`, `review_group__*`, `suggestion__*`, `linked_issues__*`) run in both harnesses.
+The functions of §5 exist in both ports with the signatures below; the vectors (`fold_pr_v2__*`, `fold_issue_v2__issue_state_kind_on_event_inert`, `transition__*`, `fold_review_v2__*`, `approvals__dismiss*`, `policy__*`, `anchor__*`, `review_group__*`, `suggestion__*`, `linked_issues__*`) run in both harnesses.
 
 | Rust (`forge_core::rules::v2`, re-exported from `rules::review`) | TypeScript (`forge-web/lib/rules/v2`) |
 |---|---|
@@ -398,7 +398,7 @@ All in `crates/forge-core/src/rules/v2.rs` and `forge-web/lib/rules/v2.ts`, held
 
 ### 5.1 `fold_pr_state_v2` — extended
 
-Inputs: `events`, `authorEvents`, `targetAuthor`, `baseTip`, `isAncestor`, **new** `initialDraft: bool` (from `patch.draft`, default false). `authorEventApplies` accepts kinds close, reopen, draft, ready, threadResolve, threadUnresolve, reviewRequest, reviewRequestRemove, headUpdate (an `authorEvent` of any other kind, which cannot exist on chain, stays inert). `applyPrEvent` unchanged for 1–10; kinds 11–18 are no-ops for `PrState`. Vectors: `fold_pr_v2__draft_from_document`, `fold_pr_v2__author_marks_ready`, `fold_pr_v2__author_cannot_label` (inert), `fold_pr_v2__member_draft_after_author_ready_wins_by_time`.
+Inputs: `events`, `authorEvents`, `targetAuthor`, `baseTip`, `isAncestor`, **new** `initialDraft: bool` (from `patch.draft`, default false). `authorEventApplies` accepts kinds close, reopen, draft, ready, threadResolve, threadUnresolve, reviewRequest, reviewRequestRemove, headUpdate (an `authorEvent` of any other kind, which cannot exist on chain, stays inert). `applyPrEvent` unchanged for 1–10; kinds 11–18 are no-ops for `PrState`. Vectors: `fold_pr_v2__draft_from_sum`, `fold_pr_v2__author_marks_ready`, `fold_pr_v2__member_draft_after_author_ready`, `fold_pr_v2__closed_draft_reopens_as_draft`. **Fresh registration (wipe/beta7):** `patch.draft` and the state kinds of `event`/`authorEvent` are gone; draft, ready, close, reopen and merge are `transition` documents whose per-target `delta` sum is the state (`prStateV2(code, mergeOid, events, …)`), and `authorEvent` carries the review kinds only.
 
 ### 5.2 `fold_pr_review_v2` — new
 

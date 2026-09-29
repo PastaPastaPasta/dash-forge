@@ -20,6 +20,8 @@
   "expected": {
     "action": "replace",
     "startedAt": null,
-    "completedAt": 2000
+    "completedAt": 2000,
+    "conclusion": "success",
+    "externalId": null
   }
 }

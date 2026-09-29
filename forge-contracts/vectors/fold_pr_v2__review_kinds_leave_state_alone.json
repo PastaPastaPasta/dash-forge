@@ -1,6 +1,6 @@
 {
   "name": "review_kinds_leave_state_alone",
-  "description": "Review kinds (request, dismiss, milestone, head update) do not change open, draft, labels or assignees.",
+  "description": "Review kinds (request, dismiss, milestone, head update, thread resolve) do not change open, draft, labels or assignees.",
   "case": "fold_pr",
   "rules": "v2",
   "input": {
@@ -43,6 +43,16 @@
         "value": null,
         "oid": "2222222222222222222222222222222222222222",
         "createdAt": 130
+      },
+      {
+        "id": "e9",
+        "targetId": "T",
+        "kind": "threadResolve",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "refId": "R",
+        "createdAt": 140
       }
     ],
     "baseTip": "B",

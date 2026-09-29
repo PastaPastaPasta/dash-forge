@@ -1,7 +1,9 @@
 /**
- * Refusal decoding and routing (D-007, D-042). The messages are the ones evo-sdk 4.2.0-beta.4
- * threw on moutai (2026-09-27): a refusal at broadcast arrives as a `WasmSdkError` of kind
- * Generic with `code: -1` and Drive's text, so the text is what identifies it.
+ * Refusal decoding and routing (D-007, D-042). The texts are Drive's (first recorded from evo-sdk
+ * 4.2.0-beta.4 on moutai, 2026-09-27). From wasm-sdk 4.2.0-beta.6 (platform#5112) a refusal at
+ * broadcast arrives as a `WasmSdkError` of kind Protocol carrying the node's code, and a block's
+ * verdict from the result wait as kind StateTransitionBroadcastError. An error without a code
+ * (-1: one the SDK could not decode, or one from an older SDK) is still identified by its text.
  */
 
 import { describe, expect, it } from 'vitest'
@@ -9,8 +11,15 @@ import { describe, expect, it } from 'vitest'
 import { BusyWriteError, ConsensusRefusal, KeyUnusableError, SupersededWriteError, UnconfirmedWriteError, asConsensusRefusal } from '../sdk/write'
 import { writeFailure } from './write-errors'
 
-/** A wasm error as the SDK throws it: a plain object, `code` -1, the text in `message`. */
-const wasm = (message: string, code = -1) => ({ name: 'Generic', kind: 18, code, message, isRetriable: false })
+/**
+ * The SDK's two refusal shapes (wasm-sdk 4.2.0-beta.6 on, platform#5112): a refusal at the
+ * broadcast check is kind Protocol, with the node's code (-1 when it has none); a block's verdict
+ * from the result wait is kind StateTransitionBroadcastError.
+ */
+const checkTx = (message: string, code: number) => ({ name: 'Protocol', kind: 3, code, message, isRetriable: false })
+const verdict = (message: string, code: number) => ({ name: 'StateTransitionBroadcastError', kind: 22, code, message, isRetriable: false })
+/** An uncoded refusal at the broadcast check, or with a code the result wait's verdict. */
+const wasm = (message: string, code = -1) => (code === -1 ? checkTx(message, -1) : verdict(message, code))
 
 const BUDGET =
   'Failed to broadcast: Protocol error: Identity 9sBGBgYZHgGDbwQyDsMvugXXYUsxgrXmZfpCXwyRgYCB public key 5 has 1000000 credits of budget left, the state transition requires 48654000'
@@ -39,9 +48,7 @@ describe('asConsensusRefusal decodes the SDK text (D-007)', () => {
     ['Protocol error: Current credits balance 10 is not enough to pay 20 fee', 30000],
     ['Protocol error: Document Abc has duplicate unique properties ["repoId", "number"] with other documents', 40105],
     ['Protocol error: referenced document Xyz not found for path repoId', 40120],
-    // The pinned SDK renders a beta.6 node's 10422 with the 10421 text (platform#5053,
-    // lib/sdk/consensus-shift.ts); a real 10421 arrives as the 11001 text.
-    ['Protocol error: Property body is 6000 bytes in UTF-8, over its maxBytes of 5120', 10422],
+    ['Protocol error: Property body is 6000 bytes in UTF-8, over its maxBytes of 5120', 10421],
   ])('reads %s', (message, code) => {
     expect(asConsensusRefusal(wasm(message))?.code).toBe(code)
   })
@@ -59,6 +66,42 @@ describe('asConsensusRefusal decodes the SDK text (D-007)', () => {
     expect(asConsensusRefusal(wasm(BUDGET))?.charged).toBe(false)
     expect(asConsensusRefusal(wasm('Protocol error: referenced document Xyz not found for path repoId'))?.feeCharged).toBe(false)
     expect(asConsensusRefusal(wasm('gate', 40120))?.feeCharged).toBe(true)
+  })
+  it('does not know the charge of an error of another kind, and does not claim one', () => {
+    const r = asConsensusRefusal({ name: 'Generic', kind: 18, code: 40120, message: 'referenced document Xyz not found for path repoId' })
+    expect(r?.charged).toBeNull()
+    expect(r?.feeCharged).toBeNull()
+    expect(writeFailure(r).message).not.toMatch(/Nothing was charged/)
+    expect(asConsensusRefusal(new Error('Protocol error: referenced document Xyz not found for path repoId'))?.charged).toBeNull()
+  })
+})
+
+const RULE = 'Failed to broadcast: Protocol error: Document checkRun breaks its propertyConstraints rule conclusionIfDone: the rule does not hold'
+
+describe('beta.6 coded refusals (platform#5112)', () => {
+  it('a coded refusal at the broadcast check is the code the node sent, and charged nothing', () => {
+    const r = asConsensusRefusal(checkTx(RULE, 10422))
+    expect(r?.code).toBe(10422)
+    expect(r?.charged).toBe(false)
+    expect(r?.feeCharged).toBe(false)
+    expect(writeFailure(r).message).toMatch(/breaks one of the contract's rules/)
+    expect(writeFailure(r).message).toMatch(/Nothing was charged/)
+  })
+  it('a coded maxBytes refusal at the broadcast check still says the field is too long', () => {
+    const r = asConsensusRefusal(checkTx('Failed to broadcast: Protocol error: Property body is 6000 bytes in UTF-8, over its maxBytes of 5120', 10421))
+    expect(r?.code).toBe(10421)
+    expect(writeFailure(r).message).toMatch(/longer than the contract allows/)
+    expect(r?.feeCharged).toBe(false)
+  })
+  it('keeps the figures of a coded key-budget refusal at the broadcast check', () => {
+    const r = asConsensusRefusal(checkTx(BUDGET, 40218))
+    expect(r?.code).toBe(40218)
+    expect(r?.figures).toEqual({ remaining: 1_000_000n, required: 48_654_000n })
+    expect(r?.charged).toBe(false)
+  })
+  it("a block's verdict is charged, unless Drive leaves that refusal unpaid", () => {
+    expect(asConsensusRefusal(verdict(RULE, 10422))?.feeCharged).toBe(true)
+    expect(asConsensusRefusal(verdict(BUDGET, 40218))?.feeCharged).toBe(false)
   })
   it('leaves transport failures and the rate-limit gate unclassified', () => {
     expect(asConsensusRefusal(wasm('no available addresses to use'))).toBeNull()

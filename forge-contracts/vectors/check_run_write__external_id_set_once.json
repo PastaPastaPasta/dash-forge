@@ -1,6 +1,6 @@
 {
-  "name": "queued_to_in_progress",
-  "description": "Queued to in progress: a replace that sets startedAt.",
+  "name": "external_id_set_once",
+  "description": "The first report naming an externalId sets it on the stored run.",
   "case": "check_run_write",
   "rules": "v2",
   "input": {
@@ -12,7 +12,8 @@
     },
     "report": {
       "status": "in_progress",
-      "conclusion": null
+      "conclusion": null,
+      "externalId": "gh-1"
     },
     "now": 1000
   },
@@ -21,6 +22,6 @@
     "startedAt": 1000,
     "completedAt": null,
     "conclusion": null,
-    "externalId": null
+    "externalId": "gh-1"
   }
 }
