@@ -265,6 +265,10 @@ describe('footnotes (L-75)', () => {
     ])
   })
 
+  it('numbers a table header\'s reference before its rows\' (document order)', () => {
+    expect(md('| a[^x] |\n|-|\n| b[^y] |\n\n[^x]: X\n[^y]: Y').at(-1)).toEqual({ footnotes: [[1, 'x', 1, 'p:X'], [2, 'y', 1, 'p:Y']] })
+  })
+
   it('leaves an undefined [^x] as text and a note without references out', () => {
     expect(md('see [^missing]')).toEqual(['p:see [^missing]'])
     expect(md('[^a]: alone')).toEqual([])

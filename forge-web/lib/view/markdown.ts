@@ -1096,6 +1096,8 @@ function parseTable(
   const { headerCells, align } = head
   const columnCount = headerCells.length
   nodesLeft -= columnCount // the header row
+  // The header first: footnotes are numbered in order of first reference.
+  const header = headerCells.map((cell) => parseInline(cell))
   const rows: Inline[][][] = []
   let next = start + 2
   while (next < lines.length && nodesLeft >= columnCount) {
@@ -1111,7 +1113,7 @@ function parseTable(
   return {
     block: {
       t: 'table',
-      header: headerCells.map((cell) => parseInline(cell)),
+      header,
       align,
       rows,
     },
