@@ -103,13 +103,23 @@ struct Shared {
     check_runs: checkruns::Store,
 }
 
-/// A head oid whose `checkRun` stream is read.
+/// A head oid whose `checkRun`s are read.
 #[derive(Debug, Clone, Copy)]
 struct Head {
     /// When it was seen (block time, ms): pruning keeps the newest.
     seen: u64,
-    /// Where its stream starts.
+    /// Runs created before it are not announced.
     baseline: Baseline,
+}
+
+impl Head {
+    /// A head first seen at `t` (block time, ms), whose runs count from then.
+    fn since(t: u64) -> Self {
+        Self {
+            seen: t,
+            baseline: Baseline::Since(t),
+        }
+    }
 }
 
 /// One served repository and its stream cursors (locked by the poll task that owns it).
@@ -117,7 +127,7 @@ struct RepoState {
     meta: RepositoryMeta,
     /// Where repo-level streams start.
     baseline: Baseline,
-    /// Cursor per stream key (`refUpdate`, `comment:<targetId>`, `checkRun:<oid>`, ...).
+    /// Cursor per stream key (`refUpdate`, `comment:<targetId>`, ...).
     cursors: BTreeMap<String, Cursor>,
     /// Issues and PRs by `$id` (for event/comment/review translation).
     targets: BTreeMap<String, TargetInfo>,
@@ -788,13 +798,14 @@ async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result
     // The heads and runs the relay watched before a restart: a run seen then is not
     // re-sent, and one that completed meanwhile is sent now (`completed`). Runs created
     // while the relay was down are not replayed, like every other stream: a stream never
-    // starts before the relay does (`wants_of`).
+    // starts before the relay does (`wants_of`). Heads first seen before the active window
+    // are not restored, as they would not be watched from scratch either.
     let mut runs = BTreeMap::new();
     for (oid, saved) in shared.check_runs.load(repo_id).heads {
-        heads.entry(oid.clone()).or_insert(Head {
-            seen: saved.seen,
-            baseline: Baseline::Since(saved.seen),
-        });
+        if saved.seen < recent && !heads.contains_key(&oid) {
+            continue;
+        }
+        heads.entry(oid.clone()).or_insert(Head::since(saved.seen));
         runs.insert(oid, saved.runs);
     }
     prune_heads(&mut heads, &mut runs);
@@ -1081,10 +1092,7 @@ async fn poll_pushes(shared: &Shared, st: &mut RepoState, prefix: &[QueryFilter]
                     // Runs on this commit from the push on; an oid already watched keeps its
                     // baseline (older runs are never replayed).
                     let t = d.created_at.unwrap_or(0);
-                    st.heads.entry(oid).or_insert(Head {
-                        seen: t,
-                        baseline: Baseline::Since(t),
-                    });
+                    st.heads.entry(oid).or_insert(Head::since(t));
                     prune_heads(&mut st.heads, &mut st.runs);
                 }
             }
@@ -1150,10 +1158,9 @@ async fn poll_repo_rest(
                     };
                     if doc_type == DOC_PATCH && !t.head_oid.is_empty() {
                         let seen = t.last_activity;
-                        st.heads.entry(t.head_oid.clone()).or_insert(Head {
-                            seen,
-                            baseline: Baseline::Since(seen),
-                        });
+                        st.heads
+                            .entry(t.head_oid.clone())
+                            .or_insert(Head::since(seen));
                         prune_heads(&mut st.heads, &mut st.runs);
                     }
                     st.targets.insert(d.id.clone(), t);
@@ -1280,11 +1287,12 @@ async fn poll_threads(
     (high, finished)
 }
 
-/// Check runs, per watched head oid (the newest [`MAX_HEADS`]): one read per head of its
-/// newest [`checkruns::PAGE`] runs (`head (repoId, headOid)`, descending), compared by
-/// `$revision` with what was seen, so a run replaced in place is observed
+/// Check runs, per watched head oid (the newest [`MAX_HEADS`]): each head's runs from
+/// [`checkruns::read_from`] on (the `head (repoId, headOid, $createdAt)` index, paged to the
+/// end), compared by `$revision` with what was seen, so a run replaced in place is observed
 /// ([`checkruns::diff`]: `created`, then `completed`). The runs seen are saved when they
-/// change, after their events were enqueued.
+/// change, after their events were enqueued. While no hook wants `check_run`, they are
+/// dropped: a hook added later starts from its own time, not from stale completions.
 async fn poll_check_runs(
     shared: &Shared,
     st: &mut RepoState,
@@ -1293,6 +1301,10 @@ async fn poll_check_runs(
     deadline: Instant,
 ) -> (u64, bool) {
     let Some(since) = wants.get("check_run").copied() else {
+        if !st.runs.is_empty() {
+            st.runs.clear();
+            st.save_check_runs(shared).await;
+        }
         return (0, true);
     };
     let mut high = 0;
@@ -1306,33 +1318,29 @@ async fn poll_check_runs(
         let Ok(bytes) = hex::decode(&oid) else {
             continue;
         };
-        let filters = [
+        let prefix = [
             rf.clone(),
             QueryFilter::eq("headOid", FieldValue::bytes(bytes)),
         ];
-        let docs = match shared
-            .client
-            .query_documents(
-                &shared.contracts.collab,
-                DOC_CHECK_RUN,
-                &filters,
-                &[QueryOrder::desc("$createdAt")],
-                checkruns::PAGE,
-                None,
-            )
-            .await
-        {
+        let source = LiveStream {
+            client: &shared.client,
+            contract: &shared.contracts.collab,
+            doc_type: DOC_CHECK_RUN,
+            prefix: &prefix,
+        };
+        let floor = match head.baseline {
+            Baseline::Since(t) => t.max(since),
+            Baseline::Tail { .. } | Baseline::Beginning => since,
+        };
+        let prev = st.runs.remove(&oid).unwrap_or_default();
+        let docs = match checkruns::read_runs(&source, checkruns::read_from(&prev, floor)).await {
             Ok(docs) => docs,
             Err(e) => {
                 tracing::warn!(repo = %st.meta.repo_id, head = %oid, error = %e, "check-run read failed; retrying next cycle");
+                st.runs.insert(oid, prev);
                 continue;
             }
         };
-        let floor = match no_earlier_than(head.baseline, since) {
-            Baseline::Since(t) => t,
-            Baseline::Tail { .. } | Baseline::Beginning => since,
-        };
-        let prev = st.runs.get(&oid).cloned().unwrap_or_default();
         let (events, next) = checkruns::diff(&prev, &docs, floor);
         for (action, d) in events {
             if action == CheckRunAction::Created {
@@ -1384,10 +1392,7 @@ fn follow_head(s: &mut RepoState, d: &FetchedDocument, author_path: bool) -> boo
         return false;
     };
     let seen = d.created_at.unwrap_or(t.last_activity);
-    s.heads.entry(head).or_insert(Head {
-        seen,
-        baseline: Baseline::Since(seen),
-    });
+    s.heads.entry(head).or_insert(Head::since(seen));
     prune_heads(&mut s.heads, &mut s.runs);
     true
 }
@@ -1397,14 +1402,7 @@ fn prune_heads(
     heads: &mut BTreeMap<String, Head>,
     runs: &mut BTreeMap<String, checkruns::HeadRuns>,
 ) {
-    if heads.len() > MAX_HEADS {
-        let mut by_time: Vec<(u64, String)> =
-            heads.iter().map(|(k, v)| (v.seen, k.clone())).collect();
-        by_time.sort();
-        for (_, k) in by_time.iter().take(heads.len() - MAX_HEADS) {
-            heads.remove(k);
-        }
-    }
+    checkruns::keep_last(heads, MAX_HEADS, |h| h.seen);
     runs.retain(|k, _| heads.contains_key(k));
 }
 

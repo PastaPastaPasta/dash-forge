@@ -68,16 +68,22 @@ impl RepositoryMeta {
     /// A forge-web route of this repo, `<web base><route>/?owner=<owner>&name=<name>&<extra>`:
     /// the shape forge-web's `repoHref` builds (trailing slash, `URLSearchParams` encoding).
     fn web_href(&self, route: &str, extra: &[(&str, &str)]) -> String {
-        let mut q = url::form_urlencoded::Serializer::new(String::new());
-        q.append_pair("owner", &self.owner_id)
-            .append_pair("name", &self.name);
-        for (k, v) in extra {
-            q.append_pair(k, v);
-        }
+        let mut params = vec![
+            ("owner", self.owner_id.as_str()),
+            ("name", self.name.as_str()),
+        ];
+        params.extend_from_slice(extra);
+        self.web_url(route, &params)
+    }
+
+    /// A forge-web route: `<web base><route>/?<params>`.
+    fn web_url(&self, route: &str, params: &[(&str, &str)]) -> String {
+        let query = url::form_urlencoded::Serializer::new(String::new())
+            .extend_pairs(params)
+            .finish();
         format!(
-            "{}{route}/?{}",
-            self.web_base_url.trim_end_matches('/'),
-            q.finish()
+            "{}{route}/?{query}",
+            self.web_base_url.trim_end_matches('/')
         )
     }
 
@@ -90,11 +96,11 @@ impl RepositoryMeta {
     /// are numbered independently, so the route must match the kind. Number 0 (an unknown
     /// target) links the repo.
     fn thread_url(&self, is_pr: bool, number: u64) -> String {
-        match (number, is_pr) {
-            (0, _) => self.html_url(),
-            (_, true) => self.web_href("/repo/pull", &[("number", &number.to_string())]),
-            (_, false) => self.web_href("/repo/issue", &[("number", &number.to_string())]),
+        if number == 0 {
+            return self.html_url();
         }
+        let route = if is_pr { "/repo/pull" } else { "/repo/issue" };
+        self.web_href(route, &[("number", &number.to_string())])
     }
 
     /// A commit (`/repo/commit/?…&oid=`).
@@ -134,14 +140,12 @@ impl RepositoryMeta {
     /// identity id is the `login` and the `node_id`, and `html_url` is its forge-web profile
     /// (`/u/?name=<id>`).
     pub fn user_json(&self, identity_id: &str) -> Value {
-        let mut q = url::form_urlencoded::Serializer::new(String::new());
-        q.append_pair("name", identity_id);
         json!({
             "login": identity_id,
             "id": github_id(identity_id),
             "node_id": identity_id,
             "type": "User",
-            "html_url": format!("{}/u/?{}", self.web_base_url.trim_end_matches('/'), q.finish()),
+            "html_url": self.web_url("/u", &[("name", identity_id)]),
         })
     }
 }
@@ -401,7 +405,7 @@ pub fn pull_request_review_event(
             "node_id": source_doc_id,
             "state": state,
             "body": body,
-            "commit_id": if commit_oid.is_empty() { Value::Null } else { Value::from(commit_oid) },
+            "commit_id": non_empty(commit_oid),
             "html_url": html_url,
             "user": repo.user_json(reviewer),
         },
@@ -494,11 +498,8 @@ pub struct CheckRunObj {
     pub runner_id: String,
 }
 
-/// The `check_run` actions the relay sends. GitHub has four (`created`, `completed`,
-/// `rerequested`, `requested_action`); a repository webhook receives only the first two, and
-/// the other two are requests from GitHub's UI to a GitHub App, which Forge has no analogue
-/// of. A replace that moves a run to `in_progress` has no action of its own on GitHub either,
-/// so it is not delivered.
+/// The `check_run` actions the relay sends: GitHub's two that a repository webhook receives
+/// (why, and when each is sent: [`crate::checkruns`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckRunAction {
     /// The run's document appeared (whatever its status).
@@ -517,8 +518,17 @@ impl CheckRunAction {
     }
 }
 
+/// `s` as a JSON string, or `null` when empty (GitHub's absent optional fields).
+fn non_empty(s: &str) -> Value {
+    if s.is_empty() {
+        Value::Null
+    } else {
+        Value::from(s)
+    }
+}
+
 /// Build a `check_run` event with `action`. `source_doc_id` is the dedup key (the delivery id
-/// seed): distinct per action and revision of one document, see `daemon::poll_check_runs`.
+/// seed): [`crate::checkruns::event_key`].
 pub fn check_run_event(
     repo: &RepositoryMeta,
     source_doc_id: &str,
@@ -526,26 +536,20 @@ pub fn check_run_event(
     cr: &CheckRunObj,
 ) -> WebhookEvent {
     let action = action.as_str();
-    let opt = |s: &str| {
-        if s.is_empty() {
-            Value::Null
-        } else {
-            Value::String(s.to_string())
-        }
-    };
+
     let payload = json!({
         "action": action,
         "check_run": {
             "id": github_id(&cr.document_id),
             "node_id": cr.document_id,
             "head_sha": cr.head_oid,
-            "external_id": opt(&cr.external_id),
+            "external_id": non_empty(&cr.external_id),
             "name": cr.name,
             "status": cr.status,
-            "conclusion": opt(&cr.conclusion),
+            "conclusion": non_empty(&cr.conclusion),
             // forge-web has no page per check run: its commit's page is the nearest.
             "html_url": repo.commit_url(&cr.head_oid),
-            "details_url": opt(&cr.details_url),
+            "details_url": non_empty(&cr.details_url),
             "output": { "title": cr.name, "summary": cr.summary },
             "app": repo.user_json(&cr.runner_id),
         },
@@ -793,13 +797,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn numeric_repo_id_is_stable() {
-        let a = repo().to_json()["id"].as_u64().unwrap();
-        let b = repo().to_json()["id"].as_u64().unwrap();
-        assert_eq!(a, b);
-    }
-
     /// One event of every kind the relay sends, with real-length base58 ids.
     fn every_event() -> Vec<WebhookEvent> {
         let r = repo();
@@ -922,15 +919,13 @@ mod tests {
             e.payload["repository"]["dash_repo_id"],
             e.payload["repository"]["node_id"]
         );
-        // Stable across relay instances: a fixed input, a fixed value.
+        // Stable across relay instances: a fixed input, a fixed value (computed independently:
+        // sha256, first 8 bytes big-endian, low 53 bits).
         assert_eq!(
             github_id("5rrwgjjVUqMghnessfiXPXubpiM2QLNNXH142Hv4PDyX"),
-            u64::from_be_bytes(
-                Sha256::digest(b"5rrwgjjVUqMghnessfiXPXubpiM2QLNNXH142Hv4PDyX")[..8]
-                    .try_into()
-                    .unwrap()
-            ) & MAX_SAFE_ID
+            1_070_030_966_701_163
         );
+        assert_eq!(repo().to_json()["id"], 1_070_030_966_701_163_u64);
         assert_ne!(github_id("a"), github_id("b"));
     }
 
@@ -938,16 +933,24 @@ mod tests {
     /// every payload into its typed event. Before the fix it refused push (`repository.id`
     /// over int64) and issues/pull_request (string ids): the same checker run on the QA
     /// pass's recorded deliveries fails all 52. Needs `go` and the module (cached, or fetched
-    /// from the proxy). It is skipped with a note when `go` is absent or cannot build the
-    /// checker (offline, no module cache); the numeric bounds above hold regardless.
+    /// from the proxy). Locally it is skipped with a note when `go` is absent or cannot build
+    /// the checker (offline, no module cache); the numeric bounds above hold regardless. In CI
+    /// (`CI` set; GitHub's ubuntu runners ship `go`) it must run.
     #[test]
     fn payloads_parse_with_go_github() {
+        let skip = |why: &str| {
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "the go-github check must run in CI: {why}"
+            );
+            eprintln!("skipping: {why}");
+        };
         if std::process::Command::new("go")
             .arg("version")
             .output()
             .is_err()
         {
-            eprintln!("skipping: go is not available");
+            skip("go is not available");
             return;
         }
         let dir = std::env::temp_dir().join(format!("relay-gogh-{}", std::process::id()));
@@ -960,9 +963,15 @@ mod tests {
             )
             .unwrap();
         }
+        // Modules come from the cache or the proxy, checked against go.sum; never from a VCS,
+        // and the checker's own workspace settings (a parent go.work, GOFLAGS) are ignored.
         let out = std::process::Command::new("go")
-            .args(["run", "."])
+            .args(["run", "-mod=readonly", "."])
             .arg(&dir)
+            .env("GOWORK", "off")
+            .env("GOFLAGS", "")
+            .env("GOTOOLCHAIN", "local")
+            .env("GOVCS", "*:off")
             .current_dir(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/testdata/webhook-parse"
@@ -975,7 +984,7 @@ mod tests {
         // The checker prints one line per payload once it runs; nothing on stdout means `go`
         // could not build it (no network and no module cache), not a refused payload.
         if stdout.trim().is_empty() && !out.status.success() {
-            eprintln!("skipping: the go-github checker did not build: {stderr}");
+            skip(&format!("the go-github checker did not build: {stderr}"));
             return;
         }
         assert!(

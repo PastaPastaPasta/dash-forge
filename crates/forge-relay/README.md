@@ -152,8 +152,8 @@ octokit) reads them:
 - Repos are polled concurrently (8 at a time), each within a 20 s budget per cycle, checked
   between streams; a poll cut short resumes at the stage it stopped in. Discovery runs in its
   own task, and a new repo is polled only once its hooks are registered.
-- No cursor state on disk (only the retry queue, and the check runs seen, below). A restart starts from "now" (or `--lookback` for the repo-level
-  streams). A repo first served while the relay runs is read from its earliest hook's
+- No cursor state on disk (only the retry queue, and the check runs seen, below). A restart
+  starts from "now" (or `--lookback` for the repo-level streams). A repo first served while the relay runs is read from its earliest hook's
   `$createdAt`, never from before the relay started; a repo that drops out and returns
   resumes where it stopped, but not before its hook's own `$createdAt` (nothing from while a
   hook was disabled). A stream only some hooks need (comments, reviews, check runs) starts no
@@ -167,9 +167,11 @@ octokit) reads them:
   of the others in rotation, so a quiet closed thread is read every few cycles (with N such
   threads, every N/10 cycles).
 - Check runs: for the 50 most recent heads (pushed commits, PR heads seen live or opened in the
-  last 7 days), each cycle reads the head's newest 100 `checkRun` documents and compares each
-  one's `$revision` with the last seen, so a run a runner replaces in place (`queued` →
-  `in_progress` → `completed`) is observed. GitHub's `check_run` has four actions; a
+  last 7 days), each cycle reads the head's `checkRun` documents from its oldest run not yet
+  seen completed (or its newest run, when all have completed), paged to the end, and compares
+  each one's `$revision` with the last seen. So a run a runner replaces in place (`queued` →
+  `in_progress` → `completed`) is observed however many runs came after it, and a head whose
+  runs have all completed costs one short read. GitHub's `check_run` has four actions; a
   repository webhook gets only `created` and `completed` (`rerequested` and
   `requested_action` are GitHub-UI requests to a GitHub App, which Forge has no analogue of).
   The relay sends `created` for a run first seen (created after the head was first watched),
@@ -177,7 +179,9 @@ octokit) reads them:
   (after its `created`), or on a replace of one that was not. A replace to `in_progress`, or
   an edit of a completed run, has no GitHub action and is not sent. A run completed again
   after a re-run (`completed` → `queued` → `completed`) sends `completed` again, with a new
-  delivery id (the document id plus its `$revision`). Who may post: consensus admits a
+  delivery id (the document id plus the `$revision` seen completed; two relays that first see
+  a completed run at different revisions send different ids, so dedupe on `check_run.id` and
+  `status` as well). Who may post: consensus admits a
   `checkRun` create and every replace only from a current `runner`, `maintainer` or
   `writer` of the repo, so a revoked runner cannot advance its runs, and the relay adds no
   filter of its own.
@@ -185,6 +189,8 @@ octokit) reads them:
   `<state dir>/check-runs/<repo id>.json` (when the retry queue is durable), so a restart
   does not re-send a run, and a run it knew that completed while it was down is sent
   `completed`. Runs created while it was down are not replayed, as for every other stream.
+  Heads first seen more than 7 days ago are not restored. While no hook of a repo wants
+  `check_run`, what was seen is dropped, so a hook added later is not sent older completions.
 - SSRF guard: http(s) only, no userinfo, private/loopback/link-local/CGNAT/multicast and
   IPv6 forms embedding them (mapped, 6to4, NAT64, Teredo) refused, DNS resolved once and the
   connection pinned to the validated addresses, redirects and proxies off. Bodies are capped

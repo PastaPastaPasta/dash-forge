@@ -3,9 +3,11 @@
 //! A `checkRun` is mutable: a runner creates it `queued`, then replaces the same document with
 //! `in_progress`, then `completed`. A replace keeps `$createdAt`, so the relay's usual streams
 //! (`$createdAt > cursor`) never see it, and there is no `$updatedAt` index to read instead.
-//! So for each watched head the relay reads the newest page of `checkRun (repoId, headOid)`
-//! every cycle and compares each document's `$revision` with the one it saw last
-//! ([`diff`]).
+//! So for each watched head the relay reads `checkRun (repoId, headOid, $createdAt >= t)`
+//! every cycle, paged to the end, and compares each document's `$revision` with the one it saw
+//! last ([`diff`]). `t` is [`read_from`]: the oldest run not yet seen completed, else the
+//! newest run seen. A head whose runs have all completed costs one short page, and a run is
+//! re-read until it completes, however many runs came after it.
 //!
 //! **GitHub actions.** GitHub's `check_run` has four actions: `created`, `completed`,
 //! `rerequested` and `requested_action`. A repository webhook receives only `created` and
@@ -24,6 +26,8 @@
 //! lock makes the state dir this relay's), so a restart does not re-send, and a known run
 //! that completed while the relay was down is sent `completed`. The watched heads are
 //! restored from it too. (Runs created while it was down are not replayed, like every stream.)
+//! While no hook of the repo wants `check_run`, what was seen is dropped, so a hook added
+//! later is not sent completions from before it existed.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -32,15 +36,17 @@ use serde::{Deserialize, Serialize};
 
 use forge_core::platform::FetchedDocument;
 
+use crate::error::Result;
+use crate::ingest::PageSource;
 use crate::payload::CheckRunAction;
 
-/// Rows read per head and cycle: Drive's page maximum, the newest runs first.
-pub const PAGE: u32 = 100;
+/// Rows per page (Drive's maximum).
+const PAGE: u32 = 100;
 
-/// Runs remembered per head. A run missing from a read (deleted, past the newest page, or a
-/// lagging node) is remembered, so it is not announced again if it reappears; beyond this
-/// many, the oldest are forgotten.
-pub const MAX_RUNS_PER_HEAD: usize = 2 * PAGE as usize;
+/// Runs remembered per head: those seen completed are forgotten first, oldest first. A run
+/// missing from a read (deleted, or a lagging node) stays remembered, so it is not announced
+/// again if it reappears.
+const MAX_RUNS_PER_HEAD: usize = 500;
 
 /// What the relay last saw of one `checkRun` document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,22 +64,63 @@ pub type HeadRuns = BTreeMap<String, RunSeen>;
 
 /// A `checkRun`'s status is `completed` (a document without one counts as completed, as
 /// [`crate::ingest::translate_check_run`] reports it).
-pub fn is_done(d: &FetchedDocument) -> bool {
+fn is_done(d: &FetchedDocument) -> bool {
     d.field_str("status").is_none_or(|s| s == "completed")
+}
+
+/// Keep the `max` entries of `map` that sort last by `rank` (ties: the larger key stays).
+pub fn keep_last<V, R: Ord>(map: &mut BTreeMap<String, V>, max: usize, rank: impl Fn(&V) -> R) {
+    if map.len() <= max {
+        return;
+    }
+    let mut ranked: Vec<(R, String)> = map.iter().map(|(k, v)| (rank(v), k.clone())).collect();
+    ranked.sort();
+    for (_, k) in &ranked[..map.len() - max] {
+        map.remove(k);
+    }
+}
+
+/// Where a head's next read starts (`$createdAt >=`): the oldest run not seen completed, else
+/// the newest run seen, else `floor` (the head's baseline) for a head with no run yet.
+pub fn read_from(prev: &HeadRuns, floor: u64) -> u64 {
+    prev.values()
+        .filter(|r| !r.done)
+        .map(|r| r.at)
+        .min()
+        .or_else(|| prev.values().map(|r| r.at).max())
+        .unwrap_or(floor)
+}
+
+/// A head's runs created at or after `from`, ascending, paged to the end (`source` is the
+/// head's `checkRun (repoId, headOid)` index). Pages continue after the previous page's last
+/// document, fetched a moment earlier; a failed read is retried whole next cycle.
+pub async fn read_runs(source: &impl PageSource, from: u64) -> Result<Vec<FetchedDocument>> {
+    let mut out = Vec::new();
+    loop {
+        let after = out.last().map(|d: &FetchedDocument| d.id.clone());
+        let page = source
+            .page(Some(from), true, PAGE, after.as_deref())
+            .await?;
+        let full = page.len() >= PAGE as usize;
+        out.extend(page);
+        if !full {
+            return Ok(out);
+        }
+    }
 }
 
 /// Compare a head's current runs (`docs`, any order) with what was seen (`prev`). Returns the
 /// events to send, oldest document first, and the new state for the head. `since` is the
 /// head's baseline: an unseen document created before it is recorded, not delivered. A read
 /// older than what was seen (a lagging node) keeps the newer state and sends nothing. Runs
-/// absent from `docs` stay remembered (at most [`MAX_RUNS_PER_HEAD`], newest kept).
+/// absent from `docs` stay remembered (at most [`MAX_RUNS_PER_HEAD`]).
 pub fn diff<'a>(
     prev: &HeadRuns,
     docs: &'a [FetchedDocument],
     since: u64,
 ) -> (Vec<(CheckRunAction, &'a FetchedDocument)>, HeadRuns) {
     let mut docs: Vec<&FetchedDocument> = docs.iter().filter(|d| d.created_at.is_some()).collect();
-    docs.sort_by(|a, b| (a.created_at, &a.id).cmp(&(b.created_at, &b.id)));
+    docs.sort_by_key(|d| (d.created_at, &d.id));
     let mut out = Vec::new();
     let mut next = prev.clone();
     for d in docs {
@@ -83,39 +130,32 @@ pub fn diff<'a>(
             at: d.created_at.unwrap_or(0),
         };
         match prev.get(&d.id) {
-            None => {
-                if d.created_at.unwrap_or(0) >= since {
-                    out.push((CheckRunAction::Created, d));
-                    if now.done {
-                        out.push((CheckRunAction::Completed, d));
-                    }
-                }
-                next.insert(d.id.clone(), now);
-            }
-            Some(seen) if now.rev < seen.rev => {
-                next.insert(d.id.clone(), *seen);
-            }
+            // A lagging read: `next` already holds the newer state.
+            Some(seen) if now.rev < seen.rev => continue,
             Some(seen) => {
                 if now.rev > seen.rev && now.done && !seen.done {
                     out.push((CheckRunAction::Completed, d));
                 }
-                next.insert(d.id.clone(), now);
             }
+            None if now.at >= since => {
+                out.push((CheckRunAction::Created, d));
+                if now.done {
+                    out.push((CheckRunAction::Completed, d));
+                }
+            }
+            None => {}
         }
+        next.insert(d.id.clone(), now);
     }
-    if next.len() > MAX_RUNS_PER_HEAD {
-        let mut by_age: Vec<(u64, String)> = next.iter().map(|(k, v)| (v.at, k.clone())).collect();
-        by_age.sort();
-        for (_, k) in by_age.iter().take(next.len() - MAX_RUNS_PER_HEAD) {
-            next.remove(k);
-        }
-    }
+    keep_last(&mut next, MAX_RUNS_PER_HEAD, |r| (!r.done, r.at));
     (out, next)
 }
 
 /// The dedup key (the `X-GitHub-Delivery` seed) of a check-run event: the document id for
-/// `created`, and the id plus the revision for `completed`, so a run that completes again
-/// after a re-run is delivered again while every relay derives the same key.
+/// `created`, and the id plus the revision seen completed for `completed`, so a run that
+/// completes again after a re-run is delivered again. Relays that see the same revision derive
+/// the same key; a completed run edited between two relays' reads can reach a receiver twice
+/// (the payloads are the same run: dedupe on `check_run.id` and `status` too).
 pub fn event_key(d: &FetchedDocument, action: CheckRunAction) -> String {
     match action {
         CheckRunAction::Created => d.id.clone(),
@@ -164,24 +204,25 @@ impl Store {
         }
     }
 
-    fn path(&self, repo_id: &str) -> Option<PathBuf> {
-        // Repo ids are base58; anything else is not a file name this store writes.
-        if repo_id.is_empty() || !repo_id.bytes().all(|b| b.is_ascii_alphanumeric()) {
-            return None;
-        }
-        self.dir.as_ref().map(|d| d.join(format!("{repo_id}.json")))
+    /// The directory, when `repo_id` can name a file in it: repo ids are base58, and anything
+    /// else is not a file name this store reads or writes.
+    fn dir_for(&self, repo_id: &str) -> Option<&Path> {
+        let ok = !repo_id.is_empty() && repo_id.bytes().all(|b| b.is_ascii_alphanumeric());
+        self.dir.as_deref().filter(|_| ok)
     }
 
     /// The repo's saved state (empty when there is none or it cannot be read).
     pub fn load(&self, repo_id: &str) -> Saved {
-        let Some(path) = self.path(repo_id) else {
+        let Some(path) = self
+            .dir_for(repo_id)
+            .map(|d| d.join(format!("{repo_id}.json")))
+        else {
             return Saved::default();
         };
-        match std::fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).unwrap_or_else(|e| {
-                tracing::warn!(file = %path.display(), error = %e, "ignoring unreadable check-run state");
-                Saved::default()
-            }),
+        let read = std::fs::read(&path)
+            .and_then(|b| serde_json::from_slice(&b).map_err(std::io::Error::from));
+        match read {
+            Ok(saved) => saved,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Saved::default(),
             Err(e) => {
                 tracing::warn!(file = %path.display(), error = %e, "ignoring unreadable check-run state");
@@ -192,7 +233,7 @@ impl Store {
 
     /// Save the repo's state (durably: a temp file, synced, renamed). Off the async threads.
     pub async fn save(&self, repo_id: &str, saved: &Saved) {
-        let (Some(dir), Some(_)) = (self.dir.clone(), self.path(repo_id)) else {
+        let Some(dir) = self.dir_for(repo_id).map(Path::to_path_buf) else {
             return;
         };
         let bytes = match serde_json::to_vec(saved) {
@@ -205,7 +246,7 @@ impl Store {
         let id = repo_id.to_string();
         let done =
             tokio::task::spawn_blocking(move || crate::queue::write_entry(&dir, &id, &bytes)).await;
-        if let Ok(Err(e)) | Err(e) = done.map_err(std::io::Error::other) {
+        if let Err(e) = done.map_err(std::io::Error::other).flatten() {
             tracing::warn!(repo = %repo_id, error = %e, "cannot save check-run state; a restart may re-send check runs");
         }
     }
@@ -346,12 +387,90 @@ mod tests {
         let (out, _) = step(&s, run("A", 10, 1, "queued"), 0);
         assert!(out.is_empty());
 
+        // Bounded: completed runs are forgotten first, oldest first; open ones are kept.
         let many: Vec<FetchedDocument> = (0..MAX_RUNS_PER_HEAD as u64 + 5)
-            .map(|i| run(&format!("r{i:04}"), i, 1, "queued"))
+            .map(|i| {
+                let status = if i == 0 { "queued" } else { "completed" };
+                run(&format!("r{i:04}"), i, 1, status)
+            })
             .collect();
         let (_, s) = diff(&HeadRuns::new(), &many, 0);
         assert_eq!(s.len(), MAX_RUNS_PER_HEAD);
-        assert!(!s.contains_key("r0000"), "the oldest are forgotten");
+        assert!(s.contains_key("r0000"), "the open run is kept");
+        assert!(!s.contains_key("r0001"), "the oldest completed one goes");
+    }
+
+    #[test]
+    fn a_head_is_read_from_its_oldest_open_run() {
+        assert_eq!(read_from(&HeadRuns::new(), 42), 42, "no run: the baseline");
+        let (_, s) = step(&HeadRuns::new(), run("A", 10, 1, "completed"), 0);
+        let (_, s) = step(&s, run("B", 20, 1, "queued"), 0);
+        let (_, s) = step(&s, run("C", 30, 1, "completed"), 0);
+        assert_eq!(read_from(&s, 0), 20, "the oldest run not completed");
+        let (_, s) = step(&s, run("B", 20, 2, "completed"), 0);
+        assert_eq!(read_from(&s, 0), 30, "all completed: the newest run seen");
+    }
+
+    /// An in-memory `checkRun (repoId, headOid, $createdAt)` index.
+    struct Index(Vec<FetchedDocument>, std::cell::Cell<usize>);
+
+    #[allow(clippy::unused_async_trait_impl)]
+    impl PageSource for Index {
+        async fn page(
+            &self,
+            since: Option<u64>,
+            ascending: bool,
+            limit: u32,
+            start_after: Option<&str>,
+        ) -> Result<Vec<FetchedDocument>> {
+            assert!(ascending);
+            self.1.set(self.1.get() + 1);
+            let mut rows: Vec<&FetchedDocument> = self
+                .0
+                .iter()
+                .filter(|d| since.is_none_or(|s| d.created_at.unwrap() >= s))
+                .collect();
+            rows.sort_by_key(|d| (d.created_at, &d.id));
+            let skip = start_after
+                .and_then(|a| rows.iter().position(|d| d.id == a))
+                .map_or(0, |i| i + 1);
+            Ok(rows
+                .into_iter()
+                .skip(skip)
+                .take(limit as usize)
+                .cloned()
+                .collect())
+        }
+    }
+
+    /// Before, a head's read was its newest 100 runs: in a matrix of more, the older runs
+    /// never showed up again, so their completion was never sent.
+    #[tokio::test]
+    async fn an_open_run_behind_more_than_a_page_of_newer_runs_still_completes() {
+        let mut rows = vec![run("old", 1, 1, "queued")];
+        rows.extend((0..250).map(|i| run(&format!("n{i:03}"), 10 + i, 1, "completed")));
+        let index = Index(rows, std::cell::Cell::new(0));
+        let docs = read_runs(&index, 0).await.unwrap();
+        assert_eq!(docs.len(), 251, "paged to the end");
+        assert_eq!(index.1.get(), 3);
+        let (out, s) = diff(&HeadRuns::new(), &docs, 0);
+        assert_eq!(out.len(), 1 + 2 * 250);
+
+        let mut rows = index.0;
+        rows[0] = run("old", 1, 2, "completed");
+        let index = Index(rows, std::cell::Cell::new(0));
+        let docs = read_runs(&index, read_from(&s, 0)).await.unwrap();
+        let (out, _) = diff(&s, &docs, 0);
+        assert_eq!(
+            actions(&out),
+            vec![(CheckRunAction::Completed, "old".into())]
+        );
+
+        // Once all are completed, a head costs one short page.
+        let (_, s) = diff(&s, &docs, 0);
+        let index = Index(index.0, std::cell::Cell::new(0));
+        let docs = read_runs(&index, read_from(&s, 0)).await.unwrap();
+        assert_eq!((docs.len(), index.1.get()), (1, 1));
     }
 
     /// A restart must not re-send: the state survives in the state dir.
