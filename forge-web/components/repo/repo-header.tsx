@@ -8,7 +8,6 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { useCallback, useEffect, useRef, useState } from 'react'
 import { Archive, Code2, GitFork, GitPullRequest, Lock, MessageSquare, Settings, Tag, Users } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { BackendBadge } from '@/components/ui/backend-badge'
@@ -19,6 +18,8 @@ import { WatchButton } from '@/components/repo/watch-button'
 import { useTargetCounts, useViewerRole } from '@/hooks/use-repo-chrome'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
+import { TabStrip } from '@/components/ui/tab-strip'
+import { bareRoute } from '@/lib/page-title'
 import { ForkButton } from '@/components/repo/fork-button'
 import { readRepoById } from '@/lib/repo'
 import type { ForgeIds } from '@/lib/deployments'
@@ -57,7 +58,7 @@ export const CODE_ROUTES = ['/repo', '/repo/tree', '/repo/blob', '/repo/blame', 
 
 /** The tab a repo route belongs to (`null`: none, e.g. Stargazers, as on GitHub). */
 export function activeRepoTab(pathname: string): 'code' | 'issues' | 'pulls' | 'releases' | 'settings' | null {
-  const p = bare(pathname)
+  const p = bareRoute(pathname)
   if (CODE_ROUTES.includes(p)) return 'code'
   if (p === '/repo/issues' || p === '/repo/issue') return 'issues'
   if (p === '/repo/pulls' || p === '/repo/pull' || p === '/repo/pulls/new') return 'pulls'
@@ -66,15 +67,17 @@ export function activeRepoTab(pathname: string): 'code' | 'issues' | 'pulls' | '
   return null
 }
 
-/** Match a route with or without the export's trailing slash. */
-const bare = (p: string): string => (p.length > 1 ? p.replace(/\/+$/, '') : p)
+/** Routes whose view renders its own h1 (an issue's title, a commit's subject): the repo name is not the page's heading there. */
+const VIEWS_WITH_OWN_H1 = ['/repo/issue', '/repo/pull', '/repo/pulls/new', '/repo/commit', '/repo/releases', '/repo/stargazers']
+
 
 export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
-  const pathname = bare(usePathname())
+  const pathname = bareRoute(usePathname())
   const current = activeRepoTab(pathname)
   const refParam = useParam('ref')
   const counts = useTargetCounts(home.repo)
   const { role } = useViewerRole(home.repo)
+  const TitleTag = VIEWS_WITH_OWN_H1.includes(pathname) ? 'div' : 'h1'
   const tabs = [
     { key: 'code', label: 'Code', path: '/repo', icon: Code2, refAware: true, count: null },
     { key: 'issues', label: 'Issues', path: '/repo/issues', icon: MessageSquare, refAware: false, count: counts.issues },
@@ -90,12 +93,15 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
   return (
     <div className="mb-5">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <div className="flex items-center gap-2 text-prose">
-          <Author identityId={home.repo.ownerId} link />
-          <span className="text-anvil-300 dark:text-anvil-600" aria-hidden>/</span>
-          <Link href={repoHref('/repo', addr)} className="hit-area font-mono font-semibold text-anvil-900 hover:text-forge-800 dark:text-anvil-50 dark:hover:text-forge-400">
-            {home.repo.name || addr.name}
-          </Link>
+        <div className="flex min-w-0 max-w-full items-center gap-2 text-prose">
+          {/* The page's h1 (L-60), the repo's owner / name, unless the view has its own title. */}
+          <TitleTag className="flex min-w-0 items-center gap-2 text-prose font-normal" data-testid="repo-title">
+            <Author identityId={home.repo.ownerId} link className="min-w-0 max-w-[45vw] sm:max-w-none" />
+            <span className="text-anvil-300 dark:text-anvil-600" aria-hidden>/</span>
+            <Link href={repoHref('/repo', addr)} className="hit-area min-w-0 truncate font-mono font-semibold text-anvil-900 hover:text-forge-800 dark:text-anvil-50 dark:hover:text-forge-400">
+              {home.repo.name || addr.name}
+            </Link>
+          </TitleTag>
           {home.repo.visibility === 'private' ? <PrivateChip home={home} /> : null}
           <BackendBadge backend={home.backend} />
         </div>
@@ -120,7 +126,7 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
       ) : null}
 
       {/* Nav: on a phone the tabs scroll sideways, with a fade on the side that has more. */}
-      <TabStrip activeKey={pathname}>
+      <TabStrip activeKey={pathname} label="Repository" className="mt-4">
         {tabs.map((tab) => {
           const active = tab.key === current
           const Icon = tab.icon
@@ -147,59 +153,6 @@ export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }
           )
         })}
       </TabStrip>
-    </div>
-  )
-}
-
-/**
- * The tab row. When it is wider than the screen it scrolls sideways: the active tab is
- * scrolled into view, and an edge fade marks the side with more tabs (`data-more`).
- */
-function TabStrip({ activeKey, children }: { activeKey: string; children: React.ReactNode }): JSX.Element {
-  const ref = useRef<HTMLElement>(null)
-  const [more, setMore] = useState<{ left: boolean; right: boolean }>({ left: false, right: false })
-  const measure = useCallback(() => {
-    const el = ref.current
-    if (!el) return
-    const left = el.scrollLeft > 1
-    const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1
-    setMore((m) => (m.left === left && m.right === right ? m : { left, right }))
-  }, [])
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    // Keep the active tab inside the strip by scrolling the strip only (scrollIntoView would
-    // also scroll the page, e.g. jump to the tabs when Back restores a scrolled position).
-    const reveal = (): void => {
-      const active = el.querySelector<HTMLElement>('[aria-current="page"]')
-      if (active) {
-        const t = active.getBoundingClientRect()
-        const n = el.getBoundingClientRect()
-        if (t.left < n.left) el.scrollLeft += t.left - n.left
-        else if (t.right > n.right) el.scrollLeft += t.right - n.right
-      }
-      measure()
-    }
-    reveal()
-    // Again whenever the strip or a tab resizes (a count that loads later widens its tab).
-    const ro = new ResizeObserver(reveal)
-    ro.observe(el)
-    for (const tab of el.children) ro.observe(tab)
-    return () => ro.disconnect()
-  }, [activeKey, measure])
-  const fade = 'pointer-events-none absolute inset-y-0 w-8 from-anvil-50 to-transparent dark:from-anvil-950'
-  return (
-    <div className="relative mt-4" data-more={[more.left && 'left', more.right && 'right'].filter(Boolean).join(' ') || undefined}>
-      <nav
-        ref={ref}
-        aria-label="Repository"
-        onScroll={measure}
-        className="flex gap-1 overflow-x-auto overscroll-x-contain border-b border-anvil-200 [scrollbar-width:none] dark:border-anvil-800 [&::-webkit-scrollbar]:hidden"
-      >
-        {children}
-      </nav>
-      {more.left ? <span aria-hidden className={cn(fade, 'left-0 bg-gradient-to-r')} /> : null}
-      {more.right ? <span aria-hidden className={cn(fade, 'right-0 bg-gradient-to-l')} /> : null}
     </div>
   )
 }

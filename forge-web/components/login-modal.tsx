@@ -39,7 +39,7 @@ import { walletLoginAvailable, walletSignInSupported } from '@/lib/auth/app-conn
 import { ENCRYPTION_KEY_BLAST_RADIUS } from '@/lib/auth/encryption-key'
 import { PLATFORM_READ_MS, connectPlatform } from '@/lib/auth/connect'
 import { withTimeout } from '@/lib/timeout'
-import { KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, TYPICAL_WRITE_CREDITS } from '@/lib/sdk'
+import { KEY_REGISTER_CREDITS, KEY_RENEW_CREDITS, PUSH_COST_DASH, dashRange, typicalIssueCredits } from '@/lib/sdk'
 import { creditsAsDash, formatDate } from '@/lib/view/format'
 import { cn, errorMessage } from '@/lib/utils'
 
@@ -48,6 +48,7 @@ type View = 'choose' | 'unlock' | 'advanced' | LoginView
 export function LoginModal(): JSX.Element {
   const open = useUiStore((s) => s.loginOpen)
   const requested = useUiStore((s) => s.loginView)
+  const intent = useUiStore((s) => s.loginIntent)
   const close = useUiStore((s) => s.closeLogin)
   const { vaults, vaultsLoaded, vaultsError, reloadVaults, limitedKeys } = useAuth()
   const [view, setView] = useState<View | null>(null)
@@ -85,9 +86,18 @@ export function LoginModal(): JSX.Element {
   // Before the stored-key list is read (a few ms, or storage blocked): the Unlock line, the
   // likelier view for someone opening the sheet on a device that holds a key.
   const description = view === null ? 'Checking this browser for a stored key…' : describeView(view, limitedKeys)
+  // A write asked for the sheet: say which, and what it costs once signed in (L-62).
+  const title = view === 'grant' ? 'Approve issues and pull requests' : intent ? `Sign in to ${intent.action}` : 'Sign in to Dash Forge'
 
   return (
-    <Dialog open={open} onClose={close} title={view === 'grant' ? 'Approve issues and pull requests' : 'Sign in to Dash Forge'} description={description} className="max-w-lg">
+    <Dialog open={open} onClose={close} title={title} description={description} className="max-w-lg">
+      {intent && view !== 'grant' ? (
+        <p data-testid="signin-intent" className="mb-3 rounded-md bg-anvil-100 px-3 py-2 text-dense text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200">
+          {intent.credits !== undefined
+            ? `Once you're signed in, this costs about ${creditsAsDash(intent.credits)} DASH, paid from your identity's balance. You confirm before anything is signed.`
+            : "Once you're signed in, you see what it costs and confirm before anything is signed."}
+        </p>
+      ) : null}
       {vaultsError && (view === null || view === 'choose' || view === 'unlock') ? (
         <div className="mb-3">
           <StepFailed error={`Couldn't read the keys stored in this browser: ${vaultsError}`} onRetry={reloadVaults} />
@@ -134,15 +144,34 @@ function describeView(view: View, limitedKeys: boolean): string {
   return `A new or imported identity gives this browser a limited key: ${limits}.`
 }
 
-function Tile({ icon: Icon, title, body, onClick, testId }: { icon: typeof Wallet; title: string; body: string; onClick: () => void; testId: string }): JSX.Element {
+function Tile({
+  icon: Icon,
+  title,
+  body,
+  onClick,
+  testId,
+  muted = false,
+}: {
+  icon: typeof Wallet
+  title: string
+  body: string
+  onClick: () => void
+  testId: string
+  /** An option most people cannot use here: dashed and dimmed, still reachable (L-62). */
+  muted?: boolean
+}): JSX.Element {
   return (
     <button
       type="button"
       data-testid={testId}
+      data-muted={muted || undefined}
       onClick={onClick}
-      className="flex w-full items-start gap-3 rounded-lg border border-anvil-200 px-3 py-3 text-left transition-colors hover:border-forge-400 hover:bg-anvil-50 dark:border-anvil-750 dark:hover:bg-anvil-850"
+      className={cn(
+        'flex w-full items-start gap-3 rounded-lg border border-anvil-200 px-3 py-3 text-left transition-colors hover:border-forge-400 hover:bg-anvil-50 dark:border-anvil-750 dark:hover:bg-anvil-850',
+        muted && 'border-dashed opacity-75',
+      )}
     >
-      <Icon className="mt-0.5 h-5 w-5 shrink-0 text-forge-500" aria-hidden />
+      <Icon className={cn('mt-0.5 h-5 w-5 shrink-0', muted ? 'text-anvil-500 dark:text-anvil-400' : 'text-forge-500')} aria-hidden />
       <span>
         <span className="block text-dense font-medium text-anvil-900 dark:text-anvil-50">{title}</span>
         <span className="block text-[12px] text-anvil-500 dark:text-anvil-400">{body}</span>
@@ -168,16 +197,17 @@ function ChooseView({ onPick }: { onPick: (v: View) => void }): JSX.Element {
         walletFirst
           ? 'DashPay (Dash Wallet) on your phone: scan a QR code (or tap a link on the phone) and approve.'
           : ACTIVE_NETWORK.network === 'devnet'
-            ? `Not on ${ACTIVE_NETWORK.key} yet: Dash Wallet's DashConnect works on testnet. Here only an internal iOS build can answer.`
+            ? `Internal iOS builds only on ${ACTIVE_NETWORK.key}: released Dash Wallet apps can't answer here yet (DashConnect is testnet-only).`
             : `Not on ${ACTIVE_NETWORK.key} yet: Dash Wallet's DashConnect works on testnet only.`
       }
+      muted={!walletFirst}
       onClick={() => onPick('wallet')}
     />
   ) : null
   return (
     <div className="space-y-2">
       {walletFirst ? walletTile : null}
-      <Tile testId="tile-create" icon={Plus} title="Create a new identity" body={`12 words you write down, then fund it from any Dash wallet. About ${creditsAsDash(TYPICAL_WRITE_CREDITS)} DASH per issue or push.`} onClick={() => onPick('create')} />
+      <Tile testId="tile-create" icon={Plus} title="Create a new identity" body={`12 words you write down, then fund it from any Dash wallet. About ${creditsAsDash(typicalIssueCredits())} DASH per issue, ${dashRange(PUSH_COST_DASH.byo)} per push.`} onClick={() => onPick('create')} />
       <Tile
         testId="tile-import"
         icon={Upload}

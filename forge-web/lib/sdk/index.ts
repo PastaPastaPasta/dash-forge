@@ -6,7 +6,8 @@
  * complete, tie-safe paging that active-repo correctness depends on.
  */
 
-export { ensureSdk, evoSdkService, isStaleConnectionError, isUnreachableError, type EvoSdkConfig, type SdkStatus } from './service'
+export { ensureSdk, evoSdkService, type EvoSdkConfig, type SdkStatus } from './service'
+export { isStaleConnectionError, isUnreachableError } from './unreachable'
 export { type DownloadProgress } from './wasm-fetch'
 export {
   ConsensusRefusal,
@@ -46,7 +47,9 @@ export {
   KEY_LIMITS_UPDATE_CREDITS,
   KEY_REGISTER_CREDITS,
   KEY_RENEW_CREDITS,
-  TYPICAL_WRITE_CREDITS,
+  typicalIssueCredits,
+  PUSH_COST_DASH,
+  dashRange,
   STEADY,
   type FirstWrite,
   creditsToDash,

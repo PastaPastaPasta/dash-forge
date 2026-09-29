@@ -34,6 +34,7 @@ set -eu
 REPO="PastaPastaPasta/dash-forge"
 DEFAULT_BASE_URL="https://github.com/${REPO}/releases"
 DOCS_URL="https://github.com/${REPO}/blob/master/docs/INSTALL.md"
+BUILDING_URL="https://github.com/${REPO}/blob/master/docs/BUILDING.md"
 
 say() {
     printf '%s\n' "$*"
@@ -127,6 +128,42 @@ download() {
     else
         die "need curl (or wget, for https) to download release files"
     fi
+}
+
+# Whether <url> is not there (as opposed to unreachable): a missing file:// path, or an HTTP 404
+# once redirects are followed. curl's exit status alone cannot tell (56 is both an HTTP error
+# with --fail on newer curl and a dropped connection), so the status line is asked for.
+not_found() {
+    case "$1" in
+        file://*) [ ! -e "${1#file://}" ] ;;
+        *)
+            if have curl; then
+                [ "$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 --silent --location --max-time 20 \
+                    --head --output /dev/null --write-out '%{http_code}' "$1" 2>/dev/null)" = 404 ]
+            else
+                wget -S --spider --timeout=20 --tries=1 "$1" 2>&1 | grep -q 'HTTP/[0-9.]* 404'
+            fi
+            ;;
+    esac
+}
+
+# There is no release to install from: say so, and how to install without one.
+no_release() {
+    if [ -n "$1" ]; then
+        printf 'install.sh: error: release v%s is not published (see %s).\n' "$1" "$BASE_URL" >&2
+    else
+        printf 'install.sh: error: no Dash Forge release has been published yet, so there are no prebuilt binaries to install (see %s).\n' "$BASE_URL" >&2
+        printf 'If only a pre-release (such as v0.1.0-rc.1) is published, "latest" skips it: pin it with DASH_FORGE_VERSION=0.1.0-rc.1.\n' >&2
+    fi
+    cat >&2 <<EOF_BUILD
+Build from source instead (needs Rust and protoc 25 or newer; see $BUILDING_URL):
+
+  git clone https://github.com/${REPO} && cd dash-forge
+  cargo install --locked --path crates/dg
+  cargo install --locked --path crates/git-remote-dash
+
+EOF_BUILD
+    exit 1
 }
 
 sha256_of() {
@@ -267,8 +304,10 @@ main() {
 
     say "Dash Forge installer ($target)"
     say "Fetching $sums_url"
-    download "$sums_url" "$tmp/SHA256SUMS" ||
-        die "could not download SHA256SUMS from $sums_url (is there a published release${pinned:+ v$pinned}?)"
+    if ! download "$sums_url" "$tmp/SHA256SUMS"; then
+        not_found "$sums_url" && no_release "$pinned"
+        die "could not download SHA256SUMS from $sums_url (a network problem, or GitHub did not answer). Check your connection and retry."
+    fi
 
     # Exactly one archive for this target, which also tells us the version.
     assets=$(sums_names "$tmp/SHA256SUMS" | grep -E "^dash-forge-[0-9A-Za-z.+-]+-${target}\\.tar\\.gz\$" || true)

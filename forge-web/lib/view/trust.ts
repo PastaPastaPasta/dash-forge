@@ -70,7 +70,7 @@ export interface TrustReport {
   readonly source: TrustLink
   /** The card's headline: the most severe row (see {@link overallOf}). */
   readonly overall: TrustState
-  /** The collapsed line: `Verified · refs by proof · 214 objects by hash · from r2.dev`. */
+  /** The collapsed line: `Verified · refs by proof · 214 objects checked this session · from r2.dev`. */
   readonly summary: string
 }
 
@@ -357,7 +357,8 @@ function summaryOf(overall: TrustState, chain: TrustLink, checks: ContentChecks)
   if (chain.checking) return 'Checking…'
   const parts = [TRUST_LABEL[overall]]
   if (chain.state === 'verified' || chain.state === 'partial') parts.push('refs by proof')
-  if (checks.objectsVerified > 0) parts.push(`${plural(checks.objectsVerified, 'object')} by hash`)
+  // A tally of this tab's reads, not a property of the repo: it grows as the viewer browses (L-81).
+  if (checks.objectsVerified > 0) parts.push(`${plural(checks.objectsVerified, 'object')} checked this session`)
   // The places that served THIS view's objects: the session's first source named Platform for
   // a file an S3 mirror served (L-18).
   const served = viewSources(checks)

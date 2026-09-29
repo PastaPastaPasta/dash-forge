@@ -15,6 +15,7 @@ import {
   previewDelete,
   sumPreviews,
   type FirstWrite,
+  typicalIssueCredits,
 } from './cost'
 
 const S = STEADY
@@ -168,5 +169,18 @@ describe('chunk storage (review M7)', () => {
     }
     // 1 MiB measured ≈0.33 DASH; the quote stays above it.
     expect(estimateChunkCredits(1 << 20) / 1e11).toBeGreaterThan(0.33)
+  })
+})
+
+describe('the sign-in sheet quotes what the New issue form previews (L-73)', () => {
+  it('is a newcomer’s issue with every first-write surcharge, not the old steady-state 62M', () => {
+    const quoted = typicalIssueCredits()
+    const firstShortIssue = previewCreate('issue', { title: 'A typical issue title' }).credits
+    const steady = previewCreate('issue', { title: 'A typical issue title' }, STEADY).credits
+    // The form showed ~0.0011–0.0013 DASH for a signed-out newcomer; the sheet said 0.00062.
+    expect(quoted).toBeGreaterThanOrEqual(firstShortIssue)
+    expect(quoted).toBeGreaterThan(1.5 * steady)
+    expect(quoted / 1e11).toBeGreaterThan(0.0011)
+    expect(quoted / 1e11).toBeLessThan(0.0014)
   })
 })

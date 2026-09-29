@@ -57,3 +57,11 @@ export function errorMessage(e: unknown, fallback = 'read failed (SDK error)'): 
   }
   return fallback
 }
+
+/** A base58 identity id (32 bytes: 42-44 characters). */
+const IDENTITY_ID = /^[1-9A-HJ-NP-Za-km-z]{42,44}$/
+
+/** Whether `s` is shaped like a base58 identity id. */
+export function isIdentityId(s: string): boolean {
+  return IDENTITY_ID.test(s)
+}

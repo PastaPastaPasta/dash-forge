@@ -363,7 +363,7 @@ export default function NewRepoPage(): JSX.Element {
             disabled={name.trim() === '' || nameError !== null || guard.disabledReason !== null || privateBlocked !== null}
             title={guard.disabledReason ?? privateBlocked ?? undefined}
             onClick={() => {
-              if (guard.check(cost)) setConfirm(input())
+              if (guard.check(cost, 'core', 'create a repository')) setConfirm(input())
             }}
           >
             Create repository

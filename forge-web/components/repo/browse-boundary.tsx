@@ -9,7 +9,7 @@
  * local memory. The state machine itself is {@link useBrowseReader}.
  */
 
-import { Fragment, useCallback, useMemo, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { AlertTriangle, HardDriveDownload, PackageOpen } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
@@ -18,6 +18,7 @@ import { useTrustView } from '@/hooks/use-trust-view'
 import type { BrowseReader } from '@/lib/browse'
 import { repoKey, type RepoRef } from '@/lib/repo'
 import { formatBytes, invalidateBrowseContext, plural, StorageUnreachableError, type UnavailablePack } from '@/lib/view'
+import { readOutages, scheduleReconnect, subscribeReadOutages } from '@/lib/view/reconnect'
 import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
 import type { RepoAddress } from '@/hooks/use-query-param'
 
@@ -58,6 +59,41 @@ function UnavailablePacksNotice({ packs }: { packs: readonly UnavailablePack[] }
   )
 }
 
+/** Automatic re-reads after outages that each ended in another outage, before asking the viewer. */
+const MAX_FRUITLESS_RECOVERIES = 3
+
+/**
+ * Re-read the view after a read of repo `key` got no bytes (L-10), once the connection is back:
+ * `epoch` goes up, and the view is keyed on it, so what failed to load (a README, the commit
+ * column, a file row) is read again without a reload. Objects that did load are memoized by
+ * the reader, so a re-read costs only what was missing (it re-runs the view, M2: it never drops
+ * the repo's browse context). After {@link MAX_FRUITLESS_RECOVERIES} re-reads that each met
+ * another outage it stops (`stalled`) and the view offers Try again instead (H2). Per repo:
+ * another repo starts afresh (M4).
+ */
+function useReadRecovery(key: string): { epoch: number; stalled: boolean; resume: () => void } {
+  const outages = useSyncExternalStore(subscribeReadOutages, () => readOutages(key), () => 0)
+  const [state, setState] = useState({ key, handled: outages, epoch: 0, fruitless: 0 })
+  const current = state.key === key ? state : { key, handled: outages, epoch: 0, fruitless: 0 }
+  if (current !== state) setState(current)
+  const stalled = current.fruitless >= MAX_FRUITLESS_RECOVERIES
+  useEffect(() => {
+    if (outages <= current.handled || stalled) return
+    return scheduleReconnect(() =>
+      // A re-read that met another outage since the last one did not get anywhere.
+      setState((s) => ({ ...s, handled: outages, epoch: s.epoch + 1, fruitless: s.epoch > 0 ? s.fruitless + 1 : 0 })),
+    )
+  }, [outages, current.handled, stalled])
+  // A quiet spell after a re-read (no new outage for a while) means it got through.
+  useEffect(() => {
+    if (current.fruitless === 0 || outages > current.handled) return
+    const t = setTimeout(() => setState((s) => ({ ...s, fruitless: 0 })), 30_000)
+    return () => clearTimeout(t)
+  }, [current.fruitless, outages, current.handled])
+  const resume = useCallback(() => setState((s) => ({ ...s, handled: outages, epoch: s.epoch + 1, fruitless: 0 })), [outages])
+  return { epoch: current.epoch, stalled, resume }
+}
+
 export function BrowseBoundary({
   repo,
   addr,
@@ -79,6 +115,7 @@ export function BrowseBoundary({
   const view = useTrustView()
   const shared = state.kind === 'ready' ? state.reader : null
   const reader = useMemo(() => shared?.forView(view) ?? null, [shared, view])
+  const recovery = useReadRecovery(key)
 
   switch (state.kind) {
     case 'loading':
@@ -87,7 +124,7 @@ export function BrowseBoundary({
       if (state.cause instanceof StorageUnreachableError) {
         return <StorageUnreachableCard repo={repo} addr={addr} packs={state.cause.packs} retry={state.retry} />
       }
-      return <ErrorState title={state.title} message={state.message} onRetry={state.retry} />
+      return <ErrorState title={state.title} message={state.message} cause={state.cause} onRetry={state.retry} />
     case 'no-packs':
       return (
         <EmptyState
@@ -99,7 +136,20 @@ export function BrowseBoundary({
     case 'ready': {
       // Keyed by the reader: one resolved from a newer pack list (a push, a merge) replaces the
       // view, whose reads then run against it, instead of keeping what the old one showed.
-      const body = <Fragment key={state.version}>{children(reader ?? state.reader, retry)}</Fragment>
+      // And by the recovery epoch: once a read outage is over, the view reads again (L-10).
+      const body = (
+        <>
+          {recovery.stalled ? (
+            <div role="status" data-testid="read-recovery-stalled" className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200">
+              Parts of this page could not be loaded: the connection keeps dropping.
+              <button type="button" onClick={recovery.resume} className="underline coarse:min-h-11">
+                Try again
+              </button>
+            </div>
+          ) : null}
+          <Fragment key={`${state.version}:${recovery.epoch}`}>{children(reader ?? state.reader, retry)}</Fragment>
+        </>
+      )
       if (!state.local) return body
       return (
         <div>

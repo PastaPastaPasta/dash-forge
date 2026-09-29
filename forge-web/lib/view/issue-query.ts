@@ -18,6 +18,7 @@
  */
 
 import { plural } from './format'
+import { isIdentityId } from '../utils'
 
 export type IssueStateFilter = 'open' | 'closed' | 'all'
 export type IssueSort = 'newest' | 'oldest' | 'comments'
@@ -52,13 +53,6 @@ const STATES: readonly IssueStateFilter[] = ['open', 'closed', 'all']
 const SORTS: readonly IssueSort[] = ['newest', 'oldest', 'comments']
 /** A label is 1-30 characters (the `label.name` schema); a longer value cannot match one. */
 const LABEL_MAX = 30
-/** A base58 identity id (32 bytes: 42-44 characters). */
-const IDENTITY = /^[1-9A-HJ-NP-Za-km-z]{42,44}$/
-
-/** Whether `s` is shaped like a base58 identity id. */
-export function isIdentityId(s: string): boolean {
-  return IDENTITY.test(s)
-}
 
 /** The bytes an issue, PR or comment `body` may hold (the contract's `maxBytes`). */
 export const BODY_MAX = 5120
@@ -71,7 +65,7 @@ export function utf8Length(s: string): number {
 function identityParam(v: string | null, extra: readonly string[]): string | null {
   if (v === null) return null
   const t = v.trim()
-  if (extra.includes(t) || IDENTITY.test(t)) return t
+  if (extra.includes(t) || isIdentityId(t)) return t
   return null
 }
 

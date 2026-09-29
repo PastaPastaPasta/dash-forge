@@ -32,28 +32,30 @@ export function IdentityPill({
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-full py-0.5 pl-0.5 pr-2 text-dense',
+        // One line, never a 2-4-line pill on a phone: the name ellipsizes, the id and the
+        // avatar keep their width (L-58). The full name is in the title.
+        'inline-flex min-w-0 max-w-full items-center gap-1.5 whitespace-nowrap rounded-full py-0.5 pl-0.5 pr-2 text-dense',
         'bg-anvil-100 text-anvil-700 dark:bg-anvil-800 dark:text-anvil-200',
         className,
       )}
     >
       <span
-        className="flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+        className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
         style={{ backgroundColor: fill }}
         aria-hidden
       >
         {initial}
       </span>
       {name ? (
-        <span className="font-medium text-dash-600 dark:text-dash-400">{name}</span>
+        <span className="min-w-0 truncate font-medium text-dash-600 dark:text-dash-400" title={name}>{name}</span>
       ) : null}
-      <span className="font-mono text-anvil-500 dark:text-anvil-400">
+      <span className="shrink-0 font-mono text-anvil-500 dark:text-anvil-400" title={identityId}>
         {abbreviate(identityId)}
       </span>
       {role ? (
         <span
           className={cn(
-            'rounded px-1 text-[10px] font-semibold uppercase tracking-wide',
+            'shrink-0 rounded px-1 text-[10px] font-semibold uppercase tracking-wide',
             'bg-forge-500/15 text-forge-800 dark:text-forge-400',
           )}
         >

@@ -10,6 +10,7 @@ import { AppHeader } from '@/components/app-header'
 import { AppFooter } from '@/components/app-footer'
 import { ContractsMissingState } from '@/components/ui/contracts-missing'
 import { useContractsMissing } from '@/hooks/use-sdk'
+import { useOfflineNavigation } from '@/hooks/use-offline-navigation'
 import { LowFundsBanner } from '@/components/low-funds-banner'
 import { LoginModal } from '@/components/login-modal'
 import { PlatformBusy } from '@/components/platform-busy'
@@ -28,6 +29,7 @@ export function AppShell({
   // The network does not have this build's contracts (a devnet reset): one state for the whole
   // app, not a read error in every view.
   const contractsMissing = useContractsMissing()
+  useOfflineNavigation()
   return (
     <div className="flex min-h-screen flex-col">
       {/* First Tab stop: skip the header's controls (WCAG 2.4.1). */}
