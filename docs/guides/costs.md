@@ -77,7 +77,7 @@ A write that is the first of its kind somewhere (a repository's first push or fi
 | Push to **your own bucket** | **~0.002–0.003 DASH**: two pack manifests (the pack's and its browse index's) and one ref update. Measured: 0.0028 DASH for the first push to a repository, 0.0021 DASH after |
 | Push with packs **on Platform** | **~0.004–0.005 DASH** for a tiny push (0.0046 first, 0.0040 after), plus **~0.33 DASH per MiB** of packed data; the storage is permanent. Measured: 200 KiB 0.070 DASH, 1.5 MiB 0.50 DASH |
 | Push to a **private** repository, packs on Platform | 20 KiB: 0.0112 DASH (first push); a tiny follow-up: 0.0022 DASH; three new branches at once: 0.0078 DASH. The packs are sealed, so they are a little larger |
-| History index (a push that moves the **default branch**) | **one more manifest and, on Platform, one small chunk**: ~0.0026–0.0043 DASH on Platform for a typical push, ~0.0016 DASH with your own storage (both upper bounds). See [History index](#history-index) |
+| History index (a push that moves the **default branch**) | **one more manifest and, on Platform, a small delta**: ~0.0026–0.006 DASH on Platform for a typical push, and now and then a full index (~0.28 DASH on dashpay/dash; about every 80 pushes there, ~0.009 DASH a push on average). ~0.0016 DASH with your own storage. All upper bounds. See [History index](#history-index) |
 | Each extra branch or tag in a push | ~0.0006–0.0009 DASH (one ref update; the same for a protected branch, public or private). A push that only adds a branch at a commit already stored measured 0.00066 DASH |
 | Each extra storage target (a second bucket) | ~0.00014 DASH a push: the two manifests carry its URIs |
 | Issue | ~0.0006 DASH with a short body in a busy repository, ~0.001 DASH for a repository's first; ~0.0017 DASH with a 4 KB body |
@@ -117,21 +117,30 @@ These are upper bounds, the prices `dg` and `git push` quote before they sign, n
 
 ### History index
 
-The file list's last-commit column and the exact `n commits` count come from a **history index** the push publishes with the default branch ([design](../design/history-index.md)). Without one, the web walks history in your browser, 400 commits at a time. The first index is a full one. Later pushes publish a small **delta** over it, until the delta reaches half the full index's size; the next push then publishes a full index again.
+The file list's last-commit column, the exact `n commits` count, and the file versions Blame and a file's History read come from a **history index** the push publishes with the default branch ([design](../design/history-index.md)). Without one, the web walks history in your browser: 400 commits at a time for the column, and every commit back to a file's first version for Blame. The first index is a full one. Later pushes publish a small **delta** over it. Each delta covers every change since the full index, so each push pays for all of them again. Once the deltas over a full index have cost as much as the full index itself, the next push publishes a full one again. A delta is never over half the full index.
 
-Sizes and fees below were computed with `forge-core`'s own code on the showcase mirrors (`measure_a_real_repository`). The fees are the upper bound `git push` and `dg repo reindex` quote (`push_fees::history_index`, priced as a first write), not balance changes:
+Since v2, the index lists each path's newest 256 first-parent versions: the commit, author and blob of each. Blame of dashpay/dash's `src/clientversion.h` then needs 16 chunk queries instead of 357 (the offline replay in the [design](../design/history-index.md#measured-size-and-cost)). The lists make the index about ten times larger than v1.
 
-| Repository (default branch) | Paths | Commits (all / first-parent) | Full index | On Platform | With your own storage |
+Sizes and fees below were computed with `forge-core`'s own code from a full clone (`measure_a_real_repository`, `measure_a_real_delta`). The fees are the upper bound `git push` and `dg repo reindex` quote (`push_fees::history_index`), not balance changes:
+
+| dashpay/dash `develop` @ 3ba0805c (5,117 paths, 34,001 / 8,363 commits) | Size | Chunks | On Platform | With your own storage |
+|---|---|---|---|---|
+| Full index (v2) | 752,738 B | 52 | **~0.284 DASH** (~0.285 for a repository's first) | ~0.0016 DASH |
+| Delta, 1 commit later | 236 B | 1 | ~0.0026 DASH | ~0.0016 DASH |
+| Delta, 10 commits later | 1,926 B | 1 | ~0.0031 DASH | ~0.0016 DASH |
+| Delta, 50 commits later | 12,301 B | 1 | ~0.0060 DASH | ~0.0016 DASH |
+| Delta, 200 commits later | 47,685 B | 4 | ~0.020 DASH | ~0.0016 DASH |
+
+**Per push, on average.** Deltas on dash grow by about 240 bytes per first-parent commit. With one commit per push, the deltas over a full index reach its cost after about 80 pushes. Then one push publishes a full index (~0.28 DASH). Over that cycle a push pays about **0.009 DASH** on average for its history index on Platform. That figure is an estimate from the quote formula and the measured delta sizes. Pushes of several commits reach the full index sooner, in pushes but not in commits. With your own storage, only the manifest is on chain: ~0.0016 DASH a push, whatever the size.
+
+| Other repositories (v1 index, before version lists) | Paths | Commits (all / first-parent) | Full index | On Platform | With your own storage |
 |---|---|---|---|---|---|
-| dashpay/dash (`develop` @ 3ba0805c) | 5,117 | 33,553 / 7,979 | 66,965 B, 5 chunks | **~0.0249 DASH** | ~0.0016 DASH |
 | junegunn/fzf (`master`) | 178 | 3,746 / 3,488 | 6,925 B, 1 chunk | ~0.0044 DASH | ~0.0016 DASH |
 | dtolnay/anyhow (`master`) | 62 | 931 / 668 | 2,490 B, 1 chunk | ~0.0032 DASH | ~0.0016 DASH |
 
-**Measured:** backfilling dashpay/dash's full index with `dg repo reindex` on devnet moutai (Platform 4.2.0-beta.6, 2026-09-29) cost **0.02479 DASH** (quoted 0.02455 before a repository's first-index margin was added; the quote now includes it and stays above the charge).
+**Measured (v1):** backfilling dashpay/dash's v1 index with `dg repo reindex` on devnet moutai (Platform 4.2.0-beta.6, 2026-09-29) cost **0.02479 DASH** for 66,965 B (quoted 0.02455 before a repository's first-index margin was added; the quote now includes it and stays above the charge). That index was computed in a shallow clone, so its counts (33,553 / 7,979) were short; a shallow clone is now refused. The v2 backfill of the dash mirror waits for its re-import on devnet bonsia. Computing dash's full v2 index takes about 1.5 s on the pusher's machine.
 
-On dashpay/dash, a delta over the full index is 202 B one commit later (3 paths, ~0.0026 DASH quoted), 1.4 KB ten commits later (64 paths, ~0.0029 DASH) and 6.5 KB fifty commits later (488 paths, ~0.0043 DASH). With your own storage, only the manifest is on chain: ~0.0016 DASH quoted, whatever the size. Computing dash's full index takes about 1.3 s on the pusher's machine.
-
-`dg repo reindex <repo>`, run inside a clone that has the default branch's tip, publishes the index for a repository pushed before it existed and quotes its price before asking. A push that stores no new pack, such as a retry of a recorded one, publishes none; `dg repo reindex` fills that in.
+`dg repo reindex <repo>`, run inside a clone that has the default branch's tip, publishes the index for a repository pushed before it existed, or a v2 index over a v1 one, and quotes its price before asking. A push that stores no new pack, such as a retry of a recorded one, publishes none; `dg repo reindex` fills that in.
 
 **Why a repository is cheap.** Every repository lives in one shared pair of contracts, forge-core and forge-collab, registered once per network (for about 1.16 DASH, paid by the deployer, not by you). A new repository is then just three documents. The first version of Forge gave each repository its own contract, and contract registration fees made that cost about 1.18 DASH per repository; it was removed on 2026-09-26.
 

@@ -12,8 +12,8 @@
 
 const TOKEN = /^~[0-9a-f]{16}$/
 
-/** The params whose values are decrypted names in a private repo. */
-export const SEALED_PARAMS: ReadonlySet<string> = new Set(['path', 'ref', 'oid'])
+/** The params whose values are decrypted names in a private repo (`base` / `head`: a comparison's refs). */
+export const SEALED_PARAMS: ReadonlySet<string> = new Set(['path', 'ref', 'oid', 'base', 'head'])
 
 /** Repos (by address key) whose URLs are sealed in this tab. */
 const sealedRepos = new Set<string>()
