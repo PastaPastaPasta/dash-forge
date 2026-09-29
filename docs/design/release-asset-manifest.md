@@ -40,7 +40,7 @@ This reuses what already exists:
 }
 ```
 
-- `assetManifest`: the `packHash` (SHA-256) of the release's asset manifest, a `packManifest` of kind 3 in the same repository.
+- `assetManifest`: the `packHash` (SHA-256) of the release's asset manifest, a `packManifest` of kind 4 in the same repository.
 - Optional. A release with only a handful of assets keeps listing them inline in `assets` and has no manifest.
 - A release may carry both. `assets` is then the **preview**: the checksum files, signatures and common platform builds, as `fit_assets` picks them today. A reader that cannot fetch the manifest still has the downloads that matter, and a reader that can shows the rest.
 - **The `noPlain` constraint gains `assetManifest`.** A private repo's release (`enc` present) must not name a plaintext list:
@@ -65,9 +65,9 @@ Sealed releases carry the hash inside `enc`, and the manifest's bytes are sealed
 
 Cost: 32 bytes and one position. forge-core's per-write contract-load fee grows by ~0.7 kB × 20 credits/B, which is negligible (BETA6-ANALYSIS.md, "Fees and registration").
 
-### 1.2 `packManifest.kind = 3`: `releaseAssets`
+### 1.2 `packManifest.kind = 4`: `releaseAssets`
 
-No schema change: `kind` is already `integer 0..255`. The new constant is `KIND_RELEASE_ASSETS = 3` in `forge_core::pack::manifest` and its web mirror. Kind 3 manifests are excluded from the git pack space: `packRef` numbering is per kind (forge-v2.md §5, step 4), so this is automatic. The browse index never covers them.
+No schema change: `kind` is already `integer 0..255`. The new constant is `KIND_RELEASE_ASSETS = 4` in `forge_core::pack::manifest` and its web mirror. Kind 3 is taken by the history index (`KIND_HISTORY_INDEX`); RC1's `kindShape` rule (R-11) requires a kind-3 manifest's `tips` to be 20, 32, 40 or 64 bytes and asks nothing extra of kind 4. Kind 4 manifests are excluded from the git pack space: `packRef` numbering is per kind (forge-v2.md §4, step 4), so this is automatic. The browse index never covers them.
 
 The artifact's bytes are UTF-8 JSON, canonical: keys sorted, no insignificant whitespace, entries in the source's order. For example:
 
@@ -98,7 +98,7 @@ Size: about 255 B per imported entry, so dashpay/dash's largest release (21 asse
 
 ### 1.3 Writers
 
-- **`forge-import`** writes the manifest when a release's list does not fit: kind-3 `packManifest` plus its chunks/URIs, under the run's storage policy and priced like any artifact. Then the `release` carries the preview in `assets` and the hash in `assetManifest`. The notes footer is no longer needed, and a later run drops it from the notes.
+- **`forge-import`** writes the manifest when a release's list does not fit: kind-4 `packManifest` plus its chunks/URIs, under the run's storage policy and priced like any artifact. Then the `release` carries the preview in `assets` and the hash in `assetManifest`. The notes footer is no longer needed, and a later run drops it from the notes.
   - An import whose storage refuses the manifest falls back to today's footer, so the release is still published.
 - **`dg release create`** and the web's new-release dialog write a manifest past ~12 assets, with the same preview rule.
 - **Idempotency:** the manifest is content-addressed, so a re-run that finds `(repoId, $ownerId, packHash)` already recorded writes nothing.
@@ -106,7 +106,7 @@ Size: about 255 B per imported entry, so dashpay/dash's largest release (21 asse
 ### 1.4 Readers
 
 - **forge-web** (`lib/repo/releases.ts`) shows `assets` at once. When `assetManifest` is set, it:
-  1. fetches the kind-3 artifact through the existing verified-artifact reader;
+  1. fetches the kind-4 artifact through the existing verified-artifact reader;
   2. checks the SHA-256 and the `tag`;
   3. lists every asset, each with the existing verified-download row.
   - If the fetch fails, it keeps the preview and says "N more assets: list unavailable (retry)".
@@ -180,7 +180,7 @@ The estimator now prices a fixed 16 levels (65,536 chunks). A `documentsCountabl
 ## 6. Checklist for the registration PR
 
 - [ ] `release.assetManifest` (h32, position 8) and `noPlain` gains it.
-- [ ] `KIND_RELEASE_ASSETS = 3` in forge-core and forge-web, excluded from the git pack space.
+- [ ] `KIND_RELEASE_ASSETS = 4` in forge-core and forge-web, excluded from the git pack space.
 - [ ] `release.imported` (§4).
 - [ ] Decide `chunk.documentsCountable` (§5) after a cost measurement.
 - [ ] Contract size stays under the limit. forge-core is 14,515 B signed on beta.6; these add well under 1 kB.

@@ -126,7 +126,7 @@ fn reason(e: &ConsensusError) -> String {
 /// the first error as `(reason, message)`.
 fn judge(
     doc_type: &str,
-    data: BTreeMap<String, Value>,
+    data: &BTreeMap<String, Value>,
     signer: Identifier,
 ) -> Option<(String, String)> {
     let Some(contract) = ForgeContract::of(doc_type) else {
@@ -158,16 +158,16 @@ fn judge(
     )))
     .or_else(|| {
         first(ran(
-            document_type.validate_distinct_from_properties(&data, signer, pv)
+            document_type.validate_distinct_from_properties(data, signer, pv)
         ))
     })
     .or_else(|| {
         first(ran(
-            document_type.validate_encrypted_property_shapes(&data, pv)
+            document_type.validate_encrypted_property_shapes(data, pv)
         ))
     })
     .or_else(|| {
-        first_unrevealable_lookup_key(document_type, &data, signer).map(|(path, e)| {
+        first_unrevealable_lookup_key(document_type, data, signer).map(|(path, e)| {
             let e: ConsensusError = DocumentReferencePreimageInvalidError::new(
                 doc_type.to_string(),
                 path,
@@ -189,7 +189,7 @@ fn judge_props(
         .iter()
         .map(|(k, v)| (k.clone(), v.clone().into_value()))
         .collect();
-    judge(doc_type, data, Identifier::from(owner))
+    judge(doc_type, &data, Identifier::from(owner))
 }
 
 /// Judge `props` as a create of `doc_type` signed by `owner`. `Err("<reason>: <message>")` for
@@ -242,8 +242,8 @@ mod vectors {
     /// `forge-contracts/scripts/rc1-live.mjs`.
     const SETS: [(&str, usize); 3] = [
         ("forge-core", 171),
-        ("forge-collab", 98),
-        ("forge-community", 112),
+        ("forge-collab", 101),
+        ("forge-community", 117),
     ];
 
     /// An identifier written as a byte `n` (32 bytes of n) or a base58 string.
@@ -322,7 +322,7 @@ mod vectors {
                     "{set}: `{name}` is a {ty}, held by another contract"
                 );
                 let signer = c.get("owner").map_or(Identifier::from(OWNER), identifier);
-                let got = judge(ty, doc_data(&c["doc"]), signer);
+                let got = judge(ty, &doc_data(&c["doc"]), signer);
                 let verdict = match (expect, &got) {
                     ("ok", None) => None,
                     ("ok", Some((why, msg))) => {
@@ -378,66 +378,6 @@ mod vectors {
         assert_eq!(validate_props("maintainer", &member, [9; 32]), Ok(()));
         let e = validate_props("maintainer", &member, OWNER).unwrap_err();
         assert!(e.starts_with("ownerOrConsented: "), "{e}");
-    }
-
-    fn doc(fields: &[(&str, FieldValue)]) -> BTreeMap<String, FieldValue> {
-        fields
-            .iter()
-            .map(|(k, v)| ((*k).to_string(), v.clone()))
-            .collect()
-    }
-
-    /// `distinctFrom` (10419): a starBeat of your own repo and a follow of yourself are refused
-    /// on the create's structure, like any node refuses them. (Local until the shared vectors
-    /// carry these cases.)
-    #[test]
-    fn distinct_from_is_judged() {
-        let beat = |owner: u8| {
-            doc(&[
-                ("repoId", FieldValue::Identifier([1; 32])),
-                ("vis", FieldValue::text("public")),
-                ("repoOwner", FieldValue::Identifier([owner; 32])),
-            ])
-        };
-        assert_eq!(validate_props("starBeat", &beat(8), OWNER), Ok(()));
-        assert_eq!(first_error("starBeat", &beat(7)).as_deref(), Some("10419"));
-        let follow = |who: u8| doc(&[("identityId", FieldValue::Identifier([who; 32]))]);
-        assert_eq!(validate_props("follow", &follow(9), OWNER), Ok(()));
-        assert_eq!(first_error("follow", &follow(7)).as_deref(), Some("10419"));
-    }
-
-    /// `encryptedFor` shapes (10420): a ciphertext is at least 32 bytes and a multiple of 16, so a
-    /// 40-byte wrap and a 33-byte webhook secret are refused though the schema admits their
-    /// lengths.
-    #[test]
-    fn encrypted_shapes_are_judged() {
-        let wrap = |len: usize| {
-            doc(&[
-                ("repoId", FieldValue::Identifier([1; 32])),
-                ("memberId", FieldValue::Identifier(OWNER)),
-                ("epoch", FieldValue::integer(0)),
-                ("recipientKeyId", FieldValue::integer(1)),
-                ("senderKeyId", FieldValue::integer(1)),
-                ("wrapped", FieldValue::bytes(vec![9; len])),
-            ])
-        };
-        assert_eq!(validate_props("repoKey", &wrap(48), OWNER), Ok(()));
-        assert_eq!(first_error("repoKey", &wrap(40)).as_deref(), Some("10420"));
-        let hook = |len: usize| {
-            doc(&[
-                ("repoId", FieldValue::Identifier([1; 32])),
-                ("hookId", FieldValue::bytes32([3; 32])),
-                ("url", FieldValue::text("https://hooks.example.com/dash")),
-                ("events", FieldValue::text_list(["push".to_string()])),
-                ("relayIdentityId", FieldValue::Identifier([13; 32])),
-                ("relayKeyId", FieldValue::integer(1)),
-                ("senderKeyId", FieldValue::integer(1)),
-                ("secret", FieldValue::bytes(vec![9; len])),
-                ("vis", FieldValue::text("public")),
-            ])
-        };
-        assert_eq!(validate_props("webhook", &hook(48), OWNER), Ok(()));
-        assert_eq!(first_error("webhook", &hook(33)).as_deref(), Some("10420"));
     }
 }
 

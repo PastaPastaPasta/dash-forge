@@ -2733,5 +2733,123 @@
    "summary": "ok",
    "externalId": "gh-1"
   }
+ },
+ {
+  "item": "base",
+  "name": "checkRun status outside its enum",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "enum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "done",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "base",
+  "name": "checkRun conclusion outside its enum",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "enum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "passed",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "O-08",
+  "name": "a beat on the signer's own repo (distinctFrom)",
+  "type": "starBeat",
+  "expect": "refused",
+  "why": "10419",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "vis": "public",
+   "repoOwner": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "base",
+  "name": "following yourself (distinctFrom)",
+  "type": "follow",
+  "expect": "refused",
+  "why": "10419",
+  "doc": {
+   "identityId": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "R-19",
+  "name": "a 33-byte webhook secret (not a multiple of 16)",
+  "type": "webhook",
+  "expect": "refused",
+  "why": "10420",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "hookId": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "url": "https://hooks.example.com/dash",
+   "events": [
+    "push"
+   ],
+   "relayIdentityId": {
+    "$id": 13
+   },
+   "relayKeyId": 1,
+   "senderKeyId": 1,
+   "secret": {
+    "$b": [
+     9,
+     33
+    ]
+   },
+   "vis": "public"
+  }
  }
 ]
