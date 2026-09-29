@@ -699,10 +699,12 @@ async function awaitOutcome(sdk: EvoSDK, st: StateTransition, indexOnly: boolean
   } catch (e) {
     // A nonce answer is settled by reading the chain (the caller's `settleUnanswered`).
     const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
-    // The result wait answers with the transition's verdict in a block, whatever shape the
-    // error takes: charged (unless Drive leaves that refusal unpaid), or unknown when the SDK
-    // could not decode it (`asConsensusRefusal` already says null for that).
-    if (refusal !== null) throw new ConsensusRefusal(refusal.code, refusal.message, refusal.figures, refusal.charged === null ? null : true)
+    // The result wait answers with the transition's verdict in a block, whatever kind the error
+    // has: charged (unless Drive leaves that refusal unpaid), or unknown when the SDK could not
+    // decode it.
+    if (refusal !== null) {
+      throw new ConsensusRefusal(refusal.code, refusal.message, refusal.figures, refusal.code === UNREADABLE_REFUSAL_CODE ? null : true)
+    }
     return 'unknown'
   } finally {
     clearTimeout(timer)
@@ -1521,7 +1523,6 @@ async function deleteDocumentUnlocked(
   const signer = new IdentitySigner()
   signer.addKeyFromWif(wif)
   const document = params.document ?? { id: documentId, ownerId, dataContractId: contractId, documentTypeName: documentType }
-  let proven = false
   try {
     await (sdk as unknown as { documents: DocumentsDeleteFacadeLike }).documents.delete({
       document,
@@ -1532,7 +1533,6 @@ async function deleteDocumentUnlocked(
       // through; the gone-poll below then decides. No `waitTimeoutMs`: see WaitSettings.
       settings: { identityNonceStaleTimeS: 0, timeoutMs: WAIT_REQUEST_MS, retries: 2 },
     })
-    proven = true
   } catch (e) {
     // From 4.2.0-beta.7 the SDK's delete of an indexOnly document resolves on the affected-state
     // proof itself (platform#5136). The SDK rebroadcasts on its own retries: "nonce already
@@ -1550,11 +1550,9 @@ async function deleteDocumentUnlocked(
       if (isAlreadyExistsError(e)) throw new UnconfirmedWriteError(documentId)
       throw e
     }
-    proven = true
   } finally {
     signer.free()
   }
-  if (!(proven || (await pollUntil(gone, confirmTimeoutMs)))) throw new UnconfirmedWriteError(documentId)
   return { result: { deleted: true, actualCredits: null }, spend: spend('delete') }
 }
 

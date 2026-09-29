@@ -37,21 +37,23 @@ function withoutReferences(value: unknown): unknown {
 
 function fixture(): Record<string, unknown> {
   const text = readFileSync(resolve(__dirname, 'fixtures', 'forge-collab-state-counts.json'), 'utf8')
-  const json = withoutReferences(JSON.parse(text.split('FORGE_CORE_CONTRACT_ID').join(FORGE_CORE))) as Record<string, unknown>
+  const json = withoutReferences(JSON.parse(text.replaceAll('FORGE_CORE_CONTRACT_ID', FORGE_CORE))) as Record<string, unknown>
   return { ...json, id: CONTRACT_ID, ownerId: OWNER }
 }
 
 describe('wasm-sdk 4.2.0-beta.6 contract rules', () => {
   let evo: Evo
+  let json: Record<string, unknown>
   let contract: InstanceType<Evo['DataContract']>
   beforeAll(async () => {
     evo = await import('@dashevo/evo-sdk')
     await evo.EvoSDK.getLatestVersionNumber()
-    contract = evo.DataContract.fromJSON(fixture() as Parameters<Evo['DataContract']['fromJSON']>[0], true, 14)
+    json = fixture()
+    contract = evo.DataContract.fromJSON(json as Parameters<Evo['DataContract']['fromJSON']>[0], true, 14)
   })
 
   it('the fixture uses the beta.6-only keywords', () => {
-    const text = JSON.stringify(fixture())
+    const text = JSON.stringify(json)
     for (const keyword of ['"countOf"', '"sumOf"', '"ifThen"', '"notIn"', '"$ownerId"', '"$createdAtBlockHeight"']) expect(text).toContain(keyword)
   })
 

@@ -148,8 +148,23 @@ function auth(spends: SpendEvent[]): WriteAuth {
 
 const write = { contractId: 'C', documentType: 'comment', data: { body: 'hi' }, confirmTimeoutMs: 0 }
 
-/** A block's verdict as the result wait throws it (beta.6): kind StateTransitionBroadcastError, the node's code. */
+/**
+ * The SDK's two refusal shapes (wasm-sdk 4.2.0-beta.6 on, platform#5112): a refusal at the
+ * broadcast check is kind Protocol with the node's code (-1 for an error the SDK could not
+ * decode); a block's verdict from the result wait is kind StateTransitionBroadcastError.
+ */
+const sdkRefusal = (text: string, code = -1) => ({ name: 'Protocol', kind: 3, code, message: `Failed to broadcast: Protocol error: ${text}` })
 const sdkVerdict = (text: string, code: number) => ({ name: 'StateTransitionBroadcastError', kind: 22, code, message: `state transition broadcast error: ${text}` })
+const GATE_TEXT = 'referenced document Xyz not found for path repoId'
+const UNREADABLE_TEXT = 'platform deserialization error: unable to deserialize ConsensusError: UnexpectedEnd { additional: 18 }'
+
+/** A stored document as `documents.get` returns it, owned by OWNER, for a replace to read. */
+const storedDoc = (title: string, revision = 1n) => ({
+  revision,
+  ownerId: { toBase58: () => OWNER },
+  toObject: () => ({ $id: 'D', title }),
+  toJSON: () => ({ $id: 'D', title }),
+})
 
 /**
  * The engine's polls (the landed / gone checks, the balance read after a write) run on a
@@ -258,7 +273,7 @@ describe('write engine', () => {
       broadcast: () => undefined,
       wait: async () => ({}),
       affected: async () => {
-        throw sdkVerdict('referenced document Xyz not found for path repoId', 40120)
+        throw sdkVerdict(GATE_TEXT, 40120)
       },
       exists: async () => undefined,
     }
@@ -270,7 +285,6 @@ describe('write engine', () => {
   })
 
   it('an indexOnly delete (unstar) resolves on the SDK delete, with no snapshot to read', async () => {
-    const signed: bigint[] = []
     const script: Script = {
       platformNonce: 1n,
       broadcast: () => undefined,
@@ -278,7 +292,7 @@ describe('write engine', () => {
       exists: async () => ({}),
       del: async () => undefined,
     }
-    const r = await deleteDocumentIdempotent(sdkOf(script, signed), auth([]), {
+    const r = await deleteDocumentIdempotent(sdkOf(script, []), auth([]), {
       contractId: 'I3', documentType: 'star', documentId: 'S', document: { values: 'the star' }, probeGone: async () => false, confirmTimeoutMs: 0,
     })
     expect(r.deleted).toBe(true)
@@ -292,7 +306,7 @@ describe('write engine', () => {
       wait: async () => ({}),
       exists: async () => storedDoc('old'),
       replace: async () => {
-        throw sdkRefusal('platform deserialization error: unable to deserialize ConsensusError: UnexpectedEnd { additional: 18 }')
+        throw sdkRefusal(UNREADABLE_TEXT)
       },
     }
     const err = await replaceDocumentIdempotent(sdkOf(script, []), auth(spends), {
@@ -487,11 +501,6 @@ function withStorage(): () => void {
   return () => vi.unstubAllGlobals()
 }
 
-/**
- * wasm-sdk 4.2.0-beta.6's error for a refusal at broadcast (platform#5112): kind Protocol with the
- * node's code (-1 for an error the SDK could not decode), Drive's text in the message.
- */
-const sdkRefusal = (text: string, code = -1) => ({ name: 'Protocol', kind: 3, code, message: `Failed to broadcast: Protocol error: ${text}` })
 const BUDGET_TEXT = `Identity ${OWNER} public key 5 has 90000000 credits of budget left, the state transition requires 100224000`
 
 describe('refusals at broadcast (D-007)', () => {
@@ -562,14 +571,6 @@ describe('refusals at broadcast (D-007)', () => {
   })
 })
 
-/** A stored document as `documents.get` returns it, owned by OWNER, for a replace to read. */
-const storedDoc = (title: string, revision = 1n) => ({
-  revision,
-  ownerId: { toBase58: () => OWNER },
-  toObject: () => ({ $id: 'D', title }),
-  toJSON: () => ({ $id: 'D', title }),
-})
-
 describe('replace and delete refusals carry the charge the SDK says (wasm-sdk 4.2.0-beta.6)', () => {
   const MAX_BYTES = 'Property title is 2000 bytes in UTF-8, over its maxBytes of 1024'
 
@@ -602,7 +603,7 @@ describe('replace and delete refusals carry the charge the SDK says (wasm-sdk 4.
       wait: async () => ({}),
       exists: async () => storedDoc('old'),
       replace: async () => {
-        throw sdkVerdict('referenced document Xyz not found for path repoId', 40120)
+        throw sdkVerdict(GATE_TEXT, 40120)
       },
     }
     const err = await replaceDocumentIdempotent(sdkOf(script, []), auth(spends), {
@@ -616,8 +617,8 @@ describe('replace and delete refusals carry the charge the SDK says (wasm-sdk 4.
 
   it('a delete refused at the broadcast check charged nothing; one refused in a block did', async () => {
     for (const [thrown, charged] of [
-      [sdkRefusal('referenced document Xyz not found for path repoId', 40120), false],
-      [sdkVerdict('referenced document Xyz not found for path repoId', 40120), true],
+      [sdkRefusal(GATE_TEXT, 40120), false],
+      [sdkVerdict(GATE_TEXT, 40120), true],
     ] as const) {
       const spends: SpendEvent[] = []
       const script: Script = {
@@ -643,7 +644,7 @@ describe('replace and delete refusals carry the charge the SDK says (wasm-sdk 4.
       wait: async () => ({}),
       exists: async () => ({}),
       del: async () => {
-        throw { name: 'Generic', kind: 18, code: 40120, message: 'referenced document Xyz not found for path repoId' }
+        throw { name: 'Generic', kind: 18, code: 40120, message: GATE_TEXT }
       },
     }
     const err = await deleteDocumentIdempotent(sdkOf(script, []), auth([]), { contractId: 'P4', documentType: 'writer', documentId: 'X', confirmTimeoutMs: 0 }).catch((e: unknown) => e)
@@ -656,7 +657,7 @@ describe('replace and delete refusals carry the charge the SDK says (wasm-sdk 4.
       platformNonce: 1n,
       broadcast: () => undefined,
       wait: async () => {
-        throw sdkRefusal('platform deserialization error: unable to deserialize ConsensusError: UnexpectedEnd { additional: 18 }')
+        throw sdkRefusal(UNREADABLE_TEXT)
       },
       exists: async () => undefined,
     }
@@ -1017,7 +1018,7 @@ describe('after "your earlier attempt was posted" (review N1, N4)', () => {
       platformNonce: 1n,
       broadcast: () => undefined,
       wait: async () => {
-        throw sdkVerdict('referenced document Xyz not found for path repoId', 40120)
+        throw sdkVerdict(GATE_TEXT, 40120)
       },
       exists: async () => undefined,
     }
@@ -1137,7 +1138,7 @@ describe('a damaged cached transition, and 10002 (protocol 14)', () => {
   it('a refusal whose reason the SDK cannot decode (a newer error variant) is discarded, never left pending', async () => {
     const store = new Map<string, string>()
     const { sdk, signed } = lostAttempt(store, () => {
-      throw sdkRefusal('platform deserialization error: unable to deserialize ConsensusError: UnexpectedEnd { additional: 18 }')
+      throw sdkRefusal(UNREADABLE_TEXT)
     })
     try {
       const params = { ...write, contractId: 'T3', intent: 'undecodable' }

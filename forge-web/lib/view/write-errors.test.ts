@@ -12,14 +12,14 @@ import { BusyWriteError, ConsensusRefusal, KeyUnusableError, SupersededWriteErro
 import { writeFailure } from './write-errors'
 
 /**
- * A wasm error as the SDK throws it: a plain object with the text in `message`. With `code` -1 it
- * is an uncoded refusal at the broadcast check (kind Protocol); a code makes it the result
- * wait's verdict in a block (kind StateTransitionBroadcastError).
+ * The SDK's two refusal shapes (wasm-sdk 4.2.0-beta.6 on, platform#5112): a refusal at the
+ * broadcast check is kind Protocol, with the node's code (-1 when it has none); a block's verdict
+ * from the result wait is kind StateTransitionBroadcastError.
  */
-const wasm = (message: string, code = -1) =>
-  code === -1
-    ? { name: 'Protocol', kind: 3, code, message, isRetriable: false }
-    : { name: 'StateTransitionBroadcastError', kind: 22, code, message, isRetriable: false }
+const checkTx = (message: string, code: number) => ({ name: 'Protocol', kind: 3, code, message, isRetriable: false })
+const verdict = (message: string, code: number) => ({ name: 'StateTransitionBroadcastError', kind: 22, code, message, isRetriable: false })
+/** An uncoded refusal at the broadcast check, or with a code the result wait's verdict. */
+const wasm = (message: string, code = -1) => (code === -1 ? checkTx(message, -1) : verdict(message, code))
 
 const BUDGET =
   'Failed to broadcast: Protocol error: Identity 9sBGBgYZHgGDbwQyDsMvugXXYUsxgrXmZfpCXwyRgYCB public key 5 has 1000000 credits of budget left, the state transition requires 48654000'
@@ -68,20 +68,14 @@ describe('asConsensusRefusal decodes the SDK text (D-007)', () => {
     expect(asConsensusRefusal(wasm('gate', 40120))?.feeCharged).toBe(true)
   })
   it('does not know the charge of an error of another kind, and does not claim one', () => {
-    const generic = { name: 'Generic', kind: 18, code: 40120, message: 'referenced document Xyz not found for path repoId' }
-    expect(asConsensusRefusal(generic)?.charged).toBeNull()
-    expect(asConsensusRefusal(generic)?.feeCharged).toBeNull()
-    expect(writeFailure(asConsensusRefusal(generic)).message).not.toMatch(/Nothing was charged/)
+    const r = asConsensusRefusal({ name: 'Generic', kind: 18, code: 40120, message: 'referenced document Xyz not found for path repoId' })
+    expect(r?.charged).toBeNull()
+    expect(r?.feeCharged).toBeNull()
+    expect(writeFailure(r).message).not.toMatch(/Nothing was charged/)
     expect(asConsensusRefusal(new Error('Protocol error: referenced document Xyz not found for path repoId'))?.charged).toBeNull()
   })
 })
 
-/**
- * wasm-sdk 4.2.0-beta.6 (platform#5112): a refusal at the broadcast check carries the node's
- * code on a `Protocol` error; a block's verdict is a `StateTransitionBroadcastError`.
- */
-const checkTx = (message: string, code: number) => ({ name: 'Protocol', kind: 3, code, message, isRetriable: false })
-const verdict = (message: string, code: number) => ({ name: 'StateTransitionBroadcastError', kind: 22, code, message, isRetriable: false })
 const RULE = 'Failed to broadcast: Protocol error: Document checkRun breaks its propertyConstraints rule conclusionIfDone: the rule does not hold'
 
 describe('beta.6 coded refusals (platform#5112)', () => {
@@ -107,7 +101,6 @@ describe('beta.6 coded refusals (platform#5112)', () => {
   })
   it("a block's verdict is charged, unless Drive leaves that refusal unpaid", () => {
     expect(asConsensusRefusal(verdict(RULE, 10422))?.feeCharged).toBe(true)
-    expect(asConsensusRefusal(verdict('gate', 40120))?.feeCharged).toBe(true)
     expect(asConsensusRefusal(verdict(BUDGET, 40218))?.feeCharged).toBe(false)
   })
   it('leaves transport failures and the rate-limit gate unclassified', () => {

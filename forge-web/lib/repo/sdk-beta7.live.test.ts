@@ -96,10 +96,7 @@ describe.skipIf(!LIVE)('live writes on wasm-sdk 4.2.0-beta.7 (moutai)', () => {
 
       // A replace refused at the broadcast check: coded, not charged, the balance unchanged.
       const writerBefore = await settledBalance(balanceOf(WRITER.identityId))
-      const tooLong = await updateTarget(sdk, WRITER, repo, { type: 'issue', id: issue.documentId, title: 'x'.repeat(2000) }).then(
-        () => null,
-        (e: unknown) => e,
-      )
+      const tooLong = await updateTarget(sdk, WRITER, repo, { type: 'issue', id: issue.documentId, title: 'x'.repeat(2000) }).catch((e: unknown) => e)
       expect(tooLong).toBeInstanceOf(ConsensusRefusal)
       const t = tooLong as ConsensusRefusal
       expect(t.code, t.message).toBeGreaterThan(10000)
@@ -109,10 +106,7 @@ describe.skipIf(!LIVE)('live writes on wasm-sdk 4.2.0-beta.7 (moutai)', () => {
 
       // A gate refusal: what the engine reports must match what the balance did.
       const before = await settledBalance(balanceOf(OTHER.identityId))
-      const refusal = await addEvent(sdk, OTHER, repo, { target: { id: issue.documentId, number: issue.number }, kind: 'labelAdd', value: 'triaged' }).then(
-        () => null,
-        (e: unknown) => e,
-      )
+      const refusal = await addEvent(sdk, OTHER, repo, { target: { id: issue.documentId, number: issue.number }, kind: 'labelAdd', value: 'triaged' }).catch((e: unknown) => e)
       expect(refusal).toBeInstanceOf(ConsensusRefusal)
       const r = refusal as ConsensusRefusal
       expect(r.code, r.message).toBe(GATE_REFUSED_CODE)
