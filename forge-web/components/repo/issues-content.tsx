@@ -33,6 +33,7 @@ import {
   parseIssueQuery,
   parseSearchText,
   resolveSearchNames,
+  searchSubmitBase,
   searchText,
   unresolvedQualifiers,
   withQuery,
@@ -178,7 +179,10 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
 
   const submitSearch = async (e: FormEvent): Promise<void> => {
     e.preventDefault()
-    await resolveAndApply(searchValue)
+    // Only the state tab survives a plain submit; every other filter is exactly what the box's
+    // qualifiers say now (see searchSubmitBase) — so deleting `label:bug` from the box and hitting
+    // Enter actually removes that filter, instead of it silently surviving.
+    await resolveAndApply(searchValue, searchSubmitBase(query))
   }
 
   // A DPNS name linked in `?q=` (e.g. a shared search URL) goes through the same resolution step
@@ -488,17 +492,36 @@ function PersonFilter({
   // snaps back to "anyone" with no input ever appearing.
   const [editingId, setEditingId] = useState(choice === 'id')
   const selectId = `filter-${label.toLowerCase()}`
+  const idInputRef = useRef<HTMLInputElement>(null)
+  // Set by the select's own onChange, just before it flips `editingId` true, so the effect below
+  // only steals focus into the id box for that one user gesture — never for `value` arriving from
+  // outside (a reload, "Clear filters", or a submitted `author:<id>` qualifier resolving here).
+  const focusIdRef = useRef(false)
 
-  // An external reset (e.g. "Clear filters") changes `value` without going through this
-  // component's own commit path: drop out of id-entry mode when that lands us back on "anyone".
+  // `value` can change from outside this component's own commit path (a reload, "Clear filters",
+  // or a search-box `author:`/`assignee:` qualifier resolving to an id) — track id-entry mode off
+  // `value` itself, not just the select's own onChange, or the id box can vanish while the select
+  // still reads "identity id…" (or stay showing a stale one after an external reset).
   useEffect(() => {
-    if (value === null) {
-      setEditingId(false)
-      setId('')
-    } else if (value !== 'me' && value !== 'none') {
-      setId(value)
-    }
+    setEditingId(value !== null && value !== 'me' && value !== 'none')
+    if (value === null) setId('')
+    else if (value !== 'me' && value !== 'none') setId(value)
+    // `value` changing from outside is never the select's own gesture; drop a stale flag so a
+    // later, unrelated `editingId` transition can't steal focus for a gesture that already
+    // happened (or never did).
+    focusIdRef.current = false
   }, [value])
+
+  useEffect(() => {
+    if (!editingId || !focusIdRef.current) return
+    focusIdRef.current = false
+    idInputRef.current?.focus()
+  }, [editingId])
+
+  const commitId = (): void => {
+    const next = id.trim() || null
+    if (next !== value) onChange(next)
+  }
 
   return (
     <span className="inline-flex items-center gap-1">
@@ -509,6 +532,7 @@ function PersonFilter({
         onChange={(e) => {
           const v = e.target.value
           if (v === 'id') {
+            focusIdRef.current = true
             setEditingId(true)
             if (choice !== 'id') setId('')
           } else {
@@ -525,16 +549,16 @@ function PersonFilter({
       </select>
       {editingId ? (
         <Input
+          ref={idInputRef}
           aria-label={`${label} identity id`}
           value={id}
           onChange={(e) => setId(e.target.value)}
-          onBlur={() => onChange(id.trim() === '' ? null : id.trim())}
+          onBlur={commitId}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') onChange(id.trim() === '' ? null : id.trim())
+            if (e.key === 'Enter') commitId()
           }}
           className="h-7 w-44 py-0 font-mono text-[12px]"
           placeholder="base58 id"
-          autoFocus
         />
       ) : null}
     </span>

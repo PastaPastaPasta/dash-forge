@@ -113,6 +113,21 @@ export function withQuery(q: IssueListQuery, change: Partial<IssueListQuery>): I
   return 'page' in change ? next : { ...next, page: 1 }
 }
 
+/**
+ * The `base` for a plain search-box submit (typed text + Enter, or a fresh submit of the box's
+ * current text): only the state tab survives from the current query — every other filter
+ * (label/author/assignee/mentions/sort) is exactly what the submitted text's qualifiers say,
+ * because {@link searchText} always writes the *whole* current query back into the box as text
+ * when it is not being actively edited. So if the viewer deletes `label:bug` from the box before
+ * hitting Enter, that filter must actually go away, not silently survive because `base` still
+ * carried it. This is different from the once-per-load resolution of a *linked* `?q=` (a shared
+ * URL carries only its own free text, never the other params' filters), which correctly uses the
+ * full `query` as `base` to keep `label=`/`sort=`/etc that its own separate URL params set.
+ */
+export function searchSubmitBase(q: IssueListQuery): IssueListQuery {
+  return { ...DEFAULT_ISSUE_QUERY, state: q.state }
+}
+
 /** Whether any filter narrows the list beyond the state tab. */
 export function hasFilters(q: IssueListQuery): boolean {
   return q.labels.length > 0 || q.author !== null || q.assignee !== null || q.mentions || q.q.trim() !== ''

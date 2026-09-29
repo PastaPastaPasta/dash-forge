@@ -10,6 +10,7 @@ import {
   parseIssueQuery,
   parseSearchText,
   resolveSearchNames,
+  searchSubmitBase,
   searchText,
   unresolvedQualifiers,
   withQuery,
@@ -97,6 +98,34 @@ describe('search-box qualifiers', () => {
     const base = { ...DEFAULT_ISSUE_QUERY, author: ID, assignee: 'me', mentions: true, sort: 'comments' as const }
     const q = parseSearchText('author:alice assignee:bob mentions:you sort:random', base)
     expect(q).toMatchObject({ author: ID, assignee: 'me', mentions: true, sort: 'comments', q: '' })
+  })
+
+  // A plain search-box submit's base (searchSubmitBase) must carry forward only the state tab —
+  // searchText always writes the *whole* current query back into the box as text when it isn't
+  // being edited, so the submitted text is the single source of truth for every other filter.
+  // Using the full current query as base (a prior, buggy fix) would let a filter deleted from the
+  // box (e.g. label:bug) silently keep applying, since liftQualifiers only overrides a field a
+  // qualifier is present for and never clears one that's simply absent from the text.
+  describe('searchSubmitBase (a plain #N or word search must not silently jump back to Open, and a deleted qualifier must actually clear)', () => {
+    it("keeps the caller's state tab when the submitted text carries no is:/state: qualifier", () => {
+      const base = searchSubmitBase({ ...DEFAULT_ISSUE_QUERY, state: 'all' })
+      expect(parseSearchText('#3', base).state).toBe('all')
+      expect(parseSearchText('crash', base).state).toBe('all')
+    })
+
+    it('still lets an explicit is:/state: qualifier in the text win over the base', () => {
+      const base = searchSubmitBase({ ...DEFAULT_ISSUE_QUERY, state: 'all' })
+      expect(parseSearchText('is:closed #3', base).state).toBe('closed')
+    })
+
+    it('removing a label:/mentions: qualifier from the text actually removes that filter', () => {
+      const query = { ...DEFAULT_ISSUE_QUERY, labels: ['bug'], mentions: true }
+      // Re-submitting the box with label:bug and mentions:@me deleted must clear both, not keep
+      // them from the caller's current query.
+      const q = parseSearchText('crash', searchSubmitBase(query))
+      expect(q.labels).toEqual([])
+      expect(q.mentions).toBe(false)
+    })
   })
 
   it('writes the query back as text that parses to the same query', () => {
