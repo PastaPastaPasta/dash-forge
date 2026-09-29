@@ -22,6 +22,14 @@ export class PackError extends Error {
     super(`sealed artifact: ${code}`)
     this.name = 'PackError'
   }
+
+  /**
+   * The sealed bytes arrived and are wrong (they fail authentication, or their size does not
+   * match): a content failure the browse reader reports as such, not an outage (L-10).
+   */
+  get corrupt(): boolean {
+    return this.code === 'sealedPackCorrupt' || this.code === 'sizeMismatch'
+  }
 }
 
 /** The 36-byte header of a sealed artifact. */

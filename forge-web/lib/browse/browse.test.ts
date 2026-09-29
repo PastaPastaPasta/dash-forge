@@ -17,7 +17,9 @@ import {
   type PackSource,
   SPAN_SENTINEL,
   gitOidHex,
+  isSourceFailure,
 } from './index'
+import { PackError } from '../private/pack'
 import {
   T_BLOB,
   T_OFS_DELTA,
@@ -252,5 +254,100 @@ describe('browse-plane reader', () => {
     )
     await unchecked.readObject(blobOid)
     expect(verdicts).toEqual(['verified', 'failed', 'unchecked'])
+  })
+
+  describe('a network failure mid-read is an outage, never a hash mismatch (L-10)', () => {
+    const content = new TextEncoder().encode('read me while offline\n'.repeat(4))
+    const blobOid = gitOidHex('blob', content)
+    const stored = concat(objHeader(T_BLOB, content.length), zlibSync(content))
+    const pack = packFrame(stored)
+    const row = { oidHex: blobOid, offset: PACK_HEADER_LEN, length: stored.length, span: stored.length, depth: 0 }
+
+    /** A source whose connection drops for `drops` reads, then comes back. */
+    function flakySource(drops: number, copies = 1): PackSource & { calls: number } {
+      const src = {
+        calls: 0,
+        fetchRange: (_packRef: number, start: number, end: number) => {
+          src.calls++
+          if (src.calls <= drops) return Promise.reject(new TypeError('Failed to fetch'))
+          return Promise.resolve(pack.slice(start, end))
+        },
+        copyCount: () => copies,
+      }
+      return src
+    }
+
+    it('reports no verdict while offline, then verifies the same object once back online', async () => {
+      const verdicts: string[] = []
+      const source = flakySource(1)
+      const reader = new BrowseReader(ObjectLocator.parse(buildLocator([row])), source, { onObject: (v) => verdicts.push(v) })
+
+      const offline = await reader.readObject(blobOid).catch((e: unknown) => e)
+      expect(offline).toBeInstanceOf(TypeError)
+      expect(isSourceFailure(offline)).toBe(true)
+      expect(verdicts).toEqual([]) // not 'failed': nothing arrived, nothing was checked
+
+      const obj = await reader.readObject(blobOid) // the connection is back
+      expect(Array.from(obj.bytes)).toEqual(Array.from(content))
+      expect(verdicts).toEqual(['verified'])
+    })
+
+    it('a drop on every copy of a multi-copy pack is still no verdict', async () => {
+      const verdicts: string[] = []
+      const reader = new BrowseReader(ObjectLocator.parse(buildLocator([row])), flakySource(3, 3), { onObject: (v) => verdicts.push(v) })
+      await expect(reader.readObject(blobOid)).rejects.toThrow(/Failed to fetch/)
+      expect(verdicts).toEqual([])
+    })
+
+    it('a drop on one copy and wrong bytes on another is a failure: bytes arrived and were wrong', async () => {
+      const verdicts: string[] = []
+      let calls = 0
+      const source: PackSource = {
+        fetchRange: (_p, start, end) => {
+          calls++
+          if (calls === 1) return Promise.reject(new TypeError('Failed to fetch'))
+          const bad = pack.slice(start, end)
+          bad[bad.length - 1] ^= 0xff // a tampered copy: its zlib stream no longer checks
+          return Promise.resolve(bad)
+        },
+        copyCount: () => 2,
+      }
+      const reader = new BrowseReader(ObjectLocator.parse(buildLocator([row])), source, { onObject: (v) => verdicts.push(v) })
+      await expect(reader.readObject(blobOid)).rejects.toThrow()
+      expect(verdicts).toEqual(['failed'])
+    })
+
+    it('a source that received bytes and says they are corrupt (a sealed pack) is a failure', async () => {
+      const verdicts: string[] = []
+      const source: PackSource = { fetchRange: () => Promise.reject(new PackError('sealedPackCorrupt')) }
+      const reader = new BrowseReader(ObjectLocator.parse(buildLocator([row])), source, { onObject: (v) => verdicts.push(v) })
+      await expect(reader.readObject(blobOid)).rejects.toThrow(/sealedPackCorrupt/)
+      expect(verdicts).toEqual(['failed'])
+    })
+
+    it('a drop while reading a delta base is an outage too', async () => {
+      const base = new TextEncoder().encode('the quick brown fox jumps over the lazy dog\n')
+      const target = new TextEncoder().encode('the quick brown fox jumps over the lazy cat\n')
+      const delta = copyInsertDelta(base.length, target.length, 40, new TextEncoder().encode('cat\n'))
+      const baseStored = concat(objHeader(T_BLOB, base.length), zlibSync(base))
+      const deltaOffset = PACK_HEADER_LEN + baseStored.length
+      const deltaStored = concat(objHeader(T_OFS_DELTA, delta.length), ofsBase(deltaOffset - PACK_HEADER_LEN), zlibSync(delta))
+      const twoPack = packFrame(baseStored, deltaStored)
+      const rows: Row[] = [
+        { oidHex: gitOidHex('blob', base), offset: PACK_HEADER_LEN, length: baseStored.length, span: baseStored.length, depth: 0 },
+        { oidHex: gitOidHex('blob', target), offset: deltaOffset, length: deltaStored.length, span: SPAN_SENTINEL, depth: 1 },
+      ]
+      let calls = 0
+      const source: PackSource = {
+        // The delta's own bytes arrive; the base's read (the second) drops.
+        fetchRange: (_p, start, end) => (++calls === 2 ? Promise.reject(new Error('transport error: grpc error: Failed to fetch')) : Promise.resolve(twoPack.slice(start, end))),
+      }
+      const verdicts: string[] = []
+      const reader = new BrowseReader(ObjectLocator.parse(buildLocator(rows)), source, { onObject: (v) => verdicts.push(v) })
+      await expect(reader.readObject(gitOidHex('blob', target))).rejects.toThrow(/Failed to fetch/)
+      expect(verdicts).toEqual([])
+      expect(Array.from((await reader.readObject(gitOidHex('blob', target))).bytes)).toEqual(Array.from(target))
+      expect(verdicts).toEqual(['verified'])
+    })
   })
 })

@@ -127,6 +127,29 @@ export class MissingObjectError extends Error {
 /** What happened to one reconstructed object's hash check. */
 export type ObjectVerdict = 'verified' | 'unchecked' | 'failed'
 
+/** Errors a {@link PackSource} rejected with: the bytes never arrived (L-10). */
+const sourceFailures = new WeakSet<object>()
+
+/**
+ * Whether a read failed because its bytes did not arrive (the pack source rejected: offline, a
+ * node or mirror that did not answer, a pack a partial clone could not load), as opposed to
+ * bytes that arrived and failed to decode or to hash to their id. Only the latter is a content
+ * verdict; the former is an outage and is never reported as `failed` (L-10).
+ *
+ * A source that received bytes and found them bad (a sealed pack that fails authentication)
+ * says so by rejecting with an error marked `corrupt: true`: that stays a content failure.
+ */
+export function isSourceFailure(e: unknown): boolean {
+  return (typeof e === 'object' && e !== null && sourceFailures.has(e)) || e instanceof MissingObjectError
+}
+
+/** `e`, tagged as a {@link isSourceFailure source failure} unless the source marked it corrupt. */
+function asSourceFailure(e: unknown): unknown {
+  const err = typeof e === 'object' && e !== null ? e : new Error(String(e))
+  if ((err as { corrupt?: unknown }).corrupt !== true) sourceFailures.add(err)
+  return err
+}
+
 /** Verdicts passed on every {@link BATCH_VERDICTS} objects (and on flush), not one by one. */
 const BATCH_VERDICTS = 500
 
@@ -316,6 +339,15 @@ export class BrowseReader {
     if (this.view !== undefined) this.opts.onRead?.(packRef, this.copyOf.get(packRef), this.view)
   }
 
+  /** Every pack read goes through here, so a rejection is tagged {@link isSourceFailure}. */
+  private async fetchRange(packRef: number, start: number, end: number, copy: number | undefined): Promise<Uint8Array> {
+    try {
+      return await this.packs.fetchRange(packRef, start, end, copy)
+    } catch (e) {
+      throw asSourceFailure(e)
+    }
+  }
+
   /**
    * A new reader over the same locator that reads the packs through {@link readAheadSource}:
    * for walks over many commits (merge-base search), which would otherwise pay one ranged read
@@ -359,7 +391,7 @@ export class BrowseReader {
     }
     if (entry === null) return null
     this.noteRead(entry.packRef)
-    const head = await this.packs.fetchRange(entry.packRef, entry.offset, Math.min(entry.offset + 16, entry.offset + entry.length), this.copyOf.get(entry.packRef))
+    const head = await this.fetchRange(entry.packRef, entry.offset, Math.min(entry.offset + 16, entry.offset + entry.length), this.copyOf.get(entry.packRef))
     const { type } = parseObjHeader(head, 0)
     return type === PACK_TYPE.OFS_DELTA || type === PACK_TYPE.REF_DELTA ? null : objTypeFromCode(type)
   }
@@ -418,25 +450,29 @@ export class BrowseReader {
   private async fetchEntry(e: LocatorEntry, maxBytes: number, copy: number | undefined): Promise<Uint8Array> {
     checkStoredLength(e, maxBytes)
     if (maxBytes !== Infinity && e.length > maxBytes * 1.001 + 64) {
-      const head = await this.packs.fetchRange(e.packRef, e.offset, e.offset + Math.min(ENTRY_HEAD_BYTES, e.length), copy)
+      const head = await this.fetchRange(e.packRef, e.offset, e.offset + Math.min(ENTRY_HEAD_BYTES, e.length), copy)
       const { type, size } = parseObjHeader(head, 0)
       // A delta's header gives the delta's own size, which is bounded differently.
       const isDelta = type === PACK_TYPE.OFS_DELTA || type === PACK_TYPE.REF_DELTA
       if (size > (isDelta ? deltaMaxBytes(maxBytes) : maxBytes)) throw new ObjectTooLargeError(size, maxBytes)
     }
-    return this.packs.fetchRange(e.packRef, e.offset, e.offset + e.length, copy)
+    return this.fetchRange(e.packRef, e.offset, e.offset + e.length, copy)
   }
 
   /**
    * Reconstruct `entry` and check its oid, trying the pack's copies in order: a copy whose
    * bytes do not reconstruct the object (a hostile or corrupt writer copy) is skipped for the
    * next one (`forge-v2.md` §4 "read the first copy that verifies"). A single-copy pack
-   * behaves exactly as before.
+   * behaves exactly as before. Reported `failed` only when some copy's bytes arrived and were
+   * wrong; a read whose bytes never arrived throws with no verdict ({@link isSourceFailure}).
    */
   private async readVerified(entry: LocatorEntry, oidKey: string, limits: Limits): Promise<GitObject> {
     const copies = this.packs.copyCount?.(entry.packRef) ?? 1
     const start = this.copyOf.get(entry.packRef) ?? 0
     let lastErr: unknown
+    // Bytes that arrived and were wrong (a hash mismatch, or bytes that do not decode). A copy
+    // whose bytes never arrived is only an outage (L-10).
+    let bad: unknown
     let tooLarge: ObjectTooLargeError | null = null
     for (let i = 0; i < copies; i++) {
       const copy = (start + i) % copies
@@ -447,7 +483,8 @@ export class BrowseReader {
         // Over the caller's limit in this copy: another copy may be the honest one (a
         // tampered header must not hide it), and if every copy says so, that is the answer.
         if (e instanceof ObjectTooLargeError) tooLarge = e
-        else lastErr = e
+        else if (isSourceFailure(e)) lastErr = e
+        else bad = e
         continue
       }
       if (this.opts.verify === false) {
@@ -460,11 +497,13 @@ export class BrowseReader {
         this.opts.onObject?.('verified')
         return obj
       }
-      lastErr = new Error(`oid mismatch: wanted ${oidKey}, reconstructed ${got}`)
+      bad = new Error(`oid mismatch: wanted ${oidKey}, reconstructed ${got}`)
     }
     if (tooLarge !== null) throw tooLarge
+    // Only bytes that arrived and failed are a content failure; an unanswered read is not.
+    if (bad === undefined) throw lastErr
     this.opts.onObject?.('failed')
-    throw lastErr
+    throw bad
   }
 
   /** The default path: memoized decode through the pack's current copy. */
@@ -480,7 +519,7 @@ export class BrowseReader {
   private async reconstructFrom(entry: LocatorEntry, copy: number, limits: Limits): Promise<GitObject> {
     if (singleReadAdvised(entry)) {
       const end = entry.offset + entry.length
-      const slice = await this.packs.fetchRange(entry.packRef, end - entry.deltaChainSpan, end, copy)
+      const slice = await this.fetchRange(entry.packRef, end - entry.deltaChainSpan, end, copy)
       return reconstructFromSpan(entry, slice, limits.item, limits.base)
     }
     const walk = async (e: LocatorEntry, limit: number): Promise<GitObject> => {
@@ -515,7 +554,7 @@ export class BrowseReader {
   private async readSpan(entry: LocatorEntry, limits: Limits): Promise<GitObject> {
     const end = entry.offset + entry.length
     const start = end - entry.deltaChainSpan
-    const slice = await this.packs.fetchRange(entry.packRef, start, end, this.copyOf.get(entry.packRef))
+    const slice = await this.fetchRange(entry.packRef, start, end, this.copyOf.get(entry.packRef))
     return reconstructFromSpan(entry, slice, limits.item, limits.base)
   }
 
