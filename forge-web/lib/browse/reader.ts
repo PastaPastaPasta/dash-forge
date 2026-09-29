@@ -183,6 +183,11 @@ export interface BrowseReaderOptions {
    */
   readonly onObject?: (verdict: ObjectVerdict, count?: number) => void
   /**
+   * Told when a read failed because its bytes never arrived ({@link isSourceFailure}): no
+   * verdict, but something on the page is missing until it is read again (L-10).
+   */
+  readonly onUnreachable?: () => void
+  /**
    * The error for an OID the locator does not index. Defaults to `object not in locator`; a
    * reader built over an incomplete pack set supplies one that names what is missing.
    */
@@ -501,7 +506,10 @@ export class BrowseReader {
     }
     if (tooLarge !== null) throw tooLarge
     // Only bytes that arrived and failed are a content failure; an unanswered read is not.
-    if (bad === undefined) throw lastErr
+    if (bad === undefined) {
+      this.opts.onUnreachable?.()
+      throw lastErr
+    }
     this.opts.onObject?.('failed')
     throw bad
   }

@@ -45,6 +45,7 @@ import {
 import { base64ToBytes, queryDocumentsWithProof } from '../sdk'
 import { isPublicHttpsUrl } from '../net'
 import { externalSourceName, noteContentCheck, noteViewPack, objectObserver } from './content-checks'
+import { noteReadOutage } from './reconnect'
 import {
   describePack,
   gatewayDownReason,
@@ -367,6 +368,15 @@ async function withSlot<T>(key: string, run: () => Promise<T>): Promise<T> {
  */
 const deadUrls = new Set<string>()
 
+/**
+ * Mark `url` dead, unless the browser is offline: then nothing could have answered, and the
+ * mirror must be tried again once the connection is back (L-10).
+ */
+function markDead(url: string): void {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return
+  deadUrls.add(url)
+}
+
 /** "Try again": ask every mirror afresh, including the ones that failed this session. */
 export function forgetDeadMirrors(): void {
   deadUrls.clear()
@@ -514,7 +524,7 @@ async function fetchExternalRange(
       // Some hosts ignore Range and return the whole body — slice defensively.
       return buf.length > end - start ? buf.subarray(start, end) : buf
     } catch (e) {
-      if (e instanceof FetchFailure && !e.timedOut) deadUrls.add(url)
+      if (e instanceof FetchFailure && !e.timedOut) markDead(url)
       lastErr = e
     }
   }
@@ -575,7 +585,7 @@ async function fetchExternalWhole(
       if (!winner.signal.aborted) {
         reasons.push(`${externalSourceName(url)}: ${errorText(e)}`)
         if (e instanceof FetchFailure && e.timedOut) timedOut.push(url)
-        else deadUrls.add(url)
+        else markDead(url)
       }
       throw e
     }
@@ -1295,6 +1305,8 @@ export function repoReader(
   const key = repoKey(repo)
   const reader: BrowseReader = new BrowseReader(locator, packs, {
     onObject: objectObserver(key),
+    // Bytes that never arrived: the views re-read once the connection is back (L-10).
+    onUnreachable: () => noteReadOutage(key),
     onRead: (packRef, copy, view) => {
       const m = space[packRef]
       if (m === undefined) return

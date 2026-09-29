@@ -42,10 +42,13 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { NETWORKS, type Network } from '../constants'
 import { dapiBudget, installDapiFetchGate } from './budget'
 import { isContractMissingError } from './contract-missing'
+import { isStaleConnectionError } from './unreachable'
 import { loadContractSnapshots } from './contract-seed'
 import { followSdkVersion, setStaleContractHandler } from './query'
 import { compileWasm, onWasmProgress, type DownloadProgress } from './wasm-fetch'
 import { setWriteHold } from './write'
+
+export { isStaleConnectionError, isUnreachableError } from './unreachable'
 
 /** How often the seeded contracts are checked against the network (spec §3.4: once per hour). */
 const SEED_CHECK_MS = 60 * 60 * 1000
@@ -121,26 +124,6 @@ export type SdkStatus =
   | { readonly phase: 'ready' }
   /** The connect failed; `retryAt` is when the next automatic attempt runs (epoch ms). */
   | { readonly phase: 'error'; readonly message: string; readonly retryAt: number | null }
-
-/** A read failed because its connection went stale, not because of what it asked. */
-export function isStaleConnectionError(e: unknown): boolean {
-  return /quorum not found in cache|no available addresses/i.test(messageOf(e))
-}
-
-/**
- * A read failed because Platform could not be reached (a stale connection, a transport error,
- * a timeout, a node that is down or rate-limited), not because of what it asked or what came
- * back. A proof or decode failure is not one of these: it must surface, never be papered over
- * with content read earlier. Nor is a contract the network does not have.
- */
-export function isUnreachableError(e: unknown): boolean {
-  if (isStaleConnectionError(e)) return true
-  // Drive's "contract not found" arrives as a gRPC transport error, but it is an answer.
-  if (isContractMissingError(e)) return false
-  return /failed to fetch|fetch failed|networkerror|network error|load failed|timed out|timeout|deadline exceeded|\bunavailable\b|resourceexhausted|resource exhausted|transport error|connection (?:refused|reset)|HTTP 5\d\d|could not reach platform|can't reach platform/i.test(
-    messageOf(e),
-  )
-}
 
 /**
  * Facade methods that only read, keyed `facade.method`, so running one again on a new

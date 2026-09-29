@@ -307,7 +307,7 @@ describe('browse-plane reader', () => {
           calls++
           if (calls === 1) return Promise.reject(new TypeError('Failed to fetch'))
           const bad = pack.slice(start, end)
-          bad[bad.length - 1] ^= 0xff // a tampered copy: its zlib stream no longer checks
+          bad[bad.length - 1] = (bad[bad.length - 1] ?? 0) ^ 0xff // a tampered copy: its zlib stream no longer checks
           return Promise.resolve(bad)
         },
         copyCount: () => 2,
