@@ -188,6 +188,8 @@ export function PullContent({
   // A longer wait asked for by the newest write (a submitted review), used for its reads.
   const waitFor = useRef<{ attempts: number; delayMs: number; backoff: number; maxDelayMs: number } | null>(null)
   const current = useRef<{ aborted: boolean }>({ aborted: false })
+  // Set by a refresh: from then on the base ref's history is read afresh, not the repo chrome's.
+  const refreshed = useRef(false)
   const { data, loading, error, reload } = useAsync<PullThread | null>(
     async () => {
       current.current.aborted = true
@@ -197,7 +199,7 @@ export function PullContent({
       let latest: PullThread | null = null
       const load = async (): Promise<PullThread | null> => {
         if (signal.aborted) return latest
-        latest = await loadPullThread(sdk!, home.repo, number, network)
+        latest = await loadPullThread(sdk!, home.repo, number, network, { fresh: refreshed.current })
         return latest
       }
       const first = await retryWhileMissing(load, justCreated ? 8 : 0, undefined, signal)
@@ -216,6 +218,7 @@ export function PullContent({
     (want?: (t: PullThread) => boolean, wait?: { attempts: number; delayMs: number; backoff: number; maxDelayMs: number }) => {
       if (want) expectations.current.push(want)
       if (wait) waitFor.current = wait
+      refreshed.current = true
       reload()
     },
     [reload],

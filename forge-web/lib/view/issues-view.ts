@@ -13,6 +13,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import {
   DOC,
+  baseRefReaders,
   asIdentifierString,
   byteFieldToHex,
   issueViewOf,
@@ -348,7 +349,14 @@ export interface PullThread {
  * A PR's timeline includes its `review` documents: an approve or a request for changes is a
  * paid-for record the contributor must see.
  */
-export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number, network: Network = DEFAULT_NETWORK): Promise<PullThread | null> {
+export async function loadPullThread(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  number: number,
+  network: Network = DEFAULT_NETWORK,
+  /** A re-read after this page's own write: the base ref's history is read afresh (a delta), not the chrome's. */
+  { fresh = false }: { readonly fresh?: boolean } = {},
+): Promise<PullThread | null> {
   const source = repoSource(repo)
   const page = source.repoQuery(DOC.patch, { where: [['number', '==', number]] })
   const toTarget = { sourceProperty: '$id', field: 'targetId' }
@@ -404,7 +412,7 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number,
     ...(memberships ?? []).map((m) => m.identity),
   ]
   const [pull] = await Promise.all([
-    readPull(sdk, repo, doc, log, undefined, undefined, { transitions }),
+    readPullWith(sdk, repo, doc, log, baseRefReaders(sdk, repo, fresh ? { maxAgeMs: 0 } : {}), { transitions }),
     prefetchDpnsNames(sdk, shownIds.filter((x) => x !== ''), network).catch(() => undefined),
   ])
 
@@ -431,6 +439,21 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number,
     hidden: tally.value,
     eventValues: eventValues(log),
   }
+}
+
+/**
+ * `readPull` with the base-ref history and config timeline from `base` (the repo chrome store the
+ * page's own chrome read filled: no request for a public repo), not three reads of their own (L-77).
+ */
+function readPullWith(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  doc: PlainDocument,
+  log: TargetLog,
+  base: ReturnType<typeof baseRefReaders>,
+  state: Parameters<typeof readPull>[6],
+): Promise<PullView> {
+  return readPull(sdk, repo, doc, log, base.configHistory, base.refUpdates, state)
 }
 
 /** The review inputs of the approval fold. */

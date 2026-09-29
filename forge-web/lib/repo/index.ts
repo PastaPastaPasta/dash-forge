@@ -119,12 +119,8 @@ export {
   type PackManifest,
 } from './packs'
 export {
+  baseRefReaders,
   historicalTipsPredicate,
-  LIST_PAGE,
-  listIssues,
-  listIssuesCached,
-  listPulls,
-  listPullsCached,
   readEvents,
   invalidateRepoFeed,
   groupFeed,
@@ -173,6 +169,14 @@ export {
   type IssueRow,
   type IssueSelection,
 } from './issue-index'
+export {
+  queryPulls,
+  type PullCounts,
+  type PullListPage,
+  type PullRow,
+  type PullSelection,
+  type PullStateFilter,
+} from './pull-index'
 export {
   addEvent,
   checkRepoInput,
