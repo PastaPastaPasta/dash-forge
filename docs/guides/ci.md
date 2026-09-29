@@ -93,4 +93,18 @@ These are what the protocol and the current forge-collab contract allow. They ar
 - **The contract does not say *which* identity may report, beyond "runner, maintainer or writer".** It cannot require that only runners write `checkRun`, and it has no status-transition rule, such as "no `queued` after `completed`". The one rule it has is that a conclusion is present exactly when the status is `completed`. Clients follow the newest-run rule. [ci-contract-wishes.md](../design/ci-contract-wishes.md) lists what the next registration should add.
 - **A check run is not tied to a pushed commit.** Consensus cannot check that `headOid` exists in the repository: packs live off-chain.
 
-**Coming soon (this series):** reporting from GitHub Actions (`forge-check-action`), a self-hosted runner that runs `.forge/workflows/*.yml` with [act](https://github.com/nektos/act), and relay `check_run` webhooks for in-place updates.
+## Self-host a runner
+
+[`forge-runner`](self-host-runner.md) watches a repository, runs `.forge/workflows/*.yml` (GitHub Actions syntax) with [nektos/act](https://github.com/nektos/act) in Docker on every push, and reports each job through `dg ci report` with its log.
+
+**The security boundary is the Docker daemon you give the runner.** Give it a daemon of its own: rootless, sysbox, or a Docker-in-Docker sidecar over TLS. Never the host's socket. On top of that, the runner:
+
+- **Refuses workflow options that reach past the container.** A job that sets docker options or mounts (`container.options` / `volumes`, the same on `services`), or calls a reusable workflow, is refused unless the repository allows it.
+- **Keeps the daemon's socket out of jobs,** and puts jobs on the `bridge` network, not the host's.
+- **Hands secrets and a `GITHUB_TOKEN` to trusted refs only.** Other runs get an empty token, and secret values are redacted from logs before upload.
+- **Clears act's environment,** so `DASH_FORGE_KEY` never reaches act or a job, and ignores act configuration planted in the checkout.
+- **Never runs a fork's pull request:** it runs pushes to the watched repository's own refs only.
+
+[Self-host a CI runner](self-host-runner.md#security) has the details.
+
+**Coming soon:** reporting from GitHub Actions (`forge-check-action`).
