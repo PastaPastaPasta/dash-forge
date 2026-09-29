@@ -4,16 +4,38 @@
 //! (Blacksmith/Depot/Jenkins/GitHub Actions runners) integrates with near-zero work:
 //! the JSON bodies here reuse GitHub's field names and shapes for `push`, `issues`,
 //! `pull_request`, `issue_comment`, `pull_request_review`, `release` and `check_run`.
-//! Fields GitHub derives server-side (compare/commit URLs, the
-//! integer `repository.id`) are mapped onto forge-web URL conventions or a deterministic
-//! surrogate; nothing here trusts the relay — a verifying consumer re-fetches from
-//! Platform (see the reference `examples/ci_consumer.rs`).
+//! Fields GitHub derives server-side are mapped as below. Nothing here trusts the relay: a
+//! verifying consumer re-fetches from Platform (see the reference `examples/ci_consumer.rs`).
+//!
+//! * **Ids.** GitHub's `id`s are integers: go-github decodes them as `int64`, and JavaScript's
+//!   `JSON.parse` rounds anything above 2^53 − 1. Every `id` here is [`github_id`] of the
+//!   Platform id: a deterministic integer in `1..=2^53 − 1`, the same on every relay. The
+//!   base58 id itself is in `node_id`, GitHub's opaque global id. `repository` also carries
+//!   it as `dash_repo_id` (D-605).
+//! * **Links.** `html_url`s point at forge-web's real routes, under `--web-base-url` (default
+//!   [`forge_core::user_error::WEB_ORIGIN`]). forge-web is a static export with query routes
+//!   (`forge-web/hooks/use-query-param.ts` `repoHref`). It has no compare page and no
+//!   per-comment or per-review anchors, so `compare` links the pushed commit (the repo, for a
+//!   branch deletion), and a comment or review links its issue or PR (D-606).
 //!
 //! Every builder is a pure `FetchedDocument`/scalar → `serde_json::Value` function so the
 //! whole mapping layer is unit-testable without a network.
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+
+/// The largest integer JavaScript represents exactly (`Number.MAX_SAFE_INTEGER`, 2^53 − 1).
+/// Every `id` in a payload is at most this, so it also fits GitHub clients' `int64`.
+pub const MAX_SAFE_ID: u64 = (1 << 53) - 1;
+
+/// The integer `id` for a Platform id (a document or identity id, base58). It is the first 8
+/// bytes of `sha256(id)`, big-endian, masked to 53 bits, and never 0. It is deterministic, so
+/// every relay instance sends the same `id` for the same document.
+pub fn github_id(platform_id: &str) -> u64 {
+    let digest = Sha256::digest(platform_id.as_bytes());
+    let n = u64::from_be_bytes(digest[..8].try_into().expect("sha256 has 8+ bytes"));
+    (n & MAX_SAFE_ID).max(1)
+}
 
 /// An all-zero git oid (40 hex zeros) — the sentinel for "ref did not exist" (`before`
 /// on a branch create) or "ref deleted" (`after` on a delete), matching git/GitHub.
@@ -43,22 +65,46 @@ pub struct RepositoryMeta {
 }
 
 impl RepositoryMeta {
-    /// A deterministic unsigned surrogate for GitHub's integer `repository.id` (some
-    /// tooling insists the field is numeric). Derived from the repo id so it is stable
-    /// across relay instances and restarts.
-    fn numeric_id(&self) -> u64 {
-        let digest = Sha256::digest(self.repo_id.as_bytes());
-        u64::from_be_bytes(digest[..8].try_into().expect("sha256 has 8+ bytes"))
+    /// A forge-web route of this repo, `<web base><route>/?owner=<owner>&name=<name>&<extra>`:
+    /// the shape forge-web's `repoHref` builds (trailing slash, `URLSearchParams` encoding).
+    fn web_href(&self, route: &str, extra: &[(&str, &str)]) -> String {
+        let mut q = url::form_urlencoded::Serializer::new(String::new());
+        q.append_pair("owner", &self.owner_id)
+            .append_pair("name", &self.name);
+        for (k, v) in extra {
+            q.append_pair(k, v);
+        }
+        format!(
+            "{}{route}/?{}",
+            self.web_base_url.trim_end_matches('/'),
+            q.finish()
+        )
     }
 
-    /// `<web_base>/<owner>/<name>` — the forge-web repo home.
+    /// The repo home (`/repo/?owner=&name=`).
     fn html_url(&self) -> String {
-        format!(
-            "{}/{}/{}",
-            self.web_base_url.trim_end_matches('/'),
-            self.owner_id,
-            self.name
-        )
+        self.web_href("/repo", &[])
+    }
+
+    /// An issue (`/repo/issue/?…&number=`) or a PR (`/repo/pull/?…&number=`). Issues and PRs
+    /// are numbered independently, so the route must match the kind. Number 0 (an unknown
+    /// target) links the repo.
+    fn thread_url(&self, is_pr: bool, number: u64) -> String {
+        match (number, is_pr) {
+            (0, _) => self.html_url(),
+            (_, true) => self.web_href("/repo/pull", &[("number", &number.to_string())]),
+            (_, false) => self.web_href("/repo/issue", &[("number", &number.to_string())]),
+        }
+    }
+
+    /// A commit (`/repo/commit/?…&oid=`).
+    fn commit_url(&self, oid: &str) -> String {
+        self.web_href("/repo/commit", &[("oid", oid)])
+    }
+
+    /// A release (`/repo/release/?…&tag=`).
+    fn release_url(&self, tag: &str) -> String {
+        self.web_href("/repo/release", &[("tag", tag)])
     }
 
     /// GitHub's `full_name` (`owner/repo`). Owner is the identity id (there is no
@@ -70,7 +116,7 @@ impl RepositoryMeta {
     /// The GitHub-shape `repository` object.
     pub fn to_json(&self) -> Value {
         json!({
-            "id": self.numeric_id(),
+            "id": github_id(&self.repo_id),
             "node_id": self.repo_id,
             "dash_repo_id": self.repo_id,
             "name": self.name,
@@ -83,16 +129,19 @@ impl RepositoryMeta {
         })
     }
 
-    /// A GitHub-shape `user` object for an identity id (used for `owner`, `sender`,
-    /// `pusher`, comment/issue authors). Platform identities have no login/email, so the
-    /// base58 identity id is used as the login and a synthetic profile URL is derived.
+    /// A GitHub-shape `user` object for an identity id (used for `owner`, `sender`, and
+    /// comment and issue authors). Platform identities have no login or email, so the base58
+    /// identity id is the `login` and the `node_id`, and `html_url` is its forge-web profile
+    /// (`/u/?name=<id>`).
     pub fn user_json(&self, identity_id: &str) -> Value {
+        let mut q = url::form_urlencoded::Serializer::new(String::new());
+        q.append_pair("name", identity_id);
         json!({
             "login": identity_id,
-            "id": identity_id,
+            "id": github_id(identity_id),
             "node_id": identity_id,
             "type": "User",
-            "html_url": format!("{}/{}", self.web_base_url.trim_end_matches('/'), identity_id),
+            "html_url": format!("{}/u/?{}", self.web_base_url.trim_end_matches('/'), q.finish()),
         })
     }
 }
@@ -140,14 +189,12 @@ pub fn push_event(
     let deleted = is_zero_oid(after);
     let before = if before.is_empty() { ZERO_OID } else { before };
     let after = if after.is_empty() { ZERO_OID } else { after };
-    let compare = format!(
-        "{}/{}/{}/compare/{}...{}",
-        repo.web_base_url.trim_end_matches('/'),
-        repo.owner_id,
-        repo.name,
-        before,
-        after
-    );
+    // forge-web has no compare view: link the pushed commit, or the repo for a deletion.
+    let compare = if deleted {
+        repo.html_url()
+    } else {
+        repo.commit_url(after)
+    };
     let payload = json!({
         "ref": ref_name,
         "before": before,
@@ -205,18 +252,12 @@ pub fn pull_request_event(
     pr: &PullRequestObj,
 ) -> WebhookEvent {
     let state = if pr.open { "open" } else { "closed" };
-    let html_url = format!(
-        "{}/{}/{}/pull/{}",
-        repo.web_base_url.trim_end_matches('/'),
-        repo.owner_id,
-        repo.name,
-        pr.number
-    );
+    let html_url = repo.thread_url(true, pr.number);
     let payload = json!({
         "action": action,
         "number": pr.number,
         "pull_request": {
-            "id": pr.document_id,
+            "id": github_id(&pr.document_id),
             "node_id": pr.document_id,
             "number": pr.number,
             "state": state,
@@ -254,20 +295,17 @@ pub struct IssueObj {
     pub body: String,
     /// Open / closed.
     pub open: bool,
+    /// Whether it is a pull request. As on GitHub, an `issue_comment` on a PR embeds the PR
+    /// as its `issue`, with a `pull_request` key.
+    pub is_pr: bool,
 }
 
 impl IssueObj {
     fn to_json(&self, repo: &RepositoryMeta) -> Value {
         let state = if self.open { "open" } else { "closed" };
-        let html_url = format!(
-            "{}/{}/{}/issues/{}",
-            repo.web_base_url.trim_end_matches('/'),
-            repo.owner_id,
-            repo.name,
-            self.number
-        );
-        json!({
-            "id": self.document_id,
+        let html_url = repo.thread_url(self.is_pr, self.number);
+        let mut v = json!({
+            "id": github_id(&self.document_id),
             "node_id": self.document_id,
             "number": self.number,
             "state": state,
@@ -275,7 +313,11 @@ impl IssueObj {
             "body": self.body,
             "html_url": html_url,
             "user": repo.user_json(&self.author),
-        })
+        });
+        if self.is_pr {
+            v["pull_request"] = json!({ "html_url": html_url });
+        }
+        v
     }
 }
 
@@ -310,19 +352,13 @@ pub fn issue_comment_event(
     commenter: &str,
     body: &str,
 ) -> WebhookEvent {
-    let html_url = format!(
-        "{}/{}/{}/issues/{}#comment-{}",
-        repo.web_base_url.trim_end_matches('/'),
-        repo.owner_id,
-        repo.name,
-        issue.number,
-        comment_id
-    );
+    // forge-web has no per-comment anchor: the comment links its issue or PR.
+    let html_url = repo.thread_url(issue.is_pr, issue.number);
     let payload = json!({
         "action": "created",
         "issue": issue.to_json(repo),
         "comment": {
-            "id": comment_id,
+            "id": github_id(comment_id),
             "node_id": comment_id,
             "body": body,
             "html_url": html_url,
@@ -356,18 +392,12 @@ pub fn pull_request_review_event(
         _ => "commented",
     };
     let pr_event = pull_request_event(repo, &pr.document_id, "submitted", pr);
-    let html_url = format!(
-        "{}/{}/{}/pull/{}#review-{}",
-        repo.web_base_url.trim_end_matches('/'),
-        repo.owner_id,
-        repo.name,
-        pr.number,
-        source_doc_id
-    );
+    // forge-web has no per-review anchor: the review links its PR.
+    let html_url = repo.thread_url(true, pr.number);
     let payload = json!({
         "action": "submitted",
         "review": {
-            "id": source_doc_id,
+            "id": github_id(source_doc_id),
             "node_id": source_doc_id,
             "state": state,
             "body": body,
@@ -413,17 +443,11 @@ pub fn release_event(
     action: &'static str,
     r: &ReleaseObj,
 ) -> WebhookEvent {
-    let html_url = format!(
-        "{}/{}/{}/releases/tag/{}",
-        repo.web_base_url.trim_end_matches('/'),
-        repo.owner_id,
-        repo.name,
-        r.tag_name
-    );
+    let html_url = repo.release_url(&r.tag_name);
     let payload = json!({
         "action": action,
         "release": {
-            "id": r.document_id,
+            "id": github_id(&r.document_id),
             "node_id": r.document_id,
             "tag_name": r.tag_name,
             "name": r.name,
