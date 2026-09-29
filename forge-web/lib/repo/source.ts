@@ -2,10 +2,10 @@
  * RepoSource — where a repo's documents live and how a query is scoped to one repo.
  *
  * Every reader in `lib/repo` and `lib/view` builds its queries here. Every repo shares
- * forge-core (code: refs, config, packs, members, releases, labels, topics), forge-collab (issues,
- * PRs, transitions, comments, reviews, repo keys) and forge-community (events, milestones,
- * runners, stars, watches, follows, check runs, policies, webhooks, profiles; the RC1 layout,
- * `forge-v2.md` §2). Indexes that list a repo's documents lead
+ * forge-core (code: refs, config, packs, members and consents, releases, labels, topics),
+ * forge-collab (issues, PRs, transitions, comments, reviews, repo keys) and forge-community
+ * (events, author events, milestones, runners, stars, watches, follows, check runs, policies,
+ * webhooks, profiles). Indexes that list a repo's documents lead
  * with `repoId`, so {@link RepoSource.repoQuery} prefixes `repoId ==` (`forge-v2.md` §2).
  * Indexes keyed by a document id (`targetId`, `patchId`) need no prefix — consensus ties
  * those references to the same repo — and go through {@link RepoSource.targetQuery}.
@@ -14,46 +14,17 @@
  * contract's own (`forge-contracts/contracts/forge-{core,collab,community}.json`).
  */
 
-import { hexToBase64, type DocumentQuery, type OrderByClause, type WhereClause } from '../sdk'
+import type { DocumentQuery, OrderByClause, WhereClause } from '../sdk'
 import type { ForgeIds } from '../deployments'
 import { DOC, type RepoRef } from './contract'
+import { contractKindOfType } from '../layout'
+import { packHashOperand } from './pack-hash'
 
-/** The forge-v2 document types held by forge-core. */
-const CORE_TYPES: ReadonlySet<string> = new Set([
-  DOC.repo,
-  DOC.maintainer,
-  DOC.writer,
-  DOC.refUpdate,
-  DOC.protectedRefUpdate,
-  DOC.config,
-  DOC.packManifest,
-  DOC.manifestPart,
-  DOC.chunk,
-  DOC.release,
-  DOC.label,
-  DOC.topic,
-])
-
-/** The forge-v2 document types held by forge-community; the rest is forge-collab. */
-export const COMMUNITY_TYPES: ReadonlySet<string> = new Set([
-  DOC.event,
-  DOC.authorEvent,
-  DOC.milestone,
-  DOC.runner,
-  DOC.star,
-  DOC.starBeat,
-  DOC.watch,
-  DOC.follow,
-  DOC.checkRun,
-  DOC.policy,
-  DOC.webhook,
-  DOC.profile,
-])
-
-/** The contract of `forge` that holds `type` (`forge-v2.md` §2). */
+/** The contract of `forge` that holds `type` (`forge-v2.md` §2, the RC1 layout). Throws on a type no contract holds. */
 export function contractOf(forge: ForgeIds, type: string): string {
-  if (CORE_TYPES.has(type)) return forge.core
-  return COMMUNITY_TYPES.has(type) ? forge.community : forge.collab
+  const kind = contractKindOfType(type)
+  if (kind === null) throw new Error(`no forge-v2 contract holds the document type ${JSON.stringify(type)}`)
+  return forge[kind]
 }
 
 /** The clauses a caller adds to a scoped query. */
@@ -74,7 +45,8 @@ export interface RepoSource {
   /**
    * The `chunk` rows `seqs` of the artifact `packHashHex`. Chunks are keyed by the
    * uploader too (`(repoId, $ownerId, packHash, seq)`, `forge-v2.md` §4), so `uploader` —
-   * the `$ownerId` of the manifest copy being read — is required.
+   * the `$ownerId` of the manifest copy being read — is required. `packHash` is an identifier
+   * (RC1), so its operand is base58 ({@link packHashOperand}).
    */
   chunkQuery(packHashHex: string, uploader: string, seqs: readonly number[]): DocumentQuery
 }
@@ -103,7 +75,7 @@ export function repoSource(repo: RepoRef): RepoSource {
       repoQuery(DOC.chunk, {
         where: [
           ['$ownerId', '==', uploader],
-          ['packHash', '==', hexToBase64(packHashHex)],
+          ['packHash', '==', packHashOperand(packHashHex)],
           ['seq', 'in', [...seqs]],
         ],
         orderBy: [['seq', 'asc']],

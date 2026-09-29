@@ -1,5 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
-import { collectPageErrors, countDapi, countDocumentQueries, DEMO, deployment, nodeSdk, repoUrl, runAxe, shot } from './helpers'
+import { collectPageErrors, countDapi, countDocumentQueries, DEMO, deployment, loadSeedPulls, nodeSdk, repoUrl, runAxe, shot } from './helpers'
 
 /**
  * G14 (L-25, L-27, L-40): Explore search, the jump box, GitHub-style short URLs and the
@@ -159,13 +159,17 @@ test('g3. the jump box: a bare repo name opens the repo, not "No such identity"'
 
 test('g4. short URLs: branches, tags, stargazers, commit, releases/tag, tree, pull files, issues ?q=', async ({ page }) => {
   const base = `/${DEMO.owner}/${DEMO.name}`
+  // Any real PR works for the pull/files case (only the canonical URL and "Files changed" are
+  // checked): its number now comes from the seed summary, not the literal 1 (dense shared
+  // numbering, forge-v2.md §6.2 — #1 is an issue in this fixture).
+  const pr = loadSeedPulls().approved
   const cases: [string, RegExp, RegExp][] = [
     [`${base}/branches`, /\/repo\/branches\/?\?owner=/, /main/],
     [`${base}/tags`, /\/repo\/tags\/?\?owner=/, /v0\.1\.0/],
     [`${base}/stargazers`, /\/repo\/stargazers\/?\?owner=/, /Stargazers/],
     [`${base}/releases/tag/v0.1.0`, /\/repo\/release\/?\?owner=.*tag=v0\.1\.0/, /v0\.1\.0/],
     [`${base}/tree/main/src`, /\/repo\/tree\/?\?owner=.*ref=main&path=src/, /main\.rs/],
-    [`${base}/pull/1/files`, /\/repo\/pull\/?\?owner=.*number=1&tab=files/, /Files changed/],
+    [`${base}/pull/${pr}/files`, new RegExp(`/repo/pull/?\\?owner=.*number=${pr}&tab=files`), /Files changed/],
     [`${base}/issues?q=is%3Aclosed`, /\/repo\/issues\/?\?owner=.*q=is%3Aclosed/, /closed/i],
   ]
   for (const [short, canonical, content] of cases) {

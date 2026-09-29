@@ -6,6 +6,14 @@
 
 import { describe, expect, it, vi } from 'vitest'
 
+// The topic-document writes, observed (every other SDK export is the real one).
+const sdkWrites = vi.hoisted(() => ({ create: vi.fn(), del: vi.fn() }))
+vi.mock('../sdk', async (orig) => ({
+  ...(await orig<typeof import('../sdk')>()),
+  createDocumentIdempotent: (...a: unknown[]) => sdkWrites.create(...a),
+  deleteDocumentIdempotent: (...a: unknown[]) => sdkWrites.del(...a),
+}))
+
 import type { RepoConfig } from './config'
 import type { RepoRef } from './contract'
 import { onRepoContentWritten } from './push'
@@ -27,6 +35,7 @@ import {
   sameConfig,
   shortBranch,
   staleProblem,
+  syncTopicDocs,
   topicChanges,
   topicsProblem,
   updateConfig,
@@ -145,6 +154,10 @@ describe('branch names and patterns', () => {
     expect(branchProblem('')).not.toBeNull()
     expect(branchProblem('a b')).not.toBeNull()
     expect(branchProblem('x'.repeat(250))).not.toBeNull()
+    expect(branchProblem('x'.repeat(244))).toBeNull()
+    // RC1 `$defs.branch`: git's grammar, no leading `-`, not `@` alone; and a branch a push can create.
+    for (const bad of ['-main', '.main', 'main/', 'a..b', 'a@{1}', 'x.', 'a~1', 'a:b', 'x.lock', '@']) expect(branchProblem(bad)).not.toBeNull()
+    for (const ok of ['release/1.x', 'a@b', '@x', 'ünï', 'v1./x']) expect(branchProblem(ok)).toBeNull()
     expect(patternsProblem(['refs/heads/main', 'refs/heads/release/*'])).toBeNull()
     expect(patternsProblem([])).toBeNull()
     expect(patternsProblem(['refs/heads/a', 'refs/heads/a'])).toMatch(/already/)
@@ -173,7 +186,13 @@ describe('repo document edits', () => {
     expect(topicsProblem(['a_b'])).not.toBeNull()
     expect(topicsProblem(['a', 'a'])).toMatch(/twice/)
     expect(topicsProblem(['a'.repeat(31)])).not.toBeNull()
-    expect(topicsProblem(Array.from({ length: 11 }, (_, i) => `t${i}`))).toMatch(/at most 10/)
+    expect(topicsProblem(['a'.repeat(30)])).toBeNull()
+    // RC1 R-20: words joined by single dashes, at most 20.
+    expect(topicsProblem(['web-dev', 'a1-b2', 'c'])).toBeNull()
+    expect(topicsProblem(['rust-'])).not.toBeNull()
+    expect(topicsProblem(['a--b'])).not.toBeNull()
+    expect(topicsProblem(Array.from({ length: 20 }, (_, i) => `t${i}`))).toBeNull()
+    expect(topicsProblem(Array.from({ length: 21 }, (_, i) => `t${i}`))).toMatch(/at most 20/)
     expect(parseTopics('a, b,c')).toEqual(['a', 'b', 'c'])
     expect(parseTopics(' , ')).toEqual([])
     expect(descriptionProblem('x'.repeat(500))).toBeNull()
@@ -201,6 +220,58 @@ describe('repo document edits', () => {
     expect(three).toBeGreaterThan(previewRepoEdit({ topics: ['rust', 'cli', 'git'] }, ['rust', 'cli']).credits)
     expect(previewRepoEdit({ topics: ['rust', 'cli', 'git'] }, null).credits).toBe(three)
     expect(previewRepoEdit({}, ['rust']).credits).toBe(0)
+    // A private repo has no topic documents (RC1 `topic.vis` is public-only): the replace alone.
+    expect(previewRepoEdit({ topics: ['rust', 'git'] }, [], 'private').credits).toBe(previewRepoEdit({ topics: ['rust', 'git'] }, ['rust', 'git']).credits)
+  })
+})
+
+describe('topic documents (RC1 R-20)', () => {
+  const REPO_ID = '11111111111111111111111111111111'
+  const repoOf = (visibility: 'public' | 'private'): RepoRef =>
+    ({ visibility, repoId: REPO_ID, ownerId: 'o', name: 'r', forge: { core: 'CORE', collab: 'COLLAB', community: 'COMM', group: 'G' } }) as RepoRef
+
+  /** An SDK holding `held` topic documents. */
+  function topicSdk(held: readonly string[]) {
+    const docs = held.map((name, i) => ({ $id: `t${i}`, name }))
+    return { documents: { query: vi.fn(async () => new Map(docs.map((d) => [d.$id, d]))) } }
+  }
+
+  it('delete before they create, so a swap on a full repo stays within the 20 cap, and carry vis public', async () => {
+    const calls: string[] = []
+    const created: Record<string, unknown>[] = []
+    sdkWrites.create.mockImplementation(async (_s: unknown, _a: unknown, p: { data: Record<string, unknown> }) => {
+      calls.push(`create:${String(p.data['name'])}`)
+      created.push(p.data)
+      return { documentId: 'n', confirmed: true }
+    })
+    sdkWrites.del.mockImplementation(async (_s: unknown, _a: unknown, p: { documentId: string }) => {
+      calls.push(`delete:${p.documentId}`)
+      return { documentId: p.documentId, confirmed: true }
+    })
+    await syncTopicDocs(topicSdk(['old', 'keep']) as never, {} as never, repoOf('public'), ['keep', 'new'])
+    expect(calls).toEqual(['delete:t0', 'create:new'])
+    expect(created[0]).toMatchObject({ name: 'new', vis: 'public' })
+    // `repoId` as the identifier's 32 bytes, like every other write.
+    expect(created[0]?.['repoId']).toBeInstanceOf(Uint8Array)
+    expect((created[0]?.['repoId'] as Uint8Array).length).toBe(32)
+  })
+
+  it('are never written for a private repo (its repo.topics stay)', async () => {
+    sdkWrites.create.mockReset()
+    const sdk = topicSdk(['x'])
+    await syncTopicDocs(sdk as never, {} as never, repoOf('private'), ['a', 'b'])
+    expect(sdk.documents.query).not.toHaveBeenCalled()
+    expect(sdkWrites.create).not.toHaveBeenCalled()
+  })
+
+  it('a config write carries the repo\'s vis stamp', async () => {
+    let written: Record<string, unknown> | null = null
+    const write = vi.fn(async (_s: unknown, _a: unknown, p: { data: Record<string, unknown> }) => {
+      written = p.data
+      return { documentId: 'x' }
+    })
+    await updateConfig({} as never, {} as never, repoOf('public'), NOW, { archived: true }, undefined, async () => NOW, write as never)
+    expect(written).toMatchObject({ vis: 'public', archived: true })
   })
 })
 

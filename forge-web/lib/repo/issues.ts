@@ -209,6 +209,9 @@ const VERDICT_BY_INT: Readonly<Record<number, VerdictName>> = {
   1: 'approve',
   2: 'requestChanges',
   3: 'comment',
+  // A non-member's approve and request changes (RC1 R-16): shown as such, never counted.
+  4: 'approve',
+  5: 'requestChanges',
 }
 
 /** Short label for a verdict, matching `dg pr view`. */

@@ -9,8 +9,9 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { describe, expect, it } from 'vitest'
 
+import { base58Encode } from '../auth/base58'
 import { bytesToBase64 } from '../sdk'
-import { readPackManifests } from './packs'
+import { readPackCopies, readPackManifests } from './packs'
 import type { RepoRef } from './contract'
 
 const REPO: RepoRef = {
@@ -79,5 +80,32 @@ describe('packed byteArray parsing (tips / supersedes)', () => {
     expect(byPack(0xbb)?.supersedes).toEqual([])
     expect(byPack(0xbb)?.tips).toEqual([])
     expect(byPack(0xbb)?.uris).toEqual([])
+  })
+})
+
+describe('packHash as an RC1 identifier', () => {
+  it('reads the base58 the 4.2 SDK returns as the same hex as the older base64', async () => {
+    const docs = await readPackManifests(
+      mockSdk([
+        { $id: 'a', packHash: base58Encode(hashBytes(0xaa)), kind: 0 },
+        { $id: 'b', packHash: bytesToBase64(hashBytes(0xbb)), kind: 4 },
+      ]),
+      REPO,
+    )
+    expect(docs.map((d) => d.packHash).sort()).toEqual([hashHex(0xaa), hashHex(0xbb)])
+  })
+
+  it('queries every copy of a pack by the base58 operand', async () => {
+    const seen: unknown[] = []
+    const sdk = {
+      documents: {
+        query: (q: { where?: unknown[] }) => {
+          seen.push(...(q.where ?? []))
+          return Promise.resolve(new Map())
+        },
+      },
+    } as unknown as EvoSDK
+    await readPackCopies(sdk, REPO, hashHex(0xaa), 0).catch(() => null)
+    expect(seen).toContainEqual(['packHash', '==', base58Encode(hashBytes(0xaa))])
   })
 })

@@ -14,12 +14,14 @@
  * the moutai test identities in `~/.config/dash-forge/test-identities/devnet-moutai/` (a few
  * cents of spend):
  *
- * 1. The fixture's PR #3 holds one document of every changed or new type, read back with
- *    proofs: a draft `patch`, the author's `headUpdate` / `threadResolve` (`authorEvent` kinds
- *    16, 11), a member's `reviewRequest` / `reviewDismiss` (`event` kinds 13, 15 with `refId`),
- *    a `review` with `commentCount`, a multi-line `comment` attached by `reviewId`, and a
- *    `policy`. The new indexes answer: `sourceRef`, `reply`, `addressee`, and the review and
- *    comment counts per PR.
+ * 1. The fixture's review-parity PR (`loadSeedPulls().reviewParity`; issues and PRs share one
+ *    dense per-repo number sequence, forge-v2.md §6.2, so it is no longer the small constant 3)
+ *    holds one document of every changed or new type, read back with proofs: a draft state (a
+ *    kind-14 `transition`, `PR_DRAFT`; `patch` itself carries no `draft` field), the author's
+ *    `headUpdate` / `threadResolve` (`authorEvent` kinds 16, 11), a member's `reviewRequest` /
+ *    `reviewDismiss` (`event` kinds 13, 15 with `refId`), a `review` with `commentCount`, a
+ *    multi-line `comment` attached by `reviewId`, and a `policy`. The new indexes answer:
+ *    `sourceRef`, `reply`, `addressee`, and the review and comment counts per PR.
  * 2. In a scratch repo (the read fixture is left as its seeder wrote it), what the spec says
  *    is refused is refused: a `comment` naming another reviewer's review
  *    (the `$ownerId` agreement, 40127), a `policy` by a writer (maintainer gate, 40120), an
@@ -39,7 +41,9 @@ import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
+import { loadSeedPulls } from '../../e2e/seed-summary'
 import { DEFAULT_NETWORK, NETWORKS } from '../constants'
+import { PR_DRAFT } from '../rules/v2'
 import { asConsensusRefusal, evoSdkService } from '../sdk'
 import { commitRootTree, loadBrowseContext, loadIssueThread, loadPullThread, loadRepoHome, readTree } from '../view'
 import { listRecentRepos, listReposByOwner } from '../view/discovery'
@@ -80,6 +84,7 @@ describe.skipIf(!LIVE)('live forge-v2 reads (moutai fixture)', () => {
   it(
     'resolves, folds and browses the fixture repo',
     async () => {
+      const pulls = loadSeedPulls()
       await evoSdkService.initialize({ network: 'devnet', contractIds: [], timeoutMs: 20000 })
       const sdk = evoSdkService.getSdk()
 
@@ -114,13 +119,13 @@ describe.skipIf(!LIVE)('live forge-v2 reads (moutai fixture)', () => {
       expect(byNumber.get(2)?.state.open).toBe(false) // the author's own authorEvent close
       expect(byNumber.get(3)?.state).toMatchObject({ open: false, labels: ['docs'] })
 
-      const pulls = (await queryPulls(sdk, home.repo, { state: 'all', labels: [], author: null, assignee: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null)).rows
-      const pr = new Map(pulls.map((p) => [p.number, p]))
-      expect(pr.get(1)?.state).toMatchObject({ open: true, merged: false })
-      expect(pr.get(2)?.state.merged).toBe(true)
-      expect(pr.get(1)?.sourceId).toBe(home.repo.repoId)
+      const prList = (await queryPulls(sdk, home.repo, { state: 'all', labels: [], author: null, assignee: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null)).rows
+      const pr = new Map(prList.map((p) => [p.number, p]))
+      expect(pr.get(pulls.approved)?.state).toMatchObject({ open: true, merged: false })
+      expect(pr.get(pulls.merged)?.state.merged).toBe(true)
+      expect(pr.get(pulls.approved)?.sourceId).toBe(home.repo.repoId)
 
-      const thread = await loadPullThread(sdk, home.repo, 1)
+      const thread = await loadPullThread(sdk, home.repo, pulls.approved)
       expect(thread?.approvals?.approvers).toEqual([MAINTAINER])
       const issue2 = await loadIssueThread(sdk, home.repo, 2)
       expect(issue2?.timeline.some((t) => t.kind === 'event' && t.byAuthor === true)).toBe(true)
@@ -149,6 +154,7 @@ describe.skipIf(!LIVE)('live forge-v2 reads (moutai fixture)', () => {
   it(
     'reads every changed type from the fixture and refuses what the spec refuses',
     async () => {
+      const pulls = loadSeedPulls()
       const ids = NETWORKS.devnet.v2
       if (ids === null) throw new Error('no forge-v2 deployment for the devnet')
       const evo: Evo = await import('@dashevo/evo-sdk')
@@ -232,10 +238,13 @@ describe.skipIf(!LIVE)('live forge-v2 reads (moutai fixture)', () => {
       const repo = [...repoRes.values()][0]?.toJSON(14) as Record<string, unknown> | undefined
       if (repo === undefined) throw new Error('forge-v2-demo not found')
       const repoId = String(repo['$id'])
-      const [pr] = await query('patch', [['repoId', '==', repoId], ['number', '==', 3]])
-      if (pr === undefined) throw new Error('fixture PR #3 not found: run seed-v2-fixture.mjs')
+      const [pr] = await query('patch', [['repoId', '==', repoId], ['number', '==', pulls.reviewParity]])
+      if (pr === undefined) throw new Error(`fixture review-parity PR #${pulls.reviewParity} not found: run seed-v2-fixture.mjs`)
       const prId = String(pr['$id'])
-      expect(pr['draft']).toBe(true)
+      // `patch` itself no longer carries a `draft` field: draft is folded from `transition`s
+      // (kind 14 = PR_DRAFT, docs/contracts/forge-v2.md §3).
+      const draftTransitions = await query('transition', [['targetId', '==', prId], ['kind', '==', PR_DRAFT]])
+      expect(draftTransitions.length).toBeGreaterThan(0)
       expect(hex(pr['headOid'])).toBe(C2)
       expect(pr['$updatedAt']).toBeDefined()
 
@@ -265,7 +274,7 @@ describe.skipIf(!LIVE)('live forge-v2 reads (moutai fixture)', () => {
         ['sourceRepoId', '==', repoId],
         ['sourceRefNameHash', '==', pr['sourceRefNameHash']],
       ])
-      expect(fromBranch.map((p) => p['number'])).toContain(3)
+      expect(fromBranch.map((p) => p['number'])).toContain(pulls.reviewParity)
       const replies = await query('comment', [['replyTo', '==', resolvedRoot]])
       expect(replies.map((c) => c['$ownerId'])).toEqual([CONTRIB.id])
       const addressed = await query('event', [['refId', '==', MAINTAINER.id]])

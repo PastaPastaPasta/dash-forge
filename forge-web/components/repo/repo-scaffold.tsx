@@ -20,6 +20,7 @@ import { useRepoHome } from '@/hooks/use-repo'
 import { useSdk } from '@/hooks/use-sdk'
 import { usePrivateHome } from '@/hooks/use-private-home'
 import { PrivateBanner } from '@/components/repo/private-banner'
+import { InviteBanner } from '@/components/repo/invite-banner'
 import { PrivateRepoState } from '@/components/repo/private-repo-state'
 import { RepoNotFound } from '@/components/repo/repo-not-found'
 import { selectRef, type RepoHome } from '@/lib/view'
@@ -153,6 +154,7 @@ export function RepoScaffold({
       <>
         {offline}
         <RepoHeader home={home} addr={addr} />
+        <InviteBanner repo={home.repo} />
         <PrivateBanner home={home} />
         <PrivateRepoState repo={home.repo} addr={addr} access={home.private?.access ?? 'outsider'} />
       </>
@@ -163,6 +165,7 @@ export function RepoScaffold({
     <>
       {offline}
       <RepoHeader home={home} addr={addr} />
+      <InviteBanner repo={home.repo} />
       <PrivateBanner home={home} />
       {rail ? (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_296px]">

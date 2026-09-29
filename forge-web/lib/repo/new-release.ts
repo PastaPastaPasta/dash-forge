@@ -32,7 +32,8 @@ import { sha256Hex } from '../storage/sigv4'
 import type { RepoRef } from './contract'
 import { invalidateMembers, readViewerPermissions } from './members'
 import { readReleases, type ReleaseAssetView } from './releases'
-import { createRelease, releaseAssetsJson, type ReleaseAsset } from './writes'
+import { PRIVATE_RELEASE_REFUSED, createRelease, releaseAssetsJson, type ReleaseAsset } from './writes'
+import { isRc1TagName } from '../rules'
 
 /** The `release` schema's limits (forge-core `release`: `maxLength` characters, `maxBytes`). */
 export const RELEASE_LIMITS = {
@@ -55,24 +56,16 @@ function fits(field: string, s: string, limit: { chars: number; bytes: number })
   return null
 }
 
-/** Why `tag` cannot name a release, or null (git's `check-ref-format` rules for a tag). */
-/** Why a private repo's release takes no assets (parity with `dg release`). */
-export const PRIVATE_ASSETS_REFUSED = 'release assets cannot be attached to a private repo: they would be uploaded unencrypted'
-
+/**
+ * Why `tag` cannot name a release, or null: the contract's `tagName` grammar (RC1 R-01) plus what
+ * it leaves to git (any whitespace, `@` alone, a leading `-`, a `.lock` component).
+ */
 export function tagProblem(tag: string): string | null {
   if (tag === '') return 'a tag is needed (e.g. v1.0.0)'
   const size = fits('a tag', tag, RELEASE_LIMITS.tagName)
   if (size) return size
-  const bad =
-    /[\s~^:?*[\\\x00-\x1f\x7f]/.test(tag) ||
-    tag.includes('..') ||
-    tag.includes('@{') ||
-    tag === '@' ||
-    tag.includes('//') ||
-    /^[-/]|\/$|\.$/.test(tag) ||
-    /(^|\/)\./.test(tag) ||
-    /\.lock(\/|$)/.test(tag)
-  return bad ? 'that is not a valid git tag name' : null
+  const bad = /\s/.test(tag) || tag === '@' || tag.startsWith('-') || /\.lock(\/|$)/.test(tag)
+  return bad || !isRc1TagName(tag) ? 'that is not a valid git tag name' : null
 }
 
 /** Why the release text does not fit its document, or null. */
@@ -294,10 +287,9 @@ export async function publishRelease(
   storage: { readonly policy: StoragePolicy | null; readonly profiles: readonly StorageProfile[] },
   onEvent?: (e: PublishEvent) => void,
 ): Promise<{ readonly release: WriteResult; readonly assets: readonly ReleaseAsset[] }> {
-  // A private repo's release assets would be uploaded unencrypted: refused, as `dg release` does.
-  if (repo.visibility === 'private' && (input.files.length > 0 || (input.stored?.assets.length ?? 0) > 0)) {
-    throw new Error(PRIVATE_ASSETS_REFUSED)
-  }
+  // A private repo's release would be written in plaintext (this client does not seal releases),
+  // which consensus refuses (RC1 R-02): refused before any upload or signature.
+  if (repo.visibility === 'private') throw new Error(PRIVATE_RELEASE_REFUSED)
   const early = tagProblem(input.tagName) ?? (input.stored ? null : assetFilesProblem(input.files))
   if (early) throw new Error(early)
   onEvent?.({ step: 'role' })

@@ -105,15 +105,11 @@ describe('historySource', () => {
     expect(historySource([manifest(new Uint8Array([1]), [], { kind: 1 })], async () => new Uint8Array())).toBeNull()
   })
 
-  it('prefers an index with version lists at a tip over one without (review L3)', () => {
+  it('prefers a full index at a tip over a delta (the format moves to the artifact header with RC1)', () => {
     const tip = 'bb'.repeat(20)
-    const base = manifest(fullOf('aa'.repeat(20)), ['aa'.repeat(20)], { historyFormat: 2 })
-    const v2Delta = manifest(fullOf('cc'.repeat(20)), [tip, 'aa'.repeat(20)], { historyFormat: 2 })
-    const v1Full = manifest(fullOf(tip), [tip], { historyFormat: 0 })
-    const src = historySource([base, v2Delta, v1Full], () => Promise.reject(new Error('unused')))
-    expect(src?.byTip.get(tip)?.manifest.packHash).toBe(v2Delta.packHash)
-    // Alike in format, a full index still wins over a delta.
-    const v2Full = manifest(fullOf(tip), [tip], { historyFormat: 2 })
+    const base = manifest(fullOf('aa'.repeat(20)), ['aa'.repeat(20)])
+    const v2Delta = manifest(fullOf('cc'.repeat(20)), [tip, 'aa'.repeat(20)])
+    const v2Full = manifest(fullOf(tip), [tip])
     const both = historySource([base, v2Delta, v2Full], () => Promise.reject(new Error('unused')))
     expect(both?.byTip.get(tip)?.baseTip).toBeNull()
   })

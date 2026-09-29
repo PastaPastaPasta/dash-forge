@@ -46,6 +46,7 @@ const rel = (tag: string, at: number, id: string, publishedAt: number | null = n
   tagName: tag,
   name: '',
   notes: '',
+  delta: 1,
   yanked: false,
   assets: [],
   badAssets: 0,
@@ -62,6 +63,12 @@ describe('newestPerTag', () => {
     // v1's newest-createdAt revision (d, tied with b on createdAt=3) beats v2's only revision (c)
     // on publish date (releaseOrder, L-78) even though v2 > v1 by version.
     expect(current.map((r) => r.id)).toEqual(['d', 'c'])
+    expect(previous.map((r) => r.id)).toEqual(['b', 'a'])
+  })
+
+  it('an unpublished tag (newest revision delta −1) leaves the current list', () => {
+    const { current, previous } = newestPerTag([rel('v1', 1, 'a'), { ...rel('v1', 2, 'b'), delta: -1 }, rel('v2', 3, 'c')])
+    expect(current.map((r) => r.id)).toEqual(['c'])
     expect(previous.map((r) => r.id)).toEqual(['b', 'a'])
   })
 

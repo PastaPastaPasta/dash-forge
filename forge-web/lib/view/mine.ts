@@ -22,6 +22,7 @@ import { z } from 'zod'
 
 import type { ForgeIds } from '../deployments'
 import { DOC, asIdentifierString } from '../repo/contract'
+import { contractOf } from '../repo/source'
 import { queryDocumentsWithProof, type DocumentQuery, type PlainDocument } from '../sdk'
 import type { DiscoveredRepo } from './discovery'
 import { mapPooled } from './pool'
@@ -372,7 +373,7 @@ export async function scanAssignedAndMentions(
   const { ok: scanned, failed } = await perRepo(repos, 3, async (repo) => {
     const feed = (type: string, limit: number): Promise<PlainDocument[]> =>
       read(sdk, {
-        dataContractId: forge.collab,
+        dataContractId: contractOf(forge, type),
         documentTypeName: type,
         where: [['repoId', '==', repo.id]],
         orderBy: [['$createdAt', 'desc']],
@@ -395,7 +396,7 @@ export async function scanAssignedAndMentions(
   // events can be assign kinds, and only those carrying `refId` are indexed. Newest first, so
   // past 100 addressed events the newest 100 are the ones read.
   const addressed = await read(sdk, {
-    dataContractId: forge.collab,
+    dataContractId: contractOf(forge, DOC.event),
     documentTypeName: DOC.event,
     where: [['refId', '==', me]],
     orderBy: [['refId', 'desc'], ['$createdAt', 'desc']],
