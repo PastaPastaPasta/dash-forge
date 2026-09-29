@@ -450,11 +450,18 @@ pub fn is_git_ref_name(name: &str) -> bool {
 }
 
 /// Whether `branch` is a legal `repo.defaultBranch` / `config.defaultBranch` (RC1
-/// `$defs.branch`): the ref grammar without the `refs/` prefix, at most 255 bytes, and no
-/// leading `-` (it would read as a git option).
+/// `$defs.branch`): the ref grammar without the `refs/` prefix, at most 255 bytes, no leading
+/// `-` (it would read as a git option), and a first component that is not only `@`s (`@` is
+/// git's name for `HEAD`).
 #[must_use]
 pub fn is_legal_branch_name(branch: &str) -> bool {
-    branch.len() <= MAX_REF_NAME_BYTES && !branch.starts_with('-') && is_legal_ref_path(branch)
+    let after_ats = branch.trim_start_matches('@');
+    let only_ats = after_ats.len() < branch.len()
+        && (after_ats.is_empty() || after_ats.starts_with(['.', '/']));
+    branch.len() <= MAX_REF_NAME_BYTES
+        && !branch.starts_with('-')
+        && !only_ats
+        && is_legal_ref_path(branch)
 }
 
 /// Whether `tag` is a legal `release.tagName` (RC1): the ref grammar without the `refs/`
