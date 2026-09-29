@@ -194,34 +194,69 @@ pub fn read_workflow(
     ))
 }
 
-/// Why the runner refuses `job`, if it does: anything that reaches past the job container.
+/// The keys a job's `container`, or one of its `services`, may have. Anything else (`options`,
+/// `volumes`, keys a newer act might add) is refused: fail closed.
+const CONTAINER_KEYS: [&str; 4] = ["image", "env", "ports", "credentials"];
+
+/// Whether a value contains an expression anywhere (`${{`): a `container` or `services` built
+/// at run time could carry what the runner cannot see now.
+fn has_expression(v: &Value) -> bool {
+    match v {
+        Value::String(s) => s.contains("${{"),
+        Value::Array(a) => a.iter().any(has_expression),
+        Value::Object(o) => o.keys().any(|k| k.contains("${{")) || o.values().any(has_expression),
+        _ => false,
+    }
+}
+
+/// Why a `container` / service definition is refused, if it is.
+fn container_refusal(v: &Value, what: &str) -> Option<String> {
+    if has_expression(v) {
+        return Some(format!(
+            "`{what}` uses an expression (`${{{{ … }}}}`), which could set docker options at run time"
+        ));
+    }
+    match v {
+        Value::Null => None,
+        Value::String(image) if !image.trim().is_empty() => None,
+        Value::Object(o) => o
+            .keys()
+            .find(|k| !CONTAINER_KEYS.contains(&k.as_str()))
+            .map(|k| {
+                format!("sets `{what}.{k}` (only image, env, ports and credentials are run; docker options or mounts reach past the job container)")
+            }),
+        _ => Some(format!("`{what}` is neither an image name nor a mapping")),
+    }
+}
+
+/// Why the runner refuses `job`, if it does: anything that reaches past the job container, or
+/// that the runner cannot judge before act runs.
 pub fn refusal(job: &Value) -> Option<String> {
-    if job.get("uses").is_some() {
+    let Some(obj) = job.as_object() else {
+        return Some("the job is not a mapping".into());
+    };
+    if obj.contains_key("uses") {
         return Some(
             "calls a reusable workflow (`uses:`), which the runner does not read before it runs"
                 .into(),
         );
     }
-    let container_keys = |v: &Value, what: &str| -> Option<String> {
-        let obj = v.as_object()?;
-        ["options", "volumes"]
-            .iter()
-            .find(|k| obj.contains_key(**k))
-            .map(|k| {
-                format!("sets `{what}.{k}` (docker options or mounts reach past the job container)")
-            })
-    };
-    if let Some(r) = container_keys(&job["container"], "container") {
+    if let Some(r) = obj
+        .get("container")
+        .and_then(|c| container_refusal(c, "container"))
+    {
         return Some(r);
     }
-    if let Some(services) = job["services"].as_object() {
-        for (name, svc) in services {
-            if let Some(r) = container_keys(svc, &format!("services.{name}")) {
-                return Some(r);
-            }
-        }
+    match obj.get("services") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(services)) => services.iter().find_map(|(name, svc)| {
+            container_refusal(svc, &format!("services.{name}")).or_else(|| {
+                (svc.is_null() || svc.as_str().is_some())
+                    .then(|| format!("`services.{name}` must be a mapping with an image"))
+            })
+        }),
+        Some(_) => Some("`services` is not a mapping".into()),
     }
-    None
 }
 
 fn strings(v: &Value) -> Option<Vec<String>> {
