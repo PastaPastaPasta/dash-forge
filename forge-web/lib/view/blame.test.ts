@@ -148,20 +148,17 @@ describe.skipIf(!HAVE_GIT)('blame matches git blame --first-parent', () => {
     const want = gitBlameMany(s.objects.values(), cases.map((k) => [k.tip, k.path] as const)) as string[][]
     cases.forEach((k, c) => expect(k.got, `case ${c}`).toEqual(want[c]))
   }, 180_000)
-})
 
-describe('known differences from git blame (documented, not bugs to chase here)', () => {
-  // Our alignment is Myers + git's compaction, not xdiff's own diff: where a line repeats and moves,
-  // xdiff can pair different copies. This is the review's minimal case (git 2.52): git gives line 1
-  // to "one" and line 3 to "two", we give line 1 to "two" and line 3 to "one". The UI says blame
-  // can differ from git's; porting xdiff's diff for exact parity is in the backlog.
-  it.skipIf(!HAVE_GIT)('a repeated line that moves: git and we pair different copies', async () => {
+  it('a repeated line that moves: the copies git pairs, not another minimal pairing (L-70)', async () => {
+    // Two minimal edit scripts keep 2 lines: both "\ty" (new lines 1 and 4), or "a" and one "\ty"
+    // (new lines 3 and 4). xdiff finds the first; a plain Myers diff (our old alignment) found the
+    // second, blaming line 1 on "two" and line 3 on "one".
     const s = new Store()
     const one = s.commit(s.files({ f: '\nc\na\n\ty\n\n}\n\ty\n' }), [], 'one')
     const two = s.commit(s.files({ f: '\ty\nb\na\n\ty\na\n' }), [one], 'two')
     const got = owners(await blameFile(s.reader(), two, 'f'))
-    expect(gitBlame(s.objects.values(), two, 'f')).toEqual([one, two, two, one, two])
-    expect(got).toEqual([two, two, one, one, two])
+    expect(got).toEqual(gitBlame(s.objects.values(), two, 'f'))
+    expect(got).toEqual([one, two, two, one, two])
   })
 })
 
