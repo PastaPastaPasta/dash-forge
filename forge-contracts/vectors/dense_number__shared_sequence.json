@@ -1,0 +1,11 @@
+{
+  "name": "shared_sequence",
+  "description": "Issues and PRs share one sequence: 4 issues and 3 PRs, the next is #8.",
+  "case": "dense_number",
+  "rules": "v2",
+  "input": {
+    "issues": 4,
+    "patches": 3
+  },
+  "expected": 8
+}

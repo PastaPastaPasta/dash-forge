@@ -1,9 +1,10 @@
 {
   "name": "review_kinds_leave_state_alone",
-  "description": "Review kinds 11-18 (resolve, request, dismiss, head update, milestone) do not change open, draft, labels or assignees.",
+  "description": "Review kinds (request, dismiss, milestone, head update) do not change open, draft, labels or assignees.",
   "case": "fold_pr",
   "rules": "v2",
   "input": {
+    "transitions": [],
     "events": [
       {
         "id": "e1",
@@ -33,30 +34,17 @@
         "value": "v1",
         "oid": null,
         "createdAt": 120
-      }
-    ],
-    "authorEvents": [
+      },
       {
         "id": "a1",
         "targetId": "T",
         "kind": "headUpdate",
-        "actor": "alice",
+        "actor": "maint",
         "value": null,
         "oid": "2222222222222222222222222222222222222222",
         "createdAt": 130
-      },
-      {
-        "id": "a2",
-        "targetId": "T",
-        "kind": "threadResolve",
-        "actor": "alice",
-        "value": null,
-        "oid": null,
-        "createdAt": 140,
-        "refId": "C1"
       }
     ],
-    "targetAuthor": "alice",
     "baseTip": "B",
     "ancestry": []
   },
@@ -66,6 +54,7 @@
     "draft": false,
     "baseRef": null,
     "labels": [],
-    "assignees": []
+    "assignees": [],
+    "mergeOnBase": null
   }
 }

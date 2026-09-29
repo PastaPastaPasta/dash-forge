@@ -1,0 +1,24 @@
+{
+  "name": "counts_stale_reads_saturate",
+  "description": "Counts read at different heights can disagree (more closes than issues): every total saturates at 0, never negative.",
+  "case": "repo_counts",
+  "rules": "v2",
+  "input": {
+    "issues": 1,
+    "patches": 1,
+    "kinds": {
+      "1": 3,
+      "11": 2,
+      "13": 1,
+      "15": 4
+    }
+  },
+  "expected": {
+    "issuesOpen": 0,
+    "issuesClosed": 3,
+    "prsOpen": 0,
+    "prsClosed": 2,
+    "prsMerged": 1,
+    "prsDraft": 0
+  }
+}

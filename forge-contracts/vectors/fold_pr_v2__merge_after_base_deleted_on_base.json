@@ -1,0 +1,56 @@
+{
+  "name": "merge_after_base_deleted_on_base",
+  "description": "A merge whose commit was a valid tip stays on the base after the base branch is deleted.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "transitions": [
+      {
+        "id": "t1",
+        "kind": 13,
+        "actor": "writer",
+        "asAuthor": 0,
+        "createdAt": 300,
+        "oid": "A"
+      }
+    ],
+    "events": [],
+    "baseHistory": {
+      "updates": [
+        {
+          "id": "u1",
+          "refNameHash": "H",
+          "refName": "refs/heads/main",
+          "prevOid": "",
+          "newOid": "A",
+          "force": false,
+          "protected": false,
+          "author": "w",
+          "createdAt": 100
+        },
+        {
+          "id": "u2",
+          "refNameHash": "H",
+          "refName": "refs/heads/main",
+          "prevOid": "A",
+          "newOid": "0000000000000000000000000000000000000000",
+          "force": false,
+          "protected": false,
+          "author": "w",
+          "createdAt": 200
+        }
+      ],
+      "configHistory": [],
+      "refNameHash": "H"
+    }
+  },
+  "expected": {
+    "open": false,
+    "merged": true,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": [],
+    "mergeOnBase": true
+  }
+}

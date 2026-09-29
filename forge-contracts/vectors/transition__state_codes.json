@@ -1,0 +1,42 @@
+{
+  "name": "state_codes",
+  "description": "The five state codes read as open / merged / draft.",
+  "case": "transition_status",
+  "rules": "v2",
+  "input": {
+    "codes": [
+      0,
+      1,
+      2,
+      8,
+      9
+    ]
+  },
+  "expected": [
+    {
+      "open": true,
+      "merged": false,
+      "draft": false
+    },
+    {
+      "open": false,
+      "merged": false,
+      "draft": false
+    },
+    {
+      "open": false,
+      "merged": true,
+      "draft": false
+    },
+    {
+      "open": true,
+      "merged": false,
+      "draft": true
+    },
+    {
+      "open": false,
+      "merged": false,
+      "draft": true
+    }
+  ]
+}

@@ -1,35 +1,36 @@
 {
   "name": "issue_event_ids_ordered_by_code_point",
-  "description": "Two events at the same createdAt order by id in code-point order: id U+FF01 (reopen) before id U+1F600 (close), so the issue ends closed.",
+  "description": "Two events at the same createdAt order by id in code-point order: id U+FF01 (labelRemove) before id U+1F600 (labelAdd), so the label stays.",
   "case": "fold_issue",
   "rules": "v2",
   "input": {
+    "transitions": [],
     "events": [
       {
         "id": "😀",
         "targetId": "T",
-        "kind": "close",
+        "kind": "labelAdd",
         "actor": "maint",
-        "value": null,
+        "value": "bug",
         "oid": null,
         "createdAt": 100
       },
       {
         "id": "！",
         "targetId": "T",
-        "kind": "reopen",
+        "kind": "labelRemove",
         "actor": "maint",
-        "value": null,
+        "value": "bug",
         "oid": null,
         "createdAt": 100
       }
-    ],
-    "authorEvents": [],
-    "targetAuthor": "alice"
+    ]
   },
   "expected": {
-    "open": false,
-    "labels": [],
+    "open": true,
+    "labels": [
+      "bug"
+    ],
     "assignees": []
   }
 }

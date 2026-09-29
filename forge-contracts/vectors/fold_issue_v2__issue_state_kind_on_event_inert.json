@@ -1,0 +1,34 @@
+{
+  "name": "issue_state_kind_on_event_inert",
+  "description": "A state kind handed to the metadata fold on an event (the contract refuses kinds 1-3, 9, 10 on event) changes nothing: state comes from transitions only.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "transitions": [],
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "close",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "draft",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 110
+      }
+    ]
+  },
+  "expected": {
+    "open": true,
+    "labels": [],
+    "assignees": []
+  }
+}

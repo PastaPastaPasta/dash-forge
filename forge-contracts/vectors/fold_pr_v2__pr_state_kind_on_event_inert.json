@@ -1,0 +1,40 @@
+{
+  "name": "pr_state_kind_on_event_inert",
+  "description": "State kinds handed to the metadata fold on events (merge, close; the contract refuses them there) change nothing: the PR stays open.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "transitions": [],
+    "events": [
+      {
+        "id": "e1",
+        "targetId": "T",
+        "kind": "merge",
+        "actor": "maint",
+        "value": null,
+        "oid": "T",
+        "createdAt": 100
+      },
+      {
+        "id": "e2",
+        "targetId": "T",
+        "kind": "close",
+        "actor": "maint",
+        "value": null,
+        "oid": null,
+        "createdAt": 110
+      }
+    ],
+    "baseTip": "T",
+    "ancestry": []
+  },
+  "expected": {
+    "open": true,
+    "merged": false,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": [],
+    "mergeOnBase": null
+  }
+}

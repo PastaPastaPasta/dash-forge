@@ -1,0 +1,30 @@
+{
+  "name": "issue_author_close_reopen",
+  "description": "The author closes and reopens their own issue (transitions with asAuthor = the issue's number): open.",
+  "case": "fold_issue",
+  "rules": "v2",
+  "input": {
+    "transitions": [
+      {
+        "id": "t1",
+        "kind": 1,
+        "actor": "alice",
+        "asAuthor": 7,
+        "createdAt": 100
+      },
+      {
+        "id": "t2",
+        "kind": 2,
+        "actor": "alice",
+        "asAuthor": 7,
+        "createdAt": 200
+      }
+    ],
+    "events": []
+  },
+  "expected": {
+    "open": true,
+    "labels": [],
+    "assignees": []
+  }
+}

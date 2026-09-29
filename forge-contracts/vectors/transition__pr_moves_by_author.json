@@ -1,0 +1,248 @@
+{
+  "name": "pr_moves_by_author",
+  "description": "Every PR action by the author: as a member's, except merge, which is members only (f_authorNoMerge).",
+  "case": "transition_moves",
+  "rules": "v2",
+  "input": {
+    "cases": [
+      {
+        "target": "patch",
+        "code": 0,
+        "action": "close",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 0,
+        "action": "reopen",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 0,
+        "action": "merge",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 0,
+        "action": "draft",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 0,
+        "action": "ready",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 1,
+        "action": "close",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 1,
+        "action": "reopen",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 1,
+        "action": "merge",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 1,
+        "action": "draft",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 1,
+        "action": "ready",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 2,
+        "action": "close",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 2,
+        "action": "reopen",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 2,
+        "action": "merge",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 2,
+        "action": "draft",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 2,
+        "action": "ready",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 8,
+        "action": "close",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 8,
+        "action": "reopen",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 8,
+        "action": "merge",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 8,
+        "action": "draft",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 8,
+        "action": "ready",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 9,
+        "action": "close",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 9,
+        "action": "reopen",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 9,
+        "action": "merge",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 9,
+        "action": "draft",
+        "member": false,
+        "targetNumber": 7
+      },
+      {
+        "target": "patch",
+        "code": 9,
+        "action": "ready",
+        "member": false,
+        "targetNumber": 7
+      }
+    ]
+  },
+  "expected": [
+    {
+      "kind": 11,
+      "delta": 1,
+      "targetKind": 1,
+      "asAuthor": 7,
+      "after": 1
+    },
+    null,
+    null,
+    {
+      "kind": 14,
+      "delta": 8,
+      "targetKind": 1,
+      "asAuthor": 7,
+      "after": 8
+    },
+    null,
+    null,
+    {
+      "kind": 12,
+      "delta": -1,
+      "targetKind": 1,
+      "asAuthor": 7,
+      "after": 0
+    },
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    {
+      "kind": 16,
+      "delta": 1,
+      "targetKind": 1,
+      "asAuthor": 7,
+      "after": 9
+    },
+    null,
+    null,
+    null,
+    {
+      "kind": 15,
+      "delta": -8,
+      "targetKind": 1,
+      "asAuthor": 7,
+      "after": 0
+    },
+    null,
+    {
+      "kind": 17,
+      "delta": -1,
+      "targetKind": 1,
+      "asAuthor": 7,
+      "after": 8
+    },
+    null,
+    null,
+    null
+  ]
+}

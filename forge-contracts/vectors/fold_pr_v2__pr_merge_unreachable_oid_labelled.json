@@ -1,0 +1,35 @@
+{
+  "name": "pr_merge_unreachable_oid_labelled",
+  "description": "A member's merge whose oid is not a base tip: merged, labelled.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "transitions": [
+      {
+        "id": "t1",
+        "kind": 13,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 100,
+        "oid": "X"
+      }
+    ],
+    "events": [],
+    "baseTip": "T",
+    "ancestry": [
+      [
+        "M",
+        "T"
+      ]
+    ]
+  },
+  "expected": {
+    "open": false,
+    "merged": true,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": [],
+    "mergeOnBase": false
+  }
+}

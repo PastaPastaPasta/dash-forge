@@ -1,0 +1,25 @@
+{
+  "name": "counts_mixed",
+  "description": "12 issues and 9 PRs in one grouped count; absent kinds read 0.",
+  "case": "repo_counts",
+  "rules": "v2",
+  "input": {
+    "issues": 12,
+    "patches": 9,
+    "kinds": {
+      "1": 5,
+      "2": 2,
+      "11": 1,
+      "13": 3,
+      "14": 2
+    }
+  },
+  "expected": {
+    "issuesOpen": 9,
+    "issuesClosed": 3,
+    "prsOpen": 5,
+    "prsClosed": 1,
+    "prsMerged": 3,
+    "prsDraft": 2
+  }
+}

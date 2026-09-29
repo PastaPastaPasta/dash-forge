@@ -1,0 +1,46 @@
+{
+  "name": "merge_into_base_created_after_open_labelled",
+  "description": "D-501 under D-9: a PR opened against a branch that did not exist; a merge tool created the branch at the PR head and a member recorded the merge. Merged is the chain fact; the merge is labelled \"not found on the base\".",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "transitions": [
+      {
+        "id": "t1",
+        "kind": 13,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 310,
+        "oid": "HEAD1"
+      }
+    ],
+    "events": [],
+    "baseHistory": {
+      "updates": [
+        {
+          "id": "u1",
+          "refNameHash": "H",
+          "refName": "refs/heads/main",
+          "prevOid": "",
+          "newOid": "HEAD1",
+          "force": false,
+          "protected": false,
+          "author": "w",
+          "createdAt": 300
+        }
+      ],
+      "configHistory": [],
+      "refNameHash": "H",
+      "openedAt": 100
+    }
+  },
+  "expected": {
+    "open": false,
+    "merged": true,
+    "draft": false,
+    "baseRef": null,
+    "labels": [],
+    "assignees": [],
+    "mergeOnBase": false
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "counts_empty_repo",
+  "description": "A repo with no issues, PRs or transitions.",
+  "case": "repo_counts",
+  "rules": "v2",
+  "input": {
+    "issues": 0,
+    "patches": 0,
+    "kinds": {}
+  },
+  "expected": {
+    "issuesOpen": 0,
+    "issuesClosed": 0,
+    "prsOpen": 0,
+    "prsClosed": 0,
+    "prsMerged": 0,
+    "prsDraft": 0
+  }
+}

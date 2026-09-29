@@ -1,0 +1,21 @@
+{
+  "name": "draft_from_sum",
+  "description": "A list row reads only the target's proved delta sum: 8 is an open draft (there is no patch.draft any more).",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "sum": 8,
+    "events": [],
+    "baseTip": "B",
+    "ancestry": []
+  },
+  "expected": {
+    "open": true,
+    "merged": false,
+    "draft": true,
+    "baseRef": null,
+    "labels": [],
+    "assignees": [],
+    "mergeOnBase": null
+  }
+}

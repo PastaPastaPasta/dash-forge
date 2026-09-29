@@ -1,0 +1,13 @@
+{
+  "name": "sum_empty",
+  "description": "No transitions: code 0 and no merge.",
+  "case": "transition_sum",
+  "rules": "v2",
+  "input": {
+    "transitions": []
+  },
+  "expected": {
+    "code": 0,
+    "mergeId": null
+  }
+}

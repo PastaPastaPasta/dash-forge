@@ -1,0 +1,50 @@
+{
+  "name": "sum_of_history",
+  "description": "A PR opened as a draft, readied, closed, reopened and merged sums to 2 (merged); the merge transition is the one kind 13.",
+  "case": "transition_sum",
+  "rules": "v2",
+  "input": {
+    "transitions": [
+      {
+        "id": "t1",
+        "kind": 14,
+        "actor": "alice",
+        "asAuthor": 7,
+        "createdAt": 1
+      },
+      {
+        "id": "t2",
+        "kind": 15,
+        "actor": "alice",
+        "asAuthor": 7,
+        "createdAt": 2
+      },
+      {
+        "id": "t3",
+        "kind": 11,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 3
+      },
+      {
+        "id": "t4",
+        "kind": 12,
+        "actor": "alice",
+        "asAuthor": 7,
+        "createdAt": 4
+      },
+      {
+        "id": "t5",
+        "kind": 13,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 5,
+        "oid": "M"
+      }
+    ]
+  },
+  "expected": {
+    "code": 2,
+    "mergeId": "t5"
+  }
+}

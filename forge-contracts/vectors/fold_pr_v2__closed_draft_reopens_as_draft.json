@@ -1,0 +1,43 @@
+{
+  "name": "closed_draft_reopens_as_draft",
+  "description": "A draft closed (16) and reopened (17) is an open draft again.",
+  "case": "fold_pr",
+  "rules": "v2",
+  "input": {
+    "transitions": [
+      {
+        "id": "t1",
+        "kind": 14,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 100
+      },
+      {
+        "id": "t2",
+        "kind": 16,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 200
+      },
+      {
+        "id": "t3",
+        "kind": 17,
+        "actor": "maint",
+        "asAuthor": 0,
+        "createdAt": 300
+      }
+    ],
+    "events": [],
+    "baseTip": "B",
+    "ancestry": []
+  },
+  "expected": {
+    "open": true,
+    "merged": false,
+    "draft": true,
+    "baseRef": null,
+    "labels": [],
+    "assignees": [],
+    "mergeOnBase": null
+  }
+}

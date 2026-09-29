@@ -48,6 +48,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod parity;
 pub mod review;
+pub mod transition;
 pub mod v2;
 
 /// A git object id, hex-encoded (the JSON-friendly representation the vectors use).
@@ -892,6 +893,11 @@ pub struct PrState {
     pub labels: BTreeSet<String>,
     /// Assignees.
     pub assignees: BTreeSet<String>,
+    /// Merged PRs only, when the reader has the merge's `oid`: whether it was a valid tip of the
+    /// base (`true`), or not (`false`: shown as "merge commit not found on the base"). `None`
+    /// when not merged or the oid is not known.
+    #[serde(default)]
+    pub merge_on_base: Option<bool>,
 }
 
 impl Default for PrState {
@@ -903,6 +909,7 @@ impl Default for PrState {
             base_ref: None,
             labels: BTreeSet::new(),
             assignees: BTreeSet::new(),
+            merge_on_base: None,
         }
     }
 }
@@ -1003,7 +1010,7 @@ fn apply_pr_event(state: &mut PrState, e: &Event) {
 }
 
 /// The `(createdAt, id)` total order every fold applies events in.
-fn event_order(a: &Event, b: &Event) -> std::cmp::Ordering {
+pub(crate) fn event_order(a: &Event, b: &Event) -> std::cmp::Ordering {
     a.created_at
         .cmp(&b.created_at)
         .then_with(|| a.id.cmp(&b.id))
@@ -1407,33 +1414,91 @@ mod tests {
     // `input`), so a vector cannot carry a field, such as a token-era `tokenRecords` or a misspelt
     // `authorEvent` key, that the v2 rules would silently ignore -----------------------------
 
+    /// A target's state code and merge oid, from exactly one of its `transitions` and (a list
+    /// row) their proved `delta` `sum` (with `mergeOid` when the row knows it).
+    fn state_of(
+        ctx: &str,
+        transitions: Option<&[v2::Transition]>,
+        sum: Option<i64>,
+        merge_oid: Option<&String>,
+    ) -> (i64, Option<String>) {
+        match (transitions, sum) {
+            (Some(t), None) => {
+                assert!(
+                    merge_oid.is_none(),
+                    "vector `{ctx}`: mergeOid goes with sum"
+                );
+                (
+                    v2::state_code(t),
+                    v2::merge_transition(t).and_then(|m| m.oid.clone()),
+                )
+            }
+            (None, Some(sum)) => (sum, merge_oid.cloned()),
+            _ => panic!("vector `{ctx}`: give exactly one of transitions and sum"),
+        }
+    }
+
     #[derive(Debug, Deserialize, Serialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct FoldIssueV2Input {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transitions: Option<Vec<v2::Transition>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sum: Option<i64>,
         #[serde(default)]
         events: Vec<Event>,
-        #[serde(default)]
-        author_events: Vec<Event>,
-        target_author: String,
     }
 
     #[derive(Debug, Deserialize, Serialize)]
     #[serde(rename_all = "camelCase", deny_unknown_fields)]
     struct FoldPrV2Input {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transitions: Option<Vec<v2::Transition>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        sum: Option<i64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        merge_oid: Option<String>,
         #[serde(default)]
         events: Vec<Event>,
-        #[serde(default)]
-        author_events: Vec<Event>,
-        target_author: String,
         #[serde(default)]
         base_tip: Option<String>,
         #[serde(default)]
         ancestry: Ancestry,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         base_history: Option<BaseHistory>,
-        /// The patch's `draft` (absent: false).
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        initial_draft: bool,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct TransitionMoveCase {
+        target: v2::TransitionTarget,
+        code: i64,
+        action: v2::StateAction,
+        member: bool,
+        target_number: u32,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct TransitionMovesInput {
+        cases: Vec<TransitionMoveCase>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct RepoCountsInput {
+        issues: u64,
+        patches: u64,
+        kinds: std::collections::BTreeMap<String, u64>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(rename_all = "camelCase", deny_unknown_fields)]
+    struct UpstreamNumberInput {
+        upstream_number: Option<u32>,
+        author: String,
+        repo_owner: String,
+        memberships: Vec<v2::Membership>,
     }
 
     #[derive(Debug, Deserialize, Serialize)]
@@ -1443,16 +1508,6 @@ mod tests {
         /// The epoch's `K_ref`, hex; absent for a public repo (`sha256`).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ref_key: Option<String>,
-    }
-
-    #[derive(Debug, Deserialize, Serialize)]
-    #[serde(rename_all = "camelCase", deny_unknown_fields)]
-    struct AllocateNumberInput {
-        count: u64,
-        taken_numbers_desc: Vec<u32>,
-        /// The owner's and maintainers' largest number; absent is 0.
-        #[serde(default)]
-        trusted_max: u32,
     }
 
     #[derive(Debug, Deserialize, Serialize)]
@@ -1777,13 +1832,112 @@ mod tests {
         }
     }
 
+    /// The transition, count and numbering cases (`transition__*`, `dense_number__*`,
+    /// `upstream_number__*`).
+    fn run_transition_case(v: &Vector) {
+        let ctx = &v.name;
+        match v.case.as_str() {
+            "transition_moves" => {
+                let inp: TransitionMovesInput = input(v);
+                let got: Vec<Option<v2::TransitionMove>> = inp
+                    .cases
+                    .iter()
+                    .map(|c| {
+                        v2::next_transition(c.target, c.code, c.action, c.member, c.target_number)
+                    })
+                    .collect();
+                assert_eq!(
+                    got,
+                    expected::<Vec<Option<v2::TransitionMove>>>(v),
+                    "vector `{ctx}`"
+                );
+            }
+            "transition_status" => {
+                #[derive(Deserialize, Serialize)]
+                #[serde(deny_unknown_fields)]
+                struct Codes {
+                    codes: Vec<i64>,
+                }
+                let inp: Codes = input(v);
+                let got: Vec<v2::StateStatus> =
+                    inp.codes.iter().map(|&c| v2::status_of_code(c)).collect();
+                assert_eq!(got, expected::<Vec<v2::StateStatus>>(v), "vector `{ctx}`");
+            }
+            "transition_sum" => {
+                #[derive(Deserialize, Serialize)]
+                #[serde(deny_unknown_fields)]
+                struct Transitions {
+                    transitions: Vec<v2::Transition>,
+                }
+                let inp: Transitions = input(v);
+                let got = serde_json::json!({
+                    "code": v2::state_code(&inp.transitions),
+                    "mergeId": v2::merge_transition(&inp.transitions).map(|t| t.id.clone()),
+                });
+                assert_eq!(got, v.expected, "vector `{ctx}`");
+            }
+            "repo_counts" => {
+                let inp: RepoCountsInput = input(v);
+                let kinds = inp
+                    .kinds
+                    .iter()
+                    .map(|(k, &n)| {
+                        let k: u8 = k
+                            .parse()
+                            .unwrap_or_else(|_| panic!("vector `{ctx}`: kind {k}"));
+                        (k, n)
+                    })
+                    .collect();
+                let got = v2::repo_counts(inp.issues, inp.patches, &kinds);
+                assert_eq!(got, expected::<v2::RepoCounts>(v), "vector `{ctx}`");
+            }
+            "dense_number" => {
+                #[derive(Deserialize, Serialize)]
+                #[serde(deny_unknown_fields)]
+                struct Totals {
+                    issues: u64,
+                    patches: u64,
+                }
+                let inp: Totals = input(v);
+                let got = v2::dense_number(inp.issues, inp.patches);
+                assert_eq!(got, expected::<Option<u32>>(v), "vector `{ctx}`");
+            }
+            "dense_refusal" => {
+                #[derive(Deserialize, Serialize)]
+                #[serde(deny_unknown_fields)]
+                struct Messages {
+                    messages: Vec<String>,
+                }
+                let inp: Messages = input(v);
+                let got: Vec<bool> = inp
+                    .messages
+                    .iter()
+                    .map(|m| v2::names_dense_rule(m))
+                    .collect();
+                assert_eq!(got, expected::<Vec<bool>>(v), "vector `{ctx}`");
+            }
+            "upstream_number" => {
+                let inp: UpstreamNumberInput = input(v);
+                let oracle = v2::RoleOracle::new(inp.memberships);
+                let got = v2::trusted_upstream_number(
+                    inp.upstream_number,
+                    &inp.author,
+                    &inp.repo_owner,
+                    &oracle,
+                );
+                assert_eq!(got, expected::<Option<u32>>(v), "vector `{ctx}`");
+            }
+            other => panic!("vector `{ctx}`: not a transition case `{other}`"),
+        }
+    }
+
     fn run_case_v2(v: &Vector) {
         let ctx = &v.name;
         match v.case.as_str() {
             "fold_issue" => {
                 let inp: FoldIssueV2Input = input(v);
-                let got =
-                    v2::fold_issue_state_v2(&inp.events, &inp.author_events, &inp.target_author);
+                let (code, _) = state_of(ctx, inp.transitions.as_deref(), inp.sum, None);
+                let got = v2::issue_state_v2(code, &inp.events);
                 assert_eq!(got, expected::<IssueState>(v), "vector `{ctx}`");
             }
             "fold_pr" => {
@@ -1794,21 +1948,23 @@ mod tests {
                     inp.base_tip.as_deref(),
                     &inp.ancestry,
                 );
-                let got = v2::fold_pr_state_v2(
+                let (code, merge_oid) = state_of(
+                    ctx,
+                    inp.transitions.as_deref(),
+                    inp.sum,
+                    inp.merge_oid.as_ref(),
+                );
+                let got = v2::pr_state_v2(
+                    code,
+                    merge_oid.as_deref(),
                     &inp.events,
-                    &inp.author_events,
-                    &inp.target_author,
                     base_tip.as_deref(),
                     |a, d| ancestry.is_ancestor(a, d),
-                    inp.initial_draft,
                 );
                 assert_eq!(got, expected::<PrState>(v), "vector `{ctx}`");
             }
-            "allocate_number" => {
-                let inp: AllocateNumberInput = input(v);
-                let got = v2::allocate_number(inp.count, &inp.taken_numbers_desc, inp.trusted_max);
-                assert_eq!(got, expected::<Option<u32>>(v), "vector `{ctx}`");
-            }
+            "transition_moves" | "transition_status" | "transition_sum" | "repo_counts"
+            | "dense_number" | "dense_refusal" | "upstream_number" => run_transition_case(v),
             "pack_copies" => run_pack_copies(v),
             "v2_pack_list" => {
                 let inp: V2PackListInput = input(v);
