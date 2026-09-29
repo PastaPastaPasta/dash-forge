@@ -6,6 +6,9 @@
 #   1. `dg repo view`, `dg issue list` / `view`, `dg pr list` / `view` on the read fixture
 #      (forge-v2-demo) succeed. They used to fail with E301 and a `DASH_FORGE_KEY=[redacted]>`
 #      fix line. `dg issue view` shows issue #3's label and close events, as the web does.
+#      Issues and PRs share one number sequence (dense numbering): the fixture's issues are
+#      #1-#4, and its open/approved PR is `demo_pull_number approved` (lib.sh; #5 unless the
+#      seeder's summary says otherwise).
 #   2. A configured key that cannot be opened here (a passphrase-sealed file, no passphrase, no
 #      terminal) does not stop a public read: it used to fail with E303.
 #   3. A private repo read with no identity stops with a clear E301 saying it is private.
@@ -56,6 +59,9 @@ anon() { local err="$2"; _retry "$err" anon_once "$@"; }
 # No prompt was shown and no key was asked for.
 unprompted() { ! grep -qiE 'passphrase|recovery words|\[y/N\]|\[Y/n\]' "$1"; }
 
+# Dense numbering: issues #1-#4, PRs #5 (open, approved), #6 (merged), #7 (review-parity draft).
+PR_APPROVED="$(demo_pull_number approved)"
+
 step "1. repo, issues and PRs of ${E2E_V2_NAME} with no identity"
 if anon "$LOG-repo.json" "$LOG-repo.err" -- --json repo view "$DEMO"; then
   check "repo view: ${E2E_V2_NAME}" assert_eq "$E2E_V2_NAME" "$(jq_py "$LOG-repo.json" 'd["name"]')"
@@ -65,7 +71,7 @@ else
   cat "$LOG-repo.err" >&2; bad "anonymous dg repo view"
 fi
 if anon "$LOG-il.json" "$LOG-il.err" -- --json issue list "$DEMO" --state all; then
-  check "issue list: the fixture's issues" test "$(jq_py "$LOG-il.json" 'd["total"]')" -ge 3
+  check "issue list: the fixture's issues" test "$(jq_py "$LOG-il.json" 'd["total"]')" -ge 4
 else
   cat "$LOG-il.err" >&2; bad "anonymous dg issue list"
 fi
@@ -83,12 +89,12 @@ else
   cat "$LOG-iv-h.err" >&2; bad "anonymous dg issue view"
 fi
 if anon "$LOG-pl.json" "$LOG-pl.err" -- --json pr list "$DEMO" --state all; then
-  check "pr list: the fixture's PRs" test "$(jq_py "$LOG-pl.json" 'd["count"]')" -ge 2
+  check "pr list: the fixture's PRs" test "$(jq_py "$LOG-pl.json" 'd["count"]')" -ge 3
 else
   cat "$LOG-pl.err" >&2; bad "anonymous dg pr list"
 fi
-if anon "$LOG-pv.json" "$LOG-pv.err" -- --json pr view "$DEMO" 1; then
-  check "pr view: #1" assert_eq "1" "$(jq_py "$LOG-pv.json" 'd["number"]')"
+if anon "$LOG-pv.json" "$LOG-pv.err" -- --json pr view "$DEMO" "$PR_APPROVED"; then
+  check "pr view: #${PR_APPROVED}" assert_eq "$PR_APPROVED" "$(jq_py "$LOG-pv.json" 'd["number"]')"
 else
   cat "$LOG-pv.err" >&2; bad "anonymous dg pr view"
 fi

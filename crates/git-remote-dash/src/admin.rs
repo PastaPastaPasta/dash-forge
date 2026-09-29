@@ -173,6 +173,8 @@ async fn dump_collab(owner: &str, repo: &str) -> Result<()> {
     let (client, _bridge) = connect().await?;
     let repo = resolve_named(&client, owner, repo).await?;
     let collab = client.fetch_contract(&repo.forge().collab).await?;
+    // RC1: events live in forge-community
+    let community = client.fetch_contract(&repo.forge().community).await?;
     let scope = repo.scope()?;
     let print = |doc_type: &str, docs: &[FetchedDocument]| {
         for d in docs {
@@ -208,7 +210,7 @@ async fn dump_collab(owner: &str, repo: &str) -> Result<()> {
             );
             // an event without a value (close, merge, …) has nothing to seal
             let valued: Vec<FetchedDocument> =
-                by_target(&client, &collab, "event", "targetId", &d.id)
+                by_target(&client, &community, "event", "targetId", &d.id)
                     .await?
                     .into_iter()
                     .filter(|e| e.fields.contains_key("value") || e.fields.contains_key("enc"))

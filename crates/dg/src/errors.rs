@@ -185,6 +185,7 @@ pub fn context_for(cmd: &Command) -> (Option<&'static str>, Option<&str>) {
         Command::Pr(P::Sync { repo, .. }) => ("pull request head not moved", Some(repo)),
         Command::Pr(P::Ready { repo, .. }) => ("pull request not marked ready", Some(repo)),
         Command::Pr(P::Draft { repo, .. }) => ("pull request not converted to a draft", Some(repo)),
+        Command::Pr(P::Lock { repo, .. }) => ("pull request lock not changed", Some(repo)),
         Command::Pr(P::Resolve { repo, .. }) => ("conversation not resolved", Some(repo)),
         Command::Pr(P::Unresolve { repo, .. }) => ("conversation not unresolved", Some(repo)),
         Command::Pr(P::RequestReview { repo, .. } | P::UnrequestReview { repo, .. }) => {

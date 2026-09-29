@@ -174,7 +174,7 @@ async fn thread_flag(ctx: &Ctx, repo: &str, number: u64, flag: Flag, on: bool) -
         Flag::Lock => "transitionId",
     };
     ctx.emit(json!({ "status": done, "issue": number, key: id }), || {
-        println!("✓ {done} issue #{number}")
+        println!("✓ {done} issue #{number}");
     });
     Ok(())
 }

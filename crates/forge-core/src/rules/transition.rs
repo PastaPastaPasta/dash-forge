@@ -230,6 +230,7 @@ pub fn fold_sum(sum: i64) -> (i64, bool) {
 /// A target's state, read off its code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(clippy::struct_excessive_bools)] // the bits of the state code, read out
 pub struct StateStatus {
     /// Neither closed nor merged.
     pub open: bool,

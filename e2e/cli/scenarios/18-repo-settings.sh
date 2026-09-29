@@ -51,6 +51,7 @@ seed_tiny_repo "$SRC" main >/dev/null
 git -C "$SRC" branch trunk
 BASE="$(git -C "$SRC" rev-parse HEAD)"
 git_dash_retry "$ID_OWNER" "$LOG-push0" -C "$SRC" push "$REMOTE" main trunk || fail_with "$LOG-push0" "owner push"
+collab_accept "$ID_COLLAB" "$REPO" "$LOG-add" || fail_with "$LOG-add.accept" "collab accept"
 dg_write "$ID_OWNER" "$LOG-add" collab add "$REPO" "$IDID_COLLAB" --role writer || fail_with "$LOG-add" "collab add"
 ok "repo ready (main @ ${BASE:0:12}), COLLAB is a writer"
 
