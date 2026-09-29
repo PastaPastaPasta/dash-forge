@@ -385,13 +385,16 @@ impl<'a> Sink<'a> {
             return Ok(None);
         }
         let local = pushed_tip(proof, base, &merged);
-        let dir = proof.dir.clone();
+        let (dir, pushed) = (proof.dir.clone(), proof.pushed);
         let contains = |tips: &MergeBaseTips| chain_tip_containing(&dir, tips, &merged);
         let mut tips = self.base_tips(target_id, base, Freshness::Synced).await?;
         // A PR opened against a base that did not exist then has no tips, and no merge into
         // it ever counts (D-501); naming one would be re-posted, and paid for, every run.
         let base_counts = tips.tip.is_some() || !self.opened.contains_key(target_id);
-        if !base_counts {
+        // Never provable: the PR was opened against a base with no tip on chain (read from
+        // chain), or this run pushes nothing and the base has no tip at all, so the PR it just
+        // created is opened against a base that is no branch (D-501).
+        if !base_counts || (!pushed && tips.tip.is_none()) {
             self.never_provable.insert(target_id.to_string());
         }
         if self.ledger.dry_run {
