@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
-import { collectPageErrors, countDapi, repoUrl as url, shot, waitForRepoResolved } from './helpers'
+import { SNAPSHOT_KEYS } from '../lib/sdk/contract-seed'
+import { E2E_DEVNET, collectPageErrors, countDapi, repoUrl as url, shot, waitForRepoResolved } from './helpers'
 
 /**
  * P-1: the shared DAPI request budget (`lib/sdk/budget.ts`) and the seeded contracts
@@ -90,6 +91,10 @@ test.describe('DAPI request budget', () => {
     ['pull', 'pull', '&number=1', 'main h1'],
   ] as const) {
     test(`rb-2 (${id}). no getDataContract request: the contracts are seeded`, async ({ page }) => {
+      // Expected until the wipe runbook step 5 (dash-forge-qa/WIPE-PLAN.md §3): the beta.6 snapshot was dropped with the beta.7
+      // schema (beta.7 cannot parse its bytes), and snapshot-contracts.mjs re-adds it after the
+      // fresh registration. Without a snapshot every page fetches its contracts.
+      test.skip(!SNAPSHOT_KEYS.includes(`devnet-${E2E_DEVNET}`), `no contract snapshot for devnet-${E2E_DEVNET} yet`)
       const counts = countDapi(page)
       await page.goto(url(path, extra), { waitUntil: 'domcontentloaded' })
       await waitForRepoResolved(page)
