@@ -19,7 +19,7 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import { addEvent, type PullView, type RepoRef } from '../repo'
+import { setTargetState, type PullView, type RepoRef } from '../repo'
 import { writePackManifest, writeRefUpdate } from '../repo/push'
 import type { WriteAuth } from '../sdk'
 import type { MergeInput } from './engine'
@@ -89,7 +89,7 @@ export interface MergeRunDeps {
    * `baseRefName`: the base the merge moves (the PR's current one); `openedBaseRefName`: the
    * base it was opened against, which the fold checks the merge against.
    */
-  readonly pull: Pick<PullView, 'id' | 'number' | 'baseRefName'> & { readonly openedBaseRefName: string }
+  readonly pull: Pick<PullView, 'id' | 'number' | 'baseRefName' | 'author'> & { readonly openedBaseRefName: string }
   readonly input: MergeInput
   /** Runs the merge and builds the pack (the worker). */
   readonly merge: (input: MergeInput, onPhase: (phase: 'analyse' | 'merge' | 'pack') => void) => Promise<MergeResult>
@@ -316,9 +316,12 @@ export async function runMergeSteps(deps: MergeRunDeps, from: MergeRun, onStep: 
 
   if (!run.done.includes('event')) {
     const w = await attempt('event', () =>
-      addEvent(deps.sdk, deps.auth, deps.repo, {
-        target: { id: deps.pull.id, number: deps.pull.number },
-        kind: 'merge',
+      // The merge is recorded as a member's merge transition (only a member merges, and the
+      // merge panel is shown to members only).
+      setTargetState(deps.sdk, deps.auth, deps.repo, {
+        target: { id: deps.pull.id, number: deps.pull.number, type: 'patch', author: deps.pull.author },
+        action: 'merge',
+        isMember: true,
         oidHex: result.newTip,
         intent: `${deps.intent}:event`,
       }),

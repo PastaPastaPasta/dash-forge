@@ -57,7 +57,7 @@ export {
   readMemberRepoIds,
   readMemberships,
   readMembershipsCached,
-  readNumberTrust,
+  readProvenanceTrust,
   readRoleOracle,
   readViewerPermissions,
 } from './members'
@@ -116,17 +116,12 @@ export {
   type PackManifest,
 } from './packs'
 export {
-  foldOpenCounts,
-  foldsForCount,
   historicalTipsPredicate,
   LIST_PAGE,
   listIssues,
   listIssuesCached,
   listPulls,
   listPullsCached,
-  openCountFor,
-  openCountOf,
-  openCounts,
   readEvents,
   invalidateRepoFeed,
   groupFeed,
@@ -134,7 +129,6 @@ export {
   onRepoInvalidated,
   revisionOf,
   seedRepoFeed,
-  settleIssueCount,
   titleOf,
   toEvents,
   toLog,
@@ -170,7 +164,6 @@ export {
 } from './labels'
 export {
   compareRows,
-  foldIssueOpenCount,
   matchesText,
   mentions,
   queryIssues,
@@ -180,7 +173,6 @@ export {
   type IssueSelection,
 } from './issue-index'
 export {
-  addAuthorEvent,
   addEvent,
   checkRepoInput,
   createComment,
@@ -200,7 +192,7 @@ export {
   setTargetState,
   starRelation,
   watchRelation,
-  stateEventRoute,
+  DraftMarkError,
   type CreateRepoInput,
   type PrivateCreate,
   type CreateRepoStep,
@@ -209,6 +201,15 @@ export {
   type RepoCreationJournal,
   type VerdictInput,
 } from './writes'
+export {
+  IllegalTransitionError,
+  readRepoCounts,
+  readStateCodes,
+  readTransitions,
+  transitionOf,
+  type StateTarget,
+  type TransitionView,
+} from './transitions'
 export {
   commentFirsts,
   contractFirst,

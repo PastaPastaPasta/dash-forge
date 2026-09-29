@@ -126,17 +126,19 @@ export async function commentFirsts(
   return known({ target, author: authorAny, contract })
 }
 
-/** A new `event` or `authorEvent` on the thread `targetId`, signed by `signer`. */
+/** A new `event`, `authorEvent` or `transition` on the thread `targetId`, signed by `signer`. */
 export async function eventFirsts(
   sdk: EvoSDK,
   repo: RepoRef,
-  type: 'event' | 'authorEvent',
+  type: 'event' | 'authorEvent' | 'transition',
   targetId: string,
   signer: string,
 ): Promise<FirstWrite> {
   const src = repoSource(repo)
+  // `transition` indexes a target by `perTarget (targetId)` alone.
+  const onTarget = type === 'transition' ? { where: [['targetId', '==', targetId]] as const, orderBy: [['targetId', 'asc']] as const } : threadQuery(targetId)
   const [target, feed, contract] = await Promise.all([
-    empty(sdk, src.targetQuery(type, threadQuery(targetId))),
+    empty(sdk, src.targetQuery(type, onTarget)),
     empty(sdk, src.repoQuery(type, { orderBy: [['$createdAt', 'desc']] })),
     contractFirst(sdk, signer, repo.forge.collab),
   ])

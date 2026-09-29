@@ -173,3 +173,25 @@ export const DENSE_RULE = 'dense'
 export function namesDenseRule(message: string): boolean {
   return message.includes('rule "dense"') || message.includes('rule \\"dense\\"')
 }
+
+/** How a timeline says what a transition did (`asAuthor` ≠ 0: written by the target's author). */
+export function transitionPhrase(kind: number): string {
+  switch (kind) {
+    case ISSUE_CLOSE:
+    case PR_CLOSE:
+    case PR_DRAFT_CLOSE:
+      return 'closed this'
+    case ISSUE_REOPEN:
+    case PR_REOPEN:
+    case PR_DRAFT_REOPEN:
+      return 'reopened this'
+    case PR_MERGE:
+      return 'merged this'
+    case PR_DRAFT:
+      return 'converted this to a draft'
+    case PR_READY:
+      return 'marked this ready for review'
+    default:
+      return `changed the state (kind ${kind})`
+  }
+}

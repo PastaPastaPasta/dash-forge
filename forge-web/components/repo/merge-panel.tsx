@@ -261,7 +261,7 @@ export function MergePanel({
           sdk,
           auth: signer,
           repo,
-          pull: { id: pull.id, number: pull.number, baseRefName, openedBaseRefName: pull.baseRefName },
+          pull: { id: pull.id, number: pull.number, author: pull.author, baseRefName, openedBaseRefName: pull.baseRefName },
           input,
           merge: (i, onPhase) => runMergeInWorker(reader, i, (p) => onPhase(p.phase)),
           upload,

@@ -1,11 +1,11 @@
 /**
- * Issue/PR thread composition (view glue) — read comments and interleave them with the folded
- * event log into a single chronological timeline for the detail view.
+ * Issue/PR thread composition (view glue) — read comments and interleave them with the event
+ * and transition logs into a single chronological timeline for the detail view.
  *
- * State itself (open/closed, labels) is the deterministic fold done by the core `readIssue` /
- * `readPull` (`foldIssueStateV2` / `foldPrStateV2` over `event` + `authorEvent`); this module
- * only adds the human thread (comments + rendered events + reviews) and the PR's counted
- * approvals (`countApprovals`, `forge-v2.md` §6).
+ * State (open, closed, merged, draft) is the target's `transition` sum; labels and assignees
+ * the fold of its member events (`issueStateV2` / `prStateV2`, via `issueViewOf` / `readPull`).
+ * This module adds the human thread (comments + rendered events, state changes and reviews) and
+ * the PR's counted approvals (`countApprovals`, `forge-v2.md` §6).
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -30,6 +30,7 @@ import {
   toLog,
   updatedAtOf,
   readTargetLog,
+  readTransitions,
   repoSource,
   str,
   wellFormed,
@@ -39,7 +40,10 @@ import {
   type RepoRef,
   type ReviewView,
   type TargetLog,
+  type TransitionView,
 } from '../repo'
+import { transitionOf } from '../repo/transitions'
+import { stateCode } from '../rules/transition'
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import { compositeOf, docsAt, queryComposite, siblingOf } from '../sdk/composite'
 import { prefetchDpnsNames } from './dpns'
@@ -72,6 +76,8 @@ export interface CommentView {
   readonly revision?: number
   /** An imported comment's provenance as read, for re-sealing an edit. */
   readonly importedRaw?: Readonly<Record<string, unknown>> | null
+  /** Copied from another forge (`imported` provenance present). */
+  readonly imported: boolean
 }
 
 /** A comment document as a {@link CommentView}. */
@@ -98,6 +104,7 @@ export function toCommentView(d: PlainDocument): CommentView {
     updatedAt: updatedAtOf(d),
     revision: revisionOf(d),
     importedRaw: typeof d['imported'] === 'object' && d['imported'] !== null ? (d['imported'] as Readonly<Record<string, unknown>>) : null,
+    imported: typeof d['imported'] === 'object' && d['imported'] !== null,
   }
 }
 
@@ -145,6 +152,12 @@ export type TimelineItem =
        * author deleted it), `'hidden'` when some could not be opened here (a private repo).
        */
       readonly orphaned?: 'deleted' | 'hidden'
+    }
+  | {
+      /** A state change (`transition`): closed, reopened, merged, draft, ready. */
+      readonly kind: 'transition'
+      readonly at: number
+      readonly transition: TransitionView
     }
   | {
       readonly kind: 'event'
@@ -213,7 +226,7 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
     compositeOf(page, 1, [
       { documentType: DOC.comment, bind: bound, limit: 100 },
       { documentType: DOC.event, bind: bound, limit: 100 },
-      { documentType: DOC.authorEvent, bind: bound, limit: 100 },
+      { documentType: DOC.transition, bind: bound, limit: 100 },
       siblingOf(labelQuery),
       siblingOf(memberQuery(DOC.maintainer)),
       siblingOf(memberQuery(DOC.writer)),
@@ -233,14 +246,15 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
     docs(i).length < 100
       ? docs(i)
       : queryAllDocuments(sdk, source.targetQuery(type, { where: [['targetId', '==', id]], orderBy: [['targetId', 'asc'], ['$createdAt', 'asc']] }))
-  const [commentDocs, eventDocs, authorEventDocs] = await Promise.all([
+  const [commentDocs, eventDocs, transitionDocs] = await Promise.all([
     complete(0, DOC.comment),
     complete(1, DOC.event),
-    complete(2, DOC.authorEvent),
+    complete(2, DOC.transition),
   ])
   const byTime = (a: PlainDocument, b: PlainDocument) => num(a, '$createdAt') - num(b, '$createdAt')
   // A private repo's member events are read through `readableEvents` (values opened, counted).
-  const log = await toLog(repo, [...eventDocs].sort(byTime), [...authorEventDocs].sort(byTime))
+  const log = await toLog(repo, [...eventDocs].sort(byTime), [])
+  const transitions = transitionDocs.map(transitionOf)
 
   // Members: complete when both sibling pages were short; recorded for the permission checks.
   const memberships = membershipsFromDocs(docs(4).length < 100 ? docs(4) : null, docs(5).length < 100 ? docs(5) : null)
@@ -252,6 +266,7 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
     str(doc, '$ownerId'),
     ...commentDocs.map((c) => str(c, '$ownerId')),
     ...[...log.events, ...log.authorEvents].flatMap((e) => [e.actor, ...(e.kind === 'assign' || e.kind === 'unassign' ? [e.value ?? ''] : []), e.refId ?? '']),
+    ...transitions.map((t) => t.actor),
     ...(memberships ?? []).map((m) => m.identity),
   ]
   await prefetchDpnsNames(sdk, shownIds.filter((id) => id !== ''), network)
@@ -261,8 +276,8 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
   const comments = (await admitAll(gate, 'comment', [...commentDocs].sort(byTime), tally)).docs.map(toCommentView)
   const labels = docs(3).length < 100 ? newestLabels(docs(3)) : await readLabels(sdk, repo)
   return {
-    issue: issueViewOf(doc, log),
-    timeline: mergeTimeline(comments, log.events, log.authorEvents, [], tally.total > 0),
+    issue: issueViewOf(doc, log, stateCode(transitions)),
+    timeline: mergeTimeline(comments, log.events, log.authorEvents, [], tally.total > 0, transitions),
     hidden: tally.value,
     eventValues: eventValues(log),
     labels,
@@ -343,6 +358,7 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number,
       siblingOf(memberQuery(DOC.maintainer)),
       siblingOf(memberQuery(DOC.writer)),
       siblingOf(source.repoQuery(DOC.policy, { orderBy: [['$createdAt', 'asc']] })),
+      { documentType: DOC.transition, bind: toTarget, limit: 100 },
     ]),
   )
   const raw = res.page[0]
@@ -358,12 +374,14 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number,
       ? docs(i)
       : queryAllDocuments(sdk, source.targetQuery(type, { where: [[field, '==', id]], orderBy: [[field, 'asc'], ['$createdAt', 'asc']] }))
   const byTime = (a: PlainDocument, b: PlainDocument) => num(a, '$createdAt') - num(b, '$createdAt')
-  const [commentDocs, eventDocs, authorEventDocs, reviewDocs] = await Promise.all([
+  const [commentDocs, eventDocs, authorEventDocs, reviewDocs, transitionDocs] = await Promise.all([
     complete(0, DOC.comment),
     complete(1, DOC.event),
     complete(2, DOC.authorEvent),
     complete(3, DOC.review, 'patchId'),
+    complete(8, DOC.transition),
   ])
+  const transitions = transitionDocs.map(transitionOf)
   // A private repo's member events are read through `readableEvents` (values opened, counted).
   const log = await toLog(repo, [...eventDocs].sort(byTime), [...authorEventDocs].sort(byTime))
 
@@ -374,11 +392,12 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number,
     str(doc, '$ownerId'),
     ...commentDocs.map((c) => str(c, '$ownerId')),
     ...reviewDocs.map((r) => str(r, '$ownerId')),
+    ...transitions.map((t) => t.actor),
     ...[...log.events, ...log.authorEvents].flatMap((e) => [e.actor, ...(e.kind === 'assign' || e.kind === 'unassign' ? [e.value ?? ''] : []), e.refId ?? '']),
     ...(memberships ?? []).map((m) => m.identity),
   ]
   const [pull] = await Promise.all([
-    readPull(sdk, repo, doc, log),
+    readPull(sdk, repo, doc, log, undefined, undefined, { transitions }),
     prefetchDpnsNames(sdk, shownIds.filter((x) => x !== ''), network).catch(() => undefined),
   ])
 
@@ -394,7 +413,7 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number,
   const approvals = await readApprovals(members, policy, reviews, review, pull.author)
   return {
     pull,
-    timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews, tally.total > 0),
+    timeline: mergeTimeline(comments, log.events, log.authorEvents, reviews, tally.total > 0, transitions),
     comments,
     reviews,
     review,
@@ -449,11 +468,12 @@ export function pullSinceYourReview(thread: Pick<PullThread, 'reviews' | 'review
 
 /** Read comments + events for a target and merge them into one chronological timeline. */
 export async function readThread(sdk: EvoSDK, repo: RepoRef, targetId: string): Promise<TimelineItem[]> {
-  const [comments, log] = await Promise.all([
+  const [comments, log, transitions] = await Promise.all([
     readComments(sdk, repo, targetId),
     readTargetLog(sdk, repo, targetId),
+    readTransitions(sdk, repo, targetId),
   ])
-  return mergeTimeline(comments, log.events, log.authorEvents, [])
+  return mergeTimeline(comments, log.events, log.authorEvents, [], false, transitions)
 }
 
 /**
@@ -467,6 +487,7 @@ export function mergeTimeline(
   reviews: readonly ReviewView[],
   /** Some comments could not be opened by this reader (private repo): a missing parent may be one. */
   someHidden = false,
+  transitions: readonly TransitionView[] = [],
 ): TimelineItem[] {
   const eventItem = (e: Event, byAuthor: boolean) => ({
     kind: 'event' as const,
@@ -489,6 +510,7 @@ export function mergeTimeline(
       .map((c) => ({ kind: 'comment' as const, at: c.createdAt, id: c.id, comment: c, ...(c.replyTo !== null && !byId.has(c.replyTo) ? { orphaned: someHidden ? ('hidden' as const) : ('deleted' as const) } : {}) })),
     ...events.map((e) => eventItem(e, false)),
     ...authorEvents.map((e) => eventItem(e, true)),
+    ...transitions.map((t) => ({ kind: 'transition' as const, at: t.createdAt, id: t.id, transition: t })),
     ...reviewItems,
   ]
   items.sort((a, b) => compareKey({ id: a.id, createdAt: a.at }, { id: b.id, createdAt: b.at }))

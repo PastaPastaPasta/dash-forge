@@ -124,12 +124,11 @@ export function invalidateMembers(repo: RepoRef, network: Network = DEFAULT_NETW
 }
 
 /**
- * The identities whose issue and PR numbers a repo's allocation trusts (`forge-v2.md` §6), and
- * whose `imported` provenance the lists show: the owner and its current maintainers, the
- * owner first, once each. When the membership cannot be read, the owner alone: a numbering
- * gap or a missing note is better than a failed create.
+ * The identities whose `imported` provenance names the repo's mirror source: the owner (the
+ * mirror signer) and its current maintainers, the owner first, once each. When the membership
+ * cannot be read, the owner alone: a missing note is better than a failed page.
  */
-export async function readNumberTrust(sdk: EvoSDK, repo: RepoRef, network: Network = DEFAULT_NETWORK): Promise<string[]> {
+export async function readProvenanceTrust(sdk: EvoSDK, repo: RepoRef, network: Network = DEFAULT_NETWORK): Promise<string[]> {
   const maintainers = await readMembershipsCached(sdk, repo, network).then(
     (ms) => ms.filter((m) => m.role === 'maintainer').map((m) => m.identity),
     () => [],

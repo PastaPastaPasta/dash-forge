@@ -161,6 +161,7 @@ function mapToDocuments(response: Map<string, unknown> | unknown): PlainDocument
 interface DocumentsFacadeLike {
   query: (q: DocumentQuery) => Promise<Map<string, unknown>>
   count: (q: DocumentQuery) => Promise<Map<string, bigint>>
+  sum: (q: DocumentQuery, sumProperty: string) => Promise<Map<string, bigint>>
   ranked: (q: unknown) => Promise<{
     startingRank: bigint
     entries: ReadonlyArray<{ groupKeyHex: string; groupValue: unknown; value: bigint; rank: bigint }>
@@ -304,6 +305,39 @@ async function readCount(sdk: EvoSDK, query: DocumentQuery): Promise<number> {
   }
   const n = Number(total)
   return Number.isSafeInteger(n) ? n : Number.MAX_SAFE_INTEGER
+}
+
+/** A read grouped by one property: `groupBy` on the query, one entry per group. */
+export type GroupedQuery = DocumentQuery & { readonly groupBy: readonly string[] }
+
+/**
+ * Per-group proved counts (`documents.count` with `in` + `groupBy`): the SDK keys each entry by
+ * the group value's tree-key encoding, hex. An absent group has no entry (read it as 0).
+ */
+export function countDocumentsGrouped(sdk: EvoSDK, query: GroupedQuery): Promise<Map<string, number>> {
+  return joinInFlight(sdk, 'countGrouped', query, async () => bigintMap(await documentsOf(sdk).count(query as DocumentQuery)))
+}
+
+/**
+ * Per-group proved sums of `property` (`documents.sum`, a `summable` index; `in` + `groupBy`),
+ * keyed like {@link countDocumentsGrouped}. An absent group has no entry (its sum is 0).
+ */
+export function sumDocumentsGrouped(sdk: EvoSDK, query: GroupedQuery, property: string): Promise<Map<string, number>> {
+  return joinInFlight(sdk, `sum:${property}`, query, async () => bigintMap(await documentsOf(sdk).sum(query as DocumentQuery, property)))
+}
+
+function bigintMap(m: Map<string, bigint> | unknown): Map<string, number> {
+  const out = new Map<string, number>()
+  if (m instanceof Map) for (const [k, v] of m) out.set(String(k), Number(v))
+  return out
+}
+
+/** The tree-key encoding of an unsigned integer group value (`encode_u8` etc.): big-endian, top bit flipped. */
+export function uintGroupKey(value: number, bytes: 1 | 2 | 4 = 1): string {
+  const b = new Uint8Array(bytes)
+  for (let i = bytes - 1, v = value; i >= 0; i--, v = Math.floor(v / 256)) b[i] = v & 0xff
+  b[0] = (b[0] as number) ^ 0x80
+  return [...b].map((x) => x.toString(16).padStart(2, '0')).join('')
 }
 
 /** A ranked (top-K) read: `documents.ranked` over a `rankedCountable` index (protocol 14). */
