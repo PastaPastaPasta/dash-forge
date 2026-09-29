@@ -69,10 +69,12 @@ async function indexOf(s: Store, tip: string, paths: readonly string[], limit: n
   return { tip, base: null, commitCount: 0, firstParentCount: 0, rootWhen: 0, tipWhen: 0, paths: new Map(), versions, versionLimit: limit }
 }
 
-/** Attach a history source answering `tip` with `load` to `reader`'s context. */
-function attach(reader: { memoScope: object }, tip: string, load: () => Promise<HistoryIndex>): void {
+/** A fresh reader of the store whose history source answers `tip` with `load`. */
+function indexedReader(s: Store, tip: string, load: () => Promise<HistoryIndex>): PrefixReader {
+  const reader = readerOf(s)
   const source: HistorySource = { byTip: new Map(), covers: (t) => t === tip, load }
   attachHistory(reader.memoScope, source)
+  return reader
 }
 
 /** Every page of `path`'s versions from `tip`, 7 at a time. */
@@ -94,8 +96,7 @@ describe('pathVersions from the history index', () => {
     const { s, tips } = history(120)
     const tip = tips[119] as string
     const ix = await indexOf(s, tip, ['a.txt', 'dir/b.txt', 'dir'], 256)
-    const reader = readerOf(s)
-    attach(reader, tip, () => Promise.resolve(ix))
+    const reader = indexedReader(s, tip, () => Promise.resolve(ix))
     s.reads.length = 0
     const page = await pathVersions(reader, tip, 'a.txt')
     // The tip commit and its root tree, to check the list against the tip's entry: nothing else.
@@ -114,8 +115,7 @@ describe('pathVersions from the history index', () => {
     const tip = tips[119] as string
     for (const path of ['a.txt', 'dir/b.txt', 'dir', 'late.txt']) {
       const ix = await indexOf(s, tip, [path], 256)
-      const reader = readerOf(s)
-      attach(reader, tip, () => Promise.resolve(ix))
+      const reader = indexedReader(s, tip, () => Promise.resolve(ix))
       const got = await paged(reader, tip, path)
       const want = await walked(s, tip, path)
       expect(got.oids, path).toEqual(want)
@@ -128,8 +128,7 @@ describe('pathVersions from the history index', () => {
     const tip = tips[119] as string
     const ix = await indexOf(s, tip, ['a.txt'], 10)
     expect(ix.versions?.get('a.txt')?.complete).toBe(false)
-    const reader = readerOf(s)
-    attach(reader, tip, () => Promise.resolve(ix))
+    const reader = indexedReader(s, tip, () => Promise.resolve(ix))
     const got = await paged(reader, tip, 'a.txt')
     expect(got.oids).toEqual(await walked(s, tip, 'a.txt'))
     expect(got.indexed).toBe(10)
@@ -144,8 +143,7 @@ describe('pathVersions from the history index', () => {
       ...ix,
       versions: new Map([['a.txt', { ...list!, versions: [{ ...list!.versions[0]!, oidPrefix: '000000000000' }, ...list!.versions.slice(1)] }]]),
     }
-    const reader = readerOf(s)
-    attach(reader, tip, () => Promise.resolve(stale))
+    const reader = indexedReader(s, tip, () => Promise.resolve(stale))
     const page = await pathVersions(reader, tip, 'a.txt', { limit: 100 })
     expect(page.indexed).toBe(0)
     expect(page.entries.map((e) => e.oid)).toEqual(await walked(s, tip, 'a.txt'))
@@ -154,13 +152,11 @@ describe('pathVersions from the history index', () => {
   it('walks when the index fails to load, or has no list for the path', async () => {
     const { s, tips } = history(60)
     const tip = tips[59] as string
-    const failing = readerOf(s)
-    attach(failing, tip, () => Promise.reject(new Error('artifact unreadable')))
+    const failing = indexedReader(s, tip, () => Promise.reject(new Error('artifact unreadable')))
     const page = await pathVersions(failing, tip, 'a.txt', { limit: 100 })
     expect(page.indexed).toBe(0)
     expect(page.entries.map((e) => e.oid)).toEqual(await walked(s, tip, 'a.txt'))
-    const v1 = readerOf(s)
-    attach(v1, tip, async () => ({ ...(await indexOf(s, tip, [], 1)), versions: null }))
+    const v1 = indexedReader(s, tip, async () => ({ ...(await indexOf(s, tip, [], 1)), versions: null }))
     expect((await pathVersions(v1, tip, 'a.txt', { limit: 100 })).indexed).toBe(0)
   })
 
@@ -169,8 +165,7 @@ describe('pathVersions from the history index', () => {
     const behind = tips[112] as string
     const tip = tips[119] as string
     const ix = await indexOf(s, behind, ['a.txt'], 256)
-    const reader = readerOf(s)
-    attach(reader, behind, () => Promise.resolve(ix))
+    const reader = indexedReader(s, behind, () => Promise.resolve(ix))
     const page = await pathVersions(reader, tip, 'a.txt', { limit: 1000 })
     expect(page.entries.map((e) => e.oid)).toEqual(await walked(s, tip, 'a.txt'))
     expect(page.examined).toBeLessThanOrEqual(8)
@@ -179,14 +174,65 @@ describe('pathVersions from the history index', () => {
 
   it('the whole-repo log never asks the index', async () => {
     const { s, tips } = history(20)
-    const reader = readerOf(s)
     let loads = 0
-    attach(reader, tips[19] as string, () => {
+    const reader = indexedReader(s, tips[19] as string, () => {
       loads++
       return Promise.reject(new Error('unused'))
     })
     expect((await pathVersions(reader, tips[19] as string, '')).entries).toHaveLength(20)
     expect(loads).toBe(0)
+  })
+})
+
+describe('a wrong list is not believed (review L1, L2)', () => {
+  it('a cut list whose oldest commit this repository does not hold: the walk answers', async () => {
+    const { s, tips } = history(120)
+    const tip = tips[119] as string
+    const ix = await indexOf(s, tip, ['a.txt'], 10)
+    const list = ix.versions!.get('a.txt')!
+    const last = list.versions.at(-1)!
+    const bogus: HistoryIndex = {
+      ...ix,
+      versions: new Map([['a.txt', { ...list, versions: [...list.versions.slice(0, -1), { ...last, commit: { ...last.commit, oid: 'ee'.repeat(20) } }] }]]),
+    }
+    const reader = indexedReader(s, tip, () => Promise.resolve(bogus))
+    const page = await pathVersions(reader, tip, 'a.txt', { limit: 1000 })
+    expect(page.entries.map((e) => e.oid)).toEqual(await walked(s, tip, 'a.txt'))
+  })
+
+  it('a later page resumes in a served list only where the trees agree with it', async () => {
+    const { s, tips } = history(120)
+    const tip = tips[119] as string
+    const ix = await indexOf(s, tip, ['a.txt'], 256)
+    const list = ix.versions!.get('a.txt')!
+    // The second version's blob is misstated: the first page (one entry) is served, the second
+    // (starting there) is not believed and walks.
+    const wrong: HistoryIndex = {
+      ...ix,
+      versions: new Map([['a.txt', { ...list, versions: [list.versions[0]!, { ...list.versions[1]!, oidPrefix: '000000000000' }, ...list.versions.slice(2)] }]]),
+    }
+    const reader = indexedReader(s, tip, () => Promise.resolve(wrong))
+    const first = await pathVersions(reader, tip, 'a.txt', { limit: 1 })
+    expect(first.indexed).toBe(1)
+    const second = await pathVersions(reader, first.next as string, 'a.txt', { limit: 1000 })
+    expect(second.indexed).toBe(0)
+    expect([...first.entries, ...second.entries].map((e) => e.oid)).toEqual(await walked(s, tip, 'a.txt'))
+  })
+
+  it('Blame reads a version from the trees when the index’s blob is not the file’s', async () => {
+    const { s, tips } = history(60)
+    const tip = tips[59] as string
+    const plain = await blameFile(readerOf(s), tip, 'a.txt')
+    const ix = await indexOf(s, tip, ['a.txt'], 256)
+    const list = ix.versions!.get('a.txt')!
+    // The second version's prefix names the tip's root tree instead of a blob.
+    const tree = (await pathEntryAt(readerOf(s), readerOf(s), tip, '')) as string
+    const wrong: HistoryIndex = {
+      ...ix,
+      versions: new Map([['a.txt', { ...list, versions: [list.versions[0]!, { ...list.versions[1]!, oidPrefix: entryOid(tree).slice(0, 12) }, ...list.versions.slice(2)] }]]),
+    }
+    const got = await blameFile(indexedReader(s, tip, () => Promise.resolve(wrong)), tip, 'a.txt')
+    expect(got.hunks).toEqual(plain.hunks)
   })
 })
 
@@ -196,8 +242,7 @@ describe('blame over the history index', () => {
     const tip = tips[89] as string
     const plain = await blameFile(readerOf(s), tip, 'a.txt')
     const ix = await indexOf(s, tip, ['a.txt'], 256)
-    const reader = readerOf(s)
-    attach(reader, tip, () => Promise.resolve(ix))
+    const reader = indexedReader(s, tip, () => Promise.resolve(ix))
     s.reads.length = 0
     const got = await blameFile(reader, tip, 'a.txt')
     expect(got.hunks).toEqual(plain.hunks)
@@ -218,8 +263,7 @@ describe('blame over the history index', () => {
     const { s, tips } = history(90)
     const tip = tips[89] as string
     const plain = await blameFile(readerOf(s), tip, 'a.txt')
-    const reader = readerOf(s)
-    attach(reader, tip, () => indexOf(s, tip, ['a.txt'], 4))
+    const reader = indexedReader(s, tip, () => indexOf(s, tip, ['a.txt'], 4))
     const got = await blameFile(reader, tip, 'a.txt')
     expect(got.hunks).toEqual(plain.hunks)
   })

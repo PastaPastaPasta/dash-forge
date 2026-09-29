@@ -64,8 +64,23 @@ interface ListedAt {
 /** A path's version list as served: log entries with their `mode:oid` where it resolved. */
 interface ServedList {
   readonly versions: readonly PathVersion[]
+  /** Each version's mode and blob oid prefix as the index gives them: what a start is checked against. */
+  readonly claims: readonly VersionClaim[]
   readonly complete: boolean
 }
+
+/** What the index says a path's entry is after a commit (no oid for a directory or a gitlink). */
+interface VersionClaim {
+  readonly mode: number
+  readonly oidPrefix: string
+}
+
+/**
+ * Whether the path's entry at a commit is what the index claims. For a file the blob oid prefix
+ * is compared; for a directory or a gitlink only the mode (the index stores no oid for them).
+ */
+const matches = (here: PathEntry, claim: VersionClaim): boolean =>
+  here !== null && entryMode(here) === claim.mode && entryOid(here).startsWith(claim.oidPrefix)
 const memos = new WeakMap<object, WalkMemo>()
 /**
  * Entries kept per map before the oldest are dropped: a parsed commit or a path entry is a few
@@ -148,7 +163,7 @@ export interface LogPage {
 }
 
 /** A log row from a parsed commit. */
-const entryOf = (oid: string, commit: CommitObject): LogEntry => ({ oid, subject: commitSubject(commit.message), author: commit.author })
+export const logEntryOf = (oid: string, commit: CommitObject): LogEntry => ({ oid, subject: commitSubject(commit.message), author: commit.author })
 
 /**
  * Up to `limit` first-parent commits from `startOid` (a tip, or a page's `next`), newest first.
@@ -182,11 +197,11 @@ export async function logPage(
       const commit: CommitObject = await commitVia(reader, walker, oid)
       const parent: string | undefined = commit.parents[0]
       if (!filtered) {
-        entries.push(entryOf(oid, commit))
+        entries.push(logEntryOf(oid, commit))
       } else {
         const here = await pathEntryAt(reader, walker, oid, path)
         const there = parent === undefined ? null : await pathEntryAt(reader, walker, parent, path)
-        if (here !== there) entries.push(entryOf(oid, commit))
+        if (here !== there) entries.push(logEntryOf(oid, commit))
         // The commit that added the path ends its History: nothing older can have changed it
         // (an earlier life of the same path, deleted then re-added, is not listed).
         if (here !== null && there === null) {
@@ -226,14 +241,15 @@ export interface PathVersionsPage extends LogPage {
  * 1. When a history index covers `startOid` (or `startOid` is inside a list one already served),
  *    its list for the path answers with no walk: each entry's commit, author and subject, and the
  *    path's `mode:oid` resolved from the blob oid prefix through the locator. The list is used
- *    only when its newest version is the path's entry at `startOid` (a stale or wrong list is
- *    not believed).
+ *    only when the path's entry at `startOid` is what it claims there: the blob oid prefix for a
+ *    file; for a directory or a gitlink only the mode, since the index stores no oid for them.
  * 2. Past the end of a list that does not reach the path's first commit, the walk goes on from
  *    the oldest listed commit's parent.
  * 3. Otherwise it walks first-parent history ({@link logPage}), and stops where an index covers
  *    a commit to go on from its list (an index a few pushes behind).
  *
- * An index that is missing, fails to load or does not match leaves the walk as the answer.
+ * An index that is missing, fails to load or does not match leaves the walk as the answer, and
+ * so does a list naming a commit that cannot be read (from the last position the trees checked).
  * `onExamined` is told the running count of commits examined, so a long search shows progress
  * before any version is found.
  */
@@ -243,11 +259,22 @@ export async function pathVersions(
   path: string,
   {
     limit = LOG_PAGE,
+    listLimit = limit,
     cap = PATH_WALK_CAP,
     walker = historyWalker(reader),
     signal,
     onExamined,
-  }: WalkOptions & { readonly limit?: number; readonly cap?: number; readonly onExamined?: (examined: number) => void } = {},
+  }: WalkOptions & {
+    readonly limit?: number
+    /**
+     * How many entries a page the index answers may hold (default `limit`). The list is already
+     * in hand, so a caller that consumes versions rather than showing pages (Blame) takes it
+     * whole: each later page would check the trees at its start again.
+     */
+    readonly listLimit?: number
+    readonly cap?: number
+    readonly onExamined?: (examined: number) => void
+  } = {},
 ): Promise<PathVersionsPage> {
   const key = path.split('/').filter((s) => s !== '').join('/')
   const history = key === '' ? null : historyOf(reader)
@@ -255,19 +282,32 @@ export async function pathVersions(
   let examined = 0
   let indexed = 0
   let next: string | null = startOid
+  // Set when a list named a commit this repository cannot read: the rest of this call walks.
+  let distrusted = key === ''
+  const most = Math.max(limit, listLimit)
   while (next !== null && entries.length < limit && examined < cap) {
     signal?.throwIfAborted()
-    const listed: ListedAt | null = key === '' ? null : await listedAt(reader, walker, next, key)
+    const listed: ListedAt | null = distrusted ? null : await listedAt(reader, walker, next, key)
     if (listed !== null) {
       const { list, at }: ListedAt = listed
-      const taken: readonly PathVersion[] = list.versions.slice(at, at + limit - entries.length)
+      const taken: readonly PathVersion[] = list.versions.slice(at, at + most - entries.length)
+      const end: number = at + taken.length
+      let after: string | null
+      try {
+        after =
+          list.versions[end]?.oid ??
+          (list.complete ? null : ((await commitVia(reader, walker, (taken[taken.length - 1] as PathVersion).oid)).parents[0] ?? null))
+      } catch (e) {
+        if (signal?.aborted === true) throw e
+        // The list names a commit that cannot be read: it is not believed. Walk from this page's
+        // start, which was checked against the trees, and find these versions again.
+        forgetList(memoOf(reader), list, key)
+        distrusted = true
+        continue
+      }
       entries.push(...taken)
       indexed += taken.length
-      const end: number = at + taken.length
-      const after: PathVersion | undefined = list.versions[end]
-      if (after !== undefined) next = after.oid
-      else if (list.complete) next = null
-      else next = (await commitVia(reader, walker, (list.versions[end - 1] as PathVersion).oid)).parents[0] ?? null
+      next = after
       continue
     }
     const from: string = next
@@ -295,8 +335,14 @@ export async function pathVersions(
  */
 async function listedAt(reader: PrefixReader, walker: ObjectReader, start: string, path: string): Promise<ListedAt | null> {
   const memo = memoOf(reader)
+  // The path's entry here, or null when it cannot be read (the walk then says why).
+  const entryHere = (): Promise<PathEntry> => pathEntryAt(reader, walker, start, path).catch(() => null)
   const hit = memo.listed.get(`${start}\0${path}`)
-  if (hit !== undefined) return hit
+  if (hit !== undefined) {
+    // A list served before holds `start`: believed here only if the trees agree (a list's commits
+    // are keys for every view of this repo, so a wrong one must not answer another branch).
+    return matches(await entryHere(), hit.list.claims[hit.at] as VersionClaim) ? hit : null
+  }
   const history = historyOf(reader)
   if (history === null || !history.covers(start)) return null
   let got: VersionList | undefined
@@ -308,20 +354,28 @@ async function listedAt(reader: PrefixReader, walker: ObjectReader, start: strin
   const newest = got?.versions[0]
   if (got === undefined || newest === undefined) return null
   // The list must describe this commit's tree: its newest version is the path's entry here.
-  const here = await pathEntryAt(reader, walker, start, path)
-  if (here === null || entryMode(here) !== newest.mode || !entryOid(here).startsWith(newest.oidPrefix)) return null
+  const here = await entryHere()
+  if (here === null || !matches(here, newest)) return null
   const versions = got.versions.map(
     (v, i): PathVersion => {
       const entry = i === 0 ? here : resolveEntry(reader, v.mode, v.oidPrefix)
       return { oid: v.commit.oid, subject: v.commit.subject, author: { name: v.commit.author, when: v.commit.when }, ...(entry !== undefined ? { entry } : {}) }
     },
   )
-  const list: ServedList = { versions, complete: got.complete }
+  const list: ServedList = { versions, claims: got.versions, complete: got.complete }
   versions.forEach((v, at) => {
     memo.listed.set(`${v.oid}\0${path}`, { list, at })
   })
   trimOldest(memo.listed, MEMO_MAX)
   return { list, at: 0 }
+}
+
+/** Drop a list that turned out wrong, so no later page resumes in it. */
+function forgetList(memo: WalkMemo, list: ServedList, path: string): void {
+  for (const v of list.versions) {
+    const k = `${v.oid}\0${path}`
+    if (memo.listed.get(k)?.list === list) memo.listed.delete(k)
+  }
 }
 
 /**

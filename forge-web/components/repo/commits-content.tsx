@@ -15,7 +15,7 @@ import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
 import { selectedTip, selectRef, timeAgo, type LogEntry } from '@/lib/view'
 import { historyWalker } from '@/lib/view/commit-log'
-import { PATH_WALK_CAP, pathVersions, type LogPage, type PathVersionsPage } from '@/lib/view/path-history'
+import { PATH_WALK_CAP, pathVersions, type PathVersionsPage } from '@/lib/view/path-history'
 import { plural } from '@/lib/view/format'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { ResolvedTip } from '@/components/repo/resolved-tip'
@@ -92,7 +92,7 @@ export function freshLog(tipOid: string): LogState {
 }
 
 /** `state` with one more page appended (a page that repeats what is shown adds nothing twice). */
-export function withPage(state: LogState, page: LogPage & Partial<Pick<PathVersionsPage, 'indexed'>>): LogState {
+export function withPage(state: LogState, page: PathVersionsPage): LogState {
   const shown = new Set(state.entries.map((e) => e.oid))
   return {
     entries: [...state.entries, ...page.entries.filter((e) => !shown.has(e.oid))],
@@ -101,7 +101,7 @@ export function withPage(state: LogState, page: LogPage & Partial<Pick<PathVersi
     error: null,
     examined: state.examined + page.examined,
     capped: page.capped,
-    indexed: state.indexed + (page.indexed ?? 0),
+    indexed: state.indexed + page.indexed,
   }
 }
 

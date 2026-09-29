@@ -26,6 +26,12 @@
  * `v` is an LEB128 varint, times are author times in seconds. A delta (non-zero base) lists
  * only the paths changed since its base's tip, each list only the changes since then, with its
  * own tip's counts.
+ *
+ * forge-core's decoder is the reference. This one refuses what it refuses (non-UTF-8 subjects and
+ * authors, a mode past 32 bits, every bound), and in one place refuses more: a varint past 2^53,
+ * which a number cannot hold and no honest writer writes (counts and times are far smaller).
+ * Paths are raw bytes in forge-core; here they decode lossily, and two that decode alike are
+ * refused as duplicates.
  */
 
 import { Inflate } from 'pako'
@@ -54,7 +60,10 @@ export interface IndexedCommit {
   readonly subject: string
   /** Author time (ms), as the web's commit parser reports it. */
   readonly when: number
-  /** The author's name (from the versions section; '' in a v1 index). */
+  /**
+   * The author's name, from the versions section: '' in a v1 index, and until the index's
+   * `versions` is first read (Blame and History read authors through the lists).
+   */
   readonly author: string
 }
 
@@ -88,7 +97,12 @@ export interface HistoryIndex {
   readonly tipWhen: number
   /** Full path → its last change. */
   readonly paths: ReadonlyMap<string, IndexedCommit>
-  /** Full path → its version list (v2), or null for a v1 index. A path without one is unknown. */
+  /**
+   * Full path → its version list (v2), or null for a v1 index. A path without one is unknown.
+   * Decoded on first read (the file list's column never reads it); a malformed section throws
+   * here, not from {@link parseHistoryIndex}, so it costs Blame and History their lists but not
+   * the column its commits.
+   */
   readonly versions: ReadonlyMap<string, VersionList> | null
   /** The most versions a list holds (0 for a v1 index). */
   readonly versionLimit: number
@@ -131,6 +145,15 @@ class Cursor {
 }
 
 const utf8 = new TextDecoder('utf-8', { fatal: false })
+/** Subjects and authors must be UTF-8, as forge-core requires. */
+const strictUtf8 = new TextDecoder('utf-8', { fatal: true })
+const text = (bytes: Uint8Array, what: string): string => {
+  try {
+    return strictUtf8.decode(bytes)
+  } catch {
+    throw new Error(`history index: ${what} is not UTF-8`)
+  }
+}
 
 /** A commit while parsing: the versions section fills in its author. */
 type ParsedCommit = { -readonly [K in keyof IndexedCommit]: IndexedCommit[K] }
@@ -182,7 +205,7 @@ export function parseHistoryIndex(compressed: Uint8Array, maxInflated = MAX_INFL
   for (let n = c.count(); n > 0; n--) {
     const oid = bytesToHex(c.take(OID_LEN))
     const when = c.varint() * 1000
-    const subject = utf8.decode(c.take(c.varint()))
+    const subject = text(c.take(c.varint()), 'a subject')
     commits.push({ oid, subject, when, author: '' })
   }
   const paths = new Map<string, IndexedCommit>()
@@ -205,18 +228,45 @@ export function parseHistoryIndex(compressed: Uint8Array, maxInflated = MAX_INFL
   }
   // Extension sections: whole `(tag, len, bytes)` records. The versions section is read; any
   // other tag (a later version's) is skipped.
-  let versions: Map<string, VersionList> | null = null
-  let versionLimit = 0
+  let section: Uint8Array | null = null
   while (!c.done) {
     const tag = c.varint()
     const bytes = c.take(c.varint())
     if (tag !== TAG_VERSIONS) continue
-    if (versions !== null) throw new Error('history index: the versions section appears twice')
-    const s = new Cursor(bytes)
-    ;({ versions, limit: versionLimit } = parseVersions(s, commits, [...paths.keys()]))
-    if (!s.done) throw new Error('history index: the versions section has trailing bytes')
+    if (section !== null) throw new Error('history index: the versions section appears twice')
+    section = bytes
   }
-  return { tip, base, commitCount, firstParentCount, rootWhen, tipWhen, paths, versions, versionLimit }
+  const body = section
+  const versionLimit = body === null ? 0 : sectionLimit(body)
+  return withLazyVersions({ tip, base, commitCount, firstParentCount, rootWhen, tipWhen, paths, versionLimit }, () => {
+    if (body === null) return null
+    const s = new Cursor(body)
+    const versions = parseVersions(s, commits, [...paths.keys()])
+    if (!s.done) throw new Error('history index: the versions section has trailing bytes')
+    return versions
+  })
+}
+
+/** The versions section's list limit (its first field), checked. */
+function sectionLimit(section: Uint8Array): number {
+  const limit = new Cursor(section).varint()
+  if (limit === 0 || limit > MAX_VERSIONS_PER_PATH) throw new Error('history index: the version list limit is out of range')
+  return limit
+}
+
+/**
+ * `index` with a `versions` read computed by `load` on first use and kept. Not enumerable, so a
+ * spread of the index (`{ ...ix }`) copies the rest without decoding the lists.
+ */
+function withLazyVersions(
+  index: Omit<HistoryIndex, 'versions'>,
+  load: () => ReadonlyMap<string, VersionList> | null,
+): HistoryIndex {
+  let got: { readonly v: ReadonlyMap<string, VersionList> | null } | undefined
+  return Object.defineProperty(index, 'versions', {
+    get: () => (got ??= { v: load() }).v,
+    enumerable: false,
+  }) as HistoryIndex
 }
 
 /** Read the versions section over the path rows `rowPaths` (in row order), filling in authors. */
@@ -224,13 +274,12 @@ function parseVersions(
   c: Cursor,
   commits: ParsedCommit[],
   rowPaths: readonly string[],
-): { versions: Map<string, VersionList>; limit: number } {
+): Map<string, VersionList> {
   const limit = c.varint()
-  if (limit === 0 || limit > MAX_VERSIONS_PER_PATH) throw new Error('history index: the version list limit is out of range')
   const oidLen = c.take(1)[0] as number
   if (oidLen < MIN_OID_PREFIX_LEN || oidLen > OID_LEN) throw new Error('history index: the oid prefix length is out of range')
   const authors: string[] = []
-  for (let n = c.count(); n > 0; n--) authors.push(utf8.decode(c.take(c.varint())))
+  for (let n = c.count(); n > 0; n--) authors.push(text(c.take(c.varint()), 'an author'))
   for (const commit of commits) commit.author = authors[c.index(authors.length, 'a commit names an author the table does not hold')] as string
   const versions = new Map<string, VersionList>()
   let entries = 0
@@ -246,12 +295,13 @@ function parseVersions(
     for (let i = 0; i < n; i++) {
       const commit = commits[c.index(commits.length, 'a version names a commit the table does not hold')] as ParsedCommit
       const mode = c.varint()
+      if (mode > 0xffffffff) throw new Error('history index: a mode overflows')
       const oidPrefix = mode === MODE_TREE || mode === MODE_GITLINK ? '' : bytesToHex(c.take(oidLen))
       list.push({ commit, mode, oidPrefix })
     }
     versions.set(path, { versions: list, complete })
   }
-  return { versions, limit }
+  return versions
 }
 
 /**
@@ -263,7 +313,7 @@ export function overlayHistory(full: HistoryIndex, delta: HistoryIndex): History
   const paths = new Map(full.paths)
   for (const [p, c] of delta.paths) paths.set(p, c)
   const limit = delta.versionLimit || full.versionLimit
-  return { ...delta, base: null, paths, versions: overlayVersions(full, delta, limit), versionLimit: limit }
+  return withLazyVersions({ ...delta, base: null, paths, versionLimit: limit }, () => overlayVersions(full, delta, limit))
 }
 
 /**

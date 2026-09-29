@@ -2481,8 +2481,14 @@ pub struct HistoryEntry {
 impl HistoryEntry {
     /// It lists each path's versions (Blame and History read them): format 2 or later.
     pub fn has_versions(&self) -> bool {
-        self.format >= u64::from(crate::pack::historyindex::VERSION_V2)
+        format_has_versions(self.format)
     }
+}
+
+/// Whether a history index manifest's format (its `offsetIndexParts`) lists each path's
+/// versions: format 2 or later.
+fn format_has_versions(format: u64) -> bool {
+    format >= u64::from(crate::pack::historyindex::VERSION_V2)
 }
 
 /// What the next history index publish should do.
@@ -2533,9 +2539,22 @@ pub struct PreparedHistory {
     artifact: Artifact,
     /// The repository's first history index (it pays the first-of-kind fee).
     first: bool,
+    /// For a full index that replaces deltas which have cost as much as it: the delta over the
+    /// same base, still readable, for a push whose cost guard declines the full index.
+    fallback: Option<Box<PreparedHistory>>,
 }
 
 impl PreparedHistory {
+    /// The cheaper delta to publish instead when the cost guard declines this full index.
+    pub fn fallback(&self) -> Option<&PreparedHistory> {
+        self.fallback.as_deref()
+    }
+
+    /// Swap in [`Self::fallback`] (after the guard declined this one), if there is one.
+    pub fn into_fallback(self) -> Option<PreparedHistory> {
+        self.fallback.map(|b| *b)
+    }
+
     /// The plaintext artifact size (what the push prices; sealing adds a little).
     pub fn plain_len(&self) -> u64 {
         self.artifact.plain.len() as u64
@@ -2600,29 +2619,31 @@ pub fn plan_history_index(
     let mut paid: BTreeMap<[u8; 20], u64> = BTreeMap::new();
     let mut counted = BTreeSet::new();
     for m in manifests {
-        let v2 = m.offset_index_parts >= u64::from(crate::pack::historyindex::VERSION_V2);
-        if let (true, true, true, Some(base_tip)) = (m.kind == kind, member(m), v2, m.tips.get(1)) {
-            if counted.insert(m.pack_hash) {
-                *paid.entry(*base_tip).or_default() += m.size_bytes;
-            }
+        let Some(base_tip) = m.tips.get(1) else {
+            continue;
+        };
+        if m.kind == kind
+            && member(m)
+            && format_has_versions(m.offset_index_parts)
+            && counted.insert(m.pack_hash)
+        {
+            let sum = paid.entry(*base_tip).or_default();
+            *sum = sum.saturating_add(m.size_bytes);
         }
     }
     // A delta covers its tip only while a live full index of its base tip stands behind it:
     // a reader could not overlay it otherwise (forge-web `historySource` applies the same rule).
     // Only v2 indexes count here: a delta extends a v2 full index, and covers its tip only over
     // one (an older writer's v1 delta over a v2 base answers the column, not the lists).
-    let full_tips: BTreeSet<[u8; 20]> = live
-        .iter()
-        .filter(|e| e.base_tip.is_none() && e.has_versions())
-        .map(|e| e.tip)
-        .collect();
+    let full_v2 = |e: &&HistoryEntry| e.base_tip.is_none() && e.has_versions();
+    let full_tips: BTreeSet<[u8; 20]> = live.iter().filter(full_v2).map(|e| e.tip).collect();
     let covers =
         |e: &HistoryEntry| e.has_versions() && e.base_tip.is_none_or(|b| full_tips.contains(&b));
     HistoryPlan {
         covered: live.iter().any(|e| e.tip == tip && covers(e)),
         bases: live
             .iter()
-            .filter(|e| e.base_tip.is_none() && e.has_versions())
+            .filter(full_v2)
             .map(|e| HistoryEntry {
                 deltas_paid: paid.get(&e.tip).copied().unwrap_or(0),
                 ..e.clone()
@@ -2649,23 +2670,29 @@ pub fn prepare_history_index(
     }
     let tip_hex = hex::encode(tip);
     // A delta over the newest live full index whose tip is on the new tip's first-parent chain
-    // (and the local repository holds it), when the delta is under half that base's size.
+    // (and the local repository holds it), while deltas pay ([`delta_pays`]).
+    let mut fallback = None;
     for base in &plan.bases {
         let Ok(Some(mut delta)) = compute(git_dir, &tip_hex, Some(&hex::encode(base.tip))) else {
             continue;
         };
         delta.base = Some(base.pack_hash);
         let bytes = delta.to_compressed()?;
-        if delta_pays(bytes.len() as u64, base) {
-            // A delta is cumulative: it replaces the earlier deltas of the same base.
-            let earlier = plan.live.iter().filter(|e| e.base_tip == Some(base.tip));
-            return Ok(Some(prepared(
-                delta,
-                bytes,
-                vec![tip, base.tip],
-                earlier,
-                plan.first,
-            )));
+        let size = bytes.len() as u64;
+        // A delta is cumulative: it replaces the earlier deltas of the same base, and any index
+        // of this tip without version lists (a v1 index the web would read instead).
+        let earlier = plan
+            .live
+            .iter()
+            .filter(|e| e.base_tip == Some(base.tip) || (e.tip == tip && !e.has_versions()));
+        let delta = prepared(delta, bytes, vec![tip, base.tip], earlier, plan.first);
+        if delta_pays(size, base) {
+            return Ok(Some(delta));
+        }
+        // The deltas have cost a full index, but this one is still readable (at most half the
+        // base): kept for a push whose cost guard declines the full index.
+        if size.saturating_mul(2) <= base.size_bytes {
+            fallback = Some(Box::new(delta));
         }
         // The newest base on the chain is too far behind: a full index, not an older base.
         break;
@@ -2673,13 +2700,9 @@ pub fn prepare_history_index(
     let index = compute(git_dir, &tip_hex, None)?
         .ok_or_else(|| Error::Config("history index: no full index computed".into()))?;
     let bytes = index.to_compressed()?;
-    Ok(Some(prepared(
-        index,
-        bytes,
-        vec![tip],
-        plan.live.iter(),
-        plan.first,
-    )))
+    let mut full = prepared(index, bytes, vec![tip], plan.live.iter(), plan.first);
+    full.fallback = fallback;
+    Ok(Some(full))
 }
 
 /// Whether a delta of `bytes` over `base` is worth publishing, rather than a full index.
@@ -2692,7 +2715,9 @@ pub fn prepare_history_index(
 /// 753 KB base: about every 80 one-commit pushes). A delta is never over half the base, so a reader
 /// never downloads more for the pair than 1.5 bases.
 fn delta_pays(bytes: u64, base: &HistoryEntry) -> bool {
-    bytes * 2 <= base.size_bytes && base.deltas_paid + bytes <= base.size_bytes
+    // Member-written sizes: saturating, so an absurd one can only end the deltas, never wrap.
+    bytes.saturating_mul(2) <= base.size_bytes
+        && base.deltas_paid.saturating_add(bytes) <= base.size_bytes
 }
 
 /// A computed index as the artifact to store, superseding `replaces` (at most
@@ -2716,6 +2741,7 @@ fn prepared<'e>(
         index,
         artifact,
         first,
+        fallback: None,
     }
 }
 
@@ -3657,6 +3683,68 @@ mod tests {
             ..b.clone()
         };
         assert!(!delta_pays(5_001, &fresh), "never over half the base");
+    }
+
+    /// Review L8: when the deltas have cost a full index, the full one is prepared with the
+    /// delta as a fallback, for a push whose cost guard declines the full index.
+    #[test]
+    fn a_due_full_index_carries_the_delta_as_a_fallback() {
+        use super::{plan_history_index, prepare_history_index};
+        let d = tempfile::TempDir::new().unwrap();
+        let p = d.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .arg("-C")
+                .arg(p)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@e.x")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@e.x")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .output()
+                .unwrap();
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let oid = |rev: &str| -> [u8; 20] {
+            hex::decode(git(&["rev-parse", rev]))
+                .unwrap()
+                .try_into()
+                .unwrap()
+        };
+        git(&["init", "-q", "-b", "main"]);
+        for i in 0..200 {
+            std::fs::write(p.join(format!("f{i}.txt")), format!("{i}")).unwrap();
+        }
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "many"]);
+        let base_tip = oid("HEAD");
+        std::fs::write(p.join("f1.txt"), "changed").unwrap();
+        git(&["commit", "-q", "-am", "edit"]);
+        let tip = oid("HEAD");
+        let roles: RoleMap = [("w".to_string(), Role::Writer)].into();
+        let mut base = history("f", 10, 1, "w", 0, None);
+        base.tips = vec![base_tip];
+        base.size_bytes = 100_000;
+        // Earlier deltas over it already cost its size.
+        let mut paid = history("d", 20, 2, "w", 0x11, None);
+        paid.tips = vec![[0x11; 20], base_tip];
+        paid.size_bytes = 100_000;
+        let plan = plan_history_index(&[paid, base], &roles, tip);
+        let full = prepare_history_index(p, tip, &plan).unwrap().unwrap();
+        assert!(full.index().base.is_none(), "a full index is due");
+        let fallback = full.fallback().expect("the delta is offered");
+        assert_eq!(fallback.index().base, Some([1; 32]));
+        assert!(fallback.plain_len() < full.plain_len());
+        assert_eq!(
+            full.into_fallback().unwrap().artifact.tips,
+            vec![tip, base_tip]
+        );
     }
 
     /// A v1 index (a writer before version lists) covers nothing and is no delta base: the next

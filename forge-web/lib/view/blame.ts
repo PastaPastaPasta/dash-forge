@@ -21,8 +21,8 @@
 import { ObjectTooLargeError } from '../browse'
 import { BlameState, lineMap } from './blame-core'
 import { diffTrees, historyWalker, type LogEntry, type PrefixReader, type WalkOptions } from './commit-log'
-import { commitSubject, decodeTextBlob } from './git-objects'
-import { commitVia, entryMode, entryOid, isFileMode, PATH_WALK_CAP, pathEntryAt, pathVersions } from './path-history'
+import { decodeTextBlob } from './git-objects'
+import { commitVia, entryMode, entryOid, isFileMode, logEntryOf, PATH_WALK_CAP, pathEntryAt, pathVersions } from './path-history'
 import { readBlob, type ObjectReader } from './tree-nav'
 
 /** Largest file blamed (the spec's ≤ 2 MiB). */
@@ -162,7 +162,8 @@ export async function blameFile(
   const state = new BlameState(tipText)
   // Every commit the walk met, so the hunks' owners can be looked up at the end.
   const seen = new Map<string, LogEntry>()
-  // Each version's text, read once. The index names versions ahead, so their reads can overlap.
+  // Versions' texts read ahead (the index names versions before they are compared, so their reads
+  // overlap). Each is dropped once compared: at most BLAME_READ_AHEAD texts are held, not a page.
   const texts = new Map<string, Promise<string>>()
   const textFor = (blob: string): Promise<string> => {
     let t = texts.get(blob)
@@ -208,22 +209,48 @@ export async function blameFile(
         partial = true
         break
       }
-      const page = await pathVersions(reader, start, at, { walker, signal, cap: Math.min(pageCap, maxCommits - examined), onExamined: report })
+      const page = await pathVersions(reader, start, at, {
+        walker,
+        signal,
+        cap: Math.min(pageCap, maxCommits - examined),
+        // Every version the index lists, at once: no later page to check the trees for again.
+        listLimit: maxVersions + 1,
+        onExamined: report,
+      })
       examined += page.examined
       for (const [i, e] of page.entries.entries()) {
         signal?.throwIfAborted()
         seen.set(e.oid, e)
-        for (const ahead of page.entries.slice(i + 1, i + 1 + BLAME_READ_AHEAD)) {
-          if (ahead.entry !== undefined && isFileEntry(ahead.entry)) void textFor(ahead.entry)
+        // No read ahead once every line has its commit: those versions would never be compared.
+        if (state.pending > 0) {
+          for (const ahead of page.entries.slice(i + 1, i + 1 + BLAME_READ_AHEAD)) {
+            if (ahead.entry !== undefined && isFileEntry(ahead.entry)) void textFor(ahead.entry)
+          }
         }
         if (current === null) {
           current = { oid: e.oid, text: tipText, blob: entry }
         } else {
           // `current.oid` changed the file from this version's text to `current.text`. A version
           // that was a directory or a submodule there means `current.oid` made the file.
-          const older = e.entry ?? (await pathEntryAt(reader, walker, e.oid, at))
+          let older = e.entry ?? (await pathEntryAt(reader, walker, e.oid, at))
           if (!isFileEntry(older)) break outer
-          const text = await textFor(older)
+          let text: string
+          try {
+            text = await textFor(older)
+          } catch (err) {
+            // The index named this version's blob. When it cannot be read as the file's text (not
+            // a blob here, not in this repo), read the version from the trees instead; only what
+            // the trees name can refuse Blame.
+            if (e.entry === undefined || signal?.aborted === true) throw err
+            const fromTrees = await pathEntryAt(reader, walker, e.oid, at)
+            if (fromTrees === e.entry) throw err
+            if (!isFileEntry(fromTrees)) break outer
+            older = fromTrees
+            text = await textFor(older)
+          } finally {
+            texts.delete(older)
+            if (e.entry !== undefined) texts.delete(e.entry)
+          }
           if (state.step(current.oid, lineMap(text, current.text)).approximate) approximate = true
           current = { oid: e.oid, text, blob: older }
           versions += 1
@@ -261,8 +288,7 @@ export async function blameFile(
   // walk reached the commit that added the file). No version at all: the path is unchanged in
   // every commit the capped walk examined, so the tip stands in, and the result says it is partial.
   if (current === null) {
-    const tip = await commitVia(reader, walker, tipOid)
-    seen.set(tipOid, { oid: tipOid, subject: commitSubject(tip.message), author: tip.author })
+    seen.set(tipOid, logEntryOf(tipOid, await commitVia(reader, walker, tipOid)))
     current = { oid: tipOid, text: tipText, blob: entry }
     partial = true
   }

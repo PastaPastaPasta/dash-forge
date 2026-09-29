@@ -3,7 +3,11 @@
 //! first-parent commit whose `mode:oid` at the path differs from its first parent's), across
 //! merges, renames, deletes, mode changes, gitlinks and directories.
 
-use super::historyindex::{compute, parse_commit_meta, HistoryIndex, SUBJECT_MAX};
+use super::historyindex::{
+    compute, compute_with, overlay_versions, parse_commit_meta, HistoryIndex, IndexedCommit,
+    PathVersion, ResolvedList, VersionList, Versions, OID_PREFIX_LEN, SUBJECT_MAX,
+    VERSIONS_PER_PATH,
+};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -325,7 +329,6 @@ fn an_option_like_tip_is_refused() {
 /// `FORGE_BLESS=1` rewrites it.
 #[test]
 fn the_shared_decoder_fixture_matches() {
-    use super::historyindex::IndexedCommit;
     let ix = HistoryIndex {
         tip: [0xab; 20],
         base: Some([0x5c; 32]),
@@ -358,28 +361,7 @@ fn the_shared_decoder_fixture_matches() {
         .collect(),
         versions: None,
     };
-    let body = {
-        let mut out = Vec::new();
-        std::io::Read::read_to_end(
-            &mut flate2::read::GzDecoder::new(&ix.to_compressed().unwrap()[..]),
-            &mut out,
-        )
-        .unwrap();
-        out
-    };
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../forge-contracts/fixtures/history-index.hex"
-    );
-    let hex_body = format!("{}\n", hex::encode(&body));
-    if std::env::var_os("FORGE_BLESS").is_some() {
-        std::fs::write(path, &hex_body).unwrap();
-    }
-    assert_eq!(
-        std::fs::read_to_string(path).unwrap(),
-        hex_body,
-        "run with FORGE_BLESS=1"
-    );
+    bless_or_check("history-index.hex", &body_of(&ix));
     assert_eq!(
         HistoryIndex::parse(&ix.to_compressed().unwrap()).unwrap(),
         ix
@@ -515,18 +497,11 @@ fn hostile_bytes_are_bounded() {
     body.extend_from_slice(&[0; 52]);
     body.extend_from_slice(&[0xff; 9]);
     body.push(0x02);
-    let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-    std::io::Write::write_all(&mut e, &body).unwrap();
-    let err = HistoryIndex::parse(&e.finish().unwrap()).unwrap_err();
+    let err = HistoryIndex::parse(&gz(&body)).unwrap_err();
     assert!(format!("{err}").contains("overflow"), "{err}");
 }
 
 // ---- v2: per-path version lists ---------------------------------------------------------
-
-use super::historyindex::{
-    compute_with, overlay_versions, IndexedCommit, PathVersion, ResolvedList, VersionList,
-    Versions, OID_PREFIX_LEN, VERSIONS_PER_PATH,
-};
 
 /// `path → (commit, mode, oid)` of each change, newest first, and whether the list reached the
 /// commit that added the path: the web's rule brute force, tree by tree over the first-parent
@@ -741,13 +716,7 @@ fn a_delta_overlaid_on_its_base_equals_a_full_index_and_the_web_fixtures_match()
         .unwrap();
     delta.base = Some([0x5c; 32]);
     let full = compute_with(p, "HEAD", None, limit).unwrap().unwrap();
-    let merged = overlay_versions(
-        base.resolved_versions().as_ref(),
-        delta.resolved_versions().as_ref(),
-        &delta.paths,
-        limit,
-    )
-    .unwrap();
+    let merged = overlay_versions(&base, &delta).unwrap();
     // A path the tip no longer has keeps its base list (the reader only asks for tip paths).
     let mut merged = resolved_as_ref(&merged);
     assert!(merged.contains_key("untouched.txt"));
@@ -777,20 +746,24 @@ fn mixed_v1_and_v2_indexes_overlay_to_what_is_known() {
     let delta = compute_with(p, "HEAD", Some(&base_tip), 3)
         .unwrap()
         .unwrap();
+    let as_v1 = |ix: &HistoryIndex| HistoryIndex {
+        versions: None,
+        ..ix.clone()
+    };
     // A v2 base under a v1 delta (an older writer's): the delta's paths changed, lists unknown.
-    let got = overlay_versions(base.resolved_versions().as_ref(), None, &delta.paths, 3).unwrap();
+    let got = overlay_versions(&base, &as_v1(&delta)).unwrap();
     assert!(delta.paths.keys().all(|p| !got.contains_key(p)));
     assert!(
         got.contains_key(b"docs/new.md".as_slice()),
         "unchanged: the base's list stands"
     );
     // A v1 base under a v2 delta: only the delta's lists, each as far as it goes.
-    let got = overlay_versions(None, delta.resolved_versions().as_ref(), &delta.paths, 3).unwrap();
+    let got = overlay_versions(&as_v1(&base), &delta).unwrap();
     assert_eq!(got.len(), delta.paths.len());
     assert!(got[b"fresh.txt".as_slice()].complete);
     assert!(!got[b"README.md".as_slice()].complete);
     // Two v1 indexes: nothing.
-    assert!(overlay_versions(None, None, &delta.paths, 3).is_none());
+    assert!(overlay_versions(&as_v1(&base), &as_v1(&delta)).is_none());
     // A v2 index read as v1 (its section dropped) keeps the column and the counts.
     let mut v1 = base.clone();
     v1.versions = None;
@@ -881,7 +854,7 @@ fn the_shared_v2_decoder_fixture_matches() {
     );
 }
 
-/// A v2 index's body before gzip.
+/// An index's body before gzip (gzip output is not byte-stable across implementations).
 fn body_of(ix: &HistoryIndex) -> Vec<u8> {
     let mut out = Vec::new();
     std::io::Read::read_to_end(
@@ -892,6 +865,7 @@ fn body_of(ix: &HistoryIndex) -> Vec<u8> {
     out
 }
 
+/// Check `body` against the hex fixture `name` forge-web also reads; `FORGE_BLESS=1` rewrites it.
 fn bless_or_check(name: &str, body: &[u8]) {
     let path = format!(
         "{}/../../forge-contracts/fixtures/{name}",
@@ -977,7 +951,7 @@ fn hostile_version_sections_are_refused() {
     assert!(HistoryIndex::parse_bounded(&gz(&head(&good)), 64).is_err());
 }
 
-/// Offline replay fixture for the web (`history-replay.local.test.ts`): the pack a push of the
+/// Offline replay fixture for the web (`forge-web/lib/view/history-replay.test.ts`): the pack a push of the
 /// tip builds, its object locator, and the tip's history index, written to
 /// `HISTORY_REPLAY_OUT`. Run with `HISTORY_REPLAY_REPO=<git dir> HISTORY_REPLAY_TIP=<rev>
 /// HISTORY_REPLAY_OUT=<dir> cargo test -p forge-core --lib export_a_replay_fixture -- --ignored`.
@@ -1008,3 +982,45 @@ fn export_a_replay_fixture() {
         history.len()
     );
 }
+
+/// Review M2: an index over the readers' bounds is cut to fewer versions per path until it
+/// fits, and stays v2; one that cannot fit is an error, never a v1 index.
+#[test]
+fn an_index_over_the_readers_bounds_is_cut_until_it_fits() {
+    use super::historyindex::compute_bounded;
+    let d = fixture_v2();
+    let p = d.path();
+    let whole = compute(p, "HEAD", None).unwrap().unwrap();
+    let body = whole.body().unwrap().len() as u64;
+    // A body cap just under the whole index: the lists are cut, the rest stays.
+    let cut = compute_bounded(p, "HEAD", None, VERSIONS_PER_PATH, 4_000_000, body - 1)
+        .unwrap()
+        .unwrap();
+    let v = cut.versions.as_ref().unwrap();
+    assert!(v.limit < VERSIONS_PER_PATH);
+    assert!((cut.body().unwrap().len() as u64) < body);
+    assert_eq!(cut.paths.len(), whole.paths.len());
+    assert!(HistoryIndex::parse_bounded(&cut.to_compressed().unwrap(), body - 1).is_ok());
+    // hot.txt has 6 versions: cut, it no longer says it is whole.
+    let hot = &v.lists[b"hot.txt".as_slice()];
+    assert!(hot.versions.len() <= v.limit as usize);
+    assert_eq!(hot.complete, hot.versions.len() == 6);
+    // A row cap on version entries works the same way.
+    let rows = compute_bounded(p, "HEAD", None, VERSIONS_PER_PATH, 40, MAX_INFLATED_TEST)
+        .unwrap()
+        .unwrap();
+    let entries: usize = rows
+        .versions
+        .as_ref()
+        .unwrap()
+        .lists
+        .values()
+        .map(|l| l.versions.len())
+        .sum();
+    assert!(entries <= 40);
+    // Nothing fits: an error.
+    let err = compute_bounded(p, "HEAD", None, VERSIONS_PER_PATH, 4_000_000, 10).unwrap_err();
+    assert!(format!("{err}").contains("size limits"), "{err}");
+}
+
+const MAX_INFLATED_TEST: u64 = 64 * 1024 * 1024;

@@ -9,11 +9,11 @@ import { describe, expect, it, vi } from 'vitest'
 vi.mock('next/navigation', () => ({ usePathname: () => '/repo/commits/', useSearchParams: () => new URLSearchParams() }))
 
 import type { LogEntry } from '@/lib/view'
-import type { LogPage } from '@/lib/view/path-history'
+import type { PathVersionsPage } from '@/lib/view/path-history'
 import { freshLog, withPage } from './commits-content'
 
 const entry = (oid: string): LogEntry => ({ oid, subject: oid, author: { name: '', when: 0 } })
-const page = (oids: string[], next: string | null): LogPage => ({ entries: oids.map(entry), next, examined: oids.length, capped: false })
+const page = (oids: string[], next: string | null): PathVersionsPage => ({ entries: oids.map(entry), next, examined: oids.length, capped: false, indexed: 0 })
 
 describe('commit log paging state', () => {
   it('appends each older page once', () => {

@@ -108,12 +108,10 @@ function fixture(): NonNullable<typeof files> {
 
 /** A fresh browser session over the fixture: an empty chunk cache and memos, and optionally the index. */
 function session(withIndex: boolean): Replay {
-  const { pack, tip } = fixture()
-  const locator = ObjectLocator.parse(fixture().locator)
+  const { pack, locator, history: bytes, tip } = fixture()
   const meter = new Meter()
-  const reader = new BrowseReader(locator, platformSource(pack, meter))
+  const reader = new BrowseReader(ObjectLocator.parse(locator), platformSource(pack, meter))
   if (withIndex) {
-    const bytes = fixture().history
     const manifest = {
       packHash: bytesToHex(sha256(bytes)),
       kind: 3,

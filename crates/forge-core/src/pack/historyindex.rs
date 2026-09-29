@@ -47,6 +47,10 @@
 //! no commit or tree reads. `complete` says the list reaches the commit that added the path: its
 //! whole first-parent history. A count of 0 without `complete` says nothing is known.
 //!
+//! This decoder is the reference. forge-web's (`lib/browse/history-index.ts`) refuses the same
+//! bytes, and also refuses a varint past 2^53, which a JS number cannot hold and no honest
+//! writer writes.
+//!
 //! `v` is an LEB128 varint; times are author times in seconds. A **delta** index (non-zero
 //! base) lists only the paths changed since its base's tip, and each of their lists holds only
 //! the changes since then; its counts are its own tip's.
@@ -84,7 +88,7 @@ const MIN_OID_PREFIX_LEN: u8 = 4;
 pub const SUBJECT_MAX: usize = 200;
 /// Paths, commits and version entries one index may hold: far past any real tree, and a bound
 /// for a reader parsing hostile bytes.
-pub const MAX_ROWS: u64 = 4_000_000;
+const MAX_ROWS: u64 = 4_000_000;
 /// The most a history index may inflate to (dashpay/dash's v2 is ~1.6 MB): a gzip bomb stops
 /// here.
 pub const MAX_INFLATED: u64 = 64 * 1024 * 1024;
@@ -93,9 +97,15 @@ const MODE_TREE: u32 = 0o40000;
 /// git's gitlink (submodule) mode.
 const MODE_GITLINK: u32 = 0o160_000;
 
-/// A blob mode (a file or a symlink): its version lists carry the blob's oid prefix.
-pub fn is_blob_mode(mode: u32) -> bool {
-    mode != MODE_TREE && mode != MODE_GITLINK
+/// The bytes of blob oid a version of `mode` stores: `oid_len` for a blob mode (a file or a
+/// symlink), none for a directory or a gitlink. The writer, the reader and the check between
+/// them all size the prefix here.
+fn stored_oid_len(mode: u32, oid_len: u8) -> usize {
+    if mode == MODE_TREE || mode == MODE_GITLINK {
+        0
+    } else {
+        usize::from(oid_len)
+    }
 }
 
 /// One commit an index refers to.
@@ -191,6 +201,14 @@ impl HistoryIndex {
 
     /// Serialize and gzip.
     pub fn to_compressed(&self) -> Result<Vec<u8>> {
+        let b = self.body()?;
+        let mut enc = GzEncoder::new(Vec::new(), Compression::new(9));
+        enc.write_all(&b).map_err(|e| Error::Io(e.to_string()))?;
+        enc.finish().map_err(|e| Error::Io(e.to_string()))
+    }
+
+    /// The serialized body, before gzip: what a reader inflates (and bounds by [`MAX_INFLATED`]).
+    pub fn body(&self) -> Result<Vec<u8>> {
         let mut b = Vec::new();
         b.extend_from_slice(MAGIC);
         b.push(self.version());
@@ -227,9 +245,19 @@ impl HistoryIndex {
             write_varint(&mut b, section.len() as u64);
             b.extend_from_slice(&section);
         }
-        let mut enc = GzEncoder::new(Vec::new(), Compression::new(9));
-        enc.write_all(&b).map_err(|e| Error::Io(e.to_string()))?;
-        enc.finish().map_err(|e| Error::Io(e.to_string()))
+        Ok(b)
+    }
+
+    /// Whether every reader accepts it: its rows (commits, paths, version entries) within
+    /// `max_rows` and its body within `max_inflated` bytes, the bounds both decoders enforce.
+    fn fits(&self, max_rows: u64, max_inflated: u64) -> Result<bool> {
+        let entries: u64 = self.versions.as_ref().map_or(0, |v| {
+            v.lists.values().map(|l| l.versions.len() as u64).sum()
+        });
+        Ok(self.commits.len() as u64 <= max_rows
+            && self.paths.len() as u64 <= max_rows
+            && entries <= max_rows
+            && self.body()?.len() as u64 <= max_inflated)
     }
 
     /// The body of the versions section.
@@ -266,12 +294,7 @@ impl HistoryIndex {
                 ((list.versions.len() as u64) << 1) | u64::from(list.complete),
             );
             for e in &list.versions {
-                let want = if is_blob_mode(e.mode) {
-                    usize::from(v.oid_len)
-                } else {
-                    0
-                };
-                if e.oid.len() != want {
+                if e.oid.len() != stored_oid_len(e.mode, v.oid_len) {
                     return Err(bad("a version's oid prefix has the wrong length"));
                 }
                 write_varint(&mut s, u64::from(e.commit));
@@ -422,11 +445,7 @@ fn parse_versions(
                 "a version names a commit the table does not hold",
             )?;
             let mode = u32::try_from(r.varint()?).map_err(|_| bad("a mode overflows"))?;
-            let oid = if is_blob_mode(mode) {
-                r.take(usize::from(oid_len))?.to_vec()
-            } else {
-                Vec::new()
-            };
+            let oid = r.take(stored_oid_len(mode, oid_len))?.to_vec();
             versions.push(PathVersion { commit, mode, oid });
         }
         lists.insert(path.clone(), VersionList { versions, complete });
@@ -479,31 +498,28 @@ impl HistoryIndex {
 /// - a path the delta does not list is unchanged since the base's tip: the base's list stands;
 /// - a path the delta lists with a **complete** list was added since the base: the delta's list
 ///   is its whole history;
-/// - otherwise the delta's changes come first, then the base's list, deduplicated and cut to
-///   `limit`; complete when the base's was and nothing was cut;
+/// - otherwise the delta's changes come first, then the base's list, deduplicated and cut to the
+///   delta's limit (the base's for a v1 delta); complete when the base's was and nothing was cut;
 /// - a path the delta lists (it changed) without a list of its own (a v1 delta) is unknown.
 ///
 /// `None` when neither index has version lists.
 pub fn overlay_versions(
-    base: Option<&BTreeMap<Vec<u8>, ResolvedList>>,
-    delta: Option<&BTreeMap<Vec<u8>, ResolvedList>>,
-    delta_paths: &PathMap,
-    limit: u32,
+    base: &HistoryIndex,
+    delta: &HistoryIndex,
 ) -> Option<BTreeMap<Vec<u8>, ResolvedList>> {
-    if base.is_none() && delta.is_none() {
-        return None;
-    }
-    let mut out = base.cloned().unwrap_or_default();
-    for path in delta_paths.keys() {
-        let Some(d) = delta.and_then(|d| d.get(path)) else {
+    // The delta's own limit: a list it cut there must not have the base's older versions
+    // appended past a gap.
+    let limit = delta.versions.as_ref().or(base.versions.as_ref())?.limit as usize;
+    let base_lists = base.resolved_versions();
+    let delta_lists = delta.resolved_versions();
+    let mut out = base_lists.clone().unwrap_or_default();
+    for path in delta.paths.keys() {
+        let Some(d) = delta_lists.as_ref().and_then(|d| d.get(path)) else {
             out.remove(path);
             continue;
         };
-        if d.complete {
-            out.insert(path.clone(), d.clone());
-            continue;
-        }
-        let Some(b) = base.and_then(|b| b.get(path)) else {
+        let b = base_lists.as_ref().and_then(|b| b.get(path));
+        let Some(b) = b.filter(|_| !d.complete) else {
             out.insert(path.clone(), d.clone());
             continue;
         };
@@ -515,8 +531,8 @@ pub fn overlay_versions(
             .filter(|e| seen.insert(e.0))
             .cloned()
             .collect();
-        let cut = versions.len() > limit as usize;
-        versions.truncate(limit as usize);
+        let cut = versions.len() > limit;
+        versions.truncate(limit);
         out.insert(
             path.clone(),
             ResolvedList {
@@ -550,25 +566,25 @@ pub fn compute_with(
     since: Option<&str>,
     limit: u32,
 ) -> Result<Option<HistoryIndex>> {
+    compute_bounded(repo, tip, since, limit, MAX_ROWS, MAX_INFLATED)
+}
+
+/// [`compute_with`], held to readers' bounds: an index whose rows pass `max_rows` or whose body
+/// inflates past `max_inflated` would be refused whole by every decoder, column and count
+/// included. Its lists are then cut to half the limit, again until it fits (still v2: a reader
+/// accepts any limit, and a v1 index would not cover the tip, so every push would redo it). An
+/// index that does not fit even at one version per path is an error: the push notes the skip.
+pub(crate) fn compute_bounded(
+    repo: &Path,
+    tip: &str,
+    since: Option<&str>,
+    limit: u32,
+    max_rows: u64,
+    max_inflated: u64,
+) -> Result<Option<HistoryIndex>> {
     let limit = limit.clamp(1, MAX_VERSIONS_PER_PATH);
     ensure_safe_rev(tip)?;
-    if capture(repo, &["rev-parse", "--is-shallow-repository"], None)?.trim_ascii() == b"true" {
-        return Err(bad(
-            "the repository is a shallow clone; its history is incomplete",
-        ));
-    }
-    // The repository's own grafts file, in its common git dir (`git_real` points
-    // GIT_GRAFT_FILE elsewhere, which `--git-path info/grafts` would report instead).
-    let common = capture(repo, &["rev-parse", "--git-common-dir"], None)?;
-    let grafts = repo
-        .join(String::from_utf8_lossy(&common).trim())
-        .join("info")
-        .join("grafts");
-    if grafts.exists() {
-        return Err(bad(
-            "the repository has an info/grafts file; its history is rewritten",
-        ));
-    }
+    refuse_cut_history(repo)?;
     let tip_oid = rev_parse(repo, tip)?;
     let tip_hex = hex::encode(tip_oid);
     let since_hex = match since {
@@ -614,7 +630,6 @@ pub fn compute_with(
         return Err(bad("git log did not account for every path of the tip"));
     }
 
-    let (commits, paths, lists) = assemble(repo, found)?;
     let commit_count = rev_count(repo, &tip_hex, false)?;
     let first_parent_count = rev_count(repo, &tip_hex, true)?;
     let root = capture(
@@ -637,32 +652,74 @@ pub fn compute_with(
             .as_bytes(),
     )?;
     let times = commit_meta(repo, &[tip_oid, root_oid])?;
-    Ok(Some(HistoryIndex {
-        tip: tip_oid,
-        base: None,
-        commit_count,
-        first_parent_count,
-        tip_time: times[0].author_time,
-        root_time: times[1].author_time,
-        commits,
-        paths,
-        versions: Some(Versions {
-            limit,
-            oid_len: OID_PREFIX_LEN,
-            lists,
-        }),
-    }))
+    let mut limit = limit;
+    loop {
+        let (commits, paths, lists) = assemble(repo, &found, limit as usize)?;
+        let index = HistoryIndex {
+            tip: tip_oid,
+            base: None,
+            commit_count,
+            first_parent_count,
+            tip_time: times[0].author_time,
+            root_time: times[1].author_time,
+            commits,
+            paths,
+            versions: Some(Versions {
+                limit,
+                oid_len: OID_PREFIX_LEN,
+                lists,
+            }),
+        };
+        if index.fits(max_rows, max_inflated)? {
+            return Ok(Some(index));
+        }
+        if limit == 1 {
+            return Err(bad(
+                "the index is over the readers' size limits even at one version per path",
+            ));
+        }
+        limit /= 2;
+    }
 }
 
-/// The commit table, the column (each path's newest change) and the version lists, from the
-/// changes the log reported.
+/// Refuse a repository whose history git would describe short of the packs': a shallow clone
+/// stops at its boundary, and an `info/grafts` file rewrites parents.
+fn refuse_cut_history(repo: &Path) -> Result<()> {
+    if capture(repo, &["rev-parse", "--is-shallow-repository"], None)?.trim_ascii() == b"true" {
+        return Err(bad(
+            "the repository is a shallow clone; its history is incomplete",
+        ));
+    }
+    // The repository's own grafts file, in its common git dir (`git_real` points
+    // GIT_GRAFT_FILE elsewhere, which `--git-path info/grafts` would report instead).
+    let common = capture(repo, &["rev-parse", "--git-common-dir"], None)?;
+    let grafts = repo
+        .join(String::from_utf8_lossy(&common).trim())
+        .join("info")
+        .join("grafts");
+    if grafts.exists() {
+        return Err(bad(
+            "the repository has an info/grafts file; its history is rewritten",
+        ));
+    }
+    Ok(())
+}
+
+/// A list's first `limit` changes.
+fn kept(l: &RawList, limit: usize) -> &[RawVersion] {
+    &l.versions[..l.versions.len().min(limit)]
+}
+
+/// The commit table, the column (each path's newest change) and the version lists cut to
+/// `limit`, from the changes the log reported.
 fn assemble(
     repo: &Path,
-    found: BTreeMap<Vec<u8>, RawList>,
+    found: &BTreeMap<Vec<u8>, RawList>,
+    limit: usize,
 ) -> Result<(Vec<IndexedCommit>, PathMap, VersionLists)> {
     let distinct: BTreeSet<[u8; OID_LEN]> = found
         .values()
-        .flat_map(|l| l.versions.iter().map(|v| v.commit))
+        .flat_map(|l| kept(l, limit).iter().map(|v| v.commit))
         .collect();
     let (commits, slot) = commit_table(repo, distinct)?;
     let paths = found
@@ -670,26 +727,22 @@ fn assemble(
         .map(|(p, l)| (p.clone(), slot[&l.versions[0].commit]))
         .collect();
     let lists = found
-        .into_iter()
+        .iter()
         .map(|(p, l)| {
-            let versions = l
-                .versions
-                .into_iter()
+            let versions = kept(l, limit)
+                .iter()
                 .map(|v| PathVersion {
                     commit: slot[&v.commit],
                     mode: v.mode,
-                    oid: if is_blob_mode(v.mode) {
-                        v.oid[..usize::from(OID_PREFIX_LEN)].to_vec()
-                    } else {
-                        Vec::new()
-                    },
+                    oid: v.oid[..stored_oid_len(v.mode, OID_PREFIX_LEN)].to_vec(),
                 })
                 .collect();
+            let whole = l.versions.len() <= limit;
             (
-                p,
+                p.clone(),
                 VersionList {
                     versions,
-                    complete: l.complete,
+                    complete: l.complete && whole,
                 },
             )
         })
