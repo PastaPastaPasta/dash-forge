@@ -123,10 +123,11 @@ pub async fn read_runs(source: &impl PageSource, from: u64) -> Result<Vec<Fetche
 /// [`read_runs`]) with what was seen (`prev`). Returns the events to send, oldest document
 /// first, and the new state for the head. `since` is the head's baseline: an unseen document
 /// created before it is recorded, not delivered. A read older than what was seen (a lagging
-/// node) keeps the newer state and sends nothing. A run the read covered but did not return is
-/// marked missing. The new state keeps exactly the runs the next read covers
-/// ([`read_from`]), so a run is never forgotten while it can still be read, and never read
-/// again once forgotten.
+/// node) keeps the newer state and sends nothing. A run the read covered but did not return,
+/// while it returned a run created later (so the node has the block that created it), was
+/// deleted: it is marked missing. A lagging node that has not reached a run's block marks
+/// nothing. The new state keeps exactly the runs the next read covers ([`read_from`]), so a
+/// run is never forgotten while it can still be read, and never read again once forgotten.
 pub fn diff<'a>(
     prev: &HeadRuns,
     docs: &'a [FetchedDocument],
@@ -137,7 +138,10 @@ pub fn diff<'a>(
     docs.sort_by_key(|d| (d.created_at, &d.id));
     let mut out = Vec::new();
     let mut next = prev.clone();
-    for r in next.values_mut().filter(|r| r.at >= from) {
+    // `$createdAt` is block time, which only increases: a node that returned a run created at
+    // `t` has every block before `t`.
+    let reached = docs.last().and_then(|d| d.created_at).unwrap_or(0);
+    for r in next.values_mut().filter(|r| r.at >= from && r.at < reached) {
         r.missing = true;
     }
     for d in docs {
@@ -452,6 +456,37 @@ mod tests {
         s.get_mut("open").unwrap().missing = false;
         s.extend((0..300).map(|i| (format!("s{i:03}"), seen(1000 + i, true))));
         assert_eq!(read_from(&s, 0), 200, "never past the newest 500 (of 601)");
+    }
+
+    /// A node that has not reached the blocks of a head's runs returns fewer: that is not a
+    /// deletion, so an open run behind many newer ones is kept and its completion still sent.
+    #[tokio::test]
+    async fn a_lagging_read_does_not_drop_an_open_run() {
+        let mut rows = vec![run("open", 1, 1, "queued")];
+        rows.extend((0..150).map(|i| run(&format!("n{i:03}"), 10 + i, 1, "completed")));
+        let (_, s) = cycle(
+            &Index(rows.clone(), std::cell::Cell::default()),
+            &HeadRuns::new(),
+        )
+        .await;
+        // A node at a block before any of them: nothing.
+        let (out, s) = cycle(&Index(Vec::new(), std::cell::Cell::default()), &s).await;
+        assert!(out.is_empty());
+        assert!(
+            s.contains_key("open") && !s["open"].missing,
+            "not taken for deleted"
+        );
+        // A node that has only the first few blocks.
+        let partial: Vec<FetchedDocument> = rows.iter().take(5).cloned().collect();
+        let (out, s) = cycle(&Index(partial, std::cell::Cell::default()), &s).await;
+        assert!(out.is_empty());
+        assert!(!s["open"].missing && !s["n100"].missing);
+        rows[0] = run("open", 1, 2, "completed");
+        let (out, _) = cycle(&Index(rows, std::cell::Cell::default()), &s).await;
+        assert_eq!(
+            out,
+            vec![(CheckRunAction::Completed, "open:completed:2".into())]
+        );
     }
 
     /// The relay's cycle over an in-memory index: read from [`read_from`], then [`diff`].
