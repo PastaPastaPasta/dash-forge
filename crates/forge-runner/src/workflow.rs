@@ -154,6 +154,14 @@ pub fn read_workflow(
     allow_container: bool,
 ) -> Result<(Workflow, Value), String> {
     let v: Value = yaml_serde::from_str(text).map_err(|e| format!("not valid YAML: {e}"))?;
+    // YAML merge keys (`<<: *anchor`): this parser keeps `<<` as a plain key, act's expands it,
+    // so the two would read different jobs. A workflow that uses one is not run.
+    if has_merge_key(&v) {
+        return Err(
+            "uses a YAML merge key (`<<:`), which the runner does not expand the way act does"
+                .into(),
+        );
+    }
     let file_name = rel
         .file_name()
         .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -197,6 +205,15 @@ pub fn read_workflow(
 /// The keys a job's `container`, or one of its `services`, may have. Anything else (`options`,
 /// `volumes`, keys a newer act might add) is refused: fail closed.
 const CONTAINER_KEYS: [&str; 4] = ["image", "env", "ports", "credentials"];
+
+/// Whether any mapping in `v` has a `<<` key (a YAML merge key, left unexpanded here).
+fn has_merge_key(v: &Value) -> bool {
+    match v {
+        Value::Array(a) => a.iter().any(has_merge_key),
+        Value::Object(o) => o.contains_key("<<") || o.values().any(has_merge_key),
+        _ => false,
+    }
+}
 
 /// Whether a value contains an expression anywhere (`${{`): a `container` or `services` built
 /// at run time could carry what the runner cannot see now.
@@ -431,6 +448,18 @@ jobs:
         assert!(jobs["c"].get("needs").is_none());
         let (ok, _) = wf("on: push\njobs:\n  a:\n    runs-on: x\n").unwrap();
         assert!(ok.without_refused().is_none());
+    }
+
+    #[test]
+    fn a_yaml_merge_key_makes_the_workflow_broken() {
+        let hidden = "x: &c\n  container: { image: n, options: --privileged }\non: push\njobs:\n  j:\n    <<: *c\n    runs-on: x\n";
+        assert!(wf(hidden).unwrap_err().contains("merge key"));
+        let alias =
+            "x: &o --privileged\non: push\njobs:\n  j:\n    container: { image: n, options: *o }\n";
+        assert!(
+            wf(alias).unwrap().0.jobs[0].refused.is_some(),
+            "plain aliases are expanded and still refused"
+        );
     }
 
     #[test]
