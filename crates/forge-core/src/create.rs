@@ -317,6 +317,7 @@ where
             Error::StaleProtocolVersion(_)
             | Error::DuplicateUniqueIndex(_)
             | Error::NotAMember { .. }
+            | Error::ReferenceNotFound { .. }
             | Error::RuleRefused { .. },
         ) => Ok(false),
         Err(e) => Err(e),
