@@ -314,7 +314,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
           key={`${repoKey(repo)}:${base}:${head.key}`}
           baseRepo={repo}
           sourceId={head.repo.repoId}
-          spec={{ baseTipOid: baseTip, baseOidAtOpen: baseTip, headOid: head.oid, merged: false, imported: false, importedUrl: '' }}
+          spec={{ baseTipOid: baseTip, baseOidAtOpen: baseTip, headOid: head.oid, merged: false, imported: false, importedUrl: '', sourceBaseOid: '' }}
           noHead="Pick a branch to compare."
           onSides={onSides}
         />

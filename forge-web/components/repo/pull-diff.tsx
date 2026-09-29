@@ -23,7 +23,6 @@ import {
   formatBytes,
   invalidateBrowseContext,
   loadPullComparison,
-  MergeBaseCancelledError,
   tipOidOf,
   type DiffSides,
   type ObjectReader,
@@ -272,6 +271,8 @@ export interface ComparisonSpec {
   readonly merged: boolean
   readonly imported: boolean
   readonly importedUrl: string
+  /** See `PullComparisonInput.sourceBaseOid`. */
+  readonly sourceBaseOid: string
 }
 
 /** A comparison being computed: the sides' readers and the merge-base diff (see {@link usePullComparison}). */
@@ -317,11 +318,11 @@ export function usePullComparison(baseRepo: RepoRef, sourceId: string, spec: Com
       setCommitsRead(0)
       return loadPullComparison(
         sides as DiffSides,
-        { baseTipOid, baseOidAtOpen, headOid: spec.headOid, merged: spec.merged, imported: spec.imported },
+        { baseTipOid, baseOidAtOpen, headOid: spec.headOid, merged: spec.merged, imported: spec.imported, sourceBaseOid: spec.sourceBaseOid },
         { signal: controller.signal, onProgress: (n) => controller.signal.aborted || setCommitsRead(n) },
       )
     },
-    [baseRepo.repoId, repoKey(baseRepo), sourceId, crossRepo, sidesKey, baseTipOid, baseOidAtOpen, spec.headOid, spec.merged, spec.imported],
+    [baseRepo.repoId, repoKey(baseRepo), sourceId, crossRepo, sidesKey, baseTipOid, baseOidAtOpen, spec.headOid, spec.merged, spec.imported, spec.sourceBaseOid],
     { enabled: waiting === null && sides !== null && spec.headOid !== '' },
   )
   // A disabled comparison (a side reloading) must not keep walking history in the background.
@@ -340,9 +341,10 @@ export function usePullComparison(baseRepo: RepoRef, sourceId: string, spec: Com
 }
 
 /** The base, head and flags of a PR's comparison. */
-export function pullSpec(pull: PullView, home: RepoHome): ComparisonSpec {
+export function pullSpec(pull: PullView, home: RepoHome, sourceBaseOid = ''): ComparisonSpec {
   const { baseTipOid, baseOidAtOpen } = pullBase(pull, home)
-  return { baseTipOid, baseOidAtOpen, headOid: pull.headOid, merged: pull.state.merged, imported: pull.imported, importedUrl: pull.importedUrl }
+  // `sourceBaseOid`: only from a trusted mirror's record (the caller checks): anyone can write that text.
+  return { baseTipOid, baseOidAtOpen, headOid: pull.headOid, merged: pull.state.merged, imported: pull.imported, importedUrl: pull.importedUrl, sourceBaseOid }
 }
 
 /** A head compared with its merge base against a base branch, across two repos. */
@@ -389,7 +391,7 @@ export function ComparisonView({
   /** Extra controls beside the heading. */
   action?: ReactNode
 }): JSX.Element {
-  const { spec, sides, problems, waiting, sidesKey, data, loading, error, cause, reload, tryAgain, commitsRead } = state
+  const { spec, sides, problems, waiting, sidesKey, data, loading, error, reload, tryAgain, commitsRead } = state
   const pull = { headOid: spec.headOid, imported: spec.imported, importedUrl: spec.importedUrl }
   const searching = loading && commitsRead > 0
   const searchProgress = (
@@ -445,19 +447,6 @@ export function ComparisonView({
     )
   }
   if (loading && data === null) return <Frame>{searchProgress}</Frame>
-  if (cause instanceof MergeBaseCancelledError) {
-    // Only an imported PR gets here (a native one falls back to its first parent): the user
-    // stopped the search, which says nothing about the history being incomplete.
-    return (
-      <Frame>
-        <Unavailable title="Search stopped" message={`${cause.message}. An imported PR is only shown against its exact base.`} problems={problems}>
-          <Button size="sm" onClick={reload}>
-            Search again
-          </Button>
-        </Unavailable>
-      </Frame>
-    )
-  }
   if (error !== null || data === null) {
     const original = pull.imported ? originalDiffUrl(pull.importedUrl) : null
     return (
@@ -506,6 +495,17 @@ export function ComparisonView({
             <Button size="sm" variant="ghost" onClick={reload}>
               Search again
             </Button>
+          ) : null}
+          {data.fellBack && pull.imported && originalDiffUrl(pull.importedUrl) ? (
+            <a
+              href={originalDiffUrl(pull.importedUrl)!}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-dense font-medium text-forge-700 underline dark:text-forge-400"
+              data-testid="original-diff-link"
+            >
+              View the diff on the source
+            </a>
           ) : null}
         </div>
       ) : null}

@@ -11,6 +11,7 @@
  * everywhere.
  */
 
+import { originOf, type Origin } from './provenance'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import {
@@ -85,6 +86,11 @@ export interface IssueView {
   readonly importedUrl: string
   /** The `imported` provenance object as read, for re-sealing an edit. */
   readonly importedRaw?: Readonly<Record<string, unknown>> | null
+  /**
+   * The original author and time an import recorded (`imported`), or null. Shown only when the
+   * signer is trusted to mirror ({@link trustedOrigin}).
+   */
+  readonly origin?: Origin | null
   readonly state: IssueState
   /**
    * False when the event log could not be read to completion, so `state` is a fold over a
@@ -183,6 +189,8 @@ export interface PullView {
   readonly importedUrl: string
   /** The `imported` provenance object as read (a private repo's decrypted), for re-sealing an edit. */
   readonly importedRaw?: Readonly<Record<string, unknown>> | null
+  /** See {@link IssueView.origin}. */
+  readonly origin?: Origin | null
   readonly state: PrState
   /** See {@link IssueView.stateComplete}. */
   readonly stateComplete: boolean
@@ -235,6 +243,8 @@ export interface ReviewView {
   /** How many `reviewId` comments the review announced (`commentCount`), or null. */
   readonly commentCount: number | null
   readonly createdAt: number
+  /** See {@link IssueView.origin}. */
+  readonly origin?: Origin | null
 }
 
 
@@ -526,6 +536,7 @@ export function reviewViewOf(d: PlainDocument): ReviewView {
     body: str(d, 'body'),
     commentCount: typeof d['commentCount'] === 'number' ? d['commentCount'] : null,
     createdAt: num(d, '$createdAt'),
+    origin: originOf(d),
   }
 }
 
@@ -678,11 +689,21 @@ export function historicalTipsPredicate(baseRefNewOidsHex: readonly string[]): I
 }
 
 /** An issue's or patch's `imported` provenance (present on items archived from another forge). */
-function readImported(doc: PlainDocument): { imported: boolean; importedUrl: string; importedRaw: Readonly<Record<string, unknown>> | null } {
+function readImported(doc: PlainDocument): {
+  imported: boolean
+  importedUrl: string
+  importedRaw: Readonly<Record<string, unknown>> | null
+  origin: Origin | null
+} {
   const value = doc['imported']
-  if (typeof value !== 'object' || value === null) return { imported: false, importedUrl: '', importedRaw: null }
+  if (typeof value !== 'object' || value === null) return { imported: false, importedUrl: '', importedRaw: null, origin: null }
   const url = (value as PlainDocument)['url']
-  return { imported: true, importedUrl: typeof url === 'string' ? url : '', importedRaw: value as Readonly<Record<string, unknown>> }
+  return {
+    imported: true,
+    importedUrl: typeof url === 'string' ? url : '',
+    importedRaw: value as Readonly<Record<string, unknown>>,
+    origin: originOf(doc),
+  }
 }
 
 /** A patch's source pointer (`sourceRepoId`). */

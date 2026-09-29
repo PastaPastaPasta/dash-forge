@@ -20,7 +20,7 @@ import { ObjectTooLargeError } from '../browse'
 import { BlameState, lineMap } from './blame-core'
 import { diffTrees, historyWalker, type WalkOptions } from './commit-log'
 import { decodeTextBlob, type CommitObject } from './git-objects'
-import { commitVia, entryMode, entryOid, isFileMode, logPage, PATH_WALK_CAP, pathEntryAt } from './path-history'
+import { commitVia, entryMode, entryOid, isFileMode, PATH_WALK_CAP, pathEntryAt, pathVersions } from './path-history'
 import { readBlob, type ObjectReader } from './tree-nav'
 
 /** Largest file blamed (the spec's ≤ 2 MiB). */
@@ -70,6 +70,8 @@ export interface BlameRename {
 }
 
 export interface BlameProgress {
+  /** Commits examined so far while looking for the file's versions. */
+  readonly examined: number
   /** Versions of the file compared so far. */
   readonly versions: number
   /** Lines still without a commit. */
@@ -115,8 +117,21 @@ async function textOf(reader: ObjectReader, entry: string): Promise<string> {
 }
 
 /**
- * Blame `path` at `tipOid`. `onProgress` is told after each version compared; `signal` stops the
- * walk (it rejects with the signal's reason).
+ * A blame run stopped by its signal, carrying what it had attributed so far (L-23): the lines of
+ * the versions compared are final; the rest are attributed to the oldest version reached, marked
+ * {@link BlameResult.partial}.
+ */
+export class BlameStoppedError extends Error {
+  constructor(readonly partial: BlameResult | null) {
+    super('blame stopped')
+    this.name = 'BlameStoppedError'
+  }
+}
+
+/**
+ * Blame `path` at `tipOid`. `onProgress` is told as the history is searched (commits examined)
+ * and after each version compared; `signal` stops the walk, rejecting with a
+ * {@link BlameStoppedError} that carries the partial result.
  */
 export async function blameFile(
   reader: ObjectReader,
@@ -157,13 +172,27 @@ export async function blameFile(
   // A page stops at its own cap without filling up (a file untouched for thousands of commits);
   // the walk goes on from where it stopped, within the total commit budget.
   let examined = 0
+  const report = (searched: number): void =>
+    onProgress?.({ examined: examined + searched, versions, pending: state.pending, total: state.lines.length })
+  // The result for a final attribution: the hunks and the commits they name.
+  const resultOf = (owner: readonly string[], isPartial: boolean): BlameResult => {
+    const hunks = toHunks(owner as string[])
+    const commits = new Map(hunks.map((h) => [h.oid, seen.get(h.oid) as CommitObject]))
+    return { lines: state.lines, hunks, commits, partial: isPartial, approximate, versions, renames, unfollowedRename }
+  }
+  // What a stopped walk has: the open lines go to the oldest version reached.
+  const partialResult = (): BlameResult | null => {
+    if (current === null) return null
+    const oldest = current.oid
+    return resultOf(state.owner.map((o) => o ?? oldest), true)
+  }
   try {
     outer: while (start !== null && state.pending > 0) {
       if (examined >= maxCommits) {
         partial = true
         break
       }
-      const page = await logPage(reader, start, { path: at, walker, signal, cap: Math.min(pageCap, maxCommits - examined) })
+      const page = await pathVersions(reader, start, at, { walker, signal, cap: Math.min(pageCap, maxCommits - examined), onExamined: report })
       examined += page.examined
       for (const e of page.entries) {
         signal?.throwIfAborted()
@@ -179,7 +208,7 @@ export async function blameFile(
           if (state.step(current.oid, lineMap(text, current.text)).approximate) approximate = true
           current = { oid: e.oid, text, blob: older }
           versions += 1
-          onProgress?.({ versions, pending: state.pending, total: state.lines.length })
+          report(0)
           await yieldToEventLoop()
           if (versions >= maxVersions) {
             partial = true
@@ -203,6 +232,9 @@ export async function blameFile(
         }
       }
     }
+  } catch (e) {
+    if (signal?.aborted) throw new BlameStoppedError(partialResult())
+    throw e
   } finally {
     walker.flush?.()
   }
@@ -215,10 +247,8 @@ export async function blameFile(
     partial = true
   }
   state.finish(current.oid)
-  onProgress?.({ versions, pending: 0, total: state.lines.length })
-  const hunks = toHunks(state.owner as string[])
-  const commits = new Map(hunks.map((h) => [h.oid, seen.get(h.oid) as CommitObject]))
-  return { lines: state.lines, hunks, commits, partial, approximate, versions, renames, unfollowedRename }
+  onProgress?.({ examined, versions, pending: 0, total: state.lines.length })
+  return resultOf(state.owner as string[], partial)
 }
 
 /**

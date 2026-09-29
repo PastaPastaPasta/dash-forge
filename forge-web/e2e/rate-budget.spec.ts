@@ -53,7 +53,7 @@ test.describe('DAPI request budget', () => {
     })
     const t0 = Date.now()
     await page.goto(url('issues'), { waitUntil: 'domcontentloaded' })
-    await expect(page.locator('main a[href*="/repo/issue"]').first()).toBeVisible({ timeout: 25_000 })
+    await expect(page.locator('main a[href*="/repo/issue/"][href*="number="]').first()).toBeVisible({ timeout: 25_000 })
     expect(Date.now() - t0).toBeLessThan(25_000)
     expect(refused).toBeGreaterThan(0)
     await expect(page.getByText(/no available addresses|did not land/i)).toHaveCount(0)
@@ -77,7 +77,7 @@ test.describe('DAPI request budget', () => {
     await expect(busy).toContainText(/Platform is busy — waiting \d+s/)
     await shot(page, 'rb-01-platform-busy')
     // Then the list lands, the status goes away, and nothing reads as an error.
-    await expect(page.locator('main a[href*="/repo/issue"]').first()).toBeVisible({ timeout: 60_000 })
+    await expect(page.locator('main a[href*="/repo/issue/"][href*="number="]').first()).toBeVisible({ timeout: 60_000 })
     await expect(busy).toBeHidden({ timeout: 30_000 })
     await expect(page.getByText(/no available addresses|did not land/i)).toHaveCount(0)
     await shot(page, 'rb-02-after-wait')
@@ -86,7 +86,7 @@ test.describe('DAPI request budget', () => {
 
   for (const [id, path, extra, ready] of [
     ['home', '', '', 'section[aria-label=README]'],
-    ['issues', 'issues', '', 'main a[href*="/repo/issue"]'],
+    ['issues', 'issues', '', 'main a[href*="/repo/issue/"][href*="number="]'],
     ['pull', 'pull', '&number=1', 'main h1'],
   ] as const) {
     test(`rb-2 (${id}). no getDataContract request: the contracts are seeded`, async ({ page }) => {

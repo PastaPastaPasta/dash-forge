@@ -8,6 +8,7 @@
  * `{name, sha256, sizeBytes, uris}` (older CLIs `size_bytes`); both parse here.
  */
 
+import { releasePublishedOf, type ReleasePublished } from './provenance'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { z } from 'zod'
 
@@ -45,6 +46,12 @@ export interface ReleaseView {
   readonly notesBody: string
   /** Assets of the source release that are not mirrored here (forge-import's footer), or null. */
   readonly omitted: OmittedAssets | null
+  /**
+   * Who published the source release and when, for an imported one (the line forge-import opens
+   * its notes with), or null. A release is written by a maintainer, so this is the repo's own
+   * account of its origin; `notesBody` leaves the line out.
+   */
+  readonly published: ReleasePublished | null
   readonly publisher: string
   readonly createdAt: number
 }
@@ -171,7 +178,8 @@ function toRelease(doc: PlainDocument): ReleaseView {
   const { assets, bad } = parseReleaseAssets(str(doc, 'assets'))
   const created = doc['$createdAt']
   const notes = str(doc, 'notes')
-  const { body, omitted } = omittedAssets(notes)
+  const { published, rest } = releasePublishedOf(notes)
+  const { body, omitted } = omittedAssets(rest)
   return {
     id: str(doc, '$id'),
     tagName: str(doc, 'tagName'),
@@ -179,6 +187,7 @@ function toRelease(doc: PlainDocument): ReleaseView {
     notes,
     notesBody: body,
     omitted,
+    published,
     yanked: doc['yanked'] === true,
     assets,
     badAssets: bad,

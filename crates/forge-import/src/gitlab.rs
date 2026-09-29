@@ -290,6 +290,9 @@ pub struct GlItem {
     /// MR: source project (another project for a fork MR; `null` once the fork is gone).
     #[serde(default)]
     pub source_project_id: Option<u64>,
+    /// The merge request's diff endpoints (`base_sha`: where it branched from its target).
+    #[serde(default)]
+    pub diff_refs: Option<GlDiffRefs>,
     /// MR: target project.
     #[serde(default)]
     pub target_project_id: Option<u64>,
@@ -414,6 +417,14 @@ pub struct GlLink {
     pub direct_asset_url: Option<String>,
 }
 
+/// A merge request's `diff_refs`.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GlDiffRefs {
+    /// The merge base with the target branch.
+    #[serde(default)]
+    pub base_sha: Option<String>,
+}
+
 /// A release's assets.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct GlAssets {
@@ -443,6 +454,12 @@ pub struct GlRelease {
     /// Links; `self` is the release's page.
     #[serde(default, rename = "_links")]
     pub links: GlReleaseLinks,
+    /// When it was released (ISO 8601).
+    #[serde(default)]
+    pub released_at: Option<String>,
+    /// Who created it.
+    #[serde(default, deserialize_with = "null_default")]
+    pub author: GlUser,
 }
 
 /// A release's `_links`.

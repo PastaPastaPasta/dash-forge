@@ -20,6 +20,9 @@
  * plaintext by design.
  */
 
+import { Byline, ItemAuthor, Time } from '@/components/repo/byline'
+import { useMirrorTrust } from '@/hooks/use-mirror-trust'
+import { pullOriginOf, trustedOrigin } from '@/lib/repo/provenance'
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
@@ -47,7 +50,7 @@ import {
 } from 'lucide-react'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
-import { ACL_NAME, ARCHIVED_REASON, loadPullThread, plural, policyOf, pullActions, timeAgo } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
 import { deleteBranchOffer, deleteBranchProblem } from '@/lib/view/pull-actions'
 import {
   addEvent,
@@ -74,10 +77,11 @@ import {
   type RepoRef,
   type VerdictInput,
 } from '@/lib/repo'
-import { checksPhrase, newestCheckRuns, readCheckRunDocs, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
+import { checksPhrase, readCheckRuns, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
 import { headSync, readBranchState, readBranchTip } from '@/lib/repo/source-branch'
 import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
-import { linkedIssues, type Policy, type PolicyStatus } from '@/lib/rules/v2'
+import { linkedIssues, RoleOracle, type Policy, type PolicyStatus } from '@/lib/rules/v2'
+import { checksState } from '@/lib/rules/parity'
 import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview as Cost } from '@/lib/sdk'
 import { pullSinceYourReview } from '@/lib/view/issues-view'
 import { headUpdatePhrases } from '@/lib/view/head-updates'
@@ -96,7 +100,6 @@ import { useFirstWrite } from '@/hooks/use-first-write'
 import { useParam, repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
-import { Author } from '@/components/author'
 import { Timeline, type CommentSlots } from '@/components/repo/timeline'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
@@ -247,6 +250,10 @@ function PullPage({
 
   const { pull, timeline, review } = thread
   const repo = home.repo
+  // Who may mirror: an imported PR of theirs shows its original author, date, base and head (FG-6).
+  const trust = useMirrorTrust(repo)
+  const origin = trustedOrigin(pull.origin, pull.author, trust)
+  const pullOrigin = origin !== null ? pullOriginOf(pull.body) : null
   const holdings = useAsync<Holdings | null>(
     () => readViewerPermissions(sdk!, repo, identity!, network),
     [ready, repoKey(repo), identity ?? '', network],
@@ -278,7 +285,7 @@ function PullPage({
   }
 
   // ---- the comparison (Files changed, the tab counts, the commit list) -----------------------
-  const spec = pullSpec(pull, home)
+  const spec = pullSpec(pull, home, pullOrigin?.baseOid ?? '')
   const comparison = usePullComparison(repo, pull.sourceId, spec)
   const cmp = comparison.data
   const headReader = cmp?.sides.head ?? null
@@ -301,12 +308,12 @@ function PullPage({
   const checks = useAsync(
     async () => {
       const members = new Set(memberKey === '' ? [] : memberKey.split(','))
-      return newestCheckRuns(await readCheckRunDocs(sdk!, repo, pull.headOid), (who) => members.has(who))
+      return readCheckRuns(sdk!, repo, pull.headOid, members)
     },
     [ready, repoKey(repo), pull.headOid, memberKey],
     { enabled: ready && sdk !== null && pull.headOid !== '' },
   )
-  const checkSummary = checks.data === null ? null : summarizeChecks(checks.data, membersKnown)
+  const checkSummary = checks.data === null ? null : summarizeChecks(checks.data.runs, membersKnown)
 
   // ---- the source branch (head sync) ----------------------------------------------------------
   const crossRepo = pull.sourceId !== '' && pull.sourceId !== repo.repoId
@@ -337,8 +344,11 @@ function PullPage({
   // ---- controls ---------------------------------------------------------------------------------
   const rules = policyOf(thread.approvals)
   const policyNow = rules.policy === 'unknown' ? null : rules.policy
-  // `requireChecks`: every trusted run on the head passed, and at least one reported.
-  const checksBlocking = policyNow?.requireChecks === true && (checkSummary === null || checkSummary.total === 0 || checkSummary.passed < checkSummary.total)
+  // `requireChecks`: the newest trusted run per name on the head passed, and at least one was
+  // reported (`checksState`, forge-core `checks_state`: `dg pr merge` applies the same rule).
+  const checksBlocking =
+    policyNow?.requireChecks === true &&
+    (checks.data === null || !membersKnown || !checksState(checks.data.rows, pull.headOid, new RoleOracle(thread.members), checks.data.runners, { requireChecks: true }).met)
   const actions = pullActions({
     pull,
     viewer: identity,
@@ -660,17 +670,26 @@ function PullPage({
               `${mergedLead} into`
             ) : (
               <>
-                <Author identityId={pull.author} link={false} /> wants to merge into
+                <ItemAuthor author={pull.author} origin={origin} link={false} />{' '}
+                {/* A closed PR no longer wants anything (L-76). */}
+                {open ? 'wants to merge into' : 'wanted to merge into'}
               </>
             )}{' '}
             <span className="font-mono">{shortBranch(pull.state.baseRef ?? pull.baseRefName) || '?'}</span>
-            {pull.sourceRefName ? (
+            {pullOrigin?.headLabel ? (
+              // A mirrored PR's head branch at the source, a fork's as `owner:branch` (L-37); the
+              // mirror's own `refs/mirror/pull/<n>/head` names no branch anyone knows.
+              <>
+                {' '}
+                from <span className="font-mono" data-testid="pr-origin-head">{pullOrigin.headLabel}</span>
+              </>
+            ) : pull.sourceRefName ? (
               <>
                 {' '}
                 from <span className="font-mono">{crossRepo && sourceRef ? `${sourceRef.name}:` : ''}{shortBranch(pull.sourceRefName)}</span>
               </>
             ) : null}{' '}
-            · {merged ? `opened ${timeAgo(pull.createdAt)}` : timeAgo(pull.createdAt)}
+            · <Time ms={origin?.createdAt || pull.createdAt} prefix={merged || !open ? 'opened ' : ''} />
           </span>
           {pull.headOid ? (
             <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400" data-testid="pr-head">
@@ -765,8 +784,7 @@ function PullPage({
               {/* Description */}
               <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
                 <div className="flex items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense dark:border-anvil-800 dark:bg-anvil-900">
-                  <Author identityId={pull.author} />
-                  <span className="text-anvil-500 dark:text-anvil-400">opened this {timeAgo(pull.createdAt)}</span>
+                  <Byline author={pull.author} createdAt={pull.createdAt} origin={origin} verb="opened this" />
                   <EditedMarker createdAt={pull.createdAt} updatedAt={pull.updatedAt} />
                 </div>
                 <div className="px-4 py-3">
@@ -784,6 +802,7 @@ function PullPage({
                 <Timeline
                   items={conversation}
                   links={links}
+                  trust={trust}
                   eventText={eventText}
                   renderComment={(item) =>
                     commentSlots({
@@ -795,6 +814,7 @@ function PullPage({
                       onSave: (id, body) => setPending({ kind: 'edit-comment', id, body }),
                       links,
                       replies: repliesOf.get(item.comment.id) ?? [],
+                      trust,
                       resolved: resolved.has(item.comment.id),
                       outdated: item.comment.anchor !== null && item.comment.anchor.commitOid !== pull.headOid,
                       onShowFiles: () => setTab('files'),
@@ -1015,7 +1035,7 @@ function PullPage({
               onRetry={() => (comparison.error ? comparison.tryAgain() : commits.reload())}
             />
           ) : tab === 'checks' ? (
-            <ChecksTab runs={checks.data} summary={checkSummary} headOid={pull.headOid} error={checks.error} onRetry={checks.reload} />
+            <ChecksTab runs={checks.data?.runs ?? null} summary={checkSummary} headOid={pull.headOid} error={checks.error} onRetry={checks.reload} />
           ) : (
             <>
             {suggest.runner.view}
@@ -1316,6 +1336,7 @@ function commentSlots({
   onSave,
   links,
   replies,
+  trust,
   resolved,
   outdated,
   onShowFiles,
@@ -1327,7 +1348,9 @@ function commentSlots({
   onEdit: (e: { id: string; body: string } | null) => void
   onSave: (id: string, body: string) => void
   links: MarkdownLinks
-  replies: readonly { id: string; author: string; body: string; createdAt: number }[]
+  replies: readonly CommentView[]
+  /** Who may mirror: an imported reply of theirs shows its original author and date (FG-6). */
+  trust?: ReadonlySet<string> | null
   resolved: boolean
   outdated: boolean
   onShowFiles: () => void
@@ -1385,8 +1408,7 @@ function commentSlots({
         {replies.map((r) => (
           <div key={r.id} className="border-l-2 border-anvil-200 pl-3 dark:border-anvil-750">
             <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
-              <Author identityId={r.author} link={false} />
-              <span>{timeAgo(r.createdAt)}</span>
+              <Byline author={r.author} createdAt={r.createdAt} origin={trustedOrigin(r.origin, r.author, trust ?? null)} link={false} />
             </div>
             <MarkdownView source={r.body} links={links} />
           </div>

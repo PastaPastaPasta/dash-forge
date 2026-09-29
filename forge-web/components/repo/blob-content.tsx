@@ -267,7 +267,7 @@ function BlobView({
 }
 
 /** The strip above a file's contents: the selection (children) and the permalink. */
-function BlobToolbar({ href, children }: { href: string | null; children?: ReactNode }): JSX.Element {
+export function BlobToolbar({ href, children }: { href: string | null; children?: ReactNode }): JSX.Element {
   return (
     <div className="flex items-center justify-end gap-2 border-b border-anvil-100 px-4 py-1 text-[12px] text-anvil-500 dark:border-anvil-850 dark:text-anvil-400">
       {children}
@@ -340,7 +340,7 @@ const visibleSeparators = (line: string): string => line.replace(LINE_SEPARATORS
  * whenever it comes from the URL (on open, or an edited fragment), not from a click, so only
  * those scroll the page.
  */
-function useLineSelection(lineCount: number, onHash: (range: LineRange) => void): [LineRange | null, (range: LineRange) => void] {
+export function useLineSelection(lineCount: number, onHash: (range: LineRange) => void): [LineRange | null, (range: LineRange) => void] {
   const [range, setRange] = useState<LineRange | null>(null)
   const onHashRef = useRef(onHash)
   onHashRef.current = onHash

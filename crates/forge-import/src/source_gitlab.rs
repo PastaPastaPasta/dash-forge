@@ -290,6 +290,9 @@ pub fn collect(
         }
         if item.kind == TargetKind::Patch {
             t.patch = Some(patch(&item.gl, number, classes.code, head_gone));
+            // Where it branched from, and the head branch when it is on a fork (L-36, L-37).
+            let (base, head) = merge_request_origin(gl, &item.gl);
+            t.body = model::with_pull_origin(&t.body, &base, &head, &url);
         }
         out.targets.push(t);
     }
@@ -301,6 +304,33 @@ pub fn collect(
         ));
     }
     Ok(out)
+}
+
+/// A merge request's base commit and head label (L-36, L-37). The listing carries no
+/// `diff_refs`, so a merged or closed one (whose diff readers compute from the mirror) is read
+/// once more on its own; an open one's diff comes from its pushed head. A fork's head is
+/// `fork:<branch>` (GitLab's merge request names the source project only by id).
+fn merge_request_origin(gl: &GitlabClient, m: &GlItem) -> (String, String) {
+    let from_fork =
+        matches!((m.source_project_id, m.target_project_id), (Some(s), Some(t)) if s != t);
+    let head = if from_fork {
+        format!("fork:{}", m.source_branch)
+    } else {
+        m.source_branch.clone()
+    };
+    let base_of = |m: &GlItem| {
+        m.diff_refs
+            .as_ref()
+            .and_then(|d| d.base_sha.clone())
+            .unwrap_or_default()
+    };
+    let mut base = base_of(m);
+    if base.is_empty() && m.is_closed() {
+        if let Ok(Ok(Some(full))) = gl.merge_request(m.iid) {
+            base = base_of(&full);
+        }
+    }
+    (base, head)
 }
 
 /// The merge requests numbered in `revisit` (a merge the last run could not prove) that the
@@ -532,12 +562,22 @@ fn release(r: &GlRelease) -> SrcRelease {
             uri: None,
         })
         .collect();
+    let url = r.links.self_url.clone().unwrap_or_default();
+    let published = r.released_at.as_deref().map(|at| model::Published {
+        host: url
+            .strip_prefix("https://")
+            .map_or("gitlab", |u| u.split_once('/').map_or(u, |(h, _)| h))
+            .to_string(),
+        author: r.author.login().to_string(),
+        at: iso8601_to_unix(at),
+    });
     model::release(
         &r.tag_name,
         r.name.as_deref(),
         r.description.as_deref(),
         assets,
-        r.links.self_url.clone().unwrap_or_default(),
+        url,
+        published.as_ref(),
     )
 }
 

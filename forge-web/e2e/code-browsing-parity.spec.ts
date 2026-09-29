@@ -152,6 +152,29 @@ test.describe('commits, History and Blame (read fixture)', () => {
     expect(errors, errors.join('\n')).toEqual([])
   })
 
+  test('hb-2b. blame line links select, y pins the commit, Copy permalink links it (L-33); a phone gets a narrow gutter (L-34)', async ({ page }) => {
+    await page.goto(repoUrl('blame', `&path=${MAIN_RS}`), { waitUntil: 'domcontentloaded' })
+    await expect(page.getByTestId('blame-table')).toBeVisible({ timeout: 60_000 })
+    // A click selects the line, a shift-click extends it; the URL follows.
+    await page.locator('#L2 a[href="#L2"]').click()
+    await expect(page).toHaveURL(/#L2$/)
+    await page.locator('#L4 a[href="#L4"]').click({ modifiers: ['Shift'] })
+    await expect(page).toHaveURL(/#L2-L4$/)
+    await expect(page.locator('#L3')).toHaveAttribute('data-selected', 'true')
+    // Copy permalink names the commit and the range; `y` puts the pinned address in the bar.
+    const copy = page.getByTestId('copy-permalink')
+    await expect(copy).toHaveAttribute('data-href', /^https?:\/\/[^/]+\/.*blame\/[0-9a-f]{40}\/src\/main\.rs#L2-L4$/)
+    await page.locator('body').press('y')
+    await expect(page).toHaveURL(/\/repo\/blame\/\?.*ref=[0-9a-f]{40}.*#L2-L4$/)
+    await shot(page, 'fg4-blame-permalink')
+
+    // A 390 px phone: the commit column is an age gutter, the code keeps the width.
+    await page.setViewportSize({ width: 390, height: 844 })
+    const gutter = await page.locator('#L1 td').first().evaluate((td) => td.getBoundingClientRect().width)
+    expect(gutter).toBeLessThanOrEqual(96)
+    await shot(page, 'fg4-blame-mobile')
+  })
+
   test('hb-3. History then Blame of the same file reads no more from Platform', async ({ page }) => {
     await openBlob(page, repoUrl('blob', `&path=${MAIN_RS}`))
     await page.getByTestId('history-link').click()

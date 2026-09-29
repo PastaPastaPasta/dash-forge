@@ -4,7 +4,6 @@ import { diffTrees, loadCommitChanges } from './commit-log'
 import { MODE_TREE, Store } from './diff-fixtures'
 import {
   findMergeBase,
-  IMPORTED_BASE_ERROR,
   loadPullComparison,
   MergeBaseSearchLimitError,
   preferring,
@@ -278,23 +277,40 @@ describe('loadPullComparison', () => {
     expect(summary(result.changes)).toEqual(['A a.txt'])
   })
 
-  it('refuses an inexact comparison for an imported PR', async () => {
-    const { s, p2, sourceRepo } = forkedPull()
-    const r = s.reader(sourceRepo)
-    await expect(
-      loadPullComparison({ base: r, head: r }, { baseTipOid: '9'.repeat(40), baseOidAtOpen: '9'.repeat(40), headOid: p2, merged: false, imported: true }),
-    ).rejects.toThrow(IMPORTED_BASE_ERROR)
+  // L-36: a merged imported PR (dashpay/dash#7760) showed "Native diff unavailable" although its
+  // commits are in the mirror. It is compared from the base commit the source recorded, and with
+  // none, against its head's parent with a note, never an error.
+  it('compares an imported PR from where it branched off the base commit its source recorded', async () => {
+    const { s, c0, c1, p2 } = forkedPull()
+    const r = s.reader()
+    // GitHub's `base.sha` is the base branch's tip (c1, which moved past the fork point c0), and the
+    // mirror's base has since merged the head: the merge base with the recorded commit is c0.
+    const merge = s.commit(s.files({ 'readme.md': 'hello world\n', 'lib.ts': 'one\nsecond\n', 'new.ts': 'n\n' }), [c1, p2])
+    const result = await loadPullComparison(
+      { base: r, head: r },
+      { baseTipOid: merge, baseOidAtOpen: merge, headOid: p2, merged: true, imported: true, sourceBaseOid: c1 },
+    )
+    expect(result.comparedBaseOid).toBe(c0)
+    expect(result.comparisonNote).toContain('base commit its source records')
+    // The base branch's own readme edit is not shown as a revert.
+    expect(summary(result.changes)).toEqual(['M lib.ts', 'A new.ts'])
   })
 
-  it('refuses an imported comparison whose every recorded target already contains the head', async () => {
+  it('falls back to the head parent for an imported PR with no usable base, never refusing', async () => {
     const s = new Store()
     const t = s.files({ f: '1' })
-    const head = s.commit(t, [s.commit(t)])
+    const parent = s.commit(t)
+    const head = s.commit(s.files({ f: '2' }), [parent])
     const target = s.commit(t, [head])
     const r = s.reader()
-    await expect(
-      loadPullComparison({ base: r, head: r }, { baseTipOid: target, baseOidAtOpen: target, headOid: head, merged: false, imported: true }),
-    ).rejects.toThrow(IMPORTED_BASE_ERROR)
+    const result = await loadPullComparison(
+      { base: r, head: r },
+      { baseTipOid: target, baseOidAtOpen: target, headOid: head, merged: true, imported: true, sourceBaseOid: '9'.repeat(40) },
+    )
+    expect(result.fellBack).toBe(true)
+    expect(result.comparedBaseOid).toBe(parent)
+    expect(result.comparisonNote).toContain('first parent')
+    expect(summary(result.changes)).toEqual(['M f'])
   })
 })
 
