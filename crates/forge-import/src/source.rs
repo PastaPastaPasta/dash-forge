@@ -1,6 +1,7 @@
 //! Where an import reads from: GitHub or GitLab, behind one [`Source`] trait, so the rest
 //! of the pipeline (pricing, the git push, the on-chain diff, the summary) is shared.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::Result;
@@ -123,8 +124,16 @@ pub trait Source {
 
     /// The collaboration data: issues and PRs/MRs with their threads and state, labels,
     /// releases, and the open PRs/MRs whose heads the git push mirrors. With `since` (ISO
-    /// 8601), only what changed after it; `limit` caps issues + PRs (0 = all).
-    fn collect(&self, classes: Classes, since: Option<&str>, limit: usize) -> Result<SrcCollab>;
+    /// 8601), only what changed after it, plus the PRs/MRs numbered in `revisit` (a merge the
+    /// last run could not prove, [`crate::state::SyncState::revisit`]) whenever they changed;
+    /// `limit` caps issues + PRs (0 = all).
+    fn collect(
+        &self,
+        classes: Classes,
+        since: Option<&str>,
+        revisit: &[u32],
+        limit: usize,
+    ) -> Result<SrcCollab>;
 
     /// Mirror-clone (or update) the git data into the bare repository at `dir`: branches,
     /// tags, and the PR/MR heads under [`Self::pull_head_prefix`]. Only branches, tags and
@@ -134,8 +143,13 @@ pub trait Source {
 
     /// Fetch the base branches `bases` (`refs/heads/<b>`) into the bare repository at `dir`
     /// ([`crate::gitsync::fetch_proof_bases`]), commits only when `treeless`: what a merged
-    /// PR is proved against when the run syncs no `code`. Returns the bases not fetched.
-    fn fetch_bases(&self, dir: &Path, bases: &[String], treeless: bool) -> Result<Vec<String>>;
+    /// PR is proved against when the run syncs no `code`. Returns the bases not fetched, and why.
+    fn fetch_bases(
+        &self,
+        dir: &Path,
+        bases: &[String],
+        treeless: bool,
+    ) -> Result<BTreeMap<String, crate::gitsync::Unfetched>>;
 
     /// Where [`Self::sync_mirror`] keeps a PR/MR head: `<prefix><n>/head`.
     fn pull_head_prefix(&self) -> &'static str;

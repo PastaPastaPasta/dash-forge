@@ -19,6 +19,7 @@
 //! are a second, optional one, so a stranger's large PR can fail only its own push, never the
 //! mirror of branches, tags and issues. It prunes the heads of PRs that closed.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -333,8 +334,18 @@ pub struct ProofRepo {
     /// the chain is about to show. Otherwise nothing is pushed, and `dir` only answers
     /// ancestry questions for the base tips already on chain.
     pub pushed: bool,
-    /// Bases [`fetch_proof_bases`] could not fetch (deleted at the source, or unreachable).
-    pub unfetched: std::collections::BTreeSet<String>,
+    /// Bases [`fetch_proof_bases`] could not fetch, and why.
+    pub unfetched: BTreeMap<String, Unfetched>,
+}
+
+/// Why a base branch is not in a [`ProofRepo`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unfetched {
+    /// The source has no such branch any more (git: "couldn't find remote ref"): a merge into
+    /// it can never be proved, whatever a later run does.
+    Gone,
+    /// The fetch failed another way (network, auth): a later run may succeed.
+    Failed,
 }
 
 /// Where [`fetch_proof_bases`] keeps a base branch: never pushed (the pushes send only
@@ -347,7 +358,10 @@ pub const PROOF_PREFIX: &str = "refs/forge-import/proof/";
 ///
 /// `treeless` fetches commits only (`--filter=tree:0`, a few MB even for dashpay/dash):
 /// ancestry needs no trees. Only for a repository made for the proof: a filtered fetch into
-/// a full mirror would make it a partial clone, and a later push of it would lack trees.
+/// a full mirror would make it a partial clone, and a later push of it would lack trees. The
+/// fetch leaves `url` recorded as a promisor remote; that is removed again, so reading the
+/// repository never fetches a missing object from the network ([`is_ancestor`] also turns
+/// lazy fetches off, on git 2.45 and later).
 ///
 /// Each base is fetched on its own, so one deleted at the source (a merge into a branch
 /// that is gone) does not stop the others. Returns the bases that could not be fetched.
@@ -357,7 +371,7 @@ pub fn fetch_proof_bases(
     bases: &[String],
     treeless: bool,
     auth: Option<&(String, String)>,
-) -> Result<Vec<String>> {
+) -> Result<BTreeMap<String, Unfetched>> {
     if !git_dir.join("HEAD").exists() {
         std::fs::create_dir_all(git_dir)?;
         let init = Command::new("git")
@@ -369,44 +383,89 @@ pub fn fetch_proof_bases(
             bail!("git init failed in {}", git_dir.display());
         }
     }
-    let mut missing = Vec::new();
+    let mut missing = BTreeMap::new();
     for base in bases {
-        let Some(branch) = base.strip_prefix("refs/heads/") else {
-            missing.push(base.clone());
-            continue;
+        let outcome = match base.strip_prefix("refs/heads/") {
+            Some(branch) => fetch_proof_base(git_dir, url, base, branch, treeless, auth)?,
+            None => Some(Unfetched::Gone),
         };
-        let mut cmd = Command::new("git");
-        if let Some((k, v)) = auth {
-            crate::github::append_git_config(&mut cmd, k, v);
-        }
-        cmd.arg("-C")
-            .arg(git_dir)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .args(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head"]);
-        if treeless {
-            cmd.arg("--filter=tree:0");
-        }
-        let status = cmd
-            .arg("--")
-            .arg(url)
-            .arg(format!("+{base}:{PROOF_PREFIX}heads/{branch}"))
-            .stderr(std::process::Stdio::null())
-            .status()
-            .context("running git")?;
-        if !status.success() {
-            missing.push(base.clone());
+        if let Some(why) = outcome {
+            missing.insert(base.clone(), why);
         }
     }
+    if treeless {
+        forget_promisor(git_dir, url);
+    }
     Ok(missing)
+}
+
+/// One base of [`fetch_proof_bases`]: `None` when it was fetched.
+fn fetch_proof_base(
+    git_dir: &Path,
+    url: &str,
+    base: &str,
+    branch: &str,
+    treeless: bool,
+    auth: Option<&(String, String)>,
+) -> Result<Option<Unfetched>> {
+    let mut cmd = Command::new("git");
+    if let Some((k, v)) = auth {
+        crate::github::append_git_config(&mut cmd, k, v);
+    }
+    cmd.arg("-C")
+        .arg(git_dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null())
+        .args(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head"]);
+    if treeless {
+        cmd.arg("--filter=tree:0");
+    }
+    let out = cmd
+        .arg("--")
+        .arg(url)
+        .arg(format!("+{base}:{PROOF_PREFIX}heads/{branch}"))
+        .output()
+        .context("running git")?;
+    Ok(if out.status.success() {
+        None
+    } else if String::from_utf8_lossy(&out.stderr).contains("couldn't find remote ref") {
+        Some(Unfetched::Gone)
+    } else {
+        Some(Unfetched::Failed)
+    })
+}
+
+/// Drop the promisor remote a filtered fetch of `url` recorded, so git never goes back to it
+/// for an object the proof repository lacks (a missing object is then just missing).
+fn forget_promisor(git_dir: &Path, url: &str) {
+    for key in ["promisor", "partialclonefilter"] {
+        let _ = Command::new("git")
+            .arg("-C")
+            .arg(git_dir)
+            .args(["config", "--unset-all", &format!("remote.{url}.{key}")])
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+}
+
+/// `git -C <git_dir>` for a read that must never reach the network: no lazy fetch of a
+/// missing object from a promisor remote (`GIT_NO_LAZY_FETCH`, git 2.45+; older gits are
+/// covered by [`forget_promisor`]), no credential prompt, nothing on stdin.
+fn local_git(git_dir: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(git_dir)
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(std::process::Stdio::null());
+    cmd
 }
 
 /// Whether commit `ancestor` is reachable from `tip` in the mirror at `git_dir` (itself
 /// included). `false` when either is missing locally.
 pub fn is_ancestor(git_dir: &Path, ancestor: &str, tip: &str) -> bool {
     ancestor == tip
-        || Command::new("git")
-            .arg("-C")
-            .arg(git_dir)
+        || local_git(git_dir)
             .args(["merge-base", "--is-ancestor", ancestor, tip])
             .stderr(std::process::Stdio::null())
             .status()
@@ -415,9 +474,7 @@ pub fn is_ancestor(git_dir: &Path, ancestor: &str, tip: &str) -> bool {
 
 /// The commit `ref_name` points at in the mirror, if it exists there.
 pub fn local_tip(git_dir: &Path, ref_name: &str) -> Option<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(git_dir)
+    let out = local_git(git_dir)
         .args(["rev-parse", "--verify", "--quiet"])
         .arg(format!("{ref_name}^{{commit}}"))
         .output()
@@ -829,6 +886,61 @@ dash: push failed: ref did not converge to pushed tip"#;
         // PR 1 closed: its head leaves the local namespace, so `--prune` deletes it.
         sync_pull_heads(d, &[2], "refs/pull/").unwrap();
         assert_eq!(heads(), "refs/mirror/pull/2/head");
+    }
+
+    /// C1 (review): the proof repository is a treeless partial clone. Asking it about an
+    /// object it lacks must never fetch from the source (a promisor remote pointing at a
+    /// dead address here would hang or prompt): the answer is `false`, at once.
+    #[test]
+    fn the_proof_repo_never_fetches_a_missing_object() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        git(&src, &["init", "-q", "-b", "main"]);
+        std::fs::write(src.join("f"), "x").unwrap();
+        git(&src, &["add", "f"]);
+        git(&src, &["commit", "-q", "-m", "a"]);
+        let tip = git(&src, &["rev-parse", "HEAD"]);
+        git(&src, &["config", "uploadpack.allowFilter", "true"]);
+        let proof = tmp.path().join("proof.git");
+        let url = format!("file://{}", src.display());
+        let missing =
+            fetch_proof_bases(&proof, &url, &["refs/heads/main".to_string()], true, None).unwrap();
+        assert!(missing.is_empty(), "{missing:?}");
+        // The promisor remote the filtered fetch recorded is gone again.
+        let config = std::fs::read_to_string(proof.join("config")).unwrap();
+        assert!(!config.contains("promisor"), "{config}");
+        // Even if a promisor were configured (an older forge-import's proof repo), reads stay
+        // local: point one at an address that can never answer.
+        git(
+            &proof,
+            &["config", "remote.dead.url", "https://192.0.2.1/x.git"],
+        );
+        git(&proof, &["config", "remote.dead.promisor", "true"]);
+        git(&proof, &["config", "extensions.partialClone", "dead"]);
+        let started = std::time::Instant::now();
+        let absent = "ab".repeat(20);
+        assert!(!is_ancestor(&proof, &absent, &tip));
+        assert!(is_ancestor(&proof, &tip, &tip));
+        assert_eq!(local_tip(&proof, "refs/heads/nope"), None);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        // A branch the source does not have is `Gone`, not a failure.
+        let gone =
+            fetch_proof_bases(&proof, &url, &["refs/heads/nope".to_string()], true, None).unwrap();
+        assert_eq!(gone.get("refs/heads/nope"), Some(&Unfetched::Gone));
+        let failed = fetch_proof_bases(
+            &proof,
+            &format!("file://{}/nowhere", tmp.path().display()),
+            &["refs/heads/main".to_string()],
+            true,
+            None,
+        )
+        .unwrap();
+        assert_eq!(failed.get("refs/heads/main"), Some(&Unfetched::Failed));
     }
 
     /// D-602: the importer names a pushed base tip that contains the merge commit; this is

@@ -296,7 +296,7 @@ function NewReleaseDialog({
           <Input id="release-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={existing?.name || undefined} disabled={locked} />
         </Field>
         <Field label="Notes (optional)" htmlFor="release-notes" hint="Markdown supported.">
-          <Textarea id="release-notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={existing?.notes || undefined} disabled={locked} />
+          <Textarea id="release-notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder={existing?.notesBody || undefined} disabled={locked} />
         </Field>
         <label className="flex items-start gap-2 text-dense text-anvil-700 dark:text-anvil-200">
           <input type="checkbox" checked={yanked} onChange={(e) => setYanked(e.target.checked)} disabled={locked} className="mt-0.5" data-testid="release-yanked" />

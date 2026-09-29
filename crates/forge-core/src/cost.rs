@@ -77,7 +77,9 @@ pub fn estimate_document_storage(bytes: u64) -> CostEstimate {
 /// 6-10x gap of D-311 / D-514 / D-700 / L-11.
 ///
 /// Every figure is at or above what the calibration paid, so the estimate is an upper bound:
-/// 1.02-1.3x the charge on a first push (more on a young network, see [`push_fees::CHUNK_FLAT`]),
+/// 1.08-1.16x the charge on a first import of 5 MiB or more, 1.08-1.27x on a 1-3 MiB one (the
+/// beta.6 showcase), up to 1.4x on a tiny first push (more on a young network, see
+/// [`push_fees::CHUNK_FLAT`]),
 /// up to about 1.7x on a small later one.
 pub mod push_fees {
     /// Credits per byte of a `chunk` document's signed transition (storage, its processing,
@@ -93,7 +95,9 @@ pub mod push_fees {
     /// each ancestor on its path. An ancestor is another ~15 KB chunk document, billed as
     /// replaced bytes at 400 credits/B (grovedb `storage_cost_for_update`, drive `ephemeral_cost`),
     /// or ~6M per level. The fit over the 15 showcase imports on beta.6 (19,107 to 90 chunks each,
-    /// landing on a tree of 0 to 26,000 chunks) gave 6.2-7.5M per level.
+    /// landing on a tree of 0 to 26,000 chunks) gave 6.2-7.5M per level of log₂(chunks). Merk is
+    /// an AVL tree, whose height is between log₂(n) and ~1.44·log₂(n); the fit is per log₂ level,
+    /// so it absorbs that factor and the extra hashing per rewritten node.
     pub const CHUNK_PER_LEVEL: u64 = 7_000_000;
     /// The tree depth [`CHUNK_FLAT`] is priced at: 16 levels, for a network holding up to 2^16
     /// (65,536) chunks, about 0.96 GB of Platform-stored packs in all. The fitted per-chunk cost

@@ -463,6 +463,14 @@ impl GithubClient {
             .collect())
     }
 
+    /// One issue or PR as the issues listing shows it.
+    pub fn issue(&self, number: u64) -> Result<GhIssue> {
+        self.get(
+            &self.path(&format!("issues/{number}")),
+            &format!("#{number}"),
+        )
+    }
+
     /// One PR's detail.
     pub fn pull(&self, number: u64) -> Result<GhPull> {
         self.get(

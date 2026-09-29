@@ -13,6 +13,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
+use std::path::Path;
 
 use anyhow::{Context, Result};
 
@@ -25,7 +26,7 @@ use forge_core::rules::{EventKind, MergeBaseTips};
 use forge_core::scope::RepoRef;
 
 use crate::budget::{collab_doc_credits, Budget, CollabDoc};
-use crate::gitsync::ProofRepo;
+use crate::gitsync::{ProofRepo, Unfetched};
 use crate::model::{same_item, same_item_renamed, SrcCollab, SrcLabel, SrcRelease, SrcTarget};
 use crate::summary::Counts;
 
@@ -40,6 +41,9 @@ pub struct Ledger<'a> {
     pub counts: Counts,
     /// Things the user should know that did not stop the run.
     pub warnings: Vec<String>,
+    /// Source numbers of merged PRs recorded closed that a later run may still prove (not
+    /// those whose base is gone at the source): saved in the state for the next run.
+    pub unproved: Vec<u32>,
 }
 
 impl<'a> Ledger<'a> {
@@ -57,6 +61,7 @@ impl<'a> Ledger<'a> {
             budget,
             counts: Counts::default(),
             warnings: Vec::new(),
+            unproved: Vec::new(),
         }
     }
 
@@ -365,14 +370,19 @@ impl<'a> Sink<'a> {
     /// proof ([`crate::gitsync::fetch_proof_bases`]), and only tips already on chain count.
     async fn merge_proof(&mut self, t: &SrcTarget, target_id: &str) -> Result<Option<Vec<u8>>> {
         let (Some(merged), Some(patch), Some(proof)) =
-            (&t.merged_oid, &t.patch, self.mirror.clone())
+            (&t.merged_oid, &t.patch, self.mirror.as_ref())
         else {
             return Ok(None);
         };
         let merged = hex::encode(merged);
         let base = &patch.base_ref_name;
-        let local = pushed_tip(&proof, base, &merged);
-        let contains = |tips: &MergeBaseTips| chain_tip_containing(&proof, tips, &merged);
+        if proof.unfetched.contains_key(base) {
+            // Not fetched: nothing to check the merge against.
+            return Ok(None);
+        }
+        let local = pushed_tip(proof, base, &merged);
+        let dir = proof.dir.clone();
+        let contains = |tips: &MergeBaseTips| chain_tip_containing(&dir, tips, &merged);
         let mut tips = self.base_tips(target_id, base, Freshness::Synced).await?;
         // A PR opened against a base that did not exist then has no tips, and no merge into
         // it ever counts (D-501); naming one would be re-posted, and paid for, every run.
@@ -567,19 +577,25 @@ impl<'a> Sink<'a> {
             {
                 self.ledger.warn(w);
             }
-            prepared.push((r, assets_in));
-        }
-        for (r, mut assets_in) in prepared.into_iter().rev() {
             if dry {
                 // Priced, not fetched: an asset a real run would hash changes the release.
                 for a in assets_in.iter_mut().filter(|a| a.sha256.is_empty()) {
                     a.sha256 = "0".repeat(64);
                 }
             }
-            let before = assets_in.len();
+            prepared.push((r, assets_in));
+        }
+        for (r, assets_in) in prepared.into_iter().rev() {
+            let total = r.dropped + assets_in.len();
             let assets_in = crate::model::fit_assets(assets_in);
-            let dropped = r.dropped + before - assets_in.len();
-            let total = r.dropped + before;
+            let dropped = total - assets_in.len();
+            let notes = crate::model::notes_with_footer(&r.notes, dropped, total, &r.source_url);
+            let assets = serde_json::to_string(&assets_in).unwrap_or_default();
+            if existing.get(&r.tag_name) == Some(&fingerprint(&r.name, &notes, &assets)) {
+                continue;
+            }
+            // Counted and warned for the releases this run writes (a re-run that finds them
+            // unchanged says nothing again).
             let unhashed = assets_in.iter().filter(|a| a.sha256.is_empty()).count();
             self.ledger.counts.assets_omitted += dropped as u64;
             self.ledger.counts.assets_unhashed += unhashed as u64;
@@ -590,11 +606,6 @@ impl<'a> Sink<'a> {
                      common platform builds; its notes link the source release)",
                     r.tag_name
                 ));
-            }
-            let notes = crate::model::notes_with_footer(&r.notes, dropped, total, &r.source_url);
-            let assets = serde_json::to_string(&assets_in).unwrap_or_default();
-            if existing.get(&r.tag_name) == Some(&fingerprint(&r.name, &notes, &assets)) {
-                continue;
             }
             let credits = collab_doc_credits(
                 CollabDoc::Release,
@@ -999,6 +1010,9 @@ impl<'a> Sink<'a> {
             if proof.is_none() {
                 let base = t.patch.as_ref().map_or("?", |p| p.base_ref_name.as_str());
                 self.ledger.counts.unproved_merges += 1;
+                if may_prove_later(self.mirror.as_ref(), base) {
+                    self.ledger.unproved.push(t.number);
+                }
                 self.ledger.warn(format!(
                     "{} was merged, but {}; recorded as closed",
                     t.imported.url,
@@ -1145,12 +1159,18 @@ fn pushed_tip(proof: &ProofRepo, base: &str, merged: &str) -> Option<String> {
 
 /// The newest base tip on chain that contains `merged`, by ancestry in `proof`'s git data:
 /// the oid a merge event names so that every reader counts it (D-602).
-fn chain_tip_containing(proof: &ProofRepo, tips: &MergeBaseTips, merged: &str) -> Option<String> {
+fn chain_tip_containing(dir: &Path, tips: &MergeBaseTips, merged: &str) -> Option<String> {
     tips.historical
         .iter()
         .rev()
-        .find(|tip| crate::gitsync::is_ancestor(&proof.dir, merged, tip))
+        .find(|tip| crate::gitsync::is_ancestor(dir, merged, tip))
         .cloned()
+}
+
+/// Whether a later run may prove a merge into `base` this run could not: not when the base is
+/// gone at the source (its commits can never be fetched again).
+fn may_prove_later(proof: Option<&ProofRepo>, base: &str) -> bool {
+    proof.and_then(|p| p.unfetched.get(base)) != Some(&Unfetched::Gone)
 }
 
 /// Why a merged PR into `base` has no merge proof, for its warning.
@@ -1159,17 +1179,21 @@ fn no_proof_reason(proof: Option<&ProofRepo>, base: &str) -> String {
         None => "this run has no git data to check the merge commit against (the base \
                  branches could not be fetched; see the warnings)"
             .into(),
-        Some(p) if p.unfetched.contains(base) => {
-            format!("its base {base} is no longer at the source")
-        }
-        Some(p) if p.pushed => format!(
-            "no mirrored tip of its base {base} contains the merge commit (the base is not \
-             mirrored, or was deleted)"
-        ),
-        Some(_) => format!(
-            "no tip of its base {base} on chain contains the merge commit (this run syncs no \
-             `code`: push the code first, then re-run the sync without --state)"
-        ),
+        Some(p) => match p.unfetched.get(base) {
+            Some(Unfetched::Gone) => format!("its base {base} is no longer at the source"),
+            Some(Unfetched::Failed) => format!(
+                "its base {base} could not be fetched from the source this run (a later run \
+                 tries again)"
+            ),
+            None if p.pushed => format!(
+                "no mirrored tip of its base {base} contains the merge commit (the base is not \
+                 mirrored, or was deleted)"
+            ),
+            None => format!(
+                "no tip of its base {base} on chain contains the merge commit (this run syncs \
+                 no `code`: push the code first; the next run tries again)"
+            ),
+        },
     }
 }
 
@@ -1332,11 +1356,18 @@ mod tests {
         let bases = vec!["refs/heads/main".to_string(), "refs/heads/gone".to_string()];
         let missing =
             crate::gitsync::fetch_proof_bases(&proof_dir, &url, &bases, true, None).unwrap();
-        assert_eq!(missing, vec!["refs/heads/gone".to_string()]);
+        assert_eq!(
+            missing,
+            [(
+                "refs/heads/gone".to_string(),
+                crate::gitsync::Unfetched::Gone
+            )]
+            .into()
+        );
         let proof = ProofRepo {
             dir: proof_dir,
             pushed: false,
-            unfetched: missing.into_iter().collect(),
+            unfetched: missing,
         };
         let tips = MergeBaseTips {
             historical: vec![old_tip.clone(), pushed_tip_on_chain.clone()],
@@ -1344,7 +1375,7 @@ mod tests {
             current: Some(pushed_tip_on_chain.clone()),
         };
         assert_eq!(
-            chain_tip_containing(&proof, &tips, &merge).as_deref(),
+            chain_tip_containing(&proof.dir, &tips, &merge).as_deref(),
             Some(pushed_tip_on_chain.as_str()),
             "the chain's tip that contains the merge is named"
         );
@@ -1356,7 +1387,7 @@ mod tests {
             tip: Some(old_tip.clone()),
             current: Some(old_tip),
         };
-        assert_eq!(chain_tip_containing(&proof, &old_only, &merge), None);
+        assert_eq!(chain_tip_containing(&proof.dir, &old_only, &merge), None);
         assert!(no_proof_reason(Some(&proof), "refs/heads/main").contains("push the code first"));
         assert!(
             no_proof_reason(Some(&proof), "refs/heads/gone").contains("no longer at the source")
@@ -1367,9 +1398,20 @@ mod tests {
         let pushed = ProofRepo {
             dir: src.clone(),
             pushed: true,
-            unfetched: std::collections::BTreeSet::new(),
+            unfetched: BTreeMap::new(),
         };
         assert!(pushed_tip(&pushed, "refs/heads/main", &merge).is_some());
+        // A1: a base gone at the source is never revisited; one not fetched this run, or whose
+        // tip on chain predates the merge, is.
+        assert!(!may_prove_later(Some(&proof), "refs/heads/gone"));
+        assert!(may_prove_later(Some(&proof), "refs/heads/main"));
+        let failed = ProofRepo {
+            unfetched: [("refs/heads/x".to_string(), Unfetched::Failed)].into(),
+            ..pushed
+        };
+        assert!(may_prove_later(Some(&failed), "refs/heads/x"));
+        assert!(no_proof_reason(Some(&failed), "refs/heads/x").contains("could not be fetched"));
+        assert!(may_prove_later(None, "refs/heads/main"));
     }
 
     /// An earlier import left the PR closed-but-not-merged (the D-602 data): a re-run adds

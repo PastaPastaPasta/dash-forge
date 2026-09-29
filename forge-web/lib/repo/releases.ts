@@ -82,7 +82,7 @@ export function omittedAssets(notes: string): { body: string; omitted: OmittedAs
   if (m === null) return { body: notes, omitted: null }
   const count = Number(m[1])
   const total = Number(m[2])
-  if (!(count > 0) || total < count) return { body: notes, omitted: null }
+  if (count === 0 || total < count) return { body: notes, omitted: null }
   return { body: notes.slice(0, m.index), omitted: { count, total, sourceUrl: m[3] ?? null } }
 }
 
@@ -99,6 +99,24 @@ export function assetVerifiable(asset: { readonly sha256: string }): boolean {
 /** Why an asset with no recorded hash is not downloaded, and how that is fixed. */
 export const UNVERIFIABLE_ASSET =
   'no SHA-256 is recorded for this asset, so it cannot be verified and is not downloaded. A maintainer fixes it by re-running the import with a current forge-import (it hashes each asset) or by publishing the release again with the file.'
+
+/**
+ * Whether `url` is a release download on the forge an import copies from (GitHub's
+ * `/<o>/<r>/releases/download/…`, GitLab's `/-/releases/<tag>/downloads/…` or `/uploads/…`).
+ * forge-import references assets there; a release published here stores them in its owner's
+ * storage instead, so such a URL marks an imported asset.
+ */
+export function importedAssetUrl(url: string): boolean {
+  let u: URL
+  try {
+    u = new URL(url)
+  } catch {
+    return false
+  }
+  if (u.protocol !== 'https:') return false
+  if (u.hostname === 'github.com') return /^\/[^/]+\/[^/]+\/releases\/download\//.test(u.pathname)
+  return /\/-\/releases\/[^/]+\/downloads\/|\/uploads\/[0-9a-f]{32}\//.test(u.pathname)
+}
 
 /** An imported asset the import has not hashed yet (its hashing budget ran out): the original is linked. */
 export const NOT_VERIFIED_YET =

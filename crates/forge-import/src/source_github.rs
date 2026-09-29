@@ -63,15 +63,45 @@ impl Source for GithubSource {
         })
     }
 
-    fn collect(&self, classes: Classes, since: Option<&str>, limit: usize) -> Result<SrcCollab> {
-        collect(&self.gh, &self.repo, classes, since, limit)
+    fn collect(
+        &self,
+        classes: Classes,
+        since: Option<&str>,
+        revisit: &[u32],
+        limit: usize,
+    ) -> Result<SrcCollab> {
+        let mut out = collect(&self.gh, &self.repo, classes, since, limit)?;
+        if classes.prs && since.is_some() {
+            let have: BTreeSet<u32> = out.targets.iter().map(|t| t.number).collect();
+            let missing: Vec<u64> = revisit
+                .iter()
+                .filter(|n| !have.contains(n))
+                .map(|&n| u64::from(n))
+                .collect();
+            if !missing.is_empty() {
+                // Each one in full (no `since`: its thread is diffed on chain anyway).
+                let items = missing
+                    .iter()
+                    .map(|&n| self.gh.issue(n))
+                    .collect::<Result<Vec<_>>>()?;
+                out.targets
+                    .extend(targets(&self.gh, &self.repo, &items, classes, None, true)?);
+                out.targets.sort_by_key(|t| t.number);
+            }
+        }
+        Ok(out)
     }
 
     fn sync_mirror(&self, dir: &Path) -> Result<()> {
         self.gh.sync_mirror(dir)
     }
 
-    fn fetch_bases(&self, dir: &Path, bases: &[String], treeless: bool) -> Result<Vec<String>> {
+    fn fetch_bases(
+        &self,
+        dir: &Path,
+        bases: &[String],
+        treeless: bool,
+    ) -> Result<BTreeMap<String, crate::gitsync::Unfetched>> {
         crate::gitsync::fetch_proof_bases(
             dir,
             &self.gh.clone_url(),
@@ -146,16 +176,32 @@ pub fn collect(
     };
     items.sort_by_key(|i| i.number);
     out.truncated = truncated;
-    let mut threads = threads(gh, &items, classes, since, limit > 0)?;
+    out.targets = targets(gh, src, &items, classes, since, limit > 0)?;
+    Ok(out)
+}
+
+/// The model of `items` (sorted by number): each with its thread, and a PR with its detail and
+/// reviews. `per_item` reads each item's own thread and detail (a `--limit` run, or a few
+/// revisited items); otherwise the repository-wide listings are read once.
+fn targets(
+    gh: &GithubClient,
+    src: &GithubRepoRef,
+    items: &[GhIssue],
+    classes: Classes,
+    since: Option<&str>,
+    per_item: bool,
+) -> Result<Vec<SrcTarget>> {
+    let mut out = Vec::with_capacity(items.len());
+    let mut threads = threads(gh, items, classes, since, per_item)?;
 
     // PR details from the listing (one call per 100 PRs); a PR the listing missed (it
     // changed mid-read), or any PR of a `--limit` run, is read by its own call.
-    let mut pulls = if limit == 0 && classes.prs && items.iter().any(GhIssue::is_pull_request) {
+    let mut pulls = if !per_item && classes.prs && items.iter().any(GhIssue::is_pull_request) {
         gh.pulls(since)?
     } else {
         BTreeMap::new()
     };
-    for i in &items {
+    for i in items {
         let Ok(number) = u32::try_from(i.number) else {
             continue;
         };
@@ -195,7 +241,7 @@ pub fn collect(
                 .filter_map(|r| review(src, number, &r))
                 .collect();
         }
-        out.targets.push(t);
+        out.push(t);
     }
     Ok(out)
 }

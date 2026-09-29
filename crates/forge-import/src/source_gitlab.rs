@@ -25,7 +25,7 @@
 //! * **Releases** keep their tag, title and notes; asset links are recorded by URL (GitLab
 //!   reports no digest or size for them). Releases dated in the future are left out.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::Result;
@@ -73,15 +73,33 @@ impl Source for GitlabSource {
         })
     }
 
-    fn collect(&self, classes: Classes, since: Option<&str>, limit: usize) -> Result<SrcCollab> {
-        collect(&self.gl, classes, since, limit, self.include_members_only)
+    fn collect(
+        &self,
+        classes: Classes,
+        since: Option<&str>,
+        revisit: &[u32],
+        limit: usize,
+    ) -> Result<SrcCollab> {
+        collect(
+            &self.gl,
+            classes,
+            since,
+            revisit,
+            limit,
+            self.include_members_only,
+        )
     }
 
     fn sync_mirror(&self, dir: &Path) -> Result<()> {
         self.gl.sync_mirror(dir)
     }
 
-    fn fetch_bases(&self, dir: &Path, bases: &[String], treeless: bool) -> Result<Vec<String>> {
+    fn fetch_bases(
+        &self,
+        dir: &Path,
+        bases: &[String],
+        treeless: bool,
+    ) -> Result<BTreeMap<String, crate::gitsync::Unfetched>> {
         self.gl.fetch_bases(dir, bases, treeless)
     }
 
@@ -188,6 +206,7 @@ pub fn collect(
     gl: &GitlabClient,
     classes: Classes,
     since: Option<&str>,
+    revisit: &[u32],
     limit: usize,
     include_members_only: bool,
 ) -> Result<SrcCollab> {
@@ -210,7 +229,26 @@ pub fn collect(
         return Ok(out);
     }
 
-    let items = items(gl, classes, since, limit, &mut out)?;
+    let mut items = items(gl, classes, since, limit, &mut out)?;
+    if classes.prs && since.is_some() {
+        // Merge requests whose merge the last run could not prove: read again in full.
+        for &iid in revisit {
+            if items
+                .iter()
+                .any(|i| i.kind == TargetKind::Patch && i.gl.iid == u64::from(iid))
+            {
+                continue;
+            }
+            if let Some(gl) =
+                out.readable(gl.merge_request(u64::from(iid))?, "a merge request", repo)
+            {
+                items.push(Item {
+                    kind: TargetKind::Patch,
+                    gl,
+                });
+            }
+        }
+    }
     // Which merge requests GitLab still has a head for (it deletes the ref 14 days after
     // one closes or merges). Unknown (the git read failed) is never reported as gone.
     let heads: Option<BTreeSet<u64>> = if classes.prs {

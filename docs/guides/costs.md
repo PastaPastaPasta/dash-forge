@@ -59,7 +59,7 @@ Estimate for 1048576 bytes (platform tier):
   fees:       ~0.11073275 DASH ≈ $3.32 (per-document and processing)
 ```
 
-This is the price `git push` quotes: an upper bound, about 1.06–1.15x what Platform charged for the large pushes of the beta.6 showcase imports (1 to 259 MiB).
+This is the price `git push` quotes: an upper bound, never below the charge. On the 15 first imports of the beta.6 showcase (a whole repository each: the repository, its pack, its refs, releases and labels), a pack of 5 MiB or more was charged 1/1.08–1/1.16 of its estimate (dashpay/dash, 259 MiB: 1.08x), and a 1–3 MiB one 1/1.08–1/1.27, where the per-document fees weigh more.
 
 A deposit only comes back when the document is deleted. Some documents can never be deleted, by design (see [Refunds](#refunds)). For those, the deposit is effectively a one-time cost.
 

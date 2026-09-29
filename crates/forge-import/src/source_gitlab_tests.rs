@@ -124,7 +124,7 @@ fn client(anonymous: bool) -> (GitlabClient, Rc<RefCell<Vec<String>>>) {
 
 /// `collect` with members-only content refused (the default).
 fn collect(gl: &GitlabClient, c: Classes, since: Option<&str>, limit: usize) -> Result<SrcCollab> {
-    super::collect(gl, c, since, limit, false)
+    super::collect(gl, c, since, &[], limit, false)
 }
 
 fn all() -> Classes {
@@ -460,7 +460,7 @@ fn members_only_content_needs_the_opt_in() {
     let (gl, _) = serve(api());
     assert!(collect(&gl, Classes::parse("code,prs,releases").unwrap(), None, 0).is_ok());
     let (gl, _) = serve(api());
-    let out = super::collect(&gl, all(), None, 0, true).unwrap();
+    let out = super::collect(&gl, all(), None, &[], 0, true).unwrap();
     assert_eq!(out.targets.len(), 9);
 }
 

@@ -14,7 +14,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ReleaseAssetView } from '@/lib/repo'
-import { NOT_VERIFIED_YET, omittedAssets } from '@/lib/repo/releases'
+import { NOT_VERIFIED_YET, importedAssetUrl, omittedAssets } from '@/lib/repo/releases'
 import { AssetRow, OmittedAssetsNote } from './releases-content'
 
 vi.mock('next/link', () => ({ default: (props: React.ComponentProps<'a'>) => <a {...props} /> }))
@@ -49,6 +49,9 @@ describe('omitted assets (showcase beta.6)', () => {
     })
     expect(omittedAssets('see _forge-import: 5 of 21 assets are not mirrored here (x)._ above\nmore').omitted).toBeNull()
     expect(omittedAssets('plain notes').body).toBe('plain notes')
+    // forge-import percent-encodes `(`, `)` and spaces, so such a URL is still one link.
+    const odd = 'https://example.org/r/v1%20%28final%29'
+    expect(omittedAssets(`n\n\n---\n_forge-import: 1 of 2 assets are not mirrored here (x). Download them from the [source release](${odd})._`).omitted?.sourceUrl).toBe(odd)
   })
 
   it('says how many assets are not mirrored and links the source release', () => {
@@ -81,6 +84,25 @@ describe('an imported asset not hashed yet', () => {
     expect(link.getAttribute('href')).toBe(UNHASHED.uris[0])
     // No "check a downloaded file": there is no hash to check it against.
     expect(row.querySelector('[data-testid="direct-download"]')).toBeNull()
+  })
+
+  it('an unhashed asset of a release published here stays unverifiable, even with an https copy (D-517)', () => {
+    const native = { ...UNHASHED, uris: ['https://downloads.example.org/tool.tar.gz'] }
+    act(() => root.render(<AssetRow asset={native} />))
+    const row = host.querySelector<HTMLElement>('[data-testid="release-asset"]')!
+    expect(row.dataset['state']).toBe('unverifiable')
+    expect(row.querySelector('a')).toBeNull()
+    // The same file in a release the importer marked (its omitted-assets footer) is imported.
+    act(() => root.render(<AssetRow asset={native} imported />))
+    expect(host.querySelector<HTMLElement>('[data-testid="release-asset"]')!.dataset['state']).toBe('unverified')
+  })
+
+  it('recognises the forges an import copies from', () => {
+    expect(importedAssetUrl(UNHASHED.uris[0]!)).toBe(true)
+    expect(importedAssetUrl('https://gitlab.com/g/p/-/releases/v1/downloads/app.tar.gz')).toBe(true)
+    expect(importedAssetUrl('https://github.com/o/r/archive/v1.tar.gz')).toBe(false)
+    expect(importedAssetUrl('http://github.com/o/r/releases/download/v1/a')).toBe(false)
+    expect(importedAssetUrl('not a url')).toBe(false)
   })
 
   it('with no public https original it stays unverifiable, with nothing to download', () => {

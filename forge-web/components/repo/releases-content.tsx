@@ -28,7 +28,7 @@ import {
   type DownloadProgress,
 } from '@/lib/view/release-download'
 import { urlHost } from '@/lib/view/format'
-import { NOT_VERIFIED_YET, UNVERIFIABLE_ASSET, assetVerifiable, type OmittedAssets } from '@/lib/repo/releases'
+import { NOT_VERIFIED_YET, UNVERIFIABLE_ASSET, assetVerifiable, importedAssetUrl, type OmittedAssets } from '@/lib/repo/releases'
 import { useReleases } from '@/hooks/use-repo-chrome'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
@@ -201,7 +201,7 @@ function ReleaseCard({
       {r.assets.length > 0 ? (
         <ul className="mt-3 divide-y divide-anvil-100 rounded-md border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800" aria-label="Assets">
           {r.assets.map((a) => (
-            <AssetRow key={`${a.name}${a.sha256}`} asset={a} />
+            <AssetRow key={`${a.name}${a.sha256}`} asset={a} imported={r.omitted !== null} />
           ))}
         </ul>
       ) : null}
@@ -236,6 +236,28 @@ export function OmittedAssetsNote({ omitted }: { omitted: OmittedAssets }): JSX.
   )
 }
 
+/**
+ * How this page can offer an asset. `unverified`: an IMPORTED asset with no recorded hash yet
+ * (the import's hashing budget ran out; a later run records it) whose original is on the source
+ * forge: linked there, marked not verified. `unverifiable`: any other asset with no recorded hash
+ * (D-517): never handed out, so a release published here can never offer an unchecked file. `browser`: the page reads it
+ * and verifies as it downloads. `origin`: only a host that sends no CORS header has it (GitHub and
+ * GitLab release downloads, L-13), so the page links to it and the hash check is a step on the
+ * downloaded file. `none`: no copy this browser may fetch at all (a private address, plain http,
+ * an IPFS CID with no gateway).
+ */
+type AssetAccess = 'unverified' | 'unverifiable' | 'browser' | 'origin' | 'none'
+
+function assetAccess(asset: ReleaseAssetView, imported: boolean): AssetAccess {
+  const linkable = directDownloadUrls(asset).length > 0
+  if (!assetVerifiable(asset)) {
+    const fromImport = imported || asset.uris.some(importedAssetUrl)
+    return fromImport && linkable ? 'unverified' : 'unverifiable'
+  }
+  if (browserReadable(asset)) return 'browser'
+  return linkable ? 'origin' : 'none'
+}
+
 type AssetState =
   | { readonly kind: 'idle' }
   | { readonly kind: 'working'; readonly progress: DownloadProgress | null }
@@ -244,7 +266,7 @@ type AssetState =
   | { readonly kind: 'error'; readonly message: string }
 
 /** One asset of a release: how this page can offer it, and the download or its fallback. */
-export function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
+export function AssetRow({ asset, imported = false }: { asset: ReleaseAssetView; imported?: boolean }): JSX.Element {
   const [state, setState] = useState<AssetState>({ kind: 'idle' })
   const run = async (): Promise<void> => {
     setState({ kind: 'working', progress: null })
@@ -261,22 +283,8 @@ export function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
     }
   }
   const bad = state.kind === 'mismatch'
-  // How this page can offer the asset. `unverified`: no recorded hash yet, but an https original
-  // (an imported asset the import has not hashed yet): linked, marked not verified. `unverifiable`:
-  // no recorded hash and no original to link (D-517), never handed out. `browser`: the page reads
-  // it and verifies as it downloads. `origin`: only a host that sends no CORS header has it
-  // (GitHub and GitLab release downloads, L-13), so the page links to it and the hash check is a
-  // step on the downloaded file. `none`: no copy this browser may fetch at all (a private
-  // address, plain http, an IPFS CID with no gateway).
-  const access: 'unverified' | 'unverifiable' | 'browser' | 'origin' | 'none' = !assetVerifiable(asset)
-    ? directDownloadUrls(asset).length > 0
-      ? 'unverified'
-      : 'unverifiable'
-    : browserReadable(asset)
-      ? 'browser'
-      : directDownloadUrls(asset).length > 0
-        ? 'origin'
-        : 'none'
+  const access = assetAccess(asset, imported)
+  const unhashed = access === 'unverifiable' || access === 'unverified'
   return (
     <li
       data-testid="release-asset"
@@ -286,7 +294,7 @@ export function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
       <FileArchive className={cn('h-4 w-4 shrink-0', bad ? 'text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400')} aria-hidden />
       <span className="min-w-0 flex-1 truncate font-mono">{asset.name}</span>
       {asset.size !== null ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{formatBytes(asset.size)}</span> : null}
-      {access === 'unverifiable' || access === 'unverified' ? (
+      {unhashed ? (
         <span className="text-[11px] font-medium text-caution-700 dark:text-caution-400">
           {access === 'unverified' ? 'not verified yet' : 'no sha256 recorded'}
         </span>
@@ -334,7 +342,7 @@ export function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
             </span>
           </span>
         </p>
-      ) : access === 'unverifiable' || access === 'unverified' ? (
+      ) : unhashed ? (
         <p role="status" className="basis-full text-[12px] text-caution-700 dark:text-caution-400">
           <span className="inline-flex items-start gap-1">
             <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />{' '}

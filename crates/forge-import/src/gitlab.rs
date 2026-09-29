@@ -26,7 +26,7 @@
 //! import.
 
 use std::cell::RefCell;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -940,6 +940,19 @@ impl GitlabClient {
         )
     }
 
+    /// One merge request.
+    pub fn merge_request(&self, iid: u64) -> Result<Readable<GlItem>> {
+        Ok(
+            match self.get(
+                &self.url(&format!("merge_requests/{iid}")),
+                "a merge request",
+            )? {
+                Ok(r) => Ok(serde_json::from_slice(&r.body).context("parsing a merge request")?),
+                Err(d) => Err(d),
+            },
+        )
+    }
+
     /// [`Self::issues`] for merge requests.
     pub fn merge_requests(
         &self,
@@ -1029,7 +1042,12 @@ impl GitlabClient {
     }
 
     /// Fetch the base branches `bases` into `dir` ([`crate::gitsync::fetch_proof_bases`]).
-    pub fn fetch_bases(&self, dir: &Path, bases: &[String], treeless: bool) -> Result<Vec<String>> {
+    pub fn fetch_bases(
+        &self,
+        dir: &Path,
+        bases: &[String],
+        treeless: bool,
+    ) -> Result<BTreeMap<String, crate::gitsync::Unfetched>> {
         let auth = git_auth(&self.repo.base, gitlab_token().as_deref());
         crate::gitsync::fetch_proof_bases(dir, &self.clone_url(), bases, treeless, auth.as_ref())
     }

@@ -6,7 +6,7 @@
 //! `imported.url`. It is how a re-run recognizes what it already wrote, so running an
 //! import again costs nothing when nothing changed.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use forge_core::collab::v2::TargetKind;
 use forge_core::collab::{CommentAnchor, Imported, ReleaseAsset, Verdict};
@@ -283,16 +283,11 @@ pub fn release(
         .collect();
     let keep = fit_indices(&sized);
     let total = assets.len();
-    let assets: Vec<ReleaseAsset> = assets
-        .into_iter()
-        .enumerate()
-        .filter(|(i, _)| keep.contains(i))
-        .map(|(_, a)| a)
-        .collect();
+    let assets = select(assets, &keep);
     SrcRelease {
         tag_name: tag_name.to_string(),
         name: clip(name.unwrap_or(tag_name), 120, 480),
-        notes: clip(notes.unwrap_or(""), 5120, 5120),
+        notes: clip(notes.unwrap_or(""), NOTES_MAX, NOTES_MAX),
         dropped: total - assets.len(),
         assets,
         source_url,
@@ -300,10 +295,10 @@ pub fn release(
 }
 
 /// The most bytes a release's `assets` JSON may take (forge-core `release.assets`).
-pub const ASSETS_MAX: usize = 4096;
+const ASSETS_MAX: usize = 4096;
 
 /// The most bytes a release's `notes` may take (forge-core `release.notes`).
-pub const NOTES_MAX: usize = 5120;
+const NOTES_MAX: usize = 5120;
 
 /// How much an asset is worth keeping when a release lists more than 4096 bytes of them;
 /// lower is kept first. Checksum lists come first (`SHA256SUMS`, `checksums.txt` and their
@@ -311,19 +306,26 @@ pub const NOTES_MAX: usize = 5120;
 /// in order: Linux x86-64, Windows x64, macOS arm64, macOS x86-64, Linux arm64. Then source
 /// archives, then everything else. Documented in docs/guides/mirror-a-github-repo.md.
 fn asset_rank(name: &str) -> u8 {
-    // Lower-cased once, so the substring and suffix tests below are case-blind.
-    let n = name.to_ascii_lowercase();
-    let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
-    let ends = |exts: &[&str]| {
-        exts.iter()
-            .any(|e| n.rsplit_once('.').is_some_and(|(_, x)| x == *e))
+    // Lower-cased once, and split into its `-`/`.`/`+`… delimited tokens, so a word matches
+    // only whole (`darwinia` is not macOS, `armadillo` is not ARM); `x86-64` is one token.
+    let n = name.to_ascii_lowercase().replace("x86-64", "x86_64");
+    let tokens: Vec<&str> = n
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .filter(|t| !t.is_empty())
+        .collect();
+    let has = |words: &[&str]| tokens.iter().any(|t| words.contains(t));
+    let starts = |prefixes: &[&str]| {
+        tokens
+            .iter()
+            .any(|t| prefixes.iter().any(|p| t.starts_with(p)))
     };
+    let ext = tokens.last().copied().unwrap_or("");
     let linux = has(&["linux"]);
-    let windows = has(&["win64", "windows", "win-x64"]) || ends(&["exe", "msi"]);
-    let mac = has(&["darwin", "apple", "macos", "osx", "mac-", "-mac"]) || ends(&["dmg"]);
-    let x86_64 = has(&["x86_64", "x86-64", "amd64", "x64"]);
+    let windows = has(&["win", "win32", "win64", "windows"]) || matches!(ext, "exe" | "msi");
+    let mac = has(&["darwin", "apple", "macos", "mac", "osx", "osx64"]) || ext == "dmg";
+    let x86_64 = has(&["x86_64", "amd64", "x64", "win64", "osx64"]);
     let arm64 = has(&["aarch64", "arm64"]);
-    if has(&["sha256sum", "sha512sum", "sha1sum", "checksums"]) {
+    if starts(&["sha256sum", "sha512sum", "sha1sum", "checksum"]) {
         0
     } else if linux && x86_64 {
         1
@@ -335,10 +337,13 @@ fn asset_rank(name: &str) -> u8 {
         4
     } else if linux && arm64 {
         5
-    } else if ends(&["gz", "xz", "tgz", "zip"])
+    } else if matches!(ext, "gz" | "xz" | "tgz" | "zip")
         && !linux
         && !mac
-        && !has(&["arm", "riscv", "i686", "i386", "x86", "android", "freebsd"])
+        && !has(&[
+            "arm", "armhf", "armel", "i686", "i386", "x86", "android", "freebsd",
+        ])
+        && !starts(&["armv", "riscv"])
     {
         6
     } else {
@@ -368,54 +373,47 @@ fn signed_subject(name: &str) -> Option<&str> {
 /// large one never blocks smaller ones behind it.
 fn fit_indices(assets: &[ReleaseAsset]) -> BTreeSet<usize> {
     let size = |i: usize| serde_json::to_string(&assets[i]).map_or(usize::MAX, |s| s.len());
-    let by_name: std::collections::BTreeMap<&str, usize> = assets
+    let by_name: BTreeMap<&str, usize> = assets
         .iter()
         .enumerate()
         .map(|(i, a)| (a.name.as_str(), i))
         .collect();
     // A signature whose subject is listed travels with it; any other asset is its own unit.
-    let subject_of = |i: usize| {
-        signed_subject(&assets[i].name)
-            .and_then(|s| by_name.get(s).copied())
-            .filter(|&s| s != i)
-    };
-    let mut units: Vec<(u8, usize, Vec<usize>)> = (0..assets.len())
-        .filter(|&i| subject_of(i).is_none())
-        .map(|i| {
-            let mut unit = vec![i];
-            unit.extend((0..assets.len()).filter(|&j| subject_of(j) == Some(i)));
-            (asset_rank(&assets[i].name), i, unit)
-        })
-        .collect();
-    units.sort_by_key(|(rank, i, _)| (*rank, *i));
+    let mut sigs: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    let mut roots = Vec::new();
+    for (i, a) in assets.iter().enumerate() {
+        match signed_subject(&a.name).and_then(|s| by_name.get(s).copied()) {
+            Some(s) if s != i => sigs.entry(s).or_default().push(i),
+            _ => roots.push(i),
+        }
+    }
+    // Stable: equal ranks keep the source's order.
+    roots.sort_by_key(|&i| asset_rank(&assets[i].name));
     // `[` + entries joined by `,` + `]`.
     let mut used = 2usize;
     let mut keep = BTreeSet::new();
-    let take = |i: usize, used: &mut usize, keep: &mut BTreeSet<usize>| {
+    let mut take = |i: usize| {
         let add = size(i).saturating_add(usize::from(!keep.is_empty()));
-        if used.saturating_add(add) <= ASSETS_MAX {
-            *used += add;
+        let fits = used.saturating_add(add) <= ASSETS_MAX;
+        if fits {
+            used += add;
             keep.insert(i);
-            true
-        } else {
-            false
         }
+        fits
     };
-    for (_, _, unit) in units {
+    for root in roots {
         // The file first; its signatures only with it.
-        if take(unit[0], &mut used, &mut keep) {
-            for &sig in &unit[1..] {
-                take(sig, &mut used, &mut keep);
+        if take(root) {
+            for &sig in sigs.get(&root).into_iter().flatten() {
+                take(sig);
             }
         }
     }
     keep
 }
 
-/// The assets of `assets` a release keeps within its 4096-byte `assets` field ([`fit_indices`]:
-/// checksum files and signatures, then the common platform builds), in the source's order.
-pub fn fit_assets(assets: Vec<ReleaseAsset>) -> Vec<ReleaseAsset> {
-    let keep = fit_indices(&assets);
+/// The entries of `assets` whose index is in `keep`, in order.
+fn select(assets: Vec<ReleaseAsset>, keep: &BTreeSet<usize>) -> Vec<ReleaseAsset> {
     assets
         .into_iter()
         .enumerate()
@@ -424,13 +422,25 @@ pub fn fit_assets(assets: Vec<ReleaseAsset>) -> Vec<ReleaseAsset> {
         .collect()
 }
 
+/// The assets of `assets` a release keeps within its 4096-byte `assets` field ([`fit_indices`]:
+/// checksum files and signatures, then the common platform builds), in the source's order.
+pub fn fit_assets(assets: Vec<ReleaseAsset>) -> Vec<ReleaseAsset> {
+    let keep = fit_indices(&assets);
+    select(assets, &keep)
+}
+
 /// The line the importer ends a release's notes with when `omitted` of its `total` assets are
 /// not listed: readers (forge-web) show it as "N more assets not mirrored" with the link.
 /// The release has no field for it on the current contracts; a release asset manifest does
 /// away with the limit (docs/design/release-asset-manifest.md).
-pub fn assets_footer(omitted: usize, total: usize, source_url: &str) -> String {
+fn assets_footer(omitted: usize, total: usize, source_url: &str) -> String {
     let link = if source_url.starts_with("https://") {
-        format!(" Download them from the [source release]({source_url}).")
+        // A `(`, `)` or space would end the markdown link early (and the web's parse of it).
+        let url = source_url
+            .replace('(', "%28")
+            .replace(')', "%29")
+            .replace(|c: char| c.is_whitespace(), "%20");
+        format!(" Download them from the [source release]({url}).")
     } else {
         String::new()
     };
@@ -688,6 +698,12 @@ mod tests {
         ];
         let ranks: Vec<u8> = order.iter().map(|n| asset_rank(n)).collect();
         assert!(ranks.windows(2).all(|w| w[0] <= w[1]), "{ranks:?}");
+        // Whole tokens only: no platform read into a longer word.
+        assert_eq!(asset_rank("darwinia-1.0.tar.gz"), 6, "not macOS");
+        assert_eq!(asset_rank("armadillo-1.0.zip"), 6, "not an ARM build");
+        assert_eq!(asset_rank("linuxkit-docs.pdf"), 7, "not Linux");
+        assert_eq!(asset_rank("tool-x86-64-linux.tar.gz"), 1);
+        assert_eq!(asset_rank("SHA256SUMS.asc"), 0);
         assert_eq!(signed_subject("a.tar.gz.asc"), Some("a.tar.gz"));
         assert_eq!(signed_subject("a.tar.gz"), None);
     }
@@ -704,8 +720,13 @@ mod tests {
         let long = notes_with_footer(&"x".repeat(NOTES_MAX), 1, 2, url);
         assert!(long.len() <= NOTES_MAX, "{}", long.len());
         assert!(long.ends_with(")._"), "{long}");
-        // No https source: no link.
+        // No https source: no link; a URL with parentheses or spaces stays one link.
         assert!(!notes_with_footer("n", 1, 2, "").contains("source release"));
+        let odd = notes_with_footer("n", 1, 2, "https://example.org/r/v1 (final)");
+        assert!(
+            odd.contains("(https://example.org/r/v1%20%28final%29)"),
+            "{odd}"
+        );
         // Through `release`: the source URL and the dropped count travel with it.
         let r = release("v22.1.3", None, Some("n"), dash_22_1_3(), url.into());
         assert_eq!(r.dropped, 21 - r.assets.len());
