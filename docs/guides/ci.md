@@ -93,4 +93,16 @@ These are what the protocol and the current forge-collab contract allow. They ar
 - **The contract does not say *which* identity may report, beyond "runner, maintainer or writer".** It cannot require that only runners write `checkRun`, and it has no status-transition rule, such as "no `queued` after `completed`". The one rule it has is that a conclusion is present exactly when the status is `completed`. Clients follow the newest-run rule. [ci-contract-wishes.md](../design/ci-contract-wishes.md) lists what the next registration should add.
 - **A check run is not tied to a pushed commit.** Consensus cannot check that `headOid` exists in the repository: packs live off-chain.
 
-**Coming soon (this series):** reporting from GitHub Actions (`forge-check-action`), a self-hosted runner that runs `.forge/workflows/*.yml` with [act](https://github.com/nektos/act), and relay `check_run` webhooks for in-place updates.
+## Self-host a runner
+
+[`forge-runner`](self-host-runner.md) watches a repository, runs `.forge/workflows/*.yml` (GitHub Actions syntax) with [nektos/act](https://github.com/nektos/act) in Docker on every push, and reports each job through `dg ci report` with its log. Its isolation, in short:
+
+- **No Docker socket in job containers.** Job containers do not get the socket, and they run on the `bridge` network, not the host's.
+- **No inherited environment.** Jobs never see the runner's own environment, and `DASH_FORGE_KEY` never leaves the runner.
+- **Secrets only on trusted refs.** A secrets file is passed only to refs in `trusted_refs`, and secret values are redacted from logs before upload.
+- **The checkout cannot configure the run.** A checked-out repository cannot plant act configuration (`.actrc`, `.env`, `.secrets`).
+- **No fork pull requests.** The runner runs pushes to the watched repository's own refs only, so a pull request from a fork never runs, with or without secrets.
+
+[Self-host a CI runner](self-host-runner.md#security) has the details and what to put around it: a dedicated Docker daemon, and a network the jobs cannot reach out of.
+
+**Coming soon:** reporting from GitHub Actions (`forge-check-action`).
