@@ -167,11 +167,12 @@ octokit) reads them:
   of the others in rotation, so a quiet closed thread is read every few cycles (with N such
   threads, every N/10 cycles).
 - Check runs: for the 50 most recent heads (pushed commits, PR heads seen live or opened in the
-  last 7 days), each cycle reads the head's `checkRun` documents from its oldest run not yet
-  seen completed (or its newest run, when all have completed), paged to the end, and compares
-  each one's `$revision` with the last seen. So a run a runner replaces in place (`queued` →
-  `in_progress` → `completed`) is observed however many runs came after it, and a head whose
-  runs have all completed costs one short read. GitHub's `check_run` has four actions; a
+  last 7 days), each cycle reads the head's `checkRun` documents, paged, from the older of its
+  oldest run not yet completed and its newest 99 runs (but never past its newest 500), and
+  compares each one's `$revision` with the last seen. So a run a runner replaces in place
+  (`queued` → `in_progress` → `completed`) is observed even behind up to 500 newer runs, a
+  re-run of a recent run is seen, and a quiet head costs one read (at most five). A run that
+  was open when it disappeared (deleted) stops holding the read's start. GitHub's `check_run` has four actions; a
   repository webhook gets only `created` and `completed` (`rerequested` and
   `requested_action` are GitHub-UI requests to a GitHub App, which Forge has no analogue of).
   The relay sends `created` for a run first seen (created after the head was first watched),

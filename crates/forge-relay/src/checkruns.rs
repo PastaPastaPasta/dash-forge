@@ -5,9 +5,10 @@
 //! (`$createdAt > cursor`) never see it, and there is no `$updatedAt` index to read instead.
 //! So for each watched head the relay reads `checkRun (repoId, headOid, $createdAt >= t)`
 //! every cycle, paged to the end, and compares each document's `$revision` with the one it saw
-//! last ([`diff`]). `t` is [`read_from`]: the oldest run not yet seen completed, else the
-//! newest run seen. A head whose runs have all completed costs one short page, and a run is
-//! re-read until it completes, however many runs came after it.
+//! last ([`diff`]). `t` is [`read_from`]: the older of the head's oldest open run and its
+//! newest 100 runs, but never past its newest 500. So a run is re-read until it completes even
+//! with up to 500 runs after it, a re-run of one of the newest 100 is seen, and a head costs
+//! one page in the common case and at most five.
 //!
 //! **GitHub actions.** GitHub's `check_run` has four actions: `created`, `completed`,
 //! `rerequested` and `requested_action`. A repository webhook receives only `created` and
@@ -43,10 +44,13 @@ use crate::payload::CheckRunAction;
 /// Rows per page (Drive's maximum).
 const PAGE: u32 = 100;
 
-/// Runs remembered per head: those seen completed are forgotten first, oldest first. A run
-/// missing from a read (deleted, or a lagging node) stays remembered, so it is not announced
-/// again if it reappears.
-const MAX_RUNS_PER_HEAD: usize = 500;
+/// A head's newest runs are always re-read (so a re-run of a recent completed run is seen).
+/// One less than a page, so a quiet head costs one read.
+const RECENT_RUNS: usize = PAGE as usize - 1;
+
+/// A head's read never reaches back past its newest this many runs: an open run older than
+/// that is given up (its completion is not sent). Bounds a head's read and memory.
+const MAX_RUNS_PER_HEAD: usize = 5 * PAGE as usize;
 
 /// What the relay last saw of one `checkRun` document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,8 +59,12 @@ pub struct RunSeen {
     pub rev: u64,
     /// Whether its status was `completed`.
     pub done: bool,
-    /// Its `$createdAt` (ms): which runs are forgotten first.
+    /// Its `$createdAt` (ms).
     pub at: u64,
+    /// Absent from the last read that covered it (deleted, or a lagging node): remembered, so
+    /// it is not announced again if it reappears, but no longer holding the read's start.
+    #[serde(default)]
+    pub missing: bool,
 }
 
 /// One watched head's runs, by document id.
@@ -68,27 +76,29 @@ fn is_done(d: &FetchedDocument) -> bool {
     d.field_str("status").is_none_or(|s| s == "completed")
 }
 
-/// Keep the `max` entries of `map` that sort last by `rank` (ties: the larger key stays).
-pub fn keep_last<V, R: Ord>(map: &mut BTreeMap<String, V>, max: usize, rank: impl Fn(&V) -> R) {
-    if map.len() <= max {
-        return;
-    }
-    let mut ranked: Vec<(R, String)> = map.iter().map(|(k, v)| (rank(v), k.clone())).collect();
-    ranked.sort();
-    for (_, k) in &ranked[..map.len() - max] {
-        map.remove(k);
-    }
-}
-
-/// Where a head's next read starts (`$createdAt >=`): the oldest run not seen completed, else
-/// the newest run seen, else `floor` (the head's baseline) for a head with no run yet.
+/// Where a head's next read starts (`$createdAt >=`): the older of its oldest open run (not
+/// completed, not missing) and its newest [`RECENT_RUNS`] runs, but never before its newest
+/// [`MAX_RUNS_PER_HEAD`]. `floor` (the head's baseline) for a head with no run yet.
 pub fn read_from(prev: &HeadRuns, floor: u64) -> u64 {
-    prev.values()
-        .filter(|r| !r.done)
+    let mut ats: Vec<u64> = prev.values().map(|r| r.at).collect();
+    if ats.is_empty() {
+        return floor;
+    }
+    ats.sort_unstable_by(|a, b| b.cmp(a));
+    let nth_newest = |n: usize| ats[n.min(ats.len()) - 1];
+    let recent = nth_newest(RECENT_RUNS);
+    let open = prev
+        .values()
+        .filter(|r| !r.done && !r.missing)
         .map(|r| r.at)
         .min()
-        .or_else(|| prev.values().map(|r| r.at).max())
-        .unwrap_or(floor)
+        .unwrap_or(recent);
+    let limit = if ats.len() >= MAX_RUNS_PER_HEAD {
+        nth_newest(MAX_RUNS_PER_HEAD)
+    } else {
+        0
+    };
+    recent.min(open).max(limit)
 }
 
 /// A head's runs created at or after `from`, ascending, paged to the end (`source` is the
@@ -109,29 +119,46 @@ pub async fn read_runs(source: &impl PageSource, from: u64) -> Result<Vec<Fetche
     }
 }
 
-/// Compare a head's current runs (`docs`, any order) with what was seen (`prev`). Returns the
-/// events to send, oldest document first, and the new state for the head. `since` is the
-/// head's baseline: an unseen document created before it is recorded, not delivered. A read
-/// older than what was seen (a lagging node) keeps the newer state and sends nothing. Runs
-/// absent from `docs` stay remembered (at most [`MAX_RUNS_PER_HEAD`]).
+/// Compare a head's runs read from `from` on (`docs`, any order, the complete read of
+/// [`read_runs`]) with what was seen (`prev`). Returns the events to send, oldest document
+/// first, and the new state for the head. `since` is the head's baseline: an unseen document
+/// created before it is recorded, not delivered. A read older than what was seen (a lagging
+/// node) keeps the newer state and sends nothing. A run the read covered but did not return is
+/// marked missing. The new state keeps exactly the runs the next read covers
+/// ([`read_from`]), so a run is never forgotten while it can still be read, and never read
+/// again once forgotten.
 pub fn diff<'a>(
     prev: &HeadRuns,
     docs: &'a [FetchedDocument],
     since: u64,
+    from: u64,
 ) -> (Vec<(CheckRunAction, &'a FetchedDocument)>, HeadRuns) {
     let mut docs: Vec<&FetchedDocument> = docs.iter().filter(|d| d.created_at.is_some()).collect();
     docs.sort_by_key(|d| (d.created_at, &d.id));
     let mut out = Vec::new();
     let mut next = prev.clone();
+    for r in next.values_mut().filter(|r| r.at >= from) {
+        r.missing = true;
+    }
     for d in docs {
         let now = RunSeen {
             rev: d.revision.unwrap_or(1),
             done: is_done(d),
             at: d.created_at.unwrap_or(0),
+            missing: false,
         };
         match prev.get(&d.id) {
-            // A lagging read: `next` already holds the newer state.
-            Some(seen) if now.rev < seen.rev => continue,
+            // A lagging read: keep the newer state (it is present, so not missing).
+            Some(seen) if now.rev < seen.rev => {
+                next.insert(
+                    d.id.clone(),
+                    RunSeen {
+                        missing: false,
+                        ..*seen
+                    },
+                );
+                continue;
+            }
             Some(seen) => {
                 if now.rev > seen.rev && now.done && !seen.done {
                     out.push((CheckRunAction::Completed, d));
@@ -147,7 +174,8 @@ pub fn diff<'a>(
         }
         next.insert(d.id.clone(), now);
     }
-    keep_last(&mut next, MAX_RUNS_PER_HEAD, |r| (!r.done, r.at));
+    let keep_from = read_from(&next, since);
+    next.retain(|_, r| r.at >= keep_from);
     (out, next)
 }
 
@@ -284,7 +312,7 @@ mod tests {
         since: u64,
     ) -> (Vec<(CheckRunAction, String)>, HeadRuns) {
         let docs = [doc];
-        let (out, next) = diff(prev, &docs, since);
+        let (out, next) = diff(prev, &docs, since, read_from(prev, since));
         let out = out.iter().map(|(a, d)| (*a, event_key(d, *a))).collect();
         (out, next)
     }
@@ -319,7 +347,7 @@ mod tests {
     fn a_run_created_completed_sends_both_actions() {
         use CheckRunAction::{Completed, Created};
         let docs = [run("B", 10, 1, "completed"), run("A", 9, 1, "queued")];
-        let (out, _) = diff(&HeadRuns::new(), &docs, 0);
+        let (out, _) = diff(&HeadRuns::new(), &docs, 0, 0);
         assert_eq!(
             actions(&out),
             vec![
@@ -357,7 +385,8 @@ mod tests {
             RunSeen {
                 rev: 3,
                 done: true,
-                at: 10
+                at: 10,
+                missing: false
             }
         );
         let (out, _) = step(&s2, run("A", 10, 3, "completed"), 0);
@@ -376,39 +405,108 @@ mod tests {
         );
     }
 
-    /// A run missing from one read (a lagging node, or past the newest page) is remembered,
-    /// so it is not announced as new when it reappears; the memory per head is bounded.
+    /// A run missing from one read (a lagging node) is remembered, so it is not announced as
+    /// new when it reappears.
     #[test]
     fn a_run_missing_from_a_read_is_not_announced_again() {
         let (_, s) = step(&HeadRuns::new(), run("A", 10, 1, "queued"), 0);
         let (out, s) = step(&s, run("B", 11, 1, "queued"), 0);
         assert_eq!(out.len(), 1);
-        assert!(s.contains_key("A"), "A is still remembered");
-        let (out, _) = step(&s, run("A", 10, 1, "queued"), 0);
+        assert!(s["A"].missing, "A is remembered, as missing");
+        let (out, s) = step(&s, run("A", 10, 1, "queued"), 0);
         assert!(out.is_empty());
-
-        // Bounded: completed runs are forgotten first, oldest first; open ones are kept.
-        let many: Vec<FetchedDocument> = (0..MAX_RUNS_PER_HEAD as u64 + 5)
-            .map(|i| {
-                let status = if i == 0 { "queued" } else { "completed" };
-                run(&format!("r{i:04}"), i, 1, status)
-            })
-            .collect();
-        let (_, s) = diff(&HeadRuns::new(), &many, 0);
-        assert_eq!(s.len(), MAX_RUNS_PER_HEAD);
-        assert!(s.contains_key("r0000"), "the open run is kept");
-        assert!(!s.contains_key("r0001"), "the oldest completed one goes");
+        assert!(!s["A"].missing);
     }
 
     #[test]
     fn a_head_is_read_from_its_oldest_open_run() {
         assert_eq!(read_from(&HeadRuns::new(), 42), 42, "no run: the baseline");
-        let (_, s) = step(&HeadRuns::new(), run("A", 10, 1, "completed"), 0);
-        let (_, s) = step(&s, run("B", 20, 1, "queued"), 0);
-        let (_, s) = step(&s, run("C", 30, 1, "completed"), 0);
-        assert_eq!(read_from(&s, 0), 20, "the oldest run not completed");
-        let (_, s) = step(&s, run("B", 20, 2, "completed"), 0);
-        assert_eq!(read_from(&s, 0), 30, "all completed: the newest run seen");
+        let seen = |at, done| RunSeen {
+            rev: 1,
+            done,
+            at,
+            missing: false,
+        };
+        let s = HeadRuns::from([
+            ("A".into(), seen(10, true)),
+            ("B".into(), seen(20, false)),
+            ("C".into(), seen(30, true)),
+        ]);
+        assert_eq!(read_from(&s, 0), 10, "the newest 99 runs are always read");
+        let mut s: HeadRuns = (0..300)
+            .map(|i| (format!("r{i:03}"), seen(100 + i, true)))
+            .collect();
+        assert_eq!(
+            read_from(&s, 0),
+            100 + 300 - 99,
+            "all completed: the newest 99"
+        );
+        s.insert("open".into(), seen(50, false));
+        assert_eq!(read_from(&s, 0), 50, "an open run behind them");
+        s.get_mut("open").unwrap().missing = true;
+        assert_eq!(
+            read_from(&s, 0),
+            301,
+            "a missing run no longer holds the start"
+        );
+        s.get_mut("open").unwrap().missing = false;
+        s.extend((0..300).map(|i| (format!("s{i:03}"), seen(1000 + i, true))));
+        assert_eq!(read_from(&s, 0), 200, "never past the newest 500 (of 601)");
+    }
+
+    /// The relay's cycle over an in-memory index: read from [`read_from`], then [`diff`].
+    async fn cycle(index: &Index, prev: &HeadRuns) -> (Vec<(CheckRunAction, String)>, HeadRuns) {
+        let from = read_from(prev, 0);
+        let docs = read_runs(index, from).await.unwrap();
+        let (out, next) = diff(prev, &docs, 0, from);
+        let out = out.iter().map(|(a, d)| (*a, event_key(d, *a))).collect();
+        (out, next)
+    }
+
+    /// Review findings: a head with many runs is not re-sent every cycle, a deleted open run
+    /// does not pin the read, and a re-run of a recent completed run is seen.
+    #[tokio::test]
+    async fn repeated_cycles_send_each_change_once() {
+        let mut rows = vec![run("open", 1, 1, "queued")];
+        rows.extend((0..700).map(|i| run(&format!("n{i:03}"), 10 + i, 1, "completed")));
+        let index = Index(rows, std::cell::Cell::new(0));
+        let (out, s) = cycle(&index, &HeadRuns::new()).await;
+        assert_eq!(out.len(), 1 + 2 * 700);
+        for _ in 0..3 {
+            let (out, _) = cycle(&index, &s).await;
+            assert!(out.is_empty(), "nothing re-sent: {}", out.len());
+        }
+        let (_, s2) = cycle(&index, &s).await;
+        assert!(s2.len() <= MAX_RUNS_PER_HEAD, "bounded: {}", s2.len());
+
+        // A deleted open run: marked missing, then no longer holds the read's start.
+        let mut rows = index.0.clone();
+        rows.retain(|d| d.id != "n650");
+        rows.push(run("late-open", 705, 1, "queued"));
+        let (_, s) = cycle(&Index(rows.clone(), std::cell::Cell::default()), &s2).await;
+        rows.retain(|d| d.id != "late-open");
+        let (_, s) = cycle(&Index(rows.clone(), std::cell::Cell::default()), &s).await;
+        assert!(s["late-open"].missing);
+        let quiet = Index(rows.clone(), std::cell::Cell::default());
+        let (out, _) = cycle(&quiet, &s).await;
+        assert!(out.is_empty());
+        assert_eq!(
+            quiet.1.get(),
+            1,
+            "one page: the deleted run does not pin the read"
+        );
+
+        // A re-run of a recent completed run: queued again, then completed again.
+        let i = rows.iter().position(|d| d.id == "n690").unwrap();
+        rows[i] = run("n690", 700, 2, "queued");
+        let (out, s) = cycle(&Index(rows.clone(), std::cell::Cell::default()), &s).await;
+        assert!(out.is_empty());
+        rows[i] = run("n690", 700, 3, "completed");
+        let (out, _) = cycle(&Index(rows, std::cell::Cell::default()), &s).await;
+        assert_eq!(
+            out,
+            vec![(CheckRunAction::Completed, "n690:completed:3".into())]
+        );
     }
 
     /// An in-memory `checkRun (repoId, headOid, $createdAt)` index.
@@ -453,24 +551,23 @@ mod tests {
         let docs = read_runs(&index, 0).await.unwrap();
         assert_eq!(docs.len(), 251, "paged to the end");
         assert_eq!(index.1.get(), 3);
-        let (out, s) = diff(&HeadRuns::new(), &docs, 0);
+        let (out, s) = diff(&HeadRuns::new(), &docs, 0, 0);
         assert_eq!(out.len(), 1 + 2 * 250);
 
         let mut rows = index.0;
         rows[0] = run("old", 1, 2, "completed");
         let index = Index(rows, std::cell::Cell::new(0));
-        let docs = read_runs(&index, read_from(&s, 0)).await.unwrap();
-        let (out, _) = diff(&s, &docs, 0);
+        let (out, s) = cycle(&index, &s).await;
         assert_eq!(
-            actions(&out),
-            vec![(CheckRunAction::Completed, "old".into())]
+            out,
+            vec![(CheckRunAction::Completed, "old:completed:2".into())]
         );
 
-        // Once all are completed, a head costs one short page.
-        let (_, s) = diff(&s, &docs, 0);
+        // Once all are completed, a head costs one page (its newest 99 runs).
         let index = Index(index.0, std::cell::Cell::new(0));
-        let docs = read_runs(&index, read_from(&s, 0)).await.unwrap();
-        assert_eq!((docs.len(), index.1.get()), (1, 1));
+        let (out, _) = cycle(&index, &s).await;
+        assert!(out.is_empty());
+        assert_eq!(index.1.get(), 1);
     }
 
     /// A restart must not re-send: the state survives in the state dir.

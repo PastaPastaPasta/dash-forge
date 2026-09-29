@@ -1333,7 +1333,8 @@ async fn poll_check_runs(
             Baseline::Tail { .. } | Baseline::Beginning => since,
         };
         let prev = st.runs.remove(&oid).unwrap_or_default();
-        let docs = match checkruns::read_runs(&source, checkruns::read_from(&prev, floor)).await {
+        let from = checkruns::read_from(&prev, floor);
+        let docs = match checkruns::read_runs(&source, from).await {
             Ok(docs) => docs,
             Err(e) => {
                 tracing::warn!(repo = %st.meta.repo_id, head = %oid, error = %e, "check-run read failed; retrying next cycle");
@@ -1341,7 +1342,7 @@ async fn poll_check_runs(
                 continue;
             }
         };
-        let (events, next) = checkruns::diff(&prev, &docs, floor);
+        let (events, next) = checkruns::diff(&prev, &docs, floor, from);
         for (action, d) in events {
             if action == CheckRunAction::Created {
                 high = high.max(d.created_at.unwrap_or(0));
@@ -1402,7 +1403,14 @@ fn prune_heads(
     heads: &mut BTreeMap<String, Head>,
     runs: &mut BTreeMap<String, checkruns::HeadRuns>,
 ) {
-    checkruns::keep_last(heads, MAX_HEADS, |h| h.seen);
+    if heads.len() > MAX_HEADS {
+        let mut by_time: Vec<(u64, String)> =
+            heads.iter().map(|(k, v)| (v.seen, k.clone())).collect();
+        by_time.sort();
+        for (_, k) in &by_time[..heads.len() - MAX_HEADS] {
+            heads.remove(k);
+        }
+    }
     runs.retain(|k, _| heads.contains_key(k));
 }
 
