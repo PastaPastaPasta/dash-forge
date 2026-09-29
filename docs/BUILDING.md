@@ -131,7 +131,7 @@ The patch stays active until you remove it. Confirm which source is in use with
 
 ### Protocol versions (SDK v4.2)
 
-The pinned SDK (`v4.2.0-beta.6` in Rust; `@dashevo/evo-sdk` and `@dashevo/wasm-sdk` `4.2.0-beta.5` in forge-web until wasm-sdk beta.6 is on npm) speaks
+The pinned SDK (`v4.2.0-beta.6` in Rust; `@dashevo/evo-sdk` and `@dashevo/wasm-sdk` `4.2.0-beta.6` in forge-web, built from the tag and installed from a release asset until dashpay publishes it to npm: [dev/sdk-vendoring.md](dev/sdk-vendoring.md)) speaks
 protocol 13 (testnet, mainnet) and protocol 14 (devnets such as moutai). Neither client pins
 a version. The SDK starts at a per-network floor (13 for testnet and mainnet, 14 for a
 devnet) and raises it from the metadata of the first **proof-verified** response. So

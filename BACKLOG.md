@@ -4,11 +4,7 @@ Small follow-ups that are known and accepted, not yet scheduled. Larger work is 
 
 ## Platform SDK
 
-- **TODO: bump the JS SDK to 4.2.0-beta.6 once `@dashevo/wasm-sdk@4.2.0-beta.6` is on npm** (the release's NPM job failed: "Required runner group 'platform-npm-releases' not found"). moutai runs drive 4.2.0-beta.6 since the 2026-09-28 reset and the Rust crates are on the `v4.2.0-beta.6` tag; forge-web, `tools/mint-identity` and `forge-contracts/sdk-v2` stay on the beta.5 pair, which reads and writes on beta.6 nodes. When it is published:
-  - move the pins in all three `package.json` files and `forge-web/pnpm-workspace.yaml` together, and refresh the locks;
-  - **delete `forge-web/lib/sdk/consensus-shift.ts`** and its use in `asConsensusRefusal` with the 11001 / 10904 patterns (platform#5053: until then the pinned SDK decodes a beta.6 node's CheckTx refusal one variant off; `consensus-shift.test.ts` fails once `PINNED_WASM_SDK` no longer matches package.json, as a reminder), and set the 10421 fixture in `write-errors.test.ts` back to 10421;
-  - beta.6 JS carries the node's code on every refusal path (platform#5112), so `REFUSAL_PATTERNS` becomes a fallback;
-  - only then register contracts that use the beta.6 `propertyConstraints` forms (`$ownerId`, `startsWith`, `countOf`, …), since beta.5 clients cannot parse them (BETA6-ANALYSIS §3.1).
+- **TODO: move the JS SDK back to npm once dashpay publishes `@dashevo/wasm-sdk@4.2.0-beta.6` (or a later 4.2).** forge-web, `tools/mint-identity` and `forge-contracts/sdk-v2` run on 4.2.0-beta.6 built from the tag and installed from the `vendor-sdk-v4.2.0-beta.6` release assets (the tag's npm job failed: "Required runner group 'platform-npm-releases' not found", fixed for later tags by dashpay/platform#5077). [docs/dev/sdk-vendoring.md](docs/dev/sdk-vendoring.md) has the steps, including the contents check against the published tarballs.
 
 ## Cost estimates
 
