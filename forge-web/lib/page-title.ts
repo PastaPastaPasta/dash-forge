@@ -69,7 +69,7 @@ const withSite = (t: string): string => (t === SITE_TITLE ? t : `${t} · ${SITE_
 
 /**
  * The title for `pathname` + `query`. A private repo's sealed paths and refs (`~` tokens,
- * `lib/view/private-nav.ts`) are left out: the title is then the repo alone.
+ * `lib/view/private-nav.ts`) are left out: the title is then the repo name alone.
  */
 export function pageTitle(pathname: string, query: Query, ownerName?: string | null): string {
   const path = bareRoute(pathname)
@@ -77,10 +77,10 @@ export function pageTitle(pathname: string, query: Query, ownerName?: string | n
   const owner = query.get('owner') ?? ''
   const name = query.get('name') ?? ''
   if (route !== undefined && owner !== '' && name !== '') {
-    const repo = `${ownerLabel(owner, ownerName)}/${name}`
-    // A private repo's path, ref and oid travel as `~…` tokens: never shown, even as tokens.
+    // A private repo's path, ref and oid travel as `~…` tokens: its title is the repo name
+    // alone, with no view, path, ref or owner (a tab title ends up in history and screen shares).
     const sealed = ['path', 'ref', 'oid'].some((k) => query.get(k)?.startsWith('~'))
-    return withSite(sealed ? repo : route(query, repo))
+    return withSite(sealed ? name : route(query, `${ownerLabel(owner, ownerName)}/${name}`))
   }
   const profile = PROFILE_TITLES[path]
   const who = query.get('name')

@@ -86,7 +86,7 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
       const follows = forge !== null ? readFollowCounts(sdk!, forge, identityId).catch(() => noCounts) : noCounts
       const [name, repos, counts] = await Promise.all([
         resolveDpnsName(sdk!, identityId, network),
-        listReposByOwner(sdk!, identityId, { network }),
+        listReposByOwner(sdk!, identityId, { network, counts: true }),
         follows,
       ])
       return { identityId, name, repos: repos.owned, memberOf: repos.member, ...counts }

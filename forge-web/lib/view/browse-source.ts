@@ -46,7 +46,6 @@ import { base64ToBytes, queryDocumentsWithProof } from '../sdk'
 import { isPublicHttpsUrl } from '../net'
 import { externalSourceName, noteContentCheck, noteViewPack, objectObserver } from './content-checks'
 import { noteReadOutage } from './reconnect'
-import { isOffline } from '../online'
 import {
   describePack,
   gatewayDownReason,
@@ -288,6 +287,11 @@ export class PackUnavailableError extends Error {
     )
     this.name = 'PackUnavailableError'
   }
+
+  /** No mirror answered with bytes: an outage, unless one served bad bytes (`corrupt`). */
+  get transport(): boolean {
+    return !this.corrupt
+  }
 }
 
 /**
@@ -321,13 +325,21 @@ const PER_ORIGIN_CONCURRENCY = 4
 /** How many of an artifact's URLs are raced at once (an `ipfs://` fans out per gateway). */
 const MIRROR_RACE_WIDTH = 3
 
-/** Why a URL failed: a timeout is worth one more sequential try, anything else is not. */
+/**
+ * Why a URL failed: a timeout is worth one more sequential try, anything else is not.
+ * `answered`: the host replied (an HTTP error, too many or wrong bytes), so the URL is dead for
+ * this session; a request nothing answered (offline, refused, reset) says nothing about it.
+ */
 class FetchFailure extends Error {
+  /** Nothing answered: an outage, not a verdict on the content (`BrowseReader`, L-10). */
+  readonly transport: boolean
   constructor(
     message: string,
     readonly timedOut: boolean,
+    readonly answered = false,
   ) {
     super(message)
+    this.transport = !answered
   }
 }
 
@@ -367,15 +379,10 @@ async function withSlot<T>(key: string, run: () => Promise<T>): Promise<T> {
  * wrong bytes). A later pack naming the same mirror skips them rather than paying for the
  * same failure again. Keyed by URL, not host: one gateway may lack one CID and hold another.
  */
+// Only URLs whose host answered (FetchFailure `answered`): one nothing answered (offline,
+// refused) is tried again once the connection is back (L-10).
 const deadUrls = new Set<string>()
 
-/**
- * Mark `url` dead, unless the browser is offline: then nothing could have answered, and the
- * mirror must be tried again once the connection is back (L-10).
- */
-function markDead(url: string): void {
-  if (!isOffline()) deadUrls.add(url)
-}
 
 /** "Try again": ask every mirror afresh, including the ones that failed this session. */
 export function forgetDeadMirrors(): void {
@@ -421,7 +428,7 @@ async function fetchBody(
     arm() // the response must begin within the deadline
     try {
       const resp = await fetch(url, { ...init, signal: controller.signal })
-      if (!resp.ok && resp.status !== 206) throw new FetchFailure(`HTTP ${resp.status}`, false)
+      if (!resp.ok && resp.status !== 206) throw new FetchFailure(`HTTP ${resp.status}`, false, true)
       if (resp.body === null) return new Uint8Array(await resp.arrayBuffer())
       const reader = resp.body.getReader()
       const parts: Uint8Array[] = []
@@ -434,7 +441,7 @@ async function fetchBody(
         // A mirror streaming more than the manifest says cannot be serving this pack.
         if (opts.maxBytes !== undefined && total > opts.maxBytes) {
           controller.abort()
-          throw new FetchFailure('served more bytes than the manifest records', false)
+          throw new FetchFailure('served more bytes than the manifest records', false, true)
         }
         parts.push(value)
       }
@@ -524,7 +531,7 @@ async function fetchExternalRange(
       // Some hosts ignore Range and return the whole body — slice defensively.
       return buf.length > end - start ? buf.subarray(start, end) : buf
     } catch (e) {
-      if (e instanceof FetchFailure && !e.timedOut) markDead(url)
+      if (e instanceof FetchFailure && e.answered) deadUrls.add(url)
       lastErr = e
     }
   }
@@ -578,14 +585,14 @@ async function fetchExternalWhole(
       const bytes = await fetchBody(url, {}, { cancel: winner.signal, maxBytes: manifest.sizeBytes })
       if (bytes.length !== manifest.sizeBytes || bytesToHex(sha256(bytes)) !== want) {
         corrupt = true
-        throw new FetchFailure('served bytes that do not match the manifest sha256', false)
+        throw new FetchFailure('served bytes that do not match the manifest sha256', false, true)
       }
       return { url, bytes }
     } catch (e) {
       if (!winner.signal.aborted) {
         reasons.push(`${externalSourceName(url)}: ${errorText(e)}`)
         if (e instanceof FetchFailure && e.timedOut) timedOut.push(url)
-        else markDead(url)
+        else if (e instanceof FetchFailure && e.answered) deadUrls.add(url)
       }
       throw e
     }

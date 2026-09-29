@@ -138,10 +138,10 @@ not_found() {
         file://*) [ ! -e "${1#file://}" ] ;;
         *)
             if have curl; then
-                [ "$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 --silent --location \
+                [ "$(curl --proto '=https' --proto-redir '=https' --tlsv1.2 --silent --location --max-time 20 \
                     --head --output /dev/null --write-out '%{http_code}' "$1" 2>/dev/null)" = 404 ]
             else
-                wget -S --spider "$1" 2>&1 | grep -q 'HTTP/[0-9.]* 404'
+                wget -S --spider --timeout=20 --tries=1 "$1" 2>&1 | grep -q 'HTTP/[0-9.]* 404'
             fi
             ;;
     esac
@@ -153,6 +153,7 @@ no_release() {
         printf 'install.sh: error: release v%s is not published (see %s).\n' "$1" "$BASE_URL" >&2
     else
         printf 'install.sh: error: no Dash Forge release has been published yet, so there are no prebuilt binaries to install (see %s).\n' "$BASE_URL" >&2
+        printf 'If only a pre-release (such as v0.1.0-rc.1) is published, "latest" skips it: pin it with DASH_FORGE_VERSION=0.1.0-rc.1.\n' >&2
     fi
     cat >&2 <<EOF_BUILD
 Build from source instead (needs Rust and protoc 25 or newer; see $BUILDING_URL):

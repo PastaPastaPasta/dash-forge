@@ -17,7 +17,7 @@ import {
   type PackSource,
   SPAN_SENTINEL,
   gitOidHex,
-  isSourceFailure,
+  readFailure,
 } from './index'
 import { PackError } from '../private/pack'
 import {
@@ -284,7 +284,7 @@ describe('browse-plane reader', () => {
 
       const offline = await reader.readObject(blobOid).catch((e: unknown) => e)
       expect(offline).toBeInstanceOf(TypeError)
-      expect(isSourceFailure(offline)).toBe(true)
+      expect(readFailure(offline)).toBe('transport')
       expect(verdicts).toEqual([]) // not 'failed': nothing arrived, nothing was checked
 
       const obj = await reader.readObject(blobOid) // the connection is back
@@ -315,6 +315,34 @@ describe('browse-plane reader', () => {
       const reader = new BrowseReader(ObjectLocator.parse(buildLocator([row])), source, { onObject: (v) => verdicts.push(v) })
       await expect(reader.readObject(blobOid)).rejects.toThrow()
       expect(verdicts).toEqual(['failed'])
+    })
+
+    it('a source error that is neither an outage nor bad bytes: no verdict and no recovery (H1)', async () => {
+      const verdicts: string[] = []
+      let unreachable = 0
+      // A locked private session, a pack a partial clone never loaded: retrying cannot help.
+      const source: PackSource = { fetchRange: () => Promise.reject(new Error('this private-repo session has ended; reload')) }
+      const reader = new BrowseReader(ObjectLocator.parse(buildLocator([row])), source, {
+        onObject: (v) => verdicts.push(v),
+        onUnreachable: () => unreachable++,
+      })
+      const err = await reader.readObject(blobOid).catch((e: unknown) => e)
+      expect(readFailure(err)).toBe('other')
+      expect(verdicts).toEqual([])
+      expect(unreachable).toBe(0)
+    })
+
+    it('only a transport failure asks for a recovery', async () => {
+      let unreachable = 0
+      const reader = new BrowseReader(ObjectLocator.parse(buildLocator([row])), flakySource(1), { onUnreachable: () => unreachable++ })
+      await expect(reader.readObject(blobOid)).rejects.toThrow(/Failed to fetch/)
+      expect(unreachable).toBe(1)
+    })
+
+    it('a marked transport error counts as one even when its text says nothing', async () => {
+      const source: PackSource = { fetchRange: () => Promise.reject(Object.assign(new Error('x'), { transport: true })) }
+      const err = await new BrowseReader(ObjectLocator.parse(buildLocator([row])), source).readObject(blobOid).catch((e: unknown) => e)
+      expect(readFailure(err)).toBe('transport')
     })
 
     it('a source that received bytes and says they are corrupt (a sealed pack) is a failure', async () => {

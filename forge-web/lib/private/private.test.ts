@@ -216,6 +216,19 @@ describe('ranged and streaming reads', () => {
     expect(cache.has(f.hash, 'copy-a')).toBe(false)
   })
 
+  it('a range past an unauthenticated header is corrupt bytes; a missing key stays noKey (L-10)', async () => {
+    const f = await fixture()
+    const cache = new PackHeaderCache()
+    // Nothing decrypted under this header yet: asking past its plaintext means the bytes are wrong.
+    await expect(readPackRange(src(f), 40_000, 40_010, f.ring, cache)).rejects.toEqual(new PackError('sealedPackCorrupt'))
+    expect(cache.has(f.hash, 'copy-a')).toBe(false)
+    // Authenticated once: the same request is the caller's mistake, not the copy's.
+    await readPackRange(src(f), 0, 1, f.ring, cache)
+    await expect(readPackRange(src(f), 40_000, 40_010, f.ring, cache)).rejects.toEqual(new PackError('outOfRange'))
+    // An epoch this reader has no key for is Unreadable(NoKey) (§5.3), never tampering.
+    await expect(readPackRange(src(f, 'copy-b'), 0, 1, new Map(), new PackHeaderCache())).rejects.toEqual(new PackError('noKey'))
+  })
+
   it('streaming open yields segments that concatenate to the whole open', async () => {
     const { ring, plain, sealed, fetchRange } = await fixture()
     const whole = await openPack(sealed, sealed.length, ring)

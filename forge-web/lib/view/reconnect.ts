@@ -20,11 +20,18 @@ const STREAK_WINDOW_MS = 90_000
 let streak = 0
 let lastRetryAt = -Infinity
 
-/** The wait before the next automatic retry, growing while retries keep failing. */
-export function nextBackoff(now: number): number {
+/** Each wait is spread ±30%, so tabs that lost the connection together do not retry together. */
+const JITTER = 0.3
+
+/**
+ * The wait before the next automatic retry, growing while retries keep failing (one call per
+ * retry cycle). `random` is `Math.random` outside tests.
+ */
+export function nextBackoff(now: number, random: () => number = Math.random): number {
   streak = now - lastRetryAt < STREAK_WINDOW_MS ? streak + 1 : 0
   lastRetryAt = now
-  return BACKOFF_MS[Math.min(streak, BACKOFF_MS.length - 1)] as number
+  const base = BACKOFF_MS[Math.min(streak, BACKOFF_MS.length - 1)] as number
+  return Math.round(base * (1 - JITTER + 2 * JITTER * random()))
 }
 
 /** Run `retry` once the page can plausibly read again. Returns a cancel function. */
@@ -53,11 +60,21 @@ export function scheduleReconnect(retry: () => void): () => void {
 
 const outages = new Map<string, number>()
 const listeners = new Set<() => void>()
+/** Repos with an outage note waiting to be announced (one notification per burst, M3). */
+const pending = new Set<string>()
 
-/** A browse read of repo `key` got no bytes (offline, a node or mirror that did not answer). */
+/**
+ * A browse read of repo `key` got no bytes (offline, a node or mirror that did not answer). A
+ * page's reads fail together during an outage: the notes of one burst are announced once.
+ */
 export function noteReadOutage(key: string): void {
-  outages.set(key, (outages.get(key) ?? 0) + 1)
-  for (const l of listeners) l()
+  if (pending.has(key)) return
+  pending.add(key)
+  queueMicrotask(() => {
+    pending.delete(key)
+    outages.set(key, (outages.get(key) ?? 0) + 1)
+    for (const l of listeners) l()
+  })
 }
 
 /** How many read outages repo `key` has had this session (a view compares it with the last it handled). */

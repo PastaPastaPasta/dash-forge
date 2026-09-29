@@ -59,20 +59,39 @@ function UnavailablePacksNotice({ packs }: { packs: readonly UnavailablePack[] }
   )
 }
 
+/** Automatic re-reads after outages that each ended in another outage, before asking the viewer. */
+const MAX_FRUITLESS_RECOVERIES = 3
+
 /**
- * The read outages of repo `key` this view has recovered from (L-10): it catches up with the
- * count once the connection is back after a read got no bytes. The view is keyed on it, so what failed to load (a README, the commit column, a file
- * row) is read again without a reload. Objects that did load are memoized by the reader, so the
- * re-read costs only what was missing.
+ * Re-read the view after a read of repo `key` got no bytes (L-10), once the connection is back:
+ * `epoch` goes up, and the view is keyed on it, so what failed to load (a README, the commit
+ * column, a file row) is read again without a reload. Objects that did load are memoized by
+ * the reader, so a re-read costs only what was missing (it re-runs the view, M2: it never drops
+ * the repo's browse context). After {@link MAX_FRUITLESS_RECOVERIES} re-reads that each met
+ * another outage it stops (`stalled`) and the view offers Try again instead (H2). Per repo:
+ * another repo starts afresh (M4).
  */
-function useReadRecovery(key: string): number {
+function useReadRecovery(key: string): { epoch: number; stalled: boolean; resume: () => void } {
   const outages = useSyncExternalStore(subscribeReadOutages, () => readOutages(key), () => 0)
-  const [handled, setHandled] = useState(outages)
+  const [state, setState] = useState({ key, handled: outages, epoch: 0, fruitless: 0 })
+  const current = state.key === key ? state : { key, handled: outages, epoch: 0, fruitless: 0 }
+  if (current !== state) setState(current)
+  const stalled = current.fruitless >= MAX_FRUITLESS_RECOVERIES
   useEffect(() => {
-    if (outages <= handled) return
-    return scheduleReconnect(() => setHandled(outages))
-  }, [outages, handled])
-  return handled
+    if (outages <= current.handled || stalled) return
+    return scheduleReconnect(() =>
+      // A re-read that met another outage since the last one did not get anywhere.
+      setState((s) => ({ ...s, handled: outages, epoch: s.epoch + 1, fruitless: s.epoch > 0 ? s.fruitless + 1 : 0 })),
+    )
+  }, [outages, current.handled, stalled])
+  // A quiet spell after a re-read (no new outage for a while) means it got through.
+  useEffect(() => {
+    if (current.fruitless === 0 || outages > current.handled) return
+    const t = setTimeout(() => setState((s) => ({ ...s, fruitless: 0 })), 30_000)
+    return () => clearTimeout(t)
+  }, [current.fruitless, outages, current.handled])
+  const resume = useCallback(() => setState((s) => ({ ...s, handled: outages, epoch: s.epoch + 1, fruitless: 0 })), [outages])
+  return { epoch: current.epoch, stalled, resume }
 }
 
 export function BrowseBoundary({
@@ -118,7 +137,19 @@ export function BrowseBoundary({
       // Keyed by the reader: one resolved from a newer pack list (a push, a merge) replaces the
       // view, whose reads then run against it, instead of keeping what the old one showed.
       // And by the recovery epoch: once a read outage is over, the view reads again (L-10).
-      const body = <Fragment key={`${state.version}:${recovery}`}>{children(reader ?? state.reader, retry)}</Fragment>
+      const body = (
+        <>
+          {recovery.stalled ? (
+            <div role="status" data-testid="read-recovery-stalled" className="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200">
+              Parts of this page could not be loaded: the connection keeps dropping.
+              <button type="button" onClick={recovery.resume} className="underline coarse:min-h-11">
+                Try again
+              </button>
+            </div>
+          ) : null}
+          <Fragment key={`${state.version}:${recovery.epoch}`}>{children(reader ?? state.reader, retry)}</Fragment>
+        </>
+      )
       if (!state.local) return body
       return (
         <div>

@@ -28,7 +28,7 @@ import {
   type RepoHome,
   type SelectedRef,
 } from '@/lib/view'
-import { useMirrorSource } from '@/components/repo/mirror-note'
+import { mirrorSourceOfDescription } from '@/lib/view/mirror-source'
 import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
 import type { Membership } from '@/lib/rules/v2'
 import { useSdk } from '@/hooks/use-sdk'
@@ -188,12 +188,13 @@ function Facts({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
 }
 
 /**
- * A mirror's source as a link, and when the mirror last moved a ref (L-84): the newest signed
- * ref update, which is the last sync that changed anything. The source is the one the issue
- * lists name (`useMirrorSource`: only what the owner or a maintainer wrote).
+ * A mirror's source as a link, and when a ref last moved (L-84). The source is what the owner
+ * wrote in the repo description when forge-import created it (`mirrorSourceOfDescription`): no
+ * read beyond the home's. The time is the newest signed ref update: when the mirror last
+ * changed, not when a sync last ran (a sync that found nothing new writes nothing).
  */
 function MirrorProvenance({ home }: { home: RepoHome }): JSX.Element | null {
-  const source = useMirrorSource(home, 'issue')
+  const source = mirrorSourceOfDescription(home.description, 'issue')
   if (source === null) return null
   const updated = [...home.branches, ...home.tags].reduce((newest, r) => {
     const at = r.state.state === 'resolved' ? r.state.createdAt : r.state.state === 'diverged' ? Math.max(...r.state.heads.map((h) => h.createdAt)) : 0
@@ -205,7 +206,7 @@ function MirrorProvenance({ home }: { home: RepoHome }): JSX.Element | null {
       <a href={`https://${source.label}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 font-medium text-forge-700 hover:underline dark:text-forge-400">
         {source.label} <ExternalLink className="h-3 w-3" aria-hidden />
       </a>
-      {updated > 0 ? <span title={new Date(updated).toISOString()}> · last synced {timeAgo(updated)}</span> : null}
+      {updated > 0 ? <span title={new Date(updated).toISOString()}> · last updated {timeAgo(updated)}</span> : null}
     </p>
   )
 }

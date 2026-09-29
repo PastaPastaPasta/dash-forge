@@ -299,7 +299,13 @@ export async function readPackRange(
     const S = 2 ** header.segLog2
     return concat(...parts).slice(a - s0 * S, b - s0 * S)
   } catch (e) {
-    if (e instanceof PackError && e.code === 'sealedPackCorrupt') cache.evict(packHash, copy)
-    throw e
+    // A header never authenticated (nothing decrypted under it yet) is only the bytes a host
+    // sent: one that puts the requested range past its own length contradicts the locator, so
+    // those bytes are wrong (L-10: a content failure). `noKey` stays what it is: content under
+    // an epoch the reader holds no key for is `Unreadable(NoKey)` (§5.3), not tampering, and
+    // the reader gives it no verdict.
+    const err = cached === undefined && e instanceof PackError && e.code === 'outOfRange' ? new PackError('sealedPackCorrupt') : e
+    if (err instanceof PackError && err.code === 'sealedPackCorrupt') cache.evict(packHash, copy)
+    throw err
   }
 }

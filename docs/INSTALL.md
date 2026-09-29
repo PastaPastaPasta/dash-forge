@@ -73,7 +73,7 @@ The script never runs `sudo`. You can control it with these environment variable
 
 | Variable | Default | Effect |
 |---|---|---|
-| `DASH_FORGE_VERSION` | latest | a specific release, e.g. `0.1.0` |
+| `DASH_FORGE_VERSION` | latest | a specific release, e.g. `0.1.0`; needed for a pre-release such as `0.1.0-rc.1`, which "latest" never picks |
 | `DASH_FORGE_INSTALL_DIR` | `~/.local/bin` | where the binaries go |
 | `DASH_FORGE_BINARIES` | `dg git-remote-dash` | add `forge-relay` / `forge-import` if you want them |
 | `DASH_FORGE_COMPLETIONS` | `0` | `1` installs bash, zsh and fish completions under `~/.local/share` and `~/.config/fish` |

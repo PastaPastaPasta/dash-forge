@@ -20,7 +20,7 @@ describe('pageTitle (L-59)', () => {
   })
 
   it('never shows a private repo’s sealed path or ref', () => {
-    expect(pageTitle('/repo/blob/', q('owner=alice&name=p&path=~0a1b2c3d4e5f6a7b&ref=~ffeeddccbbaa9988'))).toBe('alice/p · Dash Forge')
+    expect(pageTitle('/repo/blob/', q('owner=alice&name=p&path=~0a1b2c3d4e5f6a7b&ref=~ffeeddccbbaa9988'))).toBe('p · Dash Forge')
   })
 
   it('titles site pages and profiles', () => {

@@ -12,6 +12,7 @@ import { useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { toast } from '@/hooks/use-toasts'
 import { isOffline } from '@/lib/online'
+import { BASE_PATH } from '@/lib/short-url'
 
 export function useOfflineNavigation(): void {
   const router = useRouter()
@@ -21,9 +22,9 @@ export function useOfflineNavigation(): void {
       if (!isOffline() || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
       const a = e.target instanceof Element ? e.target.closest('a[href]') : null
       if (!(a instanceof HTMLAnchorElement) || (a.target && a.target !== '_self') || a.hasAttribute('download')) return
-      const url = new URL(a.href, window.location.href)
-      if (url.origin !== window.location.origin || url.href === window.location.href) return
-      const href = `${url.pathname}${url.search}${url.hash}`
+      const target = offlineTarget(a.href, window.location.href, BASE_PATH)
+      if (target === null) return
+      const href = target
       // Before React's handlers (Next's Link would start the navigation that falls back to a reload).
       e.preventDefault()
       e.stopPropagation()
@@ -43,4 +44,17 @@ export function useOfflineNavigation(): void {
       window.removeEventListener('online', onOnline)
     }
   }, [router])
+}
+
+/**
+ * The in-app route a link to `href` opens (for `router.push`, which adds the base path itself),
+ * or null when it is not one to hold: another origin, or the same page (only its `#fragment`
+ * differs: the browser scrolls, nothing is fetched).
+ */
+export function offlineTarget(href: string, current: string, basePath: string): string | null {
+  const url = new URL(href, current)
+  const here = new URL(current)
+  if (url.origin !== here.origin || (url.pathname === here.pathname && url.search === here.search)) return null
+  const path = basePath !== '' && (url.pathname === basePath || url.pathname.startsWith(`${basePath}/`)) ? url.pathname.slice(basePath.length) || '/' : url.pathname
+  return `${path}${url.search}${url.hash}`
 }

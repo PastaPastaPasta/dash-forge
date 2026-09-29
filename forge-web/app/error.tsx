@@ -4,8 +4,10 @@
  * The app's error boundary (L-56). Its common cause is a page whose code could not be fetched,
  * because the connection dropped before the tab loaded that page's chunk: without this, Next
  * shows a blank "Application error". A connection failure gets the plain offline state and
- * reloads by itself once the browser is back online; anything else says what failed, with Try
- * again.
+ * reloads once the connection is back; anything else says what failed, with Try again.
+ *
+ * Automatic reloads are capped (`lib/auto-reload.ts`): a page that fails the same way after
+ * every reload must not loop.
  */
 
 import { useEffect } from 'react'
@@ -13,27 +15,20 @@ import { AlertTriangle, WifiOff } from 'lucide-react'
 import { isUnreachableError } from '@/lib/sdk/unreachable'
 import { errorMessage } from '@/lib/utils'
 import { isOffline } from '@/lib/online'
+import { scheduleReconnect } from '@/lib/view/reconnect'
+import { autoReload, isLoadFailure } from '@/lib/auto-reload'
 import { ErrorDetails, RetryNowButton } from '@/components/ui/states'
 
-/** A failure to fetch the app's own code (a webpack chunk, or the route's RSC payload). */
-function isLoadFailure(e: unknown): boolean {
-  const name = e instanceof Error ? e.name : ''
-  return name === 'ChunkLoadError' || /loading (?:css )?chunk .* failed|failed to fetch dynamically imported module/i.test(errorMessage(e, ''))
-}
-
 export default function AppError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }): JSX.Element {
-  const connection = isLoadFailure(error) || isUnreachableError(error) || isOffline()
+  const chunk = isLoadFailure(error)
+  const connection = chunk || isUnreachableError(error) || isOffline()
   useEffect(() => {
     if (!connection) return
-    // The failed chunk is only fetched again by a fresh load of the page.
-    const back = (): void => window.location.reload()
-    if (navigator.onLine) {
-      const t = setTimeout(back, 5_000)
-      return () => clearTimeout(t)
-    }
-    window.addEventListener('online', back)
-    return () => window.removeEventListener('online', back)
-  }, [connection])
+    // Online, a chunk that failed to load is fetched again by a reload (backed off). Otherwise
+    // wait for the browser to come back online (scheduleReconnect does that while offline).
+    if (!chunk && !isOffline()) return
+    return scheduleReconnect(autoReload)
+  }, [connection, chunk])
 
   const Icon = connection ? WifiOff : AlertTriangle
   return (
@@ -46,7 +41,7 @@ export default function AppError({ error, reset }: { error: Error & { digest?: s
       </h1>
       <p className="mt-2 text-dense text-anvil-600 dark:text-anvil-300">
         {connection
-          ? 'This page could not be loaded. It will load by itself as soon as your connection is back.'
+          ? 'This page could not be loaded. It will load by itself once your connection is back.'
           : 'Something in this page failed. Trying again usually works; if it keeps failing, reload.'}
       </p>
       <RetryNowButton onClick={() => (connection ? window.location.reload() : reset())} />
