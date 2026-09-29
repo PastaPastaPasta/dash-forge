@@ -102,6 +102,8 @@ interface Script {
   platformNonce: bigint
   broadcast: (st: { nonce: bigint; title?: unknown }) => void
   wait: (settings?: unknown) => Promise<unknown>
+  /** The affected-state wait (an indexOnly write's); defaults to refusing, so a test sees which wait ran. */
+  affected?: (settings?: unknown) => Promise<unknown>
   exists: (id: string) => Promise<unknown>
   del?: () => Promise<void>
   replace?: () => Promise<void>
@@ -130,6 +132,10 @@ function sdkOf(s: Script, signed: bigint[]): EvoSDK {
         balance -= 1000n
       },
       waitForResponse: async (_st: unknown, settings?: unknown) => s.wait(settings),
+      waitForAffectedState: async (_st: unknown, settings?: unknown) => {
+        if (!s.affected) throw new Error('the affected-state wait is only for an indexOnly write')
+        return s.affected(settings)
+      },
     },
     epoch: { current: async () => undefined },
     version: () => 14,
@@ -226,6 +232,70 @@ describe('write engine', () => {
     await reported()
     expect(spends.map((s) => s.kind)).toEqual(['refused:comment'])
     expect(spends[0]?.balanceBefore).toBe(1_000_000_000n)
+  })
+
+  it('an indexOnly create (star) waits with the affected-state wait and lands on its proof', async () => {
+    let strict = 0
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => {
+        strict += 1
+        throw new Error('received a verified VerifiedDocuments snapshot for this transition family')
+      },
+      affected: async () => ({}),
+      exists: async () => undefined,
+    }
+    const r = await createDocumentIdempotent(sdkOf(script, []), auth([]), { ...write, contractId: 'I1', documentType: 'star', probe: async () => true })
+    expect(r.confirmed).toBe(true)
+    expect(strict).toBe(0)
+  })
+
+  it('an indexOnly create refused in a block is a charged refusal, not a landing', async () => {
+    const spends: SpendEvent[] = []
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => ({}),
+      affected: async () => {
+        throw sdkVerdict('referenced document Xyz not found for path repoId', 40120)
+      },
+      exists: async () => undefined,
+    }
+    const err = await createDocumentIdempotent(sdkOf(script, []), auth(spends), { ...write, contractId: 'I2', documentType: 'star', probe: async () => false }).catch((e: unknown) => e)
+    expect((err as ConsensusRefusal).code).toBe(40120)
+    expect((err as ConsensusRefusal).feeCharged).toBe(true)
+    await reported()
+    expect(spends.map((s) => s.kind)).toEqual(['refused:star'])
+  })
+
+  it('an indexOnly delete (unstar) resolves on the SDK delete, with no snapshot to read', async () => {
+    const signed: bigint[] = []
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => ({}),
+      exists: async () => ({}),
+      del: async () => undefined,
+    }
+    const r = await deleteDocumentIdempotent(sdkOf(script, signed), auth([]), {
+      contractId: 'I3', documentType: 'star', documentId: 'S', document: { values: 'the star' }, probeGone: async () => false, confirmTimeoutMs: 0,
+    })
+    expect(r.deleted).toBe(true)
+  })
+
+  it('a stored document never uses the affected-state wait', async () => {
+    const script: Script = {
+      platformNonce: 1n,
+      broadcast: () => undefined,
+      wait: async () => ({}),
+      affected: async () => {
+        throw new Error('a stored document must wait strictly')
+      },
+      exists: async () => ({}),
+    }
+    const r = await createDocumentIdempotent(sdkOf(script, []), auth([]), { ...write, contractId: 'I4' })
+    expect(r.confirmed).toBe(true)
   })
 
   it('does not read an index-only snapshot as landed for a stored document', async () => {

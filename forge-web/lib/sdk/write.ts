@@ -78,6 +78,8 @@ interface DocumentsFacadeLike {
 interface StateTransitionsFacadeLike {
   broadcastStateTransition(st: StateTransition): Promise<void>
   waitForResponse(st: StateTransition, settings?: WaitSettings): Promise<unknown>
+  /** Accepts a proof of the state the transition affected: the only proof an indexOnly write has. */
+  waitForAffectedState(st: StateTransition, settings?: WaitSettings): Promise<unknown>
 }
 
 /**
@@ -655,15 +657,6 @@ export function asConsensusRefusal(e: unknown): ConsensusRefusal | null {
 }
 
 /**
- * The SDK proves an indexOnly write (star, follow) by the state it affected, not by the
- * transition, and says so by rejecting the strict wait with this message. Only an indexOnly
- * write may read this as "landed".
- */
-function isAffectedStateSnapshot(e: unknown): boolean {
-  return errorMessage(e).includes('VerifiedDocuments snapshot')
-}
-
-/**
  * One result wait: a single node, 20 s, no banning, and a 45 s hard deadline (proof checking
  * included; a JS race, see {@link WaitSettings}). A transition a node accepted can still never produce a result: when two writers
  * sign with one identity's contract nonce at once (this tab and the CLI, or another browser),
@@ -680,12 +673,20 @@ export const WAIT_SETTINGS: WaitSettings = { retries: 0, timeoutMs: WAIT_REQUEST
  * Wait for Platform's verdict on a broadcast transition: `'landed'` once proven, a thrown
  * {@link ConsensusRefusal} when consensus rejected it, `'unknown'` when the wait itself failed
  * (timeout, transport) — the caller then settles it ({@link settleUnanswered}).
+ *
+ * An indexOnly write (star, follow) keeps no row: its proof shows the entry the create leaves,
+ * never that this transition wrote it, so the strict wait refuses it. Such a write waits with
+ * the SDK's affected-state wait, which accepts that proof (the one `documents.create` itself
+ * uses for an indexOnly type from 4.2.0-beta.7, platform#5136); every other write keeps the
+ * strict one.
  */
 async function awaitOutcome(sdk: EvoSDK, st: StateTransition, indexOnly: boolean): Promise<'landed' | 'unknown'> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     await Promise.race([
-      facades(sdk).stateTransitions.waitForResponse(st, WAIT_SETTINGS),
+      indexOnly
+        ? facades(sdk).stateTransitions.waitForAffectedState(st, WAIT_SETTINGS)
+        : facades(sdk).stateTransitions.waitForResponse(st, WAIT_SETTINGS),
       // The overall deadline (proof verification can add a quorum fetch to the 20 s request).
       new Promise((_, reject) => {
         timer = setTimeout(() => reject(new Error('result wait deadline exceeded')), WAIT_DEADLINE_MS)
@@ -693,7 +694,6 @@ async function awaitOutcome(sdk: EvoSDK, st: StateTransition, indexOnly: boolean
     ])
     return 'landed'
   } catch (e) {
-    if (indexOnly && isAffectedStateSnapshot(e)) return 'landed'
     // A nonce answer is settled by reading the chain (the caller's `settleUnanswered`).
     const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
     // The result wait answers with the transition's verdict in a block, whatever shape the
@@ -1531,24 +1531,23 @@ async function deleteDocumentUnlocked(
     })
     proven = true
   } catch (e) {
-    if (indexOnly && isAffectedStateSnapshot(e)) proven = true
-    else {
-      // The SDK rebroadcasts on its own retries: "nonce already present" may be this delete
-      // having landed, so the gone-poll below decides it, never as a refusal.
-      const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
-      if (refusal !== null) {
-        if (refusal.feeCharged === true) reportSpend(sdk, auth, spend('refused'))
-        throw refusal
-      }
-      // Anything else ("already exists in cache", a bounded wait that ran out): the gone-poll
-      // decides. Still there: an unclassified error stands, and "already exists" (which a
-      // transition dropped after a same-nonce race also answers) is unconfirmed.
-      if (!(await pollUntil(gone, confirmTimeoutMs))) {
-        if (isAlreadyExistsError(e)) throw new UnconfirmedWriteError(documentId)
-        throw e
-      }
-      proven = true
+    // From 4.2.0-beta.7 the SDK's delete of an indexOnly document resolves on the affected-state
+    // proof itself (platform#5136). The SDK rebroadcasts on its own retries: "nonce already
+    // present" may be this delete having landed, so the gone-poll below decides it, never as a
+    // refusal.
+    const refusal = isNonceUsedError(e) ? null : asConsensusRefusal(e)
+    if (refusal !== null) {
+      if (refusal.feeCharged === true) reportSpend(sdk, auth, spend('refused'))
+      throw refusal
     }
+    // Anything else ("already exists in cache", a bounded wait that ran out): the gone-poll
+    // decides. Still there: an unclassified error stands, and "already exists" (which a
+    // transition dropped after a same-nonce race also answers) is unconfirmed.
+    if (!(await pollUntil(gone, confirmTimeoutMs))) {
+      if (isAlreadyExistsError(e)) throw new UnconfirmedWriteError(documentId)
+      throw e
+    }
+    proven = true
   } finally {
     signer.free()
   }
