@@ -9,25 +9,27 @@
  * `docs/contracts/forge-v2.md`: a repo is three documents in forge-core (`repo`,
  * the owner's `maintainer`, the first `config`), created resumably; members are `maintainer` /
  * `writer` documents the owner creates and deletes; issues, comments, reviews, `event`
- * (members) and `authorEvent` (the author's close/reopen) live in forge-collab, and consensus
+ * (members), `authorEvent` (the author's review kinds) and `transition` (state changes) live in
+ * forge-collab, and consensus
  * enforces every gate. `star` and `follow` are `indexOnly`: a delete carries the document's
- * values (the SDK's index-only delete). Issue numbers follow the `allocateNumber` rule (§6).
+ * values (the SDK's index-only delete). Issue and PR numbers are dense (§6): the contract's `dense`
+ * rule requires the next number to be the repo's issue and PR totals plus one.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { hexToBytes } from '@noble/hashes/utils.js'
 
-import { DEFAULT_NETWORK, type Network } from '../constants'
+import type { Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
 import { isLegalRefName, type EventKind } from '../rules'
-import { allocateNumber, isAuthorKind, numberCeiling, normalizeRepoName as normalizeV2RepoName, type Role, type Visibility } from '../rules/v2'
+import { denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type Role, type StateAction, type Visibility } from '../rules/v2'
 import { fetchIdentityKeys, usableEncryptionKey, type EncryptionOps } from '../auth/encryption-key'
 import {
   ConsensusRefusal,
   DUPLICATE_UNIQUE_CODE,
-  GATE_REFUSED_CODE,
+  RULE_REFUSED_CODE,
   UnconfirmedWriteError,
   contentHash,
   countDocuments,
@@ -36,19 +38,18 @@ import {
   previewCredits,
   queryDocumentsWithProof,
   type DeleteResult,
-  type DocumentQuery,
   type WriteAuth,
   type WriteResult,
 } from '../sdk'
-import { DOC, num, str, type RepoRef } from './contract'
-import { invalidateMembers, readNumberTrust } from './members'
+import { DOC, type RepoRef } from './contract'
+import { invalidateMembers } from './members'
 import { refNameHash, repoContentWritten } from './push'
-import { mapPooled } from '../view/pool'
 import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
 import { invalidateRepoFeed } from './issues'
 import { noteTargetCreated } from './social'
 import { repoSource } from './source'
+import { writeTransition, type StateTarget } from './transitions'
 
 // ---------------------------------------------------------------------------
 // event kind name → integer (parity with forge-core `event_kind_to_u64`)
@@ -112,7 +113,7 @@ function scoped(repo: RepoRef, data: Record<string, unknown>): Record<string, un
 }
 
 /** The document types whose writes can change an open issue or PR count. */
-const COUNTED_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.event, DOC.authorEvent])
+const COUNTED_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.transition])
 
 /**
  * Drop the caches a write of `documentType` to `repo` invalidates, so the next read shows it.
@@ -245,102 +246,23 @@ function firstId(documents: readonly Record<string, unknown>[]): string | null {
 }
 
 // ---------------------------------------------------------------------------
-// Issue numbering (forge-v2.md §6 `allocate_number`)
+// Issue numbering (forge-v2.md §6: dense, one sequence for issues and PRs)
 // ---------------------------------------------------------------------------
 
-/** The `number` field of a result row, or null. */
-function numberOf(doc: Record<string, unknown>): number | null {
-  const n = num(doc, 'number')
-  return n > 0 ? n : null
-}
-
-/** The number of a `number desc, limit 1` read's row, or 0 when it found none. */
-async function firstNumber(sdk: EvoSDK, query: DocumentQuery): Promise<number> {
-  const { documents } = await queryDocumentsWithProof(sdk, query)
-  return documents[0] ? numberOf(documents[0]) ?? 0 : 0
-}
-
-/** Concurrent `author`-index reads one allocation makes (one per trusted identity). */
-const TRUSTED_READS = 8
-
 /**
- * The largest number among `repo`'s issues (or PRs) written by one of `trusted`, or 0: one
- * `number desc, limit 1` read of the `author` index (`$ownerId, repoId, number`) each, at most
- * {@link TRUSTED_READS} at a time.
+ * The number the next issue or PR of a repo must carry: the proved `issue` and `patch` totals
+ * (`perRepo`) plus one (the contract's `dense` rule counts the new document). Null when no u32
+ * number is left.
  */
-async function trustedMaxNumber(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch', trusted: readonly string[]): Promise<number> {
+export async function nextNumber(sdk: EvoSDK, repo: RepoRef): Promise<number | null> {
   const source = repoSource(repo)
-  const highest = await mapPooled(trusted, TRUSTED_READS, (author) =>
-    firstNumber(sdk, {
-      ...source.targetQuery(DOC[type]),
-      where: [['$ownerId', '==', author], ['repoId', '==', repo.repoId]],
-      orderBy: [['number', 'desc']],
-      limit: 1,
-    }),
-  )
-  return Math.max(0, ...highest)
+  const [issues, patches] = await Promise.all([countDocuments(sdk, source.repoQuery(DOC.issue)), countDocuments(sdk, source.repoQuery(DOC.patch))])
+  return denseNumber(issues, patches)
 }
 
-/**
- * The number the allocation rule gives the next issue (or PR) of a repo:
- * `n` = the provable count, `base` = the larger of the largest taken number at or below the
- * ceiling and the owner's and maintainers' largest number, then — only when `base` is at or
- * above the ceiling — the contiguous run of taken numbers above it, paged to its end. Null
- * when nothing is left to allocate.
- */
-export async function nextNumber(
-  sdk: EvoSDK,
-  repo: RepoRef,
-  type: 'issue' | 'patch',
-  network: Network = DEFAULT_NETWORK,
-  trusted?: readonly string[],
-): Promise<number | null> {
-  const source = repoSource(repo)
-  const trust = trusted ?? (await readNumberTrust(sdk, repo, network))
-  const [count, trustedMax] = await Promise.all([countDocuments(sdk, source.repoQuery(DOC[type])), trustedMaxNumber(sdk, repo, type, trust)])
-  const ceiling = numberCeiling(count)
-  const belowCeiling = await firstNumber(
-    sdk,
-    source.repoQuery(DOC[type], {
-      where: [['number', '<=', ceiling]],
-      orderBy: [['number', 'desc']],
-      limit: 1,
-    }),
-  )
-  const base = Math.max(belowCeiling, trustedMax)
-  const taken: number[] = base > 0 ? [base] : []
-  // Below the ceiling `base + 1` is free by the choice of `base`. At or above it (the ceiling
-  // itself, or a trusted number past it) squatters may sit right above: walk the run to its
-  // first gap.
-  if (base >= ceiling) {
-    let expect = base + 1
-    let startAfter: string | undefined
-    for (;;) {
-      const page = await queryDocumentsWithProof(
-        sdk,
-        source.repoQuery(DOC[type], {
-          where: [['number', '>', base]],
-          orderBy: [['number', 'asc']],
-          limit: 100,
-          ...(startAfter ? { startAfter } : {}),
-        }),
-      )
-      let gap = false
-      for (const d of page.documents) {
-        const n = numberOf(d)
-        if (n !== expect) {
-          gap = true
-          break
-        }
-        taken.push(n)
-        expect += 1
-      }
-      const last = page.documents[page.documents.length - 1]
-      if (gap || page.documents.length < 100 || last === undefined) break
-      startAfter = str(last, '$id')
-    }
-  }
-  return allocateNumber(count, taken.sort((a, b) => b - a), trustedMax)
+/** Whether a refusal says the number was not the dense next one (another create landed first). */
+function isDenseRefusal(e: unknown): boolean {
+  return e instanceof ConsensusRefusal && e.code === RULE_REFUSED_CODE && namesDenseRule(e.message)
 }
 
 // ---------------------------------------------------------------------------
@@ -353,10 +275,10 @@ export interface CreateIssueResult extends WriteResult {
 }
 
 /**
- * Create an `issue` (ungated; anyone). The number comes from the repo's numbering rule; when
- * consensus refuses it as taken (someone claimed it between the read and the write), the
- * allocation runs again — the squatted number is now `base` — and `onRetry` is told, so the
- * UI can say "Someone claimed #42 a moment ago; retrying as #43" (`ux-dx-spec.md` §1d).
+ * Create an `issue` (ungated; anyone). The number is the dense next one ({@link nextNumber});
+ * when consensus refuses it (another issue or PR landed between the read and the write: a
+ * `dense` refusal, or the unique index), the totals are read again and `onRetry` is told, so
+ * the UI can say "Someone took #42 a moment ago; retrying as #43" (`ux-dx-spec.md` §1d).
  */
 export async function createIssue(
   sdk: EvoSDK,
@@ -382,7 +304,7 @@ export interface PatchInput {
   readonly sourceRefName: string
   /** The head commit, hex. */
   readonly headOid: string
-  /** Open as a draft (`patch.draft`, review-parity P6): not ready for review until marked so. */
+  /** Open as a draft (review-parity P6): the patch, then a draft `transition` (kind 14). */
   readonly draft?: boolean
 }
 
@@ -408,11 +330,14 @@ export function patchData(input: PatchInput): Record<string, unknown> {
   data['sourceRefNameHash'] = refNameHash(input.sourceRefName)
   data['sourceRefName'] = input.sourceRefName
   data['headOid'] = head
-  if (input.draft === true) data['draft'] = true
   return data
 }
 
-/** Open a PR (`patch`, ungated), numbered like an issue (PRs number independently). */
+/**
+ * Open a PR (`patch`, ungated), numbered in the issues' sequence. A draft is the patch and then
+ * its author's draft `transition`; when that second write fails the PR is open and ready, and the
+ * error says so (the author can convert it from the PR page).
+ */
 export async function createPatch(
   sdk: EvoSDK,
   auth: WriteAuth,
@@ -420,10 +345,36 @@ export async function createPatch(
   input: PatchInput & { intent?: string },
   onRetry?: (taken: number, next: number) => void,
 ): Promise<CreateIssueResult> {
-  return createNumbered(sdk, auth, repo, 'patch', patchData(input), input.intent, onRetry)
+  const created = await createNumbered(sdk, auth, repo, 'patch', patchData(input), input.intent, onRetry)
+  if (input.draft !== true) return created
+  const target: StateTarget = { id: created.documentId, number: created.number, type: 'patch', author: auth.identityId }
+  try {
+    await setTargetState(sdk, auth, repo, { target, action: 'draft', isMember: false, ...(input.intent ? { intent: `${input.intent}:draft` } : {}) })
+  } catch (e) {
+    throw new DraftMarkError(created, e)
+  }
+  return created
 }
 
-/** Create a numbered `issue` / `patch`, allocating again when the number is taken meanwhile. */
+/**
+ * The PR was opened, but marking it a draft did not confirm: it is open and ready for review, or
+ * (an unconfirmed write) may still become a draft. Never create the PR again on this error.
+ */
+export class DraftMarkError extends Error {
+  constructor(
+    readonly created: CreateIssueResult,
+    readonly cause: unknown,
+  ) {
+    super(
+      cause instanceof UnconfirmedWriteError
+        ? `PR #${created.number} was opened; marking it a draft was sent but is not confirmed yet. Check the PR page`
+        : `PR #${created.number} was opened, but marking it a draft failed (${cause instanceof Error ? cause.message : String(cause)}); convert it to a draft from the PR page`,
+    )
+    this.name = 'DraftMarkError'
+  }
+}
+
+/** Create a numbered `issue` / `patch`, taking the next dense number again when another landed first. */
 async function createNumbered(
   sdk: EvoSDK,
   auth: WriteAuth,
@@ -434,7 +385,7 @@ async function createNumbered(
   onRetry?: (taken: number, next: number) => void,
 ): Promise<CreateIssueResult> {
   const noun = type === 'issue' ? 'issue' : 'PR'
-  // A private repo: refuse over-long text before allocating, and seal every renumbered retry
+  // A private repo: refuse over-long text before numbering, and seal every renumbered retry
   // under the one writer of this action (the AD binds each new number).
   let writer: PrivateWriter | undefined
   if (repo.visibility === 'private') {
@@ -444,36 +395,35 @@ async function createNumbered(
     }
     writer = await privateWriter(sdk, auth, repo)
   }
-  // Whose numbers are trusted is read once per action, not once per renumbered retry.
-  const trusted = await readNumberTrust(sdk, repo, auth.network)
-  const next = (): Promise<number | null> => nextNumber(sdk, repo, type, auth.network, trusted)
+  const next = (): Promise<number | null> => nextNumber(sdk, repo)
   // A retry of this action first finishes the number its last attempt signed: once that
-  // attempt is visible, allocation would hand out the next number, a new cache key, and a
-  // second issue (the pending write under the old number would never be looked at).
+  // attempt is visible, the totals would give the next number, a new cache key, and a second
+  // issue (the pending write under the old number would never be looked at).
   const triedKey = intentBase ? `forge:numbered:${auth.network}:${repo.repoId}:${type}:${intentBase}` : null
   let number = readTriedNumber(triedKey) ?? (await next())
   for (let attempt = 0; attempt < 4; attempt++) {
-    if (number === null) throw new Error(`this repo has no ${noun} numbers left to allocate`)
+    if (number === null) throw new Error(`this repo has no ${noun} numbers left`)
     try {
       // Each number is its own write: a renumbered retry must not reuse the earlier bytes.
       const intent = intentBase ? `${intentBase}#${number}` : undefined
       writeTriedNumber(triedKey, number)
-      const result = await writeRepoDoc(sdk, auth, repo, DOC[type], { number, ...fields }, intent, writer)
+      const result = await writeRepoDoc(sdk, auth, repo, DOC[type], { number, tk: type === 'issue' ? 0 : 1, ...fields }, intent, writer)
       writeTriedNumber(triedKey, null)
       if (result.confirmed) noteTargetCreated(repo, type)
       return { ...result, number }
     } catch (e) {
-      // Refused for good (not a duplicate, which is renumbered below): nothing under this
+      // Refused for good (not a numbering race, which is renumbered below): nothing under this
       // number is pending, so the action does not pin it any more. After a SupersededWriteError
       // the number stays pinned on purpose: its intent `base#N` holds the tombstone, so every
-      // later retry of this action lands there and is answered the same way, never allocated a
+      // later retry of this action lands there and is answered the same way, never given a
       // fresh number and posted as a second document.
-      if (e instanceof ConsensusRefusal && !isDuplicate(e)) writeTriedNumber(triedKey, null)
+      const race = isDuplicate(e) || isDenseRefusal(e)
+      if (e instanceof ConsensusRefusal && !race) writeTriedNumber(triedKey, null)
       if (e instanceof UnconfirmedWriteError) {
         // Not seen yet. If someone else holds the number, ours was refused: renumber.
-        const holder = await numberHolder(sdk, repo, type, number).catch(() => undefined)
+        const holder = await numberHolder(sdk, repo, number).catch(() => undefined)
         if (holder === undefined || holder === null || holder === auth.identityId) throw e
-      } else if (!isDuplicate(e)) throw e
+      } else if (!race) throw e
       const taken: number = number
       number = await next()
       if (number !== null && number <= taken) number = taken + 1
@@ -513,10 +463,13 @@ function writeTriedNumber(key: string | null, number: number | null): void {
   }
 }
 
-/** Who holds issue / PR `number` (its `$ownerId`), or null when nobody does. */
-async function numberHolder(sdk: EvoSDK, repo: RepoRef, type: 'issue' | 'patch', number: number): Promise<string | null> {
-  const { documents } = await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(DOC[type], { where: [['number', '==', number]], limit: 1 }))
-  const owner = documents[0]?.['$ownerId']
+/** Who holds `number` (its `$ownerId`) among the repo's issues and PRs (one sequence), or null. */
+async function numberHolder(sdk: EvoSDK, repo: RepoRef, number: number): Promise<string | null> {
+  const source = repoSource(repo)
+  const held = await Promise.all(
+    [DOC.issue, DOC.patch].map((t) => queryDocumentsWithProof(sdk, source.repoQuery(t, { where: [['number', '==', number]], limit: 1 }))),
+  )
+  const owner = held.flatMap((r) => r.documents)[0]?.['$ownerId']
   return typeof owner === 'string' ? owner : null
 }
 
@@ -562,19 +515,6 @@ export async function addEvent(
 }
 
 /**
- * The issue or PR author's own close / reopen: an `authorEvent`, gated to the target's author
- * (`forge-v2.md` §3).
- */
-export async function addAuthorEvent(
-  sdk: EvoSDK,
-  auth: WriteAuth,
-  repo: RepoRef,
-  input: { target: WriteTarget; kind: 'close' | 'reopen'; intent?: string },
-): Promise<WriteResult> {
-  return writeRepoDoc(sdk, auth, repo, DOC.authorEvent, eventData(input.target, input.kind), input.intent)
-}
-
-/**
  * Which document an event of `kind` by the viewer must be: a member's `event` (every kind),
  * else the author's `authorEvent` for an author kind, else null (no gate admits it). Parity:
  * forge-core `kind_route`.
@@ -590,33 +530,17 @@ export function eventRoute(params: {
   return params.viewer === params.author && isAuthorKind(params.kind) ? 'authorEvent' : null
 }
 
-/** Which state-event type a close/reopen by the viewer should be. */
-export function stateEventRoute(params: {
-  readonly viewer: string
-  readonly author: string
-  readonly isMember: boolean
-}): 'event' | 'authorEvent' | null {
-  return eventRoute({ ...params, kind: 'close' })
-}
-
-/** Close or reopen an issue/PR by whichever route the viewer holds. */
+/**
+ * Close, reopen, merge, draft or ready an issue or PR: one `transition`, the legal move from its
+ * current state, by a member or by its author ({@link writeTransition}).
+ */
 export async function setTargetState(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { target: WriteTarget; kind: 'close' | 'reopen'; author: string; isMember: boolean; intent?: string },
+  input: { target: StateTarget; action: StateAction; isMember: boolean; oidHex?: string; intent?: string },
 ): Promise<WriteResult> {
-  const route = stateEventRoute({ viewer: auth.identityId, author: input.author, isMember: input.isMember })
-  if (route === null) throw new Error('only the author or a maintainer or writer can do that')
-  if (route === 'authorEvent') return addAuthorEvent(sdk, auth, repo, input)
-  try {
-    return await addEvent(sdk, auth, repo, input)
-  } catch (e) {
-    // The membership read was stale (revoked meanwhile): the author path still holds.
-    const gateRefused = e instanceof ConsensusRefusal && e.code === GATE_REFUSED_CODE
-    if (gateRefused && auth.identityId === input.author) return addAuthorEvent(sdk, auth, repo, { ...input, intent: input.intent ? `${input.intent}:author` : undefined })
-    throw e
-  }
+  return writeTransition(sdk, auth, repo, (type, data, intent) => writeRepoDoc(sdk, auth, repo, type, data, intent), input)
 }
 
 /** Submit a PR review: a verdict on `commitOid` (the head it was made against). */

@@ -34,13 +34,13 @@ export function MirrorNote({ home, kind }: { home: RepoHome; kind: MirrorKind })
   )
 }
 
-/** The New issue form's hint on a mirror: numbers here follow the source's. */
+/** The New issue form's hint on a mirror: numbers here are this repo's own, not the source's. */
 export function MirrorComposeHint({ home }: { home: RepoHome }): JSX.Element | null {
   const source = useMirrorSource(home, 'issue')
   if (source === null) return null
   return (
     <p role="note" className="text-[12px] text-caution-700 dark:text-caution-400" data-testid="mirror-compose-hint">
-      This repo mirrors {source.label}; issues opened here may take numbers the upstream project will use.
+      This repo mirrors {source.label}. Issues opened here are numbered in this repo&apos;s own sequence; mirrored items show their {source.host} number beside it.
     </p>
   )
 }

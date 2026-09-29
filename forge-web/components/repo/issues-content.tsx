@@ -265,8 +265,8 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                     <span className="font-mono">#{issue.number}</span>
                     <Byline author={issue.author} createdAt={issue.createdAt} origin={trustedOrigin(issue.origin, issue.author, trust)} verb="opened" link={false} />
                     {!issue.stateComplete ? (
-                      <span className="rounded-full bg-danger/10 px-2 py-0.5 text-[11px] text-danger-700 dark:text-danger-400" title="This repository's event history could not be read completely, so the open/closed state, labels and assignees are unverified.">
-                        state unverified
+                      <span className="rounded-full bg-danger/10 px-2 py-0.5 text-[11px] text-danger-700 dark:text-danger-400" title="This repository's event history could not be read completely, so the labels and assignees are unverified. Open or closed is proved.">
+                        labels unverified
                       </span>
                     ) : null}
                   </div>

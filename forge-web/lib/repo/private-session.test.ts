@@ -187,7 +187,7 @@ function mockSdk(rows: Record<string, Record<string, unknown>[]>): EvoSDK {
     out = out.slice(0, Math.min(q.limit ?? 100, 100))
     return new Map(out.map((d) => [String(d['$id']), d]))
   }
-  return { documents: { query, count: async () => new Map() } } as unknown as EvoSDK
+  return { documents: { query, count: async () => new Map(), sum: async () => new Map() } } as unknown as EvoSDK
 }
 
 // ---------------------------------------------------------------------------

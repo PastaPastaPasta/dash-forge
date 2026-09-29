@@ -9,7 +9,8 @@ import { fixtureWriteBlocked, idFile, idOrEmpty, repoUrl, shot, signedIn, unlock
  *
  * One story, four identities from ~/.config/dash-forge/test-identities/devnet-<name>/, each in
  * its own browser context: OWNER creates a repo and adds COLLAB as a writer; CONTRIB opens an
- * issue, comments and closes it with an `authorEvent`; COLLAB labels it with a member `event`;
+ * issue, comments and closes it as its author (a `transition`, asAuthor = its number); COLLAB labels
+ * it with a member `event`;
  * CONTRIB stars and unstars the repo (the unstar is an index-only delete); OWNER approves the
  * fixture's open PR and finally removes COLLAB. Every write goes through the confirm dialog and
  * its cost preview, and the spend ledger in /settings records it.

@@ -13,7 +13,7 @@
  * Anyone can write an `imported` object or such text, so this module only parses. A caller shows
  * it as the original author, date or verdict only when the document's owner is trusted to mirror
  * (the repo owner or a current maintainer: {@link trustedOrigin}, the same trust set as the
- * mirror note and issue numbering).
+ * mirror note).
  */
 
 import type { PlainDocument } from '../sdk'

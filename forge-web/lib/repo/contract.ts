@@ -31,6 +31,7 @@ export const DOC = {
   comment: 'comment',
   event: 'event',
   authorEvent: 'authorEvent',
+  transition: 'transition',
   review: 'review',
   label: 'label',
   release: 'release',

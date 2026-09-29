@@ -19,7 +19,8 @@ import {
  *
  * The fixture: repo `forge-v2-demo` owned by OWNER (maintainers OWNER + MAINTAINER, writer
  * COLLAB), main = 3 files + docs/, a feature branch, tag v0.1.0; issue #1 open + labelled by a
- * writer, #2 closed by its author (`authorEvent`), #3 closed + labelled by a maintainer; PR #1
+ * writer, #2 closed by its author (a `transition` written as the author), #3 closed + labelled by a
+ * maintainer; PR #1
  * open with a maintainer approval, PR #2 merged; issue #4 open; PR #3 the review-parity
  * fixture (below); a branch `policy`; one star. `forge-v2-empty` (MAINTAINER) has
  * nothing pushed. The axe checks over these pages live in a11y.spec.ts.
@@ -88,7 +89,7 @@ test.describe('forge-v2 read paths (devnet fixture)', () => {
     await shot(page, 'v2-03-blob')
   })
 
-  test('v2-4. issues list folds event + authorEvent', async ({ page }) => {
+  test('v2-4. issues list reads state from transitions and labels from events', async ({ page }) => {
     await page.goto(url('issues'), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
     await expectLanded(page, page.getByRole('list', { name: 'Issues', exact: true }).getByText('README should explain the event split'))

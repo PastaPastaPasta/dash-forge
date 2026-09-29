@@ -133,17 +133,18 @@ describe('event payloads and routes', () => {
     expect(eventRoute({ viewer: BOB, author: ALICE, isMember: true, kind: 'reviewDismiss' })).toBe('event')
     expect(eventRoute({ viewer: ALICE, author: ALICE, isMember: false, kind: 'headUpdate' })).toBe('authorEvent')
     expect(eventRoute({ viewer: ALICE, author: ALICE, isMember: false, kind: 'threadResolve' })).toBe('authorEvent')
-    for (const kind of ['merge', 'labelAdd', 'reviewDismiss', 'milestoneSet', 'retarget'] as const) {
+    // The state kinds are transitions now: no authorEvent carries them.
+    for (const kind of ['merge', 'close', 'reopen', 'draft', 'ready', 'labelAdd', 'reviewDismiss', 'milestoneSet', 'retarget'] as const) {
       expect(eventRoute({ viewer: ALICE, author: ALICE, isMember: false, kind })).toBeNull()
     }
     expect(eventRoute({ viewer: BOB, author: ALICE, isMember: false, kind: 'threadResolve' })).toBeNull()
   })
 
   it('posts the author route as an authorEvent document', async () => {
-    const r = await postTargetEvent(sdk, auth(ALICE), REPO, { target, kind: 'ready', author: ALICE, isMember: false })
+    const r = await postTargetEvent(sdk, auth(ALICE), REPO, { target, kind: 'headUpdate', author: ALICE, isMember: false, payload: { oidHex: HEAD } })
     expect(r.route).toBe('authorEvent')
     expect(writes[0]?.documentType).toBe('authorEvent')
-    expect(writes[0]?.data['kind']).toBe(10)
+    expect(writes[0]?.data['kind']).toBe(16)
     await expect(postTargetEvent(sdk, auth(ALICE), REPO, { target, kind: 'reviewDismiss', author: ALICE, isMember: false, payload: { refId: BOB } })).rejects.toThrow(/maintainer or writer/)
     expect(writes).toHaveLength(1)
   })
@@ -244,7 +245,7 @@ describe('private repos', () => {
     await expect(submitReviewDraft(sdk, auth(BOB), PRIVATE, d, undefined, NO_CHAIN)).rejects.toThrow(/private repo/)
     expect(writes).toHaveLength(0)
     // Events are plaintext by design, and still allowed.
-    await postTargetEvent(sdk, auth(ALICE), PRIVATE, { target, kind: 'ready', author: ALICE, isMember: false })
+    await postTargetEvent(sdk, auth(ALICE), PRIVATE, { target, kind: 'headUpdate', author: ALICE, isMember: false, payload: { oidHex: HEAD } })
     expect(writes[0]?.documentType).toBe('authorEvent')
   })
 })

@@ -53,7 +53,6 @@ import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
 import { deleteBranchOffer, deleteBranchProblem } from '@/lib/view/pull-actions'
 import {
-  addEvent,
   createComment,
   commentFirsts,
   createReview,
@@ -103,6 +102,7 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { Timeline, type CommentSlots } from '@/components/repo/timeline'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
+import { bodyRefsUpstream, numberLabel, shownUpstreamNumber } from '@/lib/view/upstream'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 import { Button } from '@/components/ui/button'
@@ -268,6 +268,7 @@ function PullPage({
   const { slot: mergeSlot, onRunning: setMergeRunning } = useMergeSlot(tab, open && pull.state.draft)
   const merged = pull.state.merged
   const target = { id: pull.id, number: pull.number }
+  const stateTarget = { ...target, type: 'patch' as const, author: pull.author }
   /**
    * Delete the PR's source branch in its repo (M7): a ref update to the null oid from the merged
    * head. Refused (`deleteBranchProblem`) for the base or default branch, and when the branch
@@ -377,11 +378,16 @@ function PullPage({
   const firstsReady = (comment !== '' || pending !== null) && ready && sdk !== null && identity !== null
   const commentFirst = useFirstWrite(() => commentFirsts(sdk!, repo, pull.id, identity!, hasComments), [pull.id, identity ?? '', hasComments], firstsReady)
   const reviewFirst = useFirstWrite(() => reviewFirsts(sdk!, repo, identity!, hasReviews), [pull.id, identity ?? '', hasReviews], firstsReady)
+  // Review kinds are a member `event` or the author's `authorEvent`; state changes a `transition`.
   const stateType = isMember ? 'event' : 'authorEvent'
   const eventFirst = useFirstWrite(() => eventFirsts(sdk!, repo, stateType, pull.id, identity!), [pull.id, identity ?? '', stateType], firstsReady)
+  const transitionFirst = useFirstWrite(() => eventFirsts(sdk!, repo, 'transition', pull.id, identity!), [pull.id, identity ?? ''], firstsReady)
+  const transitionCost = previewCreate('transition', {}, transitionFirst)
 
 
   const links: MarkdownLinks = useMemo(() => ({ issueHref: (n: number) => repoHref('/repo/issue', addr, { number: String(n) }) }), [addr])
+  // A mirrored body's `#n` is the source's number: resolved through `upstreamNumber` (D-2).
+  const upstreamLinks: MarkdownLinks = useMemo(() => ({ issueHref: (n: number) => repoHref('/repo/issue', addr, { upstream: String(n) }) }), [addr])
 
   const eventCost = previewCreate(stateType, {}, eventFirst)
   /** Confirm an event write (the route's price checked against the balance first). */
@@ -477,12 +483,12 @@ function PullPage({
     const p = pending
     switch (p.kind) {
       case 'state':
-        await setTargetState(sdk, signer, repo, { target, kind: p.to, author: pull.author, isMember, intent })
+        await setTargetState(sdk, signer, repo, { target: stateTarget, action: p.to, isMember, intent })
         refresh((t) => t.pull.state.open === (p.to === 'reopen'))
         return
       case 'mark-merged':
-        await addEvent(sdk, signer, repo, { target, kind: 'merge', oidHex: pull.headOid, intent })
-        refresh()
+        await setTargetState(sdk, signer, repo, { target: stateTarget, action: 'merge', isMember, oidHex: pull.headOid, intent })
+        refresh((t) => t.pull.state.merged)
         return
       case 'review': {
         const r = await createReview(sdk, signer, repo, { patchId: pull.id, verdict: p.verdict, commitOid: pull.headOid, body: p.body, intent })
@@ -492,7 +498,7 @@ function PullPage({
         return
       }
       case 'draft':
-        await post(p.to, intent)
+        await setTargetState(sdk, signer, repo, { target: stateTarget, action: p.to, isMember, intent })
         refresh((t) => t.pull.state.draft === (p.to === 'draft'))
         return
       case 'head':
@@ -569,8 +575,10 @@ function PullPage({
     switch (pending.kind) {
       case 'review':
         return composeCost(repo, 'review', { body: pending.body }, reviewFirst)
+      case 'state':
       case 'mark-merged':
-        return previewCreate('event')
+      case 'draft':
+        return transitionCost
       case 'label':
         return previewCreate('event', { value: pending.label })
       case 'assign':
@@ -619,8 +627,8 @@ function PullPage({
         : { label: 'Open', icon: <GitPullRequest className="h-4 w-4" aria-hidden />, bg: 'bg-verify-700' }
   const linked = linkedIssues(pull.body)
   // D-104: a merged PR's header says what happened ("2 commits merged into main"), not "wants to".
-  // Who signed the merge is in the timeline: the fold may have passed over earlier claims. A
-  // count only from a real comparison (not the first-parent fallback).
+  // Who recorded the merge is in the timeline. A count only from a real comparison (not the
+  // first-parent fallback).
   const mergedLead = counts.commits === null || cmp?.fellBack === true ? 'Merged' : `${plural(counts.commits, 'commit')} merged`
   const checkout = checkoutCommand(repo, pull.number)
   const sourceAddr = sourceRef === null ? null : { owner: sourceRef.ownerId, name: sourceRef.name }
@@ -651,7 +659,7 @@ function PullPage({
         ) : (
           <div className="flex items-start gap-3">
             <h1 className="min-w-0 flex-1 break-words text-2xl">
-              {pull.title || '(untitled)'} <span className="font-mono font-normal text-anvil-500 dark:text-anvil-400">#{pull.number}</span>
+              {pull.title || '(untitled)'} <span className="font-mono font-normal text-anvil-500 dark:text-anvil-400" data-testid="pull-number">{numberLabel(pull.number, shownUpstreamNumber(pull, repo, thread.members))}</span>
             </h1>
             {isAuthor ? (
               <Button variant="outline" size="sm" onClick={() => setEditing({ title: pull.title, body: pull.body })} disabled={writeBlocked} title={composeBlock ?? undefined}>
@@ -691,6 +699,13 @@ function PullPage({
             ) : null}{' '}
             · <Time ms={origin?.createdAt || pull.createdAt} prefix={merged || !open ? 'opened ' : ''} />
           </span>
+          {pull.state.mergeOnBase === false ? (
+            // D-9: merged is what a maintainer recorded; the recorded commit never became a tip
+            // of the base branch here (a mirror whose base was not imported, or a mistaken mark).
+            <span className="text-[12px] text-forge-700 dark:text-forge-400" data-testid="pr-merge-not-on-base" title="The merge was recorded by a maintainer or writer; its commit is not a tip the base branch ever had in this repo.">
+              merge commit not found on the base
+            </span>
+          ) : null}
           {pull.headOid ? (
             <span className="flex items-center gap-1 text-anvil-500 dark:text-anvil-400" data-testid="pr-head">
               head <Oid value={pull.headOid} chars={9} />
@@ -791,7 +806,7 @@ function PullPage({
                   {editing ? (
                     <MarkdownEditor id="edit-pr-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} />
                   ) : pull.body ? (
-                    <MarkdownView source={pull.body} links={links} />
+                    <MarkdownView source={pull.body} links={bodyRefsUpstream(pull, repo, thread.members) ? upstreamLinks : links} />
                   ) : (
                     <p className="italic text-anvil-500 dark:text-anvil-400">No description.</p>
                   )}
@@ -802,6 +817,7 @@ function PullPage({
                 <Timeline
                   items={conversation}
                   links={links}
+                  commentLinks={(c) => (bodyRefsUpstream(c, repo, thread.members) ? upstreamLinks : undefined)}
                   trust={trust}
                   eventText={eventText}
                   renderComment={(item) =>
@@ -839,7 +855,7 @@ function PullPage({
                       size="sm"
                       disabled={guard.disabledReason !== null}
                       onClick={() => {
-                        confirmEvent({ kind: 'draft', to: 'ready' })
+                        confirmEvent({ kind: 'draft', to: 'ready' }, transitionCost)
                       }}
                     >
                       Ready for review
@@ -1005,8 +1021,8 @@ function PullPage({
                 {actions.canMarkMerged && !pull.state.draft ? (
                   <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
                     {actions.markCountsNow
-                      ? `The head commit is already on ${base}, so a merge mark counts as soon as it lands.`
-                      : `"Mark as merged" records a merge done elsewhere: it only counts once the head commit is on ${base}. Merge it above to move the branch.`}
+                      ? `The head commit is already on ${base}: marking it merged records that.`
+                      : `"Mark as merged" records a merge done elsewhere, and it is final. The head commit is not on ${base}, so the PR will say "merge commit not found on the base" until it gets there. Merge it above to move the branch.`}
                   </p>
                 ) : actions.mergeHint !== null ? (
                   <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">{actions.mergeHint}</p>
@@ -1140,7 +1156,7 @@ function PullPage({
               <button
                 type="button"
                 onClick={() => {
-                  confirmEvent({ kind: 'draft', to: 'draft' })
+                  confirmEvent({ kind: 'draft', to: 'draft' }, transitionCost)
                 }}
                 className="text-[12px] text-anvil-500 underline-offset-2 hover:text-forge-700 hover:underline dark:text-anvil-400 dark:hover:text-forge-400"
               >
@@ -1258,17 +1274,18 @@ function ChecksRow({ summary, headOid, onOpen }: { summary: ChecksSummary | null
 /** The confirm dialog's words for each pending write. */
 function confirmText(pending: Pending | null, number: number, isMember: boolean, head: string): { title: string; description: string; label: string } {
   const via = isMember ? 'a member event' : 'an author event (you opened this PR)'
+  const move = isMember ? 'a state change as a member' : 'a state change as the PR author'
   switch (pending?.kind) {
     case 'state':
       return {
         title: `${pending.to === 'close' ? 'Close' : 'Reopen'} PR #${number}`,
-        description: `Appends ${via}.`,
+        description: `Records ${move}. Platform accepts it only if the PR is still ${pending.to === 'close' ? 'open' : 'closed'}.`,
         label: pending.to === 'close' ? 'Close PR' : 'Reopen PR',
       }
     case 'mark-merged':
       return {
         title: `Mark PR #${number} as merged`,
-        description: `Appends a merge event naming ${head.slice(0, 9)}. This does not merge any code: it records a merge done elsewhere, and only counts once that commit is on the base branch.`,
+        description: `Records the PR as merged at ${head.slice(0, 9)}. This does not merge any code: it records a merge done elsewhere, and it is final. If that commit never reaches the base branch, the PR shows "merge commit not found on the base".`,
         label: 'Sign & mark merged',
       }
     case 'review':
@@ -1279,8 +1296,8 @@ function confirmText(pending: Pending | null, number: number, isMember: boolean,
       }
     case 'draft':
       return pending.to === 'ready'
-        ? { title: `Mark PR #${number} ready for review`, description: `Appends ${via}. Reviewers see it as ready; it can be merged.`, label: 'Sign & mark ready' }
-        : { title: `Convert PR #${number} to a draft`, description: `Appends ${via}. A draft can be reviewed but not merged.`, label: 'Sign & convert' }
+        ? { title: `Mark PR #${number} ready for review`, description: `Records ${move}. Reviewers see it as ready; it can be merged.`, label: 'Sign & mark ready' }
+        : { title: `Convert PR #${number} to a draft`, description: `Records ${move}. A draft can be reviewed but not merged.`, label: 'Sign & convert' }
     case 'head':
       return {
         title: `Update PR #${number}'s head`,

@@ -4,18 +4,20 @@
  * Timeline — the interleaved comment + event + review stream of an issue/PR. Comments render
  * the author pill + markdown body; events render a compact, git-native one-liner ("closed
  * this", "added the bug label"); reviews render their verdict and the commit they were made
- * against. An `authorEvent` the fold ignores (not a close/reopen by the author) still appears
- * here as the audit trail it is.
+ * against; state changes (`transition`) render as "closed this", "merged this". An event the
+ * folds ignore still appears here as the audit trail it is.
  */
 
 import { Byline } from '@/components/repo/byline'
 import { importedVerdictOf, trustedOrigin } from '@/lib/repo/provenance'
-import { Check, CheckCircle2, Eye, GitCommit, GitMerge, Lock, LockOpen, Milestone, MessageSquare, Pin, Tag, UserPlus, X } from 'lucide-react'
+import { Check, CheckCircle2, Eye, GitCommit, GitMerge, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pin, Tag, UserPlus, X } from 'lucide-react'
 import type { TimelineItem } from '@/lib/view'
 import { branchName, plural, timeAgo } from '@/lib/view'
 import { anchorLabel } from '@/lib/view/inline-threads'
 import { VERDICT_LABEL, type VerdictName } from '@/lib/repo'
 import type { Event } from '@/lib/rules'
+import { ISSUE_CLOSE, PR_CLOSE, PR_DRAFT, PR_DRAFT_CLOSE, PR_MERGE, PR_READY, transitionPhrase } from '@/lib/rules/transition'
+import type { TransitionView } from '@/lib/repo'
 import { Author } from '@/components/author'
 import type { ReactNode } from 'react'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
@@ -92,6 +94,15 @@ function eventPhrase(e: Event): { text: string; icon: JSX.Element; who?: string;
   }
 }
 
+/** The icon of a state change. */
+function transitionIcon(t: TransitionView): JSX.Element {
+  const muted = 'h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400'
+  if (t.kind === PR_MERGE) return <GitMerge className="h-3.5 w-3.5 text-dash" aria-hidden />
+  if (t.kind === ISSUE_CLOSE || t.kind === PR_CLOSE || t.kind === PR_DRAFT_CLOSE) return <Lock className="h-3.5 w-3.5 text-forge-500" aria-hidden />
+  if (t.kind === PR_DRAFT || t.kind === PR_READY) return <GitPullRequestDraft className={muted} aria-hidden />
+  return <LockOpen className={muted} aria-hidden />
+}
+
 /** What a page adds to a comment card: header actions, or a body that replaces the rendered one (an editor). */
 export interface CommentSlots {
   readonly header?: ReactNode
@@ -111,6 +122,7 @@ export function Timeline({
   links,
   renderComment,
   eventText,
+  commentLinks,
   trust = null,
 }: {
   items: readonly TimelineItem[]
@@ -120,6 +132,8 @@ export function Timeline({
   renderComment?: (item: Extract<TimelineItem, { kind: 'comment' }>) => CommentSlots
   /** A page's own wording for an event (the PR page counts the commits a head update pushed), or null. */
   eventText?: (e: Event) => string | null
+  /** A comment's own link targets (a mirrored comment's `#n` names the source's item), else `links`. */
+  commentLinks?: (comment: Extract<TimelineItem, { kind: 'comment' }>['comment']) => MarkdownLinks | undefined
   /** Who may mirror (`useMirrorTrust`): their imported comments and reviews show the original author and date. */
   trust?: ReadonlySet<string> | null
 }): JSX.Element {
@@ -142,7 +156,7 @@ export function Timeline({
               </div>
               {slot.body ?? (
                 <div className="px-4 py-3">
-                  <MarkdownView source={item.comment.body} links={links} />
+                  <MarkdownView source={item.comment.body} links={commentLinks?.(item.comment) ?? links} />
                 </div>
               )}
             </div>
@@ -198,6 +212,18 @@ export function Timeline({
                   ) : null}
                 </div>
               ) : null}
+            </div>
+          )
+        }
+        if (item.kind === 'transition') {
+          const t = item.transition
+          return (
+            <div key={`t-${t.id}-${i}`} className="flex flex-wrap items-center gap-2 px-2 text-dense text-anvil-500 dark:text-anvil-400" data-testid="timeline-event" data-kind={`transition-${t.kind}`}>
+              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-anvil-100 dark:bg-anvil-800">{transitionIcon(t)}</span>
+              <Author identityId={t.actor} link={false} />
+              <span>{transitionPhrase(t.kind)}</span>
+              {t.kind === PR_MERGE && t.oid ? <span className="flex items-center gap-1">at <Oid value={t.oid} chars={9} /></span> : null}
+              <span className="text-anvil-500 dark:text-anvil-400">· {timeAgo(t.createdAt)}</span>
             </div>
           )
         }
