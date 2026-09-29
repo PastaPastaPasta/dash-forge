@@ -194,9 +194,15 @@ export function PullContent({
       const signal = { aborted: false }
       current.current = signal
       const want = [...expectations.current]
-      const load = () => loadPullThread(sdk!, home.repo, number, network)
-      const first = await retryWhileMissing(load, justCreated ? 8 : 0)
-      const t = first === null ? null : await readUntil(async () => (signal.aborted ? first : load()), want, { ...(waitFor.current ?? {}), signal })
+      let latest: PullThread | null = null
+      const load = async (): Promise<PullThread | null> => {
+        if (signal.aborted) return latest
+        latest = await loadPullThread(sdk!, home.repo, number, network)
+        return latest
+      }
+      const first = await retryWhileMissing(load, justCreated ? 8 : 0, undefined, signal)
+      // One read on a cold load; re-reads only while a write this page made has not shown (L-77).
+      const t = first === null ? null : await readUntil(load, want, { ...(waitFor.current ?? {}), signal, first })
       if (!signal.aborted && t !== null) {
         expectations.current = expectations.current.filter((w) => !w(t))
         if (expectations.current.length === 0) waitFor.current = null

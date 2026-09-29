@@ -3,11 +3,19 @@
  * browser just wrote. Retry a read that came back empty a few times (1.5 s apart) before
  * believing it.
  */
-export async function retryWhileMissing<T>(read: () => Promise<T | null>, attempts: number, delayMs = 1500): Promise<T | null> {
+export async function retryWhileMissing<T>(
+  read: () => Promise<T | null>,
+  attempts: number,
+  delayMs = 1500,
+  /** Stops the retries once aborted (a newer read took over). */
+  signal?: { readonly aborted: boolean },
+): Promise<T | null> {
+  const stopped = (): boolean => signal?.aborted === true
   for (let i = 0; ; i++) {
     const value = await read()
-    if (value !== null || i >= attempts) return value
+    if (value !== null || i >= attempts || stopped()) return value
     await new Promise((r) => setTimeout(r, delayMs))
+    if (stopped()) return value
   }
 }
 
@@ -40,10 +48,22 @@ export async function readUntil<T>(
     backoff = 1,
     maxDelayMs = 10_000,
     signal,
-  }: { attempts?: number; delayMs?: number; backoff?: number; maxDelayMs?: number; signal?: { readonly aborted: boolean } } = {},
+    first,
+  }: {
+    attempts?: number
+    delayMs?: number
+    backoff?: number
+    maxDelayMs?: number
+    signal?: { readonly aborted: boolean }
+    /**
+     * A value the caller has just read: checked first, instead of reading again at once. Without
+     * it a page's load read twice on every cold visit, its first read dropped (L-77).
+     */
+    first?: T
+  } = {},
 ): Promise<T | null> {
   const stopped = (): boolean => signal?.aborted === true
-  let v = await read()
+  let v = first ?? (await read())
   let wait = delayMs
   for (let i = 0; v !== null && !want.every((w) => w(v as T)) && i < attempts && !stopped(); i++) {
     await new Promise((r) => setTimeout(r, wait))
