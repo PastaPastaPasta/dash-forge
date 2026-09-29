@@ -51,13 +51,19 @@ test.describe('shell resilience (L-10, L-56)', () => {
     await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
     await context.setOffline(true)
     await page.getByRole('navigation', { name: 'Repository' }).getByRole('link', { name: /^Pull requests/ }).click()
-    // Whatever failed first (the page's code, the repo resolve, the list's read), it says so
-    // plainly: never a blank "Application error" or raw gRPC text.
-    const offline = page.getByTestId('read-unreachable').or(page.getByTestId('platform-unreachable')).or(page.getByTestId('app-offline')).first()
+    // Whatever happens first, it says so plainly: the click held with a toast (a page this tab
+    // has no data for), or the page's offline state (the list's read, the repo resolve, its
+    // code). Never a blank "Application error" or raw gRPC text.
+    const offline = page
+      .getByText("You're offline")
+      .or(page.getByTestId('read-unreachable'))
+      .or(page.getByTestId('platform-unreachable'))
+      .first()
     await expect(offline).toBeVisible({ timeout: 60_000 })
     // The raw error is only behind the collapsed Details: nothing visible reads as gRPC internals.
     await expect(page.getByText(/grpc error|That read did not land|Application error/i).filter({ visible: true })).toHaveCount(0)
     await context.setOffline(false)
+    await expect(page).toHaveURL(/\/repo\/pulls\//, { timeout: 60_000 })
     await expect(page.getByTestId('read-unreachable').or(page.getByTestId('app-offline'))).toHaveCount(0, { timeout: 90_000 })
     await expect(page.getByRole('heading', { name: /pull requests/i }).or(page.getByText(/No pull requests|open/i)).first()).toBeVisible({ timeout: 60_000 })
   })
