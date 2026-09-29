@@ -1,7 +1,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { countDocuments, queryAllDocuments, queryDocuments, setPlatformVersion, setStaleContractHandler } from './query'
+import { countDocuments, noteSdkWrite, queryAllDocuments, queryDocuments, setPlatformVersion, setStaleContractHandler } from './query'
 
 const CONTRACT = 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS'
 
@@ -87,6 +87,21 @@ describe('identical reads in flight are joined (S-1)', () => {
     expect(results.map((r) => r.status)).toEqual(['rejected', 'rejected'])
     await expect(queryDocuments(sdk, q)).resolves.toEqual([])
     expect(query).toHaveBeenCalledTimes(2)
+  })
+
+  it('a read issued after this tab wrote does not join one issued before (review L2)', async () => {
+    let resolve!: (m: Map<string, unknown>) => void
+    const query = vi.fn(() => new Promise<Map<string, unknown>>((r) => (resolve = r)))
+    const sdk = fakeSdk(query)
+    const q = { dataContractId: CONTRACT, documentTypeName: 'issue', limit: 1 }
+    const before = queryDocuments(sdk, q)
+    const first = resolve
+    noteSdkWrite(sdk)
+    const after = queryDocuments(sdk, q)
+    expect(query).toHaveBeenCalledTimes(2)
+    first(new Map())
+    resolve(new Map())
+    await Promise.all([before, after])
   })
 
   it('counts are joined the same way', async () => {

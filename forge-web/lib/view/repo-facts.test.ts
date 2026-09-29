@@ -11,7 +11,7 @@ vi.mock('../repo/private-session', () => ({ onPrivateSessionEnded: (l: (id: stri
 
 import { Store } from './diff-fixtures'
 import { readTree } from './tree-nav'
-import { loadRepoFacts, repoFacts, repoFilesWalk, resetRepoFacts, subscribeRepoFacts, wantRepoFacts } from './repo-facts'
+import { loadRepoFacts, repoFacts, repoFactsLoading, repoFilesWalk, resetRepoFacts, subscribeRepoFacts, wantRepoFacts } from './repo-facts'
 
 const MIT = 'Permission is hereby granted, free of charge, to any person obtaining a copy of this software\n\nThe above copyright notice and this permission notice shall be included in all copies'
 
@@ -45,7 +45,8 @@ describe('loadRepoFacts', () => {
     expect(facts.license).toEqual({ ids: ['MIT'], file: 'LICENSE' })
     expect(facts.languages?.languages.map((l) => l.name)).toEqual(['Rust', 'Shell'])
     expect(facts.languages?.truncated).toBe(false)
-    expect(told).toBe(2)
+    // The load registering and ending, and each fact published.
+    expect(told).toBe(4)
   })
 
   it('is worked out once per tip: a second load and Go to file read nothing more', async () => {
@@ -220,5 +221,40 @@ describe('the facts wait for the About card (S-1)', () => {
     const load = loadRepoFacts('r', tip, reader, root, await readTree(reader, root), stop.signal)
     stop.abort(new Error('left'))
     await expect(load).rejects.toThrow('left')
+  })
+})
+
+describe('the About card placeholder shows only while a load is registered (review M2)', () => {
+  it('no load (a deep link to a file, an empty repo): nothing loading, so no placeholder', () => {
+    resetRepoFacts()
+    const { tip } = repo()
+    expect(repoFactsLoading('r', tip)).toBe(false)
+    expect(repoFactsLoading('r', null)).toBe(false)
+  })
+
+  it('a load waiting for the card, and reading, is loading; done, it is not', async () => {
+    resetRepoFacts()
+    const { s, tip, root } = repo()
+    const reader = s.reader(undefined, locateBy(s))
+    const load = loadRepoFacts('r', tip, reader, root, await readTree(reader, root))
+    expect(repoFactsLoading('r', tip)).toBe(true)
+    wantRepoFacts('r')
+    await load
+    expect(repoFactsLoading('r', tip)).toBe(false)
+  })
+
+  it('a failed or abandoned load ends the placeholder', async () => {
+    resetRepoFacts()
+    const { s, tip, root } = repo()
+    const reader = s.reader(undefined, locateBy(s))
+    const stop = new AbortController()
+    const load = loadRepoFacts('r', tip, reader, root, await readTree(reader, root), stop.signal)
+    stop.abort(new Error('left'))
+    await expect(load).rejects.toThrow('left')
+    expect(repoFactsLoading('r', tip)).toBe(false)
+    const flaky = { ...reader, readObject: () => Promise.reject(new Error('offline')) } as unknown as typeof reader
+    wantRepoFacts('r')
+    await expect(loadRepoFacts('r', tip, flaky, root, await readTree(reader, root))).rejects.toThrow('offline')
+    expect(repoFactsLoading('r', tip)).toBe(false)
   })
 })

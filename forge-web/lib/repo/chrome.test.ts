@@ -19,8 +19,9 @@ import type { ForgeIds } from '../deployments'
 import { bytesToBase64, hexToBase64, setPlatformVersion, type DocumentQuery } from '../sdk'
 import { loadRepoHome } from '../view/repo-view'
 import { cachedDpnsName, clearDpnsCache } from '../view/dpns'
-import { readRepoChrome, repoTimelines, resetRepoTimelines, staleRepoTimelines } from './chrome'
+import { chromeFallbacks, readRepoChrome, repoTimelines, resetRepoTimelines, staleRepoTimelines } from './chrome'
 import { invalidateMembers, readMembershipsCached } from './members'
+import { noteTargetCreated } from './social'
 import { readBrowseManifests } from './packs'
 import { readTargetCounts } from './social'
 import type { RepoRef } from './contract'
@@ -92,11 +93,14 @@ const byTime = (a: Doc, b: Doc): number => (a['$createdAt'] as number) - (b['$cr
 interface Fake {
   readonly sdk: EvoSDK
   readonly calls: string[]
+  /** Set to a promise to hold every composite until it resolves (answers are computed after). */
+  hold: Promise<void> | null
 }
 
 /** Plain queries and composites over `store`; `calls` records one entry per request. */
 function fakeSdk(store: Store): Fake {
   const calls: string[] = []
+  const fake: { hold: Promise<void> | null } = { hold: null }
   const rowsOf = (contract: string, type: string): Doc[] => [...(store[contract]?.[type] ?? [])]
   const plain = (q: DocumentQuery): Doc[] => {
     let rows = filter(rowsOf(q.dataContractId, q.documentTypeName), q.where).sort(byTime)
@@ -124,6 +128,7 @@ function fakeSdk(store: Store): Fake {
       }) => {
         calls.push(`composite:${q.documentType}`)
         expect(q.subQueries.length).toBeLessThanOrEqual(10)
+        if (fake.hold !== null) await fake.hold
         const page = filter(rowsOf(q.dataContractId, q.documentType), q.where).slice(0, q.limit)
         const subResults = q.subQueries.map((s) => {
           const contract = s.dataContractId ?? q.dataContractId
@@ -144,7 +149,7 @@ function fakeSdk(store: Store): Fake {
     },
     dpns: { resolveName: async () => undefined },
   } as unknown as EvoSDK
-  return { sdk, calls }
+  return Object.assign(fake, { sdk, calls })
 }
 
 const REF: RepoRef = { forge: FORGE, repoId: REPO, ownerId: OWNER, name: 'demo', visibility: 'public' }
@@ -269,5 +274,84 @@ describe('repo chrome store: the pack list and base refs come from the same read
     const chrome = await readRepoChrome(sdk, FORGE, OWNER, 'demo', 'devnet')
     expect(chrome?.repo.repoId).toBe(NEW)
     expect((await chrome!.timelines!).refUpdate).toEqual([])
+  })
+})
+
+describe('the store never answers across this tab\'s own write (review M1, L1, L3)', () => {
+  it('a composite in flight when this tab writes neither answers a later reader nor is kept', async () => {
+    const store = fixture(3)
+    const fake = fakeSdk(store)
+    await loadRepoHome(fake.sdk, { network: 'devnet', owner: OWNER, name: 'demo' })
+    // A revalidation goes out and is held...
+    let release!: () => void
+    fake.hold = new Promise((r) => (release = r))
+    const before = readRepoChrome(fake.sdk, FORGE, OWNER, 'demo', 'devnet')
+    await Promise.resolve()
+    // ...this tab pushes a pack...
+    store.CORE!.packManifest!.push(doc({ $ownerId: OWNER, repoId: REPO, kind: 0, packHash: hexToBase64('33'.repeat(32)), sizeBytes: 5, objectCount: 1, chunkCount: 1, storage: 0 }))
+    staleRepoTimelines(REF)
+    fake.calls.length = 0
+    // ...and the browse context asks for the pack list: a new composite, not the held one.
+    fake.hold = null
+    const after = readBrowseManifests(fake.sdk, REF, { network: 'devnet' })
+    release()
+    await before
+    expect(await after).toHaveLength(2)
+    expect(fake.calls.filter((c) => c.startsWith('composite'))).toEqual(['composite:repo'])
+    // And the held read did not become the store's answer.
+    fake.calls.length = 0
+    expect(await readBrowseManifests(fake.sdk, REF, { network: 'devnet' })).toHaveLength(2)
+    expect(fake.calls).toEqual([])
+  })
+
+  it('a member change while the chrome read is out does not seed the old membership', async () => {
+    const store = fixture(3)
+    const fake = fakeSdk(store)
+    let release!: () => void
+    fake.hold = new Promise((r) => (release = r))
+    const read = readRepoChrome(fake.sdk, FORGE, OWNER, 'demo', 'devnet')
+    await Promise.resolve()
+    store.CORE!.writer!.push(doc({ $ownerId: OWNER, repoId: REPO, memberId: 'Ad88NKGHimxUgGHrTGpBJjKpnzrQe8Zh4V5q13mRh85h' }))
+    invalidateMembers(REF, 'devnet')
+    release()
+    await read
+    fake.hold = null
+    fake.calls.length = 0
+    expect(await readMembershipsCached(fake.sdk, REF, 'devnet')).toHaveLength(2)
+    expect(fake.calls.some((c) => c === 'query:writer')).toBe(true)
+  })
+
+  it('an issue created after the chrome read was issued: the header counts again', async () => {
+    const fake = fakeSdk(fixture(3))
+    await readRepoChrome(fake.sdk, FORGE, OWNER, 'demo', 'devnet')
+    noteTargetCreated(REF, 'issue')
+    fake.calls.length = 0
+    await readTargetCounts(fake.sdk, FORGE, REPO, { retryMs: 1 })
+    expect(fake.calls).toContain('count:issue')
+    expect(fake.calls).not.toContain('count:patch')
+  })
+})
+
+describe('the store stays bounded, and refusals are counted', () => {
+  it('keeps the 20 most recently read repos', async () => {
+    const store = fixture(0)
+    for (let i = 0; i < 25; i++) store.CORE!.repo!.push({ $id: `R${String(i).padStart(43, '1')}`, $ownerId: OWNER, $createdAt: 1, name: `r${i}`, visibility: 'public' })
+    const fake = fakeSdk(store)
+    for (let i = 0; i < 25; i++) await (await readRepoChrome(fake.sdk, FORGE, OWNER, `r${i}`, 'devnet'))!.timelines
+    const oldest: RepoRef = { forge: FORGE, repoId: `R${'0'.padStart(43, '1')}`, ownerId: OWNER, name: 'r0', visibility: 'public' }
+    const newest: RepoRef = { ...oldest, repoId: `R${'24'.padStart(43, '1')}`, name: 'r24' }
+    expect(await repoTimelines(fake.sdk, oldest, { network: 'devnet' })).toBeNull()
+    expect(await repoTimelines(fake.sdk, newest, { network: 'devnet' })).not.toBeNull()
+  })
+
+  it('a refused composite is answered by plain queries and counted', async () => {
+    const fake = fakeSdk(fixture(3))
+    ;(fake.sdk as unknown as { documents: { composite: unknown } }).documents.composite = async () => {
+      throw new Error('invalid argument: unsupported sub-query')
+    }
+    const chrome = await readRepoChrome(fake.sdk, FORGE, OWNER, 'demo', 'devnet')
+    expect(chrome?.repo.repoId).toBe(REPO)
+    expect((await chrome!.timelines!).refUpdate).toHaveLength(4)
+    expect(chromeFallbacks()).toBe(1)
   })
 })

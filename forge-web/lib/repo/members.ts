@@ -93,9 +93,25 @@ export function membershipsFromDocs(maintainers: readonly PlainDocument[] | null
   return [...of(maintainers, 'maintainer'), ...of(writers, 'writer')]
 }
 
-/** Record a repo's complete membership read elsewhere, unless a fresher read is cached. */
-export function seedMemberships(repo: RepoRef, network: Network, memberships: Membership[]): void {
+/**
+ * Bumped by every {@link invalidateMembers} (a member add or revoke through this tab): a read that
+ * started before one never seeds the cache. One counter for all repos: a seed skipped for another
+ * repo's change only costs that repo one membership read.
+ */
+let membersGenerationNow = 0
+
+/** The membership generation now: pass it to {@link seedMemberships} for a read starting now. */
+export function membersGeneration(): number {
+  return membersGenerationNow
+}
+
+/**
+ * Record a repo's complete membership read elsewhere, unless a fresher read is cached, or a
+ * membership changed through this tab since that read started (`generation`, taken then).
+ */
+export function seedMemberships(repo: RepoRef, network: Network, memberships: Membership[], generation = membersGenerationNow): void {
   const key = membersKey(network, repo)
+  if (generation !== membersGenerationNow) return
   const hit = membersCache.get(key)
   if (hit !== undefined && Date.now() - hit.at < MEMBERS_TTL_MS) return
   membersCache.set(key, { at: Date.now(), promise: Promise.resolve(memberships) })
@@ -104,6 +120,7 @@ export function seedMemberships(repo: RepoRef, network: Network, memberships: Me
 /** Drop a repo's cached membership (tests; and after a member add/revoke). */
 export function invalidateMembers(repo: RepoRef, network: Network = DEFAULT_NETWORK): void {
   membersCache.delete(membersKey(network, repo))
+  membersGenerationNow += 1
 }
 
 /**

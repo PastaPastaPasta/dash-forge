@@ -103,8 +103,13 @@ const CURSOR_PADDED_FROM = 14
  * Whether the network pages tie-safely by itself (protocol {@link CURSOR_PADDED_FROM}+), as far
  * as the SDK has seen: the version is learned from the first proved reply, which every paged
  * read has had by the time it needs its second page.
+ *
+ * Drive pads a cursor page only off the primary key and for types that are not `indexOnly`
+ * (`pads_cursor_page`). Every tie-probed read here orders by `$createdAt` (never the primary key),
+ * and none of the `indexOnly` forge types (`star`, `starBeat`, `follow`, `watch`) has an index
+ * ending in `$createdAt`, the only shape {@link tieProbeAllowed} admits: the version alone decides.
  */
-function cursorPadded(): boolean {
+export function cursorPadded(): boolean {
   return platformVersion >= CURSOR_PADDED_FROM
 }
 
@@ -201,8 +206,9 @@ function isUnknownDocumentType(e: unknown): boolean {
 /**
  * Identical reads in flight, per SDK: a second caller of the same query joins the first
  * request instead of sending its own (two components of one page asking for the same owner's
- * name, two folds reading the same feed page at once). Only while the request is out: a settled
- * answer is never served from here, so nothing is ever staler than a fresh read.
+ * name, two folds reading the same feed page at once). Only while the request is out, and only
+ * among reads issued since this tab's last write ({@link noteSdkWrite}): a settled answer is
+ * never served from here, and a read issued after a write never joins one issued before it.
  */
 const inFlight = new WeakMap<object, Map<string, Promise<unknown>>>()
 
@@ -228,9 +234,17 @@ export function shareInFlight<T>(map: Map<string, Promise<T>>, key: string, read
   return promise
 }
 
+/** Writes this tab made through each SDK: part of every dedupe key, so no read joins across one. */
+const writeEpoch = new WeakMap<object, number>()
+
+/** This tab's write through `sdk` settled: reads from now on do not join earlier ones. */
+export function noteSdkWrite(sdk: EvoSDK): void {
+  writeEpoch.set(sdk, (writeEpoch.get(sdk) ?? 0) + 1)
+}
+
 /** Run `read`, or join an identical one already in flight on `sdk`. */
 function joinInFlight<T>(sdk: EvoSDK, kind: string, query: unknown, read: () => Promise<T>): Promise<T> {
-  const key = inFlightKey(kind, query)
+  const key = inFlightKey(`${kind}@${writeEpoch.get(sdk) ?? 0}`, query)
   if (key === null) return read()
   const bySdk = inFlight.get(sdk) ?? new Map<string, Promise<unknown>>()
   inFlight.set(sdk, bySdk)

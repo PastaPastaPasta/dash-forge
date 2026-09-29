@@ -63,6 +63,7 @@ export {
   base64ToHex,
   bytesToBase64,
   countDocuments,
+  cursorPadded,
   hexToBase64,
   normalizeDocument,
   setPlatformVersion,

@@ -28,6 +28,7 @@ export { CHUNK_QUERY_MAX, repoSource } from './source'
 export {
   readRepoChrome,
   repoTimelines,
+  chromeFallbacks,
   resetRepoTimelines,
   staleRepoTimelines,
   TIMELINE_TYPES,

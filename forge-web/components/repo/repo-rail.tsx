@@ -40,7 +40,7 @@ import { TrustPanel } from '@/components/ui/trust-panel'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { CloneBox } from '@/components/repo/clone-box'
 import { LanguageBar, useRepoFacts } from '@/components/repo/repo-facts-card'
-import { wantRepoFacts } from '@/lib/view/repo-facts'
+import { repoFactsLoading, subscribeRepoFacts, wantRepoFacts } from '@/lib/view/repo-facts'
 import { Author } from '@/components/author'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 
@@ -152,7 +152,11 @@ function About({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
  */
 function Facts({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; selected: SelectedRef }): JSX.Element {
   const key = repoKey(home.repo)
-  const { license, languages } = useRepoFacts(key, selectedTip(selected))
+  const tip = selectedTip(selected)
+  const { license, languages } = useRepoFacts(key, tip)
+  // A placeholder only while the home has a load of these facts registered: a route that works
+  // none out (tree, blob, commits), an empty repo or a failed load shows nothing, as before.
+  const loading = useSyncExternalStore(subscribeRepoFacts, () => repoFactsLoading(key, tip), () => false)
   const [ref, inView] = useInView<HTMLDivElement>()
   useEffect(() => {
     if (inView) wantRepoFacts(key)
@@ -168,7 +172,7 @@ function Facts({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
         </Row>
       ) : null}
       {languages ? <LanguageBar stats={languages} /> : null}
-      {license === undefined || languages === undefined ? (
+      {loading && (license === undefined || languages === undefined) ? (
         <Skeleton
           label="Reading the license and languages"
           testId="facts-skeleton"

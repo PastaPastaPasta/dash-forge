@@ -32,9 +32,9 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { compositeOf, countsAt, docsAt, queryComposite, type CompositeSub } from '../sdk/composite'
-import { queryAllDocuments, shareInFlight, type PlainDocument, type WhereClause } from '../sdk'
+import { cursorPadded, queryAllDocuments, shareInFlight, type PlainDocument, type WhereClause } from '../sdk'
 import { DOC, type RepoRef } from './contract'
-import { membershipsFromDocs, seedMemberships } from './members'
+import { membersGeneration, membershipsFromDocs, seedMemberships } from './members'
 import { repoRefOf, toRepoDoc, type RepoDoc } from './resolveRepo'
 import { seedTargetCounts } from './social'
 import { repoSource } from './source'
@@ -58,8 +58,10 @@ export const TIMELINES_FRESH_MS = 5_000
 interface StoreEntry {
   /** The repo the rows are of (the key is its address, which a new repo could take over). */
   readonly repoId: string
-  /** When the read behind `promise` started (0: out of date, read again before use). */
-  at: number
+  /** When the read behind `promise` was issued. */
+  readonly at: number
+  /** The repo's write generation when it was issued ({@link staleRepoTimelines}). */
+  readonly generation: number
   readonly promise: Promise<RepoTimelines>
   /** The read is still out (a later reader joins it rather than checking its age). */
   pending: boolean
@@ -67,9 +69,27 @@ interface StoreEntry {
   settled?: RepoTimelines
 }
 
+/** Repos whose timelines are kept (least recently used dropped first). */
+const STORE_REPOS = 20
 const store = new Map<string, StoreEntry>()
-/** Chrome reads in flight, per repo address. */
+/** Per repo address: bumped by {@link staleRepoTimelines} (this tab wrote to the repo). */
+const writeGenerations = new Map<string, number>()
+/** Chrome reads in flight, per repo address and write generation. */
 const chromeInFlight = new Map<string, Promise<RepoChrome | null>>()
+/** Composites the node refused (answered by plain queries instead): a count to watch, not a failure. */
+let fallbacks = 0
+
+const generationOf = (key: string): number => writeGenerations.get(key) ?? 0
+
+/** The store's entry for `key`, touched as most recently used. */
+function touch(key: string): StoreEntry | undefined {
+  const hit = store.get(key)
+  if (hit !== undefined) {
+    store.delete(key)
+    store.set(key, hit)
+  }
+  return hit
+}
 
 /** A repo's store key: its address, which both a route and a {@link RepoRef} know. */
 function keyOf(forge: ForgeIds, ownerId: string, name: string): string {
@@ -96,8 +116,9 @@ const createdAtOf = (d: PlainDocument): number => (typeof d['$createdAt'] === 'n
  * plain continuation pages must use the same bound, so both take it from here.
  */
 function sinceWhere(known: RepoTimelines | undefined, type: TimelineType): { where?: WhereClause[] } {
-  const rows = known?.[type] ?? []
-  return rows.length === 0 ? {} : { where: [['$createdAt', '>=', Math.max(...rows.map(createdAtOf))]] }
+  let newest: number | null = null
+  for (const d of known?.[type] ?? []) newest = Math.max(newest ?? 0, createdAtOf(d))
+  return newest === null ? {} : { where: [['$createdAt', '>=', newest]] }
 }
 
 /** `known` plus `fresh`, each `$id` once, oldest first (`$createdAt`, then `$id`). */
@@ -176,9 +197,10 @@ export function readRepoChrome(
   network: Network = DEFAULT_NETWORK,
 ): Promise<RepoChrome | null> {
   // Two readers at once (the home revalidating, and its browse context re-resolving behind a
-  // stale reader) share one request: both started after whatever they are checking.
+  // stale reader) share one request, but never across this tab's write to the repo: a read issued
+  // after it must not be answered by one issued before.
   const key = keyOf(forge, ownerId, name)
-  return shareInFlight(chromeInFlight, key, () => readChrome(sdk, key, forge, ownerId, name, network))
+  return shareInFlight(chromeInFlight, `${key}@${generationOf(key)}`, () => readChrome(sdk, key, forge, ownerId, name, network))
 }
 
 async function readChrome(
@@ -190,16 +212,18 @@ async function readChrome(
   network: Network,
 ): Promise<RepoChrome | null> {
   const started = Date.now()
-  const held = store.get(key)
-  const known = held?.settled
-  const res = await queryComposite(
-    sdk,
-    compositeOf(
-      { dataContractId: forge.core, documentTypeName: DOC.repo, where: [['$ownerId', '==', ownerId], ['name', '==', name]] },
-      1,
-      chromeSubs(forge, network, known),
-    ),
+  const generation = generationOf(key)
+  const membersAtStart = membersGeneration()
+  const held = touch(key)
+  // Only on protocol 14 is a delta page continued safely: a `startAfter` cursor below it drops
+  // rows tied with the cursor, and the `>=` bound rules out the tie probe. Read whole there.
+  const known = cursorPadded() ? held?.settled : undefined
+  const q = compositeOf(
+    { dataContractId: forge.core, documentTypeName: DOC.repo, where: [['$ownerId', '==', ownerId], ['name', '==', name]] },
+    1,
+    chromeSubs(forge, network, known),
   )
+  const res = await queryComposite(sdk, q, { onFallback: () => noteFallback(known !== undefined) })
   const raw = res.page[0]
   if (raw === undefined) return null
   const doc = toRepoDoc(raw)
@@ -212,25 +236,44 @@ async function readChrome(
   }
   const count = (i: number): number => countsAt(res, i)?.get(repo.repoId) ?? 0
 
-  seedTargetCounts(forge, repo.repoId, { issues: count(SUB.issue), pulls: count(SUB.patch) })
+  seedTargetCounts(forge, repo.repoId, { issues: count(SUB.issue), pulls: count(SUB.patch) }, started)
   // Only a short page is the whole membership.
   const role = (i: number): PlainDocument[] | null => (docsAt(res, i).length < PAGE ? docsAt(res, i) : null)
   const members = membershipsFromDocs(role(SUB.maintainer), role(SUB.writer))
-  if (members !== null) seedMemberships(repo, network, members)
+  if (members !== null) seedMemberships(repo, network, members, membersAtStart)
 
   let timelines: Promise<RepoTimelines> | null = null
   if (repo.visibility === 'public') {
     const pages = TIMELINE_TYPES.map((_, i) => docsAt(res, SUB.timeline + i))
     timelines = completeTimelines(sdk, repo, known, pages)
-    remember(key, repo.repoId, started, timelines)
+    // A read issued before this tab's write to the repo still answers its own caller, but is not
+    // kept: the next reader must not take it for a read made after the write.
+    if (generation === generationOf(key)) remember(key, { repoId: repo.repoId, at: started, generation }, timelines)
   }
   return { repo, doc, starCount: count(SUB.star), ownerDomains: docsAt(res, SUB.domain), timelines }
 }
 
+/** A composite answered by plain queries: logged, and counted for {@link chromeFallbacks}. */
+function noteFallback(delta: boolean): void {
+  fallbacks += 1
+  // eslint-disable-next-line no-console
+  console.warn(`[forge] the repo chrome composite${delta ? ' (a delta read)' : ''} was refused; read with plain queries instead`)
+}
+
+/** How many chrome composites this tab had to answer with plain queries (a node refused the shape). */
+export function chromeFallbacks(): number {
+  return fallbacks
+}
+
 /** Put a read in the store; a failed one is dropped (the next reader reads again). */
-function remember(key: string, repoId: string, at: number, promise: Promise<RepoTimelines>): void {
-  const entry: StoreEntry = { repoId, at, promise, pending: true, settled: store.get(key)?.settled }
+function remember(key: string, read: Pick<StoreEntry, 'repoId' | 'at' | 'generation'>, promise: Promise<RepoTimelines>): void {
+  const entry: StoreEntry = { ...read, promise, pending: true, settled: store.get(key)?.settled }
+  store.delete(key)
   store.set(key, entry)
+  for (const k of store.keys()) {
+    if (store.size <= STORE_REPOS) break
+    store.delete(k)
+  }
   promise.then(
     (settled) => {
       entry.settled = settled
@@ -255,26 +298,30 @@ export async function repoTimelines(
   { maxAgeMs = TIMELINES_FRESH_MS, network = DEFAULT_NETWORK }: { readonly maxAgeMs?: number; readonly network?: Network } = {},
 ): Promise<RepoTimelines | null> {
   if (repo.visibility !== 'public') return null
-  const hit = store.get(keyOf(repo.forge, repo.ownerId, repo.name))
+  const key = keyOf(repo.forge, repo.ownerId, repo.name)
+  const hit = touch(key)
   if (hit === undefined || hit.repoId !== repo.repoId) return null
   // A read in flight is joined (as the browse cache joins a re-resolve in flight), a settled one
-  // answers within `maxAgeMs`; `at` 0 is a read a write made stale, in flight or not.
-  if (hit.at !== 0 && (hit.pending || Date.now() - hit.at < maxAgeMs)) return hit.promise
+  // answers within `maxAgeMs`; neither when it was issued before this tab's last write.
+  if (hit.generation === generationOf(key) && (hit.pending || Date.now() - hit.at < maxAgeMs)) return hit.promise
   const chrome = await readRepoChrome(sdk, repo.forge, repo.ownerId, repo.name, network)
   return chrome?.repo.repoId === repo.repoId ? chrome.timelines : null
 }
 
 /**
  * The repo's content changed through this tab (a push, a merge, a release): the next reader
- * reads again. What is held stays, so that read asks only for the new rows.
+ * reads again, and no read issued before now answers it, even one still in flight. What is held
+ * stays, so that read asks only for the new rows.
  */
 export function staleRepoTimelines(repo: RepoRef): void {
-  const hit = store.get(keyOf(repo.forge, repo.ownerId, repo.name))
-  if (hit !== undefined) hit.at = 0
+  const key = keyOf(repo.forge, repo.ownerId, repo.name)
+  writeGenerations.set(key, generationOf(key) + 1)
 }
 
 /** Test hook: forget every stored timeline. */
 export function resetRepoTimelines(): void {
   store.clear()
   chromeInFlight.clear()
+  writeGenerations.clear()
+  fallbacks = 0
 }
