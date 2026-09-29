@@ -32,6 +32,9 @@ type Json = Record<string, unknown>
 type Schema = Record<string, unknown>
 
 /** The three RC1 contracts, by file name. */
+/** The consensus code a `maxBytes` refusal carries (`DocumentFieldMaxSizeExceededError`); a vector's `why` may name it. */
+const MAX_BYTES_CODE = 10417
+
 export type Rc1ContractName = 'forge-core' | 'forge-collab' | 'forge-community'
 const NAMES: readonly Rc1ContractName[] = ['forge-core', 'forge-collab', 'forge-community']
 
@@ -218,7 +221,7 @@ function checkSchema(schema: Schema, value: unknown, path: string, run: SchemaRu
     if (typeof schema.pattern === 'string' && !rustPattern(schema.pattern).test(value))
       fail('pattern', `${JSON.stringify(value.slice(0, 60))} does not match ${schema.pattern}`)
     const bytes = new TextEncoder().encode(value).length
-    if (typeof schema.maxBytes === 'number' && bytes > schema.maxBytes) run.bytes.push(`maxBytes at ${at}: ${bytes} B > ${schema.maxBytes}`)
+    if (typeof schema.maxBytes === 'number' && bytes > schema.maxBytes) run.bytes.push(`maxBytes at ${at}: ${bytes} B > ${schema.maxBytes} (${MAX_BYTES_CODE})`)
   } else if (value instanceof Uint8Array || Array.isArray(value)) {
     const n = value.length
     if (typeof schema.minItems === 'number' && n < schema.minItems) fail('minItems', `${n} items < ${schema.minItems}`)

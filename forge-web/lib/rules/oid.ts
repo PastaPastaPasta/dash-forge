@@ -52,9 +52,12 @@ const REST = `(?:(?:\\.?/|\\.)${COMPONENT})*$`
 
 /** forge-core `$defs.refName` (refUpdate / protectedRefUpdate `refName`, patch base/source refs). */
 export const RC1_REF_NAME_PATTERN = `^refs/${COMPONENT}${REST}`
-/** forge-core `$defs.branch` (`repo.defaultBranch`, `config.defaultBranch`): a short name, no leading `-`. */
+/**
+ * forge-core `$defs.branch` (`repo.defaultBranch`, `config.defaultBranch`): a short name, no
+ * leading `-`, and not `@` alone (git's `HEAD` shorthand).
+ */
 export const RC1_BRANCH_PATTERN =
-  '^(?:(?:@+[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{|[^\\x00- \\x7f~^:?*\\[\\\\/.@{\\-])(?:@*[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{)*@*|@+)' + REST
+  '^(?:@+[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{|[^\\x00- \\x7f~^:?*\\[\\\\/.@{\\-])(?:@*[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{)*@*' + REST
 /** forge-core `release.tagName` (a leading `-` is allowed: a private repo's keyed-hash tag starts with one). */
 export const RC1_TAG_PATTERN = `^${COMPONENT}${REST}`
 

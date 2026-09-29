@@ -30,8 +30,8 @@ interface VectorCase {
 }
 
 const CONTRACTS: readonly Rc1ContractName[] = ['forge-core', 'forge-collab', 'forge-community']
-/** The number of cases vectors.py writes; a dropped or truncated file changes it. */
-const TOTAL_CASES = 376
+/** The cases vectors.py wrote when this runner was written; a dropped or truncated file falls below it. */
+const MIN_CASES = 385
 
 /** A case's signer as base58: a byte `n` is 32 bytes of `n`; absent is the vectors' default. */
 function ownerOf(owner: number | string | undefined): string | undefined {
@@ -66,8 +66,8 @@ describe('RC1 conformance vectors', () => {
     await validateRc1('star', { repoId: new Uint8Array(32).fill(1) })
   }, 60_000)
 
-  it(`has all ${TOTAL_CASES} cases`, () => {
-    expect(CONTRACTS.reduce((n, c) => n + vectors[c].length, 0)).toBe(TOTAL_CASES)
+  it(`has at least ${MIN_CASES} cases`, () => {
+    expect(CONTRACTS.reduce((n, c) => n + vectors[c].length, 0)).toBeGreaterThanOrEqual(MIN_CASES)
   })
 
   it.each(CONTRACTS)('%s: every document type has an ok base case, and each case sits in its type’s contract', (name) => {

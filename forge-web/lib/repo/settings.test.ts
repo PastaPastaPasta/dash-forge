@@ -155,9 +155,9 @@ describe('branch names and patterns', () => {
     expect(branchProblem('a b')).not.toBeNull()
     expect(branchProblem('x'.repeat(250))).not.toBeNull()
     expect(branchProblem('x'.repeat(244))).toBeNull()
-    // RC1 `$defs.branch`: git's grammar, no leading `-`; and a branch a push can create.
-    for (const bad of ['-main', '.main', 'main/', 'a..b', 'a@{1}', 'x.', 'a~1', 'a:b', 'x.lock']) expect(branchProblem(bad)).not.toBeNull()
-    for (const ok of ['release/1.x', 'a@b', '@', 'ünï', 'v1./x']) expect(branchProblem(ok)).toBeNull()
+    // RC1 `$defs.branch`: git's grammar, no leading `-`, not `@` alone; and a branch a push can create.
+    for (const bad of ['-main', '.main', 'main/', 'a..b', 'a@{1}', 'x.', 'a~1', 'a:b', 'x.lock', '@']) expect(branchProblem(bad)).not.toBeNull()
+    for (const ok of ['release/1.x', 'a@b', '@x', 'ünï', 'v1./x']) expect(branchProblem(ok)).toBeNull()
     expect(patternsProblem(['refs/heads/main', 'refs/heads/release/*'])).toBeNull()
     expect(patternsProblem([])).toBeNull()
     expect(patternsProblem(['refs/heads/a', 'refs/heads/a'])).toMatch(/already/)
