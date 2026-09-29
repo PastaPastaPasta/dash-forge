@@ -19,7 +19,7 @@
  * and a plain `git diff` compare them.
  */
 
-import type { DiffLimits } from './text-diff'
+import type { DiffLimits } from './text-diff.ts'
 
 // xdiffi.c
 const XDL_MAX_COST_MIN = 256
@@ -140,12 +140,16 @@ class Search {
   private readonly base: number
   private readonly mxcost: number
   private work = 0
+  // Plain fields, not parameter properties: `text-diff.ts` loads this module under Node's type
+  // stripping (render-fuzz), which runs only erasable syntax.
+  private readonly h1: Int32Array
+  private readonly h2: Int32Array
+  private readonly maxWork: number
 
-  constructor(
-    private readonly h1: Int32Array,
-    private readonly h2: Int32Array,
-    private readonly maxWork: number,
-  ) {
+  constructor(h1: Int32Array, h2: Int32Array, maxWork: number) {
+    this.h1 = h1
+    this.h2 = h2
+    this.maxWork = maxWork
     const ndiags = h1.length + h2.length + 3
     this.kvdf = new Int32Array(ndiags)
     this.kvdb = new Int32Array(ndiags)

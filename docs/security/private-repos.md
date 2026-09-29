@@ -83,7 +83,7 @@ The manifest is written as for a public repo except:
 
 - `sizeBytes` is the sealed length (what the storage holds; it is what chunking and ranged reads count).
 - `objectCount`, `chunkCount`, `kind`, `tips`, `supersedes`, `uris`, `storage` are as today. `tips` are OIDs, visible anyway in `newOid` (§7).
-- `offsetIndexParts` is 0 (it is 0 on every kind already; `manifestPart` is never written).
+- `offsetIndexParts` is 0 (it is 0 on every kind already; `manifestPart` is never written), except on a history index (kind 3), where it is the index's format version (0 = v1, 2 = with per-path version lists). That is plaintext metadata, like `kind`: it says which layout the sealed artifact has, nothing about its content.
 
 **Reseed copies sealed bytes.** `dg reseed`, `packMirror` and every other re-upload path copy the sealed artifact verbatim; nothing ever re-seals, since a re-seal would change `packHash` and orphan every locator row pointing at the pack.
 

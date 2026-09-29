@@ -81,7 +81,7 @@ describe('BlameBody in StrictMode', () => {
     const partial = {
       lines: ['one\n', 'two\n'],
       hunks: [{ start: 1, count: 2, oid: c }],
-      commits: new Map([[c, { message: 'subject', author: { name: 'a', when: 0 } }]]),
+      commits: new Map([[c, { oid: c, subject: 'subject', author: { name: 'a', when: 0 } }]]),
       partial: true,
       approximate: false,
       versions: 3,
