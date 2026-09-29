@@ -505,10 +505,22 @@ pub struct CheckRun {
     pub summary: String,
     /// Who reported it (`$ownerId`).
     pub reporter: String,
-    /// Whether the reporter is a current maintainer or writer of the repo. Consensus admitted
-    /// the document from a member; a member removed since is no longer trusted (the approvals
-    /// rule). When `runner` memberships land (platform-parity C-1), runners count too.
+    /// Whether the reporter is a current maintainer, writer or runner of the repo. Consensus
+    /// admitted the document from one; a member removed since is no longer trusted (the
+    /// approvals rule).
     pub trusted: bool,
+    /// When the run started / completed (ms), as the reporter says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<u64>,
+    /// When the run completed (ms), as the reporter says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<u64>,
+    /// Where the log is, and its SHA-256 (hex): a reader verifies the bytes against it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_url: Option<String>,
+    /// The log's SHA-256 (hex).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_sha256: Option<String>,
     /// Consensus `$createdAt` (ms).
     pub created_at: u64,
 }
@@ -544,6 +556,10 @@ pub fn newest_check_runs(
             trusted: is_member(&d.owner_id),
             reporter: d.owner_id.clone(),
             created_at: d.created_at.unwrap_or_default(),
+            started_at: d.field_u64("startedAt"),
+            completed_at: d.field_u64("completedAt"),
+            log_url: d.field_str("logUrl"),
+            log_sha256: d.field_hex("logSha256"),
         })
         .collect()
 }
@@ -2445,8 +2461,8 @@ impl<'a> Collab<'a> {
     }
 
     /// The check runs reported on `head_oid` in `repo` (the `checkRun` `head` index): the
-    /// newest per `name`, each marked trusted when its reporter is a current maintainer or
-    /// writer ([`newest_check_runs`]).
+    /// newest per `name`, each marked trusted when its reporter is a current maintainer,
+    /// writer or runner ([`newest_check_runs`]).
     pub async fn check_runs(&self, repo: &RepoRef, head_oid: &str) -> Result<Vec<CheckRun>> {
         let collab = self.collab_contract(repo).await?;
         let oid = hex::decode(head_oid)
@@ -2471,8 +2487,14 @@ impl<'a> Collab<'a> {
             return Ok(Vec::new());
         }
         let oracle = self.member_oracle(repo).await?;
+        let runners: BTreeSet<String> = crate::ci::RunnerReader::new(self.client)
+            .list(repo)
+            .await?
+            .into_iter()
+            .map(|r| r.identity_id)
+            .collect();
         Ok(newest_check_runs(&docs, |who| {
-            oracle.current_role(who).is_some()
+            oracle.current_role(who).is_some() || runners.contains(who)
         }))
     }
 

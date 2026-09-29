@@ -392,6 +392,26 @@ fn key_v0(
     }
 }
 
+/// A key bound to one document type of one contract (`ContractBounds::SingleContractDocumentType`,
+/// protocol 14 admits it on AUTHENTICATION keys): consensus refuses every batch member outside
+/// that type with `ContractBoundedKeyOutOfBoundsError` (20014). A CI runner's key is bound to
+/// `(forge-collab, checkRun)` this way (platform-parity-spec §2.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocTypeKeySpec {
+    /// Total credits the key may spend.
+    pub budget_credits: u64,
+    /// When it stops signing (Unix ms).
+    pub expires_at_ms: u64,
+    /// The contract (base58) the key is bound to.
+    pub contract: String,
+    /// The one document type of `contract` it may write.
+    pub document_type: String,
+}
+
+fn with_limits(v0: IdentityPublicKeyV0, budget: u64, expires_at_ms: u64) -> IdentityPublicKey {
+    IdentityPublicKeyV1::from_v0_with_limits(v0, Some(budget), Some(expires_at_ms)).into()
+}
+
 fn limited_public_key(id: u32, key: &FreshKey, spec: &LimitedKeySpec) -> Result<IdentityPublicKey> {
     let group = parse_id(&spec.group, "contract group id")?;
     let v0 = key_v0(
@@ -401,12 +421,26 @@ fn limited_public_key(id: u32, key: &FreshKey, spec: &LimitedKeySpec) -> Result<
         &key.public(),
         Some(ContractBounds::ContractGroup { id: group }),
     );
-    Ok(IdentityPublicKeyV1::from_v0_with_limits(
-        v0,
-        Some(spec.budget_credits),
-        Some(spec.expires_at_ms),
-    )
-    .into())
+    Ok(with_limits(v0, spec.budget_credits, spec.expires_at_ms))
+}
+
+fn doc_type_public_key(
+    id: u32,
+    key: &FreshKey,
+    spec: &DocTypeKeySpec,
+) -> Result<IdentityPublicKey> {
+    let contract = parse_id(&spec.contract, "contract id")?;
+    let v0 = key_v0(
+        id,
+        Purpose::AUTHENTICATION,
+        SecurityLevel::HIGH,
+        &key.public(),
+        Some(ContractBounds::SingleContractDocumentType {
+            id: contract,
+            document_type_name: spec.document_type.clone(),
+        }),
+    );
+    Ok(with_limits(v0, spec.budget_credits, spec.expires_at_ms))
 }
 
 fn plain_public_key(
@@ -828,6 +862,7 @@ impl PlatformClient {
         for (next, (key, spec)) in (first..).zip(add) {
             let pk = match spec {
                 KeySpec::Limited(s) => limited_public_key(next, key, s)?,
+                KeySpec::DocumentType(s) => doc_type_public_key(next, key, s)?,
                 KeySpec::Encryption => plain_public_key(
                     next,
                     Purpose::ENCRYPTION,
@@ -990,6 +1025,56 @@ impl LoadedIdentity {
         }
     }
 
+    /// Whether key `key_id` is live and exactly what `spec` asks for: AUTHENTICATION / HIGH,
+    /// bound to `(spec.contract, spec.document_type)`, with `spec`'s budget and expiry, and
+    /// controlled by `wif`.
+    pub fn check_doc_type_key(
+        &self,
+        key_id: u32,
+        wif: &str,
+        network: &Network,
+        spec: &DocTypeKeySpec,
+    ) -> Result<()> {
+        use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
+        let bad = |why: &str| Error::Platform(format!("key {key_id} on {}: {why}", self.id()));
+        let k = self
+            .0
+            .public_keys()
+            .get(&key_id)
+            .ok_or_else(|| bad("not on the identity"))?;
+        if k.is_disabled() {
+            return Err(bad("disabled"));
+        }
+        if k.purpose() != Purpose::AUTHENTICATION || k.security_level() != SecurityLevel::HIGH {
+            return Err(bad("not an AUTHENTICATION / HIGH key"));
+        }
+        if self.key_doc_type(key_id) != Some((spec.contract.clone(), spec.document_type.clone()))
+        {
+            return Err(bad("not bound to the requested document type"));
+        }
+        if k.total_budget() != Some(spec.budget_credits)
+            || k.expires_at() != Some(spec.expires_at_ms)
+        {
+            return Err(bad("its budget or expiry differs from what was requested"));
+        }
+        if self.key_id_for(wif, network) != Some(key_id) {
+            return Err(bad("the private key does not control it"));
+        }
+        Ok(())
+    }
+
+    /// The `(contract, document type)` key `key_id` is bound to (base58 contract id), if it is
+    /// bound to one document type.
+    pub fn key_doc_type(&self, key_id: u32) -> Option<(String, String)> {
+        match self.0.public_keys().get(&key_id)?.contract_bounds()? {
+            ContractBounds::SingleContractDocumentType {
+                id,
+                document_type_name,
+            } => Some((id.to_string(Encoding::Base58), document_type_name.clone())),
+            _ => None,
+        }
+    }
+
     /// The id of the live key `bridge` signs documents with, if this identity has it.
     pub fn signing_key_id(&self, bridge: &BridgeIdentity, network: &Network) -> Option<u32> {
         bridge
@@ -1071,6 +1156,9 @@ pub struct GroupOwnership {
 pub enum KeySpec {
     /// A Forge limited key (AUTHENTICATION / HIGH, group-bound, budget + expiry).
     Limited(LimitedKeySpec),
+    /// A key for one document type only (AUTHENTICATION / HIGH, budget + expiry): a CI
+    /// runner's `checkRun` key.
+    DocumentType(DocTypeKeySpec),
     /// An ENCRYPTION / MEDIUM key (private repositories).
     Encryption,
 }
