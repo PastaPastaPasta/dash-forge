@@ -14,6 +14,7 @@ import { NotDeployedState, isForgeDeployed } from '@/components/ui/network-badge
 import { Button } from '@/components/ui/button'
 import { ConnectingBlock, UnreachableBanner } from '@/components/ui/platform-status'
 import { RepoHeader } from '@/components/repo/repo-header'
+import { RepoShellHeader } from '@/components/repo/repo-shell-header'
 import { RepoRail } from '@/components/repo/repo-rail'
 import { useRepoHome } from '@/hooks/use-repo'
 import { useSdk } from '@/hooks/use-sdk'
@@ -85,8 +86,11 @@ export function RepoScaffold({
   // synchronously from the home cache (`settled`, including a cached not-found) and renders
   // its real state immediately, even while a background revalidation is still loading.
   if (offline === null && (!ready || (loading && !settled))) {
+    // The repo's name and tabs from its address, while the SDK downloads or the repo resolves
+    // (L-54): a slow link shows what it is loading, not a bare spinner.
     return (
       <>
+        <RepoShellHeader addr={addr} />
         {ready ? <LoadingBlock label={`Resolving ${addr.name}`} /> : <ConnectingBlock status={sdkStatus} />}
       </>
     )
