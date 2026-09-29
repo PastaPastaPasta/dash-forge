@@ -1,5 +1,19 @@
 # Installing Dash Forge
 
+> **No release has been published yet.** Until the first `v*` tag is released, there are no
+> prebuilt binaries: `install.sh` stops with "no Dash Forge release has been published yet"
+> and prints the commands below, and the Releases page is empty (Windows included). Build from
+> source ([BUILDING.md](BUILDING.md); Rust and `protoc` 25 or newer):
+>
+> ```sh
+> git clone https://github.com/PastaPastaPasta/dash-forge && cd dash-forge
+> cargo install --locked --path crates/dg
+> cargo install --locked --path crates/git-remote-dash
+> ```
+>
+> On Windows, run the same `cargo install` commands in PowerShell; the binaries land in
+> `%USERPROFILE%\.cargo\bin`, which rustup puts on your `Path`.
+
 Every release on [GitHub Releases](https://github.com/PastaPastaPasta/dash-forge/releases)
 ships prebuilt binaries, so you do not need Rust, `protoc`, or the Platform SDK source to use
 Dash Forge. Each archive contains:

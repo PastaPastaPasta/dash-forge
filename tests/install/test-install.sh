@@ -71,6 +71,23 @@ run_install() {
 make_release 0.1.0
 make_release 0.2.0 latest
 
+# 0. No published release at all (L-11): a clear message and the from-source route, not a bare
+#    download error. A pinned version that does not exist says which.
+if ! env -i PATH="$PATH" HOME="$work/home" SHELL=/bin/sh DASH_FORGE_RELEASE_BASE_URL="file://$work/none" \
+    DASH_FORGE_TARGET="$TARGET" DASH_FORGE_INSTALL_DIR="$work/p0" sh "$installer" > "$work/out" 2>&1 &&
+    grep -q 'no Dash Forge release has been published yet' "$work/out" &&
+    grep -q 'cargo install --locked --path crates/dg' "$work/out" &&
+    [ ! -e "$work/p0/dg" ]; then
+    ok "no release: says so and prints the build-from-source route"
+else
+    not_ok "no release: says so and prints the build-from-source route"
+fi
+if ! run_install "$work/p0" DASH_FORGE_VERSION=9.9.9 && grep -q 'release v9.9.9 is not published' "$work/out"; then
+    ok "a pinned version that is not published is named"
+else
+    not_ok "a pinned version that is not published is named"
+fi
+
 # 1. Latest release: installs dg + git-remote-dash only, prints next steps.
 if run_install "$work/p1" &&
     [ -x "$work/p1/dg" ] && [ -x "$work/p1/git-remote-dash" ] && [ ! -e "$work/p1/forge-relay" ] &&
