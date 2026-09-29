@@ -70,6 +70,11 @@ rpassword = "7"
 # keychain values are written as `b64:` so any text round-trips through `security`.
 base64 = "0.22"
 
+# `test_support::rc1` (feature `test-support` only): the SDK's own rs-dpp with document-property
+# validation and JSON contract parsing switched on, to judge documents against the RC1
+# contracts. The same package as the SDK's, so it unifies to one copy.
+dpp = { workspace = true, optional = true, features = ["validation", "json-conversion"] }
+
 # OS credential store for identity keys and storage secrets (`forge_core::keychain`): the
 # Secret Service / Credential Manager through `keyring`. macOS uses /usr/bin/security instead
 # (a stable program identity across dg upgrades), so it does not link keyring.
@@ -103,12 +108,17 @@ vendored-openssl = ["dep:openssl", "openssl/vendored"]
 # The deterministic seal constructors (caller-supplied nonce / fileId) that reproduce the
 # conformance vectors. Release builds never set it; the crate's own tests get them via cfg(test).
 vectors = []
+# `forge_core::test_support` for other crates' tests (the RC1 conformance validator). Never
+# set by a release build; forge-core's own tests get the module via cfg(test).
+test-support = ["dep:dpp"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 tempfile = "3"
 hex = "0.4"
 serde_json = { workspace = true }
+# `test_support::rc1` in forge-core's own tests (the optional dependency above, always on here).
+dpp = { workspace = true, features = ["validation", "json-conversion"] }
 
 [lints]
 workspace = true

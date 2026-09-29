@@ -2780,8 +2780,21 @@ pub const MAX_PROTECTED_PATTERNS: usize = 8;
 pub const MAX_PATTERN_CHARS: usize = 100;
 /// `repo.description` holds at most this many characters and bytes (forge-core schema).
 pub const MAX_DESCRIPTION: (usize, usize) = (500, 1000);
-/// `repo.topics`: at most 10 unique, `^[a-z0-9][a-z0-9-]*$`, 1–30 characters.
-pub const MAX_TOPICS: usize = 10;
+/// `repo.topics`: at most 20 unique, [`is_topic_name`], 1–30 characters. Also the most `topic`
+/// documents a repository holds (`atMost20`).
+pub const MAX_TOPICS: usize = 20;
+
+/// Whether `name` is a topic RC1 accepts: 1–30 characters of `^[a-z0-9]+(-[a-z0-9]+)*$` (no
+/// leading, trailing or doubled `-`).
+pub fn is_topic_name(name: &str) -> bool {
+    (1..=30).contains(&name.len())
+        && name.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        })
+}
 
 /// A repository's current configuration, as a settings reader and writer sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -3010,14 +3023,9 @@ impl RepoEdit {
             }
             let mut seen = BTreeSet::new();
             for topic in t {
-                let ok = (1..=30).contains(&topic.len())
-                    && topic
-                        .bytes()
-                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-                    && !topic.starts_with('-');
-                if !ok {
+                if !is_topic_name(topic) {
                     return Err(Error::Config(format!(
-                        "topic {topic:?}: use 1-30 of a-z, 0-9 and '-', not starting with '-'"
+                        "topic {topic:?}: use 1-30 of a-z and 0-9, words joined by single '-'"
                     )));
                 }
                 if !seen.insert(topic.as_str()) {
@@ -4847,7 +4855,16 @@ mod tests {
             assert!(topics(&["a_b"]).validate().is_err(), "underscore");
             assert!(topics(&["a", "a"]).validate().is_err(), "duplicate");
             assert!(topics(&[&"a".repeat(31)]).validate().is_err(), "too long");
-            let many: Vec<String> = (0..11).map(|i| format!("t{i}")).collect();
+            assert!(topics(&["x-"]).validate().is_err(), "trailing dash");
+            assert!(topics(&["a--b"]).validate().is_err(), "doubled dash");
+            let max: Vec<String> = (0..20).map(|i| format!("t{i}")).collect();
+            assert!(RepoEdit {
+                topics: Some(max),
+                ..RepoEdit::default()
+            }
+            .validate()
+            .is_ok());
+            let many: Vec<String> = (0..21).map(|i| format!("t{i}")).collect();
             assert!(RepoEdit {
                 topics: Some(many),
                 ..RepoEdit::default()

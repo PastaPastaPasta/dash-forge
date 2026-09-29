@@ -267,6 +267,15 @@ pub fn reviewer_rows(
                 Standing::Dismissed
             } else {
                 match review {
+                    // a non-member's verdict (4 / 5) is shown, never counted
+                    Some(r)
+                        if matches!(
+                            r.verdict,
+                            Verdict::ApproveNonMember | Verdict::RequestChangesNonMember
+                        ) =>
+                    {
+                        Standing::NotMember
+                    }
                     Some(r) if matches!(r.verdict, Verdict::Approve | Verdict::RequestChanges) => {
                         if !oracle.member_at(id, r.created_at) || oracle.current_role(id).is_none()
                         {

@@ -2608,7 +2608,7 @@ impl FieldValue {
         }
     }
 
-    fn into_value(self) -> Value {
+    pub(crate) fn into_value(self) -> Value {
         match self {
             FieldValue::Bytes(b) => Value::Bytes(b),
             FieldValue::Bytes32(b) => Value::Bytes32(b),
@@ -3068,12 +3068,24 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
             }
             // 40120 on the writer path: a protocol-14 `ownerRefersTo` gate found no
             // membership document for the writer (forge-v2: never granted, or revoked; or a
-            // writer where the type needs a maintainer).
-            StateError::ReferencedEntityNotFoundError(err) if err.path() == "$ownerId" => {
-                return WriteFailure::Fatal(Error::NotAMember {
-                    document_type: document_type.to_string(),
-                    detail: format!("40120: {err}"),
-                })
+            // writer where the type needs a maintainer). RC1's `asMember` proof is the same
+            // gate on a property: the signer's maintainer/writer document.
+            StateError::ReferencedEntityNotFoundError(err) => {
+                let document_type = document_type.to_string();
+                let detail = format!("40120: {err}");
+                return WriteFailure::Fatal(match err.path() {
+                    "$ownerId" | "asMember" => Error::NotAMember {
+                        document_type,
+                        detail,
+                    },
+                    // Any other path: what a property refers to is missing (a revoked member a
+                    // `repoKey` wraps to, a `consent` not written yet, a deleted parent).
+                    path => Error::ReferenceNotFound {
+                        document_type,
+                        path: path.to_string(),
+                        detail,
+                    },
+                });
             }
             _ => {}
         }
@@ -4283,6 +4295,68 @@ mod tests {
         .await;
         assert!(matches!(out, Err(Error::NotAMember { .. })));
         assert_eq!((nb, nw), (1, 0));
+    }
+
+    /// 40120 on the membership gates (`$ownerId`, `asMember`) is not being a member; on any
+    /// other path it is a missing reference, typed with its path. 10422 names its rule.
+    #[test]
+    fn consensus_refusals_are_typed_by_path_and_rule() {
+        use dash_sdk::dpp::consensus::basic::document::{
+            DocumentPropertyConstraintViolatedError, PropertyConstraintViolation,
+        };
+        use dash_sdk::dpp::consensus::basic::BasicError;
+        use dash_sdk::dpp::consensus::state::document::referenced_entity_not_found_error::ReferencedEntityNotFoundError;
+        use dash_sdk::dpp::consensus::state::state_error::StateError;
+        use dash_sdk::dpp::consensus::ConsensusError;
+        use dash_sdk::dpp::data_contract::document_type::DocumentPropertyReferenceTarget;
+        let refused = |ce: ConsensusError| {
+            dash_sdk::Error::Protocol(dash_sdk::dpp::ProtocolError::ConsensusError(Box::new(ce)))
+        };
+        let missing = |path: &str| {
+            refused(ConsensusError::StateError(
+                StateError::ReferencedEntityNotFoundError(ReferencedEntityNotFoundError::new(
+                    [9; 32].into(),
+                    DocumentPropertyReferenceTarget::Identity,
+                    path.into(),
+                )),
+            ))
+        };
+        for path in ["$ownerId", "asMember"] {
+            assert!(
+                matches!(
+                    super::classify_write_error(&missing(path), "comment"),
+                    super::WriteFailure::Fatal(Error::NotAMember { .. })
+                ),
+                "{path}"
+            );
+        }
+        match super::classify_write_error(&missing("memberId"), "repoKey") {
+            super::WriteFailure::Fatal(Error::ReferenceNotFound {
+                document_type,
+                path,
+                detail,
+            }) => {
+                assert_eq!(
+                    (document_type.as_str(), path.as_str()),
+                    ("repoKey", "memberId")
+                );
+                assert!(detail.starts_with("40120: "), "{detail}");
+            }
+            _ => panic!("a missing memberId is a missing reference"),
+        }
+        let rule = refused(ConsensusError::BasicError(
+            BasicError::DocumentPropertyConstraintViolatedError(
+                DocumentPropertyConstraintViolatedError::new(
+                    "review".into(),
+                    "memberVerdict".into(),
+                    PropertyConstraintViolation::NotMet,
+                ),
+            ),
+        ));
+        assert!(matches!(
+            super::classify_write_error(&rule, "review"),
+            super::WriteFailure::Fatal(Error::RuleRefused { rule, .. }) if rule == "memberVerdict"
+        ));
     }
 
     /// An indexOnly create whose nonce was found spent is settled by its probe: present means

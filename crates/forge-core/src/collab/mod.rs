@@ -330,10 +330,25 @@ mod tests {
             (Verdict::Approve, 1),
             (Verdict::RequestChanges, 2),
             (Verdict::Comment, 3),
+            (Verdict::ApproveNonMember, 4),
+            (Verdict::RequestChangesNonMember, 5),
         ] {
             assert_eq!(v.code(), code, "{v:?} encodes as {code}");
             assert_eq!(Verdict::from_code(code), v, "{code} decodes as {v:?}");
         }
+    }
+
+    #[test]
+    fn a_verdict_is_written_as_the_signer_s_membership_allows() {
+        use Verdict::{
+            Approve, ApproveNonMember, Comment, RequestChanges, RequestChangesNonMember,
+        };
+        assert_eq!(Approve.as_written_by(false), ApproveNonMember);
+        assert_eq!(ApproveNonMember.as_written_by(true), Approve);
+        assert_eq!(RequestChanges.as_written_by(false), RequestChangesNonMember);
+        assert_eq!(RequestChangesNonMember.as_written_by(true), RequestChanges);
+        assert_eq!(Comment.as_written_by(false), Comment);
+        assert!(Approve.needs_member_proof() && !ApproveNonMember.needs_member_proof());
     }
 
     #[test]
