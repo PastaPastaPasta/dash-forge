@@ -28,6 +28,10 @@ pub struct SrcTarget {
     pub closed: bool,
     /// The merge commit, when a pull request was merged.
     pub merged_oid: Option<Vec<u8>>,
+    /// The source says merged but gives no merge commit (a GitHub PR with `merged_at` and no
+    /// `merge_commit_sha`, a GitLab MR with no merge, squash or head sha): a merge records an
+    /// oid, so it is imported closed, and the run says so.
+    pub merged_without_sha: bool,
     /// Labels applied in the source now.
     pub labels: BTreeSet<String>,
     /// Draft (pull requests).
@@ -130,6 +134,9 @@ pub struct SrcCollab {
     /// Read with `since` (an incremental run): it lists only what changed, so it cannot
     /// create an item below one already mirrored ([`crate::sink::Sink`]'s order check).
     pub incremental: bool,
+    /// Items (`(tk, source number)`) the destination refused on an earlier run
+    /// ([`crate::state::SyncState::refused`]): the order check does not call them missing.
+    pub refused: BTreeSet<(u8, u32)>,
 }
 
 /// An item URL split into (`host/repository`, the item: `issues/12`,

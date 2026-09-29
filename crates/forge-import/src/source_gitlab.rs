@@ -448,6 +448,14 @@ fn target(repo: &GitlabRepoRef, item: &Item, number: u32, url: &str, head_gone: 
              (it deletes it 14 days after a merge request closes or merges).\n\n",
         );
     }
+    let merged_oid = i
+        .is_merged()
+        .then(|| {
+            [&i.merge_commit_sha, &i.squash_commit_sha, &i.sha]
+                .into_iter()
+                .find_map(|s| s.as_deref().and_then(model::oid))
+        })
+        .flatten();
     SrcTarget {
         kind: item.kind,
         number,
@@ -455,14 +463,8 @@ fn target(repo: &GitlabRepoRef, item: &Item, number: u32, url: &str, head_gone: 
         body: model::body(&head, i.description.as_deref().unwrap_or(""), url),
         imported: model::imported(i.author.login(), created, url),
         closed: i.is_closed(),
-        merged_oid: i
-            .is_merged()
-            .then(|| {
-                [&i.merge_commit_sha, &i.squash_commit_sha, &i.sha]
-                    .into_iter()
-                    .find_map(|s| s.as_deref().and_then(model::oid))
-            })
-            .flatten(),
+        merged_oid: merged_oid.clone(),
+        merged_without_sha: i.is_merged() && merged_oid.is_none(),
         labels: i
             .labels
             .iter()

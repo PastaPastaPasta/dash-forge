@@ -848,8 +848,8 @@ async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result
         },
         baseline,
         cursors,
+        closed: seed_closed(shared, &targets).await,
         targets,
-        closed: BTreeSet::new(),
         heads,
         runs,
         saved_runs: None,
@@ -1384,6 +1384,50 @@ async fn poll_check_runs(
     (high, finished)
 }
 
+/// The targets that are closed or merged now, from their proved state codes (one grouped sum
+/// of `transition.delta` per 100 targets): which threads a poll reads first. A read that fails
+/// starts every thread as open (it only orders the reads) and says so.
+async fn seed_closed(shared: &Shared, targets: &BTreeMap<String, TargetInfo>) -> BTreeSet<String> {
+    let mut codes = BTreeMap::new();
+    let ids: Vec<[u8; 32]> = targets
+        .keys()
+        .filter_map(|id| decode_identifier(id).ok())
+        .collect();
+    for chunk in ids.chunks(100) {
+        let filter = QueryFilter::in_list(
+            "targetId",
+            chunk.iter().map(|id| FieldValue::identifier(*id)).collect(),
+        );
+        match shared
+            .client
+            .sum_documents_grouped(
+                &shared.contracts.collab,
+                DOC_TRANSITION,
+                &[filter],
+                "targetId",
+                "delta",
+            )
+            .await
+        {
+            Ok(sums) => codes.extend(sums),
+            Err(e) => {
+                tracing::warn!(error = %e, "target states unavailable; every thread starts as open");
+                return BTreeSet::new();
+            }
+        }
+    }
+    closed_from_codes(&codes)
+}
+
+/// The targets a grouped sum's codes say are not open (closed, or merged).
+fn closed_from_codes(codes: &BTreeMap<Vec<u8>, i64>) -> BTreeSet<String> {
+    codes
+        .iter()
+        .filter(|(_, &code)| !rules::v2::status_of_code(code).open)
+        .filter_map(|(k, _)| forge_core::platform::decode_identifier_key(k))
+        .collect()
+}
+
 /// Record an event's effect on its target: its activity time.
 fn note_activity(s: &mut RepoState, d: &FetchedDocument) -> Option<String> {
     let tid = d
@@ -1756,5 +1800,23 @@ mod tests {
         assert_eq!(heads.len(), MAX_HEADS);
         assert!(!heads.contains_key(&format!("{:040x}", 0)));
         assert!(heads.contains_key(&format!("{:040x}", MAX_HEADS as u64 + 9)));
+    }
+
+    /// The startup seed of the closed set: closed, merged and closed-draft targets; open,
+    /// draft and never-moved (absent) ones are not.
+    #[test]
+    fn the_closed_set_is_seeded_from_state_codes() {
+        let codes = BTreeMap::from([
+            (vec![1; 32], 0),
+            (vec![2; 32], 1),
+            (vec![3; 32], 2),
+            (vec![4; 32], 8),
+            (vec![5; 32], 9),
+        ]);
+        let id = |b: u8| forge_core::platform::encode_identifier([b; 32]);
+        assert_eq!(
+            closed_from_codes(&codes),
+            [id(2), id(3), id(5)].into_iter().collect()
+        );
     }
 }

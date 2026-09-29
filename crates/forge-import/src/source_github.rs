@@ -1,14 +1,16 @@
 //! GitHub → [`SrcCollab`]: issues, pull requests, comments, reviews, labels and releases,
 //! mapped to what the forge-v2 mirror should hold.
 //!
-//! * Numbers are kept (GitHub issues and PRs share one sequence; forge-v2 numbers issues and
-//!   PRs independently, so each keeps its GitHub number and the gaps are fine, §6).
+//! * Issues and PRs are listed in GitHub's number order (one sequence for both). Forge numbers
+//!   them densely as they are created, so a fresh mirror of a repository with no deleted items
+//!   numbers identically; each keeps its GitHub number as its upstream number
+//!   ([`crate::sink`]).
 //! * The GitHub author cannot sign, so the mirror identity writes every document. The body
 //!   opens with *"Mirrored from github.com/o/r#123 by @bob"*, and `imported`
 //!   `{author, createdAt, url}` records the original; `imported.url` (the GitHub
 //!   `html_url`) is the idempotency key.
-//! * State is replayed as member events written by the mirror identity (who must be a
-//!   maintainer or writer): close, reopen, merge (with the merge commit), labels, draft.
+//! * State is replayed by the mirror identity (who must be a maintainer or writer): close,
+//!   reopen, merge (with the merge commit), draft and ready as transitions, labels as events.
 //! * Release assets are referenced (GitHub download URL + sha256 when GitHub reports one),
 //!   never re-uploaded.
 //!
@@ -259,6 +261,7 @@ fn targets(
                 .as_ref()
                 .and(pull.merge_commit_sha.as_deref())
                 .and_then(model::oid);
+            t.merged_without_sha = pull.merged_at.is_some() && t.merged_oid.is_none();
             let head = model::oid(&pull.head.sha).unwrap_or_else(|| vec![0; 20]);
             let base = if pull.base.ref_name.is_empty() {
                 "main".to_string()
@@ -387,6 +390,7 @@ fn target(src: &GithubRepoRef, i: &GhIssue, number: u32) -> SrcTarget {
         imported: model::imported(&i.user.login, created, &i.html_url),
         closed: i.is_closed(),
         merged_oid: None,
+        merged_without_sha: false,
         labels: i
             .labels
             .iter()

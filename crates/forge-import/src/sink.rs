@@ -54,6 +54,9 @@ pub struct Ledger<'a> {
     pub counts: Counts,
     /// Things the user should know that did not stop the run.
     pub warnings: Vec<String>,
+    /// Items (`(tk, source number)`) the destination refused this run: a content error, so
+    /// retrying the same item cannot help ([`crate::state::SyncState::refused`]).
+    pub refused: BTreeSet<(u8, u32)>,
 }
 
 impl<'a> Ledger<'a> {
@@ -71,6 +74,7 @@ impl<'a> Ledger<'a> {
             budget,
             counts: Counts::default(),
             warnings: Vec::new(),
+            refused: BTreeSet::new(),
         }
     }
 
@@ -242,6 +246,34 @@ fn item_error(e: &anyhow::Error) -> bool {
         })
 }
 
+/// Whether an item error is a refusal of the item's own content (a field too long, an illegal
+/// ref name, a rule of the issue / PR / comment / review type), which the same item would get
+/// again: not a transition refused by a state rule after a concurrent change, a number another
+/// create took, or a duplicate.
+fn content_error(e: &anyhow::Error) -> bool {
+    e.chain()
+        .any(|c| match c.downcast_ref::<forge_core::Error>() {
+            Some(forge_core::Error::RuleRefused {
+                document_type,
+                rule,
+                ..
+            }) => document_type != "transition" && rule != forge_core::rules::v2::DENSE_RULE,
+            Some(forge_core::Error::Config(_)) => item_error(e),
+            _ => false,
+        })
+}
+
+/// The warning for a PR the source merged without naming its merge commit, when it is written
+/// closed (a merge transition records an oid, D-9 names the upstream sha).
+fn merged_without_sha_note(t: &SrcTarget, code: i64) -> Option<String> {
+    (t.merged_without_sha && t.merged_oid.is_none() && code != 2).then(|| {
+        format!(
+            "{} was merged, but the source names no merge commit; recorded as closed",
+            t.imported.url
+        )
+    })
+}
+
 /// Whether an item's state (close, reopen, merge, labels) is written after its thread: always
 /// once the thread is written, and also when the destination refused a comment or review (an
 /// item error: the item is skipped, and must not also be left open). Not after a spend-cap or
@@ -308,6 +340,34 @@ fn state_path(target: TransitionTarget, from: i64, to: i64, number: u32) -> Vec<
         }
     }
     Vec::new()
+}
+
+/// The highest upstream number among `rows` written by a trusted writer (`trusted(author)`:
+/// the signer or a member). A stranger may set any `upstreamNumber`, so theirs never count.
+fn highest_trusted(
+    rows: &[forge_core::collab::v2::ImportedRow],
+    trusted: impl Fn(&str) -> bool,
+) -> Option<u32> {
+    rows.iter()
+        .filter(|r| trusted(&r.target.author))
+        .filter_map(|r| r.upstream_number)
+        .max()
+}
+
+/// Whether the order check refuses the run: an incremental one that finds an earlier item
+/// missing. A full run creates the missing items at the next numbers and warns.
+fn order_refuses(incremental: bool, missing: &[u32]) -> bool {
+    incremental && !missing.is_empty()
+}
+
+/// The source numbers among `below` (items under the highest one held, each with whether the
+/// destination has its copy) that have none.
+pub(crate) fn missing_below(below: &[(u32, bool)]) -> Vec<u32> {
+    below
+        .iter()
+        .filter(|(_, has)| !has)
+        .map(|(n, _)| *n)
+        .collect()
 }
 
 /// The label events that take `current` to `t`'s labels.
@@ -581,20 +641,25 @@ impl<'a> Sink<'a> {
         let Some(repo) = self.repo.clone() else {
             return Ok(0);
         };
+        // The first page (highest first); when it holds rows but none from a trusted writer,
+        // every one. Not "a full page": unreadable rows are dropped before this sees them.
         for all in [false, true] {
             let rows = self
                 .collab
                 .upstream_numbered(&repo, kind, all)
                 .await
                 .context("reading the destination's upstream numbers")?;
-            let full = rows.len() >= 100;
-            for row in rows {
-                if self.trusted(&row.target.author).await? {
-                    return Ok(row.upstream_number.unwrap_or(0));
+            if rows.is_empty() {
+                break;
+            }
+            let mut trusted = BTreeSet::new();
+            for author in rows.iter().map(|r| r.target.author.as_str()) {
+                if !trusted.contains(author) && self.trusted(author).await? {
+                    trusted.insert(author.to_string());
                 }
             }
-            if !full {
-                break;
+            if let Some(n) = highest_trusted(&rows, |a| trusted.contains(a)) {
+                return Ok(n);
             }
         }
         Ok(0)
@@ -605,24 +670,32 @@ impl<'a> Sink<'a> {
     /// after later items and the mirror's numbers would stop following the source's, and the
     /// run could not tell whether other earlier items are missing too. A full run creates
     /// such an item at the next number and says so.
+    ///
+    /// An item the destination refused before ([`SrcCollab::refused`]) is not called missing:
+    /// the same content error would refuse it again, and it must not stop every later run.
+    ///
+    /// The check is per kind: GitHub numbers issues and PRs in one sequence, but a new issue
+    /// below the highest mirrored PR (or the reverse) is not caught here; it takes the next
+    /// number, and its upstream number stays with it.
     async fn check_order(&mut self, src: &SrcCollab) -> Result<()> {
         for kind in [TargetKind::Issue, TargetKind::Patch] {
             let held = self.held_upstream(kind).await?;
-            let mut missing = Vec::new();
+            let mut below = Vec::new();
             for t in src
                 .targets
                 .iter()
                 .filter(|t| t.kind == kind && t.number < held)
             {
-                if self.existing(t).await?.is_none() {
-                    missing.push(t.number);
+                if !src.refused.contains(&key_of(t)) {
+                    below.push((t.number, self.existing(t).await?.is_some()));
                 }
             }
+            let missing = missing_below(&below);
             let Some(first) = missing.first() else {
                 continue;
             };
             let noun = kind.noun();
-            if src.incremental {
+            if order_refuses(src.incremental, &missing) {
                 anyhow::bail!(
                     "refusing this incremental run: upstream {noun} #{first} (and {} more) is \
                      not mirrored, but #{held} already is. Forge numbers issues and PRs \
@@ -812,6 +885,11 @@ impl<'a> Sink<'a> {
             Err(e) if item_error(&e) => {
                 self.ledger
                     .skip(format!("{} not mirrored this run: {e:#}", t.imported.url));
+                // Only a refusal of the item's own content is final for it; a state move a
+                // concurrent change beat (a `c*` rule) or a taken number is retried next run.
+                if content_error(&e) {
+                    self.ledger.refused.insert(key_of(t));
+                }
                 Ok(())
             }
             other => other,
@@ -1073,6 +1151,9 @@ impl<'a> Sink<'a> {
             wanted_code(t),
             target.number,
         );
+        if let Some(note) = merged_without_sha_note(t, current.code) {
+            self.ledger.warn(note);
+        }
         let merges = moves
             .iter()
             .any(|m| m.kind == forge_core::rules::transition::PR_MERGE);
@@ -1311,6 +1392,7 @@ mod tests {
             imported: Imported::default(),
             closed: false,
             merged_oid: None,
+            merged_without_sha: false,
             labels: BTreeSet::new(),
             draft: false,
             patch: None,
@@ -1546,5 +1628,74 @@ mod tests {
             "{note}"
         );
         assert!(note.ends_with("https://github.com/dashpay/dash/issues/7762"));
+    }
+
+    /// A merge the source names no commit for imports closed, with a warning; one with a
+    /// commit, or one already merged on chain, says nothing.
+    #[test]
+    fn a_merge_without_a_sha_is_closed_and_said() {
+        let mut t = target(TargetKind::Patch);
+        t.closed = true;
+        t.merged_without_sha = true;
+        assert_eq!(wanted_code(&t), 1);
+        assert!(merged_without_sha_note(&t, 0).is_some_and(|n| n.contains("no merge commit")));
+        assert!(merged_without_sha_note(&t, 2).is_none());
+        t.merged_oid = Some(vec![1; 20]);
+        assert!(merged_without_sha_note(&t, 0).is_none());
+    }
+
+    /// Only the item's own content makes it refused for later runs.
+    #[test]
+    fn only_content_refusals_are_final_for_an_item() {
+        let rule = |doc: &str, rule: &str| {
+            anyhow::Error::from(forge_core::Error::RuleRefused {
+                document_type: doc.into(),
+                rule: rule.into(),
+                detail: String::new(),
+            })
+        };
+        assert!(content_error(&rule("issue", "hasTitle")));
+        assert!(content_error(&anyhow::Error::from(
+            forge_core::Error::Config("title too long: 300 chars (max 256)".into())
+        )));
+        assert!(!content_error(&rule("transition", "c1_closedAfter")));
+        assert!(!content_error(&rule("issue", "dense")));
+        assert!(!content_error(&anyhow::Error::from(
+            forge_core::Error::DuplicateUniqueIndex("number".into())
+        )));
+        assert!(!content_error(&anyhow::Error::from(
+            forge_core::Error::Config("no destination repository".into())
+        )));
+    }
+
+    /// A stranger's high `upstreamNumber` does not move the order check; the signer's and a
+    /// member's do.
+    #[test]
+    fn only_trusted_upstream_numbers_are_held() {
+        let row = |author: &str, n: u32| forge_core::collab::v2::ImportedRow {
+            target: Target {
+                kind: TargetKind::Issue,
+                id: format!("d{n}"),
+                number: n,
+                author: author.into(),
+            },
+            imported: None,
+            upstream_number: Some(n),
+            base: None,
+        };
+        let rows = [row("stranger", 9000), row("mirror", 40), row("member", 41)];
+        let trusted = |a: &str| a == "mirror" || a == "member";
+        assert_eq!(highest_trusted(&rows, trusted), Some(41));
+        assert_eq!(highest_trusted(&rows[..1], trusted), None);
+        assert_eq!(highest_trusted(&[], trusted), None);
+    }
+
+    /// An incremental run that finds an earlier item missing is refused; a full run is not
+    /// (it warns and places the items at the next numbers); nothing missing is fine.
+    #[test]
+    fn the_order_check_refuses_only_an_incremental_run() {
+        assert!(order_refuses(true, &[3]));
+        assert!(!order_refuses(false, &[3]));
+        assert!(!order_refuses(true, &[]));
     }
 }

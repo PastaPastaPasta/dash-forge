@@ -376,6 +376,7 @@ impl TargetInfo {
             head_oid: self.head_oid.clone(),
             open,
             merged,
+            draft: false,
         }
     }
 }
@@ -447,6 +448,7 @@ pub fn translate_patch(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<Web
         head_oid: d.field_hex("headOid").unwrap_or_default(),
         open: true,
         merged: false,
+        draft: false,
     };
     Some(pull_request_event(repo, &d.id, "opened", &pr))
 }
@@ -600,12 +602,16 @@ pub fn translate_transition(
     }
     let (action, open, merged) = transition_action(kind)?;
     let mut e = if target.is_pr {
-        pull_request_event(
-            repo,
-            &d.id,
-            action,
-            &target.pr_obj(&target_id, open, merged),
-        )
+        let mut pr = target.pr_obj(&target_id, open, merged);
+        // The draft axis after the move, from the kind alone: a draft, a closed draft and a
+        // reopened draft stay drafts; a ready, a ready close / reopen and a merge do not.
+        pr.draft = matches!(
+            u8::try_from(kind),
+            Ok(forge_core::rules::transition::PR_DRAFT
+                | forge_core::rules::transition::PR_DRAFT_CLOSE
+                | forge_core::rules::transition::PR_DRAFT_REOPEN)
+        );
+        pull_request_event(repo, &d.id, action, &pr)
     } else {
         issues_event(repo, &d.id, action, &target.issue_obj(&target_id, open))
     };
@@ -994,6 +1000,11 @@ mod tests {
             assert_eq!(e.payload["action"], action, "kind {kind}");
             assert_eq!(e.payload["pull_request"]["state"], state, "kind {kind}");
             assert_eq!(e.payload["pull_request"]["merged"], merged, "kind {kind}");
+            assert_eq!(
+                e.payload["pull_request"]["draft"],
+                matches!(kind, 14 | 16 | 17),
+                "kind {kind}"
+            );
             assert!(e.payload.get("dash_merge_unverified").is_none());
         }
         // Merged is the chain fact (D-9); a commit not found on the base is labelled.
