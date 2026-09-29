@@ -381,6 +381,9 @@ function Thread({ thread, repo, pullId, onPosted, writeBlock, actions, suggestio
           </div>
         ) : writeBlock !== null ? (
           <PrivateComposeNote reason={writeBlock} />
+        ) : thread.root.replyTo !== null ? (
+          // The thread's root comment was deleted: a reply must name a live root (RC1 R-14).
+          <span className="text-[12px] text-anvil-500 dark:text-anvil-400">The first comment of this thread was deleted; replies are closed.</span>
         ) : (
           <Button size="sm" variant="ghost" onClick={() => setReplying(true)}>
             Reply

@@ -16,6 +16,10 @@ const creates: Create[] = []
 const present = new Set<string>()
 /** The tags with a live release (their `perTag` delta sum is 1). */
 const liveTags: string[] = []
+/** The member documents (`maintainer` / `writer` / `runner` → member ids) the complete reads find. */
+const held: Record<string, string[]> = {}
+/** A refusal the next create meets (then cleared). */
+let refuseNext: Error | null = null
 
 const ALICE = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const BOB = 'CJao2MVHL4x3f2Ko2xTUibnZ8G1t9exTPtvJnCbHAgDH'
@@ -26,13 +30,20 @@ vi.mock('../sdk', async (importOriginal) => {
   return {
     ...real,
     createDocumentIdempotent: vi.fn(async (_sdk: unknown, a: { identityId: string }, p: Omit<Create, 'signer'>) => {
+      if (refuseNext !== null) {
+        const e = refuseNext
+        refuseNext = null
+        throw e
+      }
       creates.push({ signer: a.identityId, contractId: p.contractId, documentType: p.documentType, data: p.data })
       return { documentId: NEW_ID, confirmed: true, cost: { credits: 0, dash: 0 }, actualCredits: null }
     }),
     queryDocumentsWithProof: vi.fn(async (_sdk: unknown, q: { documentTypeName: string }) => ({
       documents: present.has(q.documentTypeName) ? [{ $id: NEW_ID, $ownerId: BOB }] : [],
     })),
-    queryAllDocuments: vi.fn(async () => []),
+    queryAllDocuments: vi.fn(async (_sdk: unknown, q: { documentTypeName: string }) =>
+      (held[q.documentTypeName] ?? []).map((memberId, i) => ({ $id: `${q.documentTypeName}${i}`, $ownerId: ALICE, $createdAt: 1, memberId })),
+    ),
     countDocuments: vi.fn(async () => 0),
     sumDocumentsGrouped: vi.fn(async () => new Map(liveTags.map((t) => [t, 1]))),
   }
@@ -98,6 +109,8 @@ beforeEach(() => {
   creates.length = 0
   present.clear()
   liveTags.length = 0
+  for (const k of Object.keys(held)) delete held[k]
+  refuseNext = null
   resetMemoryStores()
 })
 
@@ -229,11 +242,17 @@ describe('forge-community writers are RC1-valid', () => {
   })
 
   it('a branch policy: the existing switches with no sources, and named checks paired with their sources', async () => {
+    held['maintainer'] = [ALICE]
+    held['runner'] = [BOB]
     await setPolicy(sdk, auth(ALICE), REPO, { requiredApprovals: 1, approverRole: 0, requireChecks: true, mergeMethods: 15 })
     await setPolicy(sdk, auth(ALICE), REPO, { requiredApprovals: 0, requiredChecks: ['build', 'lint'], requiredCheckSources: [BOB, ALICE] })
     await judged()
-    expect(() => setPolicy(sdk, auth(ALICE), REPO, { requiredApprovals: 0, requiredChecks: ['build', 'lint'], requiredCheckSources: [BOB] })).toThrow(/source/)
-    expect(() => setPolicy(sdk, auth(ALICE), REPO, { requiredApprovals: 0, mergeMethods: 16 })).toThrow(/0-15/)
+    await expect(setPolicy(sdk, auth(ALICE), REPO, { requiredApprovals: 0, requiredChecks: ['build', 'lint'], requiredCheckSources: [BOB] })).rejects.toThrow(/source/)
+    await expect(setPolicy(sdk, auth(ALICE), REPO, { requiredApprovals: 0, mergeMethods: 16 })).rejects.toThrow(/0-15/)
+    // A pinned source removed since (no longer a runner or maintainer): said before signing.
+    held['runner'] = []
+    await expect(setPolicy(sdk, auth(ALICE), REPO, { requiredApprovals: 0, requiredChecks: ['build'], requiredCheckSources: [BOB] })).rejects.toThrow(/no longer a runner or maintainer/)
+    expect(creates).toHaveLength(0)
   })
 
   it('a star with its trending beat (repoOwner, vis public), a watch and a follow', async () => {
@@ -276,5 +295,22 @@ describe('what the writers refuse or adjust before signing', () => {
     // A parent hidden by a key this reader lacks is not taken for a deleted one.
     expect(commentEditDrops(reply, [reply], { isMember: true, allReadable: false })).toEqual({})
     expect(commentEditDrops(c('i', { proved: true, imported: true }), [], { isMember: false, allReadable: true })).toEqual({})
+  })
+})
+
+describe('the review fixes', () => {
+  it('a verdict read as a non-member is checked again, uncached, before it is written as 4/5', async () => {
+    held['writer'] = [BOB]
+    await createReview(sdk, auth(BOB), REPO, { patchId: PR, verdict: 'approve', commitOid: HEAD, post: { isMember: false } })
+    const [r] = await judged()
+    expect(r?.data['verdict']).toBe(1)
+    expect(r?.data['asMember']).toBeDefined()
+  })
+
+  it('a release refused by oneLive (a stale live total) is read again and retried once', async () => {
+    const { ConsensusRefusal } = await import('../sdk')
+    refuseNext = new ConsensusRefusal(10422, 'breaks its propertyConstraints rule "oneLive": NotMet')
+    await createRelease(sdk, auth(ALICE), REPO, { tagName: 'v3' })
+    expect(types(await judged())).toEqual(['release'])
   })
 })

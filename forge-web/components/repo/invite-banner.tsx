@@ -14,7 +14,10 @@
 import { useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { UserPlus } from 'lucide-react'
-import { acceptInvite, findConsent, readMembershipsCached, repoContractIds, type RepoRef } from '@/lib/repo'
+import { acceptInvite, findConsent, readConsents, readMembershipsCached, repoContractIds, type RepoRef } from '@/lib/repo'
+import type { Role } from '@/lib/rules/v2'
+import { repoHref } from '@/hooks/use-query-param'
+import { CopyRow } from '@/components/ui/copy-row'
 import { previewCreate } from '@/lib/sdk'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -103,5 +106,64 @@ export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
         }}
       />
     </div>
+  )
+}
+
+/**
+ * The owner's side of an invitation (Settings → Collaborators, public and private repos alike):
+ * the repo's invite link, the identity an add was just refused for (they have not accepted), and
+ * the pending invitations, i.e. the consents of identities that are not members yet, each with
+ * an add action (`onPick`: the add flow of the page, which a private repo runs with its key).
+ */
+export function Invitations({
+  repo,
+  members,
+  awaiting,
+  disabled,
+  onPick,
+}: {
+  repo: RepoRef
+  /** The current members' identity ids (their consents are not pending). */
+  members: readonly string[]
+  /** The identity an add was refused for because they had not accepted, or null. */
+  awaiting: string | null
+  disabled: boolean
+  onPick: (identity: string, role: Role) => void
+}): JSX.Element {
+  const { sdk, ready, network } = useSdk(repoContractIds(repo))
+  const consents = useAsync<string[]>(() => readConsents(sdk!, repo), [ready, repo.repoId, network, members.length], { enabled: ready && sdk !== null })
+  const pending = (consents.data ?? []).filter((id) => id !== repo.ownerId && !members.includes(id))
+  const link = typeof window === 'undefined' ? '' : new URL(repoHref('/repo', { owner: repo.ownerId, name: repo.name }, { [INVITE_PARAM]: '1' }), window.location.origin).toString()
+  return (
+    <>
+      {awaiting !== null ? (
+        <p role="status" data-testid="invite-pending" className="mt-2 text-[12px] text-anvil-700 dark:text-anvil-200">
+          <Author identityId={awaiting} link={false} /> hasn&apos;t accepted yet, so nothing was signed. Send them the invite link below; once they
+          accept, they show under Pending invitations and you can add them.
+        </p>
+      ) : null}
+      {link !== '' ? (
+        <div className="mt-3 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="invite-link">
+          <p className="mb-1">Invite link: the member opens it and accepts before you add them.</p>
+          <CopyRow text={link} label="Copy the invite link" />
+        </div>
+      ) : null}
+      {pending.length > 0 ? (
+        <div className="mt-3" data-testid="pending-invites">
+          <h5 className="mb-1 text-[12px] font-medium text-anvil-600 dark:text-anvil-300">Pending invitations (accepted, not added yet)</h5>
+          {pending.map((id) => (
+            <div key={id} className="flex items-center gap-2 py-1">
+              <Author identityId={id} link={false} />
+              {(['writer', 'maintainer'] as Role[]).map((r) => (
+                <Button key={r} size="sm" variant="outline" className={r === 'writer' ? 'ml-auto' : ''} disabled={disabled} onClick={() => onPick(id, r)}>
+                  Add as {r}
+                </Button>
+              ))}
+            </div>
+          ))}
+        </div>
+      ) : null}
+      {consents.error ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">Couldn&apos;t read the invitations: {consents.error}</p> : null}
+    </>
   )
 }

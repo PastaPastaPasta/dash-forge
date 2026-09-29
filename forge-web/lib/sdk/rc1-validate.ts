@@ -23,7 +23,7 @@
 
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { base58Encode } from '../auth/base58'
+import { base58Decode, base58Encode } from '../auth/base58'
 import { contractKindOfType } from '../layout'
 
 type Evo = typeof import('@dashevo/evo-sdk')
@@ -300,6 +300,8 @@ export async function validateRc1(type: string, doc: Record<string, unknown>, op
   checkSchema(schema, doc, '', run)
   if (run.errors.length > 0) return { ok: false, errors: run.errors }
   if (run.bytes.length > 0) return { ok: false, errors: run.bytes }
+  const shape = structureErrors(schema, doc, opts?.owner ?? RC1_VECTOR_OWNER)
+  if (shape.length > 0) return { ok: false, errors: shape }
 
   const { evo, contracts } = await judge()
   const document = new evo.Document({
@@ -311,6 +313,34 @@ export async function validateRc1(type: string, doc: Record<string, unknown>, op
   const broken = contracts[name].checkDocumentPropertyConstraints(document)
   return broken ? { ok: false, errors: [`propertyConstraints ${broken.rule} (${broken.violation}): ${broken.message}`] } : { ok: true }
 }
+
+/**
+ * The checks a node runs on a create right after the schema (drive-abci's advanced structure,
+ * as `tools/contract-validate` judges the vectors): a `distinctFrom` property differs from the
+ * writer or its sibling (10419), and an `encryptedFor` ciphertext is at least 32 bytes and a
+ * whole number of 16-byte AES blocks (10420).
+ */
+function structureErrors(schema: Schema, doc: Record<string, unknown>, owner: string): string[] {
+  const errors: string[] = []
+  const props = (schema.properties ?? {}) as Record<string, Schema & { distinctFrom?: string; encryptedFor?: unknown }>
+  const same = (a: unknown, b: unknown): boolean => a instanceof Uint8Array && b instanceof Uint8Array && a.length === b.length && a.every((x, i) => x === b[i])
+  for (const [name, prop] of Object.entries(props)) {
+    const value = doc[name]
+    if (value === undefined) continue
+    if (typeof prop.distinctFrom === 'string') {
+      const other = prop.distinctFrom === '$ownerId' ? base58Decode(owner) : doc[prop.distinctFrom]
+      if (same(value, other)) errors.push(`distinctFrom at /${name}: equals ${prop.distinctFrom} (${DISTINCT_FROM_CODE})`)
+    }
+    if (prop.encryptedFor !== undefined && value instanceof Uint8Array && (value.length < 32 || value.length % 16 !== 0)) {
+      errors.push(`encryptedFor at /${name}: ${value.length} bytes is no AES-CBC ciphertext (${ENCRYPTED_SHAPE_CODE})`)
+    }
+  }
+  return errors
+}
+
+/** The consensus codes of the two structure checks (`distinctFrom`, the `encryptedFor` shape). */
+const DISTINCT_FROM_CODE = 10419
+const ENCRYPTED_SHAPE_CODE = 10420
 
 /**
  * Throws, listing every error, unless {@link validateRc1} accepts `doc` as a create of `type`

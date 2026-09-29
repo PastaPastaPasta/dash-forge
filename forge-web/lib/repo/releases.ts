@@ -39,6 +39,8 @@ export interface ReleaseView {
   readonly name: string
   readonly notes: string
   readonly yanked: boolean
+  /** RC1 `delta`: +1 a publish, 0 an edit or yank, −1 an unpublish (0 when absent: a pre-RC1 document). */
+  readonly delta: number
   readonly assets: readonly ReleaseAssetView[]
   /** Assets that could not be parsed (shown as a count, never guessed at). */
   readonly badAssets: number
@@ -192,6 +194,7 @@ function toRelease(doc: PlainDocument): ReleaseView {
     omitted,
     published,
     yanked: doc['yanked'] === true,
+    delta: typeof doc['delta'] === 'number' ? doc['delta'] : 0,
     assets,
     badAssets: bad,
     publisher: str(doc, '$ownerId'),
@@ -230,7 +233,9 @@ export function newestPerTag(all: readonly ReleaseView[]): ReleaseList {
   const previous: ReleaseView[] = []
   for (const revs of byTag.values()) {
     const [head, ...rest] = [...revs].sort(newestFirst)
-    if (head !== undefined) current.push(head)
+    // An unpublish (RC1 `delta` −1) takes the tag's release down; its revisions stay history.
+    if (head !== undefined && head.delta !== -1) current.push(head)
+    else if (head !== undefined) previous.push(head)
     previous.push(...rest)
   }
   return { current: current.sort(releaseOrder), previous: previous.sort(newestFirst) }

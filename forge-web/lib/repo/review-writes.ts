@@ -34,6 +34,8 @@ import {
 } from '../sdk'
 import { DOC, asIdentifierString, byteFieldToHex, num, str, type RepoRef } from './contract'
 import { invalidateRepoFeed, readReviews } from './issues'
+import { readMemberships } from './members'
+import { readRunners } from './checks'
 import { sealEdit } from './private-writes'
 import { repoSource } from './source'
 import { admitAll, gateFor } from './private-content'
@@ -50,6 +52,7 @@ import {
   eventRoute,
   lockedOut,
   refusePlaintextInPrivate,
+  settledPost,
   reviewVerdictFields,
   writeRepoDoc,
   type PostContext,
@@ -513,13 +516,14 @@ async function submitWith(
   onProgress?.({ done: done(), total })
   let reviewId = current.reviewId
   if (reviewId === undefined) {
+    const settled = await settledPost(sdk, repo, auth.identityId, post, draft.verdict)
     const r = await write(sdk, auth, repo, DOC.review, reviewData({
       patchId: draft.prId,
       verdict: draft.verdict,
       commitOid: draft.headOid,
       body: draft.summary,
       commentCount: draft.comments.length,
-      post,
+      post: settled,
     }, auth.identityId), `review:${draft.draftId}:review`, writer)
     reviewId = r.documentId
     current = { ...current, reviewId }
@@ -581,8 +585,20 @@ export function policyData(policy: Policy): Record<string, unknown> {
 }
 
 /** Set the branch policy (maintainers only at consensus). */
-export function setPolicy(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, policy: Policy, intent?: string): Promise<WriteResult> {
-  return write(sdk, auth, repo, DOC.policy, policyData(policy), intent)
+export async function setPolicy(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, policy: Policy, intent?: string): Promise<WriteResult> {
+  const data = policyData(policy)
+  // Consensus re-checks every pinned source (a runner or maintainer of the repo): one removed
+  // since would refuse every save, so say which before signing.
+  const sources = policy.requiredCheckSources ?? []
+  if (sources.length > 0) {
+    const [members, runners] = await Promise.all([readMemberships(sdk, repo), readRunners(sdk, repo)])
+    const valid = new Set([...members.filter((m) => m.role === 'maintainer').map((m) => m.identity), ...runners])
+    const gone = sources.filter((id) => !valid.has(id))
+    if (gone.length > 0) {
+      throw new Error(`a required check's pinned source (${gone.join(', ')}) is no longer a runner or maintainer of this repo; update the check sources with the CLI before saving`)
+    }
+  }
+  return write(sdk, auth, repo, DOC.policy, data, intent)
 }
 
 /**
@@ -648,6 +664,9 @@ export interface SealContext {
   readonly imported?: Readonly<Record<string, unknown>> | null
 }
 
+/** A comment's plaintext references an edit may remove (never sealed). */
+const REFERENCE_FIELDS: readonly string[] = ['reviewId', 'replyTo', 'asMember']
+
 /** The content fields a sealed replace clears when a legacy plaintext copy sits next to `enc`. */
 const PLAINTEXT_OF: Readonly<Record<'issue' | 'patch' | 'comment', readonly string[]>> = { issue: ['title', 'body'], patch: ['title', 'body'], comment: ['body'] }
 
@@ -677,7 +696,9 @@ async function replace(
     const sealed = await sealEdit(sdk, auth, repo, documentType, { ...seal!.bind }, seal!.current, changes, seal!.patchEpoch, seal!.imported)
     // Legacy plaintext stored next to `enc` goes in the same replace (as the CLI's re-seal does):
     // `undefined` removes a field from the stored document.
-    replaced = { ...sealed, ...Object.fromEntries(PLAINTEXT_OF[documentType].map((f) => [f, undefined])) }
+    // Removed references (a deleted review or parent, a lapsed proof) are plaintext fields: kept.
+    const drops = Object.fromEntries(Object.entries(changes).filter(([k, v]) => v === undefined && REFERENCE_FIELDS.includes(k)))
+    replaced = { ...sealed, ...Object.fromEntries(PLAINTEXT_OF[documentType].map((f) => [f, undefined])), ...drops }
   }
   try {
     return await replaceDocumentIdempotent(sdk, auth, {

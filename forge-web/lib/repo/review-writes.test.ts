@@ -206,6 +206,10 @@ describe('assignees and labels (F-1)', () => {
     // The comment's provenance is re-sealed, and the edit names the revision and the repo it read.
     expect(sealed[1]?.[5]).toEqual({ author: 'octocat', url: 'u' })
     expect(replaces[1]).toMatchObject({ expectedRevision: 2n, expectRepoId: PRIVATE.repoId })
+    // RC1: a dead parent and a lapsed proof are removed in the sealed replace too (plaintext references).
+    await updateComment(sdk, auth(ALICE), PRIVATE, { id: PR, body: 'again', dropReplyTo: true, dropProof: true, expectedRevision: 3n, seal: { current: { body: 'edited' }, bind: { targetId: PR } } })
+    expect(replaces[2]?.changes).toEqual({ enc: new Uint8Array([1, 2, 3]), epoch: 4, body: undefined, replyTo: undefined, asMember: undefined })
+    expect(Object.keys(replaces[2]?.changes ?? {})).toEqual(expect.arrayContaining(['replyTo', 'asMember']))
     // A private comment edit without the revision it read is refused (both clients guard edits by revision).
     await expect(updateComment(sdk, auth(ALICE), PRIVATE, { id: PR, body: 'x', seal: { current: { body: 'was' }, bind: { targetId: PR } } })).rejects.toThrow(/revision/)
     // The author (and repo, revision) is checked before any key work: a refused precheck seals nothing.
@@ -217,7 +221,7 @@ describe('assignees and labels (F-1)', () => {
     expect(prechecks.length).toBeGreaterThan(0)
     // A public edit is plaintext, as before.
     await updateTarget(sdk, auth(ALICE), REPO, { type: 'issue', id: PR, title: 'pub' })
-    expect(replaces[2]?.changes).toEqual({ title: 'pub' })
+    expect(replaces[3]?.changes).toEqual({ title: 'pub' })
   })
 })
 

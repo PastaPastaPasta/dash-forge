@@ -48,8 +48,8 @@ import {
   type WriteResult,
 } from '../sdk'
 import { DOC, withVis, type RepoRef } from './contract'
-import { isRc1BranchName, isRc1OidHex, isRc1RefName, isRc1TagName } from '../rules'
-import { invalidateMembers } from './members'
+import { isRc1BranchName, isRc1OidHex, isRc1TagName } from '../rules'
+import { invalidateMembers, readMemberships } from './members'
 import { refNameHash, repoContentWritten } from './push'
 import type { PrivateDocType } from '../private'
 import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, PrivateWriteError, type PrivateWriter } from './private-writes'
@@ -57,6 +57,7 @@ import { invalidateRepoFeed } from './issues'
 import { noteTargetCreated } from './social'
 import { repoSource } from './source'
 import { writeLock, writeTransition, type StateTarget } from './transitions'
+import { refusedRule } from '../rules/transition'
 
 // ---------------------------------------------------------------------------
 // event kind name → integer (parity with forge-core `event_kind_to_u64`)
@@ -135,6 +136,17 @@ export function reviewVerdictFields(verdict: VerdictInput, signer: string, post:
  */
 export function commentProof(signer: string, post: PostContext | undefined): Record<string, unknown> {
   return post?.isMember === true && post.locked === true ? { asMember: decodeIdentifier(signer) } : {}
+}
+
+/**
+ * `post` with its membership settled for a review of `verdict`: a non-member's approve or request
+ * changes is recorded as 4/5, which never counts, so a "not a member" read (still loading, failed,
+ * or cached from before they were added) is read again, uncached, before it decides that.
+ */
+export async function settledPost(sdk: EvoSDK, repo: RepoRef, signer: string, post: PostContext, verdict: VerdictInput): Promise<PostContext> {
+  if (post.isMember || verdict === 'comment') return post
+  const members = await readMemberships(sdk, repo)
+  return members.some((m) => m.identity === signer) ? { ...post, isMember: true } : post
 }
 
 /** An issue or PR a write refers to: its document id and number. */
@@ -631,9 +643,10 @@ export async function createReview(
 ): Promise<WriteResult> {
   if (lockedOut(input.post)) throw new Error(LOCKED_REASON)
   if (!isRc1OidHex(input.commitOid)) throw new Error('a review names a 20- or 32-byte commit')
+  const post = await settledPost(sdk, repo, auth.identityId, input.post, input.verdict)
   const data: Record<string, unknown> = {
     patchId: decodeIdentifier(input.patchId),
-    ...reviewVerdictFields(input.verdict, auth.identityId, input.post),
+    ...reviewVerdictFields(input.verdict, auth.identityId, post),
     commitOid: hexToBytes(input.commitOid),
   }
   if (input.body && input.body.length > 0) data['body'] = input.body
@@ -698,13 +711,21 @@ export async function createRelease(
 ): Promise<WriteResult> {
   if (repo.visibility === 'private') throw new Error(PRIVATE_RELEASE_REFUSED)
   if (!isRc1TagName(input.tagName)) throw new Error(`${JSON.stringify(input.tagName)} is not a tag name git accepts`)
-  const delta = publishDelta(await readTagLive(sdk, repo, input.tagName))
-  const data: Record<string, unknown> = { tagName: input.tagName, yanked: input.yanked ?? false, delta }
-  if (input.name && input.name.length > 0) data['name'] = input.name
-  if (input.notes && input.notes.length > 0) data['notes'] = input.notes
-  if (input.assets && input.assets.length > 0) data['assets'] = releaseAssetsJson(input.assets)
+  const fields: Record<string, unknown> = { tagName: input.tagName, yanked: input.yanked ?? false }
+  if (input.name && input.name.length > 0) fields['name'] = input.name
+  if (input.notes && input.notes.length > 0) fields['notes'] = input.notes
+  if (input.assets && input.assets.length > 0) fields['assets'] = releaseAssetsJson(input.assets)
+  const attempt = async (): Promise<WriteResult> =>
+    writeRepoDoc(sdk, auth, repo, DOC.release, { ...fields, delta: publishDelta(await readTagLive(sdk, repo, input.tagName)) }, input.intent)
   try {
-    return await writeRepoDoc(sdk, auth, repo, DOC.release, data, input.intent)
+    try {
+      return await attempt()
+    } catch (e) {
+      // The live total was read from a node a block behind (a publish that just landed): read
+      // it again and retry once (`oneLive` refused the delta; nothing was stored).
+      if (!(e instanceof ConsensusRefusal && e.code === RULE_REFUSED_CODE && refusedRule(e.message) === 'oneLive')) throw e
+      return await attempt()
+    }
   } finally {
     // A release names a tag just pushed, often from another client: browse it afresh.
     repoContentWritten(repo)
@@ -905,7 +926,7 @@ export class PrivateMembershipError extends Error {
  */
 export class ConsentMissingError extends Error {
   constructor(readonly memberId: string) {
-    super('they have not accepted the invitation yet: send them the link to this repo so they can accept it, then add them again')
+    super("they haven't accepted the invitation yet: send them this repo's invite link (Settings → Collaborators) to accept, then add them")
     this.name = 'ConsentMissingError'
   }
 }

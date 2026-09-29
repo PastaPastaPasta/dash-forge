@@ -1021,7 +1021,8 @@ function PullPage({
                         key={v}
                         size="sm"
                         variant={v === 'approve' ? 'primary' : 'outline'}
-                        disabled={guard.disabledReason !== null}
+                        // Until the viewer's membership is read, a verdict would be recorded as a non-member's.
+                        disabled={guard.disabledReason !== null || (v !== 'comment' && !holdings.settled)}
                         onClick={() => {
                           if (!commentTooLong && guard.check(composeCost(repo, 'review', { body: comment.trim() }, reviewFirst), 'collab')) setPending({ kind: 'review', verdict: v, body: comment.trim() })
                         }}
