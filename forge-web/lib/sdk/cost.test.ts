@@ -151,7 +151,7 @@ describe('admission (D-012)', () => {
 describe('chunk storage (review M7)', () => {
   // forge-core `cost::push_fees::chunks`, and chunks measured on moutai beta.5 (PR #127).
   it('matches the CLI and covers every measured chunk', () => {
-    expect(estimateChunkCredits(1 << 20)).toBe(36_072_827_200)
+    expect(estimateChunkCredits(1 << 20)).toBe(39_384_827_200)
     expect(estimateChunkCredits(0)).toBe(0)
     const measured: ReadonlyArray<readonly [number, number]> = [
       [15_023, 478_722_620],

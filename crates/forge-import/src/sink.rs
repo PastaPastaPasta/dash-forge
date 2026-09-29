@@ -13,7 +13,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
-use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 
@@ -26,6 +25,7 @@ use forge_core::rules::{EventKind, MergeBaseTips};
 use forge_core::scope::RepoRef;
 
 use crate::budget::{collab_doc_credits, Budget, CollabDoc};
+use crate::gitsync::ProofRepo;
 use crate::model::{same_item, same_item_renamed, SrcCollab, SrcLabel, SrcRelease, SrcTarget};
 use crate::summary::Counts;
 
@@ -174,9 +174,9 @@ pub struct Sink<'a> {
     /// The destination's members (maintainers and writers), read once: an imported item by
     /// a member is an earlier mirror's copy; one by anyone else is a squatter.
     members: Option<BTreeSet<String>>,
-    /// The local git mirror, when this run has one: where a merge commit's ancestry is
-    /// checked (see [`Sink::merge_proof`]).
-    mirror: Option<PathBuf>,
+    /// The git data a merge commit's ancestry is checked in, when this run has any (see
+    /// [`Sink::merge_proof`]).
+    mirror: Option<ProofRepo>,
     /// Each destination PR's base as the readers fold it, by target `$id`. Filled wherever
     /// a patch is read.
     opened: BTreeMap<String, PrBase>,
@@ -289,10 +289,10 @@ impl<'a> Sink<'a> {
         }
     }
 
-    /// Check merge commits against the local git mirror at `dir` (see [`Sink::merge_proof`]).
+    /// Check merge commits against the git data in `proof` (see [`Sink::merge_proof`]).
     #[must_use]
-    pub fn with_mirror(mut self, dir: Option<PathBuf>) -> Self {
-        self.mirror = dir;
+    pub fn with_mirror(mut self, proof: Option<ProofRepo>) -> Self {
+        self.mirror = proof;
         self
     }
 
@@ -360,24 +360,19 @@ impl<'a> Sink<'a> {
     ///
     /// A dry run is priced before this run's push, so the mirror's own base tip (which the
     /// push is about to record) stands in for the chain's newest one.
+    ///
+    /// A run without `code` pushes nothing: the git data is the base branches fetched for the
+    /// proof ([`crate::gitsync::fetch_proof_bases`]), and only tips already on chain count.
     async fn merge_proof(&mut self, t: &SrcTarget, target_id: &str) -> Result<Option<Vec<u8>>> {
-        let (Some(merged), Some(patch), Some(dir)) = (&t.merged_oid, &t.patch, self.mirror.clone())
+        let (Some(merged), Some(patch), Some(proof)) =
+            (&t.merged_oid, &t.patch, self.mirror.clone())
         else {
             return Ok(None);
         };
         let merged = hex::encode(merged);
         let base = &patch.base_ref_name;
-        // The mirror's own tip of the base: this run's push put it on chain (a dry run is
-        // priced before that push, so it stands in for the chain's newest tip there).
-        let local = crate::gitsync::local_tip(&dir, base)
-            .filter(|tip| crate::gitsync::is_ancestor(&dir, &merged, tip));
-        let contains = |tips: &MergeBaseTips| -> Option<String> {
-            tips.historical
-                .iter()
-                .rev()
-                .find(|tip| crate::gitsync::is_ancestor(&dir, &merged, tip))
-                .cloned()
-        };
+        let local = pushed_tip(&proof, base, &merged);
+        let contains = |tips: &MergeBaseTips| chain_tip_containing(&proof, tips, &merged);
         let mut tips = self.base_tips(target_id, base, Freshness::Synced).await?;
         // A PR opened against a base that did not exist then has no tips, and no merge into
         // it ever counts (D-501); naming one would be re-posted, and paid for, every run.
@@ -520,8 +515,14 @@ impl<'a> Sink<'a> {
     /// its bytes ([`crate::assets`], D-517). A release recorded by an older import with no
     /// hash is therefore republished once, with it.
     ///
-    /// Written oldest first (sources list newest first), so the documents' `$createdAt`
+    /// Hashed newest first, so a run's hashing budget goes to the releases people download;
+    /// written oldest first (sources list newest first), so the documents' `$createdAt`
     /// follows the releases' own order; readers order by version anyway (L-14).
+    ///
+    /// A release listing more assets than its 4096-byte field holds keeps the checksum files,
+    /// signatures and common platform builds first ([`crate::model::fit_assets`]), and its
+    /// notes end with a line saying how many are not mirrored, linking the source release
+    /// ([`crate::model::notes_with_footer`]), which readers show.
     async fn sync_releases(&mut self, releases: &[SrcRelease]) -> Result<()> {
         let mut known = crate::assets::Known::default();
         let existing: BTreeMap<String, String> = match &self.repo {
@@ -542,7 +543,10 @@ impl<'a> Sink<'a> {
         };
         let fetch = crate::assets::Https::default();
         let mut budget = crate::assets::RUN_BYTES;
-        for r in releases.iter().rev() {
+        let dry = self.ledger.dry_run;
+        // Newest first (the source's order): the hashing budget goes to the newest releases.
+        let mut prepared = Vec::with_capacity(releases.len());
+        for r in releases {
             if r.tag_name.is_empty() || r.tag_name.len() > 63 {
                 self.ledger.warn(format!(
                     "release tag {:?} does not fit the 63 bytes a release holds; skipped",
@@ -551,7 +555,6 @@ impl<'a> Sink<'a> {
                 continue;
             }
             let mut assets_in = r.assets.clone();
-            let dry = self.ledger.dry_run;
             for w in crate::assets::fill_hashes(
                 &r.tag_name,
                 &mut assets_in,
@@ -564,6 +567,9 @@ impl<'a> Sink<'a> {
             {
                 self.ledger.warn(w);
             }
+            prepared.push((r, assets_in));
+        }
+        for (r, mut assets_in) in prepared.into_iter().rev() {
             if dry {
                 // Priced, not fetched: an asset a real run would hash changes the release.
                 for a in assets_in.iter_mut().filter(|a| a.sha256.is_empty()) {
@@ -573,29 +579,35 @@ impl<'a> Sink<'a> {
             let before = assets_in.len();
             let assets_in = crate::model::fit_assets(assets_in);
             let dropped = r.dropped + before - assets_in.len();
+            let total = r.dropped + before;
+            let unhashed = assets_in.iter().filter(|a| a.sha256.is_empty()).count();
+            self.ledger.counts.assets_omitted += dropped as u64;
+            self.ledger.counts.assets_unhashed += unhashed as u64;
             if dropped > 0 {
                 self.ledger.warn(format!(
-                    "release {}: {dropped} of its assets do not fit the 4096 bytes a release \
-                     lists; left out",
+                    "release {}: {dropped} of its {total} assets do not fit the 4096 bytes a \
+                     release lists; left out (kept first: checksum files, signatures, the \
+                     common platform builds; its notes link the source release)",
                     r.tag_name
                 ));
             }
+            let notes = crate::model::notes_with_footer(&r.notes, dropped, total, &r.source_url);
             let assets = serde_json::to_string(&assets_in).unwrap_or_default();
-            if existing.get(&r.tag_name) == Some(&fingerprint(&r.name, &r.notes, &assets)) {
+            if existing.get(&r.tag_name) == Some(&fingerprint(&r.name, &notes, &assets)) {
                 continue;
             }
+            let credits = collab_doc_credits(
+                CollabDoc::Release,
+                (r.tag_name.len() + r.name.len() + notes.len() + assets.len() + 40) as u64,
+            );
             let input = ReleaseInput {
                 tag_name: r.tag_name.clone(),
                 name: r.name.clone(),
-                notes: r.notes.clone(),
+                notes,
                 yanked: false,
                 assets: assets_in,
             };
             let (collab, repo) = (&self.collab, self.repo.as_ref());
-            let credits = collab_doc_credits(
-                CollabDoc::Release,
-                (r.tag_name.len() + r.name.len() + r.notes.len() + assets.len() + 40) as u64,
-            );
             let input = &input;
             self.ledger
                 .write(
@@ -985,11 +997,12 @@ impl<'a> Sink<'a> {
         if t.merged_oid.is_some() && !current.merged {
             proof = self.merge_proof(t, &target.id).await?;
             if proof.is_none() {
+                let base = t.patch.as_ref().map_or("?", |p| p.base_ref_name.as_str());
+                self.ledger.counts.unproved_merges += 1;
                 self.ledger.warn(format!(
-                    "{} was merged, but no mirrored tip of its base {} contains the merge \
-                     commit (the base is not mirrored, or was deleted); recorded as closed",
+                    "{} was merged, but {}; recorded as closed",
                     t.imported.url,
-                    t.patch.as_ref().map_or("?", |p| p.base_ref_name.as_str())
+                    no_proof_reason(self.mirror.as_ref(), base)
                 ));
             }
         }
@@ -1119,6 +1132,47 @@ impl<'a> Sink<'a> {
     }
 }
 
+/// The mirror's own tip of `base` when it contains `merged`: a run that pushes (`code`) puts
+/// it on chain (a dry run is priced before that push, so it stands in for the chain's newest
+/// tip there). `None` for a run that pushes nothing: only tips already on chain count then.
+fn pushed_tip(proof: &ProofRepo, base: &str, merged: &str) -> Option<String> {
+    if !proof.pushed {
+        return None;
+    }
+    crate::gitsync::local_tip(&proof.dir, base)
+        .filter(|tip| crate::gitsync::is_ancestor(&proof.dir, merged, tip))
+}
+
+/// The newest base tip on chain that contains `merged`, by ancestry in `proof`'s git data:
+/// the oid a merge event names so that every reader counts it (D-602).
+fn chain_tip_containing(proof: &ProofRepo, tips: &MergeBaseTips, merged: &str) -> Option<String> {
+    tips.historical
+        .iter()
+        .rev()
+        .find(|tip| crate::gitsync::is_ancestor(&proof.dir, merged, tip))
+        .cloned()
+}
+
+/// Why a merged PR into `base` has no merge proof, for its warning.
+fn no_proof_reason(proof: Option<&ProofRepo>, base: &str) -> String {
+    match proof {
+        None => "this run has no git data to check the merge commit against (the base \
+                 branches could not be fetched; see the warnings)"
+            .into(),
+        Some(p) if p.unfetched.contains(base) => {
+            format!("its base {base} is no longer at the source")
+        }
+        Some(p) if p.pushed => format!(
+            "no mirrored tip of its base {base} contains the merge commit (the base is not \
+             mirrored, or was deleted)"
+        ),
+        Some(_) => format!(
+            "no tip of its base {base} on chain contains the merge commit (this run syncs no \
+             `code`: push the code first, then re-run the sync without --state)"
+        ),
+    }
+}
+
 fn fingerprint(name: &str, notes: &str, assets: &str) -> String {
     format!("{name}\0{notes}\0{assets}")
 }
@@ -1229,6 +1283,93 @@ mod tests {
             kinds(&Sink::state_events(&t, &Current::new_target(), None)),
             vec![EventKind::Close]
         );
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t")
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// The showcase rebuild (beta.6): a `--sync issues,prs,labels` pass after the code import
+    /// recorded every merged PR as closed, because the sink had no git data without `code`.
+    /// Now it is given the base branch fetched from the source (treeless, as the importer does
+    /// with no `--work-dir` mirror) and names the tip on chain that contains the merge.
+    #[test]
+    fn merge_proof_without_the_code_class_uses_the_fetched_base() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir(&src).unwrap();
+        git(&src, &["init", "-q", "-b", "main"]);
+        git(&src, &["commit", "-q", "--allow-empty", "-m", "base"]);
+        let old_tip = git(&src, &["rev-parse", "HEAD"]);
+        git(&src, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(src.join("f"), "x").unwrap();
+        git(&src, &["add", "f"]);
+        git(&src, &["commit", "-q", "-m", "work"]);
+        git(&src, &["checkout", "-q", "main"]);
+        git(
+            &src,
+            &["merge", "-q", "--no-ff", "feature", "-m", "Merge PR #1"],
+        );
+        let merge = git(&src, &["rev-parse", "HEAD"]);
+        git(&src, &["commit", "-q", "--allow-empty", "-m", "later"]);
+        let pushed_tip_on_chain = git(&src, &["rev-parse", "HEAD"]);
+        // The code import pushed `later`; the source moved on since.
+        git(&src, &["commit", "-q", "--allow-empty", "-m", "newer"]);
+
+        let proof_dir = tmp.path().join("proof.git");
+        let url = format!("file://{}", src.display());
+        let bases = vec!["refs/heads/main".to_string(), "refs/heads/gone".to_string()];
+        let missing =
+            crate::gitsync::fetch_proof_bases(&proof_dir, &url, &bases, true, None).unwrap();
+        assert_eq!(missing, vec!["refs/heads/gone".to_string()]);
+        let proof = ProofRepo {
+            dir: proof_dir,
+            pushed: false,
+            unfetched: missing.into_iter().collect(),
+        };
+        let tips = MergeBaseTips {
+            historical: vec![old_tip.clone(), pushed_tip_on_chain.clone()],
+            tip: Some(pushed_tip_on_chain.clone()),
+            current: Some(pushed_tip_on_chain.clone()),
+        };
+        assert_eq!(
+            chain_tip_containing(&proof, &tips, &merge).as_deref(),
+            Some(pushed_tip_on_chain.as_str()),
+            "the chain's tip that contains the merge is named"
+        );
+        // Nothing is pushed without `code`: the fetched tip never stands in for the chain's.
+        assert_eq!(pushed_tip(&proof, "refs/heads/main", &merge), None);
+        // A chain that only shows the old tip cannot prove it: recorded closed, and said why.
+        let old_only = MergeBaseTips {
+            historical: vec![old_tip.clone()],
+            tip: Some(old_tip.clone()),
+            current: Some(old_tip),
+        };
+        assert_eq!(chain_tip_containing(&proof, &old_only, &merge), None);
+        assert!(no_proof_reason(Some(&proof), "refs/heads/main").contains("push the code first"));
+        assert!(
+            no_proof_reason(Some(&proof), "refs/heads/gone").contains("no longer at the source")
+        );
+        assert!(no_proof_reason(None, "refs/heads/main").contains("could not be fetched"));
+
+        // With `code`, the mirror's own tip counts (a dry run prices before the push).
+        let pushed = ProofRepo {
+            dir: src.clone(),
+            pushed: true,
+            unfetched: std::collections::BTreeSet::new(),
+        };
+        assert!(pushed_tip(&pushed, "refs/heads/main", &merge).is_some());
     }
 
     /// An earlier import left the PR closed-but-not-merged (the D-602 data): a re-run adds

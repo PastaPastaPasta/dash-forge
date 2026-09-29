@@ -132,6 +132,11 @@ pub trait Source {
     /// [`crate::gitsync::Refs`]), whatever else the local mirror holds.
     fn sync_mirror(&self, dir: &Path) -> Result<()>;
 
+    /// Fetch the base branches `bases` (`refs/heads/<b>`) into the bare repository at `dir`
+    /// ([`crate::gitsync::fetch_proof_bases`]), commits only when `treeless`: what a merged
+    /// PR is proved against when the run syncs no `code`. Returns the bases not fetched.
+    fn fetch_bases(&self, dir: &Path, bases: &[String], treeless: bool) -> Result<Vec<String>>;
+
     /// Where [`Self::sync_mirror`] keeps a PR/MR head: `<prefix><n>/head`.
     fn pull_head_prefix(&self) -> &'static str;
 }

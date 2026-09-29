@@ -86,7 +86,7 @@ pub fn cost_line(credits: u64, price_usd: f64) -> String {
     format!("~{} DASH ≈ ${:.2}", dash_amount(dash), usd)
 }
 
-/// Platform's pack-storage rate for copy, e.g. `~0.36 DASH/MiB`: the calibrated `chunk`
+/// Platform's pack-storage rate for copy, e.g. `~0.39 DASH/MiB`: the calibrated `chunk`
 /// fees `git push` quotes (`forge_core::cost::push_fees`), an upper bound.
 pub fn platform_rate() -> String {
     format!(

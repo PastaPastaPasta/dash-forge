@@ -440,6 +440,17 @@ pub struct GlRelease {
     /// Assets.
     #[serde(default)]
     pub assets: GlAssets,
+    /// Links; `self` is the release's page.
+    #[serde(default, rename = "_links")]
+    pub links: GlReleaseLinks,
+}
+
+/// A release's `_links`.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GlReleaseLinks {
+    /// The release's page (`<project>/-/releases/<tag>`).
+    #[serde(default, rename = "self")]
+    pub self_url: Option<String>,
 }
 
 /// `null` as the default (GitLab sends `"author": null` for some imported items).
@@ -1015,6 +1026,12 @@ impl GitlabClient {
 
     fn clone_url(&self) -> String {
         format!("{}.git", self.repo.web_url())
+    }
+
+    /// Fetch the base branches `bases` into `dir` ([`crate::gitsync::fetch_proof_bases`]).
+    pub fn fetch_bases(&self, dir: &Path, bases: &[String], treeless: bool) -> Result<Vec<String>> {
+        let auth = git_auth(&self.repo.base, gitlab_token().as_deref());
+        crate::gitsync::fetch_proof_bases(dir, &self.clone_url(), bases, treeless, auth.as_ref())
     }
 
     /// Mirror-clone (or update) the project into the bare repo at `dir`: branches, tags and

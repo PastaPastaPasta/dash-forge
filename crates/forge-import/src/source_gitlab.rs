@@ -81,6 +81,10 @@ impl Source for GitlabSource {
         self.gl.sync_mirror(dir)
     }
 
+    fn fetch_bases(&self, dir: &Path, bases: &[String], treeless: bool) -> Result<Vec<String>> {
+        self.gl.fetch_bases(dir, bases, treeless)
+    }
+
     fn pull_head_prefix(&self) -> &'static str {
         "refs/merge-requests/"
     }
@@ -474,6 +478,7 @@ fn release(r: &GlRelease) -> SrcRelease {
         r.name.as_deref(),
         r.description.as_deref(),
         assets,
+        r.links.self_url.clone().unwrap_or_default(),
     )
 }
 

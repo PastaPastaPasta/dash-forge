@@ -37,6 +37,16 @@ pub struct Counts {
     /// the run is `partial`, but the state still advances (git data is compared with the
     /// destination on every run, whatever `--state` says).
     pub git_skipped: u64,
+    /// PRs the source merged that were recorded closed, because no base tip on chain was
+    /// shown to contain the merge commit (see the warnings). A re-run that can prove them
+    /// turns each into a merge.
+    pub unproved_merges: u64,
+    /// Release assets left out of the releases written this run: the rest did not fit a
+    /// release's 4,096-byte `assets` field (the web links the source release for them).
+    pub assets_omitted: u64,
+    /// Release assets written with no SHA-256 (this run's hashing budget ran out, or the
+    /// file could not be read): readers refuse them until a later run hashes them.
+    pub assets_unhashed: u64,
 }
 
 impl Counts {
@@ -202,6 +212,19 @@ impl Summary {
                 self.key.id.unwrap_or_default(),
                 credits_to_dash(left),
                 credits_to_dash(total)
+            );
+        }
+        if c.unproved_merges > 0 {
+            eprintln!(
+                "  warning: {} merged PR(s) recorded as closed: no merge proof (see below)",
+                c.unproved_merges
+            );
+        }
+        if c.assets_omitted > 0 || c.assets_unhashed > 0 {
+            eprintln!(
+                "  warning: release assets: {} not mirrored (past the 4,096-byte list), {} \
+                 without a SHA-256 yet (a later run hashes them)",
+                c.assets_omitted, c.assets_unhashed
             );
         }
         for w in &self.warnings {

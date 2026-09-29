@@ -71,6 +71,16 @@ impl Source for GithubSource {
         self.gh.sync_mirror(dir)
     }
 
+    fn fetch_bases(&self, dir: &Path, bases: &[String], treeless: bool) -> Result<Vec<String>> {
+        crate::gitsync::fetch_proof_bases(
+            dir,
+            &self.gh.clone_url(),
+            bases,
+            treeless,
+            crate::github::git_auth().as_ref(),
+        )
+    }
+
     fn pull_head_prefix(&self) -> &'static str {
         "refs/pull/"
     }
@@ -347,7 +357,13 @@ fn release(r: &crate::github::GhRelease) -> SrcRelease {
             uri: None,
         })
         .collect();
-    model::release(&r.tag_name, r.name.as_deref(), r.body.as_deref(), assets)
+    model::release(
+        &r.tag_name,
+        r.name.as_deref(),
+        r.body.as_deref(),
+        assets,
+        r.html_url.clone(),
+    )
 }
 
 #[cfg(test)]

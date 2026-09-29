@@ -63,6 +63,7 @@ SCENARIOS=(
   "31-import-merged-and-hashed"
   "32-import-failed-push-reports-landed"
   "33-browse-index-published-and-reindex"
+  "34-import-phased-merged-prs"
 )
 
 # Optional subset filter (match by leading number or substring).
@@ -85,11 +86,11 @@ if ! curl -fsS -m 3 -o /dev/null "http://127.0.0.1:9000/health/ready" 2>/dev/nul
   SCENARIOS=("${kept[@]}")
 fi
 
-# 31-33 read GitHub (gh or GH_TOKEN) and create a repo per run; 32 and 33 also need a
-# test-hooks git-remote-dash. They run when named (`run.sh 31 32 33`), not in the default set.
+# 31-34 read GitHub (gh or GH_TOKEN) and create a repo per run; 32 and 33 also need a
+# test-hooks git-remote-dash. They run when named (`run.sh 31 32 33 34`), not in the default set.
 if [[ $# -eq 0 ]]; then
   kept=()
-  for s in "${SCENARIOS[@]}"; do [[ "$s" == 31-* || "$s" == 32-* || "$s" == 33-* ]] || kept+=("$s"); done
+  for s in "${SCENARIOS[@]}"; do [[ "$s" == 31-* || "$s" == 32-* || "$s" == 33-* || "$s" == 34-* ]] || kept+=("$s"); done
   SCENARIOS=("${kept[@]}")
 fi
 

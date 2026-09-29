@@ -77,14 +77,35 @@ pub fn estimate_document_storage(bytes: u64) -> CostEstimate {
 /// 6-10x gap of D-311 / D-514 / D-700 / L-11.
 ///
 /// Every figure is at or above what the calibration paid, so the estimate is an upper bound:
-/// 1.01-1.2x the charge on a first push, up to about 1.6x on a small later one.
+/// 1.02-1.3x the charge on a first push (more on a young network, see [`push_fees::CHUNK_FLAT`]),
+/// up to about 1.7x on a small later one.
 pub mod push_fees {
     /// Credits per byte of a `chunk` document's signed transition (storage, its processing,
     /// and the chunk's own index entries growing with it). Measured 27,450-27,650.
     pub const CHUNK_PER_BYTE: u64 = 27_700;
-    /// A `chunk`'s cost beyond its bytes. Measured 60-70M for a later chunk, more for a
-    /// repository's first (new index subtrees): whole pushes into new repositories need 94M.
-    pub const CHUNK_FLAT: u64 = 94_000_000;
+    /// What a `chunk` costs beyond its bytes and its tree levels ([`CHUNK_PER_LEVEL`]): its
+    /// index entries, and a repository's first chunks' new index subtrees. The beta.6 fit's
+    /// intercept is -6 to +12M; this keeps the dips import (the network's first chunks, 69M
+    /// per chunk measured at an average depth of 6) covered too.
+    pub const CHUNK_FLAT_BASE: u64 = 28_000_000;
+    /// What each level of the network-wide chunk tree adds to a chunk. Every chunk of every
+    /// repository is one entry in forge-core's `chunk` primary-key tree, and an insert rewrites
+    /// each ancestor on its path. An ancestor is another ~15 KB chunk document, billed as
+    /// replaced bytes at 400 credits/B (grovedb `storage_cost_for_update`, drive `ephemeral_cost`),
+    /// or ~6M per level. The fit over the 15 showcase imports on beta.6 (19,107 to 90 chunks each,
+    /// landing on a tree of 0 to 26,000 chunks) gave 6.2-7.5M per level.
+    pub const CHUNK_PER_LEVEL: u64 = 7_000_000;
+    /// The tree depth [`CHUNK_FLAT`] is priced at: 16 levels, for a network holding up to 2^16
+    /// (65,536) chunks, about 0.96 GB of Platform-stored packs in all. The fitted per-chunk cost
+    /// at that depth is 110-115M, so the flat keeps ~25M of margin; past about 2^20 chunks the
+    /// per-write reconcile, not the estimate, is what holds the cap. A total chunk count on
+    /// chain (a `documentsCountable` chunk type, docs/design/release-asset-manifest.md §5) would
+    /// let the estimate price the real depth.
+    pub const CHUNK_TREE_LEVELS: u64 = 16;
+    /// A `chunk`'s cost beyond its bytes: 140M. The dash import (19,107 chunks onto a tree of
+    /// 6,438) paid 98M per chunk against the earlier 94M flat, so its estimate came in 0.56 DASH
+    /// under the charge.
+    pub const CHUNK_FLAT: u64 = CHUNK_FLAT_BASE + CHUNK_PER_LEVEL * CHUNK_TREE_LEVELS;
     /// Bytes a chunk document's transition carries beyond its payload (ids, the pack hash,
     /// `seq`, field headers, the signature). Measured 116-128.
     pub const CHUNK_OVERHEAD_BYTES: u64 = 130;
@@ -243,17 +264,19 @@ mod tests {
             chain.chunk_credits > 100 * ext.metadata_credits,
             "{chain:?} vs {ext:?}"
         );
-        // ~1.2 MiB of chunks is ~0.43 DASH (measured ≈0.33 DASH/MiB, plus the index).
+        // ~1.2 MiB of chunks is ~0.47 DASH (measured ≈0.33-0.36 DASH/MiB, plus the index).
         #[allow(clippy::cast_precision_loss)]
         let d = chain.total() as f64 / CREDITS_PER_DASH as f64;
-        assert!((0.40..0.48).contains(&d), "{d}");
+        assert!((0.44..0.52).contains(&d), "{d}");
     }
 
     /// L-11 / D-311 / D-700: every push recorded on moutai (drive 4.2.0-beta.5, 2026-09-27/28,
     /// an identity nothing else spent from) with what it paid: the sum of its writes'
     /// balance deltas, or its balance change rounded up. The estimate must be an upper bound;
-    /// within +25% of the charge on a push into a new repository or ref (the case the
-    /// first-write fees price), within +60% on a later one (existing index subtrees pay less).
+    /// within +40% of the charge on a push into a new repository or ref (the case the
+    /// first-write fees price), within +70% on a later one (existing index subtrees pay less).
+    /// These landed on a young chunk tree, so the flat's depth allowance ([`CHUNK_TREE_LEVELS`])
+    /// is mostly headroom here.
     #[test]
     fn estimates_cover_recorded_beta5_pushes() {
         // (pack bytes, objects, refs, external targets, platform, private, paid, first write)
@@ -285,7 +308,7 @@ mod tests {
             .total();
             #[allow(clippy::cast_precision_loss)]
             let ratio = est as f64 / paid as f64;
-            let cap = if first { 1.25 } else { 1.6 };
+            let cap = if first { 1.4 } else { 1.7 };
             assert!(
                 est >= paid && ratio <= cap,
                 "{bytes} B: estimate {est} vs paid {paid} ({ratio:.3})"
@@ -330,7 +353,7 @@ mod tests {
     /// forge-web's `estimateChunkCredits` mirrors [`chunks`]; its test pins the same figure.
     #[test]
     fn a_mib_of_chunks_is_what_the_web_quotes() {
-        assert_eq!(chunks(1 << 20), 36_072_827_200);
+        assert_eq!(chunks(1 << 20), 39_384_827_200);
         assert_eq!(chunks(0), 0);
     }
 

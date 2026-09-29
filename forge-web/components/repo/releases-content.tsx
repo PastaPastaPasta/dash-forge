@@ -28,7 +28,7 @@ import {
   type DownloadProgress,
 } from '@/lib/view/release-download'
 import { urlHost } from '@/lib/view/format'
-import { UNVERIFIABLE_ASSET, assetVerifiable } from '@/lib/repo/releases'
+import { NOT_VERIFIED_YET, UNVERIFIABLE_ASSET, assetVerifiable, type OmittedAssets } from '@/lib/repo/releases'
 import { useReleases } from '@/hooks/use-repo-chrome'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
@@ -193,9 +193,9 @@ function ReleaseCard({
       <p className="mt-1 flex flex-wrap items-center gap-1 text-[12px] text-anvil-600 dark:text-anvil-300">
         Published by <Author identityId={r.publisher} /> · {timeAgo(r.createdAt)}
       </p>
-      {r.notes && (full || !previous) ? (
+      {r.notesBody && (full || !previous) ? (
         <div className={cn('mt-3 text-prose', !full && 'line-clamp-6')}>
-          <MarkdownView source={r.notes} images="auto" />
+          <MarkdownView source={r.notesBody} images="auto" />
         </div>
       ) : null}
       {r.assets.length > 0 ? (
@@ -205,12 +205,34 @@ function ReleaseCard({
           ))}
         </ul>
       ) : null}
+      {r.omitted ? <OmittedAssetsNote omitted={r.omitted} /> : null}
       {r.badAssets > 0 ? (
         <p className="mt-2 text-[12px] text-caution-700 dark:text-caution-400">
           {plural(r.badAssets, 'asset entry', 'asset entries')} {r.badAssets === 1 ? 'is' : 'are'} unreadable and not shown.
         </p>
       ) : null}
     </article>
+  )
+}
+
+/**
+ * An imported release whose source has more assets than a release lists (4,096 bytes of them):
+ * how many are not mirrored here, and where the originals are. forge-import kept the checksum
+ * files, signatures and common platform builds first.
+ */
+export function OmittedAssetsNote({ omitted }: { omitted: OmittedAssets }): JSX.Element {
+  return (
+    <p data-testid="release-assets-omitted" className="mt-2 flex flex-wrap items-center gap-x-1 text-[12px] text-caution-700 dark:text-caution-400">
+      <AlertTriangle className="h-3.5 w-3.5 shrink-0" aria-hidden />
+      <span>
+        {plural(omitted.count, 'more asset')} not mirrored ({omitted.total - omitted.count} of {omitted.total} listed here).
+      </span>
+      {omitted.sourceUrl ? (
+        <a href={omitted.sourceUrl} target="_blank" rel="noopener noreferrer" referrerPolicy="no-referrer" className="font-medium underline">
+          All assets at {urlHost(omitted.sourceUrl)}
+        </a>
+      ) : null}
+    </p>
   )
 }
 
@@ -239,13 +261,17 @@ export function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
     }
   }
   const bad = state.kind === 'mismatch'
-  // How this page can offer the asset. `unverifiable`: no recorded hash (D-517), never handed
-  // out. `browser`: the page reads it and verifies as it downloads. `origin`: only a host that
-  // sends no CORS header has it (GitHub and GitLab release downloads, L-13), so the page links to
-  // it and the hash check is a step on the downloaded file. `none`: no copy this browser may
-  // fetch at all (a private address, plain http, an IPFS CID with no gateway).
-  const access: 'unverifiable' | 'browser' | 'origin' | 'none' = !assetVerifiable(asset)
-    ? 'unverifiable'
+  // How this page can offer the asset. `unverified`: no recorded hash yet, but an https original
+  // (an imported asset the import has not hashed yet): linked, marked not verified. `unverifiable`:
+  // no recorded hash and no original to link (D-517), never handed out. `browser`: the page reads
+  // it and verifies as it downloads. `origin`: only a host that sends no CORS header has it
+  // (GitHub and GitLab release downloads, L-13), so the page links to it and the hash check is a
+  // step on the downloaded file. `none`: no copy this browser may fetch at all (a private
+  // address, plain http, an IPFS CID with no gateway).
+  const access: 'unverified' | 'unverifiable' | 'browser' | 'origin' | 'none' = !assetVerifiable(asset)
+    ? directDownloadUrls(asset).length > 0
+      ? 'unverified'
+      : 'unverifiable'
     : browserReadable(asset)
       ? 'browser'
       : directDownloadUrls(asset).length > 0
@@ -260,8 +286,10 @@ export function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
       <FileArchive className={cn('h-4 w-4 shrink-0', bad ? 'text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400')} aria-hidden />
       <span className="min-w-0 flex-1 truncate font-mono">{asset.name}</span>
       {asset.size !== null ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{formatBytes(asset.size)}</span> : null}
-      {access === 'unverifiable' ? (
-        <span className="text-[11px] font-medium text-caution-700 dark:text-caution-400">no sha256 recorded</span>
+      {access === 'unverifiable' || access === 'unverified' ? (
+        <span className="text-[11px] font-medium text-caution-700 dark:text-caution-400">
+          {access === 'unverified' ? 'not verified yet' : 'no sha256 recorded'}
+        </span>
       ) : (
         <span className="font-mono text-[11px] text-anvil-500 dark:text-anvil-400" title={`SHA-256 ${asset.sha256}`}>
           sha256 {asset.sha256.slice(0, 10)}…
@@ -272,7 +300,7 @@ export function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
           {state.kind === 'working' ? <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden /> : <Download className="h-3.5 w-3.5" aria-hidden />}
           Download
         </Button>
-      ) : access === 'origin' ? (
+      ) : access === 'origin' || access === 'unverified' ? (
         <OriginLinks asset={asset} primary />
       ) : null}
       {access === 'browser' ? (
@@ -306,10 +334,11 @@ export function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
             </span>
           </span>
         </p>
-      ) : access === 'unverifiable' ? (
+      ) : access === 'unverifiable' || access === 'unverified' ? (
         <p role="status" className="basis-full text-[12px] text-caution-700 dark:text-caution-400">
           <span className="inline-flex items-start gap-1">
-            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden /> {UNVERIFIABLE_ASSET}
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />{' '}
+            {access === 'unverified' ? NOT_VERIFIED_YET : UNVERIFIABLE_ASSET}
           </span>
         </p>
       ) : (

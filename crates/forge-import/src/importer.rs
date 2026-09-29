@@ -21,7 +21,7 @@ use forge_core::repo::credits_to_dash;
 
 use crate::budget::Budget;
 use crate::dest::{self, Outcome, Signer, REPO_CREATE_CREDITS};
-use crate::gitsync::{GitPusher, PackStorage, PushReport, Refs};
+use crate::gitsync::{GitPusher, PackStorage, ProofRepo, PushReport, Refs};
 use crate::sink::Ledger;
 use crate::source::{Classes, Source};
 use crate::state::{self, SyncState};
@@ -139,9 +139,8 @@ async fn run_inner<'a>(
                 .context("preparing the open pull requests' heads")?;
         }
     }
-    // Merged PRs are proved against the base tips this mirror pushes (D-602): only with the
-    // git data in hand. Without `code`, a merged PR is recorded closed.
-    let mirror = cfg.classes.code.then(|| work.clone());
+    // Merged PRs are proved against base tips that contain their merge commits (D-602).
+    let mirror = proof_repo(cfg, src, &work, &collab_src, summary);
 
     // Price everything, then the up-front cap check. Branches and tags, then the open PRs'
     // heads, are separate pushes (see gitsync); the second is optional, so it is priced for
@@ -438,6 +437,66 @@ pub(crate) fn planned_pushes(classes: Classes, open: Option<&[u64]>) -> Vec<Refs
         (true, true, Some(open)) => vec![Refs::Code, Refs::PullHeads(open.to_vec())],
         (true, _, _) => vec![Refs::Code],
         _ => Vec::new(),
+    }
+}
+
+/// The git data merged PRs are proved against (D-602). With `code`, the mirror this run
+/// pushes. Without it, the base branches of the merged PRs, fetched into the `--work-dir`
+/// mirror when there is one (whole commits, like a mirror), or else into a treeless
+/// repository next to it (commits only: ancestry needs no trees). `None` (warned) when no
+/// merged PR needs a proof, or nothing could be fetched.
+fn proof_repo(
+    cfg: &ImportConfig,
+    src: &dyn Source,
+    work: &std::path::Path,
+    collab: &crate::model::SrcCollab,
+    summary: &mut Summary,
+) -> Option<ProofRepo> {
+    if cfg.classes.code {
+        return Some(ProofRepo {
+            dir: work.to_path_buf(),
+            pushed: true,
+            unfetched: std::collections::BTreeSet::new(),
+        });
+    }
+    let bases: std::collections::BTreeSet<String> = collab
+        .targets
+        .iter()
+        .filter(|t| t.merged_oid.is_some())
+        .filter_map(|t| t.patch.as_ref().map(|p| p.base_ref_name.clone()))
+        .collect();
+    if bases.is_empty() {
+        return None;
+    }
+    let bases: Vec<String> = bases.into_iter().collect();
+    // An existing full mirror (`--work-dir` from a code run) takes a full fetch; anything else
+    // gets its own commits-only repository, so the mirror never becomes a partial clone.
+    let (dir, treeless) = if work.join("HEAD").exists() {
+        (work.to_path_buf(), false)
+    } else {
+        (work.join("proof.git"), true)
+    };
+    match src.fetch_bases(&dir, &bases, treeless) {
+        Ok(missing) if missing.len() < bases.len() => Some(ProofRepo {
+            dir,
+            pushed: false,
+            unfetched: missing.into_iter().collect(),
+        }),
+        Ok(_) => {
+            summary.warnings.push(format!(
+                "none of the merged PRs' base branches ({}) could be fetched from the source, \
+                 so their merges cannot be proved and they are recorded as closed",
+                bases.join(", ")
+            ));
+            None
+        }
+        Err(e) => {
+            summary.warnings.push(format!(
+                "fetching the merged PRs' base branches failed ({e:#}), so their merges cannot \
+                 be proved and they are recorded as closed"
+            ));
+            None
+        }
     }
 }
 

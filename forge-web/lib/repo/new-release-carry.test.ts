@@ -26,6 +26,8 @@ const current: ReleaseView = {
     { name: 'CHANGES.txt', sha256: H, size: 5, uris: ['https://a.example/c'] },
   ],
   badAssets: 0,
+  notesBody: 'first notes',
+  omitted: null,
   publisher: 'M',
   createdAt: 1,
 }

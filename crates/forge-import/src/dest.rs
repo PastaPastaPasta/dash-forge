@@ -2,7 +2,7 @@
 //! repository, check the signer can write what the run needs, and read the signing key's
 //! limits for the summary.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
@@ -18,6 +18,7 @@ use forge_core::collab::v2::Collab;
 use forge_core::repo::credits_to_dash;
 
 use crate::budget::{Budget, CapExceeded};
+use crate::gitsync::ProofRepo;
 use crate::model::SrcCollab;
 use crate::sink::{Ledger, Sink};
 use crate::summary::{KeyInfo, RepoInfo, Status, Summary};
@@ -324,7 +325,7 @@ pub async fn dry_collab<'a>(
     existing: Option<RepoRef>,
     signer: Option<&'a Signer>,
     src: &SrcCollab,
-    mirror: Option<PathBuf>,
+    mirror: Option<ProofRepo>,
 ) -> Result<Ledger<'a>> {
     // A private destination is read with the signer's keys (its documents are sealed).
     let collab = match signer {
@@ -395,13 +396,14 @@ pub fn collab_plan(
     (plan, warnings)
 }
 
-/// What the collaboration write reads: the source data, and the local git mirror merged PRs
-/// are proved against ([`Sink::with_mirror`]).
+/// What the collaboration write reads: the source data, and the git data merged PRs are
+/// proved against ([`Sink::with_mirror`]).
 pub struct CollabSource<'s> {
     /// The collaboration data read from the source.
     pub src: &'s SrcCollab,
-    /// The run's bare git mirror (`None` without `--sync code`).
-    pub mirror: Option<PathBuf>,
+    /// The run's git mirror, or the base branches fetched for the proof (`None`: no merged
+    /// PR to prove, or nothing could be fetched).
+    pub mirror: Option<ProofRepo>,
 }
 
 /// Write the collaboration documents missing from `repo` with the run's ledger (taken from
@@ -454,6 +456,7 @@ mod tests {
                     notes: String::new(),
                     assets: Vec::new(),
                     dropped: 0,
+                    source_url: String::new(),
                 }]
             }),
             ..SrcCollab::default()

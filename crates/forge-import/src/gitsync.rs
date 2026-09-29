@@ -324,6 +324,82 @@ pub fn sync_pull_heads(git_dir: &Path, open: &[u64], source_prefix: &str) -> Res
     Ok(())
 }
 
+/// The git data a run proves merged PRs against (D-602, [`crate::sink::Sink::with_mirror`]).
+#[derive(Debug, Clone)]
+pub struct ProofRepo {
+    /// A bare repository holding the base branches' commits.
+    pub dir: PathBuf,
+    /// This run pushes its branches from `dir` (`--sync code`): its own tip of a base is what
+    /// the chain is about to show. Otherwise nothing is pushed, and `dir` only answers
+    /// ancestry questions for the base tips already on chain.
+    pub pushed: bool,
+    /// Bases [`fetch_proof_bases`] could not fetch (deleted at the source, or unreachable).
+    pub unfetched: std::collections::BTreeSet<String>,
+}
+
+/// Where [`fetch_proof_bases`] keeps a base branch: never pushed (the pushes send only
+/// `refs/heads/*`, `refs/tags/*` and `refs/mirror/pull/*`), never pruned by `sync_mirror`.
+pub const PROOF_PREFIX: &str = "refs/forge-import/proof/";
+
+/// Fetch the base branches `bases` (`refs/heads/<b>`) from `url` into the bare repository
+/// at `git_dir` (created when missing), under [`PROOF_PREFIX`]: the commits a merged PR's
+/// merge commit is checked against when this run syncs no `code` (D-602 without a push).
+///
+/// `treeless` fetches commits only (`--filter=tree:0`, a few MB even for dashpay/dash):
+/// ancestry needs no trees. Only for a repository made for the proof: a filtered fetch into
+/// a full mirror would make it a partial clone, and a later push of it would lack trees.
+///
+/// Each base is fetched on its own, so one deleted at the source (a merge into a branch
+/// that is gone) does not stop the others. Returns the bases that could not be fetched.
+pub fn fetch_proof_bases(
+    git_dir: &Path,
+    url: &str,
+    bases: &[String],
+    treeless: bool,
+    auth: Option<&(String, String)>,
+) -> Result<Vec<String>> {
+    if !git_dir.join("HEAD").exists() {
+        std::fs::create_dir_all(git_dir)?;
+        let init = Command::new("git")
+            .args(["init", "--bare", "--quiet"])
+            .arg(git_dir)
+            .status()
+            .context("running git")?;
+        if !init.success() {
+            bail!("git init failed in {}", git_dir.display());
+        }
+    }
+    let mut missing = Vec::new();
+    for base in bases {
+        let Some(branch) = base.strip_prefix("refs/heads/") else {
+            missing.push(base.clone());
+            continue;
+        };
+        let mut cmd = Command::new("git");
+        if let Some((k, v)) = auth {
+            crate::github::append_git_config(&mut cmd, k, v);
+        }
+        cmd.arg("-C")
+            .arg(git_dir)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .args(["fetch", "--quiet", "--no-tags", "--no-write-fetch-head"]);
+        if treeless {
+            cmd.arg("--filter=tree:0");
+        }
+        let status = cmd
+            .arg("--")
+            .arg(url)
+            .arg(format!("+{base}:{PROOF_PREFIX}heads/{branch}"))
+            .stderr(std::process::Stdio::null())
+            .status()
+            .context("running git")?;
+        if !status.success() {
+            missing.push(base.clone());
+        }
+    }
+    Ok(missing)
+}
+
 /// Whether commit `ancestor` is reachable from `tip` in the mirror at `git_dir` (itself
 /// included). `false` when either is missing locally.
 pub fn is_ancestor(git_dir: &Path, ancestor: &str, tip: &str) -> bool {
@@ -947,6 +1023,46 @@ dash: push failed: ref did not converge to pushed tip"#;
         // Push 3: the other 9 refs and a 1,183-byte pack: the balance fell 942,227,520.
         let last = fresh_push_credits(1_183, 0, 9, PackStorage::PLATFORM);
         assert!(last >= 942_227_520, "{last}");
+    }
+
+    /// The showcase rebuild on moutai beta.6 (2026-09-28): 15 first imports into new public
+    /// repositories, packs on Platform, one identity each, in the order they landed. Each run
+    /// charged the repository's creation, one push, and its releases and labels; what it paid
+    /// is the identity's balance drop. dashpay/dash (19,107 chunks) paid 97.901210 DASH against
+    /// an estimate of 97.339809: each chunk cost ~98M beyond its bytes, not the 94M priced,
+    /// because every chunk insert rewrites its ancestors in forge-core's network-wide chunk
+    /// tree ([`push_fees::CHUNK_PER_LEVEL`]). Every estimate must cover its charge.
+    #[test]
+    fn import_estimates_cover_the_beta6_showcase_imports() {
+        // (pack bytes, objects, refs, releases+labels estimate, paid), all credits but bytes.
+        #[rustfmt::skip]
+        const RUNS: &[(u64, u64, u64, u64, u64)] = &[
+            (2_492_980, 712, 5, 420_500_000, 83_408_472_560),              // dashpay/dips
+            (13_808_506, 26_871, 169, 3_905_400_000, 504_183_680_440),     // psf/requests
+            (20_900_383, 50_301, 623, 32_583_100_000, 815_318_105_360),    // preactjs/preact
+            (5_934_182, 14_063, 288, 14_105_500_000, 244_509_209_840),     // BurntSushi/ripgrep
+            (2_583_839, 8_762, 54, 9_958_000_000, 109_445_328_060),        // sharkdp/fd
+            (8_456_787, 11_862, 38, 5_498_400_000, 308_048_112_020),       // jqlang/jq
+            (2_085_947, 5_682, 53, 5_532_200_000, 85_874_938_920),         // sharkdp/hyperfine
+            (8_795_952, 20_496, 193, 21_524_400_000, 355_049_116_060),     // junegunn/fzf
+            (3_239_305, 4_407, 36, 6_485_000_000, 124_701_199_440),        // charmbracelet/glow
+            (10_547_811, 4_521, 12, 471_600_000, 372_312_999_100),         // dashpay/docs-platform
+            (1_174_452, 3_850, 106, 10_818_800_000, 58_204_447_320),       // dtolnay/anyhow
+            (3_218_916, 9_147, 183, 19_194_400_000, 133_173_374_760),      // serde-rs/json
+            (1_622_200, 3_458, 2, 336_200_000, 57_038_991_760),            // sindresorhus/awesome
+            (3_240_199, 11_860, 13, 635_900_000, 129_369_646_160),         // github/gitignore
+            (271_210_607, 268_021, 604, 33_291_800_000, 9_790_121_010_320), // dashpay/dash
+        ];
+        for &(bytes, objects, refs, collab, paid) in RUNS {
+            let git = fresh_push_credits(bytes, objects, refs, PackStorage::PLATFORM);
+            let estimate = crate::dest::REPO_CREATE_CREDITS + git + collab;
+            #[allow(clippy::cast_precision_loss)]
+            let ratio = estimate as f64 / paid as f64;
+            assert!(
+                estimate >= paid && ratio <= 1.35,
+                "{bytes} B: estimate {estimate} vs paid {paid} ({ratio:.4})"
+            );
+        }
     }
 
     /// With `dash.platformFallback` armed, the helper's dry run prices the pack on your
