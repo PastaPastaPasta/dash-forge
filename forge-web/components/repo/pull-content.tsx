@@ -56,6 +56,7 @@ import {
   createComment,
   commentFirsts,
   createReview,
+  LOCKED_REASON,
   eventFirsts,
   reviewFirsts,
   deleteComment,
@@ -82,7 +83,8 @@ import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
 import { linkedIssues, RoleOracle, type Policy, type PolicyStatus } from '@/lib/rules/v2'
 import { checksState } from '@/lib/rules/parity'
 import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview as Cost } from '@/lib/sdk'
-import { pullSinceYourReview } from '@/lib/view/issues-view'
+import { commentEditDrops, pullSinceYourReview } from '@/lib/view/issues-view'
+import { totalHidden } from '@/lib/repo/private-content'
 import { headUpdatePhrases } from '@/lib/view/head-updates'
 import { inlineCommentIds, lineKey, repliesByRoot } from '@/lib/view/inline-threads'
 import { appliedSuggestions, prCommits, prHaveSet } from '@/lib/view/pr-commits'
@@ -271,8 +273,10 @@ function PullPage({
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const isAuthor = identity !== null && identity === pull.author
   const archived = home.config?.archived === true
-  const composeBlock = archived ? ARCHIVED_REASON : privateComposeBlock(home)
+  // A locked PR takes comments and reviews from members only (RC1: consensus refuses the rest).
+  const composeBlock = archived ? ARCHIVED_REASON : thread.locked && !isMember ? LOCKED_REASON : privateComposeBlock(home)
   const writeBlocked = composeBlock !== null
+  const postContext = { isMember, locked: thread.locked }
   const open = pull.state.open
   const { slot: mergeSlot, onRunning: setMergeRunning } = useMergeSlot(tab, open && pull.state.draft)
   const merged = pull.state.merged
@@ -355,10 +359,17 @@ function PullPage({
   const rules = policyOf(thread.approvals)
   const policyNow = rules.policy === 'unknown' ? null : rules.policy
   // `requireChecks`: the newest trusted run per name on the head passed, and at least one was
-  // reported (`checksState`, forge-core `checks_state`: `dg pr merge` applies the same rule).
+  // reported; named `requiredChecks` (set by `dg`) must each pass, from their pinned source when
+  // the policy names one (`checksState`, forge-core `checks_state`: `dg pr merge` applies the same rule).
+  const checksRequired = policyNow !== null && (policyNow.requireChecks === true || (policyNow.requiredChecks?.length ?? 0) > 0)
+  const checksPolicy = {
+    requireChecks: policyNow?.requireChecks === true,
+    ...(policyNow?.requiredChecks ? { requiredChecks: policyNow.requiredChecks } : {}),
+    ...(policyNow?.requiredCheckSources ? { requiredCheckSources: policyNow.requiredCheckSources } : {}),
+  }
   const checksBlocking =
-    policyNow?.requireChecks === true &&
-    (checks.data === null || !membersKnown || !checksState(checks.data.rows, pull.headOid, new RoleOracle(thread.members), checks.data.runners, { requireChecks: true }).met)
+    checksRequired &&
+    (checks.data === null || !membersKnown || !checksState(checks.data.rows, pull.headOid, new RoleOracle(thread.members), checks.data.runners, checksPolicy).met)
   const actions = pullActions({
     pull,
     viewer: identity,
@@ -461,7 +472,7 @@ function PullPage({
     setPosting(true)
     setCommentError(null)
     try {
-      const r = await createComment(sdk, signer, repo, { targetId: pull.id, body: comment.trim(), intent: commentIntent.intent })
+      const r = await createComment(sdk, signer, repo, { targetId: pull.id, body: comment.trim(), intent: commentIntent.intent, post: postContext })
       setComment('')
       commentIntent.renew()
       refresh((t) => t.comments.some((c) => c.id === r.documentId))
@@ -498,7 +509,7 @@ function PullPage({
         refresh((t) => t.pull.state.merged)
         return
       case 'review': {
-        const r = await createReview(sdk, signer, repo, { patchId: pull.id, verdict: p.verdict, commitOid: pull.headOid, body: p.body, intent })
+        const r = await createReview(sdk, signer, repo, { patchId: pull.id, verdict: p.verdict, commitOid: pull.headOid, body: p.body, intent, post: postContext })
         setComment('')
         commentIntent.renew()
         refresh((t) => t.reviews.some((x) => x.id === r.documentId))
@@ -567,6 +578,7 @@ function PullPage({
         await updateComment(sdk, signer, repo, {
           id: p.id,
           body: p.body,
+          ...(c ? commentEditDrops(c, thread.comments, { isMember, allReadable: totalHidden(thread.hidden) === 0 }) : {}),
           ...(c?.revision !== undefined ? { expectedRevision: BigInt(c.revision) } : {}),
           seal: { current: { body: c?.body ?? '', path: c?.anchor?.path }, bind: { targetId: pull.id }, imported: c?.importedRaw ?? null },
         })
@@ -1075,6 +1087,7 @@ function PullPage({
                     update={reviewDraft.update}
                     ensure={reviewDraft.ensure}
                     isMember={isMember}
+                    locked={thread.locked}
                     lineExists={(path, side, line) => knownLines.current.get(path)?.has(lineKey(path, side, line)) ?? false}
                     onSubmitted={(s) => {
                       setArriving(s)
@@ -1086,6 +1099,7 @@ function PullPage({
               wrap={(c, diff) => (
                 <InlineCommentsProvider
                   repo={repo}
+                  post={postContext}
                   writeBlock={composeBlock}
                   pullId={pull.id}
                   headOid={pull.headOid}

@@ -32,6 +32,7 @@ import {
   releaseTextProblem,
   tagProblem,
 } from '@/lib/repo/new-release'
+import { PRIVATE_RELEASE_REFUSED } from '@/lib/repo'
 import { externalTargets, policyForRepo } from '@/lib/storage'
 import { UnconfirmedWriteError, previewCreate } from '@/lib/sdk'
 import { invalidateSessionCache } from '@/lib/view/session-cache'
@@ -88,9 +89,11 @@ export function NewReleaseButton({ home, releases, onPublished }: { home: RepoHo
   // A settled marker (no visible output): tests can tell "no button" from "not decided yet".
   if (role !== 'maintainer') return known ? <span hidden data-testid="new-release-role" data-role={role ?? 'none'} /> : null
   const archived = home.config?.archived === true
+  // This client does not seal releases, and a private repo's plaintext release is refused (RC1).
+  const blocked = archived ? ARCHIVED_REASON : home.repo.visibility === 'private' ? PRIVATE_RELEASE_REFUSED : null
   return (
     <>
-      <Button variant="primary" size="sm" onClick={() => setOpen(true)} disabled={archived} title={archived ? ARCHIVED_REASON : undefined}>
+      <Button variant="primary" size="sm" onClick={() => setOpen(true)} disabled={blocked !== null} title={blocked ?? undefined} data-testid="new-release">
         <Plus className="h-3.5 w-3.5" aria-hidden /> New release
       </Button>
       {open ? (
@@ -274,12 +277,6 @@ function NewReleaseDialog({
       }
     >
       <div className="space-y-3">
-        {repo.visibility === 'private' ? (
-          <p role="note" className="flex items-start gap-1.5 rounded-md border border-caution/40 bg-caution/5 px-3 py-2 text-[12px] text-anvil-700 dark:text-anvil-200" data-testid="release-plaintext-note">
-            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-caution-700 dark:text-caution-400" aria-hidden />
-            Releases are not encrypted in this release: anyone can read the tag, title and notes. Assets can&apos;t be attached to a private repo&apos;s release, because they would be uploaded unencrypted.
-          </p>
-        ) : null}
         <Field label="Tag" htmlFor="release-tag" hint="The git tag this release is for, e.g. v1.2.0 (push the tag with git; publishing does not create it).">
           <Input id="release-tag" value={tag} onChange={(e) => setTag(e.target.value)} onBlur={() => setTouched(true)} className="font-mono" placeholder="v1.0.0" disabled={locked} autoFocus />
         </Field>

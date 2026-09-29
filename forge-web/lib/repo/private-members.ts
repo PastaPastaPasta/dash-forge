@@ -48,7 +48,7 @@ import {
   type WriteAuth,
 } from '../sdk'
 import { sleep } from '../sdk/facade'
-import { DOC, type RepoRef } from './contract'
+import { DOC, withVis, type RepoRef } from './contract'
 import { invalidateMembers, readMemberships } from './members'
 import {
   isMaintainer,
@@ -60,8 +60,8 @@ import {
   type PrivateSession,
   type WrapDoc,
 } from './private-session'
-import { repoSource } from './source'
-import { assertNoPlaintext, grantMembershipDoc, revokeMembershipDoc } from './writes'
+import { contractOf, repoSource } from './source'
+import { ConsentMissingError, assertNoPlaintext, findConsent, grantMembershipDoc, revokeMembershipDoc } from './writes'
 
 
 /** An identity as the messages name it: its first 8 characters. */
@@ -404,7 +404,7 @@ async function assertMembersSettled(
 /** Post a sealed private `config` (a rotation anchor or a re-anchor); never with plaintext content. */
 async function postConfig(c: PrivateWriteContext, data: Record<string, unknown>, intent: string): Promise<void> {
   assertNoPlaintext(c.repo, DOC.config, data)
-  await createDocumentIdempotent(c.sdk, c.auth, { contractId: c.repo.forge.core, documentType: DOC.config, data, intent })
+  await createDocumentIdempotent(c.sdk, c.auth, { contractId: c.repo.forge.core, documentType: DOC.config, data: withVis(c.repo.visibility, DOC.config, data), intent })
 }
 
 /** The config fields a new anchor repeats: the current branch and patterns (a `main` default when none opens). */
@@ -437,7 +437,7 @@ async function postWrap(
   assertNoPlaintext(c.repo, DOC.repoKey, data)
   try {
     await createDocumentIdempotent(c.sdk, c.auth, {
-      contractId: c.repo.forge.core,
+      contractId: contractOf(c.repo.forge, DOC.repoKey),
       documentType: DOC.repoKey,
       data,
       intent: `${intent}:wrap:${keys.epoch}:${keyTag(keys)}:${identity}`,
@@ -873,10 +873,12 @@ async function postAnchor(
 }
 
 /**
- * Add a member (§5.5): check their usable ENCRYPTION key, write the membership document, then a
- * wrap of the current epoch to them. Two transitions.
+ * Add a member (§5.5): check their usable ENCRYPTION key and their `consent` (RC1: they accepted
+ * the invitation), write the membership document, then a wrap of the current epoch to them. Two
+ * transitions.
  */
 export async function addPrivateMember(c: PrivateWriteContext, memberId: string, role: Role, intent: string): Promise<void> {
+  if ((await findConsent(c.sdk, c.repo, memberId)) === null) throw new ConsentMissingError(memberId)
   const keys = await fetchIdentityKeys(c.sdk, memberId)
   if (usableEncryptionKey(keys ?? [], c.repo.forge.core) === null) throw new PrivateMembersError(`${short(memberId)} has no encryption key yet`, 'E306')
   // Nothing is written unless the wrap can follow, and a new maintainer's old configs must not

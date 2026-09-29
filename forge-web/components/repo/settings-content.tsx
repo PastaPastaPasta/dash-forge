@@ -12,7 +12,10 @@ import { useState } from 'react'
 import { Fingerprint, HardDrive, ShieldPlus, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
-import { grantMember, invalidateMembers, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
+import { ConsentMissingError, grantMember, invalidateMembers, readConsents, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
+import { INVITE_PARAM } from '@/components/repo/invite-banner'
+import { repoHref } from '@/hooks/use-query-param'
+import { CopyRow } from '@/components/ui/copy-row'
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCreate, previewDelete } from '@/lib/sdk'
@@ -55,6 +58,12 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
     { enabled: ready && sdk !== null },
   )
   const memberRows = members.data ?? []
+  // Pending invitations (RC1 R-06): identities that accepted (their `consent`) but are not members yet.
+  const consents = useAsync<string[]>(() => readConsents(sdk!, repo), [ready, repo.repoId, network], { enabled: ready && sdk !== null && isOwner })
+  const pendingInvites = (consents.data ?? []).filter((id) => id !== repo.ownerId && !memberRows.some((m) => m.identity === id))
+  const inviteLink = typeof window === 'undefined' ? '' : new URL(repoHref('/repo', { owner: repo.ownerId, name: repo.name }, { [INVITE_PARAM]: '1' }), window.location.origin).toString()
+  // The identity the owner tried to add before they accepted: the invite is pending on them.
+  const [awaiting, setAwaiting] = useState<string | null>(null)
   const [memberId, setMemberId] = useState('')
   const [role, setRole] = useState<MemberRole>('writer')
   const [action, setAction] = useState<{ kind: 'grant' | 'revoke'; member: string; role: MemberRole } | null>(null)
@@ -70,7 +79,16 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const runAction = async (intent: string): Promise<void> => {
     if (!sdk || !signer || !action) throw new Error('sign in to continue')
     if (action.kind === 'grant') {
-      await grantMember(sdk, signer, repo, action.member, action.role, intent)
+      try {
+        await grantMember(sdk, signer, repo, action.member, action.role, intent)
+      } catch (e) {
+        if (!(e instanceof ConsentMissingError)) throw e
+        // Nothing was signed: show the invitation as pending on them instead of an error.
+        setAwaiting(action.member)
+        setAction(null)
+        return
+      }
+      setAwaiting(null)
       setMemberId('')
     } else {
       await revokeMember(sdk, signer, repo, action.member, action.role)
@@ -85,6 +103,7 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
       return shows(await readMembershipsCached(sdk, repo, network)) ? true : null
     }, 8)
     members.reload()
+    consents.reload()
   }
   return (
     <div className="mx-auto max-w-2xl space-y-8">
@@ -176,9 +195,46 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
               </Button>
             </div>
             {idError ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">{idError}</p> : null}
+            {awaiting !== null ? (
+              <p role="status" data-testid="invite-pending" className="mt-2 text-[12px] text-anvil-700 dark:text-anvil-200">
+                <Author identityId={awaiting} link={false} /> hasn&apos;t accepted yet, so nothing was signed. Send them the invite link below; once they
+                accept, they show under Pending invitations and you can add them.
+              </p>
+            ) : null}
+            {inviteLink !== '' ? (
+              <div className="mt-3 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="invite-link">
+                <p className="mb-1">Invite link: the member opens it and accepts before you add them.</p>
+                <CopyRow text={inviteLink} label="Copy the invite link" />
+              </div>
+            ) : null}
+            {pendingInvites.length > 0 ? (
+              <div className="mt-3" data-testid="pending-invites">
+                <h5 className="mb-1 text-[12px] font-medium text-anvil-600 dark:text-anvil-300">Pending invitations (accepted, not added yet)</h5>
+                {pendingInvites.map((id) => (
+                  <div key={id} className="flex items-center gap-2 py-1">
+                    <Author identityId={id} link={false} />
+                    {(['writer', 'maintainer'] as MemberRole[]).map((r) => (
+                      <Button
+                        key={r}
+                        size="sm"
+                        variant="outline"
+                        className={r === 'writer' ? 'ml-auto' : ''}
+                        disabled={guard.disabledReason !== null}
+                        onClick={() => {
+                          if (guard.check(previewCreate(r))) setAction({ kind: 'grant', member: id, role: r })
+                        }}
+                      >
+                        Add as {r}
+                      </Button>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            ) : null}
             <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
               Writers can push, open refs and act on issues and PRs; maintainers can also update
-              protected branches, config and releases.
+              protected branches, config and releases. Nobody becomes a member without accepting
+              your invitation first.
             </p>
           </div>
         ) : null}

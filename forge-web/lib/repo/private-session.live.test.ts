@@ -69,7 +69,7 @@ describe.skipIf(!LIVE)('live private-repo reads (moutai)', () => {
       const enc = owner.identityKeys.find((k) => k.purpose === 'ENCRYPTION') as KeyRecord
       holdForSession('devnet', { identityId: owner.identityId, keyId: -1, wif: encodeWif(new Uint8Array(32).fill(1), 'devnet') })
       await storeEncryptionKey('devnet', owner.identityId, enc.id, hexToBytes(enc.privateKeyHex))
-      const ops = await encryptionOps(sdk, 'devnet', owner.identityId, ids.core)
+      const ops = await encryptionOps(sdk, 'devnet', owner.identityId, ids.collab)
       if (ops === null) throw new Error('no encryption ops')
       const session = await loadPrivateSession({
         repo: home.repo,

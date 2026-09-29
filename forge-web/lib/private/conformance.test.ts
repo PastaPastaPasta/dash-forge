@@ -17,6 +17,7 @@ import { expand } from '@noble/hashes/hkdf.js'
 import { hmac } from '@noble/hashes/hmac.js'
 import { sha256 as nobleSha256 } from '@noble/hashes/sha2.js'
 import { beforeAll, describe, expect, it } from 'vitest'
+import { rc1Contracts } from '../sdk/rc1-validate'
 
 import { bytesToHex, concat, hexToBytes, sha256 } from './bytes'
 import { TooLargeError, openContent, type OpenContext, type OpenResult, type PrivateDoc, type StoredPrivateDoc } from './doc'
@@ -647,7 +648,8 @@ describe('private-repository conformance vectors', () => {
   beforeAll(async () => {
     evo = await import('@dashevo/evo-sdk')
     await evo.EvoSDK.getLatestVersionNumber()
-    const json: unknown = JSON.parse(readFileSync(resolve(ROOT, 'forge-contracts', 'contracts', 'forge-core.json'), 'utf8'))
+    // `repoKey` (and its `encryptedFor` declaration) lives in forge-collab since RC1 (O-03).
+    const json: unknown = rc1Contracts()['forge-collab']
     forgeCore = evo.DataContract.fromJSON(json as Parameters<Evo['DataContract']['fromJSON']>[0], true, 14)
     facade = new evo.EvoSDK().encryptedFor
   })

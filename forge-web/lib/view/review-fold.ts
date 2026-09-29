@@ -11,6 +11,15 @@
  */
 
 import { countApprovals, type Review, type Role, type RoleOracle } from '../rules/v2'
+
+/**
+ * The verdict an approve or request-changes review states, whoever wrote it: a member's 1/2, or a
+ * non-member's 4/5 (RC1 R-16), which consensus records and the fold never counts. Null otherwise.
+ */
+function statedVerdict(code: number): 'approve' | 'changes' | null {
+  if (code === 1 || code === 4) return 'approve'
+  return code === 2 || code === 5 ? 'changes' : null
+}
 import { compareKey } from '../rules'
 import { plural } from './format'
 
@@ -47,7 +56,7 @@ export function summarizeReviews(
   const approvers = new Set(counted.approvers)
   const changes = new Set(counted.changesRequested)
   const newest = new Map<string, Review>()
-  const verdicts = reviews.filter((r) => (r.verdict === 1 || r.verdict === 2) && !dismissed.has(r.id))
+  const verdicts = reviews.filter((r) => statedVerdict(r.verdict) !== null && !dismissed.has(r.id))
   for (const r of [...verdicts].sort(compareKey)) newest.set(r.reviewer, r)
 
   const rows: ReviewerRow[] = []
@@ -55,7 +64,7 @@ export function summarizeReviews(
   let writers = 0
   for (const [reviewer, r] of newest) {
     const role = oracle.currentRole(reviewer)
-    const verdict = r.verdict === 1 ? 'approve' : 'changes'
+    const verdict = statedVerdict(r.verdict) as 'approve' | 'changes'
     if (approvers.has(reviewer) && role !== null) {
       if (role === 'maintainer') maintainers += 1
       else writers += 1
@@ -163,6 +172,7 @@ export function reviewerRows(
     else if (approvals.approvers.includes(id)) state = 'approved'
     else if (approvals.changesRequested.includes(id)) state = 'changesRequested'
     else if (dismissal !== undefined) state = 'dismissed'
+    else if (review !== undefined && (review.verdict === 4 || review.verdict === 5)) state = 'notMember'
     else if (review !== undefined && (review.verdict === 1 || review.verdict === 2)) {
       if (!oracle.memberAt(id, review.createdAt) || oracle.currentRole(id) === null) state = 'notMember'
       else if (review.commitOid !== head) state = 'stale'

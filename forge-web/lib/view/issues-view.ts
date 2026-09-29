@@ -44,7 +44,7 @@ import {
   type TransitionView,
 } from '../repo'
 import { sortTransitions, transitionOf } from '../repo/transitions'
-import { stateCode } from '../rules/transition'
+import { isLocked, stateCode } from '../rules/transition'
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import { compositeOf, docsAt, queryComposite, siblingOf } from '../sdk/composite'
 import { prefetchDpnsNames } from './dpns'
@@ -81,6 +81,25 @@ export interface CommentView {
   readonly imported: boolean
   /** See `IssueView.origin`. */
   readonly origin?: Origin | null
+  /** It carries a membership proof (`asMember`, RC1): consensus re-checks it on every edit. */
+  readonly proved?: boolean
+}
+
+/**
+ * What an edit of `comment` must remove so consensus takes the replace (RC1): `replyTo` when the
+ * comment it replies to is gone (a replace re-validates the reference; only when every comment of
+ * the thread was readable, so a hidden parent is never taken for a deleted one), and the
+ * membership proof when the editor is no longer a member (an imported comment keeps it: its
+ * provenance needs it, so such an edit is refused).
+ */
+export function commentEditDrops(
+  comment: CommentView,
+  thread: readonly CommentView[],
+  opts: { readonly isMember: boolean; readonly allReadable: boolean },
+): { dropReplyTo?: true; dropProof?: true } {
+  const parentGone = comment.replyTo !== null && opts.allReadable && !thread.some((c) => c.id === comment.replyTo)
+  const proofStale = comment.proved === true && !opts.isMember && !comment.imported
+  return { ...(parentGone ? { dropReplyTo: true } : {}), ...(proofStale ? { dropProof: true } : {}) }
 }
 
 /** A comment document as a {@link CommentView}. */
@@ -109,6 +128,7 @@ export function toCommentView(d: PlainDocument): CommentView {
     importedRaw: typeof d['imported'] === 'object' && d['imported'] !== null ? (d['imported'] as Readonly<Record<string, unknown>>) : null,
     imported: typeof d['imported'] === 'object' && d['imported'] !== null,
     origin: originOf(d),
+    proved: asIdentifierString(d['asMember']) !== '',
   }
 }
 
@@ -195,7 +215,10 @@ export interface IssueThread {
   readonly members: readonly Membership[]
   /** Private repos: the target's event values not readable here, and those not encrypted. */
   readonly eventValues: EventValueCounts
-  /** Milestone, pinned and locked (the member events, folded: kinds 17-22). */
+  /**
+   * Milestone and pinned (the member events, folded: kinds 17-20), and locked: the lock bit of the
+   * issue's transitions (RC1 R-15; sum ≥ 16), which consensus enforces on every comment.
+   */
   readonly meta: ThreadMeta
 }
 
@@ -289,7 +312,8 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
     eventValues: eventValues(log),
     labels,
     members: memberships ?? (await readMembershipsCached(sdk, repo, network)),
-    meta: foldThreadMetaV2(log.events),
+    // The lock is a transition since RC1 (kinds 3/4); the retired lock events 21/22 are refused.
+    meta: { ...foldThreadMetaV2(log.events), locked: isLocked(transitions) },
   }
 }
 
@@ -335,6 +359,11 @@ export interface PullThread {
   readonly hidden: HiddenCounts
   /** Private repos: the PR's event values not readable here, and those not encrypted. */
   readonly eventValues: EventValueCounts
+  /**
+   * The conversation is locked (RC1 R-15: the PR's transition sum is 16 or more): consensus
+   * refuses a comment or review from anyone who does not prove membership.
+   */
+  readonly locked: boolean
 }
 
 /**
@@ -430,6 +459,7 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number,
     labels,
     hidden: tally.value,
     eventValues: eventValues(log),
+    locked: isLocked(transitions),
   }
 }
 

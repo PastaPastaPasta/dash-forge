@@ -23,6 +23,9 @@ import { useState } from 'react'
 import { CheckCircle2, CircleDot, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, loadIssueThread } from '@/lib/view'
+import { commentEditDrops } from '@/lib/view/issues-view'
+import { totalHidden } from '@/lib/repo/private-content'
+import { ISSUE_LOCK, ISSUE_UNLOCK } from '@/lib/rules/transition'
 import {
   commentFirsts,
   createComment,
@@ -35,6 +38,8 @@ import {
   setLabel,
   setMilestone,
   setThreadFlag,
+  setLock,
+  LOCKED_REASON,
   setTargetState,
   updateComment,
   updateTarget,
@@ -142,6 +147,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const { issue, timeline, labels, members, hidden, eventValues, meta } = data
   const origin = trustedOrigin(issue.origin, issue.author, trust)
   const whileLocked = commentsWhileLocked(timeline, new Set(members.map((m) => m.identity)))
+  const postContext = { isMember: holdings.data !== null && (holdings.data.write || holdings.data.maintain), locked: meta.locked }
   const open = issue.state.open
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
   const isAuthor = identity !== null && identity === issue.author
@@ -153,7 +159,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const composeBlock = archived
     ? ARCHIVED_REASON
     : meta.locked && !isMember
-      ? 'This conversation is locked: only maintainers and writers can comment.'
+      ? LOCKED_REASON
       : privateComposeBlock(home)
   const isPrivate = home.repo.visibility === 'private'
   const toggleHint =
@@ -172,7 +178,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
     setPosting(true)
     setCommentError(null)
     try {
-      await createComment(sdk, signer, home.repo, { targetId: issue.id, body: comment.trim(), intent: draft.intent })
+      await createComment(sdk, signer, home.repo, { targetId: issue.id, body: comment.trim(), intent: draft.intent, post: postContext })
       setComment('')
       draft.renew()
       reload()
@@ -202,7 +208,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         await setAssignee(sdk, signer, home.repo, { target, assignee: pending.who, assign: !pending.remove, intent })
         break
       case 'flag':
-        await setThreadFlag(sdk, signer, home.repo, { target, flag: pending.flag, on: pending.on, intent })
+        // A lock is a member transition since RC1 (consensus then refuses non-members' comments).
+        if (pending.flag === 'lock') await setLock(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, lock: pending.on, isMember, intent })
+        else await setThreadFlag(sdk, signer, home.repo, { target, flag: 'pin', on: pending.on, intent })
         break
       case 'milestone':
         await setMilestone(sdk, signer, home.repo, { target, title: pending.title, intent })
@@ -229,6 +237,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
         await updateComment(sdk, signer, home.repo, {
           id: pending.id,
           body: pending.body,
+          ...commentEditDropsOf(timeline, pending.id, { isMember, allReadable: totalHidden(hidden) === 0 }),
           ...(timelineComment(timeline, pending.id)?.revision !== undefined ? { expectedRevision: BigInt(timelineComment(timeline, pending.id)?.revision as number) } : {}),
           seal: { current: { body: timelineComment(timeline, pending.id)?.body ?? '' }, bind: { targetId: issue.id }, imported: timelineComment(timeline, pending.id)?.importedRaw ?? null },
         })
@@ -245,7 +254,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       case 'assign':
         return composeCost(home.repo, 'event', { value: pending.who }, eventFirst)
       case 'flag':
-        return composeCost(home.repo, 'event', {}, eventFirst)
+        // A lock is a transition; a pin an event.
+        return pending.flag === 'lock' ? stateCost : composeCost(home.repo, 'event', {}, eventFirst)
       case 'milestone':
         return composeCost(home.repo, 'event', pending.title === null ? {} : { value: pending.title }, eventFirst)
       case 'defineLabel': {
@@ -491,8 +501,8 @@ function confirmText(pending: Pending, number: number, open: boolean, isMember: 
           pending.flag === 'pin'
             ? pending.on ? 'Appends a pin event: the issue is listed first on the repo\'s issues page (and in dg issue list).' : 'Appends an unpin event.'
             : pending.on
-              ? 'Appends a lock event: Forge clients (this app and dg) then offer commenting to maintainers and writers only. Consensus cannot stop anyone else from commenting (fees are the only floor); a comment posted after the lock is marked so.'
-              : 'Appends an unlock event: everyone is offered the comment box again.',
+              ? 'Records a lock: from then on the network refuses comments from anyone who is not a maintainer or writer. Any maintainer or writer can unlock it.'
+              : 'Records an unlock: everyone can comment again.',
         label: `Sign & ${verb.toLowerCase()}`,
       }
     }
@@ -566,18 +576,25 @@ function commentSlots({
 }
 
 /**
- * The comments a non-member posted while the conversation was locked (the member `event`s
- * kinds 21/22, in timeline order, as `foldThreadMetaV2` reads them). Consensus admits such a
- * comment; readers mark it.
+ * The comments a non-member posted while the conversation was locked (the lock and unlock
+ * `transition`s, kinds 3/4, in timeline order). Consensus refuses such a comment since RC1, so
+ * this only marks one the timeline order cannot tell apart (a comment in the lock's own block).
  */
 function commentsWhileLocked(items: readonly TimelineItem[], members: ReadonlySet<string>): Set<string> {
   const out = new Set<string>()
   let locked = false
   for (const it of [...items].sort((a, b) => a.at - b.at)) {
-    if (it.kind === 'event' && !it.byAuthor && (it.event.kind === 'lock' || it.event.kind === 'unlock')) locked = it.event.kind === 'lock'
+    if (it.kind === 'transition' && (it.transition.kind === ISSUE_LOCK || it.transition.kind === ISSUE_UNLOCK)) locked = it.transition.kind === ISSUE_LOCK
     else if (it.kind === 'comment' && locked && !members.has(it.comment.author)) out.add(it.comment.id)
   }
   return out
+}
+
+/** What an edit of the comment `id` must drop (`commentEditDrops`), or nothing when it is not on the timeline. */
+function commentEditDropsOf(items: readonly TimelineItem[], id: string, opts: { isMember: boolean; allReadable: boolean }): ReturnType<typeof commentEditDrops> {
+  const comments = items.flatMap((it) => (it.kind === 'comment' ? [it.comment] : []))
+  const c = comments.find((x) => x.id === id)
+  return c === undefined ? {} : commentEditDrops(c, comments, opts)
 }
 
 /** A comment of the timeline by id (the text an edit re-seals from). */

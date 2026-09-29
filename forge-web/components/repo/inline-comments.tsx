@@ -19,10 +19,10 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import { CheckCircle2, MessageSquare, Pencil, Trash2 } from 'lucide-react'
 
-import { commentFirsts, postComment, type AnchorInput, type RepoRef } from '@/lib/repo'
+import { commentFirsts, postComment, type AnchorInput, type PostContext, type RepoRef } from '@/lib/repo'
 import type { DraftComment } from '@/lib/repo'
 import { plural, type CommentView } from '@/lib/view'
 import { anchorLabel, extendSelection, lineKey, placeThreads, rangeKeys, type InlineThread, type LineSelection } from '@/lib/view/inline-threads'
@@ -87,8 +87,12 @@ export interface PendingReview {
   readonly onRemove: (localId: string) => void
 }
 
+/** Whether the viewer is a member and the PR locked: a member's comment on a locked PR proves membership (RC1). */
+const PostContextOf = createContext<PostContext | undefined>(undefined)
+
 export function InlineCommentsProvider({
   repo,
+  post,
   pullId,
   headOid,
   comments,
@@ -102,6 +106,8 @@ export function InlineCommentsProvider({
   children,
 }: {
   repo: RepoRef
+  /** The viewer's membership and the PR's lock, for the comments posted here. */
+  post?: PostContext
   /** Why this browser cannot write here (a private repo it cannot write to), or null. */
   writeBlock?: string | null
   pullId: string
@@ -239,6 +245,7 @@ export function InlineCommentsProvider({
   )
 
   return (
+    <PostContextOf.Provider value={post}>
     <InlineCommentsContext.Provider value={value}>
       {placed.fileLevel.length > 0 ? (
         <details open className="mb-3 rounded-lg border border-anvil-200 dark:border-anvil-800" data-testid="file-comments">
@@ -305,6 +312,7 @@ export function InlineCommentsProvider({
       ) : null}
       {children}
     </InlineCommentsContext.Provider>
+    </PostContextOf.Provider>
   )
 }
 
@@ -566,6 +574,7 @@ function Composer({
   const { identity, signer } = useAuth()
   const guard = useWriteGuard()
   const draft = useIntent()
+  const post = useContext(PostContextOf)
   const [body, setBody] = useState('')
   const [posting, setPosting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -599,6 +608,7 @@ function Composer({
         body: body.trim(),
         ...(anchor ? { anchor } : {}),
         ...(replyTo ? { replyTo } : {}),
+        ...(post ? { post } : {}),
         intent: draft.intent,
       })
       draft.renew()

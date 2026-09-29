@@ -14,6 +14,10 @@
  * enforces every gate. `star` and `follow` are `indexOnly`: a delete carries the document's
  * values (the SDK's index-only delete). Issue and PR numbers are dense (§6): the contract's `dense`
  * rule requires the next number to be the repo's issue and PR totals plus one.
+ *
+ * RC1 (`forge-contracts/schema/build.py`): every stamped type carries `vis` ({@link withVis});
+ * a member proves membership with `asMember` (= the signer) where a rule needs it (approve and
+ * request-changes, posts to a locked thread); a member is added only with their `consent`.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -36,12 +40,15 @@ import {
   createDocumentIdempotent,
   deleteDocumentIdempotent,
   previewCredits,
+  queryAllDocuments,
   queryDocumentsWithProof,
+  sumDocumentsGrouped,
   type DeleteResult,
   type WriteAuth,
   type WriteResult,
 } from '../sdk'
 import { DOC, withVis, type RepoRef } from './contract'
+import { isRc1BranchName, isRc1OidHex, isRc1RefName, isRc1TagName } from '../rules'
 import { invalidateMembers } from './members'
 import { refNameHash, repoContentWritten } from './push'
 import type { PrivateDocType } from '../private'
@@ -49,7 +56,7 @@ import { isSealedKind, privateWriter, sealForRepo, sealedIntent, sealedTextUse, 
 import { invalidateRepoFeed } from './issues'
 import { noteTargetCreated } from './social'
 import { repoSource } from './source'
-import { writeTransition, type StateTarget } from './transitions'
+import { writeLock, writeTransition, type StateTarget } from './transitions'
 
 // ---------------------------------------------------------------------------
 // event kind name → integer (parity with forge-core `event_kind_to_u64`)
@@ -84,9 +91,47 @@ export const EVENT_KIND_CODE: Readonly<Record<EventKind, number>> = {
   unlock: 22,
 }
 
-/** Review verdicts (`review.verdict`). */
+/** Review verdicts (`review.verdict`) a member writes: approve and request changes carry `asMember`. */
 export const VERDICT_INT = { approve: 1, requestChanges: 2, comment: 3 } as const
 export type VerdictInput = keyof typeof VERDICT_INT
+
+/**
+ * A non-member's approve and request-changes (RC1 R-16): recorded, never counted (consensus
+ * refuses 1/2 without a membership proof, and 4/5 with one).
+ */
+export const OUTSIDER_VERDICT_INT = { approve: 4, requestChanges: 5 } as const
+
+/** Where a comment or review is posted from: whether the signer is a member, and whether the thread is locked. */
+export interface PostContext {
+  /** The signer holds a maintainer or writer document of the repo (as last read). */
+  readonly isMember: boolean
+  /** The target's conversation is locked (its transition sum is 16 or more). */
+  readonly locked?: boolean
+}
+
+/**
+ * The `verdict` and membership proof of a review (RC1 R-15, R-16): a member's approve or request
+ * changes proves membership (1/2 + `asMember`), a non-member's is 4/5; a comment verdict proves
+ * it only on a locked thread (where consensus refuses a non-member's review).
+ */
+export function reviewVerdictFields(verdict: VerdictInput, signer: string, post: PostContext): Record<string, unknown> {
+  if (verdict === 'comment') return { verdict: VERDICT_INT.comment, ...proofIf(post.isMember && post.locked === true, signer) }
+  if (!post.isMember) return { verdict: OUTSIDER_VERDICT_INT[verdict] }
+  return { verdict: VERDICT_INT[verdict], asMember: decodeIdentifier(signer) }
+}
+
+/**
+ * The membership proof a comment carries (RC1 R-15): a member's post to a locked thread proves it,
+ * or consensus refuses it (`lockGate`). A post that needs none carries none: the proof is an
+ * extra read at consensus, and a stale membership read would get it refused.
+ */
+export function commentProof(signer: string, post: PostContext | undefined): Record<string, unknown> {
+  return proofIf(post?.isMember === true && post.locked === true, signer)
+}
+
+function proofIf(prove: boolean, signer: string): Record<string, unknown> {
+  return prove ? { asMember: decodeIdentifier(signer) } : {}
+}
 
 /** An issue or PR a write refers to: its document id and number. */
 export interface WriteTarget {
@@ -317,12 +362,12 @@ export interface PatchInput {
 export function patchData(input: PatchInput): Record<string, unknown> {
   if (input.title.trim() === '') throw new Error('a title is required')
   for (const name of [input.baseRefName, input.sourceRefName]) {
-    if (!isLegalRefName(name) || new TextEncoder().encode(name).length > 255) {
+    if (!isLegalRefName(name) || !isRc1RefName(name)) {
       throw new Error(`illegal ref name ${JSON.stringify(name)}`)
     }
   }
   const head = hexToBytes(input.headOid)
-  if (head.length < 20 || head.length > 32) throw new Error('the PR head must be a 20-32 byte oid')
+  if (head.length !== 20 && head.length !== 32) throw new Error('the PR head must be a 20- or 32-byte oid (SHA-1 or SHA-256)')
   const data: Record<string, unknown> = { title: input.title }
   if (input.body.length > 0) data['body'] = input.body
   data['baseRefNameHash'] = refNameHash(input.baseRefName)
@@ -474,17 +519,25 @@ async function numberHolder(sdk: EvoSDK, repo: RepoRef, number: number): Promise
   return typeof owner === 'string' ? owner : null
 }
 
-/** Create a `comment` on an issue or PR (ungated; author-owned). */
+/**
+ * Create a `comment` on an issue or PR (ungated; author-owned). `replyTo` must name a thread's
+ * root comment (RC1 R-14: consensus refuses a reply to a reply). On a locked thread only a
+ * member can post, with the proof ({@link commentProof}); a non-member is refused here.
+ */
 export async function createComment(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { targetId: string; body: string; replyTo?: string; intent?: string },
+  input: { targetId: string; body: string; replyTo?: string; intent?: string; post?: PostContext },
 ): Promise<WriteResult> {
+  if (input.post?.locked === true && !input.post.isMember) throw new Error(LOCKED_REASON)
   const data: Record<string, unknown> = { targetId: decodeIdentifier(input.targetId), body: input.body }
   if (input.replyTo) data['replyTo'] = decodeIdentifier(input.replyTo)
-  return writeRepoDoc(sdk, auth, repo, DOC.comment, data, input.intent)
+  return writeRepoDoc(sdk, auth, repo, DOC.comment, { ...data, ...commentProof(auth.identityId, input.post) }, input.intent)
 }
+
+/** Why a non-member cannot comment on or review a locked thread. */
+export const LOCKED_REASON = 'This conversation is locked: only maintainers and writers can comment.'
 
 /** The document data of a state event on `target`. */
 function eventData(
@@ -544,16 +597,35 @@ export async function setTargetState(
   return writeTransition(sdk, auth, repo, (type, data, intent) => writeRepoDoc(sdk, auth, repo, type, data, intent), input)
 }
 
-/** Submit a PR review: a verdict on `commitOid` (the head it was made against). */
+/**
+ * Lock or unlock the conversation on an issue or PR: one member `transition` (kinds 3/4 or 18/19;
+ * {@link writeLock}). Once locked, consensus refuses comments and reviews from non-members.
+ */
+export async function setLock(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  input: { target: StateTarget; lock: boolean; isMember: boolean; intent?: string },
+): Promise<WriteResult> {
+  return writeLock(sdk, auth, repo, (type, data, intent) => writeRepoDoc(sdk, auth, repo, type, data, intent), input)
+}
+
+/**
+ * Submit a PR review: a verdict on `commitOid` (the head it was made against). A member's approve
+ * or request changes proves membership; a non-member's is recorded as 4/5
+ * ({@link reviewVerdictFields}); on a locked PR a non-member is refused here.
+ */
 export async function createReview(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { patchId: string; verdict: VerdictInput; commitOid: string; body?: string; intent?: string },
+  input: { patchId: string; verdict: VerdictInput; commitOid: string; body?: string; intent?: string; post: PostContext },
 ): Promise<WriteResult> {
+  if (input.post.locked === true && !input.post.isMember) throw new Error(LOCKED_REASON)
+  if (!isRc1OidHex(input.commitOid)) throw new Error('a review names a 20- or 32-byte commit')
   const data: Record<string, unknown> = {
     patchId: decodeIdentifier(input.patchId),
-    verdict: VERDICT_INT[input.verdict],
+    ...reviewVerdictFields(input.verdict, auth.identityId, input.post),
     commitOid: hexToBytes(input.commitOid),
   }
   if (input.body && input.body.length > 0) data['body'] = input.body
@@ -577,14 +649,49 @@ export interface ReleaseAsset {
 /** The `assets` field's byte limit (the `release` schema's `maxBytes`). */
 export const RELEASE_ASSETS_MAX_BYTES = 4096
 
-/** Create a `release`: newest per tag wins. Maintainers only (consensus-gated). */
+/**
+ * Why this client cannot publish a release in a private repo: it does not seal releases, and
+ * consensus refuses a private release's tag name, title, notes or assets in plaintext (RC1 R-02).
+ */
+export const PRIVATE_RELEASE_REFUSED = "releases can't be published in a private repo from the web yet: the title, notes and assets would be written unencrypted"
+
+/**
+ * The live-release total of `tagName` (`release.perTag`, summable `delta`): 1 when a release of the
+ * tag is published, 0 when none is (never published, or unpublished).
+ */
+export async function readTagLive(sdk: EvoSDK, repo: RepoRef, tagName: string): Promise<number> {
+  const sums = await sumDocumentsGrouped(
+    sdk,
+    { ...repoSource(repo).repoQuery(DOC.release, { where: [['tagName', 'in', [tagName]]], orderBy: [['tagName', 'asc']] }), groupBy: ['tagName'] },
+    'delta',
+  )
+  return [...sums.values()].reduce((a, b) => a + b, 0)
+}
+
+/**
+ * The `release.delta` of a publish, an edit or a yank (RC1 O-04 `oneLive`): +1 when the tag has no
+ * live release, 0 when it has one (the new document supersedes it). Releases are never deleted;
+ * an unpublish (-1) is not offered here.
+ */
+export function publishDelta(live: number): 1 | 0 {
+  return live >= 1 ? 0 : 1
+}
+
+/**
+ * Create a `release`: newest per tag wins. Maintainers only (consensus-gated). Refused before
+ * signing in a private repo ({@link PRIVATE_RELEASE_REFUSED}) and for a tag name the contract
+ * refuses. `delta` is read from the tag's live total ({@link publishDelta}).
+ */
 export async function createRelease(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
   input: { tagName: string; name?: string; notes?: string; yanked?: boolean; assets?: readonly ReleaseAsset[]; intent?: string },
 ): Promise<WriteResult> {
-  const data: Record<string, unknown> = { tagName: input.tagName, yanked: input.yanked ?? false }
+  if (repo.visibility === 'private') throw new Error(PRIVATE_RELEASE_REFUSED)
+  if (!isRc1TagName(input.tagName)) throw new Error(`${JSON.stringify(input.tagName)} is not a tag name git accepts`)
+  const delta = publishDelta(await readTagLive(sdk, repo, input.tagName))
+  const data: Record<string, unknown> = { tagName: input.tagName, yanked: input.yanked ?? false, delta }
   if (input.name && input.name.length > 0) data['name'] = input.name
   if (input.notes && input.notes.length > 0) data['notes'] = input.notes
   if (input.assets && input.assets.length > 0) data['assets'] = releaseAssetsJson(input.assets)
@@ -647,14 +754,14 @@ async function findOwnIndexOnly(
   return null
 }
 
-/** Create the signer's `star` / `follow` (indexOnly). Idempotent: a duplicate is success. */
-function createIndexOnly(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, type: IndexOnlyType, targetId: string): Promise<WriteResult> {
+/** Create the signer's `star` / `follow` (indexOnly), with `payload` besides the target. Idempotent: a duplicate is success. */
+function createIndexOnly(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, type: IndexOnlyType, targetId: string, payload: Record<string, unknown> = {}): Promise<WriteResult> {
   const field = targetField(type)
   return createOrExisting(() =>
     createDocumentIdempotent(sdk, auth, {
       contractId: forge.community,
       documentType: type,
-      data: { [field]: decodeIdentifier(targetId) },
+      data: { [field]: decodeIdentifier(targetId), ...payload },
       probe: async () => (await findOwnIndexOnly(sdk, forge, type, auth.identityId, targetId)) !== null,
     }),
   )
@@ -682,12 +789,22 @@ export interface Relation {
 }
 
 /**
- * Write the signer's `starBeat` for `repoId` (trending, platform-parity-spec §4.3) unless one
- * exists: one per identity and repo, ever.
+ * Whether the signer may write a `starBeat` for `repo` (RC1 O-08): only on a public repo, and
+ * never on their own (`repoOwner` must differ from the signer, `distinctFrom`).
  */
-export async function writeStarBeat(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, repoId: string): Promise<void> {
-  if ((await findOwnIndexOnly(sdk, forge, 'starBeat', auth.identityId, repoId)) !== null) return
-  await createIndexOnly(sdk, auth, forge, 'starBeat', repoId)
+export function beatAllowed(repo: RepoRef, signer: string): boolean {
+  return repo.visibility === 'public' && repo.ownerId !== signer
+}
+
+/**
+ * Write the signer's `starBeat` for `repo` (trending, platform-parity-spec §4.3) unless one
+ * exists: one per identity and repo, ever, carrying `{repoId, vis: "public", repoOwner}`.
+ * Nothing is written where consensus would refuse it ({@link beatAllowed}).
+ */
+export async function writeStarBeat(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef): Promise<void> {
+  if (!beatAllowed(repo, auth.identityId)) return
+  if ((await findOwnIndexOnly(sdk, repo.forge, 'starBeat', auth.identityId, repo.repoId)) !== null) return
+  await createIndexOnly(sdk, auth, repo.forge, 'starBeat', repo.repoId, { vis: 'public', repoOwner: decodeIdentifier(repo.ownerId) })
 }
 
 /**
@@ -703,7 +820,7 @@ export function starRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string
       if (confirmed && trending) {
         // Best effort: the star stands without its beat, which only feeds a ranking.
         // eslint-disable-next-line no-console
-        await writeStarBeat(sdk, a, repo.forge, repo.repoId).catch((e: unknown) => console.warn('the star landed; its Trending beat did not', e))
+        await writeStarBeat(sdk, a, repo).catch((e: unknown) => console.warn('the star landed; its Trending beat did not', e))
       }
       return confirmed
     },
@@ -770,10 +887,73 @@ export class PrivateMembershipError extends Error {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Consent (RC1 R-06: nobody is made a member without their own `consent`)
+// ---------------------------------------------------------------------------
+
+/**
+ * The member has not accepted yet: consensus refuses a `maintainer` or `writer` document without
+ * the member's `consent` for the repo. Nothing was written; the invite is pending on them.
+ */
+export class ConsentMissingError extends Error {
+  constructor(readonly memberId: string) {
+    super('they have not accepted the invitation yet: send them the link to this repo so they can accept it, then add them again')
+    this.name = 'ConsentMissingError'
+  }
+}
+
+/** The signer's `consent` document for `repo` (`byRepoOwner`, unique), or null. */
+export async function findConsent(sdk: EvoSDK, repo: RepoRef, identityId: string): Promise<string | null> {
+  const { documents } = await queryDocumentsWithProof(
+    sdk,
+    repoSource(repo).repoQuery(DOC.consent, { where: [['$ownerId', '==', identityId]], orderBy: [['$ownerId', 'asc']], limit: 1 }),
+  )
+  return firstId(documents)
+}
+
+/**
+ * Every identity that consented to join `repo` (their `consent` documents), in id order: the
+ * owner's pending invitations are the consents of identities that are not members yet.
+ */
+export async function readConsents(sdk: EvoSDK, repo: RepoRef): Promise<string[]> {
+  const docs = await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.consent, { orderBy: [['$ownerId', 'asc']] }))
+  return docs.map((d) => d['$ownerId']).filter((id): id is string => typeof id === 'string')
+}
+
+/**
+ * Accept an invitation to collaborate on `repo`: the signer's `consent` document, which lets the
+ * owner make them a maintainer or writer. Idempotent: an existing consent is success. A consent
+ * stands until deleted, so a later re-add needs no new one.
+ */
+export async function acceptInvite(sdk: EvoSDK, auth: WriteAuth, repo: RepoRef, intent?: string): Promise<WriteResult> {
+  if (auth.identityId === repo.ownerId) throw new Error('the owner is a member already')
+  const existing = await findConsent(sdk, repo, auth.identityId)
+  if (existing !== null) return alreadyThere(existing)
+  return createOrExisting(
+    () => createDocumentIdempotent(sdk, auth, { contractId: repo.forge.core, documentType: DOC.consent, data: { repoId: decodeIdentifier(repo.repoId) }, ...(intent ? { intent } : {}) }),
+    () => findConsent(sdk, repo, auth.identityId),
+  )
+}
+
+/**
+ * The `maintainer` / `writer` document data (RC1): the repo's `vis`, and `consentBy` = the member
+ * (their `consent` document must exist) unless the owner enrols itself.
+ */
+export function membershipData(repo: RepoRef, memberId: string): Record<string, unknown> {
+  const member = decodeIdentifier(memberId)
+  return {
+    repoId: decodeIdentifier(repo.repoId),
+    memberId: member,
+    vis: repo.visibility,
+    ...(memberId === repo.ownerId ? {} : { consentBy: member }),
+  }
+}
+
 /**
  * Grant `memberId` a role on a public repo: the owner creates a `maintainer` or `writer`
  * document (consensus refuses anyone else). Idempotent: an existing membership is success.
- * Refused on a private repo ({@link PrivateMembershipError}).
+ * Refused on a private repo ({@link PrivateMembershipError}), and while the member has not
+ * accepted ({@link ConsentMissingError}).
  */
 export async function grantMember(
   sdk: EvoSDK,
@@ -789,7 +969,8 @@ export async function grantMember(
 
 /**
  * The membership document write alone, for any repo. Only `private-members.ts` calls it for a
- * private repo, inside the add flow (after its checks, before the key wrap).
+ * private repo, inside the add flow (after its checks, before the key wrap). Throws
+ * {@link ConsentMissingError} before signing when the member has not accepted.
  */
 export async function grantMembershipDoc(
   sdk: EvoSDK,
@@ -800,12 +981,15 @@ export async function grantMembershipDoc(
   intent?: string,
 ): Promise<WriteResult> {
   if (auth.identityId !== repo.ownerId) throw new Error('only the repo owner can add members')
+  const held = await findMembership(sdk, repo, role, memberId)
+  if (held !== null) return alreadyThere(held)
+  if (memberId !== repo.ownerId && (await findConsent(sdk, repo, memberId)) === null) throw new ConsentMissingError(memberId)
   const result = await createOrExisting(
     () =>
       createDocumentIdempotent(sdk, auth, {
         contractId: repo.forge.core,
         documentType: ROLE_DOC[role],
-        data: { repoId: decodeIdentifier(repo.repoId), memberId: decodeIdentifier(memberId) },
+        data: membershipData(repo, memberId),
         ...(intent ? { intent } : {}),
       }),
     () => findMembership(sdk, repo, role, memberId),
@@ -911,6 +1095,9 @@ export function checkRepoInput(input: CreateRepoInput): void {
     throw new Error(`The description is ${bytes(input.description)} bytes; the limit is ${REPO_LIMITS.description} (accented letters and emoji take more than one byte).`)
   }
   if (bytes(input.defaultBranch) > REPO_LIMITS.defaultBranch) throw new Error('The default branch name is too long.')
+  if (input.defaultBranch !== undefined && input.defaultBranch !== '' && !isRc1BranchName(input.defaultBranch)) {
+    throw new Error(`${JSON.stringify(input.defaultBranch)} is not a branch name git accepts.`)
+  }
   if (input.visibility === 'private' && input.forkOf !== undefined) throw new Error('a fork is public: a private repository cannot be a fork')
 }
 
@@ -1056,7 +1243,7 @@ export async function createRepo(
       await createDocumentIdempotent(sdk, auth, {
         contractId: forge.core,
         documentType: DOC.maintainer,
-        data: { repoId: R, memberId: decodeIdentifier(ownerId) },
+        data: membershipData(repo, ownerId),
         intent: `${key}:maintainer`,
       })
     } catch (e) {
@@ -1077,7 +1264,7 @@ export async function createRepo(
     await createDocumentIdempotent(sdk, auth, {
       contractId: forge.core,
       documentType: DOC.config,
-      data: { repoId: R, defaultBranch: input.defaultBranch ?? 'main', backend: { mode: 0 } },
+      data: withVis(visibility, DOC.config, { repoId: R, defaultBranch: input.defaultBranch ?? 'main', backend: { mode: 0 } }),
       intent: `${key}:config`,
     })
   })

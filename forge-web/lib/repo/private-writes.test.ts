@@ -189,7 +189,7 @@ describe('sealed writes to a private repo', () => {
     expect(a.ok && a.doc['body']).toBe('looks off')
     await createPatch(sdk, auth, REPO_REF, { title: 'p', body: '', baseRefName: 'refs/heads/main', sourceRepoId: b58(REPO), sourceRefName: 'refs/heads/x', headOid: 'cd'.repeat(20) })
     const patchId = String(chain['patch']?.[0]?.['$id'])
-    await createReview(sdk, auth, REPO_REF, { patchId, verdict: 'approve', commitOid: 'cd'.repeat(20), body: 'ship it' })
+    await createReview(sdk, auth, REPO_REF, { patchId, verdict: 'approve', commitOid: 'cd'.repeat(20), body: 'ship it', post: { isMember: true } })
     const r = chain['review']?.[0] as Doc
     expect(noPlaintext(r)).toEqual([])
     const ar = await open('review', r)
@@ -387,7 +387,7 @@ describe('correctness review of the sealed writes', () => {
       comments: Array.from({ length: 5 }, (_, i) => ({ localId: String(i), anchor: { path: `f${i}`, line: 1, side: 1 as const }, body: `c${i}` })),
     }
     const before = sessionLoads
-    await submitReviewDraft(sdk, auth, repo, draft)
+    await submitReviewDraft(sdk, auth, repo, draft, { isMember: true })
     expect(chain['comment']).toHaveLength(5)
     expect(sessionLoads - before).toBe(1)
   })
@@ -395,7 +395,7 @@ describe('correctness review of the sealed writes', () => {
   it('a review draft on a private repo needs a session, so landed comments are never re-posted', async () => {
     const { submitReviewDraft } = await import('./review-writes')
     const draft = { draftId: 'd', network: 'devnet', identity: b58(ALICE), repoId: b58(REPO), prId: b58(id(0x44)), headOid: 'cd'.repeat(20), verdict: 'comment' as const, summary: '', startedAt: 1, attemptedAt: 2, comments: [] }
-    await expect(submitReviewDraft(sdk, auth, REPO_REF, draft)).rejects.toThrow(/member/)
+    await expect(submitReviewDraft(sdk, auth, REPO_REF, draft, { isMember: true })).rejects.toThrow(/member/)
     expect(chain['review']).toBeUndefined()
   })
 
@@ -528,11 +528,11 @@ describe('security review of the sealed writes', () => {
       draftId: 'dr', network: 'devnet', identity: b58(ALICE), repoId: b58(REPO), prId, headOid: 'cd'.repeat(20), verdict: 'comment' as const, summary: 's', startedAt: 1,
       comments: [{ localId: 'a', anchor: { path: 'f', line: 1, side: 1 as const }, body: 'one' }],
     }
-    await submitReviewDraft(sdk, auth, { ...REPO_REF, session: stale }, draft)
+    await submitReviewDraft(sdk, auth, { ...REPO_REF, session: stale }, draft, { isMember: true })
     expect(chain['comment']).toHaveLength(1)
     // The draft was lost locally (a closed tab) but has an attempt on record: resubmitting with
     // the page's stale (epoch-0) session must adopt what landed, not post it again.
-    await submitReviewDraft(sdk, auth, { ...REPO_REF, session: stale }, { ...draft, attemptedAt: 0 })
+    await submitReviewDraft(sdk, auth, { ...REPO_REF, session: stale }, { ...draft, attemptedAt: 0 }, { isMember: true })
     expect(chain['comment']).toHaveLength(1)
     expect(chain['review']).toHaveLength(1)
   })

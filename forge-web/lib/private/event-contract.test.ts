@@ -17,12 +17,12 @@ type Schema = {
   properties: Record<string, unknown>
 }
 
-const contract = JSON.parse(readFileSync(resolve(process.cwd(), '..', 'forge-contracts', 'contracts', 'forge-collab.json'), 'utf8')) as {
+const contract = JSON.parse(readFileSync(resolve(process.cwd(), '..', 'forge-contracts', 'contracts', 'forge-community.json'), 'utf8')) as {
   documentSchemas?: Record<string, Schema>
 } & Record<string, Schema>
 const schemas = contract.documentSchemas ?? contract
 
-describe('forge-collab event: what the late-rule exemption needs', () => {
+describe('forge-community event (RC1 O-01): what the late-rule exemption needs', () => {
   const event = schemas['event'] as Schema
 
   it('is immutable and cannot be deleted', () => {

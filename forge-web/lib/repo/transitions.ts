@@ -3,8 +3,8 @@
  * fresh-registration design `STATE-COUNTS.md` §2 and §4).
  *
  * Consensus accepts a transition only as a legal move from the target's current state, so the
- * sum of `delta` over a target's transitions IS its state code (`lib/rules/transition.ts`).
- * Reads here:
+ * sum of `delta` over a target's transitions, mod 16, IS its state code, and a sum of 16 or more
+ * means the thread is locked (`lib/rules/transition.ts`). Reads here:
  *
  * - a target's own transitions (who closed it, when; the merge oid), from the `perTarget`
  *   index (`targetId ==`);
@@ -13,7 +13,8 @@
  * - the repo's open / closed / merged / draft totals: the `issue` and `patch` totals
  *   (`perRepo`) and one count of `transition` by `kind` (`perRepoKind`), three proved requests.
  *
- * Writes: {@link writeTransition}, the move {@link nextTransition} picks from the current code.
+ * Writes: {@link writeTransition}, the move {@link nextTransition} picks from the current code;
+ * {@link writeLock}, a member's lock or unlock.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -24,13 +25,16 @@ import { compareKey } from '../rules/oid'
 import {
   PR_MERGE,
   TRANSITION_KINDS,
+  lockTransition,
   nextTransition,
   refusedRule,
   repoCounts,
   statusOfCode,
+  threadStateOf,
   type Actor,
   type RepoCounts,
   type StateAction,
+  type ThreadState,
   type Transition,
   type TransitionTarget,
 } from '../rules/transition'
@@ -98,12 +102,13 @@ function idKey(id: string): string {
 }
 
 /**
- * The state code of each of `targetIds` (base58), from one proved sum query per 100 ids:
- * `targetId in [...]` grouped by `targetId`. A target with no transitions has no entry: 0.
+ * The state code and lock bit of each of `targetIds` (base58), from one proved sum query per 100
+ * ids: `targetId in [...]` grouped by `targetId`. A target with no transitions has no entry: open
+ * and unlocked.
  */
-export async function readStateCodes(sdk: EvoSDK, repo: RepoRef, targetIds: readonly string[]): Promise<Map<string, number>> {
+export async function readThreadStates(sdk: EvoSDK, repo: RepoRef, targetIds: readonly string[]): Promise<Map<string, ThreadState>> {
   const ids = [...new Set(targetIds.filter((id) => id !== ''))]
-  const out = new Map<string, number>(ids.map((id) => [id, 0]))
+  const out = new Map<string, ThreadState>(ids.map((id) => [id, threadStateOf(0)]))
   const source = repoSource(repo)
   const batches: string[][] = []
   for (let i = 0; i < ids.length; i += IN_MAX) batches.push(ids.slice(i, i + IN_MAX))
@@ -115,10 +120,16 @@ export async function readStateCodes(sdk: EvoSDK, repo: RepoRef, targetIds: read
         { ...source.targetQuery(DOC.transition, { where: [['targetId', 'in', sorted]], orderBy: [['targetId', 'asc']] }), groupBy: ['targetId'] },
         'delta',
       )
-      for (const id of batch) out.set(id, sums.get(idKey(id)) ?? 0)
+      for (const id of batch) out.set(id, threadStateOf(sums.get(idKey(id)) ?? 0))
     }),
   )
   return out
+}
+
+/** The state code (mod 16, the lock bit dropped) of each of `targetIds`: {@link readThreadStates}. */
+export async function readStateCodes(sdk: EvoSDK, repo: RepoRef, targetIds: readonly string[]): Promise<Map<string, number>> {
+  const states = await readThreadStates(sdk, repo, targetIds)
+  return new Map([...states].map(([id, st]) => [id, st.code]))
 }
 
 /** The per-kind transition counts of a repo (`perRepoKind`, one proved request). */
@@ -179,7 +190,7 @@ function illegalMessage(action: StateAction, code: number): string {
   return 'it is not a draft'
 }
 
-/** Whether a refusal names one of the `transition` state rules (`c1`…`c5`): the state moved. */
+/** Whether a refusal names one of the `transition` state rules (`c1`…`c6`): the state moved. */
 export function isStaleStateRefusal(e: unknown): boolean {
   return e instanceof ConsensusRefusal && e.code === RULE_REFUSED_CODE && /^c\d_/.test(refusedRule(e.message) ?? '')
 }
@@ -272,4 +283,41 @@ export async function writeTransition(
     }
   }
   throw new IllegalTransitionError(action, await codeNow())
+}
+
+/**
+ * Lock or unlock the conversation on `target` (a member's `transition`, kinds 3/4 or 18/19): once
+ * locked, consensus refuses a comment or review from anyone who does not prove membership. Reads
+ * the lock bit first and writes nothing when it is already in the asked state (a retry after the
+ * write landed); a `c6_lockedAfter` refusal (someone else moved it meanwhile) re-reads once.
+ */
+export async function writeLock(
+  sdk: EvoSDK,
+  auth: WriteAuth,
+  repo: RepoRef,
+  write: TransitionWriter,
+  input: { target: StateTarget; lock: boolean; isMember: boolean; intent?: string },
+): Promise<WriteResult> {
+  if (!input.isMember) throw new Error('only a maintainer or writer can lock or unlock a conversation')
+  const { target, lock } = input
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const state = (await readThreadStates(sdk, repo, [target.id])).get(target.id) ?? threadStateOf(0)
+    const move = lockTransition(target.type, state.locked, lock)
+    if (move === null) return { documentId: '', confirmed: true, cost: previewCredits(0), actualCredits: 0 }
+    const data = {
+      targetId: decodeIdentifier(target.id),
+      targetNumber: target.number,
+      targetKind: move.targetKind,
+      kind: move.kind,
+      delta: move.delta,
+      asAuthor: move.asAuthor,
+    }
+    try {
+      return await write(DOC.transition, data, input.intent ? `${input.intent}:${lock ? 'lock' : 'unlock'}` : undefined)
+    } catch (e) {
+      if (attempt === 0 && isStaleStateRefusal(e)) continue
+      throw e
+    }
+  }
+  throw new Error(lock ? 'the conversation is already locked' : 'the conversation is not locked')
 }
