@@ -244,7 +244,7 @@ function LatestRelease({ home, addr }: { home: RepoHome; addr: RepoAddress }): J
               {latest.data.name ? <span className="truncate font-normal">{latest.data.name}</span> : null}
             </span>
             <span className="text-[12px] text-anvil-500 dark:text-anvil-400">
-              <Time ms={latest.data.published?.at || latest.data.createdAt} />
+              {latest.data.published ? <Time ms={latest.data.published.at} dateOnly /> : <Time ms={latest.data.createdAt} />}
             </span>
           </Link>
         )}

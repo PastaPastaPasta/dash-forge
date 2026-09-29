@@ -9,7 +9,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { Byline } from './byline'
+import { Byline, Time } from './byline'
 
 vi.mock('@/components/author', () => ({ Author: ({ identityId }: { identityId: string }) => <span data-testid="author">{identityId}</span> }))
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -39,6 +39,13 @@ describe('Byline', () => {
     expect(time.getAttribute('dateTime')).toBe('2018-06-22T09:00:00.000Z')
     expect(time.getAttribute('title')).toBe('2018-06-22 09:00 UTC')
     expect(host.textContent).toContain('mirrored')
+  })
+
+  it('says only the date for a time known to the day', () => {
+    act(() => root.render(<Time ms={Date.parse('2026-08-03T00:00:00Z')} dateOnly />))
+    const time = host.querySelector('time')!
+    expect(time.getAttribute('dateTime')).toBe('2026-08-03')
+    expect(time.getAttribute('title')).toBe('2026-08-03')
   })
 
   it('shows the signer and the chain time otherwise', () => {

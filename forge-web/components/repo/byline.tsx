@@ -17,11 +17,15 @@ function exactTime(ms: number): string {
   return new Date(ms).toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
 }
 
-/** `<time>` with the relative text and the exact time on hover. */
-export function Time({ ms, prefix = '' }: { ms: number; prefix?: string }): JSX.Element | null {
+/**
+ * `<time>` with the relative text and the exact time on hover; `dateOnly` for a time known only to
+ * the day (a mirrored release's publish date), which then shows and says just the date.
+ */
+export function Time({ ms, prefix = '', dateOnly = false }: { ms: number; prefix?: string; dateOnly?: boolean }): JSX.Element | null {
   if (!ms) return null
+  const iso = new Date(ms).toISOString()
   return (
-    <time dateTime={new Date(ms).toISOString()} title={exactTime(ms)}>
+    <time dateTime={dateOnly ? iso.slice(0, 10) : iso} title={dateOnly ? iso.slice(0, 10) : exactTime(ms)}>
       {prefix}
       {timeAgo(ms)}
     </time>

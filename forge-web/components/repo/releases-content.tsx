@@ -194,7 +194,7 @@ function ReleaseCard({
       <p className="mt-1 flex flex-wrap items-center gap-1 text-[12px] text-anvil-600 dark:text-anvil-300">
         {r.published !== null ? (
           <>
-            Published <Time ms={r.published.at} /> on {r.published.host}
+            Published <Time ms={r.published.at} dateOnly /> on {r.published.host}
             {r.published.author ? <> by <span className="font-medium text-anvil-800 dark:text-anvil-100">@{r.published.author}</span></> : null} · mirrored by{' '}
             <Author identityId={r.publisher} /> <Time ms={r.createdAt} />
           </>
