@@ -12,7 +12,10 @@
 #   3. job containers have no Docker socket, and no secrets on an untrusted ref;
 #   4. a trusted ref gets the secrets file; its value never appears in a report;
 #   5. the checkout's own .actrc / .secrets / .env are ignored;
-#   6. a push without .forge/workflows runs nothing; a second poll re-runs nothing.
+#   6. a job with container.options, and a reusable-workflow call, are refused (one failed check
+#      each, with the reason) and never reach act; an invalid workflow file is one failed check;
+#      a workflow whose on.push.branches excludes the ref does not run; GITHUB_TOKEN is empty;
+#   7. a push without .forge/workflows runs nothing; a second poll re-runs nothing.
 set -uo pipefail
 RUNNER="${1:-${CARGO_TARGET_DIR:-target}/debug/forge-runner}"
 [[ -x "$RUNNER" ]] || { echo "SKIP: no forge-runner binary at $RUNNER"; exit 2; }
@@ -91,25 +94,53 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: echo "building $GITHUB_REF at $GITHUB_SHA"; test ! -e /var/run/docker.sock && echo NO-DOCKER-SOCKET
-      - run: echo "secret=[${{ secrets.E2E_SECRET }}]"; env | grep -c DASH_FORGE_ || echo NO-FORGE-KEY
+      - run: echo "secret=[${{ secrets.E2E_SECRET }}]"; env | grep -c DASH_FORGE_ || echo NO-FORGE-KEY; echo "token=[${{ secrets.GITHUB_TOKEN }}]"
   test:
     runs-on: ubuntu-latest
     steps:
       - run: echo testing; exit 3
+  escape:
+    runs-on: ubuntu-latest
+    container:
+      image: IMAGE_PLACEHOLDER
+      options: --privileged -v /var/run/docker.sock:/var/run/docker.sock
+    steps:
+      - run: echo ESCAPED
+  nested:
+    uses: ./.forge/workflows/other.yml
 EOF
+sed -i.bak "s|IMAGE_PLACEHOLDER|$IMAGE|" "$R/.forge/workflows/ci.yml" && rm -f "$R/.forge/workflows/ci.yml.bak"
+cat >"$R/.forge/workflows/main-only.yml" <<'EOF'
+name: main-only
+on:
+  push:
+    branches: [main]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo deploying
+EOF
+printf 'jobs: [\n' >"$R/.forge/workflows/broken.yml"
 # Things an attacker's checkout could plant; act must not read them.
 printf -- '--privileged\n' >"$R/.actrc"
 printf 'E2E_SECRET=planted\n' >"$R/.secrets"
 git -C "$R" add -A; git -C "$R" commit -qm "ci"
 SHA=$(git -C "$R" rev-parse HEAD)
 poll
-check "6 reports (2 jobs × queued, in_progress, completed)" test "$(q 'len(rs)')" = 6
+check "8 reports (2 jobs × 3, 2 refusals); the broken file is 1 more" test "$(q 'len(rs)')" = 9
 check "build: success" test "$(q "[r['conclusion'] for r in rs if r.get('status')=='completed' and r['name']=='ci / build']")" = "['success']"
 check "test: failure (exit 3)" test "$(q "[r['conclusion'] for r in rs if r.get('status')=='completed' and r['name']=='ci / test']")" = "['failure']"
 check "every report names the pushed commit" test "$(q "sorted({r['sha'] for r in rs})")" = "['$SHA']"
-check "one run id per job across its three reports" test "$(q "len({r['external-id'] for r in rs})")" = 2
+check "one run id per check across its reports" test "$(q "len({r['external-id'] for r in rs})")" = 5
+check "container.options job refused, with the reason" test "$(q "[(r['status'], r['conclusion'], 'container.options' in r['summary']) for r in rs if r['name']=='ci / escape']")" = "[('completed', 'failure', True)]"
+check "reusable-workflow call refused" test "$(q "[('uses:' in r['summary']) for r in rs if r['name']=='ci / nested']")" = "[True]"
+check "the refused job never ran" bash -c "! grep -q ESCAPED '$FAKE_DG_LOG'"
+check "an invalid workflow file is one failed check" test "$(q "[r['conclusion'] for r in rs if 'broken.yml' in r['name']]")" = "['failure']"
+check "a main-only workflow does not run on a feature branch" test "$(q "len([r for r in rs if r['name'].startswith('main-only')])")" = 0
+check "GITHUB_TOKEN is empty on an untrusted ref" test "$(q "'token=[]' in [r for r in rs if r['status']=='completed' and r['name']=='ci / build'][0]['log_text']")" = True
 check "status order queued → in_progress → completed" test "$(q "[r['status'] for r in rs if r['name']=='ci / build']")" = "['queued', 'in_progress', 'completed']"
-check "the completed report uploads the job's log to the storage profile" test "$(q "[r.get('storage') for r in rs if r['status']=='completed']")" = "['e2e-logs', 'e2e-logs']"
+check "each run job's completed report uploads its log; refusals carry none" test "$(q "sorted((r['name'], r.get('storage')) for r in rs if r['status']=='completed')")" = "[('.forge/workflows/broken.yml (invalid workflow)', None), ('ci / build', 'e2e-logs'), ('ci / escape', None), ('ci / nested', None), ('ci / test', 'e2e-logs')]"
 check "the job sees the pushed ref and commit" test "$(q "'building refs/heads/feature at $SHA' in [r for r in rs if r['status']=='completed' and r['name']=='ci / build'][0]['log_text']")" = True
 check "no Docker socket in the job container" test "$(q "'NO-DOCKER-SOCKET' in [r for r in rs if r['status']=='completed' and r['name']=='ci / build'][0]['log_text']")" = True
 check "no secrets on an untrusted ref (and none from the planted .secrets)" test "$(q "'secret=[]' in [r for r in rs if r['status']=='completed' and r['name']=='ci / build'][0]['log_text']")" = True
@@ -121,16 +152,18 @@ echo "== 3. a push to the trusted branch gets the secrets"
 git -C "$R" switch -q main; git -C "$R" merge -q --ff-only feature
 poll
 SECRET=$(cut -d= -f2 "$W/secrets")
-check "main ran both jobs" test "$(q "len([r for r in rs if r['status']=='completed'])")" = 2
+check "main ran build, test and main-only (and refused 2, broken 1)" test "$(q "sorted(r['name'] for r in rs if r['status']=='completed' and r.get('log'))")" = "['ci / build', 'ci / test', 'main-only / deploy']"
 check "the secret reached the job (masked by act in the log)" test "$(q "'secret=[***]' in [r for r in rs if r['status']=='completed' and r['name']=='ci / build'][0]['log_text']")" = True
 check "the secret value appears in no report" bash -c "! grep -q -- '$SECRET' '$FAKE_DG_LOG'"
-check "the summary says it ran with secrets" test "$(q "all('with secrets' in r['summary'] for r in rs if r['status']=='completed')")" = True
+check "the summary says it ran with secrets" test "$(q "all('with secrets' in r['summary'] for r in rs if r['status']=='completed' and r.get('log'))")" = True
 
 echo "== 4. no workflows → nothing; a re-poll runs nothing again"
 : >"$FAKE_DG_LOG"
 git -C "$R" switch -q -c docs; git -C "$R" rm -rq .forge; git -C "$R" commit -qm "no ci"
 poll; poll
 check "no reports for a commit without .forge/workflows, nor on a re-poll" test "$(wc -l <"$FAKE_DG_LOG" | tr -d ' ')" = 0
+
+check "no act container, volume or network left behind" bash -c "! docker ps -a --format '{{.Names}}' | grep -q '^act-e2e'"
 
 if [[ $fails -gt 0 ]]; then echo "FAIL ($fails)"; sed -n '1,200p' "$W/runner.log"; exit 1; fi
 echo "PASS forge-runner local e2e"

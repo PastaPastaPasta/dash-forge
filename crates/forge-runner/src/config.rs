@@ -56,9 +56,20 @@ pub struct Config {
     /// default: a job with the socket controls the Docker host.
     #[serde(default)]
     pub mount_docker_socket: bool,
-    /// Extra `docker run` options for job containers (act `--container-options`).
+    /// Extra `docker run` options for job containers (act `--container-options`). The runner
+    /// owner's own setting (for example `--memory 4g --cpus 2 --read-only`); a workflow cannot
+    /// set it.
     #[serde(default)]
     pub container_options: Option<String>,
+    /// The runner owns its Docker daemon (a rootless or sysbox daemon, or a DinD sidecar used by
+    /// nothing else): after a timed-out or crashed run it removes every `act-*` container,
+    /// volume and network there, and it removes act's shared `act-toolcache` volume before
+    /// every run. Leave it off on a daemon anything else uses.
+    #[serde(default)]
+    pub sweep_after_timeout: bool,
+    /// How many polls retry a push whose checkout or run could not start (a network error).
+    #[serde(default = "default_attempts")]
+    pub attempts: u32,
     /// How long one push's workflows may run.
     #[serde(default = "default_timeout")]
     pub job_timeout_secs: u64,
@@ -120,6 +131,12 @@ pub struct RepoConfig {
     /// act secrets (`KEY=value` lines), given only to trusted refs.
     #[serde(default)]
     pub secrets_file: Option<PathBuf>,
+    /// Run jobs that set `container.options` / `container.volumes`, the same on `services.*`,
+    /// or call a reusable workflow (`uses:`). Off by default: each reaches past the job
+    /// container (`--privileged`, a mounted socket, a host path). Turn it on only for a
+    /// repository whose every pusher you trust with the Docker daemon.
+    #[serde(default)]
+    pub allow_container_options: bool,
 }
 
 fn default_interval() -> u64 {
@@ -133,6 +150,9 @@ fn default_network() -> String {
 }
 fn default_timeout() -> u64 {
     3600
+}
+fn default_attempts() -> u32 {
+    3
 }
 fn default_refs() -> Vec<String> {
     vec!["refs/heads/**".into()]
@@ -186,6 +206,13 @@ impl Config {
                     "{}: trusted_refs without a secrets_file gives nothing",
                     r.repo
                 );
+            }
+        }
+        for (label, image) in &c.platforms {
+            // `-self-hosted` makes act run the job directly on the runner's host, outside
+            // Docker.
+            if image.trim() == "-self-hosted" || image.trim().is_empty() {
+                bail!("platforms.{label} = {image:?}: jobs run in a container image, never on the host");
             }
         }
         if c.network.as_deref() == Some("devnet") && c.devnet_name.is_none() {
@@ -264,6 +291,14 @@ repo = "alice/project"
             !r.trusted("refs/heads/main"),
             "no secrets unless configured"
         );
+        assert!(
+            !r.allow_container_options,
+            "workflow docker options refused by default"
+        );
+        assert!(
+            !c.sweep_after_timeout,
+            "no daemon-wide sweep unless the daemon is the runner's"
+        );
     }
 
     #[test]
@@ -275,6 +310,7 @@ repo = "alice/project"
             "state_dir = \"/x\"\n[[repo]]\nrepo = \"a/b\"\nrefs = [\"main\"]",
             "state_dir = \"/x\"\nnetwork = \"devnet\"\n[[repo]]\nrepo = \"a/b\"",
             "state_dir = \"/x\"\nsocket = true\n[[repo]]\nrepo = \"a/b\"",
+            "state_dir = \"/x\"\n[platforms]\nubuntu-latest = \"-self-hosted\"\n[[repo]]\nrepo = \"a/b\"",
             "state_dir = \"/x\"",
         ] {
             assert!(Config::parse(bad).is_err(), "{bad}");

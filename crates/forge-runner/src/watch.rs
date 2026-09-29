@@ -73,6 +73,10 @@ pub struct RepoState {
     pub tips: Tips,
     /// Whether the first poll happened (its tips are recorded, not run).
     pub primed: bool,
+    /// Pushes whose run could not start (a fetch or checkout error), keyed `<ref> <oid>`, with
+    /// how many polls tried them.
+    #[serde(default)]
+    pub failed: std::collections::BTreeMap<String, u32>,
 }
 
 /// `<state_dir>/repos/<owner>__<name>.json`.
@@ -164,6 +168,7 @@ mod tests {
         let s = RepoState {
             tips: Tips::from([("refs/heads/main".into(), A.into())]),
             primed: true,
+            failed: std::collections::BTreeMap::new(),
         };
         s.save(&p).unwrap();
         let back = RepoState::load(&p).unwrap();
