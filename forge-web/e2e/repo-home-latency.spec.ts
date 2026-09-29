@@ -13,7 +13,7 @@ import { collectPageErrors, countDapi, countDocumentQueries, E2E_DEVNET, repoUrl
  * Asserted, per cold load (a fresh browser context: no session cache, no stored index):
  *  - the root file list is on screen within {@link COLD_LIST_MS}, the page settled (README, commit
  *    count, commit column) within {@link COLD_SETTLED_MS};
- *  - the DAPI request budget: at most {@link MAX_DAPI} requests, one `packManifest` listing, no
+ *  - the DAPI request budget: at most {@link MAX_DAPI} requests, the pack list inside the chrome composite, no
  *    `getDataContract`;
  *  - the last-commit column never shows a bare blank: every cell has a commit or says why not.
  * A warm load (same context, the repo visited once) must settle within {@link WARM_MS}.
@@ -28,8 +28,14 @@ const COLD_LIST_MS = 6000
 const COLD_SETTLED_MS = 9000
 /** The same page again in the same tab (session caches warm). */
 const WARM_MS = 2000
-/** DAPI requests one cold home may make (every kind, incl. the connect). */
-const MAX_DAPI = 120
+/**
+ * DAPI requests one cold home may make (every kind, incl. the connect). Measured after S-1:
+ * preact 29, of which 12 are the commit column's history walk (dashpay/dash 48, 20); the
+ * column's own index work takes its share out. Headroom for a slow node's hedges.
+ * dashpay/dash (E2E_LARGE_REPO) is the large-repo bound: `E2E_MAX_DAPI=60` (measured 49: 7 of
+ * them its 9.7 MB index, 25 the commit walks).
+ */
+const MAX_DAPI = Number(process.env['E2E_MAX_DAPI'] ?? 40)
 
 const fileRows = (page: Page) => page.locator('main a[href*="/repo/tree/"], main a[href*="/repo/blob/"]')
 const commitCells = (page: Page) => page.locator('main a[href*="/repo/commit/"]')
@@ -74,8 +80,9 @@ test.describe('repo home latency (showcase repos)', () => {
     expect(settledMs, `settled after ${settledMs} ms`).toBeLessThan(COLD_SETTLED_MS)
     expect(total, budget).toBeLessThanOrEqual(MAX_DAPI)
     expect(counts.get('getDataContract') ?? 0, budget).toBe(0)
-    // The browse context resolves once, even though the home prefetches it alongside the refs.
-    expect(manifests.count(), 'packManifest listings').toBeLessThanOrEqual(2)
+    // The pack list comes from the repo chrome composite (whose body names `packManifest` as a
+    // sub-query): no listing of its own.
+    expect(manifests.count(), 'packManifest listings').toBeLessThanOrEqual(1)
 
     expect(await commitCells(page).count()).toBeGreaterThan(0)
     expect(await blankCommitCells(page)).toBe(0)

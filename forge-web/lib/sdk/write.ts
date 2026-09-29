@@ -35,7 +35,7 @@ import { base58Encode } from '../auth/base58'
 import { controlsKey } from '../auth/wif'
 import { previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview } from './cost'
 import { trueCodeOf } from './consensus-shift'
-import { base64ToBytes, bytesToBase64, followSdkVersion } from './query'
+import { base64ToBytes, bytesToBase64, followSdkVersion, noteSdkWrite } from './query'
 
 export type { CostPreview } from './cost'
 
@@ -1031,6 +1031,14 @@ function reportSpend(
 }
 
 /**
+ * `write`, and once it settles (landed, refused or unknown) a note to the read layer that state
+ * may have changed: a read issued after it must not join one issued before (`noteSdkWrite`).
+ */
+function wrote<T>(sdk: EvoSDK, write: Promise<T>): Promise<T> {
+  return write.finally(() => noteSdkWrite(sdk))
+}
+
+/**
  * Create a document with idempotent retry. Builds + signs a state transition, caches the
  * signed bytes under the action's {@link newIntent intent token}, broadcasts, and waits for
  * Platform's verdict. Retrying the same action while its transition is pending re-broadcasts
@@ -1048,7 +1056,7 @@ function reportSpend(
 export function createDocumentIdempotent(sdk: EvoSDK, auth: WriteAuth, params: CreateParams): Promise<WriteResult> {
   // A write can be the page's first proved exchange: serialize with the version the SDK knows now.
   followSdkVersion(sdk)
-  return serialized(auth.identityId, () => createDocumentUnlocked(sdk, auth, params)).then((r) => {
+  return serialized(auth.identityId, () => wrote(sdk, createDocumentUnlocked(sdk, auth, params))).then((r) => {
     reportSpend(sdk, auth, r.spend)
     return r.result
   })
@@ -1432,7 +1440,7 @@ interface DocumentsDeleteFacadeLike {
 export function deleteDocumentIdempotent(sdk: EvoSDK, auth: WriteAuth, params: DeleteParams): Promise<DeleteResult> {
   // A write can be the page's first proved exchange: serialize with the version the SDK knows now.
   followSdkVersion(sdk)
-  return serialized(auth.identityId, () => deleteDocumentUnlocked(sdk, auth, params)).then((r) => {
+  return serialized(auth.identityId, () => wrote(sdk, deleteDocumentUnlocked(sdk, auth, params))).then((r) => {
     if (r.spend) reportSpend(sdk, auth, r.spend)
     return r.result
   })
@@ -1610,7 +1618,7 @@ export function checkOwnRepo(storedRepoId: unknown, expected: string | undefined
 export function replaceDocumentIdempotent(sdk: EvoSDK, auth: WriteAuth, params: ReplaceParams): Promise<ReplaceResult> {
   // A write can be the page's first proved exchange: serialize with the version the SDK knows now.
   followSdkVersion(sdk)
-  return serialized(auth.identityId, () => replaceDocumentUnlocked(sdk, auth, params)).then((r) => {
+  return serialized(auth.identityId, () => wrote(sdk, replaceDocumentUnlocked(sdk, auth, params))).then((r) => {
     if (r.spend) reportSpend(sdk, auth, r.spend)
     return r.result
   })

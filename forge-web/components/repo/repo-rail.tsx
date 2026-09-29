@@ -10,7 +10,7 @@
  * and the browse plane's content-check ledger (which updates live as the page reads objects).
  */
 
-import { useLayoutEffect, useSyncExternalStore } from 'react'
+import { useEffect, useLayoutEffect, useSyncExternalStore } from 'react'
 import Link from 'next/link'
 import { GitBranch, Scale, Star, Tag, Users } from 'lucide-react'
 import {
@@ -20,6 +20,7 @@ import {
   isLive,
   readGatewaysFor,
   NO_CONTENT_CHECKS,
+  prefetchDpnsNames,
   refParamFor,
   selectedTip,
   subscribeContentChecks,
@@ -27,17 +28,19 @@ import {
   type RepoHome,
   type SelectedRef,
 } from '@/lib/view'
-import { latestRelease, readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
+import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
 import type { Membership } from '@/lib/rules/v2'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useQuorumCheck } from '@/hooks/use-quorum-check'
 import { useTrustView } from '@/hooks/use-trust-view'
-import { useReleases, useViewerRole } from '@/hooks/use-repo-chrome'
+import { useLatestRelease, useViewerRole } from '@/hooks/use-repo-chrome'
+import { useInView } from '@/hooks/use-in-view'
 import { TrustPanel } from '@/components/ui/trust-panel'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { CloneBox } from '@/components/repo/clone-box'
 import { LanguageBar, useRepoFacts } from '@/components/repo/repo-facts-card'
+import { repoFactsLoading, subscribeRepoFacts, wantRepoFacts } from '@/lib/view/repo-facts'
 import { Author } from '@/components/author'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 
@@ -110,10 +113,6 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 }
 
 function About({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; selected: SelectedRef }): JSX.Element {
-  const { license, languages } = useRepoFacts(repoKey(home.repo), selectedTip(selected))
-  // The license file at the ref the page shows (a pinned commit stays pinned).
-  const refParam = selected.pinned ?? refParamFor(selected.name, selected.isTag, home.defaultBranch)
-  const licenseHref = license ? repoHref('/repo/blob', addr, { path: license.file, ...(refParam ? { ref: refParam } : {}) }) : undefined
   return (
     <Card title="About">
       {home.description ? <p className="mb-2 text-anvil-700 dark:text-anvil-200">{home.description}</p> : null}
@@ -138,12 +137,7 @@ function About({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
       <Row icon={<Star className="h-3.5 w-3.5" aria-hidden />} label="Stars" href={repoHref('/repo/stargazers', addr)}>
         {home.starCount ?? <span title="Couldn't read the star count from Platform">–</span>}
       </Row>
-      {license ? (
-        <Row icon={<Scale className="h-3.5 w-3.5" aria-hidden />} label="License" href={licenseHref} testId="repo-license">
-          {license.ids.length > 0 ? license.ids.join(' or ') : 'Other'}
-        </Row>
-      ) : null}
-      {languages ? <LanguageBar stats={languages} /> : null}
+      <Facts home={home} addr={addr} selected={selected} />
       <div className="mt-2 flex items-center justify-between gap-2 border-t border-anvil-100 pt-2 dark:border-anvil-850">
         <span className="text-anvil-500 dark:text-anvil-400">Storage</span>
         <BackendBadge backend={home.backend} />
@@ -152,10 +146,52 @@ function About({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
   )
 }
 
+/**
+ * The About card's LICENSE row and language bar: worked out once the slot is in view (S-1), with
+ * a skeleton for whichever is not known yet.
+ */
+function Facts({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; selected: SelectedRef }): JSX.Element {
+  const key = repoKey(home.repo)
+  const tip = selectedTip(selected)
+  const { license, languages } = useRepoFacts(key, tip)
+  // A placeholder only while the home has a load of these facts registered: a route that works
+  // none out (tree, blob, commits), an empty repo or a failed load shows nothing, as before.
+  const loading = useSyncExternalStore(subscribeRepoFacts, () => repoFactsLoading(key, tip), () => false)
+  const [ref, inView] = useInView<HTMLDivElement>()
+  useEffect(() => {
+    if (inView) wantRepoFacts(key)
+  }, [inView, key])
+  // The license file at the ref the page shows (a pinned commit stays pinned).
+  const refParam = selected.pinned ?? refParamFor(selected.name, selected.isTag, home.defaultBranch)
+  const licenseHref = license ? repoHref('/repo/blob', addr, { path: license.file, ...(refParam ? { ref: refParam } : {}) }) : undefined
+  return (
+    <div ref={ref}>
+      {license ? (
+        <Row icon={<Scale className="h-3.5 w-3.5" aria-hidden />} label="License" href={licenseHref} testId="repo-license">
+          {license.ids.length > 0 ? license.ids.join(' or ') : 'Other'}
+        </Row>
+      ) : null}
+      {languages ? <LanguageBar stats={languages} /> : null}
+      {loading && (license === undefined || languages === undefined) ? (
+        <Skeleton
+          label="Reading the license and languages"
+          testId="facts-skeleton"
+          bars={[...(license === undefined ? ['h-3.5 w-full'] : []), ...(languages === undefined ? ['h-2 w-full'] : [])]}
+        />
+      ) : null}
+    </div>
+  )
+}
+
 function Members({ repo }: { repo: RepoRef }): JSX.Element {
   const { sdk, ready, network } = useSdk([repo.forge.core, repo.forge.collab])
   const members = useAsync<Membership[]>(
-    () => readMembershipsCached(sdk!, repo, network),
+    async () => {
+      const list = await readMembershipsCached(sdk!, repo, network)
+      // Every member's name in one read, before the pills ask one at a time.
+      await prefetchDpnsNames(sdk!, list.map((m) => m.identity), network)
+      return list
+    },
     [ready, repo.repoId, network],
     { enabled: ready && sdk !== null },
   )
@@ -185,30 +221,45 @@ function Members({ repo }: { repo: RepoRef }): JSX.Element {
 }
 
 function LatestRelease({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
-  const releases = useReleases(home.repo)
-  const latest = releases.data ? latestRelease(releases.data) : undefined
+  // Below the fold on most screens: read once the card is in view (S-1), a skeleton until then.
+  const [ref, inView] = useInView<HTMLDivElement>()
+  const latest = useLatestRelease(home.repo, inView)
   return (
     <Card title="Latest release">
-      {releases.error ? (
-        <p className="text-anvil-500 dark:text-anvil-400">Couldn&apos;t read the releases.</p>
-      ) : releases.data === null ? (
-        <p className="text-anvil-500 dark:text-anvil-400">Reading…</p>
-      ) : latest === undefined ? (
-        <p className="text-anvil-500 dark:text-anvil-400">No releases yet.</p>
-      ) : (
-        <Link
-          href={repoHref('/repo/release', addr, { tag: latest.tagName })}
-          className="-mx-1 block rounded px-1 py-1 hover:bg-anvil-50 dark:hover:bg-anvil-850"
-        >
-          <span className="flex items-center gap-1.5 font-medium text-anvil-800 dark:text-anvil-100">
-            <Tag className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
-            <span className="font-mono">{latest.tagName}</span>
-            {latest.name ? <span className="truncate font-normal">{latest.name}</span> : null}
-          </span>
-          <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{timeAgo(latest.createdAt)}</span>
-        </Link>
-      )}
+      <div ref={ref}>
+        {latest.error ? (
+          <p className="text-anvil-500 dark:text-anvil-400">Couldn&apos;t read the releases.</p>
+        ) : !latest.settled ? (
+          <Skeleton label="Reading the latest release" testId="latest-release-skeleton" bars={['h-3.5 w-28', 'h-3 w-16']} />
+        ) : latest.data === null ? (
+          <p className="text-anvil-500 dark:text-anvil-400">No releases yet.</p>
+        ) : (
+          <Link
+            href={repoHref('/repo/release', addr, { tag: latest.data.tagName })}
+            className="-mx-1 block rounded px-1 py-1 hover:bg-anvil-50 dark:hover:bg-anvil-850"
+          >
+            <span className="flex items-center gap-1.5 font-medium text-anvil-800 dark:text-anvil-100">
+              <Tag className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
+              <span className="font-mono">{latest.data.tagName}</span>
+              {latest.data.name ? <span className="truncate font-normal">{latest.data.name}</span> : null}
+            </span>
+            <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{timeAgo(latest.data.createdAt)}</span>
+          </Link>
+        )}
+      </div>
     </Card>
+  )
+}
+
+/** A card's placeholder while its data is read: pulsing bars (Tailwind size classes), announced once. */
+function Skeleton({ label, testId, bars }: { label: string; testId: string; bars: readonly string[] }): JSX.Element {
+  return (
+    <div className="space-y-1.5 py-1" role="status" data-testid={testId}>
+      <span className="sr-only">{label}</span>
+      {bars.map((size, i) => (
+        <div key={i} className={`${size} animate-pulse rounded bg-anvil-100 dark:bg-anvil-800`} />
+      ))}
+    </div>
   )
 }
 

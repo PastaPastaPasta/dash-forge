@@ -26,6 +26,18 @@ export {
 } from './contract'
 export { CHUNK_QUERY_MAX, repoSource } from './source'
 export {
+  readRepoChrome,
+  repoTimelines,
+  chromeFallbacks,
+  resetRepoTimelines,
+  staleRepoTimelines,
+  TIMELINE_TYPES,
+  TIMELINES_FRESH_MS,
+  type RepoChrome,
+  type RepoTimelines,
+  type TimelineType,
+} from './chrome'
+export {
   readRepoById,
   resolveAnyRepo,
   resolveAnyRepoWith,
@@ -39,6 +51,7 @@ export {
 export {
   holdingsOfRole,
   invalidateMembers,
+  membersGeneration,
   membershipsFromDocs,
   seedMemberships,
   readMemberRepoIds,
@@ -71,6 +84,7 @@ export {
 } from './releases'
 export {
   readConfig,
+  configBundleOf,
   readConfigBundle,
   readConfigHistory,
   readDefaultBranch,
@@ -83,6 +97,8 @@ export {
   readAllRefUpdates,
   readRefUpdates,
   readRefs,
+  refUpdatesFromRows,
+  refsFromRows,
   resolveRefByHash,
   tagsOf,
   type ResolvedRef,
@@ -93,6 +109,7 @@ export {
   readNewestManifestOfKind,
   readPackManifests,
   readRepoPackManifests,
+  readBrowseManifests,
   readPackCopies,
   packsOfKind,
   type AsOf,

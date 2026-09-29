@@ -19,6 +19,7 @@ import { useSdk } from '@/hooks/use-sdk'
 import {
   foldIssueOpenCount,
   foldOpenCounts,
+  latestRelease,
   openCounts,
   readReleases,
   readTargetCounts,
@@ -29,6 +30,7 @@ import {
   repoWriteGeneration,
   subscribeRepoLists,
   type ReleaseList,
+  type ReleaseView,
   type RepoRef,
   type TargetTotals,
 } from '@/lib/repo'
@@ -85,11 +87,10 @@ export function useTargetCounts(repo: RepoRef): TargetTotals {
         readTargetCounts(sdk!, repo.forge, repo.repoId),
       )
       // Issues: the issue index (exact from the complete feed, shared with the Issues tab);
-      // pull requests: the folded list page, as before.
-      await Promise.all([
-        foldIssueOpenCount(sdk!, repo, totals.issues, network).catch(() => null),
-        foldOpenCounts(sdk!, repo, totals, { issues: false }),
-      ])
+      // pull requests: the folded list page, as before. One after the other: the index's
+      // composite reads the repo feed and seeds it, so the PR fold does not read it again.
+      await foldIssueOpenCount(sdk!, repo, totals.issues, network).catch(() => null)
+      await foldOpenCounts(sdk!, repo, totals, { issues: false })
       return totals
     },
     [ready, repoKey(repo), network, generation],
@@ -110,11 +111,21 @@ export function useRepoWriteGeneration(repo: RepoRef): number {
   return useSyncExternalStore(subscribeRepoLists, () => repoWriteGeneration(repo), () => 0)
 }
 
-export function useReleases(repo: RepoRef): AsyncState<ReleaseList> {
+export function useReleases(repo: RepoRef, { enabled = true }: { readonly enabled?: boolean } = {}): AsyncState<ReleaseList> {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
   return useAsync(
     () => sessionCached(`releases:${network}:${repoKey(repo)}`, MINUTE, () => readReleases(sdk!, repo)),
     [ready, repoKey(repo), network],
-    { enabled: ready && sdk !== null },
+    { enabled: enabled && ready && sdk !== null },
   )
+}
+
+/**
+ * The rail's latest release (null: none), read only once `wanted` (the card came into view):
+ * which release is latest is a version order over every tag, so it takes the whole list, and
+ * the Releases tab reads the same cached list.
+ */
+export function useLatestRelease(repo: RepoRef, wanted: boolean): AsyncState<ReleaseView | null> {
+  const releases = useReleases(repo, { enabled: wanted })
+  return { ...releases, data: releases.data === null ? null : latestRelease(releases.data) ?? null }
 }

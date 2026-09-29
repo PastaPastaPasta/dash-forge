@@ -16,6 +16,7 @@ import {
   byteFieldToHex,
   issueViewOf,
   revisionOf,
+  membersGeneration,
   membershipsFromDocs,
   newestLabels,
   num,
@@ -206,6 +207,7 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
   const bound = { sourceProperty: '$id', field: 'targetId' }
   const labelQuery = source.repoQuery(DOC.label, { orderBy: [['name', 'asc'], ['$createdAt', 'asc']] })
   const memberQuery = (type: string) => source.repoQuery(type, { orderBy: [['memberId', 'asc']] })
+  const membersAtStart = membersGeneration()
   const res = await queryComposite(
     sdk,
     compositeOf(page, 1, [
@@ -242,7 +244,7 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
 
   // Members: complete when both sibling pages were short; recorded for the permission checks.
   const memberships = membershipsFromDocs(docs(4).length < 100 ? docs(4) : null, docs(5).length < 100 ? docs(5) : null)
-  if (memberships !== null) seedMemberships(repo, network, memberships)
+  if (memberships !== null) seedMemberships(repo, network, memberships, membersAtStart)
   // Every name the page shows (the author, commenters, event actors, assignees, members) in one
   // batched DPNS read. Two bound DPNS lookups in the composite would walk the same index path,
   // which the node refuses when either carries a limit (verified on moutai).
@@ -329,6 +331,7 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number,
   const page = source.repoQuery(DOC.patch, { where: [['number', '==', number]] })
   const toTarget = { sourceProperty: '$id', field: 'targetId' }
   const memberQuery = (type: string) => source.repoQuery(type, { orderBy: [['memberId', 'asc']] })
+  const membersAtStart = membersGeneration()
   const res = await queryComposite(
     sdk,
     compositeOf(page, 1, [
@@ -365,7 +368,7 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number,
   const log = await toLog(repo, [...eventDocs].sort(byTime), [...authorEventDocs].sort(byTime))
 
   const memberships = membershipsFromDocs(docs(5).length < 100 ? docs(5) : null, docs(6).length < 100 ? docs(6) : null)
-  if (memberships !== null) seedMemberships(repo, network, memberships)
+  if (memberships !== null) seedMemberships(repo, network, memberships, membersAtStart)
   // Every name the page shows in one batched DPNS read (best effort: a pill falls back to its id).
   const shownIds = [
     str(doc, '$ownerId'),

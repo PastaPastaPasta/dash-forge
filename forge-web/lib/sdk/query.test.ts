@@ -1,7 +1,7 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { queryDocuments, setStaleContractHandler } from './query'
+import { countDocuments, noteSdkWrite, queryAllDocuments, queryDocuments, setPlatformVersion, setStaleContractHandler } from './query'
 
 const CONTRACT = 'C1zHeeG7EUudXdB5ZyDQnXVU35hrCfvd1fRCybXEqaPS'
 
@@ -40,5 +40,104 @@ describe('reads against a seeded contract that went stale (M3)', () => {
     setStaleContractHandler(handler)
     await expect(queryDocuments(fakeSdk(query), { dataContractId: CONTRACT, documentTypeName: 'issue' })).rejects.toThrow('transport error')
     expect(handler).not.toHaveBeenCalled()
+  })
+})
+
+describe('identical reads in flight are joined (S-1)', () => {
+  it('two callers of the same query while it is out send one request, and each gets its own array', async () => {
+    let resolve!: (m: Map<string, unknown>) => void
+    const query = vi.fn(() => new Promise<Map<string, unknown>>((r) => (resolve = r)))
+    const sdk = fakeSdk(query)
+    const q = { dataContractId: CONTRACT, documentTypeName: 'domain', where: [['records.identity', '==', 'x']] as const, limit: 1 }
+    const a = queryDocuments(sdk, q)
+    const b = queryDocuments(sdk, { ...q })
+    resolve(new Map([['a', { toJSON: () => ({ $id: 'a' }) }]]))
+    const [ra, rb] = await Promise.all([a, b])
+    expect(query).toHaveBeenCalledTimes(1)
+    expect(ra).toEqual([{ $id: 'a' }])
+    expect(ra).not.toBe(rb)
+  })
+
+  it('a settled answer is never reused: the next read asks again', async () => {
+    const query = vi.fn(async () => new Map())
+    const sdk = fakeSdk(query)
+    const q = { dataContractId: CONTRACT, documentTypeName: 'issue' }
+    await queryDocuments(sdk, q)
+    await queryDocuments(sdk, q)
+    expect(query).toHaveBeenCalledTimes(2)
+  })
+
+  it('different queries, and the same query on another SDK, are not joined', async () => {
+    const query = vi.fn(async () => new Map())
+    const one = fakeSdk(query)
+    const two = fakeSdk(query)
+    await Promise.all([
+      queryDocuments(one, { dataContractId: CONTRACT, documentTypeName: 'issue', limit: 1 }),
+      queryDocuments(one, { dataContractId: CONTRACT, documentTypeName: 'issue', limit: 2 }),
+      queryDocuments(two, { dataContractId: CONTRACT, documentTypeName: 'issue', limit: 1 }),
+    ])
+    expect(query).toHaveBeenCalledTimes(3)
+  })
+
+  it('a failure reaches every joined caller, and the next read tries again', async () => {
+    const query = vi.fn().mockRejectedValueOnce(new Error('down')).mockResolvedValueOnce(new Map())
+    const sdk = fakeSdk(query)
+    const q = { dataContractId: CONTRACT, documentTypeName: 'issue' }
+    const results = await Promise.allSettled([queryDocuments(sdk, q), queryDocuments(sdk, q)])
+    expect(results.map((r) => r.status)).toEqual(['rejected', 'rejected'])
+    await expect(queryDocuments(sdk, q)).resolves.toEqual([])
+    expect(query).toHaveBeenCalledTimes(2)
+  })
+
+  it('a read issued after this tab wrote does not join one issued before (review L2)', async () => {
+    let resolve!: (m: Map<string, unknown>) => void
+    const query = vi.fn(() => new Promise<Map<string, unknown>>((r) => (resolve = r)))
+    const sdk = fakeSdk(query)
+    const q = { dataContractId: CONTRACT, documentTypeName: 'issue', limit: 1 }
+    const before = queryDocuments(sdk, q)
+    const first = resolve
+    noteSdkWrite(sdk)
+    const after = queryDocuments(sdk, q)
+    expect(query).toHaveBeenCalledTimes(2)
+    first(new Map())
+    resolve(new Map())
+    await Promise.all([before, after])
+  })
+
+  it('counts are joined the same way', async () => {
+    const count = vi.fn(async () => new Map([['', 3n]]))
+    const sdk = { documents: { count }, version: () => 14 } as unknown as EvoSDK
+    const q = { dataContractId: CONTRACT, documentTypeName: 'star', where: [['repoId', '==', 'r']] as const }
+    expect(await Promise.all([countDocuments(sdk, q), countDocuments(sdk, q)])).toEqual([3, 3])
+    expect(count).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('the page-boundary tie read is for protocol 13 only', () => {
+  // Two full pages, then a short one.
+  const rows = Array.from({ length: 201 }, (_, i) => ({ $id: `r-${String(i).padStart(4, '0')}`, $createdAt: i }))
+  function pagedSdk(version: number, seen: unknown[]): EvoSDK {
+    const query = async (q: { where?: unknown[][]; startAfter?: string; limit?: number }) => {
+      seen.push(q)
+      let out = [...rows]
+      for (const [f, op, v] of q.where ?? []) if (op === '==' && f === '$createdAt') out = out.filter((d) => d.$createdAt === v)
+      if (q.startAfter !== undefined) out = out.slice(out.findIndex((d) => d.$id === q.startAfter) + 1)
+      return new Map(out.slice(0, q.limit ?? 100).map((d) => [d.$id, d]))
+    }
+    return { documents: { query }, version: () => version } as unknown as EvoSDK
+  }
+  const q = { dataContractId: CONTRACT, documentTypeName: 'event', where: [['repoId', '==', 'r']] as const, orderBy: [['$createdAt', 'asc']] as const }
+  afterEach(() => setPlatformVersion(14))
+
+  it('protocol 14 pages on the cursor alone (Drive pads the tie itself)', async () => {
+    const seen: unknown[] = []
+    expect(await queryAllDocuments(pagedSdk(14, seen), q)).toHaveLength(201)
+    expect(seen).toHaveLength(3)
+  })
+
+  it('protocol 13 still reads each boundary timestamp', async () => {
+    const seen: unknown[] = []
+    expect(await queryAllDocuments(pagedSdk(13, seen), q)).toHaveLength(201)
+    expect(seen).toHaveLength(5)
   })
 })

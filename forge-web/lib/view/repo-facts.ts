@@ -111,6 +111,11 @@ export function repoFilesWalk(
  * KiB each, through the page's reader), then the language bar from the shared file walk. Facts
  * already known are not read again; a fact whose read failed stays unknown, so the next visit
  * tries again.
+ *
+ * Both facts sit below the fold: nothing is read until a viewer has the About card in view
+ * ({@link wantRepoFacts}, S-1). While a load is registered for a tip ({@link repoFactsLoading}) the
+ * card shows a placeholder; when none is (a route that works no facts out, an empty repo, a load
+ * that failed or was left) it shows nothing, as before.
  */
 export async function loadRepoFacts(
   repoKey: string,
@@ -122,32 +127,107 @@ export async function loadRepoFacts(
 ): Promise<void> {
   const key = keyOf(repoKey, tipOid)
   const known = facts.get(key) ?? UNKNOWN
-  if (known.license === undefined) {
-    // Files only: a directory named `license/` is not a license.
-    const files = rootEntries.filter((e) => isLicenseFile(e.name) && e.mode !== MODE_TREE && e.mode !== MODE_GITLINK).slice(0, LICENSE_FILES_MAX)
-    // A few files at a time: a root of many LICENSE-* files must not fire every read at once. A
-    // file too large is not placed; any other failure fails the load, so the next visit tries again.
-    const texts = await mapPooled(files, LICENSE_READ_POOL, async (e): Promise<readonly [string, string | null]> => {
-      try {
-        return [e.name, decodeTextBlob(await readBlob(reader, e.oid, LICENSE_MAX_BYTES))]
-      } catch (err) {
-        if (err instanceof ObjectTooLargeError) return [e.name, null]
-        throw err
-      }
-    })
-    signal?.throwIfAborted()
-    publish(key, { license: detectLicense(texts) })
+  if (known.license !== undefined && known.languages !== undefined) return
+  setLoading(key, 1)
+  try {
+    await whenFactsWanted(repoKey, signal)
+    if (known.license === undefined) {
+      // Files only: a directory named `license/` is not a license.
+      const files = rootEntries.filter((e) => isLicenseFile(e.name) && e.mode !== MODE_TREE && e.mode !== MODE_GITLINK).slice(0, LICENSE_FILES_MAX)
+      // A few files at a time: a root of many LICENSE-* files must not fire every read at once. A
+      // file too large is not placed; any other failure fails the load, so the next visit tries again.
+      const texts = await mapPooled(files, LICENSE_READ_POOL, async (e): Promise<readonly [string, string | null]> => {
+        try {
+          return [e.name, decodeTextBlob(await readBlob(reader, e.oid, LICENSE_MAX_BYTES))]
+        } catch (err) {
+          if (err instanceof ObjectTooLargeError) return [e.name, null]
+          throw err
+        }
+      })
+      // Published even if the home was left meanwhile: facts are keyed by tip, and the placeholder
+      // another route shows for this tip ends with them.
+      publish(key, { license: detectLicense(texts) })
+      signal?.throwIfAborted()
+    }
+    if (known.languages === undefined) {
+      const walk = await repoFilesWalk(repoKey, tipOid, reader, rootTree)
+      publish(key, { languages: languageStats(walk) })
+    }
+  } finally {
+    setLoading(key, -1)
   }
-  if (known.languages === undefined) {
-    const walk = await repoFilesWalk(repoKey, tipOid, reader, rootTree)
-    signal?.throwIfAborted()
-    publish(key, { languages: languageStats(walk) })
+}
+
+/** Loads registered per `(repo, tip)`: the card's placeholder shows only while one is. */
+const loading = new Map<string, number>()
+
+function setLoading(key: string, delta: 1 | -1): void {
+  const n = (loading.get(key) ?? 0) + delta
+  if (n > 0) loading.set(key, n)
+  else loading.delete(key)
+  for (const l of listeners) l()
+}
+
+/** Whether a load of this tip's facts is registered (waiting for the card, or reading). */
+export function repoFactsLoading(repoKey: string, tipOid: string | null): boolean {
+  return tipOid !== null && loading.has(keyOf(repoKey, tipOid))
+}
+
+/**
+ * Per repo, whether a viewer has its facts in view, and the loads waiting for that. The facts cost
+ * a tree read per directory (the language bar's walk: 47 requests on dashpay/dash) and the license
+ * files, and the About card is below the fold, so the home works them out only once wanted (S-1).
+ * Kept for the {@link KEEP_WANTED} most recent repos; a load that is left removes its waiter.
+ */
+const wanted = new Map<string, { open: boolean; readonly waiters: Set<() => void> }>()
+const KEEP_WANTED = 50
+
+function wantedOf(repoKey: string): { open: boolean; readonly waiters: Set<() => void> } {
+  let w = wanted.get(repoKey)
+  if (w === undefined) {
+    w = { open: false, waiters: new Set() }
+    wanted.set(repoKey, w)
+    // Trim the oldest entries nobody waits on.
+    for (const [k, v] of wanted) {
+      if (wanted.size <= KEEP_WANTED) break
+      if (k !== repoKey && v.waiters.size === 0) wanted.delete(k)
+    }
   }
+  return w
+}
+
+/** The About card's facts came into view: the home may work them out. */
+export function wantRepoFacts(repoKey: string): void {
+  const w = wantedOf(repoKey)
+  w.open = true
+  for (const wake of w.waiters) wake()
+  w.waiters.clear()
+}
+
+/** Resolves once {@link wantRepoFacts} was called for the repo; rejects when `signal` aborts. */
+function whenFactsWanted(repoKey: string, signal?: AbortSignal): Promise<void> {
+  const w = wantedOf(repoKey)
+  if (w.open) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    const stop = (): void => {
+      w.waiters.delete(wake)
+      reject(signal?.reason)
+    }
+    const wake = (): void => {
+      signal?.removeEventListener('abort', stop)
+      resolve()
+    }
+    if (signal?.aborted) return stop()
+    w.waiters.add(wake)
+    signal?.addEventListener('abort', stop, { once: true })
+  })
 }
 
 /** Test hook. */
 export function resetRepoFacts(): void {
   facts.clear()
   walks.clear()
+  wanted.clear()
+  loading.clear()
   for (const l of listeners) l()
 }

@@ -33,7 +33,8 @@ import {
   packsOfKind,
   type AsOf,
   readNewestManifestOfKind,
-  readRepoPackManifests,
+  readBrowseManifests,
+  staleRepoTimelines,
   onRepoContentWritten,
   repoKey,
   repoSource,
@@ -1135,7 +1136,12 @@ export type UnindexedReason =
  * its git packs when the index covers them, or the live pack set the fallback clone would
  * need when it does not.
  */
-export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<BrowseState> {
+export async function loadBrowseContext(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  /** A read started now: a re-resolve must not be answered by the read it is checking. */
+  { fresh = false }: { readonly fresh?: boolean } = {},
+): Promise<BrowseState> {
   // A private repo's artifacts are sealed: nothing is fetched without the reader's session.
   if (repo.visibility === 'private' && repo.session === undefined) throw new PrivateRepoLockedError()
   // ONE snapshot, deliberately. `readPackManifests` applies no `kind` filter and is now
@@ -1143,8 +1149,9 @@ export async function loadBrowseContext(sdk: EvoSDK, repo: RepoRef): Promise<Bro
   // fragments separately would be actively wrong: a repack committing between the two
   // queries pairs a post-repack index with a pre-repack pack list, and `packRef` then
   // resolves to the wrong pack silently. That is the same misalignment the completeness fix
-  // exists to prevent, reintroduced through the back door.
-  const manifests = await readRepoPackManifests(sdk, repo)
+  // exists to prevent, reintroduced through the back door. A public repo's list comes from the
+  // repo chrome store: the home's own read of a moment ago (zero requests), else its delta.
+  const manifests = await readBrowseManifests(sdk, repo, { fresh, network: ACTIVE_NETWORK.network })
   // The gateways this repo's CURRENT members' pushes recorded reach its IPFS node: try them
   // first. A past writer's or a stranger's manifest cannot steer every read.
   noteRepoGateways(
@@ -1340,6 +1347,8 @@ onPrivateSessionEnded((id) => {
 // a PR's source repo or fork, a fork) or published a release: the repo's views resolve again, so
 // the PR page re-reads its head and the Code tab its tip through the new objects.
 onRepoContentWritten((repo) => {
+  // The pack list is read from the repo chrome store: its next read asks for what is new.
+  staleRepoTimelines(repo)
   for (const k of [...browseCache.keys()]) if (k.startsWith(`${repo.repoId}#`)) invalidateBrowseContext(k)
   invalidateBrowseContext(repo.repoId)
 })
@@ -1421,7 +1430,7 @@ function startEntry(sdk: EvoSDK, repo: RepoRef, key: string): BrowseCacheEntry {
  */
 function refreshEntry(sdk: EvoSDK, repo: RepoRef, key: string, hit: BrowseCacheEntry & { settled: BrowseState }): Promise<BrowseState> {
   if (hit.refresh !== undefined) return hit.refresh
-  const refresh = loadBrowseContext(sdk, repo)
+  const refresh = loadBrowseContext(sdk, repo, { fresh: true })
     .then((state) => {
       // An explicit reload may have dropped the entry meanwhile: leave its successor alone.
       if (browseCache.get(key) !== hit) return state

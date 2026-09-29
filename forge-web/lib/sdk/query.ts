@@ -96,6 +96,23 @@ export type PlainDocument = Record<string, unknown>
 // (the value only selects DPP's serialization rules, which are stable for our field types).
 let platformVersion = 1
 
+/** The protocol version from which a `startAfter` page never skips rows tied with its cursor. */
+const CURSOR_PADDED_FROM = 14
+
+/**
+ * Whether the network pages tie-safely by itself (protocol {@link CURSOR_PADDED_FROM}+), as far
+ * as the SDK has seen: the version is learned from the first proved reply, which every paged
+ * read has had by the time it needs its second page.
+ *
+ * Drive pads a cursor page only off the primary key and for types that are not `indexOnly`
+ * (`pads_cursor_page`). Every tie-probed read here orders by `$createdAt` (never the primary key),
+ * and none of the `indexOnly` forge types (`star`, `starBeat`, `follow`, `watch`) has an index
+ * ending in `$createdAt`, the only shape {@link tieProbeAllowed} admits: the version alone decides.
+ */
+export function cursorPadded(): boolean {
+  return platformVersion >= CURSOR_PADDED_FROM
+}
+
 /** Pin the DPP platform version used by {@link normalizeDocument}'s `toJSON`. */
 export function setPlatformVersion(version: number): void {
   if (Number.isInteger(version) && version > 0) platformVersion = version
@@ -186,8 +203,61 @@ function isUnknownDocumentType(e: unknown): boolean {
   return /document type not found/i.test(message)
 }
 
+/**
+ * Identical reads in flight, per SDK: a second caller of the same query joins the first
+ * request instead of sending its own (two components of one page asking for the same owner's
+ * name, two folds reading the same feed page at once). Only while the request is out, and only
+ * among reads issued since this tab's last write ({@link noteSdkWrite}): a settled answer is
+ * never served from here, and a read issued after a write never joins one issued before it.
+ */
+const inFlight = new WeakMap<object, Map<string, Promise<unknown>>>()
+
+/** The key identical reads share, or null when the query cannot be keyed (never deduped then). */
+function inFlightKey(kind: string, query: unknown): string | null {
+  try {
+    return `${kind}:${JSON.stringify(query)}`
+  } catch {
+    return null
+  }
+}
+
+/** `read()`, or the read under `key` already in flight in `map` (dropped from it once it settles). */
+export function shareInFlight<T>(map: Map<string, Promise<T>>, key: string, read: () => Promise<T>): Promise<T> {
+  const held = map.get(key)
+  if (held !== undefined) return held
+  const promise = read()
+  map.set(key, promise)
+  const done = (): void => {
+    if (map.get(key) === promise) map.delete(key)
+  }
+  promise.then(done, done)
+  return promise
+}
+
+/** Writes this tab made through each SDK: part of every dedupe key, so no read joins across one. */
+const writeEpoch = new WeakMap<object, number>()
+
+/** This tab's write through `sdk` settled: reads from now on do not join earlier ones. */
+export function noteSdkWrite(sdk: EvoSDK): void {
+  writeEpoch.set(sdk, (writeEpoch.get(sdk) ?? 0) + 1)
+}
+
+/** Run `read`, or join an identical one already in flight on `sdk`. */
+function joinInFlight<T>(sdk: EvoSDK, kind: string, query: unknown, read: () => Promise<T>): Promise<T> {
+  const key = inFlightKey(`${kind}@${writeEpoch.get(sdk) ?? 0}`, query)
+  if (key === null) return read()
+  const bySdk = inFlight.get(sdk) ?? new Map<string, Promise<unknown>>()
+  inFlight.set(sdk, bySdk)
+  return shareInFlight(bySdk, key, read) as Promise<T>
+}
+
 /** Raw query (no proof). Prefer {@link queryDocumentsWithProof} for trust-minimized reads. */
 export async function queryDocuments(sdk: EvoSDK, query: DocumentQuery): Promise<PlainDocument[]> {
+  // Every caller gets its own array (the documents themselves are shared, read-only records).
+  return [...(await joinInFlight(sdk, 'documents', query, () => readDocuments(sdk, query)))]
+}
+
+async function readDocuments(sdk: EvoSDK, query: DocumentQuery): Promise<PlainDocument[]> {
   let response: Map<string, unknown>
   try {
     response = await documentsOf(sdk).query(query)
@@ -222,7 +292,11 @@ export async function queryDocumentsWithProof(
  * Provable O(1) count over a countable index (`forge-v2.md` §2). Sums the grouped result
  * the SDK returns for `documents.count`. Use for star / follower / issue-total surfaces.
  */
-export async function countDocuments(sdk: EvoSDK, query: DocumentQuery): Promise<number> {
+export function countDocuments(sdk: EvoSDK, query: DocumentQuery): Promise<number> {
+  return joinInFlight(sdk, 'count', query, () => readCount(sdk, query))
+}
+
+async function readCount(sdk: EvoSDK, query: DocumentQuery): Promise<number> {
   const grouped = await documentsOf(sdk).count(query)
   let total = 0n
   if (grouped instanceof Map) {
@@ -348,8 +422,14 @@ export class IncompleteReadError extends Error {
  * Documents created in the same block as a page's last row that sort after it would be
  * silently skipped. Protocol 14 bounds the cursor by document id and does not drop them.
  *
- * forge-v2 runs on protocol 14, so this is a safety net there, kept for parity with forge-core.
  * It needs the boundary row's `$createdAt`, which every forge-v2 history type requires.
+ *
+ * Only below protocol 14 ({@link CURSOR_PADDED_FROM}): there Drive lowers a `startAfter` as a
+ * `startAt` on the cursor's own index key, continues within it by document id and strips the
+ * cursor row (`rs-drive` `DriveDocumentQuery::pads_cursor_page`, gated on
+ * `non_primary_key_path_query >= 1`, first set in protocol 14; proved the same way, and
+ * covered by `compound_cursor_tests.rs`). The probe would be one more request per full page for
+ * rows the next page returns anyway.
  */
 export function tieProbeAllowed(query: DocumentQuery): boolean {
   const orderBy = query.orderBy ?? []
@@ -383,7 +463,7 @@ export async function queryAllDocuments(
   const ascending = ascendingEquivalent(query)
   if (opts.firstPage !== undefined && ascending !== null) throw new Error('firstPage continues an ascending query only')
   const paged = ascending === null ? query : { ...query, orderBy: ascending }
-  const tieSafe = tieProbeAllowed(paged)
+  const tieShape = tieProbeAllowed(paged)
   const out: PlainDocument[] = []
   const held = new Set<string>()
   const take = (rows: PlainDocument[]): void => {
@@ -418,7 +498,8 @@ export async function queryAllDocuments(
     // Same-block rows past the boundary: read the boundary timestamp in full (see
     // `tieProbeAllowed`), then continue after the last of them.
     const createdAt = last?.['$createdAt']
-    if (tieSafe && typeof createdAt === 'number') {
+    // Checked per boundary: the version is known once the first proved page has come back.
+    if (tieShape && !cursorPadded() && typeof createdAt === 'number') {
       const { documents: tied } = await queryDocumentsWithProof(sdk, {
         ...paged,
         where: [...(paged.where ?? []), ['$createdAt', '==', createdAt]],

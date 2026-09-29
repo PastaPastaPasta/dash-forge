@@ -10,7 +10,8 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
-import { PACK_KIND, type PackKind } from '../constants'
+import { DEFAULT_NETWORK, PACK_KIND, type Network, type PackKind } from '../constants'
+import { repoTimelines } from './chrome'
 import { queryAllDocuments, queryDocumentsWithProof, type PlainDocument } from '../sdk'
 import { v2PackList, type Role } from '../rules/v2'
 import { DOC, str, stringArray, type RepoRef } from './contract'
@@ -192,6 +193,27 @@ export async function readRepoPackManifests(sdk: EvoSDK, repo: RepoRef): Promise
     readRoleOracle(sdk, repo),
   ])
   return manifests.map((m) => ({ ...m, ownerRole: oracle.currentRole(m.uploader) }))
+}
+
+/**
+ * {@link readRepoPackManifests} for a browse context: a public repo's manifests come from the
+ * repo chrome store ({@link repoTimelines}: the home's own read when it is a few seconds old, else
+ * one request for what is new), and the membership from the cache that read seeded. `fresh`: a
+ * read started now (a re-resolve after a miss or a push), never an earlier one's answer.
+ */
+export async function readBrowseManifests(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  { fresh = false, network = DEFAULT_NETWORK }: { readonly fresh?: boolean; readonly network?: Network } = {},
+): Promise<PackManifest[]> {
+  const timelines = await repoTimelines(sdk, repo, { network, ...(fresh ? { maxAgeMs: 0 } : {}) })
+  if (timelines === null) return readRepoPackManifests(sdk, repo)
+  const oracle = await readRoleOracle(sdk, repo, network)
+  // Newest first, as `readPackManifests` answers (the store holds them oldest first).
+  return [...timelines.packManifest].reverse().map((d) => {
+    const m = toManifest(d)
+    return { ...m, ownerRole: oracle.currentRole(m.uploader) }
+  })
 }
 
 /**

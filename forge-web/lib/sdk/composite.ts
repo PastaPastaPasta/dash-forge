@@ -28,6 +28,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { isContractMissingError } from './contract-missing'
 import {
   countDocuments,
+  followSdkVersion,
   normalizeDocument,
   queryDocumentsWithProof,
   type DocumentQuery,
@@ -160,7 +161,12 @@ function check(q: CompositeQuery): void {
  * `plainFallback: false` throws instead of falling back, for a caller whose plain equivalent
  * would cost one request per bound value (counts over a whole page).
  */
-export async function queryComposite(sdk: EvoSDK, q: CompositeQuery, opts: { readonly plainFallback?: boolean } = {}): Promise<CompositeResult> {
+export async function queryComposite(
+  sdk: EvoSDK,
+  q: CompositeQuery,
+  /** `onFallback`: told when the composite was refused and plain queries answer instead. */
+  opts: { readonly plainFallback?: boolean; readonly onFallback?: () => void } = {},
+): Promise<CompositeResult> {
   check(q)
   const facade = (sdk as unknown as { documents: CompositeFacadeLike }).documents
   if (typeof facade.composite !== 'function' && opts.plainFallback === false) throw new Error('composite queries are not available in this SDK')
@@ -182,6 +188,7 @@ export async function queryComposite(sdk: EvoSDK, q: CompositeQuery, opts: { rea
           ...(s.bind ? { bind: s.bind } : {}),
         })),
       })
+      followSdkVersion(sdk)
       return {
         page: raw.pageDocuments.filter((d) => d != null).map(normalizeDocument),
         subs: raw.subResults.map((r) =>
@@ -194,6 +201,7 @@ export async function queryComposite(sdk: EvoSDK, q: CompositeQuery, opts: { rea
       if (!isUnsupported(e) || opts.plainFallback === false) throw e
     }
   }
+  opts.onFallback?.()
   return plainComposite(sdk, q)
 }
 
