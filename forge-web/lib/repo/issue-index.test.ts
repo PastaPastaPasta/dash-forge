@@ -69,6 +69,8 @@ interface Seen {
   composites: CompositeQuery[]
   queries: DocumentQuery[]
   counts: DocumentQuery[]
+  /** Set to a promise to hold every composite's answer (computed when sent) until it resolves. */
+  hold?: Promise<void> | null
 }
 
 /** A mock over `store[contract][type]` that also answers `documents.composite`. */
@@ -81,6 +83,7 @@ function mockSdk(store: Record<string, Record<string, Doc[]>>, seen: Seen): EvoS
   }
   const composite = async (q: CompositeQuery & { subQueries: CompositeQuery['subQueries'] }) => {
     seen.composites.push(q)
+    const held = seen.hold
     const page = run(rows(q.dataContractId, q.documentType), (q.where ?? []) as never, (q.orderBy ?? []) as never, q.limit)
     const subDocs: Doc[][] = []
     const subResults = q.subQueries.map((s, i) => {
@@ -101,6 +104,7 @@ function mockSdk(store: Record<string, Record<string, Doc[]>>, seen: Seen): EvoS
       subDocs[i] = docs
       return { kind: 'documents', documents: docs, missingIds: [] }
     })
+    if (held) await held
     return { pageDocuments: page, subResults }
   }
   return {
@@ -258,6 +262,31 @@ describe('issue index', () => {
     expect(last.matching).toBe(250)
     // No row listed twice.
     expect(new Set(last.rows.map((r) => r.id)).size).toBe(50)
+  })
+
+  it('a read in flight across a write neither refills the shared feed nor settles a count (L-77 review)', async () => {
+    const repoId = 'Ad88NKGHimxUgGHrTGpBJjKpnzrQe8Zh4V5q13mRh85h'
+    const store = bigRepo(12, repoId)
+    const seen: Seen = { composites: [], queries: [], counts: [] }
+    const sdk = mockSdk(store, seen)
+    const repo = repoRef(repoId)
+    invalidateRepoFeed(repo)
+    // The header's index load sends its composite (the whole feed rides in it) and is held...
+    let release!: () => void
+    seen.hold = new Promise((r) => (release = r))
+    const stale = foldIssueOpenCount(sdk, repo, 12, 'devnet')
+    await Promise.resolve()
+    // ...a maintainer closes #5, and the write drops the repo's caches...
+    store.COLLAB!.event!.push({ $id: 'eclose', $ownerId: MAINT, $createdAt: 9_000_000, repoId, targetId: 'i0005', targetNumber: 5, kind: 1 })
+    invalidateRepoFeed(repo)
+    seen.hold = null
+    release()
+    await stale
+    // ...so the header shows no count from before the write, and the next read shows #5 closed.
+    expect(openCounts(repo, { issues: 12, pulls: 0 }).issues).toBeNull()
+    const page = await queryIssues(sdk, repo, { ...base, state: 'closed' }, 12, 'devnet')
+    expect(page.rows.map((r) => r.number)).toEqual([5, 3])
+    expect(page.openCount).toBe(10)
   })
 
   it('reads a small repo whole in one composite, header included', async () => {

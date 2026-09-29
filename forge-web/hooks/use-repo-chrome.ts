@@ -18,7 +18,7 @@ import { useAsync, type AsyncState } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import {
   foldIssueOpenCount,
-  foldOpenCounts,
+  foldPullOpenCount,
   latestRelease,
   openCounts,
   readReleases,
@@ -68,10 +68,10 @@ export function useViewerRole(repo: RepoRef): {
 
 /**
  * The OPEN issue and PR counts for the tabs (null: not proven, so no number is shown). The
- * countable indexes only give totals — open or closed — so they pick the strategy
- * (`foldsForCount`) and the numbers come from the same folded list pages the Issues and Pull
- * requests pages show, through their shared session cache. A write drops those lists and
- * bumps the repo's write generation, which re-reads the totals and refolds here.
+ * countable indexes only give totals — open or closed — so the numbers come from the issue and
+ * pull indexes the Issues and Pull requests tabs read (a small repo's is read here; a large one's
+ * only once its tab has). A write drops those indexes and bumps the repo's write generation, which
+ * re-reads the totals and refolds here.
  */
 export function useTargetCounts(repo: RepoRef): TargetTotals {
   const { sdk, ready, network } = useSdk(repoContractIds(repo))
@@ -86,11 +86,12 @@ export function useTargetCounts(repo: RepoRef): TargetTotals {
       const totals = await sessionCached(`counts:${network}:${repo.repoId}:${generation}`, MINUTE, () =>
         readTargetCounts(sdk!, repo.forge, repo.repoId),
       )
-      // Issues: the issue index (exact from the complete feed, shared with the Issues tab);
-      // pull requests: the folded list page, as before. One after the other: the index's
-      // composite reads the repo feed and seeds it, so the PR fold does not read it again.
-      await foldIssueOpenCount(sdk!, repo, totals.issues, network).catch(() => null)
-      await foldOpenCounts(sdk!, repo, totals, { issues: false })
+      // The issue and pull indexes (exact from the complete feed, shared with the Issues and Pull
+      // requests tabs). They share one read of the repo feed, whichever starts it (L-77).
+      await Promise.all([
+        foldIssueOpenCount(sdk!, repo, totals.issues, network).catch(() => null),
+        foldPullOpenCount(sdk!, repo, totals.pulls, network).catch(() => null),
+      ])
       return totals
     },
     [ready, repoKey(repo), network, generation],
@@ -122,8 +123,8 @@ export function useReleases(repo: RepoRef, { enabled = true }: { readonly enable
 
 /**
  * The rail's latest release (null: none), read only once `wanted` (the card came into view):
- * which release is latest is a version order over every tag, so it takes the whole list, and
- * the Releases tab reads the same cached list.
+ * which release is latest depends on every tag's publish date (L-78), so it takes the whole
+ * list, and the Releases tab reads the same cached list.
  */
 export function useLatestRelease(repo: RepoRef, wanted: boolean): AsyncState<ReleaseView | null> {
   const releases = useReleases(repo, { enabled: wanted })

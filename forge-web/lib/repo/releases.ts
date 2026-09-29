@@ -15,6 +15,9 @@ import { z } from 'zod'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { DOC, str, type RepoRef } from './contract'
 import { repoSource } from './source'
+import { isPrerelease } from './ref-order'
+
+export { compareRefNames, compareTagNames, isPrerelease, naturalRuns, tagVersion, type TagVersion } from './ref-order'
 
 /** One downloadable asset of a release. */
 export interface ReleaseAssetView {
@@ -103,9 +106,15 @@ export function assetVerifiable(asset: { readonly sha256: string }): boolean {
   return SHA256.test(asset.sha256)
 }
 
-/** Why an asset with no recorded hash is not downloaded, and how that is fixed. */
+/**
+ * Why an asset with no recorded hash offers no download here, addressed to whoever is reading
+ * the page (L-50): this page has nothing to check a copy against, and — unlike an {@link
+ * importedAssetUrl imported} asset, which at least names a known source host — it cannot point
+ * at one it trusts either. The second sentence is for a maintainer who can actually fix the
+ * missing hash.
+ */
 export const UNVERIFIABLE_ASSET =
-  'no SHA-256 is recorded for this asset, so it cannot be verified and is not downloaded. A maintainer fixes it by re-running the import with a current forge-import (it hashes each asset) or by publishing the release again with the file.'
+  'no SHA-256 is recorded for this asset, so this page can’t verify a copy of it and won’t link to one it can’t vouch for. A maintainer fixes this by re-running the import with a current forge-import (it hashes each asset) or by publishing the release again with the file.'
 
 /**
  * Whether `url` is a release download on the forge an import copies from (GitHub's
@@ -200,78 +209,29 @@ const newestFirst = (a: ReleaseView, b: ReleaseView): number =>
   b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
 
 /**
- * A tag's version (`v1.2.3`, `1.2`, `jq-1.7.1`, `v0.9.13.15`, `v24.0.0-rc.1`): the
- * `digits(.digits)*` run starting at the tag's first digit, and the pre-release suffix after it,
- * if any. `null` when the tag holds no number. Parity: forge-core `tag_version`.
+ * When a release actually went out: an imported release's `published.at` (from its notes'
+ * `Published on … on YYYY-MM-DD` line — the source's real date), or, for one made here, when it
+ * was created, since that *is* when it was published. Never `$createdAt` for an imported release:
+ * an importer writes a repo's whole history in one run, so `$createdAt` says when a release was
+ * mirrored, not when it was originally published.
  */
-export interface TagVersion {
-  /** The numeric dot-separated parts (`[24, 0, 0]`). */
-  readonly parts: readonly number[]
-  /** The pre-release suffix (`rc.1`), `''` for a release. */
-  readonly pre: string
-}
-
-export function tagVersion(tag: string): TagVersion | null {
-  const m = /(\d+(?:\.\d+)*)(.*)$/.exec(tag)
-  if (m === null) return null
-  const parts = m[1]!.split('.').map(Number)
-  // `-rc.1`, `-beta`, `rc1`, `a1`: a suffix is a pre-release; `+build` metadata is not.
-  const pre = m[2]!.replace(/\+.*$/, '').replace(/^[-.]/, '')
-  return { parts, pre }
-}
-
-/** Whether `tag` names a pre-release (a version with a suffix such as `-rc.1`, `-beta`). */
-export function isPrerelease(tag: string): boolean {
-  return (tagVersion(tag)?.pre ?? '') !== ''
+function publishedAt(r: ReleaseView): number {
+  return r.published?.at ?? r.createdAt
 }
 
 /**
- * `a` vs `b` by their runs of digits and of other characters (`.`, `-`, `_` separate runs and
- * are dropped): digits compare as numbers and sort before text, text compares lower-cased. So
- * `rc.10` > `rc.9`, `rc.1` = `rc1`, `RC1` = `rc1`, `1` < `beta`. Parity: forge-core `natural`.
- */
-function naturalRuns(a: string, b: string): number {
-  const runs = (s: string): (number | string)[] =>
-    (s.match(/\d+|[^\d._-]+/g) ?? []).map((r) => (/^\d/.test(r) ? Number(r) : r.toLowerCase()))
-  const ra = runs(a)
-  const rb = runs(b)
-  for (let i = 0; i < Math.min(ra.length, rb.length); i++) {
-    const x = ra[i]!
-    const y = rb[i]!
-    if (typeof x === 'number' && typeof y === 'number') {
-      if (x !== y) return x - y
-    } else if (typeof x === 'number') return -1
-    else if (typeof y === 'number') return 1
-    else if (x !== y) return x < y ? -1 : 1
-  }
-  return ra.length - rb.length
-}
-
-/** `a` vs `b` by version, highest first: numbers compared as numbers, a release above its pre-releases. */
-function versionDesc(a: TagVersion, b: TagVersion): number {
-  for (let i = 0; i < Math.max(a.parts.length, b.parts.length); i++) {
-    const d = (b.parts[i] ?? 0) - (a.parts[i] ?? 0)
-    if (d !== 0) return d
-  }
-  if (a.pre === b.pre) return 0
-  if (a.pre === '') return -1
-  if (b.pre === '') return 1
-  return naturalRuns(b.pre, a.pre)
-}
-
-/**
- * The releases page's order (L-14): tags with a version, highest first; then the rest, newest
- * first. The documents' own order is not the releases' order: an importer writes a repo's whole
- * history in one run (older mirrors in GitHub's newest-first listing order), so `$createdAt` says
- * when a release was mirrored, not when it was published. Parity: forge-core `release_order`.
+ * The releases page's order (L-78): newest published first, matching GitHub's releases page (not
+ * the tags/ref-switcher's version order — {@link compareTagNames} — which sorts *names*, not
+ * dated documents, and stays version-first because a tag has no date of its own). Ties (same
+ * day, or two releases made here without one) fall back to {@link newestFirst}.
+ *
+ * This intentionally diverges from forge-core's `release_order` (version-highest-first), which
+ * forge-core keeps for its own callers; forge-web reads the raw `release` documents and computes
+ * this list's display order itself, so the two are free to disagree, and here the real publish
+ * date is available and is what GitHub itself sorts by.
  */
 export function releaseOrder(a: ReleaseView, b: ReleaseView): number {
-  const va = tagVersion(a.tagName)
-  const vb = tagVersion(b.tagName)
-  if (va !== null && vb !== null) return versionDesc(va, vb) || newestFirst(a, b)
-  if (va !== null) return -1
-  if (vb !== null) return 1
-  return newestFirst(a, b)
+  return publishedAt(b) - publishedAt(a) || newestFirst(a, b)
 }
 
 /** The repo's latest release, as GitHub picks it: the first in {@link releaseOrder} that is not a pre-release or yanked. */

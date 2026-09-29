@@ -296,6 +296,19 @@ describe('loadPullComparison', () => {
     expect(summary(result.changes)).toEqual(['M lib.ts', 'A new.ts'])
   })
 
+  // L-47: New PR with a head the base already contains showed a made-up diff against the head's parent.
+  it('an open PR whose base branch already contains its head has nothing to compare', async () => {
+    const s = new Store()
+    const parent = s.commit(s.files({ f: '1' }))
+    const head = s.commit(s.files({ f: '2' }), [parent])
+    const base = s.commit(s.files({ f: '3' }), [head])
+    const r = s.reader()
+    const result = await loadPullComparison({ base: r, head: r }, { baseTipOid: base, baseOidAtOpen: base, headOid: head, merged: false, imported: false })
+    expect(result.upToDate).toBe(true)
+    expect(result.changes).toEqual([])
+    expect(result.fellBack).toBeUndefined()
+  })
+
   it('falls back to the head parent for an imported PR with no usable base, never refusing', async () => {
     const s = new Store()
     const t = s.files({ f: '1' })

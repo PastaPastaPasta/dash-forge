@@ -14,6 +14,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import {
   DOC,
   asIdentifierString,
+  baseRefReaders,
   byteFieldToHex,
   issueViewOf,
   revisionOf,
@@ -324,13 +325,20 @@ export interface PullThread {
  * (`platform-parity-spec.md` §3.3, review-parity §3.10): the patch by `(repoId, number)`; its
  * comments, events and author events (bound `$id → targetId`) and reviews (`$id → patchId`);
  * the repo's labels, members and branch policies (siblings). A type past 100 rows continues
- * with a complete paged read of that type only. The base ref's history is read by `readPull`.
- * Null if not found.
+ * with a complete paged read of that type only. The base ref's history and the config timeline
+ * come from the repo chrome store the page's own chrome read filled (no request; `baseRefReaders`),
+ * or, `fresh` (a re-read after this page's own write), from a delta read of it. Null if not found.
  *
  * A PR's timeline includes its `review` documents: an approve or a request for changes is a
  * paid-for record the contributor must see.
  */
-export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number, network: Network = DEFAULT_NETWORK): Promise<PullThread | null> {
+export async function loadPullThread(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  number: number,
+  network: Network = DEFAULT_NETWORK,
+  { fresh = false }: { readonly fresh?: boolean } = {},
+): Promise<PullThread | null> {
   const source = repoSource(repo)
   const page = source.repoQuery(DOC.patch, { where: [['number', '==', number]] })
   const toTarget = { sourceProperty: '$id', field: 'targetId' }
@@ -381,8 +389,9 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number,
     ...[...log.events, ...log.authorEvents].flatMap((e) => [e.actor, ...(e.kind === 'assign' || e.kind === 'unassign' ? [e.value ?? ''] : []), e.refId ?? '']),
     ...(memberships ?? []).map((m) => m.identity),
   ]
+  const base = baseRefReaders(sdk, repo, fresh ? { maxAgeMs: 0 } : {})
   const [pull] = await Promise.all([
-    readPull(sdk, repo, doc, log),
+    readPull(sdk, repo, doc, log, base.configHistory, base.refUpdates),
     prefetchDpnsNames(sdk, shownIds.filter((x) => x !== ''), network).catch(() => undefined),
   ])
 

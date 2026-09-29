@@ -72,8 +72,11 @@ export {
   readPublicRepoFacts,
 } from './social'
 export {
+  compareRefNames,
+  compareTagNames,
   isPrerelease,
   latestRelease,
+  naturalRuns,
   newestPerTag,
   parseReleaseAssets,
   readReleases,
@@ -133,7 +136,7 @@ export {
   issueViewOf,
   onRepoInvalidated,
   revisionOf,
-  seedRepoFeed,
+  baseRefReaders,
   settleIssueCount,
   titleOf,
   toEvents,
@@ -179,6 +182,14 @@ export {
   type IssueRow,
   type IssueSelection,
 } from './issue-index'
+export {
+  foldPullOpenCount,
+  queryPulls,
+  type PullListPage,
+  type PullRow,
+  type PullSelection,
+  type PullStateFilter,
+} from './pull-index'
 export {
   addAuthorEvent,
   addEvent,

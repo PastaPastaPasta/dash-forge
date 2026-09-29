@@ -7,7 +7,7 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ResolvedRef } from '../repo'
-import { isLive, refParamFor, selectedTip, selectRef } from './refs'
+import { isLive, matchesRefQuery, refParamFor, selectedTip, selectRef } from './refs'
 
 function ref(refName: string, oid = 'a'.repeat(40)): ResolvedRef {
   return { refName, refNameHash: 'x', state: { state: 'resolved', oid, author: 'id', createdAt: 1 } }
@@ -82,6 +82,19 @@ describe('refParamFor', () => {
       expect(s.isTag).toBe(isTag)
       expect(s.ref).toBeDefined()
     }
+  })
+})
+
+describe('matchesRefQuery', () => {
+  it('matches everything on an empty or whitespace-only query', () => {
+    expect(matchesRefQuery('v23.1.8', '')).toBe(true)
+    expect(matchesRefQuery('v23.1.8', '   ')).toBe(true)
+  })
+
+  it('matches a case-insensitive substring anywhere in the name', () => {
+    expect(matchesRefQuery('v23.1.8', '23.1')).toBe(true)
+    expect(matchesRefQuery('Release-Candidate', 'candidate')).toBe(true)
+    expect(matchesRefQuery('v23.1.8', 'CANDIDATE')).toBe(false)
   })
 })
 

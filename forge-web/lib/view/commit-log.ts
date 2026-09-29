@@ -8,6 +8,7 @@
 import { MissingObjectError, MODE_GITLINK, MODE_TREE, type GitObject } from '../browse'
 import { commitSubject, type CommitObject, type TagObject, type TreeEntry } from './git-objects'
 import { mapPooled } from './pool'
+import { detectRenames } from './renames'
 import { ObjectTypeError, peelToCommit, readCommit, readTree, type ObjectReader, type Peeled } from './tree-nav'
 
 /**
@@ -36,8 +37,10 @@ export interface LogAuthor {
 
 /** A single file change between two trees. */
 export interface FileChange {
+  /** The path on the head side (the old path, for a deletion). */
   readonly path: string
-  readonly status: 'added' | 'modified' | 'deleted'
+  /** `renamed`: {@link detectRenames} paired a deleted file with this added one, as `git diff -M` does. */
+  readonly status: 'added' | 'modified' | 'deleted' | 'renamed'
   /** The blob (or gitlink commit) on each side; null on the side where the path is absent. */
   readonly baseOid: string | null
   readonly headOid: string | null
@@ -46,12 +49,28 @@ export interface FileChange {
   readonly headMode: number | null
   /** The object most useful for a compact summary (head, or base for a deletion). */
   readonly oid: string
+  /** A rename's path on the base side. */
+  readonly oldPath?: string
+  /** A rename's similarity index, as git prints it (`R087` is 87). */
+  readonly similarity?: number
 }
 
 /** A tree comparison. `truncated` means the node cap stopped it before every path was seen. */
 export interface TreeDiff {
   readonly changes: FileChange[]
   readonly truncated: boolean
+  /** Why renames with edits may be missing from `changes` (a browser limit), when renames were detected. */
+  readonly renameLimit?: string | null
+}
+
+/**
+ * {@link diffTrees}, then {@link detectRenames} over its result (`git diff -M`): what a commit or
+ * a comparison shows. Blame's rename following reads the plain tree diff instead.
+ */
+export async function diffTreesWithRenames(sides: DiffSides, baseTreeOid: string | null, headTreeOid: string | null): Promise<TreeDiff> {
+  const diff = await diffTrees(sides, baseTreeOid, headTreeOid)
+  const { changes, limited } = await detectRenames(sides, diff.changes)
+  return { changes, truncated: diff.truncated, renameLimit: limited }
 }
 
 const DIFF_NODE_CAP = 2000
@@ -266,7 +285,7 @@ export async function loadCommitChanges(reader: PrefixReader, id: string): Promi
   }
   const parent = commit.parents[0]
   const parentTree = parent ? (await readCommit(reader, parent)).tree : null
-  const diff = await diffTrees({ base: reader, head: reader }, parentTree, commit.tree)
+  const diff = await diffTreesWithRenames({ base: reader, head: reader }, parentTree, commit.tree)
   return { commit, oid: peeled.oid, tags: peeled.tags, ...diff }
 }
 

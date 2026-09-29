@@ -355,11 +355,14 @@ export function ComparisonDiff({
   noHead,
   wrap,
   onSides,
+  onResult,
 }: {
   baseRepo: RepoRef
   sourceId: string
   spec: ComparisonSpec
   noHead: string
+  /** Told the comparison once it is computed (null while it is not). */
+  onResult?: (comparison: PullComparison | null) => void
   wrap?: (comparison: PullComparison, diff: ReactNode) => ReactNode
   /**
    * Told the readers the comparison uses (e.g. to read the head commit), and a key that changes
@@ -369,6 +372,10 @@ export function ComparisonDiff({
 }): JSX.Element {
   const state = usePullComparison(baseRepo, sourceId, spec)
   const { sides, sidesKey } = state
+  useEffect(() => {
+    onResult?.(state.data)
+    return () => onResult?.(null)
+  }, [onResult, state.data])
   useEffect(() => {
     onSides?.(sides, sidesKey)
     // Taken back when they change or this comparison goes (another head picked): nothing may be
@@ -410,7 +417,7 @@ export function ComparisonView({
   )
 
   const range =
-    data !== null ? (
+    data !== null && data.upToDate !== true ? (
       <div className="flex flex-wrap items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
         {data.comparedBaseOid ? <Oid value={data.comparedBaseOid} chars={7} copyable={false} /> : <span>(empty tree)</span>}
         <span>…</span>
@@ -509,13 +516,19 @@ export function ComparisonView({
           ) : null}
         </div>
       ) : null}
-      {(() => {
+      {data.upToDate ? (
+        <div className="rounded-lg border border-anvil-200 px-4 py-6 text-center text-dense text-anvil-600 dark:border-anvil-800 dark:text-anvil-300" data-testid="nothing-to-compare">
+          The base branch already contains this head: there is nothing to compare.
+        </div>
+      ) : null}
+      {data.upToDate ? null : (() => {
         const diff = (
           <DiffView
             key={`${data.comparedBaseOid}..${pull.headOid}@${sidesKey}`}
             sides={data.sides}
             changes={data.changes}
             truncated={data.truncated}
+            renameLimit={data.renameLimit}
           />
         )
         return wrap ? wrap(data, diff) : diff

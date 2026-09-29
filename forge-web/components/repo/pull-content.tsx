@@ -188,15 +188,23 @@ export function PullContent({
   // A longer wait asked for by the newest write (a submitted review), used for its reads.
   const waitFor = useRef<{ attempts: number; delayMs: number; backoff: number; maxDelayMs: number } | null>(null)
   const current = useRef<{ aborted: boolean }>({ aborted: false })
+  // Set by a refresh: from then on the base ref's history is read afresh, not the repo chrome's.
+  const refreshed = useRef(false)
   const { data, loading, error, reload } = useAsync<PullThread | null>(
     async () => {
       current.current.aborted = true
       const signal = { aborted: false }
       current.current = signal
       const want = [...expectations.current]
-      const load = () => loadPullThread(sdk!, home.repo, number, network)
-      const first = await retryWhileMissing(load, justCreated ? 8 : 0)
-      const t = first === null ? null : await readUntil(async () => (signal.aborted ? first : load()), want, { ...(waitFor.current ?? {}), signal })
+      let latest: PullThread | null = null
+      const load = async (): Promise<PullThread | null> => {
+        if (signal.aborted) return latest
+        latest = await loadPullThread(sdk!, home.repo, number, network, { fresh: refreshed.current })
+        return latest
+      }
+      const first = await retryWhileMissing(load, justCreated ? 8 : 0, undefined, signal)
+      // One read on a cold load; re-reads only while a write this page made has not shown (L-77).
+      const t = first === null ? null : await readUntil(load, want, { ...(waitFor.current ?? {}), signal, first })
       if (!signal.aborted && t !== null) {
         expectations.current = expectations.current.filter((w) => !w(t))
         if (expectations.current.length === 0) waitFor.current = null
@@ -210,6 +218,7 @@ export function PullContent({
     (want?: (t: PullThread) => boolean, wait?: { attempts: number; delayMs: number; backoff: number; maxDelayMs: number }) => {
       if (want) expectations.current.push(want)
       if (wait) waitFor.current = wait
+      refreshed.current = true
       reload()
     },
     [reload],
@@ -853,7 +862,7 @@ function PullPage({
                 <>
                   {thread.approvals !== null ? <Approvals approvals={thread.approvals} headOid={pull.headOid} /> : null}
                   <ChecksRow summary={checkSummary} headOid={pull.headOid} onOpen={() => setTab('checks')} />
-                  {open && baseTipOid !== '' && cmp !== null && cmp.comparedBaseOid !== baseTipOid && (suggest.write.can || isAuthor) ? (
+                  {open && baseTipOid !== '' && cmp !== null && cmp.upToDate !== true && cmp.comparedBaseOid !== baseTipOid && (suggest.write.can || isAuthor) ? (
                     <section aria-label="Update branch" className="flex flex-wrap items-center gap-3 rounded-lg border border-anvil-200 px-4 py-2 text-dense dark:border-anvil-800" data-testid="update-branch">
                       <RefreshCw className="h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
                       <span className="min-w-0 flex-1">
@@ -1071,7 +1080,7 @@ function PullPage({
                   pullId={pull.id}
                   headOid={pull.headOid}
                   comments={thread.comments}
-                  changedPaths={new Set(c.changes.map((x) => x.path))}
+                  changedPaths={new Set(c.changes.flatMap((x) => (x.oldPath !== undefined ? [x.path, x.oldPath] : [x.path])))}
                   onPosted={onInlinePosted}
                   actions={threadActions}
                   onLinesKnown={rememberLines}

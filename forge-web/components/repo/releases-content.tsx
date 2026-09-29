@@ -12,7 +12,7 @@
  */
 
 import { Time } from '@/components/repo/byline'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import Link from 'next/link'
 import { AlertTriangle, CheckCircle2, Download, FileArchive, Loader2, Tag, XCircle } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
@@ -29,7 +29,7 @@ import {
   type DownloadProgress,
 } from '@/lib/view/release-download'
 import { urlHost } from '@/lib/view/format'
-import { NOT_VERIFIED_YET, UNVERIFIABLE_ASSET, assetVerifiable, importedAssetUrl, type OmittedAssets } from '@/lib/repo/releases'
+import { NOT_VERIFIED_YET, UNVERIFIABLE_ASSET, assetVerifiable, importedAssetUrl, isPrerelease, latestRelease, type OmittedAssets } from '@/lib/repo/releases'
 import { useReleases } from '@/hooks/use-repo-chrome'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
@@ -44,10 +44,14 @@ import { invalidateSessionCache } from '@/lib/view/session-cache'
 import { repoKey } from '@/lib/repo'
 import { errorMessage, cn } from '@/lib/utils'
 
+/** L-49: releases per page, with a "Show more" button for the rest. */
+const PAGE_SIZE = 10
+
 export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const { data, error, reload } = useReleases(home.repo)
   const links = useRepoLinks(addr, home.description)
   const [showPrevious, setShowPrevious] = useState(false)
+  const [shown, setShown] = useState(PAGE_SIZE)
   const { network } = useSdk()
   const timers = useRef<ReturnType<typeof setTimeout>[]>([])
   useEffect(() => () => timers.current.forEach(clearTimeout), [])
@@ -61,6 +65,8 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
       }, delay),
     )
   }
+  // L-48: the one release GitHub would mark "Latest" — the newest non-prerelease, non-yanked one.
+  const latest = data ? latestRelease(data) : undefined
 
   return (
     <div className="mx-auto max-w-3xl space-y-4">
@@ -84,12 +90,21 @@ export function ReleasesContent({ home, addr }: { home: RepoHome; addr: RepoAddr
       ) : (
         <>
           <ul className="space-y-3">
-            {data.current.map((r) => (
+            {data.current.slice(0, shown).map((r) => (
               <li key={r.id}>
-                <ReleaseCard release={r} addr={addr} links={links} tagTip={releaseTagTip(home, r.tagName)} />
+                <ReleaseCard release={r} addr={addr} links={links} tagTip={releaseTagTip(home, r.tagName)} isLatest={r.id === latest?.id} />
               </li>
             ))}
           </ul>
+          {data.current.length > shown ? (
+            <button
+              type="button"
+              onClick={() => setShown((n) => n + PAGE_SIZE)}
+              className="text-dense text-anvil-600 underline dark:text-anvil-300"
+            >
+              Show {Math.min(PAGE_SIZE, data.current.length - shown)} more (of {plural(data.current.length - shown, 'release')} left)
+            </button>
+          ) : null}
           {data.previous.length > 0 ? (
             <section aria-label="Previous revisions">
               <button
@@ -148,7 +163,7 @@ export function ReleaseContent({ home, addr, tag }: { home: RepoHome; addr: Repo
       <Link href={repoHref('/repo/releases', addr)} className="text-dense text-anvil-600 underline dark:text-anvil-300">
         ← All releases
       </Link>
-      <ReleaseCard release={release} addr={addr} links={links} full tagTip={releaseTagTip(home, tag)} />
+      <ReleaseCard release={release} addr={addr} links={links} full tagTip={releaseTagTip(home, tag)} isLatest={release.id === latestRelease(data)?.id} />
       {previous.length > 0 ? (
         <section aria-label="Previous revisions" className="space-y-3">
           <h2 className="text-prose">Previous revisions of {tag}</h2>
@@ -168,6 +183,7 @@ function ReleaseCard({
   previous = false,
   full = false,
   tagTip = null,
+  isLatest = false,
 }: {
   release: ReleaseView
   addr: RepoAddress
@@ -176,7 +192,11 @@ function ReleaseCard({
   full?: boolean
   /** The release tag's tip (a commit or a tag object); null when no live tag has its name. */
   tagTip?: string | null
+  /** L-48: this is the release GitHub would mark "Latest" (never true for a superseded revision). */
+  isLatest?: boolean
 }): JSX.Element {
+  const [assetsOpen, setAssetsOpen] = useState(false)
+  const accesses = r.assets.map(assetAccess)
   return (
     <article
       data-testid="release"
@@ -193,7 +213,18 @@ function ReleaseCard({
         >
           {r.tagName}
         </Link>
-        {r.name ? <span className="text-prose text-anvil-700 dark:text-anvil-200">{r.name}</span> : null}
+        {/* L-79: the name repeats the tag on most releases (`v24.0.0-rc.1 v24.0.0-rc.1`); only show it when it says more. */}
+        {r.name && r.name !== r.tagName ? <span className="text-prose text-anvil-700 dark:text-anvil-200">{r.name}</span> : null}
+        {/* latestRelease() falls back to the newest release when every one is a pre-release
+            (so the rail still names something); that fallback should not draw a "Latest" badge
+            here, since GitHub shows none in that case either. */}
+        {isLatest && !isPrerelease(r.tagName) ? (
+          <span className="rounded bg-verify-100 px-1.5 text-[11px] font-medium uppercase text-verify-700 dark:bg-verify-900/40 dark:text-verify-400">
+            Latest
+          </span>
+        ) : isPrerelease(r.tagName) ? (
+          <span className="rounded bg-anvil-100 px-1.5 text-[11px] uppercase text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300">Pre-release</span>
+        ) : null}
         {previous ? (
           <span className="rounded bg-anvil-100 px-1.5 text-[11px] uppercase text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300">previous</span>
         ) : null}
@@ -241,12 +272,32 @@ function ReleaseCard({
           <MarkdownView source={r.notesBody} images="auto" links={links} imported={sourceUrl(links)} />
         </div>
       ) : null}
+      {/* L-79: line-clamp-6 silently cuts notes with no way back to the rest. */}
+      {r.notesBody && !full && !previous ? (
+        <Link
+          href={repoHref('/repo/release', addr, { tag: r.tagName })}
+          className="mt-1 inline-block text-dense text-anvil-600 underline dark:text-anvil-300"
+        >
+          Full release notes
+        </Link>
+      ) : null}
       {r.assets.length > 0 ? (
-        <ul className="mt-3 divide-y divide-anvil-100 rounded-md border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800" aria-label="Assets">
-          {r.assets.map((a) => (
-            <AssetRow key={`${a.name}${a.sha256}`} asset={a} />
-          ))}
-        </ul>
+        full ? (
+          <AssetList assets={r.assets} accesses={accesses} className="mt-3" />
+        ) : (
+          // L-49: 2,039 asset rows fully expanded is most of a 238,000 px page; collapsed by default in the list.
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={() => setAssetsOpen((o) => !o)}
+              aria-expanded={assetsOpen}
+              className="text-dense text-anvil-600 underline dark:text-anvil-300"
+            >
+              {assetsOpen ? 'Hide' : 'Show'} {plural(r.assets.length, 'asset')}
+            </button>
+            {assetsOpen ? <AssetList assets={r.assets} accesses={accesses} className="mt-2" /> : null}
+          </div>
+        )
       ) : null}
       {r.omitted ? <OmittedAssetsNote omitted={r.omitted} /> : null}
       {r.badAssets > 0 ? (
@@ -255,6 +306,31 @@ function ReleaseCard({
         </p>
       ) : null}
     </article>
+  )
+}
+
+/** A card's asset rows, with one shared {@link AssetsNote} under them instead of a notice on each row. */
+function AssetList({
+  assets,
+  accesses,
+  className,
+}: {
+  assets: readonly ReleaseAssetView[]
+  accesses: readonly AssetAccess[]
+  className: string
+}): JSX.Element {
+  return (
+    <>
+      <ul
+        className={cn(className, 'divide-y divide-anvil-100 rounded-md border border-anvil-200 dark:divide-anvil-850 dark:border-anvil-800')}
+        aria-label="Assets"
+      >
+        {assets.map((a, i) => (
+          <AssetRow key={`${a.name}${a.sha256}`} asset={a} access={accesses[i]} notice={false} />
+        ))}
+      </ul>
+      <AssetsNote accesses={accesses} />
+    </>
   )
 }
 
@@ -299,6 +375,39 @@ function assetAccess(asset: ReleaseAssetView): AssetAccess {
   return linkable ? 'origin' : 'none'
 }
 
+/**
+ * One shared explanation per card instead of the same boilerplate on every asset row (L-50: "no
+ * SHA-256 is recorded … a maintainer fixes it" repeated 8 times per card). Only the two unhashed
+ * states and the unreachable state are folded here — `origin`'s per-row "not checked yet" line
+ * stays on each row: L-13's `import-release-fidelity.spec.ts` f2 and `markdown-render.spec.ts`
+ * md-4 both read it there, so deduping it needs a design that does not move it off the row.
+ * `browser`'s per-asset download progress also stays on its own row, where it belongs.
+ */
+function AssetsNote({ accesses }: { accesses: readonly AssetAccess[] }): JSX.Element | null {
+  const has = (a: AssetAccess): boolean => accesses.includes(a)
+  if (!has('unverified') && !has('unverifiable') && !has('none')) return null
+  return (
+    <ul className="mt-2 space-y-1 text-[12px]" aria-label="About these downloads">
+      {has('unverified') ? <AssetsNoteItem>{NOT_VERIFIED_YET}</AssetsNoteItem> : null}
+      {has('unverifiable') ? <AssetsNoteItem>{UNVERIFIABLE_ASSET}</AssetsNoteItem> : null}
+      {has('none') ? (
+        <AssetsNoteItem>
+          Some assets have no copy at an address a browser may download from (a public https URL, or an IPFS CID with a gateway). Use{' '}
+          <span className="font-mono">dg release download</span> with a storage profile for their host.
+        </AssetsNoteItem>
+      ) : null}
+    </ul>
+  )
+}
+
+function AssetsNoteItem({ children }: { children: ReactNode }): JSX.Element {
+  return (
+    <li className="flex items-start gap-1 text-caution-700 dark:text-caution-400">
+      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden /> <span>{children}</span>
+    </li>
+  )
+}
+
 type AssetState =
   | { readonly kind: 'idle' }
   | { readonly kind: 'working'; readonly progress: DownloadProgress | null }
@@ -306,9 +415,25 @@ type AssetState =
   | { readonly kind: 'mismatch'; readonly message: string }
   | { readonly kind: 'error'; readonly message: string }
 
-/** One asset of a release: how this page can offer it, and the download or its fallback. */
-export function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
+/**
+ * One asset of a release: how this page can offer it, and the download or its fallback.
+ * `access` lets a caller that already computed every row's access (ReleaseCard, to render one
+ * shared {@link AssetsNote}) skip recomputing it; standalone use computes it here. `notice`
+ * turns off this row's own copy of a fixed explanation {@link AssetsNote} already covers
+ * (ReleaseCard passes `false`); a standalone row (e.g. a test) keeps it, since there is then no
+ * card-level note to fall back on.
+ */
+export function AssetRow({
+  asset,
+  access: knownAccess,
+  notice = true,
+}: {
+  asset: ReleaseAssetView
+  access?: AssetAccess
+  notice?: boolean
+}): JSX.Element {
   const [state, setState] = useState<AssetState>({ kind: 'idle' })
+  const access = knownAccess ?? assetAccess(asset)
   const run = async (): Promise<void> => {
     setState({ kind: 'working', progress: null })
     try {
@@ -324,7 +449,6 @@ export function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
     }
   }
   const bad = state.kind === 'mismatch'
-  const access = assetAccess(asset)
   const unhashed = access === 'unverifiable' || access === 'unverified'
   return (
     <li
@@ -333,7 +457,10 @@ export function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
       className={cn('flex flex-wrap items-center gap-2 px-3 py-2 text-dense', bad && 'bg-danger/5')}
     >
       <FileArchive className={cn('h-4 w-4 shrink-0', bad ? 'text-danger-700 dark:text-danger-400' : 'text-anvil-500 dark:text-anvil-400')} aria-hidden />
-      <span className="min-w-0 flex-1 truncate font-mono">{asset.name}</span>
+      {/* L-07: 12 of 15 names clip at 1440 px, 16 of 16 clip on a phone, with no way to read the rest. */}
+      <span className="min-w-0 flex-1 truncate font-mono" title={asset.name}>
+        {asset.name}
+      </span>
       {asset.size !== null ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{formatBytes(asset.size)}</span> : null}
       {unhashed ? (
         <span className="text-[11px] font-medium text-caution-700 dark:text-caution-400">
@@ -374,23 +501,32 @@ export function AssetRow({ asset }: { asset: ReleaseAssetView }): JSX.Element {
           ) : null}
         </p>
       ) : access === 'none' ? (
-        <p role="status" className="basis-full text-[12px] text-caution-700 dark:text-caution-400">
-          <span className="inline-flex items-start gap-1">
-            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
-            <span>
-              No copy of this asset is at an address a browser may download from (a public https URL, or an IPFS CID with a gateway). Use{' '}
-              <span className="font-mono">dg release download</span> with a storage profile for its host.
+        // L-80's dedup applies here (a shared AssetsNote covers this when notice=false): unlike
+        // 'origin' below, no e2e spec pins this exact row to a status role or text (only L-13's
+        // md-4 and f2 pin the 'origin' catch-all), so it is safe to move to the card level.
+        notice ? (
+          <p role="status" className="basis-full text-[12px] text-caution-700 dark:text-caution-400">
+            <span className="inline-flex items-start gap-1">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+              <span>
+                No copy of this asset is at an address a browser may download from (a public https URL, or an IPFS CID with a gateway). Use{' '}
+                <span className="font-mono">dg release download</span> with a storage profile for its host.
+              </span>
             </span>
-          </span>
-        </p>
+          </p>
+        ) : null
       ) : unhashed ? (
-        <p role="status" className="basis-full text-[12px] text-caution-700 dark:text-caution-400">
-          <span className="inline-flex items-start gap-1">
-            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />{' '}
-            {access === 'unverified' ? NOT_VERIFIED_YET : UNVERIFIABLE_ASSET}
-          </span>
-        </p>
+        notice ? (
+          <p role="status" className="basis-full text-[12px] text-caution-700 dark:text-caution-400">
+            <span className="inline-flex items-start gap-1">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />{' '}
+              {access === 'unverified' ? NOT_VERIFIED_YET : UNVERIFIABLE_ASSET}
+            </span>
+          </p>
+        ) : null
       ) : (
+        // 'origin': kept unconditional (L-13, D-056) — import-release-fidelity.spec.ts f2 and
+        // markdown-render.spec.ts md-4 both pin this exact row's status to "not checked yet".
         <p role="status" className="basis-full text-[12px] text-anvil-500 dark:text-anvil-400">
           {urlHost(directDownloadUrls(asset)[0] ?? '')} doesn&apos;t let pages read its files, so the download comes straight from it and is not checked yet.
         </p>

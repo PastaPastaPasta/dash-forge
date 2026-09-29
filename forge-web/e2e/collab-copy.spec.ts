@@ -43,7 +43,7 @@ test('g17-1. a merged PR says what happened, with short branch names (L-37, D-10
   // The list names the base branch the same way.
   await page.goto(repoUrl('pulls'), { waitUntil: 'domcontentloaded' })
   await expectLanded(page, page.getByText(/Greet by name/).first())
-  await page.getByRole('button', { name: /^All$/i }).click()
+  await page.getByRole('tab', { name: /^All$/i }).click()
   await expect(page.getByText(/Document the fold rules/).first()).toBeVisible({ timeout: 60_000 })
   await expect(page.locator('main')).not.toContainText('into refs/heads/')
   await expect(page.locator('main')).toContainText('into main')

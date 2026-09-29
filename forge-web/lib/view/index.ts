@@ -40,8 +40,10 @@ export {
 } from './text-diff'
 export {
   INLINE_BLOB_MAX_BYTES,
+  diffTotals,
   loadFilePatch,
   modeString,
+  type DiffTotals,
   type FilePatch,
   type PatchPlaceholder,
 } from './file-diff'
@@ -129,7 +131,7 @@ export {
   type PrivateAccess,
   type RepoHome,
 } from './repo-view'
-export { namesFromDomains, prefetchDpnsNames, resolveDpnsName, resolveDpnsNames, seedDpnsNames } from './dpns'
+export { namesFromDomains, prefetchDpnsNames, resolveDpnsId, resolveDpnsName, resolveDpnsNames, seedDpnsNames } from './dpns'
 export {
   commitRootTree,
   findEntry,
@@ -144,6 +146,7 @@ export {
   findBranch,
   isDiverged,
   isLive,
+  matchesRefQuery,
   refParamFor,
   selectedTip,
   selectRef,
