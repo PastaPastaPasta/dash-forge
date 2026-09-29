@@ -24,7 +24,7 @@ import { repoSource } from './source'
 export interface PackManifest {
   /** SHA-256 of the pack, hex. */
   readonly packHash: string
-  /** 0 git pack | 1 objectLocator | 2 flatIndex. */
+  /** 0 git pack | 1 objectLocator | 2 flatIndex | 3 history index. */
   readonly kind: PackKind
   readonly sizeBytes: number
   readonly objectCount: number
@@ -33,7 +33,7 @@ export interface PackManifest {
   readonly storage: number
   /** External fetch URIs (empty when storage = platform). */
   readonly uris: readonly string[]
-  /** For flatIndex (kind 2): the tip commit oids it indexes. */
+  /** For flatIndex (kind 2): the tip it indexes; for a history index (kind 3), `[tip]` or `[tip, baseTip]`. */
   readonly tips: readonly string[]
   /** Pack hashes this manifest supersedes. */
   readonly supersedes: readonly string[]

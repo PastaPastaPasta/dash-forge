@@ -14,11 +14,12 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ROW_PX, scrollToRow, useRowWindow } from '@/hooks/use-row-window'
 import { Check, Download, FileText, Link2 } from 'lucide-react'
-import type { BrowseReader } from '@/lib/browse'
+import { MODE_TREE, type BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
+import { rootTreeOf, type PeeledTip } from '@/lib/view/tip'
+import type { RepoRef } from '@/lib/repo'
 import {
   blobDisplay,
-  commitRootTree,
   decodeTextBlob,
   findEntry,
   formatBytes,
@@ -43,8 +44,10 @@ import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/rep
 import { Oid } from '@/components/ui/oid'
 import { ScrollRegion } from '@/components/ui/scroll-region'
 import { Button } from '@/components/ui/button'
-import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
-import type { RepoAddress } from '@/hooks/use-query-param'
+import { EmptyState, LoadingBlock } from '@/components/ui/states'
+import { ReadErrorState, ResolvedTip } from '@/components/repo/resolved-tip'
+import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
+import { useRouter } from 'next/navigation'
 import { permalinkPath, pinnedHref, usePermalinkKey } from '@/components/repo/permalink'
 import { useCopy } from '@/hooks/use-copy'
 import { bytesToBase64 } from '@/lib/sdk/query'
@@ -56,14 +59,23 @@ interface BlobData {
   readonly text: string | null
 }
 
-async function loadBlob(reader: BrowseReader, tipOid: string, path: string): Promise<BlobData> {
-  const { tree } = await commitRootTree(reader, tipOid)
+/** A path that names a directory: the view sends it to the tree route (L-63). */
+class IsDirectory extends Error {}
+
+async function loadBlob(reader: BrowseReader, tip: PeeledTip, path: string): Promise<BlobData> {
+  // A tag of a blob is that file, whatever the path says.
+  if (tip.type === 'blob') {
+    const bytes = await readBlob(reader, tip.oid)
+    return { oid: tip.oid, bytes, text: decodeTextBlob(bytes) }
+  }
+  const tree = await rootTreeOf(reader, tip)
   const slash = path.lastIndexOf('/')
   const dir = slash === -1 ? '' : path.slice(0, slash)
   const name = slash === -1 ? path : path.slice(slash + 1)
   const entries = dir ? await treeAtPath(reader, tree, dir) : await readTree(reader, tree)
   const entry = findEntry(entries, name)
   if (!entry) throw new Error(`file not found: ${path}`)
+  if (entry.mode === MODE_TREE) throw new IsDirectory(path)
   const bytes = await readBlob(reader, entry.oid)
   return { oid: entry.oid, bytes, text: decodeTextBlob(bytes) }
 }
@@ -100,7 +112,11 @@ export function BlobContent({
       </div>
       <BrowseBoundary repo={home.repo} addr={addr}>
         {(reader, retry) => (
-          <BlobBody key={`${tipOid}:${path}`} reader={reader} retry={retry} tipOid={tipOid} path={path} addr={addr} privateRepo={home.repo.visibility === 'private'} />
+          <ResolvedTip reader={reader} retry={retry} repo={home.repo} tip={tipOid} pinned={selected.pinned !== undefined} name={selected.name} addr={addr} refParam={refParam} accepts="any" label="Reconstructing blob">
+            {(tip) => (
+              <BlobBody key={`${tip.oid}:${path}`} reader={reader} retry={retry} tip={tip} path={path} addr={addr} refParam={refParam} repo={home.repo} />
+            )}
+          </ResolvedTip>
         )}
       </BrowseBoundary>
     </div>
@@ -110,20 +126,32 @@ export function BlobContent({
 function BlobBody({
   reader,
   retry,
-  tipOid,
+  tip,
   path,
   addr,
-  privateRepo,
+  refParam,
+  repo,
 }: {
   reader: BrowseReader
   retry: () => void
-  tipOid: string
+  tip: PeeledTip
   path: string
   addr: RepoAddress
-  privateRepo: boolean
+  refParam: string
+  repo: RepoRef
 }): JSX.Element {
-  const { data, loading, error } = useAsync(() => loadBlob(reader, tipOid, path), [tipOid, path])
-  usePermalinkKey(pinnedHref(addr, 'blob', tipOid, path, privateRepo))
+  const { data, loading, error, cause } = useAsync(() => loadBlob(reader, tip, path), [tip.oid, path])
+  const router = useRouter()
+  const isDir = cause instanceof IsDirectory
+  // A directory's path opened as a file: show the directory, as GitHub does (L-63). Replaced, not
+  // pushed, so Back skips the file URL that only redirected.
+  const treeHref = isDir ? repoHref('/repo/tree', addr, { path, ...(refParam ? { ref: refParam } : {}) }) : null
+  useEffect(() => {
+    if (treeHref !== null) router.replace(treeHref)
+  }, [treeHref, router])
+  // Only a commit pins (`?ref=` takes commits): a tag of a tree or a blob keeps its name.
+  const tipOid = tip.type === 'commit' ? tip.oid : null
+  usePermalinkKey(tipOid === null ? null : pinnedHref(addr, 'blob', tipOid, path, repo.visibility === 'private'))
   const name = path.split('/').pop() ?? path
   const [renderLarge, setRenderLarge] = useState(false)
   // An image that is also text (SVG) can be read as code too, as on GitHub.
@@ -137,16 +165,16 @@ function BlobBody({
   const rawHref = useObjectUrl(shown?.kind === 'confirm-large' ? data?.bytes : undefined, 'text/plain;charset=utf-8')
   const imageHref = useImageUrl(data?.bytes, shown?.kind === 'image' ? shown.type : null)
 
-  if (loading) return <LoadingBlock label="Reconstructing blob" />
+  if (loading || isDir) return <LoadingBlock label={isDir ? 'Opening the directory' : 'Reconstructing blob'} />
   // A missing path is deterministic (common right after a ref switch) — no point retrying.
   if (error?.includes('file not found')) {
     return <EmptyState icon={FileText} title="File not found on this ref" body={`${path} does not exist here. Pick another branch or tag, or browse the tree.`} />
   }
-  if (error) return <ErrorState message={error} onRetry={retry} />
+  if (error) return <ReadErrorState cause={cause} retry={retry} addr={addr} repo={repo} />
   if (!data || !display) return <LoadingBlock />
 
-  // The link at this commit (null in the instant a private repo's vault locks).
-  const pinned = permalinkPath(addr, 'blob', tipOid, path, privateRepo)
+  // The link at this commit (null in the instant a private repo's vault locks, or with no commit).
+  const pinned = tipOid === null ? null : permalinkPath(addr, 'blob', tipOid, path, repo.visibility === 'private')
   const permalink = pinned === null ? null : `${typeof window === 'undefined' ? '' : window.location.origin}${pinned}`
 
   return (

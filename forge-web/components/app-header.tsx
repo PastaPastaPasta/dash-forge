@@ -10,7 +10,7 @@
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Bell, ChevronDown, Compass, GitFork, Hammer, LogOut, Plus, Search, Wallet } from 'lucide-react'
+import { Bell, ChevronDown, Compass, GitFork, Hammer, LogOut, Menu, Plus, Search, Settings, Wallet, X } from 'lucide-react'
 import { useAuth } from '@/contexts/auth-context'
 import { signInRequestOutcome, useUiStore } from '@/hooks/use-ui-store'
 import { useUnreadCount } from '@/hooks/use-inbox'
@@ -22,7 +22,7 @@ import { NetworkBadge } from '@/components/ui/network-badge'
 import { ACTIVE_NETWORK, DEFAULT_NETWORK } from '@/lib/constants'
 import { resolveAnyRepo } from '@/lib/repo'
 import { creditsToDash, ensureSdk } from '@/lib/sdk'
-import { errorMessage } from '@/lib/utils'
+import { cn, errorMessage } from '@/lib/utils'
 import type { DiscoveredRepo } from '@/lib/view/discovery'
 import { numberTargets, parseJump, resolveWord, wordTarget, type WordMatches } from '@/lib/view/jump'
 import { Author } from '@/components/author'
@@ -30,6 +30,8 @@ import { balanceToDash, dashToUsd } from '@/lib/view/format'
 import { FundsPill } from '@/components/funds-pill'
 import { consumePrehydrationIntent } from '@/lib/prehydration'
 import { isPageShortcut } from '@/lib/focus'
+import { bareRoute, pageTitle } from '@/lib/page-title'
+import { useDpnsName } from '@/hooks/use-dpns-name'
 
 /** The mirror guide (the `/mirror` wizard does not exist yet). */
 export const MIRROR_GUIDE_URL = 'https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/guides/mirror-a-github-repo.md'
@@ -77,6 +79,7 @@ export function AppHeader(): JSX.Element {
   return (
     <header className="sticky top-0 z-40 border-b border-anvil-200 bg-anvil-50/85 backdrop-blur dark:border-anvil-800 dark:bg-anvil-950/85">
       <div className="mx-auto flex h-14 max-w-[1280px] items-center gap-2 px-3 sm:gap-3 sm:px-6">
+        <NavDrawer signedIn={identity !== null} />
         <Link href="/" className="flex shrink-0 items-center gap-2 coarse:min-h-11 coarse:min-w-11" aria-label="Dash Forge home">
           <span className="flex h-7 w-7 items-center justify-center rounded-md bg-forge-500/15">
             <Hammer className="h-4 w-4 text-forge-500" aria-hidden />
@@ -118,8 +121,28 @@ export function AppHeader(): JSX.Element {
           <JumpBox compact />
         </Suspense>
       </div>
+      <Suspense fallback={null}>
+        <DocumentTitle />
+      </Suspense>
     </header>
   )
+}
+
+/**
+ * Keeps `document.title` in step with the route (L-59): the static export's `<title>` is the
+ * same on every page. A repo's or profile's owner id is shown by its DPNS name once resolved
+ * (one cached lookup, shared with the owner chip).
+ */
+function DocumentTitle(): null {
+  const pathname = usePathname()
+  const params = useSearchParams()
+  const owner = params.get('owner') ?? (pathname.startsWith('/u') ? params.get('name') : null) ?? ''
+  const name = useDpnsName(owner)
+  const title = pageTitle(pathname, params, name)
+  useEffect(() => {
+    document.title = title
+  }, [title])
+  return null
 }
 
 /**
@@ -323,6 +346,60 @@ function JumpBox({ compact = false }: { compact?: boolean }): JSX.Element {
   )
 }
 
+/**
+ * The site navigation below `lg`, where the header has no room for its links (L-57): a menu
+ * button that opens a drawer with Explore and the rest. A disclosure, like the other menus:
+ * Escape, an outside tap and following a link close it.
+ */
+function NavDrawer({ signedIn }: { signedIn: boolean }): JSX.Element {
+  const { open, setOpen, ref, trigger } = usePopover()
+  const pathname = usePathname()
+  // A navigation closes it (the header stays mounted across pages).
+  useEffect(() => setOpen(false), [pathname, setOpen])
+  const close = (): void => setOpen(false)
+  const item = (href: string, label: string, Icon: typeof Compass): JSX.Element => {
+    const current = bareRoute(pathname) === bareRoute(href)
+    return (
+      <Link key={href} href={href} className={cn(ITEM, current && 'bg-anvil-100 dark:bg-anvil-800')} aria-current={current ? 'page' : undefined} onClick={close}>
+        <Icon className="h-4 w-4 shrink-0 text-forge-500" aria-hidden /> {label}
+      </Link>
+    )
+  }
+  return (
+    <div ref={ref} className="lg:hidden">
+      <button
+        ref={trigger}
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        aria-controls="nav-drawer"
+        aria-label={open ? 'Close menu' : 'Open menu'}
+        data-testid="nav-drawer-toggle"
+        className="-ml-1 inline-flex h-8 w-8 items-center justify-center rounded-md text-anvil-700 hover:bg-anvil-100 coarse:h-11 coarse:w-11 dark:text-anvil-200 dark:hover:bg-anvil-800"
+      >
+        {open ? <X className="h-5 w-5" aria-hidden /> : <Menu className="h-5 w-5" aria-hidden />}
+      </button>
+      {open ? (
+        <nav
+          id="nav-drawer"
+          aria-label="Site"
+          data-testid="nav-drawer"
+          className="absolute inset-x-0 top-full z-50 max-h-[calc(100vh-3.5rem)] animate-fade-in overflow-y-auto border-b border-anvil-200 bg-white p-2 shadow-xl dark:border-anvil-800 dark:bg-anvil-900"
+        >
+          {item('/explore/', 'Explore', Compass)}
+          {ACTIVE_NETWORK.v2 !== null ? item('/new/', 'New repository', Plus) : null}
+          <a href={MIRROR_GUIDE_URL} target="_blank" rel="noopener noreferrer" className={ITEM} onClick={close}>
+            <GitFork className="h-4 w-4 shrink-0 text-forge-500" aria-hidden /> Mirror a GitHub repo (guide)
+          </a>
+          {signedIn ? item('/notifications/', 'Notifications', Bell) : null}
+          {signedIn ? item('/settings/', 'Settings & spend', Settings) : null}
+        </nav>
+      ) : null}
+    </div>
+  )
+}
+
+
 function profileHref(name: string): string {
   return `/u/?name=${encodeURIComponent(name)}`
 }
@@ -414,6 +491,9 @@ function usePopover(): { open: boolean; setOpen: (v: boolean) => void; ref: Reac
 }
 
 const MENU_ITEM = 'flex w-full items-start gap-2 rounded-md px-3 py-2 text-left text-dense hover:bg-anvil-100 focus-visible:bg-anvil-100 dark:hover:bg-anvil-800 dark:focus-visible:bg-anvil-800'
+
+/** A drawer row: a menu item sized for a finger. */
+const ITEM = cn(MENU_ITEM, 'items-center coarse:min-h-11')
 
 function NewMenu(): JSX.Element | null {
   const { open, setOpen, ref, trigger } = usePopover()

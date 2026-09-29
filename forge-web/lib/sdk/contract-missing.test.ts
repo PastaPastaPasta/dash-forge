@@ -10,7 +10,8 @@ vi.mock('./wasm-fetch', () => ({ compileWasm: () => Promise.resolve({}), onWasmP
 
 import { NETWORKS } from '../constants'
 import { isContractMissingError } from './contract-missing'
-import { EvoSdkService, isUnreachableError, type Connection } from './service'
+import { EvoSdkService, type Connection } from './service'
+import { isUnreachableError } from './unreachable'
 
 /**
  * What forge.dashhq.org showed after devnet moutai was reset to beta.6 (2026-09-28): a document

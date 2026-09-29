@@ -16,20 +16,24 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import { CheckCircle2, ChevronLeft, ChevronRight, CircleDot, MessageSquare, MessageSquarePlus, Pin, Search, X } from 'lucide-react'
+import { CheckCircle2, ChevronLeft, ChevronRight, CircleDot, Loader2, MessageSquare, MessageSquarePlus, Pin, Search, X } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { ARCHIVED_REASON, resolveDpnsName } from '@/lib/view'
+import { ARCHIVED_REASON, resolveDpnsId, resolveDpnsName } from '@/lib/view'
 import {
   DEFAULT_ISSUE_QUERY,
   ISSUE_PAGE_SIZE,
+  dpnsAuthorCandidates,
+  droppedQualifiersReason,
   emptyIssuesBody,
   hasFilters,
   issueQueryParams,
   parseIssueQuery,
   parseSearchText,
+  resolveSearchNames,
+  searchSubmitBase,
   searchText,
   unresolvedQualifiers,
   withQuery,
@@ -45,6 +49,8 @@ import { useIntent } from '@/hooks/use-intent'
 import { useFirstWrite } from '@/hooks/use-first-write'
 import { plural } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
+import { useDpnsName } from '@/hooks/use-dpns-name'
+import { ownerLabel } from '@/lib/page-title'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
@@ -54,6 +60,7 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { HiddenNote } from '@/components/repo/hidden-note'
 import { MirrorComposeHint, MirrorNote } from '@/components/repo/mirror-note'
+import { useRepoLinks } from '@/components/repo/target-href'
 import { AssigneeAvatars, LabelChip, MarkdownEditor } from '@/components/repo/issue-bits'
 import { IssueTemplatePicker } from '@/components/repo/issue-templates'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
@@ -86,7 +93,14 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
     for (const [k, v] of issueQueryParams(next)) q.append(k, v)
     router.replace(`${pathname}?${q.toString()}`, { scroll: false })
   }
-  const change = (c: Partial<IssueListQuery>): void => setQuery(withQuery(query, c))
+  // Review: a tab/filter/pager change must win over a name lookup already in flight (from a
+  // slower earlier submit, or the on-load `?q=` resolution) — bump the generation so that
+  // lookup's own `setQuery` on completion sees `stillWanted() === false` and is discarded instead
+  // of overwriting this change.
+  const change = (c: Partial<IssueListQuery>): void => {
+    submitIdRef.current++
+    setQuery(withQuery(query, c))
+  }
 
   // `me` needs a signed-in viewer; signed out, a `me` filter shows nothing rather than everything.
   const needsViewer = query.author === 'me' || query.assignee === 'me' || query.mentions
@@ -116,16 +130,84 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const searchValue = search ?? searchText(query)
   // Qualifiers typed (or linked in `?q=`) that could not be used: said, not silently dropped.
   const [dropped, setDropped] = useState<string[]>(() => unresolvedQualifiers(params.get('q') ?? ''))
-  const submitSearch = (e: FormEvent): void => {
-    e.preventDefault()
-    setDropped(unresolvedQualifiers(searchValue))
-    setQuery(parseSearchText(searchValue))
-    setSearch(null)
+  // Review: a name DPNS looked up and could not find (vs. one it never looked up at all) gets its
+  // own reason from droppedQualifiersReason; whether the SDK was not ready to look anything up.
+  const [notFoundNames, setNotFoundNames] = useState<readonly string[]>([])
+  const [notReady, setNotReady] = useState(false)
+  const [searching, setSearching] = useState(false)
+
+  // Review: an out-of-order submit (a slow lookup from an earlier submit settling after a faster,
+  // later one) must not clobber the later, still-wanted result — `submitIdRef` marks which call is
+  // current, and `mountedRef` stops any of them from touching state after unmount.
+  const submitIdRef = useRef(0)
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  // L-43: `author:`/`assignee:` used to accept only an identity id or `@me` — a typed or linked
+  // DPNS name silently matched nothing. Resolve any name-shaped values against DPNS first (a
+  // read, so this has to happen before the qualifiers are lifted into the query), then lift the
+  // (now id-bearing) text as before; a name DPNS does not know stays unresolved and gets reported
+  // same as it always did. `base` carries the query fields `text` itself does not encode (e.g. an
+  // initial `?q=` only carries what was linked, not `label=`/`sort=` from their own params).
+  const resolveAndApply = async (text: string, base: IssueListQuery = DEFAULT_ISSUE_QUERY): Promise<void> => {
+    const id = ++submitIdRef.current
+    const stillWanted = (): boolean => mountedRef.current && submitIdRef.current === id
+    // Honest about why a name-looking value was not looked up, instead of silently reporting it
+    // as just another unresolved qualifier with no explanation.
+    setNotReady(!sdk && dpnsAuthorCandidates(text).length > 0)
+    setSearching(true)
+    try {
+      const { text: resolvedText, notFound } = sdk
+        ? await resolveSearchNames(text, (name) => resolveDpnsId(sdk, name, network))
+        : { text, notFound: [] }
+      if (!stillWanted()) return
+      setDropped(unresolvedQualifiers(resolvedText))
+      setNotFoundNames(notFound)
+      setQuery({ ...parseSearchText(resolvedText, base), page: base.page })
+      // Only clear the box back to the URL-driven value if it still holds what was submitted —
+      // the viewer may already be typing the next search.
+      setSearch((current) => (current === text ? null : current))
+    } finally {
+      if (stillWanted()) setSearching(false)
+    }
   }
+
+  const submitSearch = async (e: FormEvent): Promise<void> => {
+    e.preventDefault()
+    // Only the state tab survives a plain submit; every other filter is exactly what the box's
+    // qualifiers say now (see searchSubmitBase) — so deleting `label:bug` from the box and hitting
+    // Enter actually removes that filter, instead of it silently surviving.
+    await resolveAndApply(searchValue, searchSubmitBase(query))
+  }
+
+  // A DPNS name linked in `?q=` (e.g. a shared search URL) goes through the same resolution step
+  // as a typed submit, once on load, so it is not silently dropped before the SDK is even ready.
+  // `pendingLinkedQRef` holds the linked `?q=` (capped like `parseIssueQuery` caps `q` itself, so
+  // a crafted link cannot force an unbounded number of DPNS reads) until it has been handled, then
+  // null.
+  const pendingLinkedQRef = useRef(params.get('q')?.slice(0, 200) ?? null)
+  useEffect(() => {
+    const raw = pendingLinkedQRef.current
+    if (raw === null) return
+    const hasNames = dpnsAuthorCandidates(raw).length > 0
+    if (hasNames && (!ready || !sdk)) return
+    pendingLinkedQRef.current = null
+    // Review: the viewer may already have typed and submitted a search, picked a state tab or
+    // changed a filter while the SDK was still connecting — the URL no longer holding exactly the
+    // linked `q` means that happened, so abandon the linked resolution instead of clobbering it.
+    if (hasNames && params.get('q')?.slice(0, 200) === raw) void resolveAndApply(raw, query)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once when the SDK becomes ready; pendingLinkedQRef guards re-entry.
+  }, [ready, sdk])
 
   const count = (n: number | null | undefined): string => (n == null ? '' : `${n} `)
   const empty = data !== null && data.rows.length === 0
   const filtered = hasFilters(query)
+  const SearchIcon = searching ? Loader2 : Search
 
   return (
     <div className="mx-auto max-w-4xl">
@@ -133,7 +215,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         <form onSubmit={submitSearch} className="flex min-w-[16rem] flex-1 items-center gap-2" role="search">
           <label htmlFor="issue-search" className="sr-only">Search issues</label>
           <div className="relative flex-1">
-            <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
+            <SearchIcon className={cn('pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-anvil-500 dark:text-anvil-400', searching && 'animate-spin')} aria-hidden />
             <Input id="issue-search" value={searchValue} onChange={(e) => setSearch(e.target.value)} className="pl-8 font-mono text-[13px]" placeholder="is:open label:bug author:@me" />
           </div>
         </form>
@@ -145,7 +227,8 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
       </div>
       {dropped.length > 0 ? (
         <p role="note" className="mb-3 text-[12px] text-caution-700 dark:text-caution-400" data-testid="issue-search-dropped">
-          Not applied: {dropped.join(' ')}. Authors and assignees take an identity id or @me.
+          Not applied: {dropped.join(' ')}. {droppedQualifiersReason(dropped, notFoundNames)}
+          {notReady ? ' Not connected yet, so a DPNS name could not be looked up — try again once connected.' : ''}
         </p>
       ) : null}
 
@@ -169,7 +252,10 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
       {filtered ? (
         <button
           type="button"
-          onClick={() => setQuery({ ...DEFAULT_ISSUE_QUERY, state: query.state })}
+          onClick={() => {
+            submitIdRef.current++
+            setQuery({ ...DEFAULT_ISSUE_QUERY, state: query.state })
+          }}
           className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400"
         >
           <X className="h-3.5 w-3.5" aria-hidden /> Clear filters
@@ -331,11 +417,24 @@ function StateTab({ active, onClick, children }: { active: boolean; onClick: () 
 /** Label filter: a multi-select of the repo's defined labels (every selected label must match). */
 function LabelFilter({ labels, selected, onChange }: { labels: readonly LabelDef[]; selected: readonly string[]; onChange: (l: string[]) => void }): JSX.Element {
   const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
   const names = [...new Set([...labels.filter((l) => !l.retired).map((l) => l.name), ...selected])]
   const byName = new Map(labels.map((l) => [l.name, l]))
+  const close = (): void => setOpen(false)
   return (
-    <div className="relative">
+    // L-72: a backdrop (outside click) and an Escape handler (bubbles up from the trigger or any
+    // option, whichever has focus) — this popover previously only ever toggled on the button.
+    <div
+      className="relative"
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape') return
+        e.preventDefault()
+        close()
+        triggerRef.current?.focus()
+      }}
+    >
       <button
+        ref={triggerRef}
         type="button"
         aria-expanded={open}
         aria-haspopup="listbox"
@@ -345,25 +444,28 @@ function LabelFilter({ labels, selected, onChange }: { labels: readonly LabelDef
         Label{selected.length ? ` (${selected.length})` : ''}
       </button>
       {open ? (
-        <div role="listbox" aria-label="Filter by label" aria-multiselectable className="absolute right-0 z-20 mt-1 max-h-72 w-60 overflow-auto rounded-md border border-anvil-200 bg-white p-1 shadow-lg dark:border-anvil-750 dark:bg-anvil-950">
-          {names.length === 0 ? <p className="px-2 py-1.5 text-dense text-anvil-500 dark:text-anvil-400">No labels defined.</p> : null}
-          {names.map((n) => {
-            const on = selected.includes(n)
-            return (
-              <button
-                key={n}
-                type="button"
-                role="option"
-                aria-selected={on}
-                onClick={() => onChange(on ? selected.filter((x) => x !== n) : [...selected, n])}
-                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-dense hover:bg-anvil-100 dark:hover:bg-anvil-850 coarse:min-h-11"
-              >
-                <input type="checkbox" readOnly checked={on} tabIndex={-1} aria-hidden className="accent-forge-600" />
-                <LabelChip name={n} def={byName.get(n)} />
-              </button>
-            )
-          })}
-        </div>
+        <>
+          <div className="fixed inset-0 z-10" aria-hidden onClick={close} />
+          <div role="listbox" aria-label="Filter by label" aria-multiselectable className="absolute right-0 z-20 mt-1 max-h-72 w-60 overflow-auto rounded-md border border-anvil-200 bg-white p-1 shadow-lg dark:border-anvil-750 dark:bg-anvil-950">
+            {names.length === 0 ? <p className="px-2 py-1.5 text-dense text-anvil-500 dark:text-anvil-400">No labels defined.</p> : null}
+            {names.map((n) => {
+              const on = selected.includes(n)
+              return (
+                <button
+                  key={n}
+                  type="button"
+                  role="option"
+                  aria-selected={on}
+                  onClick={() => onChange(on ? selected.filter((x) => x !== n) : [...selected, n])}
+                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-dense hover:bg-anvil-100 dark:hover:bg-anvil-850 coarse:min-h-11"
+                >
+                  <input type="checkbox" readOnly checked={on} tabIndex={-1} aria-hidden className="accent-forge-600" />
+                  <LabelChip name={n} def={byName.get(n)} />
+                </button>
+              )
+            })}
+          </div>
+        </>
       ) : null}
     </div>
   )
@@ -385,17 +487,58 @@ function PersonFilter({
 }): JSX.Element {
   const choice = value === null ? '' : value === 'me' || value === 'none' ? value : 'id'
   const [id, setId] = useState(choice === 'id' ? value ?? '' : '')
+  // L-42: `choice` only changes once a typed id is committed (blur/Enter), so picking "identity
+  // id…" from the select needs its own flag — otherwise the select has nothing new to show and
+  // snaps back to "anyone" with no input ever appearing.
+  const [editingId, setEditingId] = useState(choice === 'id')
   const selectId = `filter-${label.toLowerCase()}`
+  const idInputRef = useRef<HTMLInputElement>(null)
+  // Set by the select's own onChange, just before it flips `editingId` true, so the effect below
+  // only steals focus into the id box for that one user gesture — never for `value` arriving from
+  // outside (a reload, "Clear filters", or a submitted `author:<id>` qualifier resolving here).
+  const focusIdRef = useRef(false)
+
+  // `value` can change from outside this component's own commit path (a reload, "Clear filters",
+  // or a search-box `author:`/`assignee:` qualifier resolving to an id) — track id-entry mode off
+  // `value` itself, not just the select's own onChange, or the id box can vanish while the select
+  // still reads "identity id…" (or stay showing a stale one after an external reset).
+  useEffect(() => {
+    setEditingId(value !== null && value !== 'me' && value !== 'none')
+    if (value === null) setId('')
+    else if (value !== 'me' && value !== 'none') setId(value)
+    // `value` changing from outside is never the select's own gesture; drop a stale flag so a
+    // later, unrelated `editingId` transition can't steal focus for a gesture that already
+    // happened (or never did).
+    focusIdRef.current = false
+  }, [value])
+
+  useEffect(() => {
+    if (!editingId || !focusIdRef.current) return
+    focusIdRef.current = false
+    idInputRef.current?.focus()
+  }, [editingId])
+
+  const commitId = (): void => {
+    const next = id.trim() || null
+    if (next !== value) onChange(next)
+  }
+
   return (
     <span className="inline-flex items-center gap-1">
       <label htmlFor={selectId} className="text-dense text-anvil-600 dark:text-anvil-300">{label}</label>
       <select
         id={selectId}
-        value={choice}
+        value={editingId ? 'id' : choice}
         onChange={(e) => {
           const v = e.target.value
-          if (v === 'id') setId('')
-          else onChange(v === '' ? null : v)
+          if (v === 'id') {
+            focusIdRef.current = true
+            setEditingId(true)
+            if (choice !== 'id') setId('')
+          } else {
+            setEditingId(false)
+            onChange(v === '' ? null : v)
+          }
         }}
         className="rounded-md border border-anvil-300 bg-white px-2 py-1 text-dense dark:border-anvil-700 dark:bg-anvil-950 coarse:h-11"
       >
@@ -404,14 +547,15 @@ function PersonFilter({
         {allowNone ? <option value="none">nobody</option> : null}
         <option value="id">identity id…</option>
       </select>
-      {choice === 'id' || (choice === '' && id !== '') ? (
+      {editingId ? (
         <Input
+          ref={idInputRef}
           aria-label={`${label} identity id`}
           value={id}
           onChange={(e) => setId(e.target.value)}
-          onBlur={() => onChange(id.trim() === '' ? null : id.trim())}
+          onBlur={commitId}
           onKeyDown={(e) => {
-            if (e.key === 'Enter') onChange(id.trim() === '' ? null : id.trim())
+            if (e.key === 'Enter') commitId()
           }}
           className="h-7 w-44 py-0 font-mono text-[12px]"
           placeholder="base58 id"
@@ -463,6 +607,9 @@ function ComposeIssueDialog({
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
   const draft = useIntent()
+  const links = useRepoLinks(addr, home.description)
+  // The owner by name, not a raw identity id (L-73).
+  const ownerName = useDpnsName(repo.ownerId)
 
   // Whether this issue is the repo's (or the author's) first, for a tight preview (D-011).
   const first = useFirstWrite(() => issueFirsts(sdk!, repo, identity!), [open, repoKey(repo), identity ?? ''], open && sdk !== null && identity !== null)
@@ -477,7 +624,7 @@ function ComposeIssueDialog({
   }
 
   const submit = async (): Promise<void> => {
-    if (pending || bodyBytes > BODY_MAX || !guard.check(cost, 'collab')) return
+    if (pending || bodyBytes > BODY_MAX || !guard.check(cost, 'collab', 'open an issue')) return
     if (!sdk || !signer || title.trim() === '') return
     setPending(true)
     setError(null)
@@ -513,7 +660,7 @@ function ComposeIssueDialog({
       open={open}
       onClose={onClose}
       title="Open an issue"
-      description={`In ${addr.owner}/${addr.name}. Anyone can open one.`}
+      description={`In ${ownerLabel(addr.owner, ownerName)}/${addr.name}. Anyone can open one.`}
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={pending}>Cancel</Button>
@@ -541,7 +688,7 @@ function ComposeIssueDialog({
           value={body}
           onChange={setBody}
           placeholder="What happened, and how to reproduce it."
-          links={{ issueHref: (n) => repoHref('/repo/issue', addr, { number: String(n) }) }}
+          links={links}
         />
         <SealedLimit repo={repo} kind="issue" text={title.trim() + body} />
         <BodyCounter repo={repo} text={body} field="description" />

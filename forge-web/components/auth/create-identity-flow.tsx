@@ -25,7 +25,7 @@ import { ErrorBox, GroupNotice, useProtection } from '@/components/auth/protecti
 import { StepFailed, Waiting } from '@/components/auth/step-status'
 import { faucetUrl } from '@/components/top-up-sheet'
 import { ACTIVE_NETWORK } from '@/lib/constants'
-import { TYPICAL_WRITE_CREDITS } from '@/lib/sdk'
+import { PUSH_COST_DASH, dashRange, typicalIssueCredits } from '@/lib/sdk'
 import { creditsAsDash } from '@/lib/view/format'
 import { isAbort } from '@/lib/sdk/facade'
 import { PHASE_TEXT, STEP_MS, connectPlatform, loadSdkLibrary, type ConnectPhase } from '@/lib/auth/connect'
@@ -388,7 +388,7 @@ export function CreateIdentityFlow({ onDone }: { onDone: () => void }): JSX.Elem
     <div className="space-y-3" data-testid="fund-step">
       <p className="text-dense">
         Send at least <span className="font-mono">0.02 DASH</span> (0.05 suggested) to this address from any Dash wallet. It becomes your
-        Platform credits: about {creditsAsDash(TYPICAL_WRITE_CREDITS)} DASH per issue or push.
+        Platform credits: about {creditsAsDash(typicalIssueCredits())} DASH per issue, {dashRange(PUSH_COST_DASH.byo)} per push.
       </p>
       {address ? <Qr value={address} label={`Deposit address ${address}`} /> : null}
       {address ? <span data-testid="deposit-address" className="sr-only">{address}</span> : null}

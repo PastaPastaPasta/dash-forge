@@ -12,6 +12,7 @@ Task-oriented guides for using Dash Forge. For how it is built, see the [documen
 | [Storage on your home NAS](home-nas-storage.md) | run RustFS or Garage (or kubo) on a Synology, TrueNAS or Linux box, publish it safely with a Cloudflare Tunnel, and keep a second copy |
 | [Collaborating](collaborating.md) | add members, work with issues, pull requests, reviews, merges, releases and webhooks |
 | [CI and check runs](ci.md) | enrol a CI runner with a key that can only report check runs, report results with `dg ci report`, and see them on commits and PRs |
+| [Self-host a CI runner](self-host-runner.md) | run a repository's `.forge/workflows` on your own machine with `forge-runner` (nektos/act in Docker), safely |
 | [Identity and keys](identity-and-keys.md) | understand your identity and limited keys, back it up, recover it, and keep keys safe |
 | [What things cost](costs.md) | know what each action costs (measured), what comes back, and how to see it before you pay |
 | [Check that Forge isn't lying to you](verify-forge.md) | read the Verification card, verify proofs and hashes yourself, and run your own copy of the web app |
@@ -21,7 +22,7 @@ Also:
 - [FAQ](../FAQ.md): who hosts it, takedowns, moderation, mainnet timing, private repositories.
 - [Error codes](../errors.md): what every `[Exxx]` means and how to fix it.
 - [Installing](../INSTALL.md) and [building from source](../BUILDING.md).
-- [The Mirror Action's reference](../../action/README.md) and [running a relay](../../crates/forge-relay/README.md).
+- [The Mirror Action's reference](../../action/README.md), [the check action's](../../check-action/README.md) and [running a relay](../../crates/forge-relay/README.md).
 
 ## What "coming soon" means
 

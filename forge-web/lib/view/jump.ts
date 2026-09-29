@@ -10,6 +10,7 @@ import type { Network } from '../constants'
 import { DOC, repoSource, resolveOwner, type RepoRef } from '../repo'
 import { queryDocumentsWithProof } from '../sdk'
 import { reposNamed, type DiscoveredRepo } from './discovery'
+import { isIdentityId } from '../utils'
 
 export type Jump =
   | { readonly kind: 'repo'; readonly owner: string; readonly name: string; readonly number?: number }
@@ -24,8 +25,6 @@ const NUMBER = /^#(\d{1,10})$/
 const REPO = /^@?([^\s/#@]+)\/([^\s/#]+?)(?:#(\d{1,10}))?$/
 const PROFILE = /^@([^\s/#@]+)$/
 const WORD = /^([^\s/#@]+)$/
-/** A base58 identity id (32 bytes): a profile, never a repo name (those are lowercase). */
-const IDENTITY = /^[1-9A-HJ-NP-Za-km-z]{42,44}$/
 
 /** Parse what was typed. `inRepo`: the page is a repo page, so `#n` has a repo to mean. */
 export function parseJump(input: string, inRepo: boolean): Jump | null {
@@ -44,7 +43,7 @@ export function parseJump(input: string, inRepo: boolean): Jump | null {
   const p = PROFILE.exec(q)
   if (p) return { kind: 'profile', name: p[1] ?? '' }
   const w = WORD.exec(q)
-  if (w) return IDENTITY.test(q) ? { kind: 'profile', name: q } : { kind: 'word', word: w[1] ?? '' }
+  if (w) return isIdentityId(q) ? { kind: 'profile', name: q } : { kind: 'word', word: w[1] ?? '' }
   return { kind: 'invalid', message: 'type owner/name, @name, or #n inside a repo' }
 }
 

@@ -103,6 +103,25 @@ const ADVERSARIAL: readonly string[] = [
   '> a\u2028',
   '*\u2028*\u2028*',
   'a\rb\r# c\r',
+  // FG-2: nested lists and quotes, lazy lines, setext runs, footnotes, emoji.
+  '- '.repeat(MAX_LEN / 2),
+  '- a\n'.repeat(MAX_LEN / 8) + '  '.repeat(MAX_LEN / 4) + '- b',
+  Array.from({ length: 200 }, (_, k) => ' '.repeat(k * 2) + '- x').join('\n'),
+  Array.from({ length: 200 }, (_, k) => ' '.repeat(k * 2) + '- x\n').join('\n'),
+  '> a\nb\n'.repeat(MAX_LEN / 6),
+  '> - a\nb\n'.repeat(MAX_LEN / 8),
+  'a\n=\n'.repeat(MAX_LEN / 4),
+  'a\n'.repeat(MAX_LEN / 2) + '---',
+  '[^a]'.repeat(MAX_LEN / 5) + '\n\n[^a]: x',
+  '[^a]: [^a]\n'.repeat(MAX_LEN / 11),
+  Array.from({ length: 1000 }, (_, k) => `[^${k}]: [^${k + 1}]`).join('\n') + '\n\n[^0]',
+  '[^a]:\n' + '    x\n\n'.repeat(MAX_LEN / 8),
+  ':tada:'.repeat(MAX_LEN / 6),
+  ':'.repeat(MAX_LEN),
+  ':' + 'a'.repeat(MAX_LEN),
+  '1. ' + '   '.repeat(MAX_LEN / 3),
+  '- ```\n'.repeat(MAX_LEN / 6),
+  '> [!NOTE]\n'.repeat(MAX_LEN / 10),
   '['.repeat(MAX_LEN),
   '!['.repeat(MAX_LEN / 2),
   '[x'.repeat(MAX_LEN / 2),
@@ -144,6 +163,8 @@ const MIB_UNITS: readonly string[] = [
   '<div>\n\n', '<script>', '<!--', '[![a](b)](c) ', '[![', '[a][b] ', '[a]: x\n', '[a]\n', '\\*', '\\',
   '&amp;', '&#x', '&', 'a  \n', 'a\\\n', 'https://x.io/a." ', '<https://x.io>', '- [ ] a\n', '- [x] ',
   '<td>\n', '<table>\n<tr>\n<td>\n\n', '<pre>\n',
+  // FG-2: nesting, lazy lines, setext, footnotes, alerts, emoji.
+  '  - a\n', '- a\nb\n', '> a\nb\n', 'a\n=\n', 'a\n', '[^a]', '[^a]: b\n', '    x\n', ':tada:', ':', '> [!NOTE]\n', '1) a\n\n',
 ]
 
 describe('renderers terminate quickly on hostile input', () => {
@@ -200,6 +221,10 @@ describe('renderers terminate quickly on hostile input', () => {
   it('parseMarkdown: 1 MiB worst cases stay under budget', async () => {
     const calls = MIB_UNITS.map((u) => [fill(MIB, u)])
     calls.push(['a|b\n---|---\n' + fill(MIB, 'c|d\n')], ['a|b\n---|---\n' + fill(MIB, '|')], [fill(MIB, '- ', 'x')])
+    // FG-2 review: `[^` runs with a footnote defined (each `[^` once normalized ~1,000 chars),
+    // bare and inside nested spans.
+    const note = '\n\n[^' + 'a'.repeat(900) + ']: x'
+    calls.push([fill(MIB - 1000, '[^') + ']' + note], ['['.repeat(31) + fill(MIB - 2000, '[^') + ']' + '](x)'.repeat(31) + note], ['~~' + fill(MIB - 1000, '[^') + ']~~' + note])
     await expectFast(markdownUrl, 'parseMarkdown', calls, 'parseMarkdown 1 MiB', MIB_CALL_MS)
   }, 120_000)
 

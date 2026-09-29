@@ -8,14 +8,18 @@
 
 import { useSyncExternalStore } from 'react'
 import { repoFacts, subscribeRepoFacts, type RepoFacts } from '@/lib/view/repo-facts'
+import { peeledCommitOf } from '@/lib/view/tip'
 import type { LanguageStats } from '@/lib/view/languages'
 import { plural } from '@/lib/view/format'
 
-/** The facts known for this repo at this tip (unknown until the home has worked them out). */
+/**
+ * The facts known for this repo at this tip (unknown until the home has worked them out). The
+ * home keys them by the commit a tag peels to, so a tag's tip is peeled here too (L-01).
+ */
 export function useRepoFacts(repoKey: string, tipOid: string | null): RepoFacts {
   return useSyncExternalStore(
     subscribeRepoFacts,
-    () => repoFacts(repoKey, tipOid),
+    () => repoFacts(repoKey, peeledCommitOf(tipOid, repoKey)),
     () => repoFacts(repoKey, null),
   )
 }

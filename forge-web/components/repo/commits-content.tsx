@@ -17,6 +17,7 @@ import { historyWalker } from '@/lib/view/commit-log'
 import { logPage, PATH_WALK_CAP, type LogPage } from '@/lib/view/path-history'
 import { plural } from '@/lib/view/format'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
+import { ResolvedTip } from '@/components/repo/resolved-tip'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
 import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
 import { Oid } from '@/components/ui/oid'
@@ -61,7 +62,11 @@ export function CommitsContent({
         ) : null}
       </div>
       <BrowseBoundary repo={home.repo} addr={addr}>
-        {(reader, retry) => <LogBody key={`${tipOid}\0${path}`} reader={reader} retry={retry} tipOid={tipOid} addr={addr} path={path} />}
+        {(reader, retry) => (
+          <ResolvedTip reader={reader} retry={retry} repo={home.repo} tip={tipOid} pinned={selected.pinned !== undefined} name={selected.name} addr={addr} refParam={refParam} accepts="commit" label="Walking history">
+            {(tip) => <LogBody key={`${tip.oid}\0${path}`} reader={reader} retry={retry} tipOid={tip.oid} addr={addr} path={path} />}
+          </ResolvedTip>
+        )}
       </BrowseBoundary>
     </div>
   )

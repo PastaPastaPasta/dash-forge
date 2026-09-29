@@ -13,8 +13,8 @@ import { stopPrehydrationCatcher } from '@/lib/prehydration'
 installDapiFetchGate(NETWORKS[DEFAULT_NETWORK].dapiAddresses)
 
 /**
- * App-wide client providers. Dark mode is the primary theme (class-based, per style guide);
- * light mode fully supported. `next-themes` toggles the `class` on <html>. {@link AuthProvider}
+ * App-wide client providers. The theme follows the OS (`prefers-color-scheme`) until the user
+ * picks one, which is kept (owner decision on L-66); `next-themes` toggles the `class` on <html>. {@link AuthProvider}
  * wraps the headless identity session so `useAuth()` works anywhere in the tree; the local
  * notifications poller runs once under it.
  */
@@ -28,7 +28,7 @@ export function Providers({ children }: { children: ReactNode }): JSX.Element {
   return (
     <ThemeProvider
       attribute="class"
-      defaultTheme="dark"
+      defaultTheme="system"
       enableSystem
       disableTransitionOnChange
     >

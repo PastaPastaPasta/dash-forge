@@ -58,7 +58,7 @@ export function StarButton({
   const cost = trending ? sumPreviews([starCost, previewCreate('starBeat', {}, beatFirst)]) : starCost
   const refund = previewDelete('star')
   const onClick = (): void => {
-    if (!starred && !guard.check(cost, 'community')) return
+    if (!starred && !guard.check(cost, 'community', 'star this repo')) return
     if (!identity || !signer) return
     void star.toggle()
   }

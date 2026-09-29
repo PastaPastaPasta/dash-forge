@@ -21,6 +21,7 @@ import type { TransitionView } from '@/lib/repo'
 import { Author } from '@/components/author'
 import type { ReactNode } from 'react'
 import { MarkdownView, type MarkdownLinks } from '@/components/markdown-view'
+import { importedUrlOf } from '@/lib/view/ref-targets'
 import { EditedMarker } from '@/components/repo/issue-bits'
 import { Oid } from '@/components/ui/oid'
 
@@ -122,7 +123,6 @@ export function Timeline({
   links,
   renderComment,
   eventText,
-  commentLinks,
   trust = null,
 }: {
   items: readonly TimelineItem[]
@@ -132,8 +132,6 @@ export function Timeline({
   renderComment?: (item: Extract<TimelineItem, { kind: 'comment' }>) => CommentSlots
   /** A page's own wording for an event (the PR page counts the commits a head update pushed), or null. */
   eventText?: (e: Event) => string | null
-  /** A comment's own link targets (a mirrored comment's `#n` names the source's item), else `links`. */
-  commentLinks?: (comment: Extract<TimelineItem, { kind: 'comment' }>['comment']) => MarkdownLinks | undefined
   /** Who may mirror (`useMirrorTrust`): their imported comments and reviews show the original author and date. */
   trust?: ReadonlySet<string> | null
 }): JSX.Element {
@@ -156,7 +154,7 @@ export function Timeline({
               </div>
               {slot.body ?? (
                 <div className="px-4 py-3">
-                  <MarkdownView source={item.comment.body} links={commentLinks?.(item.comment) ?? links} />
+                  <MarkdownView source={item.comment.body} links={links} imported={importedUrlOf(item.comment.importedRaw)} />
                 </div>
               )}
             </div>
@@ -193,7 +191,7 @@ export function Timeline({
               </div>
               {review.body ? (
                 <div className="px-4 py-3">
-                  <MarkdownView source={review.body} links={links} />
+                  <MarkdownView source={review.body} links={links} imported={review.origin?.url ?? null} />
                 </div>
               ) : null}
               {item.comments.length > 0 || item.expected > 0 ? (
@@ -201,7 +199,7 @@ export function Timeline({
                   {item.comments.map((c) => (
                     <div key={c.id}>
                       {c.anchor ? <p className="mb-1 font-mono text-[12px] text-anvil-600 dark:text-anvil-400">{anchorLabel(c.anchor)}</p> : null}
-                      <MarkdownView source={c.body} links={links} />
+                      <MarkdownView source={c.body} links={links} imported={importedUrlOf(c.importedRaw)} />
                     </div>
                   ))}
                   {/* A submit writes the review first, then its comments: say when some have not landed (yet). */}

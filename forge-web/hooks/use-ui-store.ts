@@ -20,13 +20,25 @@ export type { TopUpReason }
  */
 export type LoginView = 'import' | 'create' | 'wallet' | 'grant' | 'unlock'
 
+/**
+ * What a signed-out click asked to do (L-62): the sheet says "Sign in to star this repo" and what
+ * that costs, rather than a generic prompt. `credits`: the write's preview (an upper bound).
+ */
+export interface SignInIntent {
+  /** Completes "Sign in to …": `star this repo`, `fork this repo`, `open an issue`. */
+  readonly action: string
+  readonly credits?: number
+}
+
 interface UiState {
   readonly loginOpen: boolean
   /** The view the sheet should open on, or null for its default (Unlock / the tiles). */
   readonly loginView: LoginView | null
   /** With `grant`: which Forge contract to ask the wallet for (captured when the sheet opens). */
   readonly loginGrantFor: ForgeContractKind | null
-  openLogin: (view?: LoginView, grantFor?: ForgeContractKind) => void
+  /** Why the sheet opened, when a write asked for it. */
+  readonly loginIntent: SignInIntent | null
+  openLogin: (view?: LoginView, grantFor?: ForgeContractKind, intent?: SignInIntent) => void
   closeLogin: () => void
   /**
    * "Sign in" was asked for while it was not yet known whether this browser's session resumes
@@ -55,8 +67,10 @@ export const useUiStore = create<UiState>((set) => ({
   loginOpen: false,
   loginView: null,
   loginGrantFor: null,
-  openLogin: (view, grantFor) => set({ loginOpen: true, loginView: view ?? null, loginGrantFor: grantFor ?? null }),
-  closeLogin: () => set({ loginOpen: false, loginView: null, loginGrantFor: null }),
+  loginIntent: null,
+  openLogin: (view, grantFor, intent) =>
+    set({ loginOpen: true, loginView: view ?? null, loginGrantFor: grantFor ?? null, loginIntent: intent ?? null }),
+  closeLogin: () => set({ loginOpen: false, loginView: null, loginGrantFor: null, loginIntent: null }),
   signInPending: false,
   requestSignIn: () => set({ signInPending: true }),
   clearSignInRequest: () => set({ signInPending: false }),

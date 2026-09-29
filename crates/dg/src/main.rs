@@ -357,7 +357,9 @@ pub enum RepoCommand {
     #[command(subcommand)]
     Policy(RepoPolicyCommand),
     /// Publish the browse index for stored packs that have none (a push that could not
-    /// publish it). Reads the packs and uploads only the index: nothing is stored again.
+    /// publish it), and the default branch's history index (last-commit column, exact commit
+    /// count) when its tip has none. Reads the packs and uploads only the indexes: nothing is
+    /// stored again.
     Reindex {
         /// The repository (`owner/name`).
         repo: String,
@@ -367,6 +369,10 @@ pub enum RepoCommand {
         /// storage.
         #[arg(long)]
         profile: Option<String>,
+        /// A local clone holding the default branch's tip, to compute the history index in.
+        /// Default: the current directory.
+        #[arg(long, value_name = "DIR")]
+        git_dir: Option<std::path::PathBuf>,
     },
     /// Mark a repo archived (maintainers): every Forge client refuses writes to it. A client
     /// rule; consensus still admits a member's writes.

@@ -17,6 +17,8 @@ import { Code2, GitPullRequest, MessageSquare, Tag } from 'lucide-react'
 import { activeRepoTab } from '@/components/repo/repo-header'
 import { repoHref, useParam, type RepoAddress } from '@/hooks/use-query-param'
 import { cn } from '@/lib/utils'
+import { ownerLabel } from '@/lib/page-title'
+import { TabStrip } from '@/components/ui/tab-strip'
 
 const TABS = [
   { key: 'code', label: 'Code', path: '/repo', icon: Code2, refAware: true },
@@ -25,29 +27,25 @@ const TABS = [
   { key: 'releases', label: 'Releases', path: '/repo/releases', icon: Tag, refAware: false },
 ] as const
 
-/** An address's owner as the URL gives it: an identity id shortened, a DPNS name as written. */
-function ownerLabel(owner: string): string {
-  // An identity id is 43-44 base58 characters; a DPNS name has a dot or is not base58.
-  return /^[1-9A-HJ-NP-Za-km-z]{43,44}$/.test(owner) ? `${owner.slice(0, 8)}…` : owner.replace(/^@/, '')
-}
-
 export function RepoShellHeader({ addr }: { addr: RepoAddress }): JSX.Element {
   const current = activeRepoTab(usePathname())
   const refParam = useParam('ref')
   return (
     <div className="mb-5" data-testid="repo-shell-header">
-      <div className="flex flex-wrap items-center gap-2 text-prose">
-        <span className="font-mono text-anvil-600 dark:text-anvil-300" title={addr.owner}>
-          {ownerLabel(addr.owner)}
+      {/* The page's h1 while it loads, one line on a phone (L-58, L-60), like the real header. */}
+      <h1 className="flex min-w-0 items-center gap-2 text-prose font-normal">
+        {/* The owner as the address gives it: an identity id shortened, a DPNS name as written. */}
+        <span className="min-w-0 max-w-[45vw] truncate font-mono text-anvil-600 dark:text-anvil-300 sm:max-w-none" title={addr.owner}>
+          {ownerLabel(addr.owner.replace(/^@/, ''))}
         </span>
         <span className="text-anvil-300 dark:text-anvil-600" aria-hidden>
           /
         </span>
-        <Link href={repoHref('/repo', addr)} className="font-mono font-semibold text-anvil-900 dark:text-anvil-50">
+        <Link href={repoHref('/repo', addr)} className="min-w-0 truncate font-mono font-semibold text-anvil-900 dark:text-anvil-50">
           {addr.name}
         </Link>
-      </div>
-      <nav aria-label="Repository" className="mt-4 flex gap-1 overflow-x-auto border-b border-anvil-200 dark:border-anvil-800">
+      </h1>
+      <TabStrip activeKey={current ?? ''} label="Repository" className="mt-4">
         {TABS.map((tab) => {
           const Icon = tab.icon
           const active = tab.key === current
@@ -66,7 +64,7 @@ export function RepoShellHeader({ addr }: { addr: RepoAddress }): JSX.Element {
             </Link>
           )
         })}
-      </nav>
+      </TabStrip>
     </div>
   )
 }

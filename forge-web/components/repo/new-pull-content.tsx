@@ -140,7 +140,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
 
   const submit = async (): Promise<void> => {
     if (pending || blocked || input === null) return
-    if (!guard.check(cost, 'collab')) return
+    if (!guard.check(cost, 'collab', 'open a pull request')) return
     if (!sdk || !signer) return
     setPending(true)
     setError(null)

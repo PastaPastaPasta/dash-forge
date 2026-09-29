@@ -16,6 +16,9 @@
 
 import { hexToBytes, bytesToHex } from '@noble/hashes/utils.js'
 
+import { isOffline } from '../online'
+import { isUnreachableError } from '../sdk/unreachable'
+
 import { FlatIndex } from './flatindex'
 import { type LocatorEntry, ObjectLocator, offsetKey, singleReadAdvised } from './locator'
 import {
@@ -102,8 +105,11 @@ export function readAheadSource(inner: PackSource, block = READ_AHEAD_BLOCK, max
         const bytes = await blockOf(packRef, index, size, copy)
         const from = start - index * block
         if (from + (end - start) <= bytes.length) return bytes.subarray(from, from + (end - start))
-      } catch {
-        /* the exact range may still be readable */
+      } catch (e) {
+        // Bad bytes, or nothing answering, fail the exact range the same way: asking again
+        // would only double the requests during an outage. Any other block failure (a block
+        // past what a mirror serves) may still leave the exact range readable.
+        if (isTransportError(e) || (e as { corrupt?: unknown } | null)?.corrupt === true) throw e
       }
       return inner.fetchRange(packRef, start, end, copy)
     },
@@ -126,6 +132,46 @@ export class MissingObjectError extends Error {
 
 /** What happened to one reconstructed object's hash check. */
 export type ObjectVerdict = 'verified' | 'unchecked' | 'failed'
+
+/**
+ * Why a read failed, for the trust panel (L-10):
+ *  - `transport`: the bytes never arrived because nothing answered (offline, a node or mirror
+ *    that did not respond). No verdict; the view reads again once the connection is back.
+ *  - `content`: bytes arrived and were wrong (a hash mismatch, bytes that do not decode, a
+ *    sealed pack that fails authentication). The object is reported `failed`.
+ *  - `other`: neither (a pack a partial clone never loaded, a locked private session, a
+ *    missing base). No verdict, and no automatic retry: it would fail the same way.
+ */
+export type ReadFailure = 'transport' | 'content' | 'other'
+
+/** Rejections from a {@link PackSource}, classified where they were caught. */
+const fetchFailures = new WeakMap<object, Exclude<ReadFailure, 'content'>>()
+
+/**
+ * A pack-source rejection that means nothing answered: marked `transport: true` by the source
+ * (an HTTP fetch that failed, a pack no mirror served), a network or node error by its message,
+ * or any rejection while the browser says it is offline. `corrupt: true` (bytes that arrived
+ * and failed a check) is never one.
+ */
+export function isTransportError(e: unknown): boolean {
+  const marks = typeof e === 'object' && e !== null ? (e as { transport?: unknown; corrupt?: unknown }) : {}
+  if (marks.corrupt === true) return false
+  return marks.transport === true || isUnreachableError(e) || isOffline()
+}
+
+/** How a failed read is classified ({@link ReadFailure}). */
+export function readFailure(e: unknown): ReadFailure {
+  if (e instanceof MissingObjectError) return 'other'
+  const tagged = typeof e === 'object' && e !== null ? fetchFailures.get(e) : undefined
+  return tagged ?? 'content'
+}
+
+/** `e` as thrown by a pack source, tagged: transport, content (`corrupt`), or other. */
+function tagFetchFailure(e: unknown): unknown {
+  const err = typeof e === 'object' && e !== null ? e : new Error(String(e))
+  if ((err as { corrupt?: unknown }).corrupt !== true) fetchFailures.set(err, isTransportError(err) ? 'transport' : 'other')
+  return err
+}
 
 /** Verdicts passed on every {@link BATCH_VERDICTS} objects (and on flush), not one by one. */
 const BATCH_VERDICTS = 500
@@ -159,6 +205,11 @@ export interface BrowseReaderOptions {
    * read). This is how the UI learns what was actually checked rather than assuming it.
    */
   readonly onObject?: (verdict: ObjectVerdict, count?: number) => void
+  /**
+   * Told when a read failed because nothing answered ({@link ReadFailure} `transport`): no
+   * verdict, but something on the page is missing until it is read again (L-10).
+   */
+  readonly onUnreachable?: () => void
   /**
    * The error for an OID the locator does not index. Defaults to `object not in locator`; a
    * reader built over an incomplete pack set supplies one that names what is missing.
@@ -316,6 +367,15 @@ export class BrowseReader {
     if (this.view !== undefined) this.opts.onRead?.(packRef, this.copyOf.get(packRef), this.view)
   }
 
+  /** Every pack read goes through here, so a rejection is classified ({@link readFailure}). */
+  private async fetchRange(packRef: number, start: number, end: number, copy: number | undefined): Promise<Uint8Array> {
+    try {
+      return await this.packs.fetchRange(packRef, start, end, copy)
+    } catch (e) {
+      throw tagFetchFailure(e)
+    }
+  }
+
   /**
    * A new reader over the same locator that reads the packs through {@link readAheadSource}:
    * for walks over many commits (merge-base search), which would otherwise pay one ranged read
@@ -331,6 +391,8 @@ export class BrowseReader {
       readAheadSource(this.packs),
       { ...this.opts, ...(verdicts ? { onObject: (v: ObjectVerdict) => verdicts.note(v) } : {}) },
       this.view,
+      // The same object memos: what the walk verified, the page does not read again.
+      this.caches,
     )
     return Object.assign(walker, { flush: () => verdicts?.flush() })
   }
@@ -359,9 +421,14 @@ export class BrowseReader {
     }
     if (entry === null) return null
     this.noteRead(entry.packRef)
-    const head = await this.packs.fetchRange(entry.packRef, entry.offset, Math.min(entry.offset + 16, entry.offset + entry.length), this.copyOf.get(entry.packRef))
+    const head = await this.fetchRange(entry.packRef, entry.offset, Math.min(entry.offset + 16, entry.offset + entry.length), this.copyOf.get(entry.packRef))
     const { type } = parseObjHeader(head, 0)
     return type === PACK_TYPE.OFS_DELTA || type === PACK_TYPE.REF_DELTA ? null : objTypeFromCode(type)
+  }
+
+  /** The error for an object this reader does not index ({@link ReadFailure} `other`). */
+  private missing(oidHex: string): Error {
+    return this.opts.missingObject?.(oidHex) ?? new MissingObjectError(`object not in locator: ${oidHex}`)
   }
 
   /** Look up a raw locator entry by OID hex (or null if absent). */
@@ -401,7 +468,7 @@ export class BrowseReader {
       if (fresher != null && fresher !== this && fresher.locate(oidHex) !== null) {
         return (this.view === undefined ? fresher : fresher.forView(this.view)).readBounded(oidHex, limits)
       }
-      throw this.opts.missingObject?.(oidHex) ?? new Error(`object not in locator: ${oidHex}`)
+      throw this.missing(oidHex)
     }
 
     const obj = await this.readVerified(entry, oidKey, limits)
@@ -418,25 +485,27 @@ export class BrowseReader {
   private async fetchEntry(e: LocatorEntry, maxBytes: number, copy: number | undefined): Promise<Uint8Array> {
     checkStoredLength(e, maxBytes)
     if (maxBytes !== Infinity && e.length > maxBytes * 1.001 + 64) {
-      const head = await this.packs.fetchRange(e.packRef, e.offset, e.offset + Math.min(ENTRY_HEAD_BYTES, e.length), copy)
+      const head = await this.fetchRange(e.packRef, e.offset, e.offset + Math.min(ENTRY_HEAD_BYTES, e.length), copy)
       const { type, size } = parseObjHeader(head, 0)
       // A delta's header gives the delta's own size, which is bounded differently.
       const isDelta = type === PACK_TYPE.OFS_DELTA || type === PACK_TYPE.REF_DELTA
       if (size > (isDelta ? deltaMaxBytes(maxBytes) : maxBytes)) throw new ObjectTooLargeError(size, maxBytes)
     }
-    return this.packs.fetchRange(e.packRef, e.offset, e.offset + e.length, copy)
+    return this.fetchRange(e.packRef, e.offset, e.offset + e.length, copy)
   }
 
   /**
    * Reconstruct `entry` and check its oid, trying the pack's copies in order: a copy whose
    * bytes do not reconstruct the object (a hostile or corrupt writer copy) is skipped for the
    * next one (`forge-v2.md` §4 "read the first copy that verifies"). A single-copy pack
-   * behaves exactly as before.
+   * behaves exactly as before. Reported `failed` only when some copy's bytes arrived and were
+   * wrong; any other failure throws with no verdict ({@link ReadFailure}).
    */
   private async readVerified(entry: LocatorEntry, oidKey: string, limits: Limits): Promise<GitObject> {
-    const copies = this.packs.copyCount?.(entry.packRef) ?? 1
+    const copies = Math.max(1, this.packs.copyCount?.(entry.packRef) ?? 1)
     const start = this.copyOf.get(entry.packRef) ?? 0
-    let lastErr: unknown
+    // The last error of each kind ({@link ReadFailure}) over the copies tried.
+    const failed: Partial<Record<ReadFailure, unknown>> = {}
     let tooLarge: ObjectTooLargeError | null = null
     for (let i = 0; i < copies; i++) {
       const copy = (start + i) % copies
@@ -447,7 +516,7 @@ export class BrowseReader {
         // Over the caller's limit in this copy: another copy may be the honest one (a
         // tampered header must not hide it), and if every copy says so, that is the answer.
         if (e instanceof ObjectTooLargeError) tooLarge = e
-        else lastErr = e
+        else failed[readFailure(e)] = e
         continue
       }
       if (this.opts.verify === false) {
@@ -460,11 +529,19 @@ export class BrowseReader {
         this.opts.onObject?.('verified')
         return obj
       }
-      lastErr = new Error(`oid mismatch: wanted ${oidKey}, reconstructed ${got}`)
+      failed.content = new Error(`oid mismatch: wanted ${oidKey}, reconstructed ${got}`)
     }
     if (tooLarge !== null) throw tooLarge
-    this.opts.onObject?.('failed')
-    throw lastErr
+    // Only bytes that arrived and were wrong are a content failure (L-10).
+    if ('content' in failed) {
+      this.opts.onObject?.('failed')
+      throw failed.content
+    }
+    if ('transport' in failed) {
+      this.opts.onUnreachable?.()
+      throw failed.transport
+    }
+    throw failed.other
   }
 
   /** The default path: memoized decode through the pack's current copy. */
@@ -480,7 +557,7 @@ export class BrowseReader {
   private async reconstructFrom(entry: LocatorEntry, copy: number, limits: Limits): Promise<GitObject> {
     if (singleReadAdvised(entry)) {
       const end = entry.offset + entry.length
-      const slice = await this.packs.fetchRange(entry.packRef, end - entry.deltaChainSpan, end, copy)
+      const slice = await this.fetchRange(entry.packRef, end - entry.deltaChainSpan, end, copy)
       return reconstructFromSpan(entry, slice, limits.item, limits.base)
     }
     const walk = async (e: LocatorEntry, limit: number): Promise<GitObject> => {
@@ -515,7 +592,7 @@ export class BrowseReader {
   private async readSpan(entry: LocatorEntry, limits: Limits): Promise<GitObject> {
     const end = entry.offset + entry.length
     const start = end - entry.deltaChainSpan
-    const slice = await this.packs.fetchRange(entry.packRef, start, end, this.copyOf.get(entry.packRef))
+    const slice = await this.fetchRange(entry.packRef, start, end, this.copyOf.get(entry.packRef))
     return reconstructFromSpan(entry, slice, limits.item, limits.base)
   }
 
@@ -573,7 +650,8 @@ export class BrowseReader {
 
   private async decodeByOid(oidHex: string, limits: Limits): Promise<GitObject> {
     const e = this.locator.lookup(hexToBytes(oidHex))
-    if (e === null) throw new Error(`REF_DELTA base not in locator: ${oidHex}`)
+    // A base this reader does not index: the same "missing object" as a direct read of it.
+    if (e === null) throw this.missing(oidHex)
     const base = await this.decodeEntry(e, limits.base, limits)
     this.noteRead(e.packRef)
     return base

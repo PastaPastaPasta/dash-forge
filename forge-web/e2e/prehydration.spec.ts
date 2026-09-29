@@ -98,6 +98,8 @@ test.describe('a tap before hydration', () => {
   })
 
   test('a button without an intent is not caught, and a tap after hydration works as before', async ({ page }) => {
+    // The theme follows the OS until chosen (L-66): pin the OS to dark, so a toggle would show.
+    await page.emulateMedia({ colorScheme: 'dark' })
     const release = await holdScripts(page)
     await page.goto('/', { waitUntil: 'domcontentloaded' })
     const theme = page.getByTestId('theme-toggle')
@@ -108,6 +110,7 @@ test.describe('a tap before hydration', () => {
     await expect(signInButton(page)).toBeVisible()
     await page.waitForLoadState('load')
     await expect(page.locator('html')).toHaveClass(/dark/)
+    expect(await page.evaluate(() => localStorage.getItem('theme'))).toBeNull()
     await expect(sheet(page)).toBeHidden()
     // After hydration the catcher is gone: a normal click works directly.
     await expect.poll(() => signInButton(page).evaluate((el) => Object.keys(el).some((k) => k.startsWith('__reactProps'))), { timeout: 60_000 }).toBe(true)

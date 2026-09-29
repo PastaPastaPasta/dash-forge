@@ -443,11 +443,31 @@ describe('startFallback with external-storage packs', () => {
       const p = blobPack(`gone ${i}\n`)
       return manifestFor(p.pack, 1, { storage: 1, uris: ['https://mirror.example/p'], createdAt: i + 1, documentId: `x${i}` })
     }
-    const calls = stubFetch({})
+    // The host answers, with an error: dead for the session.
+    const calls: string[] = []
+    vi.stubGlobal('fetch', (url: string) => {
+      calls.push(url)
+      return Promise.resolve(new Response('gone', { status: 404 }))
+    })
     const sdk = mockSdk(new Map([[platform.packHash, plat.pack]]))
     await startFallback(sdk, testRepo('fallback-dead'), [platform, dead(1)])
     await startFallback(sdk, testRepo('fallback-dead-2'), [platform, dead(2)])
     expect(calls).toEqual(['https://mirror.example/p'])
+  })
+
+  it('never marks a mirror dead when nothing answered: it is asked again once back online (M1, L-10)', async () => {
+    const plat = blobPack('base\n')
+    const platform = manifestFor(plat.pack, 1, { createdAt: 0, documentId: 'a' })
+    const ext = (i: number): PackManifest => {
+      const p = blobPack(`later ${i}\n`)
+      return manifestFor(p.pack, 1, { storage: 1, uris: ['https://mirror.example/q'], createdAt: i + 1, documentId: `y${i}` })
+    }
+    // Offline or refused: a network error, not an answer.
+    const calls = stubFetch({})
+    const sdk = mockSdk(new Map([[platform.packHash, plat.pack]]))
+    await startFallback(sdk, testRepo('fallback-net-1'), [platform, ext(1)])
+    await startFallback(sdk, testRepo('fallback-net-2'), [platform, ext(2)])
+    expect(calls).toEqual(['https://mirror.example/q', 'https://mirror.example/q'])
   })
 
   it('cancels external downloads when an on-chain pack fails', async () => {

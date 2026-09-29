@@ -28,21 +28,21 @@ import {
   readBlob,
   readTree,
   selectRef,
-  timeAgo,
   selectedTip,
   type TreeEntry,
 } from '@/lib/view'
+import { historyWalker } from '@/lib/view/commit-log'
 import {
-  countCommits,
-  historyWalker,
-  LAST_COMMIT_WALK,
-  walkCommitColumn,
-  type LastCommit,
-  type LastCommitColumn,
-  type WalkOptions,
-} from '@/lib/view/commit-log'
+  CommitCell,
+  commitCountLabel,
+  commitCountTitle,
+  countWithHistory,
+  SearchOlderHistory,
+  useLastCommits,
+} from '@/components/repo/commit-column'
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
+import { ResolvedTip } from '@/components/repo/resolved-tip'
 import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
 import { PackUnavailableError, unavailableOf } from '@/lib/view/browse-source'
 import { FileList } from '@/components/repo/file-list'
@@ -80,28 +80,6 @@ async function loadReadme(reader: BrowseReader, entries: readonly TreeEntry[]): 
   }
 }
 
-const WALKING: LastCommitColumn = { found: new Map(), done: false, failed: false }
-
-/** The root listing's commit column ({@link walkCommitColumn}), walked again for a new tip or listing. */
-function useLastCommits(
-  reader: BrowseReader,
-  walker: NonNullable<WalkOptions['walker']>,
-  tipOid: string,
-  names: readonly string[] | null,
-): LastCommitColumn {
-  const [state, setState] = useState<LastCommitColumn & { readonly key: string }>({ key: '', ...WALKING })
-  const key = names === null ? '' : `${tipOid}\0${names.join('\0')}`
-  useEffect(() => {
-    if (names === null) return
-    const stop = new AbortController()
-    void walkCommitColumn(reader, tipOid, names, (column) => setState({ key, ...column }), { walker, signal: stop.signal })
-    return () => stop.abort()
-    // `key` covers `tipOid` and `names`.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reader, walker, key])
-  return state.key === key ? state : WALKING
-}
-
 export function RepoHomeContent({
   home,
   addr,
@@ -128,7 +106,11 @@ export function RepoHomeContent({
   return (
     <BrowseBoundary repo={home.repo} addr={addr}>
       {(reader, retry) => (
-        <RootBody reader={reader} retry={retry} tipOid={tipOid} home={home} addr={addr} selected={selected} refParam={refParam} />
+        // An annotated tag (a release) is peeled to its commit first (L-01): the listing, the
+        // commit count and the commit column all key on the commit.
+        <ResolvedTip reader={reader} retry={retry} repo={home.repo} tip={tipOid} pinned={selected.pinned !== undefined} name={selected.name} addr={addr} refParam={refParam} accepts="commit" label="Reading root tree">
+          {(tip) => <RootBody reader={reader} retry={retry} tipOid={tip.oid} home={home} addr={addr} selected={selected} refParam={refParam} />}
+        </ResolvedTip>
       )}
     </BrowseBoundary>
   )
@@ -162,9 +144,9 @@ function RootBody({
   // Keyed to the tip too: a new tip's walk starts with an empty read-ahead cache.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const walker = useMemo(() => historyWalker(reader), [reader, tipOid])
-  const lastCommits = useLastCommits(reader, walker, tipOid, names)
+  const lastCommits = useLastCommits(reader, tipOid, '', names, walker)
   const commits = useAsync(
-    (signal) => countCommits(reader, tipOid, HOME_COMMIT_COUNT_CAP, { walker, signal }),
+    (signal) => countWithHistory(reader, tipOid, HOME_COMMIT_COUNT_CAP, { walker, signal }),
     [tipOid],
     { enabled: data !== null },
   )
@@ -199,9 +181,10 @@ function RootBody({
           href={commitsHref}
           className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-anvil-700 hover:bg-anvil-100 coarse:min-h-11 dark:text-anvil-200 dark:hover:bg-anvil-800"
           data-testid="commit-count"
+          title={commitCountTitle(commits.data)}
         >
           <GitCommit className="h-3.5 w-3.5" aria-hidden />
-          {commits.data ? plural(commits.data.capped ? `${commits.data.count}+` : commits.data.count, 'commit') : 'Commits'}
+          {commitCountLabel(commits.data)}
         </Link>
         <Oid value={tipOid} />
         <GoToFile reader={reader} repoKey={key} tipOid={tipOid} rootTree={data.tree} addr={addr} refParam={refParam} />
@@ -212,10 +195,9 @@ function RootBody({
         addr={addr}
         basePath=""
         refParam={refParam}
-        commitColumn={(name) => (
-          <CommitCell commit={lastCommits.found.get(name)} done={lastCommits.done} failed={lastCommits.failed} addr={addr} />
-        )}
+        commitColumn={(name) => <CommitCell commit={lastCommits.found.get(name)} column={lastCommits} addr={addr} />}
       />
+      <SearchOlderHistory column={lastCommits} />
 
       {readme.data ? (
         <section aria-label="README" className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
@@ -237,46 +219,6 @@ function RootBody({
         <LoadingBlock label="Reading README" />
       ) : null}
     </div>
-  )
-}
-
-/** What a commit cell with no commit says, and its tooltip. */
-function missingCommitLabel(done: boolean, failed: boolean): [text: string, title: string] {
-  if (!done) return ['…', 'Finding the last commit that changed this']
-  if (failed) return ['not loaded', 'The commit history could not be read']
-  return [`older than ${LAST_COMMIT_WALK} commits`, `Not changed in the last ${LAST_COMMIT_WALK} commits; older history is not searched here`]
-}
-
-function CommitCell({
-  commit,
-  done,
-  failed,
-  addr,
-}: {
-  commit: LastCommit | undefined
-  /** The walk has stopped: no commit now means none in the walked window. */
-  done: boolean
-  failed: boolean
-  addr: RepoAddress
-}): JSX.Element {
-  if (commit === undefined) {
-    const [text, title] = missingCommitLabel(done, failed)
-    return (
-      <span className="truncate text-anvil-500 dark:text-anvil-400" title={title} data-testid="commit-cell-pending">
-        {text}
-      </span>
-    )
-  }
-  return (
-    <>
-      <Link
-        href={repoHref('/repo/commit', addr, { oid: commit.oid })}
-        className="min-w-0 flex-1 truncate text-anvil-600 hover:text-forge-800 coarse:-my-3 coarse:py-3 dark:text-anvil-300 dark:hover:text-forge-400"
-      >
-        {commit.subject || '(no message)'}
-      </Link>
-      <span className="shrink-0 tabular-nums text-anvil-500 dark:text-anvil-400">{timeAgo(commit.when)}</span>
-    </>
   )
 }
 

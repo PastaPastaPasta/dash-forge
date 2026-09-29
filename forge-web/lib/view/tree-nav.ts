@@ -9,7 +9,7 @@
 
 import type { BrowseReader, GitObject, LocatorEntry, ReadObjectOptions } from '../browse'
 import { MODE_TREE, ObjectTooLargeError } from '../browse'
-import { commitSubject, parseCommit, parseTree, type CommitObject, type TreeEntry } from './git-objects'
+import { commitSubject, MalformedObjectError, parseCommit, parseTag, parseTree, type CommitObject, type TagObject, type TreeEntry } from './git-objects'
 
 /**
  * The slice of {@link BrowseReader} object reads need. `locate` is optional so a test double
@@ -19,6 +19,9 @@ import { commitSubject, parseCommit, parseTree, type CommitObject, type TreeEntr
 export interface ObjectReader {
   readObject(oidHex: string, options?: ReadObjectOptions): Promise<GitObject>
   locate?(oidHex: string): LocatorEntry | null
+  /** An object's type from its entry header, or null for a delta entry ({@link BrowseReader.objectType}). */
+  objectType?(oidHex: string): Promise<GitObject['type'] | null>
+
   /**
    * A new reader of the same objects with block read-ahead, for one walk over many commits
    * ({@link BrowseReader.forHistoryWalk}); `flush` passes on its batched hash-check verdicts.
@@ -28,11 +31,99 @@ export interface ObjectReader {
   readonly memoScope?: object
 }
 
+/**
+ * An object of the wrong type where a commit, tree or blob was expected: permanent (the object
+ * is hash-checked, so reading it again gives the same answer), never worth a "Try again".
+ */
+export class ObjectTypeError extends Error {
+  readonly oid: string
+  readonly actual: GitObject['type']
+
+  constructor(oid: string, actual: GitObject['type'], expected: GitObject['type']) {
+    super(`${oid.slice(0, 8)} is a ${actual}, not a ${expected}`)
+    this.name = 'ObjectTypeError'
+    this.oid = oid
+    this.actual = actual
+  }
+}
+
 /** Read a commit object, failing clearly when the oid names something else. */
 export async function readCommit(reader: ObjectReader, commitOid: string): Promise<CommitObject> {
   const obj = await reader.readObject(commitOid)
-  if (obj.type !== 'commit') throw new Error(`${commitOid.slice(0, 8)} is not a commit`)
+  if (obj.type !== 'commit') throw new ObjectTypeError(commitOid, obj.type, 'commit')
   return parseCommit(obj.bytes)
+}
+
+/**
+ * Tags followed before giving up. git sets no limit (a cycle is impossible: each tag's id hashes
+ * the id it names), but a hostile push can chain many; real repos nest one or two at most.
+ */
+export const TAG_PEEL_MAX = 16
+
+/** What an object peels to (`git rev-parse <oid>^{}`). */
+export interface Peeled {
+  /** The first object that is not a tag, following annotated tags from the one named. */
+  readonly oid: string
+  /** Its type: a commit, almost always; a tree or a blob for a tag of one. */
+  readonly type: Exclude<GitObject['type'], 'tag'>
+  /** The annotated tags followed to reach it, outermost first (empty when none were). */
+  readonly tags: readonly TagObject[]
+}
+
+/**
+ * The most {@link peel} reads of one object. Tags and commits are far smaller; an object over it
+ * is only asked its type (a tag of a large tree or blob costs a few header bytes, not the object).
+ */
+const PEEL_READ_MAX = 256 * 1024
+
+/**
+ * An object for {@link peel}: its bytes when it is small enough to be a tag (the read of a commit
+ * is the one its view makes next, then answered from the reader's memo), else only its type.
+ */
+async function readForPeel(reader: ObjectReader, oid: string): Promise<GitObject | { readonly type: GitObject['type']; readonly bytes: null }> {
+  try {
+    return await reader.readObject(oid, { maxBytes: PEEL_READ_MAX })
+  } catch (e) {
+    if (!(e instanceof ObjectTooLargeError)) throw e
+    // Too large to be a tag: its type, from its entry header (a delta's is its base's: read it).
+    const type = (await reader.objectType?.(oid)) ?? (await reader.readObject(oid)).type
+    return { type, bytes: null }
+  }
+}
+
+/**
+ * Peel `oid`: a commit, tree or blob is itself, and an annotated tag is followed to what it names
+ * (a tag of a tag too). Costs one object read per tag followed. The read of the object it ends on
+ * is the one its caller makes next anyway, which the reader then answers from its memo; an object
+ * too large to be a tag is only asked its type ({@link PEEL_READ_MAX}).
+ *
+ * `verify: false` is for listings of many tags: it stops at a tag that declares its target a
+ * commit and trusts that, instead of reading the commit (the commit page it links to checks it).
+ */
+export async function peel(reader: ObjectReader, oid: string, { verify = true }: { readonly verify?: boolean } = {}): Promise<Peeled> {
+  const tags: TagObject[] = []
+  let at = oid.toLowerCase()
+  for (let depth = 0; depth <= TAG_PEEL_MAX; depth++) {
+    const obj = await readForPeel(reader, at)
+    if (obj.type !== 'tag') return { oid: at, type: obj.type, tags }
+    if (obj.bytes === null) throw new MalformedObjectError(at, `a tag over ${PEEL_READ_MAX} bytes`)
+    const tag = parseTag(obj.bytes)
+    if (tag === null) throw new MalformedObjectError(at, 'a tag without an object and type header')
+    tags.push(tag)
+    if (!verify && tag.type === 'commit') return { oid: tag.object, type: 'commit', tags }
+    at = tag.object
+  }
+  throw new MalformedObjectError(oid, `more than ${TAG_PEEL_MAX} nested tags`)
+}
+
+/**
+ * {@link peel} to a commit (`git rev-parse <oid>^{commit}`). A tree or a blob, named directly or
+ * by a tag, fails with {@link ObjectTypeError}, which carries its type.
+ */
+export async function peelToCommit(reader: ObjectReader, oid: string): Promise<Peeled> {
+  const peeled = await peel(reader, oid)
+  if (peeled.type !== 'commit') throw new ObjectTypeError(peeled.oid, peeled.type, 'commit')
+  return peeled
 }
 
 /** Resolve a commit's root tree oid. */
@@ -44,7 +135,7 @@ export async function commitRootTree(reader: ObjectReader, commitOid: string): P
 /** Read a tree object's entries by tree oid. */
 export async function readTree(reader: ObjectReader, treeOid: string): Promise<TreeEntry[]> {
   const obj = await reader.readObject(treeOid)
-  if (obj.type !== 'tree') throw new Error(`${treeOid.slice(0, 8)} is not a tree`)
+  if (obj.type !== 'tree') throw new ObjectTypeError(treeOid, obj.type, 'tree')
   return parseTree(obj.bytes)
 }
 
@@ -90,7 +181,7 @@ export function knownMinSize(reader: ObjectReader, oid: string): number | null {
  */
 export async function readBlob(reader: ObjectReader, blobOid: string, maxBytes = Infinity): Promise<Uint8Array> {
   const obj = await reader.readObject(blobOid, { maxBytes })
-  if (obj.type !== 'blob') throw new Error(`${blobOid.slice(0, 8)} is not a blob`)
+  if (obj.type !== 'blob') throw new ObjectTypeError(blobOid, obj.type, 'blob')
   if (obj.bytes.length > maxBytes) throw new ObjectTooLargeError(obj.bytes.length, maxBytes)
   return obj.bytes
 }

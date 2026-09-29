@@ -249,6 +249,8 @@ export const PACK_KIND = {
   GIT_PACK: 0,
   OBJECT_LOCATOR: 1,
   FLAT_INDEX: 2,
+  /** The history index: each path's last change and the commit count of a tip. */
+  HISTORY_INDEX: 3,
 } as const
 export type PackKind = (typeof PACK_KIND)[keyof typeof PACK_KIND]
 

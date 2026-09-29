@@ -3,7 +3,7 @@
 /**
  * The Verification card (`ux-dx-spec.md` §6) — the signature element on every repo view.
  *
- * Collapsed, one line: `Verified · refs by proof · 214 objects by hash · from r2.dev`.
+ * Collapsed, one line: `Verified · refs by proof · 214 objects checked this session · from r2.dev`.
  * Expanded, four plain sentences, each with its state (icon + word + color, never color
  * alone): chain data, branch tip, file contents, where the bytes came from. Every state comes
  * from {@link deriveTrust} over checks that actually ran this session (roadmap invariant 4),
@@ -11,7 +11,7 @@
  * app itself.
  */
 
-import { useId, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { ChevronRight, Loader2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { shortOid, timeAgo, type TrustLink, type TrustReport } from '@/lib/view'
@@ -141,11 +141,27 @@ export function TrustPanel({ report }: { report: TrustReport }): JSX.Element {
             <Row title="Where the bytes came from" link={report.source} />
           </ol>
           <p className="rounded border border-anvil-200 bg-white px-2.5 py-2 text-[11px] leading-snug text-anvil-500 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-400">
-            This app is served by GitHub Pages. If you don&apos;t trust that, pin the IPFS build or use the CLI, which
-            needs no website.
+            <HostingNote />
           </p>
         </div>
       ) : null}
     </section>
+  )
+}
+
+/**
+ * Who served this app's code (L-81): the checks above cover the data, not the code doing the
+ * checking. forge.dashhq.org is GitHub Pages behind Cloudflare, which can rewrite the HTML.
+ */
+function HostingNote(): JSX.Element {
+  const [host, setHost] = useState<string | null>(null)
+  useEffect(() => setHost(window.location.host), [])
+  const who =
+    host === 'forge.dashhq.org' ? 'forge.dashhq.org (GitHub Pages, behind Cloudflare)' : host === null ? 'the site you opened' : host
+  return (
+    <>
+      This app&apos;s code comes from {who}, and you trust that host for the code itself. If you don&apos;t, pin the IPFS build or
+      use the CLI, which needs no website.
+    </>
   )
 }

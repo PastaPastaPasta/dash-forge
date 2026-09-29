@@ -5,7 +5,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { describe, expect, it } from 'vitest'
 
 import { AssetHashMismatchError, browserReadable, downloadVerifiedAsset } from '../view/release-download'
-import { UNVERIFIABLE_ASSET, assetVerifiable, isPrerelease, latestRelease, newestPerTag, parseReleaseAssets, type ReleaseView } from './releases'
+import { UNVERIFIABLE_ASSET, assetVerifiable, compareRefNames, compareTagNames, isPrerelease, latestRelease, newestPerTag, parseReleaseAssets, releaseOrder, type ReleaseView } from './releases'
 
 const H = 'ab'.repeat(32)
 
@@ -41,21 +41,22 @@ describe('parseReleaseAssets', () => {
   })
 })
 
+const rel = (tag: string, at: number, id: string): ReleaseView => ({
+  id,
+  tagName: tag,
+  name: '',
+  notes: '',
+  yanked: false,
+  assets: [],
+  badAssets: 0,
+  notesBody: '',
+  omitted: null,
+  published: null,
+  publisher: 'p',
+  createdAt: at,
+})
+
 describe('newestPerTag', () => {
-  const rel = (tag: string, at: number, id: string): ReleaseView => ({
-    id,
-    tagName: tag,
-    name: '',
-    notes: '',
-    yanked: false,
-    assets: [],
-    badAssets: 0,
-    notesBody: '',
-    omitted: null,
-    published: null,
-    publisher: 'p',
-    createdAt: at,
-  })
   it('keeps the newest revision per tag and lists the rest as previous', () => {
     const { current, previous } = newestPerTag([rel('v1', 1, 'a'), rel('v1', 3, 'b'), rel('v2', 2, 'c'), rel('v1', 3, 'd')])
     expect(current.map((r) => r.id)).toEqual(['c', 'd'])
@@ -89,6 +90,52 @@ describe('newestPerTag', () => {
     const list = newestPerTag(['15.2.0', '14.1.1', '0.10.0', '0.0.2'].map((t, i) => rel(t, i + 1, t)))
     expect(latestRelease(list)?.tagName).toBe('15.2.0')
     expect(list.current.map((r) => r.tagName)).toEqual(['15.2.0', '14.1.1', '0.10.0', '0.0.2'])
+  })
+})
+
+// L-13/L-53: the ref switcher and the tags/branches pages sort by this instead of localeCompare,
+// so a 575-tag repo shows v23.1.10 above v23.1.8 rather than between v23.1.1 and v23.1.2.
+describe('compareTagNames', () => {
+  it('sorts numeric versions highest first, not lexicographically', () => {
+    const names = ['v23.1.2', 'v23.1.10', 'v23.1.8', 'v23.1.9']
+    expect([...names].sort(compareTagNames)).toEqual(['v23.1.10', 'v23.1.9', 'v23.1.8', 'v23.1.2'])
+  })
+
+  it('puts every versioned name ahead of every unversioned one, each internally sorted', () => {
+    const names = ['nightly', 'v1.2.0', 'edge', 'v1.10.0', 'main']
+    expect([...names].sort(compareTagNames)).toEqual(['v1.10.0', 'v1.2.0', 'edge', 'main', 'nightly'])
+  })
+
+  it('breaks a tie between two equal versions by natural-sorting the full name', () => {
+    const names = ['zeta-v1.0.0', 'alpha-v1.0.0']
+    expect([...names].sort(compareTagNames)).toEqual(['alpha-v1.0.0', 'zeta-v1.0.0'])
+  })
+
+  // Both compareTagNames (name-only, for the ref switcher and tags/branches pages) and
+  // releaseOrder (ReleaseView-based, for the releases page) share the same version comparison
+  // (versionDesc); they only differ in how they break a tie between two equal versions
+  // (natural-sort the name vs. newestFirst by createdAt/id). This fixture has no true ties, so
+  // that difference cannot show up here, and the two orders genuinely agree — proven by actually
+  // running releaseOrder, not by asserting a second hand-copied expectation.
+  it('agrees with releaseOrder on a mixed real-world tag set with no version ties', () => {
+    const tags = ['v24.0.0-rc.1', 'v23.1.2', 'v23.1.10', 'v24.0.0-rc.10', 'v0.9.13.15', 'nightly', 'jq-1.7.1']
+    const releases: ReleaseView[] = tags.map((t, i) => rel(t, i + 1, t))
+    const byCompareTagNames = [...tags].sort(compareTagNames)
+    const byReleaseOrder = [...releases].sort(releaseOrder).map((r) => r.tagName)
+    expect(byCompareTagNames).toEqual(byReleaseOrder)
+  })
+
+  // naturalRuns alone calls "foo-bar"/"foo_bar"/"Foo.bar" equal (it drops separators and case),
+  // so without a further tie-break their relative order would be whatever the caller's list
+  // happened to arrive in, not a fixed one. Both compareTagNames's unversioned fallback and
+  // compareRefNames (the branches/tags "name" sort, and the ref switcher's branch sort) break
+  // that tie the same way, so the two stay in agreement (L-53).
+  it('breaks a naturalRuns tie between distinct unversioned names by raw string, not caller order', () => {
+    const names = ['foo_bar', 'Foo.bar', 'foo-bar']
+    const reversed = [...names].reverse()
+    expect([...names].sort(compareTagNames)).toEqual([...reversed].sort(compareTagNames))
+    expect([...names].sort(compareRefNames)).toEqual([...reversed].sort(compareRefNames))
+    expect([...names].sort(compareTagNames)).toEqual([...names].sort(compareRefNames))
   })
 })
 
