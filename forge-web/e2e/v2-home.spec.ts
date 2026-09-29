@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test'
+import { PUSH_COST_DASH } from '../lib/sdk/cost'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { collectPageErrors, E2E_DEVNET, EMPTY, readErrorBanner, runAxe, SCREENSHOT_DIR, shot, waitForRepoResolved } from './helpers'
@@ -195,7 +196,8 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     // L-11: the ~0.0003 DASH per push copy was 5-10x low; the calibrated beta.5 figures show instead.
     await expect(empty.getByText(/0\.0003 DASH/)).toHaveCount(0)
     await expect(empty.getByText(/a small push ≈ 0\.003–0\.005 DASH/)).toBeVisible()
-    await expect(empty.getByText(/~0\.36 DASH\/MiB/)).toBeVisible()
+    // The rate comes from the cost module (the chunk fees `dg` and the docs quote), never a literal.
+    await expect(empty.getByText(`~${PUSH_COST_DASH.perMib} DASH/MiB`)).toBeVisible()
     await expect(empty.getByRole('link', { name: 'Install →' })).toBeVisible()
     // With no storage configured, the amber note links to the storage settings.
     const note = empty.getByRole('note')

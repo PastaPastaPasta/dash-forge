@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  PUSH_COST_DASH,
   STEADY,
   estimateChunkCredits,
   estimateCreateCredits,
@@ -152,6 +153,8 @@ describe('chunk storage (review M7)', () => {
   // forge-core `cost::push_fees::chunks`, and chunks measured on moutai beta.5 (PR #127).
   it('matches the CLI and covers every measured chunk', () => {
     expect(estimateChunkCredits(1 << 20)).toBe(39_384_827_200)
+    // The quoted rate is derived from it: the same ~0.39 DASH/MiB as `dg` and costs.md.
+    expect(PUSH_COST_DASH.perMib).toBe(0.39)
     expect(estimateChunkCredits(0)).toBe(0)
     const measured: ReadonlyArray<readonly [number, number]> = [
       [15_023, 478_722_620],

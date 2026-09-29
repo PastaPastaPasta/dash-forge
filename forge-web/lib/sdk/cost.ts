@@ -258,7 +258,14 @@ const DEFAULT_ADMISSION_FACTOR: Admission = { budget: 2, balance: 5 }
 export const PUSH_COST_DASH = {
   byo: { min: 0.002, max: 0.003 },
   platform: { min: 0.003, max: 0.005 },
-  perMib: 0.39,
+  /**
+   * DASH per MiB of packs on Platform, to two decimals: derived from {@link estimateChunkCredits},
+   * the same calibrated chunk fees `dg` (`fmt::platform_rate`) and `git push` quote, so the web,
+   * the CLI and docs/guides/costs.md say one number (~0.39 since the beta.6 chunk-tree fit).
+   */
+  get perMib(): number {
+    return Math.round((estimateChunkCredits(1 << 20) / CREDITS_PER_DASH) * 100) / 100
+  },
 } as const
 
 /** A `min–max` DASH range for copy: `0.002–0.003`. */
