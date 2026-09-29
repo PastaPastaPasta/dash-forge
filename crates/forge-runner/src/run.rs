@@ -125,21 +125,25 @@ pub fn ls_remote(cfg: &Config, repo: &RepoConfig) -> Result<String> {
     output(&mut cmd, "git ls-remote")
 }
 
-/// Check `oid` out into a fresh directory under `work` (a partial clone of the ref, so a
-/// large repository is not copied whole). The runner never keeps credentials in it.
-fn checkout(cfg: &Config, repo: &RepoConfig, push: &Push, dir: &Path) -> Result<()> {
-    if dir.exists() {
-        std::fs::remove_dir_all(dir)?;
-    }
-    std::fs::create_dir_all(dir)?;
+/// Check `oid` out into `dir`, a fresh work tree, from a per-repo cache under `work`. The cache
+/// is a bare repository the runner fetches the pushed ref into (dash:// serves full and partial
+/// fetches, not shallow ones: E205), so each push fetches only what is new. The work tree is a
+/// fresh clone of that cache for every run, so nothing a job wrote survives into the next, and
+/// the runner keeps no credentials in either.
+fn checkout(cfg: &Config, repo: &RepoConfig, push: &Push, work: &Path, dir: &Path) -> Result<()> {
+    let cache = work.join("cache.git");
     let git = |args: &[&str]| {
         let mut c = with_network(Command::new(&cfg.bin.git), cfg);
-        c.arg("-C").arg(dir).args(args);
+        c.arg("--git-dir").arg(&cache).args(args);
         output(&mut c, &format!("git {}", args.first().unwrap_or(&"")))
     };
-    git(&["init", "-q"])?;
-    git(&["fetch", "-q", "--depth", "1", &repo.url(), &push.refname])?;
-    let head = git(&["rev-parse", "FETCH_HEAD"])?;
+    if !cache.join("HEAD").exists() {
+        std::fs::create_dir_all(&cache)?;
+        git(&["init", "-q", "--bare"])?;
+    }
+    let dest = format!("+{}:refs/forge-runner/fetched", push.refname);
+    git(&["fetch", "-q", &repo.url(), &dest])?;
+    let head = git(&["rev-parse", "refs/forge-runner/fetched"])?;
     if head.trim() != push.oid {
         bail!(
             "{} moved while it was fetched ({} now, {} expected); the next poll runs the new tip",
@@ -148,14 +152,28 @@ fn checkout(cfg: &Config, repo: &RepoConfig, push: &Push, dir: &Path) -> Result<
             push.oid
         );
     }
-    git(&[
+    if dir.exists() {
+        std::fs::remove_dir_all(dir)?;
+    }
+    // A clone of the local cache, detached at the commit: act reads `github.sha` and
+    // `github.ref` from the checkout's git metadata. Its origin is the cache on disk, never
+    // dash://, so a job cannot use it to push.
+    let mut clone = Command::new(&cfg.bin.git);
+    clone
+        .args(["clone", "-q", "--no-checkout", "--no-hardlinks"])
+        .arg(&cache)
+        .arg(dir);
+    output(&mut clone, "git clone (local cache)")?;
+    let mut co = Command::new(&cfg.bin.git);
+    co.arg("-C").arg(dir).args([
         "-c",
         "advice.detachedHead=false",
         "checkout",
         "-q",
         "--detach",
         &push.oid,
-    ])?;
+    ]);
+    output(&mut co, "git checkout")?;
     Ok(())
 }
 
@@ -225,7 +243,7 @@ pub fn run_push(cfg: &Config, repo: &RepoConfig, push: &Push) -> Result<Ran> {
         .join("work")
         .join(repo.repo.replace('/', "__"));
     let co = work.join("checkout");
-    checkout(cfg, repo, push, &co)?;
+    checkout(cfg, repo, push, &work, &co)?;
     let Some(wf) = workflow_dir(cfg, &co) else {
         eprintln!(
             "forge-runner: {} {} has no {}; nothing to run",
