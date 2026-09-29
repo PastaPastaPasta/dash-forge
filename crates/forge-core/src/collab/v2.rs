@@ -877,6 +877,16 @@ pub fn policy_from_doc(d: &FetchedDocument) -> Policy {
         approver_role: small("approverRole"),
         require_checks: d.field_bool("requireChecks"),
         merge_methods: small("mergeMethods"),
+        required_checks: crate::scope::doc_text_list(d, "requiredChecks"),
+        // Identifiers (base58); an empty array reads back as empty bytes.
+        required_check_sources: match d.fields.get("requiredCheckSources") {
+            Some(FieldValue::List(items)) => items
+                .iter()
+                .filter_map(|i| i.as_bytes()?.try_into().ok())
+                .map(platform::encode_identifier)
+                .collect(),
+            _ => Vec::new(),
+        },
     }
 }
 
@@ -1414,7 +1424,10 @@ fn no_move(target: &Target, code: i64, action: StateAction, actor: Actor) -> Err
     .into()
 }
 
-/// The properties of a `policy` (without `repoId`).
+/// The properties of a `policy` (without `repoId`). Refuses what forge-community would: over
+/// 10 approvals, an unknown approver role, merge methods over 15, more than 10 required checks
+/// (or a repeated, empty or oversized name), and check sources that do not pair up with the
+/// names (`sourcesMatchNames`: as many as the names, or none).
 pub fn policy_props(policy: &Policy) -> Result<BTreeMap<String, FieldValue>> {
     if policy.required_approvals > 10 || policy.approver_role > 1 {
         return Err(Error::Config(
@@ -1423,6 +1436,37 @@ pub fn policy_props(policy: &Policy) -> Result<BTreeMap<String, FieldValue>> {
                 .into(),
         ));
     }
+    if policy.merge_methods > 15 {
+        return Err(Error::Config(format!(
+            "merge methods {} is not a mask of ff (1), merge (2), squash (4) and rebase (8)",
+            policy.merge_methods
+        )));
+    }
+    let names = &policy.required_checks;
+    let unique: BTreeSet<&String> = names.iter().collect();
+    if names.len() > 10
+        || unique.len() != names.len()
+        || names
+            .iter()
+            .any(|n| n.is_empty() || n.chars().count() > 100 || n.len() > 200)
+    {
+        return Err(Error::Config(
+            "a policy takes at most 10 required checks, each named once in 1-100 characters".into(),
+        ));
+    }
+    let sources = &policy.required_check_sources;
+    if !sources.is_empty() && sources.len() != names.len() {
+        return Err(Error::Config(format!(
+            "{} check source(s) for {} required check(s): name one source per check, in the \
+             same order, or none",
+            sources.len(),
+            names.len()
+        )));
+    }
+    let source_ids = sources
+        .iter()
+        .map(|s| platform::decode_identifier(s).map(FieldValue::identifier))
+        .collect::<Result<Vec<_>>>()?;
     let mut p = BTreeMap::new();
     p.insert(
         "requiredApprovals".to_string(),
@@ -1440,6 +1484,18 @@ pub fn policy_props(policy: &Policy) -> Result<BTreeMap<String, FieldValue>> {
         "mergeMethods".to_string(),
         FieldValue::integer(u64::from(policy.merge_methods)),
     );
+    if !names.is_empty() {
+        p.insert(
+            "requiredChecks".to_string(),
+            FieldValue::text_list(names.iter().cloned()),
+        );
+    }
+    if !source_ids.is_empty() {
+        p.insert(
+            "requiredCheckSources".to_string(),
+            FieldValue::List(source_ids),
+        );
+    }
     Ok(p)
 }
 
@@ -5436,6 +5492,7 @@ mod tests {
             approver_role: 1,
             require_checks: true,
             merge_methods: 3,
+            ..Policy::default()
         };
         let p = policy_props(&policy).unwrap();
         assert_eq!(p.get("requiredApprovals"), Some(&FieldValue::integer(2)));

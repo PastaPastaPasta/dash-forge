@@ -700,15 +700,48 @@ mod builders {
 
     #[test]
     fn a_policy_is_rc1_valid() {
-        let mut p = policy_props(&Policy {
+        let p = policy_props(&Policy {
             required_approvals: 2,
             approver_role: 1,
             require_checks: true,
             merge_methods: 15,
+            ..Policy::default()
         })
         .unwrap();
-        p.insert("repoId".to_string(), FieldValue::identifier(REPO));
-        assert_valid("policy", &p);
+        assert_valid(
+            "policy",
+            &stamped("policy", p, Visibility::Public, By::Other),
+        );
+        // Required checks pinned to their sources (check_sources), and names alone.
+        let pinned = Policy {
+            required_approvals: 1,
+            require_checks: true,
+            required_checks: vec!["build".into(), "lint".into()],
+            required_check_sources: vec![ID.into(), signer()],
+            ..Policy::default()
+        };
+        assert_valid(
+            "policy",
+            &stamped(
+                "policy",
+                policy_props(&pinned).unwrap(),
+                Visibility::Public,
+                By::Other,
+            ),
+        );
+        let names_only = Policy {
+            required_check_sources: vec![],
+            ..pinned
+        };
+        assert_valid(
+            "policy",
+            &stamped(
+                "policy",
+                policy_props(&names_only).unwrap(),
+                Visibility::Public,
+                By::Other,
+            ),
+        );
     }
 
     // ---------------- checkRun ----------------
@@ -727,19 +760,75 @@ mod builders {
     }
 
     #[test]
-    #[ignore = "RC1: a checkRun create needs outcome (0 pending, 1 success/neutral/skipped, 2 otherwise: outcomeOf)"]
     fn check_run_creates_are_rc1_valid() {
         for (status, conclusion) in [
             ("queued", None),
             ("in_progress", None),
             ("completed", Some("success")),
             ("completed", Some("failure")),
+            ("completed", Some("skipped")),
         ] {
-            let report = check_report(status, conclusion);
-            let oid = report.validate().unwrap();
-            let w = report.write(None, 1_760_000_000_000).unwrap();
-            let p = report.create_props(oid, &w);
-            public("checkRun", p, By::Other);
+            let mut report = check_report(status, conclusion);
+            report.log = Some(("ipfs://bafy1".into(), [7; 32]));
+            for visibility in [Visibility::Public, Visibility::Private] {
+                // A private repository's run drops its text (privateNoText).
+                let (report, _) = report.for_visibility(visibility);
+                let oid = report.validate().unwrap();
+                let w = report.write(None, 1_760_000_000_000).unwrap();
+                let p = report.create_props(oid, &w, visibility);
+                let mut doc = p.clone();
+                doc.insert("repoId".to_string(), FieldValue::identifier(REPO));
+                assert_valid("checkRun", &doc);
+                // The builder stamps vis itself.
+                assert_eq!(stamped("checkRun", p, visibility, By::Other), doc);
+            }
         }
+        // Text on a private run is what the contract refuses: the builder never writes it.
+        let report = check_report("completed", Some("success"));
+        let oid = report.validate().unwrap();
+        let w = report.write(None, 1_760_000_000_000).unwrap();
+        let mut p = report.create_props(oid, &w, Visibility::Private);
+        p.insert("repoId".to_string(), FieldValue::identifier(REPO));
+        assert_refused("checkRun", &p, "privateNoText");
+    }
+
+    #[test]
+    fn a_check_run_replace_stays_rc1_valid() {
+        // queued → in_progress → completed, each replace merged over the stored document.
+        let mut doc = BTreeMap::new();
+        let mut stored: Option<crate::platform::FetchedDocument> = None;
+        for (i, (status, conclusion)) in [
+            ("queued", None),
+            ("in_progress", None),
+            ("completed", Some("failure")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let report = check_report(status, conclusion);
+            let now = 1_760_000_000_000 + i as u64 * 1000;
+            let w = report.write(stored.as_ref(), now).unwrap();
+            if stored.is_none() {
+                doc = report.create_props(report.validate().unwrap(), &w, Visibility::Public);
+                doc.insert("repoId".to_string(), FieldValue::identifier(REPO));
+            } else {
+                for (k, v) in report.changes(&w) {
+                    if let Some(v) = v {
+                        doc.insert(k, v);
+                    }
+                }
+            }
+            assert_valid("checkRun", &doc);
+            stored = Some(crate::platform::FetchedDocument {
+                id: "run".into(),
+                owner_id: signer(),
+                created_at: Some(1),
+                created_at_block_height: None,
+                updated_at_block_height: None,
+                fields: doc.clone(),
+                revision: Some(1),
+            });
+        }
+        assert_eq!(doc.get("outcome"), Some(&FieldValue::integer(2)));
     }
 }
