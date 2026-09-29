@@ -142,7 +142,6 @@ export {
   verdictFromCode,
   VERDICT_LABEL,
   type IssueView,
-  type Listed,
   type PullView,
   type ReviewView,
   type TargetLog,

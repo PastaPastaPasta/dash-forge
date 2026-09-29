@@ -29,31 +29,31 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { DEFAULT_NETWORK, type Network } from '../constants'
-import { IncompleteReadError, type PlainDocument } from '../sdk'
-import { str, type RepoRef } from './contract'
+import { IncompleteReadError } from '../sdk'
+import type { RepoRef } from './contract'
 import { compareRows, rowMatches } from './issue-index'
-import { EMPTY_LOG, baseRefReaders, incompletePullView, readPull, type BaseRefReaders, type PullView } from './issues'
+import { baseRefReaders, incompletePullView, readPull, type BaseRefReaders, type PullView } from './issues'
 import { PR_CLOSE, PR_DRAFT_CLOSE, PR_MERGE } from '../rules/transition'
-import { readStateCodes } from './transitions'
 import type { LabelDef } from './labels'
 import type { HiddenCounts } from './private-content'
 import {
   authorCandidates,
   indexCache,
   intersect,
-  loadListIndex,
-  loadedIds,
   metaCandidates,
+  pageOf,
   repoCountsOf,
-  resolveIds,
-  rowsOf,
+  rowsInAnyState,
+  selectRows,
   transitionTargets,
-  walkWhile,
   type ListIndex,
-  type RowBuilder,
 } from './target-index'
 
-/** A PR row: the PR with its state and its comment count (null: not counted). */
+/**
+ * A PR row: the PR with its state and its comment count (null: not counted). The list reads the
+ * repo's member events only, so a row's `headOid`, `headOnBase` and `review` do not follow an
+ * author's own head updates: read the PR (`loadPullThread`) for those.
+ */
 export interface PullRow extends PullView {
   readonly comments: number | null
 }
@@ -66,35 +66,28 @@ type PullIndex = ListIndex<PullRow>
 /** Each index's base-ref readers: one read of each history per index, however many chunks. */
 const readers = new WeakMap<PullIndex, BaseRefReaders>()
 
-/**
- * THE state step: a chunk's PRs with their state codes (one proved sum query,
- * `targetId in [chunk]`), their labels and assignees from the feed (unverified when the feed is
- * too large to read completely), and their merge labelled against the base ref's history.
- */
-const pullRows: RowBuilder<PullRow> = async (sdk, index, docs, counts) => {
-  if (docs.length === 0) return []
+function readersOf(sdk: EvoSDK, index: PullIndex): BaseRefReaders {
   let base = readers.get(index)
-  if (base === undefined) readers.set(index, (base = baseRefReaders(sdk, index.repo)))
-  const codes = await readStateCodes(sdk, index.repo, docs.map((d: PlainDocument) => str(d, '$id')))
-  return Promise.all(
-    docs.map(async (doc) => {
-      const id = str(doc, '$id')
-      const code = codes.get(id) ?? 0
-      const view = await readPull(sdk, index.repo, doc, index.feed?.get(id) ?? EMPTY_LOG, base!.configHistory, base!.refUpdates, { code }).catch((e: unknown) => {
-        if (!(e instanceof IncompleteReadError)) throw e
-        return incompletePullView(doc, code)
-      })
-      return { ...view, stateComplete: view.stateComplete && index.feed !== null, comments: counts === null ? null : counts.get(id) ?? 0 }
-    }),
-  )
+  if (base === undefined) {
+    base = baseRefReaders(sdk, index.repo)
+    readers.set(index, base)
+  }
+  return base
 }
 
-const cached = indexCache<PullRow>()
-
-/** The index, loading it on first use (one per repo and network, until a write drops it). */
-function indexOf(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<PullIndex> {
-  return cached(sdk, repo, network, () => loadListIndex(sdk, repo, network, 'patch', pullRows))
-}
+/**
+ * The index, loading it on first use (one per repo and network, until a write drops it). A PR's
+ * view: its state code (the chunk's proved sum), its labels and assignees from the feed, and its
+ * merge labelled against the base ref's history; a PR whose base history cannot be read completely
+ * keeps its proved state, unverified.
+ */
+const indexOf = indexCache<PullRow>('patch', async (sdk, index, doc, log, code) => {
+  const base = readersOf(sdk, index)
+  return readPull(sdk, index.repo, doc, log, base.configHistory, base.refUpdates, { code }).catch((e: unknown) => {
+    if (!(e instanceof IncompleteReadError)) throw e
+    return incompletePullView(doc, code)
+  })
+})
 
 // ---------------------------------------------------------------------------
 // Queries
@@ -177,16 +170,15 @@ async function candidatesFor(sdk: EvoSDK, index: PullIndex, q: PullSelection): P
 }
 
 /**
- * The repo's Open / Merged / Closed totals: the proved counts, less (from Open) the PRs this reader
- * skipped as not shown. In a private repo anyone's ciphertext counts in the total and cannot be
- * told apart until read, so only a full read gives an open count there. Null when the counts
- * could not be read.
+ * The repo's Open / Merged / Closed totals: the proved counts, less (from Open) the open PRs this
+ * reader skipped as not shown (their state is read with their chunk's). In a private repo
+ * anyone's ciphertext counts in the totals and cannot be told apart until read, so only a full
+ * read gives counts there, as on the Issues list. None when the counts could not be read.
  */
 async function exactCounts(sdk: EvoSDK, index: PullIndex): Promise<PullCounts> {
   const counts = await repoCountsOf(sdk, index)
-  if (counts === null) return NO_COUNTS
-  const open = index.repo.visibility === 'private' && !index.all ? null : Math.max(0, counts.prsOpen - index.hidden.total)
-  return { open, merged: counts.prsMerged, closed: counts.prsClosed }
+  if (counts === null || (index.repo.visibility === 'private' && !index.all)) return NO_COUNTS
+  return { open: Math.max(0, counts.prsOpen - index.hiddenOpen), merged: counts.prsMerged, closed: counts.prsClosed }
 }
 
 /** Every PR shown (open + merged + closed), or null when a count is not proven. */
@@ -208,49 +200,36 @@ export async function queryPulls(
   network: Network = DEFAULT_NETWORK,
 ): Promise<PullListPage> {
   const index = await indexOf(sdk, repo, network)
-  const want = q.page * q.pageSize
-  const cmp = compareRows(q.sort)
-  const direction = q.sort === 'oldest' ? 'asc' : 'desc'
-  const matches = (r: PullRow): boolean => pullStateMatches(r, q.state) && filtersMatch(r, q)
-
-  let rows: PullRow[]
-  let complete: boolean
-  let searched: number | null = null
-  const candidates = await candidatesFor(sdk, index, q)
-  if (candidates !== null) {
-    await resolveIds(sdk, index, candidates)
-    rows = rowsOf(index, candidates).filter(matches).sort(cmp)
-    complete = true
-  } else {
-    const matching = (): PullRow[] => rowsOf(index, loadedIds(index, direction)).filter(matches)
-    // Read chunks until the page is full and one more row shows a next page (every chunk, for a
-    // sort by comments).
-    complete = await walkWhile(sdk, index, direction, () => q.sort === 'comments' || matching().length <= want)
-    rows = matching().sort(cmp)
-    if (!complete && (q.text.trim() !== '' || q.sort === 'comments')) searched = [...loadedIds(index, direction)].length
-  }
-
   const filtered = q.labels.length > 0 || q.author !== null || q.assignee !== null || q.text.trim() !== ''
+  const selected = await selectRows(sdk, index, {
+    candidates: await candidatesFor(sdk, index, q),
+    matches: (r) => pullStateMatches(r, q.state) && filtersMatch(r, q),
+    cmp: compareRows(q.sort),
+    direction: q.sort === 'oldest' ? 'asc' : 'desc',
+    want: q.page * q.pageSize,
+    walkAll: q.sort === 'comments',
+    partial: q.text.trim() !== '' || q.sort === 'comments',
+  })
+
   let counts = NO_COUNTS
   if (!filtered) {
     counts = await exactCounts(sdk, index)
   } else {
     // Every tab's count needs every candidate in any state: an index names them, or every PR is loaded.
-    const any = await candidatesFor(sdk, index, { ...q, state: 'all' })
-    if (any !== null) await resolveIds(sdk, index, any)
-    const all = any !== null ? rowsOf(index, any) : index.all ? [...index.rows.values()] : null
-    if (all !== null) counts = countRows(all.filter((r) => filtersMatch(r, q)))
+    const all = await rowsInAnyState(sdk, index, await candidatesFor(sdk, index, { ...q, state: 'all' }), (r) => filtersMatch(r, q))
+    if (all !== null) counts = countRows(all)
   }
 
-  // Unfiltered, the tab's proved count is how many rows match, before the walk reaches them all.
+  // Unfiltered, the tab's proved count is how many rows match, before the walk reaches them all
+  // (not when the walk stopped short of the repo's end: then the page count is unknown).
   const tabCount = q.state === 'all' ? sum(counts) : counts[q.state]
-  const start = (q.page - 1) * q.pageSize
+  const page = pageOf(selected.rows, q.page, q.pageSize)
   return {
-    rows: rows.slice(start, start + q.pageSize),
-    matching: complete ? rows.length : filtered ? null : tabCount,
-    hasNext: rows.length > start + q.pageSize,
+    rows: page.rows,
+    matching: selected.complete ? selected.rows.length : filtered || selected.short ? null : tabCount,
+    hasNext: page.hasNext,
     counts,
-    searchedOf: searched === null ? null : { searched, total },
+    searchedOf: selected.searched === null ? null : { searched: selected.searched, total },
     stateComplete: index.feed !== null,
     labels: index.labels,
     hidden: index.hidden.total,

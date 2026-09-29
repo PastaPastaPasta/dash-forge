@@ -197,6 +197,29 @@ describe('issue index', () => {
     expect(after.rows.map((r) => r.number)).toEqual([5])
   })
 
+  it('a state read that fails on a later chunk does not list it twice on the retry (review)', async () => {
+    const { sdk, repo } = fresh(250)
+    const q = { ...base, state: 'all' as const }
+    await queryIssues(sdk, repo, { ...q, page: 2 }, 250, 'devnet')
+    const documents = (sdk as unknown as { documents: { sum: (...a: unknown[]) => Promise<unknown> } }).documents
+    const sum = documents.sum
+    let failed = false
+    documents.sum = (...a) => {
+      if (!failed) {
+        failed = true
+        return Promise.reject(new Error('node down'))
+      }
+      return sum(...a)
+    }
+    // Pages 1-2 read the first two chunks; page 5 needs the third, whose state read fails once.
+    await expect(queryIssues(sdk, repo, { ...q, page: 5 }, 250, 'devnet')).rejects.toThrow('node down')
+    const p5 = await queryIssues(sdk, repo, { ...q, page: 5 }, 250, 'devnet')
+    expect(p5.rows.map((r) => r.number)).toEqual(Array.from({ length: 50 }, (_, i) => 50 - i))
+    const every = await queryIssues(sdk, repo, { ...q, pageSize: 300 }, 250, 'devnet')
+    expect(new Set(every.rows.map((r) => r.id)).size).toBe(every.rows.length)
+    expect(every.rows).toHaveLength(250)
+  })
+
   it('reads a small repo whole in one composite', async () => {
     const { sdk, seen, repo } = fresh(12, 'Ad88NKGHimxUgGHrTGpBJjKpnzrQe8Zh4V5q13mRh85h')
     // Only #3 of the fixture's closed issues exists in a 12-issue repo.

@@ -18,12 +18,11 @@ import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
 import { useMemo, useState } from 'react'
 import Link from 'next/link'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import { CheckCircle2, CircleDot, MessageSquare, MessageSquarePlus, Pin, X } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { CheckCircle2, CircleDot, MessageSquarePlus, Pin, X } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { ARCHIVED_REASON, resolveDpnsName } from '@/lib/view'
 import {
-  DEFAULT_ISSUE_QUERY,
   ISSUE_PAGE_SIZE,
   droppedQualifiersReason,
   emptyIssuesBody,
@@ -34,7 +33,6 @@ import {
   searchSubmitBase,
   searchText,
   unresolvedQualifiers,
-  withQuery,
   BODY_MAX,
   utf8Length,
   type IssueListQuery,
@@ -45,7 +43,6 @@ import { useWriteGuard } from '@/hooks/use-write-guard'
 import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import { useIntent } from '@/hooks/use-intent'
 import { useFirstWrite } from '@/hooks/use-first-write'
-import { plural } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
 import { useDpnsName } from '@/hooks/use-dpns-name'
 import { ownerLabel } from '@/lib/page-title'
@@ -59,8 +56,23 @@ import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { HiddenNote } from '@/components/repo/hidden-note'
 import { MirrorComposeHint, MirrorNote } from '@/components/repo/mirror-note'
 import { useRepoLinks } from '@/components/repo/target-href'
-import { AssigneeAvatars, LabelChip, MarkdownEditor } from '@/components/repo/issue-bits'
-import { DroppedNote, LabelFilter, Pager, PersonFilter, SearchBox, SortSelect, StateTab, tabCount, useListSearch, type ListGrammar } from '@/components/repo/list-controls'
+import { AssigneeAvatars, MarkdownEditor } from '@/components/repo/issue-bits'
+import {
+  CommentCount,
+  DroppedNote,
+  LabelChipFilter,
+  LabelFilter,
+  Pager,
+  PersonFilter,
+  RowLink,
+  SearchBox,
+  SearchedNote,
+  SortSelect,
+  StateTab,
+  tabCount,
+  useListQuery,
+  type ListGrammar,
+} from '@/components/repo/list-controls'
 import { IssueTemplatePicker } from '@/components/repo/issue-templates'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
 import { BodyCounter, SealedLimit, composeCost, privateComposeBlock } from '@/components/repo/private-compose'
@@ -76,8 +88,6 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const { identity } = useAuth()
   const [composing, setComposing] = useState(false)
   const router = useRouter()
-  const pathname = usePathname()
-  const params = useSearchParams()
   const generation = useRepoWriteGeneration(home.repo)
   const trust = useMirrorTrust(home.repo)
   const totals = useRepoTotals(home.repo)
@@ -86,24 +96,8 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const canCompose = privateComposeBlock(home) === null
   const archived = home.config?.archived === true
 
-  // The list query lives in the URL: parse it on every render, write it with router.replace.
-  const query = useMemo(() => parseIssueQuery(params), [params])
-  const setQuery = (next: IssueListQuery): void => {
-    const q = new URLSearchParams({ owner: addr.owner, name: addr.name })
-    if (addr.repoId) q.set('repo', addr.repoId)
-    for (const [k, v] of issueQueryParams(next)) q.append(k, v)
-    router.replace(`${pathname}?${q.toString()}`, { scroll: false })
-  }
-  const search = useListSearch({
-    query,
-    setQuery,
-    grammar: ISSUE_GRAMMAR,
-    linkedQ: params.get('q')?.slice(0, 200) ?? null,
-    sdk,
-    ready,
-    network,
-    withChange: withQuery,
-  })
+  // The list query lives in the URL (a reload or a shared link shows the same list).
+  const { query, search } = useListQuery({ addr, parse: parseIssueQuery, toParams: issueQueryParams, grammar: ISSUE_GRAMMAR, sdk, ready, network })
   const change = search.change
 
   // `me` needs a signed-in viewer; signed out, a `me` filter shows nothing rather than everything.
@@ -130,7 +124,6 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   )
 
   const labelDefs = useMemo(() => new Map((data?.labels ?? []).map((l) => [l.name, l])), [data])
-  const count = tabCount
   const empty = data !== null && data.rows.length === 0
   const filtered = hasFilters(query)
 
@@ -166,7 +159,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
       {filtered ? (
         <button
           type="button"
-          onClick={() => search.clear({ ...DEFAULT_ISSUE_QUERY, state: query.state })}
+          onClick={search.clear}
           className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400"
         >
           <X className="h-3.5 w-3.5" aria-hidden /> Clear filters
@@ -177,10 +170,10 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 dark:border-anvil-800 dark:bg-anvil-900">
           <div className="flex items-center gap-3" role="tablist" aria-label="Issue state">
             <StateTab active={query.state === 'open'} onClick={() => change({ state: 'open' })}>
-              <CircleDot className="h-3.5 w-3.5" aria-hidden /> {count(data?.openCount)}Open
+              <CircleDot className="h-3.5 w-3.5" aria-hidden /> {tabCount(data?.openCount)}Open
             </StateTab>
             <StateTab active={query.state === 'closed'} onClick={() => change({ state: 'closed' })}>
-              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> {count(data?.closedCount)}Closed
+              <CheckCircle2 className="h-3.5 w-3.5" aria-hidden /> {tabCount(data?.closedCount)}Closed
             </StateTab>
             <StateTab active={query.state === 'all'} onClick={() => change({ state: 'all' })}>
               All
@@ -239,13 +232,9 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                 )}
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-1.5">
-                    <Link href={repoHref('/repo/issue', addr, { number: String(issue.number) })} className="hit-area text-dense font-medium text-anvil-900 hover:text-forge-700 dark:hover:text-forge-400 dark:text-anvil-50">
-                      {issue.title || '(untitled)'}
-                    </Link>
+                    <RowLink href={repoHref('/repo/issue', addr, { number: String(issue.number) })} title={issue.title} />
                     {issue.state.labels.map((l) => (
-                      <button key={l} type="button" onClick={() => change({ labels: query.labels.includes(l) ? query.labels : [...query.labels, l] })} aria-label={`Filter by label ${l}`} className="hit-area">
-                        <LabelChip name={l} def={labelDefs.get(l)} />
-                      </button>
+                      <LabelChipFilter key={l} name={l} def={labelDefs.get(l)} selected={query.labels} onChange={(labels) => change({ labels })} />
                     ))}
                   </div>
                   <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
@@ -260,11 +249,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
                 </div>
                 <div className="flex shrink-0 items-center gap-3 pt-0.5">
                   <AssigneeAvatars ids={issue.state.assignees} />
-                  {issue.comments ? (
-                    <span className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400" aria-label={plural(issue.comments, 'comment')}>
-                      <MessageSquare className="h-3.5 w-3.5" aria-hidden /> {issue.comments}
-                    </span>
-                  ) : null}
+                  <CommentCount n={issue.comments} />
                 </div>
               </li>
             ))}
@@ -272,19 +257,9 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         )}
       </div>
 
-      {data?.searchedOf ? (
-        <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-          Searched the newest {data.searchedOf.searched}
-          {data.searchedOf.total !== null ? ` of ${data.searchedOf.total}` : ''} issues; older ones were not read for this search.
-        </p>
-      ) : null}
+      <SearchedNote searchedOf={data?.searchedOf} noun="issues" />
 
-      <Pager
-        page={query.page}
-        hasNext={data?.hasNext ?? false}
-        pages={data?.matching != null ? Math.max(1, Math.ceil(data.matching / ISSUE_PAGE_SIZE)) : null}
-        onPage={(page) => change({ page })}
-      />
+      <Pager label="Issue pages" page={query.page} hasNext={data?.hasNext ?? false} matching={data?.matching ?? null} pageSize={ISSUE_PAGE_SIZE} onPage={(page) => change({ page })} />
 
       <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'issue' : 'issues'} home={home} by={data?.hiddenBy} />
 

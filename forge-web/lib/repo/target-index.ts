@@ -1,12 +1,13 @@
 /**
  * What the issue index (`./issue-index`) and the pull index (`./pull-index`) share: a keyset walk
- * over one document type read in composites of 100 (with comment counts and author names), the
+ * over one document type read in composites of 100 (with comment counts and author names), each
+ * chunk's states from one proved sum of its transitions (`./transitions` `readStateCodes`), the
  * repo's member-event feed and label definitions read once, `$id in` resolution of ids an index
- * names but has not loaded, the `author` index, the targets of a transition kind, and the
- * per-repo cache a write drops (`platform-parity-spec.md` §1.2, §3.3; L-44, L-77).
+ * names but has not loaded, the `author` index, the targets of a transition kind, the proved
+ * counts, and the per-repo cache a write drops (`platform-parity-spec.md` §1.2, §3.3; L-44, L-77).
  *
- * Each index supplies its rows through {@link ListIndex.toRows}: the ONE step that turns admitted
- * documents into rows with their state (a proved transition sum per chunk, `./transitions`).
+ * Each index supplies its views through a {@link ViewBuilder} (an admitted document, its feed
+ * slice and its state code in; the issue or PR view out); the engine adds the comment counts.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -14,25 +15,27 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { NETWORKS, type Network } from '../constants'
 import { compositeOf, countsAt, docsAt, queryComposite, siblingOf, type CompositeResult, type CompositeSub } from '../sdk/composite'
 import { IncompleteReadError, queryAllDocuments, type DocumentQuery, type PlainDocument } from '../sdk'
+import { statusOfCode } from '../rules/transition'
 import { DOC, asIdentifierString, repoKey, str, type RepoRef } from './contract'
-import { feedQuery, onRepoInvalidated, readRepoFeedFrom, repoEpoch, sharedRepoFeed, type TargetLog } from './issues'
+import { EMPTY_LOG, feedQuery, onRepoInvalidated, readRepoFeedFrom, repoEpoch, sharedRepoFeed, type TargetLog } from './issues'
 import { newestLabels, type LabelDef } from './labels'
 import { HiddenTally, gateFor, type ContentGate } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
-import { readRepoCounts } from './transitions'
+import { readRepoCounts, readStateCodes } from './transitions'
 
 type RepoCounts = Awaited<ReturnType<typeof readRepoCounts>>
+type Direction = 'desc' | 'asc'
 
 /** Rows per keyset chunk (the page limit of one composite). */
-export const CHUNK = 100
+const CHUNK = 100
 /** Chunks one call may read to satisfy a query (a sort by comments reads every chunk up to this). */
-export const MAX_CHUNKS = 30
+const MAX_CHUNKS = 30
 /** Pages of one transition kind read for a tab's candidates before the tab walks chunks instead. */
 const KIND_MAX_PAGES = 30
 
 /** One keyset walk over the repo's rows, in one direction. */
-export interface Walk {
+interface Walk {
   /** Loaded ids, in walk order. */
   readonly ids: string[]
   /** The `$createdAt` bound of the next chunk (`<=` newest-first, `>=` oldest-first). */
@@ -42,8 +45,28 @@ export interface Walk {
   complete: boolean
 }
 
+/** What every row carries besides its view: its comment count (null: not counted), whether its labels are verified. */
+export interface RowExtras {
+  readonly id: string
+  readonly comments: number | null
+  /** False when the feed was too large to read: the row's labels and assignees are unverified. */
+  readonly stateComplete: boolean
+}
+
+/**
+ * An index's one view step: an admitted document, its slice of the member-event feed and its
+ * state code (the proved sum of its transitions) in; the issue or PR view out.
+ */
+export type ViewBuilder<Row extends RowExtras> = (
+  sdk: EvoSDK,
+  index: ListIndex<Row>,
+  doc: PlainDocument,
+  log: TargetLog,
+  code: number,
+) => Promise<Omit<Row, 'comments' | 'stateComplete'> & { readonly stateComplete?: boolean }>
+
 /** A repo's list index of one type (mutable while it loads). */
-export interface ListIndex<Row extends { readonly id: string }> {
+export interface ListIndex<Row extends RowExtras> {
   readonly type: 'issue' | 'patch'
   readonly repo: RepoRef
   readonly network: Network
@@ -55,8 +78,9 @@ export interface ListIndex<Row extends { readonly id: string }> {
   readonly notRows: Set<string>
   /** Rows left out: not well-formed for the repo, or (private) not readable with the session keys. */
   readonly hidden: HiddenTally
-  readonly desc: Walk
-  readonly asc: Walk
+  /** How many of the hidden rows are open (their state code): the Open count leaves them out. */
+  hiddenOpen: number
+  readonly walks: Record<Direction, Walk>
   /**
    * Every index read (keyset chunks, `$id in` resolutions, author and kind reads) runs one at a
    * time on this queue: concurrent readers of one bound would otherwise see "nothing new" and
@@ -72,17 +96,8 @@ export interface ListIndex<Row extends { readonly id: string }> {
   /** The repo's proved counts, read once per index (a write drops the index). */
   counts?: Promise<RepoCounts>
   readonly gate: ContentGate
-  /** The rows of admitted documents, with their comment counts: the index's one state step. */
-  readonly toRows: RowBuilder<Row>
+  readonly view: ViewBuilder<Row>
 }
-
-/** Builds an index's rows from admitted documents and their comment counts (null: not counted). */
-export type RowBuilder<Row extends { readonly id: string }> = (
-  sdk: EvoSDK,
-  index: ListIndex<Row>,
-  docs: readonly PlainDocument[],
-  counts: ReadonlyMap<string, number> | null,
-) => Promise<Row[]>
 
 const newWalk = (): Walk => ({ ids: [], bound: null, done: false, complete: true })
 
@@ -107,7 +122,7 @@ async function seedNames(network: Network, docs: readonly PlainDocument[], domai
 }
 
 /** Run `task` on the index's read queue ({@link ListIndex.queue}). */
-export function serial<T>(index: { queue: Promise<void> }, task: () => Promise<T>): Promise<T> {
+function serial<T>(index: { queue: Promise<void> }, task: () => Promise<T>): Promise<T> {
   const run = index.queue.then(task)
   index.queue = run.then(
     () => undefined,
@@ -116,46 +131,61 @@ export function serial<T>(index: { queue: Promise<void> }, task: () => Promise<T
   return run
 }
 
-/** Record a chunk's documents: admit each, build the new rows, and (a keyset chunk) keep their order. */
-async function addDocs<Row extends { readonly id: string }>(
-  sdk: EvoSDK,
-  index: ListIndex<Row>,
-  docs: readonly PlainDocument[],
-  counts: ReadonlyMap<string, number> | null,
-  walk: Walk | null,
-): Promise<void> {
-  const fresh: PlainDocument[] = []
-  const freshIds = new Set<string>()
-  for (const raw of docs) {
-    const id = str(raw, '$id')
-    if (id === '' || index.notRows.has(id)) continue
-    if (index.rows.has(id) || freshIds.has(id)) {
-      if (walk !== null && !walk.ids.includes(id)) walk.ids.push(id)
-      continue
-    }
-    const admitted = await index.gate.admit(index.type, raw)
-    if (!admitted.ok) {
-      index.notRows.add(id)
-      index.hidden.add(admitted.reason)
-      continue
-    }
-    fresh.push(admitted.doc)
-    freshIds.add(id)
-    walk?.ids.push(id)
-  }
-  for (const row of await index.toRows(sdk, index, fresh, counts)) index.rows.set(row.id, row)
+/** The state codes of a chunk's documents (one proved sum, `targetId in [chunk]`). */
+function codesOf(sdk: EvoSDK, repo: RepoRef, docs: readonly PlainDocument[]): Promise<Map<string, number>> {
+  return readStateCodes(sdk, repo, docs.map((d) => str(d, '$id')))
 }
 
-/** Record one keyset chunk and move its walk's bound. */
-async function addChunk<Row extends { readonly id: string }>(
+/**
+ * Record a composite's page (`docs`): admit each document and build its row, and only then write
+ * the rows, the hidden ones and (a keyset chunk) the walk, so a read that fails part-way leaves
+ * the index as it was and a retry reads the chunk afresh (never twice over). `codes` is the
+ * chunk's state read, when it was started beside another read.
+ */
+async function recordChunk<Row extends RowExtras>(
   sdk: EvoSDK,
   index: ListIndex<Row>,
-  walk: Walk,
+  res: CompositeResult,
   docs: readonly PlainDocument[],
-  counts: ReadonlyMap<string, number> | null,
+  walk: Walk | null,
+  codes: Promise<Map<string, number>> = codesOf(sdk, index.repo, docs),
 ): Promise<void> {
+  const counts = countsAt(res, 0)
+  const fresh = new Map<string, PlainDocument>()
+  const hidden: { id: string; reason: Parameters<HiddenTally['add']>[0] }[] = []
+  for (const raw of docs) {
+    const id = str(raw, '$id')
+    if (id === '' || index.notRows.has(id) || index.rows.has(id) || fresh.has(id) || hidden.some((h) => h.id === id)) continue
+    const admitted = await index.gate.admit(index.type, raw)
+    if (admitted.ok) fresh.set(id, admitted.doc)
+    else hidden.push({ id, reason: admitted.reason })
+  }
+  const code = await codes
+  const rows = await Promise.all(
+    [...fresh].map(async ([id, doc]) => {
+      const view = await index.view(sdk, index, doc, index.feed?.get(id) ?? EMPTY_LOG, code.get(id) ?? 0)
+      // A view the builder could not complete (a PR's base history) stays unverified too.
+      return { ...view, stateComplete: index.feed !== null && view.stateComplete !== false, comments: counts === null ? null : counts.get(id) ?? 0 } as Row
+    }),
+  )
+  // Every read is done: record.
+  for (const row of rows) index.rows.set(row.id, row)
+  for (const { id, reason } of hidden) {
+    index.notRows.add(id)
+    index.hidden.add(reason)
+    if (statusOfCode(code.get(id) ?? 0).open) index.hiddenOpen++
+  }
+  if (walk !== null) advance(index, walk, docs)
+  await seedNames(index.network, docs, docsAt(res, 1))
+}
+
+/** Add a keyset chunk's rows to its walk, in order, and move the walk's bound. */
+function advance<Row extends RowExtras>(index: ListIndex<Row>, walk: Walk, docs: readonly PlainDocument[]): void {
   const before = walk.ids.length
-  await addDocs(sdk, index, docs, counts, walk)
+  for (const d of docs) {
+    const id = str(d, '$id')
+    if (index.rows.has(id) && !walk.ids.includes(id)) walk.ids.push(id)
+  }
   if (docs.length < CHUNK) {
     walk.done = true
   } else {
@@ -172,15 +202,8 @@ async function addChunk<Row extends { readonly id: string }>(
   if (walk.done && walk.complete) index.all = true
 }
 
-/** Record a composite's page (`docs`) with its comment counts and names (sub-queries 0 and 1). */
-async function record<Row extends { readonly id: string }>(sdk: EvoSDK, index: ListIndex<Row>, res: CompositeResult, docs: readonly PlainDocument[], walk: Walk | null): Promise<void> {
-  if (walk === null) await addDocs(sdk, index, docs, countsAt(res, 0), null)
-  else await addChunk(sdk, index, walk, docs, countsAt(res, 0))
-  await seedNames(index.network, docs, docsAt(res, 1))
-}
-
 /** Read one chunk (`page`, up to `limit`) with its comment counts and names, and record it. */
-async function readChunk<Row extends { readonly id: string }>(
+async function readChunk<Row extends RowExtras>(
   sdk: EvoSDK,
   index: ListIndex<Row>,
   page: DocumentQuery,
@@ -189,23 +212,17 @@ async function readChunk<Row extends { readonly id: string }>(
 ): Promise<PlainDocument[]> {
   const res = await queryComposite(sdk, compositeOf(page, limit, chunkSubs(index.network)))
   const docs = keep ? res.page.filter(keep) : res.page
-  await record(sdk, index, res, docs, walk)
+  await recordChunk(sdk, index, res, docs, walk)
   return docs
 }
 
 /**
  * First load, ONE composite: the newest 100 rows with their comment counts and author names, and
  * as siblings the label definitions and (unless another reader has the feed already) the feed's
- * first page. Then the rest of the feed, shared with the other index (`readRepoFeedFrom`), and of
- * the labels when their first pages were full.
+ * first page. Beside it the rows' state sum; then the rest of the feed, shared with the other
+ * index (`readRepoFeedFrom`), and of the labels when their first pages were full.
  */
-export async function loadListIndex<Row extends { readonly id: string }>(
-  sdk: EvoSDK,
-  repo: RepoRef,
-  network: Network,
-  type: 'issue' | 'patch',
-  toRows: RowBuilder<Row>,
-): Promise<ListIndex<Row>> {
+async function loadListIndex<Row extends RowExtras>(sdk: EvoSDK, repo: RepoRef, network: Network, type: 'issue' | 'patch', view: ListIndex<Row>['view']): Promise<ListIndex<Row>> {
   const source = repoSource(repo)
   const labelQuery = source.repoQuery(DOC.label, { orderBy: [['name', 'asc'], ['$createdAt', 'asc']] })
   const page = source.repoQuery(DOC[type], { orderBy: [['$createdAt', 'desc']] })
@@ -213,6 +230,9 @@ export async function loadListIndex<Row extends { readonly id: string }>(
   const shared = sharedRepoFeed(repo)
   const subs = [...chunkSubs(network), siblingOf(labelQuery, CHUNK), ...(shared === undefined ? [siblingOf(feedQuery(repo), CHUNK)] : [])]
   const res = await queryComposite(sdk, compositeOf(page, CHUNK, subs))
+  // The first chunk's states are read beside the feed, not after it.
+  const codes = codesOf(sdk, repo, res.page)
+  codes.catch(() => undefined)
   const feed = await (shared ?? readRepoFeedFrom(sdk, repo, docsAt(res, 3), epoch))
   let labelDocs = docsAt(res, 2)
   if (labelDocs.length >= CHUNK) {
@@ -230,46 +250,49 @@ export async function loadListIndex<Row extends { readonly id: string }>(
     rows: new Map(),
     notRows: new Set(),
     hidden: new HiddenTally(),
-    desc: newWalk(),
-    asc: newWalk(),
+    hiddenOpen: 0,
+    walks: { desc: newWalk(), asc: newWalk() },
     queue: Promise.resolve(),
     all: false,
     byAuthor: new Map(),
     byKinds: new Map(),
     gate: gateFor(repo),
-    toRows,
+    view,
   }
-  await record(sdk, index, res, res.page, index.desc)
+  await recordChunk(sdk, index, res, res.page, index.walks.desc, codes)
   return index
 }
 
-/** Read the next keyset chunk in `direction` (`<=` / `>=` its bound; the boundary row is skipped as seen). */
-export function loadChunk<Row extends { readonly id: string }>(sdk: EvoSDK, index: ListIndex<Row>, direction: 'desc' | 'asc'): Promise<void> {
-  return serial(index, async () => {
-    const walk = direction === 'desc' ? index.desc : index.asc
-    if (walk.done || index.all) return
-    const bound: [string, '<=' | '>=', number][] = walk.bound === null ? [] : [['$createdAt', direction === 'desc' ? '<=' : '>=', walk.bound]]
-    await readChunk(sdk, index, repoSource(index.repo).repoQuery(DOC[index.type], { where: bound, orderBy: [['$createdAt', direction]] }), CHUNK, { walk })
-  })
-}
-
 /**
- * Read chunks in `direction` while `more()` holds, the walk has not ended and at most
- * {@link MAX_CHUNKS} chunks: returns whether the walk covered every row.
+ * A per-repo cache of one kind of index, returning its loader: one load per network, repo and
+ * (private) reader session (a private index holds decrypted titles and bodies), dropped by any
+ * write to the repo and when the session ends.
  */
-export async function walkWhile<Row extends { readonly id: string }>(sdk: EvoSDK, index: ListIndex<Row>, direction: 'desc' | 'asc', more: () => boolean): Promise<boolean> {
-  const walk = direction === 'asc' ? index.asc : index.desc
-  for (let chunks = 0; !walk.done && !index.all && chunks < MAX_CHUNKS && more(); chunks++) await loadChunk(sdk, index, direction)
-  return index.all || (walk.done && walk.complete)
-}
-
-/** The rows the walk in `direction` has loaded, in walk order (every row once all are loaded). */
-export function loadedIds<Row extends { readonly id: string }>(index: ListIndex<Row>, direction: 'desc' | 'asc'): Iterable<string> {
-  return index.all ? index.rows.keys() : (direction === 'asc' ? index.asc : index.desc).ids
+export function indexCache<Row extends RowExtras>(type: 'issue' | 'patch', view: ListIndex<Row>['view']): (sdk: EvoSDK, repo: RepoRef, network: Network) => Promise<ListIndex<Row>> {
+  const indexes = new Map<string, Promise<ListIndex<Row>>>()
+  onRepoInvalidated((repo) => {
+    const at = `:${repo.forge.collab}:${repo.repoId}`
+    for (const key of [...indexes.keys()]) if (key.endsWith(at) || key.includes(`${at}#`)) indexes.delete(key)
+  })
+  onPrivateSessionEnded((id) => {
+    for (const key of [...indexes.keys()]) if (key.endsWith(`#${id}`)) indexes.delete(key)
+  })
+  return (sdk, repo, network) => {
+    const key = `${network}:${repo.forge.collab}:${repoKey(repo)}`
+    let hit = indexes.get(key)
+    if (hit === undefined) {
+      hit = loadListIndex(sdk, repo, network, type, view)
+      indexes.set(key, hit)
+      hit.catch(() => {
+        if (indexes.get(key) === hit) indexes.delete(key)
+      })
+    }
+    return hit
+  }
 }
 
 /** Resolve ids an index names but no loaded chunk holds: `$id in` composites of up to 100. */
-export function resolveIds<Row extends { readonly id: string }>(sdk: EvoSDK, index: ListIndex<Row>, ids: Iterable<string>): Promise<void> {
+export function resolveIds<Row extends RowExtras>(sdk: EvoSDK, index: ListIndex<Row>, ids: Iterable<string>): Promise<void> {
   // Serialized per index: two readers resolving the same ids at once each see what the other read.
   const wanted = [...ids]
   return serial(index, async () => {
@@ -296,7 +319,7 @@ export function resolveIds<Row extends { readonly id: string }>(sdk: EvoSDK, ind
  * composites of 100 by number, newest first. Null past {@link MAX_CHUNKS} chunks (the list then
  * walks chunks instead).
  */
-export function authorCandidates<Row extends { readonly id: string }>(sdk: EvoSDK, index: ListIndex<Row>, author: string): Promise<Set<string> | null> {
+export function authorCandidates<Row extends RowExtras>(sdk: EvoSDK, index: ListIndex<Row>, author: string): Promise<Set<string> | null> {
   return serial(index, async () => {
     const cached = index.byAuthor.get(author)
     if (cached !== undefined) return cached
@@ -323,7 +346,7 @@ export function authorCandidates<Row extends { readonly id: string }>(sdk: EvoSD
  * candidates (the Closed issues, the Merged or Closed PRs; a candidate's current state is its
  * row's). Null when there are too many to read.
  */
-export function transitionTargets<Row extends { readonly id: string }>(sdk: EvoSDK, index: ListIndex<Row>, kinds: readonly number[]): Promise<Set<string> | null> {
+export function transitionTargets<Row extends RowExtras>(sdk: EvoSDK, index: ListIndex<Row>, kinds: readonly number[]): Promise<Set<string> | null> {
   const key = [...kinds].sort().join(',')
   return serial(index, async () => {
     const cached = index.byKinds.get(key)
@@ -355,13 +378,13 @@ export function transitionTargets<Row extends { readonly id: string }>(sdk: EvoS
  * applies. A loaded row is checked exactly (`loaded`); one not loaded yet is admitted on its
  * events and filtered once resolved.
  */
-export function metaCandidates<Row extends { readonly id: string }>(
+export function metaCandidates<Row extends RowExtras>(
   index: ListIndex<Row>,
   q: { readonly labels: readonly string[]; readonly assignee: string | null },
   loaded: (row: Row) => boolean,
 ): Set<string> | null {
-  const byFeed = q.labels.length > 0 || (q.assignee !== null && q.assignee !== 'none')
-  if (!byFeed || index.feed === null) return null
+  const assignee = q.assignee !== null && q.assignee !== 'none' ? q.assignee : null
+  if ((q.labels.length === 0 && assignee === null) || index.feed === null) return null
   const out = new Set<string>()
   for (const [id, log] of index.feed) {
     if (id === '' || index.notRows.has(id)) continue
@@ -371,7 +394,7 @@ export function metaCandidates<Row extends { readonly id: string }>(
       continue
     }
     if (q.labels.length > 0 && !log.events.some((e) => e.kind === 'labelAdd')) continue
-    if (q.assignee !== null && q.assignee !== 'none' && !log.events.some((e) => e.kind === 'assign' && e.value === q.assignee)) continue
+    if (assignee !== null && !log.events.some((e) => e.kind === 'assign' && e.value === assignee)) continue
     out.add(id)
   }
   return out
@@ -389,7 +412,7 @@ export function intersect(sets: readonly (Set<string> | null)[]): Set<string> | 
  * transitions by kind), read once per index; null when they could not be read (tried again next
  * time).
  */
-export async function repoCountsOf<Row extends { readonly id: string }>(sdk: EvoSDK, index: ListIndex<Row>): Promise<RepoCounts | null> {
+export async function repoCountsOf<Row extends RowExtras>(sdk: EvoSDK, index: ListIndex<Row>): Promise<RepoCounts | null> {
   index.counts ??= readRepoCounts(sdk, index.repo)
   return index.counts.catch(() => {
     index.counts = undefined
@@ -398,34 +421,84 @@ export async function repoCountsOf<Row extends { readonly id: string }>(sdk: Evo
 }
 
 /** The loaded rows of `ids`, in order (ids not loaded are skipped). */
-export function rowsOf<Row extends { readonly id: string }>(index: ListIndex<Row>, ids: Iterable<string>): Row[] {
+export function rowsOf<Row extends RowExtras>(index: ListIndex<Row>, ids: Iterable<string>): Row[] {
   return [...ids].map((id) => index.rows.get(id)).filter((r): r is Row => r !== undefined)
 }
 
+/** The rows one list page draws from, and how far they reach. */
+export interface Selected<Row> {
+  /** Every loaded row that matches, sorted. */
+  readonly rows: Row[]
+  /** The rows are every match in the repo. */
+  readonly complete: boolean
+  /** The walk ended short of the repo's end (a timestamp shared by 100+ rows, or the chunk cap). */
+  readonly short: boolean
+  /** When a walk covered only part of the repo: how many rows it looked at. */
+  readonly searched: number | null
+}
+
 /**
- * A per-repo cache of one kind of index: one load per network, repo and (private) reader session
- * (a private index holds decrypted titles and bodies), dropped by any write to the repo and when
- * the session ends.
+ * The matching rows for a page: an index-named candidate set resolved by id, or else a keyset walk
+ * in `direction` until `want` rows (and one more, for a next page) match, or every chunk for a
+ * sort by comments (`walkAll`). `partial` says whether a short walk should report how much it
+ * searched (a text search or a comment sort).
  */
-export function indexCache<Row extends { readonly id: string }>(): (sdk: EvoSDK, repo: RepoRef, network: Network, load: () => Promise<ListIndex<Row>>) => Promise<ListIndex<Row>> {
-  const indexes = new Map<string, Promise<ListIndex<Row>>>()
-  onRepoInvalidated((repo) => {
-    const at = `:${repo.forge.collab}:${repo.repoId}`
-    for (const key of [...indexes.keys()]) if (key.endsWith(at) || key.includes(`${at}#`)) indexes.delete(key)
-  })
-  onPrivateSessionEnded((id) => {
-    for (const key of [...indexes.keys()]) if (key.endsWith(`#${id}`)) indexes.delete(key)
-  })
-  return (_sdk, repo, network, load) => {
-    const key = `${network}:${repo.forge.collab}:${repoKey(repo)}`
-    let hit = indexes.get(key)
-    if (hit === undefined) {
-      hit = load()
-      indexes.set(key, hit)
-      hit.catch(() => {
-        if (indexes.get(key) === hit) indexes.delete(key)
-      })
-    }
-    return hit
+export async function selectRows<Row extends RowExtras>(
+  sdk: EvoSDK,
+  index: ListIndex<Row>,
+  {
+    candidates,
+    matches,
+    cmp,
+    direction,
+    want,
+    walkAll,
+    partial,
+  }: {
+    candidates: Set<string> | null
+    matches: (r: Row) => boolean
+    cmp: (a: Row, b: Row) => number
+    direction: Direction
+    want: number
+    walkAll: boolean
+    partial: boolean
+  },
+): Promise<Selected<Row>> {
+  if (candidates !== null) {
+    await resolveIds(sdk, index, candidates)
+    return { rows: rowsOf(index, candidates).filter(matches).sort(cmp), complete: true, short: false, searched: null }
   }
+  const walk = index.walks[direction]
+  // Once every row is loaded, the walk's own order does not matter: sort the whole set.
+  const loaded = (): string[] => (index.all ? [...index.rows.keys()] : walk.ids)
+  const matching = (): Row[] => rowsOf(index, loaded()).filter(matches)
+  let chunks = 0
+  for (; !walk.done && !index.all && chunks < MAX_CHUNKS && (walkAll || matching().length <= want); chunks++) {
+    await serial(index, async () => {
+      if (walk.done || index.all) return
+      const bound: [string, '<=' | '>=', number][] = walk.bound === null ? [] : [['$createdAt', direction === 'desc' ? '<=' : '>=', walk.bound]]
+      await readChunk(sdk, index, repoSource(index.repo).repoQuery(DOC[index.type], { where: bound, orderBy: [['$createdAt', direction]] }), CHUNK, { walk })
+    })
+  }
+  const complete = index.all || (walk.done && walk.complete)
+  const short = !complete && (walk.done || chunks >= MAX_CHUNKS)
+  return { rows: matching().sort(cmp), complete, short, searched: !complete && partial ? loaded().length : null }
+}
+
+/**
+ * The rows matching a filter in any state (a filtered list's tab counts): every candidate an index
+ * names, resolved, or every row once all are loaded; null when only a chunk walk could tell.
+ */
+export async function rowsInAnyState<Row extends RowExtras>(sdk: EvoSDK, index: ListIndex<Row>, candidates: Set<string> | null, matches: (r: Row) => boolean): Promise<Row[] | null> {
+  if (candidates !== null) {
+    await resolveIds(sdk, index, candidates)
+    return rowsOf(index, candidates).filter(matches)
+  }
+  return index.all ? [...index.rows.values()].filter(matches) : null
+}
+
+/** The rows of page `page` (1-based) of `pageSize`, and whether a next page exists. */
+export function pageOf<Row>(rows: readonly Row[], page: number, pageSize: number): { rows: Row[]; hasNext: boolean } {
+  const start = (page - 1) * pageSize
+  return { rows: rows.slice(start, start + pageSize), hasNext: rows.length > start + pageSize }
 }

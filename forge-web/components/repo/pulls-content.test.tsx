@@ -139,7 +139,7 @@ describe('PullsContent (L-44)', () => {
     const rows = [...el.querySelectorAll('[data-testid="pull-row"]')]
     expect(rows.map((r) => r.getAttribute('data-number'))).toEqual(['203', '202'])
     expect(rows[0]?.textContent).toContain('bug')
-    expect(rows[0]?.querySelector('[data-testid="pull-comments"]')?.textContent).toContain('2 comments')
+    expect(rows[0]?.querySelector('[data-testid="comment-count"]')?.textContent).toContain('2 comments')
     expect(rows[1]?.textContent).toContain('Draft · into main')
     expect(el.querySelector('[data-testid="page-indicator"]')?.textContent).toBe('Page 1 of 6')
     expect(asked[0]).toMatchObject({ state: 'open', page: 1, pageSize: 25, sort: 'newest' })

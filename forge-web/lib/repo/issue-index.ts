@@ -25,11 +25,9 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { DEFAULT_NETWORK, type Network } from '../constants'
-import type { PlainDocument } from '../sdk'
-import { str, type RepoRef } from './contract'
-import { EMPTY_LOG, issueViewOf, type IssueView } from './issues'
+import type { RepoRef } from './contract'
+import { issueViewOf, type IssueView } from './issues'
 import { ISSUE_CLOSE } from '../rules/transition'
-import { readStateCodes } from './transitions'
 import type { LabelDef } from './labels'
 import { pinnedTargets } from '../rules/parity'
 import type { HiddenCounts } from './private-content'
@@ -37,16 +35,15 @@ import {
   authorCandidates,
   indexCache,
   intersect,
-  loadListIndex,
-  loadedIds,
   metaCandidates,
+  pageOf,
   repoCountsOf,
   resolveIds,
+  rowsInAnyState,
   rowsOf,
+  selectRows,
   transitionTargets,
-  walkWhile,
   type ListIndex,
-  type RowBuilder,
 } from './target-index'
 
 /** An issue row: the folded issue and its comment count (null: not counted). */
@@ -57,25 +54,10 @@ export interface IssueRow extends IssueView {
 type IssueIndex = ListIndex<IssueRow>
 
 /**
- * THE state step: a chunk's issues with their state codes (one proved sum query,
- * `targetId in [chunk]`) and their labels and assignees from the feed (unverified, and said so,
- * when the feed is too large to read completely).
+ * The index, loading it on first use (one per repo and network, until a write drops it). An
+ * issue's view: its state code (the chunk's proved sum) and its labels and assignees from the feed.
  */
-const issueRows: RowBuilder<IssueRow> = async (sdk, index, docs, counts) => {
-  const codes = docs.length === 0 ? new Map<string, number>() : await readStateCodes(sdk, index.repo, docs.map((d: PlainDocument) => str(d, '$id')))
-  return docs.map((doc) => {
-    const id = str(doc, '$id')
-    const view = issueViewOf(doc, index.feed?.get(id) ?? EMPTY_LOG, codes.get(id) ?? 0)
-    return { ...view, stateComplete: index.feed !== null, comments: counts === null ? null : counts.get(id) ?? 0 }
-  })
-}
-
-const cached = indexCache<IssueRow>()
-
-/** The index, loading it on first use (one per repo and network, until a write drops it). */
-function indexOf(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<IssueIndex> {
-  return cached(sdk, repo, network, () => loadListIndex(sdk, repo, network, 'issue', issueRows))
-}
+const indexOf = indexCache<IssueRow>('issue', async (_sdk, _index, doc, log, code) => issueViewOf(doc, log, code))
 
 function sortRowsNewest(a: IssueRow, b: IssueRow): number {
   return b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1)
@@ -113,7 +95,7 @@ export interface IssueListPage {
   readonly closedCount: number | null
   /**
    * When the answer covers only part of the repo (a text or mention search looks at loaded
-   * issues; a comment sort at most {@link MAX_CHUNKS} chunks): how many issues it looked at.
+   * issues; a comment sort at most 30 chunks): how many issues it looked at.
    */
   readonly searchedOf: { readonly searched: number; readonly total: number | null } | null
   /** False when the feed was too large to fold: states, labels and assignees are unverified. */
@@ -188,23 +170,22 @@ export function compareRows(sort: IssueSelection['sort']): (a: IssueRow, b: Issu
 
 /**
  * The repo's Open / Closed issue totals: the proved counts (read once per index, dropped with it
- * by a write), less the issues this reader skipped as not shown. A skipped issue (not
- * well-formed, or a stranger's) is never closed, so it sits in Open; once every issue is
- * loaded it is subtracted exactly. In a private repo anyone's ciphertext counts in the total
- * and cannot be told apart until read, so only a full read gives an open count there. Null
- * when the counts could not be read.
+ * by a write), less the open issues this reader skipped as not shown (not well-formed, or a
+ * stranger's; their state is read with their chunk's). In a private repo anyone's ciphertext
+ * counts in the total and cannot be told apart until read, so only a full read gives counts
+ * there. Null when the counts could not be read.
  */
 async function exactCounts(sdk: EvoSDK, index: IssueIndex): Promise<{ open: number; closed: number } | null> {
   const counts = await repoCountsOf(sdk, index)
   if (counts === null) return null
   if (index.repo.visibility === 'private' && !index.all) return null
-  return { open: Math.max(0, counts.issuesOpen - index.hidden.total), closed: counts.issuesClosed }
+  return { open: Math.max(0, counts.issuesOpen - index.hiddenOpen), closed: counts.issuesClosed }
 }
 
 /**
  * One page of the issue list for `q`, reading only what it needs: the first chunk and the feed
  * (once), feed-named candidates by id, more keyset chunks while the page is not full, or every
- * chunk (up to {@link MAX_CHUNKS}) for a sort by comments. `total` is the repo's issue count
+ * chunk (up to 30) for a sort by comments. `total` is the repo's issue count
  * (the countable index), or null when it is not known.
  */
 export async function queryIssues(
@@ -214,94 +195,70 @@ export async function queryIssues(
   total: number | null,
   network: Network = DEFAULT_NETWORK,
 ): Promise<IssueListPage> {
-  const state = await indexOf(sdk, repo, network)
-  const want = q.page * q.pageSize
-  const cmp = compareRows(q.sort)
-  const direction = q.sort === 'oldest' ? 'asc' : 'desc'
-
-  let rows: IssueRow[]
-  let complete: boolean
-  let searched: number | null = null
-  const candidates = await candidatesFor(sdk, state, q)
-  if (candidates !== null) {
-    // The feed names every issue that can match: resolve them, then filter exactly.
-    await resolveIds(sdk, state, candidates)
-    rows = rowsOf(state, candidates).filter((r) => stateMatches(r, q.state) && rowMatches(r, q)).sort(cmp)
-    complete = true
-  } else {
-    // Once every issue is loaded, the walk's own order does not matter: sort the whole set.
-    const matching = (): IssueRow[] => rowsOf(state, loadedIds(state, direction)).filter((r) => stateMatches(r, q.state) && rowMatches(r, q))
-    // Keep reading chunks until the page is full and one more row shows a next page exists (every
-    // chunk, for a sort by comments).
-    complete = await walkWhile(sdk, state, direction, () => q.sort === 'comments' || matching().length <= want)
-    rows = matching().sort(cmp)
-    if (!complete && (q.text.trim() !== '' || q.mentions !== null || q.sort === 'comments')) searched = [...loadedIds(state, direction)].length
-  }
+  const index = await indexOf(sdk, repo, network)
+  const filtered = q.labels.length > 0 || q.author !== null || q.assignee !== null || q.mentions !== null || q.text.trim() !== ''
+  const matches = (r: IssueRow): boolean => stateMatches(r, q.state) && rowMatches(r, q)
+  const selected = await selectRows(sdk, index, {
+    candidates: await candidatesFor(sdk, index, q),
+    matches,
+    cmp: compareRows(q.sort),
+    direction: q.sort === 'oldest' ? 'asc' : 'desc',
+    want: q.page * q.pageSize,
+    walkAll: q.sort === 'comments',
+    partial: q.text.trim() !== '' || q.mentions !== null || q.sort === 'comments',
+  })
 
   // Tab counts under the current filters: exact when the whole candidate set is known.
   let openCount: number | null = null
   let closedCount: number | null = null
-  const filtered = q.labels.length > 0 || q.author !== null || q.assignee !== null || q.mentions !== null || q.text.trim() !== ''
   if (!filtered) {
-    const exact = await exactCounts(sdk, state)
+    const exact = await exactCounts(sdk, index)
     openCount = exact?.open ?? null
     closedCount = exact?.closed ?? null
   } else {
-    // Both tabs' counts need every candidate in either state: the feed or author index names
-    // them, or a finished walk has loaded every issue.
-    const both = await withBothStates(sdk, state, q)
-    const all = both ?? (state.all ? rowsOf(state, state.rows.keys()).filter((r) => rowMatches(r, q)) : null)
+    // Both tabs' counts need every candidate in either state: an index names them, or every issue is loaded.
+    const all = await rowsInAnyState(sdk, index, await candidatesFor(sdk, index, { ...q, state: 'all' }), (r) => rowMatches(r, q))
     if (all !== null) {
       openCount = all.filter((r) => r.state.open).length
       closedCount = all.length - openCount
     }
   }
 
-  const start = (q.page - 1) * q.pageSize
+  const page = pageOf(selected.rows, q.page, q.pageSize)
   return {
-    rows: rows.slice(start, start + q.pageSize),
-    pinned: q.page === 1 ? await pinnedRows(sdk, state) : [],
-    matching: complete ? rows.length : null,
-    hasNext: rows.length > start + q.pageSize,
+    rows: page.rows,
+    pinned: q.page === 1 ? await pinnedRows(sdk, index) : [],
+    matching: selected.complete ? selected.rows.length : null,
+    hasNext: page.hasNext,
     openCount,
     closedCount,
-    searchedOf: searched === null ? null : { searched, total },
-    stateComplete: state.feed !== null,
-    labels: state.labels,
-    hidden: state.hidden.total,
-    hiddenBy: state.hidden.value,
+    searchedOf: selected.searched === null ? null : { searched: selected.searched, total },
+    stateComplete: index.feed !== null,
+    labels: index.labels,
+    hidden: index.hidden.total,
+    hiddenBy: index.hidden.value,
   }
 }
 
 /**
- * The rows matching `q`'s filters in either state (for both tabs' counts), when the feed or the
- * author index names every candidate; null when only a chunk walk could.
+ * Every issue that can match `q`, when an index names them: the feed (labels, assignee), the
+ * `author` index and (the Closed tab) the issue-close transitions, intersected. Null when none
+ * applies (the list walks chunks).
  */
-async function withBothStates(sdk: EvoSDK, state: IssueIndex, q: IssueSelection): Promise<IssueRow[] | null> {
-  const cands = await candidatesFor(sdk, state, { ...q, state: 'all' })
-  if (cands === null) return null
-  await resolveIds(sdk, state, cands)
-  return rowsOf(state, cands).filter((r) => rowMatches(r, q))
-}
-
-/**
- * Every issue that can match `q`, when an index names them: the feed (state, labels, assignee)
- * and the `author` index, intersected. Null when neither applies (the list walks chunks).
- */
-async function candidatesFor(sdk: EvoSDK, state: IssueIndex, q: IssueSelection): Promise<Set<string> | null> {
+async function candidatesFor(sdk: EvoSDK, index: IssueIndex, q: IssueSelection): Promise<Set<string> | null> {
   return intersect([
-    metaCandidates(state, q, (row) => rowMatches(row, { ...q, author: null, mentions: null, text: '' })),
-    q.author === null ? null : await authorCandidates(sdk, state, q.author),
+    metaCandidates(index, q, (row) => rowMatches(row, { ...q, author: null, mentions: null, text: '' })),
+    q.author === null ? null : await authorCandidates(sdk, index, q.author),
     // Every issue ever closed (the targets of issue-close transitions); its row says whether it still is.
-    q.state === 'closed' ? await transitionTargets(sdk, state, [ISSUE_CLOSE]) : null,
+    q.state === 'closed' ? await transitionTargets(sdk, index, [ISSUE_CLOSE]) : null,
   ])
 }
 
 /** The repo's pinned issues, newest pin first (one `$id in` read for any not loaded yet). */
-async function pinnedRows(sdk: EvoSDK, state: IssueIndex): Promise<IssueRow[]> {
-  if (state.feed === null) return []
-  const ids = pinnedTargets([...state.feed.values()].flatMap((log) => log.events)).map((p) => p.targetId)
+async function pinnedRows(sdk: EvoSDK, index: IssueIndex): Promise<IssueRow[]> {
+  if (index.feed === null) return []
+  const ids = pinnedTargets([...index.feed.values()].flatMap((log) => log.events)).map((p) => p.targetId)
   if (ids.length === 0) return []
-  await resolveIds(sdk, state, ids)
-  return rowsOf(state, ids)
+  await resolveIds(sdk, index, ids)
+  return rowsOf(index, ids)
 }

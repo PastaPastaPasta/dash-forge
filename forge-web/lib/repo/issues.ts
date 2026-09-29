@@ -45,7 +45,7 @@ import {
 import { repoTimelines, type RepoTimelines } from './chrome'
 import { configBundleOf, readConfigHistory } from './config'
 import { publicRefKey, readRefUpdates, refUpdatesFromRows } from './refs'
-import { HiddenTally, SEALED_EPOCH, admitAll, gateFor, readableEvents, type HiddenCounts } from './private-content'
+import { HiddenTally, SEALED_EPOCH, admitAll, gateFor, readableEvents } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
 import { base64ToHex, hexToBase64 } from '../sdk'
@@ -57,14 +57,6 @@ export function titleOf(doc: PlainDocument): string {
   if (title !== '') return title
   return byteFieldToHex(doc, 'enc') !== '' ? 'Encrypted (not readable here)' : ''
 }
-
-/**
- * A list page: the rows, and how many newer documents were skipped as not well-formed (or, in
- * a private repo, as unreadable: `hiddenBy` splits them by reason) — shown as "N hidden",
- * never silently. `complete` is true when the read reached the end of the list, so the rows
- * are every shown document of the repo, not just its newest page (an open count needs that).
- */
-export type Listed<T> = T[] & { readonly hidden: number; readonly hiddenBy: HiddenCounts; readonly complete: boolean }
 
 /** An issue with its folded state. */
 export interface IssueView {
@@ -102,7 +94,7 @@ export interface IssueView {
    * False when the event log could not be read to completion, so `state` is a fold over a
    * partial history and must not be presented as authoritative. Only list surfaces can
    * produce this — a detail read throws instead, because there a wrong state is worse than
-   * an error. See {@link listIssues}.
+   * an error (the list indexes, `./issue-index`, `./pull-index`).
    */
   readonly stateComplete: boolean
 }
@@ -458,7 +450,7 @@ export function feedQuery(repo: RepoRef): DocumentQuery {
  * labels and assignees from (state is the rows' transition sums; `event` is member-gated at
  * consensus, so the feed is bounded by real activity). Read once per repo through a short
  * cache: a read another reader has in flight or settled is joined, else this one starts,
- * continued past `first` (an index's composite sibling page) when given, and is shared the moment
+ * continued past `first` (an index's composite sibling page), and is shared the moment
  * it starts, so the two indexes page the feed once between them (L-77). `epoch` is the
  * {@link repoEpoch} `first` was read at: a first page from before a write is not shared. Null
  * when the feed is too large to fold ({@link FEED_MAX_PAGES}).
@@ -466,8 +458,8 @@ export function feedQuery(repo: RepoRef): DocumentQuery {
 export function readRepoFeedFrom(
   sdk: EvoSDK,
   repo: RepoRef,
-  first?: readonly PlainDocument[],
-  epoch = repoEpoch(repo),
+  first: readonly PlainDocument[],
+  epoch: number,
 ): Promise<Map<string, TargetLog> | null> {
   if (epoch !== repoEpoch(repo)) return readRepoFeed(sdk, repo, first)
   return ttlCached(feedCache, pageKey(repo), () => readRepoFeed(sdk, repo, first))
@@ -479,9 +471,9 @@ export function sharedRepoFeed(repo: RepoRef): Promise<Map<string, TargetLog> | 
   return live(hit) ? hit!.promise : undefined
 }
 
-async function readRepoFeed(sdk: EvoSDK, repo: RepoRef, first?: readonly PlainDocument[]): Promise<Map<string, TargetLog> | null> {
+async function readRepoFeed(sdk: EvoSDK, repo: RepoRef, first: readonly PlainDocument[]): Promise<Map<string, TargetLog> | null> {
   try {
-    const docs = await queryAllDocuments(sdk, feedQuery(repo), { maxPages: FEED_MAX_PAGES, ...(first === undefined ? {} : { firstPage: first }) })
+    const docs = await queryAllDocuments(sdk, feedQuery(repo), { maxPages: FEED_MAX_PAGES, firstPage: first })
     // A private repo's member events are read through `readableEvents` (values opened).
     const log = await toLog(repo, docs, [])
     return groupFeed(log.events, [])
@@ -745,23 +737,26 @@ export interface BaseRefReaders {
  * config read, one update-history read per base ref, so a list costs O(base refs), not O(PRs).
  */
 export function baseRefReaders(sdk: EvoSDK, repo: RepoRef, { maxAgeMs = FEED_TTL_MS }: { readonly maxAgeMs?: number } = {}): BaseRefReaders {
-  let timelines: Promise<RepoTimelines | null> | undefined
-  const stored = (): Promise<RepoTimelines | null> => (timelines ??= repoTimelines(sdk, repo, { maxAgeMs }))
-  let configs: Promise<readonly ConfigDoc[]> | undefined
-  const updates = new Map<string, Promise<RefUpdate[]>>()
+  // Each read is kept for the reader set's life, unless it fails: then the next caller reads again
+  // (a transient failure must not stick to an index that lives for the session).
+  const held = new Map<string, Promise<unknown>>()
+  const once = <T>(key: string, read: () => Promise<T>): Promise<T> => {
+    let hit = held.get(key) as Promise<T> | undefined
+    if (hit === undefined) {
+      hit = read()
+      held.set(key, hit)
+      const mine = hit
+      hit.catch(() => {
+        if (held.get(key) === mine) held.delete(key)
+      })
+    }
+    return hit
+  }
+  const stored = (): Promise<RepoTimelines | null> => once('timelines', () => repoTimelines(sdk, repo, { maxAgeMs }))
   return {
-    configHistory: () =>
-      (configs ??= stored().then((t) => (t === null ? readConfigHistory(sdk, repo) : configBundleOf(repo, t.config).history))),
-    refUpdates: (hash) => {
-      let read = updates.get(hash)
-      if (read === undefined) {
-        read = stored().then((t) =>
-          t === null ? readRefUpdates(sdk, repo, hash) : refUpdatesFromRows(repo, t.refUpdate, t.protectedRefUpdate, hash),
-        )
-        updates.set(hash, read)
-      }
-      return read
-    },
+    configHistory: () => once('config', () => stored().then((t) => (t === null ? readConfigHistory(sdk, repo) : configBundleOf(repo, t.config).history))),
+    refUpdates: (hash) =>
+      once(`ref:${hash}`, () => stored().then((t) => (t === null ? readRefUpdates(sdk, repo, hash) : refUpdatesFromRows(repo, t.refUpdate, t.protectedRefUpdate, hash)))),
   }
 }
 

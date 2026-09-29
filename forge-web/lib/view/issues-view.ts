@@ -411,8 +411,10 @@ export async function loadPullThread(
     ...[...log.events, ...log.authorEvents].flatMap((e) => [e.actor, ...(e.kind === 'assign' || e.kind === 'unassign' ? [e.value ?? ''] : []), e.refId ?? '']),
     ...(memberships ?? []).map((m) => m.identity),
   ]
+  // The base ref's history and config from the repo chrome store (no request), afresh after this page's own write.
+  const base = baseRefReaders(sdk, repo, fresh ? { maxAgeMs: 0 } : {})
   const [pull] = await Promise.all([
-    readPullWith(sdk, repo, doc, log, baseRefReaders(sdk, repo, fresh ? { maxAgeMs: 0 } : {}), { transitions }),
+    readPull(sdk, repo, doc, log, base.configHistory, base.refUpdates, { transitions }),
     prefetchDpnsNames(sdk, shownIds.filter((x) => x !== ''), network).catch(() => undefined),
   ])
 
@@ -439,21 +441,6 @@ export async function loadPullThread(
     hidden: tally.value,
     eventValues: eventValues(log),
   }
-}
-
-/**
- * `readPull` with the base-ref history and config timeline from `base` (the repo chrome store the
- * page's own chrome read filled: no request for a public repo), not three reads of their own (L-77).
- */
-function readPullWith(
-  sdk: EvoSDK,
-  repo: RepoRef,
-  doc: PlainDocument,
-  log: TargetLog,
-  base: ReturnType<typeof baseRefReaders>,
-  state: Parameters<typeof readPull>[6],
-): Promise<PullView> {
-  return readPull(sdk, repo, doc, log, base.configHistory, base.refUpdates, state)
 }
 
 /** The review inputs of the approval fold. */

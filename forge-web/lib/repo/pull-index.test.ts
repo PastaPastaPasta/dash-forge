@@ -233,6 +233,45 @@ describe('pull index', () => {
     expect(seen.composites.length).toBeGreaterThan(reads)
   })
 
+  it('a failed read on a later chunk leaves the index as it was: the retry reads it once, not twice (review)', async () => {
+    const { sdk, seen, repo, store } = fresh(203)
+    // #50..#1 target `dev`, whose history is read when the walk reaches them (the second chunk on).
+    const DEV = bytesToBase64(sha256(new TextEncoder().encode('refs/heads/dev')))
+    for (const p of store.COLLAB!.patch!) if ((p['number'] as number) <= 50) Object.assign(p, { baseRefName: 'refs/heads/dev', baseRefNameHash: DEV })
+    store.CORE!.refUpdate!.push({ $id: 'rdev', $ownerId: OWNER, $createdAt: 11, repoId: REPO, refName: 'refs/heads/dev', refNameHash: DEV, newOid: hexToBase64(oid(88_888)) })
+    await queryPulls(sdk, repo, { ...base, state: 'all' }, 203, 'devnet')
+    // `dev`'s history read fails once (a node down): the page fails…
+    const documents = (sdk as unknown as { documents: { query: (q: DocumentQuery) => Promise<unknown> } }).documents
+    const query = documents.query
+    let failed = false
+    documents.query = (q) => {
+      if (!failed && q.documentTypeName === 'refUpdate' && (q.where ?? []).some(([f, , v]) => f === 'refNameHash' && v === DEV)) {
+        failed = true
+        return Promise.reject(new Error('node down'))
+      }
+      return query(q)
+    }
+    await expect(queryPulls(sdk, repo, { ...base, state: 'all', page: 9 }, 203, 'devnet')).rejects.toThrow('node down')
+    // …and the retry reads `dev` again (the failure is not kept) and lists every PR once.
+    const last = await queryPulls(sdk, repo, { ...base, state: 'all', page: 9 }, 203, 'devnet')
+    expect(last.rows.map((r) => r.number)).toEqual([3, 2, 1])
+    const all = await queryPulls(sdk, repo, { ...base, state: 'all', pageSize: 300 }, 203, 'devnet')
+    expect(all.rows).toHaveLength(203)
+    expect(new Set(all.rows.map((r) => r.id)).size).toBe(203)
+    expect(seen.composites.length).toBeGreaterThan(0)
+  })
+
+  it('leaves a hidden PR out of Open only while it is open (review)', async () => {
+    const { sdk, repo, store } = fresh(30)
+    // Two malformed PRs (ciphertext in a public repo): #31 still open, #32 closed by a maintainer.
+    for (const n of [31, 32]) store.COLLAB!.patch!.push({ $id: PID(n), $ownerId: COLLAB, $createdAt: 2_000_000 + n * 1000, repoId: REPO, number: n, title: '', enc: bytesToBase64(new Uint8Array(32)), epoch: 0, baseRefName: 'refs/heads/main', baseRefNameHash: MAIN_HASH, headOid: hexToBase64(oid(n)), sourceRepoId: REPO })
+    store.COLLAB!.transition!.push({ $id: 'thidden', $ownerId: MAINT, $createdAt: 9_000_000, repoId: REPO, targetId: PID(32), targetNumber: 32, targetKind: 1, kind: 11, delta: 1, asAuthor: 0 })
+    const page = await queryPulls(sdk, repo, base, 32, 'devnet')
+    // The proved totals count both; only the open hidden one comes off Open.
+    expect(page.hidden).toBe(2)
+    expect(page.counts).toEqual({ ...expected(30), closed: expected(30).closed + 1 })
+  })
+
   it('assigns COLLAB nothing: the assignee filter is exact', async () => {
     const { sdk, repo } = fresh(30)
     expect((await queryPulls(sdk, repo, { ...base, state: 'all', assignee: COLLAB }, 30, 'devnet')).rows).toEqual([])

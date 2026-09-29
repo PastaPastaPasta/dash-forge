@@ -7,13 +7,16 @@
  * `lib/view/pull-query`) and passes it in.
  */
 
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { ChevronLeft, ChevronRight, Loader2, Search } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import Link from 'next/link'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { ChevronLeft, ChevronRight, Loader2, MessageSquare, Search } from 'lucide-react'
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import type { Network } from '@/lib/constants'
 import type { LabelDef } from '@/lib/repo'
-import { resolveDpnsId } from '@/lib/view'
-import { dpnsAuthorCandidates, resolveSearchNames } from '@/lib/view/issue-query'
+import { plural, resolveDpnsId } from '@/lib/view'
+import { dpnsAuthorCandidates, resolveSearchNames, withQuery } from '@/lib/view/issue-query'
+import type { RepoAddress } from '@/hooks/use-query-param'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { LabelChip } from '@/components/repo/issue-bits'
@@ -45,40 +48,50 @@ export interface ListSearch<Q> {
   readonly notReady: boolean
   /** A tab, filter or page change: wins over a name lookup still in flight. */
   readonly change: (c: Partial<Q>) => void
-  /** Clear filters: `next` replaces the query, and the note goes with them. */
-  readonly clear: (next: Q) => void
+  /** Clear filters: back to the state tab alone, and the note goes with the filters. */
+  readonly clear: () => void
 }
 
 /** What the box and its note read of a {@link ListSearch}, whatever the list's query type. */
 export type SearchState = Omit<ListSearch<never>, 'change' | 'clear'>
 
 /**
- * The search box of a list whose query lives in the URL: `author:` / `assignee:` DPNS names are
- * resolved to identity ids before the qualifiers are lifted (L-43), in a typed submit and, once
- * connected, in a linked `?q=`; the newest submit, tab, filter or page change wins, so an
- * overtaken lookup neither applies its result nor leaves the spinner on.
+ * A list whose query lives in the URL (`parse` reads it, `toParams` writes it with
+ * `router.replace`), with its search box: `author:` / `assignee:` DPNS names are resolved to
+ * identity ids before the qualifiers are lifted (L-43), in a typed submit and, once connected, in
+ * a linked `?q=`; the newest submit, tab, filter or page change wins, so an overtaken lookup
+ * neither applies its result nor leaves the spinner on.
  */
-export function useListSearch<Q extends { readonly page: number }>({
-  query,
-  setQuery,
+export function useListQuery<Q extends { readonly page: number }>({
+  addr,
+  parse,
+  toParams,
   grammar,
-  linkedQ,
   sdk,
   ready,
   network,
-  withChange,
 }: {
-  query: Q
-  setQuery: (next: Q) => void
+  addr: RepoAddress
+  parse: (params: URLSearchParams) => Q
+  toParams: (q: Q) => [string, string][]
   grammar: ListGrammar<Q>
-  /** The URL's `?q=` (the page reads it once, capped at 200 characters). */
-  linkedQ: string | null
   sdk: EvoSDK | null
   ready: boolean
   network: Network
-  /** The query with `c` applied (a change but a page move returns to page 1). */
-  withChange: (q: Q, c: Partial<Q>) => Q
-}): ListSearch<Q> {
+}): { query: Q; search: ListSearch<Q> } {
+  const router = useRouter()
+  const pathname = usePathname()
+  const params = useSearchParams()
+  const query = useMemo(() => parse(new URLSearchParams(params.toString())), [params, parse])
+  const setQuery = (next: Q): void => {
+    const q = new URLSearchParams({ owner: addr.owner, name: addr.name })
+    if (addr.repoId) q.set('repo', addr.repoId)
+    for (const [k, v] of toParams(next)) q.append(k, v)
+    router.replace(`${pathname}?${q.toString()}`, { scroll: false })
+  }
+  // The linked `?q=`, capped as the query parsers cap it (a crafted link cannot force unbounded DPNS reads).
+  const linkedQ = params.get('q')?.slice(0, 200) ?? null
+
   const [search, setSearch] = useState<string | null>(null)
   const [dropped, setDropped] = useState<readonly string[]>(() => grammar.unresolved(linkedQ ?? ''))
   const [notFound, setNotFound] = useState<readonly string[]>([])
@@ -132,26 +145,29 @@ export function useListSearch<Q extends { readonly page: number }>({
     setSearching(false)
   }
   return {
-    value,
-    setValue: setSearch,
-    submit: async (e) => {
-      e.preventDefault()
-      await resolveAndApply(value, grammar.submitBase(query))
-    },
-    searching,
-    dropped,
-    notFound,
-    notReady,
-    change: (c) => {
-      overtake()
-      setQuery(withChange(query, c))
-    },
-    clear: (next) => {
-      overtake()
-      setDropped([])
-      setNotFound([])
-      setNotReady(false)
-      setQuery(next)
+    query,
+    search: {
+      value,
+      setValue: setSearch,
+      submit: async (e) => {
+        e.preventDefault()
+        await resolveAndApply(value, grammar.submitBase(query))
+      },
+      searching,
+      dropped,
+      notFound,
+      notReady,
+      change: (c) => {
+        overtake()
+        setQuery(withQuery(query, c))
+      },
+      clear: () => {
+        overtake()
+        setDropped([])
+        setNotFound([])
+        setNotReady(false)
+        setQuery(grammar.submitBase(query))
+      },
     },
   }
 }
@@ -375,17 +391,21 @@ export function PersonFilter({
 export function Pager({
   page,
   hasNext,
-  pages,
+  matching,
+  pageSize,
   onPage,
-  label = 'Issue pages',
+  label,
 }: {
   page: number
   hasNext: boolean
-  pages: number | null
+  /** Every matching row, when known: the page count. */
+  matching: number | null
+  pageSize: number
   onPage: (p: number) => void
-  label?: string
+  label: string
 }): JSX.Element | null {
   if (page === 1 && !hasNext) return null
+  const pages = matching === null ? null : Math.max(1, Math.ceil(matching / pageSize))
   return (
     <nav aria-label={label} className="mt-4 flex items-center justify-center gap-3 text-dense">
       <Button variant="outline" size="sm" disabled={page <= 1} onClick={() => onPage(page - 1)}>
@@ -399,5 +419,45 @@ export function Pager({
         Next <ChevronRight className="h-3.5 w-3.5" aria-hidden />
       </Button>
     </nav>
+  )
+}
+
+/** "Searched the newest N of M …": a search or comment sort that looked at part of the repo. */
+export function SearchedNote({ searchedOf, noun }: { searchedOf: { readonly searched: number; readonly total: number | null } | null | undefined; noun: string }): JSX.Element | null {
+  if (!searchedOf) return null
+  return (
+    <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
+      Searched the newest {searchedOf.searched}
+      {searchedOf.total !== null ? ` of ${searchedOf.total}` : ''} {noun}; older ones were not read for this search.
+    </p>
+  )
+}
+
+/** A row's label chip that adds the label to the list's filter. */
+export function LabelChipFilter({ name, def, selected, onChange }: { name: string; def: LabelDef | undefined; selected: readonly string[]; onChange: (labels: string[]) => void }): JSX.Element {
+  return (
+    <button type="button" onClick={() => onChange(selected.includes(name) ? [...selected] : [...selected, name])} aria-label={`Filter by label ${name}`} className="hit-area">
+      <LabelChip name={name} def={def} />
+    </button>
+  )
+}
+
+/** A link to one row of a list (its title). */
+export function RowLink({ href, title }: { href: string; title: string }): JSX.Element {
+  return (
+    <Link href={href} className="hit-area text-dense font-medium text-anvil-900 hover:text-forge-700 dark:text-anvil-50 dark:hover:text-forge-400">
+      {title || '(untitled)'}
+    </Link>
+  )
+}
+
+/** A row's comment count (nothing when there are none). */
+export function CommentCount({ n }: { n: number | null }): JSX.Element | null {
+  if (!n) return null
+  return (
+    <span className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="comment-count">
+      <MessageSquare className="h-3.5 w-3.5" aria-hidden /> <span aria-hidden>{n}</span>
+      <span className="sr-only">{plural(n, 'comment')}</span>
+    </span>
   )
 }

@@ -25,8 +25,6 @@ import {
 } from './issue-query'
 import { plural } from './format'
 
-export type { PullStateFilter }
-
 /** The structured PR list query. */
 export type PullListQuery = Omit<IssueListQuery, 'state' | 'mentions'> & { readonly state: PullStateFilter }
 

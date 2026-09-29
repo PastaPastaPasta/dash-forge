@@ -333,7 +333,8 @@ describe('forge-v2 issue and PR folds', () => {
     // State: one sum query naming the whole page, grouped by target.
     const sums = seen.filter((q) => q.documentTypeName === 'transition' && (q as { groupBy?: string[] }).groupBy?.[0] === 'targetId')
     expect(sums).toHaveLength(1)
-    expect(sums[0]?.where).toEqual([['targetId', 'in', [ID('issue1'), ID('issue2'), ID('issue3')].sort()]])
+    // The chunk's hidden #4 too: an open hidden issue comes off the Open count.
+    expect(sums[0]?.where).toEqual([['targetId', 'in', [ID('issue1'), ID('issue2'), ID('issue3'), ID('issue4')].sort()]])
     expect((sums[0] as { groupBy?: string[] }).groupBy).toEqual(['targetId'])
     // Labels and assignees: the repo's member-event feed, read once, never per row.
     const eventReads = seen.filter((q) => q.documentTypeName === 'event' || q.documentTypeName === 'authorEvent')
@@ -374,7 +375,7 @@ describe('forge-v2 issue and PR folds', () => {
     // Five newer malformed issues (ciphertext in a public repo) ahead of the real ones.
     for (let n = 10; n < 15; n++) {
       store.COLLAB!.issue!.push(
-        doc({ $id: `spam${n}`, $ownerId: STRANGER, repoId: REPO, number: n, title: '', enc: bytesToBase64(new Uint8Array(32)), epoch: 0 }),
+        doc({ $id: ID(`spam${n}`), $ownerId: STRANGER, repoId: REPO, number: n, title: '', enc: bytesToBase64(new Uint8Array(32)), epoch: 0 }),
       )
     }
     invalidateRepoFeed(DEMO)

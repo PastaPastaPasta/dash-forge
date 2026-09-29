@@ -21,10 +21,9 @@ import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
 import { useMemo } from 'react'
 import Link from 'next/link'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import { GitMerge, GitPullRequest, GitPullRequestClosed, MessageSquare, X } from 'lucide-react'
+import { GitMerge, GitPullRequest, GitPullRequestClosed, X } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { branchName, plural } from '@/lib/view'
+import { branchName } from '@/lib/view'
 import {
   DEFAULT_PULL_QUERY,
   PULL_PAGE_SIZE,
@@ -38,15 +37,29 @@ import {
   unresolvedPullQualifiers,
   type PullListQuery,
 } from '@/lib/view/pull-query'
-import { withQuery } from '@/lib/view/issue-query'
 import { queryPulls, repoContractIds, repoKey, type PullListPage, type PullRow, type PullSelection } from '@/lib/repo'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
 import { useRepoWriteGeneration } from '@/hooks/use-repo-chrome'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
-import { DroppedNote, LabelFilter, Pager, PersonFilter, SearchBox, SortSelect, StateTab, tabCount, useListSearch, type ListGrammar } from '@/components/repo/list-controls'
-import { AssigneeAvatars, LabelChip } from '@/components/repo/issue-bits'
+import {
+  CommentCount,
+  DroppedNote,
+  LabelChipFilter,
+  LabelFilter,
+  Pager,
+  PersonFilter,
+  RowLink,
+  SearchBox,
+  SearchedNote,
+  SortSelect,
+  StateTab,
+  tabCount,
+  useListQuery,
+  type ListGrammar,
+} from '@/components/repo/list-controls'
+import { AssigneeAvatars } from '@/components/repo/issue-bits'
 import { HiddenNote } from '@/components/repo/hidden-note'
 import { MirrorNote } from '@/components/repo/mirror-note'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
@@ -72,31 +85,12 @@ function pullStatus(p: PullRow): { label: string; icon: JSX.Element; klass: stri
 export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
   const { sdk, ready, network } = useSdk(repoContractIds(home.repo))
   const { identity } = useAuth()
-  const router = useRouter()
-  const pathname = usePathname()
-  const params = useSearchParams()
   const generation = useRepoWriteGeneration(home.repo)
   const trust = useMirrorTrust(home.repo)
   const total = useRepoTotals(home.repo, 'pulls')
 
-  // The list query lives in the URL: parse it on every render, write it with router.replace.
-  const query = useMemo(() => parsePullQuery(params), [params])
-  const setQuery = (next: PullListQuery): void => {
-    const q = new URLSearchParams({ owner: addr.owner, name: addr.name })
-    if (addr.repoId) q.set('repo', addr.repoId)
-    for (const [k, v] of pullQueryParams(next)) q.append(k, v)
-    router.replace(`${pathname}?${q.toString()}`, { scroll: false })
-  }
-  const search = useListSearch({
-    query,
-    setQuery,
-    grammar: PULL_GRAMMAR,
-    linkedQ: params.get('q')?.slice(0, 200) ?? null,
-    sdk,
-    ready,
-    network,
-    withChange: withQuery,
-  })
+  // The list query lives in the URL (a reload or a shared link shows the same list).
+  const { query, search } = useListQuery({ addr, parse: parsePullQuery, toParams: pullQueryParams, grammar: PULL_GRAMMAR, sdk, ready, network })
   const change = search.change
 
   // `me` needs a signed-in viewer; signed out, a `me` filter shows nothing rather than everything.
@@ -121,7 +115,6 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   )
 
   const labelDefs = useMemo(() => new Map((data?.labels ?? []).map((l) => [l.name, l])), [data])
-  const count = tabCount
   const filtered = hasPullFilters(query)
   const counts = data?.counts
   const settled = counts?.merged != null && counts.closed != null ? counts.merged + counts.closed : null
@@ -144,7 +137,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
       {filtered ? (
         <button
           type="button"
-          onClick={() => search.clear({ ...DEFAULT_PULL_QUERY, state: query.state })}
+          onClick={search.clear}
           className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-500 hover:text-forge-700 dark:text-anvil-400 dark:hover:text-forge-400"
         >
           <X className="h-3.5 w-3.5" aria-hidden /> Clear filters
@@ -155,13 +148,13 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 dark:border-anvil-800 dark:bg-anvil-900">
           <div className="flex items-center gap-3" role="tablist" aria-label="Pull request state">
             <StateTab active={query.state === 'open'} onClick={() => change({ state: 'open' })}>
-              <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> {count(counts?.open)}Open
+              <GitPullRequest className="h-3.5 w-3.5" aria-hidden /> {tabCount(counts?.open)}Open
             </StateTab>
             <StateTab active={query.state === 'merged'} onClick={() => change({ state: 'merged' })}>
-              <GitMerge className="h-3.5 w-3.5" aria-hidden /> {count(counts?.merged)}Merged
+              <GitMerge className="h-3.5 w-3.5" aria-hidden /> {tabCount(counts?.merged)}Merged
             </StateTab>
             <StateTab active={query.state === 'closed'} onClick={() => change({ state: 'closed' })}>
-              <GitPullRequestClosed className="h-3.5 w-3.5" aria-hidden /> {count(counts?.closed)}Closed
+              <GitPullRequestClosed className="h-3.5 w-3.5" aria-hidden /> {tabCount(counts?.closed)}Closed
             </StateTab>
             <StateTab active={query.state === 'all'} onClick={() => change({ state: 'all' })}>
               All
@@ -196,13 +189,9 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
                   <span className={cn('mt-0.5 shrink-0', st.klass)}>{st.icon}</span>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
-                      <Link href={repoHref('/repo/pull', addr, { number: String(p.number) })} className="hit-area text-dense font-medium text-anvil-900 hover:text-forge-700 dark:text-anvil-50 dark:hover:text-forge-400">
-                        {p.title || '(untitled)'}
-                      </Link>
+                      <RowLink href={repoHref('/repo/pull', addr, { number: String(p.number) })} title={p.title} />
                       {p.state.labels.map((l) => (
-                        <button key={l} type="button" onClick={() => change({ labels: query.labels.includes(l) ? query.labels : [...query.labels, l] })} aria-label={`Filter by label ${l}`} className="hit-area">
-                          <LabelChip name={l} def={labelDefs.get(l)} />
-                        </button>
+                        <LabelChipFilter key={l} name={l} def={labelDefs.get(l)} selected={query.labels} onChange={(labels) => change({ labels })} />
                       ))}
                     </div>
                     <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-anvil-500 dark:text-anvil-400">
@@ -213,12 +202,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
                   </div>
                   <div className="flex shrink-0 items-center gap-3 pt-0.5">
                     <AssigneeAvatars ids={p.state.assignees} />
-                    {p.comments ? (
-                      <span className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="pull-comments">
-                        <MessageSquare className="h-3.5 w-3.5" aria-hidden /> <span aria-hidden>{p.comments}</span>
-                        <span className="sr-only">{plural(p.comments, 'comment')}</span>
-                      </span>
-                    ) : null}
+                    <CommentCount n={p.comments} />
                   </div>
                 </li>
               )
@@ -227,25 +211,14 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
         )}
       </div>
 
-      {data?.searchedOf ? (
-        <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-          Searched the newest {data.searchedOf.searched}
-          {data.searchedOf.total !== null ? ` of ${data.searchedOf.total}` : ''} pull requests; older ones were not read for this search.
-        </p>
-      ) : null}
+      <SearchedNote searchedOf={data?.searchedOf} noun="pull requests" />
       {data !== null && !data.stateComplete ? (
         <p className="mt-2 text-[12px] text-danger-700 dark:text-danger-400">
           This repository&apos;s event history is too large to read completely, so labels and assignees are unverified.
         </p>
       ) : null}
 
-      <Pager
-        label="Pull request pages"
-        page={query.page}
-        hasNext={data?.hasNext ?? false}
-        pages={data?.matching != null ? Math.max(1, Math.ceil(data.matching / PULL_PAGE_SIZE)) : null}
-        onPage={(page) => change({ page })}
-      />
+      <Pager label="Pull request pages" page={query.page} hasNext={data?.hasNext ?? false} matching={data?.matching ?? null} pageSize={PULL_PAGE_SIZE} onPage={(page) => change({ page })} />
 
       <HiddenNote hidden={data?.hidden ?? 0} what={data?.hidden === 1 ? 'pull request' : 'pull requests'} home={home} by={data?.hiddenBy} />
     </div>
