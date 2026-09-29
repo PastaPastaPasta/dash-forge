@@ -1078,26 +1078,26 @@ pub fn patch_props(
 ) -> Result<BTreeMap<String, FieldValue>> {
     check_title(&input.title)?;
     check_text("PR body", &input.body, 5120, 5120)?;
-    // Written into un-gated data a maintainer's client renders and hands to git: refuse a
-    // name that could smuggle a newline or an option (the `refUpdate` guard, mirrored).
-    if !rules::is_legal_ref_name(&input.base_ref_name) || input.base_ref_name.len() > 255 {
+    // Written into un-gated data a maintainer's client renders and hands to git: refuse what
+    // the contract's ref-name grammar refuses (the `refUpdate` guard, mirrored). The "illegal
+    // PR" prefix is what forge-import's item errors match on.
+    if !rules::is_legal_ref_name(&input.base_ref_name) {
         return Err(Error::Config(format!(
-            "illegal PR base ref name {:?}: 1-255 bytes, no leading '-', no whitespace or \
-             control characters",
+            "illegal PR base ref name {:?}: {REF_NAME_RULE}",
             input.base_ref_name
         )));
     }
     if let Some(s) = &input.source_ref_name {
-        if !rules::is_legal_ref_name(s) || s.len() > 255 {
+        if !rules::is_legal_ref_name(s) {
             return Err(Error::Config(format!(
-                "illegal PR source ref name {s:?}: 1-255 bytes, no leading '-', no whitespace \
-                 or control characters"
+                "illegal PR source ref name {s:?}: {REF_NAME_RULE}"
             )));
         }
     }
-    if !(20..=32).contains(&input.head_oid.len()) {
+    // R-10 `oidWidth`: a SHA-1 (20) or SHA-256 (32) commit id, nothing in between.
+    if !matches!(input.head_oid.len(), 20 | 32) {
         return Err(Error::Config(format!(
-            "PR head oid must be 20-32 bytes, got {}",
+            "PR head oid must be 20 or 32 bytes (SHA-1 or SHA-256), got {}",
             input.head_oid.len()
         )));
     }
@@ -1134,6 +1134,11 @@ pub fn patch_props(
     }
     Ok(p)
 }
+
+/// What a legal ref name is, for a refusal: the contract's grammar (git check-ref-format).
+const REF_NAME_RULE: &str = "a full ref name under refs/ (such as refs/heads/main) that git \
+     check-ref-format accepts: no '..', '@{', control characters, spaces or ~^:?*[\\, no \
+     component starting with '.' or ending in '.lock', at most 255 bytes";
 
 fn check_title(title: &str) -> Result<()> {
     if title.trim().is_empty() {
@@ -1189,7 +1194,7 @@ pub fn event_payload_props(
     match kind {
         EventKind::Retarget if !value.is_some_and(rules::is_legal_ref_name) => {
             return Err(Error::Config(format!(
-                "illegal retarget base ref name {value:?}"
+                "illegal retarget base ref name {value:?}: {REF_NAME_RULE}"
             )));
         }
         EventKind::ThreadResolve
