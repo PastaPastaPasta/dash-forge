@@ -191,7 +191,10 @@ export async function resolveDpnsId(sdk: EvoSDK, name: string, network: Network)
         return id
       },
       () => {
-        idLookups.delete(key)
+        // Review: only delete this call's own entry. `clearDpnsCache()` (or a fresh lookup of the
+        // same key started after this one failed) may already have replaced it by the time this
+        // rejection handler runs; deleting unconditionally would evict that newer entry instead.
+        if (idLookups.get(key) === lookup) idLookups.delete(key)
         return null
       },
     )

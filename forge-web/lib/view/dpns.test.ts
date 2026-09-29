@@ -15,6 +15,14 @@ const domainDoc = (id: string, label: string, parent = 'dash') => ({
   toJSON: () => ({ label, normalizedParentDomainName: parent, records: { identity: id } }),
 })
 
+/** Resolve `name` against an empty DPNS and return the one query's where clause. */
+async function whereFor(name: string): Promise<unknown[][]> {
+  const query = vi.fn(async (_q: unknown) => new Map())
+  await resolveDpnsId(fakeSdk(query), name, 'devnet')
+  expect(query).toHaveBeenCalledTimes(1)
+  return (query.mock.calls[0]?.[0] as { where: unknown[][] }).where
+}
+
 beforeEach(() => clearDpnsCache())
 
 describe('seeding names from a DPNS lookup', () => {
@@ -52,31 +60,21 @@ describe('resolveDpnsId (review: forward name -> id resolution)', () => {
   // 'mark' has no o/l/i characters, so it survives homograph normalization unchanged — these two
   // tests are about the where-clause shape and the bare-name/dash default, not normalization.
   it('queries the parentNameAndLabel index with a bare name defaulted to the dash parent', async () => {
-    const query = vi.fn(async (_q: unknown) => new Map())
-    await resolveDpnsId(fakeSdk(query), 'mark', 'devnet')
-    expect(query).toHaveBeenCalledTimes(1)
-    const q = query.mock.calls[0]?.[0] as { where: unknown[][] }
-    expect(q.where).toEqual([
+    expect(await whereFor('mark')).toEqual([
       ['normalizedParentDomainName', '==', 'dash'],
       ['normalizedLabel', '==', 'mark'],
     ])
   })
 
   it('splits an explicit label.parent instead of defaulting the parent to dash', async () => {
-    const query = vi.fn(async (_q: unknown) => new Map())
-    await resolveDpnsId(fakeSdk(query), 'mark.xyz', 'devnet')
-    const q = query.mock.calls[0]?.[0] as { where: unknown[][] }
-    expect(q.where).toEqual([
+    expect(await whereFor('mark.xyz')).toEqual([
       ['normalizedParentDomainName', '==', 'xyz'],
       ['normalizedLabel', '==', 'mark'],
     ])
   })
 
   it('normalizes homograph-ambiguous characters before querying (o->0, l/i->1)', async () => {
-    const query = vi.fn(async (_q: unknown) => new Map())
-    await resolveDpnsId(fakeSdk(query), 'Cool.dash', 'devnet')
-    const q = query.mock.calls[0]?.[0] as { where: unknown[][] }
-    expect(q.where).toEqual([
+    expect(await whereFor('Cool.dash')).toEqual([
       ['normalizedParentDomainName', '==', 'dash'],
       ['normalizedLabel', '==', 'c001'],
     ])

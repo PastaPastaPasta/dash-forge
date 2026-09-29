@@ -92,7 +92,14 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
     for (const [k, v] of issueQueryParams(next)) q.append(k, v)
     router.replace(`${pathname}?${q.toString()}`, { scroll: false })
   }
-  const change = (c: Partial<IssueListQuery>): void => setQuery(withQuery(query, c))
+  // Review: a tab/filter/pager change must win over a name lookup already in flight (from a
+  // slower earlier submit, or the on-load `?q=` resolution) — bump the generation so that
+  // lookup's own `setQuery` on completion sees `stillWanted() === false` and is discarded instead
+  // of overwriting this change.
+  const change = (c: Partial<IssueListQuery>): void => {
+    submitIdRef.current++
+    setQuery(withQuery(query, c))
+  }
 
   // `me` needs a signed-in viewer; signed out, a `me` filter shows nothing rather than everything.
   const needsViewer = query.author === 'me' || query.assignee === 'me' || query.mentions
@@ -124,7 +131,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const [dropped, setDropped] = useState<string[]>(() => unresolvedQualifiers(params.get('q') ?? ''))
   // Review: a name DPNS looked up and could not find (vs. one it never looked up at all) gets its
   // own reason from droppedQualifiersReason; whether the SDK was not ready to look anything up.
-  const [notFoundNames, setNotFoundNames] = useState<string[]>([])
+  const [notFoundNames, setNotFoundNames] = useState<readonly string[]>([])
   const [notReady, setNotReady] = useState(false)
   const [searching, setSearching] = useState(false)
 
@@ -149,18 +156,17 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const resolveAndApply = async (text: string, base: IssueListQuery = DEFAULT_ISSUE_QUERY): Promise<void> => {
     const id = ++submitIdRef.current
     const stillWanted = (): boolean => mountedRef.current && submitIdRef.current === id
-    const candidates = dpnsAuthorCandidates(text)
     // Honest about why a name-looking value was not looked up, instead of silently reporting it
     // as just another unresolved qualifier with no explanation.
-    setNotReady(candidates.length > 0 && !sdk)
+    setNotReady(!sdk && dpnsAuthorCandidates(text).length > 0)
     setSearching(true)
     try {
       const { text: resolvedText, notFound } = sdk
         ? await resolveSearchNames(text, (name) => resolveDpnsId(sdk, name, network))
-        : { text, notFound: [] as readonly string[] }
+        : { text, notFound: [] }
       if (!stillWanted()) return
       setDropped(unresolvedQualifiers(resolvedText))
-      setNotFoundNames(notFound as string[])
+      setNotFoundNames(notFound)
       setQuery({ ...parseSearchText(resolvedText, base), page: base.page })
       // Only clear the box back to the URL-driven value if it still holds what was submitted —
       // the viewer may already be typing the next search.
@@ -177,24 +183,27 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
 
   // A DPNS name linked in `?q=` (e.g. a shared search URL) goes through the same resolution step
   // as a typed submit, once on load, so it is not silently dropped before the SDK is even ready.
-  const initialQRef = useRef(params.get('q'))
-  const initialResolvedRef = useRef(false)
+  // `pendingLinkedQRef` holds the linked `?q=` (capped like `parseIssueQuery` caps `q` itself, so
+  // a crafted link cannot force an unbounded number of DPNS reads) until it has been handled, then
+  // null.
+  const pendingLinkedQRef = useRef(params.get('q')?.slice(0, 200) ?? null)
   useEffect(() => {
-    if (initialResolvedRef.current) return
-    const raw = initialQRef.current
-    if (raw === null || dpnsAuthorCandidates(raw).length === 0) {
-      initialResolvedRef.current = true
-      return
-    }
-    if (!ready || !sdk) return
-    initialResolvedRef.current = true
-    void resolveAndApply(raw, query)
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once when the SDK becomes ready; initialResolvedRef guards re-entry.
+    const raw = pendingLinkedQRef.current
+    if (raw === null) return
+    const hasNames = dpnsAuthorCandidates(raw).length > 0
+    if (hasNames && (!ready || !sdk)) return
+    pendingLinkedQRef.current = null
+    // Review: the viewer may already have typed and submitted a search, picked a state tab or
+    // changed a filter while the SDK was still connecting — the URL no longer holding exactly the
+    // linked `q` means that happened, so abandon the linked resolution instead of clobbering it.
+    if (hasNames && params.get('q')?.slice(0, 200) === raw) void resolveAndApply(raw, query)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once when the SDK becomes ready; pendingLinkedQRef guards re-entry.
   }, [ready, sdk])
 
   const count = (n: number | null | undefined): string => (n == null ? '' : `${n} `)
   const empty = data !== null && data.rows.length === 0
   const filtered = hasFilters(query)
+  const SearchIcon = searching ? Loader2 : Search
 
   return (
     <div className="mx-auto max-w-4xl">
@@ -202,11 +211,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         <form onSubmit={submitSearch} className="flex min-w-[16rem] flex-1 items-center gap-2" role="search">
           <label htmlFor="issue-search" className="sr-only">Search issues</label>
           <div className="relative flex-1">
-            {searching ? (
-              <Loader2 className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 animate-spin text-anvil-500 dark:text-anvil-400" aria-hidden />
-            ) : (
-              <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
-            )}
+            <SearchIcon className={cn('pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-anvil-500 dark:text-anvil-400', searching && 'animate-spin')} aria-hidden />
             <Input id="issue-search" value={searchValue} onChange={(e) => setSearch(e.target.value)} className="pl-8 font-mono text-[13px]" placeholder="is:open label:bug author:@me" />
           </div>
         </form>
@@ -243,7 +248,10 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
       {filtered ? (
         <button
           type="button"
-          onClick={() => setQuery({ ...DEFAULT_ISSUE_QUERY, state: query.state })}
+          onClick={() => {
+            submitIdRef.current++
+            setQuery({ ...DEFAULT_ISSUE_QUERY, state: query.state })
+          }}
           className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400"
         >
           <X className="h-3.5 w-3.5" aria-hidden /> Clear filters

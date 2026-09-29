@@ -200,13 +200,10 @@ export function withResolvedNames(text: string, resolved: ReadonlyMap<string, st
 }
 
 /**
- * Resolve every DPNS-name candidate in `text` through `resolveId` (injected — this needs no SDK,
- * so it is a plain, race-safe async function: two overlapping calls, e.g. an out-of-order
- * submit, never interfere, since each is its own independent resolution over its own `text` and
- * its own `Promise.all` — whichever settles last simply returns its own correct answer, and it
- * is the caller (which alone knows which call is still wanted) that decides whether to use it).
- * Returns `text` with every name `resolveId` found rewritten to its id, and the candidates it
- * did not find (for a "no such name" note, distinct from a qualifier that was never a candidate).
+ * Resolve every DPNS-name candidate in `text` through the injected `resolveId`. It holds no
+ * shared state, so overlapping calls (an out-of-order submit) never interfere; the caller decides
+ * which result is still wanted. Returns `text` with every found name rewritten to its id, and the
+ * candidates that were not found (for a "no such name" note, distinct from a non-candidate).
  */
 export async function resolveSearchNames(
   text: string,
