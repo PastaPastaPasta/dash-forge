@@ -8,14 +8,16 @@
  */
 
 import Link from 'next/link'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { FileText, History, X } from 'lucide-react'
 import { PathActions } from '@/components/repo/path-actions'
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
-import { commitSubject, parseLineHash, selectedTip, selectRef, timeAgo } from '@/lib/view'
+import { commitSubject, lineHash, selectedTip, selectLine, selectRef, timeAgo } from '@/lib/view'
 import { ROW_PX, scrollToRow, useRowWindow } from '@/hooks/use-row-window'
-import { BLAME_MAX_COMMITS, BLAME_MAX_VERSIONS, BlameRefusedError, blameFile, type BlameProgress, type BlameResult } from '@/lib/view/blame'
+import { BLAME_MAX_COMMITS, BLAME_MAX_VERSIONS, BlameRefusedError, BlameStoppedError, blameFile, type BlameProgress, type BlameResult } from '@/lib/view/blame'
+import { BlobToolbar, useLineSelection } from '@/components/repo/blob-content'
+import { permalinkPath, pinnedHref, usePermalinkKey } from '@/components/repo/permalink'
 import { plural } from '@/lib/view/format'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
@@ -53,7 +55,7 @@ export function BlameContent({
         <PathActions addr={addr} path={path} refParam={refParam} show={['code', 'history']} />
       </div>
       <BrowseBoundary repo={home.repo} addr={addr}>
-        {(reader) => <BlameBody key={`${tipOid}\0${path}`} reader={reader} tipOid={tipOid} path={path} addr={addr} />}
+        {(reader) => <BlameBody key={`${tipOid}\0${path}`} reader={reader} tipOid={tipOid} path={path} addr={addr} privateRepo={home.repo.visibility === 'private'} />}
       </BrowseBoundary>
     </div>
   )
@@ -62,14 +64,32 @@ export function BlameContent({
 type RunState =
   | { readonly kind: 'running'; readonly progress: BlameProgress | null }
   | { readonly kind: 'done'; readonly result: BlameResult }
-  | { readonly kind: 'cancelled'; readonly progress: BlameProgress | null }
+  | { readonly kind: 'cancelled'; readonly progress: BlameProgress | null; readonly partial: BlameResult | null }
   | { readonly kind: 'failed'; readonly error: unknown }
 
 /** One blame run over a reader (exported for its StrictMode test). */
-export function BlameBody({ reader, tipOid, path, addr }: { reader: BrowseReader; tipOid: string; path: string; addr: RepoAddress }): JSX.Element {
+export function BlameBody({
+  reader,
+  tipOid,
+  path,
+  addr,
+  privateRepo = false,
+}: {
+  reader: BrowseReader
+  tipOid: string
+  path: string
+  addr: RepoAddress
+  privateRepo?: boolean
+}): JSX.Element {
   const [run, setRun] = useState<RunState>({ kind: 'running', progress: null })
   const [attempt, setAttempt] = useState(0)
   const stopRef = useRef<AbortController | null>(null)
+  // `y` pins the address to this commit (as the file view does), keeping the `#L` selection (L-33).
+  usePermalinkKey(pinnedHref(addr, 'blame', tipOid, path, privateRepo))
+  // A full URL, as the file view copies (null in the instant a private repo's vault locks).
+  const pinned = permalinkPath(addr, 'blame', tipOid, path, privateRepo)
+  const permalink = pinned === null ? null : `${typeof window === 'undefined' ? '' : window.location.origin}${pinned}`
+  const restart = (): void => setAttempt((n) => n + 1)
 
   useEffect(() => {
     const stop = new AbortController()
@@ -87,7 +107,13 @@ export function BlameBody({ reader, tipOid, path, addr }: { reader: BrowseReader
       },
     }).then(
       (result) => current() && setRun({ kind: 'done', result }),
-      (error: unknown) => current() && setRun(stop.signal.aborted ? { kind: 'cancelled', progress: last } : { kind: 'failed', error }),
+      (error: unknown) =>
+        current() &&
+        setRun(
+          stop.signal.aborted
+            ? { kind: 'cancelled', progress: last, partial: error instanceof BlameStoppedError ? error.partial : null }
+            : { kind: 'failed', error },
+        ),
     )
     return () => {
       // Unmount or a new run: stop this one without it reporting (Cancel aborts while it is current).
@@ -98,15 +124,23 @@ export function BlameBody({ reader, tipOid, path, addr }: { reader: BrowseReader
 
   if (run.kind === 'failed') {
     if (run.error instanceof BlameRefusedError) return <EmptyState icon={FileText} title="Can't blame this file" body={run.error.message} />
-    return <ErrorState message={errorMessage(run.error)} onRetry={() => setAttempt((n) => n + 1)} />
+    return <ErrorState message={errorMessage(run.error)} onRetry={restart} />
+  }
+  if (run.kind === 'cancelled' && run.partial !== null) {
+    // Cancel keeps what was worked out (L-23): the table, marked stopped, and a way to run again.
+    return <BlameTable result={run.partial} addr={addr} permalink={permalink} stopped onRestart={restart} />
   }
   if (run.kind === 'cancelled') {
     return (
       <EmptyState
         icon={History}
         title="Blame stopped"
-        body={run.progress ? `Stopped after comparing ${plural(run.progress.versions, 'version')}.` : 'Stopped before any version was compared.'}
-        action={<Button onClick={() => setAttempt((n) => n + 1)}>Start again</Button>}
+        body={
+          run.progress
+            ? `Stopped after examining ${plural(run.progress.examined, 'commit')}, before any version was found.`
+            : 'Stopped before any commit was examined.'
+        }
+        action={<Button onClick={restart}>Start again</Button>}
       />
     )
   }
@@ -118,7 +152,9 @@ export function BlameBody({ reader, tipOid, path, addr }: { reader: BrowseReader
         <p>
           {p === null
             ? 'Reading the file’s history…'
-            : `Compared ${plural(p.versions, 'version')} of up to ${BLAME_MAX_VERSIONS} · ${plural(p.total - p.pending, 'line')} of ${p.total} attributed`}
+            : p.versions === 0
+              ? `Looking for the file’s versions · ${plural(p.examined, 'commit')} examined`
+              : `Compared ${plural(p.versions, 'version')} of up to ${BLAME_MAX_VERSIONS} · ${plural(p.total - p.pending, 'line')} of ${p.total} attributed · ${plural(p.examined, 'commit')} examined`}
         </p>
         <div className="h-1.5 w-64 max-w-full overflow-hidden rounded-full bg-anvil-100 dark:bg-anvil-800" aria-hidden>
           <div className="h-full bg-forge-500 transition-[width]" style={{ width: `${done}%` }} />
@@ -129,10 +165,23 @@ export function BlameBody({ reader, tipOid, path, addr }: { reader: BrowseReader
       </div>
     )
   }
-  return <BlameTable result={run.result} addr={addr} />
+  return <BlameTable result={run.result} addr={addr} permalink={permalink} />
 }
 
-function BlameTable({ result, addr }: { result: BlameResult; addr: RepoAddress }): JSX.Element {
+function BlameTable({
+  result,
+  addr,
+  permalink,
+  stopped = false,
+  onRestart,
+}: {
+  result: BlameResult
+  addr: RepoAddress
+  permalink: string | null
+  /** Cancelled: the table is what the walk had worked out when it stopped. */
+  stopped?: boolean
+  onRestart?: () => void
+}): JSX.Element {
   const { lines, hunks, commits } = result
   // The hunk each line is in, and whether it starts one (where the commit cell is drawn).
   const hunkOf = useMemo(() => {
@@ -142,10 +191,11 @@ function BlameTable({ result, addr }: { result: BlameResult; addr: RepoAddress }
   }, [lines.length, hunks])
   const tableRef = useRef<HTMLTableElement>(null)
   const { from, to } = useRowWindow(tableRef, lines.length)
-  const [range] = useState(() => (typeof window === 'undefined' ? null : parseLineHash(window.location.hash, lines.length)))
-  useLayoutEffect(() => {
-    if (range !== null) scrollToRow(tableRef.current, range.start)
-  }, [range])
+  // The `#L` selection, kept as the file view keeps it: from the URL (scrolled to), or a click.
+  const [range, select] = useLineSelection(lines.length, (r) => {
+    requestAnimationFrame(() => scrollToRow(tableRef.current, r.start))
+  })
+  const href = permalink === null || range === null ? permalink : `${permalink}#${lineHash(range)}`
 
   const rows: JSX.Element[] = []
   for (let i = from; i < to; i++) {
@@ -157,18 +207,43 @@ function BlameTable({ result, addr }: { result: BlameResult; addr: RepoAddress }
     const on = range !== null && i + 1 >= range.start && i + 1 <= range.end
     rows.push(
       <tr key={i} id={`L${i + 1}`} data-oid={hunk.oid} data-selected={on || undefined} className={cn('h-5', k % 2 === 1 && 'bg-anvil-50/60 dark:bg-anvil-900/40', on && 'bg-caution/15', first && i > 0 && 'border-t border-anvil-100 dark:border-anvil-850')}>
-        <td className="w-72 max-w-[18rem] truncate whitespace-nowrap border-r border-anvil-100 px-3 py-0 align-top text-[12px] text-anvil-500 dark:border-anvil-850 dark:text-anvil-400">
+        <td className="w-20 max-w-[5rem] truncate whitespace-nowrap border-r sm:w-72 sm:max-w-[18rem] border-anvil-100 px-3 py-0 align-top text-[12px] text-anvil-500 dark:border-anvil-850 dark:text-anvil-400">
           {first && commit ? (
             <span className="flex items-center gap-2">
-              <span className="shrink-0 tabular-nums">{timeAgo(commit.author.when)}</span>
+              {/* On a phone the column is an age gutter linking the commit; the subject shows from sm up (L-34). */}
+              <Link
+                href={repoHref('/repo/commit', addr, { oid: hunk.oid })}
+                className="shrink-0 tabular-nums hover:text-forge-800 dark:hover:text-forge-400"
+                data-tap-exempt="code-line"
+                // The subject beside it is the commit's link (and tab stop); this one is for phones.
+                tabIndex={-1}
+                aria-label={`Commit ${hunk.oid.slice(0, 7)}: ${commitSubject(commit.message) || '(no message)'}`}
+              >
+                {timeAgo(commit.author.when)}
+              </Link>
               {/* One per hunk, inside a 20 px code row (e2e/mobile.spec.ts exempts it, as the diff gutter). */}
-              <Link href={repoHref('/repo/commit', addr, { oid: hunk.oid })} className="min-w-0 truncate hover:text-forge-800 dark:hover:text-forge-400" title={`${hunk.oid.slice(0, 7)} ${commit.author.name}`} data-tap-exempt="code-line" data-testid="blame-commit">
+              <Link href={repoHref('/repo/commit', addr, { oid: hunk.oid })} className="hidden min-w-0 truncate hover:text-forge-800 sm:inline dark:hover:text-forge-400" title={`${hunk.oid.slice(0, 7)} ${commit.author.name}`} data-tap-exempt="code-line" data-testid="blame-commit">
                 {commitSubject(commit.message) || '(no message)'}
               </Link>
             </span>
           ) : null}
         </td>
-        <td className="select-none whitespace-nowrap px-3 py-0 text-right align-top text-anvil-500 dark:text-anvil-400">{i + 1}</td>
+        <td className="select-none whitespace-nowrap px-3 py-0 text-right align-top text-anvil-500 dark:text-anvil-400">
+          <a
+            href={`#L${i + 1}`}
+            // Not a tab stop per line, and one per code line (e2e/mobile.spec.ts exempts it).
+            tabIndex={-1}
+            data-tap-exempt="code-line"
+            onClick={(e) => {
+              if (e.metaKey || e.ctrlKey) return
+              e.preventDefault()
+              select(selectLine(range, i + 1, e.shiftKey))
+            }}
+            className="hover:text-anvil-800 dark:hover:text-anvil-100"
+          >
+            {i + 1}
+          </a>
+        </td>
         <td className="whitespace-pre px-4 py-0 align-top text-anvil-800 dark:text-anvil-200">{(lines[i] ?? '').replace(/\r?\n$/, '') || ' '}</td>
       </tr>,
     )
@@ -180,7 +255,14 @@ function BlameTable({ result, addr }: { result: BlameResult; addr: RepoAddress }
         <span>
           {plural(lines.length, 'line')} · {plural(commits.size, 'commit')} · {plural(result.versions, 'version')} compared
         </span>
-        {result.partial ? (
+        {stopped ? (
+          <span className="text-caution-700 dark:text-caution-400" data-testid="blame-stopped">
+            Stopped: lines not reached yet are shown on the oldest version compared.{' '}
+            <button type="button" onClick={onRestart} className="font-medium underline">
+              Run again
+            </button>
+          </span>
+        ) : result.partial ? (
           <span className="text-caution-700 dark:text-caution-400" data-testid="blame-partial">
             Partial: the walk hit a limit ({BLAME_MAX_VERSIONS} versions, {BLAME_MAX_COMMITS.toLocaleString('en-US')} commits, or a rename too large to look up), so the
             oldest lines may be older than shown.
@@ -204,6 +286,9 @@ function BlameTable({ result, addr }: { result: BlameResult; addr: RepoAddress }
         <span className="font-mono">git blame</span> (lines that repeat and move, renames with edits); <span className="font-mono">git blame --first-parent</span> is the
         authoritative answer.
       </p>
+      <BlobToolbar href={href}>
+        {range ? <span>{range.start === range.end ? `Line ${range.start}` : `Lines ${range.start}–${range.end}`} selected</span> : null}
+      </BlobToolbar>
       <ScrollRegion label="Blame" className="overflow-x-auto">
         <table ref={tableRef} className="w-full border-collapse font-mono text-[13px] leading-5" data-lines={lines.length} data-testid="blame-table">
           <tbody>

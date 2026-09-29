@@ -3,48 +3,68 @@
  * given the file's versions newest first (`git blame --first-parent` semantics: each version's
  * lines are compared with the version before it, and a line both have is passed back).
  *
- * The line alignment is `diffTextLines` (Myers over lines, terminators included, as git's xdiff
- * compares records), so a line that only gained its final newline is a change, as in git; then
- * git's change compaction ({@link compactChanges}) places ambiguous hunks where git does.
+ * The line alignment is git's own: its common-tail trim and Myers diff ({@link xdiffChanges}, a
+ * port of xdiff's, which pairs the same copies of a repeated line that git does), then its change
+ * compaction ({@link compactChanges}, which places ambiguous hunks where git does). Records are
+ * lines with their terminators, as xdiff compares them, so a line that only gained its final
+ * newline is a change, as in git.
  */
 
-import { diffTextLines, DEFAULT_DIFF_LIMITS, splitLines, type DiffLimits } from './text-diff'
+import { DEFAULT_DIFF_LIMITS, splitLines, type DiffLimits } from './text-diff'
+import { commonTailRecords, xdiffChanges } from './xdiff'
 import { compactChanges } from './xdiff-compact'
 
 /** For each line of `after` (0-based), the line of `before` it is unchanged from, or -1 (added there). */
 export type LineMap = Int32Array
 
 /**
- * {@link LineMap} of `after` against `before`, or null when the change is too large for the
- * diff's bounds. The alignment is compacted as git's is ({@link compactChanges}), so where a
- * repeated line could come from either of two commits it is given the one git gives it.
+ * {@link LineMap} of `after` against `before`, aligned as `git blame` aligns them, or null when
+ * the change is too large for the diff's work bound (`limits.maxWork`).
  */
 export function lineMap(before: string, after: string, limits: DiffLimits = DEFAULT_DIFF_LIMITS): LineMap | null {
-  const diff = diffTextLines(before, after, limits)
-  if (diff === null) return null
-  const oldRecs = splitLines(before)
-  const newRecs = splitLines(after)
-  const oldChanged = new Uint8Array(oldRecs.length)
-  const newChanged = new Uint8Array(newRecs.length)
-  for (const l of diff) {
-    if (l.kind === 'deleted' && l.oldLine !== null) oldChanged[l.oldLine - 1] = 1
-    if (l.kind === 'added' && l.newLine !== null) newChanged[l.newLine - 1] = 1
-  }
-  // A compaction that fails (a bug: the port asserts what xdiff asserts) must not fail the blame:
-  // the uncompacted alignment is still a valid one.
-  let compacted: { readonly oldChanged: Uint8Array; readonly newChanged: Uint8Array } = { oldChanged, newChanged }
-  try {
-    compacted = compactChanges(oldRecs, newRecs, oldChanged, newChanged)
-  } catch {
-    /* keep the Myers alignment */
-  }
-  const map = new Int32Array(newRecs.length).fill(-1)
-  for (let i = 0, j = 0; j < newRecs.length; ) {
-    if (i < oldRecs.length && compacted.oldChanged[i] === 1) i++
-    else if (compacted.newChanged[j] === 1) j++
+  const marks = gitChangeMarks(before, after, limits)
+  if (marks === null) return null
+  const { oldRecs, newRecs, tail, oldChanged, newChanged } = marks
+  const map = new Int32Array(newRecs.length + tail).fill(-1)
+  let i = 0
+  let j = 0
+  while (j < newRecs.length) {
+    if (i < oldRecs.length && oldChanged[i] === 1) i++
+    else if (newChanged[j] === 1) j++
     else map[j++] = i++
   }
+  for (let k = 0; k < tail; k++) map[newRecs.length + k] = oldRecs.length + k
   return map
+}
+
+/**
+ * Which records of each file git blame counts as changed: the common tail trimmed (in whole 1 KiB
+ * blocks) as git does before it diffs, xdiff's alignment of the rest, then git's compaction. The
+ * marks cover the records before the tail (`oldRecs` / `newRecs`); the `tail` records after them
+ * are unchanged. Null past `limits`. Exported so the git-oracle tests check this very pipeline.
+ */
+export function gitChangeMarks(
+  before: string,
+  after: string,
+  limits: DiffLimits = DEFAULT_DIFF_LIMITS,
+): { oldRecs: string[]; newRecs: string[]; tail: number; oldChanged: Uint8Array; newChanged: Uint8Array } | null {
+  const oldAll = splitLines(before)
+  const newAll = splitLines(after)
+  // git drops the files' common tail (in whole 1 KiB blocks) before it diffs: those lines are
+  // unchanged, and xdiff neither counts them nor slides a change into them.
+  const tail = commonTailRecords(oldAll, newAll)
+  const oldRecs = oldAll.slice(0, oldAll.length - tail)
+  const newRecs = newAll.slice(0, newAll.length - tail)
+  const diff = xdiffChanges(oldRecs, newRecs, limits)
+  if (diff === null) return null
+  // A compaction that fails (a bug: the port asserts what xdiff asserts) must not fail the blame:
+  // the uncompacted alignment is still a valid one.
+  try {
+    const c = compactChanges(oldRecs, newRecs, diff.oldChanged, diff.newChanged)
+    return { oldRecs, newRecs, tail, oldChanged: c.oldChanged, newChanged: c.newChanged }
+  } catch {
+    return { oldRecs, newRecs, tail, oldChanged: diff.oldChanged, newChanged: diff.newChanged }
+  }
 }
 
 /**
