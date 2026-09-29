@@ -92,10 +92,6 @@ const MAX_GROUP_NAME = 64;
 const MAX_GROUP_DESCRIPTION = 256;
 const PUT_SETTINGS = { connectTimeoutMs: 10000, timeoutMs: 90000, retries: 3 };
 const CREDITS_PER_DASH = 1e11;
-const DEFAULT_ADDRESSES = {
-  // devnet moutai (protocol 14; drive 4.2.0-beta.6 since the 2026-09-28 reset, beta.7 after the next wipe)
-  moutai: [254, 207, 192, 194, 195, 196, 253, 198, 199, 84].map((o) => `https://68.67.122.${o}:1443`),
-};
 
 const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}`);
 
@@ -254,9 +250,13 @@ async function main() {
         're-run with --same-group to confirm, or use --force-new without --only for a new set in a new group'
     );
   }
+  // A devnet's DAPI addresses: --addresses, else the deployment file's `dapiAddresses` (as
+  // deploy-key-exchange.mjs and snapshot-contracts.mjs read them), else SDK discovery
+  const depFile = depPath(network, devnetName);
+  const dep = readDep(depFile);
   const addresses = typeof args.addresses === 'string'
     ? args.addresses.split(',').map((s) => s.trim()).filter(Boolean)
-    : (devnetName && DEFAULT_ADDRESSES[devnetName]) || undefined;
+    : (devnetName && (dep.dapiAddresses ?? dep.v2?.devnet?.addresses)) || undefined;
 
   const rec = JSON.parse(readFileSync(resolve(String(args.identity)), 'utf8'));
   const ownerId = rec.identityId;
@@ -303,8 +303,6 @@ async function main() {
   });
   const privateKey = PrivateKey.fromWIF(critKey.privateKeyWif);
 
-  const depFile = depPath(network, devnetName);
-  const dep = readDep(depFile);
   dep.v2 ??= {};
   const v2 = dep.v2;
   const record = () => writeDep(depFile, dep);

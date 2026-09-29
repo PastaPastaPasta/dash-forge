@@ -73,6 +73,9 @@ e2e-fixture:
 ## funded from the devnet's faucet wallet key, then verify every identity on
 ## Platform. The key is read from dash-network-configs at runtime (process
 ## substitution, never copied to disk) unless FORGE_DEVNET_FUNDING_WIF is set.
+## Devnet bonsia is not in dash-network-configs: run with DEVNET=bonsia and
+## FORGE_DEVNET_FUNDING_WIF set (or use the QA harness outside this repo,
+## dash-forge-qa's `QA_NETWORK=bonsia qa mint`).
 ## Knobs: DEVNET (moutai), DEVNET_CONFIGS (~/workspace/dash-network-configs),
 ## DEVNET_IDENTITY_DIR, DEVNET_POOL_AMOUNT (DASH per role), DEVNET_ROLE_AMOUNTS.
 DEVNET ?= moutai
@@ -89,6 +92,9 @@ tools/mint-identity/node_modules: tools/mint-identity/package.json tools/mint-id
 	@touch $@
 
 devnet-identities: tools/mint-identity/node_modules
+	@if [ -z "$${FORGE_DEVNET_FUNDING_WIF:-}" ] && ! git -C "$(DEVNET_CONFIGS)" cat-file -e origin/master:devnet-$(DEVNET).yml 2>/dev/null; then \
+		echo "devnet-$(DEVNET) is not in $(DEVNET_CONFIGS): set FORGE_DEVNET_FUNDING_WIF to its funding key" >&2; exit 1; \
+	fi
 	@if [ -n "$${FORGE_DEVNET_FUNDING_WIF:-}" ]; then \
 		$(DEVNET_POOL); \
 	else \

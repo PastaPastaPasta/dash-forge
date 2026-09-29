@@ -1,5 +1,6 @@
 // Network parameters. TESTNET is ported from mainnet-bridge/src/config.ts; the
-// DEVNETS registry mirrors the bridge's DEVNET_MOUTAI entry.
+// DEVNETS registry mirrors the bridge's DEVNET_MOUTAI entry, plus bonsia (not in
+// dash-network-configs; probed from its quorum service and DAPI getStatus).
 //
 // Every network object carries the fields the rest of the tool reads:
 //   type / name       'testnet' | 'devnet', and the name written into identity files
@@ -29,6 +30,31 @@ export const TESTNET = {
 // with a ChainAssetLockProof once Platform's chain-locked Core height reaches
 // the asset-lock tx's block.
 export const DEVNETS = {
+  // bonsia: drive/dapi 4.2.0-beta.7 (protocol 14), the replacement for moutai. Its chain id carries
+  // a generation suffix; the SDK's devnet name is `bonsia` (quorums.bonsia.networks.dash.org).
+  bonsia: {
+    chainId: 'dash-devnet-bonsia-g1',
+    platformProtocolVersion: 14,
+    insightApiUrl: 'https://insight.bonsia.networks.dash.org/insight-api',
+    quorumUrl: 'https://quorums.bonsia.networks.dash.org',
+    webFaucetUrl: 'https://faucet.bonsia.networks.dash.org',
+    // The 13 ENABLED masternodes of quorums.bonsia.networks.dash.org/masternodes (DAPI grpc-web on 1443).
+    dapiAddresses: [
+      'https://68.67.122.224:1443',
+      'https://68.67.122.225:1443',
+      'https://68.67.122.226:1443',
+      'https://68.67.122.227:1443',
+      'https://68.67.122.228:1443',
+      'https://68.67.122.229:1443',
+      'https://68.67.122.230:1443',
+      'https://68.67.122.242:1443',
+      'https://68.67.122.243:1443',
+      'https://68.67.122.244:1443',
+      'https://68.67.122.245:1443',
+      'https://68.67.122.246:1443',
+      'https://68.67.122.247:1443',
+    ],
+  },
   moutai: {
     chainId: 'dash-devnet-moutai',
     platformProtocolVersion: 14,

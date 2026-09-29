@@ -804,6 +804,7 @@ mod tests {
     fn every_embedded_deployment_parses() {
         let keys: Vec<_> = deployment_keys().collect();
         assert!(keys.contains(&"devnet-moutai"), "{keys:?}");
+        assert!(keys.contains(&"devnet-bonsia"), "{keys:?}");
         for key in keys {
             deployment(key).unwrap().expect("listed key has a file");
         }
@@ -988,6 +989,31 @@ mod tests {
             t.network.quorum_base_url(),
             "https://quorums.moutai.networks.dash.org"
         );
+    }
+
+    #[test]
+    fn bonsia_resolves_its_addresses_and_quorum_service_and_has_no_forge_v2_yet() {
+        let t = NetworkSettings {
+            network: Some("devnet".into()),
+            devnet_name: Some("bonsia".into()),
+            ..Default::default()
+        }
+        .resolve()
+        .unwrap();
+        let Network::Devnet { dapi_addresses, .. } = &t.network else {
+            panic!("expected devnet, got {:?}", t.network);
+        };
+        assert_eq!(dapi_addresses.len(), 13);
+        assert!(dapi_addresses.contains(&"https://68.67.122.224:1443".to_string()));
+        assert!(dapi_addresses.contains(&"https://68.67.122.247:1443".to_string()));
+        assert_eq!(t.network.key(), "devnet-bonsia");
+        assert_eq!(
+            t.network.quorum_base_url(),
+            "https://quorums.bonsia.networks.dash.org"
+        );
+        // Nothing is registered on bonsia until the wipe deploy is sequenced. The deploy commit
+        // that records bonsia's v2 flips this (and the test name), with web constants.test.ts
+        assert!(t.v2.is_none());
     }
 
     #[test]

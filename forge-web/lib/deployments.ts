@@ -8,6 +8,7 @@
  * build that says "not deployed".
  */
 
+import devnetBonsia from '../../forge-contracts/deployments/devnet-bonsia.json'
 import devnetMoutai from '../../forge-contracts/deployments/devnet-moutai.json'
 import mainnet from '../../forge-contracts/deployments/mainnet.json'
 import testnet from '../../forge-contracts/deployments/testnet.json'
@@ -146,5 +147,6 @@ export function groupTrust(file: DeploymentFile | undefined): GroupTrust | null 
 export const DEPLOYMENTS: Readonly<Record<string, DeploymentFile>> = {
   testnet,
   mainnet,
+  'devnet-bonsia': devnetBonsia,
   'devnet-moutai': devnetMoutai,
 }

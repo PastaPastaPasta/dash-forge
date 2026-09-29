@@ -80,6 +80,17 @@ describe('resolveNetworks', () => {
     expect(networks.testnet.v2).toBeNull()
   })
 
+  it('resolves devnet bonsia: its 13 DAPI nodes and quorum service, no forge-v2 yet', () => {
+    const { active, networks } = resolveNetworks({ network: 'devnet', devnetName: 'bonsia' }, DEPLOYMENTS)
+    expect(active).toBe('devnet')
+    expect(networks.devnet.key).toBe('devnet-bonsia')
+    expect(networks.devnet.dapiAddresses).toHaveLength(13)
+    expect(networks.devnet.dapiAddresses).toContain('https://68.67.122.224:1443')
+    expect(quorumEndpoint(networks.devnet)).toBe('https://quorums.bonsia.networks.dash.org')
+    // Flipped by the deploy commit that records bonsia's v2 (with forge-core network.rs)
+    expect(networks.devnet.v2).toBeNull()
+  })
+
   it('treats a devnet name alone as devnet', () => {
     expect(resolveNetworks({ devnetName: 'moutai' }, DEPLOYMENTS).active).toBe('devnet')
   })
