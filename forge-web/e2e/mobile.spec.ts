@@ -274,6 +274,7 @@ test('iPhone SE: offline, a tab shows the plain offline state, and it fits (L-56
   const page = await context.newPage()
   await page.goto(repoUrl(), { waitUntil: 'domcontentloaded' })
   await waitForRepoResolved(page)
+  await expect(page.getByTestId('repo-title')).toBeVisible({ timeout: 90_000 })
   await context.setOffline(true)
   await page.getByRole('navigation', { name: 'Repository' }).getByRole('link', { name: /^Pull requests/ }).click()
   const offline = page.getByTestId('read-unreachable').or(page.getByTestId('platform-unreachable')).or(page.getByTestId('app-offline')).first()
