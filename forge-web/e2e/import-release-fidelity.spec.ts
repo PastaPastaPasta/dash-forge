@@ -16,7 +16,9 @@ import { E2E_DEVNET, idFile, repoUrl, shot, signedIn } from './helpers'
  *     no verification (L-13).
  * f3. OWNER yanks scenario 30's release from the browser with only the Yanked box ticked: the
  *     yanked revision keeps its asset, title and notes (D-504).
- * f4. The rail's "Latest release" is the highest version, not the last-imported one (L-14).
+ * f4. The rail's "Latest release" is the same one the releases list marks "Latest" (L-14, L-48):
+ *     the newest non-prerelease, not the last-imported one and not necessarily the first card
+ *     (the list orders by publish date, L-78, so a newer pre-release can sit above it).
  *
  * f3 writes as OWNER of E2E_IDENTITY_DIR: never the shared fixtures (the harness refuses to run
  * without E2E_IDENTITY_DIR).
@@ -59,7 +61,12 @@ test('f2. an imported asset has a hash and a direct download, without a false ve
   test.skip(IMPORTED === '', 'set E2E_IMPORTED to scenario 31 repo')
   const page = await browser.newPage()
   await page.goto(repoUrl('releases', '', repoOf(IMPORTED)), { waitUntil: 'domcontentloaded' })
-  const asset = page.getByTestId('release-asset').first()
+  const card = page.getByTestId('release').first()
+  await expect(card).toBeVisible({ timeout: 90_000 })
+  // L-49: the list collapses each release's assets by default; open them before asserting on a row.
+  const toggle = card.getByRole('button', { name: /^Show \d+ assets?$/i })
+  if ((await toggle.count()) > 0) await toggle.click()
+  const asset = card.getByTestId('release-asset').first()
   await expect(asset).toBeVisible({ timeout: 90_000 })
   await expect(asset).toHaveAttribute('data-state', 'origin')
   await expect(asset).toContainText(/sha256 [0-9a-f]{10}…/)
@@ -74,6 +81,9 @@ test('f3. yanking from the browser keeps the release assets (D-504)', async ({ b
   const page = await signedIn(browser, 'OWNER', repoUrl('releases', '', repoOf(RELEASES)))
   const card = page.getByTestId('release').filter({ hasText: TAG }).first()
   await expect(card).toBeVisible({ timeout: 90_000 })
+  // L-49: the list collapses each release's assets by default; open them before counting rows.
+  const toggleBefore = card.getByRole('button', { name: /^Show \d+ assets?$/i })
+  if ((await toggleBefore.count()) > 0) await toggleBefore.click()
   const assetsBefore = await card.getByTestId('release-asset').count()
   expect(assetsBefore).toBeGreaterThan(0)
   await page.getByRole('button', { name: /new release/i }).click({ timeout: 60_000 })
@@ -87,11 +97,14 @@ test('f3. yanking from the browser keeps the release assets (D-504)', async ({ b
   await dialog.getByRole('button', { name: /^close$/i }).click()
   const yanked = page.getByTestId('release').filter({ hasText: TAG }).filter({ hasText: /yanked/i }).first()
   await expect(yanked).toBeVisible({ timeout: 90_000 })
+  // The republished card is a fresh component instance, collapsed by default again.
+  const toggleAfter = yanked.getByRole('button', { name: /^Show \d+ assets?$/i })
+  if ((await toggleAfter.count()) > 0) await toggleAfter.click()
   await expect(yanked.getByTestId('release-asset')).toHaveCount(assetsBefore)
   await shot(page, 'fidelity-05-yanked-keeps-assets')
 })
 
-test('f4. the rail shows the highest version as the latest release (L-14)', async ({ browser }) => {
+test('f4. the rail and the releases list agree on which release is Latest (L-14, L-48)', async ({ browser }) => {
   const target = process.env['E2E_LATEST_REPO'] ?? ''
   const want = process.env['E2E_LATEST_TAG'] ?? ''
   test.skip(target === '' || want === '', 'set E2E_LATEST_REPO and E2E_LATEST_TAG (a repo with several releases)')
@@ -102,8 +115,10 @@ test('f4. the rail shows the highest version as the latest release (L-14)', asyn
   // The tag (and here also the title, which GitHub set to the tag).
   await expect(card.getByText(want, { exact: true }).first()).toBeVisible({ timeout: 90_000 })
   await shot(page, 'fidelity-06-latest-release')
-  // The releases page lists the highest version first too.
+  // The releases list marks the same release "Latest" (L-48). It need not be the first card: the
+  // list orders by publish date (L-78), so a newer pre-release can sit above the actual latest.
   await page.goto(repoUrl('releases', '', repoOf(target)), { waitUntil: 'domcontentloaded' })
-  await expect(page.getByTestId('release').first()).toContainText(want, { timeout: 90_000 })
+  const latestCard = page.getByTestId('release').filter({ hasText: want }).first()
+  await expect(latestCard).toContainText('Latest', { timeout: 90_000 })
   await shot(page, 'fidelity-07-releases-order')
 })
