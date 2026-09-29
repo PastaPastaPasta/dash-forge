@@ -23,8 +23,8 @@ export function pullHref(addr: RepoAddress, n: number): string {
 /**
  * `#n` of `addr` when it is not known whether an issue or a PR holds it (GitHub numbers both
  * in one sequence): the resolver page opens whichever exists. `upstream`: the number is the
- * mirrored forge's (imported content), so a row here counts only when the import wrote it,
- * and the source's own page is offered otherwise.
+ * mirrored forge's (imported content), so the page opens the item a trusted writer recorded with
+ * that `upstreamNumber` (D-2), and offers the source's own page otherwise.
  */
 export function numberHref(addr: RepoAddress, n: number, upstream = false): string {
   return repoHref('/repo/number', addr, { number: String(n), ...(upstream ? { upstream: '1' } : {}) })

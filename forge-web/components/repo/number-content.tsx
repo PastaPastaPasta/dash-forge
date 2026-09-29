@@ -31,8 +31,8 @@ export function NumberContent({ home, addr, number, upstream }: { home: RepoHome
   const valid = Number.isSafeInteger(number) && number > 0
   const source = mirrorRepo(home.description)
   // Imported content's `#N` is the source's number: the native item a trusted writer recorded
-  // with that `upstreamNumber`. Elsewhere any row at N is.
-  const checkUpstream = upstream && source !== null
+  // with that `upstreamNumber` (whatever the description says). Elsewhere any row at N is.
+  const checkUpstream = upstream
   const { data, error, reload } = useAsync(
     async (): Promise<{ issue: number | null; pull: number | null }> => {
       if (checkUpstream) {
@@ -55,7 +55,8 @@ export function NumberContent({ home, addr, number, upstream }: { home: RepoHome
   if (!valid) return <EmptyState icon={Hash} title="No number addressed" body="Add &number= to the URL." />
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (data === null || only !== null) return <LoadingBlock label={`Finding #${number}`} />
-  const upstreamUrl = upstreamItemUrl(source, number)
+  // The source's own page, only for a source number (a native #N has nothing to do with it)
+  const upstreamUrl = checkUpstream ? upstreamItemUrl(source, number) : null
   if (issue !== null && pull !== null) {
     return (
       <EmptyState
