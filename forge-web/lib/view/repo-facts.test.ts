@@ -11,7 +11,7 @@ vi.mock('../repo/private-session', () => ({ onPrivateSessionEnded: (l: (id: stri
 
 import { Store } from './diff-fixtures'
 import { readTree } from './tree-nav'
-import { loadRepoFacts, repoFacts, repoFilesWalk, resetRepoFacts, subscribeRepoFacts } from './repo-facts'
+import { loadRepoFacts, repoFacts, repoFilesWalk, resetRepoFacts, subscribeRepoFacts, wantRepoFacts } from './repo-facts'
 
 const MIT = 'Permission is hereby granted, free of charge, to any person obtaining a copy of this software\n\nThe above copyright notice and this permission notice shall be included in all copies'
 
@@ -26,7 +26,11 @@ const locateBy = (s: Store) => (oid: string) => {
   return o ? { packRef: 0, offset: 0, length: o.bytes.length, deltaChainSpan: 0, deltaDepth: 0 } : null
 }
 
-beforeEach(() => resetRepoFacts())
+beforeEach(() => {
+  resetRepoFacts()
+  // The About card is in view (the gate is tested on its own below).
+  wantRepoFacts('r')
+})
 
 describe('loadRepoFacts', () => {
   it('publishes the license and the language bar for the tip, and tells subscribers', async () => {
@@ -82,6 +86,8 @@ describe('loadRepoFacts', () => {
     const { s, tip, root } = repo()
     const reader = s.reader(undefined, locateBy(s))
     const key = 'repoId#session7'
+    wantRepoFacts(key)
+    wantRepoFacts('other#session8')
     await loadRepoFacts(key, tip, reader, root, await readTree(reader, root))
     await loadRepoFacts('other#session8', tip, reader, root, await readTree(reader, root))
     expect(repoFacts(key, tip).languages).toBeDefined()
@@ -186,5 +192,33 @@ describe('loadRepoFacts', () => {
     const reader = s.reader(undefined, locateBy(s))
     await loadRepoFacts('r', tip, reader, root, await readTree(reader, root))
     expect(repoFacts('r', tip).license).toBeNull()
+  })
+})
+
+describe('the facts wait for the About card (S-1)', () => {
+  it('reads nothing until the card is in view, then works the facts out', async () => {
+    resetRepoFacts()
+    const { s, tip, root } = repo()
+    const reader = s.reader(undefined, locateBy(s))
+    const entries = await readTree(reader, root)
+    const before = s.reads.length
+    let done = false
+    const load = loadRepoFacts('r', tip, reader, root, entries).then(() => (done = true))
+    await new Promise((r) => setTimeout(r, 20))
+    expect(done).toBe(false)
+    expect(s.reads.length).toBe(before)
+    wantRepoFacts('r')
+    await load
+    expect(repoFacts('r', tip).license).toEqual({ ids: ['MIT'], file: 'LICENSE' })
+  })
+
+  it('a home left before the card came into view stops waiting (its signal aborts)', async () => {
+    resetRepoFacts()
+    const { s, tip, root } = repo()
+    const reader = s.reader(undefined, locateBy(s))
+    const stop = new AbortController()
+    const load = loadRepoFacts('r', tip, reader, root, await readTree(reader, root), stop.signal)
+    stop.abort(new Error('left'))
+    await expect(load).rejects.toThrow('left')
   })
 })

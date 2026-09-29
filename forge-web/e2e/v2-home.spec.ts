@@ -68,7 +68,10 @@ test.describe('repo home launch UX (moutai fixture)', () => {
     const titles = await rail.locator(':scope > section').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))
     expect(titles).toEqual(['Verification', 'Clone', 'About', 'Members', 'Latest release'])
     await expect(rail.getByTestId('rail-members').getByText('maintainer').first()).toBeVisible({ timeout: 45_000 })
-    await expect(rail.getByRole('region', { name: 'Latest release' })).toContainText(/No releases yet|v\d/)
+    // Read once it is in view (S-1): a skeleton until then, the release once scrolled to.
+    const release = rail.getByRole('region', { name: 'Latest release' })
+    await release.scrollIntoViewIfNeeded()
+    await expect(release).toContainText(/No releases yet|v\d/, { timeout: 45_000 })
 
     const card = await settledCard(page)
     await expect(card.getByTestId('verification-summary')).toHaveText(/^(Verified|Partly verified) · refs by proof/)

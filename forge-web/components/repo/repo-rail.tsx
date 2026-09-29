@@ -10,7 +10,7 @@
  * and the browse plane's content-check ledger (which updates live as the page reads objects).
  */
 
-import { useLayoutEffect, useSyncExternalStore } from 'react'
+import { useEffect, useLayoutEffect, useSyncExternalStore } from 'react'
 import Link from 'next/link'
 import { GitBranch, Scale, Star, Tag, Users } from 'lucide-react'
 import {
@@ -20,6 +20,7 @@ import {
   isLive,
   readGatewaysFor,
   NO_CONTENT_CHECKS,
+  prefetchDpnsNames,
   refParamFor,
   selectedTip,
   subscribeContentChecks,
@@ -27,17 +28,19 @@ import {
   type RepoHome,
   type SelectedRef,
 } from '@/lib/view'
-import { latestRelease, readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
+import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
 import type { Membership } from '@/lib/rules/v2'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useQuorumCheck } from '@/hooks/use-quorum-check'
 import { useTrustView } from '@/hooks/use-trust-view'
-import { useReleases, useViewerRole } from '@/hooks/use-repo-chrome'
+import { useLatestRelease, useViewerRole } from '@/hooks/use-repo-chrome'
+import { useInView } from '@/hooks/use-in-view'
 import { TrustPanel } from '@/components/ui/trust-panel'
 import { BackendBadge } from '@/components/ui/backend-badge'
 import { CloneBox } from '@/components/repo/clone-box'
 import { LanguageBar, useRepoFacts } from '@/components/repo/repo-facts-card'
+import { wantRepoFacts } from '@/lib/view/repo-facts'
 import { Author } from '@/components/author'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 
@@ -110,10 +113,6 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 }
 
 function About({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; selected: SelectedRef }): JSX.Element {
-  const { license, languages } = useRepoFacts(repoKey(home.repo), selectedTip(selected))
-  // The license file at the ref the page shows (a pinned commit stays pinned).
-  const refParam = selected.pinned ?? refParamFor(selected.name, selected.isTag, home.defaultBranch)
-  const licenseHref = license ? repoHref('/repo/blob', addr, { path: license.file, ...(refParam ? { ref: refParam } : {}) }) : undefined
   return (
     <Card title="About">
       {home.description ? <p className="mb-2 text-anvil-700 dark:text-anvil-200">{home.description}</p> : null}
@@ -138,12 +137,7 @@ function About({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
       <Row icon={<Star className="h-3.5 w-3.5" aria-hidden />} label="Stars" href={repoHref('/repo/stargazers', addr)}>
         {home.starCount ?? <span title="Couldn't read the star count from Platform">–</span>}
       </Row>
-      {license ? (
-        <Row icon={<Scale className="h-3.5 w-3.5" aria-hidden />} label="License" href={licenseHref} testId="repo-license">
-          {license.ids.length > 0 ? license.ids.join(' or ') : 'Other'}
-        </Row>
-      ) : null}
-      {languages ? <LanguageBar stats={languages} /> : null}
+      <Facts home={home} addr={addr} selected={selected} />
       <div className="mt-2 flex items-center justify-between gap-2 border-t border-anvil-100 pt-2 dark:border-anvil-850">
         <span className="text-anvil-500 dark:text-anvil-400">Storage</span>
         <BackendBadge backend={home.backend} />
@@ -152,10 +146,49 @@ function About({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
   )
 }
 
+/**
+ * The About card's LICENSE row and language bar: worked out once the slot is in view (S-1), with
+ * a skeleton for whichever is not known yet.
+ */
+function Facts({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; selected: SelectedRef }): JSX.Element {
+  const key = repoKey(home.repo)
+  const { license, languages } = useRepoFacts(key, selectedTip(selected))
+  const [ref, inView] = useInView<HTMLDivElement>()
+  useEffect(() => {
+    if (inView) wantRepoFacts(key)
+  }, [inView, key])
+  // The license file at the ref the page shows (a pinned commit stays pinned).
+  const refParam = selected.pinned ?? refParamFor(selected.name, selected.isTag, home.defaultBranch)
+  const licenseHref = license ? repoHref('/repo/blob', addr, { path: license.file, ...(refParam ? { ref: refParam } : {}) }) : undefined
+  const pending = license === undefined || languages === undefined
+  return (
+    <div ref={ref}>
+      {license ? (
+        <Row icon={<Scale className="h-3.5 w-3.5" aria-hidden />} label="License" href={licenseHref} testId="repo-license">
+          {license.ids.length > 0 ? license.ids.join(' or ') : 'Other'}
+        </Row>
+      ) : null}
+      {languages ? <LanguageBar stats={languages} /> : null}
+      {pending ? (
+        <div className="mt-1 space-y-1.5 py-1" role="status" data-testid="facts-skeleton">
+          <span className="sr-only">Reading the license and languages</span>
+          {license === undefined ? <div className="h-3.5 w-full animate-pulse rounded bg-anvil-100 dark:bg-anvil-800" /> : null}
+          {languages === undefined ? <div className="h-2 w-full animate-pulse rounded-full bg-anvil-100 dark:bg-anvil-800" /> : null}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function Members({ repo }: { repo: RepoRef }): JSX.Element {
   const { sdk, ready, network } = useSdk([repo.forge.core, repo.forge.collab])
   const members = useAsync<Membership[]>(
-    () => readMembershipsCached(sdk!, repo, network),
+    async () => {
+      const list = await readMembershipsCached(sdk!, repo, network)
+      // Every member's name in one read, before the pills ask one at a time.
+      await prefetchDpnsNames(sdk!, list.map((m) => m.identity), network)
+      return list
+    },
     [ready, repo.repoId, network],
     { enabled: ready && sdk !== null },
   )
@@ -185,14 +218,21 @@ function Members({ repo }: { repo: RepoRef }): JSX.Element {
 }
 
 function LatestRelease({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {
-  const releases = useReleases(home.repo)
-  const latest = releases.data ? latestRelease(releases.data) : undefined
+  // Below the fold on most screens: read once the card is in view (S-1), a skeleton until then.
+  const [ref, inView] = useInView<HTMLDivElement>()
+  const releases = useLatestRelease(home.repo, inView)
+  const latest = releases.data ?? undefined
   return (
     <Card title="Latest release">
+      <div ref={ref}>
       {releases.error ? (
         <p className="text-anvil-500 dark:text-anvil-400">Couldn&apos;t read the releases.</p>
-      ) : releases.data === null ? (
-        <p className="text-anvil-500 dark:text-anvil-400">Reading…</p>
+      ) : !releases.settled ? (
+        <div className="space-y-1.5 py-1" role="status" data-testid="latest-release-skeleton">
+          <span className="sr-only">Reading the latest release</span>
+          <div className="h-3.5 w-28 animate-pulse rounded bg-anvil-100 dark:bg-anvil-800" />
+          <div className="h-3 w-16 animate-pulse rounded bg-anvil-100 dark:bg-anvil-800" />
+        </div>
       ) : latest === undefined ? (
         <p className="text-anvil-500 dark:text-anvil-400">No releases yet.</p>
       ) : (
@@ -208,6 +248,7 @@ function LatestRelease({ home, addr }: { home: RepoHome; addr: RepoAddress }): J
           <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{timeAgo(latest.createdAt)}</span>
         </Link>
       )}
+      </div>
     </Card>
   )
 }

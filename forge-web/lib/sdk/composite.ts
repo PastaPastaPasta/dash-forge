@@ -28,6 +28,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { isContractMissingError } from './contract-missing'
 import {
   countDocuments,
+  followSdkVersion,
   normalizeDocument,
   queryDocumentsWithProof,
   type DocumentQuery,
@@ -182,6 +183,7 @@ export async function queryComposite(sdk: EvoSDK, q: CompositeQuery, opts: { rea
           ...(s.bind ? { bind: s.bind } : {}),
         })),
       })
+      followSdkVersion(sdk)
       return {
         page: raw.pageDocuments.filter((d) => d != null).map(normalizeDocument),
         subs: raw.subResults.map((r) =>

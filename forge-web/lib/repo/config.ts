@@ -77,12 +77,15 @@ export async function readConfigBundle(sdk: EvoSDK, repo: RepoRef): Promise<Conf
   // nobody else reads any of it (only the plaintext backend, via readConfig).
   if (repo.session !== undefined) return { config: repo.session.config, history: [...repo.session.configHistory] }
   if (repo.visibility === 'private') return { config: await readConfig(sdk, repo), history: [] }
-  const documents = (
-    await queryAllDocuments(
-      sdk,
-      repoSource(repo).repoQuery(DOC.config, { orderBy: [['$createdAt', 'asc']] }),
-    )
-  ).filter((d) => wellFormed(repo, 'config', d))
+  return configBundleOf(
+    repo,
+    await queryAllDocuments(sdk, repoSource(repo).repoQuery(DOC.config, { orderBy: [['$createdAt', 'asc']] })),
+  )
+}
+
+/** A public repo's {@link ConfigBundle} from its complete config timeline, however it was read. */
+export function configBundleOf(repo: RepoRef, rows: readonly PlainDocument[]): ConfigBundle {
+  const documents = rows.filter((d) => wellFormed(repo, 'config', d))
   // Do NOT take the wire order's last row as "newest". Drive orders the terminal
   // document-id subtree by the RAW 32 bytes of `$id`, while `configAsOf` — the rule that
   // decides which config is in force — tie-breaks on the base58 `$id` STRING. For two

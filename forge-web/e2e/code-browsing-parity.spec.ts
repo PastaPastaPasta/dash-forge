@@ -261,6 +261,8 @@ test.describe('LICENSE and languages (showcase repos)', () => {
       await page.goto(repoUrl('', '', repo), { waitUntil: 'domcontentloaded' })
       await waitForRepoResolved(page)
       const about = page.getByRole('complementary', { name: 'About this repository' })
+      // The facts are worked out once the About card is in view (S-1).
+      await about.getByRole('region', { name: 'About' }).scrollIntoViewIfNeeded({ timeout: 90_000 })
       await expect(about.getByTestId('repo-license')).toBeVisible({ timeout: 90_000 })
       await expect(about.getByTestId('repo-license').locator('span').last()).toHaveText(license)
       const bar = about.getByTestId('language-bar')
@@ -273,8 +275,9 @@ test.describe('LICENSE and languages (showcase repos)', () => {
         type: 'dapi',
         description: `${name} cold home with the About facts: ${cold} DAPI requests ${JSON.stringify(Object.fromEntries(counts))}; ${await bar.getByTestId('language-note').innerText()}`,
       })
-      // Within the cold home's budget (repo-home-latency rhl-1).
-      expect(cold, JSON.stringify(Object.fromEntries(counts))).toBeLessThanOrEqual(120)
+      // A cold home with the facts worked out (the About card scrolled into view): the home's
+      // budget plus the facts' walk (repo-home-latency rhl-1).
+      expect(cold, JSON.stringify(Object.fromEntries(counts))).toBeLessThanOrEqual(80)
       await shot(page, `f5-lb-${name}`)
 
       // The license row opens the license file.
@@ -297,6 +300,7 @@ test.describe('LICENSE and languages (showcase repos)', () => {
     const repo = await showcaseRepo('JUNEGUNN', 'fzf')
     await page.goto(repoUrl('', '', repo), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(page)
+    await page.getByRole('region', { name: 'About' }).scrollIntoViewIfNeeded({ timeout: 90_000 })
     await expect(page.getByTestId('language-bar')).toBeVisible({ timeout: 90_000 })
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => undefined)
     const chunks = countDocumentQueries(page, 'chunk')

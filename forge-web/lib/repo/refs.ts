@@ -451,6 +451,45 @@ export async function resolveRefByHash(
 }
 
 /**
+ * Every ref of a public repo, folded from rows already read: each type's complete `reflog`
+ * (`(repoId, $createdAt)`, as the repo chrome store holds them) and the config timeline. This is
+ * the scan's own fallback answer, read as one timeline instead of a keyset scan: every row of
+ * both types, grouped by `refNameHash`, so no ref can be cut off by a page boundary.
+ */
+export function refsFromRows(
+  repo: RepoRef,
+  refUpdates: readonly PlainDocument[],
+  protectedRefUpdates: readonly PlainDocument[],
+  configHistory: readonly ConfigDoc[],
+  isAncestor: IsAncestor = NO_ANCESTRY,
+): ResolvedRef[] {
+  const byHash = groupByRef(repo, [
+    { type: DOC.refUpdate, isProtected: false, rows: dedupeById(refUpdates) },
+    { type: DOC.protectedRefUpdate, isProtected: true, rows: dedupeById(protectedRefUpdates) },
+  ])
+  return [...byHash]
+    .map(([refNameHashHex, updates]) => toResolvedRef(updates, configHistory, refNameHashHex, isAncestor))
+    .filter((r): r is ResolvedRef => r !== null)
+}
+
+/**
+ * One ref's update history (both types) from rows already read, as {@link readRefUpdates}
+ * returns it: a PR list folds every row's base ref from the stored timelines.
+ */
+export function refUpdatesFromRows(
+  repo: RepoRef,
+  refUpdates: readonly PlainDocument[],
+  protectedRefUpdates: readonly PlainDocument[],
+  refNameHashB64: string,
+): RefUpdate[] {
+  const hex = base64ToHex(refNameHashB64)
+  return (groupByRef(repo, [
+    { type: DOC.refUpdate, isProtected: false, rows: dedupeById(refUpdates) },
+    { type: DOC.protectedRefUpdate, isProtected: true, rows: dedupeById(protectedRefUpdates) },
+  ]).get(hex) ?? [])
+}
+
+/**
  * Read every ref of a repo: {@link readAllRefUpdates}, each ref folded locally. Fetches the
  * config history once and reuses it across refs — or accepts the caller's in-flight fetch
  * (`configHistoryPromise`) so a composed read like `loadRepoHome` issues only ONE config

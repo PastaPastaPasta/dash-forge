@@ -54,6 +54,14 @@ export async function readTargetCounts(
 ): Promise<{ issues: number | null; pulls: number | null }> {
   const key = `${forge.collab}:${repoId}`
   const count = async (type: 'issue' | 'patch'): Promise<number | null> => {
+    // Proved by the repo chrome read a moment ago (the same count trees), unless this browser
+    // has since created one it must see.
+    const seeded = seededCount.get(`${key}:${type}`)
+    seededCount.delete(`${key}:${type}`)
+    if (seeded !== undefined && Date.now() - seeded.at < SEEDED_COUNT_MS && seeded.n >= (createdFloor.get(`${key}:${type}`) ?? 0)) {
+      lastCount.set(`${key}:${type}`, seeded.n)
+      return seeded.n
+    }
     const read = (): Promise<number | null> =>
       countDocuments(sdk, {
         dataContractId: forge.collab,
@@ -83,6 +91,22 @@ const FLOOR_RETRIES = 4
 /** The last count read per `collab:repoId:type`, and the least a create by this browser proves. */
 const lastCount = new Map<string, number>()
 const createdFloor = new Map<string, number>()
+
+/** Totals another read proved (the repo chrome composite), each answering the next count read once. */
+const seededCount = new Map<string, { n: number; at: number }>()
+/** How long a seeded total stands in for a count read (the header asks right after the chrome). */
+const SEEDED_COUNT_MS = 10_000
+
+/**
+ * Record a repo's issue and PR totals proved elsewhere (the same `number` count trees, in the
+ * repo chrome composite), so the header's next {@link readTargetCounts} does not ask again.
+ */
+export function seedTargetCounts(forge: ForgeIds, repoId: string, totals: { readonly issues: number; readonly pulls: number }): void {
+  const key = `${forge.collab}:${repoId}`
+  const at = Date.now()
+  seededCount.set(`${key}:issue`, { n: totals.issues, at })
+  seededCount.set(`${key}:patch`, { n: totals.pulls, at })
+}
 
 /**
  * This browser created an issue or PR in `repo`: its total is now at least one more than the

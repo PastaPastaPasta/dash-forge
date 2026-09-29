@@ -149,6 +149,71 @@ export function countDocumentQueries(page: Page, documentType: string): { readon
   return { count: () => n }
 }
 
+/** One `getDocuments` request, decoded far enough to classify it (the v1 wire, evo-sdk 4.2). */
+export interface DocumentsRequest {
+  readonly documentType: string
+  /** Each where clause's field, and for an `in` the number of values. */
+  readonly where: readonly { readonly field: string; readonly inCount: number | null }[]
+}
+
+function readVarint(b: Uint8Array, at: number): [number, number] {
+  let v = 0
+  let shift = 0
+  for (;;) {
+    const x = b[at++] as number
+    v += (x & 0x7f) * 2 ** shift
+    shift += 7
+    if ((x & 0x80) === 0) return [v, at]
+  }
+}
+
+/** The length-delimited fields of a protobuf message: `[field number, bytes]`; varints as `null` bytes. */
+function protoFields(b: Uint8Array): [number, Uint8Array | null][] {
+  const out: [number, Uint8Array | null][] = []
+  let at = 0
+  while (at < b.length) {
+    let key: number
+    ;[key, at] = readVarint(b, at)
+    const wire = key & 7
+    if (wire === 0) {
+      ;[, at] = readVarint(b, at)
+      out.push([key >>> 3, null])
+    } else if (wire === 2) {
+      let len: number
+      ;[len, at] = readVarint(b, at)
+      out.push([key >>> 3, b.subarray(at, at + len)])
+      at += len
+    } else if (wire === 1) at += 8
+    else if (wire === 5) at += 4
+    else break
+  }
+  return out
+}
+
+/**
+ * Decode a `getDocuments` gRPC-web body (5-byte frame header, then `GetDocumentsRequest`) as
+ * `platform.proto` defines v1: `document_type` 2, `where_clauses` 3 (`WhereClause`: `field` 1,
+ * `value` 3; an `IN`'s value is a `list`, field 7, of values). Null for another shape (v0).
+ */
+export function decodeDocumentsRequest(body: Buffer | null): DocumentsRequest | null {
+  if (body === null || body.length < 6) return null
+  const [version, inner] = protoFields(body.subarray(5))[0] ?? []
+  if (version !== 2 || !inner) return null
+  const text = (b: Uint8Array | null | undefined): string => (b ? Buffer.from(b).toString('utf8') : '')
+  const fields = protoFields(inner)
+  return {
+    documentType: text(fields.find(([f]) => f === 2)?.[1]),
+    where: fields
+      .filter(([f, v]) => f === 3 && v !== null)
+      .map(([, clause]) => {
+        const c = protoFields(clause as Uint8Array)
+        const value = c.find(([f]) => f === 3)?.[1]
+        const list = value ? protoFields(value).find(([f]) => f === 7)?.[1] : undefined
+        return { field: text(c.find(([f]) => f === 1)?.[1]), inCount: list ? protoFields(list).filter(([f]) => f === 1).length : null }
+      }),
+  }
+}
+
 /**
  * Collect console errors. Some noise is expected and benign in a WASM SPA hitting a live
  * devnet (transient DAPI request failures, favicon 404s, dev warnings). We only fail on

@@ -41,8 +41,9 @@ import {
   type RepoRef,
   repoKey,
 } from './contract'
-import { readConfigHistory } from './config'
-import { publicRefKey, readRefUpdates } from './refs'
+import { repoTimelines, type RepoTimelines } from './chrome'
+import { configBundleOf, readConfigHistory } from './config'
+import { publicRefKey, readRefUpdates, refUpdatesFromRows } from './refs'
 import { HiddenTally, SEALED_EPOCH, admitAll, gateFor, readableEvents, type HiddenCounts } from './private-content'
 import { onPrivateSessionEnded } from './private-session'
 import { repoSource } from './source'
@@ -824,16 +825,24 @@ export async function listPulls(
   limit = 50,
 ): Promise<Listed<PullView>> {
   const { documents, hidden, complete } = await newestTargets(sdk, repo, 'patch', limit)
+  // A public repo's base refs and config come from the repo chrome store: the page's own chrome
+  // read of a moment ago (no request), else one request for what is new. The ref histories are
+  // the complete timelines the Code tab folds, so a PR folds against the same ones.
+  let timelines: Promise<RepoTimelines | null> | undefined
+  const stored = (): Promise<RepoTimelines | null> => (timelines ??= repoTimelines(sdk, repo, { maxAgeMs: FEED_TTL_MS }))
   // One config read for the whole page, made by the first row that has a base ref.
   let configs: Promise<readonly ConfigDoc[]> | undefined
-  const configHistory = () => (configs ??= readConfigHistory(sdk, repo))
+  const configHistory = () =>
+    (configs ??= stored().then((t) => (t === null ? readConfigHistory(sdk, repo) : configBundleOf(repo, t.config).history)))
   // One update-history read per base ref for the whole page: most PRs target the same few
   // refs (usually just main), so this is O(base refs), not O(PRs).
   const updates = new Map<string, Promise<RefUpdate[]>>()
   const refUpdates = (hash: string): Promise<RefUpdate[]> => {
     let read = updates.get(hash)
     if (read === undefined) {
-      read = readRefUpdates(sdk, repo, hash)
+      read = stored().then((t) =>
+        t === null ? readRefUpdates(sdk, repo, hash) : refUpdatesFromRows(repo, t.refUpdate, t.protectedRefUpdate, hash),
+      )
       updates.set(hash, read)
     }
     return read

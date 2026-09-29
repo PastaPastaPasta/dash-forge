@@ -9,21 +9,29 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
-import type { Network } from '../constants'
+import { NETWORKS, type Network } from '../constants'
 import {
   branchesOf,
+  configBundleOf,
   readConfigBundle,
   readRefs,
+  readRepoChrome,
   readStarCount,
+  refsFromRows,
   resolveAnyRepo,
+  resolveOwner,
   repoKey,
   tagsOf,
   type RepoAddressParams,
+  type RepoChrome,
   type RepoConfig,
   type RepoRef,
+  type RepoTimelines,
   type ResolvedRef,
   type RepoDoc,
 } from '../repo'
+import { normalizeRepoName } from '../rules/v2'
+import { seedFromDomains } from './dpns'
 import { noteRepoGateways } from './storage-status'
 import type { PrivateSession } from '../repo/private-session'
 
@@ -114,9 +122,53 @@ export async function loadRepoHome(
   params: RepoAddressParams & { readonly network: Network },
   onResolved?: (repo: RepoRef) => void,
 ): Promise<RepoHome | null> {
+  // A repo addressed by `(owner, name)`: one composite resolves it and reads its chrome.
+  const forge = NETWORKS[params.network].v2
+  const name = params.repoId ? null : normalizeRepoName(params.name)
+  if (forge !== null && name !== null) {
+    const ownerId = await resolveOwner(sdk, params.owner)
+    if (ownerId === null) return null
+    const chrome = await readRepoChrome(sdk, forge, ownerId, name, params.network)
+    if (chrome === null) return null
+    seedFromDomains(params.network, [ownerId], chrome.ownerDomains)
+    if (chrome.timelines !== null) {
+      onResolved?.(chrome.repo)
+      return homeFromTimelines(chrome, await chrome.timelines)
+    }
+    return composeHome(sdk, chrome.repo, chrome.doc, onResolved, chrome.starCount)
+  }
   const resolved = await resolveAnyRepo(sdk, params)
   if (resolved === null) return null
-  const { repo, doc: v2 } = resolved
+  return composeHome(sdk, resolved.repo, resolved.doc, onResolved)
+}
+
+/** A public repo's home from its chrome read and complete timelines (no further request). */
+function homeFromTimelines(chrome: RepoChrome, timelines: RepoTimelines): RepoHome {
+  const { repo, doc: v2 } = chrome
+  const { config, history } = configBundleOf(repo, timelines.config)
+  noteRepoGateways(repoKey(repo), 'config', config?.backendUris ?? [])
+  const refs = refsFromRows(repo, timelines.refUpdate, timelines.protectedRefUpdate, history)
+  return {
+    repo,
+    v2,
+    description: v2.description,
+    config,
+    defaultBranch: config?.defaultBranch ?? v2.defaultBranch ?? 'main',
+    branches: branchesOf(refs),
+    tags: tagsOf(refs),
+    starCount: chrome.starCount,
+    backend: backendInfo(config),
+  }
+}
+
+/** The home of a resolved repo, read with plain queries (a private repo, or one pinned by `?repo=`). */
+async function composeHome(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  v2: RepoDoc,
+  onResolved?: (repo: RepoRef) => void,
+  knownStars?: number,
+): Promise<RepoHome> {
   onResolved?.(repo)
 
   // One config query serves both the current config and the history readRefs folds with. The
@@ -130,7 +182,7 @@ export async function loadRepoHome(
   const [{ config }, refs, starCount] = await Promise.all([
     bundlePromise,
     readRefs(sdk, repo, undefined, bundlePromise.then((b) => b.history)),
-    readStarCount(sdk, repo.forge, repo.repoId).catch(() => null),
+    knownStars ?? readStarCount(sdk, repo.forge, repo.repoId).catch(() => null),
   ])
   return {
     repo,

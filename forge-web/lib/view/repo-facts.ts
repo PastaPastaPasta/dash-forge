@@ -122,6 +122,9 @@ export async function loadRepoFacts(
 ): Promise<void> {
   const key = keyOf(repoKey, tipOid)
   const known = facts.get(key) ?? UNKNOWN
+  // Both facts sit below the fold: read nothing until a viewer has the About card's facts in view
+  // (S-1). The walk may already be running for Go to file; the license read is a few KiB.
+  if (known.license === undefined || known.languages === undefined) await factsWanted(repoKey, signal)
   if (known.license === undefined) {
     // Files only: a directory named `license/` is not a license.
     const files = rootEntries.filter((e) => isLicenseFile(e.name) && e.mode !== MODE_TREE && e.mode !== MODE_GITLINK).slice(0, LICENSE_FILES_MAX)
@@ -145,9 +148,47 @@ export async function loadRepoFacts(
   }
 }
 
+/**
+ * Repos whose facts a viewer has in view. The facts cost a tree read per directory (the language
+ * bar's walk: 47 requests on dashpay/dash) and the license files, and the About card is below the
+ * fold, so the home works them out only once they are wanted (S-1).
+ */
+const factsShown = new Set<string>()
+const factsWaiters = new Map<string, Set<() => void>>()
+
+/** The About card's facts came into view: the home may work them out. */
+export function wantRepoFacts(repoKey: string): void {
+  if (factsShown.has(repoKey)) return
+  factsShown.add(repoKey)
+  for (const wake of factsWaiters.get(repoKey) ?? []) wake()
+  factsWaiters.delete(repoKey)
+}
+
+/** Resolves once {@link wantRepoFacts} was called for the repo; rejects when `signal` aborts. */
+function factsWanted(repoKey: string, signal?: AbortSignal): Promise<void> {
+  if (factsShown.has(repoKey)) return Promise.resolve()
+  return new Promise((resolve, reject) => {
+    const waiters = factsWaiters.get(repoKey) ?? new Set()
+    factsWaiters.set(repoKey, waiters)
+    const wake = (): void => {
+      signal?.removeEventListener('abort', stop)
+      resolve()
+    }
+    const stop = (): void => {
+      waiters.delete(wake)
+      reject(signal?.reason)
+    }
+    waiters.add(wake)
+    if (signal?.aborted) stop()
+    else signal?.addEventListener('abort', stop, { once: true })
+  })
+}
+
 /** Test hook. */
 export function resetRepoFacts(): void {
   facts.clear()
   walks.clear()
+  factsShown.clear()
+  factsWaiters.clear()
   for (const l of listeners) l()
 }
