@@ -3407,5 +3407,160 @@
    "color": "#00ff00",
    "description": "d"
   }
+ },
+ {
+  "item": "base",
+  "name": "ref with neither name nor enc",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "hasName",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "base",
+  "name": "protected ref with neither name nor enc",
+  "type": "protectedRefUpdate",
+  "expect": "refused",
+  "why": "hasName",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "newOid": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "prevOid": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "base",
+  "name": "sealed label with a plaintext colour",
+  "type": "label",
+  "expect": "refused",
+  "why": "noPlain",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "good first issue",
+   "color": "#00ff00",
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "R-06",
+  "name": "a member enrols itself",
+  "type": "maintainer",
+  "expect": "ok",
+  "owner": 9,
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 9
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-06",
+  "name": "a stranger enrols someone else",
+  "type": "writer",
+  "expect": "refused",
+  "why": "ownerOrConsented",
+  "owner": 8,
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 9
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "base",
+  "name": "hex oid and base58 repo id",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": "A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1"
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$hex": "abababababababababababababababababababab"
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-10",
+  "name": "hex oid of 21 bytes",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "oidWidth",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$hex": "ababababababababababababababababababababab"
+   },
+   "vis": "public"
+  }
  }
 ]

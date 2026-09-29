@@ -4,7 +4,8 @@ name: Contracts
 # forge-community; tools/contract-validate, rs-dpp at the Platform tag its Cargo.toml pins,
 # protocol 14): the full parse a node runs at registration, the registration reference checks
 # (collab and community refer across to forge-core), sample documents against every
-# propertyConstraints rule, the create-transition size against the 20,480-byte limit, and — for
+# propertyConstraints rule (the accept/refuse vectors of forge-contracts/vectors/rc1), the
+# create-transition size against the 20,480-byte limit, and — for
 # forge-core, which only ever changes by an in-place DataContractUpdate (platform-parity-spec
 # §6) — that the update from the registered schema is accepted. negative.sh then proves the
 # validator refuses each broken rule the design relies on.
@@ -12,6 +13,8 @@ on:
   pull_request:
     paths:
       - 'forge-contracts/contracts/**'
+      - 'forge-contracts/schema/**'
+      - 'forge-contracts/vectors/rc1/**'
       - 'forge-contracts/scripts/deploy-v2.mjs'
       - 'tools/contract-validate/**'
       - '.github/workflows/contracts.yml'
@@ -19,6 +22,8 @@ on:
     branches: [master]
     paths:
       - 'forge-contracts/contracts/**'
+      - 'forge-contracts/schema/**'
+      - 'forge-contracts/vectors/rc1/**'
       - 'forge-contracts/scripts/deploy-v2.mjs'
       - 'tools/contract-validate/**'
       - '.github/workflows/contracts.yml'
@@ -37,6 +42,17 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/target-contract-validate
     steps:
       - uses: actions/checkout@v4
+      # The committed schemas and vectors are exactly what forge-contracts/schema/ generates
+      - name: Schemas and vectors match their generators
+        run: |
+          python3 forge-contracts/schema/build.py --check
+          python3 forge-contracts/schema/vectors.py --check
+      # The registration-only reference checks a contract parse does not run (40121, 40122,
+      # 40126, 40131, 40137): the JSON mirror, and its proof that it sees each of them
+      - name: Registration where-check
+        run: |
+          python3 forge-contracts/schema/wherecheck.py
+          python3 forge-contracts/schema/wherecheck.py --self-test
       # The toolchain platform v4.2.0-beta.7 pins (its rust-toolchain.toml)
       - name: Install Rust 1.98.1
         run: rustup toolchain install 1.98.1 --profile minimal
@@ -53,7 +69,7 @@ jobs:
       # forge-core change must stay an in-place update of it
       - name: Validate forge-core (as an update of the registered schema), forge-collab and forge-community
         run: |
-          "$CARGO_TARGET_DIR/debug/contract-validate" \
+          "$CARGO_TARGET_DIR/debug/contract-validate" --vectors forge-contracts/vectors/rc1 \
             forge-contracts/contracts/forge-core.json \
             --expect-update forge-contracts/contracts/registered/forge-core.v1.json \
             forge-contracts/contracts/forge-collab.json \

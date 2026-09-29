@@ -11,7 +11,7 @@ forge-contracts/vectors/rc1/<contract>.json (see its README for the format).
 Every case is a document create judged the way a client pre-check (and a node's basic
 validation) judges it: the JSON schema, maxBytes and every `propertyConstraints` rule that reads
 no total, time or height. The rules that do (dense, c1..c6, lockGate, platformChunks, oneLive,
-atMost20, notFuture) and the registration `where` checks are the live suite's
+atMost20, notFuture), starBeat's distinctFrom and the registration `where` checks are the live suite's
 (forge-contracts/scripts/rc1-live.mjs). A refused case names the item it covers and, in `why`,
 a substring of the first error (a rule name, or a schema keyword), so a conformance runner can
 check it refuses for the same reason.
@@ -105,12 +105,19 @@ def doc(t, /, **kw):
     return d
 
 
+def case(item, label, t, expect, why, kw):
+    owner = kw.pop('signer', None)  # another signer than OWNER (contract-validate judges these; b7gate skips them)
+    c = {"item": item, "name": label, "type": t, "expect": expect, **({"why": why} if why else {}),
+         **({"owner": owner} if owner is not None else {}), "doc": doc(t, **kw)}
+    CASES.append(c)
+
+
 def ok(item, label, t, /, **kw):
-    CASES.append({"item": item, "name": label, "type": t, "expect": "ok", "doc": doc(t, **kw)})
+    case(item, label, t, "ok", None, kw)
 
 
 def no(item, label, t, why, /, **kw):
-    CASES.append({"item": item, "name": label, "type": t, "expect": "refused", "why": why, "doc": doc(t, **kw)})
+    case(item, label, t, "refused", why, kw)
 
 
 SEALED = dict(enc=b(5, 61), epoch=0)
@@ -279,6 +286,7 @@ ok('R-04', 'imported patch with a proof', 'patch', imported=IMP, upstreamNumber=
 no('R-04', 'imported comment without a proof', 'comment', 'i_provenance', imported=IMP)
 ok('R-04', 'imported comment with a proof', 'comment', imported=IMP, asMember=i(OWNER))
 no('R-04', 'proof naming another identity', 'issue', 'm_self', asMember=i(9))
+no('R-04', 'patch proof naming another identity', 'patch', 'm_self', asMember=i(9))
 no('R-04', 'sealed private import without a proof', 'issue', 'i_provenance', title=DROP, body=DROP, vis='private', imported={"createdAt": 1}, **SEALED)
 
 # ---------------- R-14 reply thread ----------------
@@ -433,6 +441,52 @@ ok('O-01', 'authorEvent resolve', 'authorEvent')
 no('O-02', 'runner with an extra field', 'runner', 'additionalProperties', kind=1)
 
 
+# ---------------- the older rules every type keeps ----------------
+no('base', 'ref with neither name nor enc', 'refUpdate', 'hasName', refName=DROP)
+no('base', 'protected ref with neither name nor enc', 'protectedRefUpdate', 'hasName', refName=DROP)
+no('base', 'issue with neither title nor enc', 'issue', 'hasTitle', title=DROP)
+no('base', 'patch with neither title nor enc', 'patch', 'hasTitle', title=DROP)
+no('base', 'comment with neither body nor enc', 'comment', 'hasBody', body=DROP)
+no('base', 'sealed issue with a plaintext title', 'issue', 'noPlain', **SEALED)
+no('base', 'sealed patch with a plaintext base ref', 'patch', 'noPlain', title=DROP, **SEALED)
+no('base', 'sealed review with a plaintext body', 'review', 'noPlain', **SEALED)
+no('base', 'sealed label with a plaintext colour', 'label', 'noPlain', description=DROP, **SEALED)
+no('base', 'sealed event with a plaintext value', 'event', 'noPlain', **SEALED)
+no('base', 'label event without a value', 'event', 'needValue', value=DROP)
+no('base', 'assignee event without refId', 'event', 'needAssignee', kind=6)
+no('base', 'resolve event without refId', 'event', 'needRefId', kind=11, value=DROP)
+no('base', 'headUpdate event without oid', 'event', 'needOid', kind=16, value=DROP)
+no('base', 'author resolve without refId', 'authorEvent', 'needRefId', refId=DROP)
+no('base', 'author headUpdate without oid', 'authorEvent', 'needOid', kind=16, refId=DROP)
+no('D-5', 'conclusion while running', 'checkRun', 'doneIfConclusion', status='in_progress', completedAt=DROP, outcome=0)
+
+
+# ---------------- other signers and literal encodings (contract-validate only; b7gate signs as 7) ----------------
+ok('R-06', 'a member enrols itself', 'maintainer', memberId=i(9), signer=9)
+no('R-06', 'a stranger enrols someone else', 'writer', 'ownerOrConsented', consentBy=DROP, signer=8)
+ok('R-04', 'imported issue proved by its signer 9', 'issue', imported=IMP, asMember=i(9), signer=9)
+ok('base', 'hex oid and base58 repo id', 'refUpdate', repoId={"$id": "A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1"}, newOid={"$hex": "ab" * 20})
+no('R-10', 'hex oid of 21 bytes', 'refUpdate', 'oidWidth', newOid={"$hex": "ab" * 21})
+
+# Rules that read a total, a time or a height: judged on chain only (forge-contracts/scripts/rc1-live.mjs).
+LIVE_ONLY = {('issue', 'dense'), ('patch', 'dense'), ('transition', 'c1_closedAfter'), ('transition', 'c2_openAfter'),
+             ('transition', 'c3_mergedAfter'), ('transition', 'c4_draftAfter'), ('transition', 'c5_draftClosedAfter'),
+             ('transition', 'c6_lockedAfter'), ('comment', 'lockGate'), ('review', 'lockGate'),
+             ('packManifest', 'platformChunks'), ('release', 'oneLive'), ('topic', 'atMost20'), ('checkRun', 'notFuture')}
+
+
+def uncovered():
+    """(contract, type, rule) with no refusing vector and not judged on chain only."""
+    refused = {(c['type'], c['why']) for c in CASES if c['expect'] == 'refused'}
+    out = []
+    for name in NAMES:
+        for t, d in json.load(open(os.path.join(CONTRACTS, f'{name}.json')))['documentSchemas'].items():
+            for rule in d.get('propertyConstraints', {}):
+                if (t, rule) not in refused and (t, rule) not in LIVE_ONLY:
+                    out.append((name, t, rule))
+    return out
+
+
 def split():
     out = {n: [] for n in NAMES}
     seen = set()
@@ -457,6 +511,7 @@ def gate(gate_bin, sets):
                 s = s.replace(k, v)
             cp = os.path.join(tmp, f'{name}.json')
             open(cp, 'w').write(s)
+            cases = [c for c in cases if 'owner' not in c and '"$hex"' not in json.dumps(c) and '"$id": "' not in json.dumps(c)]
             vp = os.path.join(tmp, f'{name}.cases.json')
             open(vp, 'w').write(json.dumps(cases))
             r = subprocess.run([gate_bin, '--cases', cp, vp], capture_output=True, text=True)
@@ -483,18 +538,19 @@ def main():
     a = ap.parse_args()
     sets = split()
     paths = {n: os.path.join(OUT, f'{n}.json') for n in NAMES}
+    missing = uncovered()
+    for m in missing:
+        print('no refusing vector for rule %s.%s.%s' % m)
     if a.check:
         stale = [p for n, p in paths.items() if not os.path.exists(p) or open(p).read() != dumps(sets[n])]
         for p in stale:
             print(f'stale: {os.path.relpath(p, REPO)} (re-run forge-contracts/schema/vectors.py)')
-        sys.exit(1 if stale else 0)
+        sys.exit(1 if stale or missing else 0)
     os.makedirs(OUT, exist_ok=True)
     for n, p in paths.items():
         open(p, 'w').write(dumps(sets[n]))
     print(f'{len(CASES)} cases written to {os.path.relpath(OUT, REPO)}')
-    if a.gate:
-        sys.exit(1 if gate(a.gate, sets) else 0)
-
+    sys.exit(1 if missing or (a.gate and gate(a.gate, sets)) else 0)
 
 if __name__ == '__main__':
     main()
