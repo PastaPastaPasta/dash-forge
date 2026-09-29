@@ -2,9 +2,10 @@
  * RepoSource — where a repo's documents live and how a query is scoped to one repo.
  *
  * Every reader in `lib/repo` and `lib/view` builds its queries here. Every repo shares
- * forge-core (code: refs, config, packs, members, releases, labels), forge-collab (issues,
- * PRs, transitions, comments, reviews, events, milestones) and forge-community (stars,
- * watches, follows, check runs, policies, webhooks, profiles). Indexes that list a repo's documents lead
+ * forge-core (code: refs, config, packs, members and consents, releases, labels, topics),
+ * forge-collab (issues, PRs, transitions, comments, reviews, repo keys) and forge-community
+ * (events, author events, milestones, runners, stars, watches, follows, check runs, policies,
+ * webhooks, profiles). Indexes that list a repo's documents lead
  * with `repoId`, so {@link RepoSource.repoQuery} prefixes `repoId ==` (`forge-v2.md` §2).
  * Indexes keyed by a document id (`targetId`, `patchId`) need no prefix — consensus ties
  * those references to the same repo — and go through {@link RepoSource.targetQuery}.
@@ -17,26 +18,34 @@ import { hexToBase64, type DocumentQuery, type OrderByClause, type WhereClause }
 import type { ForgeIds } from '../deployments'
 import { DOC, type RepoRef } from './contract'
 
-/** The forge-v2 document types held by forge-core. */
-const CORE_TYPES: ReadonlySet<string> = new Set([
+/**
+ * The forge-v2 document types held by forge-core (the RC1 layout, `forge-contracts/schema/build.py`):
+ * code, membership and consent, releases, labels and topics.
+ */
+export const CORE_TYPES: ReadonlySet<string> = new Set([
   DOC.repo,
   DOC.maintainer,
   DOC.writer,
+  DOC.consent,
   DOC.refUpdate,
   DOC.protectedRefUpdate,
   DOC.config,
-  DOC.repoKey,
   DOC.packManifest,
-  DOC.manifestPart,
   DOC.chunk,
   DOC.release,
   DOC.label,
-  DOC.runner,
   DOC.topic,
 ])
 
-/** The forge-v2 document types held by forge-community; the rest is forge-collab. */
+/**
+ * The forge-v2 document types held by forge-community: the social types, CI and policy, and
+ * (RC1 O-01/O-02) the member and author events, milestones and runners.
+ */
 export const COMMUNITY_TYPES: ReadonlySet<string> = new Set([
+  DOC.event,
+  DOC.authorEvent,
+  DOC.milestone,
+  DOC.runner,
   DOC.star,
   DOC.starBeat,
   DOC.watch,
@@ -47,10 +56,15 @@ export const COMMUNITY_TYPES: ReadonlySet<string> = new Set([
   DOC.profile,
 ])
 
-/** The contract of `forge` that holds `type` (`forge-v2.md` §2). */
+/** The forge-v2 document types held by forge-collab: issues, PRs and their threads, and (RC1 O-03) `repoKey`. */
+export const COLLAB_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.transition, DOC.comment, DOC.review, DOC.repoKey])
+
+/** The contract of `forge` that holds `type` (`forge-v2.md` §2). Throws on a type no contract holds. */
 export function contractOf(forge: ForgeIds, type: string): string {
   if (CORE_TYPES.has(type)) return forge.core
-  return COMMUNITY_TYPES.has(type) ? forge.community : forge.collab
+  if (COMMUNITY_TYPES.has(type)) return forge.community
+  if (COLLAB_TYPES.has(type)) return forge.collab
+  throw new Error(`no forge-v2 contract holds the document type ${JSON.stringify(type)}`)
 }
 
 /** The clauses a caller adds to a scoped query. */

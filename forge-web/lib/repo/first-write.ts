@@ -16,7 +16,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 import { STEADY, type FirstWrite } from '../sdk/cost'
 import { countDocuments, queryDocumentsWithProof, type DocumentQuery } from '../sdk'
 import { DOC, type RepoRef } from './contract'
-import { repoSource, type QueryShape } from './source'
+import { contractOf, repoSource, type QueryShape } from './source'
 
 /** A read's answer, or `undefined` (unknown) when the read fails. */
 async function orUnknown(read: () => Promise<boolean>): Promise<boolean | undefined> {
@@ -140,7 +140,7 @@ export async function eventFirsts(
   const [target, feed, contract] = await Promise.all([
     empty(sdk, src.targetQuery(type, onTarget)),
     empty(sdk, src.repoQuery(type, { orderBy: [['$createdAt', 'desc']] })),
-    contractFirst(sdk, signer, repo.forge.collab),
+    contractFirst(sdk, signer, contractOf(repo.forge, type)),
   ])
   return known({ target, repo: feed, contract })
 }

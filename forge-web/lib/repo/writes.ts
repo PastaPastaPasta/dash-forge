@@ -41,7 +41,7 @@ import {
   type WriteAuth,
   type WriteResult,
 } from '../sdk'
-import { DOC, type RepoRef } from './contract'
+import { DOC, withVis, type RepoRef } from './contract'
 import { invalidateMembers } from './members'
 import { refNameHash, repoContentWritten } from './push'
 import type { PrivateDocType } from '../private'
@@ -212,7 +212,8 @@ export async function writeRepoDoc(
     return await createDocumentIdempotent(sdk, auth, {
       contractId: contractFor(repo, documentType),
       documentType,
-      data: scoped(repo, data),
+      // The stamp goes on after sealing: it is plaintext on chain, never part of `enc`.
+      data: scoped(repo, withVis(repo.visibility, documentType, data)),
       ...(intent ? { intent } : {}),
       ...(contentKey ? { contentKey } : {}),
     })

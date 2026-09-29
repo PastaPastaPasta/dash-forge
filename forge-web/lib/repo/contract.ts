@@ -14,17 +14,20 @@ import { isWellFormed, type ContentKind, type Visibility } from '../rules/v2'
 import { base58Decode, base58Encode } from '../auth/base58'
 import { base64ToBytes, base64ToHex, type PlainDocument } from '../sdk'
 
-/** The forge-core, forge-collab and forge-community document type names (`forge-v2.md` §2). */
+/**
+ * The forge-core, forge-collab and forge-community document type names (`forge-v2.md` §2).
+ * Which contract holds each is `source.ts` {@link contractOf} (the RC1 layout).
+ */
 export const DOC = {
   repo: 'repo',
   maintainer: 'maintainer',
   writer: 'writer',
+  consent: 'consent',
   config: 'config',
   repoKey: 'repoKey',
   refUpdate: 'refUpdate',
   protectedRefUpdate: 'protectedRefUpdate',
   packManifest: 'packManifest',
-  manifestPart: 'manifestPart',
   chunk: 'chunk',
   issue: 'issue',
   patch: 'patch',
@@ -44,10 +47,42 @@ export const DOC = {
   watch: 'watch',
   milestone: 'milestone',
   profile: 'profile',
-  // forge-core (C-1)
   runner: 'runner',
   topic: 'topic',
 } as const
+
+/**
+ * The types RC1 stamps with their repo's visibility (`vis`, required): consensus proves it
+ * against the repo (or the signer's member document) and refuses plaintext under `private`
+ * (`forge-contracts/schema/build.py` R-02, R-03, R-18, R-19).
+ */
+export const VIS_TYPES: ReadonlySet<string> = new Set([
+  DOC.maintainer,
+  DOC.writer,
+  DOC.refUpdate,
+  DOC.protectedRefUpdate,
+  DOC.config,
+  DOC.release,
+  DOC.issue,
+  DOC.patch,
+  DOC.comment,
+  DOC.review,
+  DOC.checkRun,
+  DOC.webhook,
+])
+
+/** The types whose `vis` may only be `"public"` (a topic or a trending beat of a private repo is refused). */
+export const PUBLIC_ONLY_TYPES: ReadonlySet<string> = new Set([DOC.topic, DOC.starBeat])
+
+/**
+ * `data` with the `vis` stamp a create of `documentType` in a repo of `visibility` carries, or
+ * `data` itself for a type that has none. A stamp already set is kept.
+ */
+export function withVis(visibility: Visibility, documentType: string, data: Record<string, unknown>): Record<string, unknown> {
+  if (data['vis'] !== undefined) return data
+  if (PUBLIC_ONLY_TYPES.has(documentType)) return { ...data, vis: 'public' }
+  return VIS_TYPES.has(documentType) ? { ...data, vis: visibility } : data
+}
 
 /** `event.kind` integer → FORGE_RULES {@link EventKind} (`forge-v2.md` §3). */
 const EVENT_KIND_BY_INT: Readonly<Record<number, EventKind>> = {

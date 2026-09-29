@@ -13,7 +13,7 @@ import { describe, expect, it } from 'vitest'
 
 import { ascendingEquivalent, tieProbeAllowed } from '../sdk'
 import type { RepoRef } from './contract'
-import { COMMUNITY_TYPES, repoSource } from './source'
+import { COLLAB_TYPES, COMMUNITY_TYPES, CORE_TYPES, repoSource } from './source'
 
 const DEMO: RepoRef = {
   forge: { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'G' },
@@ -30,15 +30,24 @@ describe('which contract holds a type', () => {
     expect(three.repoQuery('config').dataContractId).toBe('CORE')
     expect(three.repoQuery('issue').dataContractId).toBe('COLLAB')
     expect(three.repoQuery('transition').dataContractId).toBe('COLLAB')
-    expect(three.repoQuery('milestone').dataContractId).toBe('COLLAB')
-    for (const t of ['star', 'starBeat', 'watch', 'follow', 'checkRun', 'policy', 'webhook', 'profile']) {
+    expect(three.repoQuery('repoKey').dataContractId).toBe('COLLAB')
+    expect(three.repoQuery('consent').dataContractId).toBe('CORE')
+    for (const t of ['event', 'authorEvent', 'milestone', 'runner', 'star', 'starBeat', 'watch', 'follow', 'checkRun', 'policy', 'webhook', 'profile']) {
       expect(three.repoQuery(t).dataContractId, t).toBe('COMMUNITY')
     }
   })
 
-  it('names the types the forge-community schema declares, and no other', () => {
-    const schema = JSON.parse(readFileSync(resolve(process.cwd(), '..', 'forge-contracts', 'contracts', 'forge-community.json'), 'utf8')) as { documentSchemas: Record<string, unknown> }
-    expect([...COMMUNITY_TYPES].sort()).toEqual(Object.keys(schema.documentSchemas).sort())
+  it('refuses a type no contract holds (manifestPart is gone in RC1)', () => {
+    expect(() => three.repoQuery('manifestPart')).toThrow(/no forge-v2 contract/)
+  })
+
+  it.each([
+    ['forge-core', CORE_TYPES],
+    ['forge-collab', COLLAB_TYPES],
+    ['forge-community', COMMUNITY_TYPES],
+  ] as const)('names the types the %s schema declares, and no other', (name, types) => {
+    const schema = JSON.parse(readFileSync(resolve(process.cwd(), '..', 'forge-contracts', 'contracts', `${name}.json`), 'utf8')) as { documentSchemas: Record<string, unknown> }
+    expect([...types].sort()).toEqual(Object.keys(schema.documentSchemas).sort())
   })
 })
 
