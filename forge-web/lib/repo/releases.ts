@@ -274,6 +274,23 @@ export function releaseOrder(a: ReleaseView, b: ReleaseView): number {
   return newestFirst(a, b)
 }
 
+/**
+ * Compare two ref names for display order (L-13 ref switcher, L-53 tags/branches pages): a name
+ * with a parseable version ({@link tagVersion}) sorts by version, highest first (`v23.1.10`
+ * before `v23.1.8`, not string order); a name without one falls back to natural sort ({@link
+ * naturalRuns}: digit runs compare as numbers). Mixed lists put every versioned name ahead of
+ * every unversioned one. Reused by the ref switcher and the tags page so both sort identically,
+ * and shares its version comparison with {@link releaseOrder}.
+ */
+export function compareTagNames(a: string, b: string): number {
+  const va = tagVersion(a)
+  const vb = tagVersion(b)
+  if (va !== null && vb !== null) return versionDesc(va, vb) || naturalRuns(a, b)
+  if (va !== null) return -1
+  if (vb !== null) return 1
+  return naturalRuns(a, b)
+}
+
 /** The repo's latest release, as GitHub picks it: the first in {@link releaseOrder} that is not a pre-release or yanked. */
 export function latestRelease(list: ReleaseList): ReleaseView | undefined {
   return list.current.find((r) => !r.yanked && !isPrerelease(r.tagName)) ?? list.current.find((r) => !r.yanked)

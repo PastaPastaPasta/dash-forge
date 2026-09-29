@@ -144,6 +144,7 @@ export {
   findBranch,
   isDiverged,
   isLive,
+  matchesRefQuery,
   refParamFor,
   selectedTip,
   selectRef,

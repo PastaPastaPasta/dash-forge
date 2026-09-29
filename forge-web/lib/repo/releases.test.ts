@@ -5,7 +5,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { describe, expect, it } from 'vitest'
 
 import { AssetHashMismatchError, browserReadable, downloadVerifiedAsset } from '../view/release-download'
-import { UNVERIFIABLE_ASSET, assetVerifiable, isPrerelease, latestRelease, newestPerTag, parseReleaseAssets, type ReleaseView } from './releases'
+import { UNVERIFIABLE_ASSET, assetVerifiable, compareTagNames, isPrerelease, latestRelease, newestPerTag, parseReleaseAssets, type ReleaseView } from './releases'
 
 const H = 'ab'.repeat(32)
 
@@ -89,6 +89,30 @@ describe('newestPerTag', () => {
     const list = newestPerTag(['15.2.0', '14.1.1', '0.10.0', '0.0.2'].map((t, i) => rel(t, i + 1, t)))
     expect(latestRelease(list)?.tagName).toBe('15.2.0')
     expect(list.current.map((r) => r.tagName)).toEqual(['15.2.0', '14.1.1', '0.10.0', '0.0.2'])
+  })
+})
+
+// L-13/L-53: the ref switcher and the tags/branches pages sort by this instead of localeCompare,
+// so a 575-tag repo shows v23.1.10 above v23.1.8 rather than between v23.1.1 and v23.1.2.
+describe('compareTagNames', () => {
+  it('sorts numeric versions highest first, not lexicographically', () => {
+    const names = ['v23.1.2', 'v23.1.10', 'v23.1.8', 'v23.1.9']
+    expect([...names].sort(compareTagNames)).toEqual(['v23.1.10', 'v23.1.9', 'v23.1.8', 'v23.1.2'])
+  })
+
+  it('puts every versioned name ahead of every unversioned one, each internally sorted', () => {
+    const names = ['nightly', 'v1.2.0', 'edge', 'v1.10.0', 'main']
+    expect([...names].sort(compareTagNames)).toEqual(['v1.10.0', 'v1.2.0', 'edge', 'main', 'nightly'])
+  })
+
+  it('breaks a tie between two equal versions by natural-sorting the full name', () => {
+    const names = ['zeta-v1.0.0', 'alpha-v1.0.0']
+    expect([...names].sort(compareTagNames)).toEqual(['alpha-v1.0.0', 'zeta-v1.0.0'])
+  })
+
+  it('agrees with releaseOrder on a mixed real-world tag set', () => {
+    const tags = ['v24.0.0-rc.1', 'v23.1.2', 'v23.1.10', 'v24.0.0-rc.10', 'v0.9.13.15', 'nightly', 'jq-1.7.1']
+    expect([...tags].sort(compareTagNames)).toEqual(['v24.0.0-rc.10', 'v24.0.0-rc.1', 'v23.1.10', 'v23.1.2', 'jq-1.7.1', 'v0.9.13.15', 'nightly'])
   })
 })
 

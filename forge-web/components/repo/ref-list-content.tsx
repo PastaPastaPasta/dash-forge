@@ -7,20 +7,24 @@
  * folded behind a disclosure so the main list shows only what can be browsed.
  */
 
+import { useMemo, useState } from 'react'
 import Link from 'next/link'
-import { GitBranch, Tag } from 'lucide-react'
+import { GitBranch, Search, Tag } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { isDiverged, isLive, plural, refParamFor, tipOidOf } from '@/lib/view'
-import type { ResolvedRef } from '@/lib/repo'
+import { isDiverged, isLive, matchesRefQuery, plural, refParamFor, tipOidOf } from '@/lib/view'
+import { compareTagNames, type ResolvedRef } from '@/lib/repo'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState } from '@/components/ui/states'
 import { TagCommit, useTagPeeler } from '@/components/repo/tag-commit'
+import { Input } from '@/components/ui/input'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 
 const KIND = {
   branches: { prefix: 'refs/heads/', icon: GitBranch, empty: 'No branches yet', noun: 'a branch', single: 'branch' },
   tags: { prefix: 'refs/tags/', icon: Tag, empty: 'No tags yet', noun: 'a tag', single: 'tag' },
 } as const
+
+type SortMode = 'name' | 'version'
 
 export function RefListContent({
   home,
@@ -49,16 +53,39 @@ export function RefListContent({
   const short = (ref: ResolvedRef): string =>
     ref.refName.startsWith(prefix) ? ref.refName.slice(prefix.length) : ref.refName
 
+  const [query, setQuery] = useState('')
+  // Tags are usually named for a version, so version order (newest first) is the useful default
+  // there; branches usually are not, so name order (default branch first, then alphabetical).
+  const [sort, setSort] = useState<SortMode>(kind === 'tags' ? 'version' : 'name')
+
   // Default branch first, then alphabetical.
   const byName = (a: ResolvedRef, b: ResolvedRef): number => {
     if (a.refName === defaultRefName) return -1
     if (b.refName === defaultRefName) return 1
     return a.refName.localeCompare(b.refName)
   }
-  const live = refs.filter(isLive).sort(byName)
-  const deleted = refs.filter((r) => !isLive(r)).sort(byName)
+  // Version-aware: a name with a parseable version (L-13/L-53), newest first; the default branch
+  // still leads even under version sort, so it never scrolls out of view.
+  const byVersion = (a: ResolvedRef, b: ResolvedRef): number => {
+    if (a.refName === defaultRefName) return -1
+    if (b.refName === defaultRefName) return 1
+    return compareTagNames(short(a), short(b))
+  }
+  const comparator = sort === 'version' ? byVersion : byName
+  const matches = (ref: ResolvedRef): boolean => matchesRefQuery(short(ref), query)
 
-  if (live.length === 0 && deleted.length === 0) {
+  const live = useMemo(
+    () => refs.filter(isLive).filter(matches).sort(comparator),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [refs, query, sort],
+  )
+  const deleted = useMemo(
+    () => refs.filter((r) => !isLive(r)).filter(matches).sort(comparator),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [refs, query, sort],
+  )
+
+  if (refs.length === 0) {
     return (
       <EmptyState
         icon={Icon}
@@ -70,7 +97,33 @@ export function RefListContent({
 
   return (
     <div className="space-y-4">
-      {live.length > 0 ? (
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative min-w-[14rem] flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
+          <label htmlFor={`${kind}-search`} className="sr-only">Search {kind}</label>
+          <Input
+            id={`${kind}-search`}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="pl-8 font-mono text-[13px]"
+            placeholder={`Find a ${single}…`}
+          />
+        </div>
+        <label className="sr-only" htmlFor={`${kind}-sort`}>Sort</label>
+        <select
+          id={`${kind}-sort`}
+          value={sort}
+          onChange={(e) => setSort(e.target.value as SortMode)}
+          className="rounded-md border border-anvil-300 bg-white px-2 py-1 text-dense dark:border-anvil-700 dark:bg-anvil-950 coarse:h-11"
+        >
+          <option value="name">Name</option>
+          <option value="version">Version</option>
+        </select>
+      </div>
+
+      {live.length === 0 && deleted.length === 0 ? (
+        <EmptyState icon={Icon} title={`No ${kind} match`} body={`No ${kind} match "${query}". Clear the search to see them all.`} />
+      ) : live.length > 0 ? (
         <div className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
           {live.map((ref) => {
             const shortName = short(ref)
