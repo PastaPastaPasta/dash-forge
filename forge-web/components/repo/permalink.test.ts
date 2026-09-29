@@ -48,12 +48,19 @@ describe('permalinkPath', () => {
   })
 
   it('keeps the canonical route for an address the short form cannot carry', () => {
-    // A `?repo=` pin, a DPNS owner with a dot, and an owner that is one of the app's own routes.
-    for (const addr of [{ ...ALICE, repoId: 'R' }, { owner: 'alice.dash', name: 'project' }, { owner: RESERVED_SEGMENTS[0] as string, name: 'x' }]) {
+    // A `?repo=` pin, and an owner that is one of the app's own routes.
+    for (const addr of [{ ...ALICE, repoId: 'R' }, { owner: RESERVED_SEGMENTS[0] as string, name: 'x' }]) {
       const link = permalinkPath(addr, 'blob', OID, 'a.rs', false)
       expect(link).toBe(pinnedHref(addr, 'blob', OID, 'a.rs', false))
       expect(link).toContain(`ref=${OID}`)
     }
+  })
+
+  it('gives an owner written as a full DPNS name (`alice.dash`) the short form, which expands back (L-82)', () => {
+    const addr = { owner: 'alice.dash', name: 'project' }
+    const short = permalinkPath(addr, 'blob', OID, 'a.rs', false) as string
+    expect(short).toBe(`/alice.dash/project/blob/${OID}/a.rs`)
+    expect(route(viaShim(short))).toEqual(route(pinnedHref(addr, 'blob', OID, 'a.rs', false)))
   })
 
   it('keeps the canonical route for a path with a `.` or `..` segment (a browser would resolve it into another repo)', () => {
