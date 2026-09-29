@@ -268,7 +268,7 @@ for (const device of ['iPhone SE', 'Pixel 7'] as const) {
   })
 }
 
-test('iPhone SE: offline, a tab shows the plain offline state, and it fits (L-56)', async ({ browser, browserName }) => {
+test('iPhone SE: offline, a tab says so (held, or the plain offline state), fits, and opens once back (L-56)', async ({ browser, browserName }) => {
   test.setTimeout(3 * 60_000)
   const context = await browser.newContext(contextFor('iPhone SE', browserName))
   const page = await context.newPage()
@@ -277,10 +277,17 @@ test('iPhone SE: offline, a tab shows the plain offline state, and it fits (L-56
   await expect(page.getByTestId('repo-title')).toBeVisible({ timeout: 90_000 })
   await context.setOffline(true)
   await page.getByRole('navigation', { name: 'Repository' }).getByRole('link', { name: /^Pull requests/ }).click()
-  const offline = page.getByTestId('read-unreachable').or(page.getByTestId('platform-unreachable')).or(page.getByTestId('app-offline')).first()
-  await expect(offline).toBeVisible({ timeout: 60_000 })
+  // A page this tab has no data for is held with a toast; one it can render shows the offline state.
+  const said = page
+    .getByText("You're offline")
+    .or(page.getByTestId('read-unreachable'))
+    .or(page.getByTestId('platform-unreachable'))
+    .first()
+  await expect(said).toBeVisible({ timeout: 60_000 })
+  await expect(page.getByText(/grpc error|Application error/i).filter({ visible: true })).toHaveCount(0)
   expect(await overflowX(page)).toBeLessThanOrEqual(1)
   await context.setOffline(false)
+  await expect(page).toHaveURL(/\/repo\/pulls\//, { timeout: 60_000 })
   await expect(page.getByTestId('read-unreachable').or(page.getByTestId('app-offline'))).toHaveCount(0, { timeout: 90_000 })
   await context.close()
 })
