@@ -21,8 +21,8 @@ import {
   holdingsOfRole,
   invalidateMembers,
   invalidateRepoFeed,
-  listIssues,
-  listPulls,
+  queryIssues,
+  queryPulls,
   nextNumber,
   readRepoCounts,
   readTargetCounts,
@@ -316,27 +316,32 @@ describe('forge-v2 refs and config', () => {
   })
 })
 
+/** Every issue / PR of `repo` through the list indexes (one page of 100, every state). */
+const issuesOf = async (sdk: EvoSDK, repo: RepoRef = DEMO) => (await queryIssues(sdk, repo, { state: 'all', labels: [], author: null, assignee: null, mentions: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null, 'devnet')).rows
+const pullsOf = async (sdk: EvoSDK, repo: RepoRef = DEMO) => (await queryPulls(sdk, repo, { state: 'all', labels: [], author: null, assignee: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null, 'devnet')).rows
+
 describe('forge-v2 issue and PR folds', () => {
   it('reads a whole list page’s state in one sum query and its labels from one feed read', async () => {
     const seen: DocumentQuery[] = []
     const sdk = mockSdk(fixture(), seen)
-    const issues = await listIssues(sdk, DEMO)
+    const issues = await issuesOf(sdk)
     const by = new Map(issues.map((i) => [i.number, i]))
     expect([...by.keys()].sort()).toEqual([1, 2, 3]) // #4 (malformed) and the other repo's #1 are skipped
     expect(by.get(1)?.state).toMatchObject({ open: true, labels: ['bug'] }) // a close kind on an event is inert
     expect(by.get(2)?.state.open).toBe(false) // the author closed it
     expect(by.get(3)?.state.open).toBe(false) // a writer closed it
     // State: one sum query naming the whole page, grouped by target.
-    const sums = seen.filter((q) => q.documentTypeName === 'transition')
+    const sums = seen.filter((q) => q.documentTypeName === 'transition' && (q as { groupBy?: string[] }).groupBy?.[0] === 'targetId')
     expect(sums).toHaveLength(1)
-    expect(sums[0]?.where).toEqual([['targetId', 'in', [ID('issue1'), ID('issue2'), ID('issue3')].sort()]])
+    // The chunk's hidden #4 too: an open hidden issue comes off the Open count.
+    expect(sums[0]?.where).toEqual([['targetId', 'in', [ID('issue1'), ID('issue2'), ID('issue3'), ID('issue4')].sort()]])
     expect((sums[0] as { groupBy?: string[] }).groupBy).toEqual(['targetId'])
-    // Labels (and a PR row's head updates): the repo feed, read once per type, never per row.
+    // Labels and assignees: the repo's member-event feed, read once, never per row.
     const eventReads = seen.filter((q) => q.documentTypeName === 'event' || q.documentTypeName === 'authorEvent')
     expect(eventReads.every((q) => q.where?.[0]?.[0] === 'repoId')).toBe(true)
-    expect(eventReads.map((q) => q.documentTypeName).sort()).toEqual(['authorEvent', 'event'])
-    // …and nothing outside the two forge contracts.
-    expect(seen.some((q) => q.dataContractId !== 'CORE' && q.dataContractId !== 'COLLAB')).toBe(false)
+    expect(eventReads.map((q) => q.documentTypeName)).toEqual(['event'])
+    // …and nothing outside the two forge contracts and DPNS (the authors' names).
+    expect(seen.some((q) => q.dataContractId !== 'CORE' && q.dataContractId !== 'COLLAB' && q.documentTypeName !== 'domain')).toBe(false)
   })
 
   it('groups the feed by target even when the SDK returns targetId as base64', async () => {
@@ -349,7 +354,7 @@ describe('forge-v2 issue and PR folds', () => {
       doc({ $ownerId: MAINT, repoId: REPO, targetId: bytesToBase64(base58Decode(ids.issue2)), targetNumber: 2, kind: 4, value: 'bug' }),
     ]
     invalidateRepoFeed(DEMO)
-    const issues = await listIssues(mockSdk(store), DEMO)
+    const issues = await issuesOf(mockSdk(store))
     expect(issues.find((i) => i.number === 2)?.state.labels).toEqual(['bug'])
     invalidateRepoFeed(DEMO)
   })
@@ -360,29 +365,29 @@ describe('forge-v2 issue and PR folds', () => {
     store.COLLAB!.issue = store.COLLAB!.issue!.map((d) => (d['$id'] === ID('issue2') ? { ...d, $id: REPO_ISSUE2 } : d))
     store.COLLAB!.transition = store.COLLAB!.transition!.map((t) => (t['targetId'] === ID('issue2') ? { ...t, targetId: REPO_ISSUE2 } : t))
     invalidateRepoFeed(DEMO)
-    const issues = await listIssues(mockSdk(store), DEMO)
+    const issues = await issuesOf(mockSdk(store))
     expect(issues.find((i) => i.number === 2)?.state.open).toBe(false)
     invalidateRepoFeed(DEMO)
   })
 
-  it('pages past hidden rows to fill the page and reports how many it hid', async () => {
+  it('skips hidden rows and reports how many it hid', async () => {
     const store = fixture()
     // Five newer malformed issues (ciphertext in a public repo) ahead of the real ones.
     for (let n = 10; n < 15; n++) {
       store.COLLAB!.issue!.push(
-        doc({ $id: `spam${n}`, $ownerId: STRANGER, repoId: REPO, number: n, title: '', enc: bytesToBase64(new Uint8Array(32)), epoch: 0 }),
+        doc({ $id: ID(`spam${n}`), $ownerId: STRANGER, repoId: REPO, number: n, title: '', enc: bytesToBase64(new Uint8Array(32)), epoch: 0 }),
       )
     }
     invalidateRepoFeed(DEMO)
-    const issues = await listIssues(mockSdk(store), DEMO, 3)
-    expect(issues.map((i) => i.number).sort()).toEqual([1, 2, 3])
-    expect(issues.hidden).toBe(6) // the five spam rows and the fixture's malformed #4
+    const page = await queryIssues(mockSdk(store), DEMO, { state: 'all', labels: [], author: null, assignee: null, mentions: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null, 'devnet')
+    expect(page.rows.map((i) => i.number).sort()).toEqual([1, 2, 3])
+    expect(page.hidden).toBe(6) // the five spam rows and the fixture's malformed #4
     invalidateRepoFeed(DEMO)
   })
 
   it('reads a merged PR from its sum on a list, and labels the merge on its page', async () => {
     const sdk = mockSdk(fixture())
-    const [pull] = await listPulls(sdk, DEMO)
+    const [pull] = await pullsOf(sdk)
     // A list row knows the sum only: merged, and whether it is on the base is not asked.
     expect(pull?.state).toMatchObject({ merged: true, open: false, mergeOnBase: null })
     expect(pull?.sourceId).toBe(REPO)
@@ -597,20 +602,10 @@ describe('open counts for the Issues / Pull requests tabs', () => {
     const main = store.COLLAB!.patch![0]!
     store.COLLAB!.patch!.push({ ...main, $id: ID('patch2'), number: 2 }, { ...main, $id: ID('patch3'), number: 3 })
     const seen: DocumentQuery[] = []
-    const pulls = await listPulls(mockSdk(store, seen), DEMO)
+    const pulls = await pullsOf(mockSdk(store, seen))
     expect(pulls).toHaveLength(3)
     const refReads = seen.filter((q) => q.documentTypeName === 'protectedRefUpdate')
     expect(refReads).toHaveLength(1)
-    invalidateRepoFeed(DEMO)
-  })
-
-  it('marks a list cut at its limit incomplete', async () => {
-    invalidateRepoFeed(DEMO)
-    const all = await listIssues(mockSdk(fixture()), DEMO)
-    expect(all.complete).toBe(true)
-    const cut = await listIssues(mockSdk(fixture()), DEMO, 2)
-    expect(cut).toHaveLength(2)
-    expect(cut.complete).toBe(false)
     invalidateRepoFeed(DEMO)
   })
 

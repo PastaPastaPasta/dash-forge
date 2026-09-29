@@ -22,7 +22,8 @@ import {
 } from '../sdk'
 import { readConfigBundle } from './config'
 import { DOC, type RepoRef } from './contract'
-import { listIssues, readEvents, readIssue, readReviews } from './issues'
+import { readEvents, readIssue, readReviews } from './issues'
+import { queryIssues } from './issue-index'
 import { locatorPackSpace } from '../view/browse-source'
 import { readPackManifests } from './packs'
 import { readComments } from '../view/issues-view'
@@ -316,6 +317,7 @@ describe('list surfaces tolerate one unreadable row', () => {
         },
         // Every target is open (no transitions): the unreadable part is the event log.
         sum: () => Promise.resolve(new Map()),
+        count: () => Promise.resolve(new Map()),
       },
     } as unknown as EvoSDK
   }
@@ -328,7 +330,7 @@ describe('list surfaces tolerate one unreadable row', () => {
     const id = 'EiaSVsG5gm6aLBXjodmJNmQRVcmwUbvon1YiFGKc64by'
     const sdk = endlessEventsSdk([{ $id: id, $ownerId: 'author', $createdAt: 1, number: 1, title: 'buried' }])
 
-    const issues = await listIssues(sdk, REPO, 10)
+    const issues = (await queryIssues(sdk, REPO, { state: 'all', labels: [], author: null, assignee: null, mentions: null, sort: 'newest', text: '', page: 1, pageSize: 100 } as const, null, 'devnet')).rows
 
     expect(issues).toHaveLength(1)
     expect(issues[0]?.title).toBe('buried')
