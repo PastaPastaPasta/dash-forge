@@ -29,7 +29,6 @@ export {
   isRc1OidHex,
   isRc1RefName,
   isRc1TagName,
-  OID_WIDTHS,
 } from './oid'
 export { matchesProtected, neutralizeWildmatch, wildmatch } from './matchesProtected'
 export { displayRefName, mergeBaseTips, prBaseTips, resolveRef } from './resolveRef'

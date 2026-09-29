@@ -40,6 +40,7 @@ import {
   setThreadFlag,
   setLock,
   LOCKED_REASON,
+  lockedOut,
   setTargetState,
   updateComment,
   updateTarget,
@@ -147,9 +148,9 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const { issue, timeline, labels, members, hidden, eventValues, meta } = data
   const origin = trustedOrigin(issue.origin, issue.author, trust)
   const whileLocked = commentsWhileLocked(timeline, new Set(members.map((m) => m.identity)))
-  const postContext = { isMember: holdings.data !== null && (holdings.data.write || holdings.data.maintain), locked: meta.locked }
   const open = issue.state.open
   const isMember = holdings.data !== null && (holdings.data.write || holdings.data.maintain)
+  const postContext = { isMember, locked: meta.locked }
   const isAuthor = identity !== null && identity === issue.author
   const canToggle = identity !== null && (isAuthor || isMember)
   // A private repo is written sealed (issues, comments and edits: `private-writes.ts`); only a
@@ -158,7 +159,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const archived = home.config?.archived === true
   const composeBlock = archived
     ? ARCHIVED_REASON
-    : meta.locked && !isMember
+    : lockedOut(postContext)
       ? LOCKED_REASON
       : privateComposeBlock(home)
   const isPrivate = home.repo.visibility === 'private'
@@ -210,7 +211,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
       case 'flag':
         // A lock is a member transition since RC1 (consensus then refuses non-members' comments).
         if (pending.flag === 'lock') await setLock(sdk, signer, home.repo, { target: { ...target, type: 'issue', author: issue.author }, lock: pending.on, isMember, intent })
-        else await setThreadFlag(sdk, signer, home.repo, { target, flag: 'pin', on: pending.on, intent })
+        else await setThreadFlag(sdk, signer, home.repo, { target, on: pending.on, intent })
         break
       case 'milestone':
         await setMilestone(sdk, signer, home.repo, { target, title: pending.title, intent })

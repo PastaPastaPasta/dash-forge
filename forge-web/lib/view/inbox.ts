@@ -331,7 +331,8 @@ export function stateWhat(kind: number, value: string | undefined, me: string): 
   }
 }
 
-const VERDICT_WHAT: Readonly<Record<number, string>> = { 1: 'approved', 2: 'requested changes', 3: 'reviewed' }
+/** Review verdicts as the inbox words them; 4/5 are a non-member's approve and request changes (RC1). */
+const VERDICT_WHAT: Readonly<Record<number, string>> = { 1: 'approved', 2: 'requested changes', 3: 'reviewed', 4: 'approved', 5: 'requested changes' }
 
 function shortRef(name: string | undefined): string {
   if (!name) return 'a branch'

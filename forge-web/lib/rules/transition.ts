@@ -79,9 +79,12 @@ export function threadStateOf(sum: number): ThreadState {
  */
 export function lockTransition(target: TransitionTarget, locked: boolean, lock: boolean): TransitionMove | null {
   if (locked === lock) return null
-  const kind = target === 'issue' ? (lock ? ISSUE_LOCK : ISSUE_UNLOCK) : lock ? PR_LOCK : PR_UNLOCK
-  return { kind, delta: lock ? LOCK_DELTA : -LOCK_DELTA, targetKind: target === 'issue' ? 0 : 1, asAuthor: 0, after: lock ? LOCK_DELTA : 0 }
+  const kind = LOCK_KINDS[target][lock ? 0 : 1]
+  return { kind, delta: deltaOf(kind) as number, targetKind: target === 'issue' ? 0 : 1, asAuthor: 0, after: lock ? LOCK_DELTA : 0 }
 }
+
+/** Each target's lock and unlock kinds. */
+const LOCK_KINDS: Readonly<Record<TransitionTarget, readonly [number, number]>> = { issue: [ISSUE_LOCK, ISSUE_UNLOCK], patch: [PR_LOCK, PR_UNLOCK] }
 
 /** What a transition names: an `issue` (`targetKind` 0) or a `patch` (1). */
 export type TransitionTarget = 'issue' | 'patch'

@@ -51,7 +51,7 @@ export const DOC = {
   topic: 'topic',
 } as const
 
-export { PUBLIC_ONLY_TYPES, VIS_TYPES, withVis } from '../layout'
+export { withVis } from '../layout'
 
 /** `event.kind` integer → FORGE_RULES {@link EventKind} (`forge-v2.md` §3). */
 const EVENT_KIND_BY_INT: Readonly<Record<number, EventKind>> = {

@@ -109,13 +109,21 @@ export interface PostContext {
   readonly locked?: boolean
 }
 
+/** Why a non-member cannot comment on or review a locked thread. */
+export const LOCKED_REASON = 'This conversation is locked: only maintainers and writers can comment.'
+
+/** A non-member's post to a locked thread: consensus refuses it (`lockGate`). */
+export function lockedOut(post: PostContext | undefined): boolean {
+  return post?.locked === true && !post.isMember
+}
+
 /**
  * The `verdict` and membership proof of a review (RC1 R-15, R-16): a member's approve or request
  * changes proves membership (1/2 + `asMember`), a non-member's is 4/5; a comment verdict proves
  * it only on a locked thread (where consensus refuses a non-member's review).
  */
 export function reviewVerdictFields(verdict: VerdictInput, signer: string, post: PostContext): Record<string, unknown> {
-  if (verdict === 'comment') return { verdict: VERDICT_INT.comment, ...proofIf(post.isMember && post.locked === true, signer) }
+  if (verdict === 'comment') return { verdict: VERDICT_INT.comment, ...commentProof(signer, post) }
   if (!post.isMember) return { verdict: OUTSIDER_VERDICT_INT[verdict] }
   return { verdict: VERDICT_INT[verdict], asMember: decodeIdentifier(signer) }
 }
@@ -126,11 +134,7 @@ export function reviewVerdictFields(verdict: VerdictInput, signer: string, post:
  * extra read at consensus, and a stale membership read would get it refused.
  */
 export function commentProof(signer: string, post: PostContext | undefined): Record<string, unknown> {
-  return proofIf(post?.isMember === true && post.locked === true, signer)
-}
-
-function proofIf(prove: boolean, signer: string): Record<string, unknown> {
-  return prove ? { asMember: decodeIdentifier(signer) } : {}
+  return post?.isMember === true && post.locked === true ? { asMember: decodeIdentifier(signer) } : {}
 }
 
 /** An issue or PR a write refers to: its document id and number. */
@@ -366,8 +370,8 @@ export function patchData(input: PatchInput): Record<string, unknown> {
       throw new Error(`illegal ref name ${JSON.stringify(name)}`)
     }
   }
+  if (!isRc1OidHex(input.headOid)) throw new Error('the PR head must be a 20- or 32-byte oid (SHA-1 or SHA-256)')
   const head = hexToBytes(input.headOid)
-  if (head.length !== 20 && head.length !== 32) throw new Error('the PR head must be a 20- or 32-byte oid (SHA-1 or SHA-256)')
   const data: Record<string, unknown> = { title: input.title }
   if (input.body.length > 0) data['body'] = input.body
   data['baseRefNameHash'] = refNameHash(input.baseRefName)
@@ -530,14 +534,11 @@ export async function createComment(
   repo: RepoRef,
   input: { targetId: string; body: string; replyTo?: string; intent?: string; post?: PostContext },
 ): Promise<WriteResult> {
-  if (input.post?.locked === true && !input.post.isMember) throw new Error(LOCKED_REASON)
+  if (lockedOut(input.post)) throw new Error(LOCKED_REASON)
   const data: Record<string, unknown> = { targetId: decodeIdentifier(input.targetId), body: input.body }
   if (input.replyTo) data['replyTo'] = decodeIdentifier(input.replyTo)
   return writeRepoDoc(sdk, auth, repo, DOC.comment, { ...data, ...commentProof(auth.identityId, input.post) }, input.intent)
 }
-
-/** Why a non-member cannot comment on or review a locked thread. */
-export const LOCKED_REASON = 'This conversation is locked: only maintainers and writers can comment.'
 
 /**
  * The event kinds RC1 refuses as a member `event` (`kind` ≥ 4, `noState`): close, reopen and
@@ -628,7 +629,7 @@ export async function createReview(
   repo: RepoRef,
   input: { patchId: string; verdict: VerdictInput; commitOid: string; body?: string; intent?: string; post: PostContext },
 ): Promise<WriteResult> {
-  if (input.post.locked === true && !input.post.isMember) throw new Error(LOCKED_REASON)
+  if (lockedOut(input.post)) throw new Error(LOCKED_REASON)
   if (!isRc1OidHex(input.commitOid)) throw new Error('a review names a 20- or 32-byte commit')
   const data: Record<string, unknown> = {
     patchId: decodeIdentifier(input.patchId),

@@ -56,21 +56,15 @@ function fits(field: string, s: string, limit: { chars: number; bytes: number })
   return null
 }
 
-/** Why `tag` cannot name a release, or null (git's `check-ref-format` rules for a tag). */
-/** Why a private repo's release takes no assets (parity with `dg release`). */
+/**
+ * Why `tag` cannot name a release, or null: the contract's `tagName` grammar (RC1 R-01) plus what
+ * it leaves to git (any whitespace, `@` alone, a leading `-`, a `.lock` component).
+ */
 export function tagProblem(tag: string): string | null {
   if (tag === '') return 'a tag is needed (e.g. v1.0.0)'
   const size = fits('a tag', tag, RELEASE_LIMITS.tagName)
   if (size) return size
-  const bad =
-    /[\s~^:?*[\\\x00-\x1f\x7f]/.test(tag) ||
-    tag.includes('..') ||
-    tag.includes('@{') ||
-    tag === '@' ||
-    tag.includes('//') ||
-    /^[-/]|\/$|\.$/.test(tag) ||
-    /(^|\/)\./.test(tag) ||
-    /\.lock(\/|$)/.test(tag)
+  const bad = /\s/.test(tag) || tag === '@' || tag.startsWith('-') || /\.lock(\/|$)/.test(tag)
   return bad || !isRc1TagName(tag) ? 'that is not a valid git tag name' : null
 }
 

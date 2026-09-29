@@ -17,6 +17,7 @@ import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 
 import { base58Decode, base58Encode } from '../auth/base58'
 import { base64ToBytes } from '../sdk'
+import { isContentHash } from '../rules/oid'
 
 /** The `where` operand for a `packHash` of `hex` (an identifier: base58). */
 export function packHashOperand(hex: string): string {
@@ -33,7 +34,7 @@ export function packHashOperand(hex: string): string {
 export function packHashHex(v: unknown): string {
   if (v instanceof Uint8Array) return bytesToHex(v)
   if (typeof v !== 'string' || v === '') return ''
-  if (/^[0-9a-fA-F]{64}$/.test(v)) return v.toLowerCase()
+  if (isContentHash(v)) return v.toLowerCase()
   try {
     const b = base58Decode(v)
     if (b.length === 32) return bytesToHex(b)

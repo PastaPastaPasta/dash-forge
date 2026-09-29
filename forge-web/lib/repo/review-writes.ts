@@ -42,11 +42,13 @@ import type { PrivateSession } from './private-session'
 import {
   EVENT_KIND_CODE,
   LOCKED_REASON,
+  OUTSIDER_VERDICT_INT,
   TRANSITION_EVENT_KINDS,
   VERDICT_INT,
   commentProof,
   contractFor,
   eventRoute,
+  lockedOut,
   refusePlaintextInPrivate,
   reviewVerdictFields,
   writeRepoDoc,
@@ -191,7 +193,7 @@ export interface CommentInput {
  */
 export function commentData(input: CommentInput, signer: string): Record<string, unknown> {
   if (input.body.trim() === '') throw new Error('a comment needs a body')
-  if (input.post?.locked === true && !input.post.isMember) throw new Error(LOCKED_REASON)
+  if (lockedOut(input.post)) throw new Error(LOCKED_REASON)
   const data: Record<string, unknown> = { targetId: decodeIdentifier(input.targetId), body: input.body }
   if (input.replyTo) data['replyTo'] = decodeIdentifier(input.replyTo)
   if (input.anchor) Object.assign(data, anchorData(input.anchor))
@@ -219,7 +221,7 @@ export interface ReviewInput {
 
 /** The document data of a review signed by `signer`. */
 export function reviewData(input: ReviewInput, signer: string): Record<string, unknown> {
-  if (input.post.locked === true && !input.post.isMember) throw new Error(LOCKED_REASON)
+  if (lockedOut(input.post)) throw new Error(LOCKED_REASON)
   if (!isRc1OidHex(input.commitOid)) throw new Error('a review names a 20- or 32-byte commit')
   const data: Record<string, unknown> = {
     patchId: decodeIdentifier(input.patchId),
@@ -408,7 +410,7 @@ function sameComment(stored: ChainComment, c: DraftComment, headOid: string): bo
 
 /** Whether a landed verdict code is `verdict`, as a member (1/2/3) or a non-member (4/5) wrote it. */
 function sameVerdict(code: number, verdict: VerdictInput): boolean {
-  return code === VERDICT_INT[verdict] || (verdict === 'approve' && code === 4) || (verdict === 'requestChanges' && code === 5)
+  return code === VERDICT_INT[verdict] || (verdict !== 'comment' && code === OUTSIDER_VERDICT_INT[verdict])
 }
 
 /** How far the client clock may be ahead of block time when matching a landed review. */
@@ -605,7 +607,7 @@ export async function setThreadFlag(
   sdk: EvoSDK,
   auth: WriteAuth,
   repo: RepoRef,
-  input: { target: WriteTarget; flag: 'pin'; on: boolean; intent?: string },
+  input: { target: WriteTarget; on: boolean; intent?: string },
 ): Promise<WriteResult> {
   return write(sdk, auth, repo, DOC.event, targetEventData(input.target, input.on ? 'pin' : 'unpin'), input.intent)
 }

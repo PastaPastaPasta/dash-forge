@@ -22,6 +22,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { hexToBytes } from '@noble/hashes/utils.js'
 
 import { isRc1OidHex, isRc1RefName, matchesProtected } from '../rules'
+import { isContentHash } from '../rules/oid'
 import { readConfigBundle } from './config'
 import { invalidateRepoFeed } from './issues'
 
@@ -126,7 +127,7 @@ export function manifestUrisProblem(uris: readonly string[]): string | null {
  * is written only after its chunks are confirmed.
  */
 export function manifestShapeProblem(input: PackManifestInput): string | null {
-  if (!/^[0-9a-fA-F]{64}$/.test(input.packHash)) return 'a pack hash is a 32-byte SHA-256 (64 hex digits)'
+  if (!isContentHash(input.packHash)) return 'a pack hash is a 32-byte SHA-256 (64 hex digits)'
   if (!Number.isSafeInteger(input.sizeBytes) || input.sizeBytes < 0 || input.sizeBytes > MANIFEST_SIZE_MAX) {
     return 'a pack manifest records a size of 0 bytes to 1 TiB'
   }
@@ -135,10 +136,7 @@ export function manifestShapeProblem(input: PackManifestInput): string | null {
   }
   if (input.storage === 1 && input.chunkCount !== 0) return 'an external-only copy records no Platform chunks'
   const tips = input.tips ?? []
-  const width = (tips[0]?.length ?? 0) / 2
-  if (tips.length > 0 && (!(width === 20 || width === 32) || tips.some((t) => t.length !== width * 2))) {
-    return 'manifest tips are oids of one width (20 or 32 bytes)'
-  }
+  if (tips.some((t) => !isRc1OidHex(t) || t.length !== tips[0]?.length)) return 'manifest tips are oids of one width (20 or 32 bytes)'
   if (input.kind === PACK_KIND.HISTORY_INDEX && !(tips.length === 1 || tips.length === 2)) {
     return 'a history index names its tip, and at most one base tip'
   }

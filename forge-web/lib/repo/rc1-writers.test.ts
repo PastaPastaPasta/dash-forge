@@ -221,7 +221,7 @@ describe('forge-community writers are RC1-valid', () => {
     await setLabel(sdk, auth(ALICE), REPO, { target, label: 'bug', add: true })
     await setAssignee(sdk, auth(ALICE), REPO, { target, assignee: BOB, assign: true })
     await setMilestone(sdk, auth(ALICE), REPO, { target, title: 'v1' })
-    await setThreadFlag(sdk, auth(ALICE), REPO, { target, flag: 'pin', on: true })
+    await setThreadFlag(sdk, auth(ALICE), REPO, { target, on: true })
     await postTargetEvent(sdk, auth(ALICE), REPO, { target, kind: 'reviewRequest', author: BOB, isMember: true, payload: { refId: BOB } })
     await postTargetEvent(sdk, auth(BOB), REPO, { target, kind: 'headUpdate', author: BOB, isMember: false, payload: { oidHex: HEAD } })
     const made = await judged()

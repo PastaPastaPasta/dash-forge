@@ -36,6 +36,7 @@ import {
   type StateAction,
   type ThreadState,
   type Transition,
+  type TransitionMove,
   type TransitionTarget,
 } from '../rules/transition'
 import {
@@ -223,6 +224,11 @@ export function transitionData(
   const move = nextTransition(target.type, code, action, actor, target.number)
   if (move === null) throw new IllegalTransitionError(action, code)
   if (move.kind === PR_MERGE && (oidHex === undefined || oidHex === '')) throw new Error('a merge names its commit')
+  return { ...moveData(target, move), ...(move.kind === PR_MERGE && oidHex ? { oid: hexToBytes(oidHex) } : {}) }
+}
+
+/** The `transition` fields of `move` on `target` (a merge adds its `oid`). */
+function moveData(target: StateTarget, move: TransitionMove): Record<string, unknown> {
   return {
     targetId: decodeIdentifier(target.id),
     targetNumber: target.number,
@@ -230,7 +236,6 @@ export function transitionData(
     kind: move.kind,
     delta: move.delta,
     asAuthor: move.asAuthor,
-    ...(move.kind === PR_MERGE && oidHex ? { oid: hexToBytes(oidHex) } : {}),
   }
 }
 
@@ -300,24 +305,16 @@ export async function writeLock(
 ): Promise<WriteResult> {
   if (!input.isMember) throw new Error('only a maintainer or writer can lock or unlock a conversation')
   const { target, lock } = input
-  for (let attempt = 0; attempt < 2; attempt++) {
+  const once = async (): Promise<WriteResult> => {
     const state = (await readThreadStates(sdk, repo, [target.id])).get(target.id) ?? threadStateOf(0)
     const move = lockTransition(target.type, state.locked, lock)
     if (move === null) return { documentId: '', confirmed: true, cost: previewCredits(0), actualCredits: 0 }
-    const data = {
-      targetId: decodeIdentifier(target.id),
-      targetNumber: target.number,
-      targetKind: move.targetKind,
-      kind: move.kind,
-      delta: move.delta,
-      asAuthor: move.asAuthor,
-    }
-    try {
-      return await write(DOC.transition, data, input.intent ? `${input.intent}:${lock ? 'lock' : 'unlock'}` : undefined)
-    } catch (e) {
-      if (attempt === 0 && isStaleStateRefusal(e)) continue
-      throw e
-    }
+    return write(DOC.transition, moveData(target, move), input.intent ? `${input.intent}:${lock ? 'lock' : 'unlock'}` : undefined)
   }
-  throw new Error(lock ? 'the conversation is already locked' : 'the conversation is not locked')
+  try {
+    return await once()
+  } catch (e) {
+    if (!isStaleStateRefusal(e)) throw e
+  }
+  return once()
 }

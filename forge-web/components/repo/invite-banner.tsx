@@ -46,7 +46,19 @@ export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
     [ready, repo.repoId, identity ?? '', network],
     { enabled: applies && ready && sdk !== null },
   )
-  if (!applies || standing.data === null || standing.data === undefined || standing.data === 'member') return null
+  if (!applies) return null
+  // A read that failed says so (with a retry) rather than hiding the invitation.
+  if (standing.error) {
+    return (
+      <p role="alert" data-testid="invite-error" className="mb-3 text-[12px] text-danger-700 dark:text-danger-400">
+        Couldn&apos;t check this invitation: {standing.error}{' '}
+        <button type="button" className="underline" onClick={standing.reload}>
+          Try again
+        </button>
+      </p>
+    )
+  }
+  if (standing.data === null || standing.data === 'member') return null
   const cost = previewCreate('consent')
   return (
     <div role="note" data-testid="invite-banner" className="mb-3 flex items-start gap-2 rounded-md border border-forge-500/40 bg-forge-500/5 px-3 py-2 text-dense text-anvil-700 dark:text-anvil-200">
@@ -76,7 +88,6 @@ export function InviteBanner({ repo }: { repo: RepoRef }): JSX.Element | null {
             </Button>
           </>
         )}
-        {standing.error ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">{standing.error}</p> : null}
       </div>
       <ConfirmDialog
         open={confirming}

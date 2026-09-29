@@ -20,8 +20,6 @@ import { DOC, type RepoRef } from './contract'
 import { contractKindOfType } from '../layout'
 import { packHashOperand } from './pack-hash'
 
-export { COLLAB_TYPES, COMMUNITY_TYPES, CORE_TYPES } from '../layout'
-
 /** The contract of `forge` that holds `type` (`forge-v2.md` §2, the RC1 layout). Throws on a type no contract holds. */
 export function contractOf(forge: ForgeIds, type: string): string {
   const kind = contractKindOfType(type)

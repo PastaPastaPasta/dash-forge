@@ -13,7 +13,8 @@ import { describe, expect, it } from 'vitest'
 
 import { ascendingEquivalent, tieProbeAllowed } from '../sdk'
 import type { RepoRef } from './contract'
-import { COLLAB_TYPES, COMMUNITY_TYPES, CORE_TYPES, repoSource } from './source'
+import { COLLAB_TYPES, COMMUNITY_TYPES, CORE_TYPES } from '../layout'
+import { repoSource } from './source'
 
 const DEMO: RepoRef = {
   forge: { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'G' },

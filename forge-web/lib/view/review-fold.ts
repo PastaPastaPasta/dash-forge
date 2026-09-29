@@ -12,6 +12,9 @@
 
 import { countApprovals, type Review, type Role, type RoleOracle } from '../rules/v2'
 
+import { compareKey } from '../rules'
+import { plural } from './format'
+
 /**
  * The verdict an approve or request-changes review states, whoever wrote it: a member's 1/2, or a
  * non-member's 4/5 (RC1 R-16), which consensus records and the fold never counts. Null otherwise.
@@ -20,8 +23,6 @@ function statedVerdict(code: number): 'approve' | 'changes' | null {
   if (code === 1 || code === 4) return 'approve'
   return code === 2 || code === 5 ? 'changes' : null
 }
-import { compareKey } from '../rules'
-import { plural } from './format'
 
 export type ReviewerStanding =
   | { readonly kind: 'approved'; readonly role: Role; readonly self: boolean }

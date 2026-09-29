@@ -99,8 +99,6 @@ export function isRc1TagName(name: string): boolean {
   return fitsString(name, 1, 63, TAG_RE)
 }
 
-/** The oid widths RC1 accepts (`oidWidth`): SHA-1 or SHA-256, in bytes. */
-export const OID_WIDTHS: readonly number[] = [20, 32]
 
 /**
  * Whether `hex` is an oid of an RC1 width (40 or 64 hex digits), as `refUpdate.newOid`,

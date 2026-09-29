@@ -24,8 +24,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { base58Encode } from '../auth/base58'
-import type { ForgeIds } from '../deployments'
-import { contractOf } from '../repo/source'
+import { contractKindOfType } from '../layout'
 
 type Evo = typeof import('@dashevo/evo-sdk')
 type Json = Record<string, unknown>
@@ -54,9 +53,6 @@ export const RC1_VECTOR_OWNER = base58Encode(new Uint8Array(32).fill(7))
 /** The protocol version b7gate judges with (rs-dpp `PlatformVersion::get(14)`). */
 const PLATFORM_VERSION = 14
 
-/** `contractOf` over file names instead of a deployment's ids. */
-const BY_NAME: ForgeIds = { core: 'forge-core', collab: 'forge-collab', community: 'forge-community', group: '' }
-
 let contractsCache: Record<Rc1ContractName, Json> | undefined
 
 /**
@@ -77,9 +73,11 @@ export function rc1Contracts(): Record<Rc1ContractName, Json> {
   return contractsCache
 }
 
-/** The RC1 contract holding `type` (via `contractOf`). Throws on a type no contract holds. */
+/** The RC1 contract holding `type` (the layout's map). Throws on a type no contract holds. */
 export function rc1ContractOf(type: string): Rc1ContractName {
-  return contractOf(BY_NAME, type) as Rc1ContractName
+  const kind = contractKindOfType(type)
+  if (kind === null) throw new Error(`no forge-v2 contract holds the document type ${JSON.stringify(type)}`)
+  return `forge-${kind}` as Rc1ContractName
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -273,7 +271,7 @@ function judge(): Promise<Judge> {
     const json = rc1Contracts()
     const parse = (name: Rc1ContractName) =>
       evo.DataContract.fromJSON(json[name] as Parameters<Evo['DataContract']['fromJSON']>[0], true, PLATFORM_VERSION)
-    return { evo, contracts: { 'forge-core': parse('forge-core'), 'forge-collab': parse('forge-collab'), 'forge-community': parse('forge-community') } }
+    return { evo, contracts: Object.fromEntries(NAMES.map((n) => [n, parse(n)])) as Judge['contracts'] }
   })()
   return judgePromise
 }

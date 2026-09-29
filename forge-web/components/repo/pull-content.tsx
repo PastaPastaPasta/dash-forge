@@ -57,6 +57,7 @@ import {
   commentFirsts,
   createReview,
   LOCKED_REASON,
+  lockedOut,
   eventFirsts,
   reviewFirsts,
   deleteComment,
@@ -274,9 +275,9 @@ function PullPage({
   const isAuthor = identity !== null && identity === pull.author
   const archived = home.config?.archived === true
   // A locked PR takes comments and reviews from members only (RC1: consensus refuses the rest).
-  const composeBlock = archived ? ARCHIVED_REASON : thread.locked && !isMember ? LOCKED_REASON : privateComposeBlock(home)
-  const writeBlocked = composeBlock !== null
   const postContext = { isMember, locked: thread.locked }
+  const composeBlock = archived ? ARCHIVED_REASON : lockedOut(postContext) ? LOCKED_REASON : privateComposeBlock(home)
+  const writeBlocked = composeBlock !== null
   const open = pull.state.open
   const { slot: mergeSlot, onRunning: setMergeRunning } = useMergeSlot(tab, open && pull.state.draft)
   const merged = pull.state.merged
@@ -362,14 +363,9 @@ function PullPage({
   // reported; named `requiredChecks` (set by `dg`) must each pass, from their pinned source when
   // the policy names one (`checksState`, forge-core `checks_state`: `dg pr merge` applies the same rule).
   const checksRequired = policyNow !== null && (policyNow.requireChecks === true || (policyNow.requiredChecks?.length ?? 0) > 0)
-  const checksPolicy = {
-    requireChecks: policyNow?.requireChecks === true,
-    ...(policyNow?.requiredChecks ? { requiredChecks: policyNow.requiredChecks } : {}),
-    ...(policyNow?.requiredCheckSources ? { requiredCheckSources: policyNow.requiredCheckSources } : {}),
-  }
   const checksBlocking =
     checksRequired &&
-    (checks.data === null || !membersKnown || !checksState(checks.data.rows, pull.headOid, new RoleOracle(thread.members), checks.data.runners, checksPolicy).met)
+    (checks.data === null || !membersKnown || !checksState(checks.data.rows, pull.headOid, new RoleOracle(thread.members), checks.data.runners, policyNow).met)
   const actions = pullActions({
     pull,
     viewer: identity,
