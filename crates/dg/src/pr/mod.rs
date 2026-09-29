@@ -1278,14 +1278,22 @@ async fn require_merge_rights(
             };
             let oracle = collab.member_oracle(handle).await?;
             let (approvals, _) = collab.approvals_with(handle, view, &oracle).await?;
+            let checks = required_checks(&collab, handle, view, &oracle, &policy).await?;
             Ok(Some((
                 policy.clone(),
                 forge_core::rules::review::meets_policy(&approvals, &oracle, &policy),
+                checks,
             )))
         };
         match read.await {
-            Ok(Some((policy, status))) => {
+            Ok(Some((policy, status, checks))) => {
                 if let Some(u) = policy_refusal(&policy, &status, method, &handle.display(), number)
+                {
+                    return Err(u.into());
+                }
+                if let Some(u) = checks
+                    .as_ref()
+                    .and_then(|c| checks_refusal(c, &handle.display(), number))
                 {
                     return Err(u.into());
                 }
@@ -1366,6 +1374,71 @@ pub const METHOD_FF: u8 = 1;
 pub const METHOD_MERGE: u8 = 2;
 /// A squash.
 pub const METHOD_SQUASH: u8 = 4;
+
+/// When `policy` requires checks, where the head's checks stand: the newest trusted run per name
+/// decides (`checks_state`, the web merge box's rule too).
+async fn required_checks(
+    collab: &forge_core::collab::v2::Collab<'_>,
+    handle: &Repo,
+    view: &PatchView,
+    oracle: &forge_core::rules::v2::RoleOracle,
+    policy: &forge_core::rules::review::Policy,
+) -> Result<Option<forge_core::rules::v2::ChecksState>> {
+    if !policy.require_checks {
+        return Ok(None);
+    }
+    let rules = forge_core::rules::v2::ChecksPolicy {
+        require_checks: true,
+        required_checks: Vec::new(),
+    };
+    Ok(Some(
+        collab
+            .head_checks(handle, &view.head, oracle, &rules)
+            .await?,
+    ))
+}
+
+/// E804 when the branch policy requires checks and the head's newest trusted runs do not all
+/// pass (or none is reported). `None` when they are met.
+fn checks_refusal(
+    checks: &forge_core::rules::v2::ChecksState,
+    repo: &str,
+    number: u64,
+) -> Option<UserError> {
+    use forge_core::rules::v2::CheckState;
+    if checks.met {
+        return None;
+    }
+    let not_passing: Vec<String> = checks
+        .required
+        .iter()
+        .filter(|c| c.state != CheckState::Passed)
+        .map(|c| {
+            let state = match c.state {
+                CheckState::Failing => "failing",
+                CheckState::Pending => "pending",
+                CheckState::Missing => "missing",
+                CheckState::Passed => "passed",
+            };
+            format!("{} {state}", c.name)
+        })
+        .collect();
+    let cause = if checks.required.is_empty() {
+        "the branch policy requires checks, and no member or runner reported any on the head"
+            .to_string()
+    } else {
+        format!("required checks not passing: {}", not_passing.join(", "))
+    };
+    Some(
+        UserError::new(
+            codes::POLICY_NOT_MET,
+            format!("merge refused: PR #{number} does not meet the branch policy of {repo}"),
+        )
+        .cause(cause)
+        .fix(format!("`dg pr checks {repo} {number}` shows the runs; a maintainer can merge with `--override-policy`"))
+        .note("checked before fetching or paying for anything; no merge event was posted"),
+    )
+}
 
 /// E804 when the branch policy is not met: too few counted approvals, or a merge method it does
 /// not allow (`method` is the bit the merge would use; `None` checks approvals only). The policy
@@ -2054,6 +2127,72 @@ mod tests {
         assert!(text.contains("--override-policy"), "{text}");
         assert!(text.contains("consensus does not enforce it"), "{text}");
         assert!(policy_refusal(&policy(2, false, 0), &status(2, 2), None, "o/r", 7).is_none());
+    }
+
+    #[test]
+    fn required_checks_that_do_not_all_pass_refuse_the_merge_with_e804() {
+        use forge_core::rules::v2::{
+            checks_state, CheckRunRow, ChecksPolicy, Membership, Role, RoleOracle,
+        };
+        let head = "ab".repeat(20);
+        let run =
+            |id: &str, by: &str, at: u64, status: &str, conclusion: Option<&str>| CheckRunRow {
+                id: id.into(),
+                head_oid: head.clone(),
+                name: "build".into(),
+                status: status.into(),
+                conclusion: conclusion.map(Into::into),
+                reporter: by.into(),
+                created_at: at,
+            };
+        let oracle = RoleOracle::new(vec![Membership {
+            identity: "m".into(),
+            role: Role::Writer,
+            created_at: 0,
+        }]);
+        let runners = std::collections::BTreeSet::from(["r".to_string()]);
+        let policy = ChecksPolicy {
+            require_checks: true,
+            required_checks: vec![],
+        };
+        // The runner's newer failing run decides it, over the writer's older passing one.
+        let runs = [
+            run("1", "m", 1, "completed", Some("success")),
+            run("2", "r", 2, "completed", Some("failure")),
+        ];
+        let state = checks_state(&runs, &head, &oracle, &runners, &policy);
+        let u = checks_refusal(&state, "o/r", 7).unwrap();
+        assert_eq!(u.code, "E804");
+        assert!(u.to_json().to_string().contains("build failing"), "{u:?}");
+        // A stranger's newer passing run changes nothing.
+        let runs = [
+            run("2", "r", 2, "completed", Some("failure")),
+            run("3", "x", 3, "completed", Some("success")),
+        ];
+        assert!(checks_refusal(
+            &checks_state(&runs, &head, &oracle, &runners, &policy),
+            "o/r",
+            7
+        )
+        .is_some());
+        // No run at all: refused.
+        assert!(checks_refusal(
+            &checks_state(&[], &head, &oracle, &runners, &policy),
+            "o/r",
+            7
+        )
+        .is_some_and(|u| u
+            .cause
+            .as_deref()
+            .is_some_and(|c| c.contains("no member or runner"))));
+        // Passing: merge allowed.
+        let runs = [run("4", "r", 4, "completed", Some("success"))];
+        assert!(checks_refusal(
+            &checks_state(&runs, &head, &oracle, &runners, &policy),
+            "o/r",
+            7
+        )
+        .is_none());
     }
 
     #[test]

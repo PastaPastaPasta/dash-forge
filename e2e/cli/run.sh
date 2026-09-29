@@ -64,6 +64,7 @@ SCENARIOS=(
   "32-import-failed-push-reports-landed"
   "33-browse-index-published-and-reindex"
   "34-import-phased-merged-prs"
+  "35-ci-runner-report"
 )
 
 # Optional subset filter (match by leading number or substring).

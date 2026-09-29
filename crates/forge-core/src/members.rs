@@ -80,6 +80,42 @@ async fn core(
     Ok((repo.scope()?, client.fetch_contract(&forge.core).await?))
 }
 
+/// Every `doc_type` membership document of `repo` (`maintainer`, `writer`, `runner`), complete.
+pub(crate) async fn membership_docs(
+    client: &PlatformClient,
+    repo: &RepoRef,
+    doc_type: &str,
+    order: &[QueryOrder],
+) -> Result<Vec<FetchedDocument>> {
+    let (scope, core) = core(client, repo).await?;
+    client
+        .query_all_documents(&core, doc_type, &scope.filters([]), order)
+        .await
+}
+
+/// `identity`'s `doc_type` membership document of `repo`, if any (the `(repoId, memberId)` index
+/// is unique).
+pub(crate) async fn membership_doc(
+    client: &PlatformClient,
+    repo: &RepoRef,
+    doc_type: &str,
+    identity: &str,
+) -> Result<Option<FetchedDocument>> {
+    let (scope, core) = core(client, repo).await?;
+    let member = FieldValue::identifier(platform::decode_identifier(identity)?);
+    let docs = client
+        .query_documents(
+            &core,
+            doc_type,
+            &scope.filters([QueryFilter::eq("memberId", member)]),
+            &[],
+            1,
+            None,
+        )
+        .await?;
+    Ok(docs.into_iter().next())
+}
+
 /// Read access to forge-v2 membership: needs only a client.
 pub struct MemberReader<'a> {
     client: &'a PlatformClient,
@@ -103,18 +139,15 @@ impl<'a> MemberReader<'a> {
     }
 
     async fn list_roles(&self, repo: &RepoRef, roles: &[Role]) -> Result<Vec<Member>> {
-        let (scope, core) = core(self.client, repo).await?;
         let mut out = Vec::new();
         for &role in roles {
-            let docs = self
-                .client
-                .query_all_documents(
-                    &core,
-                    doc_type(role),
-                    &scope.filters([]),
-                    &[QueryOrder::asc("memberId")],
-                )
-                .await?;
+            let docs = membership_docs(
+                self.client,
+                repo,
+                doc_type(role),
+                &[QueryOrder::asc("memberId")],
+            )
+            .await?;
             out.extend(docs.iter().filter_map(|d| Member::from_doc(d, role)));
         }
         Ok(out)
@@ -127,20 +160,9 @@ impl<'a> MemberReader<'a> {
         identity: &str,
         role: Role,
     ) -> Result<Option<Member>> {
-        let (scope, core) = core(self.client, repo).await?;
-        let member = FieldValue::identifier(platform::decode_identifier(identity)?);
-        let docs = self
-            .client
-            .query_documents(
-                &core,
-                doc_type(role),
-                &scope.filters([QueryFilter::eq("memberId", member)]),
-                &[],
-                1,
-                None,
-            )
-            .await?;
-        Ok(docs.iter().find_map(|d| Member::from_doc(d, role)))
+        Ok(membership_doc(self.client, repo, doc_type(role), identity)
+            .await?
+            .and_then(|d| Member::from_doc(&d, role)))
     }
 
     /// `identity`'s current membership documents in `repo` (at most one per role).

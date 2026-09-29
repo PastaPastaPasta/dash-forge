@@ -4,18 +4,23 @@
  * CommitContent — a single commit: metadata + its patch against its first parent (browse-plane
  * tree diff, then per-file line diffs through the shared {@link DiffView}). A root commit shows
  * every file as added. Each changed path links to its blob on the default branch — the blob
- * route addresses branches and tags, not commits.
+ * route addresses branches and tags, not commits. Below the header, the commit's check runs (CI
+ * results, `checkRun`): what `dg ci report` and the GitHub Action link to.
  */
 
 import Link from 'next/link'
 import { useMemo } from 'react'
 import { GitCommit } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
+import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
+import { readCheckRuns, summarizeChecks } from '@/lib/repo/checks'
 import type { DiffSides, RepoHome } from '@/lib/view'
 import { CommitIdError, commitSubject, formatDate, loadCommitChanges, timeAgo } from '@/lib/view'
 import { useAsync } from '@/hooks/use-async'
+import { useSdk } from '@/hooks/use-sdk'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
 import { DiffView } from '@/components/repo/diff-view'
+import { ChecksTab } from '@/components/repo/pull-tabs'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
@@ -31,12 +36,12 @@ export function CommitContent({ home, addr, oid }: { home: RepoHome; addr: RepoA
   if (!oid) return <EmptyState icon={GitCommit} title="No commit addressed" body="Add &oid= to the URL." />
   return (
     <BrowseBoundary repo={home.repo} addr={addr}>
-      {(reader, retry) => <Body reader={reader} retry={retry} oid={oid} addr={addr} />}
+      {(reader, retry) => <Body reader={reader} retry={retry} oid={oid} addr={addr} repo={home.repo} />}
     </BrowseBoundary>
   )
 }
 
-function Body({ reader, retry, oid, addr }: { reader: BrowseReader; retry: () => void; oid: string; addr: RepoAddress }): JSX.Element {
+function Body({ reader, retry, oid, addr, repo }: { reader: BrowseReader; retry: () => void; oid: string; addr: RepoAddress; repo: RepoRef }): JSX.Element {
   const { data, loading, error, cause } = useAsync(() => loadCommitChanges(reader, oid), [oid])
   const sides = useMemo<DiffSides>(() => ({ base: reader, head: reader }), [reader])
   if (loading) return <LoadingBlock label="Reconstructing commit" />
@@ -91,6 +96,8 @@ function Body({ reader, retry, oid, addr }: { reader: BrowseReader; retry: () =>
         ) : null}
       </div>
 
+      <CommitChecks repo={repo} oid={full} />
+
       {changes.length === 0 && !truncated ? (
         <EmptyState title="No file changes" body="This commit touches no tree paths (e.g. a merge with no diff to its first parent)." />
       ) : (
@@ -103,5 +110,39 @@ function Body({ reader, retry, oid, addr }: { reader: BrowseReader; retry: () =>
         />
       )}
     </div>
+  )
+}
+
+/**
+ * The newest check run per name on this commit, trusted when its reporter is a current
+ * maintainer, writer or runner. Private repositories' check runs are plaintext on chain too
+ * (private-repos.md §7), so they read the same way.
+ */
+function CommitChecks({ repo, oid }: { repo: RepoRef; oid: string }): JSX.Element {
+  const { sdk, ready, network } = useSdk(repoContractIds(repo))
+  const checks = useAsync(
+    async () => {
+      const members = await readMembershipsCached(sdk!, repo, network).then(
+        (ms) => ({ known: true, ids: new Set(ms.map((m) => m.identity)) }),
+        () => ({ known: false, ids: new Set<string>() }),
+      )
+      const { runs } = await readCheckRuns(sdk!, repo, oid, members.ids)
+      return { runs, summary: summarizeChecks(runs, members.known) }
+    },
+    [ready, repoKey(repo), oid, network],
+    { enabled: ready && sdk !== null && oid !== '' },
+  )
+  return (
+    <section aria-label="Checks" data-testid="commit-checks">
+      <h2 className="mb-2 text-dense font-semibold text-anvil-700 dark:text-anvil-200">Checks</h2>
+      <ChecksTab
+        runs={checks.data?.runs ?? null}
+        summary={checks.data?.summary ?? null}
+        headOid={oid}
+        error={checks.error}
+        onRetry={checks.reload}
+        subject="commit"
+      />
+    </section>
   )
 }

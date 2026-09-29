@@ -74,10 +74,11 @@ import {
   type RepoRef,
   type VerdictInput,
 } from '@/lib/repo'
-import { checksPhrase, newestCheckRuns, readCheckRunDocs, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
+import { checksPhrase, readCheckRuns, summarizeChecks, type ChecksSummary } from '@/lib/repo/checks'
 import { headSync, readBranchState, readBranchTip } from '@/lib/repo/source-branch'
 import type { Event, EventKind, Holdings, RefState } from '@/lib/rules'
-import { linkedIssues, type Policy, type PolicyStatus } from '@/lib/rules/v2'
+import { linkedIssues, RoleOracle, type Policy, type PolicyStatus } from '@/lib/rules/v2'
+import { checksState } from '@/lib/rules/parity'
 import { SupersededWriteError, previewCreate, previewCredits, previewDelete, previewReplace, type CostPreview as Cost } from '@/lib/sdk'
 import { pullSinceYourReview } from '@/lib/view/issues-view'
 import { headUpdatePhrases } from '@/lib/view/head-updates'
@@ -301,12 +302,12 @@ function PullPage({
   const checks = useAsync(
     async () => {
       const members = new Set(memberKey === '' ? [] : memberKey.split(','))
-      return newestCheckRuns(await readCheckRunDocs(sdk!, repo, pull.headOid), (who) => members.has(who))
+      return readCheckRuns(sdk!, repo, pull.headOid, members)
     },
     [ready, repoKey(repo), pull.headOid, memberKey],
     { enabled: ready && sdk !== null && pull.headOid !== '' },
   )
-  const checkSummary = checks.data === null ? null : summarizeChecks(checks.data, membersKnown)
+  const checkSummary = checks.data === null ? null : summarizeChecks(checks.data.runs, membersKnown)
 
   // ---- the source branch (head sync) ----------------------------------------------------------
   const crossRepo = pull.sourceId !== '' && pull.sourceId !== repo.repoId
@@ -337,8 +338,11 @@ function PullPage({
   // ---- controls ---------------------------------------------------------------------------------
   const rules = policyOf(thread.approvals)
   const policyNow = rules.policy === 'unknown' ? null : rules.policy
-  // `requireChecks`: every trusted run on the head passed, and at least one reported.
-  const checksBlocking = policyNow?.requireChecks === true && (checkSummary === null || checkSummary.total === 0 || checkSummary.passed < checkSummary.total)
+  // `requireChecks`: the newest trusted run per name on the head passed, and at least one was
+  // reported (`checksState`, forge-core `checks_state`: `dg pr merge` applies the same rule).
+  const checksBlocking =
+    policyNow?.requireChecks === true &&
+    (checks.data === null || !membersKnown || !checksState(checks.data.rows, pull.headOid, new RoleOracle(thread.members), checks.data.runners, { requireChecks: true }).met)
   const actions = pullActions({
     pull,
     viewer: identity,
@@ -1015,7 +1019,7 @@ function PullPage({
               onRetry={() => (comparison.error ? comparison.tryAgain() : commits.reload())}
             />
           ) : tab === 'checks' ? (
-            <ChecksTab runs={checks.data} summary={checkSummary} headOid={pull.headOid} error={checks.error} onRetry={checks.reload} />
+            <ChecksTab runs={checks.data?.runs ?? null} summary={checkSummary} headOid={pull.headOid} error={checks.error} onRetry={checks.reload} />
           ) : (
             <>
             {suggest.runner.view}
