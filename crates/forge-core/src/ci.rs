@@ -328,7 +328,7 @@ impl CheckReport {
 
     /// The full property set a create carries (the scope adds `repoId`): the status, the
     /// set-once fields `w` sets, and everything else this report gives.
-    fn create_props(&self, oid: Vec<u8>, w: &RunWrite) -> BTreeMap<String, FieldValue> {
+    pub(crate) fn create_props(&self, oid: Vec<u8>, w: &RunWrite) -> BTreeMap<String, FieldValue> {
         let mut p = BTreeMap::from([
             ("headOid".to_string(), FieldValue::bytes(oid)),
             ("name".to_string(), FieldValue::text(&self.name)),

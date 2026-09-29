@@ -8,15 +8,16 @@
 //! the ids of the earlier contracts substituted for their placeholders, as
 //! `tools/contract-validate` does.
 //!
-//! A document is judged by `validate_document_properties` with only its owner known
-//! (0x07×32): the JSON schema, `maxBytes` and every `propertyConstraints` rule that reads no
-//! total, time, height or other document. The rules that do (dense, c1..c6, lockGate,
-//! platformChunks, oneLive, atMost20, notFuture, the `refersTo`/`ownerRefersTo`/`findBy` state
-//! reads) are consensus's, covered by the live suite (`forge-contracts/scripts/rc1-live.mjs`).
+//! A document is judged by `validate_document_properties` with only its signer known: the JSON
+//! schema, `maxBytes` and every `propertyConstraints` rule that reads no total, time, height or
+//! other document. The checks that do (dense, c1..c6, lockGate, platformChunks, oneLive,
+//! atMost20, notFuture, starBeat's distinctFrom, every `refersTo` / `where` / `findBy`
+//! reference) are consensus's, covered by the live suite (`forge-contracts/scripts/rc1-live.mjs`).
 //!
-//! [`assert_valid`] / [`first_error`] are for builder tests: build a document's properties the
-//! way the writer does and check RC1 accepts them. The vectors test runs every case in
-//! `forge-contracts/vectors/rc1/`.
+//! [`assert_valid`] / [`assert_refused`] / [`first_error`] are for builder tests: build a
+//! document's properties the way the writer does and check RC1 accepts them. The `vectors`
+//! tests run every case in `forge-contracts/vectors/rc1/`; the `builders` tests run the Rust
+//! builders.
 
 use std::collections::BTreeMap;
 use std::sync::OnceLock;
@@ -40,7 +41,7 @@ use crate::platform::FieldValue;
 /// The protocol the RC1 contracts are registered under (Platform v4.2, protocol 14).
 const PROTOCOL_VERSION: u32 = 14;
 
-/// The signer and owner of every judged document, and the contracts' placeholder owner.
+/// The signer of every document the helpers judge, and the contracts' placeholder owner.
 pub(crate) const OWNER: [u8; 32] = [7u8; 32];
 
 /// The generated contracts, in registration order (a later one refers to the earlier ones).
@@ -102,8 +103,8 @@ fn contract_of(doc_type: &str) -> &'static DataContract {
 }
 
 /// A refusal's reason as the vectors name it: the JSON Schema keyword, the broken
-/// `propertyConstraints` rule, `maxBytes`, or else the consensus error code (as b7gate's
-/// `reason()`).
+/// `propertyConstraints` rule, `maxBytes`, or else the consensus error code (b7gate's and
+/// contract-validate's `reason`).
 fn reason(e: &ConsensusError) -> String {
     match e {
         ConsensusError::BasicError(BasicError::JsonSchemaError(j)) => j.keyword().to_string(),
@@ -117,78 +118,96 @@ fn reason(e: &ConsensusError) -> String {
     }
 }
 
-/// Judge `properties` as a create of `doc_type` by [`OWNER`]: `None` when RC1 accepts it, else
-/// the first error as `(reason, message)`.
-fn judge(doc_type: &str, properties: Value) -> Option<(String, String)> {
+/// Judge `properties` as a create of `doc_type` signed by `signer`: `None` when RC1 accepts it,
+/// else the first error as `(reason, message)`.
+fn judge(doc_type: &str, properties: Value, signer: Identifier) -> Option<(String, String)> {
     let result = contract_of(doc_type)
         .validate_document_properties(
             doc_type,
             properties,
-            &DocumentSystemValues::owned_by(Identifier::from(OWNER)),
+            &DocumentSystemValues::owned_by(signer),
             platform_version(),
         )
         .unwrap_or_else(|e| panic!("{doc_type}: validation could not run: {e}"));
     result.errors.first().map(|e| (reason(e), e.to_string()))
 }
 
-fn to_value(props: &BTreeMap<String, FieldValue>) -> Value {
-    Value::Map(
+fn judge_props(doc_type: &str, props: &BTreeMap<String, FieldValue>) -> Option<(String, String)> {
+    let value = Value::Map(
         props
             .iter()
             .map(|(k, v)| (Value::Text(k.clone()), v.clone().into_value()))
             .collect(),
-    )
+    );
+    judge(doc_type, value, Identifier::from(OWNER))
 }
 
 /// The reason RC1 refuses these properties for a `doc_type` create by 0x07×32 (a schema
 /// keyword, a `propertyConstraints` rule name, `maxBytes` or an error code), or `None` when it
 /// accepts them.
 pub(crate) fn first_error(doc_type: &str, props: &BTreeMap<String, FieldValue>) -> Option<String> {
-    judge(doc_type, to_value(props)).map(|(why, _)| why)
+    judge_props(doc_type, props).map(|(why, _)| why)
 }
 
 /// Panic unless RC1 accepts these properties for a `doc_type` create by 0x07×32.
 #[track_caller]
 pub(crate) fn assert_valid(doc_type: &str, props: &BTreeMap<String, FieldValue>) {
-    if let Some((why, message)) = judge(doc_type, to_value(props)) {
+    if let Some((why, message)) = judge_props(doc_type, props) {
         panic!("RC1 refuses this {doc_type}: [{why}] {message}\n  properties: {props:?}");
     }
 }
 
-/// Panic unless RC1 refuses these properties for a `doc_type` create, first for `why`.
+/// Panic unless RC1 refuses these properties for a `doc_type` create by 0x07×32, first for
+/// `why`.
 #[track_caller]
 pub(crate) fn assert_refused(doc_type: &str, props: &BTreeMap<String, FieldValue>, why: &str) {
-    match judge(doc_type, to_value(props)) {
+    match judge_props(doc_type, props) {
         None => panic!("RC1 accepts this {doc_type}, want [{why}]\n  properties: {props:?}"),
         Some((got, message)) => assert_eq!(got, why, "{doc_type}: {message}"),
     }
 }
 
-#[cfg(test)]
 mod vectors {
     use super::*;
 
     /// The committed vector sets and how many cases each holds
-    /// (`forge-contracts/schema/vectors.py`). A change to either is a deliberate re-generation:
-    /// update the counts here with it.
+    /// (`forge-contracts/schema/vectors.py`). A re-generation that changes a count must update
+    /// it here, after checking the runner still reads every case the way the README describes.
     const SETS: [(&str, usize); 3] = [
-        ("forge-core", 159),
-        ("forge-collab", 90),
-        ("forge-community", 104),
+        ("forge-core", 166),
+        ("forge-collab", 98),
+        ("forge-community", 112),
     ];
-    const TOTAL: usize = 353;
+    const TOTAL: usize = 376;
 
     /// Cases judged by the live suite only, never offline, by `(type, name)`.
     ///
-    /// None: `vectors.py` keeps every rule that reads a total, time, height or another document
-    /// (dense, c1..c6, lockGate, platformChunks, oneLive, atMost20, notFuture, the registration
-    /// `where` checks, `refersTo`/`ownerRefersTo`/`findBy`) out of these sets and in
-    /// `forge-contracts/scripts/rc1-live.mjs`, so every committed case is judged here. A case
-    /// added to this list must name why.
+    /// None: `vectors.py` keeps every check that reads a total, the block or another document
+    /// (dense, c1..c6, lockGate, platformChunks, oneLive, atMost20, notFuture, starBeat's
+    /// distinctFrom, every `refersTo` / `where` / `findBy` reference) out of these sets (its
+    /// `LIVE_ONLY` list) and in `forge-contracts/scripts/rc1-live.mjs`, so every committed case
+    /// is judged here. A case added to this list must say why.
     const LIVE_ONLY: [(&str, &str); 0] = [];
 
-    /// A vector document: `{"$id": n}` is the 32-byte identifier filled with n and
-    /// `{"$b": [fill, len]}` is `len` bytes of `fill` (b7gate's `to_value`).
+    /// An identifier written as a byte `n` (32 bytes of n) or a base58 string.
+    fn identifier(j: &Json) -> Identifier {
+        match j {
+            Json::Number(n) => {
+                let n = n
+                    .as_u64()
+                    .and_then(|n| u8::try_from(n).ok())
+                    .expect("an id byte");
+                Identifier::from([n; 32])
+            }
+            Json::String(s) => {
+                Identifier::from_string(s, Encoding::Base58).unwrap_or_else(|e| panic!("{s}: {e}"))
+            }
+            other => panic!("an identifier is a byte or a base58 string, not {other}"),
+        }
+    }
+
+    /// A vector document (the README's format): `{"$id": n | "<base58>"}` is an identifier,
+    /// `{"$b": [fill, len]}` is `len` bytes of `fill` and `{"$hex": "…"}` is bytes.
     fn doc_value(j: &Json) -> Value {
         match j {
             Json::Object(m) if m.contains_key("$b") => {
@@ -197,9 +216,12 @@ mod vectors {
                 let len = usize::try_from(a[1].as_u64().expect("len")).expect("len");
                 Value::Bytes(vec![fill; len])
             }
+            Json::Object(m) if m.contains_key("$hex") => {
+                let h = m["$hex"].as_str().expect("$hex is a string");
+                Value::Bytes(hex::decode(h).unwrap_or_else(|e| panic!("{h}: {e}")))
+            }
             Json::Object(m) if m.contains_key("$id") => {
-                let n = u8::try_from(m["$id"].as_u64().expect("$id: n")).expect("$id is a byte");
-                Value::Identifier([n; 32])
+                Value::Identifier(identifier(&m["$id"]).to_buffer())
             }
             Json::Object(m) => Value::Map(
                 m.iter()
@@ -240,7 +262,8 @@ mod vectors {
                     skipped += 1;
                     continue;
                 }
-                let got = judge(ty, doc_value(&c["doc"]));
+                let signer = c.get("owner").map_or(Identifier::from(OWNER), identifier);
+                let got = judge(ty, doc_value(&c["doc"]), signer);
                 let verdict = match (expect, &got) {
                     ("ok", None) => None,
                     ("ok", Some((why, msg))) => {
@@ -282,5 +305,366 @@ mod vectors {
         assert_eq!(first_error("topic", &topic), None);
         topic.insert("vis".to_string(), FieldValue::text("private"));
         assert_refused("topic", &topic, "enum");
+        assert_eq!(first_error("topic", &topic).as_deref(), Some("enum"));
+    }
+}
+
+/// The Rust builders against RC1. Each builds a document the way its writer does: the builder's
+/// properties, `repoId` (which the service adds) and the `vis` stamp
+/// ([`crate::layout::stamp_vis`], a no-op where the builder already stamps it).
+///
+/// A test `#[ignore]`d with `RC1: …` names what the builder still lacks; the RC1 builder work
+/// un-ignores it. Builders that are not pure functions (webhook `prepare`, member enrol, runner
+/// enrol, topic reconcile, milestone define: their properties are built inside an async
+/// service method) are covered by the vectors and the live suite instead.
+mod builders {
+    use super::*;
+    use crate::ci::CheckReport;
+    use crate::collab::private::seal_props;
+    use crate::collab::v2::{
+        comment_props, event_payload_props, issue_props, patch_props, policy_props, review_props,
+        transition_props, EventPayload, PatchInput, Provenance, Target, TargetKind,
+    };
+    use crate::collab::{CommentAnchor, Imported};
+    use crate::layout::stamp_vis;
+    use crate::private::{DocKind, EpochKey, EpochKeys};
+    use crate::rules::v2::{
+        next_transition, Actor, Policy, StateAction, TransitionMove, Visibility,
+    };
+    use crate::rules::{EventKind, Verdict};
+
+    const REPO: [u8; 32] = [1; 32];
+    /// A base58 document / identity id for the builders' string inputs.
+    const ID: &str = "A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1";
+    /// The signer (0x07×32) in base58: an `asMember` proof names the signer.
+    fn signer() -> String {
+        crate::platform::encode_identifier(OWNER)
+    }
+
+    /// `props` as written to a repo of `visibility`: `repoId` and the `vis` stamp added.
+    fn written(
+        mut props: BTreeMap<String, FieldValue>,
+        visibility: Visibility,
+    ) -> BTreeMap<String, FieldValue> {
+        props.insert("repoId".to_string(), FieldValue::identifier(REPO));
+        stamp_vis(&mut props, visibility);
+        props
+    }
+
+    /// `props` of a type that carries no `vis` (transition, event, policy), with `repoId`.
+    fn scoped(mut props: BTreeMap<String, FieldValue>) -> BTreeMap<String, FieldValue> {
+        props.insert("repoId".to_string(), FieldValue::identifier(REPO));
+        props
+    }
+
+    fn imported() -> Imported {
+        Imported {
+            author: "octocat".into(),
+            created_at: 1_600_000_000,
+            url: "https://github.com/o/r/issues/1".into(),
+        }
+    }
+
+    fn target(kind: TargetKind) -> Target {
+        Target {
+            kind,
+            id: ID.into(),
+            number: 7,
+            author: signer(),
+        }
+    }
+
+    fn patch_input() -> PatchInput {
+        PatchInput {
+            title: "A fix".into(),
+            body: "body".into(),
+            base_ref_name: "refs/heads/main".into(),
+            source_repo_id: ID.into(),
+            source_ref_name: Some("refs/heads/fix".into()),
+            head_oid: vec![0xab; 20],
+            patch_manifest_hash: Some([4; 32]),
+            draft: false,
+        }
+    }
+
+    fn keys() -> EpochKeys {
+        EpochKeys::derive(&REPO, 0, &EpochKey::from_bytes([3; 32]))
+    }
+
+    // ---------------- issue / patch ----------------
+
+    #[test]
+    fn a_public_issue_is_rc1_valid() {
+        let p = issue_props(1, "A bug", "text", Provenance::default()).unwrap();
+        assert_valid("issue", &written(p, Visibility::Public));
+        let untitled_body = issue_props(2, "t", "", Provenance::default()).unwrap();
+        assert_valid("issue", &written(untitled_body, Visibility::Public));
+    }
+
+    #[test]
+    fn a_private_issue_sealed_is_rc1_valid() {
+        let p = issue_props(1, "A bug", "text", Provenance::default()).unwrap();
+        let sealed = seal_props(&keys(), DocKind::Issue, OWNER, p).unwrap();
+        assert_valid("issue", &written(sealed, Visibility::Private));
+    }
+
+    #[test]
+    #[ignore = "RC1: an imported issue needs asMember (the signer) with imported/upstreamNumber (i_provenance)"]
+    fn an_imported_issue_is_rc1_valid() {
+        let imp = imported();
+        let from = Provenance {
+            imported: Some(&imp),
+            upstream_number: Some(7761),
+        };
+        let p = issue_props(1, "A bug", "text", from).unwrap();
+        assert_valid("issue", &written(p, Visibility::Public));
+    }
+
+    #[test]
+    fn a_public_patch_is_rc1_valid() {
+        let p = patch_props(2, &patch_input(), Provenance::default()).unwrap();
+        assert_valid("patch", &written(p, Visibility::Public));
+        let bare = PatchInput {
+            body: String::new(),
+            source_ref_name: None,
+            patch_manifest_hash: None,
+            head_oid: vec![0xcd; 32],
+            ..patch_input()
+        };
+        let p = patch_props(3, &bare, Provenance::default()).unwrap();
+        assert_valid("patch", &written(p, Visibility::Public));
+    }
+
+    #[test]
+    fn a_private_patch_sealed_is_rc1_valid() {
+        let p = patch_props(2, &patch_input(), Provenance::default()).unwrap();
+        let sealed = seal_props(&keys(), DocKind::Patch, OWNER, p).unwrap();
+        assert_valid("patch", &written(sealed, Visibility::Private));
+    }
+
+    #[test]
+    #[ignore = "RC1: an imported patch needs asMember (the signer) with imported/upstreamNumber (i_provenance)"]
+    fn an_imported_patch_is_rc1_valid() {
+        let imp = imported();
+        let from = Provenance {
+            imported: Some(&imp),
+            upstream_number: Some(12),
+        };
+        let p = patch_props(2, &patch_input(), from).unwrap();
+        assert_valid("patch", &written(p, Visibility::Public));
+    }
+
+    // ---------------- comment / review ----------------
+
+    #[test]
+    fn comments_are_rc1_valid() {
+        let plain = comment_props(ID, "hi", None, None).unwrap();
+        assert_valid("comment", &written(plain, Visibility::Public));
+        let inline = CommentAnchor {
+            reply_to: None,
+            commit_oid: Some(vec![0xab; 20]),
+            path: Some("src/lib.rs".into()),
+            line: Some(12),
+            side: Some(1),
+            start_line: Some(10),
+            review_id: Some(ID.into()),
+        };
+        let p = comment_props(ID, "nit", Some(&inline), None).unwrap();
+        assert_valid("comment", &written(p, Visibility::Public));
+        let reply = CommentAnchor {
+            reply_to: Some(ID.into()),
+            ..CommentAnchor::default()
+        };
+        let p = comment_props(ID, "agreed", Some(&reply), None).unwrap();
+        assert!(!p.contains_key("noParent"), "noParent is never set");
+        assert_valid("comment", &written(p, Visibility::Public));
+    }
+
+    #[test]
+    fn a_private_comment_sealed_is_rc1_valid() {
+        let p = comment_props(ID, "secret", None, None).unwrap();
+        let sealed = seal_props(&keys(), DocKind::Comment, OWNER, p).unwrap();
+        assert_valid("comment", &written(sealed, Visibility::Private));
+    }
+
+    #[test]
+    #[ignore = "RC1: an imported comment needs asMember (the signer) (i_provenance)"]
+    fn an_imported_comment_is_rc1_valid() {
+        let p = comment_props(ID, "hi", None, Some(&imported())).unwrap();
+        assert_valid("comment", &written(p, Visibility::Public));
+    }
+
+    #[test]
+    fn a_comment_review_is_rc1_valid() {
+        let p = review_props(ID, Verdict::Comment, &[0xab; 20], "fine", Some(2), None).unwrap();
+        assert_valid("review", &written(p, Visibility::Public));
+        let p = review_props(ID, Verdict::Comment, &[0xab; 20], "", None, None).unwrap();
+        let sealed = seal_props(&keys(), DocKind::Review, OWNER, p).unwrap();
+        assert_valid("review", &written(sealed, Visibility::Private));
+    }
+
+    #[test]
+    #[ignore = "RC1: a member's approve/request-changes (verdict 1/2) needs asMember (memberVerdict); a non-member's is verdict 4/5"]
+    fn a_member_verdict_is_rc1_valid() {
+        for v in [Verdict::Approve, Verdict::RequestChanges] {
+            let p = review_props(ID, v, &[0xab; 20], "lgtm", None, None).unwrap();
+            assert_valid("review", &written(p, Visibility::Public));
+        }
+    }
+
+    /// A review carries no `i_provenance` rule: an imported comment-verdict review is valid
+    /// without `asMember` (an imported approve still needs it, [`a_member_verdict_is_rc1_valid`]).
+    #[test]
+    fn an_imported_comment_review_is_rc1_valid() {
+        let p = review_props(
+            ID,
+            Verdict::Comment,
+            &[0xab; 20],
+            "x",
+            None,
+            Some(&imported()),
+        )
+        .unwrap();
+        assert_valid("review", &written(p, Visibility::Public));
+    }
+
+    // ---------------- transition / event / policy ----------------
+
+    #[test]
+    fn every_transition_move_is_rc1_valid() {
+        use StateAction::{Close, Draft, Merge, Ready, Reopen};
+        let moves: [(TargetKind, i64, StateAction); 9] = [
+            (TargetKind::Issue, 0, Close),
+            (TargetKind::Issue, 1, Reopen),
+            (TargetKind::Patch, 0, Close),
+            (TargetKind::Patch, 1, Reopen),
+            (TargetKind::Patch, 0, Merge),
+            (TargetKind::Patch, 0, Draft),
+            (TargetKind::Patch, 8, Ready),
+            (TargetKind::Patch, 8, Close),
+            (TargetKind::Patch, 9, Reopen),
+        ];
+        for (kind, code, action) in moves {
+            let t = target(kind);
+            for actor in [Actor::Member, Actor::Author] {
+                let Some(mv): Option<TransitionMove> =
+                    next_transition(kind.transition_target(), code, action, actor, t.number)
+                else {
+                    assert!(action == Merge && actor == Actor::Author);
+                    continue;
+                };
+                let oid = (action == Merge).then_some(&[0xaa; 20][..]);
+                let p = transition_props(&t, &mv, oid).unwrap();
+                assert_valid("transition", &scoped(p));
+            }
+        }
+    }
+
+    #[test]
+    fn every_event_kind_is_rc1_valid() {
+        let issue = target(TargetKind::Issue);
+        let pr = target(TargetKind::Patch);
+        let v = |value| EventPayload {
+            value: Some(value),
+            ..EventPayload::default()
+        };
+        let r = EventPayload {
+            ref_id: Some(ID),
+            ..EventPayload::default()
+        };
+        let who = signer();
+        let assignee = EventPayload {
+            value: Some(&who),
+            ref_id: Some(&who),
+            ..EventPayload::default()
+        };
+        let head = EventPayload {
+            oid: Some(&[0xab; 20]),
+            ..EventPayload::default()
+        };
+        let none = EventPayload::default();
+        let cases: [(&Target, EventKind, &EventPayload<'_>); 15] = [
+            (&issue, EventKind::LabelAdd, &v("bug")),
+            (&issue, EventKind::LabelRemove, &v("bug")),
+            (&issue, EventKind::Assign, &assignee),
+            (&issue, EventKind::Unassign, &assignee),
+            (&pr, EventKind::Retarget, &v("refs/heads/dev")),
+            (&pr, EventKind::ThreadResolve, &r),
+            (&pr, EventKind::ThreadUnresolve, &r),
+            (&pr, EventKind::ReviewRequest, &r),
+            (&pr, EventKind::ReviewRequestRemove, &r),
+            (&pr, EventKind::ReviewDismiss, &r),
+            (&pr, EventKind::HeadUpdate, &head),
+            (&issue, EventKind::MilestoneSet, &v("v1")),
+            (&issue, EventKind::MilestoneClear, &none),
+            (&issue, EventKind::Pin, &none),
+            (&issue, EventKind::Unpin, &none),
+        ];
+        for (t, kind, payload) in cases {
+            let p = scoped(event_payload_props(t, kind, payload).unwrap());
+            assert_valid("event", &p);
+            if crate::rules::v2::is_author_kind(kind) {
+                assert_valid("authorEvent", &p);
+            }
+        }
+    }
+
+    /// RC1 locks a thread with a transition (kinds 3/4 on an issue, 18/19 on a PR, delta ±16);
+    /// the lock/unlock events (21/22) are refused (`noState`), so the builder must refuse them
+    /// before anything is signed, and `Collab::set_locked` must write the transition instead.
+    #[test]
+    #[ignore = "RC1: lock/unlock is a transition (3/4, 18/19, delta ±16); event kinds 21/22 break noState and set_locked still writes them"]
+    fn lock_events_are_refused_before_signing() {
+        let issue = target(TargetKind::Issue);
+        for kind in [EventKind::Lock, EventKind::Unlock] {
+            assert!(
+                event_payload_props(&issue, kind, &EventPayload::default()).is_err(),
+                "{kind:?} is a transition in RC1"
+            );
+        }
+    }
+
+    #[test]
+    fn a_policy_is_rc1_valid() {
+        let p = policy_props(&Policy {
+            required_approvals: 2,
+            approver_role: 1,
+            require_checks: true,
+            merge_methods: 15,
+        })
+        .unwrap();
+        assert_valid("policy", &scoped(p));
+    }
+
+    // ---------------- checkRun ----------------
+
+    fn check_report(status: &str, conclusion: Option<&str>) -> CheckReport {
+        CheckReport {
+            head_oid: "ab".repeat(20),
+            name: "build".into(),
+            status: status.into(),
+            conclusion: conclusion.map(str::to_string),
+            details_url: Some("https://ci.example.com/run/1".into()),
+            summary: Some("ok".into()),
+            external_id: Some("gh-1".into()),
+            ..CheckReport::default()
+        }
+    }
+
+    #[test]
+    #[ignore = "RC1: a checkRun create needs outcome (0 pending, 1 success/neutral/skipped, 2 otherwise: outcomeOf)"]
+    fn check_run_creates_are_rc1_valid() {
+        for (status, conclusion) in [
+            ("queued", None),
+            ("in_progress", None),
+            ("completed", Some("success")),
+            ("completed", Some("failure")),
+        ] {
+            let report = check_report(status, conclusion);
+            let oid = report.validate().unwrap();
+            let w = report.write(None, 1_760_000_000_000).unwrap();
+            let p = report.create_props(oid, &w);
+            assert_valid("checkRun", &written(p, Visibility::Public));
+        }
     }
 }
