@@ -16,7 +16,7 @@ import { formatBytes } from './format'
 export const INLINE_BLOB_MAX_BYTES = 256 * 1024
 
 /** Why a change has no line diff. */
-export type PatchPlaceholder = 'binary' | 'large' | 'too-complex' | 'submodule' | 'mode-only' | 'unreadable'
+export type PatchPlaceholder = 'binary' | 'large' | 'too-complex' | 'submodule' | 'mode-only' | 'renamed' | 'unreadable'
 
 export type FilePatch =
   | {
@@ -92,6 +92,10 @@ export async function loadFilePatch(
     return placeholder(change, 'submodule', `Submodule commit ${from} → ${to}`)
   }
   if (change.baseOid !== null && change.baseOid === change.headOid) {
+    if (change.status === 'renamed') {
+      const mode = change.baseMode !== change.headMode ? ' Its mode changed.' : ''
+      return placeholder(change, 'renamed', `File renamed without changes.${mode}`)
+    }
     return placeholder(change, 'mode-only', 'File mode changed; content is identical.')
   }
   try {

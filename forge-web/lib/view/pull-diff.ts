@@ -9,7 +9,7 @@
  * wrong bytes, only fail to answer.
  */
 
-import { diffTrees, type DiffSides, type TreeDiff } from './commit-log'
+import { diffTreesWithRenames, type DiffSides, type TreeDiff } from './commit-log'
 import type { ReadObjectOptions } from '../browse'
 import { readCommit, type ObjectReader } from './tree-nav'
 
@@ -142,7 +142,7 @@ export async function loadPullComparison(
 
   const compare = async (baseOid: string, comparisonNote: string | null): Promise<PullComparison> => {
     const baseTree = baseOid === '' ? null : (await readCommit(sides.base, baseOid)).tree
-    const diff = await diffTrees(sides, baseTree, headCommit.tree)
+    const diff = await diffTreesWithRenames(sides, baseTree, headCommit.tree)
     return { ...diff, comparedBaseOid: baseOid, comparisonNote, sides }
   }
 
