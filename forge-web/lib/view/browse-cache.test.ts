@@ -20,7 +20,8 @@ import { concat, objHeader, packFrame, T_BLOB } from '../browse/pack-fixtures'
 import { indexPacks, serializeLocator } from '../browse/indexer'
 import { CHUNK_PAYLOAD_MAX } from '../constants'
 import { DOC, repoContentWritten, type RepoRef } from '../repo'
-import { base64ToHex, bytesToBase64, hexToBase64 } from '../sdk'
+import { bytesToBase64 } from '../sdk'
+import { base58Decode, base58Encode } from '../auth/base58'
 import {
   browseGeneration,
   clearChunkCache,
@@ -51,7 +52,8 @@ async function push(text: string, packRef: number, at: number) {
     $id: id,
     $createdAt: createdAt,
     $ownerId: 'owner',
-    packHash: hexToBase64(hex(bytes)),
+    // An identifier: base58, as the 4.2 SDK returns it.
+    packHash: base58Encode(sha256(bytes)),
     kind,
     sizeBytes: bytes.length,
     chunkCount: 1,
@@ -100,7 +102,7 @@ function repoSdk() {
           if (chunksFail) return Promise.reject(new Error('node unavailable'))
           const packClause = (q.where ?? []).find((w) => w[0] === 'packHash')
           const seqClause = (q.where ?? []).find((w) => w[0] === 'seq')
-          const bytes = artifacts.get(base64ToHex(String(packClause?.[2] ?? '')))
+          const bytes = artifacts.get(bytesToHex(base58Decode(String(packClause?.[2] ?? ''))))
           const out = new Map<string, unknown>()
           if (bytes === undefined) return Promise.resolve(out)
           for (const seq of (seqClause?.[2] as number[]) ?? [0]) {

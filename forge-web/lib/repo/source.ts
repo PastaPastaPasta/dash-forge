@@ -14,57 +14,19 @@
  * contract's own (`forge-contracts/contracts/forge-{core,collab,community}.json`).
  */
 
-import { hexToBase64, type DocumentQuery, type OrderByClause, type WhereClause } from '../sdk'
+import type { DocumentQuery, OrderByClause, WhereClause } from '../sdk'
 import type { ForgeIds } from '../deployments'
 import { DOC, type RepoRef } from './contract'
+import { contractKindOfType } from '../layout'
+import { packHashOperand } from './pack-hash'
 
-/**
- * The forge-v2 document types held by forge-core (the RC1 layout, `forge-contracts/schema/build.py`):
- * code, membership and consent, releases, labels and topics.
- */
-export const CORE_TYPES: ReadonlySet<string> = new Set([
-  DOC.repo,
-  DOC.maintainer,
-  DOC.writer,
-  DOC.consent,
-  DOC.refUpdate,
-  DOC.protectedRefUpdate,
-  DOC.config,
-  DOC.packManifest,
-  DOC.chunk,
-  DOC.release,
-  DOC.label,
-  DOC.topic,
-])
+export { COLLAB_TYPES, COMMUNITY_TYPES, CORE_TYPES } from '../layout'
 
-/**
- * The forge-v2 document types held by forge-community: the social types, CI and policy, and
- * (RC1 O-01/O-02) the member and author events, milestones and runners.
- */
-export const COMMUNITY_TYPES: ReadonlySet<string> = new Set([
-  DOC.event,
-  DOC.authorEvent,
-  DOC.milestone,
-  DOC.runner,
-  DOC.star,
-  DOC.starBeat,
-  DOC.watch,
-  DOC.follow,
-  DOC.checkRun,
-  DOC.policy,
-  DOC.webhook,
-  DOC.profile,
-])
-
-/** The forge-v2 document types held by forge-collab: issues, PRs and their threads, and (RC1 O-03) `repoKey`. */
-export const COLLAB_TYPES: ReadonlySet<string> = new Set([DOC.issue, DOC.patch, DOC.transition, DOC.comment, DOC.review, DOC.repoKey])
-
-/** The contract of `forge` that holds `type` (`forge-v2.md` §2). Throws on a type no contract holds. */
+/** The contract of `forge` that holds `type` (`forge-v2.md` §2, the RC1 layout). Throws on a type no contract holds. */
 export function contractOf(forge: ForgeIds, type: string): string {
-  if (CORE_TYPES.has(type)) return forge.core
-  if (COMMUNITY_TYPES.has(type)) return forge.community
-  if (COLLAB_TYPES.has(type)) return forge.collab
-  throw new Error(`no forge-v2 contract holds the document type ${JSON.stringify(type)}`)
+  const kind = contractKindOfType(type)
+  if (kind === null) throw new Error(`no forge-v2 contract holds the document type ${JSON.stringify(type)}`)
+  return forge[kind]
 }
 
 /** The clauses a caller adds to a scoped query. */
@@ -85,7 +47,8 @@ export interface RepoSource {
   /**
    * The `chunk` rows `seqs` of the artifact `packHashHex`. Chunks are keyed by the
    * uploader too (`(repoId, $ownerId, packHash, seq)`, `forge-v2.md` §4), so `uploader` —
-   * the `$ownerId` of the manifest copy being read — is required.
+   * the `$ownerId` of the manifest copy being read — is required. `packHash` is an identifier
+   * (RC1), so its operand is base58 ({@link packHashOperand}).
    */
   chunkQuery(packHashHex: string, uploader: string, seqs: readonly number[]): DocumentQuery
 }
@@ -114,7 +77,7 @@ export function repoSource(repo: RepoRef): RepoSource {
       repoQuery(DOC.chunk, {
         where: [
           ['$ownerId', '==', uploader],
-          ['packHash', '==', hexToBase64(packHashHex)],
+          ['packHash', '==', packHashOperand(packHashHex)],
           ['seq', 'in', [...seqs]],
         ],
         orderBy: [['seq', 'asc']],

@@ -262,7 +262,7 @@ describe('RepoSource', () => {
     expect(q.where).toEqual([
       ['repoId', '==', REPO],
       ['$ownerId', '==', MAINT],
-      ['packHash', '==', hexToBase64('aa'.repeat(32))],
+      ['packHash', '==', base58Encode(new Uint8Array(32).fill(0xaa))], // an identifier: base58
       ['seq', 'in', [0, 1]],
     ])
   })

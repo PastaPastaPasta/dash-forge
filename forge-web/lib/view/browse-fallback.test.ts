@@ -25,7 +25,8 @@ import {
 } from '../browse/pack-fixtures'
 import { CHUNK_PAYLOAD_MAX } from '../constants'
 import type { PackManifest, RepoRef } from '../repo'
-import { base64ToHex, bytesToBase64 } from '../sdk'
+import { bytesToBase64 } from '../sdk'
+import { base58Decode } from '../auth/base58'
 import { cachedFallback, startFallback, type FallbackProgress } from './browse-fallback'
 import { externalFetchUrls, resetExternalFetchState, StorageUnreachableError } from './browse-source'
 import { beginView, contentChecks, resetContentChecks } from './content-checks'
@@ -44,7 +45,7 @@ function mockSdk(packsByHash: Map<string, Uint8Array>): EvoSDK {
       query: (q: { where?: readonly (readonly unknown[])[] }): Promise<Map<string, unknown>> => {
         const packClause = (q.where ?? []).find((w) => w[0] === 'packHash')
         const seqClause = (q.where ?? []).find((w) => w[0] === 'seq')
-        const bytes = packsByHash.get(base64ToHex(String(packClause?.[2] ?? '')))
+        const bytes = packsByHash.get(bytesToHex(base58Decode(String(packClause?.[2] ?? ''))))
         const seqs = (seqClause?.[2] as number[]) ?? []
         const map = new Map<string, unknown>()
         if (bytes === undefined) return Promise.resolve(map)
