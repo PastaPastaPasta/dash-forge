@@ -1,0 +1,15 @@
+{
+  "name": "conclusion_before_completion",
+  "description": "doneIfConclusion: a conclusion on a run that is not completed is refused.",
+  "case": "check_run_write",
+  "rules": "v2",
+  "input": {
+    "stored": null,
+    "report": {
+      "status": "in_progress",
+      "conclusion": "success"
+    },
+    "now": 1000
+  },
+  "expected": null
+}

@@ -9,175 +9,175 @@
         "target": "issue",
         "code": 0,
         "action": "close",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 0,
         "action": "reopen",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 0,
         "action": "merge",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 0,
         "action": "draft",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 0,
         "action": "ready",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 1,
         "action": "close",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 1,
         "action": "reopen",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 1,
         "action": "merge",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 1,
         "action": "draft",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 1,
         "action": "ready",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 2,
         "action": "close",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 2,
         "action": "reopen",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 2,
         "action": "merge",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 2,
         "action": "draft",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 2,
         "action": "ready",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 8,
         "action": "close",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 8,
         "action": "reopen",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 8,
         "action": "merge",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 8,
         "action": "draft",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 8,
         "action": "ready",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 9,
         "action": "close",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 9,
         "action": "reopen",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 9,
         "action": "merge",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 9,
         "action": "draft",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       },
       {
         "target": "issue",
         "code": 9,
         "action": "ready",
-        "member": false,
+        "actor": "author",
         "targetNumber": 7
       }
     ]

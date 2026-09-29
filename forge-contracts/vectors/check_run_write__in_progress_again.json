@@ -1,6 +1,6 @@
 {
   "name": "in_progress_again",
-  "description": "A second in-progress report changes no time.",
+  "description": "A second in-progress report changes nothing that is set.",
   "case": "check_run_write",
   "rules": "v2",
   "input": {
@@ -19,6 +19,8 @@
   "expected": {
     "action": "replace",
     "startedAt": null,
-    "completedAt": null
+    "completedAt": null,
+    "conclusion": null,
+    "externalId": null
   }
 }

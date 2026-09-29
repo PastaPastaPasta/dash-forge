@@ -1,6 +1,6 @@
 {
   "name": "completed_new",
-  "description": "A run reported only on completion gets both times (completedAtIfDone, startedIfRunning).",
+  "description": "A run reported only on completion gets both times and its conclusion (completedAtIfDone, startedIfRunning).",
   "case": "check_run_write",
   "rules": "v2",
   "input": {
@@ -14,6 +14,8 @@
   "expected": {
     "action": "create",
     "startedAt": 1000,
-    "completedAt": 1000
+    "completedAt": 1000,
+    "conclusion": "success",
+    "externalId": null
   }
 }

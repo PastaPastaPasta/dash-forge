@@ -54,6 +54,9 @@ export type TransitionTarget = 'issue' | 'patch'
 /** A state change a user asks for. */
 export type StateAction = 'close' | 'reopen' | 'merge' | 'draft' | 'ready'
 
+/** Who asks: a current member, the target's author (not a member), or anyone else (never admitted). */
+export type Actor = 'member' | 'author' | 'other'
+
 /** The `transition` fields a client writes besides `repoId`, `targetId`, `targetNumber`, `oid`. */
 export interface TransitionMove {
   readonly kind: number
@@ -77,17 +80,19 @@ const MOVES: Readonly<Record<TransitionTarget, Readonly<Partial<Record<StateActi
 }
 
 /**
- * The move that carries out `action` on a target at state `code`, by a member or by the
- * target's author; null when consensus would refuse it (an illegal move, or a merge by a
+ * The move that carries out `action` on a target at state `code`, by `actor`; null when
+ * consensus would refuse it (a writer no operand admits, an illegal move, or a merge by a
  * non-member). Parity: forge-core `next_transition`.
  */
 export function nextTransition(
   target: TransitionTarget,
   code: number,
   action: StateAction,
-  member: boolean,
+  actor: Actor,
   targetNumber: number,
 ): TransitionMove | null {
+  if (actor === 'other') return null
+  const member = actor === 'member'
   if (action === 'merge' && !member) return null
   const kind = MOVES[target][action]?.[code]
   if (kind === undefined) return null
@@ -163,7 +168,7 @@ export function repoCounts(issues: number, patches: number, kinds: ReadonlyMap<n
 /** The number the next issue or PR must carry (`dense`: the two totals plus the new one). */
 export function denseNumber(issues: number, patches: number): number | null {
   const n = issues + patches + 1
-  return Number.isSafeInteger(n) && n <= 0xffff_ffff ? n : null
+  return Number.isSafeInteger(n) && n >= 1 && n <= 0xffff_ffff ? n : null
 }
 
 /** The rule that refuses a create whose number is not the dense next one. */

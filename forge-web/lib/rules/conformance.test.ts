@@ -233,17 +233,17 @@ function runCaseV2(v: Vector): void {
       break
     }
     case 'transition_moves': {
-      onlyKeys(v, ['cases'], { cases: ['target', 'code', 'action', 'member', 'targetNumber'] })
+      onlyKeys(v, ['cases'], { cases: ['target', 'code', 'action', 'actor', 'targetNumber'] })
       const { cases } = v.input as {
         readonly cases: readonly {
           readonly target: v2.TransitionTarget
           readonly code: number
           readonly action: v2.StateAction
-          readonly member: boolean
+          readonly actor: v2.Actor
           readonly targetNumber: number
         }[]
       }
-      expect(cases.map((c) => v2.nextTransition(c.target, c.code, c.action, c.member, c.targetNumber))).toEqual(v.expected)
+      expect(cases.map((c) => v2.nextTransition(c.target, c.code, c.action, c.actor, c.targetNumber))).toEqual(v.expected)
       break
     }
     case 'transition_status': {
@@ -276,7 +276,7 @@ function runCaseV2(v: Vector): void {
       break
     }
     case 'check_run_write': {
-      const run = ['status', 'startedAt', 'completedAt', 'conclusion']
+      const run = ['status', 'startedAt', 'completedAt', 'conclusion', 'externalId']
       onlyKeys(v, ['stored', 'report', 'now'], { stored: run, report: run })
       const inp = v.input as { readonly stored: v2.StoredRun | null; readonly report: v2.RunReport; readonly now: number }
       expect(v2.checkRunWrite(inp.stored, inp.report, inp.now)).toEqual(v.expected)
@@ -507,6 +507,7 @@ const TRANSITION_NESTED: Readonly<Record<string, readonly string[]>> = {
 
 /** The state code and merge oid, from exactly one of `transitions` and `sum` (parity: Rust `state_of`). */
 function stateOf(v: Vector, inp: StateInput): [number, string | null] {
+  expect(inp.sum !== null, `vector ${v.name}: sum is a number or absent`).toBe(true)
   expect((inp.transitions === undefined) !== (inp.sum === undefined), `vector ${v.name}: exactly one of transitions and sum`).toBe(true)
   if (inp.transitions !== undefined) {
     expect(inp.mergeOid, `vector ${v.name}: mergeOid goes with sum`).toBeUndefined()
