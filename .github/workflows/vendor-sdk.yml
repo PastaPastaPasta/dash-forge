@@ -4,7 +4,7 @@ name: Vendor the Platform JS SDK
 # two npm tarballs to a GitHub pre-release of this repository (`vendor-sdk-<tag>`), for a
 # Platform version whose npm packages were never published (v4.2.0-beta.6: its release job
 # needs a runner group dashpay no longer has). forge-web depends on the release-asset URLs,
-# so the pnpm lockfile pins each tarball's integrity and no developer or CI job needs a Rust
+# so the lockfiles pin each tarball's integrity and no developer or CI job needs a Rust
 # toolchain. docs/dev/sdk-vendoring.md: rebuilding for a new tag, and moving back to npm.
 #
 # The build follows upstream's own release recipe (.github/actions/npm-release-build at the
@@ -13,8 +13,10 @@ name: Vendor the Platform JS SDK
 # wasm-sdk and evo-sdk builds with the tag's yarn, packed by `yarn pack` (which rewrites
 # evo-sdk's `workspace:*` dependency to the exact version).
 #
-# Manual only. Publishing an existing release again is refused unless `replace` is set: the
-# lockfile's integrity hashes name the assets already there.
+# Manual only, and it publishes only from master. The lockfiles' integrity hashes name the
+# assets once published, so an existing release or tag is refused unless `replace` is set.
+# The release is created as a draft, filled, and only then published; the tarballs and
+# SHA256SUMS carry a GitHub build-provenance attestation (Sigstore, keyless).
 
 on:
   workflow_dispatch:
@@ -23,6 +25,11 @@ on:
         description: dashpay/platform tag to build (e.g. v4.2.0-beta.6)
         required: true
         type: string
+      expected_commit:
+        description: The full commit the tag must point at (optional; checked when set)
+        required: false
+        type: string
+        default: ''
       replace:
         description: Replace the assets of an existing vendor-sdk release (breaks lockfiles that pin them)
         type: boolean
@@ -35,7 +42,12 @@ concurrency:
   group: vendor-sdk-${{ inputs.platform_tag }}
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash
+
 env:
+  PLATFORM_TAG: ${{ inputs.platform_tag }}
   # Upstream's release recipe at v4.2.0-beta.6 (.github/actions/npm-release-build/action.yaml).
   WASM_BINDGEN_VERSION: 0.2.108
   WASM_BINDGEN_SHA256: d15d7e476feec78d0ec9edc27b8f77279ec7a3e6227756e7036e5cd2066800f4
@@ -58,37 +70,41 @@ jobs:
       commit: ${{ steps.meta.outputs.commit }}
     steps:
       - name: Check the tag name
-        env:
-          TAG: ${{ inputs.platform_tag }}
         run: |
           set -euo pipefail
-          printf '%s\n' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' \
-            || { echo "::error::$TAG is not a v<semver> tag"; exit 1; }
+          printf '%s\n' "$PLATFORM_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' \
+            || { echo "::error::$PLATFORM_TAG is not a v<semver> tag"; exit 1; }
 
       - name: Check out dashpay/platform at the tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: dashpay/platform
           ref: refs/tags/${{ inputs.platform_tag }}
           path: platform
           persist-credentials: false
 
-      - name: Read the version and commit
+      - name: Read the version, commit and toolchain
         id: meta
         working-directory: platform
         env:
-          TAG: ${{ inputs.platform_tag }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
         run: |
           set -euo pipefail
           version=$(jq -r .version packages/wasm-sdk/package.json)
           evo=$(jq -r .version packages/js-evo-sdk/package.json)
-          [ "v$version" = "$TAG" ] && [ "$evo" = "$version" ] \
-            || { echo "::error::tag $TAG builds wasm-sdk $version and evo-sdk $evo"; exit 1; }
+          [ "v$version" = "$PLATFORM_TAG" ] && [ "$evo" = "$version" ] \
+            || { echo "::error::tag $PLATFORM_TAG builds wasm-sdk $version and evo-sdk $evo"; exit 1; }
+          commit=$(git rev-parse HEAD)
+          if [ -n "$EXPECTED_COMMIT" ] && [ "$commit" != "$EXPECTED_COMMIT" ]; then
+            echo "::error::tag $PLATFORM_TAG is at $commit, not the expected $EXPECTED_COMMIT"; exit 1
+          fi
+          rust=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          [ -n "$rust" ] || { echo "::error::no channel in the tag's rust-toolchain.toml"; exit 1; }
           {
             echo "version=$version"
-            echo "commit=$(git rev-parse HEAD)"
-            echo "release=vendor-sdk-$TAG"
-            echo "rust=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+            echo "commit=$commit"
+            echo "release=vendor-sdk-$PLATFORM_TAG"
+            echo "rust=$rust"
           } >> "$GITHUB_OUTPUT"
 
       - name: Install native dependencies
@@ -96,12 +112,14 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y --no-install-recommends clang llvm libsnappy-dev
 
-      - name: Install the pinned Rust toolchain (${{ steps.meta.outputs.rust }})
+      - name: Install the tag's Rust toolchain
         working-directory: platform
+        env:
+          RUST: ${{ steps.meta.outputs.rust }}
         run: |
           set -euo pipefail
-          rustup toolchain install "${{ steps.meta.outputs.rust }}" --profile minimal --target wasm32-unknown-unknown
-          rustc --version
+          rustup toolchain install "$RUST" --profile minimal --target wasm32-unknown-unknown
+          rustc --version | grep -F "rustc $RUST"
 
       - name: Install wasm-bindgen, wasm-pack, Binaryen and protoc (checksum-verified)
         run: |
@@ -131,24 +149,14 @@ jobs:
           protoc --version | grep -Fx "libprotoc $PROTOC_VERSION"
           clang --version | head -1
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: ${{ env.NODE_VERSION }}
-
-      - name: Cache the cargo registry
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          # Not target/ (~1.5 GB): it would crowd the Pages chunk cache out of the repo's 10 GB.
-          key: vendor-sdk-cargo-${{ steps.meta.outputs.commit }}
-          restore-keys: vendor-sdk-cargo-
 
       - name: Install the workspace packages the two SDKs need
         working-directory: platform
         run: |
+          set -euo pipefail
           corepack enable
           yarn workspaces focus @dashevo/wasm-sdk @dashevo/evo-sdk
 
@@ -157,6 +165,7 @@ jobs:
         env:
           CARGO_BUILD_PROFILE: release
           CC_wasm32_unknown_unknown: clang
+          CXX_wasm32_unknown_unknown: clang++
           AR_wasm32_unknown_unknown: llvm-ar
         run: yarn build
 
@@ -164,18 +173,39 @@ jobs:
         working-directory: platform/packages/js-evo-sdk
         run: yarn build
 
-      - name: Pack both and record their checksums
+      - name: Pack both, check their contents and record their checksums
         working-directory: platform
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
         run: |
           set -euo pipefail
           out="$GITHUB_WORKSPACE/out"; mkdir -p "$out"
-          v="${{ steps.meta.outputs.version }}"
-          (cd packages/wasm-sdk && yarn pack --out "$out/dashevo-wasm-sdk-$v.tgz")
-          (cd packages/js-evo-sdk && yarn pack --out "$out/dashevo-evo-sdk-$v.tgz")
-          # evo-sdk must name the exact wasm-sdk it was built against (yarn pack resolves workspace:*).
-          dep=$(tar -xzOf "$out/dashevo-evo-sdk-$v.tgz" package/package.json | jq -r '.dependencies["@dashevo/wasm-sdk"]')
-          [ "$dep" = "$v" ] || { echo "::error::evo-sdk depends on @dashevo/wasm-sdk $dep, not $v"; exit 1; }
+          wasm="dashevo-wasm-sdk-$VERSION.tgz"; evo="dashevo-evo-sdk-$VERSION.tgz"
+          (cd packages/wasm-sdk && yarn pack --out "$out/$wasm")
+          (cd packages/js-evo-sdk && yarn pack --out "$out/$evo")
           cd "$out"
+          # What forge-web loads (next.config.js, lib/sdk/wasm-shim.ts) and the package entries.
+          has() { tar -tzf "$1" | grep -Fxq "$2" || { echo "::error::$1 lacks $2"; exit 1; }; }
+          for f in package/package.json package/dist/sdk.js package/dist/sdk.d.ts package/dist/sdk.compressed.js \
+                   package/dist/raw/wasm_sdk.js package/dist/raw/wasm_sdk.d.ts package/dist/raw/wasm_sdk_bg.wasm; do
+            has "$wasm" "$f"
+          done
+          for f in package/package.json package/dist/evo-sdk.module.js package/dist/sdk.js package/dist/sdk.d.ts package/dist/wasm.js; do
+            has "$evo" "$f"
+          done
+          for f in "$wasm" "$evo"; do
+            v=$(tar -xzOf "$f" package/package.json | jq -r .version)
+            [ "$v" = "$VERSION" ] || { echo "::error::$f is version $v, not $VERSION"; exit 1; }
+          done
+          # evo-sdk must name the exact wasm-sdk it was built against (yarn pack resolves workspace:*).
+          dep=$(tar -xzOf "$evo" package/package.json | jq -r '.dependencies["@dashevo/wasm-sdk"]')
+          [ "$dep" = "$VERSION" ] || { echo "::error::evo-sdk depends on @dashevo/wasm-sdk $dep, not $VERSION"; exit 1; }
+          # The wasm must be a wasm module of plausible size (beta.6: 23.6 MB).
+          tar -xzf "$wasm" -C "$RUNNER_TEMP" package/dist/raw/wasm_sdk_bg.wasm
+          bin="$RUNNER_TEMP/package/dist/raw/wasm_sdk_bg.wasm"
+          [ "$(od -An -tx1 -N4 "$bin" | tr -d ' \n')" = 0061736d ] || { echo "::error::wasm_sdk_bg.wasm is not a wasm module"; exit 1; }
+          [ "$(stat -c %s "$bin")" -gt 10000000 ] || { echo "::error::wasm_sdk_bg.wasm is only $(stat -c %s "$bin") bytes"; exit 1; }
+          rm -rf "$RUNNER_TEMP/package"
           sha256sum -- *.tgz > SHA256SUMS
           # The integrity npm and pnpm record in a lockfile.
           for f in *.tgz; do echo "$f sha512-$(openssl dgst -sha512 -binary "$f" | base64 -w0)"; done > INTEGRITY
@@ -183,19 +213,21 @@ jobs:
           ls -l
 
       - name: Write the release notes
+        working-directory: out
         env:
-          TAG: ${{ inputs.platform_tag }}
           COMMIT: ${{ steps.meta.outputs.commit }}
           RUST: ${{ steps.meta.outputs.rust }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          cd out
+          yarn_version=$(cd ../platform && yarn --version)
           {
-            echo "Build artifact, not a Dash Forge release: \`@dashevo/wasm-sdk\` and \`@dashevo/evo-sdk\` built from [dashpay/platform \`$TAG\`](https://github.com/dashpay/platform/tree/$COMMIT), whose npm packages were not published. forge-web installs these tarballs by URL; the lockfile pins their integrity. See [docs/dev/sdk-vendoring.md](https://github.com/${{ github.repository }}/blob/master/docs/dev/sdk-vendoring.md)."
+            echo "Build artifact, not a Dash Forge release: \`@dashevo/wasm-sdk\` and \`@dashevo/evo-sdk\` built from [dashpay/platform \`$PLATFORM_TAG\`](https://github.com/dashpay/platform/tree/$COMMIT), whose npm packages were not published. forge-web installs these tarballs by URL; the lockfiles pin their integrity. See [docs/dev/sdk-vendoring.md](https://github.com/$REPO/blob/master/docs/dev/sdk-vendoring.md)."
             echo
-            echo "- Source: dashpay/platform \`$TAG\` at \`$COMMIT\`"
-            echo "- Built by: [${{ github.workflow }} run ${{ github.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) on \`ubuntu-24.04\`"
-            echo "- Toolchain: Rust $RUST (wasm32-unknown-unknown), wasm-bindgen-cli $WASM_BINDGEN_VERSION, wasm-pack $WASM_PACK_VERSION, Binaryen version_$BINARYEN_VERSION, protoc $PROTOC_VERSION, $(clang --version | head -1), Node $NODE_VERSION, yarn $(cd ../platform && yarn --version)"
+            echo "- Source: dashpay/platform \`$PLATFORM_TAG\` at \`$COMMIT\`"
+            echo "- Built by: [workflow run]($RUN_URL) on \`ubuntu-24.04\`, with a build-provenance attestation (\`gh attestation verify <file> -R $REPO\`)"
+            echo "- Toolchain: Rust $RUST (wasm32-unknown-unknown), wasm-bindgen-cli $WASM_BINDGEN_VERSION, wasm-pack $WASM_PACK_VERSION, Binaryen version_$BINARYEN_VERSION, protoc $PROTOC_VERSION, $(clang --version | head -1), Node $NODE_VERSION, yarn $yarn_version"
             echo "- Recipe: upstream's \`.github/actions/npm-release-build\` at the tag (\`CARGO_BUILD_PROFILE=release yarn build\` in \`packages/wasm-sdk\`, \`yarn build\` in \`packages/js-evo-sdk\`, \`yarn pack\`)"
             echo
             echo "SHA-256:"
@@ -208,7 +240,7 @@ jobs:
             echo '```'
           } > NOTES.md
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: vendor-sdk-${{ steps.meta.outputs.version }}
           path: out/
@@ -218,31 +250,63 @@ jobs:
   publish:
     name: Publish the pre-release
     needs: build
+    # A dispatch from any other branch builds and checks, but never publishes.
+    if: github.ref == 'refs/heads/master'
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
-      contents: write
+      contents: write # create the release and upload its assets
+      id-token: write # Sigstore OIDC token for the provenance attestation
+      attestations: write # store the attestation in this repository
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE: ${{ needs.build.outputs.release }}
+      REPLACE: ${{ inputs.replace }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: vendor-sdk-${{ needs.build.outputs.version }}
           path: out
-      - name: Verify, then create or update the pre-release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE: ${{ needs.build.outputs.release }}
-          REPLACE: ${{ inputs.replace }}
+      - name: Verify the checksums and refuse to overwrite
+        id: plan
+        working-directory: out
         run: |
           set -euo pipefail
-          cd out
           sha256sum -c SHA256SUMS
-          if gh release view "$RELEASE" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            [ "$REPLACE" = true ] || { echo "::error::$RELEASE exists; its assets are pinned by lockfiles. Dispatch with replace=true to overwrite them."; exit 1; }
+          release=false; tag=false
+          gh release view "$RELEASE" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 && release=true
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE" >/dev/null 2>&1 && tag=true
+          if { [ "$release" = true ] || [ "$tag" = true ]; } && [ "$REPLACE" != true ]; then
+            echo "::error::$RELEASE exists (release: $release, tag: $tag); lockfiles pin its assets. Dispatch with replace=true to overwrite them."
+            exit 1
+          fi
+          echo "exists=$release" >> "$GITHUB_OUTPUT"
+      - name: Attest the tarballs
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: out/SHA256SUMS
+      - name: Create or update the pre-release
+        working-directory: out
+        env:
+          EXISTS: ${{ steps.plan.outputs.exists }}
+        run: |
+          set -euo pipefail
+          if [ "$EXISTS" = true ]; then
             gh release upload "$RELEASE" -R "$GITHUB_REPOSITORY" --clobber -- *.tgz SHA256SUMS
             gh release edit "$RELEASE" -R "$GITHUB_REPOSITORY" --notes-file NOTES.md
           else
-            # The tag is on this workflow's commit; `vendor-sdk-*` does not match release.yml's `v*`.
-            gh release create "$RELEASE" -R "$GITHUB_REPOSITORY" --prerelease --latest=false \
-              --target "$GITHUB_SHA" --title "$RELEASE (build artifact)" --notes-file NOTES.md \
-              -- *.tgz SHA256SUMS
+            # A draft first: nothing is public until every asset is attached. The tag is made on
+            # publish, at this workflow's commit. release.yml excludes `vendor-sdk-*` from its
+            # `v*` trigger (and a tag the GITHUB_TOKEN creates triggers no workflow anyway); the
+            # `refs/tags/v*` ruleset does match it, which keeps the tag from being moved or deleted.
+            gh release create "$RELEASE" -R "$GITHUB_REPOSITORY" --draft --prerelease --latest=false \
+              --target "$GITHUB_SHA" --title "$RELEASE (build artifact)" --notes-file NOTES.md
+            gh release upload "$RELEASE" -R "$GITHUB_REPOSITORY" -- *.tgz SHA256SUMS
+            gh release edit "$RELEASE" -R "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
           fi
-          gh release view "$RELEASE" -R "$GITHUB_REPOSITORY" --json url,assets --jq '.url, (.assets[] | "\(.name) \(.size)")'
+          gh release view "$RELEASE" -R "$GITHUB_REPOSITORY" --json url,isDraft,isPrerelease,assets \
+            --jq '.url, "draft=\(.isDraft) prerelease=\(.isPrerelease)", (.assets[] | "\(.name) \(.size)")'
+          # What a lockfile will fetch must be what was built.
+          mkdir -p ../check && cd ../check
+          gh release download "$RELEASE" -R "$GITHUB_REPOSITORY" -p '*.tgz'
+          sha256sum -c ../out/SHA256SUMS
