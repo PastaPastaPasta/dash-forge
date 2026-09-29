@@ -27,7 +27,7 @@ import type { Network } from '../constants'
 import type { ForgeIds } from '../deployments'
 import { decodeIdentifier } from '../auth/base58'
 import { idbDelete, idbEntries, idbGet, idbPut } from '../idb'
-import { isLegalRefName, type EventKind } from '../rules'
+import { isGitRefName, type EventKind } from '../rules'
 import { denseNumber, isAuthorKind, namesDenseRule, normalizeRepoName as normalizeV2RepoName, type Role, type StateAction, type Visibility } from '../rules/v2'
 import { fetchIdentityKeys, usableEncryptionKey, type EncryptionOps } from '../auth/encryption-key'
 import {
@@ -366,7 +366,7 @@ export interface PatchInput {
 export function patchData(input: PatchInput): Record<string, unknown> {
   if (input.title.trim() === '') throw new Error('a title is required')
   for (const name of [input.baseRefName, input.sourceRefName]) {
-    if (!isLegalRefName(name) || !isRc1RefName(name)) {
+    if (!isGitRefName(name)) {
       throw new Error(`illegal ref name ${JSON.stringify(name)}`)
     }
   }

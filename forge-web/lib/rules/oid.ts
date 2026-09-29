@@ -18,23 +18,26 @@ export function isNullOid(oid: string | undefined): boolean {
 }
 
 /**
- * Whether a ref name is legal to advertise on the git wire protocol.
+ * Whether a ref name is one the RC1 contract accepts on a ref update (and a patch's base and
+ * source): `refs/` then git's check-ref-format grammar (`@{` included), at most 255 bytes, no
+ * trailing `.lock` ({@link isRc1RefName}). Parity: forge-core `is_legal_ref_name`.
  *
- * Security-critical (parity with the write guard, fold side, helper emission): non-empty,
- * no leading `-`, and no ASCII whitespace or control byte (`b <= 0x20`, plus DEL 0x7f).
- * This makes newline/NUL/space ref-advertisement injection inert on read/fold.
+ * It is also the fold's rule: a ref name reaches the git wire protocol, so one carrying a newline
+ * would inject a spoofed ref-advertisement line into every clone, and a NUL or space would
+ * corrupt parsing. A name outside the grammar is inert on read, including a sealed private ref
+ * name and a retarget value, which reach the fold without consensus judging them.
  */
 export function isLegalRefName(name: string): boolean {
-  if (name.length === 0) return false
-  if (name.charCodeAt(0) === 0x2d /* '-' */) return false
-  // Inspect UTF-8 bytes: a multi-byte scalar's continuation bytes are all >= 0x80, so a
-  // per-code-unit check on the string's char codes is insufficient — encode first.
-  const bytes = new TextEncoder().encode(name)
-  for (let i = 0; i < bytes.length; i++) {
-    const b = bytes[i] as number
-    if (b <= 0x20 || b === 0x7f) return false
-  }
-  return true
+  return isRc1RefName(name)
+}
+
+/**
+ * {@link isLegalRefName} plus the one rule of `git check-ref-format` the contract's grammar cannot
+ * express: no component ends with `.lock`. A ref git itself could create. Parity: forge-core
+ * `is_git_ref_name`.
+ */
+export function isGitRefName(name: string): boolean {
+  return isLegalRefName(name) && !name.split('/').some((c) => c.endsWith('.lock'))
 }
 
 // ---------------------------------------------------------------------------

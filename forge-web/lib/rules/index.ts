@@ -21,6 +21,7 @@ export {
   compareKey,
   compareStrings,
   isCheckRefFormat,
+  isGitRefName,
   isLegalRefName,
   isNullOid,
   isOidHex,

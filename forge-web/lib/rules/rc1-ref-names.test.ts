@@ -12,6 +12,8 @@ import {
   RC1_BRANCH_PATTERN,
   RC1_REF_NAME_PATTERN,
   RC1_TAG_PATTERN,
+  isGitRefName,
+  isLegalRefName,
   isRc1BranchName,
   isRc1OidHex,
   isRc1RefName,
@@ -83,6 +85,53 @@ describe('RC1 ref-name pre-checks', () => {
   it('leave a non-final .lock component to the reader, as consensus does', () => {
     expect(isRc1RefName('refs/heads/x.lock/y')).toBe(true)
     expect(isRc1RefName('refs/heads/x.lock')).toBe(false)
+    expect(isGitRefName('refs/heads/x.lock/y')).toBe(false)
+  })
+
+  // The fold's rule is the contract's (parity: forge-core `is_legal_ref_name`, judged over the
+  // same rc1 vectors), so a sealed private ref name or a retarget value outside it is inert.
+  it.each(cases.filter((c) => c.check === isRc1RefName))('the fold judges $label as consensus does', ({ value, want }) => {
+    expect(isLegalRefName(value)).toBe(want)
+  })
+
+  it('refuses the wire-injection shapes forge-core tests', () => {
+    expect(isLegalRefName('refs/heads/main')).toBe(true)
+    expect(isLegalRefName('refs/tags/v1.0')).toBe(true)
+    for (const bad of ['refs/heads/x\n0000 refs/heads/main', 'refs/heads/x\t', 'refs/heads/ x', 'refs/heads/x\0y', '-oops', '', 'heads/main', 'refs/heads/a@{1}']) {
+      expect(isLegalRefName(bad), JSON.stringify(bad)).toBe(false)
+    }
+  })
+
+  it("refuse a default branch of '@' alone or leading a path ('@/x', '@.x'), as $defs.branch does", () => {
+    for (const bad of ['@', '@/x', '@.x', '@@', '-x']) expect(isRc1BranchName(bad), bad).toBe(false)
+    for (const ok of ['@a', 'a@', 'a/@', 'x/@/y', 'main']) expect(isRc1BranchName(ok), ok).toBe(true)
+  })
+
+  it('agree with the JSON patterns over a generated corpus (every string of up to 4 of 12 characters)', () => {
+    const alphabet = ['a', 'b', '@', '.', '/', '-', '{', '~', ' ', 'é', '\n', 'k']
+    const judge = (pattern: string, min: number, max: number) => {
+      const re = new RegExp(pattern, 'u')
+      return (s: string): boolean => {
+        const bytes = new TextEncoder().encode(s).length
+        return [...s].length >= min && bytes <= max && re.test(s)
+      }
+    }
+    const branch = judge(RC1_BRANCH_PATTERN, 1, 255)
+    const tag = judge(RC1_TAG_PATTERN, 1, 63)
+    const ref = judge(RC1_REF_NAME_PATTERN, 6, 255)
+    let words = ['']
+    let checked = 0
+    for (let len = 1; len <= 4; len++) {
+      words = words.flatMap((w) => alphabet.map((c) => w + c))
+      for (const w of words) {
+        expect(isRc1BranchName(w), JSON.stringify(w)).toBe(branch(w))
+        expect(isRc1TagName(w), JSON.stringify(w)).toBe(tag(w))
+        const full = `refs/${w}`
+        expect(isRc1RefName(full), JSON.stringify(full)).toBe(ref(full) && !full.endsWith('.lock'))
+        checked += 1
+      }
+    }
+    expect(checked).toBe(12 + 144 + 1728 + 20736)
   })
 
   it('count characters and UTF-8 bytes', () => {
