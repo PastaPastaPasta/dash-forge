@@ -55,7 +55,8 @@ test.describe('shell resilience (L-10, L-56)', () => {
     // plainly: never a blank "Application error" or raw gRPC text.
     const offline = page.getByTestId('read-unreachable').or(page.getByTestId('platform-unreachable')).or(page.getByTestId('app-offline')).first()
     await expect(offline).toBeVisible({ timeout: 60_000 })
-    await expect(page.locator('body')).not.toContainText(/grpc error|That read did not land|Application error/i)
+    // The raw error is only behind the collapsed Details: nothing visible reads as gRPC internals.
+    await expect(page.getByText(/grpc error|That read did not land|Application error/i).filter({ visible: true })).toHaveCount(0)
     await context.setOffline(false)
     await expect(page.getByTestId('read-unreachable').or(page.getByTestId('app-offline'))).toHaveCount(0, { timeout: 90_000 })
     await expect(page.getByRole('heading', { name: /pull requests/i }).or(page.getByText(/No pull requests|open/i)).first()).toBeVisible({ timeout: 60_000 })
@@ -74,9 +75,14 @@ test.describe('shell resilience (L-10, L-56)', () => {
     await context.setOffline(true)
     await page.getByRole('navigation', { name: 'Repository' }).getByRole('link', { name: /^Issues/ }).click()
     await page.waitForTimeout(10_000)
-    await expect(page.locator('body')).not.toContainText(/grpc error|That read did not land|Application error/i)
+    // Never the browser's own "no internet" page: the app is still there, saying it is offline.
+    await expect(page.getByRole('heading', { level: 1 }).or(page.getByTestId('read-unreachable')).first()).toBeVisible()
+    // The raw error is only behind the collapsed Details: nothing visible reads as gRPC internals.
+    await expect(page.getByText(/grpc error|That read did not land|Application error/i).filter({ visible: true })).toHaveCount(0)
     await context.setOffline(false)
-    await expect(page.getByRole('list', { name: 'Issues', exact: true })).toBeVisible({ timeout: 90_000 })
+    // The list this tab already read is shown from the session cache, or read again once back.
+    await expect(page.getByText('README should explain the event split').first()).toBeVisible({ timeout: 90_000 })
+    await expect(page.getByTestId('read-unreachable')).toHaveCount(0)
   })
 })
 
