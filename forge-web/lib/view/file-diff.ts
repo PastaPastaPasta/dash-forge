@@ -9,7 +9,7 @@
 import { decodeTextBlob } from './git-objects'
 import { isGitlink, type DiffSides, type FileChange } from './commit-log'
 import { knownMinSize, type ObjectReader } from './tree-nav'
-import { compactDiffLines, diffStat, diffTextLines, type CompactDiffLine } from './text-diff'
+import { compactDiffLines, diffStat, diffTextLines, type CompactDiffLine, type TextDiffLine } from './text-diff'
 import { formatBytes } from './format'
 
 /** Blobs above this are not diffed inline. */
@@ -22,7 +22,10 @@ export type FilePatch =
   | {
       readonly kind: 'text'
       readonly change: FileChange
+      /** The diff with unchanged runs folded into gaps (3 lines of context, as git shows). */
       readonly lines: readonly CompactDiffLine[]
+      /** Every line of the diff: what an expanded gap shows (L-69). */
+      readonly full: readonly TextDiffLine[]
       readonly added: number
       readonly deleted: number
     }
@@ -107,7 +110,7 @@ export async function loadFilePatch(
     if (lines === null) {
       return placeholder(change, 'too-complex', 'This change is too large to diff in the browser.')
     }
-    return { kind: 'text', change, lines: compactDiffLines(lines), ...diffStat(lines) }
+    return { kind: 'text', change, lines: compactDiffLines(lines), full: lines, ...diffStat(lines) }
   } catch (e) {
     if (e instanceof Binary) return placeholder(change, 'binary', 'Binary file not shown.')
     if (e instanceof TooLarge && e.indexed) {
@@ -133,4 +136,38 @@ export async function loadFilePatch(
 /** Human form of a tree-entry mode for a mode-change label (`100755`). */
 export function modeString(mode: number): string {
   return mode.toString(8).padStart(6, '0')
+}
+
+/** A change set's line totals (L-25), and how many files they do not cover yet. */
+export interface DiffTotals {
+  readonly added: number
+  readonly deleted: number
+  /** Files whose patch is not loaded yet. */
+  readonly pending: number
+  /** Files whose lines cannot be counted here (too large, too complex, unreadable). */
+  readonly uncounted: number
+}
+
+/**
+ * Totals over `changes` as `git diff --shortstat` counts them: text lines; a submodule's commit
+ * line on each side it exists; nothing for a binary file, a mode change or a rename without edits.
+ * `patchOf` gives a change's loaded patch, if any.
+ */
+export function diffTotals(changes: readonly FileChange[], patchOf: (change: FileChange) => FilePatch | undefined): DiffTotals {
+  let added = 0
+  let deleted = 0
+  let pending = 0
+  let uncounted = 0
+  for (const change of changes) {
+    const p = patchOf(change)
+    if (p === undefined) pending += 1
+    else if (p.kind === 'text') {
+      added += p.added
+      deleted += p.deleted
+    } else if (p.reason === 'submodule') {
+      added += change.headOid !== null ? 1 : 0
+      deleted += change.baseOid !== null ? 1 : 0
+    } else if (p.reason === 'large' || p.reason === 'too-complex' || p.reason === 'unreadable') uncounted += 1
+  }
+  return { added, deleted, pending, uncounted }
 }

@@ -142,6 +142,16 @@ export function RefListContent({
                     diverged
                   </span>
                 ) : null}
+                {tip && !isDefault ? (
+                  // What this ref has that the default branch does not (L-30).
+                  <Link
+                    href={repoHref('/repo/compare', addr, { base: home.defaultBranch, head: shortName })}
+                    className="hit-area shrink-0 text-[12px] text-anvil-500 hover:text-forge-800 dark:text-anvil-400 dark:hover:text-forge-400"
+                    aria-label={`Compare ${shortName} with ${home.defaultBranch}`}
+                  >
+                    Compare
+                  </Link>
+                ) : null}
                 {tip ? tipChip(tip) : null}
               </div>
             )

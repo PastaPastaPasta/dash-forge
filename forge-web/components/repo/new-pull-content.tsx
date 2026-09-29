@@ -11,12 +11,14 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { GitBranch } from 'lucide-react'
 
 import { createPatch, findForks, readRefs, repoKey, type ResolvedRef, type RepoRef } from '@/lib/repo'
 import { branchName, commitSubject, readCommit, tipOidOf, type DiffSides, type RepoHome } from '@/lib/view'
-import { preferring } from '@/lib/view/pull-diff'
+import { preferring, type PullComparison } from '@/lib/view/pull-diff'
+import { branchRefName, headKeyOf, sortBranches } from '@/lib/view/compare'
 import { dropPrDraft, loadPrDraft, savePrDraft } from '@/lib/view/pr-draft'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
 import { useAuth } from '@/contexts/auth-context'
@@ -60,8 +62,9 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   const [titleTouched, setTitleTouched] = useState((saved?.title ?? '') !== '')
   const [body, setBody] = useState(saved?.body ?? '')
   const [preview, setPreview] = useState(false)
-  const [base, setBase] = useState(saved?.base || baseParam || `refs/heads/${home.defaultBranch}`)
-  const [headKey, setHeadKey] = useState(saved?.head || headParam)
+  // `?base=master&head=develop` as GitHub writes them, or full ref names and `repo:branch` keys (L-30).
+  const [base, setBase] = useState(saved?.base || branchRefName(baseParam) || `refs/heads/${home.defaultBranch}`)
+  const [headKey, setHeadKey] = useState(saved?.head || headKeyOf(headParam, repo.repoId))
   const [pending, setPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
@@ -76,7 +79,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     [repo, title, titleTouched, body, headKey, base],
   )
 
-  const branches = useMemo(() => home.branches.filter((b) => tipOidOf(b) !== null), [home.branches])
+  const branches = useMemo(() => sortBranches(home.branches.filter((b) => tipOidOf(b) !== null), home.defaultBranch), [home.branches, home.defaultBranch])
   const forks = useAsync(
     async () => {
       const mine = await findForks(sdk!, repo.forge, repo.repoId, identity!)
@@ -97,8 +100,9 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
     return [...own, ...fromForks].filter((o): o is HeadOption => o !== null)
   }, [branches, forks.data, repo])
 
-  // Default head: the first branch that is not the base.
-  const head = options.find((o) => o.key === headKey) ?? options.find((o) => !(o.repo.repoId === repo.repoId && o.refName === base)) ?? null
+  // No head until one is picked (L-47): guessing one started a merge-base walk over a branch
+  // nobody asked about, and prefilled its title.
+  const head = options.find((o) => o.key === headKey) ?? null
   const baseRef = branches.find((b) => b.refName === base)
   const baseTip = tipOidOf(baseRef) ?? ''
   // The base must be a branch of this repo now (D-501): a `?base=` link or a kept draft can
@@ -106,7 +110,10 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
   // after the PR never counts.
   const noBase = baseRef === undefined
   const sameBranch = head !== null && head.repo.repoId === repo.repoId && head.refName === base
-  const nothing = head !== null && head.oid === baseTip
+  // The comparison below says whether the base already contains the head (nothing to merge).
+  const [comparison, setComparison] = useState<PullComparison | null>(null)
+  const onResult = useCallback((c: PullComparison | null) => setComparison(c), [])
+  const nothing = head !== null && (head.oid === baseTip || comparison?.upToDate === true)
 
   // The head commit's subject becomes the title until the author types one (L-16). It is read
   // for the head picked now, through the readers the diff below uses, and again whenever those
@@ -170,7 +177,11 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
       <div>
         <h1 className="text-xl">Open a pull request</h1>
         <p className="mt-1 text-dense text-anvil-600 dark:text-anvil-300">
-          Propose merging a branch into {repo.name}. Anyone can open one; maintainers and writers merge.
+          Propose merging a branch into {repo.name}. Anyone can open one; maintainers and writers merge.{' '}
+          <Link href={repoHref('/repo/compare', addr, { base: branchName(base), head: head === null || head.repo.repoId !== repo.repoId ? '' : branchName(head.refName) })} className="text-forge-700 underline underline-offset-2 dark:text-forge-400">
+            Compare tags or commits
+          </Link>{' '}
+          without opening one.
         </p>
       </div>
 
@@ -200,7 +211,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
             onChange={(e) => setHeadKey(e.target.value)}
             className="h-9 min-w-0 max-w-full rounded-md border border-anvil-300 bg-white px-2 font-mono text-dense coarse:h-11 coarse:text-base sm:min-w-[14rem] text-anvil-900 dark:border-anvil-700 dark:bg-anvil-950 dark:text-anvil-100"
           >
-            {options.length === 0 ? <option value="">No branches yet</option> : null}
+            <option value="">{options.length === 0 ? 'No branches yet' : 'Pick a branch…'}</option>
             <optgroup label={`${repo.name} (this repo)`}>
               {options
                 .filter((o) => o.repo.repoId === repo.repoId)
@@ -242,7 +253,11 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
         </p>
       ) : null}
       {sameBranch ? <p className="text-dense text-caution-700 dark:text-caution-400">Pick a branch other than the base to compare.</p> : null}
-      {nothing && !sameBranch ? <p className="text-dense text-caution-700 dark:text-caution-400">{short(base)} already points at this commit; there is nothing to merge.</p> : null}
+      {nothing && !sameBranch ? (
+        <p className="text-dense text-caution-700 dark:text-caution-400" data-testid="nothing-to-merge">
+          {short(base)} {head?.oid === baseTip ? 'already points at this commit' : `already contains everything on ${head?.label ?? 'this branch'}`}; there is nothing to merge.
+        </p>
+      ) : null}
 
       <div className="space-y-3 rounded-lg border border-anvil-200 p-4 dark:border-anvil-800">
         <Field label="Title" htmlFor="pr-title">
@@ -317,6 +332,7 @@ export function NewPullContent({ home, addr }: { home: RepoHome; addr: RepoAddre
           spec={{ baseTipOid: baseTip, baseOidAtOpen: baseTip, headOid: head.oid, merged: false, imported: false, importedUrl: '', sourceBaseOid: '' }}
           noHead="Pick a branch to compare."
           onSides={onSides}
+          onResult={onResult}
         />
       ) : null}
     </div>

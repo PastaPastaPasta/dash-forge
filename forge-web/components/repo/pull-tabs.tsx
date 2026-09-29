@@ -18,6 +18,7 @@ import { CheckCircle2, CircleDashed, GitCommit, ListChecks, MinusCircle, XCircle
 import { checkOutcome, checksPhrase, fetchVerifiedLog, runDuration, safeDetailsUrl, safeLogUrl, untrustedWords, type CheckRun, type ChecksSummary, type VerifiedLog } from '@/lib/repo/checks'
 import type { PrCommits } from '@/lib/view/pr-commits'
 import { plural, timeAgo } from '@/lib/view'
+import { Time } from '@/components/repo/byline'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { errorMessage } from '@/lib/utils'
 import { Author } from '@/components/author'
@@ -32,6 +33,7 @@ export function CommitsTab({
   sourceAddr,
   unavailable,
   onRetry,
+  allHint = '`dg pr commits` lists them all.',
 }: {
   commits: PrCommits | null
   error: string | null
@@ -42,6 +44,8 @@ export function CommitsTab({
   /** Where the head's commits browse (the fork), when not this repo. */
   sourceAddr: RepoAddress | null
   onRetry: () => void
+  /** How to see every commit when the list is cut. */
+  allHint?: string
 }): JSX.Element {
   if (error !== null) return <ErrorState message={error} onRetry={onRetry} />
   if (commits === null && unavailable !== null) return <EmptyState icon={GitCommit} title="Commits unavailable" body={unavailable} />
@@ -60,7 +64,9 @@ export function CommitsTab({
               </Link>
               <div className="mt-0.5 flex items-center gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
                 <span>{c.commit.author.name || 'unknown'}</span>
-                <span>· {timeAgo(c.commit.committer.when)}</span>
+                <span>
+                  · <Time ms={c.commit.author.when} prefix="authored " />
+                </span>
               </div>
             </div>
             <Oid value={c.oid} chars={7} />
@@ -69,7 +75,7 @@ export function CommitsTab({
       </div>
       {commits.truncated ? (
         <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-          Showing the newest {commits.commits.length} of {plural(commits.total ?? 'many', 'commit')}. `dg pr commits` lists them all.
+          Showing the newest {commits.commits.length} of {plural(commits.total ?? 'many', 'commit')}. {allHint}
         </p>
       ) : null}
     </div>

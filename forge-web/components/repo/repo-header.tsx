@@ -54,7 +54,7 @@ function ForkedFrom({ forge, parentId }: { forge: ForgeIds; parentId: string }):
  * Settings. Commits live under Code (the ref bar's `n commits`). Settings is a maintainer's
  * tab; a writer sees the same page as a read-only Members list.
  */
-export const CODE_ROUTES = ['/repo', '/repo/tree', '/repo/blob', '/repo/blame', '/repo/branches', '/repo/tags', '/repo/commits', '/repo/commit']
+export const CODE_ROUTES = ['/repo', '/repo/tree', '/repo/blob', '/repo/blame', '/repo/branches', '/repo/tags', '/repo/commits', '/repo/commit', '/repo/compare']
 
 /** The tab a repo route belongs to (`null`: none, e.g. Stargazers, as on GitHub). */
 export function activeRepoTab(pathname: string): 'code' | 'issues' | 'pulls' | 'releases' | 'settings' | null {
@@ -68,7 +68,7 @@ export function activeRepoTab(pathname: string): 'code' | 'issues' | 'pulls' | '
 }
 
 /** Routes whose view renders its own h1 (an issue's title, a commit's subject): the repo name is not the page's heading there. */
-const VIEWS_WITH_OWN_H1 = ['/repo/issue', '/repo/pull', '/repo/pulls/new', '/repo/commit', '/repo/releases', '/repo/stargazers']
+const VIEWS_WITH_OWN_H1 = ['/repo/issue', '/repo/pull', '/repo/pulls/new', '/repo/commit', '/repo/compare', '/repo/releases', '/repo/stargazers']
 
 
 export function RepoHeader({ home, addr }: { home: RepoHome; addr: RepoAddress }): JSX.Element {

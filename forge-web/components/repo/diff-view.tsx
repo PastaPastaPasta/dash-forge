@@ -1,7 +1,7 @@
 'use client'
 
 /**
- * DiffView — a change set rendered as reviewable patches, shared by the commit and PR views.
+ * DiffView — a change set rendered as reviewable patches, shared by the commit, PR and compare views.
  *
  * A file list with per-file +/- counts, then one collapsible patch per file. Everything is
  * bounded so a huge change cannot freeze the tab: patches load {@link FILE_PAGE} files at a
@@ -9,12 +9,19 @@
  * before offering the rest, and binary, oversized, submodule and unreadable files get a
  * placeholder saying why rather than a diff. Callers key this component by the comparison so
  * a new one starts from a clean slate.
+ *
+ * The header's +/- totals cover the whole change or are not shown (L-25): up to
+ * {@link AUTO_COUNT} files are counted as soon as the view opens, a bigger change on request.
+ * A renamed file is one row, old path → new path (L-24). "⋯ N unchanged lines" expands (L-69).
+ * Hide whitespace is kept in the URL as `?w=1` (L-71), falling back to the reader's preference.
  */
 
 import Link from 'next/link'
-import { createContext, Fragment, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ChevronDown, ChevronRight, FileDiff } from 'lucide-react'
 import {
+  diffTotals,
   loadFilePatch,
   mapPooled,
   modeString,
@@ -25,7 +32,7 @@ import {
   type FilePatch,
   type TextDiffLine,
 } from '@/lib/view'
-import { splitRows } from '@/lib/view/text-diff'
+import { compactDiffLines, EXPAND_STEP, expandGap, splitRows, type DiffGap, type Revealed } from '@/lib/view/text-diff'
 import { createBatcher } from '@/lib/view/batcher'
 import { DIFF_PALETTES, type DiffPalette } from '@/lib/view/prefs'
 import { lineKey } from '@/lib/view/inline-threads'
@@ -58,6 +65,8 @@ export const InlineCommentsContext = createContext<InlineComments | null>(null)
 
 /** Files whose patches load per page. */
 const FILE_PAGE = 25
+/** A change set of at most this many files has its lines counted as it opens; a bigger one on request. */
+const AUTO_COUNT = 100
 /** Rows a file renders before a "show more lines" button. */
 const LINE_PAGE = 400
 /** Patch reads in flight at once. */
@@ -72,7 +81,42 @@ const PATCH_FLUSH_MS = 100
 function statusMeta(status: FileChange['status'], palette: DiffPalette): { label: string; klass: string } {
   if (status === 'added') return { label: 'A', klass: DIFF_PALETTES[palette].added.marker }
   if (status === 'deleted') return { label: 'D', klass: DIFF_PALETTES[palette].deleted.marker }
+  if (status === 'renamed') return { label: 'R', klass: 'text-anvil-600 dark:text-anvil-300' }
   return { label: 'M', klass: 'text-caution-700 dark:text-caution-400' }
+}
+
+/** A change's status for its letter's tooltip: `renamed (87% similar)`. */
+const statusTitle = (c: FileChange): string => (c.status === 'renamed' ? `renamed (${c.similarity ?? 100}% similar)` : c.status)
+
+/** A change's path as shown: `old → new` for a rename. */
+function ChangePath({ change }: { change: FileChange }): JSX.Element {
+  if (change.status !== 'renamed' || change.oldPath === undefined) return <>{change.path}</>
+  return (
+    <>
+      <span className="text-anvil-500 dark:text-anvil-400">{change.oldPath}</span> → {change.path}
+    </>
+  )
+}
+
+/**
+ * Hide whitespace: `?w=1` / `?w=0` when the URL says, else the reader's preference. Setting it
+ * writes both, so a copied link shows what its sender saw (L-71).
+ */
+function useIgnoreWhitespace(): [boolean, (on: boolean) => void] {
+  const [prefs, update] = usePrefs()
+  const params = useSearchParams()
+  const router = useRouter()
+  const pathname = usePathname()
+  const w = params.get('w')
+  const on = w === '1' ? true : w === '0' ? false : prefs.ignoreWhitespace
+  const set = (next: boolean): void => {
+    update({ ignoreWhitespace: next })
+    const q = new URLSearchParams(params.toString())
+    if (next) q.set('w', '1')
+    else q.delete('w')
+    router.replace(`${pathname}?${q.toString()}${window.location.hash}`, { scroll: false })
+  }
+  return [on, set]
 }
 
 const anchorId = (index: number): string => `diff-file-${index}`
@@ -82,6 +126,7 @@ export function DiffView({
   changes,
   truncated,
   fileHref,
+  renameLimit = null,
 }: {
   sides: DiffSides
   changes: readonly FileChange[]
@@ -89,15 +134,19 @@ export function DiffView({
   truncated: boolean
   /** Where a file's path links (omit for no links). Not called for deleted files. */
   fileHref?: (path: string) => string
+  /** Why renames with edits may not be shown (`TreeDiff.renameLimit`). */
+  renameLimit?: string | null
 }): JSX.Element {
   const [shown, setShown] = useState(Math.min(FILE_PAGE, changes.length))
-  const [{ ignoreWhitespace, palette }] = usePrefs()
+  const [{ palette }] = usePrefs()
+  const [ignoreWhitespace] = useIgnoreWhitespace()
+  // Every file's patch is loaded to count the totals: at once for a small change, on request for a big one.
+  const [countAll, setCountAll] = useState(changes.length <= AUTO_COUNT)
   // Patches are keyed by mode + path: toggling whitespace loads the other mode's patches
   // without discarding these (toggling back is instant).
   const keyOf = (path: string): string => `${ignoreWhitespace ? 'w' : 'x'}:${path}`
   const [loaded, setPatches] = useState<ReadonlyMap<string, FilePatch>>(() => new Map())
   const patches = { get: (path: string): FilePatch | undefined => loaded.get(keyOf(path)) }
-  const current = changes.map((c) => loaded.get(keyOf(c.path))).filter((p): p is FilePatch => p !== undefined)
   const [scrollTo, setScrollTo] = useState<number | null>(null)
   const requested = useRef(new Set<string>())
   // Patches land one by one; committing each would re-render the whole list per file. The
@@ -112,7 +161,7 @@ export function DiffView({
 
   useEffect(() => {
     const key = (path: string): string => `${ignoreWhitespace ? 'w' : 'x'}:${path}`
-    const todo = changes.slice(0, shown).filter((c) => !requested.current.has(key(c.path)))
+    const todo = (countAll ? changes : changes.slice(0, shown)).filter((c) => !requested.current.has(key(c.path)))
     for (const c of todo) requested.current.add(key(c.path))
     void mapPooled(todo, PATCH_CONCURRENCY, async (change) => {
       // loadFilePatch turns read failures into placeholders; anything else must still settle
@@ -122,7 +171,7 @@ export function DiffView({
       )
       batcher.add(key(change.path), patch)
     })
-  }, [changes, shown, sides, ignoreWhitespace, batcher])
+  }, [changes, shown, countAll, sides, ignoreWhitespace, batcher])
 
   // Jump to a file picked from the list once it has rendered (it may be past `shown`).
   useEffect(() => {
@@ -131,19 +180,7 @@ export function DiffView({
     setScrollTo(null)
   }, [scrollTo, shown])
 
-  let added = 0
-  let deleted = 0
-  let counted = 0
-  for (const p of current) {
-    if (p.kind !== 'text') continue
-    added += p.added
-    deleted += p.deleted
-    counted += 1
-  }
-  const textFiles = changes.filter((c) => {
-    const p = patches.get(c.path)
-    return p === undefined || p.kind === 'text'
-  }).length
+  const totals = diffTotals(changes, (c) => patches.get(c.path))
 
   if (changes.length === 0) {
     return (
@@ -182,10 +219,31 @@ export function DiffView({
           <span className="font-medium">
             {plural(truncated ? `${changes.length.toLocaleString('en-US')}+` : changes.length, 'file')} changed
           </span>
-          <DiffStat added={added} deleted={deleted} />
-          {counted < textFiles ? (
-            <span className="text-[12px] text-anvil-500 dark:text-anvil-400">line counts cover {counted} of {plural(textFiles, 'file')}</span>
-          ) : null}
+          {totals.pending === 0 ? (
+            <span className="flex items-center gap-2" data-testid="diff-totals">
+              <DiffStat added={totals.added} deleted={totals.deleted} />
+              {totals.uncounted > 0 ? (
+                <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{plural(totals.uncounted, 'file')} not counted</span>
+              ) : null}
+            </span>
+          ) : countAll ? (
+            <span className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="diff-totals-pending">
+              counting lines: {(changes.length - totals.pending).toLocaleString('en-US')} of {plural(changes.length, 'file')}
+            </span>
+          ) : (
+            <button
+              type="button"
+              className="rounded px-1.5 text-[12px] font-medium text-forge-700 underline underline-offset-2 hover:text-forge-800 coarse:min-h-11 dark:text-forge-400 dark:hover:text-forge-300"
+              data-testid="count-lines"
+              onClick={(e) => {
+                // Inside the summary: count, without also folding the file list.
+                e.preventDefault()
+                setCountAll(true)
+              }}
+            >
+              Count lines in all {plural(changes.length, 'file')}
+            </button>
+          )}
         </summary>
         <ul className="max-h-80 overflow-y-auto border-t border-anvil-200 dark:border-anvil-800">
           {changes.map((c, index) => {
@@ -198,10 +256,12 @@ export function DiffView({
                   onClick={() => pick(index)}
                   className="flex w-full items-center gap-3 px-3 py-1 text-left text-dense hover:bg-anvil-50 coarse:min-h-11 dark:hover:bg-anvil-850"
                 >
-                  <span className={cn('w-4 shrink-0 text-center font-mono font-semibold', meta.klass)} title={c.status}>
+                  <span className={cn('w-4 shrink-0 text-center font-mono font-semibold', meta.klass)} title={statusTitle(c)}>
                     {meta.label}
                   </span>
-                  <span className="min-w-0 flex-1 truncate font-mono">{c.path}</span>
+                  <span className="min-w-0 flex-1 truncate font-mono">
+                    <ChangePath change={c} />
+                  </span>
                   {p?.kind === 'text' ? <DiffStat added={p.added} deleted={p.deleted} /> : null}
                   {p?.kind === 'placeholder' ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{p.reason}</span> : null}
                 </button>
@@ -210,6 +270,12 @@ export function DiffView({
           })}
         </ul>
       </details>
+
+      {renameLimit !== null ? (
+        <p className="text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="rename-limit">
+          {renameLimit}
+        </p>
+      ) : null}
 
       {truncated ? (
         <p className="rounded-md border border-caution/30 bg-caution/5 px-3 py-2 text-dense text-anvil-600 dark:text-anvil-300">
@@ -226,6 +292,7 @@ export function DiffView({
           patch={patches.get(change.path)}
           href={fileHref && change.status !== 'deleted' ? fileHref(change.path) : undefined}
           onLoadAnyway={() => loadAnyway(change)}
+          ignoreWhitespace={ignoreWhitespace}
         />
       ))}
 
@@ -253,9 +320,10 @@ function DiffStat({ added, deleted }: { added: number; deleted: number }): JSX.E
   )
 }
 
-/** Layout, whitespace and palette switches; remembered in this browser. */
+/** Layout, whitespace and palette switches; remembered in this browser (whitespace also in the URL). */
 function DiffToolbar(): JSX.Element {
   const [prefs, update] = usePrefs()
+  const [ignoreWhitespace, setIgnoreWhitespace] = useIgnoreWhitespace()
   const wide = useMinWidth(1024)
   const toggle = (label: string, pressed: boolean, onClick: () => void, title?: string): JSX.Element => (
     <button
@@ -280,7 +348,7 @@ function DiffToolbar(): JSX.Element {
         </div>
       ) : null}
       <div className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
-        {toggle('Hide whitespace', prefs.ignoreWhitespace, () => update({ ignoreWhitespace: !prefs.ignoreWhitespace }), 'Compare lines ignoring whitespace (git diff -w)')}
+        {toggle('Hide whitespace', ignoreWhitespace, () => setIgnoreWhitespace(!ignoreWhitespace), 'Compare lines ignoring whitespace (git diff -w)')}
       </div>
       <div className="inline-flex rounded-md border border-anvil-200 p-0.5 dark:border-anvil-750">
         {toggle('Blue/orange', prefs.palette === 'colorblind', () => update({ palette: prefs.palette === 'colorblind' ? 'standard' : 'colorblind' }), 'Color-blind friendly diff colors')}
@@ -295,12 +363,14 @@ function FilePatchView({
   patch,
   href,
   onLoadAnyway,
+  ignoreWhitespace,
 }: {
   id: string
   change: FileChange
   patch: FilePatch | undefined
   href: string | undefined
   onLoadAnyway: () => void
+  ignoreWhitespace: boolean
 }): JSX.Element {
   // Deleted files start collapsed: their patch is the whole old file in red.
   const [open, setOpen] = useState(change.status !== 'deleted')
@@ -321,15 +391,17 @@ function FilePatchView({
         >
           {open ? <ChevronDown className="h-4 w-4" aria-hidden /> : <ChevronRight className="h-4 w-4" aria-hidden />}
         </button>
-        <span className={cn('w-4 shrink-0 text-center font-mono font-semibold', meta.klass)} title={change.status}>
+        <span className={cn('w-4 shrink-0 text-center font-mono font-semibold', meta.klass)} title={statusTitle(change)}>
           {meta.label}
         </span>
         {href ? (
           <Link href={href} className="min-w-0 flex-1 truncate font-mono hover:text-forge-800 coarse:py-3 dark:hover:text-forge-400">
-            {change.path}
+            <ChangePath change={change} />
           </Link>
         ) : (
-          <span className="min-w-0 flex-1 truncate font-mono">{change.path}</span>
+          <span className="min-w-0 flex-1 truncate font-mono">
+            <ChangePath change={change} />
+          </span>
         )}
         {modeChanged ? (
           <span className="shrink-0 font-mono text-[12px] text-anvil-500 dark:text-anvil-400">
@@ -355,8 +427,12 @@ function FilePatchView({
             </div>
           ) : patch.lines.length === 0 ? (
             <p className="px-4 py-4 text-dense text-anvil-500 dark:text-anvil-400">Empty file.</p>
+          ) : ignoreWhitespace && patch.added + patch.deleted === 0 && change.status !== 'added' && change.status !== 'deleted' ? (
+            <p className="px-4 py-4 text-dense text-anvil-500 dark:text-anvil-400" data-testid="whitespace-only">
+              Only whitespace changed in this file. Turn off Hide whitespace to see it.
+            </p>
           ) : (
-            <PatchLines path={change.path} lines={patch.lines} />
+            <PatchLines path={change.path} lines={patch.lines} full={patch.full} />
           )}
         </div>
       ) : null}
@@ -431,8 +507,46 @@ function ThreadRow({ path, keys, colSpan }: { path: string; keys: readonly (read
   )
 }
 
-function PatchLines({ path, lines }: { path: string; lines: readonly CompactDiffLine[] }): JSX.Element {
+/** The controls of a "⋯ N unchanged lines" row (L-69): 20 more from either side, or all of it. */
+function GapRow({ gap, colSpan, total, onExpand }: { gap: DiffGap; colSpan: number; total: number; onExpand: (range: readonly [number, number]) => void }): JSX.Element {
+  const leading = gap.from === 0
+  const trailing = gap.from + gap.hidden === total
+  const btn = (how: 'up' | 'down' | 'all', text: string, label: string): JSX.Element => (
+    <button
+      type="button"
+      onClick={() => onExpand(expandGap(gap, how))}
+      aria-label={label}
+      className="rounded px-1.5 font-sans font-medium text-forge-700 hover:bg-forge-500/10 coarse:min-h-11 dark:text-forge-400"
+    >
+      {text}
+    </button>
+  )
+  const small = gap.hidden <= EXPAND_STEP
+  return (
+    <tr className="bg-dash/5 text-anvil-600 dark:text-anvil-400" data-testid="diff-gap">
+      <td colSpan={colSpan} className="px-3 py-0.5">
+        <span className="sticky left-3 inline-flex flex-wrap items-center gap-1">
+          {small ? (
+            btn('all', `⋯ Show ${plural(gap.hidden, 'unchanged line')}`, `Show ${plural(gap.hidden, 'unchanged line')}`)
+          ) : (
+            <>
+              <span>⋯ {plural(gap.hidden, 'unchanged line')}</span>
+              {!leading ? btn('down', `↓ ${EXPAND_STEP}`, `Show ${EXPAND_STEP} more unchanged lines after the change above`) : null}
+              {!trailing ? btn('up', `↑ ${EXPAND_STEP}`, `Show ${EXPAND_STEP} more unchanged lines before the change below`) : null}
+              {btn('all', 'Show all', `Show all ${plural(gap.hidden, 'unchanged line')}`)}
+            </>
+          )}
+        </span>
+      </td>
+    </tr>
+  )
+}
+
+function PatchLines({ path, lines: folded, full }: { path: string; lines: readonly CompactDiffLine[]; full: readonly TextDiffLine[] }): JSX.Element {
   const [limit, setLimit] = useState(LINE_PAGE)
+  const [revealed, setRevealed] = useState<Revealed>([])
+  const lines = useMemo(() => (revealed.length === 0 ? folded : compactDiffLines(full, 3, revealed)), [folded, full, revealed])
+  const expand = (range: readonly [number, number]): void => setRevealed((r) => [...r, range])
   const inline = useContext(InlineCommentsContext)
   // Report the rows on screen (not past the "show more" cut), and withdraw them on unmount
   // (a collapsed file), so threads under lines nobody can see are listed elsewhere.
@@ -452,13 +566,7 @@ function PatchLines({ path, lines }: { path: string; lines: readonly CompactDiff
   const split = wide && prefs.diffLayout === 'split'
   const palette = prefs.palette
   const visible = lines.slice(0, limit)
-  const gap = (hidden: number, key: string, colSpan: number): JSX.Element => (
-    <tr key={key} className="bg-dash/5 text-anvil-600 dark:text-anvil-400">
-      <td colSpan={colSpan} className="px-3 py-0.5">
-        ⋯ {plural(hidden, 'unchanged line')}
-      </td>
-    </tr>
-  )
+  const gap = (g: DiffGap, colSpan: number): JSX.Element => <GapRow key={`gap-${g.from}`} gap={g} colSpan={colSpan} total={full.length} onExpand={expand} />
   return (
     <>
       <ScrollRegion label={`Changes to ${path}`} className="overflow-x-auto [container-type:inline-size]">
@@ -467,10 +575,20 @@ function PatchLines({ path, lines }: { path: string; lines: readonly CompactDiff
           aria-label={`Changes to ${path}${split ? ' (side by side)' : ''}`}
           data-layout={split ? 'split' : 'unified'}
         >
+          {split ? (
+            // A fixed layout takes its widths from the first row; a gap row there (one cell over
+            // all four columns) would split them equally (L-29). The gutters are fixed here.
+            <colgroup>
+              <col className="w-12" />
+              <col />
+              <col className="w-12" />
+              <col />
+            </colgroup>
+          ) : null}
           <tbody>
             {split
               ? splitRows(visible).map((row, index) => {
-                  if (row.kind === 'gap') return gap(row.hidden, `gap-${index}`, 4)
+                  if (row.kind === 'gap') return gap(row, 4)
                   const { left, right } = row
                   const same = left === right
                   return (
@@ -497,8 +615,8 @@ function PatchLines({ path, lines }: { path: string; lines: readonly CompactDiff
                     </Fragment>
                   )
                 })
-              : visible.map((line, index) => {
-                  if (line.kind === 'gap') return gap(line.hidden, `gap-${index}`, 3)
+              : visible.map((line) => {
+                  if (line.kind === 'gap') return gap(line, 3)
                   return (
                     <Fragment key={`${line.oldLine ?? 'n'}-${line.newLine ?? 'n'}`}>
                       <tr className={lineTint(line.kind, palette)}>

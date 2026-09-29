@@ -16,7 +16,9 @@ import type { BrowseReader } from '@/lib/browse'
 import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
 import { readCheckRuns, summarizeChecks } from '@/lib/repo/checks'
 import type { DiffSides, RepoHome } from '@/lib/view'
-import { commitSubject, formatDate, loadCommitChanges, timeAgo } from '@/lib/view'
+import { commitSubject, loadCommitChanges, type CommitObject } from '@/lib/view'
+import { commitPeople } from '@/lib/view/commit-people'
+import { Time } from '@/components/repo/byline'
 import { useAsync } from '@/hooks/use-async'
 import { useSdk } from '@/hooks/use-sdk'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
@@ -63,8 +65,7 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
           </pre>
         ) : null}
         <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] coarse:gap-y-3 text-anvil-500 dark:text-anvil-400">
-          <span className="font-medium text-anvil-700 dark:text-anvil-200">{commit.author.name || 'unknown'}</span>
-          <span>committed {timeAgo(commit.committer.when)} · {formatDate(commit.committer.when)}</span>
+          <CommitByline commit={commit} />
           <span className="flex items-center gap-1">commit <Oid value={full} chars={9} /></span>
           {tagNames.length > 0 ? (
             <span className="flex items-center gap-1" data-testid="commit-via-tag">
@@ -94,6 +95,7 @@ function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseR
           sides={sides}
           changes={changes}
           truncated={truncated}
+          renameLimit={data.renameLimit ?? null}
           fileHref={(path) => repoHref('/repo/blob', addr, { path, ref: full })}
         />
       )}
@@ -132,5 +134,33 @@ function CommitChecks({ repo, oid }: { repo: RepoRef; oid: string }): JSX.Elemen
         subject="commit"
       />
     </section>
+  )
+}
+
+/**
+ * Who made the commit and when (L-26, L-27): the author with the author date, then the committer
+ * with the commit date when that is someone else or another time, and the co-authors its trailers
+ * name. Each date is a `<time>` with the exact time on hover.
+ */
+function CommitByline({ commit }: { commit: CommitObject }): JSX.Element {
+  const { author, committer, committerIsAuthor, coAuthors } = commitPeople(commit)
+  const name = (n: string): JSX.Element => <span className="font-medium text-anvil-700 dark:text-anvil-200">{n || 'unknown'}</span>
+  return (
+    <span className="flex flex-wrap items-center gap-x-1.5" data-testid="commit-byline">
+      {name(author.name)}
+      {coAuthors.length > 0 ? (
+        <span title={coAuthors.map((p) => `${p.name} <${p.email}>`).join('\n')} data-testid="commit-coauthors">
+          and {coAuthors.map((p) => p.name).join(', ')}
+        </span>
+      ) : null}
+      <span data-testid="commit-authored">
+        {committer === null ? 'committed' : 'authored'} <Time ms={author.when} withDate />
+      </span>
+      {committer !== null ? (
+        <span data-testid="commit-committed">
+          · {committerIsAuthor ? null : <>{name(committer.name)} </>}committed <Time ms={committer.when} withDate />
+        </span>
+      ) : null}
+    </span>
   )
 }

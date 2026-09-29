@@ -24,6 +24,8 @@ export interface TextDiffLine {
 export interface DiffGap {
   readonly kind: 'gap'
   readonly hidden: number
+  /** The index of its first line in the full diff (what "show more" reveals from). */
+  readonly from: number
 }
 
 export type CompactDiffLine = TextDiffLine | DiffGap
@@ -202,10 +204,17 @@ export function diffStat(lines: readonly TextDiffLine[]): { added: number; delet
   return { added, deleted }
 }
 
-/** Keep `context` unchanged lines around edits and replace each omitted run with one gap row. */
+/** Lines of the full diff shown in addition to the context around edits: `[from, to)` ranges. */
+export type Revealed = readonly (readonly [number, number])[]
+
+/**
+ * Keep `context` unchanged lines around edits (and the `revealed` ranges a reader expanded, L-69)
+ * and replace each omitted run with one gap row saying where it starts.
+ */
 export function compactDiffLines(
   lines: readonly TextDiffLine[],
   context = 3,
+  revealed: Revealed = [],
 ): CompactDiffLine[] {
   const visible = new Uint8Array(lines.length)
   for (let i = 0; i < lines.length; i++) {
@@ -214,25 +223,39 @@ export function compactDiffLines(
     const to = Math.min(lines.length - 1, i + context)
     visible.fill(1, from, to + 1)
   }
+  for (const [from, to] of revealed) visible.fill(1, Math.max(0, from), Math.min(lines.length, to))
 
   const out: CompactDiffLine[] = []
   let hidden = 0
   for (let i = 0; i < lines.length; i++) {
     if (visible[i] === 1) {
-      if (hidden > 0) out.push({ kind: 'gap', hidden })
+      if (hidden > 0) out.push({ kind: 'gap', hidden, from: i - hidden })
       hidden = 0
       out.push(lines[i] as TextDiffLine)
     } else {
       hidden += 1
     }
   }
-  if (hidden > 0) out.push({ kind: 'gap', hidden })
+  if (hidden > 0) out.push({ kind: 'gap', hidden, from: lines.length - hidden })
   return out
+}
+
+/** Lines a gap's "show more" reveals at a time (GitHub's step). */
+export const EXPAND_STEP = 20
+
+/**
+ * The range a gap's expander reveals: `all` of it, or {@link EXPAND_STEP} lines from its top
+ * (`down`, continuing the hunk above) or from its bottom (`up`, leading into the hunk below).
+ */
+export function expandGap(gap: DiffGap, how: 'up' | 'down' | 'all'): readonly [number, number] {
+  const end = gap.from + gap.hidden
+  if (how === 'all' || gap.hidden <= EXPAND_STEP) return [gap.from, end]
+  return how === 'down' ? [gap.from, gap.from + EXPAND_STEP] : [end - EXPAND_STEP, end]
 }
 
 /** One row of a side-by-side diff: the old line on the left, the new one on the right. */
 export type SplitRow =
-  | { readonly kind: 'gap'; readonly hidden: number }
+  | DiffGap
   | { readonly kind: 'pair'; readonly left: TextDiffLine | null; readonly right: TextDiffLine | null }
 
 /**

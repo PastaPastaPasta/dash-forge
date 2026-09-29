@@ -40,8 +40,10 @@ export {
 } from './text-diff'
 export {
   INLINE_BLOB_MAX_BYTES,
+  diffTotals,
   loadFilePatch,
   modeString,
+  type DiffTotals,
   type FilePatch,
   type PatchPlaceholder,
 } from './file-diff'
