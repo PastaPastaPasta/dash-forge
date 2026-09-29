@@ -390,6 +390,7 @@ fn history_json(
         Some(p) => json!({
             "status": "published",
             "manifestId": p.manifest_id,
+            "versionsManifestId": p.versions_manifest_id,
             "paths": p.rows,
             "delta": p.delta,
             "commits": p.commit_count,
@@ -558,7 +559,14 @@ fn print_reindex(
             h.commit_count,
             if h.delta { " (delta)" } else { "" }
         );
-        println!("  history manifest: {}", h.manifest_id);
+        for (what, id) in [
+            ("history manifest: ", &h.manifest_id),
+            ("version lists:    ", &h.versions_manifest_id),
+        ] {
+            if let Some(id) = id {
+                println!("  {what}{id}");
+            }
+        }
     }
     for (h, why) in &report.skipped {
         println!("  not indexed:     {h}: {why}");

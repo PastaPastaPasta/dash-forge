@@ -249,8 +249,12 @@ export const PACK_KIND = {
   GIT_PACK: 0,
   OBJECT_LOCATOR: 1,
   FLAT_INDEX: 2,
-  /** The history index: each path's last change and the commit count of a tip. */
+  /** The history column index: each path's last change and the commit counts of a tip (format 1). */
   HISTORY_INDEX: 3,
+  /** Release assets (D-4). */
+  RELEASE_ASSETS: 4,
+  /** The history index's per-path version lists, the whole index of the same tip (format 2). */
+  HISTORY_VERSIONS: 5,
 } as const
 export type PackKind = (typeof PACK_KIND)[keyof typeof PACK_KIND]
 

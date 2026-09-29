@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 import { gzip } from 'pako'
 import { describe, expect, it } from 'vitest'
 
-import { MAX_INFLATED, overlayHistory, parseHistoryIndex, type HistoryIndex, type VersionList } from './history-index'
+import { MAX_INFLATED, overlayHistory, parseHistoryIndex, parseHistoryIndexOfKind, type HistoryIndex, type VersionList } from './history-index'
 
 /** A body forge-core wrote to `forge-contracts/fixtures/<name>` (before gzip). */
 const fixture = (name: string): Uint8Array =>
@@ -60,10 +60,28 @@ describe('parseHistoryIndex', () => {
     expect(MAX_INFLATED).toBe(64 * 1024 * 1024)
   })
 
-  it('skips a later version\'s extension sections', () => {
+  it('skips an extension section it does not know', () => {
     const v2 = Uint8Array.from([...body, 7, 3, 0xaa, 0xbb, 0xcc])
     v2[4] = 2
-    expect(parseHistoryIndex(gzip(v2))).toEqual(parseHistoryIndex(gzip(body)))
+    expect(parseHistoryIndex(gzip(v2))).toEqual({ ...parseHistoryIndex(gzip(body)), format: 2 })
+  })
+
+  it('takes the format from the header only, and refuses one it does not know', () => {
+    expect(parseHistoryIndex(gzip(body)).format).toBe(1)
+    for (const v of [0, 3, 255]) {
+      const b = Uint8Array.from(body)
+      b[4] = v
+      expect(() => parseHistoryIndex(gzip(b))).toThrow(`history index format ${v} is not one this client reads`)
+    }
+    // A column index (kind 3) is format 1 and version lists (kind 5) format 2 (forge-core
+    // `HistoryIndex::parse_kind`); each is refused as the other kind.
+    const v2 = Uint8Array.from(body)
+    v2[4] = 2
+    expect(parseHistoryIndexOfKind(gzip(body), 3).format).toBe(1)
+    expect(parseHistoryIndexOfKind(gzip(v2), 5).format).toBe(2)
+    expect(() => parseHistoryIndexOfKind(gzip(v2), 3)).toThrow(/kind-3 artifact must be format 1/)
+    expect(() => parseHistoryIndexOfKind(gzip(body), 5)).toThrow(/kind-5 artifact must be format 2/)
+    expect(() => parseHistoryIndexOfKind(gzip(body), 1)).toThrow(/not a history index kind/)
   })
 
   it('overlays a delta on its full index', () => {
@@ -86,6 +104,21 @@ function lists(versions: ReadonlyMap<string, VersionList> | null, only?: Readonl
   }
   return out
 }
+
+describe('the column index (kind 3) forge-core derives from a v2 index', () => {
+  it('has the same paths and last changes in format 1, and no version lists', () => {
+    const whole = parseHistoryIndexOfKind(gzip(fixture('history-index-v2.hex')), 5)
+    const column = parseHistoryIndexOfKind(gzip(fixture('history-index-v2-column.hex')), 3)
+    expect(column.format).toBe(1)
+    expect(column.versions).toBeNull()
+    expect([...column.paths.keys()]).toEqual([...whole.paths.keys()])
+    for (const [path, c] of column.paths) {
+      const w = whole.paths.get(path)
+      expect({ oid: c.oid, subject: c.subject, when: c.when }).toEqual({ oid: w?.oid, subject: w?.subject, when: w?.when })
+    }
+    expect([column.tip, column.commitCount, column.firstParentCount]).toEqual([whole.tip, whole.commitCount, whole.firstParentCount])
+  })
+})
 
 describe('history index v2: version lists', () => {
   it('reads the versions section forge-core wrote: authors, modes, prefixes, whole and cut lists', () => {

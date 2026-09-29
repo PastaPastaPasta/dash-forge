@@ -2479,8 +2479,9 @@ impl<'a> RepoService<'a> {
         Ok(plan_history_index(&manifests, &roles, tip))
     }
 
-    /// Store a history index [`prepare_history_index`] computed, through `target`, and record
-    /// its `packManifest` (kind 3).
+    /// Store a history index [`prepare_history_index`] computed, through `target`: its version
+    /// lists (kind 5) first, then its column index (kind 3), each with its `packManifest`. The
+    /// column goes last so a reader that finds it can already find the lists of the same tip.
     pub async fn store_history_index(
         &self,
         repo: &RepoRef,
@@ -2488,11 +2489,22 @@ impl<'a> RepoService<'a> {
         target: RepackTarget<'_>,
     ) -> Result<HistoryPublished> {
         let PreparedHistory {
-            index, artifact, ..
+            index,
+            artifact,
+            column,
+            ..
         } = prepared;
-        let manifest_id = self.store_artifact(repo, artifact, target).await?;
+        let versions_manifest_id = match artifact {
+            Some(a) => Some(self.store_artifact(repo, a, target).await?),
+            None => None,
+        };
+        let manifest_id = match column {
+            Some(c) => Some(self.store_artifact(repo, c, target).await?),
+            None => None,
+        };
         Ok(HistoryPublished {
             manifest_id,
+            versions_manifest_id,
             rows: index.paths.len() as u64,
             delta: index.base.is_some(),
             commit_count: index.commit_count,
@@ -2529,27 +2541,41 @@ pub struct HistoryEntry {
 }
 
 /// What the next history index publish should do.
+///
+/// A history index is two artifacts of the same tip: its **version lists** (kind 5, the whole
+/// index, format 2), which Blame and a path's History read, and its **column index** (kind 3,
+/// the last-change column and the counts, format 1), which the file list and the commit counts
+/// read. Each kind is its own series of full indexes and deltas (a delta's header names the full
+/// index of its own kind). The version lists decide full or delta; the column follows them.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HistoryPlan {
-    /// An index already covers the tip: nothing to publish.
+    /// Both kinds already cover the tip: nothing to publish.
     pub covered: bool,
-    /// The live FULL indexes by current members, newest first: the bases a delta may extend
-    /// (the first on the new tip's first-parent chain).
+    /// The version lists already cover the tip (only its column index is missing).
+    pub lists_covered: bool,
+    /// The live FULL version-lists indexes by current members, newest first: the bases a delta
+    /// may extend (the first on the new tip's first-parent chain).
     pub bases: Vec<HistoryEntry>,
-    /// Every live history index by a current member: what a full index supersedes, and the
-    /// deltas of a base a new delta supersedes.
+    /// Every live version-lists index by a current member: what a full index supersedes, and
+    /// the deltas of a base a new delta supersedes.
     pub live: Vec<HistoryEntry>,
-    /// The repository has no history index manifest at all yet: this one is its first, which
-    /// pays the first-of-kind fee ([`crate::cost::push_fees::HISTORY_FIRST_EXTRA`]).
+    /// The repository has no version-lists manifest yet: this one is its first, which pays the
+    /// first-of-kind fee ([`crate::cost::push_fees::HISTORY_FIRST_EXTRA`]).
     pub first: bool,
+    /// Every live column index by a current member (a column delta extends the full one of its
+    /// base tip; a full column supersedes them all).
+    pub columns: Vec<HistoryEntry>,
+    /// The repository has no column-index manifest yet (its first pays the first-of-kind fee).
+    pub columns_first: bool,
 }
 
 impl HistoryPlan {
     /// The plan for a repository with no history index yet (a first push into a new one): a
-    /// full index, its first.
+    /// full index of each kind, their first.
     pub fn fresh() -> Self {
         Self {
             first: true,
+            columns_first: true,
             ..Self::default()
         }
     }
@@ -2558,8 +2584,10 @@ impl HistoryPlan {
 /// What [`RepoService::store_history_index`] published.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryPublished {
-    /// The manifest document id.
-    pub manifest_id: String,
+    /// The column index's manifest document id (kind 3), when one was published.
+    pub manifest_id: Option<String>,
+    /// The version lists' manifest document id (kind 5), when they were published.
+    pub versions_manifest_id: Option<String>,
     /// Path rows it holds.
     pub rows: u64,
     /// A delta over a full index (else a full index).
@@ -2571,9 +2599,14 @@ pub struct HistoryPublished {
 /// A history index computed and ready to store ([`RepoService::store_history_index`]).
 pub struct PreparedHistory {
     index: crate::pack::HistoryIndex,
-    artifact: Artifact,
-    /// The repository's first history index (it pays the first-of-kind fee).
+    /// The version lists (kind 5); `None` when they already cover the tip.
+    artifact: Option<Artifact>,
+    /// The column index (kind 3); `None` when one already covers the tip.
+    column: Option<Artifact>,
+    /// The repository's first version-lists index (it pays the first-of-kind fee).
     first: bool,
+    /// The repository's first column index.
+    columns_first: bool,
     /// For a full index that replaces deltas which have cost as much as it: the delta over the
     /// same base, still readable, for a push whose cost guard declines the full index.
     fallback: Option<Box<PreparedHistory>>,
@@ -2590,21 +2623,34 @@ impl PreparedHistory {
         self.fallback.map(|b| *b)
     }
 
-    /// The plaintext artifact size (what the push prices; sealing adds a little).
+    /// The plaintext size of both artifacts (what the push prices; sealing adds a little).
     pub fn plain_len(&self) -> u64 {
-        self.artifact.plain.len() as u64
+        [&self.artifact, &self.column]
+            .into_iter()
+            .flatten()
+            .map(|a| a.plain.len() as u64)
+            .sum()
     }
 
-    /// The price of storing it (an upper bound), sealed or not, with `external_targets` URIs
-    /// and, when `platform`, its chunks.
+    /// The price of storing both artifacts (an upper bound), sealed or not, with
+    /// `external_targets` URIs and, when `platform`, their chunks.
     pub fn credits(&self, sealed: bool, external_targets: u64, platform: bool) -> u64 {
-        crate::cost::push_fees::history_index(
-            self.plain_len(),
-            sealed,
-            external_targets,
-            platform,
-            self.first,
-        )
+        [
+            (&self.artifact, self.first),
+            (&self.column, self.columns_first),
+        ]
+        .into_iter()
+        .filter_map(|(a, first)| Some((a.as_ref()?, first)))
+        .map(|(a, first)| {
+            crate::cost::push_fees::history_index(
+                a.plain.len() as u64,
+                sealed,
+                external_targets,
+                platform,
+                first,
+            )
+        })
+        .sum()
     }
 
     /// The computed index.
@@ -2614,19 +2660,26 @@ impl PreparedHistory {
 
     /// Whether it is the repository's first history index.
     pub fn is_first(&self) -> bool {
-        self.first
+        self.first || self.columns_first
     }
 }
 
-/// Plan the history index publish for `tip` from the repository's manifests: which live
-/// indexes (kind 3, by a current member, not superseded by a member's manifest) exist, whether
-/// one already covers `tip`, and the newest full index a delta could extend.
-pub fn plan_history_index(
-    manifests: &[PackManifestInfo],
-    roles: &RoleMap,
-    tip: [u8; 20],
-) -> HistoryPlan {
-    let kind = u64::from(crate::pack::KIND_HISTORY_INDEX);
+/// One kind's live history indexes: what [`plan_history_index`] reads from the manifests.
+struct Series {
+    /// Live indexes by current members, not superseded by a member's manifest, newest first,
+    /// one per `packHash`.
+    live: Vec<HistoryEntry>,
+    /// Its full indexes, each with what the deltas over its tip have cost.
+    bases: Vec<HistoryEntry>,
+    /// An index of this kind covers `tip`.
+    covered: bool,
+    /// No manifest of this kind exists yet.
+    first: bool,
+}
+
+/// The live indexes of `kind` among `manifests` (see [`Series`]).
+fn series(manifests: &[PackManifestInfo], roles: &RoleMap, kind: u8, tip: [u8; 20]) -> Series {
+    let kind = u64::from(kind);
     let member = |m: &PackManifestInfo| roles.contains_key(&m.owner_id);
     let superseded: BTreeSet<[u8; 32]> = manifests
         .iter()
@@ -2663,12 +2716,10 @@ pub fn plan_history_index(
     }
     // A delta covers its tip only while a live full index of its base tip stands behind it:
     // a reader could not overlay it otherwise (forge-web `historySource` applies the same rule).
-    // Every index on an RC1 network has version lists (its header says so; a reader refuses any
-    // other format), so the manifests alone decide.
     let full = |e: &&HistoryEntry| e.base_tip.is_none();
     let full_tips: BTreeSet<[u8; 20]> = live.iter().filter(full).map(|e| e.tip).collect();
     let covers = |e: &HistoryEntry| e.base_tip.is_none_or(|b| full_tips.contains(&b));
-    HistoryPlan {
+    Series {
         covered: live.iter().any(|e| e.tip == tip && covers(e)),
         bases: live
             .iter()
@@ -2683,11 +2734,33 @@ pub fn plan_history_index(
     }
 }
 
+/// Plan the history index publish for `tip` from the repository's manifests: the live version
+/// lists (kind 5) and column indexes (kind 3), each by a current member and not superseded by a
+/// member's manifest, whether both already cover `tip`, and the newest full version-lists index
+/// a delta could extend.
+pub fn plan_history_index(
+    manifests: &[PackManifestInfo],
+    roles: &RoleMap,
+    tip: [u8; 20],
+) -> HistoryPlan {
+    let versions = series(manifests, roles, crate::pack::KIND_HISTORY_VERSIONS, tip);
+    let columns = series(manifests, roles, crate::pack::KIND_HISTORY_INDEX, tip);
+    HistoryPlan {
+        covered: versions.covered && columns.covered,
+        lists_covered: versions.covered,
+        bases: versions.bases,
+        live: versions.live,
+        first: versions.first,
+        columns: columns.live,
+        columns_first: columns.first,
+    }
+}
+
 /// Compute the history index for `tip` in the local repository `git_dir` as `plan` says: a
 /// delta over the newest of `plan.bases` on `tip`'s first-parent chain while deltas stay the
-/// cheaper choice ([`delta_pays`]), else a full index superseding the live ones. `None` when
-/// `plan` says an index already covers `tip`. Local only: nothing is read from or written to the
-/// network.
+/// cheaper choice ([`delta_pays`]), else a full index superseding the live ones; and its column
+/// index ([`column_of`]). `None` when `plan` says both already cover `tip`. Local only: nothing
+/// is read from or written to the network.
 pub fn prepare_history_index(
     git_dir: &std::path::Path,
     tip: [u8; 20],
@@ -2698,6 +2771,10 @@ pub fn prepare_history_index(
         return Ok(None);
     }
     let tip_hex = hex::encode(tip);
+    let full_index = || -> Result<crate::pack::HistoryIndex> {
+        compute(git_dir, &tip_hex, None)?
+            .ok_or_else(|| Error::Config("history index: no full index computed".into()))
+    };
     // A delta over the newest live full index whose tip is on the new tip's first-parent chain
     // (and the local repository holds it), while deltas pay ([`delta_pays`]).
     let mut fallback = None;
@@ -2710,7 +2787,8 @@ pub fn prepare_history_index(
         let size = bytes.len() as u64;
         // A delta is cumulative: it replaces the earlier deltas of the same base.
         let earlier = plan.live.iter().filter(|e| e.base_tip == Some(base.tip));
-        let delta = prepared(delta, bytes, vec![tip, base.tip], earlier, plan.first);
+        let column = column_of(&delta, Some(base.tip), plan, tip, &full_index)?;
+        let delta = prepared(delta, bytes, vec![tip, base.tip], earlier, column, plan);
         if delta_pays(size, base) {
             return Ok(Some(delta));
         }
@@ -2722,12 +2800,64 @@ pub fn prepare_history_index(
         // The newest base on the chain is too far behind: a full index, not an older base.
         break;
     }
-    let index = compute(git_dir, &tip_hex, None)?
-        .ok_or_else(|| Error::Config("history index: no full index computed".into()))?;
+    let index = full_index()?;
     let bytes = index.to_compressed()?;
-    let mut full = prepared(index, bytes, vec![tip], plan.live.iter(), plan.first);
+    let column = column_of(&index, None, plan, tip, &full_index)?;
+    let mut full = prepared(index, bytes, vec![tip], plan.live.iter(), column, plan);
     full.fallback = fallback;
     Ok(Some(full))
+}
+
+/// The column index (kind 3) to publish with the version lists `ix` of `tip` (a delta over the
+/// full index of `base_tip`, or full): a delta over the live full column of the same base tip
+/// superseding that base's earlier column deltas, else a full column superseding every live one.
+/// `None` when a live column already covers `tip` with a full index of the same base behind it.
+fn column_of(
+    ix: &crate::pack::HistoryIndex,
+    base_tip: Option<[u8; 20]>,
+    plan: &HistoryPlan,
+    tip: [u8; 20],
+    full_index: &dyn Fn() -> Result<crate::pack::HistoryIndex>,
+) -> Result<Option<Artifact>> {
+    let full_columns: Vec<&HistoryEntry> = plan
+        .columns
+        .iter()
+        .filter(|e| e.base_tip.is_none())
+        .collect();
+    let covered = plan.columns.iter().any(|e| {
+        e.tip == tip
+            && e.base_tip
+                .is_none_or(|b| full_columns.iter().any(|f| f.tip == b))
+    });
+    if covered {
+        return Ok(None);
+    }
+    let column_base = base_tip.and_then(|b| full_columns.iter().find(|f| f.tip == b));
+    let (column, tips, replaces): (_, _, Vec<&HistoryEntry>) = match (base_tip, column_base) {
+        (Some(b), Some(base)) => {
+            let c = ix.column().with_base(base.pack_hash);
+            let earlier = plan.columns.iter().filter(|e| e.base_tip == Some(b));
+            (c, vec![tip, b], earlier.collect())
+        }
+        // Full lists, or a delta whose base tip has no live full column: a full column.
+        (None, _) => (ix.column(), vec![tip], plan.columns.iter().collect()),
+        (Some(_), None) => (
+            full_index()?.column(),
+            vec![tip],
+            plan.columns.iter().collect(),
+        ),
+    };
+    Ok(Some(Artifact {
+        kind: crate::pack::KIND_HISTORY_INDEX,
+        rows: column.paths.len() as u64,
+        plain: column.to_compressed()?,
+        supersedes: replaces
+            .into_iter()
+            .take(MAX_SUPERSEDES)
+            .map(|e| e.pack_hash)
+            .collect(),
+        tips,
+    }))
 }
 
 /// Whether a delta of `bytes` over `base` is worth publishing, rather than a full index.
@@ -2745,26 +2875,30 @@ fn delta_pays(bytes: u64, base: &HistoryEntry) -> bool {
         && base.deltas_paid.saturating_add(bytes) <= base.size_bytes
 }
 
-/// A computed index as the artifact to store, superseding `replaces` (at most
-/// [`MAX_SUPERSEDES`]).
+/// A computed index as the version-lists artifact to store (kind 5), superseding `replaces` (at
+/// most [`MAX_SUPERSEDES`]), with its column index. The version lists are left out when a live
+/// one already covers the tip (only the column was missing).
 fn prepared<'e>(
     index: crate::pack::HistoryIndex,
     plain: Vec<u8>,
     tips: Vec<[u8; 20]>,
     replaces: impl Iterator<Item = &'e HistoryEntry>,
-    first: bool,
+    column: Option<Artifact>,
+    plan: &HistoryPlan,
 ) -> PreparedHistory {
-    let artifact = Artifact {
-        kind: crate::pack::KIND_HISTORY_INDEX,
+    let artifact = (!plan.lists_covered).then(|| Artifact {
+        kind: crate::pack::KIND_HISTORY_VERSIONS,
         rows: index.paths.len() as u64,
         plain,
         supersedes: replaces.take(MAX_SUPERSEDES).map(|e| e.pack_hash).collect(),
         tips,
-    };
+    });
     PreparedHistory {
         index,
         artifact,
-        first,
+        column,
+        first: plan.first,
+        columns_first: plan.columns_first,
         fallback: None,
     }
 }
@@ -3676,6 +3810,16 @@ mod tests {
     }
 
     /// A history index manifest (kind 3) by `owner` for `tip` (and `base_tip` for a delta).
+    /// `m` as the column index (kind 3) of the same tip, with packHash `[hash; 32]`.
+    fn as_column(m: &PackManifestInfo, hash: u8) -> PackManifestInfo {
+        PackManifestInfo {
+            kind: u64::from(crate::pack::KIND_HISTORY_INDEX),
+            pack_hash: [hash; 32],
+            document_id: format!("{}-column", m.document_id),
+            ..m.clone()
+        }
+    }
+
     fn history(
         id: &str,
         at: u64,
@@ -3684,7 +3828,7 @@ mod tests {
         tip: u8,
         base_tip: Option<u8>,
     ) -> PackManifestInfo {
-        let mut m = manifest(id, at, crate::pack::KIND_HISTORY_INDEX, hash);
+        let mut m = manifest(id, at, crate::pack::KIND_HISTORY_VERSIONS, hash);
         m.owner_id = owner.into();
         m.tips = std::iter::once(tip)
             .chain(base_tip)
@@ -3788,7 +3932,12 @@ mod tests {
         assert_eq!(fallback.index().base, Some([1; 32]));
         assert!(fallback.plain_len() < full.plain_len());
         assert_eq!(
-            full.into_fallback().unwrap().artifact.tips,
+            full.into_fallback()
+                .unwrap()
+                .artifact
+                .as_ref()
+                .unwrap()
+                .tips,
             vec![tip, base_tip]
         );
     }
@@ -3802,15 +3951,19 @@ mod tests {
         let roles: RoleMap = [("w".to_string(), Role::Writer)].into();
         let delta = history("d", 20, 2, "w", 0xb0, Some(0xa0));
         let base = history("f", 10, 1, "w", 0xa0, None);
-        assert!(plan_history_index(&[delta.clone(), base.clone()], &roles, [0xb0; 20]).covered);
+        assert!(
+            plan_history_index(&[delta.clone(), base.clone()], &roles, [0xb0; 20]).lists_covered
+        );
         // The base's only copy is a stranger's: it is not live, so the delta is orphaned.
         let mut stranger_base = base.clone();
         stranger_base.owner_id = "x".into();
-        assert!(!plan_history_index(&[delta.clone(), stranger_base], &roles, [0xb0; 20]).covered);
+        assert!(
+            !plan_history_index(&[delta.clone(), stranger_base], &roles, [0xb0; 20]).lists_covered
+        );
         // A newer full index of another tip superseded the base: orphaned too.
         let mut newer = history("g", 30, 3, "w", 0xc0, None);
         newer.supersedes = vec![base.pack_hash];
-        assert!(!plan_history_index(&[newer, delta, base], &roles, [0xb0; 20]).covered);
+        assert!(!plan_history_index(&[newer, delta, base], &roles, [0xb0; 20]).lists_covered);
     }
 
     /// Review M2: the delta's base is the newest live full index on the new tip's first-parent
@@ -3878,7 +4031,7 @@ mod tests {
             Some([1; 32]),
             "extends the index on the chain"
         );
-        assert_eq!(got.artifact.tips, vec![tip, on_chain]);
+        assert_eq!(got.artifact.as_ref().unwrap().tips, vec![tip, on_chain]);
     }
 
     #[test]
@@ -3902,9 +4055,9 @@ mod tests {
         ];
 
         let plan = plan_history_index(&all, &roles, [0xc0; 20]);
-        assert!(plan.covered, "the newest delta covers its tip");
+        assert!(plan.lists_covered, "the newest delta covers its tip");
         let plan = plan_history_index(&all, &roles, [0xd0; 20]);
-        assert!(!plan.covered);
+        assert!(!plan.lists_covered);
         // The base is the newest full index by a member: never a stranger's.
         let bases: Vec<[u8; 20]> = plan.bases.iter().map(|b| b.tip).collect();
         assert_eq!(bases, [[0xa0; 20]]);
@@ -3913,7 +4066,7 @@ mod tests {
         // The superseded delta is not live; the stranger's index never counts.
         let live: Vec<[u8; 32]> = plan.live.iter().map(|e| e.pack_hash).collect();
         assert_eq!(live, [delta_new.pack_hash, [1; 32]]);
-        assert!(!plan_history_index(&all, &roles, [0xee; 20]).covered);
+        assert!(!plan_history_index(&all, &roles, [0xee; 20]).lists_covered);
     }
 
     #[test]
@@ -3960,7 +4113,7 @@ mod tests {
         let full = prepare_history_index(p, base_tip, &plan).unwrap().unwrap();
         assert!(full.index().base.is_none());
         assert_eq!(full.index().paths.len(), 400);
-        assert_eq!(full.artifact.tips, vec![base_tip]);
+        assert_eq!(full.artifact.as_ref().unwrap().tips, vec![base_tip]);
 
         // One file changes: a delta over the full index, superseding the base's older delta.
         std::fs::write(p.join("f3.txt"), "changed").unwrap();
@@ -3977,14 +4130,62 @@ mod tests {
         assert_eq!(delta.index().base, Some([1; 32]));
         let rows: Vec<&[u8]> = delta.index().paths.keys().map(Vec::as_slice).collect();
         assert_eq!(rows, [b"f3.txt".as_slice()]);
-        assert_eq!(delta.artifact.tips, vec![new_tip, base_tip]);
-        assert_eq!(delta.artifact.supersedes, vec![[2; 32]]);
+        assert_eq!(
+            delta.artifact.as_ref().unwrap().tips,
+            vec![new_tip, base_tip]
+        );
+        assert_eq!(delta.artifact.as_ref().unwrap().supersedes, vec![[2; 32]]);
         assert_eq!(delta.index().commit_count, 2);
 
-        // Covered: nothing to do.
+        // No column index yet: a full one, superseding nothing.
+        let column = delta.column.as_ref().unwrap();
+        assert_eq!(column.kind, crate::pack::KIND_HISTORY_INDEX);
+        assert_eq!(
+            (column.tips.clone(), column.supersedes.len()),
+            (vec![new_tip], 0)
+        );
+
+        // A full column of the base tip and an older column delta over it: the column is a delta
+        // over that full column (its header names the kind-3 base), superseding the older one.
+        let mut column_base = as_column(&manifests[1], 0x31);
+        column_base.tips = vec![base_tip];
+        let mut column_older = as_column(&manifests[0], 0x32);
+        column_older.tips = vec![[0x11; 20], base_tip];
+        let with_columns = [
+            column_older,
+            column_base,
+            manifests[0].clone(),
+            manifests[1].clone(),
+        ];
+        let plan = plan_history_index(&with_columns, &roles, new_tip);
+        let delta = prepare_history_index(p, new_tip, &plan).unwrap().unwrap();
+        let column = delta.column.as_ref().unwrap();
+        assert_eq!(column.tips, vec![new_tip, base_tip]);
+        assert_eq!(column.supersedes, vec![[0x32; 32]]);
+        let parsed = crate::pack::HistoryIndex::parse_kind(&column.plain, column.kind).unwrap();
+        assert_eq!(
+            parsed.base,
+            Some([0x31; 32]),
+            "the column delta extends the kind-3 base"
+        );
+        assert_eq!(parsed, delta.index().column().with_base([0x31; 32]));
+
+        // Covered: nothing to do, once both kinds cover the tip.
         let mut covering = history("c", 30, 3, "w", 0, None);
         covering.tips = vec![new_tip];
-        let plan = plan_history_index(&[covering], &roles, new_tip);
+        let plan = plan_history_index(std::slice::from_ref(&covering), &roles, new_tip);
+        assert!(
+            plan.lists_covered && !plan.covered,
+            "the column is still missing"
+        );
+        let only_column = prepare_history_index(p, new_tip, &plan).unwrap().unwrap();
+        assert!(
+            only_column.artifact.is_none(),
+            "the lists are not published again"
+        );
+        assert!(only_column.column.is_some());
+        let both = [as_column(&covering, 0x33), covering];
+        let plan = plan_history_index(&both, &roles, new_tip);
         assert!(prepare_history_index(p, new_tip, &plan).unwrap().is_none());
     }
 
@@ -4028,7 +4229,7 @@ mod tests {
         let plan = plan_history_index(std::slice::from_ref(&unknown), &roles, head);
         let got = prepare_history_index(p, head, &plan).unwrap().unwrap();
         assert!(got.index().base.is_none());
-        assert_eq!(got.artifact.supersedes, vec![[1; 32]]);
+        assert_eq!(got.artifact.as_ref().unwrap().supersedes, vec![[1; 32]]);
         // A base on the chain but tiny: the delta (every path) is not under half of it.
         let parent: [u8; 20] = hex::decode(git(&["rev-parse", "HEAD~1"]))
             .unwrap()
@@ -5079,7 +5280,8 @@ mod rc1_tests {
     }
 
     /// The manifest forms the push path writes besides a git pack: a full and a delta history
-    /// index, a browse artifact and a release-asset manifest, each accepted by RC1.
+    /// index, a browse artifact, a release-asset manifest and a history index's version lists
+    /// (kind 5), each accepted by RC1.
     #[test]
     fn every_manifest_kind_the_client_writes_is_rc1_valid() {
         let scope = crate::scope::DocScope {
@@ -5096,6 +5298,11 @@ mod rc1_tests {
                 vec![[3u8; 32]; 2],
             ),
             (u64::from(crate::pack::KIND_RELEASE_ASSETS), vec![], vec![]),
+            (
+                u64::from(crate::pack::KIND_HISTORY_VERSIONS),
+                vec![vec![1u8; 20], vec![2u8; 20]],
+                vec![[3u8; 32]],
+            ),
         ] {
             let props = PackManifestInput {
                 pack_hash: [4; 32],

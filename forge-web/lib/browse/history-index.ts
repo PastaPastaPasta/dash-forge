@@ -1,7 +1,10 @@
 /**
- * History index reader (`packManifest.kind == 3`): for one tip commit, each path's first-parent
- * changes and the branch's exact commit count, computed by the pusher
- * (`docs/design/history-index.md`).
+ * History index reader: for one tip commit, each path's first-parent changes and the branch's
+ * exact commit count, computed by the pusher (`docs/design/history-index.md`). A push stores two
+ * artifacts of the tip: the column index (`packManifest.kind == 3`, format 1: the last-change
+ * column and the counts) and the version lists (kind 5, format 2: the whole index). The format is
+ * the header's version byte, the only place it is recorded; {@link parseHistoryIndexOfKind}
+ * refuses an artifact whose format is not its kind's, and any format this reader does not know.
  *
  * Read-side port of `crates/forge-core/src/pack/historyindex.rs`. gzip-compressed body:
  *
@@ -12,9 +15,9 @@
  *   nPaths v   | (shared v | suffixLen v | suffix | commit v)*      byte-sorted, front-coded
  *   (tag v | len v | bytes)*                                          extension sections
  *
- * The layout up to the paths is fixed for every version; a later version adds tagged sections
- * after them. This reader reads the versions section (tag 1, v2) and skips any other tag (it
- * accepts any version from 1 on):
+ * The layout up to the paths is fixed for every version; a version adds tagged sections after
+ * them. This reader reads the versions section (tag 1, v2) and skips any other tag; it refuses a
+ * version other than 1 or 2:
  *
  *   limit v | oidLen u8 | nAuthors v | (len v | name)* | (author v) × nCommits
  *   per path row: (count << 1 | complete) v | (commit v | mode v | oid prefix (oidLen))*
@@ -38,7 +41,9 @@ import { Inflate } from 'pako'
 import { bytesToHex } from '@noble/hashes/utils.js'
 
 const MAGIC = [0x44, 0x46, 0x48, 0x49] // "DFHI"
-const VERSION = 1
+/** The formats this reader knows: 1 (the column index) and 2 (with the version lists). */
+const VERSION_V1 = 1
+const VERSION_V2 = 2
 const OID_LEN = 20
 /** The versions section's tag (forge-core `TAG_VERSIONS`). */
 const TAG_VERSIONS = 1
@@ -106,6 +111,8 @@ export interface HistoryIndex {
   readonly versions: ReadonlyMap<string, VersionList> | null
   /** The most versions a list holds (0 for a v1 index). */
   readonly versionLimit: number
+  /** The header's format: 1 for a column index, 2 with the version lists. */
+  readonly format: number
 }
 
 class Cursor {
@@ -193,7 +200,11 @@ export function inflateBounded(compressed: Uint8Array, max: number): Uint8Array 
 export function parseHistoryIndex(compressed: Uint8Array, maxInflated = MAX_INFLATED): HistoryIndex {
   const c = new Cursor(inflateBounded(compressed, maxInflated))
   const head = c.take(5)
-  if (MAGIC.some((m, i) => head[i] !== m) || (head[4] as number) < VERSION) throw new Error('not a history index')
+  if (MAGIC.some((m, i) => head[i] !== m)) throw new Error('not a history index')
+  const format = head[4] as number
+  if (format < VERSION_V1 || format > VERSION_V2) {
+    throw new Error(`history index format ${format} is not one this client reads (1-${VERSION_V2}); reload for a newer version`)
+  }
   const tip = bytesToHex(c.take(OID_LEN))
   const baseBytes = c.take(32)
   const base = baseBytes.every((b) => b === 0) ? null : bytesToHex(baseBytes)
@@ -238,13 +249,26 @@ export function parseHistoryIndex(compressed: Uint8Array, maxInflated = MAX_INFL
   }
   const body = section
   const versionLimit = body === null ? 0 : sectionLimit(body)
-  return withLazyVersions({ tip, base, commitCount, firstParentCount, rootWhen, tipWhen, paths, versionLimit }, () => {
+  return withLazyVersions({ tip, base, commitCount, firstParentCount, rootWhen, tipWhen, paths, versionLimit, format }, () => {
     if (body === null) return null
     const s = new Cursor(body)
     const versions = parseVersions(s, commits, [...paths.keys()])
     if (!s.done) throw new Error('history index: the versions section has trailing bytes')
     return versions
   })
+}
+
+/**
+ * {@link parseHistoryIndex} for an artifact recorded as `packManifest.kind == kind`: a column
+ * index (kind 3) must be format 1, version lists (kind 5) format 2 (forge-core
+ * `HistoryIndex::parse_kind`).
+ */
+export function parseHistoryIndexOfKind(compressed: Uint8Array, kind: number, maxInflated = MAX_INFLATED): HistoryIndex {
+  const want = kind === 3 ? VERSION_V1 : kind === 5 ? VERSION_V2 : null
+  if (want === null) throw new Error('history index: not a history index kind')
+  const ix = parseHistoryIndex(compressed, maxInflated)
+  if (ix.format !== want) throw new Error(`history index: a kind-${kind} artifact must be format ${want}, not ${ix.format}`)
+  return ix
 }
 
 /** The versions section's list limit (its first field), checked. */

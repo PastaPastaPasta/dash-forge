@@ -3,7 +3,7 @@
  * or directory's History, over the browse plane.
  *
  * A path's versions ({@link pathVersions}: History and Blame) come from the push-time history
- * index when one covers the start commit (`docs/design/history-index.md`, v2): its list for the
+ * index's version lists (kind 5) when they cover the start commit (`docs/design/history-index.md`): its list for the
  * path names each change's commit, author, subject and blob, so no commit or tree is read. Past
  * the list's end, or with no index, they come from a walk.
  *
@@ -317,7 +317,7 @@ export async function pathVersions(
       cap: Math.min(VERSIONS_STRIDE, cap - examined),
       walker,
       signal,
-      ...(history !== null ? { stopAt: (oid: string) => history.covers(oid) } : {}),
+      ...(history !== null ? { stopAt: (oid: string) => history.coversVersions(oid) } : {}),
     })
     entries.push(...page.entries)
     examined += page.examined
@@ -344,10 +344,10 @@ async function listedAt(reader: PrefixReader, walker: ObjectReader, start: strin
     return matches(await entryHere(), hit.list.claims[hit.at] as VersionClaim) ? hit : null
   }
   const history = historyOf(reader)
-  if (history === null || !history.covers(start)) return null
+  if (history === null || !history.coversVersions(start)) return null
   let got: VersionList | undefined
   try {
-    got = (await history.load(start)).versions?.get(path)
+    got = (await history.loadVersions(start)).versions?.get(path)
   } catch {
     return null
   }

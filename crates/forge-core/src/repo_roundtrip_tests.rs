@@ -282,8 +282,8 @@ async fn clone(rec: &Recorded, dst: &Path, store: &Store<'_>) {
     );
 }
 
-/// The push's history index of `tip` (kind 3), planned and computed as a push does, stored
-/// like any artifact.
+/// The push's history index of `tip`, planned and computed as a push does: its version lists
+/// (kind 5) and its column index (kind 3), each stored like any artifact.
 async fn publish_history(
     rec: &mut Recorded,
     scope: &DocScope,
@@ -295,31 +295,64 @@ async fn publish_history(
     let prepared = super::prepare_history_index(src, tip, &super::HistoryPlan::fresh())
         .unwrap()
         .unwrap();
-    let artifact = &prepared.artifact;
-    store_artifact(
-        rec,
-        scope,
-        store,
-        &artifact.plain,
-        u64::from(artifact.kind),
-        artifact.rows,
-        artifact.tips.iter().map(|t| t.to_vec()).collect(),
-    )
-    .await;
+    for artifact in [&prepared.artifact, &prepared.column].into_iter().flatten() {
+        store_artifact(
+            rec,
+            scope,
+            store,
+            &artifact.plain,
+            u64::from(artifact.kind),
+            artifact.rows,
+            artifact.tips.iter().map(|t| t.to_vec()).collect(),
+        )
+        .await;
+    }
 }
 
-/// The history index reads back through its manifest, its format from its header.
+/// Both history artifacts read back through their manifests, each in its kind's format: the
+/// column index (kind 3) without version lists and a commit table cut to the paths' commits,
+/// the version lists (kind 5) the whole index.
 async fn check_history(rec: &Recorded, store: &Store<'_>, tip: &str) {
     let tip: [u8; 20] = hex::decode(tip).unwrap().try_into().unwrap();
-    let history = rec
+    let manifests: Vec<_> = rec
         .of("packManifest")
         .iter()
         .map(|d| manifest_info(d).unwrap())
-        .find(|m| m.kind == u64::from(crate::pack::KIND_HISTORY_INDEX))
-        .expect("a history index manifest");
-    assert_eq!(history.tips, vec![tip]);
-    let ix = crate::pack::HistoryIndex::parse(&read_pack(rec, &history, store).await).unwrap();
-    assert_eq!((ix.version(), ix.commit_count, ix.tip), (2, 3, tip));
+        .collect();
+    let read = |kind: u8| {
+        let m = manifests
+            .iter()
+            .find(|m| m.kind == u64::from(kind))
+            .expect("a history manifest of each kind");
+        assert_eq!(m.tips, vec![tip]);
+        m
+    };
+    let column = read(crate::pack::KIND_HISTORY_INDEX);
+    let lists = read(crate::pack::KIND_HISTORY_VERSIONS);
+    let column_bytes = read_pack(rec, column, store).await;
+    let lists_bytes = read_pack(rec, lists, store).await;
+    let kind3 =
+        crate::pack::HistoryIndex::parse_kind(&column_bytes, crate::pack::KIND_HISTORY_INDEX);
+    let kind5 =
+        crate::pack::HistoryIndex::parse_kind(&lists_bytes, crate::pack::KIND_HISTORY_VERSIONS);
+    let (column, lists) = (kind3.unwrap(), kind5.unwrap());
+    assert_eq!(
+        (column.version(), column.commit_count, column.tip),
+        (1, 3, tip)
+    );
+    assert_eq!((lists.version(), lists.commit_count), (2, 3));
+    assert_eq!(column, lists.column(), "the column is the lists' column");
+    // Each artifact is refused as the other kind.
+    assert!(crate::pack::HistoryIndex::parse_kind(
+        &column_bytes,
+        crate::pack::KIND_HISTORY_VERSIONS
+    )
+    .is_err());
+    assert!(
+        crate::pack::HistoryIndex::parse_kind(&lists_bytes, crate::pack::KIND_HISTORY_INDEX)
+            .is_err()
+    );
+    assert!(column_bytes.len() < lists_bytes.len());
 }
 
 /// The source repository and the pushes of the round trip: `main` and an annotated tag, then

@@ -23,7 +23,16 @@ A push that moves the default branch publishes a **history index** for the new t
 - `objectCount` = the number of path rows;
 - `supersedes` = the history indexes it makes redundant.
 
-**The format is recorded only in the artifact header** (the `version` byte after `"DFHI"`). The RC1 contract removed `packManifest.offsetIndexParts`, which carried it before the wipe, and no manifest field replaces it: a manifest is only the artifact's address. A reader takes the format from the artifact it fetched, and refuses a version it does not know with an error that says to update the client, instead of guessing. Every writer on an RC1 network writes version 2, so a planner treats every kind-3 manifest as an index with version lists; there is no v1 to upgrade on a network that started empty.
+**Two artifacts per tip (RC1).** A push publishes the index as two artifacts of the same tip, so the file list does not download what only Blame and History read (on dashpay/dash the version lists are most of the 753 KB):
+
+| kind | artifact | header format | read by |
+|---|---|---|---|
+| 3 | the **column index**: tip, base, counts, the commits the paths name, the paths | 1 (no versions section) | the file list's column, the ref bar's count, the log total |
+| 5 | the **version lists**: the whole index | 2 (with the versions section) | Blame and a path's History |
+
+Both have `tips` = `[tip]` or `[tip, baseTip]`. Each kind is its own series of full indexes and cumulative deltas: a delta's header `base` names the full index **of its own kind**, and each supersedes only its own kind. The version lists decide full or delta (`delta_pays`); the column follows them, as a delta over the live full column of the same base tip when there is one, else as a full column. A tip is covered only when both kinds cover it; a push that finds one kind missing publishes that one alone. The contract needs no change: `kind` is an open 0..255 integer, and `kindShape` checks tips on kind 3 only, so kind 5's tip width is a reader rule.
+
+**The format is recorded only in the artifact header** (the `version` byte after `"DFHI"`). The RC1 contract removed `packManifest.offsetIndexParts`, which carried it before the wipe, and no manifest field replaces it: a manifest is only the artifact's address. A reader takes the format from the artifact it fetched, refuses a version it does not know with an error that says to update the client, and refuses an artifact whose format is not its kind's (a kind-3 artifact must be format 1, a kind-5 artifact format 2: forge-core `HistoryIndex::parse_kind`, forge-web `parseHistoryIndexOfKind`, over the shared fixtures including `history-index-v2-column.hex`). There is no v1 index to upgrade on a network that started empty.
 
 ### Format (v1)
 
@@ -114,7 +123,7 @@ The writer's choice, from its local repository and the manifest list (it never d
 
 ### Reader (forge-web)
 
-The browse resolve already reads the repository's whole manifest list, so the kind-3 manifests cost no extra query.
+The browse resolve already reads the repository's whole manifest list, so the history manifests cost no extra query. `historySource` keeps the two kinds apart: `load`/`covers` read the column index (kind 3), which is all the file list, the commit count and the log total touch, and `loadVersions`/`coversVersions` read the version lists (kind 5), which only Blame and a path's History touch (`history-source.test.ts` checks that the column and the count fetch kind 3 alone).
 
 **Candidates.** A candidate is a kind-3 pack whose representative copy is from a **current member**. A delta counts only while a live full index of its base tip stands behind it. If two indexes cover one tip, a full index wins over a delta, and the newer wins between two of the same kind. An index that fails to load (a missing artifact, bad bytes) counts as none: the column walks and the count walks on. Artifacts inflate to at most 64 MB. `packManifest` can only be written by a maintainer or writer (`ownerRefersTo`), and a revoked writer's claims no longer count.
 

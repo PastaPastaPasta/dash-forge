@@ -7,10 +7,12 @@
 //! - `0` — a git packfile.
 //! - `1` — an `objectLocator` (the browse plane's object index).
 //! - `2` — a `flatIndex` (carries the indexed tip in `tips`).
-//! - `3` — a history index (`tips` = `[tip]`, or `[tip, baseTip]` for a delta over an
+//! - `3` — a history column index (`tips` = `[tip]`, or `[tip, baseTip]` for a delta over an
 //!   earlier full index). The RC1 contract's `kindShape` rule refuses a kind-3 manifest
 //!   whose `tips` is not 20, 32, 40 or 64 bytes.
 //! - `4` — a release-asset manifest (docs/design/release-asset-manifest.md, D-4).
+//! - `5` — a history index's version lists, the companion of kind 3 with the same `tips` (a
+//!   reader rule: the contract checks tips on kind 3 only).
 //!
 //! `kind` is a plain `0..=255` integer in forge-core. RC1 removed the per-pack offset index
 //! (`manifestPart` documents and `packManifest.offsetIndexParts`): every artifact locates
@@ -32,6 +34,10 @@ pub const KIND_FLAT_INDEX: u8 = 2;
 pub const KIND_HISTORY_INDEX: u8 = 3;
 /// `packManifest.kind == 4`: a release-asset manifest (D-4; RC1 `pack_kind_shape`).
 pub const KIND_RELEASE_ASSETS: u8 = 4;
+/// `packManifest.kind == 5`: a history index's per-path version lists (the whole index, format
+/// 2), companion of the column index (kind 3, format 1) of the same tip. Blame and a path's
+/// History read it; the file list and the counts read only kind 3.
+pub const KIND_HISTORY_VERSIONS: u8 = 5;
 
 /// The `packManifest` document fields (data-contracts §2.3). List fields serialize as
 /// JSON-in-string / packed byteArray at the platform layer, not native arrays.

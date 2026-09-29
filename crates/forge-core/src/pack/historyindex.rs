@@ -201,6 +201,64 @@ impl HistoryIndex {
         }
     }
 
+    /// The column index of this one: the same tip, base, counts and last-change column, without
+    /// the version lists, its commit table cut to the commits the paths name (in table order).
+    /// What `packManifest.kind == 3` stores (version 1); the whole index is kind 5 (version 2).
+    #[must_use]
+    pub fn column(&self) -> Self {
+        let mut keep: Vec<u32> = self.paths.values().copied().collect();
+        keep.sort_unstable();
+        keep.dedup();
+        let at: HashMap<u32, u32> = keep
+            .iter()
+            .enumerate()
+            .map(|(new, &old)| (old, u32::try_from(new).expect("fits the old table")))
+            .collect();
+        Self {
+            tip: self.tip,
+            base: self.base,
+            commit_count: self.commit_count,
+            first_parent_count: self.first_parent_count,
+            root_time: self.root_time,
+            tip_time: self.tip_time,
+            commits: keep
+                .iter()
+                .map(|&i| IndexedCommit {
+                    author: String::new(),
+                    ..self.commits[i as usize].clone()
+                })
+                .collect(),
+            paths: self.paths.iter().map(|(p, c)| (p.clone(), at[c])).collect(),
+            versions: None,
+        }
+    }
+
+    /// This index naming `base` as the full index it extends (a delta's header field).
+    #[must_use]
+    pub fn with_base(mut self, base: [u8; 32]) -> Self {
+        self.base = Some(base);
+        self
+    }
+
+    /// [`Self::parse`] an artifact recorded as `packManifest.kind == kind`, refusing one whose
+    /// header is not that kind's format: a column index (kind 3) is version 1, a version-lists
+    /// index (kind 5) version 2. The header is the only place the format is recorded.
+    pub fn parse_kind(compressed: &[u8], kind: u8) -> Result<Self> {
+        let want = match kind {
+            super::KIND_HISTORY_INDEX => VERSION_V1,
+            super::KIND_HISTORY_VERSIONS => VERSION_V2,
+            _ => return Err(bad("not a history index kind")),
+        };
+        let ix = Self::parse(compressed)?;
+        if ix.version() != want {
+            return Err(Error::Config(format!(
+                "history index: a kind-{kind} artifact must be format {want}, not {}",
+                ix.version()
+            )));
+        }
+        Ok(ix)
+    }
+
     /// Serialize and gzip.
     pub fn to_compressed(&self) -> Result<Vec<u8>> {
         let b = self.body()?;
