@@ -216,18 +216,13 @@ pub fn verdict_word(v: Verdict) -> &'static str {
 /// in `sourceRepoId`, a Forge repo), so readers take them from here (L-36, L-37): the web
 /// compares a merged PR from that base, and names the fork branch.
 pub fn with_pull_origin(body: &str, base_oid: &str, head_label: &str, full_at: &str) -> String {
-    let base = oid(base_oid).map(hex::encode);
-    if base.is_none() && head_label.is_empty() {
-        return body.to_string();
-    }
-    let parts: Vec<String> = [
-        base.map(|b| format!("Base {b}")),
-        (!head_label.is_empty()).then(|| format!("head {}", clip(head_label, 200, 200))),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    let line = format!("> {}", parts.join(" · "));
+    let base = oid(base_oid).map(|b| format!("Base {}", hex::encode(b)));
+    let head = (!head_label.is_empty()).then(|| format!("head {}", clip(head_label, 200, 200)));
+    let line = match (base, head) {
+        (None, None) => return body.to_string(),
+        (Some(b), Some(h)) => format!("> {b} · {h}"),
+        (Some(x), None) | (None, Some(x)) => format!("> {x}"),
+    };
     // After the first line (the provenance quote) and its blank line.
     let (first, rest) = body.split_once("\n\n").unwrap_or((body, ""));
     let joined = if rest.is_empty() {
@@ -244,19 +239,24 @@ pub const BODY_MAX: usize = 5120;
 
 /// `header` + `text`, cut to the body bound; a cut body says where the full text is.
 pub fn body(header: &str, text: &str, full_at: &str) -> String {
-    let whole = if text.trim().is_empty() {
+    fit_text(&headed(header, text), BODY_MAX, full_at)
+}
+
+/// `header` then `text`, or just the header (trimmed) when the text is blank.
+fn headed(header: &str, text: &str) -> String {
+    if text.trim().is_empty() {
         header.trim_end().to_string()
     } else {
         format!("{header}{text}")
-    };
-    fit_text(&whole, BODY_MAX, full_at)
+    }
 }
 
 /// `text` within `max` characters and bytes. A longer one is cut at the last paragraph, line or
 /// word boundary that fits (never mid-word; L-74), an open code fence or code span is closed,
 /// and a note says where the full text is (L-06).
 pub fn fit_text(text: &str, max: usize, full_at: &str) -> String {
-    if text.chars().count() <= max && text.len() <= max {
+    // A string never has more characters than bytes: the byte bound covers both.
+    if text.len() <= max {
         return text.to_string();
     }
     let note = format!("\n\n… (truncated; the full text is at {full_at})");
@@ -280,26 +280,19 @@ fn boundary_cut(s: &str) -> &str {
 /// `s` with a code fence or inline code span left open at its end closed again, so the cut does
 /// not turn the rest of the rendering (the truncation note) into code.
 fn close_code(s: &str) -> String {
-    let fences = s
-        .lines()
-        .filter(|l| l.trim_start().starts_with("```"))
-        .count();
-    if fences % 2 == 1 {
-        return format!("{s}\n```");
-    }
     // Backticks outside fenced blocks: an odd count leaves a span open.
     let mut in_fence = false;
     let mut ticks = 0usize;
     for line in s.lines() {
         if line.trim_start().starts_with("```") {
             in_fence = !in_fence;
-            continue;
-        }
-        if !in_fence {
+        } else if !in_fence {
             ticks += line.matches('`').count();
         }
     }
-    if ticks % 2 == 1 {
+    if in_fence {
+        format!("{s}\n```")
+    } else if ticks % 2 == 1 {
         format!("{s}`")
     } else {
         s.to_string()
@@ -398,13 +391,8 @@ fn release_notes(notes: &str, published: Option<&Published>, source_url: &str) -
         };
         format!("> Published on {}{by} on {}\n\n", p.host, date(p.at))
     });
-    let text = if notes.trim().is_empty() {
-        head.trim_end().to_string()
-    } else {
-        format!("{head}{notes}")
-    };
     // Room for a later assets footer is made by `notes_with_footer` itself.
-    fit_text(&text, NOTES_MAX, source_url)
+    fit_text(&headed(&head, notes), NOTES_MAX, source_url)
 }
 
 /// The most bytes a release's `assets` JSON may take (forge-core `release.assets`).

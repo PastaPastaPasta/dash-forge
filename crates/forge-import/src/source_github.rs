@@ -252,8 +252,12 @@ fn targets(
             };
             // Where it branched from, and the head branch when it is on a fork (L-36, L-37):
             // the patch has no field for either, so the body's provenance block names them.
-            let from_fork =
-                pull.head.repo.as_ref().map(|r| r.full_name.as_str()) != Some(src.slug().as_str());
+            // GitHub's names are case-insensitive: `dashpay/Dash` is `dashpay/dash`.
+            let from_fork = pull
+                .head
+                .repo
+                .as_ref()
+                .is_none_or(|r| !r.full_name.eq_ignore_ascii_case(&src.slug()));
             let head_label = if from_fork && !pull.head.label.is_empty() {
                 pull.head.label.clone()
             } else {
@@ -298,13 +302,7 @@ fn threads(
     let mut out: BTreeMap<u64, Vec<GhComment>> = BTreeMap::new();
     if per_item {
         for i in items {
-            let thread = out.entry(i.number).or_default();
-            if i.comments > 0 {
-                thread.extend(gh.comments_on(i.number, None)?);
-            }
-            if i.is_pull_request() {
-                thread.extend(gh.review_comments_on(i.number, None)?);
-            }
+            out.insert(i.number, full_thread(gh, i)?);
         }
         return Ok(out);
     }
@@ -322,24 +320,29 @@ fn threads(
         }
     }
     if since.is_some() {
-        let partial: Vec<&GhIssue> = items
-            .iter()
-            .filter(|i| {
-                let got = out
-                    .get(&i.number)
-                    .map_or(0, |t| t.iter().filter(|c| c.path.is_none()).count() as u64);
-                i.comments > got
-            })
-            .collect();
-        for i in partial {
-            let mut thread = gh.comments_on(i.number, None)?;
-            if i.is_pull_request() {
-                thread.extend(gh.review_comments_on(i.number, None)?);
+        for i in items {
+            let got = out
+                .get(&i.number)
+                .map_or(0, |t| t.iter().filter(|c| c.path.is_none()).count() as u64);
+            if i.comments > got {
+                out.insert(i.number, full_thread(gh, i)?);
             }
-            out.insert(i.number, thread);
         }
     }
     Ok(out)
+}
+
+/// One item's whole thread: its conversation comments, and a PR's review (line) comments.
+fn full_thread(gh: &GithubClient, i: &GhIssue) -> Result<Vec<GhComment>> {
+    let mut thread = if i.comments > 0 {
+        gh.comments_on(i.number, None)?
+    } else {
+        Vec::new()
+    };
+    if i.is_pull_request() {
+        thread.extend(gh.review_comments_on(i.number, None)?);
+    }
+    Ok(thread)
 }
 
 fn header(src: &GithubRepoRef, number: u32, login: &str, created: u64, kind: &str) -> String {

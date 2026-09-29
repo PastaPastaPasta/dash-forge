@@ -98,12 +98,20 @@ export interface CommentSlots {
   readonly body?: ReactNode
 }
 
+/** What a comment's header says it did. */
+function commentVerb(item: Extract<TimelineItem, { kind: 'comment' }>): string {
+  let verb = 'commented'
+  if (item.orphaned === 'deleted') verb = 'replied to a deleted comment'
+  else if (item.orphaned === 'hidden') verb = 'replied to a comment you cannot read'
+  return item.comment.anchor ? `${verb} on ${anchorLabel(item.comment.anchor)}` : verb
+}
+
 export function Timeline({
   items,
   links,
   renderComment,
   eventText,
-  trust,
+  trust = null,
 }: {
   items: readonly TimelineItem[]
   /** Where `#n` / `@name` in bodies link (omit: plain text). Keep it referentially stable. */
@@ -126,8 +134,8 @@ export function Timeline({
                 <Byline
                   author={item.comment.author}
                   createdAt={item.comment.createdAt}
-                  origin={trustedOrigin(item.comment.origin, item.comment.author, trust ?? null)}
-                  verb={`${item.orphaned === 'deleted' ? 'replied to a deleted comment' : item.orphaned === 'hidden' ? 'replied to a comment you cannot read' : 'commented'}${item.comment.anchor ? ` on ${anchorLabel(item.comment.anchor)}` : ''}`}
+                  origin={trustedOrigin(item.comment.origin, item.comment.author, trust)}
+                  verb={commentVerb(item)}
                 />
                 <EditedMarker createdAt={item.comment.createdAt} updatedAt={item.comment.updatedAt} />
                 {slot.header}
@@ -142,33 +150,27 @@ export function Timeline({
         }
         if (item.kind === 'review') {
           const { review } = item
+          // A mirrored review records its source verdict in its provenance line; the document's
+          // own verdict is a comment (a mirror identity's approval would count as a maintainer's).
+          // Shown as what the source reviewer did, never as counted.
+          const origin = trustedOrigin(review.origin, review.reviewer, trust)
+          const source = origin !== null ? importedVerdictOf(review.body) : null
           return (
             <div key={`r-${review.id}-${i}`} className="overflow-hidden rounded-lg border border-anvil-200 dark:border-anvil-800">
               <div className="flex flex-wrap items-center gap-2 border-b border-anvil-200 bg-anvil-50 px-4 py-2 text-dense coarse:min-h-12 coarse:gap-y-3 coarse:py-3 dark:border-anvil-800 dark:bg-anvil-900">
                 <span className="flex h-6 w-6 items-center justify-center rounded-full bg-anvil-100 dark:bg-anvil-800">
                   {verdictIcon(review.verdict)}
                 </span>
-                {(() => {
-                  // A mirrored review records its source verdict in its provenance line; the
-                  // document's own verdict is a comment (a mirror identity's approval would count
-                  // as a maintainer's). Shown as what the source reviewer did, never as counted.
-                  const origin = trustedOrigin(review.origin, review.reviewer, trust ?? null)
-                  const source = origin !== null ? importedVerdictOf(review.body) : null
-                  return (
-                    <>
-                      <Byline author={review.reviewer} createdAt={review.createdAt} origin={origin} verb={source ?? VERDICT_LABEL[review.verdict]} />
-                      {source !== null && source !== 'commented' ? (
-                        <span
-                          data-testid="imported-verdict"
-                          className="rounded-full border border-anvil-300 px-2 py-0.5 text-[11px] text-anvil-700 dark:border-anvil-700 dark:text-anvil-200"
-                          title="The verdict on the source forge. It does not count toward approvals here: only reviews by this repo's maintainers and writers do."
-                        >
-                          {source} on {origin?.host || 'the source'} · not counted here
-                        </span>
-                      ) : null}
-                    </>
-                  )
-                })()}
+                <Byline author={review.reviewer} createdAt={review.createdAt} origin={origin} verb={source ?? VERDICT_LABEL[review.verdict]} />
+                {source !== null && source !== 'commented' ? (
+                  <span
+                    data-testid="imported-verdict"
+                    className="rounded-full border border-anvil-300 px-2 py-0.5 text-[11px] text-anvil-700 dark:border-anvil-700 dark:text-anvil-200"
+                    title="The verdict on the source forge. It does not count toward approvals here: only reviews by this repo's maintainers and writers do."
+                  >
+                    {source} on {origin?.host || 'the source'} · not counted here
+                  </span>
+                ) : null}
                 {/* Which commit was reviewed: a verdict on an older head is not a verdict on
                     the current one, and only the oid says which. */}
                 {review.commitOid ? (

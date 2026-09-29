@@ -15,7 +15,6 @@
  * shows "Diff unavailable" only when the objects genuinely are not reachable.
  */
 
-import { pullOriginOf, trustedOrigin } from '@/lib/repo/provenance'
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { FileDiff, Files, HardDriveDownload } from 'lucide-react'
 
@@ -343,11 +342,9 @@ export function usePullComparison(baseRepo: RepoRef, sourceId: string, spec: Com
 }
 
 /** The base, head and flags of a PR's comparison. */
-export function pullSpec(pull: PullView, home: RepoHome, trust: ReadonlySet<string> | null = null): ComparisonSpec {
+export function pullSpec(pull: PullView, home: RepoHome, sourceBaseOid = ''): ComparisonSpec {
   const { baseTipOid, baseOidAtOpen } = pullBase(pull, home)
-  // Only a trusted mirror's record names the base to diff from: anyone can write that text.
-  const origin = trustedOrigin(pull.origin, pull.author, trust)
-  const sourceBaseOid = origin !== null ? (pullOriginOf(pull.body)?.baseOid ?? '') : ''
+  // `sourceBaseOid`: only from a trusted mirror's record (the caller checks): anyone can write that text.
   return { baseTipOid, baseOidAtOpen, headOid: pull.headOid, merged: pull.state.merged, imported: pull.imported, importedUrl: pull.importedUrl, sourceBaseOid }
 }
 

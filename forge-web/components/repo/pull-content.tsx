@@ -20,7 +20,7 @@
  * plaintext by design.
  */
 
-import { Byline, OriginAuthor, Time } from '@/components/repo/byline'
+import { Byline, ItemAuthor, Time } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { pullOriginOf, trustedOrigin } from '@/lib/repo/provenance'
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -285,7 +285,7 @@ function PullPage({
   }
 
   // ---- the comparison (Files changed, the tab counts, the commit list) -----------------------
-  const spec = pullSpec(pull, home, trust)
+  const spec = pullSpec(pull, home, pullOrigin?.baseOid ?? '')
   const comparison = usePullComparison(repo, pull.sourceId, spec)
   const cmp = comparison.data
   const headReader = cmp?.sides.head ?? null
@@ -667,7 +667,7 @@ function PullPage({
               `${mergedLead} into`
             ) : (
               <>
-                {origin !== null ? <OriginAuthor origin={origin} /> : <Author identityId={pull.author} link={false} />}{' '}
+                <ItemAuthor author={pull.author} origin={origin} link={false} />{' '}
                 {/* A closed PR no longer wants anything (L-76). */}
                 {open ? 'wants to merge into' : 'wanted to merge into'}
               </>

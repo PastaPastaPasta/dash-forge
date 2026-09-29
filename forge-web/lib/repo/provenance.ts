@@ -83,15 +83,17 @@ export function pullOriginOf(body: string): PullOrigin | null {
 /** A review's verdict at the source, from its provenance line (`(review, approved, 2026-…)`). */
 export type ImportedVerdict = 'approved' | 'requested changes' | 'commented'
 
+const IMPORTED_VERDICTS: readonly ImportedVerdict[] = ['approved', 'requested changes', 'commented']
+
 export function importedVerdictOf(body: string): ImportedVerdict | null {
   const m = PROVENANCE.exec(body.split('\n', 1)[0] ?? '')
   const kind = m?.[1] ?? ''
   if (!kind.startsWith('review, ')) return null
   const verdict = kind.slice('review, '.length).split(',')[0]?.trim()
-  return verdict === 'approved' || verdict === 'requested changes' || verdict === 'commented' ? verdict : null
+  return IMPORTED_VERDICTS.find((v) => v === verdict) ?? null
 }
 
-/** Who published a mirrored release, and when (its notes' first line), and the notes without it. */
+/** Who published a mirrored release, and when (its notes' first line). */
 export interface ReleasePublished {
   readonly host: string
   readonly author: string
@@ -101,6 +103,7 @@ export interface ReleasePublished {
 
 const PUBLISHED = /^> Published on ([a-z0-9.-]+(?::\d+)?)(?: by @(\S+))? on (\d{4}-\d{2}-\d{2})\s*$/
 
+/** The publisher line of a mirrored release's notes, and the notes without it. */
 export function releasePublishedOf(notes: string): { published: ReleasePublished | null; rest: string } {
   const [first = '', ...rest] = notes.split('\n')
   const m = PUBLISHED.exec(first)

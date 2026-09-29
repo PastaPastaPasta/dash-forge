@@ -551,8 +551,7 @@ fn release(r: &GlRelease) -> SrcRelease {
     let published = r.released_at.as_deref().map(|at| model::Published {
         host: url
             .strip_prefix("https://")
-            .and_then(|u| u.split('/').next())
-            .unwrap_or("gitlab")
+            .map_or("gitlab", |u| u.split_once('/').map_or(u, |(h, _)| h))
             .to_string(),
         author: r.author.login().to_string(),
         at: iso8601_to_unix(at),

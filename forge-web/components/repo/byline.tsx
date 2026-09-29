@@ -13,7 +13,7 @@ import { timeAgo } from '@/lib/view'
 import type { Origin } from '@/lib/repo/provenance'
 
 /** An exact timestamp for a `title` and `dateTime`: `2026-08-03 14:05 UTC`. */
-export function exactTime(ms: number): string {
+function exactTime(ms: number): string {
   return new Date(ms).toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
 }
 
@@ -38,6 +38,11 @@ export function OriginAuthor({ origin }: { origin: Origin }): JSX.Element {
   )
 }
 
+/** The original author of a trusted import, else the Forge identity that signed it. */
+export function ItemAuthor({ author, origin, link = true }: { author: string; origin: Origin | null; link?: boolean }): JSX.Element {
+  return origin !== null ? <OriginAuthor origin={origin} /> : <Author identityId={author} link={link} />
+}
+
 /**
  * `author` (a Forge identity) or, for a trusted import, the original author; with the chain
  * time or the original time. `verb` sits between them (`opened`, `commented`, …).
@@ -55,27 +60,18 @@ export function Byline({
   verb?: string
   link?: boolean
 }): JSX.Element {
-  if (origin === null) {
-    return (
-      <>
-        <Author identityId={author} link={link} />
-        <span className="text-anvil-500 dark:text-anvil-400">
-          {verb ? `${verb} ` : ''}
-          <Time ms={createdAt} />
-        </span>
-      </>
-    )
-  }
   return (
     <>
-      <OriginAuthor origin={origin} />
+      <ItemAuthor author={author} origin={origin} link={link} />
       <span className="text-anvil-500 dark:text-anvil-400">
         {verb ? `${verb} ` : ''}
-        {origin.createdAt ? <Time ms={origin.createdAt} /> : null}
+        <Time ms={origin !== null ? origin.createdAt : createdAt} />
       </span>
-      <span className="rounded bg-anvil-100 px-1.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300" title={`Mirrored ${exactTime(createdAt)} by this repo's mirror identity`}>
-        mirrored
-      </span>
+      {origin !== null ? (
+        <span className="rounded bg-anvil-100 px-1.5 text-[11px] text-anvil-600 dark:bg-anvil-800 dark:text-anvil-300" title={`Mirrored ${exactTime(createdAt)} by this repo's mirror identity`}>
+          mirrored
+        </span>
+      ) : null}
     </>
   )
 }
