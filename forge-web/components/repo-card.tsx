@@ -12,7 +12,14 @@ import { plural, timeAgo } from '@/lib/view'
 import { repoHref } from '@/hooks/use-query-param'
 import { Author } from '@/components/author'
 
-export function RepoCard({ repo }: { repo: DiscoveredRepo }): JSX.Element {
+export function RepoCard({
+  repo,
+  showOwner = true,
+}: {
+  repo: DiscoveredRepo
+  /** False on the owner's own profile, where every card's owner is the page's (L-86). */
+  showOwner?: boolean
+}): JSX.Element {
   // Every card pins the repo it shows by its repo id, so another repo answering to the same
   // owner and name can never stand in for it.
   const href = repoHref('/repo', { owner: repo.ownerId, name: repo.slug, repoId: repo.key })
@@ -39,11 +46,11 @@ export function RepoCard({ repo }: { repo: DiscoveredRepo }): JSX.Element {
         <p className="mt-2 italic text-anvil-500 dark:text-anvil-400">No description</p>
       )}
       <div className="mt-3 flex flex-wrap items-center gap-2 text-[12px] text-anvil-500 dark:text-anvil-400">
-        <Author identityId={repo.ownerId} />
+        {showOwner ? <Author identityId={repo.ownerId} /> : null}
         {typeof repo.pushedAt === 'number' ? (
-          <span title="Newest push">· pushed {timeAgo(repo.pushedAt)}</span>
+          <span title="Newest push">{showOwner ? '· ' : ''}pushed {timeAgo(repo.pushedAt)}</span>
         ) : repo.createdAt ? (
-          <span>· {timeAgo(repo.createdAt)}</span>
+          <span title="Created">{showOwner ? '· ' : ''}created {timeAgo(repo.createdAt)}</span>
         ) : null}
         {typeof repo.stars === 'number' ? (
           <span className="inline-flex items-center gap-1" title="Stars (provable count)" data-testid="repo-stars" data-stars={repo.stars}>
@@ -56,8 +63,9 @@ export function RepoCard({ repo }: { repo: DiscoveredRepo }): JSX.Element {
             the open count. */}
         {typeof repo.issues === 'number' ? (
           <span className="inline-flex items-center gap-1" title="Issues ever opened, open or closed (provable count)">
-            <MessageSquare className="h-3 w-3" aria-hidden /> {plural(repo.issues, 'issue')}
-            <span className="sr-only">in total</span>
+            {/* Visibly a total (L-85): the Issues tab counts open ones, so a bare "15 issues"
+                beside a tab reading 13 looked wrong. */}
+            <MessageSquare className="h-3 w-3" aria-hidden /> {plural(repo.issues, 'issue')} total
           </span>
         ) : null}
       </div>

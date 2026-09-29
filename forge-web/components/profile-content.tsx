@@ -192,7 +192,7 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {data.repos.map((r) => (
-              <RepoCard key={r.key} repo={r} />
+              <RepoCard key={r.key} repo={r} showOwner={false} />
             ))}
           </div>
         )}

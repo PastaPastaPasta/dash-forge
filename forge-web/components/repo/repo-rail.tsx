@@ -13,7 +13,7 @@
 import { Time } from '@/components/repo/byline'
 import { useEffect, useLayoutEffect, useSyncExternalStore } from 'react'
 import Link from 'next/link'
-import { GitBranch, Scale, Star, Tag, Users } from 'lucide-react'
+import { ExternalLink, GitBranch, Scale, Star, Tag, Users } from 'lucide-react'
 import {
   beginView,
   contentChecks,
@@ -28,6 +28,7 @@ import {
   type RepoHome,
   type SelectedRef,
 } from '@/lib/view'
+import { useMirrorSource } from '@/components/repo/mirror-note'
 import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
 import type { Membership } from '@/lib/rules/v2'
 import { useSdk } from '@/hooks/use-sdk'
@@ -117,6 +118,7 @@ function About({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
   return (
     <Card title="About">
       {home.description ? <p className="mb-2 text-anvil-700 dark:text-anvil-200">{home.description}</p> : null}
+      <MirrorProvenance home={home} />
       {home.v2.topics.length > 0 ? (
         <ul className="mb-2 flex flex-wrap gap-1.5" aria-label="Topics" data-testid="repo-topics">
           {home.v2.topics.map((t) => (
@@ -182,6 +184,29 @@ function Facts({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
         />
       ) : null}
     </div>
+  )
+}
+
+/**
+ * A mirror's source as a link, and when the mirror last moved a ref (L-84): the newest signed
+ * ref update, which is the last sync that changed anything. The source is the one the issue
+ * lists name (`useMirrorSource`: only what the owner or a maintainer wrote).
+ */
+function MirrorProvenance({ home }: { home: RepoHome }): JSX.Element | null {
+  const source = useMirrorSource(home, 'issue')
+  if (source === null) return null
+  const updated = [...home.branches, ...home.tags].reduce((newest, r) => {
+    const at = r.state.state === 'resolved' ? r.state.createdAt : r.state.state === 'diverged' ? Math.max(...r.state.heads.map((h) => h.createdAt)) : 0
+    return Math.max(newest, at)
+  }, 0)
+  return (
+    <p className="mb-2 text-[12px] text-anvil-600 dark:text-anvil-300" data-testid="mirror-provenance">
+      Mirror of{' '}
+      <a href={`https://${source.label}`} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-0.5 font-medium text-forge-700 hover:underline dark:text-forge-400">
+        {source.label} <ExternalLink className="h-3 w-3" aria-hidden />
+      </a>
+      {updated > 0 ? <span title={new Date(updated).toISOString()}> · last synced {timeAgo(updated)}</span> : null}
+    </p>
   )
 }
 

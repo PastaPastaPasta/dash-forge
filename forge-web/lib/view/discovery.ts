@@ -418,16 +418,21 @@ export async function listReposByOwner(
   if (forge === null) return { owned: [], member: [] }
   const limit = opts.limit ?? 50
 
-  const owned = async (): Promise<DiscoveredRepo[]> => {
-    const { documents } = await queryDocumentsWithProof(sdk, {
-      dataContractId: forge.core,
-      documentTypeName: DOC.repo,
-      where: [['$ownerId', '==', ownerId]],
-      orderBy: [['name', 'asc']],
-      limit,
-    })
-    return documents.map((d) => fromRepoDoc(toRepoDoc(d)))
-  }
+  // One composite with each repo's star and issue counts (L-86: the profile's cards show them,
+  // as Explore's do), through the `ownerName` index; a node that refuses the shape gets the
+  // plain read, without counts.
+  const owned = async (): Promise<DiscoveredRepo[]> =>
+    (
+      await readRepoPage<string>(
+        sdk,
+        forge,
+        opts.network ?? DEFAULT_NETWORK,
+        { field: 'name', direction: 'asc' },
+        () => [['$ownerId', '==', ownerId]],
+        Math.min(limit, MAX_ROWS),
+        null,
+      )
+    ).repos
   const member = async (): Promise<DiscoveredRepo[]> => {
     const rows = (await readMemberRepoIds(sdk, forge, ownerId)).slice(0, limit)
     if (rows.length === 0) return []
