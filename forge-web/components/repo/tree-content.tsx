@@ -4,20 +4,23 @@
 
 import type { BrowseReader } from '@/lib/browse'
 import type { RepoHome } from '@/lib/view'
-import { commitRootTree, readTree, selectedTip, selectRef, treeAtPath, type TreeEntry } from '@/lib/view'
+import { readTree, selectedTip, selectRef, treeAtPath, type TreeEntry } from '@/lib/view'
+import { rootTreeOf, type PeeledTip } from '@/lib/view/tip'
+import type { RepoRef } from '@/lib/repo'
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
+import { ReadErrorState, ResolvedTip } from '@/components/repo/resolved-tip'
 import { FileList } from '@/components/repo/file-list'
 import { PathBreadcrumb } from '@/components/repo/path-breadcrumb'
 import { PathActions } from '@/components/repo/path-actions'
 import { RefDeletedState, RefNotFoundState, RefSwitcher } from '@/components/repo/ref-switcher'
-import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
+import { EmptyState, LoadingBlock } from '@/components/ui/states'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { pinnedHref, usePermalinkKey } from '@/components/repo/permalink'
 import { FolderOpen } from 'lucide-react'
 
-async function loadDir(reader: BrowseReader, tipOid: string, path: string): Promise<TreeEntry[]> {
-  const { tree } = await commitRootTree(reader, tipOid)
+async function loadDir(reader: BrowseReader, tip: PeeledTip, path: string): Promise<TreeEntry[]> {
+  const tree = await rootTreeOf(reader, tip)
   return path ? treeAtPath(reader, tree, path) : readTree(reader, tree)
 }
 
@@ -53,7 +56,9 @@ export function TreeContent({
       </div>
       <BrowseBoundary repo={home.repo} addr={addr}>
         {(reader, retry) => (
-          <DirBody reader={reader} retry={retry} tipOid={tipOid} path={path} addr={addr} refParam={refParam} privateRepo={home.repo.visibility === 'private'} />
+          <ResolvedTip reader={reader} retry={retry} repo={home.repo} tip={tipOid} pinned={selected.pinned !== undefined} name={selected.name} addr={addr} refParam={refParam} accepts="tree" label="Reading tree">
+            {(tip) => <DirBody reader={reader} retry={retry} tip={tip} path={path} addr={addr} refParam={refParam} repo={home.repo} />}
+          </ResolvedTip>
         )}
       </BrowseBoundary>
     </div>
@@ -63,28 +68,29 @@ export function TreeContent({
 function DirBody({
   reader,
   retry,
-  tipOid,
+  tip,
   path,
   addr,
   refParam,
-  privateRepo,
+  repo,
 }: {
   reader: BrowseReader
   retry: () => void
-  tipOid: string
+  tip: PeeledTip
   path: string
   addr: RepoAddress
   refParam: string
-  privateRepo: boolean
+  repo: RepoRef
 }): JSX.Element {
-  const { data, loading, error } = useAsync(() => loadDir(reader, tipOid, path), [tipOid, path])
-  usePermalinkKey(pinnedHref(addr, 'tree', tipOid, path, privateRepo))
+  const { data, loading, error, cause } = useAsync(() => loadDir(reader, tip, path), [tip.oid, path])
+  // A tag of a tree pins to the tree itself: `?ref=` takes commits only, so it keeps its name.
+  usePermalinkKey(tip.type === 'commit' ? pinnedHref(addr, 'tree', tip.oid, path, repo.visibility === 'private') : null)
   if (loading) return <LoadingBlock label="Reading tree" />
   // A missing path is deterministic (common right after a ref switch) — no point retrying.
   if (error?.includes('path not found')) {
     return <EmptyState icon={FolderOpen} title="Directory not found on this ref" body={`${path} does not exist here. Pick another branch or tag, or browse from the repo root.`} />
   }
-  if (error) return <ErrorState message={error} onRetry={retry} />
+  if (error) return <ReadErrorState cause={cause} retry={retry} addr={addr} repo={repo} />
   if (!data) return <LoadingBlock />
   return <FileList entries={data} addr={addr} basePath={path} refParam={refParam} />
 }

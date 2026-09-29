@@ -41,6 +41,7 @@ import { BackendBadge } from '@/components/ui/backend-badge'
 import { CloneBox } from '@/components/repo/clone-box'
 import { LanguageBar, useRepoFacts } from '@/components/repo/repo-facts-card'
 import { repoFactsLoading, subscribeRepoFacts, wantRepoFacts } from '@/lib/view/repo-facts'
+import { peeledCommitOf } from '@/lib/view/tip'
 import { Author } from '@/components/author'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 
@@ -156,7 +157,8 @@ function Facts({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
   const { license, languages } = useRepoFacts(key, tip)
   // A placeholder only while the home has a load of these facts registered: a route that works
   // none out (tree, blob, commits), an empty repo or a failed load shows nothing, as before.
-  const loading = useSyncExternalStore(subscribeRepoFacts, () => repoFactsLoading(key, tip), () => false)
+  // Keyed by the commit, as the home keys it: a tag's tip is its tag object (L-01).
+  const loading = useSyncExternalStore(subscribeRepoFacts, () => repoFactsLoading(key, peeledCommitOf(tip, key)), () => false)
   const [ref, inView] = useInView<HTMLDivElement>()
   useEffect(() => {
     if (inView) wantRepoFacts(key)

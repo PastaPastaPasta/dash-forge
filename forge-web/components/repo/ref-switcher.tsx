@@ -139,7 +139,7 @@ export function RefNotFoundState({
     <EmptyState
       icon={GitBranch}
       title="Ref not found"
-      body={`No branch or tag named ${refParam} in this repo.`}
+      body={`No branch, tag or commit named ${refParam} in this repo.`}
       action={
         <Link href={repoHref('/repo', addr)}>
           <Button variant="primary">Back to {defaultBranch}</Button>

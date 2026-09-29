@@ -43,6 +43,7 @@ import {
 } from '@/lib/view/commit-log'
 import { useAsync } from '@/hooks/use-async'
 import { BrowseBoundary } from '@/components/repo/browse-boundary'
+import { ResolvedTip } from '@/components/repo/resolved-tip'
 import { StorageUnreachableCard } from '@/components/repo/storage-unreachable'
 import { PackUnavailableError, unavailableOf } from '@/lib/view/browse-source'
 import { FileList } from '@/components/repo/file-list'
@@ -128,7 +129,11 @@ export function RepoHomeContent({
   return (
     <BrowseBoundary repo={home.repo} addr={addr}>
       {(reader, retry) => (
-        <RootBody reader={reader} retry={retry} tipOid={tipOid} home={home} addr={addr} selected={selected} refParam={refParam} />
+        // An annotated tag (a release) is peeled to its commit first (L-01): the listing, the
+        // commit count and the commit column all key on the commit.
+        <ResolvedTip reader={reader} retry={retry} repo={home.repo} tip={tipOid} pinned={selected.pinned !== undefined} name={selected.name} addr={addr} refParam={refParam} accepts="commit" label="Reading root tree">
+          {(tip) => <RootBody reader={reader} retry={retry} tipOid={tip.oid} home={home} addr={addr} selected={selected} refParam={refParam} />}
+        </ResolvedTip>
       )}
     </BrowseBoundary>
   )

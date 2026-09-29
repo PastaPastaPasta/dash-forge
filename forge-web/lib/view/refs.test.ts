@@ -102,10 +102,12 @@ describe('pinned commits (permalinks, D-054)', () => {
     expect(selectedTip(selectRef(branches, tags, 'main', ''))).toBe('1'.repeat(40))
   })
 
-  it('leaves an unknown short name unresolved', () => {
-    const selected = selectRef(branches, tags, 'main', 'abcdef0')
-    expect(selected.ref).toBeUndefined()
-    expect(selected.pinned).toBeUndefined()
-    expect(selectedTip(selected)).toBeNull()
+  it('pins a short hex id for the view to resolve (L-32), and leaves other unknown names unresolved', () => {
+    const short = selectRef(branches, tags, 'main', 'abcdef0')
+    expect(short.ref).toBeUndefined()
+    expect(short.pinned).toBe('abcdef0')
+    const unknown = selectRef(branches, tags, 'main', 'feature-x')
+    expect(unknown.pinned).toBeUndefined()
+    expect(selectedTip(unknown)).toBeNull()
   })
 })

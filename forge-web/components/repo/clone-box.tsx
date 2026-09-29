@@ -20,6 +20,8 @@ import { errorMessage } from '@/lib/utils'
 import { saveBytes } from '@/lib/view/release-download'
 import { formatBytes, plural, selectedTip, type RepoHome, type SelectedRef } from '@/lib/view'
 import { repoCommands } from '@/lib/view/repo-commands'
+import { resolveTip } from '@/lib/view/tip'
+import { repoKey } from '@/lib/repo'
 import {
   compressInWorker,
   listFiles,
@@ -94,7 +96,8 @@ function ZipDownload({ home, addr, selected }: { home: RepoHome; addr: RepoAddre
     setMessage(null)
     setProgress({ phase: 'listing', files: 0, filesTotal: 0, bytes: 0 })
     try {
-      const files = await listFiles(reader, tip)
+      // A short pinned id resolved to its commit, and a tag to what it names (L-01, L-32).
+      const files = await listFiles(reader, (await resolveTip(reader, tip, { repoKey: repoKey(home.repo), pinned: selected.pinned !== undefined })).oid)
       const stored = storedSize(files)
       if (stored > ZIP_MAX_BYTES) throw new ZipTooLargeError(stored)
       const entries = await readZipFiles(reader, files, setProgress, cancel.current.signal)

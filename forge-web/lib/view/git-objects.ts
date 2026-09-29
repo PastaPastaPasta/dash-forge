@@ -105,6 +105,30 @@ export function parseCommit(bytes: Uint8Array): CommitObject {
   return { tree, parents, author: a === undefined ? none : parseIdent(a), committer: c === undefined ? none : parseIdent(c), message }
 }
 
+/** The header of an annotated tag object: what it points at. */
+export interface TagObject {
+  /** The object the tag names (a commit, usually; another tag, a tree or a blob, rarely). */
+  readonly object: string
+  /** The type the tag declares for it (the object's own type is what counts). */
+  readonly type: string
+  readonly tag: string
+}
+
+/**
+ * Parse an annotated tag the way git does (`parse_tag_buffer`): `object <oid>` is the first
+ * header line and `type <type>` the second. Null for a tag that does not start that way.
+ */
+export function parseTag(bytes: Uint8Array): TagObject | null {
+  const text = new TextDecoder('utf-8', { fatal: false, ignoreBOM: true }).decode(bytes)
+  const sep = text.indexOf('\n\n')
+  const lines = (sep === -1 ? text : text.slice(0, sep)).split('\n')
+  const object = lines[0]?.startsWith('object ') ? (lines[0] as string).slice(7) : ''
+  const type = lines[1]?.startsWith('type ') ? (lines[1] as string).slice(5) : ''
+  if (!OID_HEX.test(object) || type === '') return null
+  const tag = lines.find((l) => l.startsWith('tag '))?.slice(4) ?? ''
+  return { object, type, tag }
+}
+
 /** A commit or tree that `git fsck` would refuse (or that git and this client would read differently). */
 export class MalformedObjectError extends Error {
   // A plain field, not a parameter property: this module also loads under Node's
@@ -118,7 +142,7 @@ export class MalformedObjectError extends Error {
   }
 }
 
-const OID_HEX = /^[0-9a-f]{40}$/
+export const OID_HEX = /^[0-9a-f]{40}$/
 
 /**
  * git's author/committer/tagger-line checks, ignored wherever Dash Forge checks objects (the
