@@ -18,7 +18,7 @@ import { queryPulls, type PullSelection } from './pull-index'
 import type { RepoRef } from './contract'
 import { mockSdk, newSeen, type Doc, type Seen, type Store } from './drive-mock'
 
-const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' }
+const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', community: 'COMMUNITY', group: 'GROUP' }
 const REPO = 'C8XSf6R4shR1kqFKUZQnuaEZ5DkW7uoe9qtQYZpS5SRd'
 const OWNER = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const MAINT = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
@@ -74,10 +74,11 @@ function bigRepo(n: number, { churn = true }: { churn?: boolean } = {}): Store {
     COLLAB: {
       patch: patches,
       issue: [1, 2].map((i) => ({ $id: base58Encode(sha256(new TextEncoder().encode(`i${i}`))), $ownerId: AUTHOR, $createdAt: 1_500_000 + i, repoId: REPO, number: 1000 + i, title: `Issue ${i}`, body: '' })),
-      event: events,
       transition: transitions,
       comment: [PID(n), PID(n), PID(n - 1)].map((target, k) => ({ $id: `c${k}`, $ownerId: OWNER, $createdAt: 5 + k, repoId: REPO, targetId: target })),
     },
+    // RC1 layout: events (labels, assignees) live in forge-community.
+    COMMUNITY: { event: events },
     CORE: {
       label: [{ $id: 'l1', $createdAt: 1, repoId: REPO, name: 'bug', color: '#d73a4a' }],
       config: [{ $id: 'cfg', $ownerId: OWNER, $createdAt: 5, repoId: REPO, defaultBranch: 'main', protectedPatterns: [] }],
@@ -132,6 +133,9 @@ describe('pull index', () => {
     expect(plainOf(seen, 'protectedRefUpdate')).toHaveLength(1)
     expect(plainOf(seen, 'config').length).toBeLessThanOrEqual(1)
     expect(plainOf(seen, 'event').length).toBeGreaterThan(0)
+    // The feed is read from forge-community (its first page as a sibling of the collab composite).
+    expect(plainOf(seen, 'event').every((q) => q.dataContractId === 'COMMUNITY')).toBe(true)
+    expect(seen.composites[0]?.subQueries.some((sq) => sq.documentType === 'event' && sq.dataContractId === 'COMMUNITY')).toBe(true)
     expect(seen.counts.map((q) => q.documentTypeName).sort()).toEqual(['issue', 'patch', 'transition'])
     expect(requests(seen)).toBeLessThanOrEqual(10)
     expect(page.rows.find((r) => r.number === 202)?.comments).toBe(1)
@@ -213,7 +217,7 @@ describe('pull index', () => {
     const stale = queryPulls(sdk, repo, base, 30, 'devnet')
     await Promise.resolve()
     // A maintainer labels #2 while the composite (whose feed page is from before) is held.
-    store.COLLAB!.event!.push({ $id: 'elabel', $ownerId: MAINT, $createdAt: 9_000_000, repoId: REPO, targetId: PID(2), targetNumber: 2, kind: 4, value: 'bug' })
+    store.COMMUNITY!.event!.push({ $id: 'elabel', $ownerId: MAINT, $createdAt: 9_000_000, repoId: REPO, targetId: PID(2), targetNumber: 2, kind: 4, value: 'bug' })
     invalidateRepoFeed(repo)
     seen.hold = null
     release()
