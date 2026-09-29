@@ -29,6 +29,7 @@ use crate::platform::{self, LoadedIdentity, PlatformClient};
 use crate::repo::{
     order_copies, PackManifestInfo, PackManifestInput, RepoService, RoleMap, MANIFEST_URIS_V2,
 };
+use crate::rules::v2::Visibility;
 use crate::rules::RefState;
 use crate::scope::RepoRef;
 
@@ -76,7 +77,6 @@ pub fn fork_manifest(
         object_count: first.object_count,
         chunk_count: 0,
         storage: 1,
-        offset_index_parts: first.offset_index_parts,
         uris,
         supersedes: first.supersedes.clone(),
         tips: Vec::new(),
@@ -167,7 +167,14 @@ pub async fn fork_repo(
     opts: &CreateRepoOpts,
     journal_dir: &std::path::Path,
 ) -> Result<ForkResult> {
+    // RC1 `repo_shape`: a fork is public (`forkIsPublic`) and so is its parent (the `forkOf`
+    // reference requires the same visibility). Both are refused here, before anything is signed.
     parent.require_public("forking")?;
+    if opts.visibility != Visibility::Public {
+        return Err(Error::Config(
+            "a fork is always public: forking into a private repository is not supported".into(),
+        ));
+    }
     let forge = parent.forge();
     let mut opts = opts.clone();
     opts.name = crate::resolve::repo_slug(&opts.name)?;
@@ -261,7 +268,6 @@ pub async fn fork_repo(
 mod tests {
     use super::*;
     use crate::network::ForgeIds;
-    use crate::rules::v2::Visibility;
 
     const PARENT: &str = "A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1";
     const UPLOADER: &str = "HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr";
@@ -287,7 +293,6 @@ mod tests {
             object_count: 3,
             chunk_count: u64::from(storage == 0),
             storage,
-            offset_index_parts: 0,
             uris: uris.iter().map(|u| (*u).to_string()).collect(),
             supersedes: Vec::new(),
             tips: Vec::new(),

@@ -801,11 +801,10 @@ impl<'a> Sink<'a> {
         // Newest first (the source's order): the hashing budget goes to the newest releases.
         let mut prepared = Vec::with_capacity(releases.len());
         for r in releases {
-            if r.tag_name.is_empty() || r.tag_name.len() > 63 {
-                self.ledger.warn(format!(
-                    "release tag {:?} does not fit the 63 bytes a release holds; skipped",
-                    r.tag_name
-                ));
+            // A tag the destination would refuse (over 63 bytes, or outside the git ref
+            // grammar the contract enforces, `@{` included) skips that release, not the run.
+            if let Err(e) = forge_core::collab::v2::check_tag_name(&r.tag_name) {
+                self.ledger.skip(format!("release not mirrored: {e}"));
                 continue;
             }
             let mut assets_in = r.assets.clone();
@@ -864,14 +863,22 @@ impl<'a> Sink<'a> {
             };
             let (collab, repo) = (&self.collab, self.repo.as_ref());
             let input = &input;
-            self.ledger
+            let written = self
+                .ledger
                 .write(
                     format!("release {}", r.tag_name),
                     credits,
                     |c| c.releases += 1,
                     || async move { collab.create_release(need(repo)?, input).await },
                 )
-                .await?;
+                .await;
+            // The destination refusing this release (a rule such as `oneLive` after a concurrent
+            // publish, or its content) skips it; spend-cap and network errors stop the run.
+            if let Err(e) = written {
+                let skipped = format!("release {} not mirrored this run: {e:#}", r.tag_name);
+                self.ledger
+                    .skip(item_error(&e).then_some(skipped).ok_or(e)?);
+            }
         }
         Ok(())
     }

@@ -245,11 +245,15 @@ pub struct Release {
     pub yanked: bool,
     /// Assets (parsed from the `assets` JSON-string field).
     pub assets: Vec<ReleaseAsset>,
-    /// Who published this revision (`$ownerId`). Always shown: a maintainer who is later
-    /// revoked can still delete (not edit) their release, so readers name the publisher.
+    /// Who published this revision (`$ownerId`). Always shown: readers name the publisher
+    /// of each revision.
     pub publisher: String,
     /// Consensus `$createdAt` (ms).
     pub created_at: u64,
+    /// `release.delta` (RC1 `release_ledger`): `+1` publishes the tag, `0` edits, yanks or
+    /// seals it, `-1` unpublishes it. A tag is live while its revisions sum to 1; releases
+    /// cannot be deleted.
+    pub delta: i64,
 }
 
 /// Build a [`Release`] from a fetched document.
@@ -283,6 +287,11 @@ pub(crate) fn release_from_doc(d: &platform::FetchedDocument) -> Release {
         assets,
         publisher: d.owner_id.clone(),
         created_at: d.created_at.unwrap_or(0),
+        delta: d
+            .fields
+            .get("delta")
+            .and_then(FieldValue::as_i64)
+            .unwrap_or(0),
     }
 }
 

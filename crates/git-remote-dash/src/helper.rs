@@ -1869,7 +1869,6 @@ async fn record_pack(
                 object_count: job.object_count,
                 chunk_count: stored.chunk_count,
                 storage: stored.storage,
-                offset_index_parts: 0,
                 uris: stored.uris,
                 // An incremental push supersedes nothing and carries no flatIndex tips.
                 supersedes: Vec::new(),

@@ -183,7 +183,6 @@ mod tests {
             object_count: 1,
             chunk_count: chunks,
             storage,
-            offset_index_parts: 0,
             uris: uris.iter().map(ToString::to_string).collect(),
             supersedes: Vec::new(),
             tips: Vec::new(),
