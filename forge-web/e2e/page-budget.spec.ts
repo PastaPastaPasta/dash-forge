@@ -111,7 +111,7 @@ test.describe('page request budget (S-1)', () => {
     const issueDapi = recordDapi(issues)
     await issues.goto(repoUrl('issues'), { waitUntil: 'domcontentloaded' })
     await waitForRepoResolved(issues)
-    await expect(issues.locator('main a[href*="/repo/issue"]').first()).toBeVisible({ timeout: 60_000 })
+    await expect(issues.locator('main a[href*="/repo/issue/"][href*="number="]').first()).toBeVisible({ timeout: 60_000 })
     await settle(issues)
     const list = issueDapi.all()
     test.info().annotations.push({ type: 'dapi', description: `fixture cold issues: ${list.length} ${summary(list)}` })

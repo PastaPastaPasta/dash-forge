@@ -218,5 +218,6 @@ test('g6. showcase repos are discoverable: search, jump box and short URL (showc
 
   await page.goto(`/${id}/ripgrep/tags`, { waitUntil: 'domcontentloaded' })
   await expect(page).toHaveURL(/\/repo\/tags\/?\?owner=/)
-  await expect(page.locator('main a[href*="/repo"]').first()).toBeVisible({ timeout: 60_000 })
+  // A tag's link (the shell header's tabs would match a bare /repo prefix before the page resolves).
+  await expect(page.locator('main a[href*="/repo/tree/"], main a[href*="/repo/release/"], main a[href*="/repo/commit/"]').first()).toBeVisible({ timeout: 60_000 })
 })
