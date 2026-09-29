@@ -25,6 +25,7 @@ import {
   TRANSITION_KINDS,
   nextTransition,
   repoCounts,
+  type Actor,
   type RepoCounts,
   type StateAction,
   type Transition,
@@ -179,10 +180,10 @@ export function transitionData(
   target: StateTarget,
   code: number,
   action: StateAction,
-  member: boolean,
+  actor: Actor,
   oidHex?: string,
 ): Record<string, unknown> {
-  const move = nextTransition(target.type, code, action, member, target.number)
+  const move = nextTransition(target.type, code, action, actor, target.number)
   if (move === null) throw new IllegalTransitionError(action, code)
   if (move.kind === PR_MERGE && (oidHex === undefined || oidHex === '')) throw new Error('a merge names its commit')
   return {
@@ -217,15 +218,15 @@ export async function writeTransition(
   const isAuthor = auth.identityId === target.author
   if (!input.isMember && !isAuthor) throw new Error('only the author or a maintainer or writer can do that')
   if (action === 'merge' && !input.isMember) throw new Error('only a maintainer or writer can merge')
-  let member = input.isMember
+  let actor: Actor = input.isMember ? 'member' : 'author'
   for (let attempt = 0; attempt < 2; attempt++) {
     const code = (await readStateCodes(sdk, repo, [target.id])).get(target.id) ?? 0
-    const intent = input.intent ? `${input.intent}:${code}:${member ? 'm' : 'a'}` : undefined
+    const intent = input.intent ? `${input.intent}:${code}:${actor === 'member' ? 'm' : 'a'}` : undefined
     try {
-      return await write(DOC.transition, transitionData(target, code, action, member, input.oidHex), intent)
+      return await write(DOC.transition, transitionData(target, code, action, actor, input.oidHex), intent)
     } catch (e) {
-      if (e instanceof ConsensusRefusal && e.code === GATE_REFUSED_CODE && member && isAuthor && action !== 'merge') {
-        member = false
+      if (e instanceof ConsensusRefusal && e.code === GATE_REFUSED_CODE && actor === 'member' && isAuthor && action !== 'merge') {
+        actor = 'author'
         continue
       }
       if (isStaleStateRefusal(e) && attempt === 0) continue
