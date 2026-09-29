@@ -8,7 +8,7 @@ import { useMemo } from 'react'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import type { MarkdownLinks } from '@/components/markdown-view'
 import { mirrorSourceOfDescription } from '@/lib/view/mirror-source'
-import { forgeRepoOfLabel, type ForgeRepo, type NamedRepo, type RefTarget } from '@/lib/view/ref-targets'
+import type { ForgeRepo, RefTarget } from '@/lib/view/ref-targets'
 
 /** Issue `n` of `addr`. */
 export function issueHref(addr: RepoAddress, n: number): string {
@@ -35,16 +35,13 @@ export function profileHref(name: string): string {
   return `/u/?name=${encodeURIComponent(name)}`
 }
 
-/** `addr`, or another Forge repo `owner/name` a reference names. */
-const repoOf = (addr: RepoAddress, repo: NamedRepo | null): RepoAddress => (repo === null ? addr : { owner: repo.owner, name: repo.name })
-
-/** The href of a reference target, in `addr`'s pages. */
+/** The href of a reference target, in `addr`'s pages (or another Forge repo's it names). */
 export function targetHref(addr: RepoAddress, target: RefTarget): string {
   switch (target.kind) {
     case 'number':
-      return numberHref(repoOf(addr, target.repo), target.n, target.upstream)
+      return numberHref(target.repo ?? addr, target.n, target.upstream)
     case 'commit':
-      return repoHref('/repo/commit', repoOf(addr, target.repo), { oid: target.oid })
+      return repoHref('/repo/commit', target.repo ?? addr, { oid: target.oid })
     case 'profile':
       return profileHref(target.name)
     case 'external':
@@ -71,7 +68,17 @@ export function sourceUrl(links: MarkdownLinks): string | null {
  * is the one the owner's description names (`Mirror of github.com/o/r`): no read.
  */
 export function useRepoLinks(addr: RepoAddress, description: string): MarkdownLinks {
-  const label = mirrorSourceOfDescription(description, 'issue')?.label ?? null
   const { owner, name, repoId } = addr
-  return useMemo(() => repoLinks({ owner, name, ...(repoId ? { repoId } : {}) }, forgeRepoOfLabel(label)), [owner, name, repoId, label])
+  return useMemo(() => repoLinks({ owner, name, ...(repoId ? { repoId } : {}) }, mirrorRepo(description)), [owner, name, repoId, description])
+}
+
+/** The repo a mirror's description names (`Mirror of github.com/o/r`), or null. */
+export function mirrorRepo(description: string): ForgeRepo | null {
+  return forgeRepoOf(mirrorSourceOfDescription(description, 'issue')?.label ?? null)
+}
+
+/** `github.com/dashpay/dash` (a mirror source's label) as a {@link ForgeRepo}. */
+function forgeRepoOf(label: string | null): ForgeRepo | null {
+  const slash = label?.indexOf('/') ?? -1
+  return label === null || slash <= 0 ? null : { host: label.slice(0, slash).toLowerCase(), path: label.slice(slash + 1) }
 }

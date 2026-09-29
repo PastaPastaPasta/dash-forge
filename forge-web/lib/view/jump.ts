@@ -10,6 +10,7 @@ import type { Network } from '../constants'
 import { DOC, repoSource, resolveOwner, type RepoRef } from '../repo'
 import { queryDocumentsWithProof } from '../sdk'
 import { reposNamed, type DiscoveredRepo } from './discovery'
+import { importedUrlOf } from './ref-targets'
 
 export type Jump =
   | { readonly kind: 'repo'; readonly owner: string; readonly name: string; readonly number?: number }
@@ -114,10 +115,7 @@ export async function numberRows(sdk: EvoSDK, repo: RepoRef, number: number): Pr
   const row = async (type: string): Promise<NumberRow | null> => {
     const { documents } = await queryDocumentsWithProof(sdk, repoSource(repo).repoQuery(type, { where: [['number', '==', number]], limit: 1 }))
     const doc = documents[0]
-    if (doc === undefined) return null
-    const imported = doc['imported']
-    const url = typeof imported === 'object' && imported !== null ? (imported as Record<string, unknown>)['url'] : undefined
-    return { importedUrl: typeof url === 'string' ? url : '' }
+    return doc === undefined ? null : { importedUrl: importedUrlOf(doc['imported']) }
   }
   const [issue, pull] = await Promise.all([row(DOC.issue), row(DOC.patch)])
   return { issue, pull }

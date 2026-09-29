@@ -169,32 +169,30 @@ export type RefPiece =
  */
 export function splitRefs(text: string): RefPiece[] {
   const out: RefPiece[] = []
-  const pushText = (v: string): void => {
-    const prev = out[out.length - 1]
-    if (prev?.t === 'text') out[out.length - 1] = { t: 'text', v: prev.v + v }
-    else out.push({ t: 'text', v })
-  }
+  const repoOf = (owner: string | undefined, name: string | undefined): { repo?: RefRepo } =>
+    owner === undefined ? {} : { repo: { owner, name: name as string } }
   let last = 0
   for (const m of text.matchAll(REF_RE)) {
     const lead = m[1] ?? ''
     const start = (m.index ?? 0) + lead.length
-    const end = (m.index ?? 0) + m[0].length
     let piece: RefPiece | null
     if (m[4] !== undefined) {
-      piece = { t: 'ref', n: Number(m[4]), ...(m[2] !== undefined ? { repo: { owner: m[2], name: m[3] as string } } : {}) }
+      const n = Number(m[4])
+      piece = n === 0 ? null : { t: 'ref', n, ...repoOf(m[2], m[3]) }
     } else if (m[7] !== undefined) {
       const oid = m[7]
-      piece = /\d/.test(oid) && /[a-f]/.test(oid) ? { t: 'commit', oid, ...(m[5] !== undefined ? { repo: { owner: m[5], name: m[6] as string } } : {}) } : null
+      piece = /\d/.test(oid) && /[a-f]/.test(oid) ? { t: 'commit', oid, ...repoOf(m[5], m[6]) } : null
     } else {
       const label = m[8] as string
       piece = { t: 'mention', name: label.toLowerCase(), label, ...(m[9] === '[bot]' ? { bot: true as const } : {}) }
     }
-    if (piece === null || (piece.t === 'ref' && piece.n === 0)) continue // stays text
-    if (start > last) pushText(text.slice(last, start))
+    // A skipped match stays in the text around it (`last` does not move).
+    if (piece === null) continue
+    if (start > last) out.push({ t: 'text', v: text.slice(last, start) })
     out.push(piece)
-    last = end
+    last = (m.index ?? 0) + m[0].length
   }
-  if (last < text.length) pushText(text.slice(last))
+  if (last < text.length) out.push({ t: 'text', v: text.slice(last) })
   return out
 }
 
@@ -1192,12 +1190,13 @@ let footnoteUse = new Map<string, { n: number; refs: number }>()
  * and a JS map iteration visits entries added during it. Each note is parsed once.
  */
 function parseFootnotes(): Footnote[] {
-  const parsed: { label: string; n: number; c: Block[] }[] = []
+  // `use.refs` is read after the walk: a later note may reference an earlier one again.
+  const parsed: { label: string; use: { n: number; refs: number }; c: Block[] }[] = []
   for (const [label, use] of footnoteUse) {
     if (nodesLeft <= 0) break
-    parsed.push({ label, n: use.n, c: parseBlocks(footnoteDefs.get(label) ?? [], 1) })
+    parsed.push({ label, use, c: parseBlocks(footnoteDefs.get(label) ?? [], 1) })
   }
-  return parsed.map((p) => ({ ...p, refs: footnoteUse.get(p.label)?.refs ?? 1 }))
+  return parsed.map(({ label, use, c }) => ({ label, n: use.n, refs: use.refs, c }))
 }
 
 /** Most reference (and footnote) definitions one document may declare. */
@@ -1445,7 +1444,7 @@ function listMarker(line: string): ListMarker | null {
   if (m === null) return null
   const indent = indentOf(m[1] as string)
   const marker = m[2] as string
-  const ordered = marker.length > 1 || /\d/.test(marker)
+  const ordered = marker.length > 1 // a bullet is one character; `1.` at least two
   const markerEnd = indent + marker.length
   const spaces = m[3] === undefined ? 0 : indentOf(' '.repeat(markerEnd) + m[3]) - markerEnd
   const text = m[4] ?? ''
@@ -1478,15 +1477,6 @@ function isLazyLine(line: string, prev: string | undefined, inFence: boolean): b
   return !inFence && prev !== undefined && prev.trim() !== '' && line.trim() !== '' && !isBlockStart(line) && !SETEXT.test(line)
 }
 
-/** A container's lines, tracking whether they are inside fenced code (lazy lines are not). */
-function fenceTracker(): (line: string) => boolean {
-  let open = false
-  return (line) => {
-    if (FENCE.test(line)) open = !open
-    return open
-  }
-}
-
 /**
  * Blocks of `lines`, and whether a blank line separates two of them (a list item holding such
  * a gap makes its list loose).
@@ -1504,7 +1494,7 @@ function parseBlockRun(lines: readonly string[], depth: number): { blocks: Block
    * one item.
    */
   const parseList = (first: ListMarker): Block => {
-    const items: Inline[][] = []
+    const items: (readonly Inline[])[] = []
     const tasks: (boolean | null)[] = []
     const rest: Block[][] = []
     let loose = false
@@ -1514,8 +1504,8 @@ function parseBlockRun(lines: readonly string[], depth: number): { blocks: Block
       const task = TASK.exec(marker.content)
       tasks.push(task === null ? null : task[1] !== ' ')
       const body = [task === null ? marker.content : marker.content.slice(task[0].length)]
-      const inFence = fenceTracker()
-      let fenced = inFence(body[0] as string)
+      // Inside fenced code, a line is never lazy (a lazy line cannot be a fence: isBlockStart).
+      let fenced = FENCE.test(body[0] as string)
       let blanks = 0
       i += 1
       while (i < lines.length) {
@@ -1525,8 +1515,9 @@ function parseBlockRun(lines: readonly string[], depth: number): { blocks: Block
           body.push('')
         } else if (indentOf(l) >= marker.width) {
           blanks = 0
-          body.push(stripCols(l, marker.width))
-          fenced = inFence(body[body.length - 1] as string)
+          const stripped = stripCols(l, marker.width)
+          body.push(stripped)
+          if (FENCE.test(stripped)) fenced = !fenced
         } else if (blanks === 0 && listMarker(l) === null && isLazyLine(l, body[body.length - 1], fenced)) {
           body.push(l)
         } else break
@@ -1541,8 +1532,9 @@ function parseBlockRun(lines: readonly string[], depth: number): { blocks: Block
       const run = depth + 1 < MAX_NEST_DEPTH ? parseBlockRun(body, depth + 1) : { blocks: [plainParagraph(body)], gap: false }
       if (run.gap) loose = true
       const head = run.blocks[0]
-      items.push(head?.t === 'paragraph' ? [...head.c] : [])
-      rest.push(head?.t === 'paragraph' ? run.blocks.slice(1) : run.blocks)
+      const text = head?.t === 'paragraph' ? head.c : null
+      items.push(text ?? [])
+      rest.push(text !== null ? run.blocks.slice(1) : run.blocks)
       // The next item: the same kind of marker, after any blank lines (which make the list loose).
       let k = i
       while (k < lines.length && (lines[k] ?? '').trim() === '') k += 1
@@ -1645,14 +1637,15 @@ function parseBlockRun(lines: readonly string[], depth: number): { blocks: Block
     // blockquote: `>` lines, and lazy lines continuing its paragraph (GitHub alerts at the top level)
     if (QUOTE.test(line)) {
       const buf: string[] = []
-      const inFence = fenceTracker()
       let fenced = false
       while (i < lines.length) {
         const l = lines[i] ?? ''
-        if (QUOTE.test(l)) buf.push(l.replace(/^ {0,3}> ?/, ''))
-        else if (isLazyLine(l, buf[buf.length - 1], fenced)) buf.push(l)
+        if (QUOTE.test(l)) {
+          const inner = l.replace(/^ {0,3}> ?/, '')
+          buf.push(inner)
+          if (FENCE.test(inner)) fenced = !fenced
+        } else if (isLazyLine(l, buf[buf.length - 1], fenced)) buf.push(l)
         else break
-        fenced = inFence(buf[buf.length - 1] as string)
         i += 1
       }
       if (depth + 1 >= MAX_NEST_DEPTH) {

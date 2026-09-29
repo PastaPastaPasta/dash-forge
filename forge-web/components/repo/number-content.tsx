@@ -16,13 +16,12 @@ import { ExternalLink, Hash } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { repoContractIds, repoKey } from '@/lib/repo'
 import { isUpstreamItem, numberRows, type NumberRow } from '@/lib/view/jump'
-import { mirrorSourceOfDescription } from '@/lib/view/mirror-source'
-import { forgeRepoOfLabel, upstreamItemUrl } from '@/lib/view/ref-targets'
+import { upstreamItemUrl } from '@/lib/view/ref-targets'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import type { RepoAddress } from '@/hooks/use-query-param'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
-import { issueHref, pullHref } from '@/components/repo/target-href'
+import { issueHref, mirrorRepo, pullHref } from '@/components/repo/target-href'
 
 export function NumberContent({ home, addr, number, upstream }: { home: RepoHome; addr: RepoAddress; number: number; upstream: boolean }): JSX.Element {
   const { sdk, ready } = useSdk(repoContractIds(home.repo))
@@ -43,7 +42,7 @@ export function NumberContent({ home, addr, number, upstream }: { home: RepoHome
   if (!valid) return <EmptyState icon={Hash} title="No number addressed" body="Add &number= to the URL." />
   if (error) return <ErrorState message={error} onRetry={reload} />
   if (data === null || only !== null) return <LoadingBlock label={`Finding #${number}`} />
-  const source = forgeRepoOfLabel(mirrorSourceOfDescription(home.description, 'issue')?.label)
+  const source = mirrorRepo(home.description)
   const upstreamUrl = upstreamItemUrl(source, number)
   if (issue && pull) {
     return (

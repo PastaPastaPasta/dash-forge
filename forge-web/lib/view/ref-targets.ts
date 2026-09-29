@@ -12,7 +12,7 @@
  * mirror copies) stay here whatever the content's origin: the mirror holds those items.
  */
 
-import type { RefPiece } from './markdown'
+import type { RefPiece, RefRepo } from './markdown'
 
 /** A forge and a repository path on it: `github.com` + `dashpay/dash`. */
 export interface ForgeRepo {
@@ -30,17 +30,11 @@ export interface RefContext {
   readonly imported: string | null
 }
 
-/** A Forge repo named in text (`owner` is a DPNS name or an identity id). */
-export interface NamedRepo {
-  readonly owner: string
-  readonly name: string
-}
-
 export type RefTarget =
   /** Issue or PR `n` of this repo (`repo` null) or of another Forge repo. `upstream`: the number is the source forge's (imported content). */
-  | { readonly kind: 'number'; readonly repo: NamedRepo | null; readonly n: number; readonly upstream: boolean }
+  | { readonly kind: 'number'; readonly repo: RefRepo | null; readonly n: number; readonly upstream: boolean }
   /** A commit of this repo (`repo` null) or of another Forge repo. */
-  | { readonly kind: 'commit'; readonly repo: NamedRepo | null; readonly oid: string }
+  | { readonly kind: 'commit'; readonly repo: RefRepo | null; readonly oid: string }
   /** A Forge profile (a DPNS name). */
   | { readonly kind: 'profile'; readonly name: string }
   /** A page on another forge. */
@@ -68,16 +62,15 @@ export function importedHost(importedUrl: string | null | undefined, source: For
 }
 
 /** The `imported.url` of an `imported` provenance object, or ''. */
-export function importedUrlOf(raw: Readonly<Record<string, unknown>> | null | undefined): string {
-  const url = raw?.['url']
+export function importedUrlOf(raw: unknown): string {
+  const url = typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>)['url'] : undefined
   return typeof url === 'string' ? url : ''
 }
 
-/** `https://<host>/<path>/<kind>/<id>` in the source forge's URL layout. */
+/** `https://<host>/<path>/<kind>/<id>` in the source forge's URL layout (GitHub's `issues/N` redirects to `pull/N`). */
 function forgeUrl(host: string, path: string, kind: 'issue' | 'commit', id: string): string {
-  const base = `https://${host}/${path}`
-  if (host === GITHUB) return `${base}/${kind === 'issue' ? 'issues' : 'commit'}/${id}` // issues/N redirects to pull/N
-  return `${base}/-/${kind === 'issue' ? 'issues' : 'commit'}/${id}`
+  const seg = kind === 'issue' ? 'issues' : 'commit'
+  return host === GITHUB ? `https://${host}/${path}/${seg}/${id}` : `https://${host}/${path}/-/${seg}/${id}`
 }
 
 /** A user's page on `host` (GitHub apps: `/apps/<name>`). */
@@ -90,34 +83,17 @@ export function upstreamItemUrl(source: ForgeRepo | null, n: number): string | n
   return source === null ? null : forgeUrl(source.host, source.path, 'issue', String(n))
 }
 
-/** Where `piece` links, or null for text. */
-export function refTarget(piece: RefPiece, ctx: RefContext): RefTarget | null {
-  const imported = ctx.imported
-  // `owner/name` naming the repo this one mirrors is this repo.
-  const other = (repo: NamedRepo | undefined): NamedRepo | null =>
-    repo === undefined || (ctx.source !== null && `${repo.owner}/${repo.name}`.toLowerCase() === ctx.source.path.toLowerCase()) ? null : repo
-  switch (piece.t) {
-    case 'text':
-      return null
-    case 'ref': {
-      const repo = other(piece.repo)
-      if (repo !== null && imported !== null) return { kind: 'external', url: forgeUrl(imported, `${repo.owner}/${repo.name}`, 'issue', String(piece.n)) }
-      return { kind: 'number', repo, n: piece.n, upstream: imported !== null && repo === null }
-    }
-    case 'commit': {
-      const repo = other(piece.repo)
-      if (repo !== null && imported !== null) return { kind: 'external', url: forgeUrl(imported, `${repo.owner}/${repo.name}`, 'commit', piece.oid) }
-      return { kind: 'commit', repo, oid: piece.oid }
-    }
-    case 'mention':
-      if (imported !== null) return { kind: 'external', url: userUrl(imported, piece.label, piece.bot === true) }
-      return { kind: 'profile', name: piece.name }
+/** Where `piece` links. */
+export function refTarget(piece: Exclude<RefPiece, { t: 'text' }>, ctx: RefContext): RefTarget {
+  const { imported, source } = ctx
+  if (piece.t === 'mention') {
+    return imported !== null ? { kind: 'external', url: userUrl(imported, piece.label, piece.bot === true) } : { kind: 'profile', name: piece.name }
   }
-}
-
-/** The repo a forge-import description names (`Mirror of github.com/o/r`), as a {@link ForgeRepo}. */
-export function forgeRepoOfLabel(label: string | null | undefined): ForgeRepo | null {
-  if (!label) return null
-  const slash = label.indexOf('/')
-  return slash <= 0 ? null : { host: label.slice(0, slash).toLowerCase(), path: label.slice(slash + 1) }
+  // `owner/name` naming the repo this one mirrors is this repo.
+  const named = piece.repo === undefined ? '' : `${piece.repo.owner}/${piece.repo.name}`
+  const repo = named === '' || named.toLowerCase() === source?.path.toLowerCase() ? null : (piece.repo as RefRepo)
+  const [kind, id] = piece.t === 'ref' ? (['issue', String(piece.n)] as const) : (['commit', piece.oid] as const)
+  // Another repo named in imported content is that forge's repo.
+  if (repo !== null && imported !== null) return { kind: 'external', url: forgeUrl(imported, named, kind, id) }
+  return piece.t === 'ref' ? { kind: 'number', repo, n: piece.n, upstream: imported !== null && repo === null } : { kind: 'commit', repo, oid: piece.oid }
 }

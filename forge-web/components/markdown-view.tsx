@@ -89,7 +89,14 @@ interface RenderContext {
   readonly notes: string
 }
 
-const Ctx = createContext<RenderContext>({ repo: null, images: 'ask', links: null, suggestion: null, refs: { source: null, imported: null }, notes: '' })
+const EMPTY_CTX: RenderContext = { repo: null, images: 'ask', links: null, suggestion: null, refs: { source: null, imported: null }, notes: '' }
+const Ctx = createContext<RenderContext>(EMPTY_CTX)
+
+/** How references resolve for `links`, in content whose `imported.url` is `imported`. */
+const refsOf = (links: MarkdownLinks | null, imported: string | null): RefContext => {
+  const source = links?.source ?? null
+  return { source, imported: importedHost(imported, source) }
+}
 
 /** A suggestion block as a diff: the replaced lines, then the suggested ones. */
 function SuggestionBlock({ text }: { text: string }): JSX.Element {
@@ -141,7 +148,6 @@ function RefLink({ piece, links }: { piece: Exclude<RefPiece, { t: 'text' }>; li
   const { refs } = useContext(Ctx)
   const target = refTarget(piece, refs)
   const label = refLabel(piece)
-  if (target === null) return <>{label}</>
   const cls = cn(LINK, piece.t === 'mention' && 'font-medium', piece.t === 'commit' && 'font-mono text-[0.9em]')
   if (target.kind === 'external') {
     return (
@@ -175,10 +181,7 @@ function AutolinkedText({ text }: { text: string }): JSX.Element {
  * commit message: no Markdown, the text as written.
  */
 export function LinkifiedText({ text, links, imported = null }: { text: string; links: MarkdownLinks; imported?: string | null }): JSX.Element {
-  const ctx = useMemo<RenderContext>(
-    () => ({ repo: null, images: 'ask', links, suggestion: null, refs: { source: links.source, imported: importedHost(imported, links.source) }, notes: '' }),
-    [links, imported],
-  )
+  const ctx = useMemo<RenderContext>(() => ({ ...EMPTY_CTX, links, refs: refsOf(links, imported) }), [links, imported])
   return (
     <Ctx.Provider value={ctx}>
       {splitUrls(text).map((p, i) =>
@@ -209,7 +212,7 @@ function MdLink({ href, id, children }: { href: string; id?: string; children: R
       </a>
     )
   }
-  if (isRelativeHref(href) || (repo !== null && href.startsWith('/'))) {
+  if (isRepoPath(repo, href)) {
     const path = repo ? repoPathOf(repo, href) : null
     if (repo === null || path === null) return target === undefined ? <>{children}</> : <a id={target}>{children}</a>
     return (
@@ -240,7 +243,12 @@ function MdLink({ href, id, children }: { href: string; id?: string; children: R
  */
 function repoPathOf(repo: MarkdownRepoContext, href: string): string | null {
   const { path } = splitHref(href)
-  return path.startsWith('/') ? resolveRepoPath('', path) : resolveRepoPath(repo.dir, path)
+  return resolveRepoPath(path.startsWith('/') ? '' : repo.dir, path)
+}
+
+/** Whether a link or image names a path in the repo: relative, or `/`-rooted in a repo file. */
+function isRepoPath(repo: MarkdownRepoContext | null, href: string): boolean {
+  return isRelativeHref(href) || (repo !== null && href.startsWith('/'))
 }
 
 /** A last path segment with no extension (`doc`, `test`): perhaps a directory, so worth looking up. */
@@ -260,9 +268,8 @@ function RepoPathLink({ repo, path, href, id, children }: { repo: MarkdownRepoCo
   useEffect(() => {
     if (!lookup || repo.reader === undefined || repo.tipOid === undefined) return
     let active = true
-    const slash = path.lastIndexOf('/')
-    entriesAt(repo.reader, repo.tipOid, slash === -1 ? '' : path.slice(0, slash)).then(
-      (entries) => active && setIsDir({ key, dir: findEntry(entries, path.slice(slash + 1))?.mode === MODE_TREE }),
+    entryAt(repo.reader, repo.tipOid, path).then(
+      (entry) => active && setIsDir({ key, dir: entry?.mode === MODE_TREE }),
       () => undefined, // unknown: the blob view it is
     )
     return () => {
@@ -378,7 +385,7 @@ function MdImage(props: ImageProps): JSX.Element | null {
   const ctx = useContext(Ctx)
   const { src } = props
   if (src === '#') return <AltText alt={props.alt} />
-  if (isRelativeHref(src) || (ctx.repo !== null && src.startsWith('/'))) return <RepoImage {...props} />
+  if (isRepoPath(ctx.repo, src)) return <RepoImage {...props} />
   if (src.startsWith('/') || src.startsWith('#')) return null // a site path means nothing here
   return ctx.images === 'auto' ? <RemoteImg {...props} /> : <GatedImage {...props} />
 }
@@ -469,6 +476,12 @@ function entriesAt(reader: BrowseReader, tipOid: string, dir: string): Promise<T
   return walk
 }
 
+/** The tree entry at `path` (through the shared per-directory walk), or undefined. */
+async function entryAt(reader: BrowseReader, tipOid: string, path: string): Promise<TreeEntry | undefined> {
+  const slash = path.lastIndexOf('/')
+  return findEntry(await entriesAt(reader, tipOid, slash === -1 ? '' : path.slice(0, slash)), path.slice(slash + 1))
+}
+
 /**
  * Read a relative image's blob, never more than {@link REPO_IMAGE_MAX_BYTES}: the reader
  * refuses an object whose header says it is larger before inflating it, and `readBlob` checks
@@ -476,9 +489,7 @@ function entriesAt(reader: BrowseReader, tipOid: string, dir: string): Promise<T
  * the pack and huge once inflated, so it is trusted only to skip an undeltified blob early.)
  */
 export async function readRepoImage(reader: BrowseReader, tipOid: string, path: string): Promise<{ bytes: Uint8Array; type: string }> {
-  const slash = path.lastIndexOf('/')
-  const entries = await entriesAt(reader, tipOid, slash === -1 ? '' : path.slice(0, slash))
-  const entry = findEntry(entries, slash === -1 ? path : path.slice(slash + 1))
+  const entry = await entryAt(reader, tipOid, path)
   if (entry === undefined) throw new Error('not found')
   if ((knownMinSize(reader, entry.oid) ?? 0) > REPO_IMAGE_MAX_BYTES) throw new Error('too large')
   const bytes = await readBlob(reader, entry.oid, REPO_IMAGE_MAX_BYTES)
@@ -659,11 +670,13 @@ const ALERTS: Readonly<Record<AlertKind, { title: string; icon: typeof Info; box
   caution: { title: 'Caution', icon: OctagonAlert, box: 'border-danger', head: 'text-danger-700 dark:text-danger-400' },
 }
 
+const CODE_BLOCK = 'overflow-x-auto rounded-md border border-anvil-200 bg-anvil-50 p-3 text-[13px] dark:border-anvil-800 dark:bg-anvil-950'
+
 /** A mermaid diagram's source, shown as code: rendering it needs mermaid's ~1 MB of script, which would draw attacker-written SVG. */
 function MermaidBlock({ source }: { source: string }): JSX.Element {
   return (
     <figure className="my-3" data-testid="mermaid">
-      <ScrollRegion as="pre" label="Mermaid diagram source" className="overflow-x-auto rounded-md border border-anvil-200 bg-anvil-50 p-3 text-[13px] dark:border-anvil-800 dark:bg-anvil-950">
+      <ScrollRegion as="pre" label="Mermaid diagram source" className={CODE_BLOCK}>
         <code>{source}</code>
       </ScrollRegion>
       <figcaption className="mt-1 flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400">
@@ -700,7 +713,7 @@ function renderBlock(b: Block, key: string, slugs: Map<string, number>): ReactNo
       if (b.lang === 'suggestion') return <SuggestionBlock key={key} text={b.v} />
       if (b.lang === 'mermaid') return <MermaidBlock key={key} source={b.v} />
       return (
-        <ScrollRegion as="pre" key={key} label="Code block" className="my-3 overflow-x-auto rounded-md border border-anvil-200 bg-anvil-50 p-3 text-[13px] dark:border-anvil-800 dark:bg-anvil-950">
+        <ScrollRegion as="pre" key={key} label="Code block" className={cn('my-3', CODE_BLOCK)}>
           <code>{b.v}</code>
         </ScrollRegion>
       )
@@ -710,21 +723,16 @@ function renderBlock(b: Block, key: string, slugs: Map<string, number>): ReactNo
         const task = tasks?.[i] ?? null
         const checkbox =
           task !== null ? <input type="checkbox" checked={task} disabled aria-label={task ? 'Done' : 'Not done'} className="mr-1.5 -ml-5 align-middle" /> : null
-        const text = renderInline(it, `${key}-${i}`)
+        const content = (
+          <>
+            {checkbox}
+            {renderInline(it, `${key}-${i}`)}
+          </>
+        )
         return (
           <li key={i} className={cn(WRAP, task !== null && 'list-none')}>
             {/* A loose list's items hold paragraphs (GitHub's spacing); a tight one's, bare text. */}
-            {b.loose && it.length > 0 ? (
-              <p className="my-2 leading-relaxed">
-                {checkbox}
-                {text}
-              </p>
-            ) : (
-              <>
-                {checkbox}
-                {text}
-              </>
-            )}
+            {b.loose && it.length > 0 ? <p className="my-2 leading-relaxed">{content}</p> : content}
             {b.blocks?.[i]?.map((inner, j) => renderBlock(inner, `${key}-${i}-${j}`, slugs))}
           </li>
         )
@@ -933,10 +941,9 @@ export const MarkdownView = memo(function MarkdownView({
   imported?: string | null
 }): JSX.Element {
   const notes = useId().replace(/[^a-zA-Z0-9]/g, '')
-  const source_ = links?.source ?? null
   const ctx = useMemo<RenderContext>(
-    () => ({ repo, images, links, suggestion, refs: { source: source_, imported: importedHost(imported, source_) }, notes: `${notes}-` }),
-    [repo, images, links, suggestion, source_, imported, notes],
+    () => ({ repo, images, links, suggestion, refs: refsOf(links, imported), notes: `${notes}-` }),
+    [repo, images, links, suggestion, imported, notes],
   )
   const blocks = useMemo(
     () => (source.length > MARKDOWN_MAX_CHARS ? null : parseMarkdown(source, { breaks: mode === 'comment' })),
