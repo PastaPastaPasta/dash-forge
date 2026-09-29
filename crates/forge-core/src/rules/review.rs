@@ -24,17 +24,14 @@ use super::{event_order, Event, EventKind, Oid};
 // The review fold
 // ===========================================================================
 
-/// The kinds an `authorEvent` may carry (the forge-collab schema's `kind` enum): close, reopen,
-/// draft, ready, thread resolve / unresolve, review request / remove, head update.
+/// The kinds an `authorEvent` may carry (the forge-collab schema's `kind` enum, 11–14 and 16):
+/// thread resolve / unresolve, review request / remove, head update. An author's close, reopen,
+/// draft and ready are `transition`s ([`super::transition`]).
 #[must_use]
 pub fn is_author_kind(kind: EventKind) -> bool {
     matches!(
         kind,
-        EventKind::Close
-            | EventKind::Reopen
-            | EventKind::Draft
-            | EventKind::Ready
-            | EventKind::ThreadResolve
+        EventKind::ThreadResolve
             | EventKind::ThreadUnresolve
             | EventKind::ReviewRequest
             | EventKind::ReviewRequestRemove
