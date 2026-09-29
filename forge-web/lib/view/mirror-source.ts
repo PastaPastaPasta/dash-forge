@@ -100,12 +100,16 @@ export async function readMirrorSource(
   const trusted = await readNumberTrust(sdk, repo, network)
   const type = kind === 'issue' ? DOC.issue : DOC.patch
   const found = await mapPooled(trusted, 8, async (author) => {
-    const { documents } = await queryDocumentsWithProof(sdk, {
+    // One author's failed read costs only that author's rows, not the others' answer.
+    const documents = await queryDocumentsWithProof(sdk, {
       ...repoSource(repo).targetQuery(type),
       where: [['$ownerId', '==', author], ['repoId', '==', repo.repoId]],
       orderBy: [['number', 'desc']],
       limit: ROWS_PER_AUTHOR,
-    })
+    }).then(
+      (r) => r.documents,
+      () => [],
+    )
     for (const d of documents) {
       const source = sourceOfRow(d, kind)
       if (source !== null) return source

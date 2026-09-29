@@ -93,6 +93,14 @@ describe('readMirrorSource: only the owner’s and maintainers’ rows count', (
     expect((await readMirrorSource(sdk, REPO, '', 'issue'))?.label).toBe('github.com/dashpay/dash')
   })
 
+  it('still names the source when another trusted author’s read fails', async () => {
+    const sdk = sdkOf([row(MAINT, 5, 'https://github.com/o/r/issues/5')], [MAINT])
+    const query = sdk.documents.query.bind(sdk.documents)
+    ;(sdk.documents as { query: typeof query }).query = (q) =>
+      (q.where ?? []).some(([f, , v]) => f === '$ownerId' && v === OWNER) ? Promise.reject(new Error('DAPI unavailable')) : query(q)
+    expect((await readMirrorSource(sdk, REPO, '', 'issue'))?.label).toBe('github.com/o/r')
+  })
+
   it('trusts a maintainer’s row, self-hosted GitLab included', async () => {
     const sdk = sdkOf([row(MAINT, 5, 'https://git.example.org/g/p/-/issues/5')], [MAINT])
     expect((await readMirrorSource(sdk, REPO, '', 'issue'))?.label).toBe('git.example.org/g/p')
