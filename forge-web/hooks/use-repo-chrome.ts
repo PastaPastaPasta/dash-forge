@@ -122,8 +122,8 @@ export function useReleases(repo: RepoRef, { enabled = true }: { readonly enable
 
 /**
  * The rail's latest release (null: none), read only once `wanted` (the card came into view):
- * which release is latest is a version order over every tag, so it takes the whole list, and
- * the Releases tab reads the same cached list.
+ * which release is latest depends on every tag's publish date (L-78), so it takes the whole
+ * list, and the Releases tab reads the same cached list.
  */
 export function useLatestRelease(repo: RepoRef, wanted: boolean): AsyncState<ReleaseView | null> {
   const releases = useReleases(repo, { enabled: wanted })
