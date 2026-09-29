@@ -285,23 +285,27 @@ impl Store {
     }
 
     /// Save the repo's state (durably: a temp file, synced, renamed). Off the async threads.
-    pub async fn save(&self, repo_id: &str, saved: &Saved) {
+    /// Returns whether the state is where it should be: written, or nothing to write (an
+    /// in-memory store). `false` after a failure, so the caller retries next cycle.
+    pub async fn save(&self, repo_id: &str, saved: &Saved) -> bool {
         let Some(dir) = self.dir_for(repo_id).map(Path::to_path_buf) else {
-            return;
+            return true;
         };
         let bytes = match serde_json::to_vec(saved) {
             Ok(b) => b,
             Err(e) => {
                 tracing::warn!(repo = %repo_id, error = %e, "cannot serialize check-run state");
-                return;
+                return false;
             }
         };
         let id = repo_id.to_string();
         let done =
             tokio::task::spawn_blocking(move || crate::queue::write_entry(&dir, &id, &bytes)).await;
         if let Err(e) = done.map_err(std::io::Error::other).flatten() {
-            tracing::warn!(repo = %repo_id, error = %e, "cannot save check-run state; a restart may re-send check runs");
+            tracing::warn!(repo = %repo_id, error = %e, "cannot save check-run state; retrying next cycle (a restart meanwhile may re-send check runs)");
+            return false;
         }
+        true
     }
 }
 
@@ -654,7 +658,7 @@ mod tests {
         let saved = Saved {
             heads: BTreeMap::from([("ab".repeat(20), SavedHead { seen: 7, runs })]),
         };
-        Store::open(Some(&base)).save(repo, &saved).await;
+        assert!(Store::open(Some(&base)).save(repo, &saved).await);
 
         let loaded = Store::open(Some(&base)).load(repo);
         assert_eq!(loaded, saved);

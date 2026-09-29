@@ -31,7 +31,7 @@
 //! earliest hook that wants that event.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -139,6 +139,8 @@ struct RepoState {
     runs: BTreeMap<String, checkruns::HeadRuns>,
     /// What was last saved of `heads`/`runs` (a save is skipped when nothing changed).
     saved_runs: Option<checkruns::Saved>,
+    /// Set when the repo stops being served: nothing is saved any more.
+    retired: Arc<AtomicBool>,
     /// The repo's `config` history (for protected-ref routing).
     configs: Vec<ConfigDoc>,
     /// Every tip a valid update set, by `refNameHash` (hex), for the base refs of known PRs only
@@ -146,6 +148,8 @@ struct RepoState {
     tips: BTreeMap<String, BTreeSet<String>>,
     /// Round-robin position over the non-priority threads.
     rotation: usize,
+    /// The head whose check runs were read last: the next poll starts after it.
+    last_head: String,
     /// Which stage group a poll starts at (it resumes where the deadline last stopped it).
     next_stage: usize,
 }
@@ -157,6 +161,9 @@ struct RepoSlot {
     wants: Mutex<BTreeMap<&'static str, u64>>,
     /// The newest `$createdAt` read (block time), for resuming after a gap.
     high_water: AtomicU64,
+    /// No longer served: a poll still running must not save its check runs (shared with the
+    /// state, [`RepoState::retired`]).
+    retired: Arc<AtomicBool>,
 }
 
 /// The served repos.
@@ -514,8 +521,15 @@ impl Discovery {
                     self.resume_at
                         .insert(id.clone(), slot.high_water.load(Ordering::Relaxed));
                     // Its check runs seen are dropped: a hook added later starts from its
-                    // own time, not from completions of runs seen before it existed.
-                    shared.check_runs.remove(id);
+                    // own time, not from completions of runs seen before it existed. Retired
+                    // first, so a poll still running saves nothing more; removed under the
+                    // state lock, after that poll (and any save it was in) finished.
+                    slot.retired.store(true, Ordering::SeqCst);
+                    let (slot, shared, id) = (Arc::clone(slot), Arc::clone(&shared), id.clone());
+                    tokio::spawn(async move {
+                        let _state = slot.state.lock().await;
+                        shared.check_runs.remove(&id);
+                    });
                 }
                 keep
             });
@@ -597,6 +611,7 @@ impl Discovery {
                     ready.push((
                         repo_id,
                         Arc::new(RepoSlot {
+                            retired: Arc::clone(&state.retired),
                             state: tokio::sync::Mutex::new(state),
                             wants: Mutex::new(BTreeMap::new()),
                             high_water: AtomicU64::new(high),
@@ -834,9 +849,11 @@ async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result
         heads,
         runs,
         saved_runs: None,
+        retired: Arc::default(),
         configs,
         tips: BTreeMap::new(),
         rotation: 0,
+        last_head: String::new(),
         next_stage: 0,
     };
     // Valid tips of the PRs' base refs only (what merges are checked against).
@@ -956,8 +973,11 @@ impl RepoState {
                 })
                 .collect(),
         };
-        if self.saved_runs.as_ref() != Some(&now) {
-            shared.check_runs.save(&self.meta.repo_id, &now).await;
+        // Recorded only once written, so a failed write is retried next cycle.
+        if !self.retired.load(Ordering::SeqCst)
+            && self.saved_runs.as_ref() != Some(&now)
+            && shared.check_runs.save(&self.meta.repo_id, &now).await
+        {
             self.saved_runs = Some(now);
         }
     }
@@ -1318,12 +1338,12 @@ async fn poll_check_runs(
     };
     let mut high = 0;
     let mut finished = true;
-    let heads: Vec<(String, Head)> = st.heads.iter().map(|(k, v)| (k.clone(), *v)).collect();
-    for (oid, head) in heads {
+    for (oid, head) in heads_after(&st.heads, &st.last_head) {
         if Instant::now() >= deadline {
             finished = false;
             break;
         }
+        st.last_head.clone_from(&oid);
         let Ok(bytes) = hex::decode(&oid) else {
             continue;
         };
@@ -1404,6 +1424,17 @@ fn follow_head(s: &mut RepoState, d: &FetchedDocument, author_path: bool) -> boo
     s.heads.entry(head).or_insert(Head::since(seen));
     prune_heads(&mut s.heads, &mut s.runs);
     true
+}
+
+/// Every head, starting after `last` (the one read last) and wrapping around, so a poll the
+/// deadline cuts short resumes with the heads it did not reach.
+fn heads_after(heads: &BTreeMap<String, Head>, last: &String) -> Vec<(String, Head)> {
+    use std::ops::Bound::{Excluded, Unbounded};
+    heads
+        .range::<String, _>((Excluded(last), Unbounded))
+        .chain(heads.range::<String, _>(..=last))
+        .map(|(k, v)| (k.clone(), *v))
+        .collect()
 }
 
 /// Keep the newest [`MAX_HEADS`] head oids (and only their runs).
@@ -1557,9 +1588,11 @@ mod tests {
             heads: BTreeMap::new(),
             runs: BTreeMap::new(),
             saved_runs: None,
+            retired: Arc::default(),
             configs: Vec::new(),
             tips: BTreeMap::new(),
             rotation: 0,
+            last_head: String::new(),
             next_stage: 0,
         }
     }
@@ -1670,6 +1703,26 @@ mod tests {
         assert!(!st.repeats_a_close(&event(1)), "a close after a reopen is");
         note_activity(&mut st, &event(1));
         assert!(st.repeats_a_close(&event(1)), "a second close is not");
+    }
+
+    /// A poll the deadline cuts short resumes after the last head it read, so later heads are
+    /// not starved by the ones before them.
+    #[test]
+    fn check_run_heads_rotate() {
+        let heads: BTreeMap<String, Head> = ["a", "b", "c", "d"]
+            .iter()
+            .map(|k| (k.to_string(), Head::since(0)))
+            .collect();
+        let order = |last: &str| -> Vec<String> {
+            heads_after(&heads, &last.to_string())
+                .into_iter()
+                .map(|(k, _)| k)
+                .collect()
+        };
+        assert_eq!(order(""), ["a", "b", "c", "d"]);
+        assert_eq!(order("b"), ["c", "d", "a", "b"]);
+        assert_eq!(order("d"), ["a", "b", "c", "d"]);
+        assert_eq!(order("bb"), ["c", "d", "a", "b"], "a pruned head");
     }
 
     #[test]
