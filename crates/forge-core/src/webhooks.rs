@@ -19,7 +19,11 @@
 //!   disabled document when any other maintainer's document for it would otherwise still be
 //!   current, then deleting their own (a document can only be deleted by its owner).
 //! * **URL**: public on chain, so it must not carry credentials; `dg webhook add` refuses a
-//!   query string or userinfo unless forced.
+//!   query string unless forced. RC1 (`url_grammar`) admits only `https://` to a DNS name
+//!   (no IP literal, no `localhost`, no userinfo, no trailing dot) with an optional port
+//!   ([`is_webhook_url`]).
+//! * **Public repositories only** (RC1 `hook_public`): the document carries `vis`, which must be
+//!   `"public"` (`publicOnly`) and match the signer's maintainer document.
 //!
 //! [`WebhookReader`] reads them (by repo, or by the relay they are addressed to, through the
 //! `relay` index); [`WebhookService`] writes them, signed by a maintainer.
@@ -218,30 +222,65 @@ pub fn check_secret(secret: &[u8]) -> Result<()> {
     Ok(())
 }
 
-/// Check a hook's `url` and `events` against the schema (and require http(s)), so a write
-/// fails here with a message instead of at consensus. With `allow_credentials` false, a URL
-/// with a query string or userinfo is refused: the URL is public on chain, and those are
-/// where tokens usually hide.
+/// Whether forge-community's `webhook.url` pattern admits `url`:
+/// `^https://([A-Za-z0-9-]+[.])+[A-Za-z][A-Za-z0-9-]*[A-Za-z0-9](:[0-9]{1,5})?([/?#][^[:space:]]*)?$`.
+/// That is `https://`, a DNS name of two or more labels whose last one starts with a letter
+/// and ends with a letter or digit (so no IP literal, `localhost`, userinfo or trailing dot),
+/// an optional port of 1–5 digits, then a path, query or fragment without whitespace.
+#[must_use]
+pub fn is_webhook_url(url: &str) -> bool {
+    let Some((authority, tail)) = crate::ci::split_https(url) else {
+        return false;
+    };
+    let (host, port) = match authority.split_once(':') {
+        Some((h, p)) => (h, Some(p)),
+        None => (authority, None),
+    };
+    let label_ok =
+        |l: &str| !l.is_empty() && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    let Some((head, tld)) = host.rsplit_once('.') else {
+        return false;
+    };
+    let tld_ok = label_ok(tld)
+        && tld.len() >= 2
+        && tld.as_bytes()[0].is_ascii_alphabetic()
+        && tld.as_bytes()[tld.len() - 1].is_ascii_alphanumeric();
+    let port_ok =
+        port.is_none_or(|p| (1..=5).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()));
+    head.split('.').all(label_ok) && tld_ok && port_ok && crate::ci::is_url_tail(tail)
+}
+
+/// Check a hook's `url` and `events` against the schema, so a write fails here with a message
+/// instead of at consensus: the URL is `https://` to a DNS name ([`is_webhook_url`]; never
+/// user:password@). With `allow_credentials` false, a URL with a query string is refused too:
+/// the URL is public on chain, and a query is where tokens usually hide.
 pub fn check_url_and_events(url: &str, events: &[String], allow_credentials: bool) -> Result<()> {
     if url.is_empty() || url.len() > URL_MAX_LEN {
         return Err(Error::Config(format!(
             "a webhook url must be 1..={URL_MAX_LEN} bytes"
         )));
     }
-    let lower = url.to_ascii_lowercase();
-    if !(lower.starts_with("https://") || lower.starts_with("http://")) {
+    let Some((authority, _)) = crate::ci::split_https(url) else {
+        return Err(Error::Config("a webhook url must be https://".into()));
+    };
+    if authority.contains('@') {
         return Err(Error::Config(
-            "a webhook url must be http:// or https://".into(),
+            "the webhook url has user:password@: it is stored publicly on chain, so it must \
+             not carry credentials (authenticate deliveries with the secret)"
+                .into(),
         ));
     }
-    let authority = url.split_once("://").map_or("", |(_, rest)| {
-        rest.split(['/', '?', '#']).next().unwrap_or("")
-    });
-    if !allow_credentials && (url.contains('?') || authority.contains('@')) {
+    if !is_webhook_url(url) {
+        return Err(Error::Config(format!(
+            "the webhook url {url:?} must name a DNS host (not an IP address, localhost or a \
+             name ending in a dot), with an optional port and no spaces"
+        )));
+    }
+    if !allow_credentials && url.contains('?') {
         return Err(Error::Config(
-            "the webhook url has a query string or user:password@ — it is stored publicly on \
-             chain, so it must not carry credentials (authenticate deliveries with the secret; \
-             pass --force if the query holds nothing secret)"
+            "the webhook url has a query string: it is stored publicly on chain, so it must \
+             not carry credentials (authenticate deliveries with the secret; pass --force if \
+             the query holds nothing secret)"
                 .into(),
         ));
     }
@@ -547,6 +586,9 @@ impl<'a> WebhookService<'a> {
         if input.disabled {
             properties.insert("disabled".to_string(), FieldValue::boolean(true));
         }
+        // Always "public" here (`require_public` above; `publicOnly`), and consensus checks it
+        // against the signer's maintainer document.
+        crate::layout::stamp_vis(&mut properties, repo.visibility);
         // Ids, key ids and the ciphertext, the text fields, and ~100 bytes of document and
         // index overhead.
         let approx_bytes = (32 * 3 + 8 + ciphertext.len() + input.url.len() + 100) as u64
@@ -712,19 +754,25 @@ mod tests {
     fn url_event_and_secret_checks() {
         let check = |url: &str, events: &[String]| check_url_and_events(url, events, false);
         assert!(check("https://x.example/h", &["push".into()]).is_ok());
-        assert!(check("ftp://x", &[]).is_err());
-        assert!(check(&format!("https://{}", "a".repeat(300)), &[]).is_err());
-        assert!(check("https://x", &["push".into(), "push".into()]).is_err());
-        assert!(check("https://x", &vec!["e".to_string(); 17]).is_err());
-        // Credentials in a public URL: refused unless forced.
-        for url in ["https://x/h?token=1", "https://u:p@x/h", "https://u@x/h"] {
-            assert!(check(url, &[]).is_err(), "{url}");
-            assert!(check_url_and_events(url, &[], true).is_ok(), "{url}");
+        assert!(check("ftp://x.example", &[]).is_err());
+        assert!(check("http://x.example/h", &[]).is_err(), "RC1: https only");
+        assert!(check(&format!("https://{}.example", "a".repeat(300)), &[]).is_err());
+        assert!(check("https://x.example", &["push".into(), "push".into()]).is_err());
+        assert!(check("https://x.example", &vec!["e".to_string(); 17]).is_err());
+        // A query string in a public URL: refused unless forced. Userinfo: always (RC1).
+        assert!(check("https://x.example/h?token=1", &[]).is_err());
+        assert!(check_url_and_events("https://x.example/h?token=1", &[], true).is_ok());
+        for url in ["https://u:p@x.example/h", "https://u@x.example/h"] {
+            assert!(check_url_and_events(url, &[], true).is_err(), "{url}");
         }
         assert!(
-            check("https://x/a@b", &[]).is_ok(),
+            check("https://x.example/a@b", &[]).is_ok(),
             "an @ in the path is not userinfo"
         );
+        // A DNS host only.
+        for url in ["https://x/h", "https://127.0.0.1/h", "https://[::1]/h"] {
+            assert!(check_url_and_events(url, &[], true).is_err(), "{url}");
+        }
 
         assert!(check_secret(&[b'a'; 31]).is_err());
         assert!(check_secret(&[b'a'; 32]).is_ok());
@@ -741,6 +789,44 @@ mod tests {
         assert!(s.expose().iter().all(u8::is_ascii_hexdigit));
         assert_eq!(hook_id_for_label("ci"), hook_id_for_label("ci"));
         assert_ne!(random_hook_id(), random_hook_id());
+    }
+
+    #[test]
+    fn the_url_check_agrees_with_the_rc1_webhook_vectors() {
+        let all: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../forge-contracts/vectors/rc1/forge-community.json"
+        ))
+        .unwrap();
+        let hooks: Vec<_> = all.iter().filter(|c| c["type"] == "webhook").collect();
+        assert!(hooks.len() > 10);
+        for case in hooks {
+            let url = case["doc"]["url"].as_str().unwrap();
+            match (case["expect"].as_str(), case["why"].as_str()) {
+                (Some("ok"), _) => {
+                    assert!(is_webhook_url(url), "{url}");
+                    assert!(check_url_and_events(url, &[], true).is_ok(), "{url}");
+                }
+                (_, Some("pattern")) => {
+                    assert!(!is_webhook_url(url), "{url}");
+                    assert!(check_url_and_events(url, &[], true).is_err(), "{url}");
+                }
+                // publicOnly / a missing vis: the writer stamps vis and refuses private repos.
+                _ => {}
+            }
+        }
+        for bad in [
+            "https://a.b",        // a one-letter TLD
+            "https://a.b-",       // a TLD ending in -
+            "https://a.1b",       // a TLD starting with a digit
+            "https://a..example", // an empty label
+            "https://a.example:123456",
+            "https://a.example:",
+            "https://a.example/ x",
+            "https://a.example\n",
+        ] {
+            assert!(!is_webhook_url(bad), "{bad:?}");
+        }
+        assert!(is_webhook_url("https://a-b.c-d.example:1/x#y"));
     }
 
     fn key_info(id: u32, private: &PrivateKey, purpose: &str, disabled: bool) -> IdentityKeyInfo {

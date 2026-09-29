@@ -115,6 +115,31 @@ impl ForgeIds {
 /// The `vis` property name.
 pub const VIS: &str = "vis";
 
+/// The types whose `vis` is required and equals the repository's visibility.
+pub const VIS_TYPES: [&str; 12] = [
+    "maintainer",
+    "writer",
+    "refUpdate",
+    "protectedRefUpdate",
+    "config",
+    "release",
+    "issue",
+    "patch",
+    "comment",
+    "review",
+    "checkRun",
+    "webhook",
+];
+
+/// The types whose `vis` may only be `"public"`.
+pub const PUBLIC_VIS_TYPES: [&str; 2] = ["topic", "starBeat"];
+
+/// The types that carry `asMember` (the signer, proving a maintainer or writer document).
+pub const MEMBER_PROOF_TYPES: [&str; 4] = ["issue", "patch", "comment", "review"];
+
+/// The `asMember` property name.
+pub const AS_MEMBER: &str = "asMember";
+
 impl Visibility {
     /// The wire form: `"public"` or `"private"` (`repo.visibility` and every `vis` stamp).
     pub fn as_str(self) -> &'static str {
@@ -138,6 +163,20 @@ pub fn stamp_vis(props: &mut BTreeMap<String, FieldValue>, visibility: Visibilit
 /// Stamp `props` with `vis: "public"`: the only value `topic` and `starBeat` accept.
 pub fn stamp_public(props: &mut BTreeMap<String, FieldValue>) {
     stamp_vis(props, Visibility::Public);
+}
+
+/// Stamp a new `doc_type` document of a repository of `visibility` with the `vis` its type
+/// takes, if any: the repository's for [`VIS_TYPES`], `"public"` for [`PUBLIC_VIS_TYPES`].
+pub fn stamp_vis_for(
+    doc_type: &str,
+    props: &mut BTreeMap<String, FieldValue>,
+    visibility: Visibility,
+) {
+    if VIS_TYPES.contains(&doc_type) {
+        stamp_vis(props, visibility);
+    } else if PUBLIC_VIS_TYPES.contains(&doc_type) {
+        stamp_public(props);
+    }
 }
 
 #[cfg(test)]
@@ -176,6 +215,56 @@ mod tests {
             for t in types {
                 assert_eq!(ForgeContract::of(t), Some(want), "{t}");
             }
+        }
+    }
+
+    /// The stamp lists agree with the contracts: `vis` required (or public-only), `asMember`
+    /// a property.
+    #[test]
+    fn the_stamp_lists_match_the_generated_contracts() {
+        let root = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../forge-contracts/contracts"
+        );
+        let (mut vis, mut public, mut member) = (Vec::new(), Vec::new(), Vec::new());
+        for file in [
+            "forge-core.json",
+            "forge-collab.json",
+            "forge-community.json",
+        ] {
+            let text = std::fs::read_to_string(format!("{root}/{file}")).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let defs = &json["schemaDefs"];
+            for (t, schema) in json["documentSchemas"].as_object().unwrap() {
+                let props = &schema["properties"];
+                if props.get(AS_MEMBER).is_some() {
+                    member.push(t.clone());
+                }
+                let Some(v) = props.get(VIS) else { continue };
+                let v = match v["$ref"].as_str() {
+                    Some(r) => &defs[r.trim_start_matches("#/$defs/")],
+                    None => v,
+                };
+                let values = v["enum"].as_array().unwrap();
+                if values.len() == 1 {
+                    assert_eq!(values[0], "public", "{t}");
+                    public.push(t.clone());
+                } else {
+                    let required = schema["required"].as_array().unwrap();
+                    assert!(required.iter().any(|r| r == VIS), "{t} requires vis");
+                    vis.push(t.clone());
+                }
+            }
+        }
+        for (got, want) in [
+            (&mut vis, VIS_TYPES.to_vec()),
+            (&mut public, PUBLIC_VIS_TYPES.to_vec()),
+            (&mut member, MEMBER_PROOF_TYPES.to_vec()),
+        ] {
+            let mut want: Vec<String> = want.into_iter().map(str::to_owned).collect();
+            got.sort();
+            want.sort();
+            assert_eq!(*got, want);
         }
     }
 

@@ -1,7 +1,7 @@
 import { test, expect, type Browser, type Page } from '@playwright/test'
 import { existsSync } from 'node:fs'
 
-import { DEMO, expectLanded, idFile, idOrEmpty, repoUrl, shot, signedIn, waitForRepoResolved } from './helpers'
+import { expectLanded, idFile, idOrEmpty, loadSeedPulls, repoUrl, shot, signedIn, waitForRepoResolved } from './helpers'
 
 /**
  * G17 (L-36, L-37, L-38): plurals, the follower / following lists, PR and issue copy, and the
@@ -23,7 +23,7 @@ const followIds = !!process.env['E2E_IDENTITY_DIR'] && existsSync(idFile('FOLLOW
 test.describe.configure({ mode: 'serial', timeout: 180_000 })
 
 test('g17-1. a merged PR says what happened, with short branch names (L-37, D-104)', async ({ page }) => {
-  await page.goto(repoUrl('pull', '&number=2'), { waitUntil: 'domcontentloaded' })
+  await page.goto(repoUrl('pull', `&number=${loadSeedPulls().merged}`), { waitUntil: 'domcontentloaded' })
   await waitForRepoResolved(page)
   await expectLanded(page, page.getByRole('heading', { name: /Document the fold rules/ }))
   await expect(page.getByTestId('pr-state')).toHaveText(/Merged/)
@@ -109,7 +109,7 @@ test.describe('follow lists and cost hints (own identities)', () => {
   })
 
   test('g17-4. Star shows its cost beside the button (L-38, D-098)', async ({ browser }) => {
-    const page = await followerPage(browser, repoUrl('pull', '&number=1'))
+    const page = await followerPage(browser, repoUrl('pull', `&number=${loadSeedPulls().approved}`))
     await waitForRepoResolved(page)
     await expectLanded(page, page.getByRole('heading', { name: /Greet by name/ }))
 
@@ -120,7 +120,7 @@ test.describe('follow lists and cost hints (own identities)', () => {
   })
 
   test('g17-6. the verdict row offers every verdict and its confirm reads well (L-37, L-38)', async ({ browser }) => {
-    const page = await followerPage(browser, repoUrl('pull', '&number=1'))
+    const page = await followerPage(browser, repoUrl('pull', `&number=${loadSeedPulls().approved}`))
     await waitForRepoResolved(page)
     await expectLanded(page, page.getByRole('heading', { name: /Greet by name/ }))
 
@@ -169,7 +169,7 @@ test.describe('follow lists and cost hints (own identities)', () => {
   })
 
   test('g17-5. the inline composer shows its cost before Add comment (L-38)', async ({ browser }) => {
-    const page = await followerPage(browser, repoUrl('pull', '&number=1&tab=files'))
+    const page = await followerPage(browser, repoUrl('pull', `&number=${loadSeedPulls().approved}&tab=files`))
     await waitForRepoResolved(page)
     const line = page.getByRole('button', { name: 'Comment on new line 2 of src/main.rs' }).first()
     await expect(line).toBeVisible({ timeout: 90_000 })

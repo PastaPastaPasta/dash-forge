@@ -12,7 +12,8 @@ import { useState } from 'react'
 import { Fingerprint, HardDrive, ShieldPlus, UserCog } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import type { RepoRef } from '@/lib/repo'
-import { grantMember, invalidateMembers, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
+import { ConsentMissingError, grantMember, invalidateMembers, readMembershipsCached, repoContractIds, revokeMember } from '@/lib/repo'
+import { Invitations } from '@/components/repo/invite-banner'
 import type { Membership, Role as MemberRole } from '@/lib/rules/v2'
 import { NetworkBadge } from '@/components/ui/network-badge'
 import { previewCreate, previewDelete } from '@/lib/sdk'
@@ -55,6 +56,8 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
     { enabled: ready && sdk !== null },
   )
   const memberRows = members.data ?? []
+  // The identity the owner tried to add before they accepted: the invite is pending on them.
+  const [awaiting, setAwaiting] = useState<string | null>(null)
   const [memberId, setMemberId] = useState('')
   const [role, setRole] = useState<MemberRole>('writer')
   const [action, setAction] = useState<{ kind: 'grant' | 'revoke'; member: string; role: MemberRole } | null>(null)
@@ -70,7 +73,16 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
   const runAction = async (intent: string): Promise<void> => {
     if (!sdk || !signer || !action) throw new Error('sign in to continue')
     if (action.kind === 'grant') {
-      await grantMember(sdk, signer, repo, action.member, action.role, intent)
+      try {
+        await grantMember(sdk, signer, repo, action.member, action.role, intent)
+      } catch (e) {
+        if (!(e instanceof ConsentMissingError)) throw e
+        // Nothing was signed: show the invitation as pending on them instead of an error.
+        setAwaiting(action.member)
+        setAction(null)
+        return
+      }
+      setAwaiting(null)
       setMemberId('')
     } else {
       await revokeMember(sdk, signer, repo, action.member, action.role)
@@ -176,9 +188,19 @@ function RepoSettings({ home, repo, reload }: { home: RepoHome; repo: RepoRef; r
               </Button>
             </div>
             {idError ? <p className="mt-1 text-[12px] text-danger-700 dark:text-danger-400">{idError}</p> : null}
+            <Invitations
+              repo={repo}
+              members={memberRows.map((m) => m.identity)}
+              awaiting={awaiting}
+              disabled={guard.disabledReason !== null}
+              onPick={(id, r) => {
+                if (guard.check(previewCreate(r))) setAction({ kind: 'grant', member: id, role: r })
+              }}
+            />
             <p className="mt-2 text-[12px] text-anvil-500 dark:text-anvil-400">
               Writers can push, open refs and act on issues and PRs; maintainers can also update
-              protected branches, config and releases.
+              protected branches, config and releases. Nobody becomes a member without accepting
+              your invitation first.
             </p>
           </div>
         ) : null}

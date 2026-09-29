@@ -17,7 +17,20 @@
  */
 
 export * from './types'
-export { compareKey, compareStrings, isCheckRefFormat, isLegalRefName, isNullOid, isOidHex, isPlainBranchRef } from './oid'
+export {
+  compareKey,
+  compareStrings,
+  isCheckRefFormat,
+  isGitRefName,
+  isLegalRefName,
+  isNullOid,
+  isOidHex,
+  isPlainBranchRef,
+  isRc1BranchName,
+  isRc1OidHex,
+  isRc1RefName,
+  isRc1TagName,
+} from './oid'
 export { matchesProtected, neutralizeWildmatch, wildmatch } from './matchesProtected'
 export { displayRefName, mergeBaseTips, prBaseTips, resolveRef } from './resolveRef'
 export { overlayTree } from './overlay'

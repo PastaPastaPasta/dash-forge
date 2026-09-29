@@ -142,6 +142,8 @@ vi.mock('./writes', async (orig) => {
   const real = await orig<typeof import('./writes')>()
   return {
     ...real,
+    // Every identity here accepted its invitation (RC1 consent); the consent flow has its own tests.
+    findConsent: async () => 'consent',
     grantMembershipDoc: async (_s: unknown, _a: unknown, _r: unknown, memberId: string, role: Membership['role']) => {
       members.push({ identity: memberId, role, createdAt: 99 })
       return { documentId: 'm', confirmed: true, actualCredits: 0 }

@@ -144,7 +144,8 @@ describe.skipIf(!LIVE)('live review parity (moutai)', () => {
         startedAt: Date.now(),
       }
       await saveReviewDraft(draft)
-      const submitted = await submitReviewDraft(sdk, COLLAB, repo, draft)
+      // COLLAB is a writer of this scratch repo (granted above): a member's post.
+      const submitted = await submitReviewDraft(sdk, COLLAB, repo, draft, { isMember: true, locked: false })
       expect(submitted.commentIds).toHaveLength(3)
 
       // CONTRIB replies to the range thread and resolves it; OWNER dismisses the review

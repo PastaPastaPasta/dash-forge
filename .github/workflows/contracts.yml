@@ -8,14 +8,16 @@ name: Contracts
 # create-transition size against the 20,480-byte limit, and — for
 # forge-core, which only ever changes by an in-place DataContractUpdate (platform-parity-spec
 # §6) — that the update from the registered schema is accepted. negative.sh then proves the
-# validator refuses each broken rule the design relies on.
+# validator refuses each broken rule the design relies on. Last, every seed and verify script
+# runs against an in-memory chain (seed-offline.mjs), and each document it writes is judged the
+# same way.
 on:
   pull_request:
     paths:
       - 'forge-contracts/contracts/**'
       - 'forge-contracts/schema/**'
       - 'forge-contracts/vectors/rc1/**'
-      - 'forge-contracts/scripts/deploy-v2.mjs'
+      - 'forge-contracts/scripts/**'
       - 'tools/contract-validate/**'
       - '.github/workflows/contracts.yml'
   push:
@@ -24,7 +26,7 @@ on:
       - 'forge-contracts/contracts/**'
       - 'forge-contracts/schema/**'
       - 'forge-contracts/vectors/rc1/**'
-      - 'forge-contracts/scripts/deploy-v2.mjs'
+      - 'forge-contracts/scripts/**'
       - 'tools/contract-validate/**'
       - '.github/workflows/contracts.yml'
   workflow_dispatch:
@@ -76,6 +78,17 @@ jobs:
             forge-contracts/contracts/forge-community.json
       - name: Negative mutations are refused
         run: tools/contract-validate/negative.sh
+      # The seed and verify scripts, run against an in-memory chain: the rules that need chain
+      # state (references, dense numbers, transitions, totals) are judged in JS, then rs-dpp
+      # judges every document they write as an rc1 vector
+      - name: Seed scripts write RC1 documents
+        run: |
+          node --test forge-contracts/scripts/lib/offline-chain.test.mjs
+          node forge-contracts/scripts/seed-offline.mjs --out "$RUNNER_TEMP/seed-vectors"
+          "$CARGO_TARGET_DIR/debug/contract-validate" --vectors "$RUNNER_TEMP/seed-vectors" \
+            forge-contracts/contracts/forge-core.json \
+            forge-contracts/contracts/forge-collab.json \
+            forge-contracts/contracts/forge-community.json
       # Offline: the deploy script's id derivation matches the validator's known answer, and every
       # schema it registers loads with forge-core's id substituted (no SDK, no network)
       - name: Deploy script self-test

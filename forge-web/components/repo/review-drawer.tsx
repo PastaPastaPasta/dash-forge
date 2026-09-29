@@ -152,6 +152,7 @@ export function ReviewDrawer({
   update,
   ensure,
   isMember,
+  locked,
   lineExists,
   onSubmitted,
 }: {
@@ -164,6 +165,8 @@ export function ReviewDrawer({
   update: (d: ReviewDraft | null) => void
   ensure: () => ReviewDraft | null
   isMember: boolean
+  /** The PR's conversation is locked: a member's review and its comments carry the membership proof. */
+  locked: boolean
   /** Whether the current diff shows a line (for re-anchoring after the head moved). */
   lineExists: (path: string, side: 0 | 1, line: number) => boolean
   /** The submitted review and every comment it wrote (the page re-reads until all show). */
@@ -230,7 +233,7 @@ export function ReviewDrawer({
     setError(null)
     setProgress({ done: 0, total: documents })
     try {
-      const r = await submitReviewDraft(sdk, signer, repo, toSubmit, (p) => setProgress(p))
+      const r = await submitReviewDraft(sdk, signer, repo, toSubmit, { isMember, locked }, (p) => setProgress(p))
       update(null)
       setOpen(false)
       setProgress(null)

@@ -289,10 +289,11 @@ fn backend_props(opts: &CreateRepoOpts) -> FieldValue {
 /// * `NonceConsumed`: this transition landed earlier, or another write by the identity took
 ///   its nonce; a proved read decides.
 /// * A consensus refusal that proves nothing executed (a stale protocol version, a unique
-///   index already taken, a gate, a `propertyConstraints` rule such as forge-v2's `dense`
-///   when another create took the saved number): it never landed; re-deciding adopts or
-///   re-signs. A rule refusal is conclusive because CheckTx checks the nonce before the
-///   rules, so the refused bytes still held a free nonce and never executed.
+///   index already taken, a membership gate, a reference to a document or identity that does
+///   not exist, a `propertyConstraints` rule such as forge-v2's `dense` when another create
+///   took the saved number): it never landed; re-deciding adopts or re-signs. A rule or
+///   reference refusal is conclusive because the node checks the nonce first, so a landed
+///   transition fails its replay on the nonce, never on the rule or the reference.
 /// * Anything else (the network) is returned: the transition may still land.
 pub(crate) async fn replay_landed(
     engine: &WriteEngine<'_>,
@@ -320,6 +321,7 @@ where
             Error::StaleProtocolVersion(_)
             | Error::DuplicateUniqueIndex(_)
             | Error::NotAMember { .. }
+            | Error::ReferenceNotFound { .. }
             | Error::RuleRefused { .. },
         ) => Ok(false),
         Err(e) => Err(e),
@@ -602,6 +604,15 @@ mod tests {
         for e in [
             Error::DuplicateUniqueIndex("number".into()),
             Error::StaleProtocolVersion("13".into()),
+            Error::NotAMember {
+                document_type: "issue".into(),
+                detail: "40120".into(),
+            },
+            Error::ReferenceNotFound {
+                document_type: "patch".into(),
+                path: "sourceRepoId".into(),
+                detail: "40120".into(),
+            },
         ] {
             assert!(!super::replay_verdict(Err(e), no_read).await.unwrap());
         }

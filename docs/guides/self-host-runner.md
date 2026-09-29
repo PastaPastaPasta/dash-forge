@@ -133,7 +133,7 @@ The runner executes code from the repository: anyone who can push to a watched r
 - **No shared caches.** act's cache server is off (`--no-cache-server`), and act's action cache and workspaces are per run. One run cannot read or poison another's.
 - **One run at a time per repository.** Each run has its own directory under a per-repository lock, which is removed when the run ends.
 - **The runner key.** `DASH_FORGE_KEY` is a runner key: it can write check runs and nothing else, only on repositories that enrolled its identity, and only within its budget. It is passed to `dg` in the environment, never on a command line and never to act.
-- **Logs are public.** Anyone can read a check run's log URL, so keep private output out of logs. On a private repository `dg ci report --log` is refused unless the runner sets `public_log = true`.
+- **Logs are public.** Anyone can read a check run's log URL, so keep private output out of logs. On a private repository a check run carries no log, summary or run id (forge-community refuses them), so `dg` uploads no log there and records only each job's name, status and conclusion. The old `public_log` setting has no effect.
 
 ## What it does not do (yet)
 

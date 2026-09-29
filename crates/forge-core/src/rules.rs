@@ -532,6 +532,11 @@ pub enum Verdict {
     RequestChanges,
     /// Comment only, no verdict (3).
     Comment,
+    /// A non-member's approval (4): shown, never counted. The contract refuses it with
+    /// `asMember` (`memberVerdict`), so a member's approval is always 1.
+    ApproveNonMember,
+    /// A non-member's request for changes (5): shown, never counted.
+    RequestChangesNonMember,
     /// A code this client does not know.
     Unknown(u64),
 }
@@ -543,6 +548,8 @@ impl Verdict {
             1 => Self::Approve,
             2 => Self::RequestChanges,
             3 => Self::Comment,
+            4 => Self::ApproveNonMember,
+            5 => Self::RequestChangesNonMember,
             other => Self::Unknown(other),
         }
     }
@@ -553,6 +560,8 @@ impl Verdict {
             Self::Approve => 1,
             Self::RequestChanges => 2,
             Self::Comment => 3,
+            Self::ApproveNonMember => 4,
+            Self::RequestChangesNonMember => 5,
             Self::Unknown(c) => c,
         }
     }
@@ -563,8 +572,32 @@ impl Verdict {
             Self::Approve => "approved",
             Self::RequestChanges => "changes requested",
             Self::Comment => "commented",
+            Self::ApproveNonMember => "approved (not a member)",
+            Self::RequestChangesNonMember => "changes requested (not a member)",
             Self::Unknown(_) => "unknown verdict",
         }
+    }
+
+    /// The code this verdict is written as by a signer who is (`member`) or is not a proved
+    /// member: members' approve / request changes are 1 / 2 (with `asMember`), everyone
+    /// else's 4 / 5 (without). A comment is 3 either way.
+    #[must_use]
+    pub fn as_written_by(self, member: bool) -> Self {
+        match (self, member) {
+            (Self::Approve | Self::ApproveNonMember, true) => Self::Approve,
+            (Self::Approve | Self::ApproveNonMember, false) => Self::ApproveNonMember,
+            (Self::RequestChanges | Self::RequestChangesNonMember, true) => Self::RequestChanges,
+            (Self::RequestChanges | Self::RequestChangesNonMember, false) => {
+                Self::RequestChangesNonMember
+            }
+            (other, _) => other,
+        }
+    }
+
+    /// Whether this verdict must carry `asMember` (1 and 2, `memberVerdict`).
+    #[must_use]
+    pub fn needs_member_proof(self) -> bool {
+        matches!(self, Self::Approve | Self::RequestChanges)
     }
 }
 

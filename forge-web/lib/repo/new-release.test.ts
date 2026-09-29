@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   MAX_ASSET_BYTES,
-  PRIVATE_ASSETS_REFUSED,
   publishRelease,
   assetFilesProblem,
   assetPlanProblem,
@@ -14,7 +13,7 @@ import {
   tagProblem,
 } from './new-release'
 import { parseReleaseAssets } from './releases'
-import { releaseAssetsJson } from './writes'
+import { PRIVATE_RELEASE_REFUSED, releaseAssetsJson } from './writes'
 import { EMPTY_STORAGE_CONFIG, externalTargets, policyFor, storeFile, type StorageConfig, type StorageProfile } from '../storage'
 import { sha256Hex } from '../storage/sigv4'
 
@@ -169,15 +168,15 @@ describe('storeFile (release assets)', () => {
 })
 
 describe('a private repo', () => {
-  it('refuses release assets before reading or uploading anything (they would be unencrypted)', async () => {
+  it('refuses any release before reading or uploading anything (this client does not seal releases)', async () => {
     const touched = vi.fn()
     const sdk = new Proxy({}, { get: () => touched }) as never
     const auth = { identityId: 'x', network: 'devnet' as const, getSigningKeyWif: () => 'x' }
     const repo = { forge: { core: 'C', collab: 'L', community: 'L', group: 'G' }, repoId: 'R', ownerId: 'x', name: 'r', visibility: 'private' as const }
     const file = { name: 'a.bin', size: 3, arrayBuffer: vi.fn(async () => new ArrayBuffer(3)) }
     const input = { tagName: 'v1', name: '', notes: '', files: [file], draft: 'd' }
-    await expect(publishRelease(sdk, auth, repo, input, { policy: null, profiles: [] })).rejects.toThrow(PRIVATE_ASSETS_REFUSED)
-    await expect(publishRelease(sdk, auth, repo, { ...input, files: [], stored: { name: '', notes: '', assets: [{ name: 'a', sha256: '00', sizeBytes: 1, uris: ['https://x'] }] } }, { policy: null, profiles: [] })).rejects.toThrow(PRIVATE_ASSETS_REFUSED)
+    await expect(publishRelease(sdk, auth, repo, input, { policy: null, profiles: [] })).rejects.toThrow(PRIVATE_RELEASE_REFUSED)
+    await expect(publishRelease(sdk, auth, repo, { ...input, files: [], stored: { name: '', notes: '', assets: [{ name: 'a', sha256: '00', sizeBytes: 1, uris: ['https://x'] }] } }, { policy: null, profiles: [] })).rejects.toThrow(PRIVATE_RELEASE_REFUSED)
     expect(file.arrayBuffer).not.toHaveBeenCalled()
     expect(touched).not.toHaveBeenCalled()
   })

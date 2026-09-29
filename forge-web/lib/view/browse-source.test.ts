@@ -10,12 +10,13 @@
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
 import { sha256 } from '@noble/hashes/sha2.js'
-import { bytesToHex } from '@noble/hashes/utils.js'
+import { bytesToHex, hexToBytes } from '@noble/hashes/utils.js'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { CHUNK_PAYLOAD_MAX } from '../constants'
 import type { PackManifest, RepoRef } from '../repo'
-import { base64ToHex, bytesToBase64, hexToBase64 } from '../sdk'
+import { bytesToBase64 } from '../sdk'
+import { base58Decode, base58Encode } from '../auth/base58'
 import { DOC } from '../repo'
 import { serializeLocator, type IndexedObject } from '../browse/indexer'
 import {
@@ -72,7 +73,7 @@ function mockSdk(bytesFor: (packHashHex: string) => Uint8Array): EvoSDK {
       }): Promise<Map<string, unknown>> => {
         const packClause = (q.where ?? []).find((w) => w[0] === 'packHash')
         const seqClause = (q.where ?? []).find((w) => w[0] === 'seq')
-        const packHashHex = base64ToHex(String(packClause?.[2] ?? ''))
+        const packHashHex = bytesToHex(base58Decode(String(packClause?.[2] ?? '')))
         const seqs = (seqClause?.[2] as number[]) ?? []
         const bytes = bytesFor(packHashHex)
         const map = new Map<string, unknown>()
@@ -355,12 +356,11 @@ describe('packRef ordering (assumption a)', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * A 32-byte hash as the base64 a manifest is read through: `n` filled (a git pack, whose
- * bytes these tests never fetch), or a hex digest (an index fragment, which the reader
- * sha256-checks against it).
+ * A 32-byte hash as the base58 a manifest is read through (RC1 `packHash` is an identifier):
+ * `n` filled (a git pack, whose bytes these tests never fetch), or a hex digest (an index
+ * fragment, which the reader sha256-checks against it).
  */
-const hashB64 = (h: number | string): string =>
-  typeof h === 'string' ? hexToBase64(h) : bytesToBase64(new Uint8Array(32).fill(h))
+const hashId = (h: number | string): string => base58Encode(typeof h === 'string' ? hexToBytes(h) : new Uint8Array(32).fill(h))
 
 /** The packHash of an artifact: sha256 of its bytes, hex. */
 const digest = (bytes: Uint8Array): string => bytesToHex(sha256(bytes))
@@ -385,7 +385,7 @@ function manifestDoc(m: ManifestSpec): Record<string, unknown> {
     $id: m.id,
     $createdAt: m.createdAt,
     ...(m.owner !== undefined ? { $ownerId: m.owner } : {}),
-    packHash: hashB64(m.hash),
+    packHash: hashId(m.hash),
     kind: m.kind,
     sizeBytes: m.sizeBytes ?? 0,
     chunkCount: 1,
@@ -451,7 +451,7 @@ function browseSdk(
         }
         // chunk: one document per artifact (every fixture fits in a single chunk).
         const packClause = (q.where ?? []).find((w) => w[0] === 'packHash')
-        const bytes = artifacts.get(base64ToHex(String(packClause?.[2] ?? '')))
+        const bytes = artifacts.get(bytesToHex(base58Decode(String(packClause?.[2] ?? ''))))
         if (bytes === undefined) return Promise.resolve(new Map())
         return Promise.resolve(new Map([['c0', { seq: 0, d0: bytesToBase64(bytes) }]]))
       },

@@ -102,7 +102,7 @@ export function usePrivateHome(home: RepoHome | null, addr: RepoAddress): Privat
       if (identity === null) return { ...base, private: { access: 'signed-out' } }
       const members = await readMembershipsCached(sdk!, base.repo, network)
       if (!members.some((m) => m.identity === identity)) return { ...base, private: { access: 'outsider' } }
-      const ops = await encryptionOps(sdk!, network, identity, base.repo.forge.core)
+      const ops = await encryptionOps(sdk!, network, identity, base.repo.forge.collab)
       if (ops === null) return { ...base, private: { access: 'no-key' } }
       // A session picked up after a reload holds the signing key only: the encryption key needs
       // an interactive unlock in this tab first.

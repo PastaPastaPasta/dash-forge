@@ -2,59 +2,72 @@
 // seed-v2-fixture.mjs — seed the forge-v2 read fixture that forge-web's devnet Playwright
 // specs and live tests read.
 //
-//   node forge-contracts/scripts/seed-v2-fixture.mjs [--network devnet --devnet-name moutai]
+//   node forge-contracts/scripts/seed-v2-fixture.mjs [--network devnet --devnet-name bonsia]
+//        [--identities <dir>] [--state <file>] [--summary <file>] [--deployment <file>]
 //
-// beta.7 only: needs evo-sdk 4.2.0-beta.7 (forge-contracts/sdk-v2) and the three-contract
-// deployment; star, starBeat, watch, policy and checkRun live in forge-community.
-// Needs `npm ci` in forge-contracts/sdk-v2 (evo-sdk 4.2, protocol 14) and the devnet test
-// identities in ~/.config/dash-forge/test-identities/<network>/ (OWNER, MAINTAINER, COLLAB,
-// CONTRIB).
+// Writes the RC1 documents (contracts/forge-{core,collab,community}.json; the rules are in
+// docs/contracts/forge-v2.md). Needs `npm ci` in forge-contracts/sdk-v2 (evo-sdk 4.2.0-beta.7),
+// the three-contract deployment in deployments/<network>.json, and the test identities OWNER,
+// MAINTAINER, COLLAB and CONTRIB in --identities (default
+// ~/.config/dash-forge/test-identities/<network>/). The network defaults to
+// DASH_FORGE_NETWORK / DASH_FORGE_DEVNET_NAME, else devnet bonsia.
 //
-// It writes, as the forge-v2 contracts define them (docs/contracts/forge-v2.md):
-//   * repo `forge-v2-demo` owned by OWNER; OWNER and MAINTAINER as maintainers, COLLAB as a
-//     writer; a config protecting refs/heads/main;
+// It writes:
+//   * repo `forge-v2-demo` owned by OWNER, OWNER and MAINTAINER as maintainers and COLLAB as a
+//     writer (each invited member first writes its `consent`), a config protecting
+//     refs/heads/main;
 //   * one deterministic git history (three commits, a feature branch, a tag) packed with git,
 //     stored on Platform as `chunk` documents behind a kind-0 `packManifest`, plus a kind-1
 //     objectLocator over it, so the web app browses it through the published index;
 //   * refs: main by protectedRefUpdate (two updates), the feature branch by COLLAB's
-//     refUpdate, the tag by OWNER;
-//   * issues #1-#4, a PR still open with an approval, a merged PR, comments, `event`s and an
-//     `authorEvent`, a star;
-//   * a review-parity PR (#3, docs/design/review-parity-spec.md): opened as a draft by CONTRIB
-//     (not a member) from c2, its head moved to c3 by the author's `headUpdate`, a reviewer
-//     requested by OWNER, MAINTAINER's request-changes review with one multi-line inline
-//     comment attached through `reviewId`, CONTRIB's reply, the author resolving the thread,
-//     OWNER dismissing the review with a reason, and a branch `policy` by OWNER;
-//   * the C-1 types (platform-parity-spec §6): CONTRIB's trending beat and watch, the topics
-//     `fixture` and `forge-v2`, milestone `v0.2` holding issues #1 (open) and #3 (closed), and
-//     issue #1 pinned;
+//     refUpdate, the tag by OWNER, and a release of the tag;
+//   * issues #1-#4 by CONTRIB, then PRs #5-#7. Issues and PRs share one dense number sequence,
+//     so numbers follow creation order:
+//     - #2 is closed by its author, and #3 by MAINTAINER (both `transition` documents);
+//     - PR #5 is open with MAINTAINER's approval and a passing check run by COLLAB;
+//     - PR #6 is merged;
+//   * the review-parity PR #7 (docs/design/review-parity-spec.md), by CONTRIB, who is not a member.
+//     It is opened from c2 and marked draft (a kind-14 transition by the author). The author's
+//     `headUpdate` moves its head to c3. Then:
+//     - OWNER requests MAINTAINER's review;
+//     - MAINTAINER writes a request-changes review with one multi-line inline comment attached
+//       through `reviewId`;
+//     - CONTRIB replies, and the author resolves the thread;
+//     - OWNER dismisses the review with a reason, and OWNER sets a branch `policy`;
+//   * the C-1 types (platform-parity-spec §6): CONTRIB's star, trending beat and watch; the
+//     topics `fixture` and `forge-v2`; milestone `v0.2` holding issues #1 (open) and #3
+//     (closed); issue #1 pinned;
 //   * repo `forge-v2-empty` owned by MAINTAINER, with no refs (the empty-repo state).
 //
-// The git-remote-dash v2 push path is not there yet (forge-core PR C), which is why the
-// pack and the locator are written here directly. The chunk layout is forge-core
-// `pack::split` (4900-byte fields, three per chunk); the locator is `pack/locator.rs`
-// (fanout || 36-byte rows, deltaChainSpan = the sentinel so readers walk each base).
+// The pack and the locator are written directly, not through git-remote-dash. The chunk
+// layout is forge-core `pack::split` (4900-byte fields, three per chunk). The locator is
+// `pack/locator.rs`: fanout || 36-byte rows, with deltaChainSpan = the sentinel so readers walk
+// each base.
 //
-// Idempotent: the result of every step is recorded in
-// ~/.cache/dash-forge/seed-v2-<network>.json and a rerun skips what is recorded. The state
-// records which forge-collab it seeded (`collabContract`): after a forge-collab re-registration
-// (forge-core unchanged) the collab steps are archived to `supersededCollab` and re-seeded under
-// the new contract, while the repo, membership, pack and refs (forge-core) are kept. Without that
-// file (a fresh CI runner), a fixture that already exists on chain is left alone: the run
-// checks `forge-v2-demo` resolves and exits. Delete the file (and pick new repo names) to
-// seed from scratch.
+// The summary (ids, numbers, commits) is printed and written to --summary (default
+// deployments/fixtures/<network>.json, committed by the bring-up for the specs to read).
+//
+// Idempotent: the result of every step is recorded in --state (default
+// ~/.cache/dash-forge/seed-v2-<network>.json) and a rerun skips what is recorded. A write that
+// landed after its confirmation failed is adopted, not written again (the chain would refuse the
+// repeat). The state records the contracts it seeded under (`contracts`). After forge-collab or
+// forge-community is re-registered (forge-core unchanged), the steps that wrote into it are
+// archived to `superseded` and seeded again. forge-community names forge-collab's id, so a new
+// forge-collab re-seeds both. The repo, membership, pack and refs (forge-core) are kept.
+// Without the state file (a fresh CI runner), a fixture that already exists on chain is left
+// alone: the run checks `forge-v2-demo` resolves and exits. To seed from scratch, delete the file
+// and pick new repo names.
 
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
-import { communityId, loadEvoSdk } from './deploy-v2.mjs';
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-const ROOT = resolve(HERE, '..');
+import {
+  CONTRACT_OF, EVENT, ROOT, TRANSITION, VIS, checkOutcome, idBytes, loadIdentity, log, membership, openSession, parseArgs,
+  runIfMain, transition, until,
+} from './lib/seed-io.mjs';
 
 const DEMO = 'forge-v2-demo';
 const EMPTY = 'forge-v2-empty';
@@ -63,37 +76,10 @@ const FIELDS_PER_DOC = 3;
 const FANOUT_LEN = 1024;
 const ROW_LEN = 36;
 const SPAN_SENTINEL = 0xffffffff;
-const EVENT = {
-  close: 1,
-  reopen: 2,
-  merge: 3,
-  labelAdd: 4,
-  draft: 9,
-  ready: 10,
-  threadResolve: 11,
-  threadUnresolve: 12,
-  reviewRequest: 13,
-  reviewRequestRemove: 14,
-  reviewDismiss: 15,
-  headUpdate: 16,
-  milestoneSet: 17,
-  milestoneClear: 18,
-  pin: 19,
-  unpin: 20,
-  lock: 21,
-  unlock: 22,
-};
-// Steps whose documents live in forge-collab: re-seeded when forge-collab is re-registered.
-const COLLAB_STEP = /^(issue:|patch:|pr3:|policy$|star:|starBeat:|watch:|milestone:|pin:)/;
-
-const log = (m) => console.error(`${new Date().toISOString().slice(11, 19)} ${m}`);
-
-function args() {
-  const out = { network: 'devnet', 'devnet-name': 'moutai' };
-  const a = process.argv.slice(2);
-  for (let i = 0; i < a.length; i += 2) out[a[i].replace(/^--/, '')] = a[i + 1];
-  return out;
-}
+/** The PR numbers the specs read (issues are #1-#4). */
+const PULLS = { approved: 5, merged: 6, reviewParity: 7 };
+const CHECK = 'fixture-ci';
+const RELEASE_TAG = 'v0.1.0';
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest();
 
@@ -139,7 +125,7 @@ function buildHistory() {
     'docs/rules.md': '# Rules\n\nIssue and PR state is folded from `event` and `authorEvent` documents.\n',
     'src/main.rs': 'fn main() {\n    println!("hello from forge-v2");\n    println!("reads are proof-checked");\n}\n',
   });
-  git(dir, ['tag', 'v0.1.0', c1]);
+  git(dir, ['tag', RELEASE_TAG, c1]);
   git(dir, ['checkout', '-q', '-b', 'feature/greeting']);
   const c3 = commit('Greet by name', '2026-09-03T12:00:00', {
     'src/main.rs': 'fn main() {\n    let name = std::env::args().nth(1).unwrap_or("forge".into());\n    println!("hello, {name}");\n    println!("reads are proof-checked");\n}\n',
@@ -208,56 +194,26 @@ function split(data) {
 // Platform writes
 // ---------------------------------------------------------------------------
 
-async function main() {
-  const a = args();
-  const network = a.network;
-  const devnetName = network === 'devnet' ? a['devnet-name'] : null;
-  const key = devnetName ? `devnet-${devnetName}` : network;
-  const dep = JSON.parse(readFileSync(join(ROOT, 'deployments', `${key}.json`), 'utf8'));
-  const core = dep.v2?.forgeCore?.contractId;
-  const collab = dep.v2?.forgeCollab?.contractId;
-  const community = communityId(dep);
-  if (!core || !collab) throw new Error(`no forge-v2 deployment recorded for ${key}`);
+export async function main(argv, injected) {
+  const a = parseArgs(argv);
+  const { net, evo, sdk, write, read } = await openSession(a, injected);
+  const { key, ids } = net;
 
-  const evo = await loadEvoSdk();
-  const { EvoSDK, Document, IdentityPublicKey, IdentitySigner, PrivateKey } = evo;
-  const sdk = new EvoSDK({
-    network,
-    trusted: true,
-    ...(devnetName ? { devnetName } : {}),
-    ...(dep.dapiAddresses ? { addresses: dep.dapiAddresses } : {}),
-    settings: { timeoutMs: 30000 },
-  });
-  await sdk.connect();
-
-  const idDir = join(homedir(), '.config/dash-forge/test-identities', key);
-  const load = (name) => {
-    const rec = JSON.parse(readFileSync(join(idDir, `${name}.identity.json`), 'utf8'));
-    const k = rec.identityKeys.find((x) => x.purpose === 'AUTHENTICATION' && x.securityLevel === 'HIGH');
-    const identityKey = new IdentityPublicKey({
-      keyId: k.id,
-      purpose: k.purpose,
-      securityLevel: k.securityLevel,
-      keyType: k.keyType,
-      isReadOnly: false,
-      data: Buffer.from(k.publicKeyHex, 'hex'),
-    });
-    const signer = new IdentitySigner();
-    signer.addKey(PrivateKey.fromWIF(k.privateKeyWif));
-    return { name, id: rec.identityId, identityKey, signer };
-  };
+  const idDir = a.identities ?? join(homedir(), '.config/dash-forge/test-identities', key);
+  const load = (name) => loadIdentity(evo, join(idDir, `${name}.identity.json`), name);
   const OWNER = load('OWNER');
   const MAINTAINER = load('MAINTAINER');
   const COLLAB = load('COLLAB');
   const CONTRIB = load('CONTRIB');
+  const contracts = { forgeCore: ids.core, forgeCollab: ids.collab, forgeCommunity: ids.community };
 
-  const statePath = join(homedir(), '.cache/dash-forge', `seed-v2-${key}.json`);
+  const statePath = a.state ?? join(homedir(), '.cache/dash-forge', `seed-v2-${key}.json`);
   mkdirSync(dirname(statePath), { recursive: true });
   if (!existsSync(statePath)) {
     // No local record: if the fixture is already on chain (seeded from another machine),
     // there is nothing to do. Re-seeding would fail on the unique `($ownerId, name)` index.
     const found = await sdk.documents.query({
-      dataContractId: core,
+      dataContractId: ids.core,
       documentTypeName: 'repo',
       where: [
         ['$ownerId', '==', OWNER.id],
@@ -267,91 +223,114 @@ async function main() {
     });
     const doc = found instanceof Map ? [...found.values()].find((v) => v != null) : null;
     if (doc) {
-      // The last step the seeder writes is the star; a fixture without it was interrupted
-      // on the machine that holds its state file, and must be finished there.
-      const stars = await sdk.documents.count({
-        dataContractId: community,
-        documentTypeName: 'star',
-        where: [['repoId', '==', String(doc.toJSON?.().$id ?? doc.id)]],
-      });
-      let n = 0n;
-      for (const v of stars.values()) n += v;
-      if (n === 0n) {
-        // Either an interrupted seed, or a forge-collab re-registered since the fixture was
-        // seeded (its collab documents, the star included, are under the old contract). Both
-        // are finished where the state file lives: that run re-seeds the collab part.
-        throw new Error(`${DEMO} exists on ${key} but has no star under forge-community ${community}: the seed was interrupted or forge-collab was re-registered since; run the seeder where ~/.cache/dash-forge/seed-v2-${key}.json lives`);
-      }
       const repoId = String(doc.toJSON?.().$id ?? doc.id?.toBase58?.() ?? doc.id);
+      // The last step the seeder writes is the pin; a fixture without it was interrupted on
+      // the machine that holds its state file, and must be finished there.
+      const events = await sdk.documents.query({
+        dataContractId: ids.community,
+        documentTypeName: 'event',
+        where: [['repoId', '==', repoId]],
+        orderBy: [['$createdAt', 'asc']],
+        limit: 100,
+      });
+      if (![...events.values()].some((e) => e?.toJSON?.().kind === EVENT.pin)) {
+        throw new Error(`${DEMO} exists on ${key} but has no pin under forge-community ${ids.community}: the seed was interrupted or a contract was re-registered since; run the seeder where ~/.cache/dash-forge/seed-v2-${key}.json lives`);
+      }
       log(`${DEMO} already exists on ${key} (${repoId}); nothing to seed`);
-      console.log(JSON.stringify({ network: key, forgeCore: core, forgeCollab: collab, demo: { owner: OWNER.id, name: DEMO, repoId, reviewParityPull: 3 }, seeded: false }, null, 2));
-      return;
+      const summary = { network: key, ...contracts, demo: { owner: OWNER.id, name: DEMO, repoId, reviewParityPull: PULLS.reviewParity }, pulls: PULLS, seeded: false };
+      console.log(JSON.stringify(summary, null, 2));
+      return summary;
     }
   }
   const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : {};
   const save = () => writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
-  // A state file from before forge-collab or forge-community was re-registered (or from before
-  // this field existed) names collab documents under another contract: archive them and seed the
-  // collab part (collab and community steps) again.
-  const seededUnder = community === collab ? collab : `${collab}+${community}`;
-  if (state.collabContract !== seededUnder) {
-    const stale = Object.keys(state).filter((k) => COLLAB_STEP.test(k));
-    if (stale.length > 0) {
-      state.supersededCollab = [
-        ...(state.supersededCollab ?? []),
-        { contract: state.collabContract ?? 'unrecorded', steps: Object.fromEntries(stale.map((k) => [k, state[k]])) },
-      ];
-      for (const k of stale) delete state[k];
-      log(`forge-collab / forge-community are now ${seededUnder}: re-seeding ${stale.length} collab steps`);
-    }
-    state.collabContract = seededUnder;
-    save();
+  // A state file from before a contract was re-registered names documents under the old one:
+  // archive the steps that wrote into it and seed those again. Every step records its type
+  // (`types`), so its contract is known.
+  state.contracts ??= { ...ids };
+  state.types ??= {};
+  const changed = new Set(Object.keys(ids).filter((c) => state.contracts[c] !== ids[c]));
+  if (changed.has('core')) {
+    throw new Error(`${statePath} seeded forge-core ${state.contracts.core}, not ${ids.core}: a new forge-core needs a new fixture (delete the state file and pick new repo names)`);
   }
-
-  const b58 = (s) => Buffer.from(evo.Identifier.fromBase58(s).toBytes());
-  const version = sdk.version();
+  // forge-community's events name forge-collab's issues and PRs
+  if (changed.has('collab')) changed.add('community');
+  if (changed.size > 0) {
+    const stale = Object.keys(state.types).filter((k) => changed.has(CONTRACT_OF[state.types[k]]) && state[k]);
+    state.superseded = [...(state.superseded ?? []), { contracts: state.contracts, steps: Object.fromEntries(stale.map((k) => [k, state[k]])) }];
+    for (const k of stale) delete state[k];
+    log(`${[...changed].map((c) => `forge-${c}`).join(' and ')} re-registered: re-seeding ${stale.length} steps`);
+    state.contracts = { ...ids };
+  }
+  save();
 
   /** Create one document (once: the step name is recorded with its id). */
-  async function create(step, who, contractId, documentTypeName, data) {
+  async function create(step, who, type, data) {
     if (state[step]) return state[step];
-    const base = new Document({ properties: {}, documentTypeName, dataContractId: contractId, ownerId: who.id });
-    const document = Document.fromObject({ ...base.toObject(), ...data }, version);
-    const created = await sdk.documents.create({ document, identityKey: who.identityKey, signer: who.signer });
-    const id = created.id.toBase58();
+    let id;
+    try {
+      id = (await write(who, type, data)).id.toBase58();
+    } catch (e) {
+      // It may have landed before the error (and a rerun of an unrecorded step would be
+      // refused): adopt what landed.
+      id = await read.existing(who, type, data);
+      if (!id) throw e;
+      log(`${step}: adopting ${type} ${id}, which landed before: ${String(e?.message ?? e).slice(0, 100)}`);
+    }
     state[step] = id;
+    state.types[step] = type;
     save();
-    log(`${step}: ${documentTypeName} ${id} (${who.name})`);
+    log(`${step}: ${type} ${id} (${who.name})`);
     return id;
   }
 
+  // indexOnly documents (star, starBeat, watch) have no id to record. The write is confirmed by
+  // a read of the writer's own entry.
+  async function createIndexOnly(step, who, type, data) {
+    if (state[step]) return;
+    const own = () => read.owns(who, type, repoId);
+    if (!(await own())) {
+      await write(who, type, data);
+      if (!(await until(own, 10, 2000))) throw new Error(`${step} did not land`);
+    }
+    state[step] = 'indexOnly';
+    state.types[step] = type;
+    save();
+    log(step);
+  }
+
   // --- repos, membership, config -----------------------------------------------------
-  const repoId = await create('repo', OWNER, core, 'repo', {
+  const repoId = await create('repo', OWNER, 'repo', {
     name: DEMO,
-    visibility: 'public',
+    visibility: VIS,
     displayName: 'forge-v2 demo',
     description: 'The forge-v2 read fixture: code, issues and pull requests in the shared contracts.',
     defaultBranch: 'main',
     topics: ['fixture', 'forge-v2'],
   });
-  const R = b58(repoId);
-  await create('maintainer:owner', OWNER, core, 'maintainer', { repoId: R, memberId: b58(OWNER.id) });
-  await create('config', OWNER, core, 'config', {
+  const R = idBytes(repoId);
+  await create('maintainer:owner', OWNER, 'maintainer', membership(R, OWNER.id, OWNER.id));
+  await create('config', OWNER, 'config', {
     repoId: R,
     defaultBranch: 'main',
     protectedPatterns: ['refs/heads/main'],
     backend: { mode: 0 },
+    vis: VIS,
   });
-  await create('maintainer:maintainer', OWNER, core, 'maintainer', { repoId: R, memberId: b58(MAINTAINER.id) });
-  await create('writer:collab', OWNER, core, 'writer', { repoId: R, memberId: b58(COLLAB.id) });
+  // An invited member accepts first (`consent`), then the owner enrols it.
+  await create('consent:maintainer', MAINTAINER, 'consent', { repoId: R });
+  await create('maintainer:maintainer', OWNER, 'maintainer', membership(R, OWNER.id, MAINTAINER.id));
+  await create('consent:collab', COLLAB, 'consent', { repoId: R });
+  await create('writer:collab', OWNER, 'writer', membership(R, OWNER.id, COLLAB.id));
 
-  const emptyId = await create('repo:empty', MAINTAINER, core, 'repo', {
+  const emptyId = await create('repo:empty', MAINTAINER, 'repo', {
     name: EMPTY,
-    visibility: 'public',
+    visibility: VIS,
     description: 'A forge-v2 repository with nothing pushed yet.',
   });
-  const E = b58(emptyId);
-  await create('empty:maintainer', MAINTAINER, core, 'maintainer', { repoId: E, memberId: b58(MAINTAINER.id) });
-  await create('empty:config', MAINTAINER, core, 'config', { repoId: E, defaultBranch: 'main' });
+  const E = idBytes(emptyId);
+  await create('empty:maintainer', MAINTAINER, 'maintainer', membership(E, MAINTAINER.id, MAINTAINER.id));
+  await create('empty:config', MAINTAINER, 'config', { repoId: E, defaultBranch: 'main', vis: VIS });
 
   // --- content: pack + locator on Platform --------------------------------------------
   const { dir, commits } = buildHistory();
@@ -373,6 +352,7 @@ async function main() {
   state.hashes = hashes;
   save();
 
+  // Every chunk lands before its manifest: the manifest's `platformChunks` rule counts them.
   async function storeArtifact(label, bytes, hash, kind, objectCount) {
     const chunks = split(bytes);
     for (let seq = 0; seq < chunks.length; seq++) {
@@ -380,9 +360,9 @@ async function main() {
       chunks[seq].forEach((field, i) => {
         data[`d${i}`] = Uint8Array.from(field);
       });
-      await create(`${label}:chunk:${seq}`, OWNER, core, 'chunk', data);
+      await create(`${label}:chunk:${seq}`, OWNER, 'chunk', data);
     }
-    return create(`${label}:manifest`, OWNER, core, 'packManifest', {
+    return create(`${label}:manifest`, OWNER, 'packManifest', {
       repoId: R,
       packHash: hash,
       kind,
@@ -390,56 +370,59 @@ async function main() {
       objectCount,
       chunkCount: chunks.length,
       storage: 0,
-      offsetIndexParts: 0,
     });
   }
   await storeArtifact('pack', pack, packHash, 0, locator.objectCount);
   await storeArtifact('locator', locator.bytes, locatorHash, 1, locator.objectCount);
 
-  // --- refs ---------------------------------------------------------------------------
+  // --- refs and the release -----------------------------------------------------------
   const oid = (hex) => Buffer.from(hex, 'hex');
   const refHash = (name) => sha256(Buffer.from(name));
-  await create('ref:main:1', OWNER, core, 'protectedRefUpdate', {
-    repoId: R, refNameHash: refHash('refs/heads/main'), refName: 'refs/heads/main', newOid: oid(commits.c1),
+  const ref = (name, newOid, prevOid) => ({
+    repoId: R, refNameHash: refHash(name), refName: name, newOid: oid(newOid), ...(prevOid ? { prevOid: oid(prevOid) } : {}), vis: VIS,
   });
-  await create('ref:main:2', MAINTAINER, core, 'protectedRefUpdate', {
-    repoId: R, refNameHash: refHash('refs/heads/main'), refName: 'refs/heads/main', prevOid: oid(commits.c1), newOid: oid(commits.c2),
-  });
-  await create('ref:feature', COLLAB, core, 'refUpdate', {
-    repoId: R, refNameHash: refHash('refs/heads/feature/greeting'), refName: 'refs/heads/feature/greeting', newOid: oid(commits.c3),
-  });
-  await create('ref:tag', OWNER, core, 'refUpdate', {
-    repoId: R, refNameHash: refHash('refs/tags/v0.1.0'), refName: 'refs/tags/v0.1.0', newOid: oid(commits.c1),
+  await create('ref:main:1', OWNER, 'protectedRefUpdate', ref('refs/heads/main', commits.c1));
+  await create('ref:main:2', MAINTAINER, 'protectedRefUpdate', ref('refs/heads/main', commits.c2, commits.c1));
+  await create('ref:feature', COLLAB, 'refUpdate', ref('refs/heads/feature/greeting', commits.c3));
+  await create('ref:tag', OWNER, 'refUpdate', ref(`refs/tags/${RELEASE_TAG}`, commits.c1));
+  // A publish counts +1 toward the tag's one live release (`oneLive`).
+  await create('release', OWNER, 'release', {
+    repoId: R, tagName: RELEASE_TAG, name: RELEASE_TAG, notes: 'The first tagged commit of the fixture.', assets: '[]', vis: VIS, delta: 1,
   });
 
   // --- issues -------------------------------------------------------------------------
-  const issue = (n, who, title, body) =>
-    create(`issue:${n}`, who, collab, 'issue', { repoId: R, number: n, title, body });
+  // Issues and PRs share one dense sequence (`dense`): each is written at the next number, in
+  // order. CONTRIB is not a member, so its issues carry no `asMember`.
+  const issue = async (n, who, title, body) => ({
+    id: await create(`issue:${n}`, who, 'issue', { repoId: R, number: n, tk: 0, title, body, vis: VIS }),
+    number: n,
+  });
   const i1 = await issue(1, CONTRIB, 'README should explain the event split', 'The README does not say why `authorEvent` is its own type.');
   const i2 = await issue(2, CONTRIB, 'Duplicate of #1', 'Opened twice by mistake.');
   const i3 = await issue(3, CONTRIB, 'Add a rules page', 'A page documenting the fold would help.');
-  // PR #3 (below) shares #3 with this issue; #4 keeps a number that is only an issue, which the
-  // jump-box spec (e2e/v2-explore.spec.ts x3) needs.
+  // #4 is a number that only an issue holds, which the jump-box spec (e2e/v2-explore.spec.ts x3)
+  // needs.
   await issue(4, CONTRIB, 'Explain review requests', 'Who can request a review, and does it count?');
-  const ev = (step, who, type, targetId, targetNumber, kind, extra = {}) =>
-    create(step, who, collab, type, { repoId: R, targetId: b58(targetId), targetNumber, kind, ...extra });
-  await ev('issue:2:author-close', CONTRIB, 'authorEvent', i2, 2, EVENT.close);
-  await ev('issue:3:label', MAINTAINER, 'event', i3, 3, EVENT.labelAdd, { value: 'docs' });
-  await ev('issue:3:close', MAINTAINER, 'event', i3, 3, EVENT.close);
-  await ev('issue:1:label', COLLAB, 'event', i1, 1, EVENT.labelAdd, { value: 'question' });
-  const comment = (step, who, targetId, body) =>
-    create(step, who, collab, 'comment', { repoId: R, targetId: b58(targetId), body });
-  await comment('issue:1:comment:1', MAINTAINER, i1, 'Good point: the split is in docs/contracts/forge-v2.md §3.');
-  await comment('issue:3:comment:1', MAINTAINER, i3, 'Done in docs/rules.md; closing.');
+  const event = (step, who, type, target, kind, extra = {}) =>
+    create(step, who, type, { repoId: R, targetId: idBytes(target.id), targetNumber: target.number, kind, ...extra });
+  const move = (step, who, target, kind, opts) => create(step, who, 'transition', transition(R, target, kind, opts));
+  await move('issue:2:author-close', CONTRIB, i2, TRANSITION.issueClose, { byAuthor: true });
+  await event('issue:3:label', MAINTAINER, 'event', i3, EVENT.labelAdd, { value: 'docs' });
+  await move('issue:3:close', MAINTAINER, i3, TRANSITION.issueClose);
+  await event('issue:1:label', COLLAB, 'event', i1, EVENT.labelAdd, { value: 'question' });
+  // A member's comment proves its membership (`asMember` = the signer).
+  const comment = (step, who, target, body, extra = {}) =>
+    create(step, who, 'comment', { repoId: R, targetId: idBytes(target.id), body, vis: VIS, ...extra });
+  await comment('issue:1:comment:1', MAINTAINER, i1, 'Good point: the split is in docs/contracts/forge-v2.md §3.', { asMember: idBytes(MAINTAINER.id) });
+  await comment('issue:3:comment:1', MAINTAINER, i3, 'Done in docs/rules.md; closing.', { asMember: idBytes(MAINTAINER.id) });
 
   // --- pull requests ------------------------------------------------------------------
-  // Numbered independently of issues (forge-v2.md §6): PR #1 and issue #1 both exist on
-  // purpose, and the jump-box spec relies on one such pair. Other suites open more PRs here,
-  // so readers must not assume these are the only numbers.
-  const patch = (n, who, title, body, headOid, sourceRef) =>
-    create(`patch:${n}`, who, collab, 'patch', {
+  // Other suites open more PRs here, so readers must not assume these are the only numbers.
+  const patch = async (n, who, title, body, headOid, sourceRef, extra = {}) => ({
+    id: await create(`patch:${n}`, who, 'patch', {
       repoId: R,
       number: n,
+      tk: 1,
       title,
       body,
       baseRefNameHash: refHash('refs/heads/main'),
@@ -448,60 +431,65 @@ async function main() {
       sourceRefNameHash: refHash(sourceRef),
       sourceRefName: sourceRef,
       headOid: oid(headOid),
-    });
-  const p1 = await patch(1, COLLAB, 'Greet by name', 'Reads the name from argv.', commits.c3, 'refs/heads/feature/greeting');
-  const p2 = await patch(2, MAINTAINER, 'Document the fold rules', 'Adds docs/rules.md.', commits.c2, 'refs/heads/main');
-  await create('patch:1:review', MAINTAINER, collab, 'review', {
-    repoId: R, patchId: b58(p1), verdict: 1, commitOid: oid(commits.c3), body: 'Looks good.',
+      vis: VIS,
+      ...extra,
+    }),
+    number: n,
   });
-  await comment('patch:1:comment:1', OWNER, p1, 'Nice. Waiting on one more review.');
-  await ev('patch:2:merge', OWNER, 'event', p2, 2, EVENT.merge, { oid: oid(commits.c2) });
+  const p5 = await patch(PULLS.approved, COLLAB, 'Greet by name', 'Reads the name from argv.', commits.c3, 'refs/heads/feature/greeting', { asMember: idBytes(COLLAB.id) });
+  const p6 = await patch(PULLS.merged, MAINTAINER, 'Document the fold rules', 'Adds docs/rules.md.', commits.c2, 'refs/heads/main', { asMember: idBytes(MAINTAINER.id) });
+  // A member's approval (verdict 1) must carry its proof.
+  await create('patch:5:review', MAINTAINER, 'review', {
+    repoId: R, patchId: idBytes(p5.id), verdict: 1, commitOid: oid(commits.c3), body: 'Looks good.', vis: VIS, asMember: idBytes(MAINTAINER.id),
+  });
+  await comment('patch:5:comment:1', OWNER, p5, 'Nice. Waiting on one more review.', { asMember: idBytes(OWNER.id) });
+  // A writer's check run on PR #5's head: completed, so `outcome` is 1 and both times are set (ms).
+  const finished = Date.now();
+  await create('check:5', COLLAB, 'checkRun', {
+    repoId: R,
+    headOid: oid(commits.c3),
+    name: CHECK,
+    status: 'completed',
+    conclusion: 'success',
+    outcome: checkOutcome('completed', 'success'),
+    startedAt: finished - 60_000,
+    completedAt: finished,
+    summary: 'The fixture build passed.',
+    vis: VIS,
+  });
+  await move('patch:6:merge', OWNER, p6, TRANSITION.merge, { oid: oid(commits.c2) });
 
   // --- review parity (docs/design/review-parity-spec.md §3, §4) ------------------------
-  // PR #3 by CONTRIB, who is not a member: every author action goes through `authorEvent`.
-  const p3 = await create('patch:3', CONTRIB, collab, 'patch', {
+  // PR #7 by CONTRIB, who is not a member: its state moves are author transitions (`asAuthor`),
+  // its other author actions are `authorEvent`s.
+  const p7 = await patch(PULLS.reviewParity, CONTRIB, 'Greet by name, reviewed', 'Opened as a draft from the commit before the greeting, then moved to it.', commits.c2, 'refs/heads/feature/greeting');
+  await move('pr7:draft', CONTRIB, p7, TRANSITION.draft, { byAuthor: true });
+  await event('pr7:head-update', CONTRIB, 'authorEvent', p7, EVENT.headUpdate, { oid: oid(commits.c3) });
+  await event('pr7:request', OWNER, 'event', p7, EVENT.reviewRequest, { refId: idBytes(MAINTAINER.id) });
+  const review7 = await create('pr7:review', MAINTAINER, 'review', {
     repoId: R,
-    number: 3,
-    title: 'Greet by name, reviewed',
-    body: 'Opened as a draft from the commit before the greeting, then moved to it.',
-    baseRefNameHash: refHash('refs/heads/main'),
-    baseRefName: 'refs/heads/main',
-    sourceRepoId: R,
-    sourceRefNameHash: refHash('refs/heads/feature/greeting'),
-    sourceRefName: 'refs/heads/feature/greeting',
-    headOid: oid(commits.c2),
-    draft: true,
-  });
-  await ev('pr3:head-update', CONTRIB, 'authorEvent', p3, 3, EVENT.headUpdate, { oid: oid(commits.c3) });
-  await ev('pr3:request', OWNER, 'event', p3, 3, EVENT.reviewRequest, { refId: b58(MAINTAINER.id) });
-  const review3 = await create('pr3:review', MAINTAINER, collab, 'review', {
-    repoId: R,
-    patchId: b58(p3),
+    patchId: idBytes(p7.id),
     verdict: 2,
     commitOid: oid(commits.c3),
     body: 'One suggestion on the greeting.',
     commentCount: 1,
+    vis: VIS,
+    asMember: idBytes(MAINTAINER.id),
   });
-  const thread3 = await create('pr3:review-comment', MAINTAINER, collab, 'comment', {
-    repoId: R,
-    targetId: b58(p3),
-    reviewId: b58(review3),
+  const thread7 = await comment('pr7:review-comment', MAINTAINER, p7, 'Default to "world":\n\n```suggestion\n    let name = std::env::args().nth(1).unwrap_or("world".into());\n    println!("hello, {name}");\n```\n', {
+    reviewId: idBytes(review7),
     commitOid: oid(commits.c3),
     path: 'src/main.rs',
     startLine: 2,
     line: 3,
     side: 1,
-    body: 'Default to "world":\n\n```suggestion\n    let name = std::env::args().nth(1).unwrap_or("world".into());\n    println!("hello, {name}");\n```\n',
+    asMember: idBytes(MAINTAINER.id),
   });
-  await create('pr3:reply', CONTRIB, collab, 'comment', {
-    repoId: R,
-    targetId: b58(p3),
-    replyTo: b58(thread3),
-    body: 'Keeping "forge" on purpose; resolving.',
-  });
-  await ev('pr3:resolve', CONTRIB, 'authorEvent', p3, 3, EVENT.threadResolve, { refId: b58(thread3) });
-  await ev('pr3:dismiss', OWNER, 'event', p3, 3, EVENT.reviewDismiss, { refId: b58(review3), value: 'the author answered the suggestion' });
-  await create('policy', OWNER, community, 'policy', {
+  // A reply names the thread's root comment.
+  await comment('pr7:reply', CONTRIB, p7, 'Keeping "forge" on purpose; resolving.', { replyTo: idBytes(thread7) });
+  await event('pr7:resolve', CONTRIB, 'authorEvent', p7, EVENT.threadResolve, { refId: idBytes(thread7) });
+  await event('pr7:dismiss', OWNER, 'event', p7, EVENT.reviewDismiss, { refId: idBytes(review7), value: 'the author answered the suggestion' });
+  await create('policy', OWNER, 'policy', {
     repoId: R,
     requiredApprovals: 1,
     approverRole: 1,
@@ -509,87 +497,43 @@ async function main() {
     mergeMethods: 3,
   });
 
-  // --- social ---------------------------------------------------------------------------
-  // `star` is indexOnly: the write is confirmed by a count read (a node answering the next
-  // read may lag the one that confirmed the write).
-  if (!state['star:contrib']) {
-    const starCount = async () => {
-      const counts = await sdk.documents.count({
-        dataContractId: community,
-        documentTypeName: 'star',
-        where: [['repoId', '==', repoId]],
-      });
-      let n = 0n;
-      for (const v of counts.values()) n += v;
-      return n;
-    };
-    if ((await starCount()) === 0n) {
-      const base = new Document({ properties: {}, documentTypeName: 'star', dataContractId: community, ownerId: CONTRIB.id });
-      const document = Document.fromObject({ ...base.toObject(), repoId: R }, version);
-      await sdk.documents.create({ document, identityKey: CONTRIB.identityKey, signer: CONTRIB.signer });
-      for (let i = 0; i < 10 && (await starCount()) === 0n; i++) await new Promise((r) => setTimeout(r, 2000));
-      if ((await starCount()) === 0n) throw new Error('the star did not land');
-    }
-    state['star:contrib'] = 'indexOnly';
-    save();
-    log('star:contrib');
-  }
-
-  // --- the final contract revision (platform-parity-spec §6, C-1) -----------------------
-  // indexOnly writes are confirmed by a read of the writer's own entry, as for the star above.
-  async function createIndexOnly(step, who, documentTypeName) {
-    if (state[step]) return;
-    const own = async () => {
-      const rows = await sdk.documents.query({ dataContractId: community, documentTypeName, where: [['$ownerId', '==', who.id], ['repoId', '==', repoId]], orderBy: [['$ownerId', 'asc']], limit: 1 });
-      return rows.size > 0;
-    };
-    if (!(await own())) {
-      const base = new Document({ properties: {}, documentTypeName, dataContractId: community, ownerId: who.id });
-      const document = Document.fromObject({ ...base.toObject(), repoId: R }, version);
-      try {
-        await sdk.documents.create({ document, identityKey: who.identityKey, signer: who.signer });
-      } catch (e) {
-        // A rerun racing its own earlier write
-        if (!/already exists|duplicate/i.test(String(e?.message ?? e))) throw e;
-      }
-      for (let i = 0; i < 10 && !(await own()); i++) await new Promise((r) => setTimeout(r, 2000));
-      if (!(await own())) throw new Error(`${step} did not land`);
-    }
-    state[step] = 'indexOnly';
-    save();
-    log(step);
-  }
-  // CONTRIB's star counts toward Trending (the default), and CONTRIB watches the repo.
-  await createIndexOnly('starBeat:contrib', CONTRIB, 'starBeat');
-  await createIndexOnly('watch:contrib', CONTRIB, 'watch');
-  // Topics (forge-core, maintainer-gated): Explore by topic counts `fixture` and `forge-v2`.
-  await create('topic:fixture', OWNER, core, 'topic', { repoId: R, name: 'fixture' });
-  await create('topic:forge-v2', OWNER, core, 'topic', { repoId: R, name: 'forge-v2' });
-  // A milestone holding issue #1 (open) and issue #3 (closed); issue #1 pinned.
-  await create('milestone:v0.2', OWNER, collab, 'milestone', {
+  // --- social and the C-1 types (platform-parity-spec §6) --------------------------------
+  // CONTRIB's star counts toward Trending through its beat. The beat names the repo's owner, who
+  // may not beat its own repo. CONTRIB also watches the repo.
+  await createIndexOnly('star:contrib', CONTRIB, 'star', { repoId: R });
+  await createIndexOnly('starBeat:contrib', CONTRIB, 'starBeat', { repoId: R, vis: VIS, repoOwner: idBytes(OWNER.id) });
+  await createIndexOnly('watch:contrib', CONTRIB, 'watch', { repoId: R });
+  // Topics (forge-core, the repo owner's): Explore by topic counts `fixture` and `forge-v2`.
+  await create('topic:fixture', OWNER, 'topic', { repoId: R, name: 'fixture', vis: VIS });
+  await create('topic:forge-v2', OWNER, 'topic', { repoId: R, name: 'forge-v2', vis: VIS });
+  // A milestone holding issue #1 (open) and issue #3 (closed); issue #1 pinned (the last step).
+  await create('milestone:v0.2', OWNER, 'milestone', {
     repoId: R,
     title: 'v0.2',
     description: 'The review-parity release.',
     dueOn: Date.UTC(2026, 11, 1),
   });
-  await ev('milestone:issue:1', MAINTAINER, 'event', i1, 1, EVENT.milestoneSet, { value: 'v0.2' });
-  await ev('milestone:issue:3', MAINTAINER, 'event', i3, 3, EVENT.milestoneSet, { value: 'v0.2' });
-  await ev('pin:issue:1', OWNER, 'event', i1, 1, EVENT.pin);
+  await event('milestone:issue:1', MAINTAINER, 'event', i1, EVENT.milestoneSet, { value: 'v0.2' });
+  await event('milestone:issue:3', MAINTAINER, 'event', i3, EVENT.milestoneSet, { value: 'v0.2' });
+  await event('pin:issue:1', OWNER, 'event', i1, EVENT.pin);
 
   const summary = {
     network: key,
-    forgeCore: core,
-    forgeCollab: collab,
-    demo: { owner: OWNER.id, name: DEMO, repoId, reviewParityPull: 3 },
+    ...contracts,
+    demo: { owner: OWNER.id, name: DEMO, repoId, reviewParityPull: PULLS.reviewParity },
+    pulls: PULLS,
     empty: { owner: MAINTAINER.id, name: EMPTY, repoId: emptyId },
+    check: { name: CHECK, sha: commits.c3, reporter: COLLAB.id },
+    release: RELEASE_TAG,
     commits,
     packHash: packHash.toString('hex'),
     locatorHash: locatorHash.toString('hex'),
   };
+  const summaryPath = a.summary ?? join(ROOT, 'deployments', 'fixtures', `${key}.json`);
+  mkdirSync(dirname(summaryPath), { recursive: true });
+  writeFileSync(summaryPath, `${JSON.stringify(summary, null, 2)}\n`);
   console.log(JSON.stringify(summary, null, 2));
+  return summary;
 }
 
-main().catch((e) => {
-  console.error(e?.stack ?? e?.message ?? String(e));
-  process.exit(1);
-});
+runIfMain(import.meta.url, main);

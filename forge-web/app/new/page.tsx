@@ -96,7 +96,7 @@ export default function NewRepoPage(): JSX.Element {
   const isPrivate = visibility === 'private'
   // A private create wraps its key from the encryption key in this browser's vault.
   const ops = useAsync(
-    () => encryptionOps(sdk!, DEFAULT_NETWORK, identity!, forge!.core),
+    () => encryptionOps(sdk!, DEFAULT_NETWORK, identity!, forge!.collab),
     [ready, identity ?? '', forge?.core ?? '', isPrivate, unlockScope ?? ''],
     { enabled: isPrivate && sdk !== null && identity !== null && forge !== null },
   )
@@ -175,7 +175,7 @@ export default function NewRepoPage(): JSX.Element {
       // Without an encryption key createRepo refuses a private create before writing anything.
       let privateCreate: PrivateCreate | undefined
       if (i.visibility === 'private') {
-        const o = await encryptionOps(sdk, DEFAULT_NETWORK, signer.identityId, forge.core)
+        const o = await encryptionOps(sdk, DEFAULT_NETWORK, signer.identityId, forge.collab)
         if (o !== null) privateCreate = { ops: o, epochZero: createEpochZero }
       }
       result = await createRepo(

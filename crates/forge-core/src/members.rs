@@ -13,6 +13,13 @@
 //!
 //! There is no suspend: revocation takes effect immediately, and re-adding creates a new
 //! document whose membership starts at its own `$createdAt`.
+//!
+//! **Consent (RC1 `member_consent`).** Nobody is made a member without agreeing: the member
+//! first writes a `consent {repoId}` document of their own ([`ConsentService::accept`], `dg
+//! collab accept`), and the owner's grant names it (`consentBy` = the member, which consensus
+//! resolves to that consent document: `ownerOrConsented`). Only the owner enrolling itself
+//! needs none. A grant without consent is refused here before signing ([`awaiting_consent`]).
+//! Every member document carries `vis`, proved against the repository's visibility.
 
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
@@ -22,6 +29,11 @@ use crate::platform::{
 };
 use crate::rules::v2::{Membership, Role, RoleOracle};
 use crate::scope::RepoRef;
+use crate::user_error::{codes, UserError};
+
+/// forge-core: an identity's consent to be made a member of a repository (`{repoId}`, owned by
+/// that identity; unique per repository and owner).
+pub const DOC_CONSENT: &str = "consent";
 
 /// The document type that grants `role`.
 pub fn doc_type(role: Role) -> &'static str {
@@ -106,19 +118,59 @@ pub(crate) async fn membership_doc(
     doc_type: &str,
     identity: &str,
 ) -> Result<Option<FetchedDocument>> {
+    doc_naming(client, repo, doc_type, "memberId", identity).await
+}
+
+/// `identity`'s `consent` document for `repo`, if any (the `(repoId, $ownerId)` index is
+/// unique).
+pub async fn consent_doc(
+    client: &PlatformClient,
+    repo: &RepoRef,
+    identity: &str,
+) -> Result<Option<FetchedDocument>> {
+    doc_naming(client, repo, DOC_CONSENT, "$ownerId", identity).await
+}
+
+/// The first `doc_type` document of `repo` whose identifier `field` is `identity`, if any.
+async fn doc_naming(
+    client: &PlatformClient,
+    repo: &RepoRef,
+    doc_type: &str,
+    field: &str,
+    identity: &str,
+) -> Result<Option<FetchedDocument>> {
     let (scope, contract) = scoped(client, repo, doc_type).await?;
-    let member = FieldValue::identifier(platform::decode_identifier(identity)?);
+    let id = FieldValue::identifier(platform::decode_identifier(identity)?);
     let docs = client
         .query_documents(
             &contract,
             doc_type,
-            &scope.filters([QueryFilter::eq("memberId", member)]),
+            &scope.filters([QueryFilter::eq(field, id)]),
             &[],
             1,
             None,
         )
         .await?;
     Ok(docs.into_iter().next())
+}
+
+/// The refusal of a grant to `member`, who has not consented to `repo` yet.
+pub fn awaiting_consent(repo: &RepoRef, member: &str) -> Error {
+    UserError::new(
+        codes::REJECTED,
+        format!(
+            "{member} has not accepted membership of {} yet",
+            repo.display()
+        ),
+    )
+    .cause("a member document must name the member's own consent (member_consent)")
+    .fix(format!(
+        "ask them to run `dg collab accept {}`, then add them again (or pass `--wait` to wait \
+         for it)",
+        repo.display()
+    ))
+    .note("nothing was written")
+    .into()
 }
 
 /// Read access to forge-v2 membership: needs only a client.
@@ -163,6 +215,11 @@ impl<'a> MemberReader<'a> {
         Ok(membership_doc(self.client, repo, doc_type(role), identity)
             .await?
             .and_then(|d| Member::from_doc(&d, role)))
+    }
+
+    /// Whether `identity` has consented to membership of `repo` (holds a `consent` document).
+    pub async fn consented(&self, repo: &RepoRef, identity: &str) -> Result<bool> {
+        Ok(consent_doc(self.client, repo, identity).await?.is_some())
     }
 
     /// `identity`'s current membership documents in `repo` (at most one per role).
@@ -214,7 +271,9 @@ impl<'a> MemberService<'a> {
     }
 
     /// Grant `role` to `member`. Idempotent: when the member already holds the role, the
-    /// existing document is returned and nothing is written.
+    /// existing document is returned and nothing is written. The member must have consented
+    /// first ([`ConsentService::accept`]): without their `consent` document the grant is
+    /// refused before signing ([`awaiting_consent`]). The owner enrolling itself needs none.
     pub async fn grant(&self, repo: &RepoRef, member: &str, role: Role) -> Result<Member> {
         self.require_owner(repo)?;
         // Consensus checks `memberId` is an identity; checking here gives a clear error.
@@ -231,11 +290,20 @@ impl<'a> MemberService<'a> {
         if let Some(existing) = reader.role_doc(repo, member, role).await? {
             return Ok(existing);
         }
+        let member_id = FieldValue::identifier(platform::decode_identifier(member)?);
+        let consent_by = if member == repo.owner_id() {
+            None
+        } else if reader.consented(repo, member).await? {
+            Some(member_id.clone())
+        } else {
+            return Err(awaiting_consent(repo, member));
+        };
         let (scope, core) = scoped(self.client, repo, doc_type(role)).await?;
-        let props = scope.props([(
-            "memberId",
-            FieldValue::identifier(platform::decode_identifier(member)?),
-        )]);
+        let mut props = scope.props([("memberId", member_id)]);
+        crate::layout::stamp_vis(&mut props, repo.visibility);
+        if let Some(c) = consent_by {
+            props.insert("consentBy".to_string(), c);
+        }
         let document_id = match self
             .engine()?
             .create_document(&core, doc_type(role), props)
@@ -276,6 +344,76 @@ impl<'a> MemberService<'a> {
     }
 }
 
+/// A member's own consent to repositories, signed by the (future) member.
+pub struct ConsentService<'a> {
+    client: &'a PlatformClient,
+    identity: &'a LoadedIdentity,
+    bridge: &'a BridgeIdentity,
+}
+
+impl<'a> ConsentService<'a> {
+    /// Bind to the consenting identity and its keys.
+    pub fn new(
+        client: &'a PlatformClient,
+        identity: &'a LoadedIdentity,
+        bridge: &'a BridgeIdentity,
+    ) -> Self {
+        Self {
+            client,
+            identity,
+            bridge,
+        }
+    }
+
+    fn engine(&self) -> Result<WriteEngine<'a>> {
+        WriteEngine::new(self.client, self.identity, self.bridge.doc_op_key()?)
+    }
+
+    /// Consent to be made a member of `repo`: write the signer's `consent {repoId}`. Idempotent:
+    /// an existing consent is returned (`false`: nothing written). Returns its document id and
+    /// whether it was written now. The owner needs none, so accepting one's own repository is
+    /// refused.
+    pub async fn accept(&self, repo: &RepoRef) -> Result<(String, bool)> {
+        let me = self.identity.id();
+        if me == repo.owner_id() {
+            return Err(Error::Config(format!(
+                "you own {}: an owner needs no consent to its own repository",
+                repo.display()
+            )));
+        }
+        if let Some(d) = consent_doc(self.client, repo, &me).await? {
+            return Ok((d.id, false));
+        }
+        let (scope, core) = scoped(self.client, repo, DOC_CONSENT).await?;
+        match self
+            .engine()?
+            .create_document(&core, DOC_CONSENT, scope.props([]))
+            .await
+        {
+            Ok(id) => Ok((id, true)),
+            // Accepted concurrently (another device): the index is unique.
+            Err(Error::DuplicateUniqueIndex(_)) => consent_doc(self.client, repo, &me)
+                .await?
+                .map(|d| (d.id, false))
+                .ok_or(Error::NotFound),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Withdraw consent to `repo` (delete the signer's `consent`). A membership that already
+    /// names it stands until the owner removes it. Returns whether one existed.
+    pub async fn withdraw(&self, repo: &RepoRef) -> Result<bool> {
+        let Some(d) = consent_doc(self.client, repo, &self.identity.id()).await? else {
+            return Ok(false);
+        };
+        let (_, core) = scoped(self.client, repo, DOC_CONSENT).await?;
+        self.engine()?
+            .delete_document(&core, DOC_CONSENT, &d.id)
+            .await?;
+        Ok(true)
+    }
+}
+
 /// The advisory push pre-check's verdict for `pusher` against `members`: `None` when the
 /// pusher holds a role (consensus will admit the write), else the refusal to show.
 ///
@@ -286,9 +424,9 @@ pub fn push_denied_reason(members: &[Member], pusher: &str, repo: &RepoRef) -> O
         return None;
     }
     Some(format!(
-        "you are not a writer of {repo} — ask its owner to run `dg collab add {repo} {pusher} \
-         --role writer`, or push to your own repo (`dg repo create <name>`) and open a pull \
-         request",
+        "you are not a writer of {repo} — run `dg collab accept {repo}` and ask its owner to \
+         run `dg collab add {repo} {pusher} --role writer`, or push to your own repo (`dg repo \
+         create <name>`) and open a pull request",
         repo = repo.display()
     ))
 }

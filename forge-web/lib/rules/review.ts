@@ -159,6 +159,10 @@ export interface Policy {
   readonly requireChecks?: boolean
   /** 1 ff, 2 merge commit, 4 squash, 8 rebase; 0 any. */
   readonly mergeMethods?: number
+  /** Checks that must pass by name (set by `dg`; the web keeps them on a rewrite). */
+  readonly requiredChecks?: readonly string[]
+  /** Each required check's source, a runner or maintainer id (base58), paired by position; empty: any. */
+  readonly requiredCheckSources?: readonly string[]
 }
 
 export interface PolicyStatus {

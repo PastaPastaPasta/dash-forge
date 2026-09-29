@@ -5,11 +5,8 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-/**
- * The devnet the build under test reads (`E2E_DEVNET`, default moutai). Must match the
- * default in playwright.config.ts, which builds the app for it.
- */
-export const E2E_DEVNET = process.env['E2E_DEVNET'] || 'moutai'
+import { E2E_DEVNET, loadSeedPulls, type SeedPulls } from './seed-summary'
+export { E2E_DEVNET, loadSeedPulls, type SeedPulls }
 
 /** The MAINTAINER test identity: a maintainer of {@link DEMO} and the owner of {@link EMPTY}. */
 export const MAINTAINER = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
@@ -18,14 +15,18 @@ export const MAINTAINER = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
  * The forge-v2 READ fixture, written only by `forge-contracts/scripts/seed-v2-fixture.mjs`:
  * repo `forge-v2-demo` owned by OWNER (maintainers OWNER + MAINTAINER, writer COLLAB); main =
  * README.md, src/main.rs, lib/util.ts, docs/rules.md; branch feature/greeting; tag v0.1.0; a
- * published objectLocator; issue #1 open + labelled `question`, #2 closed by its author, #3
- * closed + labelled `docs`, #4 open; PR #1 open with MAINTAINER's approval, PR #2 merged; PR #3
- * by CONTRIB (not a member), the review-parity fixture: opened as a draft, head moved to c3 by
- * the author (`headUpdate`), MAINTAINER requested, MAINTAINER's request-changes review with one
- * multi-line inline comment (`reviewId`), CONTRIB's reply, the thread resolved by the author, the
- * review dismissed by OWNER; a branch `policy`; one star.
- * Only its seeder writes it (v2-writes w6 adds OWNER's approval to PR #1, nothing else; the
- * live test `lib/repo/v2.live.test.ts` writes its own scratch repo).
+ * published objectLocator. Issues and PRs share one dense per-repo number sequence
+ * (forge-v2.md §6.2): issue #1 open + labelled `question` (pinned), #2 closed by its author, #3
+ * closed + labelled `docs` (both #1 and #3 in milestone v0.2), #4 open; then three PRs, whose
+ * numbers are read from the seed summary at runtime ({@link loadSeedPulls}) rather than
+ * hard-coded here — `pulls.approved` open with MAINTAINER's approval, `pulls.merged` merged,
+ * `pulls.reviewParity` by CONTRIB (not a member), the review-parity fixture: opened as a draft
+ * (a kind-14 `transition`), head moved to c3 by the author (`headUpdate`), MAINTAINER requested,
+ * MAINTAINER's request-changes review with one multi-line inline comment (`reviewId`), CONTRIB's
+ * reply, the thread resolved by the author, the review dismissed by OWNER; a branch `policy`;
+ * one star.
+ * Only its seeder writes it (v2-writes w6 adds OWNER's approval to `pulls.approved`, nothing
+ * else; the live test `lib/repo/v2.live.test.ts` writes its own scratch repo).
  * Override with E2E_V2_OWNER / E2E_V2_NAME.
  */
 export const DEMO = {

@@ -4,15 +4,18 @@
  *
  * Every state change is one immutable `transition` with a signed `delta`; consensus accepts it
  * only as a legal move from the target's current state, so the running sum of `delta` over a
- * target's transitions is its state code (0 open, 1 closed, 2 merged, 8 open draft, 9 closed
- * draft; bit 0 closed, bit 1 merged, bit 3 draft). The `transition__*` vectors hold the two
- * ports in parity.
+ * target's transitions, **mod 16**, is its state code (0 open, 1 closed, 2 merged, 8 open draft,
+ * 9 closed draft; bit 0 closed, bit 1 merged, bit 3 draft), and the thread is **locked** when the
+ * sum is 16 or more (RC1 R-15: lock and unlock are kinds 3/4 on an issue and 18/19 on a PR, delta
+ * ±16, members only). The `transition__*` vectors hold the two ports in parity.
  */
 
 import type { Oid } from './types'
 
 export const ISSUE_CLOSE = 1
 export const ISSUE_REOPEN = 2
+export const ISSUE_LOCK = 3
+export const ISSUE_UNLOCK = 4
 export const PR_CLOSE = 11
 export const PR_REOPEN = 12
 export const PR_MERGE = 13
@@ -20,11 +23,16 @@ export const PR_DRAFT = 14
 export const PR_READY = 15
 export const PR_DRAFT_CLOSE = 16
 export const PR_DRAFT_REOPEN = 17
+export const PR_LOCK = 18
+export const PR_UNLOCK = 19
 
-/** Every `transition.kind` the contract accepts. */
+/** The kinds that move the open / closed / merged / draft state (what the repo totals count). */
 export const TRANSITION_KINDS: readonly number[] = [
   ISSUE_CLOSE, ISSUE_REOPEN, PR_CLOSE, PR_REOPEN, PR_MERGE, PR_DRAFT, PR_READY, PR_DRAFT_CLOSE, PR_DRAFT_REOPEN,
 ]
+
+/** The lock bit's weight in a target's delta sum: a locked thread's sum is 16 or more. */
+export const LOCK_DELTA = 16
 
 /** The `delta` the contract pins for `kind`, or null for a kind it does not have. */
 export function deltaOf(kind: number): number | null {
@@ -43,10 +51,40 @@ export function deltaOf(kind: number): number | null {
       return 8
     case PR_READY:
       return -8
+    case ISSUE_LOCK:
+    case PR_LOCK:
+      return LOCK_DELTA
+    case ISSUE_UNLOCK:
+    case PR_UNLOCK:
+      return -LOCK_DELTA
     default:
       return null
   }
 }
+
+/** A target's delta sum read as its state code (mod 16) and its lock bit. */
+export interface ThreadState {
+  readonly code: number
+  readonly locked: boolean
+}
+
+/** The state code and lock bit of a raw delta sum (Euclidean mod, so a junk negative sum still maps into 0..15). */
+export function threadStateOf(sum: number): ThreadState {
+  return { code: ((sum % LOCK_DELTA) + LOCK_DELTA) % LOCK_DELTA, locked: sum >= LOCK_DELTA }
+}
+
+/**
+ * The lock or unlock move on `target` (kinds 3/4 or 18/19, delta ±16, written by a member:
+ * `asAuthor` 0, rule `g_memberLock`); null when the thread is already in that state.
+ */
+export function lockTransition(target: TransitionTarget, locked: boolean, lock: boolean): TransitionMove | null {
+  if (locked === lock) return null
+  const kind = LOCK_KINDS[target][lock ? 0 : 1]
+  return { kind, delta: deltaOf(kind) as number, targetKind: target === 'issue' ? 0 : 1, asAuthor: 0, after: lock ? LOCK_DELTA : 0 }
+}
+
+/** Each target's lock and unlock kinds. */
+const LOCK_KINDS: Readonly<Record<TransitionTarget, readonly [number, number]>> = { issue: [ISSUE_LOCK, ISSUE_UNLOCK], patch: [PR_LOCK, PR_UNLOCK] }
 
 /** What a transition names: an `issue` (`targetKind` 0) or a `patch` (1). */
 export type TransitionTarget = 'issue' | 'patch'
@@ -64,7 +102,7 @@ export interface TransitionMove {
   readonly targetKind: number
   /** 0 for a member; the target's number for its author (the contract's author operands). */
   readonly asAuthor: number
-  /** The state code after the move. */
+  /** The state code after the move (for a lock move: the lock bit's part of the sum). */
   readonly after: number
 }
 
@@ -121,11 +159,21 @@ export interface Transition {
   readonly createdAt?: number
 }
 
-/** The state code a target's transitions sum to (unknown kinds count 0). */
+/** The raw delta sum of a target's transitions (unknown kinds count 0). */
+function deltaSum(transitions: readonly Transition[]): number {
+  let sum = 0
+  for (const t of transitions) sum += deltaOf(t.kind) ?? 0
+  return sum
+}
+
+/** The state code a target's transitions sum to, mod 16 (the lock bit dropped). */
 export function stateCode(transitions: readonly Transition[]): number {
-  let code = 0
-  for (const t of transitions) code += deltaOf(t.kind) ?? 0
-  return code
+  return threadStateOf(deltaSum(transitions)).code
+}
+
+/** Whether a target's transitions leave it locked (sum ≥ 16). */
+export function isLocked(transitions: readonly Transition[]): boolean {
+  return threadStateOf(deltaSum(transitions)).locked
 }
 
 /** The target's merge transition (kind 13), if any. */
@@ -204,6 +252,12 @@ export function transitionPhrase(kind: number): string {
       return 'converted this to a draft'
     case PR_READY:
       return 'marked this ready for review'
+    case ISSUE_LOCK:
+    case PR_LOCK:
+      return 'locked the conversation'
+    case ISSUE_UNLOCK:
+    case PR_UNLOCK:
+      return 'unlocked the conversation'
     default:
       return `changed the state (kind ${kind})`
   }

@@ -41,6 +41,11 @@ export interface ChecksPolicy {
   readonly requireChecks?: boolean
   /** These checks must be reported and pass (overrides "every reported check" when set). */
   readonly requiredChecks?: readonly string[]
+  /**
+   * The identity (a runner or a maintainer, base58) each required check must come from, paired
+   * by position with `requiredChecks` (RC1 R-08); empty: any trusted reporter counts.
+   */
+  readonly requiredCheckSources?: readonly string[]
 }
 
 export type CheckState = 'passed' | 'failing' | 'pending' | 'missing'
@@ -63,6 +68,15 @@ export interface ChecksState {
 /** The conclusions that pass a required check. */
 export const PASSING_CONCLUSIONS: readonly string[] = ['success', 'neutral', 'skipped']
 
+/**
+ * A run's `outcome` (RC1 O-07 `outcomeOf`): 0 not completed, 1 completed with a passing
+ * conclusion, 2 completed otherwise. Consensus refuses a run whose `outcome` disagrees.
+ */
+export function checkRunOutcome(status: string, conclusion: string | null | undefined): 0 | 1 | 2 {
+  if (status !== 'completed') return 0
+  return PASSING_CONCLUSIONS.includes(conclusion ?? '') ? 1 : 2
+}
+
 function checkStateOf(run: CheckRunRow): CheckState {
   if (run.status !== 'completed') return 'pending'
   return PASSING_CONCLUSIONS.includes(run.conclusion ?? '') ? 'passed' : 'failing'
@@ -72,8 +86,9 @@ function checkStateOf(run: CheckRunRow): CheckState {
  * Whether the check runs on `headOid` meet `policy`. A run counts only when its reporter is a
  * current maintainer or writer (`oracle`) or a current runner (`runners`); the newest counting
  * run per name by `($createdAt, $id)` decides it. `requiredChecks` names what must pass;
- * otherwise `requireChecks` means every counting name must pass and at least one exist.
- * A client rule for the merge box, never consensus. Parity: forge-core `checks_state`.
+ * otherwise `requireChecks` means every counting name must pass and at least one exist. A
+ * required check with a pinned source (`requiredCheckSources`, by position) counts only that
+ * source's runs. A client rule for the merge box, never consensus. Parity: forge-core `checks_state`.
  */
 export function checksState(
   runs: readonly CheckRunRow[],
@@ -83,6 +98,12 @@ export function checksState(
   policy: ChecksPolicy,
 ): ChecksState {
   const trusted = (who: string) => oracle.currentRole(who) !== null || runners.has(who)
+  // A pinned name's source, when the policy pairs one with every name (the contract's rule).
+  const sources = policy.requiredCheckSources ?? []
+  const pinned = new Map<string, string>()
+  if (sources.length > 0 && sources.length === (policy.requiredChecks ?? []).length) {
+    ;(policy.requiredChecks ?? []).forEach((name, i) => pinned.set(name, sources[i] as string))
+  }
   const newest = new Map<string, CheckRunRow>()
   let untrusted = 0
   const head = headOid.toLowerCase()
@@ -92,6 +113,8 @@ export function checksState(
       untrusted += 1
       continue
     }
+    const source = pinned.get(run.name)
+    if (source !== undefined && run.reporter !== source) continue
     const held = newest.get(run.name)
     if (held === undefined || compareKey(run, held) > 0) newest.set(run.name, run)
   }
