@@ -2789,5 +2789,67 @@
    "summary": "ok",
    "externalId": "gh-1"
   }
+ },
+ {
+  "item": "O-08",
+  "name": "a beat on the signer's own repo (distinctFrom)",
+  "type": "starBeat",
+  "expect": "refused",
+  "why": "10419",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "vis": "public",
+   "repoOwner": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "base",
+  "name": "following yourself (distinctFrom)",
+  "type": "follow",
+  "expect": "refused",
+  "why": "10419",
+  "doc": {
+   "identityId": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "R-19",
+  "name": "a 33-byte webhook secret (not a multiple of 16)",
+  "type": "webhook",
+  "expect": "refused",
+  "why": "10420",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "hookId": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "url": "https://hooks.example.com/dash",
+   "events": [
+    "push"
+   ],
+   "relayIdentityId": {
+    "$id": 13
+   },
+   "relayKeyId": 1,
+   "senderKeyId": 1,
+   "secret": {
+    "$b": [
+     9,
+     33
+    ]
+   },
+   "vis": "public"
+  }
  }
 ]
