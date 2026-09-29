@@ -230,13 +230,28 @@ fn targets(
         };
         let mut t = target(src, i, number);
         let mut thread = threads.remove(&i.number).unwrap_or_default();
-        thread.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
-        t.comments = thread.iter().map(|c| comment(src, number, c)).collect();
-        if i.is_pull_request() {
-            let pull = match pulls.remove(&i.number) {
+        let pull = if i.is_pull_request() {
+            Some(match pulls.remove(&i.number) {
                 Some(p) => p,
                 None => gh.pull(i.number)?,
-            };
+            })
+        } else {
+            None
+        };
+        // L-05 for review comments: the issues listing counts only conversation comments, so a
+        // PR whose line comments at the source outnumber those the `since` window returned is
+        // read in full too. The count is the detail endpoint's (`pulls/{n}`); a PR taken from the
+        // `pulls` listing has none (GitHub leaves it out there), so its line comments older than
+        // the window stay unread until the item is next read on its own.
+        if let Some(p) = &pull {
+            let lines = thread.iter().filter(|c| c.path.is_some()).count() as u64;
+            if since.is_some() && !per_item && p.review_comments > lines {
+                thread = full_thread(gh, i)?;
+            }
+        }
+        thread.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        t.comments = thread.iter().map(|c| comment(src, number, c)).collect();
+        if let Some(pull) = pull {
             t.kind = TargetKind::Patch;
             t.draft = pull.draft;
             t.merged_oid = pull

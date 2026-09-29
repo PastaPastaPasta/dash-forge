@@ -449,8 +449,8 @@ export function ComparisonView({
   }
   if (loading && data === null) return <Frame>{searchProgress}</Frame>
   if (cause instanceof MergeBaseCancelledError) {
-    // Only an imported PR gets here (a native one falls back to its first parent): the user
-    // stopped the search, which says nothing about the history being incomplete.
+    // A stopped search normally falls back to the head's first parent (`searchStopped`); this is
+    // the defensive path for a comparison that ended on the cancellation itself.
     return (
       <Frame>
         <Unavailable title="Search stopped" message={`${cause.message}. An imported PR is only shown against its exact base.`} problems={problems}>
@@ -509,6 +509,17 @@ export function ComparisonView({
             <Button size="sm" variant="ghost" onClick={reload}>
               Search again
             </Button>
+          ) : null}
+          {data.fellBack && pull.imported && originalDiffUrl(pull.importedUrl) ? (
+            <a
+              href={originalDiffUrl(pull.importedUrl)!}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-dense font-medium text-forge-700 underline dark:text-forge-400"
+              data-testid="original-diff-link"
+            >
+              View the diff on the source
+            </a>
           ) : null}
         </div>
       ) : null}

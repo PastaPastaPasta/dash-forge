@@ -283,23 +283,61 @@ fn boundary_cut(s: &str) -> &str {
 /// `s` with a code fence or inline code span left open at its end closed again, so the cut does
 /// not turn the rest of the rendering (the truncation note) into code.
 fn close_code(s: &str) -> String {
-    // Backticks outside fenced blocks: an odd count leaves a span open.
-    let mut in_fence = false;
-    let mut ticks = 0usize;
+    // The fence a block opened with (``` or ~~~, any length ≥ 3): it closes only on the same
+    // character, at least as long. Outside blocks, an inline span opened by a run of N
+    // unescaped backticks closes on the next run of exactly N.
+    let mut fence: Option<(char, usize)> = None;
+    let mut span: Option<usize> = None;
     for line in s.lines() {
-        if line.trim_start().starts_with("```") {
-            in_fence = !in_fence;
-        } else if !in_fence {
-            ticks += line.matches('`').count();
+        let t = line.trim_start();
+        let run = |c: char| t.chars().take_while(|&x| x == c).count();
+        if let Some((c, n)) = fence {
+            if run(c) >= n && t.trim_end().chars().all(|x| x == c) {
+                fence = None;
+            }
+            continue;
         }
+        if span.is_none() {
+            if let Some(c) = ['`', '~'].into_iter().find(|&c| run(c) >= 3) {
+                fence = Some((c, run(c)));
+                continue;
+            }
+        }
+        span = backtick_spans(line, span);
     }
-    if in_fence {
-        format!("{s}\n```")
-    } else if ticks % 2 == 1 {
-        format!("{s}`")
-    } else {
-        s.to_string()
+    match (fence, span) {
+        (Some((c, n)), _) => format!("{s}\n{}", c.to_string().repeat(n)),
+        (None, Some(n)) => format!("{s}{}", "`".repeat(n)),
+        (None, None) => s.to_string(),
     }
+}
+
+/// The inline code span still open after `line` (its opening run's length), given the one open
+/// before it; a backslash-escaped backtick outside a span is text.
+fn backtick_spans(line: &str, mut open: Option<usize>) -> Option<usize> {
+    let b = line.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if open.is_none() && b[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if b[i] == b'`' {
+            let start = i;
+            while i < b.len() && b[i] == b'`' {
+                i += 1;
+            }
+            let n = i - start;
+            open = match open {
+                None => Some(n),
+                Some(m) if m == n => None,
+                other => other,
+            };
+            continue;
+        }
+        i += 1;
+    }
+    open
 }
 
 /// Provenance within the contract (author ≤ 120 chars / 480 bytes, url ≤ 300 bytes).
@@ -386,14 +424,17 @@ pub struct Published {
 /// then the source notes, fitted to the 5120-byte field at a boundary with a link to the full
 /// notes (L-06).
 fn release_notes(notes: &str, published: Option<&Published>, source_url: &str) -> String {
-    let head = published.map_or_else(String::new, |p| {
-        let by = if p.author.is_empty() {
-            String::new()
-        } else {
-            format!(" by @{}", p.author)
-        };
-        format!("> Published on {}{by} on {}\n\n", p.host, date(p.at))
-    });
+    // No date (an unparseable timestamp reads as 0): no line, rather than "Published … on 1970".
+    let head = published
+        .filter(|p| p.at > 0)
+        .map_or_else(String::new, |p| {
+            let by = if p.author.is_empty() {
+                String::new()
+            } else {
+                format!(" by @{}", p.author)
+            };
+            format!("> Published on {}{by} on {}\n\n", p.host, date(p.at))
+        });
     // Room for a later assets footer is made by `notes_with_footer` itself.
     fit_text(&headed(&head, notes), NOTES_MAX, source_url)
 }
@@ -637,6 +678,40 @@ mod tests {
         );
         // Short text is untouched.
         assert_eq!(fit_text("short `x", 5120, "u"), "short `x");
+    }
+
+    /// Review: fences of `~~~` and of four or more backticks, double-backtick spans and escaped
+    /// backticks are all closed (or left alone) correctly.
+    #[test]
+    fn every_kind_of_open_code_is_closed() {
+        assert_eq!(close_code("a\n~~~ sh\nls"), "a\n~~~ sh\nls\n~~~");
+        assert_eq!(close_code("````md\n```\ninner"), "````md\n```\ninner\n````");
+        assert_eq!(close_code("x ``a ` b"), "x ``a ` b``");
+        assert_eq!(close_code(r"a \` literal"), r"a \` literal");
+        assert_eq!(
+            close_code("```\ncode\n```\nafter `x"),
+            "```\ncode\n```\nafter `x`"
+        );
+        assert_eq!(close_code("done `x` and ``y``"), "done `x` and ``y``");
+    }
+
+    /// Review: an unparseable release date (0) writes no line, never "on 1970-01-01".
+    #[test]
+    fn an_undated_release_has_no_published_line() {
+        let p = Published {
+            host: "github.com".into(),
+            author: "x".into(),
+            at: 0,
+        };
+        let r = release(
+            "v1",
+            None,
+            Some("Fixes."),
+            Vec::new(),
+            "https://u".into(),
+            Some(&p),
+        );
+        assert_eq!(r.notes, "Fixes.");
     }
 
     /// L-06: dash v0.16.0.1's 16 kB notes ended at "…(as they only excha", with no marker.

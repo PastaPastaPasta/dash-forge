@@ -196,6 +196,9 @@ pub struct GhPull {
     /// Number.
     #[serde(default)]
     pub number: u64,
+    /// Review (line) comments at the source (the detail endpoint; the listing omits it).
+    #[serde(default)]
+    pub review_comments: u64,
     /// Head.
     #[serde(default)]
     pub head: GhRef,

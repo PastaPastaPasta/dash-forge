@@ -106,7 +106,7 @@ export function preferring(primary: ObjectReader, fallback: ObjectReader): Objec
 
 const short = (oid: string): string => oid.slice(0, 7)
 
-type Baseline = 'current tip' | 'tip when opened'
+type Baseline = 'current tip' | 'tip when opened' | 'source base'
 
 /**
  * Load a PR's comparison: the head against its merge base with the base branch, as a code
@@ -115,10 +115,11 @@ type Baseline = 'current tip' | 'tip when opened'
  * Two baselines are recorded for a PR: the base ref's current tip and its tip when the PR was
  * opened. An unmerged PR is compared from the current tip first. A merged PR is compared from
  * the tip at open first, because the current tip now contains the head — its merge base would
- * be the head itself, an empty diff. When neither baseline works, a native PR falls back to
- * the head commit's first parent, with a note saying so. An imported PR never does: its first
- * parent can omit earlier commits of the original PR, so an inexact diff is worse than linking
- * to the archived upstream comparison.
+ * be the head itself, an empty diff. An imported PR tries first the base commit its source
+ * recorded (GitHub's `base.sha`, the base branch's tip when the PR was last updated; GitLab's
+ * `diff_refs.base_sha`): its merge base with the head is where the PR branched, even after the
+ * mirrored branch moved on. When no baseline works, the head commit's first parent is used, with
+ * a note saying so (and, for an imported PR, the page links the source's own diff).
  */
 export async function loadPullComparison(
   raw: DiffSides,
@@ -142,20 +143,14 @@ export async function loadPullComparison(
     return { ...diff, comparedBaseOid: baseOid, comparisonNote, sides }
   }
 
-  // An imported PR whose source base commit is in the mirror: the diff the source shows, with no
-  // merge-base search (the mirrored base branch has moved on, and a merged PR's head is already in
-  // it, so a search from its tips finds nothing to diff).
-  if (input.imported && input.sourceBaseOid) {
-    try {
-      return await compare(input.sourceBaseOid, `Compared against the base commit the source records for this PR, ${short(input.sourceBaseOid)}.`)
-    } catch {
-      // Not in the mirror (a commit on a branch that was never mirrored): search as for any PR.
-    }
-  }
-
   const tip = { oid: input.baseTipOid, which: 'current tip' as Baseline }
   const atOpen = { oid: input.baseOidAtOpen, which: 'tip when opened' as Baseline }
-  const candidates = (input.merged ? [atOpen, tip] : [tip, atOpen]).filter(
+  // An imported PR's source base commit comes first: GitHub's `base.sha` is the base branch's tip
+  // when the PR was last updated (not the merge base), so it too goes through the merge-base
+  // search, which then names where the PR branched; a merged PR's head is already in the mirror's
+  // current base tip, so the source's commit is the one that still predates the merge.
+  const recorded = { oid: input.imported ? (input.sourceBaseOid ?? '') : '', which: 'source base' as Baseline }
+  const candidates = [recorded, ...(input.merged ? [atOpen, tip] : [tip, atOpen])].filter(
     (c, i, all) => c.oid !== '' && all.findIndex((d) => d.oid === c.oid) === i,
   )
   const failed: string[] = []
@@ -197,16 +192,16 @@ export async function loadPullComparison(
     const { oid, which, mergeBase } = found
     const why = failed.length > 0 ? ` (${failed.join('; ')})` : ''
     const note =
-      which === 'tip when opened'
-        ? `Compared against the base branch as it stood when this PR was opened, ${short(oid)}${why || (input.merged ? ', because the PR is merged' : '')}.`
-        : failed.length > 0
-          ? `Compared against the base branch's current tip${why}.`
-          : null
+      which === 'source base'
+        ? `Compared from where this PR branched off the base commit its source records, ${short(oid)}${why}.`
+        : which === 'tip when opened'
+          ? `Compared against the base branch as it stood when this PR was opened, ${short(oid)}${why || (input.merged ? ', because the PR is merged' : '')}.`
+          : failed.length > 0
+            ? `Compared against the base branch's current tip${why}.`
+            : null
     return compare(mergeBase, note)
   }
 
-  // A stopped search is the user's choice, not missing history: say so.
-  if (input.imported && cancelled !== null) throw cancelled
   const why =
     failed.length > 0
       ? `Could not find where this PR branched from its base (${failed.join('; ')}).`

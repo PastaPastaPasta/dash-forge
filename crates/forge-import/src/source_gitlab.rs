@@ -291,20 +291,8 @@ pub fn collect(
         if item.kind == TargetKind::Patch {
             t.patch = Some(patch(&item.gl, number, classes.code, head_gone));
             // Where it branched from, and the head branch when it is on a fork (L-36, L-37).
-            let m = &item.gl;
-            let from_fork =
-                m.source_project_id.is_some() && m.source_project_id != m.target_project_id;
-            let head = if from_fork {
-                format!("fork:{}", m.source_branch)
-            } else {
-                m.source_branch.clone()
-            };
-            let base = m
-                .diff_refs
-                .as_ref()
-                .and_then(|d| d.base_sha.as_deref())
-                .unwrap_or("");
-            t.body = model::with_pull_origin(&t.body, base, &head, &url);
+            let (base, head) = merge_request_origin(gl, &item.gl);
+            t.body = model::with_pull_origin(&t.body, &base, &head, &url);
         }
         out.targets.push(t);
     }
@@ -316,6 +304,33 @@ pub fn collect(
         ));
     }
     Ok(out)
+}
+
+/// A merge request's base commit and head label (L-36, L-37). The listing carries no
+/// `diff_refs`, so a merged or closed one (whose diff readers compute from the mirror) is read
+/// once more on its own; an open one's diff comes from its pushed head. A fork's head is
+/// `fork:<branch>` (GitLab's merge request names the source project only by id).
+fn merge_request_origin(gl: &GitlabClient, m: &GlItem) -> (String, String) {
+    let from_fork =
+        matches!((m.source_project_id, m.target_project_id), (Some(s), Some(t)) if s != t);
+    let head = if from_fork {
+        format!("fork:{}", m.source_branch)
+    } else {
+        m.source_branch.clone()
+    };
+    let base_of = |m: &GlItem| {
+        m.diff_refs
+            .as_ref()
+            .and_then(|d| d.base_sha.clone())
+            .unwrap_or_default()
+    };
+    let mut base = base_of(m);
+    if base.is_empty() && m.is_closed() {
+        if let Ok(Ok(Some(full))) = gl.merge_request(m.iid) {
+            base = base_of(&full);
+        }
+    }
+    (base, head)
 }
 
 /// The merge requests numbered in `revisit` (a merge the last run could not prove) that the

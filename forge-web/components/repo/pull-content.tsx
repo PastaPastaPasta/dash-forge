@@ -50,7 +50,7 @@ import {
 } from 'lucide-react'
 
 import type { PullThread, RepoHome, TimelineItem } from '@/lib/view'
-import { ACL_NAME, ARCHIVED_REASON, loadPullThread, plural, policyOf, pullActions, timeAgo } from '@/lib/view'
+import { ACL_NAME, ARCHIVED_REASON, loadPullThread, plural, policyOf, pullActions, type CommentView } from '@/lib/view'
 import { deleteBranchOffer, deleteBranchProblem } from '@/lib/view/pull-actions'
 import {
   addEvent,
@@ -99,7 +99,6 @@ import { useFirstWrite } from '@/hooks/use-first-write'
 import { useParam, repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { useAuth } from '@/contexts/auth-context'
 import { useWriteGuard } from '@/hooks/use-write-guard'
-import { Author } from '@/components/author'
 import { Timeline, type CommentSlots } from '@/components/repo/timeline'
 import { ComparisonView, pullBase, pullSpec, usePullComparison } from '@/components/repo/pull-diff'
 import { BodyCounter, PrivateComposeNote, SealedLimit, composeCost, composeTooLong, privateComposeBlock } from '@/components/repo/private-compose'
@@ -673,16 +672,17 @@ function PullPage({
               </>
             )}{' '}
             <span className="font-mono">{shortBranch(pull.state.baseRef ?? pull.baseRefName) || '?'}</span>
-            {pull.sourceRefName ? (
-              <>
-                {' '}
-                from <span className="font-mono">{crossRepo && sourceRef ? `${sourceRef.name}:` : ''}{shortBranch(pull.sourceRefName)}</span>
-              </>
-            ) : pullOrigin?.headLabel ? (
-              // A mirrored PR's head branch at the source, a fork's as `owner:branch` (L-37).
+            {pullOrigin?.headLabel ? (
+              // A mirrored PR's head branch at the source, a fork's as `owner:branch` (L-37); the
+              // mirror's own `refs/mirror/pull/<n>/head` names no branch anyone knows.
               <>
                 {' '}
                 from <span className="font-mono" data-testid="pr-origin-head">{pullOrigin.headLabel}</span>
+              </>
+            ) : pull.sourceRefName ? (
+              <>
+                {' '}
+                from <span className="font-mono">{crossRepo && sourceRef ? `${sourceRef.name}:` : ''}{shortBranch(pull.sourceRefName)}</span>
               </>
             ) : null}{' '}
             · <Time ms={origin?.createdAt || pull.createdAt} prefix={merged || !open ? 'opened ' : ''} />
@@ -810,6 +810,7 @@ function PullPage({
                       onSave: (id, body) => setPending({ kind: 'edit-comment', id, body }),
                       links,
                       replies: repliesOf.get(item.comment.id) ?? [],
+                      trust,
                       resolved: resolved.has(item.comment.id),
                       outdated: item.comment.anchor !== null && item.comment.anchor.commitOid !== pull.headOid,
                       onShowFiles: () => setTab('files'),
@@ -1331,6 +1332,7 @@ function commentSlots({
   onSave,
   links,
   replies,
+  trust,
   resolved,
   outdated,
   onShowFiles,
@@ -1342,7 +1344,9 @@ function commentSlots({
   onEdit: (e: { id: string; body: string } | null) => void
   onSave: (id: string, body: string) => void
   links: MarkdownLinks
-  replies: readonly { id: string; author: string; body: string; createdAt: number }[]
+  replies: readonly CommentView[]
+  /** Who may mirror: an imported reply of theirs shows its original author and date (FG-6). */
+  trust?: ReadonlySet<string> | null
   resolved: boolean
   outdated: boolean
   onShowFiles: () => void
@@ -1400,8 +1404,7 @@ function commentSlots({
         {replies.map((r) => (
           <div key={r.id} className="border-l-2 border-anvil-200 pl-3 dark:border-anvil-750">
             <div className="flex items-center gap-2 text-[12px] text-anvil-600 dark:text-anvil-400">
-              <Author identityId={r.author} link={false} />
-              <span>{timeAgo(r.createdAt)}</span>
+              <Byline author={r.author} createdAt={r.createdAt} origin={trustedOrigin(r.origin, r.author, trust ?? null)} link={false} />
             </div>
             <MarkdownView source={r.body} links={links} />
           </div>

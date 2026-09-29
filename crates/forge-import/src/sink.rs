@@ -226,6 +226,14 @@ fn item_error(e: &anyhow::Error) -> bool {
         })
 }
 
+/// Whether an item's state (close, reopen, merge, labels) is written after its thread: always
+/// once the thread is written, and also when the destination refused a comment or review (an
+/// item error: the item is skipped, and must not also be left open). Not after a spend-cap or
+/// network error, which stops the run (L-46: the state comes after the thread it follows).
+fn state_after(thread: &Result<()>) -> bool {
+    thread.as_ref().err().is_none_or(item_error)
+}
+
 /// The state of a target as its events fold today.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Current {
@@ -708,11 +716,22 @@ impl<'a> Sink<'a> {
         };
         // The thread first, then the state: readers order a target's timeline by `$createdAt`,
         // and at the source a close (or merge) comes after the comments that led to it (L-46).
-        self.sync_comments(t, &target, fresh).await?;
-        if t.kind == TargetKind::Patch {
-            self.sync_reviews(t, &target, fresh).await?;
+        // A comment or review the destination refuses (an item error, which skips this item)
+        // still lets the state be written, as it was before this order: a skip must not also
+        // leave the item open.
+        let thread = self.sync_thread(t, &target, fresh).await;
+        if state_after(&thread) {
+            self.sync_state(t, &target, &current).await?;
         }
-        self.sync_state(t, &target, &current).await?;
+        thread
+    }
+
+    /// An item's comments, then (a PR's) reviews.
+    async fn sync_thread(&mut self, t: &SrcTarget, target: &Target, fresh: bool) -> Result<()> {
+        self.sync_comments(t, target, fresh).await?;
+        if t.kind == TargetKind::Patch {
+            self.sync_reviews(t, target, fresh).await?;
+        }
         Ok(())
     }
 
@@ -1372,6 +1391,18 @@ mod tests {
 
     fn kinds(v: &[StateEvent]) -> Vec<EventKind> {
         v.iter().map(|e| e.0).collect()
+    }
+
+    /// L-46: the thread is written before the state, and a refused comment or review does not
+    /// cost the item its close; a cap or network error stops before the state.
+    #[test]
+    fn state_follows_the_thread_even_past_a_refused_comment() {
+        assert!(state_after(&Ok(())));
+        let refused =
+            anyhow::Error::from(forge_core::Error::Config("comment body too long".into()));
+        assert!(state_after(&Err(refused)));
+        let stop = anyhow::anyhow!("--max-spend reached");
+        assert!(!state_after(&Err(stop)));
     }
 
     #[test]
