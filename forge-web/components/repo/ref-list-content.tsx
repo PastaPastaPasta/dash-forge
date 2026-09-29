@@ -12,7 +12,7 @@ import Link from 'next/link'
 import { GitBranch, Search, Tag } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { isDiverged, isLive, matchesRefQuery, plural, refParamFor, tipOidOf } from '@/lib/view'
-import { compareTagNames, naturalRuns, type ResolvedRef } from '@/lib/repo'
+import { compareRefNames, compareTagNames, type ResolvedRef } from '@/lib/repo'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState } from '@/components/ui/states'
 import { TagCommit, useTagPeeler } from '@/components/repo/tag-commit'
@@ -65,8 +65,9 @@ export function RefListContent({
   const { live, deleted } = useMemo(() => {
     // Natural order (digit runs as numbers), not localeCompare: "branch-9" belongs before
     // "branch-10", and it matches the tags page's Version mode closely enough that switching
-    // between the two sort modes doesn't reshuffle unrelated names.
-    const compareNames = sort === 'version' ? compareTagNames : naturalRuns
+    // between the two sort modes doesn't reshuffle unrelated names. compareRefNames, not bare
+    // naturalRuns: it adds the raw-string tie-break that keeps "foo-bar"/"foo_bar" in a fixed order.
+    const compareNames = sort === 'version' ? compareTagNames : compareRefNames
     const comparator = (a: ResolvedRef, b: ResolvedRef): number => {
       if (a.refName === defaultRefName) return -1
       if (b.refName === defaultRefName) return 1

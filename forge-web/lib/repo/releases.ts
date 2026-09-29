@@ -15,6 +15,9 @@ import { z } from 'zod'
 import { queryAllDocuments, type PlainDocument } from '../sdk'
 import { DOC, str, type RepoRef } from './contract'
 import { repoSource } from './source'
+import { isPrerelease, tagVersion, versionDesc } from './ref-order'
+
+export { compareRefNames, compareTagNames, isPrerelease, naturalRuns, tagVersion, type TagVersion } from './ref-order'
 
 /** One downloadable asset of a release. */
 export interface ReleaseAssetView {
@@ -200,73 +203,6 @@ const newestFirst = (a: ReleaseView, b: ReleaseView): number =>
   b.createdAt - a.createdAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0)
 
 /**
- * A tag's version (`v1.2.3`, `1.2`, `jq-1.7.1`, `v0.9.13.15`, `v24.0.0-rc.1`): the
- * `digits(.digits)*` run starting at the tag's first digit, and the pre-release suffix after it,
- * if any. `null` when the tag holds no number. Parity: forge-core `tag_version`.
- */
-export interface TagVersion {
-  /** The numeric dot-separated parts (`[24, 0, 0]`). */
-  readonly parts: readonly number[]
-  /** The pre-release suffix (`rc.1`), `''` for a release. */
-  readonly pre: string
-}
-
-export function tagVersion(tag: string): TagVersion | null {
-  const m = /(\d+(?:\.\d+)*)(.*)$/.exec(tag)
-  if (m === null) return null
-  const parts = m[1]!.split('.').map(Number)
-  // `-rc.1`, `-beta`, `rc1`, `a1`: a suffix is a pre-release; `+build` metadata is not.
-  const pre = m[2]!.replace(/\+.*$/, '').replace(/^[-.]/, '')
-  return { parts, pre }
-}
-
-/** Whether `tag` names a pre-release (a version with a suffix such as `-rc.1`, `-beta`). */
-export function isPrerelease(tag: string): boolean {
-  return (tagVersion(tag)?.pre ?? '') !== ''
-}
-
-/**
- * `a` vs `b` by their runs of digits and of other characters (`.`, `-`, `_` separate runs and
- * are dropped): digits compare as numbers and sort before text, text compares lower-cased. So
- * `rc.10` > `rc.9`, `rc.1` = `rc1`, `RC1` = `rc1`, `1` < `beta`. Parity: forge-core `natural`.
- * Exported so callers that want plain name order (branch names in the ref switcher, which are
- * usually not version-like) can use it directly instead of {@link compareTagNames}.
- */
-export function naturalRuns(a: string, b: string): number {
-  const runs = (s: string): (number | string)[] =>
-    (s.match(/\d+|[^\d._-]+/g) ?? []).map((r) => (/^\d/.test(r) ? Number(r) : r.toLowerCase()))
-  const ra = runs(a)
-  const rb = runs(b)
-  for (let i = 0; i < Math.min(ra.length, rb.length); i++) {
-    const x = ra[i]!
-    const y = rb[i]!
-    if (typeof x === 'number' && typeof y === 'number') {
-      if (x !== y) return x - y
-    } else if (typeof x === 'number') return -1
-    else if (typeof y === 'number') return 1
-    else if (x !== y) return x < y ? -1 : 1
-  }
-  if (ra.length !== rb.length) return ra.length - rb.length
-  // Case and the dropped separators (. - _) mean e.g. "foo-bar", "foo_bar" and "Foo.bar" compare
-  // equal above; fall back to the raw string so two such names sort in a fixed order instead of
-  // whatever order they happened to arrive in (a caller's filter/enumeration order, which can
-  // change between renders).
-  return a < b ? -1 : a > b ? 1 : 0
-}
-
-/** `a` vs `b` by version, highest first: numbers compared as numbers, a release above its pre-releases. */
-function versionDesc(a: TagVersion, b: TagVersion): number {
-  for (let i = 0; i < Math.max(a.parts.length, b.parts.length); i++) {
-    const d = (b.parts[i] ?? 0) - (a.parts[i] ?? 0)
-    if (d !== 0) return d
-  }
-  if (a.pre === b.pre) return 0
-  if (a.pre === '') return -1
-  if (b.pre === '') return 1
-  return naturalRuns(b.pre, a.pre)
-}
-
-/**
  * The releases page's order (L-14): tags with a version, highest first; then the rest, newest
  * first. The documents' own order is not the releases' order: an importer writes a repo's whole
  * history in one run (older mirrors in GitHub's newest-first listing order), so `$createdAt` says
@@ -279,23 +215,6 @@ export function releaseOrder(a: ReleaseView, b: ReleaseView): number {
   if (va !== null) return -1
   if (vb !== null) return 1
   return newestFirst(a, b)
-}
-
-/**
- * Compare two ref names for display order (L-13 ref switcher, L-53 tags/branches pages): a name
- * with a parseable version ({@link tagVersion}) sorts by version, highest first (`v23.1.10`
- * before `v23.1.8`, not string order); a name without one falls back to natural sort ({@link
- * naturalRuns}: digit runs compare as numbers). Mixed lists put every versioned name ahead of
- * every unversioned one. Reused by the ref switcher and the tags page so both sort identically,
- * and shares its version comparison with {@link releaseOrder}.
- */
-export function compareTagNames(a: string, b: string): number {
-  const va = tagVersion(a)
-  const vb = tagVersion(b)
-  if (va !== null && vb !== null) return versionDesc(va, vb) || naturalRuns(a, b)
-  if (va !== null) return -1
-  if (vb !== null) return 1
-  return naturalRuns(a, b)
 }
 
 /** The repo's latest release, as GitHub picks it: the first in {@link releaseOrder} that is not a pre-release or yanked. */

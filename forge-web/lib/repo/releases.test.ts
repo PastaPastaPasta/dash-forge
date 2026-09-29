@@ -5,7 +5,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 import { describe, expect, it } from 'vitest'
 
 import { AssetHashMismatchError, browserReadable, downloadVerifiedAsset } from '../view/release-download'
-import { UNVERIFIABLE_ASSET, assetVerifiable, compareTagNames, isPrerelease, latestRelease, newestPerTag, parseReleaseAssets, releaseOrder, type ReleaseView } from './releases'
+import { UNVERIFIABLE_ASSET, assetVerifiable, compareRefNames, compareTagNames, isPrerelease, latestRelease, newestPerTag, parseReleaseAssets, releaseOrder, type ReleaseView } from './releases'
 
 const H = 'ab'.repeat(32)
 
@@ -123,6 +123,19 @@ describe('compareTagNames', () => {
     const byCompareTagNames = [...tags].sort(compareTagNames)
     const byReleaseOrder = [...releases].sort(releaseOrder).map((r) => r.tagName)
     expect(byCompareTagNames).toEqual(byReleaseOrder)
+  })
+
+  // naturalRuns alone calls "foo-bar"/"foo_bar"/"Foo.bar" equal (it drops separators and case),
+  // so without a further tie-break their relative order would be whatever the caller's list
+  // happened to arrive in, not a fixed one. Both compareTagNames's unversioned fallback and
+  // compareRefNames (the branches/tags "name" sort, and the ref switcher's branch sort) break
+  // that tie the same way, so the two stay in agreement (L-53).
+  it('breaks a naturalRuns tie between distinct unversioned names by raw string, not caller order', () => {
+    const names = ['foo_bar', 'Foo.bar', 'foo-bar']
+    const reversed = [...names].reverse()
+    expect([...names].sort(compareTagNames)).toEqual([...reversed].sort(compareTagNames))
+    expect([...names].sort(compareRefNames)).toEqual([...reversed].sort(compareRefNames))
+    expect([...names].sort(compareTagNames)).toEqual([...names].sort(compareRefNames))
   })
 })
 

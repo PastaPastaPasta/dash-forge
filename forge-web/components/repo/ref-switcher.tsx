@@ -12,7 +12,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import { Check, ChevronDown, GitBranch, Search, Tag } from 'lucide-react'
 import type { RepoHome, SelectedRef } from '@/lib/view'
 import { findBranch, isLive, matchesRefQuery, refParamFor } from '@/lib/view'
-import { compareTagNames, naturalRuns } from '@/lib/repo'
+import { compareRefNames, compareTagNames } from '@/lib/repo'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
 import { Button } from '@/components/ui/button'
 import { EmptyState } from '@/components/ui/states'
@@ -77,7 +77,7 @@ export function RefSwitcher({
     branchNames.sort((a, b) => {
       if (a === home.defaultBranch) return -1
       if (b === home.defaultBranch) return 1
-      return naturalRuns(a, b)
+      return compareRefNames(a, b)
     })
     const tagNames = home.tags.filter(isLive).map((t) => t.refName.replace(/^refs\/tags\//, '')).sort(compareTagNames)
     return { branchNames, tagNames }
@@ -156,6 +156,7 @@ export function RefSwitcher({
         onClick={toggle}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-label={`Switch branches or tags, currently ${current.name}`}
         className="inline-flex items-center gap-1.5 rounded-md border border-anvil-200 bg-white px-2.5 py-1 text-dense coarse:min-h-11 text-anvil-700 transition-colors hover:border-anvil-300 dark:border-anvil-750 dark:bg-anvil-900 dark:text-anvil-200 dark:hover:border-anvil-600"
       >
         <CurrentIcon className="h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400" aria-hidden />
