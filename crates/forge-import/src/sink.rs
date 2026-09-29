@@ -706,11 +706,13 @@ impl<'a> Sink<'a> {
         } else {
             self.current(t, &target).await?
         };
-        self.sync_state(t, &target, &current).await?;
+        // The thread first, then the state: readers order a target's timeline by `$createdAt`,
+        // and at the source a close (or merge) comes after the comments that led to it (L-46).
         self.sync_comments(t, &target, fresh).await?;
         if t.kind == TargetKind::Patch {
             self.sync_reviews(t, &target, fresh).await?;
         }
+        self.sync_state(t, &target, &current).await?;
         Ok(())
     }
 

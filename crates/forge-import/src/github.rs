@@ -168,12 +168,26 @@ impl GhIssue {
 /// A PR head/base pointer.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct GhRef {
+    /// `owner:branch` (a fork's owner for a PR from a fork).
+    #[serde(default)]
+    pub label: String,
     /// Branch name.
     #[serde(default, rename = "ref")]
     pub ref_name: String,
     /// Commit.
     #[serde(default)]
     pub sha: String,
+    /// The repository the branch is in (`None` when it was deleted, e.g. a removed fork).
+    #[serde(default)]
+    pub repo: Option<GhRepoName>,
+}
+
+/// A repository as a PR's head or base names it.
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct GhRepoName {
+    /// `owner/name`.
+    #[serde(default)]
+    pub full_name: String,
 }
 
 /// The pull-request detail (`pulls/{n}`).
@@ -237,6 +251,12 @@ pub struct GhRelease {
     /// The release's page on GitHub.
     #[serde(default)]
     pub html_url: String,
+    /// When it was published (ISO 8601; `None` for a draft).
+    #[serde(default)]
+    pub published_at: Option<String>,
+    /// Who published it.
+    #[serde(default)]
+    pub author: Option<GhUser>,
     /// Assets.
     #[serde(default)]
     pub assets: Vec<GhAsset>,

@@ -210,6 +210,35 @@ pub fn verdict_word(v: Verdict) -> &'static str {
     }
 }
 
+/// A mirrored PR's body with the line that says where it branched from and from which head
+/// branch, right after the provenance line: `> Base 1a2b3c4d… · head thepastaclaw:branch`.
+/// The patch document records neither (`baseOid` is not a field; `sourceRefName` names a ref
+/// in `sourceRepoId`, a Forge repo), so readers take them from here (L-36, L-37): the web
+/// compares a merged PR from that base, and names the fork branch.
+pub fn with_pull_origin(body: &str, base_oid: &str, head_label: &str, full_at: &str) -> String {
+    let base = oid(base_oid).map(hex::encode);
+    if base.is_none() && head_label.is_empty() {
+        return body.to_string();
+    }
+    let parts: Vec<String> = [
+        base.map(|b| format!("Base {b}")),
+        (!head_label.is_empty()).then(|| format!("head {}", clip(head_label, 200, 200))),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let line = format!("> {}", parts.join(" · "));
+    // After the first line (the provenance quote) and its blank line.
+    let (first, rest) = body.split_once("\n\n").unwrap_or((body, ""));
+    let joined = if rest.is_empty() {
+        format!("{first}\n{line}")
+    } else {
+        format!("{first}\n{line}\n\n{rest}")
+    };
+    // The body was fitted before; a line of at most ~260 bytes may push it over again.
+    fit_text(&joined, BODY_MAX, full_at)
+}
+
 /// The contract's body bound (5120 chars and 5120 bytes).
 pub const BODY_MAX: usize = 5120;
 
@@ -220,12 +249,61 @@ pub fn body(header: &str, text: &str, full_at: &str) -> String {
     } else {
         format!("{header}{text}")
     };
-    if whole.chars().count() <= BODY_MAX && whole.len() <= BODY_MAX {
-        return whole;
+    fit_text(&whole, BODY_MAX, full_at)
+}
+
+/// `text` within `max` characters and bytes. A longer one is cut at the last paragraph, line or
+/// word boundary that fits (never mid-word; L-74), an open code fence or code span is closed,
+/// and a note says where the full text is (L-06).
+pub fn fit_text(text: &str, max: usize, full_at: &str) -> String {
+    if text.chars().count() <= max && text.len() <= max {
+        return text.to_string();
     }
     let note = format!("\n\n… (truncated; the full text is at {full_at})");
-    let room = BODY_MAX.saturating_sub(note.len());
-    format!("{}{note}", clip(&whole, room, room))
+    // Room for the note and for closing a fence (`\n```\n`) or a span (`` ` ``).
+    let room = max.saturating_sub(note.len() + 5);
+    let clipped = clip(text, room, room);
+    let cut = boundary_cut(&clipped);
+    format!("{}{note}", close_code(cut))
+}
+
+/// `s` shortened to its last paragraph break, else line break, else space, when one falls in
+/// its second half (a single overlong word is cut where it is).
+fn boundary_cut(s: &str) -> &str {
+    let half = s.len() / 2;
+    ["\n\n", "\n", " "]
+        .iter()
+        .find_map(|sep| s.rfind(sep).filter(|&i| i >= half))
+        .map_or(s, |i| s[..i].trim_end())
+}
+
+/// `s` with a code fence or inline code span left open at its end closed again, so the cut does
+/// not turn the rest of the rendering (the truncation note) into code.
+fn close_code(s: &str) -> String {
+    let fences = s
+        .lines()
+        .filter(|l| l.trim_start().starts_with("```"))
+        .count();
+    if fences % 2 == 1 {
+        return format!("{s}\n```");
+    }
+    // Backticks outside fenced blocks: an odd count leaves a span open.
+    let mut in_fence = false;
+    let mut ticks = 0usize;
+    for line in s.lines() {
+        if line.trim_start().starts_with("```") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if !in_fence {
+            ticks += line.matches('`').count();
+        }
+    }
+    if ticks % 2 == 1 {
+        format!("{s}`")
+    } else {
+        s.to_string()
+    }
 }
 
 /// Provenance within the contract (author ≤ 120 chars / 480 bytes, url ≤ 300 bytes).
@@ -271,6 +349,7 @@ pub fn release(
     notes: Option<&str>,
     assets: Vec<ReleaseAsset>,
     source_url: String,
+    published: Option<&Published>,
 ) -> SrcRelease {
     // Sized as recorded: with the 64-hex hash the importer fills in for an asset the source
     // gives none (D-517), so the list never outgrows the field once hashed.
@@ -287,11 +366,45 @@ pub fn release(
     SrcRelease {
         tag_name: tag_name.to_string(),
         name: clip(name.unwrap_or(tag_name), 120, 480),
-        notes: clip(notes.unwrap_or(""), NOTES_MAX, NOTES_MAX),
+        notes: release_notes(notes.unwrap_or(""), published, &source_url),
         dropped: total - assets.len(),
         assets,
         source_url,
     }
+}
+
+/// Who published a source release, and when (`release` has no field for it on the current
+/// contracts: its notes open with this, as issue and PR bodies do; `release.imported` is
+/// proposed for the fresh registration, docs/design/release-asset-manifest.md §4).
+#[derive(Debug, Clone)]
+pub struct Published {
+    /// `github.com`, `gitlab.com`, … (the source host).
+    pub host: String,
+    /// The publisher's login (may be empty when the source does not say).
+    pub author: String,
+    /// Unix seconds.
+    pub at: u64,
+}
+
+/// A release's notes: a provenance line (`> Published on github.com by @x on 2026-08-03`),
+/// then the source notes, fitted to the 5120-byte field at a boundary with a link to the full
+/// notes (L-06).
+fn release_notes(notes: &str, published: Option<&Published>, source_url: &str) -> String {
+    let head = published.map_or_else(String::new, |p| {
+        let by = if p.author.is_empty() {
+            String::new()
+        } else {
+            format!(" by @{}", p.author)
+        };
+        format!("> Published on {}{by} on {}\n\n", p.host, date(p.at))
+    });
+    let text = if notes.trim().is_empty() {
+        head.trim_end().to_string()
+    } else {
+        format!("{head}{notes}")
+    };
+    // Room for a later assets footer is made by `notes_with_footer` itself.
+    fit_text(&text, NOTES_MAX, source_url)
 }
 
 /// The most bytes a release's `assets` JSON may take (forge-core `release.assets`).
@@ -459,7 +572,7 @@ pub fn notes_with_footer(notes: &str, omitted: usize, total: usize, source_url: 
     }
     let footer = assets_footer(omitted, total, source_url);
     let room = NOTES_MAX.saturating_sub(footer.len());
-    format!("{}{footer}", clip(notes, room, room))
+    format!("{}{footer}", fit_text(notes, room, source_url))
 }
 
 /// `YYYY-MM-DD` of unix seconds, for headers.
@@ -498,6 +611,94 @@ mod tests {
         assert!(b.ends_with("the full text is at https://x/1)"));
         assert_eq!(body("> h\n\n", "short", "u"), "> h\n\nshort");
         assert_eq!(body("> h\n\n", "", "u"), "> h");
+    }
+
+    /// L-74: dashpay/dash#7549 was cut at "…the same com", #7512 inside a code span. A cut
+    /// lands on a paragraph, line or word boundary, and closes what it leaves open.
+    #[test]
+    fn a_cut_lands_on_a_boundary_and_closes_code() {
+        let words = "word ".repeat(1500);
+        let b = body("> h\n\n", &words, "https://x/1");
+        let kept = b.split("\n\n… (truncated").next().unwrap();
+        assert!(kept.ends_with("word"), "{:?}", &kept[kept.len() - 20..]);
+        // A paragraph break in the second half wins over a later space.
+        let paras = format!("{}\n\n{}", "a ".repeat(2000), "b ".repeat(2000));
+        let b = fit_text(&paras, 5120, "u");
+        assert!(
+            b.starts_with(&"a ".repeat(2000).trim_end().to_string()),
+            "cut at the paragraph"
+        );
+        assert!(!b.contains("b b"));
+        // An open fence is closed before the note.
+        let fenced = format!("intro\n\n```rust\n{}", "let x = 1;\n".repeat(700));
+        let b = fit_text(&fenced, 5120, "u");
+        assert_eq!(b.matches("```").count() % 2, 0, "{}", &b[b.len() - 80..]);
+        assert!(b.len() <= 5120);
+        // An open inline span is closed.
+        let span = format!("{} `dapi-grpc {}", "x ".repeat(2400), "y ".repeat(400));
+        let b = fit_text(&span, 5120, "u");
+        let kept = b.split("\n\n… (truncated").next().unwrap();
+        assert_eq!(
+            kept.matches('`').count() % 2,
+            0,
+            "{:?}",
+            &kept[kept.len() - 30..]
+        );
+        // Short text is untouched.
+        assert_eq!(fit_text("short `x", 5120, "u"), "short `x");
+    }
+
+    /// L-06: dash v0.16.0.1's 16 kB notes ended at "…(as they only excha", with no marker.
+    /// Long notes are cut at a boundary with a link; a release says who published it and when.
+    #[test]
+    fn release_notes_carry_the_publisher_and_a_marker() {
+        let p = Published {
+            host: "github.com".into(),
+            author: "UdjinM6".into(),
+            at: 1_785_715_200,
+        };
+        let url = "https://github.com/dashpay/dash/releases/tag/v0.16.0.1";
+        let r = release(
+            "v0.16.0.1",
+            None,
+            Some(&"notes ".repeat(3000)),
+            Vec::new(),
+            url.into(),
+            Some(&p),
+        );
+        assert!(
+            r.notes
+                .starts_with("> Published on github.com by @UdjinM6 on 2026-08-03\n\nnotes"),
+            "{}",
+            &r.notes[..80]
+        );
+        assert!(r.notes.len() <= NOTES_MAX);
+        assert!(r.notes.ends_with(&format!("the full text is at {url})")));
+        // A short release is left whole; without a publisher there is no line.
+        let r = release("v1", None, Some("Fixes."), Vec::new(), url.into(), None);
+        assert_eq!(r.notes, "Fixes.");
+    }
+
+    /// L-36/L-37: a mirrored PR's body names its base commit and a fork's head branch.
+    #[test]
+    fn a_pull_body_names_its_base_and_fork_head() {
+        let b = body(
+            "> Mirrored from github.com/o/r#7 by @x (pull request, 2026-09-01)\n\n",
+            "text",
+            "u",
+        );
+        let base = "ab".repeat(20);
+        let with = with_pull_origin(&b, &base, "thepastaclaw:backport-0.26", "u");
+        assert_eq!(
+            with,
+            format!("> Mirrored from github.com/o/r#7 by @x (pull request, 2026-09-01)\n> Base {base} · head thepastaclaw:backport-0.26\n\ntext")
+        );
+        // No base and no label: unchanged. A bad oid is left out.
+        assert_eq!(with_pull_origin(&b, "", "", "u"), b);
+        assert!(with_pull_origin(&b, "nothex", "feature", "u").contains("> head feature"));
+        // Still within the bound.
+        let long = body("> h\n\n", &"w ".repeat(3000), "u");
+        assert!(with_pull_origin(&long, &base, "o:b", "u").len() <= BODY_MAX);
     }
 
     #[test]
@@ -734,7 +935,7 @@ mod tests {
             "{odd}"
         );
         // Through `release`: the source URL and the dropped count travel with it.
-        let r = release("v22.1.3", None, Some("n"), dash_22_1_3(), url.into());
+        let r = release("v22.1.3", None, Some("n"), dash_22_1_3(), url.into(), None);
         assert_eq!(r.dropped, 21 - r.assets.len());
         assert_eq!(r.source_url, url);
     }

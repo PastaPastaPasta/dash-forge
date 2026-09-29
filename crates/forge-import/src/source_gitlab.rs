@@ -290,6 +290,21 @@ pub fn collect(
         }
         if item.kind == TargetKind::Patch {
             t.patch = Some(patch(&item.gl, number, classes.code, head_gone));
+            // Where it branched from, and the head branch when it is on a fork (L-36, L-37).
+            let m = &item.gl;
+            let from_fork =
+                m.source_project_id.is_some() && m.source_project_id != m.target_project_id;
+            let head = if from_fork {
+                format!("fork:{}", m.source_branch)
+            } else {
+                m.source_branch.clone()
+            };
+            let base = m
+                .diff_refs
+                .as_ref()
+                .and_then(|d| d.base_sha.as_deref())
+                .unwrap_or("");
+            t.body = model::with_pull_origin(&t.body, base, &head, &url);
         }
         out.targets.push(t);
     }
@@ -532,12 +547,23 @@ fn release(r: &GlRelease) -> SrcRelease {
             uri: None,
         })
         .collect();
+    let url = r.links.self_url.clone().unwrap_or_default();
+    let published = r.released_at.as_deref().map(|at| model::Published {
+        host: url
+            .strip_prefix("https://")
+            .and_then(|u| u.split('/').next())
+            .unwrap_or("gitlab")
+            .to_string(),
+        author: r.author.login().to_string(),
+        at: iso8601_to_unix(at),
+    });
     model::release(
         &r.tag_name,
         r.name.as_deref(),
         r.description.as_deref(),
         assets,
-        r.links.self_url.clone().unwrap_or_default(),
+        url,
+        published.as_ref(),
     )
 }
 
