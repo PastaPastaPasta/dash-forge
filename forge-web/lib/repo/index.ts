@@ -136,10 +136,7 @@ export {
   issueViewOf,
   onRepoInvalidated,
   revisionOf,
-  readRepoFeedFrom,
-  settlePullCount,
   baseRefReaders,
-  type BaseRefReaders,
   settleIssueCount,
   titleOf,
   toEvents,
@@ -187,9 +184,7 @@ export {
 } from './issue-index'
 export {
   foldPullOpenCount,
-  pullStateMatches,
   queryPulls,
-  type PullCounts,
   type PullListPage,
   type PullRow,
   type PullSelection,

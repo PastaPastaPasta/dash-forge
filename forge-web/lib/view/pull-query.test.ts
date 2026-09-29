@@ -8,8 +8,8 @@ import {
   pullQueryParams,
   pullSearchText,
   unresolvedPullQualifiers,
-  withPullQuery,
 } from './pull-query'
+import { withQuery } from './issue-query'
 
 const ID = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const params = (q: string) => new URLSearchParams(q)
@@ -33,6 +33,8 @@ describe('PR list query (L-44)', () => {
     const q = parsePullSearch(`is:pr is:merged label:bug author:${ID} sort:created-asc fix parser`)
     expect(q).toMatchObject({ state: 'merged', labels: ['bug'], author: ID, sort: 'oldest', q: 'fix parser' })
     expect(parsePullSearch('is:closed').state).toBe('closed')
+    // Values are exact, as the Issues grammar reads them: `is:Closed` sets no state.
+    expect(parsePullSearch('is:Closed', { ...DEFAULT_PULL_QUERY, state: 'merged' }).state).toBe('merged')
     expect(parsePullSearch('parser', { ...DEFAULT_PULL_QUERY, state: 'merged' }).state).toBe('merged')
     expect(unresolvedPullQualifiers('is:merged is:pr label:bug')).toEqual([])
   })
@@ -54,8 +56,8 @@ describe('PR list query (L-44)', () => {
 
   it('returns to page 1 on any change but a page move', () => {
     const q = { ...DEFAULT_PULL_QUERY, page: 4 }
-    expect(withPullQuery(q, { state: 'closed' }).page).toBe(1)
-    expect(withPullQuery(q, { page: 5 }).page).toBe(5)
+    expect(withQuery(q, { state: 'closed' }).page).toBe(1)
+    expect(withQuery(q, { page: 5 }).page).toBe(5)
   })
 
   it('never invites the first PR while some are merged or closed', () => {

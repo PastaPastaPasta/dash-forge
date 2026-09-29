@@ -12,7 +12,9 @@ import { collectPageErrors, DAPI_METHOD, decodeDocumentsRequest, E2E_DEVNET, rep
  * (`E2E_TRACE=1` adds the request order).
  *
  * Measured before the pull index, on moutai beta.6 (2026-09-29): fixture list 10, PR #2 17;
- * dash list 21, PR #7762 31 (the ledger's 36 / 42-44 counted the rail too).
+ * dash list 21, PR #7762 31. moutai then moved to beta.7, which master's JS cannot read: the
+ * after-counts run on bonsia once the fixtures and the dash mirror are there (the showcase block
+ * skips itself on a devnet where the mirror's name does not resolve).
  */
 
 /** S-1's cold page budget. */
@@ -94,10 +96,10 @@ test.describe('PR request budget (L-77)', () => {
   })
 
   test.describe('showcase repos', () => {
-    test.skip(E2E_DEVNET !== 'moutai', 'the showcase repos are imported on moutai')
-
     test('prb-2. the dash mirror: the PR list and PR #7762, cold, ≤ 25 each', async ({ browser }) => {
-      const dash = await showcaseRepo('DASHPAY', 'dash')
+      const dash = await showcaseRepo('DASHPAY', 'dash').catch(() => null)
+      test.skip(dash === null, `the dash mirror is not imported on ${E2E_DEVNET}`)
+      if (dash === null) return
       const list = await cold(browser, 'dash PR list', repoUrl('pulls', '', dash), listReady)
       expect(list.rows.length, summary(list.rows)).toBeLessThanOrEqual(COLD_BUDGET)
       // L-44: the list pages past 100 and counts every tab, instead of stopping at 100 silently.

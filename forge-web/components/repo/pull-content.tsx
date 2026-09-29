@@ -92,7 +92,7 @@ import { commentsShown, draftIsEmpty, draftWhereabouts, reviewShows, SUBMIT_WAIT
 import { tipOidOf } from '@/lib/view/refs'
 import type { ReviewerCardRow } from '@/lib/view/review-fold'
 import { BODY_MAX, utf8Length } from '@/lib/view/issue-query'
-import { readOnceThenUntil } from '@/lib/view/retry'
+import { readUntil, retryWhileMissing } from '@/lib/view/retry'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useIntent } from '@/hooks/use-intent'
@@ -202,8 +202,9 @@ export function PullContent({
         latest = await loadPullThread(sdk!, home.repo, number, network, { fresh: refreshed.current })
         return latest
       }
+      const first = await retryWhileMissing(load, justCreated ? 8 : 0, undefined, signal)
       // One read on a cold load; re-reads only while a write this page made has not shown (L-77).
-      const t = await readOnceThenUntil(load, want, { ...(waitFor.current ?? {}), signal, missingAttempts: justCreated ? 8 : 0 })
+      const t = first === null ? null : await readUntil(load, want, { ...(waitFor.current ?? {}), signal, first })
       if (!signal.aborted && t !== null) {
         expectations.current = expectations.current.filter((w) => !w(t))
         if (expectations.current.length === 0) waitFor.current = null

@@ -72,6 +72,8 @@ function run(rows: Doc[], where: readonly (readonly [string, string, unknown])[]
 interface Seen {
   composites: CompositeQuery[]
   queries: DocumentQuery[]
+  /** Set to a promise to hold every composite's answer (computed when sent) until it resolves. */
+  hold?: Promise<void> | null
 }
 
 type Store = Record<string, Record<string, Doc[]>>
@@ -85,6 +87,7 @@ function mockSdk(store: Store, seen: Seen): EvoSDK {
   }
   const composite = async (q: CompositeQuery) => {
     seen.composites.push(q)
+    const held = seen.hold
     const page = run(rows(q.dataContractId, q.documentType), (q.where ?? []) as never, (q.orderBy ?? []) as never, q.limit)
     const subResults = q.subQueries.map((s) => {
       const contract = s.dataContractId ?? q.dataContractId
@@ -100,6 +103,7 @@ function mockSdk(store: Store, seen: Seen): EvoSDK {
       const where = [...(s.where ?? []), ...(values === null ? [] : [[s.bind!.field, 'in', values] as const])]
       return { kind: 'documents', documents: run(rows(contract, s.documentType), where as never, (s.orderBy ?? []) as never, s.limit ?? 100) }
     })
+    if (held) await held
     return { pageDocuments: page, subResults }
   }
   return { documents: { query, composite, count: async () => new Map() } } as unknown as EvoSDK
@@ -215,6 +219,13 @@ describe('pull index', () => {
     expect(p9.rows.map((r) => r.number)).toEqual([3, 2, 1])
     expect(p9.hasNext).toBe(false)
     expect(p9.matching).toBe(203)
+    // The page count is known from page 1, from the exact counts, before the walk reads them all.
+    const { sdk: sdk2, repo: repo2 } = fresh(203)
+    const first = await queryPulls(sdk2, repo2, { ...base, state: 'all' }, 203, 'devnet')
+    expect(first.matching).toBe(203)
+    expect((await queryPulls(sdk2, repo2, base, 203, 'devnet')).matching).toBe(expected(203).open)
+    // A filter's matches are not counted by the tabs: no page count until the walk ends.
+    expect((await queryPulls(sdk2, repo2, { ...base, text: 'PR 1' }, 203, 'devnet')).matching).toBeNull()
     const keyset = seen.composites.filter((c) => (c.where ?? []).some(([f, op]) => f === '$createdAt' && op === '<='))
     expect(keyset.length).toBe(2) // 203 PRs = the first composite + two keyset chunks
   })
@@ -300,6 +311,32 @@ describe('pull index', () => {
     expect(page.counts).toEqual(expected(30))
     expect(seen.composites).toHaveLength(1)
     expect(plainOf(seen, 'refUpdate')).toHaveLength(1)
+  })
+
+  it('a read in flight across a write neither refills the feed cache nor settles a count (review #1)', async () => {
+    const store = bigRepo(30)
+    // A feed that fits the composite's first page: the whole feed then comes from before the write.
+    store.COLLAB!.event = store.COLLAB!.event!.filter((e) => e['value'] !== 'churn')
+    const seen: Seen = { composites: [], queries: [] }
+    const sdk = mockSdk(store, seen)
+    const repo = repoRef()
+    invalidateRepoFeed(repo)
+    // The header's index load sends its composite and is held there...
+    let release!: () => void
+    seen.hold = new Promise((r) => (release = r))
+    const stale = queryPulls(sdk, repo, base, 30, 'devnet')
+    await Promise.resolve()
+    // ...a maintainer closes #1 and the write drops the repo's caches...
+    store.COLLAB!.event!.push({ $id: 'eclose', $ownerId: MAINT, $createdAt: 9_000_000, repoId: REPO, targetId: pid(1), targetNumber: 1, kind: 1 })
+    invalidateRepoFeed(repo)
+    seen.hold = null
+    release()
+    await stale
+    // ...so the next read reads again, and shows #1 closed, as does the header.
+    const after = await queryPulls(sdk, repo, { ...base, state: 'closed', pageSize: 100 }, 30, 'devnet')
+    expect(after.rows.map((r) => r.number)).toContain(1)
+    expect(after.counts.open).toBe(expected(30).open - 1)
+    expect(openCounts(repo, { issues: null, pulls: 30 }).pulls).toBe(expected(30).open - 1)
   })
 
   it('a write drops the index: the next page reads again', async () => {

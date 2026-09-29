@@ -11,8 +11,10 @@
  * which every PR matches). `mentions:` is not a PR filter here, and is reported as not applied.
  */
 
+import type { PullStateFilter } from '../repo'
 import {
   DEFAULT_ISSUE_QUERY,
+  hasFilters,
   issueQueryParams,
   parseIssueQuery,
   parseSearchText,
@@ -22,7 +24,7 @@ import {
 } from './issue-query'
 import { plural } from './format'
 
-export type PullStateFilter = 'open' | 'merged' | 'closed' | 'all'
+export type { PullStateFilter }
 
 /** The structured PR list query. */
 export type PullListQuery = Omit<IssueListQuery, 'state' | 'mentions'> & { readonly state: PullStateFilter }
@@ -45,8 +47,10 @@ function toIssue(q: PullListQuery): IssueListQuery {
 
 /** `is:merged` / `is:pr` (or `state:`), which the Issues grammar does not have. */
 const PR_STATE_TOKEN = /(^|\s)(?:is|state):(merged|pr)(?=\s|$)/gi
-/** A state the Issues grammar sets. */
-const ISSUE_STATE_TOKEN = /(^|\s)(?:is|state):(?:open|closed|all)(?=\s|$)/i
+/** Whether `text` sets a state the Issues grammar knows (its key in any case, its value exactly, as it parses them). */
+function setsIssueState(text: string): boolean {
+  return [...text.matchAll(/(?:^|\s)(?:is|state):(\S+)/gi)].some((m) => m[1] === 'open' || m[1] === 'closed' || m[1] === 'all')
+}
 /** `mentions:` — an Issues filter, not a PR one. */
 const MENTIONS_TOKEN = /(^|\s)(mentions:\S*)/gi
 
@@ -72,7 +76,9 @@ function liftPullOnly(text: string): { rest: string; merged: boolean; mentions: 
 export function parsePullSearch(text: string, base: PullListQuery = DEFAULT_PULL_QUERY): PullListQuery {
   const { rest, merged } = liftPullOnly(text)
   const parsed = parseSearchText(rest, toIssue(base))
-  const state: PullStateFilter = merged ? 'merged' : ISSUE_STATE_TOKEN.test(rest) ? parsed.state : base.state
+  let state: PullStateFilter = base.state
+  if (merged) state = 'merged'
+  else if (setsIssueState(rest)) state = parsed.state
   return toPull(parsed, state)
 }
 
@@ -88,14 +94,15 @@ export function parsePullQuery(params: { get(name: string): string | null; getAl
   const state = STATES.includes(raw as PullStateFilter) ? (raw as PullStateFilter) : 'open'
   const q = (params.get('q') ?? '').slice(0, 200)
   // The rest as the Issues list reads it; `q`'s qualifiers (a GitHub link) are lifted below.
-  const issue = parseIssueQuery({ get: (n) => (n === 'state' ? null : n === 'q' ? null : params.get(n)), getAll: (n) => params.getAll(n) })
+  const issue = parseIssueQuery({ get: (n) => (n === 'state' || n === 'q' ? null : params.get(n)), getAll: (n) => params.getAll(n) })
   const base = { ...toPull(issue, state), q }
   return q.includes(':') ? { ...parsePullSearch(q, { ...base, q: '' }), page: issue.page } : base
 }
 
 /** The URL params of a query, defaults omitted, in a stable order. */
 export function pullQueryParams(q: PullListQuery): [string, string][] {
-  return [...(q.state !== 'open' ? [['state', q.state] as [string, string]] : []), ...issueQueryParams(toIssue(q))]
+  const rest = issueQueryParams(toIssue(q))
+  return q.state === 'open' ? rest : [['state', q.state], ...rest]
 }
 
 /** The query as search-box text, qualifiers first. */
@@ -103,15 +110,9 @@ export function pullSearchText(q: PullListQuery): string {
   return searchText(toIssue(q)).replace(/^is:open/, `is:${q.state}`)
 }
 
-/** A change to the query; any change but a page move returns to page 1. */
-export function withPullQuery(q: PullListQuery, change: Partial<PullListQuery>): PullListQuery {
-  const next = { ...q, ...change }
-  return 'page' in change ? next : { ...next, page: 1 }
-}
-
 /** Whether any filter narrows the list beyond the state tab. */
 export function hasPullFilters(q: PullListQuery): boolean {
-  return q.labels.length > 0 || q.author !== null || q.assignee !== null || q.q.trim() !== ''
+  return hasFilters(toIssue(q))
 }
 
 /** The empty PR list's line: never "open the first one" while some are merged or closed. */

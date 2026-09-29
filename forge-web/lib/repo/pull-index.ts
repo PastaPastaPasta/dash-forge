@@ -18,7 +18,9 @@
  * the FORGE_RULES fold of each patch's slice of the feed against its base ref's history. The
  * base refs' histories come from the repo chrome store (`baseRefReaders`: no request for a public
  * repo whose page just read its chrome; one read per base ref, not per PR, otherwise), which is
- * what "merged" needs. The on-chain transition reader (wipe/beta7, #158) replaces that one step.
+ * what "merged" needs. The on-chain transition reader (wipe/beta7, #158) replaces that one step —
+ * and with it {@link settledTargets} / {@link feedCandidates}, which pick the Merged / Closed tabs'
+ * candidates and the counts' settled PRs from the feed's merge and close events.
  *
  * Counts: the repo's PR total is the countable `patch.number` index; what is merged or closed is
  * a fold over the complete feed. So Open / Merged / Closed are exact without reading every PR:
@@ -29,18 +31,20 @@
 import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { DEFAULT_NETWORK, NETWORKS, type Network } from '../constants'
-import { compositeOf, countsAt, docsAt, queryComposite, siblingOf, type CompositeSub } from '../sdk/composite'
+import { compositeOf, countsAt, docsAt, queryComposite, siblingOf, type CompositeResult, type CompositeSub } from '../sdk/composite'
 import { IncompleteReadError, queryAllDocuments, type DocumentQuery, type PlainDocument } from '../sdk'
 import { DOC, asIdentifierString, repoKey, str, type RepoRef } from './contract'
-import { compareRows, rowMatches, type IssueSelection } from './issue-index'
+import { compareRows, rowMatches } from './issue-index'
 import {
+  EMPTY_LOG,
   baseRefReaders,
   feedQuery,
   incompletePullView,
   onRepoInvalidated,
   readPull,
   readRepoFeedFrom,
-  settlePullCount,
+  repoEpoch,
+  settleCount,
   sharedRepoFeed,
   type BaseRefReaders,
   type PullView,
@@ -64,8 +68,6 @@ const CHUNK = 100
 /** Chunks one call may read to satisfy a query (a sort by comments reads every chunk up to this). */
 const MAX_CHUNKS = 30
 
-const EMPTY_LOG: TargetLog = { events: [], authorEvents: [] }
-
 /** One keyset walk over the repo's patches, in one direction. */
 interface Walk {
   /** Loaded ids, in walk order. */
@@ -81,6 +83,8 @@ interface Walk {
 interface IndexState {
   readonly repo: RepoRef
   readonly network: Network
+  /** The repo's write epoch when the load started: counts from an older one are not recorded. */
+  readonly epoch: number
   /** Every target's log; null when the feed is too large to read completely. */
   readonly feed: Map<string, TargetLog> | null
   /** The config and base-ref histories every row's state is folded against. */
@@ -149,10 +153,11 @@ async function pullStates(state: IndexState, sdk: EvoSDK, docs: readonly PlainDo
 /** Record a chunk's patch documents (and their comment counts); `walk` also records their order. */
 async function addDocs(sdk: EvoSDK, state: IndexState, docs: readonly PlainDocument[], counts: ReadonlyMap<string, number> | null, walk: Walk | null): Promise<void> {
   const fresh: PlainDocument[] = []
+  const freshIds = new Set<string>()
   for (const raw of docs) {
     const id = str(raw, '$id')
     if (id === '' || state.notPulls.has(id)) continue
-    if (state.rows.has(id) || fresh.some((d) => str(d, '$id') === id)) {
+    if (state.rows.has(id) || freshIds.has(id)) {
       if (walk !== null && !walk.ids.includes(id)) walk.ids.push(id)
       continue
     }
@@ -163,6 +168,7 @@ async function addDocs(sdk: EvoSDK, state: IndexState, docs: readonly PlainDocum
       continue
     }
     fresh.push(admitted.doc)
+    freshIds.add(id)
     walk?.ids.push(id)
   }
   const views = await pullStates(state, sdk, fresh)
@@ -194,6 +200,13 @@ async function addChunk(sdk: EvoSDK, state: IndexState, walk: Walk, docs: readon
   if (walk.done && walk.complete) state.all = true
 }
 
+/** Record a composite's patches (`docs`, from its page) with its comment counts and names (sub-queries 0 and 1). */
+async function record(sdk: EvoSDK, state: IndexState, res: CompositeResult, docs: readonly PlainDocument[], walk: Walk | null): Promise<void> {
+  if (walk === null) await addDocs(sdk, state, docs, countsAt(res, 0), null)
+  else await addChunk(sdk, state, walk, docs, countsAt(res, 0))
+  await seedNames(state.network, docs, docsAt(res, 1))
+}
+
 /** Read one chunk of patches with their comment counts and authors' names, and record it. */
 async function readChunk(
   sdk: EvoSDK,
@@ -204,9 +217,7 @@ async function readChunk(
 ): Promise<PlainDocument[]> {
   const res = await queryComposite(sdk, compositeOf(page, limit, chunkSubs(state.network)))
   const docs = keep ? res.page.filter(keep) : res.page
-  if (walk === null) await addDocs(sdk, state, docs, countsAt(res, 0), null)
-  else await addChunk(sdk, state, walk, docs, countsAt(res, 0))
-  await seedNames(state.network, docs, docsAt(res, 1))
+  await record(sdk, state, res, docs, walk)
   return docs
 }
 
@@ -215,12 +226,13 @@ async function loadIndex(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<
   const source = repoSource(repo)
   const labelQuery = source.repoQuery(DOC.label, { orderBy: [['name', 'asc'], ['$createdAt', 'asc']] })
   const page = source.repoQuery(DOC.patch, { orderBy: [['$createdAt', 'desc']] })
+  const epoch = repoEpoch(repo)
   // A feed another reader (the issue index, the header) already has is joined, not re-proved.
   const shared = sharedRepoFeed(repo)
   const feedSubs = shared === undefined ? [siblingOf(feedQuery(repo, 'event'), CHUNK), siblingOf(feedQuery(repo, 'authorEvent'), CHUNK)] : []
   const subs = [...chunkSubs(network), ...feedSubs, siblingOf(labelQuery, CHUNK)]
   const res = await queryComposite(sdk, compositeOf(page, CHUNK, subs))
-  const feed = await (shared ?? readRepoFeedFrom(sdk, repo, { event: docsAt(res, 2), authorEvent: docsAt(res, 3) }))
+  const feed = await (shared ?? readRepoFeedFrom(sdk, repo, { event: docsAt(res, 2), authorEvent: docsAt(res, 3) }, epoch))
   let labelDocs = docsAt(res, subs.length - 1)
   if (labelDocs.length >= CHUNK) {
     labelDocs = await queryAllDocuments(sdk, labelQuery, { firstPage: labelDocs, maxPages: 10 }).catch((e: unknown) => {
@@ -231,6 +243,7 @@ async function loadIndex(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<
   const state: IndexState = {
     repo,
     network,
+    epoch,
     feed,
     base: baseRefReaders(sdk, repo),
     labels: newestLabels(labelDocs),
@@ -244,8 +257,7 @@ async function loadIndex(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<
     byAuthor: new Map(),
     gate: gateFor(repo),
   }
-  await addChunk(sdk, state, state.desc, res.page, countsAt(res, 0))
-  await seedNames(network, res.page, docsAt(res, 1))
+  await record(sdk, state, res, res.page, state.desc)
   return state
 }
 
@@ -348,47 +360,50 @@ export interface PullListPage {
 
 const NO_COUNTS: PullCounts = { open: null, merged: null, closed: null }
 
+/** Every PR shown (open + merged + closed), or null when a count is not proven. */
+function sum(c: PullCounts): number | null {
+  return c.open === null || c.merged === null || c.closed === null ? null : c.open + c.merged + c.closed
+}
+
 /** Whether a row's state passes the state tab. */
-export function pullStateMatches(row: Pick<PullView, 'state'>, tab: PullStateFilter): boolean {
+function pullStateMatches(row: Pick<PullView, 'state'>, tab: PullStateFilter): boolean {
   if (tab === 'all') return true
   if (tab === 'merged') return row.state.merged
   if (tab === 'closed') return !row.state.open && !row.state.merged
   return row.state.open
 }
 
-/** The issue index's filter and sort rules take a PR row as they take an issue row. */
-function asIssueSelection(q: PullSelection): IssueSelection {
-  return { ...q, state: 'all', mentions: null }
-}
-
-/** Whether a row passes every filter but the state tab (labels, author, assignee, title / `#n`). */
+/** Whether a row passes every filter but the state tab (labels, author, assignee, title / `#n`): the issue list's rule. */
 function filtersMatch(row: PullRow, q: PullSelection): boolean {
-  return rowMatches(row, asIssueSelection(q))
+  return rowMatches(row, { ...q, state: 'all', mentions: null })
 }
 
-/** Feed targets that have a close or merge (a member's, or the author's close). */
-function settledTargets(state: IndexState, kinds: 'merge' | 'close' | 'either'): string[] {
-  if (state.feed === null) return []
-  const out: string[] = []
-  for (const [id, log] of state.feed) {
-    if (id === '' || state.notPulls.has(id)) continue
-    const merge = kinds !== 'close' && log.events.some((e) => e.kind === 'merge')
-    const close = kinds !== 'merge' && (log.events.some((e) => e.kind === 'close') || log.authorEvents.some((e) => e.kind === 'close'))
-    if (merge || close) out.push(id)
-  }
-  return out
+/** Whether a target's log has a merge (a member's), or a close (a member's, or its author's). */
+function settledAs(log: TargetLog, kind: 'merge' | 'close'): boolean {
+  if (kind === 'merge') return log.events.some((e) => e.kind === 'merge')
+  return log.events.some((e) => e.kind === 'close') || log.authorEvents.some((e) => e.kind === 'close')
+}
+
+/** The feed's targets not yet known to be something other than a shown patch. */
+function feedTargets(state: IndexState): [string, TargetLog][] {
+  return state.feed === null ? [] : [...state.feed].filter(([id]) => id !== '' && !state.notPulls.has(id))
+}
+
+/** Feed targets that have a merge or a close: the only PRs that can be other than open. */
+function settledTargets(state: IndexState): string[] {
+  return feedTargets(state)
+    .filter(([, log]) => settledAs(log, 'merge') || settledAs(log, 'close'))
+    .map(([id]) => id)
 }
 
 /** Feed targets that can pass the feed-decided filters (merged / closed tab, labels, assignee), or null when none applies. */
 function feedCandidates(state: IndexState, q: PullSelection): Set<string> | null {
-  const byState = q.state === 'merged' || q.state === 'closed'
+  const byState = q.state === 'merged' || q.state === 'closed' ? q.state : null
   const byMeta = q.labels.length > 0 || (q.assignee !== null && q.assignee !== 'none')
-  if ((!byState && !byMeta) || state.feed === null) return null
-  const settled = byState ? new Set(settledTargets(state, q.state === 'merged' ? 'merge' : 'close')) : null
+  if ((byState === null && !byMeta) || state.feed === null) return null
   const out = new Set<string>()
-  for (const [id, log] of state.feed) {
-    if (id === '' || state.notPulls.has(id)) continue
-    if (settled !== null && !settled.has(id)) continue
+  for (const [id, log] of feedTargets(state)) {
+    if (byState !== null && !settledAs(log, byState === 'merged' ? 'merge' : 'close')) continue
     // Not loaded yet: admitted on its events alone, filtered exactly once resolved.
     if (q.labels.length > 0 && !log.events.some((e) => e.kind === 'labelAdd')) continue
     if (q.assignee !== null && q.assignee !== 'none' && !log.events.some((e) => e.kind === 'assign' && e.value === q.assignee)) continue
@@ -435,29 +450,37 @@ function rowsOf(state: IndexState, ids: Iterable<string>): PullRow[] {
 
 /** Open / Merged / Closed of `rows`. */
 function countRows(rows: readonly PullRow[]): { open: number; merged: number; closed: number } {
-  const merged = rows.filter((r) => r.state.merged).length
-  const closed = rows.filter((r) => !r.state.open && !r.state.merged).length
+  const merged = rows.filter((r) => pullStateMatches(r, 'merged')).length
+  const closed = rows.filter((r) => pullStateMatches(r, 'closed')).length
   return { open: rows.length - merged - closed, merged, closed }
 }
 
 /**
  * The repo's exact Open / Merged / Closed counts: every close and merge target of the complete
  * feed resolved to a patch and folded; open = total − merged − closed − hidden. Null when the
- * feed is too large to fold, the total is unknown, or a settled PR's state is unverified.
+ * feed is too large to fold, the total is unknown, or a settled PR's state is unverified. A proved
+ * open count is recorded for the header.
  */
 async function exactCounts(sdk: EvoSDK, state: IndexState, total: number | null): Promise<{ open: number; merged: number; closed: number } | null> {
   if (state.feed === null || total === null) return null
-  const settled = settledTargets(state, 'either')
+  const settled = settledTargets(state)
   await resolveIds(sdk, state, settled)
   if (rowsOf(state, settled).some((r) => !r.stateComplete)) return null
   const rows = [...state.rows.values()]
-  const { merged, closed } = countRows(rows)
-  // Every patch is loaded: count directly, unless the total proves a newer one this read missed.
-  if (state.all) return rows.length + state.hidden.total < total ? null : countRows(rows)
-  // A private repo's total counts ciphertext this reader cannot tell apart until read.
-  if (state.repo.visibility === 'private') return null
-  const open = total - merged - closed - state.hidden.total
-  return open >= 0 ? { open, merged, closed } : null
+  const loaded = countRows(rows)
+  let counts: { open: number; merged: number; closed: number } | null
+  if (state.all) {
+    // Every patch is loaded: count directly, unless the total proves a newer one this read missed.
+    counts = rows.length + state.hidden.total < total ? null : loaded
+  } else if (state.repo.visibility === 'private') {
+    // A private repo's total counts ciphertext this reader cannot tell apart until read.
+    counts = null
+  } else {
+    const open = total - loaded.merged - loaded.closed - state.hidden.total
+    counts = open >= 0 ? { ...loaded, open } : null
+  }
+  if (counts !== null) settleCount(state.repo, 'patch', counts.open, total, state.epoch)
+  return counts
 }
 
 /**
@@ -506,24 +529,22 @@ export async function queryPulls(
   const filtered = q.labels.length > 0 || q.author !== null || q.assignee !== null || q.text.trim() !== ''
   let counts: PullCounts = NO_COUNTS
   if (!filtered) {
-    const exact = await exactCounts(sdk, state, total)
-    if (exact !== null) {
-      counts = exact
-      settlePullCount(repo, exact.open, total)
-    }
-  } else {
+    counts = (await exactCounts(sdk, state, total)) ?? NO_COUNTS
+  } else if (state.feed !== null) {
     // Every tab's count needs every candidate in any state: the feed or author index names them,
-    // or every patch is loaded.
+    // or every patch is loaded. Without the feed no row's state is known: no counts.
     const any = await candidatesFor(sdk, state, { ...q, state: 'all' })
     if (any !== null) await resolveIds(sdk, state, any)
     const all = any !== null ? rowsOf(state, any) : state.all ? [...state.rows.values()] : null
     if (all !== null) counts = countRows(all.filter((r) => filtersMatch(r, q)))
   }
 
+  // Unfiltered, the tab's exact count is how many rows match, before the walk reaches them all.
+  const tabCount = q.state === 'all' ? sum(counts) : counts[q.state]
   const start = (q.page - 1) * q.pageSize
   return {
     rows: rows.slice(start, start + q.pageSize),
-    matching: complete ? rows.length : null,
+    matching: complete ? rows.length : filtered ? null : tabCount,
     hasNext: rows.length > start + q.pageSize,
     counts,
     searchedOf: searched === null ? null : { searched, total },
@@ -542,7 +563,5 @@ export async function foldPullOpenCount(sdk: EvoSDK, repo: RepoRef, total: numbe
   if (total === 0) return 0
   if (!indexes.has(indexKey(repo, network)) && !(total !== null && total < CHUNK)) return null
   const state = await indexOf(sdk, repo, network)
-  const exact = await exactCounts(sdk, state, total)
-  if (exact !== null) settlePullCount(repo, exact.open, total)
-  return exact?.open ?? null
+  return (await exactCounts(sdk, state, total))?.open ?? null
 }

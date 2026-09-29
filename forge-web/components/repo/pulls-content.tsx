@@ -34,9 +34,9 @@ import {
   pullQueryParams,
   pullSearchText,
   unresolvedPullQualifiers,
-  withPullQuery,
   type PullListQuery,
 } from '@/lib/view/pull-query'
+import { withQuery } from '@/lib/view/issue-query'
 import { queryPulls, repoContractIds, repoKey, type PullListPage, type PullRow, type PullSelection } from '@/lib/repo'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -80,7 +80,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
     for (const [k, v] of pullQueryParams(next)) q.append(k, v)
     router.replace(`${pathname}?${q.toString()}`, { scroll: false })
   }
-  const change = (c: Partial<PullListQuery>): void => setQuery(withPullQuery(query, c))
+  const change = (c: Partial<PullListQuery>): void => setQuery(withQuery(query, c))
 
   // `me` needs a signed-in viewer; signed out, a `me` filter shows nothing rather than everything.
   const needsViewer = query.author === 'me' || query.assignee === 'me'
@@ -148,7 +148,10 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
       {filtered ? (
         <button
           type="button"
-          onClick={() => setQuery({ ...DEFAULT_PULL_QUERY, state: query.state })}
+          onClick={() => {
+            setDropped([])
+            setQuery({ ...DEFAULT_PULL_QUERY, state: query.state })
+          }}
           className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-500 hover:text-forge-700 dark:text-anvil-400 dark:hover:text-forge-400"
         >
           <X className="h-3.5 w-3.5" aria-hidden /> Clear filters
@@ -208,7 +211,6 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
               return (
                 <li key={p.id} className="flex items-start gap-3 border-b border-anvil-100 px-4 py-3 last:border-b-0 hover:bg-anvil-50 dark:border-anvil-850 dark:hover:bg-anvil-900" data-testid="pull-row" data-number={p.number}>
                   <span className={cn('mt-0.5 shrink-0', st.klass)}>{st.icon}</span>
-                  <span className="sr-only">{st.label}</span>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-1.5">
                       <Link href={repoHref('/repo/pull', addr, { number: String(p.number) })} className="hit-area text-dense font-medium text-anvil-900 hover:text-forge-700 dark:text-anvil-50 dark:hover:text-forge-400">
@@ -230,8 +232,9 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
                   <div className="flex shrink-0 items-center gap-3 pt-0.5">
                     <AssigneeAvatars ids={p.state.assignees} />
                     {p.comments ? (
-                      <span className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400" aria-label={plural(p.comments, 'comment')}>
-                        <MessageSquare className="h-3.5 w-3.5" aria-hidden /> {p.comments}
+                      <span className="inline-flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400" data-testid="pull-comments">
+                        <MessageSquare className="h-3.5 w-3.5" aria-hidden /> <span aria-hidden>{p.comments}</span>
+                        <span className="sr-only">{plural(p.comments, 'comment')}</span>
                       </span>
                     ) : null}
                   </div>

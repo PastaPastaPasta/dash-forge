@@ -279,29 +279,57 @@ export interface TargetLog {
   readonly plaintextValues?: number
 }
 
-const EMPTY_LOG: TargetLog = { events: [], authorEvents: [] }
+/** A target with no state documents. */
+export const EMPTY_LOG: TargetLog = { events: [], authorEvents: [] }
 
 /**
  * Pages of each feed type read before the feed is declared too large to fold (`authorEvent` can
- * be written by any issue author). The issue and pull indexes share one read of it, so it is the
- * same bound as theirs; past it a list page folds each row from its own target log instead.
+ * be written by any issue author). The issue index, the pull index and the lists all share this
+ * one read; past the bound a list page folds each row from its own target log instead.
  */
-export const FEED_MAX_PAGES = 30
+const FEED_MAX_PAGES = 30
 /** How long a repo feed, and the lists folded from it, serve later reads. */
 const FEED_TTL_MS = 30_000
 
-type Cache<T> = Map<string, { at: number; promise: Promise<T> }>
+/** A cached read: `at` is when it settled (null while in flight). */
+type Cache<T> = Map<string, { at: number | null; promise: Promise<T> }>
 
-/** One in-flight or settled read per key for {@link FEED_TTL_MS}, dropped when it rejects. */
+/** Whether a cached read still answers: in flight, or settled within {@link FEED_TTL_MS}. */
+function live(hit: { at: number | null } | undefined): boolean {
+  return hit !== undefined && (hit.at === null || Date.now() - hit.at < FEED_TTL_MS)
+}
+
+/**
+ * One in-flight or settled read per key, joined while in flight and for {@link FEED_TTL_MS} after
+ * it settles (a 30-page feed on a slow node outlives the TTL while it reads), dropped when it
+ * rejects.
+ */
 function ttlCached<T>(cache: Cache<T>, key: string, load: () => Promise<T>): Promise<T> {
   const hit = cache.get(key)
-  if (hit !== undefined && Date.now() - hit.at < FEED_TTL_MS) return hit.promise
-  const entry = { at: Date.now(), promise: load() }
+  if (hit !== undefined && live(hit)) return hit.promise
+  const entry: { at: number | null; promise: Promise<T> } = { at: null, promise: load() }
   cache.set(key, entry)
-  entry.promise.catch(() => {
-    if (cache.get(key) === entry) cache.delete(key)
-  })
+  entry.promise.then(
+    () => {
+      entry.at = Date.now()
+    },
+    () => {
+      if (cache.get(key) === entry) cache.delete(key)
+    },
+  )
   return entry.promise
+}
+
+/** Per repo: bumped by every {@link invalidateRepoFeed}, so a read started before a write can tell. */
+const epochs = new Map<string, number>()
+
+/**
+ * The repo's write epoch. A reader captures it before its first request; a feed or count it
+ * derives is shared only while the epoch is unchanged, so a read in flight across a write never
+ * refills a cache the write just dropped (L-77 review).
+ */
+export function repoEpoch(repo: RepoRef): number {
+  return epochs.get(feedKey(repo)) ?? 0
 }
 
 const feedCache: Cache<Map<string, TargetLog> | null> = new Map()
@@ -342,25 +370,10 @@ function changed(repo: RepoRef, counters: readonly Map<string, number>[]): void 
   for (const listener of listeners) listener()
 }
 
-/**
- * Share a repo feed read by another reader (the issue and pull indexes start it inside their
- * composites) while it is still in flight, so every other reader of the repo — the other index,
- * the header's counts — joins that one read instead of paging the feed again (L-77). A read that
- * rejects is dropped, like any cached read.
- */
-export function shareRepoFeed(repo: RepoRef, feed: Promise<Map<string, TargetLog> | null>): void {
-  const key = pageKey(repo)
-  const entry = { at: Date.now(), promise: feed }
-  feedCache.set(key, entry)
-  feed.catch(() => {
-    if (feedCache.get(key) === entry) feedCache.delete(key)
-  })
-}
-
 /** The repo feed another reader is reading or has read within {@link FEED_TTL_MS}, if any. */
 export function sharedRepoFeed(repo: RepoRef): Promise<Map<string, TargetLog> | null> | undefined {
   const hit = feedCache.get(pageKey(repo))
-  return hit !== undefined && Date.now() - hit.at < FEED_TTL_MS ? hit.promise : undefined
+  return live(hit) ? hit!.promise : undefined
 }
 
 /** Group a repo feed's events by target. */
@@ -379,11 +392,6 @@ export function groupFeed(events: readonly Event[], authorEvents: readonly Event
   return byTarget
 }
 
-/** {@link readRepoFeed} through a short per-repo cache (issues and pulls pages share it). */
-export function readRepoFeedCached(sdk: EvoSDK, repo: RepoRef): Promise<Map<string, TargetLog> | null> {
-  return ttlCached(feedCache, pageKey(repo), () => readRepoFeed(sdk, repo))
-}
-
 /**
  * Drop a repo's cached feed and list pages (tests; and after a write lands). With `counts`
  * (the default) the write can change an open count — an issue, patch, event, authorEvent or
@@ -394,6 +402,7 @@ export function invalidateRepoFeed(repo: RepoRef, { counts = true }: { counts?: 
   // Every session's pages of this repo (a write is visible to all of them).
   const prefix = `${repo.forge.collab}:${repo.repoId}`
   const ofRepo = (k: string): boolean => k === prefix || k.startsWith(`${prefix}:`) || k.startsWith(`${prefix}#`)
+  epochs.set(feedKey(repo), repoEpoch(repo) + 1)
   for (const k of [...feedCache.keys()]) if (ofRepo(k)) feedCache.delete(k)
   for (const k of [...listCache.keys()]) if (ofRepo(k)) listCache.delete(k)
   for (const drop of invalidationHooks) drop(repo)
@@ -422,7 +431,12 @@ export function onRepoInvalidated(drop: (repo: RepoRef) => void): void {
 const provedCounts = new Map<string, { open: number; total: number | null }>()
 const countKey = (repo: RepoRef, type: 'issue' | 'patch'): string => `${feedKey(repo)}:${type}`
 
-function settleCount(repo: RepoRef, type: 'issue' | 'patch', open: number, total: number | null): void {
+/**
+ * Record an open issue or PR count an index proved against `total`; the header shows it. A count
+ * from a read started before a write (`epoch` older than {@link repoEpoch}) is not recorded.
+ */
+export function settleCount(repo: RepoRef, type: 'issue' | 'patch', open: number, total: number | null, epoch = repoEpoch(repo)): void {
+  if (epoch !== repoEpoch(repo)) return
   const key = countKey(repo, type)
   const held = provedCounts.get(key)
   if (held?.open === open && held.total === total) return
@@ -430,14 +444,9 @@ function settleCount(repo: RepoRef, type: 'issue' | 'patch', open: number, total
   changed(repo, [versions])
 }
 
-/** Record an open issue count the issue index proved against `total`; the header shows it. */
-export function settleIssueCount(repo: RepoRef, open: number, total: number | null): void {
-  settleCount(repo, 'issue', open, total)
-}
-
-/** Record an open PR count the pull index proved against `total`; the header shows it. */
-export function settlePullCount(repo: RepoRef, open: number, total: number | null): void {
-  settleCount(repo, 'patch', open, total)
+/** {@link settleCount} for issues (the issue index's call). */
+export function settleIssueCount(repo: RepoRef, open: number, total: number | null, epoch?: number): void {
+  settleCount(repo, 'issue', open, total, epoch)
 }
 
 /** How often `repo`'s list pages changed this session: what a view derived from them re-renders on. */
@@ -505,18 +514,21 @@ export interface FeedFirstPages {
 }
 
 /**
- * The repo feed for a list index that read its first pages (`first`, siblings of its composite):
- * the read another reader already has in flight or settled, else this one — continued past a
- * full first page, and shared ({@link shareRepoFeed}) the moment it starts, so the issue index,
- * the pull index and the header page the feed once between them (L-77). Null when it is too large
- * to fold ({@link FEED_MAX_PAGES}).
+ * The repo feed, read once per repo through a short cache: a read another reader has in flight
+ * or settled is joined, else this one starts — continued past `first` (a list index's composite
+ * siblings) when given — and is shared the moment it starts, so the issue index, the pull index
+ * and the header page the feed once between them (L-77). Null when it is too large to fold
+ * ({@link FEED_MAX_PAGES}).
  */
-export function readRepoFeedFrom(sdk: EvoSDK, repo: RepoRef, first: FeedFirstPages): Promise<Map<string, TargetLog> | null> {
-  const shared = sharedRepoFeed(repo)
-  if (shared !== undefined) return shared
-  const feed = readRepoFeed(sdk, repo, first)
-  shareRepoFeed(repo, feed)
-  return feed
+export function readRepoFeedFrom(
+  sdk: EvoSDK,
+  repo: RepoRef,
+  first?: FeedFirstPages,
+  /** The {@link repoEpoch} the caller read `first` at: first pages from before a write are not shared. */
+  epoch = repoEpoch(repo),
+): Promise<Map<string, TargetLog> | null> {
+  if (epoch !== repoEpoch(repo)) return readRepoFeed(sdk, repo, first)
+  return ttlCached(feedCache, pageKey(repo), () => readRepoFeed(sdk, repo, first))
 }
 
 /**
@@ -679,7 +691,7 @@ async function foldRows<T>(
 ): Promise<T[]> {
   // Fold from the repo feed while it is small; otherwise (feed = null) each row reads its own
   // target log.
-  const feed = documents.length > 0 ? await readRepoFeedCached(sdk, repo) : null
+  const feed = documents.length > 0 ? await readRepoFeedFrom(sdk, repo) : null
   // Per-row tolerance. One target padded past the reader's completeness bound must not take
   // down a whole page of issues — and
   // dropping the row silently would be the same class of bug this all fixes. The row is
@@ -996,7 +1008,7 @@ function listCached<T extends Listed<IssueView> | Listed<PullView>>(
 ): Promise<T> {
   const key = listKey(repo, type)
   const hit = listCache.get(key)
-  if (hit !== undefined && Date.now() - hit.at < FEED_TTL_MS) return hit.promise as Promise<T>
+  if (live(hit)) return hit!.promise as Promise<T>
   const promise = ttlCached(listCache, key, load) as Promise<T>
   promise.then(
     (list) => {

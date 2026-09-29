@@ -34,6 +34,7 @@ import {
   issueViewOf,
   onRepoInvalidated,
   readRepoFeedFrom,
+  repoEpoch,
   settleIssueCount,
   type IssueView,
   type TargetLog,
@@ -71,6 +72,8 @@ interface Walk {
 interface IndexState {
   readonly repo: RepoRef
   readonly network: Network
+  /** The repo's write epoch when the load started: a count from an older one is not recorded. */
+  readonly epoch: number
   /** Every target's log; null when the feed is too large to read completely. */
   feed: Map<string, TargetLog> | null
   labels: LabelDef[]
@@ -188,6 +191,7 @@ async function loadIndex(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<
   const source = repoSource(repo)
   const labelQuery = source.repoQuery(DOC.label, { orderBy: [['name', 'asc'], ['$createdAt', 'asc']] })
   const page = source.repoQuery(DOC.issue, { orderBy: [['$createdAt', 'desc']] })
+  const epoch = repoEpoch(repo)
   const res = await queryComposite(
     sdk,
     compositeOf(page, CHUNK, [...chunkSubs(network), siblingOf(feedQuery(repo, 'event'), CHUNK), siblingOf(feedQuery(repo, 'authorEvent'), CHUNK), siblingOf(labelQuery, CHUNK)]),
@@ -195,7 +199,7 @@ async function loadIndex(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<
 
   // The rest of the feed, read once for the repo: the pull index and the header's counts join this
   // read (or this joins theirs). A private repo's member events come with their values opened.
-  const feed = await readRepoFeedFrom(sdk, repo, { event: docsAt(res, 2), authorEvent: docsAt(res, 3) })
+  const feed = await readRepoFeedFrom(sdk, repo, { event: docsAt(res, 2), authorEvent: docsAt(res, 3) }, epoch)
   let labelDocs = docsAt(res, 4)
   let labelsComplete = true
   try {
@@ -208,6 +212,7 @@ async function loadIndex(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<
   const state: IndexState = {
     repo,
     network,
+    epoch,
     feed,
     labels: newestLabels(labelDocs),
     labelsComplete,
@@ -565,7 +570,7 @@ export async function queryIssues(
     const exact = await exactCounts(sdk, state, total)
     openCount = exact?.open ?? null
     closedCount = exact?.closed ?? null
-    if (exact !== null && state.feed !== null) settleIssueCount(repo, exact.open, total)
+    if (exact !== null && state.feed !== null) settleIssueCount(repo, exact.open, total, state.epoch)
   } else {
     // Both tabs' counts need every candidate in either state: the feed or author index names
     // them, or a finished walk has loaded every issue.
@@ -640,6 +645,6 @@ export async function foldIssueOpenCount(sdk: EvoSDK, repo: RepoRef, total: numb
   if (!indexes.has(indexKey(repo, network)) && !(total !== null && total < CHUNK)) return null
   const state = await indexOf(sdk, repo, network)
   const exact = await exactCounts(sdk, state, total)
-  if (exact !== null) settleIssueCount(repo, exact.open, total)
+  if (exact !== null) settleIssueCount(repo, exact.open, total, state.epoch)
   return exact?.open ?? null
 }
