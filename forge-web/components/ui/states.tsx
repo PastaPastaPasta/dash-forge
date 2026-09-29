@@ -68,15 +68,15 @@ export function useOffline(): boolean {
   return useSyncExternalStore(subscribeOnlineStatus, isOffline, () => false)
 }
 
-/** "Try now" for an offline or unreachable state. */
-export function RetryNowButton({ onClick }: { onClick: () => void }): JSX.Element {
+/** "Try again" for an offline or unreachable state (the words the Platform banner uses). */
+export function RetryButton({ onClick }: { onClick: () => void }): JSX.Element {
   return (
     <button
       type="button"
       onClick={onClick}
       className="mt-4 rounded-md border border-anvil-300 px-3 py-1.5 text-dense hover:bg-anvil-100 coarse:min-h-11 dark:border-anvil-700 dark:hover:bg-anvil-800"
     >
-      Try now
+      Try again
     </button>
   )
 }
@@ -168,7 +168,7 @@ export function UnreachableState({ message, onRetry }: { message: string; onRetr
           ? 'This page will load as soon as your connection is back.'
           : 'Nothing answered this read. It will try again by itself in a few seconds.'}
       </p>
-      <RetryNowButton onClick={onRetry} />
+      <RetryButton onClick={onRetry} />
       <ErrorDetails message={message} />
     </div>
   )

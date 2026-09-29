@@ -17,7 +17,7 @@ import { errorMessage } from '@/lib/utils'
 import { isOffline } from '@/lib/online'
 import { scheduleReconnect } from '@/lib/view/reconnect'
 import { autoReload, isLoadFailure } from '@/lib/auto-reload'
-import { ErrorDetails, RetryNowButton } from '@/components/ui/states'
+import { ErrorDetails, RetryButton } from '@/components/ui/states'
 
 export default function AppError({ error, reset }: { error: Error & { digest?: string }; reset: () => void }): JSX.Element {
   const chunk = isLoadFailure(error)
@@ -44,7 +44,7 @@ export default function AppError({ error, reset }: { error: Error & { digest?: s
           ? 'This page could not be loaded. It will load by itself once your connection is back.'
           : 'Something in this page failed. Trying again usually works; if it keeps failing, reload.'}
       </p>
-      <RetryNowButton onClick={() => (connection ? window.location.reload() : reset())} />
+      <RetryButton onClick={() => (connection ? window.location.reload() : reset())} />
       <ErrorDetails message={errorMessage(error, 'unknown error')} />
     </main>
   )

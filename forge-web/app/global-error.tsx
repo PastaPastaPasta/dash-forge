@@ -29,7 +29,7 @@ export default function GlobalError({ error, reset }: { error: Error & { digest?
             onClick={() => (chunk ? window.location.reload() : reset())}
             className="mt-4 rounded-md border border-anvil-300 px-3 py-1.5 text-dense hover:bg-anvil-100"
           >
-            Try now
+            Try again
           </button>
           <p className="mt-3 break-words font-mono text-[12px] text-anvil-500">{errorMessage(error, 'unknown error')}</p>
         </main>
