@@ -25,6 +25,13 @@ const keyOf = (network: Network, id: string): string => `${network}:${id}`
 /** Batched lookups in flight ({@link prefetchDpnsNames}), per key: a per-id read waits for them. */
 const pending = new Map<string, Promise<void>>()
 
+/** The identity a DPNS `domain` document's `records.identity` points at, or null. */
+function identityOf(doc: Record<string, unknown> | undefined): string | null {
+  const records = doc?.['records']
+  const id = records !== null && typeof records === 'object' ? (records as Record<string, unknown>)['identity'] : undefined
+  return typeof id === 'string' ? id : null
+}
+
 function nameOf(doc: Record<string, unknown>): string | null {
   const label = doc['label']
   const parent = doc['normalizedParentDomainName']
@@ -67,10 +74,9 @@ export async function resolveDpnsName(
 export function namesFromDomains(docs: readonly Record<string, unknown>[]): Map<string, string> {
   const out = new Map<string, string>()
   for (const d of docs) {
-    const records = d['records']
-    const id = records !== null && typeof records === 'object' ? (records as Record<string, unknown>)['identity'] : undefined
+    const id = identityOf(d)
     const name = nameOf(d)
-    if (typeof id === 'string' && name !== null && !out.has(id)) out.set(id, name)
+    if (id !== null && name !== null && !out.has(id)) out.set(id, name)
   }
   return out
 }
@@ -104,11 +110,14 @@ export function seedFromDomains(network: Network, looked: readonly string[], dom
 /** Forget every cached name (tests). */
 export function clearDpnsCache(): void {
   cache.clear()
-  idCache.clear()
+  idLookups.clear()
 }
 
-const idCache = new Map<string, string | null>()
-const idPending = new Map<string, Promise<string | null>>()
+/**
+ * Forward lookups by normalized name, per network. A lookup never rejects, so its promise is
+ * both the in-flight dedupe and the cached answer (null for an unknown name or a failed read).
+ */
+const idLookups = new Map<string, Promise<string | null>>()
 
 /** Lowercase, then `o`->`0`, `l`/`i`->`1` — the contract's homograph-safe normalization. */
 function homographSafe(s: string): string {
@@ -131,38 +140,25 @@ export async function resolveDpnsId(sdk: EvoSDK, name: string, network: Network)
   if (label === '') return null
   const normalizedLabel = homographSafe(label)
   const normalizedParentDomainName = homographSafe(parent)
-  const key = keyOf(network, `name:${normalizedParentDomainName}.${normalizedLabel}`)
+  const key = keyOf(network, `${normalizedLabel}.${normalizedParentDomainName}`)
 
-  const inflight = idPending.get(key)
-  if (inflight) return inflight
-  const cached = idCache.get(key)
-  if (cached !== undefined) return cached
-
-  const run = (async (): Promise<string | null> => {
-    try {
-      const docs = await queryDocuments(sdk, {
-        dataContractId: NETWORKS[network].dpnsContractId,
-        documentTypeName: 'domain',
-        where: [
-          ['normalizedParentDomainName', '==', normalizedParentDomainName],
-          ['normalizedLabel', '==', normalizedLabel],
-        ],
-        limit: 1,
-      })
-      const records = docs[0]?.['records']
-      const id = records !== null && typeof records === 'object' ? (records as Record<string, unknown>)['identity'] : undefined
-      const result = typeof id === 'string' ? id : null
-      idCache.set(key, result)
-      return result
-    } catch {
-      idCache.set(key, null)
-      return null
-    } finally {
-      idPending.delete(key)
-    }
-  })()
-  idPending.set(key, run)
-  return run
+  let lookup = idLookups.get(key)
+  if (!lookup) {
+    lookup = queryDocuments(sdk, {
+      dataContractId: NETWORKS[network].dpnsContractId,
+      documentTypeName: 'domain',
+      where: [
+        ['normalizedParentDomainName', '==', normalizedParentDomainName],
+        ['normalizedLabel', '==', normalizedLabel],
+      ],
+      limit: 1,
+    }).then(
+      (docs) => identityOf(docs[0]),
+      () => null,
+    )
+    idLookups.set(key, lookup)
+  }
+  return lookup
 }
 
 /** A cached name: undefined when unknown, null when proven nameless (tests, views). */

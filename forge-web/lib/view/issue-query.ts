@@ -170,13 +170,9 @@ export function unresolvedQualifiers(text: string): string[] {
 export function dpnsAuthorCandidates(text: string): string[] {
   const out = new Set<string>()
   for (const tok of tokens(text)) {
-    const at = tok.indexOf(':')
-    if (at <= 0) continue
-    const key = tok.slice(0, at).toLowerCase()
-    if (key !== 'author' && key !== 'assignee') continue
-    const raw = unquote(tok.slice(at + 1)).replace(/^@/, '')
-    if (raw === '' || raw === 'me' || raw === 'none' || isIdentityId(raw)) continue
-    out.add(raw)
+    const value = personQualifier(tok)?.value
+    if (value === undefined || value === '' || value === 'me' || value === 'none' || isIdentityId(value)) continue
+    out.add(value)
   }
   return [...out]
 }
@@ -190,18 +186,23 @@ export function dpnsAuthorCandidates(text: string): string[] {
 export function withResolvedNames(text: string, resolved: ReadonlyMap<string, string>): string {
   return tokens(text)
     .map((tok) => {
-      const at = tok.indexOf(':')
-      if (at <= 0) return tok
-      const key = tok.slice(0, at).toLowerCase()
-      if (key !== 'author' && key !== 'assignee') return tok
-      const raw = unquote(tok.slice(at + 1)).replace(/^@/, '')
-      const id = resolved.get(raw)
-      return id ? `${key}:${id}` : tok
+      const person = personQualifier(tok)
+      const id = person ? resolved.get(person.value) : undefined
+      return person && id ? `${person.key}:${id}` : tok
     })
     .join(' ')
 }
 
-/** Why each of `dropped`'s known-but-unresolved qualifiers (as {@link unresolvedQualifiers} reports them) could not be used. */
+/** An `author:`/`assignee:` token's lowercased key and its value (quotes and a leading `@` stripped); null for any other token. */
+function personQualifier(tok: string): { key: string; value: string } | null {
+  const at = tok.indexOf(':')
+  if (at <= 0) return null
+  const key = tok.slice(0, at).toLowerCase()
+  if (key !== 'author' && key !== 'assignee') return null
+  return { key, value: unquote(tok.slice(at + 1)).replace(/^@/, '') }
+}
+
+/** Why a known qualifier's value could not be used, by key (see {@link droppedQualifiersReason}). */
 const QUALIFIER_REASON: Readonly<Record<string, string>> = {
   is: 'is: and state: take open, closed, all or issue.',
   state: 'is: and state: take open, closed, all or issue.',
