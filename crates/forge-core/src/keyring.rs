@@ -1005,7 +1005,7 @@ impl<'a> PrivateSigner<'a> {
             Ok(_) => Ok(WrapOutcome::Posted),
             // RC1 `wrap_member`: a wrap names a current maintainer or writer. They were removed
             // since this plan was read; nothing landed, and the caller re-plans without them.
-            Err(Error::NotAMember { detail, .. }) if detail.contains("path memberId") => {
+            Err(Error::ReferenceNotFound { path, .. }) if path == "memberId" => {
                 Ok(WrapOutcome::NotAMember)
             }
             // (repoId, memberId, epoch, $ownerId) is unique: this signer already wrapped this

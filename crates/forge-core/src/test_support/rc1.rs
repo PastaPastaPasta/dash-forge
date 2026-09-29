@@ -348,14 +348,15 @@ mod vectors {
     }
 }
 
-/// The Rust builders against RC1. Each builds a document the way its writer does: the builder's
-/// properties, `repoId` (which the service adds) and the `vis` stamp
-/// ([`crate::layout::stamp_vis`], a no-op where the builder already stamps it).
+/// The Rust builders against RC1. Each test builds a document the way its writer does: the
+/// builder's properties, `repoId` (which the service adds), then the service's stamp
+/// ([`stamped`], mirroring `Collab::stamp`: `vis` by [`crate::layout::stamp_vis_for`] and, on
+/// an issue, PR, comment or review by a member, `asMember` = the signer).
 ///
-/// A test `#[ignore]`d with `RC1: …` names what the builder still lacks; the RC1 builder work
-/// un-ignores it. Builders that are not pure functions (webhook `prepare`, member enrol, runner
-/// enrol, topic reconcile, milestone define: their properties are built inside an async
-/// service method) are covered by the vectors and the live suite instead.
+/// A test `#[ignore]`d with `RC1: …` names what the builder still lacks. Builders that are not
+/// pure functions (webhook `prepare`, member enrol and consent, runner enrol, topic reconcile,
+/// milestone define: their properties are built inside an async service method) are covered by
+/// the vectors and the live suite instead.
 #[cfg(test)]
 mod builders {
     use super::*;
@@ -366,35 +367,50 @@ mod builders {
         transition_props, EventPayload, PatchInput, Provenance, Target, TargetKind,
     };
     use crate::collab::{CommentAnchor, Imported};
-    use crate::layout::stamp_vis;
+    use crate::layout::{stamp_vis_for, AS_MEMBER, MEMBER_PROOF_TYPES};
     use crate::private::{DocKind, EpochKey, EpochKeys};
-    use crate::rules::v2::{
-        next_transition, Actor, Policy, StateAction, TransitionMove, Visibility,
-    };
+    use crate::rules::v2::{next_transition, Actor, Policy, StateAction, Visibility};
     use crate::rules::{EventKind, Verdict};
 
     const REPO: [u8; 32] = [1; 32];
     /// A base58 document / identity id for the builders' string inputs.
     const ID: &str = "A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1";
-    /// The signer (0x07×32) in base58: an `asMember` proof names the signer.
+
+    /// Who signs: a maintainer/writer of the repository, or anyone else.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum By {
+        Member,
+        Other,
+    }
+
+    /// The signer (0x07×32) in base58.
     fn signer() -> String {
         crate::platform::encode_identifier(OWNER)
     }
 
-    /// `props` as written to a repo of `visibility`: `repoId` and the `vis` stamp added.
-    fn written(
+    /// `props` of `doc_type` as written to a repository of `visibility` by `by`: `repoId`, the
+    /// `vis` stamp, and `asMember` when a member signs a type that carries it (never on a
+    /// non-member's verdict 4/5). The pure part of `Collab::stamp`.
+    fn stamped(
+        doc_type: &str,
         mut props: BTreeMap<String, FieldValue>,
         visibility: Visibility,
+        by: By,
     ) -> BTreeMap<String, FieldValue> {
         props.insert("repoId".to_string(), FieldValue::identifier(REPO));
-        stamp_vis(&mut props, visibility);
+        stamp_vis_for(doc_type, &mut props, visibility);
+        let non_member_verdict = props
+            .get("verdict")
+            .and_then(FieldValue::as_u64)
+            .is_some_and(|v| matches!(v, 4 | 5));
+        if by == By::Member && MEMBER_PROOF_TYPES.contains(&doc_type) && !non_member_verdict {
+            props.insert(AS_MEMBER.to_string(), FieldValue::identifier(OWNER));
+        }
         props
     }
 
-    /// `props` of a type that carries no `vis` (transition, event, policy), with `repoId`.
-    fn scoped(mut props: BTreeMap<String, FieldValue>) -> BTreeMap<String, FieldValue> {
-        props.insert("repoId".to_string(), FieldValue::identifier(REPO));
-        props
+    fn public(doc_type: &str, props: BTreeMap<String, FieldValue>, by: By) {
+        assert_valid(doc_type, &stamped(doc_type, props, Visibility::Public, by));
     }
 
     fn imported() -> Imported {
@@ -434,36 +450,40 @@ mod builders {
     // ---------------- issue / patch ----------------
 
     #[test]
-    fn a_public_issue_is_rc1_valid() {
-        let p = issue_props(1, "A bug", "text", Provenance::default()).unwrap();
-        assert_valid("issue", &written(p, Visibility::Public));
-        let untitled_body = issue_props(2, "t", "", Provenance::default()).unwrap();
-        assert_valid("issue", &written(untitled_body, Visibility::Public));
-    }
-
-    #[test]
-    fn a_private_issue_sealed_is_rc1_valid() {
+    fn issues_are_rc1_valid() {
+        for by in [By::Member, By::Other] {
+            public(
+                "issue",
+                issue_props(1, "A bug", "text", Provenance::default()).unwrap(),
+                by,
+            );
+            public(
+                "issue",
+                issue_props(2, "t", "", Provenance::default()).unwrap(),
+                by,
+            );
+        }
         let p = issue_props(1, "A bug", "text", Provenance::default()).unwrap();
         let sealed = seal_props(&keys(), DocKind::Issue, OWNER, p).unwrap();
-        assert_valid("issue", &written(sealed, Visibility::Private));
+        let written = stamped("issue", sealed, Visibility::Private, By::Member);
+        assert_valid("issue", &written);
     }
 
     #[test]
-    #[ignore = "RC1: an imported issue needs asMember (the signer) with imported/upstreamNumber (i_provenance)"]
-    fn an_imported_issue_is_rc1_valid() {
+    fn an_imported_issue_is_rc1_valid_from_a_member_only() {
         let imp = imported();
         let from = Provenance {
             imported: Some(&imp),
             upstream_number: Some(7761),
         };
         let p = issue_props(1, "A bug", "text", from).unwrap();
-        assert_valid("issue", &written(p, Visibility::Public));
+        public("issue", p.clone(), By::Member);
+        let unproved = stamped("issue", p, Visibility::Public, By::Other);
+        assert_refused("issue", &unproved, "i_provenance");
     }
 
     #[test]
-    fn a_public_patch_is_rc1_valid() {
-        let p = patch_props(2, &patch_input(), Provenance::default()).unwrap();
-        assert_valid("patch", &written(p, Visibility::Public));
+    fn patches_are_rc1_valid() {
         let bare = PatchInput {
             body: String::new(),
             source_ref_name: None,
@@ -471,35 +491,42 @@ mod builders {
             head_oid: vec![0xcd; 32],
             ..patch_input()
         };
-        let p = patch_props(3, &bare, Provenance::default()).unwrap();
-        assert_valid("patch", &written(p, Visibility::Public));
-    }
-
-    #[test]
-    fn a_private_patch_sealed_is_rc1_valid() {
+        for by in [By::Member, By::Other] {
+            public(
+                "patch",
+                patch_props(2, &patch_input(), Provenance::default()).unwrap(),
+                by,
+            );
+            public(
+                "patch",
+                patch_props(3, &bare, Provenance::default()).unwrap(),
+                by,
+            );
+        }
         let p = patch_props(2, &patch_input(), Provenance::default()).unwrap();
         let sealed = seal_props(&keys(), DocKind::Patch, OWNER, p).unwrap();
-        assert_valid("patch", &written(sealed, Visibility::Private));
+        let written = stamped("patch", sealed, Visibility::Private, By::Member);
+        assert_valid("patch", &written);
     }
 
     #[test]
-    #[ignore = "RC1: an imported patch needs asMember (the signer) with imported/upstreamNumber (i_provenance)"]
-    fn an_imported_patch_is_rc1_valid() {
+    fn an_imported_patch_is_rc1_valid_from_a_member() {
         let imp = imported();
         let from = Provenance {
             imported: Some(&imp),
             upstream_number: Some(12),
         };
-        let p = patch_props(2, &patch_input(), from).unwrap();
-        assert_valid("patch", &written(p, Visibility::Public));
+        public(
+            "patch",
+            patch_props(2, &patch_input(), from).unwrap(),
+            By::Member,
+        );
     }
 
     // ---------------- comment / review ----------------
 
     #[test]
     fn comments_are_rc1_valid() {
-        let plain = comment_props(ID, "hi", None, None).unwrap();
-        assert_valid("comment", &written(plain, Visibility::Public));
         let inline = CommentAnchor {
             reply_to: None,
             commit_oid: Some(vec![0xab; 20]),
@@ -509,73 +536,76 @@ mod builders {
             start_line: Some(10),
             review_id: Some(ID.into()),
         };
-        let p = comment_props(ID, "nit", Some(&inline), None).unwrap();
-        assert_valid("comment", &written(p, Visibility::Public));
         let reply = CommentAnchor {
             reply_to: Some(ID.into()),
             ..CommentAnchor::default()
         };
-        let p = comment_props(ID, "agreed", Some(&reply), None).unwrap();
-        assert!(!p.contains_key("noParent"), "noParent is never set");
-        assert_valid("comment", &written(p, Visibility::Public));
-    }
-
-    #[test]
-    fn a_private_comment_sealed_is_rc1_valid() {
+        for by in [By::Member, By::Other] {
+            public("comment", comment_props(ID, "hi", None, None).unwrap(), by);
+            public(
+                "comment",
+                comment_props(ID, "nit", Some(&inline), None).unwrap(),
+                by,
+            );
+            let p = comment_props(ID, "agreed", Some(&reply), None).unwrap();
+            assert!(!p.contains_key("noParent"), "noParent is never set");
+            public("comment", p, by);
+        }
         let p = comment_props(ID, "secret", None, None).unwrap();
         let sealed = seal_props(&keys(), DocKind::Comment, OWNER, p).unwrap();
-        assert_valid("comment", &written(sealed, Visibility::Private));
+        let written = stamped("comment", sealed, Visibility::Private, By::Other);
+        assert_valid("comment", &written);
     }
 
     #[test]
-    #[ignore = "RC1: an imported comment needs asMember (the signer) (i_provenance)"]
-    fn an_imported_comment_is_rc1_valid() {
+    fn an_imported_comment_is_rc1_valid_from_a_member() {
         let p = comment_props(ID, "hi", None, Some(&imported())).unwrap();
-        assert_valid("comment", &written(p, Visibility::Public));
+        public("comment", p, By::Member);
     }
 
     #[test]
-    fn a_comment_review_is_rc1_valid() {
-        let p = review_props(ID, Verdict::Comment, &[0xab; 20], "fine", Some(2), None).unwrap();
-        assert_valid("review", &written(p, Visibility::Public));
+    fn reviews_are_rc1_valid_with_the_verdict_their_signer_writes() {
+        for (by, member) in [(By::Member, true), (By::Other, false)] {
+            for v in [Verdict::Approve, Verdict::RequestChanges, Verdict::Comment] {
+                let v = v.as_written_by(member);
+                let p = review_props(ID, v, &[0xab; 20], "lgtm", Some(2), None).unwrap();
+                public("review", p, by);
+            }
+        }
         let p = review_props(ID, Verdict::Comment, &[0xab; 20], "", None, None).unwrap();
         let sealed = seal_props(&keys(), DocKind::Review, OWNER, p).unwrap();
-        assert_valid("review", &written(sealed, Visibility::Private));
+        let written = stamped("review", sealed, Visibility::Private, By::Member);
+        assert_valid("review", &written);
+        // A member's verdict needs the proof; a non-member's may not carry it.
+        let p = review_props(ID, Verdict::Approve, &[0xab; 20], "", None, None).unwrap();
+        let unproved = stamped("review", p, Visibility::Public, By::Other);
+        assert_refused("review", &unproved, "memberVerdict");
     }
 
     #[test]
-    #[ignore = "RC1: a member's approve/request-changes (verdict 1/2) needs asMember (memberVerdict); a non-member's is verdict 4/5"]
-    fn a_member_verdict_is_rc1_valid() {
-        for v in [Verdict::Approve, Verdict::RequestChanges] {
-            let p = review_props(ID, v, &[0xab; 20], "lgtm", None, None).unwrap();
-            assert_valid("review", &written(p, Visibility::Public));
-        }
-    }
-
-    /// A review carries no `i_provenance` rule: an imported comment-verdict review is valid
-    /// without `asMember` (an imported approve still needs it, [`a_member_verdict_is_rc1_valid`]).
-    #[test]
-    fn an_imported_comment_review_is_rc1_valid() {
+    fn an_imported_review_is_rc1_valid() {
         let p = review_props(
             ID,
-            Verdict::Comment,
+            Verdict::Approve,
             &[0xab; 20],
             "x",
             None,
             Some(&imported()),
         )
         .unwrap();
-        assert_valid("review", &written(p, Visibility::Public));
+        public("review", p, By::Member);
     }
 
     // ---------------- transition / event / policy ----------------
 
     #[test]
     fn every_transition_move_is_rc1_valid() {
-        use StateAction::{Close, Draft, Merge, Ready, Reopen};
-        let moves: [(TargetKind, i64, StateAction); 9] = [
+        use StateAction::{Close, Draft, Lock, Merge, Ready, Reopen, Unlock};
+        let moves: [(TargetKind, i64, StateAction); 13] = [
             (TargetKind::Issue, 0, Close),
             (TargetKind::Issue, 1, Reopen),
+            (TargetKind::Issue, 1, Lock),
+            (TargetKind::Issue, 16, Unlock),
             (TargetKind::Patch, 0, Close),
             (TargetKind::Patch, 1, Reopen),
             (TargetKind::Patch, 0, Merge),
@@ -583,20 +613,31 @@ mod builders {
             (TargetKind::Patch, 8, Ready),
             (TargetKind::Patch, 8, Close),
             (TargetKind::Patch, 9, Reopen),
+            (TargetKind::Patch, 2, Lock),
+            (TargetKind::Patch, 18, Unlock),
         ];
-        for (kind, code, action) in moves {
+        for (kind, sum, action) in moves {
             let t = target(kind);
+            let mut written = 0;
             for actor in [Actor::Member, Actor::Author] {
-                let Some(mv): Option<TransitionMove> =
-                    next_transition(kind.transition_target(), code, action, actor, t.number)
+                let Some(mv) =
+                    next_transition(kind.transition_target(), sum, action, actor, t.number)
                 else {
-                    assert!(action == Merge && actor == Actor::Author);
                     continue;
                 };
                 let oid = (action == Merge).then_some(&[0xaa; 20][..]);
-                let p = transition_props(&t, &mv, oid).unwrap();
-                assert_valid("transition", &scoped(p));
+                let mut p = transition_props(&t, &mv, oid).unwrap();
+                p.insert("repoId".to_string(), FieldValue::identifier(REPO));
+                assert_valid("transition", &p);
+                written += 1;
             }
+            // Only a member merges, locks and unlocks; the author may make every other move.
+            let member_only = matches!(action, Merge | Lock | Unlock);
+            assert_eq!(
+                written,
+                if member_only { 1 } else { 2 },
+                "{kind:?} {action:?}"
+            );
         }
     }
 
@@ -641,39 +682,33 @@ mod builders {
             (&issue, EventKind::Unpin, &none),
         ];
         for (t, kind, payload) in cases {
-            let p = scoped(event_payload_props(t, kind, payload).unwrap());
+            let mut p = event_payload_props(t, kind, payload).unwrap();
+            p.insert("repoId".to_string(), FieldValue::identifier(REPO));
             assert_valid("event", &p);
             if crate::rules::v2::is_author_kind(kind) {
                 assert_valid("authorEvent", &p);
             }
         }
-    }
-
-    /// RC1 locks a thread with a transition (kinds 3/4 on an issue, 18/19 on a PR, delta ±16);
-    /// the lock/unlock events (21/22) are refused (`noState`), so the builder must refuse them
-    /// before anything is signed, and `Collab::set_locked` must write the transition instead.
-    #[test]
-    #[ignore = "RC1: lock/unlock is a transition (3/4, 18/19, delta ±16); event kinds 21/22 break noState and set_locked still writes them"]
-    fn lock_events_are_refused_before_signing() {
-        let issue = target(TargetKind::Issue);
+        // Lock and unlock are transitions in RC1 (the event kinds 21/22 break `noState`).
         for kind in [EventKind::Lock, EventKind::Unlock] {
             assert!(
-                event_payload_props(&issue, kind, &EventPayload::default()).is_err(),
-                "{kind:?} is a transition in RC1"
+                event_payload_props(&issue, kind, &none).is_err(),
+                "{kind:?}"
             );
         }
     }
 
     #[test]
     fn a_policy_is_rc1_valid() {
-        let p = policy_props(&Policy {
+        let mut p = policy_props(&Policy {
             required_approvals: 2,
             approver_role: 1,
             require_checks: true,
             merge_methods: 15,
         })
         .unwrap();
-        assert_valid("policy", &scoped(p));
+        p.insert("repoId".to_string(), FieldValue::identifier(REPO));
+        assert_valid("policy", &p);
     }
 
     // ---------------- checkRun ----------------
@@ -704,7 +739,7 @@ mod builders {
             let oid = report.validate().unwrap();
             let w = report.write(None, 1_760_000_000_000).unwrap();
             let p = report.create_props(oid, &w);
-            assert_valid("checkRun", &written(p, Visibility::Public));
+            public("checkRun", p, By::Other);
         }
     }
 }

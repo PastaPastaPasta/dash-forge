@@ -3346,6 +3346,7 @@ impl<'a> Collab<'a> {
             Error::RuleRefused { .. }
                 | Error::NotPermitted { .. }
                 | Error::NotAMember { .. }
+                | Error::ReferenceNotFound { .. }
                 | Error::User(_)
         );
         Err(UserError::new(
