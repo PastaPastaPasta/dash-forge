@@ -188,6 +188,9 @@ pub struct Sink<'a> {
     /// Bases already re-read for read-after-write lag this run ([`BASE_LAG_WAITS`]): the lag
     /// is waited out once, not once per PR.
     lag_waited: BTreeSet<String>,
+    /// PRs (destination `$id`) whose base was not a branch on chain when they were mirrored:
+    /// no merge into it ever counts (D-501), so a later run cannot prove them either.
+    never_provable: BTreeSet<String>,
     /// Bases this write phase read from the network already. The process's synced copy of
     /// the history may be the dry run's, from before this run's push: a base's first read
     /// here asks the network (`Freshness::Now`), later ones reuse that copy.
@@ -290,6 +293,7 @@ impl<'a> Sink<'a> {
             mirror: None,
             opened: BTreeMap::new(),
             lag_waited: BTreeSet::new(),
+            never_provable: BTreeSet::new(),
             fresh_read: BTreeSet::new(),
         }
     }
@@ -387,6 +391,9 @@ impl<'a> Sink<'a> {
         // A PR opened against a base that did not exist then has no tips, and no merge into
         // it ever counts (D-501); naming one would be re-posted, and paid for, every run.
         let base_counts = tips.tip.is_some() || !self.opened.contains_key(target_id);
+        if !base_counts {
+            self.never_provable.insert(target_id.to_string());
+        }
         if self.ledger.dry_run {
             return Ok(contains(&tips)
                 .or(local.filter(|_| base_counts))
@@ -1010,13 +1017,21 @@ impl<'a> Sink<'a> {
             if proof.is_none() {
                 let base = t.patch.as_ref().map_or("?", |p| p.base_ref_name.as_str());
                 self.ledger.counts.unproved_merges += 1;
-                if may_prove_later(self.mirror.as_ref(), base) {
-                    self.ledger.unproved.push(t.number);
-                }
-                self.ledger.warn(format!(
-                    "{} was merged, but {}; recorded as closed",
-                    t.imported.url,
+                let reason = if self.never_provable.contains(&target.id) {
+                    format!(
+                        "its base {base} was not a branch on chain when it was mirrored, so no \
+                         merge into it counts (forge-v2 §6, D-501: push the code before the \
+                         issues and PRs)"
+                    )
+                } else {
+                    if may_prove_later(self.mirror.as_ref(), base) {
+                        self.ledger.unproved.push(t.number);
+                    }
                     no_proof_reason(self.mirror.as_ref(), base)
+                };
+                self.ledger.warn(format!(
+                    "{} was merged, but {reason}; recorded as closed",
+                    t.imported.url
                 ));
             }
         }
