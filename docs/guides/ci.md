@@ -107,4 +107,22 @@ These are what the protocol and the current forge-collab contract allow. They ar
 
 [Self-host a CI runner](self-host-runner.md#security) has the details.
 
-**Coming soon:** reporting from GitHub Actions (`forge-check-action`).
+## Report from GitHub Actions
+
+A repository mirrored from GitHub keeps its CI on GitHub. The [check action](../../check-action/README.md) reports each GitHub job's result as a Forge check run on the same commit (a mirror is the same git history, so the commit ids match; a pull request run reports on the PR head):
+
+```yaml
+      - name: Report to Dash Forge
+        if: always()
+        uses: PastaPastaPasta/dash-forge/check-action@master
+        with:
+          repo: <owner identity id>/project
+          job-status: ${{ job.status }}
+          network: devnet           # Forge runs on a devnet today
+          devnet-name: <devnet name>
+          install: 'false'          # until a release exists; build dg in an earlier step
+        env:
+          DASH_FORGE_KEY: ${{ secrets.FORGE_RUNNER_KEY }}      # from `dg ci runner new`
+```
+
+No Dash Forge release is published yet, so the step needs `dg` built earlier in the job: the [check action's README](../../check-action/README.md#quick-start) has the build steps. The check is named `<workflow> / <job>`, and each matrix leg is its own check. The check run's details link goes back to the GitHub run. A failed report warns and passes by default, so a Forge outage never fails your CI. A pull request from a fork has no access to the secret and does not report: do not use `pull_request_target` to give it one.

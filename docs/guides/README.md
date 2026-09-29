@@ -22,7 +22,7 @@ Also:
 - [FAQ](../FAQ.md): who hosts it, takedowns, moderation, mainnet timing, private repositories.
 - [Error codes](../errors.md): what every `[Exxx]` means and how to fix it.
 - [Installing](../INSTALL.md) and [building from source](../BUILDING.md).
-- [The Mirror Action's reference](../../action/README.md) and [running a relay](../../crates/forge-relay/README.md).
+- [The Mirror Action's reference](../../action/README.md), [the check action's](../../check-action/README.md) and [running a relay](../../crates/forge-relay/README.md).
 
 ## What "coming soon" means
 
