@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # Scenario 9: the issue lifecycle on forge-v2, and who may change an issue's state.
 #
-#   1. CONTRIB (never a member) opens an issue           -> numbered by the §6 rule
-#   2. CONTRIB closes it (the author: `authorEvent`)       -> reads closed
-#   3. CONTRIB reopens it (`authorEvent`)                  -> reads open
+#   1. CONTRIB (never a member) opens an issue           -> the dense next number
+#   2. CONTRIB closes it (the author: a `transition` with asAuthor = its number) -> reads closed
+#   3. CONTRIB reopens it (the author's transition)        -> reads open
 #   4. COLLAB (not the author, not a member) tries to close it:
 #        a. dg refuses before signing                      -> E601, nothing paid
-#        b. with the pre-check off, consensus refuses the `event` -> 40120 on $ownerId
+#        b. with the pre-check off, consensus refuses the `transition` -> 40120 on $ownerId
 #   5. OWNER (maintainer) labels it and comments           -> label reads back
-#   6. OWNER closes it as a member (`event`)               -> reads closed
+#   6. OWNER closes it as a member (a transition, asAuthor 0) -> reads closed
 #
 # COLLAB is left a non-member here (scenario 04 always ends with it revoked).
-SCENARIO_NAME="09 issue lifecycle (authorEvent, member event, stranger refused at consensus)"
+SCENARIO_NAME="09 issue lifecycle (author and member transitions, stranger refused at consensus)"
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib.sh"
 harness_init
 [[ -n "${HARNESS_SHARED:-}" ]] || harness_ensure_repo "$E2E_REPO_NAME" || skip_scenario "could not create/resolve the test repo"
@@ -49,15 +49,16 @@ fi
 N="$(jq_py "$LOG-create.json" 'd["number"]')"
 ok "opened issue #${N} ($(jq_py "$LOG-create.json" 'd["cost"]["dash"]') DASH)"
 
-step "CONTRIB closes it as the author (authorEvent)"
+step "CONTRIB closes it as the author (transition)"
 if dg_write "$ID_CONTRIB" "$LOG-close" issue close "$REPO" "$N"; then
-  check "routed through authorEvent" assert_eq "author" "$(jq_py "$LOG-close.json" 'd["via"]')"
+  check "written as the author" assert_eq "author" "$(jq_py "$LOG-close.json" 'd["via"]')"
+  check "an issue close (kind 1)" assert_eq "1" "$(jq_py "$LOG-close.json" 'd["kind"]')"
   check "reads closed" wait_open "$N" false
 else
   cat "$LOG-close.err" "$LOG-close.json" >&2; bad "author close failed"
 fi
 
-step "CONTRIB reopens it (authorEvent)"
+step "CONTRIB reopens it (transition)"
 if dg_write "$ID_CONTRIB" "$LOG-reopen" issue reopen "$REPO" "$N"; then
   check "reads open" wait_open "$N" true
 else
@@ -104,9 +105,9 @@ else
   cat "$LOG-comment.json" >&2; bad "comment failed"
 fi
 
-step "OWNER closes it as a member (event)"
+step "OWNER closes it as a member (transition)"
 if dg_write "$ID_OWNER" "$LOG-mclose" issue close "$REPO" "$N"; then
-  check "routed through a member event" assert_eq "member" "$(jq_py "$LOG-mclose.json" 'd["via"]')"
+  check "written as a member" assert_eq "member" "$(jq_py "$LOG-mclose.json" 'd["via"]')"
   check "reads closed" wait_open "$N" false
 else
   cat "$LOG-mclose.json" >&2; bad "member close failed"
