@@ -3,7 +3,7 @@
   "id": "11111111111111111111111111111111",
   "ownerId": "11111111111111111111111111111111",
   "version": 1,
-  "description": "Dash Forge v2 core: repositories, refs, packs, members, releases, labels, topics",
+  "description": "Dash Forge v2 core: repositories, refs, packs, members, releases, labels, runners, topics",
   "schemaDefs": {
     "id": {
       "type": "array",
@@ -35,37 +35,15 @@
     },
     "refName": {
       "type": "string",
-      "minLength": 6,
+      "minLength": 1,
       "maxLength": 255,
-      "maxBytes": 255,
-      "pattern": "^refs/(?:(?:@*[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{)+@*|@+)(?:(?:\\.?/|\\.)(?:(?:@*[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{)+@*|@+))*$"
+      "maxBytes": 255
     },
     "enc": {
       "type": "array",
       "byteArray": true,
-      "minItems": 29,
+      "minItems": 28,
       "maxItems": 1536
-    },
-    "branch": {
-      "type": "string",
-      "minLength": 1,
-      "maxLength": 255,
-      "maxBytes": 255,
-      "pattern": "^(?:(?:@+[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{|[^\\x00- \\x7f~^:?*\\[\\\\/.@{\\-])(?:@*[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{)*@*|@+)(?:(?:\\.?/|\\.)(?:(?:@*[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{)+@*|@+))*$"
-    },
-    "vis": {
-      "type": "string",
-      "enum": [
-        "public",
-        "private"
-      ]
-    },
-    "hid": {
-      "type": "array",
-      "byteArray": true,
-      "minItems": 32,
-      "maxItems": 32,
-      "contentMediaType": "application/x.dash.dpp.identifier"
     }
   },
   "documentSchemas": {
@@ -92,7 +70,7 @@
           "position": 1
         },
         "defaultBranch": {
-          "$ref": "#/$defs/branch",
+          "$ref": "#/$defs/refName",
           "position": 2
         },
         "visibility": {
@@ -101,8 +79,7 @@
             "public",
             "private"
           ],
-          "position": 3,
-          "maxLength": 7
+          "position": 3
         },
         "forkOf": {
           "type": "array",
@@ -112,22 +89,19 @@
           "contentMediaType": "application/x.dash.dpp.identifier",
           "refersTo": {
             "type": "permanentDocument",
-            "documentType": "repo",
-            "where": {
-              "visibility": "visibility"
-            }
+            "documentType": "repo"
           },
           "position": 4
         },
         "topics": {
           "type": "array",
-          "maxItems": 20,
+          "maxItems": 10,
           "uniqueItems": true,
           "items": {
             "type": "string",
             "minLength": 1,
             "maxLength": 30,
-            "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$"
+            "pattern": "^[a-z0-9][a-z0-9-]*$"
           },
           "position": 5
         },
@@ -194,13 +168,9 @@
           "name": "recent",
           "properties": [
             {
-              "visibility": "asc"
-            },
-            {
               "$createdAt": "asc"
             }
-          ],
-          "rangeCountable": true
+          ]
         }
       ],
       "required": [
@@ -209,49 +179,7 @@
         "visibility"
       ],
       "additionalProperties": false,
-      "documentsCountable": true,
-      "propertyConstraints": {
-        "forkIsPublic": {
-          "anyOf": [
-            {
-              "absent": "forkOf"
-            },
-            {
-              "equal": [
-                "visibility",
-                {
-                  "const": "public"
-                }
-              ]
-            }
-          ]
-        },
-        "privateNoBranch": {
-          "anyOf": [
-            {
-              "equal": [
-                "visibility",
-                {
-                  "const": "public"
-                }
-              ]
-            },
-            {
-              "absent": "defaultBranch"
-            }
-          ]
-        },
-        "nameNotDotGit": {
-          "not": {
-            "endsWith": [
-              "name",
-              {
-                "const": ".git"
-              }
-            ]
-          }
-        }
-      }
+      "documentsCountable": true
     },
     "maintainer": {
       "type": "object",
@@ -268,8 +196,7 @@
             "type": "permanentDocument",
             "documentType": "repo",
             "where": {
-              "$ownerId": "$ownerId",
-              "visibility": "vis"
+              "$ownerId": "$ownerId"
             }
           },
           "position": 0
@@ -280,27 +207,10 @@
           "minItems": 32,
           "maxItems": 32,
           "contentMediaType": "application/x.dash.dpp.identifier",
-          "position": 1
-        },
-        "vis": {
-          "$ref": "#/$defs/vis",
-          "position": 2
-        },
-        "consentBy": {
-          "type": "array",
-          "byteArray": true,
-          "minItems": 32,
-          "maxItems": 32,
-          "contentMediaType": "application/x.dash.dpp.identifier",
           "refersTo": {
-            "type": "deletableDocument",
-            "documentType": "consent",
-            "findBy": {
-              "repoId": "repoId",
-              "$ownerId": "."
-            }
+            "type": "identity"
           },
-          "position": 3
+          "position": 1
         }
       },
       "indices": [
@@ -328,28 +238,9 @@
       "required": [
         "$createdAt",
         "repoId",
-        "memberId",
-        "vis"
+        "memberId"
       ],
-      "additionalProperties": false,
-      "propertyConstraints": {
-        "ownerOrConsented": {
-          "anyOf": [
-            {
-              "equal": [
-                "memberId",
-                "$ownerId"
-              ]
-            },
-            {
-              "equal": [
-                "consentBy",
-                "memberId"
-              ]
-            }
-          ]
-        }
-      }
+      "additionalProperties": false
     },
     "writer": {
       "type": "object",
@@ -366,8 +257,7 @@
             "type": "permanentDocument",
             "documentType": "repo",
             "where": {
-              "$ownerId": "$ownerId",
-              "visibility": "vis"
+              "$ownerId": "$ownerId"
             }
           },
           "position": 0
@@ -378,27 +268,10 @@
           "minItems": 32,
           "maxItems": 32,
           "contentMediaType": "application/x.dash.dpp.identifier",
-          "position": 1
-        },
-        "vis": {
-          "$ref": "#/$defs/vis",
-          "position": 2
-        },
-        "consentBy": {
-          "type": "array",
-          "byteArray": true,
-          "minItems": 32,
-          "maxItems": 32,
-          "contentMediaType": "application/x.dash.dpp.identifier",
           "refersTo": {
-            "type": "deletableDocument",
-            "documentType": "consent",
-            "findBy": {
-              "repoId": "repoId",
-              "$ownerId": "."
-            }
+            "type": "identity"
           },
-          "position": 3
+          "position": 1
         }
       },
       "indices": [
@@ -426,28 +299,9 @@
       "required": [
         "$createdAt",
         "repoId",
-        "memberId",
-        "vis"
+        "memberId"
       ],
-      "additionalProperties": false,
-      "propertyConstraints": {
-        "ownerOrConsented": {
-          "anyOf": [
-            {
-              "equal": [
-                "memberId",
-                "$ownerId"
-              ]
-            },
-            {
-              "equal": [
-                "consentBy",
-                "memberId"
-              ]
-            }
-          ]
-        }
-      }
+      "additionalProperties": false
     },
     "refUpdate": {
       "type": "object",
@@ -461,9 +315,6 @@
             "findBy": {
               "repoId": "repoId",
               "memberId": "."
-            },
-            "where": {
-              "vis": "vis"
             }
           },
           {
@@ -472,9 +323,6 @@
             "findBy": {
               "repoId": "repoId",
               "memberId": "."
-            },
-            "where": {
-              "vis": "vis"
             }
           }
         ]
@@ -521,10 +369,6 @@
           "minimum": 0,
           "maximum": 4294967295,
           "position": 7
-        },
-        "vis": {
-          "$ref": "#/$defs/vis",
-          "position": 8
         }
       },
       "indices": [
@@ -573,27 +417,14 @@
         "$createdAtBlockHeight",
         "repoId",
         "refNameHash",
-        "newOid",
-        "vis"
+        "newOid"
       ],
       "additionalProperties": false,
       "propertyConstraints": {
         "noPlain": {
           "anyOf": [
             {
-              "allOf": [
-                {
-                  "absent": "enc"
-                },
-                {
-                  "equal": [
-                    "vis",
-                    {
-                      "const": "public"
-                    }
-                  ]
-                }
-              ]
+              "absent": "enc"
             },
             {
               "absent": "refName"
@@ -607,43 +438,6 @@
             },
             {
               "present": "refName"
-            }
-          ]
-        },
-        "noLock": {
-          "not": {
-            "endsWith": [
-              "refName",
-              {
-                "const": ".lock"
-              }
-            ]
-          }
-        },
-        "oidWidth": {
-          "allOf": [
-            {
-              "in": [
-                {
-                  "count": "newOid"
-                },
-                [
-                  20,
-                  32
-                ]
-              ]
-            },
-            {
-              "in": [
-                {
-                  "count": "prevOid"
-                },
-                [
-                  0,
-                  20,
-                  32
-                ]
-              ]
             }
           ]
         }
@@ -659,9 +453,6 @@
         "findBy": {
           "repoId": "repoId",
           "memberId": "."
-        },
-        "where": {
-          "vis": "vis"
         }
       },
       "dependentRequired": {
@@ -706,10 +497,6 @@
           "minimum": 0,
           "maximum": 4294967295,
           "position": 7
-        },
-        "vis": {
-          "$ref": "#/$defs/vis",
-          "position": 8
         }
       },
       "indices": [
@@ -758,27 +545,14 @@
         "$createdAtBlockHeight",
         "repoId",
         "refNameHash",
-        "newOid",
-        "vis"
+        "newOid"
       ],
       "additionalProperties": false,
       "propertyConstraints": {
         "noPlain": {
           "anyOf": [
             {
-              "allOf": [
-                {
-                  "absent": "enc"
-                },
-                {
-                  "equal": [
-                    "vis",
-                    {
-                      "const": "public"
-                    }
-                  ]
-                }
-              ]
+              "absent": "enc"
             },
             {
               "absent": "refName"
@@ -794,43 +568,6 @@
               "present": "refName"
             }
           ]
-        },
-        "noLock": {
-          "not": {
-            "endsWith": [
-              "refName",
-              {
-                "const": ".lock"
-              }
-            ]
-          }
-        },
-        "oidWidth": {
-          "allOf": [
-            {
-              "in": [
-                {
-                  "count": "newOid"
-                },
-                [
-                  20,
-                  32
-                ]
-              ]
-            },
-            {
-              "in": [
-                {
-                  "count": "prevOid"
-                },
-                [
-                  0,
-                  20,
-                  32
-                ]
-              ]
-            }
-          ]
         }
       }
     },
@@ -844,9 +581,6 @@
         "findBy": {
           "repoId": "repoId",
           "memberId": "."
-        },
-        "where": {
-          "vis": "vis"
         }
       },
       "dependentRequired": {
@@ -860,7 +594,7 @@
           "position": 0
         },
         "defaultBranch": {
-          "$ref": "#/$defs/branch",
+          "$ref": "#/$defs/refName",
           "position": 1
         },
         "protectedPatterns": {
@@ -871,8 +605,7 @@
             "minLength": 1,
             "maxLength": 100
           },
-          "position": 2,
-          "uniqueItems": true
+          "position": 2
         },
         "backend": {
           "type": "object",
@@ -913,10 +646,6 @@
           "minimum": 0,
           "maximum": 4294967295,
           "position": 6
-        },
-        "vis": {
-          "$ref": "#/$defs/vis",
-          "position": 7
         }
       },
       "indices": [
@@ -935,27 +664,14 @@
       "required": [
         "$createdAt",
         "$createdAtBlockHeight",
-        "repoId",
-        "vis"
+        "repoId"
       ],
       "additionalProperties": false,
       "propertyConstraints": {
         "noPlain": {
           "anyOf": [
             {
-              "allOf": [
-                {
-                  "absent": "enc"
-                },
-                {
-                  "equal": [
-                    "vis",
-                    {
-                      "const": "public"
-                    }
-                  ]
-                }
-              ]
+              "absent": "enc"
             },
             {
               "allOf": [
@@ -965,21 +681,6 @@
                 {
                   "absent": "protectedPatterns"
                 }
-              ]
-            }
-          ]
-        },
-        "encV2": {
-          "anyOf": [
-            {
-              "absent": "enc"
-            },
-            {
-              "greaterThanOrEqual": [
-                {
-                  "count": "enc"
-                },
-                61
               ]
             }
           ]
@@ -1016,7 +717,7 @@
           "position": 0
         },
         "packHash": {
-          "$ref": "#/$defs/hid",
+          "$ref": "#/$defs/h32",
           "position": 1
         },
         "kind": {
@@ -1026,7 +727,7 @@
           "position": 2
         },
         "sizeBytes": {
-          "type": "integer",
+          "$ref": "#/$defs/u64",
           "position": 3
         },
         "objectCount": {
@@ -1065,6 +766,12 @@
           "byteArray": true,
           "maxItems": 1024,
           "position": 9
+        },
+        "offsetIndexParts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "position": 10
         }
       },
       "indices": [
@@ -1119,21 +826,6 @@
               "$createdAt": "asc"
             }
           ]
-        },
-        {
-          "name": "bytes",
-          "properties": [
-            {
-              "repoId": "asc"
-            },
-            {
-              "storage": "asc"
-            },
-            {
-              "kind": "asc"
-            }
-          ],
-          "summable": "sizeBytes"
         }
       ],
       "required": [
@@ -1145,154 +837,82 @@
         "sizeBytes",
         "objectCount",
         "chunkCount",
-        "storage"
+        "storage",
+        "offsetIndexParts"
       ],
-      "additionalProperties": false,
-      "propertyConstraints": {
-        "platformChunks": {
-          "ifThen": [
-            {
-              "equal": [
-                "storage",
-                0
-              ]
-            },
-            {
-              "allOf": [
-                {
-                  "equal": [
-                    {
-                      "countOf": [
-                        "chunk",
-                        {
-                          "repoId": "repoId",
-                          "$ownerId": "$ownerId",
-                          "packHash": "packHash"
-                        }
-                      ]
-                    },
-                    "chunkCount"
-                  ]
-                },
-                {
-                  "equal": [
-                    {
-                      "sumOf": [
-                        "chunk",
-                        "seq",
-                        {
-                          "repoId": "repoId",
-                          "$ownerId": "$ownerId",
-                          "packHash": "packHash"
-                        }
-                      ]
-                    },
-                    {
-                      "divide": [
-                        {
-                          "multiply": [
-                            "chunkCount",
-                            {
-                              "subtract": [
-                                "chunkCount",
-                                1
-                              ]
-                            }
-                          ]
-                        },
-                        2
-                      ]
-                    }
-                  ]
-                }
-              ]
+      "additionalProperties": false
+    },
+    "manifestPart": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": false,
+      "ownerRefersTo": {
+        "anyOf": [
+          {
+            "type": "deletableDocument",
+            "documentType": "maintainer",
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
             }
-          ]
+          },
+          {
+            "type": "deletableDocument",
+            "documentType": "writer",
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
+            }
+          }
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
         },
-        "storageShape": {
-          "ifThenElse": [
-            {
-              "equal": [
-                "storage",
-                0
-              ]
-            },
-            {
-              "lessThanOrEqual": [
-                "sizeBytes",
-                {
-                  "multiply": [
-                    "chunkCount",
-                    14700
-                  ]
-                }
-              ]
-            },
-            {
-              "equal": [
-                "chunkCount",
-                0
-              ]
-            }
-          ]
+        "packHash": {
+          "$ref": "#/$defs/h32",
+          "position": 1
         },
-        "kindShape": {
-          "allOf": [
-            {
-              "equal": [
-                {
-                  "modulo": [
-                    {
-                      "count": "supersedes"
-                    },
-                    32
-                  ]
-                },
-                0
-              ]
-            },
-            {
-              "ifThen": [
-                {
-                  "equal": [
-                    "kind",
-                    3
-                  ]
-                },
-                {
-                  "in": [
-                    {
-                      "count": "tips"
-                    },
-                    [
-                      20,
-                      32,
-                      40,
-                      64
-                    ]
-                  ]
-                }
-              ]
-            }
-          ]
+        "partSeq": {
+          "$ref": "#/$defs/u32",
+          "position": 2
         },
-        "sizeNonNeg": {
-          "allOf": [
-            {
-              "greaterThanOrEqual": [
-                "sizeBytes",
-                0
-              ]
-            },
-            {
-              "lessThanOrEqual": [
-                "sizeBytes",
-                1099511627776
-              ]
-            }
-          ]
+        "entries": {
+          "type": "array",
+          "byteArray": true,
+          "maxItems": 4900,
+          "position": 3
         }
-      }
+      },
+      "indices": [
+        {
+          "name": "part",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "$ownerId": "asc"
+            },
+            {
+              "packHash": "asc"
+            },
+            {
+              "partSeq": "asc"
+            }
+          ],
+          "unique": true
+        }
+      ],
+      "required": [
+        "repoId",
+        "packHash",
+        "partSeq",
+        "entries"
+      ],
+      "additionalProperties": false
     },
     "chunk": {
       "type": "object",
@@ -1324,7 +944,7 @@
           "position": 0
         },
         "packHash": {
-          "$ref": "#/$defs/hid",
+          "$ref": "#/$defs/h32",
           "position": 1
         },
         "seq": {
@@ -1367,22 +987,8 @@
               "seq": "asc"
             }
           ],
-          "unique": true
-        },
-        {
-          "name": "perPack",
-          "properties": [
-            {
-              "repoId": "asc"
-            },
-            {
-              "$ownerId": "asc"
-            },
-            {
-              "packHash": "asc"
-            }
-          ],
-          "averageable": "seq"
+          "unique": true,
+          "rangeCountable": true
         }
       ],
       "required": [
@@ -1397,16 +1003,13 @@
     "release": {
       "type": "object",
       "documentsMutable": false,
-      "canBeDeleted": false,
+      "canBeDeleted": true,
       "ownerRefersTo": {
         "type": "deletableDocument",
         "documentType": "maintainer",
         "findBy": {
           "repoId": "repoId",
           "memberId": "."
-        },
-        "where": {
-          "vis": "vis"
         }
       },
       "properties": {
@@ -1419,8 +1022,7 @@
           "minLength": 1,
           "maxLength": 63,
           "maxBytes": 63,
-          "position": 1,
-          "pattern": "^(?:(?:@*[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{)+@*|@+)(?:(?:\\.?/|\\.)(?:(?:@*[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{)+@*|@+))*$"
+          "position": 1
         },
         "name": {
           "type": "string",
@@ -1485,16 +1087,6 @@
           ],
           "additionalProperties": false,
           "position": 9
-        },
-        "vis": {
-          "$ref": "#/$defs/vis",
-          "position": 10
-        },
-        "delta": {
-          "type": "integer",
-          "minimum": -1,
-          "maximum": 1,
-          "position": 11
         }
       },
       "indices": [
@@ -1522,27 +1114,12 @@
               "$createdAt": "asc"
             }
           ]
-        },
-        {
-          "name": "perTag",
-          "properties": [
-            {
-              "repoId": "asc"
-            },
-            {
-              "tagName": "asc"
-            }
-          ],
-          "summable": "delta",
-          "rangeSummable": true
         }
       ],
       "required": [
         "$createdAt",
         "repoId",
-        "tagName",
-        "vis",
-        "delta"
+        "tagName"
       ],
       "additionalProperties": false,
       "dependentRequired": {
@@ -1554,19 +1131,7 @@
         "noPlain": {
           "anyOf": [
             {
-              "allOf": [
-                {
-                  "absent": "enc"
-                },
-                {
-                  "equal": [
-                    "vis",
-                    {
-                      "const": "public"
-                    }
-                  ]
-                }
-              ]
+              "absent": "enc"
             },
             {
               "allOf": [
@@ -1581,44 +1146,6 @@
                 },
                 {
                   "absent": "assetManifest"
-                }
-              ]
-            }
-          ]
-        },
-        "oneLive": {
-          "ifThenElse": [
-            {
-              "present": "enc"
-            },
-            {
-              "equal": [
-                "delta",
-                0
-              ]
-            },
-            {
-              "equal": [
-                {
-                  "sumOf": [
-                    "release",
-                    "delta",
-                    {
-                      "repoId": "repoId",
-                      "tagName": "tagName"
-                    }
-                  ]
-                },
-                {
-                  "min": [
-                    {
-                      "add": [
-                        "delta",
-                        1
-                      ]
-                    },
-                    1
-                  ]
                 }
               ]
             }
@@ -1660,8 +1187,7 @@
           "minLength": 1,
           "maxLength": 30,
           "maxBytes": 60,
-          "position": 1,
-          "pattern": "^[^\\s\\x00-\\x1f\\x7f]([^\\x00-\\x1f\\x7f]*[^\\s\\x00-\\x1f\\x7f])?$"
+          "position": 1
         },
         "color": {
           "type": "string",
@@ -1737,6 +1263,176 @@
         }
       }
     },
+    "repoKey": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": false,
+      "ownerRefersTo": {
+        "type": "deletableDocument",
+        "documentType": "maintainer",
+        "findBy": {
+          "repoId": "repoId",
+          "memberId": "."
+        }
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
+        },
+        "memberId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "type": "identityPublicKey",
+            "keyIdProperty": "recipientKeyId",
+            "keyRequirements": {
+              "purpose": "encryption"
+            }
+          },
+          "position": 1
+        },
+        "epoch": {
+          "$ref": "#/$defs/u32",
+          "position": 2
+        },
+        "recipientKeyId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "position": 3
+        },
+        "senderKeyId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "refersTo": {
+            "type": "identityPublicKey",
+            "identityProperty": "$ownerId",
+            "keyRequirements": {
+              "purpose": "encryption"
+            }
+          },
+          "position": 4
+        },
+        "wrapped": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 96,
+          "encryptedFor": {
+            "recipient": "memberId",
+            "recipientKey": "recipientKeyId",
+            "senderKey": "senderKeyId",
+            "scheme": "ecdh-secp256k1-aes256-cbc"
+          },
+          "position": 5
+        }
+      },
+      "indices": [
+        {
+          "name": "memberEpoch",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "memberId": "asc"
+            },
+            {
+              "epoch": "asc"
+            },
+            {
+              "$ownerId": "asc"
+            }
+          ],
+          "unique": true
+        },
+        {
+          "name": "byMember",
+          "properties": [
+            {
+              "memberId": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "$createdAtBlockHeight",
+        "repoId",
+        "memberId",
+        "epoch",
+        "recipientKeyId",
+        "senderKeyId",
+        "wrapped"
+      ],
+      "additionalProperties": false
+    },
+    "runner": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": true,
+      "properties": {
+        "repoId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "type": "permanentDocument",
+            "documentType": "repo",
+            "where": {
+              "$ownerId": "$ownerId"
+            }
+          },
+          "position": 0
+        },
+        "memberId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "type": "identity"
+          },
+          "position": 1
+        }
+      },
+      "indices": [
+        {
+          "name": "byRepoMember",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "memberId": "asc"
+            }
+          ],
+          "unique": true
+        },
+        {
+          "name": "byMember",
+          "properties": [
+            {
+              "memberId": "asc"
+            }
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "repoId",
+        "memberId"
+      ],
+      "additionalProperties": false
+    },
     "topic": {
       "type": "object",
       "documentsMutable": false,
@@ -1752,8 +1448,7 @@
             "type": "permanentDocument",
             "documentType": "repo",
             "where": {
-              "$ownerId": "$ownerId",
-              "visibility": "vis"
+              "$ownerId": "$ownerId"
             }
           },
           "position": 0
@@ -1763,16 +1458,8 @@
           "minLength": 1,
           "maxLength": 30,
           "maxBytes": 30,
-          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,29}$",
           "position": 1
-        },
-        "vis": {
-          "type": "string",
-          "enum": [
-            "public"
-          ],
-          "maxLength": 6,
-          "position": 2
         }
       },
       "indices": [
@@ -1802,75 +1489,12 @@
           "rankedCountable": {
             "at": "name"
           }
-        },
-        {
-          "name": "perRepo",
-          "properties": [
-            {
-              "repoId": "asc"
-            }
-          ],
-          "countable": true
         }
       ],
       "required": [
         "$createdAt",
         "repoId",
-        "name",
-        "vis"
-      ],
-      "additionalProperties": false,
-      "propertyConstraints": {
-        "atMost20": {
-          "lessThanOrEqual": [
-            {
-              "countOf": [
-                "topic",
-                {
-                  "repoId": "repoId"
-                }
-              ]
-            },
-            20
-          ]
-        }
-      }
-    },
-    "consent": {
-      "type": "object",
-      "documentsMutable": false,
-      "canBeDeleted": true,
-      "properties": {
-        "repoId": {
-          "type": "array",
-          "byteArray": true,
-          "minItems": 32,
-          "maxItems": 32,
-          "contentMediaType": "application/x.dash.dpp.identifier",
-          "refersTo": {
-            "type": "permanentDocument",
-            "documentType": "repo"
-          },
-          "position": 0
-        }
-      },
-      "indices": [
-        {
-          "name": "byRepoOwner",
-          "properties": [
-            {
-              "repoId": "asc"
-            },
-            {
-              "$ownerId": "asc"
-            }
-          ],
-          "unique": true
-        }
-      ],
-      "required": [
-        "$createdAt",
-        "repoId"
+        "name"
       ],
       "additionalProperties": false
     }

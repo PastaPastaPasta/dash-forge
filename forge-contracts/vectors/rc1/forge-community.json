@@ -1,0 +1,2582 @@
+[
+ {
+  "item": "base",
+  "name": "event ok",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 4,
+   "value": "bug"
+  }
+ },
+ {
+  "item": "base",
+  "name": "authorEvent ok",
+  "type": "authorEvent",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 11,
+   "refId": {
+    "$id": 3
+   }
+  }
+ },
+ {
+  "item": "base",
+  "name": "milestone ok",
+  "type": "milestone",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "title": "v1"
+  }
+ },
+ {
+  "item": "base",
+  "name": "runner ok",
+  "type": "runner",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 12
+   }
+  }
+ },
+ {
+  "item": "base",
+  "name": "checkRun ok",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "base",
+  "name": "policy ok",
+  "type": "policy",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "requiredApprovals": 1,
+   "requireChecks": true,
+   "mergeMethods": 15,
+   "requiredChecks": [
+    "build",
+    "lint"
+   ],
+   "requiredCheckSources": [
+    {
+     "$id": 12
+    },
+    {
+     "$id": 7
+    }
+   ]
+  }
+ },
+ {
+  "item": "base",
+  "name": "webhook ok",
+  "type": "webhook",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "hookId": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "url": "https://hooks.example.com/dash",
+   "events": [
+    "push"
+   ],
+   "relayIdentityId": {
+    "$id": 13
+   },
+   "relayKeyId": 1,
+   "senderKeyId": 1,
+   "secret": {
+    "$b": [
+     9,
+     48
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "base",
+  "name": "profile ok",
+  "type": "profile",
+  "expect": "ok",
+  "doc": {
+   "displayName": "Al",
+   "links": [
+    "https://a.dev",
+    "https://github.com/al"
+   ]
+  }
+ },
+ {
+  "item": "base",
+  "name": "star ok",
+  "type": "star",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   }
+  }
+ },
+ {
+  "item": "base",
+  "name": "watch ok",
+  "type": "watch",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   }
+  }
+ },
+ {
+  "item": "base",
+  "name": "follow ok",
+  "type": "follow",
+  "expect": "ok",
+  "doc": {
+   "identityId": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "base",
+  "name": "starBeat ok",
+  "type": "starBeat",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "vis": "public",
+   "repoOwner": {
+    "$id": 8
+   }
+  }
+ },
+ {
+  "item": "R-10",
+  "name": "event headUpdate oid 31",
+  "type": "event",
+  "expect": "refused",
+  "why": "oidWidth",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 16,
+   "oid": {
+    "$b": [
+     1,
+     31
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-10",
+  "name": "authorEvent headUpdate oid 31",
+  "type": "authorEvent",
+  "expect": "refused",
+  "why": "oidWidth",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 16,
+   "oid": {
+    "$b": [
+     1,
+     31
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-10",
+  "name": "checkRun head 21",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "oidWidth",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     21
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-10",
+  "name": "checkRun head 32",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-15",
+  "name": "event kind 21 (retired lock event)",
+  "type": "event",
+  "expect": "refused",
+  "why": "noState",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 21
+  }
+ },
+ {
+  "item": "R-15",
+  "name": "event kind 22 (retired unlock event)",
+  "type": "event",
+  "expect": "refused",
+  "why": "noState",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 22
+  }
+ },
+ {
+  "item": "state",
+  "name": "event close kind",
+  "type": "event",
+  "expect": "refused",
+  "why": "minimum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 1
+  }
+ },
+ {
+  "item": "state",
+  "name": "event draft kind",
+  "type": "event",
+  "expect": "refused",
+  "why": "noState",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 9
+  }
+ },
+ {
+  "item": "state",
+  "name": "event headUpdate",
+  "type": "event",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 16,
+   "oid": {
+    "$b": [
+     2,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "state",
+  "name": "authorEvent close kind",
+  "type": "authorEvent",
+  "expect": "refused",
+  "why": "enum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 1
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "detailsUrl https://github.com/o/r/actions/runs/1",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://github.com/o/r/actions/runs/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "detailsUrl https://10.0.0.5:8443/job/1",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://10.0.0.5:8443/job/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "detailsUrl https://ci.example.com",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "detailsUrl 'javascript:alert(1)'",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "javascript:alert(1)",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "detailsUrl 'http://ci.example.com/1'",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "http://ci.example.com/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "detailsUrl 'https://github.com@evil.example/x'",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://github.com@evil.example/x",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "detailsUrl 'https://a b'",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://a b",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "detailsUrl 'https://a\\n'",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://a\n",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "detailsUrl 'HTTPS://a.b'",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "HTTPS://a.b",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "detailsUrl 'https:///x'",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https:///x",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "logUrl ipfs",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "logUrl": "ipfs://bafy123",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "logUrl https",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "logUrl": "https://logs.example.com/1.txt",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "logUrl http://logs.example.com/1",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "logUrl": "http://logs.example.com/1",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "logUrl s3://bucket/1",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "logUrl": "s3://bucket/1",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "profile link javascript:x",
+  "type": "profile",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "displayName": "Al",
+   "links": [
+    "javascript:x"
+   ]
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "profile link http://a.dev",
+  "type": "profile",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "displayName": "Al",
+   "links": [
+    "http://a.dev"
+   ]
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "profile link data:text/html,x",
+  "type": "profile",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "displayName": "Al",
+   "links": [
+    "data:text/html,x"
+   ]
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "profile link mailto:a@b.c",
+  "type": "profile",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "displayName": "Al",
+   "links": [
+    "mailto:a@b.c"
+   ]
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "webhook https://hooks.example.com:8443/x?y=1",
+  "type": "webhook",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "hookId": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "url": "https://hooks.example.com:8443/x?y=1",
+   "events": [
+    "push"
+   ],
+   "relayIdentityId": {
+    "$id": 13
+   },
+   "relayKeyId": 1,
+   "senderKeyId": 1,
+   "secret": {
+    "$b": [
+     9,
+     48
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "webhook https://xn--bcher-kva.example/h",
+  "type": "webhook",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "hookId": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "url": "https://xn--bcher-kva.example/h",
+   "events": [
+    "push"
+   ],
+   "relayIdentityId": {
+    "$id": 13
+   },
+   "relayKeyId": 1,
+   "senderKeyId": 1,
+   "secret": {
+    "$b": [
+     9,
+     48
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "webhook https://127.0.0.1/x",
+  "type": "webhook",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "hookId": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "url": "https://127.0.0.1/x",
+   "events": [
+    "push"
+   ],
+   "relayIdentityId": {
+    "$id": 13
+   },
+   "relayKeyId": 1,
+   "senderKeyId": 1,
+   "secret": {
+    "$b": [
+     9,
+     48
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "webhook https://10.0.0.5/x",
+  "type": "webhook",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "hookId": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "url": "https://10.0.0.5/x",
+   "events": [
+    "push"
+   ],
+   "relayIdentityId": {
+    "$id": 13
+   },
+   "relayKeyId": 1,
+   "senderKeyId": 1,
+   "secret": {
+    "$b": [
+     9,
+     48
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "webhook https://localhost:9099/x",
+  "type": "webhook",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "hookId": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "url": "https://localhost:9099/x",
+   "events": [
+    "push"
+   ],
+   "relayIdentityId": {
+    "$id": 13
+   },
+   "relayKeyId": 1,
+   "senderKeyId": 1,
+   "secret": {
+    "$b": [
+     9,
+     48
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "webhook https://[::1]/x",
+  "type": "webhook",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "hookId": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "url": "https://[::1]/x",
+   "events": [
+    "push"
+   ],
+   "relayIdentityId": {
+    "$id": 13
+   },
+   "relayKeyId": 1,
+   "senderKeyId": 1,
+   "secret": {
+    "$b": [
+     9,
+     48
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "webhook https://u:p@hooks.example.com/x",
+  "type": "webhook",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "hookId": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "url": "https://u:p@hooks.example.com/x",
+   "events": [
+    "push"
+   ],
+   "relayIdentityId": {
+    "$id": 13
+   },
+   "relayKeyId": 1,
+   "senderKeyId": 1,
+   "secret": {
+    "$b": [
+     9,
+     48
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "webhook http://hooks.example.com/x",
+  "type": "webhook",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "hookId": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "url": "http://hooks.example.com/x",
+   "events": [
+    "push"
+   ],
+   "relayIdentityId": {
+    "$id": 13
+   },
+   "relayKeyId": 1,
+   "senderKeyId": 1,
+   "secret": {
+    "$b": [
+     9,
+     48
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "webhook https://127.1/x",
+  "type": "webhook",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "hookId": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "url": "https://127.1/x",
+   "events": [
+    "push"
+   ],
+   "relayIdentityId": {
+    "$id": 13
+   },
+   "relayKeyId": 1,
+   "senderKeyId": 1,
+   "secret": {
+    "$b": [
+     9,
+     48
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "webhook https://2130706433/x",
+  "type": "webhook",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "hookId": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "url": "https://2130706433/x",
+   "events": [
+    "push"
+   ],
+   "relayIdentityId": {
+    "$id": 13
+   },
+   "relayKeyId": 1,
+   "senderKeyId": 1,
+   "secret": {
+    "$b": [
+     9,
+     48
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-07",
+  "name": "webhook https://hooks.example.com./x",
+  "type": "webhook",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "hookId": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "url": "https://hooks.example.com./x",
+   "events": [
+    "push"
+   ],
+   "relayIdentityId": {
+    "$id": 13
+   },
+   "relayKeyId": 1,
+   "senderKeyId": 1,
+   "secret": {
+    "$b": [
+     9,
+     48
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-08",
+  "name": "names only",
+  "type": "policy",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "requiredApprovals": 1,
+   "requireChecks": true,
+   "mergeMethods": 15,
+   "requiredChecks": [
+    "build",
+    "lint"
+   ]
+  }
+ },
+ {
+  "item": "R-08",
+  "name": "neither",
+  "type": "policy",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "requiredApprovals": 1,
+   "requireChecks": true,
+   "mergeMethods": 15
+  }
+ },
+ {
+  "item": "R-08",
+  "name": "an empty source list",
+  "type": "policy",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "requiredApprovals": 1,
+   "requireChecks": true,
+   "mergeMethods": 15,
+   "requiredChecks": [
+    "build",
+    "lint"
+   ],
+   "requiredCheckSources": []
+  }
+ },
+ {
+  "item": "R-08",
+  "name": "the same runner twice",
+  "type": "policy",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "requiredApprovals": 1,
+   "requireChecks": true,
+   "mergeMethods": 15,
+   "requiredChecks": [
+    "build",
+    "lint"
+   ],
+   "requiredCheckSources": [
+    {
+     "$id": 12
+    },
+    {
+     "$id": 12
+    }
+   ]
+  }
+ },
+ {
+  "item": "R-08",
+  "name": "two names, one source",
+  "type": "policy",
+  "expect": "refused",
+  "why": "sourcesMatchNames",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "requiredApprovals": 1,
+   "requireChecks": true,
+   "mergeMethods": 15,
+   "requiredChecks": [
+    "build",
+    "lint"
+   ],
+   "requiredCheckSources": [
+    {
+     "$id": 12
+    }
+   ]
+  }
+ },
+ {
+  "item": "R-08",
+  "name": "sources with no names",
+  "type": "policy",
+  "expect": "refused",
+  "why": "sourcesMatchNames",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "requiredApprovals": 1,
+   "requireChecks": true,
+   "mergeMethods": 15,
+   "requiredCheckSources": [
+    {
+     "$id": 12
+    },
+    {
+     "$id": 7
+    }
+   ]
+  }
+ },
+ {
+  "item": "R-08",
+  "name": "mergeMethods 16",
+  "type": "policy",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "requiredApprovals": 1,
+   "requireChecks": true,
+   "mergeMethods": 16,
+   "requiredChecks": [
+    "build",
+    "lint"
+   ],
+   "requiredCheckSources": [
+    {
+     "$id": 12
+    },
+    {
+     "$id": 7
+    }
+   ]
+  }
+ },
+ {
+  "item": "R-08",
+  "name": "eleven sources",
+  "type": "policy",
+  "expect": "refused",
+  "why": "maxItems",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "requiredApprovals": 1,
+   "requireChecks": true,
+   "mergeMethods": 15,
+   "requiredChecks": [
+    "build",
+    "lint"
+   ],
+   "requiredCheckSources": [
+    {
+     "$id": 12
+    },
+    {
+     "$id": 12
+    },
+    {
+     "$id": 12
+    },
+    {
+     "$id": 12
+    },
+    {
+     "$id": 12
+    },
+    {
+     "$id": 12
+    },
+    {
+     "$id": 12
+    },
+    {
+     "$id": 12
+    },
+    {
+     "$id": 12
+    },
+    {
+     "$id": 12
+    },
+    {
+     "$id": 12
+    }
+   ]
+  }
+ },
+ {
+  "item": "R-17",
+  "name": "start == end",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000000000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-17",
+  "name": "a 2012 run",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1330000000000,
+   "completedAt": 1330000000001,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-17",
+  "name": "queued, no times",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "queued",
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-17",
+  "name": "end before start",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "doneAfterStart",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1759999999999,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-17",
+  "name": "seconds, not ms",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "msEpoch",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000,
+   "completedAt": 1760000060,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-17",
+  "name": "the old fixture startedAt 5",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "msEpoch",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "in_progress",
+   "startedAt": 5,
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "D-5",
+  "name": "running without startedAt",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "startedIfRunning",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "in_progress",
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "D-5",
+  "name": "queued with startedAt",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "runningIfStarted",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "queued",
+   "startedAt": 1760000000000,
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "D-5",
+  "name": "completed without completedAt",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "completedAtIfDone",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "D-5",
+  "name": "completedAt while running",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "doneIfCompletedAt",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "in_progress",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "D-5",
+  "name": "completed with no conclusion",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "conclusionIfDone",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 2,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "D-5",
+  "name": "a log URL without its hash",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1",
+   "logUrl": "https://logs.example.com/1"
+  }
+ },
+ {
+  "item": "O-07",
+  "name": "in progress = 0",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "in_progress",
+   "startedAt": 1760000000000,
+   "outcome": 0,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "O-07",
+  "name": "success = 1",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "O-07",
+  "name": "neutral = 1",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "neutral",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "O-07",
+  "name": "skipped = 1",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "skipped",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "O-07",
+  "name": "failure = 2",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "failure",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 2,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "O-07",
+  "name": "cancelled = 2",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "cancelled",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 2,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "O-07",
+  "name": "timed_out = 2",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "timed_out",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 2,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "O-07",
+  "name": "action_required = 2",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "action_required",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 2,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "O-07",
+  "name": "stale = 2",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "stale",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 2,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "O-07",
+  "name": "failure marked passed",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "outcomeOf",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "failure",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "O-07",
+  "name": "success marked failed",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "outcomeOf",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 2,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "O-07",
+  "name": "queued marked passed",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "outcomeOf",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "queued",
+   "outcome": 1,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "O-07",
+  "name": "outcome 3",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 3,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "O-07",
+  "name": "no outcome",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "vis": "public",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-18",
+  "name": "private completed run with no text",
+  "type": "checkRun",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "private"
+  }
+ },
+ {
+  "item": "R-18",
+  "name": "private run with summary",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "privateNoText",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "private",
+   "summary": "ok"
+  }
+ },
+ {
+  "item": "R-18",
+  "name": "private run with detailsUrl",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "privateNoText",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "private",
+   "detailsUrl": "https://ci.example.com/1"
+  }
+ },
+ {
+  "item": "R-18",
+  "name": "private run with externalId",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "privateNoText",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "private",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-18",
+  "name": "private run with artifacts",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "privateNoText",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "private",
+   "artifacts": "[]"
+  }
+ },
+ {
+  "item": "R-18",
+  "name": "private run with a log URL",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "privateNoText",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "private",
+   "logUrl": "https://logs.example.com/1",
+   "logSha256": {
+    "$b": [
+     1,
+     32
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-18",
+  "name": "run without vis",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-18",
+  "name": "run vis internal",
+  "type": "checkRun",
+  "expect": "refused",
+  "why": "enum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "headOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "name": "build",
+   "status": "completed",
+   "conclusion": "success",
+   "startedAt": 1760000000000,
+   "completedAt": 1760000060000,
+   "outcome": 1,
+   "vis": "internal",
+   "detailsUrl": "https://ci.example.com/run/1",
+   "summary": "ok",
+   "externalId": "gh-1"
+  }
+ },
+ {
+  "item": "R-19",
+  "name": "webhook on a private repo",
+  "type": "webhook",
+  "expect": "refused",
+  "why": "publicOnly",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "hookId": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "url": "https://hooks.example.com/dash",
+   "events": [
+    "push"
+   ],
+   "relayIdentityId": {
+    "$id": 13
+   },
+   "relayKeyId": 1,
+   "senderKeyId": 1,
+   "secret": {
+    "$b": [
+     9,
+     48
+    ]
+   },
+   "vis": "private"
+  }
+ },
+ {
+  "item": "R-19",
+  "name": "webhook without vis",
+  "type": "webhook",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "hookId": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "url": "https://hooks.example.com/dash",
+   "events": [
+    "push"
+   ],
+   "relayIdentityId": {
+    "$id": 13
+   },
+   "relayKeyId": 1,
+   "senderKeyId": 1,
+   "secret": {
+    "$b": [
+     9,
+     48
+    ]
+   }
+  }
+ },
+ {
+  "item": "O-08",
+  "name": "private beat",
+  "type": "starBeat",
+  "expect": "refused",
+  "why": "enum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "vis": "private",
+   "repoOwner": {
+    "$id": 8
+   }
+  }
+ },
+ {
+  "item": "O-08",
+  "name": "beat without repoOwner",
+  "type": "starBeat",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "O-08",
+  "name": "beat without vis",
+  "type": "starBeat",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "repoOwner": {
+    "$id": 8
+   }
+  }
+ },
+ {
+  "item": "O-08",
+  "name": "the old {repoId} beat",
+  "type": "starBeat",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   }
+  }
+ },
+ {
+  "item": "COMM-9",
+  "name": "star with an extra field",
+  "type": "star",
+  "expect": "refused",
+  "why": "additionalProperties",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "note": "x"
+  }
+ },
+ {
+  "item": "O-01",
+  "name": "milestone with a due date",
+  "type": "milestone",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "title": "v1",
+   "description": "d",
+   "dueOn": 1760000000
+  }
+ },
+ {
+  "item": "O-01",
+  "name": "milestone plaintext description in a sealed doc",
+  "type": "milestone",
+  "expect": "refused",
+  "why": "noPlain",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "title": "v1",
+   "description": "d",
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "O-01",
+  "name": "authorEvent resolve",
+  "type": "authorEvent",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "targetId": {
+    "$id": 2
+   },
+   "targetNumber": 7,
+   "kind": 11,
+   "refId": {
+    "$id": 3
+   }
+  }
+ },
+ {
+  "item": "O-02",
+  "name": "runner with an extra field",
+  "type": "runner",
+  "expect": "refused",
+  "why": "additionalProperties",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 12
+   },
+   "kind": 1
+  }
+ }
+]

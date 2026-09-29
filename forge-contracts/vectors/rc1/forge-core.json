@@ -1,0 +1,3411 @@
+[
+ {
+  "item": "base",
+  "name": "repo ok",
+  "type": "repo",
+  "expect": "ok",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": "main",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "base",
+  "name": "maintainer ok",
+  "type": "maintainer",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 7
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "base",
+  "name": "writer ok",
+  "type": "writer",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 9
+   },
+   "vis": "public",
+   "consentBy": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "base",
+  "name": "consent ok",
+  "type": "consent",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   }
+  }
+ },
+ {
+  "item": "base",
+  "name": "refUpdate ok",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "base",
+  "name": "protectedRefUpdate ok",
+  "type": "protectedRefUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "prevOid": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "base",
+  "name": "config ok",
+  "type": "config",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "defaultBranch": "main",
+   "protectedPatterns": [
+    "refs/heads/main",
+    "refs/tags/**"
+   ],
+   "backend": {
+    "mode": 2,
+    "uris": [
+     "s3://b/p"
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "base",
+  "name": "packManifest ok",
+  "type": "packManifest",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 0,
+   "sizeBytes": 14700,
+   "objectCount": 10,
+   "chunkCount": 1,
+   "storage": 0,
+   "tips": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "base",
+  "name": "chunk ok",
+  "type": "chunk",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "seq": 0,
+   "d0": {
+    "$b": [
+     0,
+     100
+    ]
+   }
+  }
+ },
+ {
+  "item": "base",
+  "name": "release ok",
+  "type": "release",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "v1.2.3",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": 1
+  }
+ },
+ {
+  "item": "base",
+  "name": "label ok",
+  "type": "label",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "good first issue",
+   "color": "#00ff00",
+   "description": "d"
+  }
+ },
+ {
+  "item": "base",
+  "name": "topic ok",
+  "type": "topic",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "web-dev",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/main' (15 B)",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/release/1.x' (22 B)",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/release/1.x",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/mirror/pull/12/head' (24 B)",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/mirror/pull/12/head",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/tags/v1.2.3' (16 B)",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/tags/v1.2.3",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/ünïcode' (18 B)",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/ünïcode",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/v1./x' (16 B)",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/v1./x",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/a@b' (14 B)",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/a@b",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/@' (12 B)",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/@",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/{x}' (14 B)",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/{x}",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/x@' (13 B)",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/x@",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/{@' (13 B)",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/{@",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' (255 B)",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/a..b' (15 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/a..b",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/.x' (13 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/.x",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/x/' (13 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/x/",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs//x' (7 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs//x",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/x.' (13 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/x.",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/*' (12 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/*",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'HEAD' (4 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "minLength",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "HEAD",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'heads/main' (10 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "heads/main",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/a:b' (14 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/a:b",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/a\\\\b' (14 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/a\\b",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/a\\tb' (14 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/a\tb",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/a\\x7fb' (14 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/ab",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/a b' (14 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/a b",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/a\\n000000000000000000000000000' (69 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/a\n0000000000000000000000000000000000000000 refs/heads/main",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/a~1' (14 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/a~1",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/a^' (13 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/a^",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/a?' (13 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/a?",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/[x' (13 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/[x",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/a@{1}' (16 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/a@{1}",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/@{' (13 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/@{",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/heads/x@@{y' (16 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/x@@{y",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref 'refs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' (256 B)",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "maxLength",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref ending .lock",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "noLock",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/x.lock",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "protected ref ending .lock",
+  "type": "protectedRefUpdate",
+  "expect": "refused",
+  "why": "noLock",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main.lock",
+   "newOid": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "prevOid": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "ref .lock in a middle component (reader rule)",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/x.lock/y",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "zero-oid delete",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$b": [
+     0,
+     20
+    ]
+   },
+   "vis": "public",
+   "prevOid": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "defaultBranch 'main'",
+  "type": "repo",
+  "expect": "ok",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": "main",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "defaultBranch 'release/1.x'",
+  "type": "repo",
+  "expect": "ok",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": "release/1.x",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "defaultBranch 'refs/heads/main'",
+  "type": "repo",
+  "expect": "ok",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": "refs/heads/main",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "defaultBranch 'ünï'",
+  "type": "repo",
+  "expect": "ok",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": "ünï",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "defaultBranch '@'",
+  "type": "repo",
+  "expect": "ok",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": "@",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "defaultBranch 'a@b'",
+  "type": "repo",
+  "expect": "ok",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": "a@b",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "defaultBranch '-main'",
+  "type": "repo",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": "-main",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "defaultBranch 'ma in'",
+  "type": "repo",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": "ma in",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "defaultBranch '.main'",
+  "type": "repo",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": ".main",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "defaultBranch 'main/'",
+  "type": "repo",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": "main/",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "defaultBranch 'a..b'",
+  "type": "repo",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": "a..b",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "defaultBranch 'a@{1}'",
+  "type": "repo",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": "a@{1}",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "defaultBranch 'x.'",
+  "type": "repo",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": "x.",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "config defaultBranch -x",
+  "type": "config",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "defaultBranch": "-x",
+   "protectedPatterns": [
+    "refs/heads/main",
+    "refs/tags/**"
+   ],
+   "backend": {
+    "mode": 2,
+    "uris": [
+     "s3://b/p"
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "tagName 'v1.2.3'",
+  "type": "release",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "v1.2.3",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": 1
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "tagName 'release/2026'",
+  "type": "release",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "release/2026",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": 1
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "tagName '-Ab3_x9QkZ'",
+  "type": "release",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "-Ab3_x9QkZ",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": 1
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "tagName 'v1@b'",
+  "type": "release",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "v1@b",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": 1
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "tagName 'v1 beta'",
+  "type": "release",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "v1 beta",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": 1
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "tagName 'v1^0'",
+  "type": "release",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "v1^0",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": 1
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "tagName 'v1..2'",
+  "type": "release",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "v1..2",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": 1
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "tagName '.hidden'",
+  "type": "release",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": ".hidden",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": 1
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "tagName 'v1@{0}'",
+  "type": "release",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "v1@{0}",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": 1
+  }
+ },
+ {
+  "item": "R-01",
+  "name": "tagName 'v1/'",
+  "type": "release",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "v1/",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": 1
+  }
+ },
+ {
+  "item": "R-02",
+  "name": "sealed private ref",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "private",
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "R-02",
+  "name": "private ref with plaintext name",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "noPlain",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "private"
+  }
+ },
+ {
+  "item": "R-02",
+  "name": "public ref with name and enc",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "noPlain",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public",
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "R-02",
+  "name": "ref without vis",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-02",
+  "name": "ref vis internal",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "enum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "internal"
+  }
+ },
+ {
+  "item": "R-02",
+  "name": "sealed private protected ref",
+  "type": "protectedRefUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "newOid": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "prevOid": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "vis": "private",
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "R-02",
+  "name": "private protected ref with plaintext name",
+  "type": "protectedRefUpdate",
+  "expect": "refused",
+  "why": "noPlain",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "prevOid": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "vis": "private"
+  }
+ },
+ {
+  "item": "R-02",
+  "name": "sealed private config with plaintext backend",
+  "type": "config",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "backend": {
+    "mode": 2,
+    "uris": [
+     "s3://b/p"
+    ]
+   },
+   "vis": "private",
+   "archived": true,
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "R-02",
+  "name": "private config with plaintext branch",
+  "type": "config",
+  "expect": "refused",
+  "why": "noPlain",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "defaultBranch": "main",
+   "protectedPatterns": [
+    "refs/heads/main",
+    "refs/tags/**"
+   ],
+   "backend": {
+    "mode": 2,
+    "uris": [
+     "s3://b/p"
+    ]
+   },
+   "vis": "private"
+  }
+ },
+ {
+  "item": "R-02",
+  "name": "sealed private release",
+  "type": "release",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "-Ab3_x9QkZ",
+   "vis": "private",
+   "delta": 0,
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "R-02",
+  "name": "private plaintext release",
+  "type": "release",
+  "expect": "refused",
+  "why": "noPlain",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "v1.2.3",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "private",
+   "delta": 1
+  }
+ },
+ {
+  "item": "R-02",
+  "name": "private member document",
+  "type": "maintainer",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 7
+   },
+   "vis": "private"
+  }
+ },
+ {
+  "item": "R-02",
+  "name": "maintainer without vis",
+  "type": "maintainer",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 7
+   }
+  }
+ },
+ {
+  "item": "R-02",
+  "name": "label definitions stay plaintext (no stamp)",
+  "type": "label",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "good first issue",
+   "color": "#00ff00",
+   "description": "d"
+  }
+ },
+ {
+  "item": "R-02",
+  "name": "sealed label",
+  "type": "label",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "good first issue",
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "R-06",
+  "name": "owner self-enrols a maintainer",
+  "type": "maintainer",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 7
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-06",
+  "name": "owner self-enrols with a stray consentBy",
+  "type": "maintainer",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 7
+   },
+   "vis": "public",
+   "consentBy": {
+    "$id": 8
+   }
+  }
+ },
+ {
+  "item": "R-06",
+  "name": "consented writer",
+  "type": "writer",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 9
+   },
+   "vis": "public",
+   "consentBy": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "R-06",
+  "name": "consented maintainer",
+  "type": "maintainer",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 9
+   },
+   "vis": "public",
+   "consentBy": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "R-06",
+  "name": "forced maintainer",
+  "type": "maintainer",
+  "expect": "refused",
+  "why": "ownerOrConsented",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 9
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-06",
+  "name": "forced writer",
+  "type": "writer",
+  "expect": "refused",
+  "why": "ownerOrConsented",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 9
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-06",
+  "name": "borrowed consent",
+  "type": "writer",
+  "expect": "refused",
+  "why": "ownerOrConsented",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "memberId": {
+    "$id": 9
+   },
+   "vis": "public",
+   "consentBy": {
+    "$id": 8
+   }
+  }
+ },
+ {
+  "item": "R-06",
+  "name": "consent with an extra field",
+  "type": "consent",
+  "expect": "refused",
+  "why": "additionalProperties",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "note": "x"
+  }
+ },
+ {
+  "item": "R-09",
+  "name": "fork manifest (storage 1, no chunks, any size)",
+  "type": "packManifest",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 0,
+   "sizeBytes": 50000000000,
+   "objectCount": 10,
+   "chunkCount": 0,
+   "storage": 1,
+   "tips": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-09",
+  "name": "empty Platform pack",
+  "type": "packManifest",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 0,
+   "sizeBytes": 0,
+   "objectCount": 10,
+   "chunkCount": 0,
+   "storage": 0,
+   "tips": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-09",
+  "name": "Platform pack at the chunk bound",
+  "type": "packManifest",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 0,
+   "sizeBytes": 29400,
+   "objectCount": 10,
+   "chunkCount": 2,
+   "storage": 0,
+   "tips": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-09",
+  "name": "storage 1 with chunks",
+  "type": "packManifest",
+  "expect": "refused",
+  "why": "storageShape",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 0,
+   "sizeBytes": 14700,
+   "objectCount": 10,
+   "chunkCount": 3,
+   "storage": 1,
+   "tips": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-09",
+  "name": "Platform pack over its chunks",
+  "type": "packManifest",
+  "expect": "refused",
+  "why": "storageShape",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 0,
+   "sizeBytes": 14701,
+   "objectCount": 10,
+   "chunkCount": 1,
+   "storage": 0,
+   "tips": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-09",
+  "name": "offsetIndexParts is gone",
+  "type": "packManifest",
+  "expect": "refused",
+  "why": "additionalProperties",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 0,
+   "sizeBytes": 14700,
+   "objectCount": 10,
+   "chunkCount": 1,
+   "storage": 0,
+   "tips": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "offsetIndexParts": 0
+  }
+ },
+ {
+  "item": "R-09",
+  "name": "packHash of 31 bytes",
+  "type": "chunk",
+  "expect": "refused",
+  "why": "minItems",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$b": [
+     4,
+     31
+    ]
+   },
+   "seq": 0,
+   "d0": {
+    "$b": [
+     0,
+     100
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-10",
+  "name": "ref 32/32",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "vis": "public",
+   "prevOid": {
+    "$b": [
+     2,
+     32
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-10",
+  "name": "ref 32 new, 20 prev",
+  "type": "refUpdate",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$b": [
+     1,
+     32
+    ]
+   },
+   "vis": "public",
+   "prevOid": {
+    "$b": [
+     2,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-10",
+  "name": "ref newOid 25",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "oidWidth",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$b": [
+     1,
+     25
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-10",
+  "name": "ref prevOid 21",
+  "type": "refUpdate",
+  "expect": "refused",
+  "why": "oidWidth",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "vis": "public",
+   "prevOid": {
+    "$b": [
+     1,
+     21
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-10",
+  "name": "protected ref newOid 31",
+  "type": "protectedRefUpdate",
+  "expect": "refused",
+  "why": "oidWidth",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "refNameHash": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "refName": "refs/heads/main",
+   "newOid": {
+    "$b": [
+     1,
+     31
+    ]
+   },
+   "prevOid": {
+    "$b": [
+     2,
+     32
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-11",
+  "name": "history index with a 20-byte tip",
+  "type": "packManifest",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 3,
+   "sizeBytes": 14700,
+   "objectCount": 10,
+   "chunkCount": 1,
+   "storage": 0,
+   "tips": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-11",
+  "name": "history index with two 20-byte tips",
+  "type": "packManifest",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 3,
+   "sizeBytes": 14700,
+   "objectCount": 10,
+   "chunkCount": 1,
+   "storage": 0,
+   "tips": {
+    "$b": [
+     1,
+     40
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-11",
+  "name": "release assets (kind 4) with no tips",
+  "type": "packManifest",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 4,
+   "sizeBytes": 14700,
+   "objectCount": 10,
+   "chunkCount": 1,
+   "storage": 0
+  }
+ },
+ {
+  "item": "R-11",
+  "name": "repack superseding two",
+  "type": "packManifest",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 0,
+   "sizeBytes": 14700,
+   "objectCount": 10,
+   "chunkCount": 1,
+   "storage": 0,
+   "tips": {
+    "$b": [
+     1,
+     320
+    ]
+   },
+   "supersedes": {
+    "$b": [
+     2,
+     64
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-11",
+  "name": "history index with no tips",
+  "type": "packManifest",
+  "expect": "refused",
+  "why": "kindShape",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 3,
+   "sizeBytes": 14700,
+   "objectCount": 10,
+   "chunkCount": 1,
+   "storage": 0
+  }
+ },
+ {
+  "item": "R-11",
+  "name": "history index with 60 B of tips",
+  "type": "packManifest",
+  "expect": "refused",
+  "why": "kindShape",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 3,
+   "sizeBytes": 14700,
+   "objectCount": 10,
+   "chunkCount": 1,
+   "storage": 0,
+   "tips": {
+    "$b": [
+     1,
+     60
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-11",
+  "name": "supersedes of 33 B",
+  "type": "packManifest",
+  "expect": "refused",
+  "why": "kindShape",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 0,
+   "sizeBytes": 14700,
+   "objectCount": 10,
+   "chunkCount": 1,
+   "storage": 0,
+   "tips": {
+    "$b": [
+     1,
+     20
+    ]
+   },
+   "supersedes": {
+    "$b": [
+     2,
+     33
+    ]
+   }
+  }
+ },
+ {
+  "item": "R-12",
+  "name": "public fork",
+  "type": "repo",
+  "expect": "ok",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": "main",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ],
+   "forkOf": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "R-12",
+  "name": "private repo with description and topics",
+  "type": "repo",
+  "expect": "ok",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "visibility": "private",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-12",
+  "name": "name a.git.b",
+  "type": "repo",
+  "expect": "ok",
+  "doc": {
+   "name": "a.git.b",
+   "description": "git on Dash",
+   "defaultBranch": "main",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-12",
+  "name": "name foo.github",
+  "type": "repo",
+  "expect": "ok",
+  "doc": {
+   "name": "foo.github",
+   "description": "git on Dash",
+   "defaultBranch": "main",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-12",
+  "name": "name git",
+  "type": "repo",
+  "expect": "ok",
+  "doc": {
+   "name": "git",
+   "description": "git on Dash",
+   "defaultBranch": "main",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-12",
+  "name": "private fork",
+  "type": "repo",
+  "expect": "refused",
+  "why": "forkIsPublic",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "visibility": "private",
+   "topics": [
+    "git",
+    "dash"
+   ],
+   "forkOf": {
+    "$id": 9
+   }
+  }
+ },
+ {
+  "item": "R-12",
+  "name": "private repo with a default branch",
+  "type": "repo",
+  "expect": "refused",
+  "why": "privateNoBranch",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": "main",
+   "visibility": "private",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-12",
+  "name": "name foo.git",
+  "type": "repo",
+  "expect": "refused",
+  "why": "nameNotDotGit",
+  "doc": {
+   "name": "foo.git",
+   "description": "git on Dash",
+   "defaultBranch": "main",
+   "visibility": "public",
+   "topics": [
+    "git",
+    "dash"
+   ]
+  }
+ },
+ {
+  "item": "R-20",
+  "name": "topic rust",
+  "type": "topic",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "rust",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-20",
+  "name": "topic c",
+  "type": "topic",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "c",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-20",
+  "name": "topic web-dev",
+  "type": "topic",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "web-dev",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-20",
+  "name": "topic a1-b2",
+  "type": "topic",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "a1-b2",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-20",
+  "name": "topic rust-",
+  "type": "topic",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "rust-",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-20",
+  "name": "topic a--b",
+  "type": "topic",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "a--b",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-20",
+  "name": "topic -x",
+  "type": "topic",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "-x",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-20",
+  "name": "topic Rust",
+  "type": "topic",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "Rust",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-20",
+  "name": "topic name of 31",
+  "type": "topic",
+  "expect": "refused",
+  "why": "maxLength",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "R-20",
+  "name": "topic on a private repo stamp",
+  "type": "topic",
+  "expect": "refused",
+  "why": "enum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "web-dev",
+   "vis": "private"
+  }
+ },
+ {
+  "item": "R-20",
+  "name": "topic without vis",
+  "type": "topic",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "web-dev"
+  }
+ },
+ {
+  "item": "R-20",
+  "name": "repo with 20 topics",
+  "type": "repo",
+  "expect": "ok",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": "main",
+   "visibility": "public",
+   "topics": [
+    "t0",
+    "t1",
+    "t2",
+    "t3",
+    "t4",
+    "t5",
+    "t6",
+    "t7",
+    "t8",
+    "t9",
+    "t10",
+    "t11",
+    "t12",
+    "t13",
+    "t14",
+    "t15",
+    "t16",
+    "t17",
+    "t18",
+    "t19"
+   ]
+  }
+ },
+ {
+  "item": "R-20",
+  "name": "repo with 21 topics",
+  "type": "repo",
+  "expect": "refused",
+  "why": "maxItems",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": "main",
+   "visibility": "public",
+   "topics": [
+    "t0",
+    "t1",
+    "t2",
+    "t3",
+    "t4",
+    "t5",
+    "t6",
+    "t7",
+    "t8",
+    "t9",
+    "t10",
+    "t11",
+    "t12",
+    "t13",
+    "t14",
+    "t15",
+    "t16",
+    "t17",
+    "t18",
+    "t19",
+    "t20"
+   ]
+  }
+ },
+ {
+  "item": "R-20",
+  "name": "repo topic rust-",
+  "type": "repo",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "name": "dash-forge",
+   "description": "git on Dash",
+   "defaultBranch": "main",
+   "visibility": "public",
+   "topics": [
+    "rust-"
+   ]
+  }
+ },
+ {
+  "item": "O-04",
+  "name": "edit or yank (delta 0)",
+  "type": "release",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "v1.2.3",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": 0,
+   "yanked": true
+  }
+ },
+ {
+  "item": "O-04",
+  "name": "unpublish (delta -1)",
+  "type": "release",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "v1.2.3",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": -1
+  }
+ },
+ {
+  "item": "O-04",
+  "name": "import with a manifest",
+  "type": "release",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "v1.2.3",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": 1,
+   "assetManifest": {
+    "$b": [
+     3,
+     32
+    ]
+   },
+   "imported": {
+    "url": "https://github.com/x/y/releases/tag/v1",
+    "createdAt": 1
+   }
+  }
+ },
+ {
+  "item": "O-04",
+  "name": "delta 2",
+  "type": "release",
+  "expect": "refused",
+  "why": "maximum",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "v1.2.3",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public",
+   "delta": 2
+  }
+ },
+ {
+  "item": "O-04",
+  "name": "release without delta",
+  "type": "release",
+  "expect": "refused",
+  "why": "required",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "tagName": "v1.2.3",
+   "name": "one",
+   "notes": "notes",
+   "assets": "[]",
+   "vis": "public"
+  }
+ },
+ {
+  "item": "O-05",
+  "name": "50 GB external pack",
+  "type": "packManifest",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 0,
+   "sizeBytes": 50000000000,
+   "objectCount": 10,
+   "chunkCount": 0,
+   "storage": 1,
+   "tips": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "O-05",
+  "name": "1 TiB external pack",
+  "type": "packManifest",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 0,
+   "sizeBytes": 1099511627776,
+   "objectCount": 10,
+   "chunkCount": 0,
+   "storage": 1,
+   "tips": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "O-05",
+  "name": "negative size",
+  "type": "packManifest",
+  "expect": "refused",
+  "why": "sizeNonNeg",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 0,
+   "sizeBytes": -1,
+   "objectCount": 10,
+   "chunkCount": 1,
+   "storage": 0,
+   "tips": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "O-05",
+  "name": "size over 1 TiB",
+  "type": "packManifest",
+  "expect": "refused",
+  "why": "sizeNonNeg",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "packHash": {
+    "$id": 4
+   },
+   "kind": 0,
+   "sizeBytes": 1099511627777,
+   "objectCount": 10,
+   "chunkCount": 0,
+   "storage": 1,
+   "tips": {
+    "$b": [
+     1,
+     20
+    ]
+   }
+  }
+ },
+ {
+  "item": "INV-11",
+  "name": "config enc of 61 B",
+  "type": "config",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "backend": {
+    "mode": 2,
+    "uris": [
+     "s3://b/p"
+    ]
+   },
+   "vis": "private",
+   "enc": {
+    "$b": [
+     5,
+     61
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "INV-11",
+  "name": "config enc of 60 B (v1 envelope)",
+  "type": "config",
+  "expect": "refused",
+  "why": "encV2",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "backend": {
+    "mode": 2,
+    "uris": [
+     "s3://b/p"
+    ]
+   },
+   "vis": "private",
+   "enc": {
+    "$b": [
+     5,
+     60
+    ]
+   },
+   "epoch": 0
+  }
+ },
+ {
+  "item": "INV-11",
+  "name": "duplicate protected patterns",
+  "type": "config",
+  "expect": "refused",
+  "why": "uniqueItems",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "defaultBranch": "main",
+   "protectedPatterns": [
+    "refs/heads/main",
+    "refs/heads/main"
+   ],
+   "backend": {
+    "mode": 2,
+    "uris": [
+     "s3://b/p"
+    ]
+   },
+   "vis": "public"
+  }
+ },
+ {
+  "item": "CL-8",
+  "name": "label 'bug'",
+  "type": "label",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "bug",
+   "color": "#00ff00",
+   "description": "d"
+  }
+ },
+ {
+  "item": "CL-8",
+  "name": "label 'good first issue'",
+  "type": "label",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "good first issue",
+   "color": "#00ff00",
+   "description": "d"
+  }
+ },
+ {
+  "item": "CL-8",
+  "name": "label 'área: web'",
+  "type": "label",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "área: web",
+   "color": "#00ff00",
+   "description": "d"
+  }
+ },
+ {
+  "item": "CL-8",
+  "name": "label 'a'",
+  "type": "label",
+  "expect": "ok",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "a",
+   "color": "#00ff00",
+   "description": "d"
+  }
+ },
+ {
+  "item": "CL-8",
+  "name": "label ' bug'",
+  "type": "label",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": " bug",
+   "color": "#00ff00",
+   "description": "d"
+  }
+ },
+ {
+  "item": "CL-8",
+  "name": "label 'bug '",
+  "type": "label",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "bug ",
+   "color": "#00ff00",
+   "description": "d"
+  }
+ },
+ {
+  "item": "CL-8",
+  "name": "label 'a\\tb'",
+  "type": "label",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "a\tb",
+   "color": "#00ff00",
+   "description": "d"
+  }
+ },
+ {
+  "item": "CL-8",
+  "name": "label 'a\\nb'",
+  "type": "label",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": "a\nb",
+   "color": "#00ff00",
+   "description": "d"
+  }
+ },
+ {
+  "item": "CL-8",
+  "name": "label '\\xa0'",
+  "type": "label",
+  "expect": "refused",
+  "why": "pattern",
+  "doc": {
+   "repoId": {
+    "$id": 1
+   },
+   "name": " ",
+   "color": "#00ff00",
+   "description": "d"
+  }
+ }
+]

@@ -3,7 +3,7 @@
   "id": "11111111111111111111111111111111",
   "ownerId": "11111111111111111111111111111111",
   "version": 1,
-  "description": "Dash Forge v2 collaboration: issues, pull requests, transitions, comments, reviews, repo keys",
+  "description": "Dash Forge v2 collaboration: issues, pull requests, state transitions, reviews",
   "schemaDefs": {
     "id": {
       "type": "array",
@@ -38,28 +38,25 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 256,
-      "maxBytes": 1024,
-      "pattern": "^[^\\x00-\\x1f\\x7f]*[^\\s\\x00-\\x1f\\x7f][^\\x00-\\x1f\\x7f]*$"
+      "maxBytes": 1024
     },
     "body": {
       "type": "string",
       "minLength": 1,
       "maxLength": 5120,
-      "maxBytes": 5120,
-      "pattern": "\\S"
+      "maxBytes": 5120
     },
     "enc": {
       "type": "array",
       "byteArray": true,
-      "minItems": 29,
+      "minItems": 28,
       "maxItems": 5120
     },
     "refName": {
       "type": "string",
-      "minLength": 6,
+      "minLength": 1,
       "maxLength": 255,
-      "maxBytes": 255,
-      "pattern": "^refs/(?:(?:@*[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{)+@*|@+)(?:(?:\\.?/|\\.)(?:(?:@*[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{)+@*|@+))*$"
+      "maxBytes": 255
     },
     "imported": {
       "type": "object",
@@ -83,42 +80,6 @@
         }
       },
       "additionalProperties": false
-    },
-    "vis": {
-      "type": "string",
-      "enum": [
-        "public",
-        "private"
-      ]
-    },
-    "member": {
-      "type": "array",
-      "byteArray": true,
-      "minItems": 32,
-      "maxItems": 32,
-      "contentMediaType": "application/x.dash.dpp.identifier",
-      "refersTo": {
-        "anyOf": [
-          {
-            "type": "deletableDocument",
-            "contractId": "FORGE_CORE_CONTRACT_ID",
-            "documentType": "maintainer",
-            "findBy": {
-              "repoId": "repoId",
-              "memberId": "."
-            }
-          },
-          {
-            "type": "deletableDocument",
-            "contractId": "FORGE_CORE_CONTRACT_ID",
-            "documentType": "writer",
-            "findBy": {
-              "repoId": "repoId",
-              "memberId": "."
-            }
-          }
-        ]
-      }
     }
   },
   "documentSchemas": {
@@ -130,9 +91,7 @@
         "repoId",
         "number",
         "tk",
-        "upstreamNumber",
-        "vis",
-        "imported"
+        "upstreamNumber"
       ],
       "dependentRequired": {
         "enc": [
@@ -149,10 +108,7 @@
           "refersTo": {
             "type": "permanentDocument",
             "contractId": "FORGE_CORE_CONTRACT_ID",
-            "documentType": "repo",
-            "where": {
-              "visibility": "vis"
-            }
+            "documentType": "repo"
           },
           "position": 0
         },
@@ -194,14 +150,6 @@
           "minimum": 1,
           "maximum": 4294967295,
           "position": 8
-        },
-        "vis": {
-          "$ref": "#/$defs/vis",
-          "position": 9
-        },
-        "asMember": {
-          "$ref": "#/$defs/member",
-          "position": 10
         }
       },
       "indices": [
@@ -275,8 +223,7 @@
         "$createdAtBlockHeight",
         "repoId",
         "number",
-        "tk",
-        "vis"
+        "tk"
       ],
       "additionalProperties": false,
       "propertyConstraints": {
@@ -347,51 +294,6 @@
               ]
             }
           ]
-        },
-        "p_sealedIfPrivate": {
-          "anyOf": [
-            {
-              "notEqual": [
-                "vis",
-                {
-                  "const": "private"
-                }
-              ]
-            },
-            {
-              "present": "enc"
-            }
-          ]
-        },
-        "m_self": {
-          "anyOf": [
-            {
-              "absent": "asMember"
-            },
-            {
-              "equal": [
-                "asMember",
-                "$ownerId"
-              ]
-            }
-          ]
-        },
-        "i_provenance": {
-          "anyOf": [
-            {
-              "allOf": [
-                {
-                  "absent": "imported"
-                },
-                {
-                  "absent": "upstreamNumber"
-                }
-              ]
-            },
-            {
-              "present": "asMember"
-            }
-          ]
         }
       }
     },
@@ -409,9 +311,7 @@
         "sourceRefName",
         "headOid",
         "tk",
-        "upstreamNumber",
-        "vis",
-        "imported"
+        "upstreamNumber"
       ],
       "dependentRequired": {
         "enc": [
@@ -428,10 +328,7 @@
           "refersTo": {
             "type": "permanentDocument",
             "contractId": "FORGE_CORE_CONTRACT_ID",
-            "documentType": "repo",
-            "where": {
-              "visibility": "vis"
-            }
+            "documentType": "repo"
           },
           "position": 0
         },
@@ -485,11 +382,10 @@
         },
         "sourceRefName": {
           "type": "string",
-          "minLength": 6,
+          "minLength": 1,
           "maxLength": 255,
           "maxBytes": 255,
-          "position": 10,
-          "pattern": "^refs/(?:(?:@*[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{)+@*|@+)(?:(?:\\.?/|\\.)(?:(?:@*[^\\x00- \\x7f~^:?*\\[\\\\/.@{]|\\{)+@*|@+))*$"
+          "position": 10
         },
         "headOid": {
           "$ref": "#/$defs/oid",
@@ -520,14 +416,6 @@
           "minimum": 1,
           "maximum": 4294967295,
           "position": 15
-        },
-        "vis": {
-          "$ref": "#/$defs/vis",
-          "position": 16
-        },
-        "asMember": {
-          "$ref": "#/$defs/member",
-          "position": 17
         }
       },
       "indices": [
@@ -615,8 +503,7 @@
         "baseRefNameHash",
         "sourceRepoId",
         "headOid",
-        "tk",
-        "vis"
+        "tk"
       ],
       "additionalProperties": false,
       "propertyConstraints": {
@@ -692,62 +579,6 @@
                 }
               ]
             }
-          ]
-        },
-        "p_sealedIfPrivate": {
-          "anyOf": [
-            {
-              "notEqual": [
-                "vis",
-                {
-                  "const": "private"
-                }
-              ]
-            },
-            {
-              "present": "enc"
-            }
-          ]
-        },
-        "m_self": {
-          "anyOf": [
-            {
-              "absent": "asMember"
-            },
-            {
-              "equal": [
-                "asMember",
-                "$ownerId"
-              ]
-            }
-          ]
-        },
-        "i_provenance": {
-          "anyOf": [
-            {
-              "allOf": [
-                {
-                  "absent": "imported"
-                },
-                {
-                  "absent": "upstreamNumber"
-                }
-              ]
-            },
-            {
-              "present": "asMember"
-            }
-          ]
-        },
-        "oidWidth": {
-          "in": [
-            {
-              "count": "headOid"
-            },
-            [
-              20,
-              32
-            ]
           ]
         }
       }
@@ -856,24 +687,20 @@
           "enum": [
             1,
             2,
-            3,
-            4,
             11,
             12,
             13,
             14,
             15,
             16,
-            17,
-            18,
-            19
+            17
           ],
           "position": 4
         },
         "delta": {
           "type": "integer",
-          "minimum": -16,
-          "maximum": 16,
+          "minimum": -8,
+          "maximum": 8,
           "position": 5
         },
         "asAuthor": {
@@ -1051,17 +878,12 @@
             {
               "equal": [
                 {
-                  "modulo": [
+                  "sumOf": [
+                    "transition",
+                    "delta",
                     {
-                      "sumOf": [
-                        "transition",
-                        "delta",
-                        {
-                          "targetId": "targetId"
-                        }
-                      ]
-                    },
-                    16
+                      "targetId": "targetId"
+                    }
                   ]
                 },
                 1
@@ -1084,17 +906,12 @@
             {
               "equal": [
                 {
-                  "modulo": [
+                  "sumOf": [
+                    "transition",
+                    "delta",
                     {
-                      "sumOf": [
-                        "transition",
-                        "delta",
-                        {
-                          "targetId": "targetId"
-                        }
-                      ]
-                    },
-                    16
+                      "targetId": "targetId"
+                    }
                   ]
                 },
                 0
@@ -1113,17 +930,12 @@
             {
               "equal": [
                 {
-                  "modulo": [
+                  "sumOf": [
+                    "transition",
+                    "delta",
                     {
-                      "sumOf": [
-                        "transition",
-                        "delta",
-                        {
-                          "targetId": "targetId"
-                        }
-                      ]
-                    },
-                    16
+                      "targetId": "targetId"
+                    }
                   ]
                 },
                 2
@@ -1145,17 +957,12 @@
             {
               "equal": [
                 {
-                  "modulo": [
+                  "sumOf": [
+                    "transition",
+                    "delta",
                     {
-                      "sumOf": [
-                        "transition",
-                        "delta",
-                        {
-                          "targetId": "targetId"
-                        }
-                      ]
-                    },
-                    16
+                      "targetId": "targetId"
+                    }
                   ]
                 },
                 8
@@ -1174,17 +981,12 @@
             {
               "equal": [
                 {
-                  "modulo": [
+                  "sumOf": [
+                    "transition",
+                    "delta",
                     {
-                      "sumOf": [
-                        "transition",
-                        "delta",
-                        {
-                          "targetId": "targetId"
-                        }
-                      ]
-                    },
-                    16
+                      "targetId": "targetId"
+                    }
                   ]
                 },
                 9
@@ -1220,123 +1022,6 @@
               ]
             }
           ]
-        },
-        "oidWidth": {
-          "in": [
-            {
-              "count": "oid"
-            },
-            [
-              0,
-              20,
-              32
-            ]
-          ]
-        },
-        "b4_lockDelta": {
-          "ifThen": [
-            {
-              "in": [
-                "kind",
-                [
-                  3,
-                  4,
-                  18,
-                  19
-                ]
-              ]
-            },
-            {
-              "ifThenElse": [
-                {
-                  "in": [
-                    "kind",
-                    [
-                      3,
-                      18
-                    ]
-                  ]
-                },
-                {
-                  "equal": [
-                    "delta",
-                    16
-                  ]
-                },
-                {
-                  "equal": [
-                    "delta",
-                    -16
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        "c6_lockedAfter": {
-          "ifThen": [
-            {
-              "in": [
-                "kind",
-                [
-                  3,
-                  4,
-                  18,
-                  19
-                ]
-              ]
-            },
-            {
-              "equal": [
-                {
-                  "divide": [
-                    {
-                      "sumOf": [
-                        "transition",
-                        "delta",
-                        {
-                          "targetId": "targetId"
-                        }
-                      ]
-                    },
-                    16
-                  ]
-                },
-                {
-                  "divide": [
-                    {
-                      "add": [
-                        "delta",
-                        16
-                      ]
-                    },
-                    32
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        "g_memberLock": {
-          "anyOf": [
-            {
-              "equal": [
-                "asAuthor",
-                0
-              ]
-            },
-            {
-              "notIn": [
-                "kind",
-                [
-                  3,
-                  4,
-                  18,
-                  19
-                ]
-              ]
-            }
-          ]
         }
       }
     },
@@ -1351,9 +1036,7 @@
         "line",
         "side",
         "startLine",
-        "reviewId",
-        "vis",
-        "imported"
+        "reviewId"
       ],
       "dependentRequired": {
         "enc": [
@@ -1377,16 +1060,14 @@
                 "type": "permanentDocument",
                 "documentType": "issue",
                 "where": {
-                  "repoId": "repoId",
-                  "vis": "vis"
+                  "repoId": "repoId"
                 }
               },
               {
                 "type": "permanentDocument",
                 "documentType": "patch",
                 "where": {
-                  "repoId": "repoId",
-                  "vis": "vis"
+                  "repoId": "repoId"
                 }
               }
             ]
@@ -1411,15 +1092,7 @@
           "minItems": 32,
           "maxItems": 32,
           "contentMediaType": "application/x.dash.dpp.identifier",
-          "position": 5,
-          "refersTo": {
-            "type": "deletableDocument",
-            "documentType": "comment",
-            "where": {
-              "targetId": "targetId",
-              "replyTo": "noParent"
-            }
-          }
+          "position": 5
         },
         "commitOid": {
           "$ref": "#/$defs/oid",
@@ -1470,22 +1143,6 @@
               "$ownerId": "$ownerId"
             }
           }
-        },
-        "vis": {
-          "$ref": "#/$defs/vis",
-          "position": 13
-        },
-        "asMember": {
-          "$ref": "#/$defs/member",
-          "position": 14
-        },
-        "noParent": {
-          "type": "array",
-          "byteArray": true,
-          "minItems": 32,
-          "maxItems": 32,
-          "contentMediaType": "application/x.dash.dpp.identifier",
-          "position": 15
         }
       },
       "indices": [
@@ -1530,8 +1187,7 @@
         "$updatedAtBlockHeight",
         "$createdAtBlockHeight",
         "repoId",
-        "targetId",
-        "vis"
+        "targetId"
       ],
       "additionalProperties": false,
       "propertyConstraints": {
@@ -1567,106 +1223,6 @@
               "present": "body"
             }
           ]
-        },
-        "p_sealedIfPrivate": {
-          "anyOf": [
-            {
-              "notEqual": [
-                "vis",
-                {
-                  "const": "private"
-                }
-              ]
-            },
-            {
-              "present": "enc"
-            }
-          ]
-        },
-        "m_self": {
-          "anyOf": [
-            {
-              "absent": "asMember"
-            },
-            {
-              "equal": [
-                "asMember",
-                "$ownerId"
-              ]
-            }
-          ]
-        },
-        "i_provenance": {
-          "anyOf": [
-            {
-              "absent": "imported"
-            },
-            {
-              "present": "asMember"
-            }
-          ]
-        },
-        "oidWidth": {
-          "in": [
-            {
-              "count": "commitOid"
-            },
-            [
-              0,
-              20,
-              32
-            ]
-          ]
-        },
-        "noParentSet": {
-          "absent": "noParent"
-        },
-        "rangeOrder": {
-          "anyOf": [
-            {
-              "absent": "startLine"
-            },
-            {
-              "allOf": [
-                {
-                  "present": "line"
-                },
-                {
-                  "lessThanOrEqual": [
-                    "startLine",
-                    "line"
-                  ]
-                }
-              ]
-            }
-          ]
-        },
-        "lockGate": {
-          "anyOf": [
-            {
-              "present": "asMember"
-            },
-            {
-              "notEqual": [
-                "$createdAtBlockHeight",
-                "$updatedAtBlockHeight"
-              ]
-            },
-            {
-              "lessThan": [
-                {
-                  "sumOf": [
-                    "transition",
-                    "delta",
-                    {
-                      "targetId": "targetId"
-                    }
-                  ]
-                },
-                16
-              ]
-            }
-          ]
         }
       }
     },
@@ -1693,8 +1249,7 @@
             "type": "permanentDocument",
             "documentType": "patch",
             "where": {
-              "repoId": "repoId",
-              "vis": "vis"
+              "repoId": "repoId"
             }
           },
           "position": 1
@@ -1702,7 +1257,7 @@
         "verdict": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 5,
+          "maximum": 3,
           "position": 2
         },
         "commitOid": {
@@ -1730,14 +1285,6 @@
           "minimum": 0,
           "maximum": 65535,
           "position": 8
-        },
-        "vis": {
-          "$ref": "#/$defs/vis",
-          "position": 9
-        },
-        "asMember": {
-          "$ref": "#/$defs/member",
-          "position": 10
         }
       },
       "indices": [
@@ -1752,21 +1299,6 @@
             }
           ],
           "rangeCountable": true
-        },
-        {
-          "name": "verdicts",
-          "properties": [
-            {
-              "patchId": "asc"
-            },
-            {
-              "commitOid": "asc"
-            },
-            {
-              "verdict": "asc"
-            }
-          ],
-          "countable": true
         }
       ],
       "required": [
@@ -1775,8 +1307,7 @@
         "repoId",
         "patchId",
         "verdict",
-        "commitOid",
-        "vis"
+        "commitOid"
       ],
       "additionalProperties": false,
       "propertyConstraints": {
@@ -1799,130 +1330,46 @@
               ]
             }
           ]
-        },
-        "p_sealedIfPrivate": {
-          "anyOf": [
-            {
-              "notEqual": [
-                "vis",
-                {
-                  "const": "private"
-                }
-              ]
-            },
-            {
-              "allOf": [
-                {
-                  "absent": "body"
-                },
-                {
-                  "absent": "imported.author"
-                },
-                {
-                  "absent": "imported.url"
-                }
-              ]
-            }
-          ]
-        },
-        "oidWidth": {
-          "in": [
-            {
-              "count": "commitOid"
-            },
-            [
-              20,
-              32
-            ]
-          ]
-        },
-        "m_self": {
-          "anyOf": [
-            {
-              "absent": "asMember"
-            },
-            {
-              "equal": [
-                "asMember",
-                "$ownerId"
-              ]
-            }
-          ]
-        },
-        "lockGate": {
-          "anyOf": [
-            {
-              "present": "asMember"
-            },
-            {
-              "lessThan": [
-                {
-                  "sumOf": [
-                    "transition",
-                    "delta",
-                    {
-                      "targetId": "patchId"
-                    }
-                  ]
-                },
-                16
-              ]
-            }
-          ]
-        },
-        "memberVerdict": {
-          "ifThenElse": [
-            {
-              "in": [
-                "verdict",
-                [
-                  1,
-                  2
-                ]
-              ]
-            },
-            {
-              "present": "asMember"
-            },
-            {
-              "ifThen": [
-                {
-                  "in": [
-                    "verdict",
-                    [
-                      4,
-                      5
-                    ]
-                  ]
-                },
-                {
-                  "absent": "asMember"
-                }
-              ]
-            }
-          ]
         }
       }
     },
-    "repoKey": {
+    "event": {
       "type": "object",
       "documentsMutable": false,
       "canBeDeleted": false,
+      "dependentRequired": {
+        "enc": [
+          "epoch"
+        ]
+      },
       "ownerRefersTo": {
-        "type": "deletableDocument",
-        "documentType": "maintainer",
-        "findBy": {
-          "repoId": "repoId",
-          "memberId": "."
-        },
-        "contractId": "FORGE_CORE_CONTRACT_ID"
+        "anyOf": [
+          {
+            "type": "deletableDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "maintainer",
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
+            }
+          },
+          {
+            "type": "deletableDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "writer",
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
+            }
+          }
+        ]
       },
       "properties": {
         "repoId": {
           "$ref": "#/$defs/id",
           "position": 0
         },
-        "memberId": {
+        "targetId": {
           "type": "array",
           "byteArray": true,
           "minItems": 32,
@@ -1931,108 +1378,504 @@
           "refersTo": {
             "anyOf": [
               {
-                "type": "deletableDocument",
-                "contractId": "FORGE_CORE_CONTRACT_ID",
-                "documentType": "maintainer",
-                "findBy": {
+                "type": "permanentDocument",
+                "documentType": "issue",
+                "where": {
                   "repoId": "repoId",
-                  "memberId": "."
+                  "number": "targetNumber"
                 }
               },
               {
-                "type": "deletableDocument",
-                "contractId": "FORGE_CORE_CONTRACT_ID",
-                "documentType": "writer",
-                "findBy": {
+                "type": "permanentDocument",
+                "documentType": "patch",
+                "where": {
                   "repoId": "repoId",
-                  "memberId": "."
+                  "number": "targetNumber"
                 }
               }
             ]
           },
           "position": 1
         },
-        "epoch": {
-          "$ref": "#/$defs/u32",
+        "targetNumber": {
+          "$ref": "#/$defs/num",
           "position": 2
         },
-        "recipientKeyId": {
+        "kind": {
           "type": "integer",
-          "minimum": 0,
-          "maximum": 4294967295,
-          "position": 3,
-          "refersTo": {
-            "type": "identityPublicKey",
-            "identityProperty": "memberId",
-            "keyRequirements": {
-              "purpose": "encryption"
-            }
-          }
+          "minimum": 4,
+          "maximum": 255,
+          "position": 3
         },
-        "senderKeyId": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 4294967295,
-          "refersTo": {
-            "type": "identityPublicKey",
-            "identityProperty": "$ownerId",
-            "keyRequirements": {
-              "purpose": "encryption"
-            }
-          },
+        "value": {
+          "type": "string",
+          "maxLength": 120,
+          "maxBytes": 480,
+          "minLength": 1,
           "position": 4
         },
-        "wrapped": {
+        "oid": {
+          "$ref": "#/$defs/oid",
+          "position": 5
+        },
+        "refId": {
           "type": "array",
           "byteArray": true,
           "minItems": 32,
-          "maxItems": 96,
-          "encryptedFor": {
-            "recipient": "memberId",
-            "recipientKey": "recipientKeyId",
-            "senderKey": "senderKeyId",
-            "scheme": "ecdh-secp256k1-aes256-cbc"
-          },
-          "position": 5
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "position": 6
+        },
+        "enc": {
+          "$ref": "#/$defs/enc",
+          "position": 7
+        },
+        "epoch": {
+          "$ref": "#/$defs/u32",
+          "position": 8
         }
       },
       "indices": [
         {
-          "name": "memberEpoch",
+          "name": "target",
+          "properties": [
+            {
+              "targetId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        },
+        {
+          "name": "feed",
           "properties": [
             {
               "repoId": "asc"
             },
             {
-              "memberId": "asc"
-            },
-            {
-              "epoch": "asc"
-            },
-            {
-              "$ownerId": "asc"
+              "$createdAt": "asc"
             }
-          ],
-          "unique": true
+          ]
         },
         {
-          "name": "byMember",
+          "name": "addressee",
           "properties": [
             {
-              "memberId": "asc"
+              "refId": "asc"
+            },
+            {
+              "$createdAt": "asc"
             }
+          ],
+          "skipIfAbsent": [
+            "refId"
           ]
         }
       ],
       "required": [
         "$createdAt",
-        "$createdAtBlockHeight",
         "repoId",
-        "memberId",
-        "epoch",
-        "recipientKeyId",
-        "senderKeyId",
-        "wrapped"
+        "targetId",
+        "targetNumber",
+        "kind"
+      ],
+      "additionalProperties": false,
+      "propertyConstraints": {
+        "noPlain": {
+          "anyOf": [
+            {
+              "absent": "enc"
+            },
+            {
+              "absent": "value"
+            }
+          ]
+        },
+        "needValue": {
+          "anyOf": [
+            {
+              "not": {
+                "in": [
+                  "kind",
+                  [
+                    4,
+                    5,
+                    8,
+                    17
+                  ]
+                ]
+              }
+            },
+            {
+              "present": "value"
+            },
+            {
+              "present": "enc"
+            }
+          ]
+        },
+        "needAssignee": {
+          "anyOf": [
+            {
+              "not": {
+                "in": [
+                  "kind",
+                  [
+                    6,
+                    7
+                  ]
+                ]
+              }
+            },
+            {
+              "allOf": [
+                {
+                  "present": "refId"
+                },
+                {
+                  "anyOf": [
+                    {
+                      "present": "value"
+                    },
+                    {
+                      "present": "enc"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        "needRefId": {
+          "anyOf": [
+            {
+              "not": {
+                "in": [
+                  "kind",
+                  [
+                    11,
+                    12,
+                    13,
+                    14,
+                    15
+                  ]
+                ]
+              }
+            },
+            {
+              "present": "refId"
+            }
+          ]
+        },
+        "needOid": {
+          "anyOf": [
+            {
+              "notEqual": [
+                "kind",
+                16
+              ]
+            },
+            {
+              "present": "oid"
+            }
+          ]
+        },
+        "noState": {
+          "notIn": [
+            "kind",
+            [
+              9,
+              10
+            ]
+          ]
+        }
+      }
+    },
+    "authorEvent": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": false,
+      "ownerRefersTo": {
+        "anyOf": [
+          {
+            "type": "permanentDocument",
+            "documentType": "issue",
+            "findBy": {
+              "$ownerId": ".",
+              "repoId": "repoId",
+              "number": "targetNumber"
+            },
+            "where": {
+              "$id": "targetId"
+            }
+          },
+          {
+            "type": "permanentDocument",
+            "documentType": "patch",
+            "findBy": {
+              "$ownerId": ".",
+              "repoId": "repoId",
+              "number": "targetNumber"
+            },
+            "where": {
+              "$id": "targetId"
+            }
+          }
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
+        },
+        "targetId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "refersTo": {
+            "anyOf": [
+              {
+                "type": "permanentDocument",
+                "documentType": "issue",
+                "where": {
+                  "repoId": "repoId",
+                  "number": "targetNumber"
+                }
+              },
+              {
+                "type": "permanentDocument",
+                "documentType": "patch",
+                "where": {
+                  "repoId": "repoId",
+                  "number": "targetNumber"
+                }
+              }
+            ]
+          },
+          "position": 1
+        },
+        "targetNumber": {
+          "$ref": "#/$defs/num",
+          "position": 2
+        },
+        "kind": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 255,
+          "enum": [
+            11,
+            12,
+            13,
+            14,
+            16
+          ],
+          "position": 3
+        },
+        "refId": {
+          "type": "array",
+          "byteArray": true,
+          "minItems": 32,
+          "maxItems": 32,
+          "contentMediaType": "application/x.dash.dpp.identifier",
+          "position": 4
+        },
+        "oid": {
+          "$ref": "#/$defs/oid",
+          "position": 5
+        }
+      },
+      "indices": [
+        {
+          "name": "target",
+          "properties": [
+            {
+              "targetId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        },
+        {
+          "name": "feed",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        },
+        {
+          "name": "addressee",
+          "properties": [
+            {
+              "refId": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ],
+          "skipIfAbsent": [
+            "refId"
+          ]
+        }
+      ],
+      "required": [
+        "$createdAt",
+        "repoId",
+        "targetId",
+        "targetNumber",
+        "kind"
+      ],
+      "additionalProperties": false,
+      "propertyConstraints": {
+        "needRefId": {
+          "anyOf": [
+            {
+              "not": {
+                "in": [
+                  "kind",
+                  [
+                    11,
+                    12,
+                    13,
+                    14
+                  ]
+                ]
+              }
+            },
+            {
+              "present": "refId"
+            }
+          ]
+        },
+        "needOid": {
+          "anyOf": [
+            {
+              "notEqual": [
+                "kind",
+                16
+              ]
+            },
+            {
+              "present": "oid"
+            }
+          ]
+        }
+      }
+    },
+    "milestone": {
+      "type": "object",
+      "documentsMutable": false,
+      "canBeDeleted": true,
+      "ownerRefersTo": {
+        "anyOf": [
+          {
+            "type": "deletableDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "maintainer",
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
+            }
+          },
+          {
+            "type": "deletableDocument",
+            "contractId": "FORGE_CORE_CONTRACT_ID",
+            "documentType": "writer",
+            "findBy": {
+              "repoId": "repoId",
+              "memberId": "."
+            }
+          }
+        ]
+      },
+      "dependentRequired": {
+        "enc": [
+          "epoch"
+        ]
+      },
+      "properties": {
+        "repoId": {
+          "$ref": "#/$defs/id",
+          "position": 0
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "maxBytes": 252,
+          "position": 1
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000,
+          "maxBytes": 2000,
+          "position": 2
+        },
+        "dueOn": {
+          "type": "integer",
+          "minimum": 0,
+          "position": 3
+        },
+        "closed": {
+          "type": "boolean",
+          "position": 4
+        },
+        "enc": {
+          "$ref": "#/$defs/enc",
+          "position": 5
+        },
+        "epoch": {
+          "$ref": "#/$defs/u32",
+          "position": 6
+        }
+      },
+      "indices": [
+        {
+          "name": "byRepo",
+          "properties": [
+            {
+              "repoId": "asc"
+            },
+            {
+              "title": "asc"
+            },
+            {
+              "$createdAt": "asc"
+            }
+          ]
+        }
+      ],
+      "propertyConstraints": {
+        "noPlain": {
+          "anyOf": [
+            {
+              "absent": "enc"
+            },
+            {
+              "allOf": [
+                {
+                  "absent": "description"
+                },
+                {
+                  "absent": "dueOn"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "required": [
+        "$createdAt",
+        "repoId",
+        "title"
       ],
       "additionalProperties": false
     }
