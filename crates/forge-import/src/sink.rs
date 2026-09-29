@@ -649,7 +649,8 @@ impl<'a> Sink<'a> {
                 .upstream_numbered(&repo, kind, all)
                 .await
                 .context("reading the destination's upstream numbers")?;
-            if rows.is_empty() {
+            // An empty first page may be a page of unreadable rows only: read every one then.
+            if rows.is_empty() && all {
                 break;
             }
             let mut trusted = BTreeSet::new();
@@ -912,8 +913,9 @@ impl<'a> Sink<'a> {
             // A member mirrored this item (an earlier mirror identity, or a second mirror):
             // writing to it, or recreating it at a new number, would duplicate it. (A
             // non-member's claim never gets here: it is a squatter, and the item is created
-            // at another number.)
-            self.ledger.skip(format!(
+            // at another number.) Settled: the member's copy is permanent, so it does not hold
+            // the sync state (a mirror identity rotated would otherwise hold it for good).
+            self.ledger.warn(format!(
                 "{noun} #{} is already mirrored by {} (as #{}); not mirrored again",
                 t.number, target.author, target.number
             ));

@@ -294,6 +294,8 @@ pub struct TargetInfo {
     pub baseline: Baseline,
     /// The newest `$createdAt` seen on the target or anything about it (ms).
     pub last_activity: u64,
+    /// A draft PR now (its state code at startup, then each transition seen).
+    pub draft: bool,
 }
 
 impl TargetInfo {
@@ -310,6 +312,7 @@ impl TargetInfo {
             base_ref_hash: String::new(),
             baseline,
             last_activity: d.created_at.unwrap_or(0),
+            draft: false,
         }
     }
 
@@ -326,6 +329,7 @@ impl TargetInfo {
             base_ref_hash: d.field_hex("baseRefNameHash").unwrap_or_default(),
             baseline,
             last_activity: d.created_at.unwrap_or(0),
+            draft: false,
         }
     }
 
@@ -376,7 +380,7 @@ impl TargetInfo {
             head_oid: self.head_oid.clone(),
             open,
             merged,
-            draft: false,
+            draft: self.draft,
         }
     }
 }
@@ -580,6 +584,18 @@ pub fn transition_action(kind: u64) -> Option<(&'static str, bool, bool)> {
     })
 }
 
+/// Whether a PR is a draft after a transition of `kind`, from the kind alone: a draft, a
+/// closed draft and a reopened draft are drafts; a ready, a ready close / reopen and a merge
+/// are not.
+#[must_use]
+pub fn draft_after(kind: u64) -> bool {
+    use forge_core::rules::transition as t;
+    matches!(
+        u8::try_from(kind),
+        Ok(t::PR_DRAFT | t::PR_DRAFT_CLOSE | t::PR_DRAFT_REOPEN)
+    )
+}
+
 /// A `transition` → `issues` / `pull_request` with the matching action ([`transition_action`]).
 /// Needs the target in `targets`; a kind of the other target kind (a PR kind on an issue) is
 /// skipped (consensus refuses it: `a_kindOfTarget`).
@@ -603,14 +619,7 @@ pub fn translate_transition(
     let (action, open, merged) = transition_action(kind)?;
     let mut e = if target.is_pr {
         let mut pr = target.pr_obj(&target_id, open, merged);
-        // The draft axis after the move, from the kind alone: a draft, a closed draft and a
-        // reopened draft stay drafts; a ready, a ready close / reopen and a merge do not.
-        pr.draft = matches!(
-            u8::try_from(kind),
-            Ok(forge_core::rules::transition::PR_DRAFT
-                | forge_core::rules::transition::PR_DRAFT_CLOSE
-                | forge_core::rules::transition::PR_DRAFT_REOPEN)
-        );
+        pr.draft = draft_after(kind);
         pull_request_event(repo, &d.id, action, &pr)
     } else {
         issues_event(repo, &d.id, action, &target.issue_obj(&target_id, open))
@@ -698,6 +707,7 @@ mod tests {
             base_ref_hash: String::new(),
             baseline: Baseline::Beginning,
             last_activity: 0,
+            draft: false,
         }
     }
 
@@ -1007,6 +1017,10 @@ mod tests {
             );
             assert!(e.payload.get("dash_merge_unverified").is_none());
         }
+        // A review (or any event) on a draft PR says draft, as the relay last saw it.
+        let mut drafted = target(true, 3);
+        drafted.draft = true;
+        assert!(drafted.pr_obj("p", true, false).draft);
         // Merged is the chain fact (D-9); a commit not found on the base is labelled.
         let e = translate_transition(&meta(), &tr(13, [9; 32]), &prs, false).unwrap();
         assert_eq!(e.payload["pull_request"]["merged"], true);

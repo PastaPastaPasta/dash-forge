@@ -848,7 +848,7 @@ async fn init_repo(shared: &Shared, repo_id: &str, baseline: Baseline) -> Result
         },
         baseline,
         cursors,
-        closed: seed_closed(shared, &targets).await,
+        closed: seed_states(shared, &mut targets).await,
         targets,
         heads,
         runs,
@@ -1384,10 +1384,14 @@ async fn poll_check_runs(
     (high, finished)
 }
 
-/// The targets that are closed or merged now, from their proved state codes (one grouped sum
-/// of `transition.delta` per 100 targets): which threads a poll reads first. A read that fails
-/// starts every thread as open (it only orders the reads) and says so.
-async fn seed_closed(shared: &Shared, targets: &BTreeMap<String, TargetInfo>) -> BTreeSet<String> {
+/// The targets' state now, from their proved state codes (one grouped sum of
+/// `transition.delta` per 100 targets): each PR's draft flag is set, and the targets that are
+/// closed or merged are returned (which threads a poll reads first). A read that fails starts
+/// every thread open and ready (it only orders reads and fills payloads) and says so.
+async fn seed_states(
+    shared: &Shared,
+    targets: &mut BTreeMap<String, TargetInfo>,
+) -> BTreeSet<String> {
     let mut codes = BTreeMap::new();
     let ids: Vec<[u8; 32]> = targets
         .keys()
@@ -1416,16 +1420,29 @@ async fn seed_closed(shared: &Shared, targets: &BTreeMap<String, TargetInfo>) ->
             }
         }
     }
-    closed_from_codes(&codes)
+    apply_codes(&codes, targets)
 }
 
-/// The targets a grouped sum's codes say are not open (closed, or merged).
-fn closed_from_codes(codes: &BTreeMap<Vec<u8>, i64>) -> BTreeSet<String> {
-    codes
-        .iter()
-        .filter(|(_, &code)| !rules::v2::status_of_code(code).open)
-        .filter_map(|(k, _)| forge_core::platform::decode_identifier_key(k))
-        .collect()
+/// Apply a grouped sum's state codes: set each PR's draft flag, and return the targets that are
+/// not open (closed, or merged).
+fn apply_codes(
+    codes: &BTreeMap<Vec<u8>, i64>,
+    targets: &mut BTreeMap<String, TargetInfo>,
+) -> BTreeSet<String> {
+    let mut closed = BTreeSet::new();
+    for (k, &code) in codes {
+        let Some(id) = forge_core::platform::decode_identifier_key(k) else {
+            continue;
+        };
+        let status = rules::v2::status_of_code(code);
+        if let Some(t) = targets.get_mut(&id) {
+            t.draft = t.is_pr && status.draft;
+        }
+        if !status.open {
+            closed.insert(id);
+        }
+    }
+    closed
 }
 
 /// Record an event's effect on its target: its activity time.
@@ -1445,7 +1462,11 @@ fn note_transition(s: &mut RepoState, d: &FetchedDocument) {
     let Some(tid) = note_activity(s, d) else {
         return;
     };
-    if let Some((_, open, _)) = d.field_u64("kind").and_then(ingest::transition_action) {
+    let kind = d.field_u64("kind");
+    if let (Some(t), Some(k)) = (s.targets.get_mut(&tid), kind) {
+        t.draft = t.is_pr && ingest::draft_after(k);
+    }
+    if let Some((_, open, _)) = kind.and_then(ingest::transition_action) {
         if open {
             s.closed.remove(&tid);
         } else {
@@ -1618,6 +1639,7 @@ mod tests {
                         base_ref_hash: String::new(),
                         baseline: Baseline::Beginning,
                         last_activity: 0,
+                        draft: false,
                     },
                 )
             })
@@ -1694,6 +1716,7 @@ mod tests {
             base_ref_hash: base_ref_hash.into(),
             baseline: Baseline::Beginning,
             last_activity: 0,
+            draft: false,
         };
         st.tips
             .entry(hash.clone())
@@ -1802,10 +1825,28 @@ mod tests {
         assert!(heads.contains_key(&format!("{:040x}", MAX_HEADS as u64 + 9)));
     }
 
-    /// The startup seed of the closed set: closed, merged and closed-draft targets; open,
-    /// draft and never-moved (absent) ones are not.
+    /// The startup seed: closed, merged and closed-draft targets are closed; open, draft and
+    /// never-moved (absent) ones are not; a PR at a draft code is a draft.
     #[test]
-    fn the_closed_set_is_seeded_from_state_codes() {
+    fn the_state_is_seeded_from_state_codes() {
+        let id = |b: u8| forge_core::platform::encode_identifier([b; 32]);
+        let pr = |b: u8| {
+            let mut t = TargetInfo::from_patch(
+                &FetchedDocument {
+                    id: id(b),
+                    owner_id: "A".into(),
+                    created_at: Some(1),
+                    created_at_block_height: None,
+                    updated_at_block_height: None,
+                    revision: None,
+                    fields: BTreeMap::new(),
+                },
+                Baseline::Beginning,
+            );
+            t.draft = b == 1;
+            (id(b), t)
+        };
+        let mut targets: BTreeMap<String, TargetInfo> = (1..=6).map(pr).collect();
         let codes = BTreeMap::from([
             (vec![1; 32], 0),
             (vec![2; 32], 1),
@@ -1813,10 +1854,30 @@ mod tests {
             (vec![4; 32], 8),
             (vec![5; 32], 9),
         ]);
-        let id = |b: u8| forge_core::platform::encode_identifier([b; 32]);
         assert_eq!(
-            closed_from_codes(&codes),
+            apply_codes(&codes, &mut targets),
             [id(2), id(3), id(5)].into_iter().collect()
         );
+        let drafts: Vec<bool> = (1..=6).map(|b| targets[&id(b)].draft).collect();
+        assert_eq!(drafts, [false, false, false, true, true, false]);
+        // A transition seen live moves the flag.
+        let mut st = state_with_threads(0);
+        st.targets = targets;
+        let tr = |kind: u64| FetchedDocument {
+            id: format!("t{kind}"),
+            owner_id: "M".into(),
+            created_at: Some(2),
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            revision: None,
+            fields: BTreeMap::from([
+                ("targetId".into(), FieldValue::identifier([4; 32])),
+                ("kind".into(), FieldValue::integer(kind)),
+            ]),
+        };
+        note_transition(&mut st, &tr(15));
+        assert!(!st.targets[&id(4)].draft);
+        note_transition(&mut st, &tr(14));
+        assert!(st.targets[&id(4)].draft);
     }
 }

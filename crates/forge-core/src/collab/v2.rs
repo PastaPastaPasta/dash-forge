@@ -1605,6 +1605,19 @@ fn is_own_copy(
             .all(|k| same_value(stored.fields.get(*k), plain.get(*k)))
 }
 
+/// Whether the document now at a refused number is this create's own landed attempt: one of
+/// the ids this call signed (`attempts`), and the signer's copy of `plain` ([`is_own_copy`]).
+/// Content alone is not enough: the signer may file the same title and body twice on purpose,
+/// and the earlier issue must never stand in for the new one.
+fn adoptable(
+    stored: &FetchedDocument,
+    signer: &str,
+    plain: &BTreeMap<String, FieldValue>,
+    attempts: &[(u32, String)],
+) -> bool {
+    attempts.iter().any(|(_, id)| *id == stored.id) && is_own_copy(stored, signer, plain)
+}
+
 /// Whether `e` is a refusal of a state move by the contract's sum rules (`c1`…`c5`): the
 /// target's state changed between the read and the write.
 fn is_state_rule_refusal(e: &Error) -> bool {
@@ -3281,18 +3294,18 @@ impl<'a> Collab<'a> {
         Ok(None)
     }
 
-    /// The signer's own create of `plain` at `number`, when that is what holds it
-    /// ([`is_own_copy`]): an earlier attempt landed though its read lagged.
+    /// This call's own create of `plain` at `number`, when that is what holds it
+    /// ([`adoptable`]): an earlier attempt of it landed though its read lagged.
     async fn own_create_at(
         &self,
         repo: &RepoRef,
         kind: TargetKind,
         number: u32,
-        me: &str,
-        plain: &BTreeMap<String, FieldValue>,
+        (me, plain): (&str, &BTreeMap<String, FieldValue>),
+        signed: &[(u32, String)],
     ) -> Option<Created> {
         let d = self.readable_target(repo, kind, number).await.ok()??;
-        let own = is_own_copy(&d, me, plain);
+        let own = adoptable(&d, me, plain, signed);
         own.then_some(Created {
             number,
             document_id: d.id,
@@ -3327,6 +3340,9 @@ impl<'a> Collab<'a> {
         // A read right after a refusal can lag the block that took the number, so never try
         // a number at or below one already refused.
         let mut floor = 0u32;
+        // Every create this call signs, with its number (a retry re-signs with fresh entropy,
+        // so a number can have several): only these may be adopted as landed.
+        let mut signed: Vec<(u32, String)> = Vec::new();
         for attempt in 0..MAX_NUMBER_ATTEMPTS {
             let number = self.next_number(repo).await?.max(floor);
             let plain = props(number)?;
@@ -3335,11 +3351,9 @@ impl<'a> Collab<'a> {
                 .seal_if_private(repo, kind.content_kind(), plain.clone())
                 .await?;
             let all = Self::with_repo(repo, sealed)?;
-            // The id of the create last signed: what a failed wait checks before giving up.
-            let mut signed: Option<String> = None;
             let res = engine
                 .create_journaled(&collab, kind.doc_type(), all, |p| {
-                    signed = Some(p.document_id().to_string());
+                    signed.push((number, p.document_id().to_string()));
                     match &path {
                         Some(path) => CreateJournal {
                             saved_at: unix_now(),
@@ -3372,7 +3386,8 @@ impl<'a> Collab<'a> {
                 // another create, and nothing of ours landed: count again.
                 Err(e) if number_taken(&e) => {
                     forget();
-                    if let Some(done) = self.own_create_at(repo, kind, number, &me, &plain).await {
+                    let own = self.own_create_at(repo, kind, number, (&me, &plain), &signed);
+                    if let Some(done) = own.await {
                         return Ok(done);
                     }
                     floor = number.saturating_add(1);
@@ -3390,25 +3405,27 @@ impl<'a> Collab<'a> {
                     forget();
                     return Err(e);
                 }
-                // Anything else (a wait that timed out, a failed read) may hide a landed create:
-                // a proved read of the signed id settles it. Unsettled, a journaled create stays
-                // saved for the next run; the importer (not journaled) finds its copy on chain.
+                // Anything else (a wait that timed out, a failed read, a nonce lost after lagging
+                // reads) may hide a landed create: a proved read of every id this call signed
+                // settles it. Unsettled, a journaled create stays saved for the next run; the
+                // importer (not journaled) finds its copy on chain.
                 Err(e) => {
-                    let Some(id) = signed else { return Err(e) };
-                    if !engine
-                        .landed(&collab, kind.doc_type(), &id, true)
-                        .await
-                        .unwrap_or(false)
-                    {
-                        return Err(e);
+                    for (n, id) in signed.iter().rev() {
+                        if engine
+                            .landed(&collab, kind.doc_type(), id, true)
+                            .await
+                            .unwrap_or(false)
+                        {
+                            forget();
+                            return Ok(Created {
+                                number: *n,
+                                document_id: id.clone(),
+                                resumed: false,
+                                draft_transition: None,
+                            });
+                        }
                     }
-                    forget();
-                    return Ok(Created {
-                        number,
-                        document_id: id,
-                        resumed: false,
-                        draft_transition: None,
-                    });
+                    return Err(e);
                 }
             }
         }
@@ -4912,6 +4929,17 @@ mod tests {
         });
         stored.insert("repoId".into(), FieldValue::identifier([1; 32]));
         assert!(is_own_copy(&doc(ME, stored.clone()), ME, &plain));
+        // Only an id this create signed is adopted: the signer's earlier, separate issue with
+        // the same title and body (filed twice on purpose) is not.
+        let signed = [(4, "landed".to_string())];
+        assert!(adoptable(&doc(ME, stored.clone()), ME, &plain, &signed));
+        assert!(!adoptable(
+            &doc(ME, stored.clone()),
+            ME,
+            &plain,
+            &[(4, "another-attempt".to_string())]
+        ));
+        assert!(!adoptable(&doc(ME, stored.clone()), ME, &plain, &[]));
         // Someone else's issue at that number, or other content: count again.
         assert!(!is_own_copy(&doc("other", stored.clone()), ME, &plain));
         let mut edited = stored;
