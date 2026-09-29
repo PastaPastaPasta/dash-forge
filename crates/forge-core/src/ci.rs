@@ -110,18 +110,14 @@ fn is_posix_space(c: char) -> bool {
 
 /// `rest` is empty, or starts with `/`, `?` or `#` and holds no whitespace: the patterns'
 /// `([/?#][^[:space:]]*)?$` tail.
-fn is_url_tail(rest: &str) -> bool {
+pub(crate) fn is_url_tail(rest: &str) -> bool {
     rest.is_empty() || (rest.starts_with(['/', '?', '#']) && !rest.contains(is_posix_space))
 }
 
-/// `https://`, a non-empty host with no whitespace or `@` (so no userinfo), then the tail.
-fn is_https_prefix_url(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://") else {
-        return false;
-    };
-    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let (host, tail) = rest.split_at(end);
-    !host.is_empty() && !host.contains(|c| c == '@' || is_posix_space(c)) && is_url_tail(tail)
+/// An `https://` URL split into its authority (up to the first `/`, `?` or `#`) and the rest.
+pub(crate) fn split_https(url: &str) -> Option<(&str, &str)> {
+    let rest = url.strip_prefix("https://")?;
+    Some(rest.split_at(rest.find(['/', '?', '#']).unwrap_or(rest.len())))
 }
 
 /// Whether the contract's `checkRun.detailsUrl` pattern admits `url`:
@@ -129,7 +125,9 @@ fn is_https_prefix_url(url: &str) -> bool {
 /// an IP host is allowed, for a self-hosted CI).
 #[must_use]
 pub fn is_details_url(url: &str) -> bool {
-    is_https_prefix_url(url)
+    split_https(url).is_some_and(|(host, tail)| {
+        !host.is_empty() && !host.contains(|c| c == '@' || is_posix_space(c)) && is_url_tail(tail)
+    })
 }
 
 /// Whether the contract's `checkRun.logUrl` pattern admits `url`: an https URL as
@@ -144,7 +142,7 @@ pub fn is_log_url(url: &str) -> bool {
         let (cid, tail) = rest.split_at(end);
         return !cid.is_empty() && is_url_tail(tail);
     }
-    is_https_prefix_url(url)
+    is_details_url(url)
 }
 
 /// One runner membership of a repo.
@@ -545,8 +543,9 @@ pub fn run_to_update<'d>(
     report: &CheckReport,
 ) -> Option<&'d FetchedDocument> {
     let newest = newest_run(docs, reporter, report)?;
+    // Only the action is read: no time is capped (the report's times never decide it).
     report
-        .write(Some(newest), 0)
+        .write(Some(newest), u64::MAX)
         .is_some_and(|w| w.action == RunWriteAction::Replace)
         .then_some(newest)
 }
@@ -606,13 +605,16 @@ impl<'a> CheckRuns<'a> {
     /// ([`CheckReport::for_visibility`]; [`ReportPlan::dropped`] names it), so its run is
     /// matched by name: it has no external id.
     pub async fn plan(&self, repo: &RepoRef, report: &CheckReport) -> Result<ReportPlan> {
+        // A report that names its run (by external id, even one a private repository drops)
+        // continues one that may have been created a moment ago.
+        let names_its_run = report.external_id.is_some();
         let (report, dropped) = report.for_visibility(repo.visibility);
         let report = &report;
         let oid = report.validate()?;
         let community = self.client.fetch_contract(&repo.forge().community).await?;
         let me = self.identity.id();
         let mut docs = check_run_docs(self.client, &community, repo, oid.clone()).await?;
-        if report.external_id.is_some() && newest_run(&docs, &me, report).is_none() {
+        if names_its_run && newest_run(&docs, &me, report).is_none() {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             docs = check_run_docs(self.client, &community, repo, oid.clone()).await?;
         }
@@ -1165,6 +1167,39 @@ mod tests {
                 _ => {}
             }
         }
+    }
+
+    #[test]
+    fn a_replace_never_touches_an_immutable_field() {
+        let full = CheckReport {
+            details_url: Some("https://ci.example.com/1".into()),
+            summary: Some("ok".into()),
+            external_id: Some("gh-1".into()),
+            started_at: Some(MS_EPOCH),
+            completed_at: Some(MS_EPOCH + 1),
+            ..report("completed", Some("success"))
+        };
+        let running = stored(&[
+            ("status", FieldValue::text("in_progress")),
+            ("startedAt", FieldValue::integer(MS_EPOCH)),
+            ("externalId", FieldValue::text("gh-1")),
+        ]);
+        let (action, c) = written(&full, Some(&running), MS_EPOCH + 5);
+        assert_eq!(action, RunWriteAction::Replace);
+        for immutable in [
+            "vis",
+            "repoId",
+            "headOid",
+            "name",
+            "startedAt",
+            "externalId",
+        ] {
+            assert!(!c.contains_key(immutable), "{immutable} in {c:?}");
+        }
+        assert_eq!(
+            c.get("completedAt"),
+            Some(&Some(FieldValue::integer(MS_EPOCH + 1)))
+        );
     }
 
     #[test]

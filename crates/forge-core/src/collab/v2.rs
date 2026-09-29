@@ -877,17 +877,13 @@ pub fn policy_from_doc(d: &FetchedDocument) -> Policy {
         approver_role: small("approverRole"),
         require_checks: d.field_bool("requireChecks"),
         merge_methods: small("mergeMethods"),
-        required_checks: d
-            .fields
-            .get("requiredChecks")
-            .and_then(FieldValue::as_text_list)
-            .unwrap_or_default(),
+        required_checks: crate::scope::doc_text_list(d, "requiredChecks"),
         // Identifiers (base58); an empty array reads back as empty bytes.
         required_check_sources: match d.fields.get("requiredCheckSources") {
             Some(FieldValue::List(items)) => items
                 .iter()
                 .filter_map(|i| i.as_bytes()?.try_into().ok())
-                .map(|id: [u8; 32]| platform::encode_identifier(id))
+                .map(platform::encode_identifier)
                 .collect(),
             _ => Vec::new(),
         },

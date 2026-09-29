@@ -587,25 +587,34 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
         external_id: a.external_id.clone(),
         ..CheckReport::default()
     };
-    // Refused before anything is uploaded or signed.
-    r.validate().map_err(|e| match e {
+    // Refused before anything is uploaded or signed: what every run carries at once, and the
+    // text once the repository's visibility says whether it is kept (a private repository's
+    // run drops it with a warning instead).
+    let usage = |e: forge_core::error::Error| match e {
         forge_core::error::Error::Config(m) => crate::errors::usage(m),
         other => other.into(),
-    })?;
+    };
+    r.for_visibility(Visibility::Private)
+        .0
+        .validate()
+        .map_err(usage)?;
     let s = Session::open_for_write(ctx, &a.repo, "check run not reported").await?;
     let private = s.repo.visibility == Visibility::Private;
-    if a.log.is_some() && !private {
-        check_log_storage(a.storage.as_deref())?;
-    }
-    let runs = CheckRuns::new(&s.client, &s.identity, &s.bridge);
-    // Decided before the prompt, so it prices the write that happens.
-    let plan = runs.plan(&s.repo, &r).await?;
-    let mut left_out = plan.dropped().to_vec();
-    if private && a.log.is_some() {
-        left_out.push("logUrl");
+    let (kept, mut left_out) = r.for_visibility(s.repo.visibility);
+    kept.validate().map_err(usage)?;
+    if a.log.is_some() {
+        if private {
+            left_out.push("logUrl");
+        } else {
+            check_log_storage(a.storage.as_deref())?;
+        }
     }
     warn_private(a, &s, &left_out);
-    let (kept, _) = r.for_visibility(s.repo.visibility);
+    let runs = CheckRuns::new(&s.client, &s.identity, &s.bridge);
+    // Decided before the prompt, so it prices the write that happens. The plan gets the
+    // report as given: an external id, even one a private repository drops, tells it the
+    // run may have been created a moment ago.
+    let plan = runs.plan(&s.repo, &r).await?;
     r = kept;
     let (verb, estimate) = if plan.replaces() {
         ("update", REPLACE_ESTIMATE_CREDITS)

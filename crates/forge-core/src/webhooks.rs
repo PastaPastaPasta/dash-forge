@@ -229,11 +229,9 @@ pub fn check_secret(secret: &[u8]) -> Result<()> {
 /// an optional port of 1–5 digits, then a path, query or fragment without whitespace.
 #[must_use]
 pub fn is_webhook_url(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://") else {
+    let Some((authority, tail)) = crate::ci::split_https(url) else {
         return false;
     };
-    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let (authority, tail) = rest.split_at(end);
     let (host, port) = match authority.split_once(':') {
         Some((h, p)) => (h, Some(p)),
         None => (authority, None),
@@ -249,8 +247,7 @@ pub fn is_webhook_url(url: &str) -> bool {
         && tld.as_bytes()[tld.len() - 1].is_ascii_alphanumeric();
     let port_ok =
         port.is_none_or(|p| (1..=5).contains(&p.len()) && p.bytes().all(|b| b.is_ascii_digit()));
-    let tail_ok = tail.is_empty() || (!tail.contains([' ', '\t', '\n', '\u{0b}', '\u{0c}', '\r']));
-    head.split('.').all(label_ok) && tld_ok && port_ok && tail_ok
+    head.split('.').all(label_ok) && tld_ok && port_ok && crate::ci::is_url_tail(tail)
 }
 
 /// Check a hook's `url` and `events` against the schema, so a write fails here with a message
@@ -263,12 +260,9 @@ pub fn check_url_and_events(url: &str, events: &[String], allow_credentials: boo
             "a webhook url must be 1..={URL_MAX_LEN} bytes"
         )));
     }
-    if !url.starts_with("https://") {
+    let Some((authority, _)) = crate::ci::split_https(url) else {
         return Err(Error::Config("a webhook url must be https://".into()));
-    }
-    let authority = url.split_once("://").map_or("", |(_, rest)| {
-        rest.split(['/', '?', '#']).next().unwrap_or("")
-    });
+    };
     if authority.contains('@') {
         return Err(Error::Config(
             "the webhook url has user:password@: it is stored publicly on chain, so it must \

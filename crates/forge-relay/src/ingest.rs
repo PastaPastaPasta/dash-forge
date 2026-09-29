@@ -597,10 +597,11 @@ pub fn transition_action(kind: u64) -> Option<(&'static str, bool, bool)> {
     })
 }
 
-/// The RC1 lock transitions (`thread_lock`, delta ±16): issue lock / unlock 3 / 4, PR lock /
-/// unlock 18 / 19. They leave the state (open, closed, merged, draft) as it is.
 /// A lock transition `kind` as GitHub's action and the `locked` it leaves: `("locked", true)`
 /// or `("unlocked", false)`; `None` for any other kind.
+///
+/// The RC1 lock transitions (`thread_lock`, delta ±16) are issue lock / unlock 3 / 4 and PR
+/// lock / unlock 18 / 19. They leave the state (open, closed, merged, draft) as it is.
 #[must_use]
 pub fn lock_action(kind: u64) -> Option<(&'static str, bool)> {
     use forge_core::rules::transition as t;

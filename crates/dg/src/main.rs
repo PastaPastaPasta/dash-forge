@@ -454,6 +454,10 @@ pub struct RepoPolicySetArgs {
     /// Allowed merge methods, comma-separated: `ff`, `merge`, `squash`, `rebase`, or `any`.
     #[arg(long = "merge-methods")]
     pub merge_methods: Option<String>,
+    /// Drop the required check names and their pinned sources (otherwise the current policy's
+    /// are kept).
+    #[arg(long = "clear-required-checks")]
+    pub clear_required_checks: bool,
 }
 
 #[derive(Debug, Subcommand)]

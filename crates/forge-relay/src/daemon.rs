@@ -98,7 +98,9 @@ impl Contracts {
     /// The contract that holds `doc_type` in the RC1 layout ([`forge_core::layout`]): `event`
     /// and `authorEvent` moved to forge-community.
     fn of(&self, doc_type: &str) -> &LoadedContract {
-        match ForgeContract::of(doc_type) {
+        let contract = ForgeContract::of(doc_type);
+        debug_assert!(contract.is_some(), "{doc_type} is no RC1 type");
+        match contract {
             Some(ForgeContract::Collab) => &self.collab,
             Some(ForgeContract::Community) => &self.community,
             Some(ForgeContract::Core) | None => &self.core,
@@ -1474,18 +1476,20 @@ fn note_transition(s: &mut RepoState, d: &FetchedDocument) {
     let Some(tid) = note_activity(s, d) else {
         return;
     };
-    let kind = d.field_u64("kind");
     // A lock or unlock is no state move: it leaves the draft flag and open / closed alone.
-    let state_kind = kind.and_then(ingest::transition_action).is_some();
-    if let (Some(t), Some(k), true) = (s.targets.get_mut(&tid), kind, state_kind) {
-        t.draft = t.is_pr && ingest::draft_after(k);
+    let Some(kind) = d.field_u64("kind") else {
+        return;
+    };
+    let Some((_, open, _)) = ingest::transition_action(kind) else {
+        return;
+    };
+    if let Some(t) = s.targets.get_mut(&tid) {
+        t.draft = t.is_pr && ingest::draft_after(kind);
     }
-    if let Some((_, open, _)) = kind.and_then(ingest::transition_action) {
-        if open {
-            s.closed.remove(&tid);
-        } else {
-            s.closed.insert(tid);
-        }
+    if open {
+        s.closed.remove(&tid);
+    } else {
+        s.closed.insert(tid);
     }
 }
 

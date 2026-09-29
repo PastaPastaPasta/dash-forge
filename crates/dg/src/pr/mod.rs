@@ -1429,13 +1429,13 @@ async fn required_checks(
     oracle: &forge_core::rules::v2::RoleOracle,
     policy: &forge_core::rules::review::Policy,
 ) -> Result<Option<forge_core::rules::v2::ChecksState>> {
-    // Named checks (with their pinned sources) are required whether or not `requireChecks` is
-    // set, as the web merge box reads them.
-    if !policy.require_checks && policy.required_checks.is_empty() {
+    // Checks are judged only when `requireChecks` is set (the web merge box's gate); then the
+    // named checks and their pinned sources, when the policy has them, decide.
+    if !policy.require_checks {
         return Ok(None);
     }
     let rules = forge_core::rules::v2::ChecksPolicy {
-        require_checks: policy.require_checks,
+        require_checks: true,
         required_checks: policy.required_checks.clone(),
         required_check_sources: policy.required_check_sources.clone(),
     };
