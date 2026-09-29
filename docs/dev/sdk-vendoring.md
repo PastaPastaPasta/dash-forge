@@ -8,14 +8,16 @@ Nothing is built on a developer's machine or in CI: `pnpm install` and `npm ci` 
 
 | | |
 |---|---|
-| Build | [`.github/workflows/vendor-sdk.yml`](../../.github/workflows/vendor-sdk.yml), `workflow_dispatch` with `platform_tag` |
+| Build | [`.github/workflows/vendor-sdk.yml`](../../.github/workflows/vendor-sdk.yml), `workflow_dispatch` on master with `platform_tag` and, optionally, `expected_commit` (the commit the tag must point at) |
 | Artifacts | pre-release [`vendor-sdk-v4.2.0-beta.6`](https://github.com/PastaPastaPasta/dash-forge/releases/tag/vendor-sdk-v4.2.0-beta.6): `dashevo-wasm-sdk-4.2.0-beta.6.tgz`, `dashevo-evo-sdk-4.2.0-beta.6.tgz`, `SHA256SUMS`. The release notes name the source commit, the toolchain and the checksums |
 | forge-web | `package.json` depends on both asset URLs; `pnpm-workspace.yaml` `overrides` sends evo-sdk's own `@dashevo/wasm-sdk: 4.2.0-beta.6` dependency to the same URL (otherwise pnpm looks for it on npm, where it does not exist) |
 | tools/mint-identity, forge-contracts/sdk-v2 | the same two URLs in `dependencies`, plus `"overrides": { "@dashevo/wasm-sdk": "$@dashevo/wasm-sdk" }` for the same reason |
 
 The release is a build artifact, not a Dash Forge release. It is marked pre-release and never "latest", so `install.sh` and `cargo binstall` never see it, and `release.yml` excludes `vendor-sdk-*` from its `v*` tag trigger. The `refs/tags/v*` tag ruleset does cover it, so the tag cannot be moved or deleted.
 
-**The assets are immutable in practice.** Every lockfile records their sha512; replacing an asset breaks every install that pins it with an integrity error. The workflow refuses to touch an existing release unless dispatched with `replace: true`. Only use that if a published asset is known to be broken, and then refresh all three lockfiles in the same change.
+**The assets are immutable in practice.** Every lockfile records their sha512; replacing an asset breaks every install that pins it with an integrity error. The workflow refuses to publish when the release or its tag already exists unless dispatched with `replace: true`. Only use that if a published asset is known to be broken, and then refresh all three lockfiles in the same change. It creates the release as a draft, uploads the assets, then publishes, so a half-filled release is never visible. It also attests the tarballs' provenance (`gh attestation verify dashevo-wasm-sdk-<v>.tgz -R PastaPastaPasta/dash-forge`).
+
+**Owner option: immutable releases.** GitHub's repository setting *Immutable releases* would make published assets and their tag unchangeable even to maintainers, which is exactly the guarantee the lockfiles rely on. It applies to every release of the repository, including `release.yml`'s, and it rules out `replace: true`, so it is left as an owner decision; nothing here depends on it.
 
 ## How the tarballs are built
 
@@ -26,7 +28,7 @@ The workflow follows upstream's own release recipe at the tag (`.github/actions/
 3. `yarn workspaces focus @dashevo/wasm-sdk @dashevo/evo-sdk` with the tag's own yarn (4.12.0, via corepack);
 4. `CARGO_BUILD_PROFILE=release yarn build` in `packages/wasm-sdk` (`build-optimized.sh`, then `bundle.cjs`), `yarn build` in `packages/js-evo-sdk`;
 5. `yarn pack` for both. It rewrites evo-sdk's `workspace:*` dependency to the exact version, and the workflow fails if it did not;
-6. writes `SHA256SUMS` and the npm/pnpm `sha512-…` integrity of each tarball into the release notes, then publishes.
+6. checks the tarballs' contents (the `dist/` files forge-web loads, the versions, evo-sdk's exact wasm-sdk dependency, a real `.wasm`), writes `SHA256SUMS` and the npm/pnpm `sha512-…` integrity of each tarball into the release notes, attests them, publishes, and re-downloads the assets to check them against `SHA256SUMS`.
 
 Do not expect the wasm to be bit-for-bit reproducible on another host or toolchain build. The checksums identify *this* build; the release notes say how it was made.
 
@@ -35,7 +37,7 @@ Do not expect the wasm to be bit-for-bit reproducible on another host or toolcha
 Only when a new Platform tag is also unpublished on npm (check `npm view @dashevo/wasm-sdk@<version> version` first).
 
 1. If the tag's recipe pins different tool versions, update the workflow's `env` block. Compare `.github/actions/npm-release-build/action.yaml` and `rust-toolchain.toml` at the tag, fetch each binary, and record its `sha256sum`. Merge that change first: a dispatch runs the workflow as it is on the chosen branch.
-2. Actions → *Vendor the Platform JS SDK* → Run workflow, `platform_tag: v4.2.0-beta.N`. Expect about 40–60 minutes; most of it is the wasm compile.
+2. Actions → *Vendor the Platform JS SDK* → Run workflow on master, `platform_tag: v4.2.0-beta.N`, `expected_commit:` the tag's commit (`git ls-remote https://github.com/dashpay/platform refs/tags/v4.2.0-beta.N`). Most of the run is the wasm compile. A dispatch from another branch builds and checks but does not publish.
 3. Point the three consumers at the new release, then refresh the lockfiles:
    - forge-web: in `package.json` and `pnpm-workspace.yaml` `overrides`, swap the URLs, then `pnpm install`;
    - tools/mint-identity and forge-contracts/sdk-v2: in `package.json`, swap the URLs, then `npm install`.
