@@ -45,6 +45,7 @@ import { useIntent } from '@/hooks/use-intent'
 import { useFirstWrite } from '@/hooks/use-first-write'
 import { plural } from '@/lib/view'
 import { useSdk } from '@/hooks/use-sdk'
+import { useDpnsName } from '@/hooks/use-dpns-name'
 import { useAsync } from '@/hooks/use-async'
 import { useAuth } from '@/contexts/auth-context'
 import { Button } from '@/components/ui/button'
@@ -465,6 +466,8 @@ function ComposeIssueDialog({
   const [note, setNote] = useState<string | null>(null)
   const draft = useIntent()
   const links = useRepoLinks(addr, home.description)
+  // The owner by name, not a raw identity id (L-73).
+  const ownerName = useDpnsName(repo.ownerId)
 
   // Whether this issue is the repo's (or the author's) first, for a tight preview (D-011).
   const first = useFirstWrite(() => issueFirsts(sdk!, repo, identity!), [open, repoKey(repo), identity ?? ''], open && sdk !== null && identity !== null)
@@ -479,7 +482,7 @@ function ComposeIssueDialog({
   }
 
   const submit = async (): Promise<void> => {
-    if (pending || bodyBytes > BODY_MAX || !guard.check(cost, 'collab')) return
+    if (pending || bodyBytes > BODY_MAX || !guard.check(cost, 'collab', 'open an issue')) return
     if (!sdk || !signer || title.trim() === '') return
     setPending(true)
     setError(null)
@@ -515,7 +518,7 @@ function ComposeIssueDialog({
       open={open}
       onClose={onClose}
       title="Open an issue"
-      description={`In ${addr.owner}/${addr.name}. Anyone can open one.`}
+      description={`In ${ownerName ?? (addr.owner === repo.ownerId ? `${addr.owner.slice(0, 8)}…` : addr.owner)}/${addr.name}. Anyone can open one.`}
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={pending}>Cancel</Button>

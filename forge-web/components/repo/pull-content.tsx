@@ -446,7 +446,7 @@ function PullPage({
   const commentTooLong = composeTooLong(repo, 'comment', { body: comment.trim() })
 
   const postComment = async (): Promise<void> => {
-    if (posting || comment.trim() === '' || commentTooLong || !guard.check(commentCost, 'collab')) return
+    if (posting || comment.trim() === '' || commentTooLong || !guard.check(commentCost, 'collab', 'comment')) return
     if (!sdk || !signer) return
     setPosting(true)
     setCommentError(null)

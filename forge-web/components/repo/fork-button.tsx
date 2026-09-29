@@ -44,7 +44,9 @@ export function ForkButton({ parent }: { parent: RepoRef }): JSX.Element {
       <Button
         size="sm"
         onClick={() => {
-          if (guard.check(0)) setOpen(true)
+          // Signed out, the sheet names the fork (L-62); its price is in the fork dialog, which
+          // reads the parent's packs and refs first.
+          if (guard.check(0, 'core', 'fork this repo')) setOpen(true)
         }}
         disabled={guard.disabledReason !== null}
         title={guard.disabledReason ?? 'Fork this repository'}

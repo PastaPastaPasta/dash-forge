@@ -7,10 +7,8 @@
  */
 
 import Link from 'next/link'
-import { useEffect, useState } from 'react'
 import { IdentityPill, type TokenRole } from '@/components/ui/identity-pill'
-import { useSdk } from '@/hooks/use-sdk'
-import { resolveDpnsName } from '@/lib/view'
+import { useDpnsName } from '@/hooks/use-dpns-name'
 
 export function Author({
   identityId,
@@ -23,21 +21,7 @@ export function Author({
   link?: boolean
   className?: string
 }): JSX.Element {
-  const { sdk, ready, network } = useSdk()
-  const [name, setName] = useState<string | undefined>(undefined)
-
-  useEffect(() => {
-    if (!ready || !sdk || !identityId) return
-    let cancelled = false
-    resolveDpnsName(sdk, identityId, network)
-      .then((n) => {
-        if (!cancelled && n) setName(n)
-      })
-      .catch(() => undefined)
-    return () => {
-      cancelled = true
-    }
-  }, [sdk, ready, identityId, network])
+  const name = useDpnsName(identityId)
 
   const pill = <IdentityPill identityId={identityId} name={name} role={role} className={className} />
   if (!link) return pill

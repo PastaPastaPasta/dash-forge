@@ -31,8 +31,7 @@ import { FundsPill } from '@/components/funds-pill'
 import { consumePrehydrationIntent } from '@/lib/prehydration'
 import { isPageShortcut } from '@/lib/focus'
 import { pageTitle } from '@/lib/page-title'
-import { useSdk } from '@/hooks/use-sdk'
-import { resolveDpnsName } from '@/lib/view'
+import { useDpnsName } from '@/hooks/use-dpns-name'
 
 /** The mirror guide (the `/mirror` wizard does not exist yet). */
 export const MIRROR_GUIDE_URL = 'https://github.com/PastaPastaPasta/dash-forge/blob/master/docs/guides/mirror-a-github-repo.md'
@@ -137,18 +136,8 @@ export function AppHeader(): JSX.Element {
 function DocumentTitle(): null {
   const pathname = usePathname()
   const params = useSearchParams()
-  const { sdk, ready, network } = useSdk()
   const owner = params.get('owner') ?? (pathname.startsWith('/u') ? params.get('name') : null) ?? ''
-  const [ownerName, setOwnerName] = useState<{ id: string; name: string | null } | null>(null)
-  useEffect(() => {
-    if (!ready || sdk === null || !/^[1-9A-HJ-NP-Za-km-z]{42,44}$/.test(owner)) return
-    let live = true
-    void resolveDpnsName(sdk, owner, network).then((name) => live && setOwnerName({ id: owner, name }))
-    return () => {
-      live = false
-    }
-  }, [ready, sdk, network, owner])
-  const name = ownerName?.id === owner ? ownerName.name : null
+  const name = useDpnsName(owner)
   const title = pageTitle(pathname, new URLSearchParams(params.toString()), name)
   useEffect(() => {
     document.title = title

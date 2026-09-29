@@ -166,7 +166,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const labelDefs = new Map(labels.map((l) => [l.name, l]))
 
   const postComment = async (): Promise<void> => {
-    if (posting || comment.trim() === '' || utf8Length(comment) > BODY_MAX || !guard.check(commentCost, 'collab')) return
+    if (posting || comment.trim() === '' || utf8Length(comment) > BODY_MAX || !guard.check(commentCost, 'collab', 'comment')) return
     if (!sdk || !signer) return
     setPosting(true)
     setCommentError(null)

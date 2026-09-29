@@ -117,7 +117,7 @@ export function ProfileContent({ identityId: address }: { identityId: string }):
   const unfollowRefund = previewDelete('follow')
   const toggleFollow = (): void => {
     // Unfollowing refunds, so only a follow needs the funds check; both sign in first.
-    if (!guard.check(following ? 0 : followCost, 'collab')) return
+    if (!guard.check(following ? 0 : followCost, 'collab', following ? 'unfollow' : 'follow this identity')) return
     setConfirming(true)
   }
   // Signed in but whether you already follow is not known yet (or unreadable): no action.
