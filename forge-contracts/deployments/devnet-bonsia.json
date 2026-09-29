@@ -1,0 +1,21 @@
+{
+  "network": "devnet",
+  "devnetName": "bonsia",
+  "chainId": "dash-devnet-bonsia-g1",
+  "quorumBaseUrl": "https://quorums.bonsia.networks.dash.org",
+  "dapiAddresses": [
+    "https://68.67.122.224:1443",
+    "https://68.67.122.225:1443",
+    "https://68.67.122.226:1443",
+    "https://68.67.122.227:1443",
+    "https://68.67.122.228:1443",
+    "https://68.67.122.229:1443",
+    "https://68.67.122.230:1443",
+    "https://68.67.122.242:1443",
+    "https://68.67.122.243:1443",
+    "https://68.67.122.244:1443",
+    "https://68.67.122.245:1443",
+    "https://68.67.122.246:1443",
+    "https://68.67.122.247:1443"
+  ]
+}

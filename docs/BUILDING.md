@@ -182,6 +182,15 @@ activates there ([mainnet-runbook.md](mainnet-runbook.md)). Until then, pass
 with `dg auth login --network devnet --devnet-name moutai`, which saves the network in
 `~/.config/dash-forge/config.toml`.
 
+**Devnet bonsia** (Platform 4.2.0-beta.7, chain id `dash-devnet-bonsia-g1`) is replacing moutai;
+the defaults (Makefile `DEVNET`, `E2E_DEVNET`, the Pages and e2e workflows) stay on moutai until
+the cut-over.
+`devnet-bonsia.json` records its 13 DAPI addresses and quorum service
+(`https://quorums.bonsia.networks.dash.org`), so `--devnet-name bonsia` works for every tool.
+It has no forge-v2 deployment until the fresh contracts are registered there. (The beta.7 wasm
+SDK sends DAPI calls to `https://node:1443//org.dash…`; a gateway that does not merge slashes
+answers them 404, which the SDK reports as "malformed response". bonsia's merges them.)
+
 Contract ids are never written into code: they come from the `v2` section of
 `forge-contracts/deployments/<key>.json`, where the key is `testnet`, `mainnet` or
 `devnet-<name>`. The Rust crates embed every file in that directory at build time
