@@ -43,6 +43,8 @@ describe('pullOriginOf (L-36, L-37)', () => {
     })
     expect(pullOriginOf(`${HEADER}\n> Base ${base}\n\nbody`)).toEqual({ baseOid: base, headLabel: '' })
     expect(pullOriginOf(`${HEADER}\n> head feature`)).toEqual({ baseOid: '', headLabel: 'feature' })
+    // As forge-import writes it: an empty quote line between, so it renders on its own line.
+    expect(pullOriginOf(`${HEADER}\n>\n> Base ${base} · head o:b\n\nbody`)).toEqual({ baseOid: base, headLabel: 'o:b' })
   })
 
   it('ignores the line anywhere but right after the provenance quote', () => {

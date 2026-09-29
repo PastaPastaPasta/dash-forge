@@ -59,6 +59,7 @@ export function trustedOrigin(origin: Origin | null | undefined, owner: string, 
 
 const PROVENANCE = /^> Mirrored from \S+ by @\S+ \(([^)]*)\)/
 const PULL_ORIGIN = /^> (?:Base ([0-9a-f]{40}|[0-9a-f]{64}))?(?: · )?(?:head (\S{1,200}))?\s*$/
+// (a bare `>` never matches: both groups empty is rejected below)
 
 /** What a mirrored PR's body says about where it branched from and its head branch. */
 export interface PullOrigin {
@@ -70,12 +71,12 @@ export interface PullOrigin {
 
 /**
  * The `> Base … · head …` line forge-import writes after a PR's provenance line, or null. Only
- * the second line of a body that opens with the provenance quote counts.
+ * the line right after the provenance quote counts (an empty `>` line may separate them).
  */
 export function pullOriginOf(body: string): PullOrigin | null {
-  const [first = '', second = ''] = body.split('\n', 2)
+  const [first = '', second = '', third = ''] = body.split('\n', 3)
   if (!PROVENANCE.test(first)) return null
-  const m = PULL_ORIGIN.exec(second)
+  const m = PULL_ORIGIN.exec(second === '>' ? third : second)
   if (m === null || (m[1] === undefined && m[2] === undefined)) return null
   return { baseOid: m[1] ?? '', headLabel: m[2] ?? '' }
 }

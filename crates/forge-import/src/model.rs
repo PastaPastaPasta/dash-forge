@@ -211,7 +211,8 @@ pub fn verdict_word(v: Verdict) -> &'static str {
 }
 
 /// A mirrored PR's body with the line that says where it branched from and from which head
-/// branch, right after the provenance line: `> Base 1a2b3c4d… · head thepastaclaw:branch`.
+/// branch, after the provenance line (in the same quote, a `>` line between them):
+/// `> Base 1a2b3c4d… · head thepastaclaw:branch`.
 /// The patch document records neither (`baseOid` is not a field; `sourceRefName` names a ref
 /// in `sourceRepoId`, a Forge repo), so readers take them from here (L-36, L-37): the web
 /// compares a merged PR from that base, and names the fork branch.
@@ -225,10 +226,12 @@ pub fn with_pull_origin(body: &str, base_oid: &str, head_label: &str, full_at: &
     };
     // After the first line (the provenance quote) and its blank line.
     let (first, rest) = body.split_once("\n\n").unwrap_or((body, ""));
+    // `>` between the two quoted lines: a paragraph break inside the quote, so the origin
+    // renders on its own line rather than folded into the provenance sentence.
     let joined = if rest.is_empty() {
-        format!("{first}\n{line}")
+        format!("{first}\n>\n{line}")
     } else {
-        format!("{first}\n{line}\n\n{rest}")
+        format!("{first}\n>\n{line}\n\n{rest}")
     };
     // The body was fitted before; a line of at most ~260 bytes may push it over again.
     fit_text(&joined, BODY_MAX, full_at)
@@ -679,7 +682,7 @@ mod tests {
         let with = with_pull_origin(&b, &base, "thepastaclaw:backport-0.26", "u");
         assert_eq!(
             with,
-            format!("> Mirrored from github.com/o/r#7 by @x (pull request, 2026-09-01)\n> Base {base} · head thepastaclaw:backport-0.26\n\ntext")
+            format!("> Mirrored from github.com/o/r#7 by @x (pull request, 2026-09-01)\n>\n> Base {base} · head thepastaclaw:backport-0.26\n\ntext")
         );
         // No base and no label: unchanged. A bad oid is left out.
         assert_eq!(with_pull_origin(&b, "", "", "u"), b);
