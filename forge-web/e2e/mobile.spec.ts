@@ -239,3 +239,47 @@ test.describe('signed in with a low balance', () => {
     })
   }
 })
+
+// FG-8 (dash showcase QA): phone chrome.
+for (const device of ['iPhone SE', 'Pixel 7'] as const) {
+  test(`${device}: the menu drawer reaches Explore, and the owner chip stays one line (L-57, L-58)`, async ({ browser, browserName }) => {
+    const context = await browser.newContext(contextFor(device, browserName))
+    const page = await context.newPage()
+    await page.goto(repoUrl(), { waitUntil: 'domcontentloaded' })
+    await waitForRepoResolved(page)
+    // L-58: the owner chip in the repo h1 is one line (a 20 px avatar, not a 64-84 px pill).
+    const chip = page.getByTestId('repo-title').locator('a').first()
+    await expect(chip).toBeVisible()
+    const cb = await chip.boundingBox()
+    expect(cb!.height).toBeLessThanOrEqual(30)
+    // L-57: Explore is in the header's menu, not only the footer.
+    const toggle = page.getByTestId('nav-drawer-toggle')
+    await expect(toggle).toBeVisible()
+    const tb = await toggle.boundingBox()
+    expect(tb!.height).toBeGreaterThanOrEqual(43.5)
+    await toggle.click()
+    const drawer = page.getByTestId('nav-drawer')
+    await expect(drawer).toBeVisible()
+    expect(await overflowX(page)).toBeLessThanOrEqual(1)
+    await drawer.getByRole('link', { name: 'Explore' }).click()
+    await expect(page).toHaveURL(/\/explore\/$/)
+    await expect(page.getByTestId('nav-drawer')).toHaveCount(0)
+    await context.close()
+  })
+}
+
+test('iPhone SE: offline, a tab shows the plain offline state, and it fits (L-56)', async ({ browser, browserName }) => {
+  test.setTimeout(3 * 60_000)
+  const context = await browser.newContext(contextFor('iPhone SE', browserName))
+  const page = await context.newPage()
+  await page.goto(repoUrl(), { waitUntil: 'domcontentloaded' })
+  await waitForRepoResolved(page)
+  await context.setOffline(true)
+  await page.getByRole('navigation', { name: 'Repository' }).getByRole('link', { name: /^Pull requests/ }).click()
+  const offline = page.getByTestId('read-unreachable').or(page.getByTestId('platform-unreachable')).or(page.getByTestId('app-offline')).first()
+  await expect(offline).toBeVisible({ timeout: 60_000 })
+  expect(await overflowX(page)).toBeLessThanOrEqual(1)
+  await context.setOffline(false)
+  await expect(page.getByTestId('read-unreachable').or(page.getByTestId('app-offline'))).toHaveCount(0, { timeout: 90_000 })
+  await context.close()
+})
