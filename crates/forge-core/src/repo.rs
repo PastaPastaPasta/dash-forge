@@ -408,7 +408,9 @@ impl ReindexPlan {
     /// go when no pack is missing its locator.
     pub fn any_pack_on_platform(&self) -> bool {
         let git = u64::from(crate::pack::KIND_GIT_PACK);
-        self.manifests.iter().any(|m| m.kind == git && m.storage == 0)
+        self.manifests
+            .iter()
+            .any(|m| m.kind == git && m.storage == 0)
     }
 
     /// The history index plan for `tip`, from the same manifests ([`plan_history_index`]).
@@ -2392,32 +2394,28 @@ impl<'a> RepoService<'a> {
             other => self.store_consolidated(repo, &bytes, &meta, other).await?,
         };
         self.write_pack_manifest(
-                repo,
-                &PackManifestInput {
-                    pack_hash,
-                    kind: u64::from(artifact.kind),
-                    size_bytes: bytes.len() as u64,
-                    object_count: artifact.rows,
-                    chunk_count: stored.chunk_count,
-                    storage: stored.storage,
-                    // A browse artifact locates itself: no `manifestPart` offset index is
-                    // written for it, so none is claimed.
-                    offset_index_parts: 0,
-                    uris: stored.uris,
-                    supersedes: artifact.supersedes,
-                    tips: artifact.tips.iter().map(|t| t.to_vec()).collect(),
-                },
-            )
-            .await
+            repo,
+            &PackManifestInput {
+                pack_hash,
+                kind: u64::from(artifact.kind),
+                size_bytes: bytes.len() as u64,
+                object_count: artifact.rows,
+                chunk_count: stored.chunk_count,
+                storage: stored.storage,
+                // A browse artifact locates itself: no `manifestPart` offset index is
+                // written for it, so none is claimed.
+                offset_index_parts: 0,
+                uris: stored.uris,
+                supersedes: artifact.supersedes,
+                tips: artifact.tips.iter().map(|t| t.to_vec()).collect(),
+            },
+        )
+        .await
     }
 
     /// What the next history index of `tip` should be (see [`plan_history_index`]), from the
     /// manifests and the repository's current members. Reads no artifact.
-    pub async fn plan_history_publish(
-        &self,
-        repo: &RepoRef,
-        tip: [u8; 20],
-    ) -> Result<HistoryPlan> {
+    pub async fn plan_history_publish(&self, repo: &RepoRef, tip: [u8; 20]) -> Result<HistoryPlan> {
         let manifests = self.read_pack_manifests(repo).await?;
         let roles = self.copy_roles(repo).await?;
         Ok(plan_history_index(&manifests, &roles, tip))
@@ -2431,7 +2429,9 @@ impl<'a> RepoService<'a> {
         prepared: PreparedHistory,
         target: RepackTarget<'_>,
     ) -> Result<HistoryPublished> {
-        let PreparedHistory { index, artifact, .. } = prepared;
+        let PreparedHistory {
+            index, artifact, ..
+        } = prepared;
         let manifest_id = self.store_artifact(repo, artifact, target).await?;
         Ok(HistoryPublished {
             manifest_id,
@@ -2480,6 +2480,17 @@ pub struct HistoryPlan {
     /// The repository has no history index manifest at all yet: this one is its first, which
     /// pays the first-of-kind fee ([`crate::cost::push_fees::HISTORY_FIRST_EXTRA`]).
     pub first: bool,
+}
+
+impl HistoryPlan {
+    /// The plan for a repository with no history index yet (a first push into a new one): a
+    /// full index, its first.
+    pub fn fresh() -> Self {
+        Self {
+            first: true,
+            ..Self::default()
+        }
+    }
 }
 
 /// What [`RepoService::store_history_index`] published.
@@ -2572,7 +2583,11 @@ pub fn plan_history_index(
     let covers = |e: &HistoryEntry| e.base_tip.is_none_or(|b| full_tips.contains(&b));
     HistoryPlan {
         covered: live.iter().any(|e| e.tip == tip && covers(e)),
-        bases: live.iter().filter(|e| e.base_tip.is_none()).cloned().collect(),
+        bases: live
+            .iter()
+            .filter(|e| e.base_tip.is_none())
+            .cloned()
+            .collect(),
         first: !manifests.iter().any(|m| m.kind == kind),
         live,
     }
@@ -2599,19 +2614,31 @@ pub fn prepare_history_index(
             continue;
         };
         delta.base = Some(base.pack_hash);
-        let plain = delta.to_compressed()?;
-        if (plain.len() as u64) * 2 <= base.size_bytes {
+        let bytes = delta.to_compressed()?;
+        if (bytes.len() as u64) * 2 <= base.size_bytes {
             // A delta is cumulative: it replaces the earlier deltas of the same base.
             let earlier = plan.live.iter().filter(|e| e.base_tip == Some(base.tip));
-            return Ok(Some(prepared(delta, plain, vec![tip, base.tip], earlier, plan.first)));
+            return Ok(Some(prepared(
+                delta,
+                bytes,
+                vec![tip, base.tip],
+                earlier,
+                plan.first,
+            )));
         }
         // The newest base on the chain is too far behind: a full index, not an older base.
         break;
     }
     let index = compute(git_dir, &tip_hex, None)?
         .ok_or_else(|| Error::Config("history index: no full index computed".into()))?;
-    let plain = index.to_compressed()?;
-    Ok(Some(prepared(index, plain, vec![tip], plan.live.iter(), plan.first)))
+    let bytes = index.to_compressed()?;
+    Ok(Some(prepared(
+        index,
+        bytes,
+        vec![tip],
+        plan.live.iter(),
+        plan.first,
+    )))
 }
 
 /// A computed index as the artifact to store, superseding `replaces` (at most
@@ -3514,10 +3541,20 @@ mod tests {
     }
 
     /// A history index manifest (kind 3) by `owner` for `tip` (and `base_tip` for a delta).
-    fn history(id: &str, at: u64, hash: u8, owner: &str, tip: u8, base_tip: Option<u8>) -> PackManifestInfo {
+    fn history(
+        id: &str,
+        at: u64,
+        hash: u8,
+        owner: &str,
+        tip: u8,
+        base_tip: Option<u8>,
+    ) -> PackManifestInfo {
         let mut m = manifest(id, at, crate::pack::KIND_HISTORY_INDEX, hash);
         m.owner_id = owner.into();
-        m.tips = std::iter::once(tip).chain(base_tip).map(|t| [t; 20]).collect();
+        m.tips = std::iter::once(tip)
+            .chain(base_tip)
+            .map(|t| [t; 20])
+            .collect();
         m.size_bytes = 1000;
         m
     }
@@ -3562,10 +3599,19 @@ mod tests {
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .output()
                 .unwrap();
-            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
-        let oid = |rev: &str| -> [u8; 20] { hex::decode(git(&["rev-parse", rev])).unwrap().try_into().unwrap() };
+        let oid = |rev: &str| -> [u8; 20] {
+            hex::decode(git(&["rev-parse", rev]))
+                .unwrap()
+                .try_into()
+                .unwrap()
+        };
         git(&["init", "-q", "-b", "main"]);
         for i in 0..400 {
             std::fs::write(p.join(format!("f{i}.txt")), format!("{i}")).unwrap();
@@ -3593,7 +3639,11 @@ mod tests {
         let manifests = [full("s", 20, 9, side), full("m", 10, 1, on_chain)];
         let plan = plan_history_index(&manifests, &roles, tip);
         let got = prepare_history_index(p, tip, &plan).unwrap().unwrap();
-        assert_eq!(got.index().base, Some([1; 32]), "extends the index on the chain");
+        assert_eq!(
+            got.index().base,
+            Some([1; 32]),
+            "extends the index on the chain"
+        );
         assert_eq!(got.artifact.tips, vec![tip, on_chain]);
     }
 
@@ -3610,7 +3660,12 @@ mod tests {
         };
         delta_old.created_at = 20;
         let stranger = history("x", 40, 9, "stranger", 0xee, None);
-        let all = [stranger, delta_new.clone(), delta_old, history("f", 10, 1, "w", 0xa0, None)];
+        let all = [
+            stranger,
+            delta_new.clone(),
+            delta_old,
+            history("f", 10, 1, "w", 0xa0, None),
+        ];
 
         let plan = plan_history_index(&all, &roles, [0xc0; 20]);
         assert!(plan.covered, "the newest delta covers its tip");
@@ -3644,7 +3699,11 @@ mod tests {
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .output()
                 .unwrap();
-            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
         git(&["init", "-q", "-b", "main"]);
@@ -3654,7 +3713,10 @@ mod tests {
         git(&["add", "-A"]);
         git(&["commit", "-q", "-m", "many files"]);
         let tip = |git: &dyn Fn(&[&str]) -> String| -> [u8; 20] {
-            hex::decode(git(&["rev-parse", "HEAD"])).unwrap().try_into().unwrap()
+            hex::decode(git(&["rev-parse", "HEAD"]))
+                .unwrap()
+                .try_into()
+                .unwrap()
         };
         let base_tip = tip(&git);
         let roles: RoleMap = [("w".to_string(), Role::Writer)].into();
@@ -3709,7 +3771,11 @@ mod tests {
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .output()
                 .unwrap();
-            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
         git(&["init", "-q", "-b", "main"]);
@@ -3718,7 +3784,10 @@ mod tests {
         git(&["commit", "-q", "-m", "one"]);
         std::fs::write(p.join("a"), "2").unwrap();
         git(&["commit", "-q", "-am", "two"]);
-        let head: [u8; 20] = hex::decode(git(&["rev-parse", "HEAD"])).unwrap().try_into().unwrap();
+        let head: [u8; 20] = hex::decode(git(&["rev-parse", "HEAD"]))
+            .unwrap()
+            .try_into()
+            .unwrap();
         let roles: RoleMap = [("w".to_string(), Role::Writer)].into();
         // A base whose tip this clone does not hold: full.
         let unknown = history("f", 10, 1, "w", 0x42, None);
@@ -3727,13 +3796,20 @@ mod tests {
         assert!(got.index().base.is_none());
         assert_eq!(got.artifact.supersedes, vec![[1; 32]]);
         // A base on the chain but tiny: the delta (every path) is not under half of it.
-        let parent: [u8; 20] =
-            hex::decode(git(&["rev-parse", "HEAD~1"])).unwrap().try_into().unwrap();
+        let parent: [u8; 20] = hex::decode(git(&["rev-parse", "HEAD~1"]))
+            .unwrap()
+            .try_into()
+            .unwrap();
         let mut small = history("f", 10, 1, "w", 0, None);
         small.tips = vec![parent];
         small.size_bytes = 10;
         let plan = plan_history_index(&[small], &roles, head);
-        assert!(prepare_history_index(p, head, &plan).unwrap().unwrap().index().base.is_none());
+        assert!(prepare_history_index(p, head, &plan)
+            .unwrap()
+            .unwrap()
+            .index()
+            .base
+            .is_none());
     }
 
     #[test]

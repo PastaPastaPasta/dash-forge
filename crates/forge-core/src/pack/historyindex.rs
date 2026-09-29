@@ -66,6 +66,9 @@ pub struct IndexedCommit {
     pub subject: String,
 }
 
+/// `path → index into the commit table`, byte-ordered.
+pub type PathMap = BTreeMap<Vec<u8>, u32>;
+
 /// A parsed (or freshly built) history index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HistoryIndex {
@@ -84,7 +87,7 @@ pub struct HistoryIndex {
     /// The referenced commits, each once.
     pub commits: Vec<IndexedCommit>,
     /// `path → index into commits`, byte-ordered.
-    pub paths: BTreeMap<Vec<u8>, u32>,
+    pub paths: PathMap,
 }
 
 impl HistoryIndex {
@@ -142,10 +145,7 @@ impl HistoryIndex {
         if body.len() as u64 > MAX_INFLATED {
             return Err(bad("inflates past its size limit"));
         }
-        let mut r = Cursor {
-            buf: &body,
-            pos: 0,
-        };
+        let mut r = Cursor { buf: &body, pos: 0 };
         if r.take(4)? != MAGIC || r.take(1)?[0] < VERSION {
             return Err(bad("not a history index"));
         }
@@ -224,7 +224,9 @@ impl HistoryIndex {
 pub fn compute(repo: &Path, tip: &str, since: Option<&str>) -> Result<Option<HistoryIndex>> {
     ensure_safe_rev(tip)?;
     if capture(repo, &["rev-parse", "--is-shallow-repository"], None)?.trim_ascii() == b"true" {
-        return Err(bad("the repository is a shallow clone; its history is incomplete"));
+        return Err(bad(
+            "the repository is a shallow clone; its history is incomplete",
+        ));
     }
     let tip_oid = rev_parse(repo, tip)?;
     let tip_hex = hex::encode(tip_oid);
@@ -243,7 +245,15 @@ pub fn compute(repo: &Path, tip: &str, since: Option<&str>) -> Result<Option<His
     // Every path of the tip (files, symlinks, gitlinks and directories).
     let listing = capture(
         repo,
-        &["ls-tree", "-r", "-t", "-z", "--name-only", "--end-of-options", &tip_hex],
+        &[
+            "ls-tree",
+            "-r",
+            "-t",
+            "-z",
+            "--name-only",
+            "--end-of-options",
+            &tip_hex,
+        ],
         None,
     )?;
     let mut open: BTreeSet<Vec<u8>> = listing
@@ -268,7 +278,13 @@ pub fn compute(repo: &Path, tip: &str, since: Option<&str>) -> Result<Option<His
     let first_parent_count = rev_count(repo, &tip_hex, true)?;
     let root = capture(
         repo,
-        &["rev-list", "--first-parent", "--max-parents=0", "--end-of-options", &tip_hex],
+        &[
+            "rev-list",
+            "--first-parent",
+            "--max-parents=0",
+            "--end-of-options",
+            &tip_hex,
+        ],
         None,
     )?;
     let root_oid = parse_hex_oid(
@@ -415,7 +431,7 @@ fn first_parent_changes(
 fn commit_table(
     repo: &Path,
     found: &BTreeMap<Vec<u8>, [u8; OID_LEN]>,
-) -> Result<(Vec<IndexedCommit>, BTreeMap<Vec<u8>, u32>)> {
+) -> Result<(Vec<IndexedCommit>, PathMap)> {
     let distinct: Vec<[u8; OID_LEN]> = found
         .values()
         .copied()
@@ -446,7 +462,11 @@ fn commit_meta(repo: &Path, oids: &[[u8; OID_LEN]]) -> Result<Vec<(u64, String)>
     if oids.is_empty() {
         return Ok(Vec::new());
     }
-    let input: String = oids.iter().map(|o| format!("{}\n", hex::encode(o))).collect();
+    let mut input = String::with_capacity(oids.len() * 41);
+    for o in oids {
+        input.push_str(&hex::encode(o));
+        input.push('\n');
+    }
     let out = capture(repo, &["cat-file", "--batch"], Some(input.as_bytes()))?;
     let mut pos = 0;
     let mut meta = Vec::with_capacity(oids.len());
@@ -455,7 +475,8 @@ fn commit_meta(repo: &Path, oids: &[[u8; OID_LEN]]) -> Result<Vec<(u64, String)>
             .iter()
             .position(|&b| b == b'\n')
             .ok_or_else(|| bad("cat-file: truncated header"))?;
-        let header = std::str::from_utf8(&out[pos..pos + nl]).map_err(|_| bad("cat-file header"))?;
+        let header =
+            std::str::from_utf8(&out[pos..pos + nl]).map_err(|_| bad("cat-file header"))?;
         let mut parts = header.split(' ');
         let (_, kind, size) = (parts.next(), parts.next(), parts.next());
         if kind != Some("commit") {
@@ -582,7 +603,10 @@ struct Cursor<'a> {
 impl<'a> Cursor<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8]> {
         let end = self.pos.checked_add(n).ok_or_else(|| bad("truncated"))?;
-        let s = self.buf.get(self.pos..end).ok_or_else(|| bad("truncated"))?;
+        let s = self
+            .buf
+            .get(self.pos..end)
+            .ok_or_else(|| bad("truncated"))?;
         self.pos = end;
         Ok(s)
     }

@@ -276,7 +276,9 @@ pub fn price_helper_estimate(mut r: PushReport, fallback: bool) -> PushReport {
     if fallback && r.chunks == 0 && r.pack_bytes > 0 {
         // The pack's chunks and the history index's (it goes where the pack does), sealed.
         let history = if r.history_bytes > 0 {
-            push_fees::chunks(forge_core::private::pack::sealed_upper_bound(r.history_bytes))
+            push_fees::chunks(forge_core::private::pack::sealed_upper_bound(
+                r.history_bytes,
+            ))
         } else {
             0
         };
@@ -658,7 +660,12 @@ pub fn fresh_push_credits(bytes: u64, objects: u64, refs: u64, storage: PackStor
 /// The history index the helper publishes with the first push of the default branch
 /// (`default_branch`, in the mirror at `git_dir`): computed here as the helper will, and priced
 /// where `storage` puts it. 0 for the PR heads push, or when the mirror has no such branch.
-fn fresh_history_credits(git_dir: &Path, refs: &Refs, storage: PackStorage, default_branch: &str) -> u64 {
+fn fresh_history_credits(
+    git_dir: &Path,
+    refs: &Refs,
+    storage: PackStorage,
+    default_branch: &str,
+) -> u64 {
     if !matches!(refs, Refs::Code) || default_branch.is_empty() {
         return 0;
     }
@@ -671,7 +678,7 @@ fn fresh_history_credits(git_dir: &Path, refs: &Refs, storage: PackStorage, defa
     else {
         return 0;
     };
-    let plan = forge_core::repo::HistoryPlan::default();
+    let plan = forge_core::repo::HistoryPlan::fresh();
     let Ok(Some(prepared)) = forge_core::repo::prepare_history_index(git_dir, tip, &plan) else {
         return 0;
     };
@@ -722,7 +729,9 @@ pub async fn history_backfill(
     let externals = resolved
         .external
         .iter()
-        .map(|(name, profile)| forge_core::storage::ExternalTarget::from_profile(name, profile, &http))
+        .map(|(name, profile)| {
+            forge_core::storage::ExternalTarget::from_profile(name, profile, &http)
+        })
         .collect::<std::result::Result<Vec<_>, _>>()?;
     let chain = resolved.platform.then(|| {
         forge_core::repo::PlatformChunkTarget::new(svc, repo, forge_core::storage::PLATFORM_PROFILE)
@@ -1132,7 +1141,7 @@ dash: push failed: ref did not converge to pushed tip"#;
         repo_with_history(d);
         let with = estimate_fresh(d, &Refs::Code, PackStorage::PLATFORM, "main").unwrap();
         let other = estimate_fresh(d, &Refs::Code, PackStorage::PLATFORM, "develop").unwrap();
-        let plan = forge_core::repo::HistoryPlan::default();
+        let plan = forge_core::repo::HistoryPlan::fresh();
         let tip: [u8; 20] = hex::decode(git(d, &["rev-parse", "main"]).trim())
             .unwrap()
             .try_into()
@@ -1146,7 +1155,10 @@ dash: push failed: ref did not converge to pushed tip"#;
         );
         // A fresh repository's index is its first: priced with the first-of-kind fee.
         assert!(prepared.is_first());
-        assert_eq!(fresh_history_credits(d, &Refs::PullHeads(vec![1]), PackStorage::PLATFORM, "main"), 0);
+        assert_eq!(
+            fresh_history_credits(d, &Refs::PullHeads(vec![1]), PackStorage::PLATFORM, "main"),
+            0
+        );
     }
 
     /// F-9: with the pack going to your own bucket, the first push into a new repository

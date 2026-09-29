@@ -430,6 +430,8 @@ impl Helper {
     }
 
     /// [`Self::push`] of real refs (no `HEAD`).
+    // One push, in order: plan, store, refs, indexes, read-back; each step is its own function.
+    #[allow(clippy::too_many_lines)]
     async fn push_refs(
         &mut self,
         specs: &[PushSpec],
@@ -567,19 +569,8 @@ impl Helper {
         } else {
             read_refs_until_converged(conn, &planned).await?
         };
-        // The history index names the tip the default branch has now: published only once the
-        // refs converged and the default branch reads at the tip it was computed for (a
-        // rejected or raced default ref gets none), and only when this push priced it.
         if let (Some(ctx), Some(history), true) = (ctx.as_ref(), history, history_paid) {
-            let landed = history_tip_landed(&history, &final_refs);
-            match (landed, stored) {
-                (true, Some(stored)) => publish_history(ctx, history.prepared, stored).await,
-                (true, None) => publish_history_to_recorded(ctx, history.prepared).await,
-                (false, _) => ctx.say(
-                    "the default branch did not land at the pushed tip; its history index is not \
-                     published (the web walks history until `dg repo reindex` publishes it)",
-                ),
-            }
+            publish_history_after_refs(ctx, history, stored, &final_refs).await;
         }
         // The branches that moved: the PRs following them get a head update (review-parity
         // R14). Read before `finalize_outcomes` consumes the plan.
@@ -658,7 +649,10 @@ impl Helper {
 
 /// Re-read refs, retrying briefly until every accepted non-delete spec resolves to its pushed
 /// tip (tolerating read-after-write lag), or the retry budget is spent.
-async fn read_refs_until_converged(conn: &Conn, planned: &[Planned]) -> Result<Vec<(String, RefState)>> {
+async fn read_refs_until_converged(
+    conn: &Conn,
+    planned: &[Planned],
+) -> Result<Vec<(String, RefState)>> {
     const MAX_ATTEMPTS: usize = 6;
     let svc = conn.service();
     // `None` = a delete, converged once the ref reads as gone. Deletes wait too: a node
@@ -1255,6 +1249,8 @@ impl PushContext<'_> {
 /// has landed; every failure before that is an error, and the caller writes no refs.
 /// `Some(credits)`: the on-chain estimate for what this push stored (the summary line's
 /// fallback when the balance has not moved yet).
+// Build, price, guard, store and record, in that order; the steps are their own functions.
+#[allow(clippy::too_many_lines)]
 async fn upload_push_pack(
     ctx: &PushContext<'_>,
     want_tips: &[String],
@@ -1334,14 +1330,9 @@ async fn upload_push_pack(
     // here, not after a "y" at the cost prompt.
     let externals = external_targets(ctx)?;
     if let Some(refs_only) = reuse_recorded(ctx, &job).await? {
-        // The history index is one more write on top of the refs: the guard weighs it too, and
-        // a guard that declines it leaves it to `dg repo reindex` (the refs still land).
-        let with_history = refs_only + history_credits(ctx, resolved.platform);
-        let history = ctx.history_bytes.is_some()
-            && policy::enforce(with_history, ctx.policy, resolved.platform, policy::NOTE_NOTHING_STORED)
-                .is_ok();
+        let (est_credits, history) = refs_only_history(ctx, refs_only);
         return Ok(Some(Uploaded {
-            est_credits: if history { with_history } else { refs_only },
+            est_credits,
             index: missing_index(ctx, &job, pack.parsed, externals).await,
             history,
         }));
@@ -2129,7 +2120,10 @@ impl StoredWith {
     }
 
     /// The external targets that confirmed the pack, plus `chain` (the Platform target).
-    fn targets<'t>(&'t self, chain: Option<&'t PlatformChunkTarget<'_>>) -> Vec<&'t dyn StorageTarget> {
+    fn targets<'t>(
+        &'t self,
+        chain: Option<&'t PlatformChunkTarget<'_>>,
+    ) -> Vec<&'t dyn StorageTarget> {
         let mut targets: Vec<&dyn StorageTarget> = self
             .externals
             .iter()
@@ -2174,7 +2168,9 @@ async fn prepare_push_history(
     // forge-import names when it spawned this push, else `main`.
     let default = match svc.read_default_branch(repo).await {
         Ok(Some(b)) => b,
-        Ok(None) => default_branch_hint().unwrap_or_else(|| forge_core::repo::DEFAULT_BRANCH.to_string()),
+        Ok(None) => {
+            default_branch_hint().unwrap_or_else(|| forge_core::repo::DEFAULT_BRANCH.to_string())
+        }
         Err(e) => {
             progress.note(&format!(
                 "the default branch could not be read ({e}); no history index this push"
@@ -2191,9 +2187,11 @@ async fn prepare_push_history(
     let prepared = async {
         let plan = svc.plan_history_publish(repo, tip).await?;
         let dir = git_dir.to_path_buf();
-        tokio::task::spawn_blocking(move || forge_core::repo::prepare_history_index(&dir, tip, &plan))
-            .await
-            .map_err(|e| forge_core::error::Error::Io(e.to_string()))?
+        tokio::task::spawn_blocking(move || {
+            forge_core::repo::prepare_history_index(&dir, tip, &plan)
+        })
+        .await
+        .map_err(|e| forge_core::error::Error::Io(e.to_string()))?
     }
     .await;
     match prepared {
@@ -2228,6 +2226,45 @@ fn default_branch_hint() -> Option<String> {
         .filter(|b| !b.is_empty())
 }
 
+/// A push that reuses a recorded pack pays for its refs; the history index is one more write on
+/// top of them, which the guard weighs too. A guard that declines it leaves it to `dg repo
+/// reindex` (the refs still land). Returns the push's price and whether it publishes the index.
+fn refs_only_history(ctx: &PushContext<'_>, refs_only: u64) -> (u64, bool) {
+    let platform = ctx.policy.resolved.platform;
+    let with_history = refs_only + history_credits(ctx, platform);
+    let history = ctx.history_bytes.is_some()
+        && policy::enforce(
+            with_history,
+            ctx.policy,
+            platform,
+            policy::NOTE_NOTHING_STORED,
+        )
+        .is_ok();
+    (if history { with_history } else { refs_only }, history)
+}
+
+/// The history index names the tip the default branch has now: published once the refs
+/// converged and only when the default branch reads at the tip it was computed for (a rejected
+/// or raced default ref gets none), to where the push's pack went (or its recorded copies).
+async fn publish_history_after_refs(
+    ctx: &PushContext<'_>,
+    history: PushHistory,
+    stored: Option<StoredWith>,
+    final_refs: &[(String, RefState)],
+) {
+    if !history_tip_landed(&history, final_refs) {
+        ctx.say(
+            "the default branch did not land at the pushed tip; its history index is not \
+             published (the web walks history until `dg repo reindex` publishes it)",
+        );
+        return;
+    }
+    match stored {
+        Some(stored) => publish_history(ctx, history.prepared, stored).await,
+        None => publish_history_to_recorded(ctx, history.prepared).await,
+    }
+}
+
 /// Whether the refs read after the push show the index's branch at the index's tip.
 fn history_tip_landed(history: &PushHistory, final_refs: &[(String, RefState)]) -> bool {
     let want = hex::encode(history.prepared.index().tip);
@@ -2257,11 +2294,16 @@ async fn publish_history_to_recorded(ctx: &PushContext<'_>, history: PreparedHis
             uris: Vec::new(),
             platform: false,
         })
-        .chain(ctx.policy.resolved.platform.then(|| forge_core::storage::Replica {
-            target: forge_core::storage::PLATFORM_PROFILE.into(),
-            uris: Vec::new(),
-            platform: true,
-        }))
+        .chain(
+            ctx.policy
+                .resolved
+                .platform
+                .then(|| forge_core::storage::Replica {
+                    target: forge_core::storage::PLATFORM_PROFILE.into(),
+                    uris: Vec::new(),
+                    platform: true,
+                }),
+        )
         .collect();
     let stored = StoredWith {
         replication: Replication {
@@ -2774,12 +2816,12 @@ fn resolve_key_path(url: &DashUrl, owner_id: &str) -> Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{default_branch_hint, history_tip_landed, PushHistory};
     use super::{
         archived_refusal, blames_set_aside_packs, forget_sealed, head_outcome, hidden_packs_needed,
         is_head, list_lines, oid_to_bytes, packs_unreadable, protected_denied, resolve_network,
         settle_ref_writes, write_denied, Planned, PushOutcome, PushSpec, Unreadable,
     };
+    use super::{default_branch_hint, history_tip_landed, PushHistory};
 
     fn planned(dst: &str) -> Planned {
         Planned {
@@ -3060,7 +3102,11 @@ mod tests {
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .output()
                 .unwrap();
-            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            assert!(
+                out.status.success(),
+                "{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         };
         git(&["init", "-q", "-b", "main"]);
@@ -3069,7 +3115,7 @@ mod tests {
         git(&["commit", "-q", "-m", "one"]);
         let tip = git(&["rev-parse", "HEAD"]);
         let oid = forge_core::pack::historyindex::parse_hex_oid(tip.as_bytes()).unwrap();
-        let plan = forge_core::repo::HistoryPlan::default();
+        let plan = forge_core::repo::HistoryPlan::fresh();
         let prepared = forge_core::repo::prepare_history_index(d.path(), oid, &plan)
             .unwrap()
             .unwrap();

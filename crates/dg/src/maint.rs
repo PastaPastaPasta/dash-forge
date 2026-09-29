@@ -115,6 +115,8 @@ pub async fn repack(
 /// packs are stored there. `--profile` is required when they are not, and inside a clone of the
 /// repository whose storage policy names your own storage: a repository is never given a
 /// Platform index it did not ask for.
+// Plan, quote, confirm, publish, report: each step is its own function.
+#[allow(clippy::too_many_lines)]
 pub async fn reindex(
     ctx: &Ctx,
     repo: &str,
@@ -168,35 +170,20 @@ pub async fn reindex(
         .join(", ");
 
     let price = dash_usd_price();
-    let sealed = s.repo.visibility == forge_core::rules::v2::Visibility::Private;
-    let locator_estimate = if plan.missing.is_empty() {
-        0
-    } else {
-        reindex_estimate(
-            plan.index_objects(),
-            sealed,
-            external_names.len() as u64,
-            platform.is_some(),
-        )
-    };
-    let history_estimate = history
-        .prepared
-        .as_ref()
-        .map_or(0, |h| h.credits(sealed, external_names.len() as u64, platform.is_some()));
-    if !ctx.json {
-        if !plan.missing.is_empty() {
-            print_reindex_plan(&s.repo, &plan, &label, &cost_line(locator_estimate, price));
-        }
-        if let Some(h) = &history.prepared {
-            print_history_plan(&s.repo, h, &label, &cost_line(history_estimate, price));
-        } else if let Some(why) = &history.note {
-            println!("  history index:   {why}");
-        }
-    }
+    let estimate = quote_reindex(
+        ctx,
+        &s.repo,
+        &plan,
+        &history,
+        &label,
+        external_names.len() as u64,
+        platform.is_some(),
+        price,
+    );
     ctx.confirm_or_cancel(&format!(
         "Publish the browse index of {} ({})?",
         s.repo.display(),
-        cost_line(locator_estimate + history_estimate, price)
+        cost_line(estimate, price)
     ))?;
     let before = s.client.get_balance(&s.identity.id()).await.ok();
     let target = || RepackTarget::Replicated {
@@ -253,6 +240,42 @@ pub async fn reindex(
         print_reindex(&s.repo, &report, published.as_ref(), spent, price);
     });
     Ok(())
+}
+
+/// Price what `dg repo reindex` will publish (the locator part and the history index, each an
+/// upper bound), and show it unless `--json`. Returns the total.
+#[allow(clippy::too_many_arguments)]
+fn quote_reindex(
+    ctx: &Ctx,
+    handle: &forge_core::scope::RepoRef,
+    plan: &forge_core::repo::ReindexPlan,
+    history: &HistoryReindex,
+    label: &str,
+    external_targets: u64,
+    platform: bool,
+    price: f64,
+) -> u64 {
+    let sealed = handle.visibility == forge_core::rules::v2::Visibility::Private;
+    let locator = if plan.missing.is_empty() {
+        0
+    } else {
+        reindex_estimate(plan.index_objects(), sealed, external_targets, platform)
+    };
+    let history_credits = history
+        .prepared
+        .as_ref()
+        .map_or(0, |h| h.credits(sealed, external_targets, platform));
+    if !ctx.json {
+        if !plan.missing.is_empty() {
+            print_reindex_plan(handle, plan, label, &cost_line(locator, price));
+        }
+        if let Some(h) = &history.prepared {
+            print_history_plan(handle, h, label, &cost_line(history_credits, price));
+        } else if let Some(why) = &history.note {
+            println!("  history index:   {why}");
+        }
+    }
+    locator + history_credits
 }
 
 /// What `dg repo reindex` does about the history index.
@@ -317,10 +340,7 @@ async fn plan_history(
     };
     let tip_hex = hex::encode(tip);
     if !crate::git::has_object(&dir, &tip_hex) {
-        return Ok(no_clone(format!(
-            "{} does not hold the tip",
-            dir.display()
-        )));
+        return Ok(no_clone(format!("{} does not hold the tip", dir.display())));
     }
     match forge_core::repo::prepare_history_index(&dir, tip, &hplan) {
         Ok(Some(p)) => Ok(HistoryReindex {

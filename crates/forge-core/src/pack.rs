@@ -44,11 +44,11 @@ pub use build::{
     Pack,
 };
 pub use flatindex::{FlatEntry, FlatIndex, MODE_GITLINK};
+pub use historyindex::HistoryIndex;
 pub use locator::{
     LocatorEntry, ObjectLocator, FANOUT_LEN, LOCATOR_ROW_LEN, SPAN_SENTINEL,
     SPAN_SINGLE_READ_THRESHOLD,
 };
-pub use historyindex::HistoryIndex;
 pub use manifest::{
     plan_supersedes, PackManifest, KIND_FLAT_INDEX, KIND_GIT_PACK, KIND_HISTORY_INDEX,
     KIND_OBJECT_LOCATOR,

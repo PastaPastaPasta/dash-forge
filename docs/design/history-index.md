@@ -58,19 +58,19 @@ For every path in the tip's tree (files, symlinks, gitlinks **and directories**,
 
 The writer's choice, from its local repository and the manifest list (it never downloads an index):
 
-1. **Base.** The newest full index from a current member whose tip is on the new tip's first-parent chain. The log pass stops when it reaches that tip.
+1. **Base.** The newest live full index from a current member whose tip is on the new tip's first-parent chain, tried newest first. The log pass stops when it reaches that tip.
 2. **Delta.** If a base exists and the delta is smaller than half the base's size, publish the delta.
 3. **Full.** Otherwise publish a full index, superseding every live history index. So a small repository, whose index fits in one chunk, simply republishes in full.
 
 **Cost.** The cumulative delta grows until it reaches half the full index, then the next push publishes a full one. A push therefore pays at most one index of about half the full size plus a manifest, and usually one small chunk plus a manifest.
 
-**Which pushes publish.** Only pushes that move the **default branch** publish an index; other branches fall back to the walk. Other branches are not indexed because their listings are rare, and each index is a manifest (about 0.001 DASH) that a push to any branch would otherwise pay.
+**Which pushes publish.** Only pushes that move the **default branch** publish an index; other branches fall back to the walk. It is published after the refs are read back: only when the default branch reads at the tip the index describes, so a rejected or raced default branch gets none. A config that cannot be read skips it rather than guess the branch. A push that reuses a recorded pack still publishes it, and its price is added to the guard. A shallow clone publishes none, because its history is cut off. The index reads the real object graph, ignoring replace refs and grafts, and the log streams: git is stopped as soon as every path is settled. Other branches are not indexed because their listings are rare, and each index is a manifest (about 0.001 DASH) that a push to any branch would otherwise pay.
 
 ### Reader (forge-web)
 
 The browse resolve already reads the repository's whole manifest list, so the kind-3 manifests cost no extra query.
 
-**Candidates.** A candidate is a kind-3 pack whose representative copy is from a **current member**. `packManifest` can only be written by a maintainer or writer (`ownerRefersTo`), and a revoked writer's claims no longer count.
+**Candidates.** A candidate is a kind-3 pack whose representative copy is from a **current member**. A delta counts only while a live full index of its base tip stands behind it. If two indexes cover one tip, a full index wins over a delta, and the newer wins between two of the same kind. An index that fails to load (a missing artifact, bad bytes) counts as none: the column walks and the count walks on. Artifacts inflate to at most 64 MB. `packManifest` can only be written by a maintainer or writer (`ownerRefersTo`), and a revoked writer's claims no longer count.
 
 **For a listing at tip `T`:**
 1. **Index for `T`.** When a candidate indexes `T`, load it: one ranged artifact read, plus its base for a delta. Both are content-addressed and cached in IndexedDB. The column then fills with **no history walk**.
@@ -97,7 +97,7 @@ The UI says where the numbers come from: the cell's and the count's tooltips nam
 ## Backfill and import
 
 - **`dg repo reindex <repo>`** also publishes the history index when the default branch's tip has none. It computes the index in the local clone: the current directory's repository, or `--git-dir`, which must hold the tip. It prices the index with the locator part before asking, and reports what it spent.
-- **forge-import** gets the index from its code push, through the helper. After the push, it checks that an index covers the default branch's tip. If none does (for example, a freshly created repository whose config the helper's first read did not see yet), it publishes one from its work mirror, with the cost inside `--max-spend`.
+- **forge-import** gets the index from its code push, through the helper, which it tells the default branch (`DASH_FORGE_DEFAULT_BRANCH`, honoured only in a push forge-import spawned). After the push, it checks that an index covers the default branch's tip. If none does (for example, a freshly created repository whose config the helper's first read did not see yet), it publishes one from its work mirror. The cost stays inside `--max-spend`, and a Platform fallback's budget includes the index's chunks (the `platform` event's `historyBytes`).
 
 ## Measured size and cost
 

@@ -372,10 +372,11 @@ async fn backfill_history(
         return;
     }
     let svc = forge_core::repo::RepoService::new(client, &signer.identity, &signer.bridge);
-    let outcome = crate::gitsync::history_backfill(&svc, repo, work, default_branch, &mut |credits| {
-        ledger.budget.fits(credits)
-    })
-    .await;
+    let outcome =
+        crate::gitsync::history_backfill(&svc, repo, work, default_branch, &mut |credits| {
+            ledger.budget.fits(credits)
+        })
+        .await;
     match outcome {
         Ok(Some(credits)) => {
             let _ = ledger.budget.charge(credits, "the history index");
@@ -472,7 +473,10 @@ async fn push_one(
 /// Count what a push wrote, and warn when it left its browse index behind (D-920).
 fn count_push(ledger: &mut Ledger<'_>, report: &PushReport, what: &str) {
     ledger.counts.add_push(report);
-    for w in [&report.index_skipped, &report.history_skipped].into_iter().flatten() {
+    for w in [&report.index_skipped, &report.history_skipped]
+        .into_iter()
+        .flatten()
+    {
         ledger.warn(format!("{what}: {w}"));
     }
 }

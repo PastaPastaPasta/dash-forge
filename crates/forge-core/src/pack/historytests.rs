@@ -55,7 +55,11 @@ fn commit_index(dir: &Path, msg: &str, when: u64) {
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
 }
 
 fn write(dir: &Path, path: &str, body: &str) {
@@ -110,7 +114,12 @@ fn fixture() -> TempDir {
     let head = git(p, &["rev-parse", "HEAD"]);
     git(
         p,
-        &["update-index", "--add", "--cacheinfo", &format!("160000,{head},vendor/sub")],
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{head},vendor/sub"),
+        ],
     );
     commit_index(p, "add gitlink", 8_000);
     commit_index(p, "empty commit", 9_000);
@@ -192,7 +201,10 @@ fn matches_the_tree_by_tree_rule_across_merges_renames_deletes_and_directories()
     assert!(ix.last_change(b"src/a.rs").is_none());
     assert!(ix.last_change(b"docs/old.md").is_none());
     // The author time comes with the commit, in seconds.
-    assert_eq!(ix.last_change(b"README.md").unwrap().author_time, 1_700_003_000);
+    assert_eq!(
+        ix.last_change(b"README.md").unwrap().author_time,
+        1_700_003_000
+    );
 }
 
 #[test]
@@ -202,7 +214,9 @@ fn counts_every_commit_and_the_first_parent_chain() {
     let ix = compute(p, "HEAD", None).unwrap().unwrap();
     assert_eq!(
         ix.commit_count,
-        git(p, &["rev-list", "--count", "HEAD"]).parse::<u64>().unwrap()
+        git(p, &["rev-list", "--count", "HEAD"])
+            .parse::<u64>()
+            .unwrap()
     );
     assert_eq!(
         ix.first_parent_count,
@@ -275,7 +289,8 @@ fn a_base_off_the_first_parent_chain_gives_no_delta() {
 
 #[test]
 fn subjects_are_the_first_trimmed_line_clipped_at_a_char_boundary() {
-    let (t, s) = parse_commit_meta(b"tree x\nauthor A <a@b> 1700000000 +0000\n\n  Fix it  \nmore\n");
+    let (t, s) =
+        parse_commit_meta(b"tree x\nauthor A <a@b> 1700000000 +0000\n\n  Fix it  \nmore\n");
     assert_eq!((t, s.as_str()), (1_700_000_000, "Fix it"));
     let long = format!("tree x\nauthor A <a@b> 5 +0000\n\n{}", "é".repeat(150));
     let (_, s) = parse_commit_meta(long.as_bytes());
@@ -344,8 +359,15 @@ fn the_shared_decoder_fixture_matches() {
     if std::env::var_os("FORGE_BLESS").is_some() {
         std::fs::write(path, &hex_body).unwrap();
     }
-    assert_eq!(std::fs::read_to_string(path).unwrap(), hex_body, "run with FORGE_BLESS=1");
-    assert_eq!(HistoryIndex::parse(&ix.to_compressed().unwrap()).unwrap(), ix);
+    assert_eq!(
+        std::fs::read_to_string(path).unwrap(),
+        hex_body,
+        "run with FORGE_BLESS=1"
+    );
+    assert_eq!(
+        HistoryIndex::parse(&ix.to_compressed().unwrap()).unwrap(),
+        ix
+    );
 }
 
 /// Size and price of a real repository's history index (docs/guides/costs.md): run with
@@ -384,7 +406,9 @@ fn measure_a_real_delta() {
     let repo = std::env::var("HISTORY_MEASURE_REPO").expect("HISTORY_MEASURE_REPO");
     let tip = std::env::var("HISTORY_MEASURE_TIP").unwrap_or_else(|_| "HEAD".into());
     let base = std::env::var("HISTORY_MEASURE_BASE").expect("HISTORY_MEASURE_BASE");
-    let d = compute(Path::new(&repo), &tip, Some(&base)).unwrap().unwrap();
+    let d = compute(Path::new(&repo), &tip, Some(&base))
+        .unwrap()
+        .unwrap();
     let bytes = d.to_compressed().unwrap();
     println!(
         "MEASURE delta base={base} paths={} gz_bytes={} platform_credits={}",
@@ -406,7 +430,11 @@ fn a_shallow_clone_is_refused() {
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .output()
         .unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let err = compute(&shallow.path().join("s"), "HEAD", None).unwrap_err();
     assert!(format!("{err}").contains("shallow"), "{err}");
 }
@@ -450,7 +478,7 @@ fn a_long_tail_of_old_history_is_not_read_to_its_end() {
 fn hostile_bytes_are_bounded() {
     let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::best());
     let zeros = vec![0u8; 1 << 20];
-    for _ in 0..(super::historyindex::MAX_INFLATED / (1 << 20) + 1) {
+    for _ in 0..=(super::historyindex::MAX_INFLATED / (1 << 20)) {
         std::io::Write::write_all(&mut e, &zeros).unwrap();
     }
     let bomb = e.finish().unwrap();
