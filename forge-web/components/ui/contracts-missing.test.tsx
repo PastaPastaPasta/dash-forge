@@ -85,10 +85,10 @@ describe('ContractsMissingState', () => {
     expect(el.textContent).not.toContain('Try again')
   })
 
-  it('on moutai: links to GitHub for status', () => {
+  it('on moutai: still links to the GitHub repo for status', () => {
     act(() => root.render(<ContractsMissingState detail={RAW} config={MOUTAI} />))
     const link = el.querySelector('a')
     expect(link?.getAttribute('href')).toBe('https://github.com/PastaPastaPasta/dash-forge#readme')
-    expect(link?.textContent).toContain('GitHub')
+    expect(link?.textContent).toBe('Dash Forge on GitHub')
   })
 })

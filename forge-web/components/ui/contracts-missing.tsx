@@ -37,9 +37,6 @@ export function ContractsMissingState({
 }): JSX.Element {
   const devnet = config.network === 'devnet'
   const where = networkName(config)
-  // moutai was upgraded in place (Platform v4.2.0-beta.7), which retired its contracts, and the
-  // forge is moving to devnet bonsia rather than being redeployed there. Gated on the devnet
-  // actually detected as missing contracts, not a hard-coded date.
   const movingToBonsia = devnet && config.devnetName === 'moutai'
   return (
     <div
@@ -72,7 +69,7 @@ export function ContractsMissingState({
           href="https://github.com/PastaPastaPasta/dash-forge#readme"
           className="text-dense text-forge-700 underline dark:text-forge-400"
         >
-          {movingToBonsia ? 'Follow the move on GitHub' : 'Dash Forge on GitHub'}
+          Dash Forge on GitHub
         </a>
       </div>
       <details className="mt-4 w-full max-w-md text-left text-dense text-anvil-600 dark:text-anvil-300">
