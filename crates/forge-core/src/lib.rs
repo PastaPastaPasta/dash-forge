@@ -28,9 +28,12 @@
 //! - [`error`] — the `thiserror` taxonomy mirroring the product error classes.
 //! - [`user_error`] — [`user_error::UserError`]: stable code + cause + fix, the exit-code
 //!   table, and the mapping from [`Error`] / SDK messages that `dg` and the helper render.
+//! - `test_support` (tests and the `test-support` feature only) — the RC1 conformance
+//!   validator other crates' tests call.
 //!
 //! The async rs-sdk integration is confined to [`platform`] (style guide §B: the SDK
-//! is touched in exactly one module); every other module is synchronous and SDK-free.
+//! is touched in exactly one module); every other module is synchronous and SDK-free
+//! (`test_support` validates with rs-dpp directly, and never ships).
 
 pub mod backends;
 pub mod budget;
@@ -57,8 +60,6 @@ pub mod network;
 pub mod pack;
 pub mod platform;
 pub mod private;
-#[cfg(test)]
-pub(crate) mod rc1;
 pub mod refs;
 pub mod repo;
 pub mod resolve;
@@ -68,6 +69,8 @@ pub mod sealed;
 pub mod storage;
 #[cfg(test)]
 pub(crate) mod test_http;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
 pub mod user_error;
 pub mod webhooks;
 
