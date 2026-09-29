@@ -16,7 +16,7 @@ import { IllegalTransitionError, isStaleStateRefusal, readKindCounts, readStateC
 const id = (name: string): string => base58Encode(sha256(new TextEncoder().encode(name)))
 const hex = (b58: string): string => [...base58Decode(b58)].map((b) => b.toString(16).padStart(2, '0')).join('')
 
-const REPO: RepoRef = { forge: { core: 'CORE', collab: 'COLLAB', group: 'GROUP' }, repoId: id('repo'), ownerId: id('owner'), name: 'r', visibility: 'public' }
+const REPO: RepoRef = { forge: { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' }, repoId: id('repo'), ownerId: id('owner'), name: 'r', visibility: 'public' }
 const AUTHOR = id('author')
 const MAINT = id('maint')
 const PR: StateTarget = { id: id('pr'), number: 7, type: 'patch', author: AUTHOR }

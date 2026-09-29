@@ -11,7 +11,7 @@ import type { DocumentQuery } from '../sdk'
 import type { Membership } from '../rules/v2'
 import { bodyRefsUpstream, numberLabel, resolveUpstreamNumber, shownUpstreamNumber } from './upstream'
 
-const REPO: RepoRef = { forge: { core: 'CORE', collab: 'COLLAB', group: 'GROUP' }, repoId: 'R', ownerId: 'owner', name: 'r', visibility: 'public' }
+const REPO: RepoRef = { forge: { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' }, repoId: 'R', ownerId: 'owner', name: 'r', visibility: 'public' }
 const MEMBERS: Membership[] = [{ identity: 'maint', role: 'maintainer', createdAt: 1 }]
 
 describe('shownUpstreamNumber', () => {
