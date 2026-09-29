@@ -393,6 +393,22 @@ describe('forge-v2 issue and PR folds', () => {
     expect(page?.timeline.filter((t) => t.kind === 'transition')).toHaveLength(1)
   })
 
+  it('reads a thread with more than 100 transitions on `perTarget` alone (no time order it cannot serve)', async () => {
+    const store = fixture()
+    const ping = Array.from({ length: 102 }, (_, i) =>
+      doc({ $ownerId: AUTHOR, repoId: REPO, targetId: ID('issue2'), targetNumber: 2, targetKind: 0, kind: i % 2 === 0 ? 2 : 1, delta: i % 2 === 0 ? -1 : 1, asAuthor: 2 }),
+    )
+    store.COLLAB!.transition = [...store.COLLAB!.transition!, ...ping]
+    const seen: DocumentQuery[] = []
+    const thread = await loadIssueThread(mockSdk(store, seen), DEMO, 2)
+    // The first close, then 51 reopen/close pairs: closed.
+    expect(thread?.issue.state.open).toBe(false)
+    expect(thread?.timeline.filter((t) => t.kind === 'transition')).toHaveLength(103)
+    const reads = seen.filter((q) => q.documentTypeName === 'transition' && q.where?.[0]?.[1] === '==')
+    expect(reads.length).toBeGreaterThan(0)
+    for (const q of reads) expect(q.orderBy).toEqual([['targetId', 'asc']])
+  })
+
   it('labels a merge whose commit never was a base tip (D-9), but still reads it merged', async () => {
     const store = fixture()
     store.COLLAB!.transition = store.COLLAB!.transition!.map((t) => (t['kind'] === 13 ? { ...t, oid: hexToBase64('ef'.repeat(20)) } : t))

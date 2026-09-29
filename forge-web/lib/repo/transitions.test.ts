@@ -9,7 +9,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { describe, expect, it } from 'vitest'
 
 import { base58Decode, base58Encode } from '../auth/base58'
-import { ConsensusRefusal, uintGroupKey, type DocumentQuery, type WriteResult } from '../sdk'
+import { ConsensusRefusal, uintGroupKey, uintOfGroupKey, type DocumentQuery, type WriteResult } from '../sdk'
 import type { RepoRef } from './contract'
 import { IllegalTransitionError, isStaleStateRefusal, readKindCounts, readStateCodes, transitionData, writeTransition, type StateTarget } from './transitions'
 
@@ -118,7 +118,45 @@ describe('writeTransition', () => {
     expect(seen).toEqual([])
   })
 
-  it('recognises only the state rules as a stale-state refusal', () => {
+  it('returns without writing when an earlier attempt already landed (a retry after a timeout)', async () => {
+    const writes: unknown[] = []
+    const r = await writeTransition(sumSdk(() => ({ [PR.id]: 2 })), auth(MAINT), REPO, async (_t, d) => {
+      writes.push(d)
+      return OK
+    }, { target: PR, action: 'merge', isMember: true, oidHex: 'ab'.repeat(20), intent: 'm1' })
+    expect(writes).toEqual([])
+    expect(r).toMatchObject({ documentId: '', confirmed: true, actualCredits: 0 })
+    // Close of a closed issue, ready of a ready PR: the same.
+    await writeTransition(sumSdk(() => ({ [ISSUE.id]: 1 })), auth(MAINT), REPO, async () => { throw new Error('no write') }, { target: ISSUE, action: 'close', isMember: true })
+    await writeTransition(sumSdk(() => ({})), auth(MAINT), REPO, async () => { throw new Error('no write') }, { target: PR, action: 'ready', isMember: true })
+  })
+
+  it('keys the intent by the action, so a retry replays the same write whatever it reads', async () => {
+    const intents: (string | undefined)[] = []
+    await writeTransition(sumSdk(() => ({})), auth(MAINT), REPO, async (_t, _d, intent) => {
+      intents.push(intent)
+      return OK
+    }, { target: PR, action: 'close', isMember: true, intent: 'x' })
+    expect(intents).toEqual(['x:close:m'])
+  })
+
+  it('still falls back to the author after a stale-state retry', async () => {
+    let code = 0
+    const seen: string[] = []
+    await writeTransition(sumSdk(() => ({ [PR.id]: code })), auth(AUTHOR), REPO, async (_t, d) => {
+      seen.push(`${d['kind']}/${d['asAuthor']}`)
+      if (seen.length === 1) {
+        code = 8
+        throw new ConsensusRefusal(10422, 'breaks its propertyConstraints rule \\"c1_closedAfter\\": it does not hold', {}, false)
+      }
+      if (seen.length === 2) throw new ConsensusRefusal(40120, 'gate', {}, false)
+      return OK
+    }, { target: PR, action: 'close', isMember: true })
+    expect(seen).toEqual(['11/0', '16/0', '16/7'])
+  })
+
+  it('recognises only the state rules as a stale-state refusal, quotes plain or escaped', () => {
+    expect(isStaleStateRefusal(new ConsensusRefusal(10422, 'breaks its propertyConstraints rule \\"c2_openAfter\\": it does not hold'))).toBe(true)
     expect(isStaleStateRefusal(new ConsensusRefusal(10422, 'breaks its propertyConstraints rule "c3_mergedAfter": it does not hold'))).toBe(true)
     expect(isStaleStateRefusal(new ConsensusRefusal(10422, 'breaks its propertyConstraints rule "b1_closeDelta": it does not hold'))).toBe(false)
     expect(isStaleStateRefusal(new Error('rule "c1_closedAfter"'))).toBe(false)
@@ -137,18 +175,24 @@ describe('proved reads', () => {
     expect(codes.size).toBe(150)
   })
 
-  it('keys a grouped kind count by the u8 tree key (top bit flipped)', async () => {
+  it('decodes a grouped kind count from the tree key (top bit flipped), at any integer width', async () => {
     expect(uintGroupKey(1)).toBe('81')
     expect(uintGroupKey(13)).toBe('8d')
     expect(uintGroupKey(0x1234, 2)).toBe('9234')
-    const sdk = {
-      documents: {
-        count: async (q: DocumentQuery & { groupBy?: string[] }) => {
-          expect(q.groupBy).toEqual(['kind'])
-          return new Map([['81', 5n], ['82', 2n], ['8d', 1n]])
+    expect([uintOfGroupKey('81'), uintOfGroupKey('8000000d'), uintOfGroupKey('800000000000000b'), uintOfGroupKey('zz'), uintOfGroupKey('')]).toEqual([1, 13, 11, null, null])
+    const sdk = (keys: [string, bigint][]) =>
+      ({
+        documents: {
+          count: async (q: DocumentQuery & { groupBy?: string[]; limit?: number }) => {
+            expect(q.groupBy).toEqual(['kind'])
+            // A GroupByIn aggregate refuses any limit.
+            expect(q.limit).toBeUndefined()
+            return new Map(keys)
+          },
         },
-      },
-    } as unknown as EvoSDK
-    expect([...(await readKindCounts(sdk, REPO))]).toEqual([[1, 5], [2, 2], [13, 1]])
+      }) as unknown as EvoSDK
+    expect([...(await readKindCounts(sdk([['81', 5n], ['82', 2n], ['8d', 1n]]), REPO))]).toEqual([[1, 5], [2, 2], [13, 1]])
+    // A u32-sized kind (a contract without sized integers) reads the same; unknown kinds are dropped.
+    expect([...(await readKindCounts(sdk([['80000001', 4n], ['80000003', 9n]]), REPO))]).toEqual([[1, 4]])
   })
 })

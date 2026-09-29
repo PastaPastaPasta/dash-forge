@@ -43,7 +43,7 @@ import {
   type TargetLog,
   type TransitionView,
 } from '../repo'
-import { transitionOf } from '../repo/transitions'
+import { sortTransitions, transitionOf } from '../repo/transitions'
 import { stateCode } from '../rules/transition'
 import { DEFAULT_NETWORK, type Network } from '../constants'
 import { compositeOf, docsAt, queryComposite, siblingOf } from '../sdk/composite'
@@ -250,15 +250,18 @@ export async function loadIssueThread(sdk: EvoSDK, repo: RepoRef, number: number
     docs(i).length < 100
       ? docs(i)
       : queryAllDocuments(sdk, source.targetQuery(type, { where: [['targetId', '==', id]], orderBy: [['targetId', 'asc'], ['$createdAt', 'asc']] }))
-  const [commentDocs, eventDocs, transitionDocs] = await Promise.all([
+  // `transition` is indexed by `targetId` alone (`perTarget`): its continuation cannot order by time.
+  const completeTransitions = async (i: number): Promise<TransitionView[]> =>
+    docs(i).length < 100 ? docs(i).map(transitionOf) : readTransitions(sdk, repo, id)
+  const [commentDocs, eventDocs, transitionRows] = await Promise.all([
     complete(0, DOC.comment),
     complete(1, DOC.event),
-    complete(2, DOC.transition),
+    completeTransitions(2),
   ])
   const byTime = (a: PlainDocument, b: PlainDocument) => num(a, '$createdAt') - num(b, '$createdAt')
   // A private repo's member events are read through `readableEvents` (values opened, counted).
   const log = await toLog(repo, [...eventDocs].sort(byTime), [])
-  const transitions = transitionDocs.map(transitionOf)
+  const transitions = sortTransitions(transitionRows)
 
   // Members: complete when both sibling pages were short; recorded for the permission checks.
   const memberships = membershipsFromDocs(docs(4).length < 100 ? docs(4) : null, docs(5).length < 100 ? docs(5) : null)
@@ -378,14 +381,14 @@ export async function loadPullThread(sdk: EvoSDK, repo: RepoRef, number: number,
       ? docs(i)
       : queryAllDocuments(sdk, source.targetQuery(type, { where: [[field, '==', id]], orderBy: [[field, 'asc'], ['$createdAt', 'asc']] }))
   const byTime = (a: PlainDocument, b: PlainDocument) => num(a, '$createdAt') - num(b, '$createdAt')
-  const [commentDocs, eventDocs, authorEventDocs, reviewDocs, transitionDocs] = await Promise.all([
+  const [commentDocs, eventDocs, authorEventDocs, reviewDocs, transitionRows] = await Promise.all([
     complete(0, DOC.comment),
     complete(1, DOC.event),
     complete(2, DOC.authorEvent),
     complete(3, DOC.review, 'patchId'),
-    complete(8, DOC.transition),
+    docs(8).length < 100 ? Promise.resolve(docs(8).map(transitionOf)) : readTransitions(sdk, repo, id),
   ])
-  const transitions = transitionDocs.map(transitionOf)
+  const transitions = sortTransitions(transitionRows)
   // A private repo's member events are read through `readableEvents` (values opened, counted).
   const log = await toLog(repo, [...eventDocs].sort(byTime), [...authorEventDocs].sort(byTime))
 

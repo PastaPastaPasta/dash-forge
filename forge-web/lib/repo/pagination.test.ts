@@ -320,7 +320,7 @@ describe('list surfaces tolerate one unreadable row', () => {
     } as unknown as EvoSDK
   }
 
-  it('keeps the row and marks its state unverified instead of failing the page', async () => {
+  it('keeps the row with its proved state and marks its labels unverified instead of failing the page', async () => {
     // One target's log can outgrow the reader's completeness bound. That must not take down
     // the whole issue list — and dropping the row silently would be the same class of bug as
     // truncating it.

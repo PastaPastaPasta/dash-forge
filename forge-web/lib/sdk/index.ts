@@ -67,6 +67,7 @@ export {
   countDocumentsGrouped,
   sumDocumentsGrouped,
   uintGroupKey,
+  uintOfGroupKey,
   type GroupedQuery,
   cursorPadded,
   hexToBase64,

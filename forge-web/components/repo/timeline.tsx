@@ -10,13 +10,13 @@
 
 import { Byline } from '@/components/repo/byline'
 import { importedVerdictOf, trustedOrigin } from '@/lib/repo/provenance'
-import { Check, CheckCircle2, Eye, GitCommit, GitMerge, Lock, LockOpen, Milestone, MessageSquare, Pin, Tag, UserPlus, X } from 'lucide-react'
+import { Check, CheckCircle2, Eye, GitCommit, GitMerge, GitPullRequestDraft, Lock, LockOpen, Milestone, MessageSquare, Pin, Tag, UserPlus, X } from 'lucide-react'
 import type { TimelineItem } from '@/lib/view'
 import { branchName, plural, timeAgo } from '@/lib/view'
 import { anchorLabel } from '@/lib/view/inline-threads'
 import { VERDICT_LABEL, type VerdictName } from '@/lib/repo'
 import type { Event } from '@/lib/rules'
-import { ISSUE_CLOSE, PR_CLOSE, PR_DRAFT_CLOSE, PR_MERGE, transitionPhrase } from '@/lib/rules/transition'
+import { ISSUE_CLOSE, PR_CLOSE, PR_DRAFT, PR_DRAFT_CLOSE, PR_MERGE, PR_READY, transitionPhrase } from '@/lib/rules/transition'
 import type { TransitionView } from '@/lib/repo'
 import { Author } from '@/components/author'
 import type { ReactNode } from 'react'
@@ -99,6 +99,7 @@ function transitionIcon(t: TransitionView): JSX.Element {
   const muted = 'h-3.5 w-3.5 text-anvil-500 dark:text-anvil-400'
   if (t.kind === PR_MERGE) return <GitMerge className="h-3.5 w-3.5 text-dash" aria-hidden />
   if (t.kind === ISSUE_CLOSE || t.kind === PR_CLOSE || t.kind === PR_DRAFT_CLOSE) return <Lock className="h-3.5 w-3.5 text-forge-500" aria-hidden />
+  if (t.kind === PR_DRAFT || t.kind === PR_READY) return <GitPullRequestDraft className={muted} aria-hidden />
   return <LockOpen className={muted} aria-hidden />
 }
 

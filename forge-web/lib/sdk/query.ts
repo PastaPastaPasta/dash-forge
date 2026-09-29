@@ -332,6 +332,20 @@ function bigintMap(m: Map<string, bigint> | unknown): Map<string, number> {
   return out
 }
 
+/**
+ * The unsigned integer a group key encodes (`encode_u8` … `encode_u64`: big-endian, top bit
+ * flipped), whatever its width; null for a key that is not 1–8 bytes of hex.
+ */
+export function uintOfGroupKey(key: string): number | null {
+  if (!/^(?:[0-9a-f]{2}){1,8}$/i.test(key)) return null
+  let n = 0
+  for (let i = 0; i < key.length; i += 2) {
+    const b = Number.parseInt(key.slice(i, i + 2), 16) ^ (i === 0 ? 0x80 : 0)
+    n = n * 256 + b
+  }
+  return Number.isSafeInteger(n) ? n : null
+}
+
 /** The tree-key encoding of an unsigned integer group value (`encode_u8` etc.): big-endian, top bit flipped. */
 export function uintGroupKey(value: number, bytes: 1 | 2 | 4 = 1): string {
   const b = new Uint8Array(bytes)

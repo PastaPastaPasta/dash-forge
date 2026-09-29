@@ -356,13 +356,20 @@ export async function createPatch(
   return created
 }
 
-/** The PR was opened, but marking it a draft failed: it is open and ready for review. */
+/**
+ * The PR was opened, but marking it a draft did not confirm: it is open and ready for review, or
+ * (an unconfirmed write) may still become a draft. Never create the PR again on this error.
+ */
 export class DraftMarkError extends Error {
   constructor(
     readonly created: CreateIssueResult,
     readonly cause: unknown,
   ) {
-    super(`PR #${created.number} was opened, but marking it a draft failed (${cause instanceof Error ? cause.message : String(cause)}); convert it to a draft from the PR page`)
+    super(
+      cause instanceof UnconfirmedWriteError
+        ? `PR #${created.number} was opened; marking it a draft was sent but is not confirmed yet. Check the PR page`
+        : `PR #${created.number} was opened, but marking it a draft failed (${cause instanceof Error ? cause.message : String(cause)}); convert it to a draft from the PR page`,
+    )
     this.name = 'DraftMarkError'
   }
 }

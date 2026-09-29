@@ -31,7 +31,7 @@ import {
   queryDocumentsWithProof,
   type PlainDocument,
 } from '../sdk'
-import { foldPrReviewV2, issueStateV2, mergeTransition, prStateV2, stateCode, type PrReviewState } from '../rules/v2'
+import { foldPrReviewV2, issueStateV2, mergeTransition, prStateV2, stateCode, statusOfCode, type PrReviewState } from '../rules/v2'
 import {
   asIdentifierString,
   byteFieldToHex,
@@ -314,8 +314,6 @@ function ttlCached<T>(cache: Cache<T>, key: string, load: () => Promise<T>): Pro
 const feedCache: Cache<Map<string, TargetLog> | null> = new Map()
 /** The in-flight or fresh issue / PR list page per repo and type. */
 const listCache: Cache<Listed<IssueView> | Listed<PullView>> = new Map()
-/** Per repo: bumped when its list pages change (a read settles, or a write drops them). */
-const versions = new Map<string, number>()
 /** Per repo: bumped when a write that can change an open count drops its caches. */
 const writes = new Map<string, number>()
 const listeners = new Set<() => void>()
@@ -338,14 +336,6 @@ function changed(repo: RepoRef, counters: readonly Map<string, number>[]): void 
   const key = feedKey(repo)
   for (const counter of counters) counter.set(key, (counter.get(key) ?? 0) + 1)
   for (const listener of listeners) listener()
-}
-
-/**
- * Record a complete repo feed read by another reader (the issue index reads it inside its
- * composite), so the pulls page and the header fold from it instead of reading it again.
- */
-export function seedRepoFeed(repo: RepoRef, feed: Map<string, TargetLog>): void {
-  feedCache.set(feedKey(repo), { at: Date.now(), promise: Promise.resolve(feed) })
 }
 
 /** Group a repo feed's events by target. */
@@ -383,7 +373,7 @@ export function invalidateRepoFeed(repo: RepoRef, { counts = true }: { counts?: 
   for (const k of [...listCache.keys()]) if (ofRepo(k)) listCache.delete(k)
   for (const drop of invalidationHooks) drop(repo)
   if (!counts) return
-  changed(repo, [writes, versions])
+  changed(repo, [writes])
 }
 
 /** Other per-repo caches a write drops along with the feed (the issue index, `./issue-index`). */
@@ -394,10 +384,6 @@ export function onRepoInvalidated(drop: (repo: RepoRef) => void): void {
   invalidationHooks.add(drop)
 }
 
-/** How often `repo`'s list pages changed this session: what a view derived from them re-renders on. */
-export function repoListVersion(repo: RepoRef): number {
-  return versions.get(feedKey(repo)) ?? 0
-}
 
 /** How many writes to `repo` dropped its caches this session: a cache key for reads a write changes. */
 export function repoWriteGeneration(repo: RepoRef): number {
@@ -601,7 +587,7 @@ async function newestTargets(
 
 /**
  * Fold a page of issue or patch rows from the repo feed, read once for the whole page — or,
- * when the feed is too large, one row at a time, keeping a row (state unverified) whose event
+ * when the feed is too large, one row at a time, keeping a row (labels unverified) whose event
  * log cannot be read to completion.
  */
 async function foldRows<T>(
@@ -609,7 +595,7 @@ async function foldRows<T>(
   repo: RepoRef,
   documents: readonly PlainDocument[],
   foldOne: (doc: PlainDocument, log: TargetLog | undefined, code: number) => Promise<T>,
-  incomplete: (doc: PlainDocument) => T,
+  incomplete: (doc: PlainDocument, code: number) => T,
 ): Promise<T[]> {
   // State: one proved sum query for the page. Labels and assignees: fold from the repo feed
   // while it is small; otherwise (feed = null) each row reads its own target log.
@@ -618,17 +604,18 @@ async function foldRows<T>(
       ? await Promise.all([readRepoFeedCached(sdk, repo), readStateCodes(sdk, repo, documents.map((d) => str(d, '$id')))])
       : [null, new Map<string, number>()]
   // Per-row tolerance. One target padded past the reader's completeness bound must not take
-  // down a whole page of issues — and
-  // dropping the row silently would be the same class of bug this all fixes. The row is
-  // kept with `stateComplete: false`; callers render the state as unverified. (A PR row also
-  // reads its base ref's history, which can fail the same way.)
+  // down a whole page of issues, and dropping the row silently would be the same class of bug.
+  // The row keeps its proved state (the sum) with `stateComplete: false`: its labels and
+  // assignees are unverified. (A PR row also reads its base ref's history, which can fail the
+  // same way.)
   return Promise.all(
-    documents.map((doc) =>
-      foldOne(doc, feed === null ? undefined : feed.get(str(doc, '$id')) ?? EMPTY_LOG, codes.get(str(doc, '$id')) ?? 0).catch((e: unknown) => {
+    documents.map((doc) => {
+      const code = codes.get(str(doc, '$id')) ?? 0
+      return foldOne(doc, feed === null ? undefined : feed.get(str(doc, '$id')) ?? EMPTY_LOG, code).catch((e: unknown) => {
         if (!(e instanceof IncompleteReadError)) throw e
-        return incomplete(doc)
-      }),
-    ),
+        return incomplete(doc, code)
+      })
+    }),
   )
 }
 
@@ -649,8 +636,8 @@ export async function listIssues(
   return Object.assign(rows, { hidden: hidden.total, hiddenBy: hidden.value, complete })
 }
 
-/** An issue row whose event log could not be read completely: identity only, no labels or state. */
-function incompleteIssueView(doc: PlainDocument): IssueView {
+/** An issue row whose event log could not be read completely: its proved state, no labels or assignees. */
+function incompleteIssueView(doc: PlainDocument, code: number): IssueView {
   return {
     id: str(doc, '$id'),
     number: num(doc, 'number'),
@@ -661,7 +648,7 @@ function incompleteIssueView(doc: PlainDocument): IssueView {
     updatedAt: updatedAtOf(doc),
     revision: revisionOf(doc),
     ...readImported(doc),
-    state: { open: true, labels: [], assignees: [] },
+    state: { open: statusOfCode(code).open, labels: [], assignees: [] },
     stateComplete: false,
   }
 }
@@ -878,8 +865,8 @@ export async function listPulls(
   return Object.assign(rows, { hidden: hidden.total, hiddenBy: hidden.value, complete })
 }
 
-/** A PR row whose event log could not be read completely: identity only, no folded state. */
-function incompletePullView(doc: PlainDocument): PullView {
+/** A PR row whose event log could not be read completely: its proved state, no labels or head updates. */
+function incompletePullView(doc: PlainDocument, code: number): PullView {
   let headOid = ''
   const raw = doc['headOid']
   if (typeof raw === 'string' && raw.length > 0) {
@@ -910,7 +897,7 @@ function incompletePullView(doc: PlainDocument): PullView {
     sourceRefName: typeof doc['sourceRefName'] === 'string' ? doc['sourceRefName'] : null,
     headOnBase: false,
     ...readImported(doc),
-    state: { open: true, merged: false, draft: false, baseRef: null, labels: [], assignees: [] },
+    state: { ...statusOfCode(code), baseRef: null, labels: [], assignees: [], mergeOnBase: null },
     stateComplete: false,
     ...editMeta(doc),
   }
@@ -919,25 +906,9 @@ function incompletePullView(doc: PlainDocument): PullView {
 /** How many rows a list page reads (the issues and pulls pages). */
 export const LIST_PAGE = 100
 
-/** Read a list page through the session cache; subscribers are told when it settles. */
-function listCached<T extends Listed<IssueView> | Listed<PullView>>(
-  repo: RepoRef,
-  type: 'issue' | 'patch',
-  load: () => Promise<T>,
-): Promise<T> {
-  const key = listKey(repo, type)
-  const hit = listCache.get(key)
-  if (hit !== undefined && Date.now() - hit.at < FEED_TTL_MS) return hit.promise as Promise<T>
-  const promise = ttlCached(listCache, key, load) as Promise<T>
-  promise.then(
-    () => {
-      // Only a read that is still current records (a write may have dropped it meanwhile).
-      if (listCache.get(key)?.promise !== promise) return
-      changed(repo, [versions])
-    },
-    () => undefined,
-  )
-  return promise
+/** Read a list page through the session cache ({@link FEED_TTL_MS}; a write drops it). */
+function listCached<T extends Listed<IssueView> | Listed<PullView>>(repo: RepoRef, type: 'issue' | 'patch', load: () => Promise<T>): Promise<T> {
+  return ttlCached(listCache, listKey(repo, type), load) as Promise<T>
 }
 
 /** {@link listIssues} of one {@link LIST_PAGE}, cached per repo (see {@link invalidateRepoFeed}). */

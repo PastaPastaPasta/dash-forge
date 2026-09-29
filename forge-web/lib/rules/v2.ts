@@ -17,14 +17,12 @@ import {
   applyIssueEvent,
   applyPrEvent,
   issueStateOf,
-  mergeReachable,
   newIssueAcc,
   newPrAcc,
   prStateOf,
   sorted,
 } from './fold'
 import { compareKey, compareStrings, refNameHashMatches } from './oid'
-import { mergedLog } from './review'
 import { statusOfCode } from './transition'
 import type { Event, EventKind, IsAncestor, IssueState, Oid, PrState } from './types'
 
@@ -143,84 +141,6 @@ export function trustedUpstreamNumber(
 ): number | null {
   if (upstreamNumber == null || upstreamNumber <= 0) return null
   return author === repoOwner || oracle.currentRole(author) !== null ? upstreamNumber : null
-}
-
-// ---------------------------------------------------------------------------
-// Issue / PR fold (event-state, retired with the fresh registration)
-// ---------------------------------------------------------------------------
-
-/** Fold an issue's `event` and `authorEvent` documents into its {@link IssueState}. */
-export function foldIssueStateV2(
-  events: readonly Event[],
-  authorEvents: readonly Event[],
-  targetAuthor: string,
-): IssueState {
-  const s = newIssueAcc()
-  for (const e of mergedLog(events, authorEvents, targetAuthor)) applyIssueEvent(s, e)
-  return issueStateOf(s)
-}
-
-/**
- * Fold a PR's `event` and `authorEvent` documents; a merge needs a reachable `oid`.
- * `initialDraft` is the patch's `draft`; draft / ready events (members or the author)
- * override it in order.
- */
-export function foldPrStateV2(
-  events: readonly Event[],
-  authorEvents: readonly Event[],
-  targetAuthor: string,
-  baseTip: string | undefined,
-  isAncestor: IsAncestor,
-  initialDraft = false,
-): PrState {
-  const s = newPrAcc(initialDraft)
-  for (const e of mergedLog(events, authorEvents, targetAuthor)) {
-    if (e.kind === 'merge' && !mergeReachable(e, baseTip, isAncestor)) continue
-    applyPrEvent(s, e)
-  }
-  return prStateOf(s)
-}
-
-// ---------------------------------------------------------------------------
-// Numbering
-// ---------------------------------------------------------------------------
-
-const MAX_NUMBER = 0xffff_ffff
-
-/** `min(2 × count + 100, 2^32 − 1)`: taken numbers above it are ignored as squatters. */
-export function numberCeiling(count: number): number {
-  return Math.min(2 * count + 100, MAX_NUMBER)
-}
-
-/**
- * The number to claim for a new issue (or PR), `forge-v2.md` §6: the first free number above
- * `base`, the larger of the largest taken number at or below the ceiling (0 if none) and
- * `trustedMax`. `null` when every number from `base + 1` to `2^32 − 1` is taken.
- *
- * `trustedMax` is the largest number among the repo's issues written by its owner or a
- * current maintainer (0 if none): trusted wherever it sits, so a mirror's upstream numbers
- * (#7761 with 15 issues on chain) are not taken for squatters.
- *
- * `takenNumbersDesc` must hold every taken number from `base` upward through the contiguous
- * run above it: a caller querying ascending from `base + 1` must page to the end of that run
- * (the first gap), not stop at one page. `count` must be a non-negative integer (the Rust
- * port takes a `u64`); anything else throws.
- */
-export function allocateNumber(count: number, takenNumbersDesc: readonly number[], trustedMax: number): number | null {
-  if (!Number.isSafeInteger(count) || count < 0) {
-    throw new RangeError(`allocateNumber: count must be a non-negative integer, got ${count}`)
-  }
-  // The Rust port takes a `u32`.
-  if (!Number.isSafeInteger(trustedMax) || trustedMax < 0 || trustedMax > MAX_NUMBER) {
-    throw new RangeError(`allocateNumber: trustedMax must be an integer in [0, 2^32 - 1], got ${trustedMax}`)
-  }
-  const ceiling = numberCeiling(count)
-  const taken = new Set(takenNumbersDesc)
-  let base = trustedMax
-  for (const n of taken) if (n <= ceiling && n > base) base = n
-  let candidate = base + 1
-  while (taken.has(candidate)) candidate++
-  return candidate <= MAX_NUMBER ? candidate : null
 }
 
 // ---------------------------------------------------------------------------

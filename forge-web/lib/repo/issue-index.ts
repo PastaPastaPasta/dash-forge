@@ -27,7 +27,7 @@ import { DEFAULT_NETWORK, NETWORKS, type Network } from '../constants'
 import { compositeOf, countsAt, docsAt, queryComposite, siblingOf, type CompositeSub } from '../sdk/composite'
 import { IncompleteReadError, queryAllDocuments, type DocumentQuery, type PlainDocument } from '../sdk'
 import { DOC, asIdentifierString, repoKey, str, type RepoRef } from './contract'
-import { groupFeed, issueViewOf, onRepoInvalidated, seedRepoFeed, toLog, type IssueView, type TargetLog } from './issues'
+import { groupFeed, issueViewOf, onRepoInvalidated, toLog, type IssueView, type TargetLog } from './issues'
 import { ISSUE_CLOSE } from '../rules/transition'
 import { readRepoCounts, readStateCodes } from './transitions'
 import { newestLabels, type LabelDef } from './labels'
@@ -69,6 +69,8 @@ interface IndexState {
   feed: Map<string, TargetLog> | null
   /** Targets with an issue-close transition (the Closed tab's candidates), once read; null if too many. */
   closedOnce: Set<string> | null | undefined
+  /** The repo's proved counts, read once per index (a write drops the index). */
+  counts?: Promise<Awaited<ReturnType<typeof readRepoCounts>>>
   labels: LabelDef[]
   /** The label read was complete (short page). */
   labelsComplete: boolean
@@ -202,6 +204,8 @@ async function loadIndex(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<
     compositeOf(page, CHUNK, [...chunkSubs(network), siblingOf(feedQuery(DOC.event), CHUNK), siblingOf(labelQuery, CHUNK)]),
   )
   const firstCodes = codesOf(sdk, repo, res.page)
+  // Awaited below, after the feed: mark it handled now so a feed failure does not leave it unhandled.
+  firstCodes.catch(() => undefined)
 
   let feed: Map<string, TargetLog> | null
   try {
@@ -209,8 +213,6 @@ async function loadIndex(sdk: EvoSDK, repo: RepoRef, network: Network): Promise<
     // A private repo's member events are read through `readableEvents` (values opened).
     const log = await toLog(repo, allEvents, [])
     feed = groupFeed(log.events, [])
-    // The pulls page folds its labels from the same feed.
-    seedRepoFeed(repo, feed)
   } catch (e) {
     if (!(e instanceof IncompleteReadError)) throw e
     feed = null
@@ -501,10 +503,23 @@ async function readAuthor(sdk: EvoSDK, state: IndexState, author: string): Promi
   return null
 }
 
-/** The repo's Open / Closed issue totals, proved (null when they could not be read). */
+/**
+ * The repo's Open / Closed issue totals: the proved counts (read once per index, dropped with it
+ * by a write), less the issues this reader skipped as not shown. A skipped issue (not
+ * well-formed, or a stranger's) is never closed, so it sits in Open; once every issue is
+ * loaded it is subtracted exactly. In a private repo anyone's ciphertext counts in the total
+ * and cannot be told apart until read, so only a full read gives an open count there. Null
+ * when the counts could not be read.
+ */
 async function exactCounts(sdk: EvoSDK, state: IndexState): Promise<{ open: number; closed: number } | null> {
-  const counts = await readRepoCounts(sdk, state.repo).catch(() => null)
-  return counts === null ? null : { open: counts.issuesOpen, closed: counts.issuesClosed }
+  state.counts ??= readRepoCounts(sdk, state.repo)
+  const counts = await state.counts.catch(() => {
+    state.counts = undefined
+    return null
+  })
+  if (counts === null) return null
+  if (state.repo.visibility === 'private' && !state.all) return null
+  return { open: Math.max(0, counts.issuesOpen - state.hidden.total), closed: counts.issuesClosed }
 }
 
 /**

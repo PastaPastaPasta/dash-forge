@@ -14,7 +14,7 @@ import type { EvoSDK } from '@dashevo/evo-sdk'
 
 import { DOC, num, repoSource, str, type RepoRef } from '../repo'
 import { RoleOracle, trustedUpstreamNumber, type Membership } from '../rules/v2'
-import { queryDocumentsWithProof } from '../sdk'
+import { queryAllDocuments } from '../sdk'
 
 /** The upstream number to show beside `#number`, or null (none, or not from a trusted writer). */
 export function shownUpstreamNumber(
@@ -34,8 +34,10 @@ export function numberLabel(number: number, upstream: number | null): string {
 
 /**
  * The native number of the issue or PR a mirror recorded as the source's `upstream`, or null:
- * one read per type on the `upstream` index, keeping only rows written by the owner or a
- * current member (the oldest such row, should there be more than one).
+ * the `upstream` index read per type to its end, keeping only rows written by the owner or a
+ * current member (the oldest such row, should there be more than one). Anyone can write the
+ * number on their own issue, so the read is not cut short: decoys cannot push the mirror's row
+ * out of a page.
  */
 export async function resolveUpstreamNumber(
   sdk: EvoSDK,
@@ -48,10 +50,9 @@ export async function resolveUpstreamNumber(
   const source = repoSource(repo)
   const found = await Promise.all(
     (['issue', 'patch'] as const).map(async (type) => {
-      const { documents } = await queryDocumentsWithProof(
-        sdk,
-        source.repoQuery(DOC[type], { where: [['upstreamNumber', '==', upstream]], orderBy: [['upstreamNumber', 'asc']], limit: 10 }),
-      )
+      const documents = await queryAllDocuments(sdk, source.repoQuery(DOC[type], { where: [['upstreamNumber', '==', upstream]], orderBy: [['upstreamNumber', 'asc']] }), {
+        maxPages: 10,
+      })
       return documents
         .filter((d) => trustedUpstreamNumber(num(d, 'upstreamNumber'), str(d, '$ownerId'), repo.ownerId, oracle) !== null)
         .map((d) => ({ type, number: num(d, 'number'), createdAt: num(d, '$createdAt') }))

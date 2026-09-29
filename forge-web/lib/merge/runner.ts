@@ -37,7 +37,7 @@ export const MERGE_STEPS: readonly { readonly id: MergeStepId; readonly label: s
   { id: 'manifest', label: 'Record the pack (packManifest)' },
   { id: 'index', label: 'Publish the browse index' },
   { id: 'ref', label: 'Move the base branch (ref update)' },
-  { id: 'event', label: 'Record the merge (merge event)' },
+  { id: 'event', label: 'Record the merge (merge transition)' },
 ]
 
 /** Where an uploaded pack was stored, as its `packManifest` records it. */

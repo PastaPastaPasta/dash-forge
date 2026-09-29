@@ -176,7 +176,15 @@ export const DENSE_RULE = 'dense'
 
 /** Whether a consensus refusal's text names the `dense` rule. */
 export function namesDenseRule(message: string): boolean {
-  return message.includes('rule "dense"') || message.includes('rule \\"dense\\"')
+  return refusedRule(message) === DENSE_RULE
+}
+
+/**
+ * The `propertyConstraints` rule a 10422 refusal's text names (`… breaks its propertyConstraints
+ * rule "c1_closedAfter": …`), quotes plain or escaped; null when it names none.
+ */
+export function refusedRule(message: string): string | null {
+  return /rule \\?"([A-Za-z0-9_]+)\\?"/.exec(message)?.[1] ?? null
 }
 
 /** How a timeline says what a transition did (`asAuthor` ≠ 0: written by the target's author). */
