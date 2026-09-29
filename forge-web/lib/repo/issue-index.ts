@@ -412,8 +412,13 @@ export function matchesText(text: string, row: { readonly title: string; readonl
   const words = text.trim().toLowerCase().split(/\s+/).filter((w) => w !== '')
   const title = row.title.toLowerCase()
   return words.every((w) => {
-    const digits = /^#?(\d+)$/.exec(w)
-    if (digits && Number(digits[1]) === row.number) return true
+    // `#n` (review L-43) is a number-only match: it never falls back to a title substring, even
+    // when the digits happen to appear in the title of a different-numbered row.
+    const hash = /^#(\d+)$/.exec(w)
+    if (hash) return Number(hash[1]) === row.number
+    // A bare number matches the number OR (additively) a title substring.
+    const bare = /^(\d+)$/.exec(w)
+    if (bare && Number(bare[1]) === row.number) return true
     return title.includes(w)
   })
 }

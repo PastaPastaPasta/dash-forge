@@ -19,7 +19,7 @@ import { trustedOrigin } from '@/lib/repo/provenance'
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
-import { CheckCircle2, ChevronLeft, ChevronRight, CircleDot, MessageSquare, MessageSquarePlus, Pin, Search, X } from 'lucide-react'
+import { CheckCircle2, ChevronLeft, ChevronRight, CircleDot, Loader2, MessageSquare, MessageSquarePlus, Pin, Search, X } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { ARCHIVED_REASON, resolveDpnsId, resolveDpnsName } from '@/lib/view'
 import {
@@ -32,10 +32,10 @@ import {
   issueQueryParams,
   parseIssueQuery,
   parseSearchText,
+  resolveSearchNames,
   searchText,
   unresolvedQualifiers,
   withQuery,
-  withResolvedNames,
   BODY_MAX,
   utf8Length,
   type IssueListQuery,
@@ -122,29 +122,75 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const searchValue = search ?? searchText(query)
   // Qualifiers typed (or linked in `?q=`) that could not be used: said, not silently dropped.
   const [dropped, setDropped] = useState<string[]>(() => unresolvedQualifiers(params.get('q') ?? ''))
+  // Review: a name DPNS looked up and could not find (vs. one it never looked up at all) gets its
+  // own reason from droppedQualifiersReason; whether the SDK was not ready to look anything up.
+  const [notFoundNames, setNotFoundNames] = useState<string[]>([])
+  const [notReady, setNotReady] = useState(false)
+  const [searching, setSearching] = useState(false)
+
+  // Review: an out-of-order submit (a slow lookup from an earlier submit settling after a faster,
+  // later one) must not clobber the later, still-wanted result — `submitIdRef` marks which call is
+  // current, and `mountedRef` stops any of them from touching state after unmount.
+  const submitIdRef = useRef(0)
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
   // L-43: `author:`/`assignee:` used to accept only an identity id or `@me` — a typed or linked
   // DPNS name silently matched nothing. Resolve any name-shaped values against DPNS first (a
   // read, so this has to happen before the qualifiers are lifted into the query), then lift the
   // (now id-bearing) text as before; a name DPNS does not know stays unresolved and gets reported
-  // same as it always did.
+  // same as it always did. `base` carries the query fields `text` itself does not encode (e.g. an
+  // initial `?q=` only carries what was linked, not `label=`/`sort=` from their own params).
+  const resolveAndApply = async (text: string, base: IssueListQuery = DEFAULT_ISSUE_QUERY): Promise<void> => {
+    const id = ++submitIdRef.current
+    const stillWanted = (): boolean => mountedRef.current && submitIdRef.current === id
+    const candidates = dpnsAuthorCandidates(text)
+    // Honest about why a name-looking value was not looked up, instead of silently reporting it
+    // as just another unresolved qualifier with no explanation.
+    setNotReady(candidates.length > 0 && !sdk)
+    setSearching(true)
+    try {
+      const { text: resolvedText, notFound } = sdk
+        ? await resolveSearchNames(text, (name) => resolveDpnsId(sdk, name, network))
+        : { text, notFound: [] as readonly string[] }
+      if (!stillWanted()) return
+      setDropped(unresolvedQualifiers(resolvedText))
+      setNotFoundNames(notFound as string[])
+      setQuery({ ...parseSearchText(resolvedText, base), page: base.page })
+      // Only clear the box back to the URL-driven value if it still holds what was submitted —
+      // the viewer may already be typing the next search.
+      setSearch((current) => (current === text ? null : current))
+    } finally {
+      if (stillWanted()) setSearching(false)
+    }
+  }
+
   const submitSearch = async (e: FormEvent): Promise<void> => {
     e.preventDefault()
-    let text = searchValue
-    const candidates = dpnsAuthorCandidates(text)
-    if (candidates.length > 0 && sdk) {
-      const resolved = new Map<string, string>()
-      await Promise.all(
-        candidates.map(async (name) => {
-          const id = await resolveDpnsId(sdk, name, network)
-          if (id) resolved.set(name, id)
-        }),
-      )
-      if (resolved.size > 0) text = withResolvedNames(text, resolved)
-    }
-    setDropped(unresolvedQualifiers(text))
-    setQuery(parseSearchText(text))
-    setSearch(null)
+    await resolveAndApply(searchValue)
   }
+
+  // A DPNS name linked in `?q=` (e.g. a shared search URL) goes through the same resolution step
+  // as a typed submit, once on load, so it is not silently dropped before the SDK is even ready.
+  const initialQRef = useRef(params.get('q'))
+  const initialResolvedRef = useRef(false)
+  useEffect(() => {
+    if (initialResolvedRef.current) return
+    const raw = initialQRef.current
+    if (raw === null || dpnsAuthorCandidates(raw).length === 0) {
+      initialResolvedRef.current = true
+      return
+    }
+    if (!ready || !sdk) return
+    initialResolvedRef.current = true
+    void resolveAndApply(raw, query)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once when the SDK becomes ready; initialResolvedRef guards re-entry.
+  }, [ready, sdk])
 
   const count = (n: number | null | undefined): string => (n == null ? '' : `${n} `)
   const empty = data !== null && data.rows.length === 0
@@ -156,7 +202,11 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
         <form onSubmit={submitSearch} className="flex min-w-[16rem] flex-1 items-center gap-2" role="search">
           <label htmlFor="issue-search" className="sr-only">Search issues</label>
           <div className="relative flex-1">
-            <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
+            {searching ? (
+              <Loader2 className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 animate-spin text-anvil-500 dark:text-anvil-400" aria-hidden />
+            ) : (
+              <Search className="pointer-events-none absolute left-2.5 top-2.5 h-4 w-4 text-anvil-500 dark:text-anvil-400" aria-hidden />
+            )}
             <Input id="issue-search" value={searchValue} onChange={(e) => setSearch(e.target.value)} className="pl-8 font-mono text-[13px]" placeholder="is:open label:bug author:@me" />
           </div>
         </form>
@@ -168,7 +218,8 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
       </div>
       {dropped.length > 0 ? (
         <p role="note" className="mb-3 text-[12px] text-caution-700 dark:text-caution-400" data-testid="issue-search-dropped">
-          Not applied: {dropped.join(' ')}. {droppedQualifiersReason(dropped)}
+          Not applied: {dropped.join(' ')}. {droppedQualifiersReason(dropped, notFoundNames)}
+          {notReady ? ' Not connected yet, so a DPNS name could not be looked up — try again once connected.' : ''}
         </p>
       ) : null}
 

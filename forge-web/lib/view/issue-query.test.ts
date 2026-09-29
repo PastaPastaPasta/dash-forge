@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import {
   DEFAULT_ISSUE_QUERY,
@@ -9,6 +9,7 @@ import {
   issueQueryParams,
   parseIssueQuery,
   parseSearchText,
+  resolveSearchNames,
   searchText,
   unresolvedQualifiers,
   withQuery,
@@ -124,6 +125,12 @@ describe('free-text match', () => {
     expect(matchesText('7512', row)).toBe(false)
     expect(matchesText('7512', { title: 'Crash when the Config is empty', number: 7512 })).toBe(true)
   })
+  // Review (L-43): unlike a bare number, `#n` is a number-only match — it must not fall through
+  // to a title substring check even when the digits happen to appear in a different row's title.
+  it('#n never falls back to a title substring match', () => {
+    expect(matchesText('#7512', { title: 'issue 7512 duplicate', number: 1 })).toBe(false)
+    expect(matchesText('#1', { title: 'issue 7512 duplicate', number: 7512 })).toBe(false)
+  })
 })
 
 // L-43: author:/assignee: previously only accepted an identity id or @me, so a DPNS name (typed
@@ -139,6 +146,18 @@ describe('DPNS names in author:/assignee: (L-43)', () => {
     expect(dpnsAuthorCandidates(`author:${ID} author:@me assignee:none is:open`)).toEqual([])
   })
 
+  // Review: `me`/`none` are excluded case-insensitively, `@name` and a quoted single-word name
+  // are accepted (an @ or quotes are not part of the name), a mixed-case name is left as typed
+  // (DPNS normalization happens at lookup time, not here), and a value that cannot possibly be a
+  // DPNS label (e.g. it contains a space) is rejected before it would ever be looked up.
+  it('handles @name, a quoted name, mixed case, ME/NONE and a value that cannot be a label', () => {
+    expect(
+      dpnsAuthorCandidates(
+        'author:@alice.dash assignee:"bob" author:CoffsEducation assignee:"two words" author:ME assignee:NONE',
+      ),
+    ).toEqual(['alice.dash', 'bob', 'CoffsEducation'])
+  })
+
   it('rewrites a resolved name to its id and leaves an unresolved one unresolved', () => {
     const resolved = new Map([['coffseducation', ID]])
     const text = withResolvedNames('author:coffseducation assignee:nobody-knows-this is:open hello', resolved)
@@ -146,12 +165,45 @@ describe('DPNS names in author:/assignee: (L-43)', () => {
     expect(parseSearchText(text)).toMatchObject({ author: ID, state: 'open', q: 'hello' })
     expect(unresolvedQualifiers(text)).toEqual(['assignee:nobody-knows-this'])
   })
+
+  // Review: `me` (and `@me`) resolves case-insensitively wherever a qualifier value names the
+  // viewer, not just in the exact-lowercase `@me` spelling `liftQualifiers` used to special-case.
+  it('treats me as the viewer case-insensitively, with or without @', () => {
+    expect(parseSearchText('author:ME assignee:@Me')).toMatchObject({ author: 'me', assignee: 'me' })
+  })
+})
+
+// Review: the DPNS-resolution step (candidates -> lookups -> rewritten text) is a plain
+// injected-resolver async function, independent of any component state, specifically so an
+// out-of-order submit can be tested as a pure race: two overlapping calls must not interfere
+// with each other regardless of which one's lookups happen to settle first.
+describe('resolveSearchNames (review: race safety of an out-of-order submit)', () => {
+  it('two overlapping calls each resolve correctly even when the first-issued one settles last', async () => {
+    let settleAlice!: (id: string | null) => void
+    const resolveId = vi.fn((name: string) => {
+      if (name === 'alice') return new Promise<string | null>((resolve) => (settleAlice = resolve))
+      return Promise.resolve(ID)
+    })
+
+    const first = resolveSearchNames('author:alice', resolveId) // issued first, resolves last
+    const second = await resolveSearchNames('author:bob', resolveId) // issued second, resolves first
+    expect(second).toEqual({ text: `author:${ID}`, notFound: [] })
+
+    settleAlice(null) // alice turns out not to exist, settling only now
+    expect(await first).toEqual({ text: 'author:alice', notFound: ['alice'] })
+  })
+
+  it('passes through text with no DPNS candidates without calling the resolver', async () => {
+    const resolveId = vi.fn()
+    expect(await resolveSearchNames('is:open hello', resolveId)).toEqual({ text: 'is:open hello', notFound: [] })
+    expect(resolveId).not.toHaveBeenCalled()
+  })
 })
 
 describe('droppedQualifiersReason (L-43)', () => {
-  it('gives is:pr its own reason instead of the generic is:/state: one', () => {
-    expect(droppedQualifiersReason(['is:pr'])).toMatch(/Pull requests/)
-    expect(droppedQualifiersReason(['state:pr'])).toMatch(/Pull requests/)
+  it('gives is:pr its own reason instead of the generic is:/state: one, naming the tab', () => {
+    expect(droppedQualifiersReason(['is:pr'])).toMatch(/Pull requests tab/)
+    expect(droppedQualifiersReason(['state:pr'])).toMatch(/Pull requests tab/)
     expect(droppedQualifiersReason(['is:merged'])).not.toMatch(/Pull requests/)
   })
 
@@ -163,6 +215,15 @@ describe('droppedQualifiersReason (L-43)', () => {
   it('reports the author/assignee reason once even when both are dropped', () => {
     const reasons = droppedQualifiersReason(['author:alice', 'assignee:bob'])
     expect(reasons.match(/DPNS name/g)?.length).toBe(1)
+  })
+
+  // Review: a name DPNS actually looked up and could not find gets a specific "no such name"
+  // message (naming it, normalized to its full `label.dash` form), instead of the generic
+  // shape-oriented reason, which would wrongly suggest the value itself was malformed.
+  it('names a specific not-found value instead of the generic reason', () => {
+    const reason = droppedQualifiersReason(['author:unofficial-dashpay-dash-mirror', 'assignee:bob'], ['unofficial-dashpay-dash-mirror'])
+    expect(reason).toMatch(/No DPNS name `unofficial-dashpay-dash-mirror\.dash` was found\./)
+    expect(reason).toMatch(/DPNS name, or @me/) // bob's generic reason is still reported
   })
 })
 

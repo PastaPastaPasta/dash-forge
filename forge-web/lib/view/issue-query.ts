@@ -17,6 +17,7 @@
  * lifts into the structured query; what is left is the free text.
  */
 
+import { displayDpnsName, looksLikeDpnsName } from './dpns'
 import { plural } from './format'
 import { isIdentityId } from '../utils'
 
@@ -62,11 +63,13 @@ export function utf8Length(s: string): number {
   return new TextEncoder().encode(s).length
 }
 
+/** `me`/`none` (and any other keyword in `extra`) match case-insensitively; a real id does not. */
 function identityParam(v: string | null, extra: readonly string[]): string | null {
   if (v === null) return null
   const t = v.trim()
-  if (extra.includes(t) || isIdentityId(t)) return t
-  return null
+  const low = t.toLowerCase()
+  if (extra.includes(low)) return low
+  return isIdentityId(t) ? t : null
 }
 
 /** Parse the list query from URL search params; anything invalid falls back to its default. */
@@ -161,17 +164,20 @@ export function unresolvedQualifiers(text: string): string[] {
 }
 
 /**
- * The `author:`/`assignee:` values in `text` that are not an id, `@me`/`me` or `none` — every
- * other qualifier value is a literal (a label, a sort spelling, …), never a name to resolve.
- * Each is a DPNS-name candidate for {@link withResolvedNames} (L-43: `author:` previously only
- * accepted a base58 id or `@me`, so a typed or linked DPNS name like
+ * The `author:`/`assignee:` values in `text` that are not an id, `me`/`none` (either case, with
+ * or without a leading `@`) and are shaped like a DPNS label ({@link looksLikeDpnsName}) —
+ * anything else is a literal (a label, a sort spelling, …) or could not be a name at all, and is
+ * never worth a lookup. Each is a candidate for {@link withResolvedNames} (L-43: `author:`
+ * previously only accepted a base58 id or `@me`, so a typed or linked DPNS name like
  * `author:unofficial-dashpay-dash-mirror.dash` silently matched nothing).
  */
 export function dpnsAuthorCandidates(text: string): string[] {
   const out = new Set<string>()
   for (const tok of tokens(text)) {
     const value = personQualifier(tok)?.value
-    if (value === undefined || value === '' || value === 'me' || value === 'none' || isIdentityId(value)) continue
+    if (value === undefined || value === '') continue
+    const low = value.toLowerCase()
+    if (low === 'me' || low === 'none' || isIdentityId(value) || !looksLikeDpnsName(value)) continue
     out.add(value)
   }
   return [...out]
@@ -191,6 +197,33 @@ export function withResolvedNames(text: string, resolved: ReadonlyMap<string, st
       return person && id ? `${person.key}:${id}` : tok
     })
     .join(' ')
+}
+
+/**
+ * Resolve every DPNS-name candidate in `text` through `resolveId` (injected — this needs no SDK,
+ * so it is a plain, race-safe async function: two overlapping calls, e.g. an out-of-order
+ * submit, never interfere, since each is its own independent resolution over its own `text` and
+ * its own `Promise.all` — whichever settles last simply returns its own correct answer, and it
+ * is the caller (which alone knows which call is still wanted) that decides whether to use it).
+ * Returns `text` with every name `resolveId` found rewritten to its id, and the candidates it
+ * did not find (for a "no such name" note, distinct from a qualifier that was never a candidate).
+ */
+export async function resolveSearchNames(
+  text: string,
+  resolveId: (name: string) => Promise<string | null>,
+): Promise<{ readonly text: string; readonly notFound: readonly string[] }> {
+  const candidates = dpnsAuthorCandidates(text)
+  if (candidates.length === 0) return { text, notFound: [] }
+  const resolved = new Map<string, string>()
+  const notFound: string[] = []
+  await Promise.all(
+    candidates.map(async (name) => {
+      const id = await resolveId(name)
+      if (id) resolved.set(name, id)
+      else notFound.push(name)
+    }),
+  )
+  return { text: resolved.size > 0 ? withResolvedNames(text, resolved) : text, notFound }
 }
 
 /** An `author:`/`assignee:` token's lowercased key and its value (quotes and a leading `@` stripped); null for any other token. */
@@ -219,13 +252,22 @@ const QUALIFIER_REASON: Readonly<Record<string, string>> = {
  * it), one sentence per distinct cause. `is:pr`/`state:pr` (L-43) is not a filter this list has
  * at all — issues and pull requests are separate lists here — so it gets its own explanation
  * instead of sharing the generic `is:`/`state:` one, which would wrongly suggest `pr` is close to
- * a valid value.
+ * a valid value. An `author:`/`assignee:` value in `notFound` (a {@link resolveSearchNames}
+ * candidate DPNS actually looked up and could not find) names the specific name that was not
+ * found, rather than the generic "take an id, a name, or @me" reason, which would wrongly
+ * suggest the value's shape (not its non-existence) was the problem.
  */
-export function droppedQualifiersReason(dropped: readonly string[]): string {
+export function droppedQualifiersReason(dropped: readonly string[], notFound: readonly string[] = []): string {
+  const notFoundLower = new Set(notFound.map((n) => n.toLowerCase()))
   const reasons = new Set<string>()
   for (const tok of dropped) {
     if (/^(is|state):pr$/i.test(tok)) {
-      reasons.add('is:pr is not a filter here — open Pull requests to search pull requests.')
+      reasons.add('is:pr is not a filter here — open the Pull requests tab to search pull requests.')
+      continue
+    }
+    const person = personQualifier(tok)
+    if (person && notFoundLower.has(person.value.toLowerCase())) {
+      reasons.add(`No DPNS name \`${displayDpnsName(person.value)}\` was found.`)
       continue
     }
     const key = tok.slice(0, tok.indexOf(':')).toLowerCase()
@@ -244,7 +286,9 @@ function liftQualifiers(text: string, base: IssueListQuery): { query: IssueListQ
   let sort = base.sort
   const free: string[] = []
   const unresolved: string[] = []
-  const who = (v: string, extra: readonly string[] = []): string | null => identityParam(v === '@me' ? 'me' : v.replace(/^@/, ''), ['me', ...extra])
+  // identityParam already matches 'me'/'none' case-insensitively, so stripping a leading `@`
+  // (never mind its case) is all this needs — `@me`, `@ME`, `me` and `ME` all land on 'me'.
+  const who = (v: string, extra: readonly string[] = []): string | null => identityParam(v.replace(/^@/, ''), ['me', ...extra])
   for (const tok of tokens(text)) {
     const at = tok.indexOf(':')
     const key = at > 0 ? tok.slice(0, at).toLowerCase() : ''

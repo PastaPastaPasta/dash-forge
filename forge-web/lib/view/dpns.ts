@@ -11,7 +11,9 @@
  * homograph-safe normalization the contract itself applies before indexing (lowercase, then
  * `o`->`0`, `l`/`i`->`1`; verified against `js-dash-sdk`'s `convertToHomographSafeChars` and
  * `rs-dpp`'s `convert_to_homograph_safe_chars`, which agree). A bare name with no `.` is a
- * subdomain of `dash`, same as typing it anywhere else in this app.
+ * subdomain of `dash`, same as typing it anywhere else in this app. A value that could not be a
+ * DPNS label at all ({@link looksLikeDpnsName}) is rejected before it ever reaches a query; a hit
+ * seeds the reverse (id -> name) cache too, for free, since the doc is already in hand.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -132,18 +134,42 @@ function splitDpnsName(name: string): { label: string; parent: string } {
 }
 
 /**
+ * A DPNS label's shape — the same pattern `splitRefs` (markdown.ts) uses to recognize an
+ * `@name` mention: 1-63 characters, alphanumeric at each end, hyphens allowed between. Checked
+ * before a value is normalized and queried, so a value that plainly cannot be a label (spaces,
+ * punctuation, an empty string) never spends a read.
+ */
+const LABEL_SHAPE = /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/
+
+/** Whether `name` (a bare label, or `label.parent`) is shaped like a name worth a DPNS lookup. */
+export function looksLikeDpnsName(name: string): boolean {
+  return LABEL_SHAPE.test(splitDpnsName(name).label)
+}
+
+/** `name` normalized for display only (no homograph substitution): a bare label defaults to `.dash`. */
+export function displayDpnsName(name: string): string {
+  const { label, parent } = splitDpnsName(name)
+  return `${label}.${parent}`
+}
+
+/**
  * Forward-resolve a DPNS name (`label` or `label.parent`) to its identity id, or null when no
- * domain document has that normalized label and parent. Never throws.
+ * domain document has that normalized label and parent (a proven absence: cached) — or when
+ * `name` is not {@link looksLikeDpnsName}-shaped, or the read itself failed (neither is cached;
+ * a shape it can already reject costs nothing, and a transient failure is not proof of absence,
+ * so the next call retries instead of caching a false "no such name" forever). Never throws.
  */
 export async function resolveDpnsId(sdk: EvoSDK, name: string, network: Network): Promise<string | null> {
   const { label, parent } = splitDpnsName(name)
-  if (label === '') return null
+  if (!LABEL_SHAPE.test(label)) return null
   const normalizedLabel = homographSafe(label)
   const normalizedParentDomainName = homographSafe(parent)
   const key = keyOf(network, `${normalizedLabel}.${normalizedParentDomainName}`)
 
   let lookup = idLookups.get(key)
   if (!lookup) {
+    // Not `sdk.dpns.resolveName`: it calls the wasm binding directly, bypassing this app's
+    // proof-verified, dedup'd, stale-contract-retried `queryDocuments` path (and its test seam).
     lookup = queryDocuments(sdk, {
       dataContractId: NETWORKS[network].dpnsContractId,
       documentTypeName: 'domain',
@@ -153,8 +179,21 @@ export async function resolveDpnsId(sdk: EvoSDK, name: string, network: Network)
       ],
       limit: 1,
     }).then(
-      (docs) => identityOf(docs[0]),
-      () => null,
+      (docs) => {
+        const doc = docs[0]
+        const id = identityOf(doc)
+        // A hit proves the reverse direction too, for free: seed it (never overwrite an
+        // already-cached answer) so the byline/pill for this identity does not ask again.
+        if (id !== null && doc !== undefined) {
+          const reverseKey = keyOf(network, id)
+          if (!cache.has(reverseKey)) cache.set(reverseKey, nameOf(doc))
+        }
+        return id
+      },
+      () => {
+        idLookups.delete(key)
+        return null
+      },
     )
     idLookups.set(key, lookup)
   }
