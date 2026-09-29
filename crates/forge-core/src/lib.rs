@@ -49,6 +49,7 @@ pub mod key_handoff;
 pub mod keychain;
 pub mod keyring;
 pub mod keystore;
+pub mod layout;
 #[cfg(feature = "cli-logging")]
 pub mod logging;
 pub mod members;
