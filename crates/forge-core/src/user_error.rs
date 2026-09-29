@@ -50,9 +50,14 @@ pub const WEB_ORIGIN: &str = crate::storage::cors::PROBE_ORIGIN;
 
 /// A repo's page in the web app.
 pub fn web_url(owner_id: &str, name: &str) -> String {
+    web_page_url("repo", owner_id, name)
+}
+
+/// A page of a repo in the web app (`repo`, `repo/commit/`, …), addressed by owner and name.
+pub fn web_page_url(page: &str, owner_id: &str, name: &str) -> String {
     use crate::backends::sigv4::uri_encode;
     format!(
-        "{WEB_ORIGIN}/repo?owner={}&name={}",
+        "{WEB_ORIGIN}/{page}?owner={}&name={}",
         uri_encode(owner_id, false),
         uri_encode(name, false)
     )

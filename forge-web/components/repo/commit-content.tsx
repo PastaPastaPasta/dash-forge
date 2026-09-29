@@ -12,7 +12,7 @@ import Link from 'next/link'
 import { useMemo } from 'react'
 import { GitCommit } from 'lucide-react'
 import type { BrowseReader } from '@/lib/browse'
-import { readMembershipsCached, repoContractIds, type RepoRef } from '@/lib/repo'
+import { readMembershipsCached, repoContractIds, repoKey, type RepoRef } from '@/lib/repo'
 import { readCheckRuns, summarizeChecks } from '@/lib/repo/checks'
 import type { DiffSides, RepoHome } from '@/lib/view'
 import { CommitIdError, commitSubject, formatDate, loadCommitChanges, timeAgo } from '@/lib/view'
@@ -129,7 +129,7 @@ function CommitChecks({ repo, oid }: { repo: RepoRef; oid: string }): JSX.Elemen
       const runs = await readCheckRuns(sdk!, repo, oid, members.ids)
       return { runs, summary: summarizeChecks(runs, members.known) }
     },
-    [ready, repo.repoId, oid, network],
+    [ready, repoKey(repo), oid, network],
     { enabled: ready && sdk !== null && oid !== '' },
   )
   return (

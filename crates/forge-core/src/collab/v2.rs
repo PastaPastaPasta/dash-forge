@@ -564,6 +564,30 @@ pub fn newest_check_runs(
         .collect()
 }
 
+/// Every `checkRun` on commit `oid` in `repo` (the `head (repoId, headOid, $createdAt)` index).
+pub(crate) async fn check_run_docs(
+    client: &PlatformClient,
+    collab: &LoadedContract,
+    repo: &RepoRef,
+    oid: Vec<u8>,
+) -> Result<Vec<FetchedDocument>> {
+    client
+        .query_all_documents(
+            collab,
+            DOC_CHECK_RUN,
+            &[
+                Collab::repo_filter(repo)?,
+                QueryFilter::eq("headOid", FieldValue::bytes(oid)),
+            ],
+            &[
+                QueryOrder::asc("repoId"),
+                QueryOrder::asc("headOid"),
+                QueryOrder::asc("$createdAt"),
+            ],
+        )
+        .await
+}
+
 /// The payload of a state event (forge-v2.md §3 kinds table).
 #[derive(Debug, Clone, Default)]
 pub struct EventPayload<'a> {
@@ -2467,22 +2491,7 @@ impl<'a> Collab<'a> {
         let collab = self.collab_contract(repo).await?;
         let oid = hex::decode(head_oid)
             .map_err(|_| Error::Config(format!("{head_oid:?} is not a hex commit id")))?;
-        let docs = self
-            .client
-            .query_all_documents(
-                &collab,
-                DOC_CHECK_RUN,
-                &[
-                    Self::repo_filter(repo)?,
-                    QueryFilter::eq("headOid", FieldValue::bytes(oid)),
-                ],
-                &[
-                    QueryOrder::asc("repoId"),
-                    QueryOrder::asc("headOid"),
-                    QueryOrder::asc("$createdAt"),
-                ],
-            )
-            .await?;
+        let docs = check_run_docs(self.client, &collab, repo, oid).await?;
         if docs.is_empty() {
             return Ok(Vec::new());
         }

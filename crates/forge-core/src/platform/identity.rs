@@ -408,20 +408,33 @@ pub struct DocTypeKeySpec {
     pub document_type: String,
 }
 
-fn with_limits(v0: IdentityPublicKeyV0, budget: u64, expires_at_ms: u64) -> IdentityPublicKey {
-    IdentityPublicKeyV1::from_v0_with_limits(v0, Some(budget), Some(expires_at_ms)).into()
-}
-
-fn limited_public_key(id: u32, key: &FreshKey, spec: &LimitedKeySpec) -> Result<IdentityPublicKey> {
-    let group = parse_id(&spec.group, "contract group id")?;
+/// An AUTHENTICATION / HIGH key with `bounds`, a budget and an expiry.
+fn bounded_public_key(
+    id: u32,
+    key: &FreshKey,
+    bounds: ContractBounds,
+    budget: u64,
+    expires_at_ms: u64,
+) -> IdentityPublicKey {
     let v0 = key_v0(
         id,
         Purpose::AUTHENTICATION,
         SecurityLevel::HIGH,
         &key.public(),
-        Some(ContractBounds::ContractGroup { id: group }),
+        Some(bounds),
     );
-    Ok(with_limits(v0, spec.budget_credits, spec.expires_at_ms))
+    IdentityPublicKeyV1::from_v0_with_limits(v0, Some(budget), Some(expires_at_ms)).into()
+}
+
+fn limited_public_key(id: u32, key: &FreshKey, spec: &LimitedKeySpec) -> Result<IdentityPublicKey> {
+    let group = parse_id(&spec.group, "contract group id")?;
+    Ok(bounded_public_key(
+        id,
+        key,
+        ContractBounds::ContractGroup { id: group },
+        spec.budget_credits,
+        spec.expires_at_ms,
+    ))
 }
 
 fn doc_type_public_key(
@@ -430,17 +443,17 @@ fn doc_type_public_key(
     spec: &DocTypeKeySpec,
 ) -> Result<IdentityPublicKey> {
     let contract = parse_id(&spec.contract, "contract id")?;
-    let v0 = key_v0(
+    let bounds = ContractBounds::SingleContractDocumentType {
+        id: contract,
+        document_type_name: spec.document_type.clone(),
+    };
+    Ok(bounded_public_key(
         id,
-        Purpose::AUTHENTICATION,
-        SecurityLevel::HIGH,
-        &key.public(),
-        Some(ContractBounds::SingleContractDocumentType {
-            id: contract,
-            document_type_name: spec.document_type.clone(),
-        }),
-    );
-    Ok(with_limits(v0, spec.budget_credits, spec.expires_at_ms))
+        key,
+        bounds,
+        spec.budget_credits,
+        spec.expires_at_ms,
+    ))
 }
 
 fn plain_public_key(
@@ -1035,6 +1048,30 @@ impl LoadedIdentity {
         network: &Network,
         spec: &DocTypeKeySpec,
     ) -> Result<()> {
+        let bound = self
+            .key_doc_type(key_id)
+            .is_some_and(|(c, t)| c == spec.contract && t == spec.document_type);
+        self.check_budgeted_key(
+            key_id,
+            wif,
+            network,
+            (spec.budget_credits, spec.expires_at_ms),
+            (!bound).then_some("not bound to the requested document type"),
+            "the private key",
+        )
+    }
+
+    /// The checks every Forge budgeted key shares; `unbound` says why its contract bounds are
+    /// wrong, if they are, and `holder` names the private key for the last check.
+    fn check_budgeted_key(
+        &self,
+        key_id: u32,
+        wif: &str,
+        network: &Network,
+        (budget, expires_at_ms): (u64, u64),
+        unbound: Option<&str>,
+        holder: &str,
+    ) -> Result<()> {
         use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
         let bad = |why: &str| Error::Platform(format!("key {key_id} on {}: {why}", self.id()));
         let k = self
@@ -1048,16 +1085,14 @@ impl LoadedIdentity {
         if k.purpose() != Purpose::AUTHENTICATION || k.security_level() != SecurityLevel::HIGH {
             return Err(bad("not an AUTHENTICATION / HIGH key"));
         }
-        if self.key_doc_type(key_id) != Some((spec.contract.clone(), spec.document_type.clone())) {
-            return Err(bad("not bound to the requested document type"));
+        if let Some(why) = unbound {
+            return Err(bad(why));
         }
-        if k.total_budget() != Some(spec.budget_credits)
-            || k.expires_at() != Some(spec.expires_at_ms)
-        {
+        if k.total_budget() != Some(budget) || k.expires_at() != Some(expires_at_ms) {
             return Err(bad("its budget or expiry differs from what was requested"));
         }
         if self.key_id_for(wif, network) != Some(key_id) {
-            return Err(bad("the private key does not control it"));
+            return Err(bad(&format!("{holder} does not control it")));
         }
         Ok(())
     }
@@ -1102,31 +1137,15 @@ impl LoadedIdentity {
         network: &Network,
         spec: &LimitedKeySpec,
     ) -> Result<()> {
-        use dash_sdk::dpp::identity::identity_public_key::accessors::v1::IdentityPublicKeyGettersV1;
-        let bad = |why: &str| Error::Platform(format!("key {key_id} on {}: {why}", self.id()));
-        let k = self
-            .0
-            .public_keys()
-            .get(&key_id)
-            .ok_or_else(|| bad("not on the identity"))?;
-        if k.is_disabled() {
-            return Err(bad("disabled"));
-        }
-        if k.purpose() != Purpose::AUTHENTICATION || k.security_level() != SecurityLevel::HIGH {
-            return Err(bad("not an AUTHENTICATION / HIGH key"));
-        }
-        if self.key_group(key_id).as_deref() != Some(spec.group.as_str()) {
-            return Err(bad("not bound to the dash-forge contract group"));
-        }
-        if k.total_budget() != Some(spec.budget_credits)
-            || k.expires_at() != Some(spec.expires_at_ms)
-        {
-            return Err(bad("its budget or expiry differs from what was requested"));
-        }
-        if self.key_id_for(wif, network) != Some(key_id) {
-            return Err(bad("the stored private key does not control it"));
-        }
-        Ok(())
+        let bound = self.key_group(key_id).as_deref() == Some(spec.group.as_str());
+        self.check_budgeted_key(
+            key_id,
+            wif,
+            network,
+            (spec.budget_credits, spec.expires_at_ms),
+            (!bound).then_some("not bound to the dash-forge contract group"),
+            "the stored private key",
+        )
     }
 }
 

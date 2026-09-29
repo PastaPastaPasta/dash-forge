@@ -19,6 +19,7 @@ import { checkOutcome, checksPhrase, fetchVerifiedLog, runDuration, safeDetailsU
 import type { PrCommits } from '@/lib/view/pr-commits'
 import { plural, timeAgo } from '@/lib/view'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
+import { errorMessage } from '@/lib/utils'
 import { Author } from '@/components/author'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
@@ -83,9 +84,11 @@ function CheckIcon({ run }: { run: CheckRun }): JSX.Element {
   return <CircleDashed className="h-4 w-4 text-caution-700 dark:text-caution-400" aria-hidden />
 }
 
+type LogState = { kind: 'idle' } | { kind: 'loading' } | { kind: 'done'; log: VerifiedLog } | { kind: 'error'; message: string }
+
 /** A run's log, fetched on demand and checked against its recorded SHA-256. */
 function RunLog({ run }: { run: CheckRun }): JSX.Element | null {
-  const [state, setState] = useState<{ kind: 'idle' } | { kind: 'loading' } | { kind: 'done'; log: VerifiedLog } | { kind: 'error'; message: string }>({ kind: 'idle' })
+  const [state, setState] = useState<LogState>({ kind: 'idle' })
   if (safeLogUrl(run.logUrl) === null || run.logSha256 === '') return null
   if (state.kind === 'idle' || state.kind === 'loading') {
     return (
@@ -98,7 +101,7 @@ function RunLog({ run }: { run: CheckRun }): JSX.Element | null {
           setState({ kind: 'loading' })
           fetchVerifiedLog(run).then(
             (log) => setState({ kind: 'done', log }),
-            (e: unknown) => setState({ kind: 'error', message: e instanceof Error ? e.message : String(e) }),
+            (e: unknown) => setState({ kind: 'error', message: errorMessage(e, 'the log could not be read') }),
           )
         }}
       >
@@ -156,12 +159,13 @@ export function ChecksTab({
         {runs.map((r) => {
           const url = safeDetailsUrl(r.detailsUrl)
           const state = r.status === 'completed' ? r.conclusion || 'completed' : r.status
+          const duration = runDuration(r)
           return (
             <li key={r.id} className="flex flex-wrap items-center gap-3 border-b border-anvil-100 px-4 py-2.5 last:border-b-0 dark:border-anvil-850" data-testid="check-run" data-name={r.name} data-outcome={checkOutcome(r)}>
               <CheckIcon run={r} />
               <span className="font-medium">{r.name}</span>
               <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{state}</span>
-              {runDuration(r) ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{runDuration(r)}</span> : null}
+              {duration ? <span className="text-[12px] text-anvil-500 dark:text-anvil-400">{duration}</span> : null}
               {r.summary ? <span className="min-w-0 flex-1 truncate text-[12px] text-anvil-500 dark:text-anvil-400">{r.summary}</span> : <span className="flex-1" />}
               {!r.trusted ? <span className="text-[11px] text-anvil-500 dark:text-anvil-400">{untrustedWords(summary)}</span> : null}
               <span className="flex items-center gap-1 text-[12px] text-anvil-500 dark:text-anvil-400">

@@ -23,7 +23,7 @@ use forge_core::ci::{commit_web_url, CheckReport, CheckRuns, RunnerReader, Runne
 use forge_core::keystore::{self, BridgeIdentity};
 use forge_core::platform::identity::{DocTypeKeySpec, FreshKey, KeySpec};
 
-use crate::auth::{dash_to_credits, parse_days};
+use crate::auth::{dash_to_credits, expiry_ms, now_ms, parse_days};
 use crate::common::{Reader, Session};
 use crate::context::Ctx;
 use crate::fmt::{cost_json, cost_line, credits_to_dash, dash_amount, dash_usd_price};
@@ -31,7 +31,6 @@ use crate::fmt::{cost_json, cost_line, credits_to_dash, dash_amount, dash_usd_pr
 /// Runner key defaults (spec §2.2): 0.5 DASH for 365 days.
 const RUNNER_KEY_BUDGET_DASH: f64 = 0.5;
 const RUNNER_KEY_DAYS: u64 = 365;
-const DAY_MS: u64 = 24 * 60 * 60 * 1000;
 /// One identity update adding a key, plus a `runner` document (an upper bound, credits).
 const RUNNER_NEW_ESTIMATE_CREDITS: u64 = 40_000_000;
 /// One `checkRun` create or replace (an upper bound, credits; measured on moutai in the docs).
@@ -179,12 +178,6 @@ pub async fn run(ctx: &Ctx, cmd: &CiCommand) -> Result<()> {
     }
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-}
-
 /// The identity whose master key registers the runner key: `--runner <file>`, else your own.
 fn key_holder(ctx: &Ctx, args: &RunnerNewArgs, me: &str) -> Result<BridgeIdentity> {
     let Some(file) = &args.runner else {
@@ -228,7 +221,7 @@ async fn runner_new(ctx: &Ctx, args: &RunnerNewArgs) -> Result<()> {
         .map_or(Ok(RUNNER_KEY_DAYS), parse_days)?;
     let spec = DocTypeKeySpec {
         budget_credits: dash_to_credits(args.budget.unwrap_or(RUNNER_KEY_BUDGET_DASH))?,
-        expires_at_ms: now_ms() + days * DAY_MS,
+        expires_at_ms: expiry_ms(days),
         contract: s.repo.forge().collab.clone(),
         document_type: forge_core::collab::v2::DOC_CHECK_RUN.to_string(),
     };
@@ -251,23 +244,17 @@ async fn runner_new(ctx: &Ctx, args: &RunnerNewArgs) -> Result<()> {
         );
     }
     ctx.confirm_or_cancel("Register the runner key?")?;
-    let before = s.balance().await;
     let key_id = register_runner_key(ctx, &s, &holder, &spec, &args.output).await?;
-    let membership = if enrol {
-        Some(
-            RunnerService::new(&s.client, &s.identity, &s.bridge)
-                .enrol(&s.repo, &holder.identity_id)
-                .await
-                .context("enrolling the runner (the key is registered and saved)")?,
-        )
-    } else {
-        None
-    };
     // The owner pays the enrolment; the key update is paid by the key holder.
-    let spent = if enrol {
-        s.spent_since(before).await
+    let (membership, spent) = if enrol {
+        let before = s.balance().await;
+        let m = RunnerService::new(&s.client, &s.identity, &s.bridge)
+            .enrol(&s.repo, &holder.identity_id)
+            .await
+            .context("enrolling the runner (the key is registered and saved)")?;
+        (Some(m), s.spent_since(before).await)
     } else {
-        0
+        (None, 0)
     };
     ctx.emit(
         json!({
@@ -333,31 +320,11 @@ async fn register_runner_key(
     if key_id != predicted {
         keystore::write_private_file(output, dfk1_for(key_id).expose().as_bytes())?;
     }
-    verify_key(ctx, s, &holder.identity_id, key_id, &wif, spec).await?;
+    crate::auth::await_key(&s.client, &holder.identity_id, "runner key", |i| {
+        i.check_doc_type_key(key_id, wif.expose(), ctx.network(), spec)
+    })
+    .await?;
     Ok(key_id)
-}
-
-async fn verify_key(
-    ctx: &Ctx,
-    s: &Session,
-    identity_id: &str,
-    key_id: u32,
-    wif: &keystore::Secret,
-    spec: &DocTypeKeySpec,
-) -> Result<()> {
-    let mut last = None;
-    for attempt in 0..8u64 {
-        match s.client.fetch_identity(identity_id).await {
-            Ok(i) => match i.check_doc_type_key(key_id, wif.expose(), ctx.network(), spec) {
-                Ok(()) => return Ok(()),
-                Err(e) => last = Some(e),
-            },
-            Err(e) => last = Some(e),
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(1500 * (attempt + 1))).await;
-    }
-    Err(last.map_or_else(|| anyhow::anyhow!("the new key was not found"), Into::into))
-        .context("verifying the runner key on chain")
 }
 
 async fn runner_add(ctx: &Ctx, repo: &str, runner: &str) -> Result<()> {
@@ -462,12 +429,9 @@ async fn report(ctx: &Ctx, a: &ReportArgs) -> Result<()> {
         ..CheckReport::default()
     };
     // Refused before anything is uploaded or signed.
-    r.validate().map_err(|e| {
-        crate::errors::usage(
-            e.to_string()
-                .trim_start_matches("configuration error: ")
-                .to_string(),
-        )
+    r.validate().map_err(|e| match e {
+        forge_core::error::Error::Config(m) => crate::errors::usage(m),
+        other => other.into(),
     })?;
     let s = Session::open_for_write(ctx, &a.repo, "check run not reported").await?;
     if let Some(p) = &a.log {

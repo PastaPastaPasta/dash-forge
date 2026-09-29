@@ -154,7 +154,7 @@ export interface VerifiedLog {
  */
 export async function fetchVerifiedLog(run: Pick<CheckRun, 'logUrl' | 'logSha256'>, fetchImpl: typeof fetch = (i, init) => fetch(i, init)): Promise<VerifiedLog> {
   const url = safeLogUrl(run.logUrl)
-  if (url === null) throw new Error('the run records no log a browser can read (https, or http on 127.0.0.1)')
+  if (url === null) throw new Error('the run records no log a browser can read (https, or http on this machine)')
   const resp = await fetchImpl(url)
   if (!resp.ok) throw new Error(`the log's storage answered HTTP ${resp.status}`)
   const buf = new Uint8Array(await resp.arrayBuffer())

@@ -25,12 +25,13 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use crate::collab::v2::DOC_CHECK_RUN;
+use crate::collab::doc_engine;
+use crate::collab::v2::{check_run_docs, DOC_CHECK_RUN};
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
+use crate::members;
 use crate::platform::{
-    self, FetchedDocument, FieldValue, LoadedIdentity, PlatformClient, QueryFilter, QueryOrder,
-    WriteEngine,
+    self, FetchedDocument, FieldValue, LoadedIdentity, PlatformClient, QueryOrder,
 };
 use crate::scope::RepoRef;
 
@@ -94,35 +95,24 @@ impl<'a> RunnerReader<'a> {
 
     /// Every current runner of `repo`, complete.
     pub async fn list(&self, repo: &RepoRef) -> Result<Vec<Runner>> {
-        let core = self.client.fetch_contract(&repo.forge().core).await?;
-        let docs = self
-            .client
-            .query_all_documents(
-                &core,
-                DOC_RUNNER,
-                &repo.scope()?.filters([]),
-                &[QueryOrder::asc("repoId"), QueryOrder::asc("memberId")],
-            )
-            .await?;
+        let docs = members::membership_docs(
+            self.client,
+            repo,
+            DOC_RUNNER,
+            &[QueryOrder::asc("repoId"), QueryOrder::asc("memberId")],
+        )
+        .await?;
         Ok(docs.iter().filter_map(Runner::from_doc).collect())
     }
 
     /// `identity`'s runner membership of `repo`, if any (the index is unique).
     pub async fn get(&self, repo: &RepoRef, identity: &str) -> Result<Option<Runner>> {
-        let core = self.client.fetch_contract(&repo.forge().core).await?;
-        let member = FieldValue::identifier(platform::decode_identifier(identity)?);
-        let docs = self
-            .client
-            .query_documents(
-                &core,
-                DOC_RUNNER,
-                &repo.scope()?.filters([QueryFilter::eq("memberId", member)]),
-                &[],
-                1,
-                None,
-            )
-            .await?;
-        Ok(docs.iter().find_map(Runner::from_doc))
+        Ok(
+            members::membership_doc(self.client, repo, DOC_RUNNER, identity)
+                .await?
+                .as_ref()
+                .and_then(Runner::from_doc),
+        )
     }
 }
 
@@ -174,7 +164,7 @@ impl<'a> RunnerService<'a> {
             "memberId",
             FieldValue::identifier(platform::decode_identifier(member)?),
         )]);
-        let engine = WriteEngine::new(self.client, self.identity, self.bridge.doc_op_key()?)?;
+        let engine = doc_engine(self.client, self.identity, self.bridge)?;
         match engine.create_document(&core, DOC_RUNNER, props).await {
             Ok(document_id) => Ok(Runner {
                 identity_id: member.to_string(),
@@ -196,7 +186,7 @@ impl<'a> RunnerService<'a> {
             return Ok(false);
         };
         let core = self.client.fetch_contract(&repo.forge().core).await?;
-        WriteEngine::new(self.client, self.identity, self.bridge.doc_op_key()?)?
+        doc_engine(self.client, self.identity, self.bridge)?
             .delete_document(&core, DOC_RUNNER, &existing.document_id)
             .await?;
         Ok(true)
@@ -236,10 +226,10 @@ fn check_text(field: &str, value: &str, (chars, bytes): (usize, usize)) -> Resul
     if value.is_empty() {
         return Err(Error::Config(format!("{field} is empty")));
     }
-    if value.chars().count() > chars || value.len() > bytes {
+    let n = value.chars().count();
+    if n > chars || value.len() > bytes {
         return Err(Error::Config(format!(
-            "{field} is too long ({} characters, {} bytes; the most is {chars} characters, {bytes} bytes)",
-            value.chars().count(),
+            "{field} is too long ({n} characters, {} bytes; the most is {chars} characters, {bytes} bytes)",
             value.len()
         )));
     }
@@ -370,16 +360,15 @@ pub fn run_to_update<'d>(
     reporter: &str,
     report: &CheckReport,
 ) -> Option<&'d FetchedDocument> {
-    let mine = docs
+    let newest = docs
         .iter()
-        .filter(|d| d.owner_id == reporter && d.field_str("name").as_deref() == Some(&report.name));
-    if let Some(ext) = &report.external_id {
-        return mine
-            .filter(|d| d.field_str("externalId").as_deref() == Some(ext.as_str()))
-            .max_by_key(|d| (d.created_at.unwrap_or(0), d.id.clone()));
-    }
-    mine.max_by_key(|d| (d.created_at.unwrap_or(0), d.id.clone()))
-        .filter(|d| d.field_str("status").as_deref() != Some("completed"))
+        .filter(|d| d.owner_id == reporter && d.field_str("name").as_deref() == Some(&report.name))
+        .filter(|d| report.external_id.is_none() || d.field_str("externalId") == report.external_id)
+        .max_by(|a, b| {
+            (a.created_at.unwrap_or(0), &a.id).cmp(&(b.created_at.unwrap_or(0), &b.id))
+        })?;
+    (report.external_id.is_some() || newest.field_str("status").as_deref() != Some("completed"))
+        .then_some(newest)
 }
 
 /// What [`CheckRuns::report`] did.
@@ -418,26 +407,8 @@ impl<'a> CheckRuns<'a> {
     pub async fn report(&self, repo: &RepoRef, report: &CheckReport) -> Result<Reported> {
         let oid = report.validate()?;
         let collab = self.client.fetch_contract(&repo.forge().collab).await?;
-        let docs = self
-            .client
-            .query_all_documents(
-                &collab,
-                DOC_CHECK_RUN,
-                &[
-                    QueryFilter::eq(
-                        "repoId",
-                        FieldValue::identifier(platform::decode_identifier(repo.id())?),
-                    ),
-                    QueryFilter::eq("headOid", FieldValue::bytes(oid.clone())),
-                ],
-                &[
-                    QueryOrder::asc("repoId"),
-                    QueryOrder::asc("headOid"),
-                    QueryOrder::asc("$createdAt"),
-                ],
-            )
-            .await?;
-        let engine = WriteEngine::new(self.client, self.identity, self.bridge.doc_op_key()?)?;
+        let docs = check_run_docs(self.client, &collab, repo, oid.clone()).await?;
+        let engine = doc_engine(self.client, self.identity, self.bridge)?;
         if let Some(run) = run_to_update(&docs, &self.identity.id(), report) {
             let written = engine
                 .replace_document(&collab, DOC_CHECK_RUN, &run.id, &report.changes())
@@ -461,13 +432,8 @@ impl<'a> CheckRuns<'a> {
 /// The web page that shows a commit's check runs: the commit page of the repo.
 pub fn commit_web_url(repo: &RepoRef, oid: &str) -> String {
     format!(
-        "{}&oid={}",
-        crate::user_error::web_url(repo.owner_id(), repo.name()).replacen(
-            "/repo?",
-            "/repo/commit/?",
-            1
-        ),
-        oid
+        "{}&oid={oid}",
+        crate::user_error::web_page_url("repo/commit/", repo.owner_id(), repo.name())
     )
 }
 
