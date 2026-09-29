@@ -409,10 +409,22 @@ pub struct Listed<T> {
 }
 
 impl TargetLog {
-    /// The target's state code: the sum of its transitions' `delta`.
+    /// The target's state code: the sum of its transitions' `delta`, mod 16.
     #[must_use]
     pub fn state_code(&self) -> i64 {
         state_code(&self.transitions)
+    }
+
+    /// The whole sum of its transitions' `delta` (a lock adds 16).
+    #[must_use]
+    pub fn state_sum(&self) -> i64 {
+        rules::v2::state_sum(&self.transitions)
+    }
+
+    /// Whether the conversation is locked (members only may post).
+    #[must_use]
+    pub fn locked(&self) -> bool {
+        rules::v2::is_locked(&self.transitions)
     }
 }
 
@@ -1288,6 +1300,8 @@ fn action_verb(action: StateAction) -> &'static str {
         StateAction::Merge => "merge",
         StateAction::Draft => "convert to a draft",
         StateAction::Ready => "mark ready",
+        StateAction::Lock => "lock",
+        StateAction::Unlock => "unlock",
     }
 }
 
@@ -1303,13 +1317,14 @@ fn state_words(kind: TargetKind, code: i64) -> &'static str {
     }
 }
 
-/// The state code `action` is a legal move from (a PR's close and reopen also have draft
-/// forms, 8 → 9 and 9 → 8).
+/// The transition sum `action` is a legal move from (a PR's close and reopen also have draft
+/// forms, 8 → 9 and 9 → 8; an unlock needs a lock).
 fn legal_from(action: StateAction) -> i64 {
     match action {
-        StateAction::Close | StateAction::Merge | StateAction::Draft => 0,
+        StateAction::Close | StateAction::Merge | StateAction::Draft | StateAction::Lock => 0,
         StateAction::Reopen => 1,
         StateAction::Ready => 8,
+        StateAction::Unlock => rules::v2::LOCK_DELTA,
     }
 }
 
@@ -1355,6 +1370,29 @@ fn no_move(target: &Target, code: i64, action: StateAction, actor: Actor) -> Err
             reason: "only a maintainer or writer can merge".into(),
             needs: "writer".into(),
         };
+    }
+    if matches!(action, StateAction::Lock | StateAction::Unlock) {
+        if actor == Actor::Author {
+            return Error::NotPermitted {
+                action: what,
+                reason: "only a maintainer or writer can lock or unlock a conversation".into(),
+                needs: "writer".into(),
+            };
+        }
+        let locked = status_of_code(code).locked;
+        return UserError::new(
+            codes::REJECTED,
+            format!(
+                "cannot {what}: it is {}",
+                if locked {
+                    "already locked"
+                } else {
+                    "not locked"
+                }
+            ),
+        )
+        .note("checked before anything was signed; nothing was written or paid")
+        .into();
     }
     let hint = match (action, status_of_code(code)) {
         (StateAction::Merge, s) if s.draft && s.open => " (mark it ready first)",
@@ -1467,7 +1505,7 @@ pub fn review_props(
     comment_count: Option<u16>,
     imported: Option<&Imported>,
 ) -> Result<BTreeMap<String, FieldValue>> {
-    if !(1..=3).contains(&verdict.code()) {
+    if !(1..=5).contains(&verdict.code()) {
         return Err(Error::Config(format!("unknown verdict {}", verdict.code())));
     }
     check_text("review body", body, 5120, 5120)?;
@@ -1492,6 +1530,18 @@ pub fn review_props(
     }
     insert_imported(&mut p, imported)?;
     Ok(p)
+}
+
+/// Refuse a write of `doc_type` into a contract the RC1 layout does not put it in.
+fn check_layout(repo: &RepoRef, contract: &LoadedContract, doc_type: &str) -> Result<()> {
+    match repo.forge().contract_id_of(doc_type) {
+        Some(id) if id == contract.id() => Ok(()),
+        want => Err(Error::Config(format!(
+            "internal: a {doc_type} belongs in {}, not in contract {}",
+            want.unwrap_or("no forge-v2 contract"),
+            contract.id()
+        ))),
+    }
 }
 
 fn target_props(target: &Target) -> Result<BTreeMap<String, FieldValue>> {
@@ -1826,6 +1876,10 @@ pub struct Collab<'a> {
     /// row's base against them), keyed by repository id. Dropped by
     /// [`Collab::refs_changed`] after a push this command made.
     private_updates: std::sync::Mutex<Option<([u8; 32], Arc<crate::refs::PrivateUpdates>)>>,
+    /// Whether the signer holds a maintainer or writer document of the repository (by id),
+    /// read once per `Collab`: what `asMember` proves on every issue, PR, comment and review
+    /// the command writes ([`Self::stamp`]).
+    member: std::sync::Mutex<Option<(String, bool)>>,
 }
 
 impl<'a> Collab<'a> {
@@ -1840,6 +1894,7 @@ impl<'a> Collab<'a> {
             signer: Some((identity, bridge)),
             keyring: crate::repo::KeyringCache::default(),
             private_updates: std::sync::Mutex::default(),
+            member: std::sync::Mutex::default(),
         }
     }
 
@@ -1855,6 +1910,7 @@ impl<'a> Collab<'a> {
             signer: None,
             keyring: crate::repo::KeyringCache::default(),
             private_updates: std::sync::Mutex::default(),
+            member: std::sync::Mutex::default(),
         }
     }
 
@@ -2048,7 +2104,9 @@ impl<'a> Collab<'a> {
         Ok(props)
     }
 
-    /// Create one document of `repo` (its `repoId` added) in `contract`, as the signer.
+    /// Create one document of `repo` (its `repoId` added, stamped by [`Self::stamp`]) in
+    /// `contract`, as the signer. `contract` must be the one the RC1 layout puts `doc_type` in
+    /// ([`crate::layout`]); anything else is refused before signing.
     pub(super) async fn write(
         &self,
         repo: &RepoRef,
@@ -2056,6 +2114,7 @@ impl<'a> Collab<'a> {
         doc_type: &str,
         props: BTreeMap<String, FieldValue>,
     ) -> Result<String> {
+        check_layout(repo, contract, doc_type)?;
         // A private repo's member `event` carries its `value` (label or milestone name, dismiss
         // reason, assignee, retarget base) sealed (§7): every event write passes here.
         let props = if doc_type == DOC_EVENT && props.contains_key("value") {
@@ -2064,9 +2123,100 @@ impl<'a> Collab<'a> {
         } else {
             props
         };
+        let mut all = Self::with_repo(repo, props)?;
+        self.stamp(repo, doc_type, &mut all).await?;
         self.engine()?
-            .create_document(contract, doc_type, Self::with_repo(repo, props)?)
+            .create_document(contract, doc_type, all)
             .await
+    }
+
+    /// Whether the signer holds a maintainer or writer document of `repo` now (read once per
+    /// `Collab` and repository).
+    pub async fn is_member(&self, repo: &RepoRef) -> Result<bool> {
+        if let Some((_, m)) = self
+            .member
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|(id, _)| id == repo.id())
+        {
+            return Ok(*m);
+        }
+        let m = self.signer_role(repo).await?.is_some();
+        *self
+            .member
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((repo.id().to_string(), m));
+        Ok(m)
+    }
+
+    /// Stamp a new `doc_type` document's properties as RC1 requires: `vis` (the repository's
+    /// visibility, or `"public"` where only that is accepted) and, on an issue, PR, comment or
+    /// review, `asMember` = the signer when the signer is a member. The proof is what admits an
+    /// import (`i_provenance`), a member verdict (`memberVerdict`, 1 and 2) and a post to a
+    /// locked thread (`lockGate`); a non-member's verdict (4 or 5) never carries it. A write that
+    /// needs the proof from a non-member is refused here, before signing (with the pre-check off
+    /// it is attempted, and consensus refuses it).
+    pub(super) async fn stamp(
+        &self,
+        repo: &RepoRef,
+        doc_type: &str,
+        props: &mut BTreeMap<String, FieldValue>,
+    ) -> Result<()> {
+        crate::layout::stamp_vis_for(doc_type, props, repo.visibility);
+        if !crate::layout::MEMBER_PROOF_TYPES.contains(&doc_type) {
+            return Ok(());
+        }
+        let verdict = props
+            .get("verdict")
+            .and_then(FieldValue::as_u64)
+            .map(Verdict::from_code);
+        if matches!(
+            verdict,
+            Some(Verdict::ApproveNonMember | Verdict::RequestChangesNonMember)
+        ) {
+            return Ok(());
+        }
+        let needs = props.contains_key("imported")
+            || props.contains_key("upstreamNumber")
+            || verdict.is_some_and(Verdict::needs_member_proof);
+        let member = self.is_member(repo).await?;
+        if member || (needs && !precheck_enabled()) {
+            props.insert(
+                crate::layout::AS_MEMBER.to_string(),
+                FieldValue::identifier(platform::decode_identifier(&self.signer_id()?)?),
+            );
+        } else if needs {
+            return Err(Error::NotPermitted {
+                action: format!("write this {doc_type}"),
+                reason: format!(
+                    "it carries a member's proof (an imported item, an upstream number or an \
+                     approve / request-changes verdict), and you are not a member of {}",
+                    repo.display()
+                ),
+                needs: "writer".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Refuse, before signing, a non-member's post to a locked conversation (`lockGate`: only a
+    /// write with `asMember` passes). Off when [`SKIP_PRECHECK_ENV`] is set.
+    async fn require_unlocked_or_member(&self, repo: &RepoRef, target_id: &str) -> Result<()> {
+        if !precheck_enabled() || self.is_member(repo).await? {
+            return Ok(());
+        }
+        if status_of_code(self.state_code(repo, target_id).await?).locked {
+            return Err(Error::NotPermitted {
+                action: "post to this conversation".into(),
+                reason: format!(
+                    "it is locked, and only members of {} can post to a locked conversation",
+                    repo.display()
+                ),
+                needs: "writer".into(),
+            });
+        }
+        Ok(())
     }
 
     /// A private repo's member events as the folds read them ([`private::readable_event`]):
@@ -2311,19 +2461,20 @@ impl<'a> Collab<'a> {
             .map(|d| issue_from_doc(&d)))
     }
 
-    /// The repository's feed (`transition`, `event`, `authorEvent`) as history specs, in
-    /// [`Self::feed_logs`] order. All three are immutable and non-deletable with a
-    /// `(repoId, $createdAt)` index, so the feed is read through the delta cache
-    /// ([`crate::history`]): after the first read each call costs one request for what landed
-    /// since.
+    /// The repository's feed (`transition` in forge-collab, `event` and `authorEvent` in
+    /// forge-community) as history specs, in [`Self::feed_logs`] order. All three are immutable
+    /// and non-deletable with a `(repoId, $createdAt)` index, so the feed is read through the
+    /// delta cache ([`crate::history`]): after the first read each call costs one request for
+    /// what landed since.
     fn feed_specs<'c>(
         collab: &'c LoadedContract,
+        community: &'c LoadedContract,
         scope: &crate::scope::DocScope,
     ) -> [crate::history::HistorySpec<'c>; 3] {
         [
             crate::history::HistorySpec::new(collab, DOC_TRANSITION, scope),
-            crate::history::HistorySpec::new(collab, DOC_EVENT, scope),
-            crate::history::HistorySpec::new(collab, DOC_AUTHOR_EVENT, scope),
+            crate::history::HistorySpec::new(community, DOC_EVENT, scope),
+            crate::history::HistorySpec::new(community, DOC_AUTHOR_EVENT, scope),
         ]
     }
 
@@ -2397,10 +2548,11 @@ impl<'a> Collab<'a> {
             }
             before = oldest;
         }
+        let community = self.community_contract(repo).await?;
         let feed: [Vec<FetchedDocument>; 3] = crate::history::take(
             crate::history::sync(
                 self.client,
-                &Self::feed_specs(&collab, &repo.scope()?),
+                &Self::feed_specs(&collab, &community, &repo.scope()?),
                 crate::history::Freshness::Now,
             )
             .await?,
@@ -2492,12 +2644,13 @@ impl<'a> Collab<'a> {
     /// is the state code, the same number the proved sum query returns.
     pub async fn target_log(&self, repo: &RepoRef, target_id: &str) -> Result<TargetLog> {
         let collab = self.collab_contract(repo).await?;
+        let community = self.community_contract(repo).await?;
         // Boxed: three complete reads in parallel make a large future for every caller.
         let (transitions, events, author_events) = Box::pin(async {
             futures::try_join!(
                 self.transitions_of(&collab, target_id),
-                self.by_target(&collab, DOC_EVENT, "targetId", target_id),
-                self.by_target(&collab, DOC_AUTHOR_EVENT, "targetId", target_id),
+                self.by_target(&community, DOC_EVENT, "targetId", target_id),
+                self.by_target(&community, DOC_AUTHOR_EVENT, "targetId", target_id),
             )
         })
         .await?;
@@ -2684,14 +2837,15 @@ impl<'a> Collab<'a> {
     ) -> Result<Listed<(PatchView, Approvals)>> {
         let forge = repo.forge();
         self.client
-            .prefetch_contracts(&[&forge.collab, &forge.core])
+            .prefetch_contracts(&[&forge.collab, &forge.core, &forge.community])
             .await?;
         let collab = self.collab_contract(repo).await?;
         let core = self.core_contract(repo).await?;
+        let community = self.community_contract(repo).await?;
         let scope = repo.scope()?;
         let limit = page_limit(limit);
         let reads = pr_list_reads(&collab, &core, &scope, limit);
-        let [feed_a, feed_b, feed_c] = Self::feed_specs(&collab, &scope);
+        let [feed_a, feed_b, feed_c] = Self::feed_specs(&collab, &community, &scope);
         let [refs_a, refs_b, refs_c] = crate::refs::GitState::specs(&core, &scope);
         let history = [feed_a, feed_b, feed_c, refs_a, refs_b, refs_c];
         let (batch, synced) = futures::join!(
@@ -3350,7 +3504,8 @@ impl<'a> Collab<'a> {
             let sealed = self
                 .seal_if_private(repo, kind.content_kind(), plain.clone())
                 .await?;
-            let all = Self::with_repo(repo, sealed)?;
+            let mut all = Self::with_repo(repo, sealed)?;
+            self.stamp(repo, kind.doc_type(), &mut all).await?;
             let res = engine
                 .create_journaled(&collab, kind.doc_type(), all, |p| {
                     signed.push((number, p.document_id().to_string()));
@@ -3551,14 +3706,31 @@ impl<'a> Collab<'a> {
             .await?
             .ok_or(Error::NotFound)?;
         let revision = edit_check(repo, doc_type, &stored, &self.signer_id()?)?;
-        let changes = if repo.visibility == Visibility::Private {
+        let mut changes = if repo.visibility == Visibility::Private {
             self.private_edit(repo, kind, &stored, &changes).await?
         } else {
             changes
         };
+        if kind == DocKind::Comment && self.orphaned(collab, &stored).await? {
+            // The root this reply named was deleted: a replace re-checks `replyTo` against a
+            // live root, so the edit drops it (the reply becomes a root of its own).
+            changes.insert("replyTo".to_string(), None);
+        }
         self.engine()?
             .replace_document_guarded(collab, doc_type, id, &changes, Some(revision))
             .await
+    }
+
+    /// Whether reply `stored` names a root comment that no longer exists.
+    async fn orphaned(&self, collab: &LoadedContract, stored: &FetchedDocument) -> Result<bool> {
+        let Some(parent) = id_field(stored, "replyTo") else {
+            return Ok(false);
+        };
+        Ok(self
+            .client
+            .fetch_document(collab, DOC_COMMENT, &parent)
+            .await?
+            .is_none())
     }
 
     /// The changes a private edit of the signer's `kind` document `stored` writes
@@ -3651,10 +3823,50 @@ impl<'a> Collab<'a> {
         anchor: Option<&CommentAnchor>,
         imported: Option<&Imported>,
     ) -> Result<String> {
-        let p = comment_props(target_id, body, anchor, imported)?;
         let collab = self.collab_contract(repo).await?;
+        let rooted;
+        let anchor = match anchor.and_then(|a| a.reply_to.as_deref()) {
+            Some(parent) => {
+                let mut a = anchor.cloned().unwrap_or_default();
+                a.reply_to = Some(self.thread_root(repo, &collab, target_id, parent).await?);
+                rooted = a;
+                Some(&rooted)
+            }
+            None => anchor,
+        };
+        let p = comment_props(target_id, body, anchor, imported)?;
+        self.require_unlocked_or_member(repo, target_id).await?;
         let p = self.seal_if_private(repo, ContentKind::Comment, p).await?;
         self.write(repo, &collab, DOC_COMMENT, p).await
+    }
+
+    /// The root comment of the thread `comment_id` (a comment of `target_id`) belongs to: the
+    /// comment itself when it is a root, else the root it replies to. A reply names a root
+    /// (`replyTo.refersTo … where replyTo = noParent`), so one step always reaches it.
+    pub async fn thread_root(
+        &self,
+        repo: &RepoRef,
+        collab: &LoadedContract,
+        target_id: &str,
+        comment_id: &str,
+    ) -> Result<String> {
+        let parent = self
+            .client
+            .fetch_document(collab, DOC_COMMENT, comment_id)
+            .await?
+            .ok_or_else(|| {
+                Error::Config(format!(
+                    "comment {comment_id} does not exist (or was deleted)"
+                ))
+            })?;
+        let same_thread = id_field(&parent, "targetId").as_deref() == Some(target_id)
+            && id_field(&parent, "repoId").as_deref() == Some(repo.id());
+        if !same_thread {
+            return Err(Error::Config(format!(
+                "comment {comment_id} is not on this issue or pull request"
+            )));
+        }
+        Ok(id_field(&parent, "replyTo").unwrap_or(parent.id))
     }
 
     /// Review a PR: `verdict` on `commit_oid` (the head a reviewer saw). Un-gated; only
@@ -3670,10 +3882,22 @@ impl<'a> Collab<'a> {
         comment_count: Option<u16>,
         imported: Option<&Imported>,
     ) -> Result<String> {
+        let verdict = self.verdict_for(repo, verdict).await?;
         let p = review_props(patch_id, verdict, commit_oid, body, comment_count, imported)?;
+        self.require_unlocked_or_member(repo, patch_id).await?;
         let p = self.seal_if_private(repo, ContentKind::Review, p).await?;
         let collab = self.collab_contract(repo).await?;
         self.write(repo, &collab, DOC_REVIEW, p).await
+    }
+
+    /// The code `verdict` is written as by the signer ([`Verdict::as_written_by`]): a member's
+    /// approve / request changes is 1 / 2, anyone else's 4 / 5. With the pre-check off the
+    /// verdict is written as asked, and consensus judges it.
+    pub async fn verdict_for(&self, repo: &RepoRef, verdict: Verdict) -> Result<Verdict> {
+        if !precheck_enabled() {
+            return Ok(verdict);
+        }
+        Ok(verdict.as_written_by(self.is_member(repo).await?))
     }
 
     /// Create one forge-collab document of `repo` exactly once across runs: the signed
@@ -3711,8 +3935,10 @@ impl<'a> Collab<'a> {
         }
         // Sealed only when signing afresh: a replay re-broadcasts the saved (sealed) bytes.
         let props = self.seal_if_private(repo, kind, props).await?;
+        let mut all = Self::with_repo(repo, props)?;
+        self.stamp(repo, doc_type, &mut all).await?;
         let prepared = engine
-            .create_journaled(&collab, doc_type, Self::with_repo(repo, props)?, |p| {
+            .create_journaled(&collab, doc_type, all, |p| {
                 persist(&WriteIntent::for_prepared(0, p))
             })
             .await?;
@@ -3744,8 +3970,8 @@ impl<'a> Collab<'a> {
             ),
         )
         .await?;
-        let collab = self.collab_contract(repo).await?;
-        self.write(repo, &collab, DOC_EVENT, props).await
+        let community = self.community_contract(repo).await?;
+        self.write(repo, &community, DOC_EVENT, props).await
     }
 
     /// Carry out `action` (close, reopen, merge, draft, ready) on `target`: one `transition`
@@ -3903,8 +4129,8 @@ impl<'a> Collab<'a> {
             StateRoute::Member => DOC_EVENT,
             StateRoute::Author => DOC_AUTHOR_EVENT,
         };
-        let collab = self.collab_contract(repo).await?;
-        let id = self.write(repo, &collab, doc_type, props).await?;
+        let community = self.community_contract(repo).await?;
+        let id = self.write(repo, &community, doc_type, props).await?;
         Ok((route, id))
     }
 
@@ -4087,8 +4313,8 @@ impl<'a> Collab<'a> {
             ),
         )
         .await?;
-        let collab = self.collab_contract(repo).await?;
-        self.write(repo, &collab, DOC_EVENT, props).await
+        let community = self.community_contract(repo).await?;
+        self.write(repo, &community, DOC_EVENT, props).await
     }
 
     /// Every label of `repo`, newest definition per name.
@@ -5289,7 +5515,7 @@ mod tests {
         };
         assert_eq!(log.state_code(), 8);
         // A kind the contract does not have is not a transition.
-        assert!(transition_from_doc(&doc(3, FieldValue::integer(2))).is_none());
+        assert!(transition_from_doc(&doc(5, FieldValue::integer(2))).is_none());
     }
 
     #[test]
