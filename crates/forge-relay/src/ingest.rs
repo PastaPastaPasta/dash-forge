@@ -9,7 +9,8 @@
 //! | `release` | forge-core | `created (repoId)` | `release` published |
 //! | `issue` | forge-collab | `created (repoId)` | `issues` opened |
 //! | `patch` | forge-collab | `created (repoId)` | `pull_request` opened |
-//! | `event`, `authorEvent` | forge-collab | `feed (repoId)` | `issues` / `pull_request` closed, reopened, merged, labeled, ... |
+//! | `transition` | forge-collab | `feed (repoId)` | `issues` / `pull_request` closed, reopened, merged, draft, ready, locked, unlocked |
+//! | `event`, `authorEvent` | forge-community (RC1) | `feed (repoId)` | `issues` / `pull_request` labeled, assigned, synchronize, ... |
 //! | `comment` | forge-collab | `target (targetId)`, per issue/PR | `issue_comment` created |
 //! | `review` | forge-collab | `patch (patchId)`, per PR | `pull_request_review` submitted |
 //! | `checkRun` | forge-community | `head (repoId, headOid)`, per head seen; not a cursor stream: re-read from the oldest open run and compared by `$revision` ([`crate::checkruns`]) | `check_run` created, completed |
@@ -44,8 +45,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use forge_core::platform::{
-    encode_identifier, FetchedDocument, LoadedContract, PlatformClient, QueryFilter, QueryOp,
-    QueryOrder,
+    encode_identifier, FetchedDocument, FieldValue, LoadedContract, PlatformClient, QueryFilter,
+    QueryOp, QueryOrder,
 };
 use forge_core::refs::ref_update_from_doc;
 use forge_core::rules::{self, ConfigDoc};
@@ -67,9 +68,9 @@ pub const DOC_RELEASE: &str = "release";
 pub const DOC_ISSUE: &str = "issue";
 /// Pull requests.
 pub const DOC_PATCH: &str = "patch";
-/// Member events (labels, assignees, retarget, review kinds, ...).
+/// Member events (labels, assignees, retarget, review kinds, ...): forge-community in RC1.
 pub const DOC_EVENT: &str = "event";
-/// Author events (thread resolution, review requests, head updates).
+/// Author events (thread resolution, review requests, head updates): forge-community in RC1.
 pub const DOC_AUTHOR_EVENT: &str = "authorEvent";
 /// State changes (close, reopen, merge, draft, ready): one legal move each.
 pub const DOC_TRANSITION: &str = "transition";
@@ -190,7 +191,7 @@ pub trait PageSource {
 pub struct LiveStream<'a> {
     /// The client.
     pub client: &'a PlatformClient,
-    /// forge-core or forge-collab.
+    /// The contract that holds `doc_type` (forge-core, forge-collab or forge-community).
     pub contract: &'a LoadedContract,
     /// The document type.
     pub doc_type: &'a str,
@@ -520,8 +521,20 @@ pub fn translate_release(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<W
         author: d.owner_id.clone(),
         assets,
     };
-    let action = if r.yanked { "unpublished" } else { "published" };
-    Some(release_event(repo, &d.id, action, &r))
+    Some(release_event(repo, &d.id, release_action(d, r.yanked), &r))
+}
+
+/// A release document's GitHub action from its RC1 `delta` (+1 publish, 0 edit / yank /
+/// sealed, −1 unpublish): `published`, `unpublished`, or for 0 `edited` (`unpublished` when it
+/// yanks). A document without a delta (before RC1) is `published` unless yanked.
+fn release_action(d: &FetchedDocument, yanked: bool) -> &'static str {
+    match d.fields.get("delta").and_then(FieldValue::as_i64) {
+        Some(1) => "published",
+        Some(-1) => "unpublished",
+        Some(_) if !yanked => "edited",
+        _ if yanked => "unpublished",
+        _ => "published",
+    }
 }
 
 /// A `checkRun` → `check_run` with `action` (chosen by [`crate::checkruns::diff`]). `None`
@@ -584,9 +597,23 @@ pub fn transition_action(kind: u64) -> Option<(&'static str, bool, bool)> {
     })
 }
 
+/// The RC1 lock transitions (`thread_lock`, delta ±16): issue lock / unlock 3 / 4, PR lock /
+/// unlock 18 / 19. They leave the state (open, closed, merged, draft) as it is.
+/// A lock transition `kind` as GitHub's action and the `locked` it leaves: `("locked", true)`
+/// or `("unlocked", false)`; `None` for any other kind.
+#[must_use]
+pub fn lock_action(kind: u64) -> Option<(&'static str, bool)> {
+    use forge_core::rules::transition as t;
+    match u8::try_from(kind).ok()? {
+        t::ISSUE_LOCK | t::PR_LOCK => Some(("locked", true)),
+        t::ISSUE_UNLOCK | t::PR_UNLOCK => Some(("unlocked", false)),
+        _ => None,
+    }
+}
+
 /// Whether a PR is a draft after a transition of `kind`, from the kind alone: a draft, a
 /// closed draft and a reopened draft are drafts; a ready, a ready close / reopen and a merge
-/// are not.
+/// are not. (A lock or unlock leaves the draft flag alone: it is not a state kind.)
 #[must_use]
 pub fn draft_after(kind: u64) -> bool {
     use forge_core::rules::transition as t;
@@ -604,17 +631,34 @@ pub fn draft_after(kind: u64) -> bool {
 /// When the relay did not find its `oid` as the tip of a valid update of the PR's base ref
 /// (`merge_on_base == false`) the payload adds `dash_merge_unverified: true`, the label forge
 /// readers show ("merge commit not found on the base").
+///
+/// A lock or unlock ([`lock_action`]) is `locked` / `unlocked` with the object's `locked` set
+/// and its state as the relay last saw it: open unless the target is in `closed`.
 pub fn translate_transition(
     repo: &RepositoryMeta,
     d: &FetchedDocument,
     targets: &BTreeMap<String, TargetInfo>,
     merge_on_base: bool,
+    closed: &BTreeSet<String>,
 ) -> Option<WebhookEvent> {
     let target_id = id_field(d, "targetId")?;
     let target = targets.get(&target_id)?;
     let kind = d.field_u64("kind")?;
     if kind / 10 != u64::from(target.is_pr) {
         return None;
+    }
+    if let Some((action, locked)) = lock_action(kind) {
+        let open = !closed.contains(&target_id);
+        let (mut e, obj) = if target.is_pr {
+            let pr = target.pr_obj(&target_id, open, false);
+            (pull_request_event(repo, &d.id, action, &pr), "pull_request")
+        } else {
+            let issue = target.issue_obj(&target_id, open);
+            (issues_event(repo, &d.id, action, &issue), "issue")
+        };
+        e.payload[obj]["locked"] = serde_json::Value::Bool(locked);
+        e.payload["sender"] = repo.user_json(&d.owner_id);
+        return Some(e);
     }
     let (action, open, merged) = transition_action(kind)?;
     let mut e = if target.is_pr {
@@ -989,8 +1033,10 @@ mod tests {
         };
         let issues = targets([1; 32], target(false, 8));
         let prs = targets([9; 32], target(true, 3));
+        let none = BTreeSet::new();
         for (kind, action, state) in [(1, "closed", "closed"), (2, "reopened", "open")] {
-            let e = translate_transition(&meta(), &tr(kind, [1; 32]), &issues, true).unwrap();
+            let e =
+                translate_transition(&meta(), &tr(kind, [1; 32]), &issues, true, &none).unwrap();
             assert_eq!(e.event, "issues");
             assert_eq!(e.payload["action"], action, "kind {kind}");
             assert_eq!(e.payload["issue"]["state"], state);
@@ -1005,7 +1051,7 @@ mod tests {
             (16, "closed", "closed", false),
             (17, "reopened", "open", false),
         ] {
-            let e = translate_transition(&meta(), &tr(kind, [9; 32]), &prs, true).unwrap();
+            let e = translate_transition(&meta(), &tr(kind, [9; 32]), &prs, true, &none).unwrap();
             assert_eq!(e.event, "pull_request");
             assert_eq!(e.payload["action"], action, "kind {kind}");
             assert_eq!(e.payload["pull_request"]["state"], state, "kind {kind}");
@@ -1022,15 +1068,65 @@ mod tests {
         drafted.draft = true;
         assert!(drafted.pr_obj("p", true, false).draft);
         // Merged is the chain fact (D-9); a commit not found on the base is labelled.
-        let e = translate_transition(&meta(), &tr(13, [9; 32]), &prs, false).unwrap();
+        let e = translate_transition(&meta(), &tr(13, [9; 32]), &prs, false, &none).unwrap();
         assert_eq!(e.payload["pull_request"]["merged"], true);
         assert_eq!(e.payload["dash_merge_unverified"], true);
         // A PR kind on an issue (or the reverse), an unknown kind or target: nothing.
-        assert!(translate_transition(&meta(), &tr(11, [1; 32]), &issues, true).is_none());
-        assert!(translate_transition(&meta(), &tr(1, [9; 32]), &prs, true).is_none());
-        assert!(translate_transition(&meta(), &tr(3, [1; 32]), &issues, true).is_none());
-        assert!(translate_transition(&meta(), &tr(1, [5; 32]), &issues, true).is_none());
+        assert!(translate_transition(&meta(), &tr(11, [1; 32]), &issues, true, &none).is_none());
+        assert!(translate_transition(&meta(), &tr(1, [9; 32]), &prs, true, &none).is_none());
+        assert!(translate_transition(&meta(), &tr(5, [1; 32]), &issues, true, &none).is_none());
+        assert!(translate_transition(&meta(), &tr(1, [5; 32]), &issues, true, &none).is_none());
         assert_eq!(transition_action(18), None);
+    }
+
+    /// RC1 lock kinds (3/4 issue, 18/19 PR) are GitHub's `locked` / `unlocked`, keeping the
+    /// state the relay last saw.
+    #[test]
+    fn lock_transitions_are_locked_and_unlocked() {
+        let tr = |kind: u64, t: [u8; 32]| {
+            doc(
+                &format!("t{kind}"),
+                "ACTOR",
+                vec![
+                    ("targetId", FieldValue::identifier(t)),
+                    ("kind", FieldValue::integer(kind)),
+                ],
+            )
+        };
+        let issues = targets([1; 32], target(false, 8));
+        let mut draft = target(true, 3);
+        draft.draft = true;
+        let prs = targets([9; 32], draft);
+        let none = BTreeSet::new();
+        let closed = BTreeSet::from([encode_identifier([1; 32])]);
+        for (kind, action, locked) in [(3, "locked", true), (4, "unlocked", false)] {
+            let e =
+                translate_transition(&meta(), &tr(kind, [1; 32]), &issues, true, &none).unwrap();
+            assert_eq!(e.event, "issues");
+            assert_eq!(e.payload["action"], action);
+            assert_eq!(e.payload["issue"]["locked"], locked);
+            assert_eq!(e.payload["issue"]["state"], "open");
+            assert_eq!(e.payload["sender"]["login"], "ACTOR");
+            let e =
+                translate_transition(&meta(), &tr(kind, [1; 32]), &issues, true, &closed).unwrap();
+            assert_eq!(
+                e.payload["issue"]["state"], "closed",
+                "a closed issue stays closed"
+            );
+        }
+        for (kind, action, locked) in [(18, "locked", true), (19, "unlocked", false)] {
+            let e = translate_transition(&meta(), &tr(kind, [9; 32]), &prs, true, &none).unwrap();
+            assert_eq!(e.event, "pull_request");
+            assert_eq!(e.payload["action"], action);
+            assert_eq!(e.payload["pull_request"]["locked"], locked);
+            assert_eq!(
+                e.payload["pull_request"]["draft"], true,
+                "a lock keeps the draft"
+            );
+        }
+        // An issue kind on a PR (or the reverse) is nothing.
+        assert!(translate_transition(&meta(), &tr(3, [9; 32]), &prs, true, &none).is_none());
+        assert!(translate_transition(&meta(), &tr(18, [1; 32]), &issues, true, &none).is_none());
     }
 
     /// An in-memory index ordered by `($createdAt, $id)`. A `start_after` naming a document
@@ -1242,5 +1338,33 @@ mod tests {
         );
         let e = translate_release(&meta(), &yanked).unwrap();
         assert_eq!(e.payload["action"], "unpublished");
+    }
+
+    /// RC1 `release.delta`: +1 publish, 0 edit (or yank), −1 unpublish.
+    #[test]
+    fn a_release_action_follows_its_delta() {
+        let rel = |delta: i64, yanked: bool| {
+            doc(
+                "r",
+                "M",
+                vec![
+                    ("tagName", FieldValue::text("v1")),
+                    ("delta", FieldValue::signed(delta)),
+                    ("yanked", FieldValue::boolean(yanked)),
+                ],
+            )
+        };
+        for (delta, yanked, action) in [
+            (1, false, "published"),
+            (-1, false, "unpublished"),
+            (0, false, "edited"),
+            (0, true, "unpublished"),
+        ] {
+            let e = translate_release(&meta(), &rel(delta, yanked)).unwrap();
+            assert_eq!(
+                e.payload["action"], action,
+                "delta {delta}, yanked {yanked}"
+            );
+        }
     }
 }

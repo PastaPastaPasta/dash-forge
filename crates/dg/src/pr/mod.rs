@@ -1430,12 +1430,15 @@ async fn required_checks(
     oracle: &forge_core::rules::v2::RoleOracle,
     policy: &forge_core::rules::review::Policy,
 ) -> Result<Option<forge_core::rules::v2::ChecksState>> {
-    if !policy.require_checks {
+    // Named checks (with their pinned sources) are required whether or not `requireChecks` is
+    // set, as the web merge box reads them.
+    if !policy.require_checks && policy.required_checks.is_empty() {
         return Ok(None);
     }
     let rules = forge_core::rules::v2::ChecksPolicy {
-        require_checks: true,
-        required_checks: Vec::new(),
+        require_checks: policy.require_checks,
+        required_checks: policy.required_checks.clone(),
+        required_check_sources: policy.required_check_sources.clone(),
     };
     Ok(Some(
         collab
@@ -2163,6 +2166,7 @@ mod tests {
             approver_role: u8::from(maintainers),
             require_checks: false,
             merge_methods: methods,
+            ..Default::default()
         }
     }
 
@@ -2212,7 +2216,7 @@ mod tests {
         let runners = std::collections::BTreeSet::from(["r".to_string()]);
         let policy = ChecksPolicy {
             require_checks: true,
-            required_checks: vec![],
+            ..ChecksPolicy::default()
         };
         // The runner's newer failing run decides it, over the writer's older passing one.
         let runs = [

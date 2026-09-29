@@ -21,8 +21,20 @@
 //!   (`ContractBoundedKeyOutOfBoundsError`), and a non-batch transition with
 //!   `ContractBoundedKeyNonBatchError`.
 //!
-//! Contract lookups go through [`RepoRef::forge`] (`community` for `checkRun`, `core` for `runner`),
-//! so moving either type to another contract is a deployment-file change here.
+//! * **RC1** (`forge-contracts/contracts/forge-community.json`): every write carries `outcome`
+//!   ([`outcome_of`]: 0 pending, 1 passed, 2 failed; `outcomeOf` binds it to the status and
+//!   conclusion, so a replace sets it again) and a create carries the `vis` stamp (immutable;
+//!   `repoId`'s `where` proves it equals the repository's visibility). Times are ms (`msEpoch`),
+//!   a completion never precedes its start (`doneAfterStart`) and no time is from the future
+//!   (`notFuture`: at most `$updatedAt` + 1 h), so a time the CI gives is capped at the
+//!   reporter's clock. `detailsUrl` is https and `logUrl` https or `ipfs://`
+//!   ([`is_details_url`], [`is_log_url`]). A **private** repository's run carries no summary,
+//!   details link, log, artifacts or external id (`privateNoText`):
+//!   [`CheckReport::for_visibility`] drops them and names what it dropped, so a caller warns
+//!   instead of failing the report; such a run is matched by name, as it has no external id.
+//!
+//! Contract lookups go through [`RepoRef::forge`] (`community` for `checkRun` and `runner`), so
+//! moving either type to another contract is a deployment-file change here.
 //!
 //! [`ContractBounds::SingleContractDocumentType`]: dash_sdk::dpp::identity::contract_bounds::ContractBounds
 
@@ -34,11 +46,15 @@ use crate::collab::doc_engine;
 use crate::collab::v2::{check_run_docs, DOC_CHECK_RUN};
 use crate::error::{Error, Result};
 use crate::keystore::BridgeIdentity;
+use crate::layout;
 use crate::members;
 use crate::platform::{
     self, FetchedDocument, FieldValue, LoadedContract, LoadedIdentity, PlatformClient, QueryOrder,
 };
-use crate::rules::v2::{check_run_write, RunReport, RunWrite, RunWriteAction, StoredRun};
+use crate::rules::v2::{
+    check_run_write, RunReport, RunWrite, RunWriteAction, StoredRun, Visibility,
+    PASSING_CONCLUSIONS,
+};
 use crate::scope::RepoRef;
 
 /// forge-community: a CI runner's membership of a repo.
@@ -65,6 +81,71 @@ const URL_MAX: (usize, usize) = (300, 300);
 const SUMMARY_MAX: (usize, usize) = (1000, 2000);
 const EXTERNAL_ID_MAX: (usize, usize) = (120, 120);
 const ARTIFACTS_MAX: (usize, usize) = (4096, 4096);
+
+/// The smallest `startedAt` the contract accepts (`msEpoch`): times are milliseconds, and a
+/// time in seconds is far below this.
+pub const MS_EPOCH: u64 = 1_000_000_000_000;
+
+/// The fields a private repository's run cannot carry (`privateNoText`), by property name.
+pub const PRIVATE_TEXT_FIELDS: [&str; 5] =
+    ["summary", "detailsUrl", "logUrl", "artifacts", "externalId"];
+
+/// A `checkRun`'s `outcome` (`outcomeOf`): 0 while the run is not completed, 1 for a completed
+/// run that passed (`success`, `neutral`, `skipped`), 2 for any other conclusion.
+#[must_use]
+pub fn outcome_of(status: &str, conclusion: Option<&str>) -> u64 {
+    if status != "completed" {
+        0
+    } else if conclusion.is_some_and(|c| PASSING_CONCLUSIONS.contains(&c)) {
+        1
+    } else {
+        2
+    }
+}
+
+/// POSIX `[[:space:]]` (ASCII): what the contract's URL patterns refuse anywhere.
+fn is_posix_space(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\u{0b}' | '\u{0c}' | '\r')
+}
+
+/// `rest` is empty, or starts with `/`, `?` or `#` and holds no whitespace: the patterns'
+/// `([/?#][^[:space:]]*)?$` tail.
+fn is_url_tail(rest: &str) -> bool {
+    rest.is_empty() || (rest.starts_with(['/', '?', '#']) && !rest.contains(is_posix_space))
+}
+
+/// `https://`, a non-empty host with no whitespace or `@` (so no userinfo), then the tail.
+fn is_https_prefix_url(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let (host, tail) = rest.split_at(end);
+    !host.is_empty() && !host.contains(|c| c == '@' || is_posix_space(c)) && is_url_tail(tail)
+}
+
+/// Whether the contract's `checkRun.detailsUrl` pattern admits `url`:
+/// `^https://[^[:space:]/?#@]+([/?#][^[:space:]]*)?$` (https only, no userinfo, no whitespace;
+/// an IP host is allowed, for a self-hosted CI).
+#[must_use]
+pub fn is_details_url(url: &str) -> bool {
+    is_https_prefix_url(url)
+}
+
+/// Whether the contract's `checkRun.logUrl` pattern admits `url`: an https URL as
+/// [`is_details_url`], or `ipfs://<alphanumeric CID>` with the same optional tail:
+/// `^(https://[^[:space:]/?#@]+|ipfs://[A-Za-z0-9]+)([/?#][^[:space:]]*)?$`.
+#[must_use]
+pub fn is_log_url(url: &str) -> bool {
+    if let Some(rest) = url.strip_prefix("ipfs://") {
+        let end = rest
+            .find(|c: char| !c.is_ascii_alphanumeric())
+            .unwrap_or(rest.len());
+        let (cid, tail) = rest.split_at(end);
+        return !cid.is_empty() && is_url_tail(tail);
+    }
+    is_https_prefix_url(url)
+}
 
 /// One runner membership of a repo.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -289,6 +370,12 @@ impl CheckReport {
         }
         if let Some(u) = &self.details_url {
             check_text("the details URL", u, URL_MAX)?;
+            if !is_details_url(u) {
+                return Err(Error::Config(format!(
+                    "the details URL {u:?} must be an https:// link with a host, no \
+                     user:password@ and no spaces"
+                )));
+            }
         }
         if let Some(s) = &self.summary {
             check_text("the summary", s, SUMMARY_MAX)?;
@@ -298,22 +385,72 @@ impl CheckReport {
         }
         if let Some((u, _)) = &self.log {
             check_text("the log URL", u, URL_MAX)?;
+            if !is_log_url(u) {
+                return Err(Error::Config(format!(
+                    "the log URL {u:?} must be https:// (with a host, no user:password@) or \
+                     ipfs://"
+                )));
+            }
         }
         if let Some(a) = &self.artifacts {
             check_text("the artifacts list", a, ARTIFACTS_MAX)?;
         }
+        for (what, t) in [
+            ("start", self.started_at),
+            ("completion", self.completed_at),
+        ] {
+            if let Some(t) = t.filter(|t| *t < MS_EPOCH) {
+                return Err(Error::Config(format!(
+                    "the {what} time {t} is not in milliseconds since 1970 (a time in seconds?)"
+                )));
+            }
+        }
         Ok(oid)
     }
 
-    /// What the monotonic rules read of this report.
-    fn run_report(&self) -> RunReport {
+    /// This report as a repository of `visibility` can take it, and the fields it left out. A
+    /// private repository's run carries no summary, details link, log, artifacts or external
+    /// id (the contract's `privateNoText`): they are dropped (named as in
+    /// [`PRIVATE_TEXT_FIELDS`]) rather than refused, so a CI that reports the same way
+    /// everywhere still records its status and conclusion, and the caller warns. A public
+    /// repository's report is unchanged.
+    #[must_use]
+    pub fn for_visibility(&self, visibility: Visibility) -> (CheckReport, Vec<&'static str>) {
+        let mut r = self.clone();
+        let mut dropped = Vec::new();
+        if visibility == Visibility::Private {
+            for (name, present) in [
+                ("summary", r.summary.take().is_some()),
+                ("detailsUrl", r.details_url.take().is_some()),
+                ("logUrl", r.log.take().is_some()),
+                ("artifacts", r.artifacts.take().is_some()),
+                ("externalId", r.external_id.take().is_some()),
+            ] {
+                if present {
+                    dropped.push(name);
+                }
+            }
+        }
+        (r, dropped)
+    }
+
+    /// What the monotonic rules read of this report at `now_ms`. A time the CI gives is capped
+    /// at the reporter's clock: the contract refuses a time more than an hour past the block's
+    /// (`notFuture`), and a CI host's clock may run ahead of this one.
+    fn run_report(&self, now_ms: u64) -> RunReport {
         RunReport {
             status: self.status.clone(),
             conclusion: self.conclusion.clone(),
-            started_at: self.started_at,
-            completed_at: self.completed_at,
+            started_at: self.started_at.map(|t| t.min(now_ms)),
+            completed_at: self.completed_at.map(|t| t.min(now_ms)),
             external_id: self.external_id.clone(),
         }
+    }
+
+    /// This report's `outcome` ([`outcome_of`]).
+    #[must_use]
+    pub fn outcome(&self) -> u64 {
+        outcome_of(&self.status, self.conclusion.as_deref())
     }
 
     /// The write this report makes against `stored` (the run [`run_to_update`] picked, or
@@ -323,16 +460,23 @@ impl CheckReport {
     #[must_use]
     pub fn write(&self, stored: Option<&FetchedDocument>, now_ms: u64) -> Option<RunWrite> {
         let stored = stored.map(stored_run);
-        check_run_write(stored.as_ref(), &self.run_report(), now_ms)
+        check_run_write(stored.as_ref(), &self.run_report(now_ms), now_ms)
     }
 
-    /// The full property set a create carries (the scope adds `repoId`): the status, the
-    /// set-once fields `w` sets, and everything else this report gives.
-    pub(crate) fn create_props(&self, oid: Vec<u8>, w: &RunWrite) -> BTreeMap<String, FieldValue> {
+    /// The full property set a create carries (the scope adds `repoId`): the `vis` stamp of a
+    /// repository of `visibility`, the status and outcome, the set-once fields `w` sets, and
+    /// everything else this report gives.
+    pub(crate) fn create_props(
+        &self,
+        oid: Vec<u8>,
+        w: &RunWrite,
+        visibility: Visibility,
+    ) -> BTreeMap<String, FieldValue> {
         let mut p = BTreeMap::from([
             ("headOid".to_string(), FieldValue::bytes(oid)),
             ("name".to_string(), FieldValue::text(&self.name)),
         ]);
+        layout::stamp_vis(&mut p, visibility);
         p.extend(
             self.changes(w)
                 .into_iter()
@@ -344,13 +488,21 @@ impl CheckReport {
     /// What a write of this report sets (never removes: the monotonic fields are set once,
     /// and a report that would clear one is a new run, [`check_run_write`]):
     ///
-    /// * `status` always.
+    /// * `status` and `outcome` always (`outcomeOf` ties the outcome to the status).
     /// * `startedAt`, `completedAt`, `conclusion`, `externalId` as `w` says: only those the
     ///   stored run does not hold yet.
     /// * Everything else this report gives replaces what is stored; what it does not give stays.
-    fn changes(&self, w: &RunWrite) -> BTreeMap<String, Option<FieldValue>> {
+    ///
+    /// `vis` is immutable: a create sets it ([`Self::create_props`]) and a replace keeps it.
+    pub(crate) fn changes(&self, w: &RunWrite) -> BTreeMap<String, Option<FieldValue>> {
         let text = |v: &Option<String>| v.as_deref().map(FieldValue::text);
-        let mut c = BTreeMap::from([("status".to_string(), Some(FieldValue::text(&self.status)))]);
+        let mut c = BTreeMap::from([
+            ("status".to_string(), Some(FieldValue::text(&self.status))),
+            (
+                "outcome".to_string(),
+                Some(FieldValue::integer(self.outcome())),
+            ),
+        ]);
         let set = [
             ("startedAt", w.started_at.map(FieldValue::integer)),
             ("completedAt", w.completed_at.map(FieldValue::integer)),
@@ -449,7 +601,13 @@ impl<'a> CheckRuns<'a> {
     /// at all reads once more after a short pause: a run created a moment ago may not be on the
     /// node this read reached yet, and a second create would split the run in two. A match that
     /// may not be updated (completed, or a re-queue of a started run) is a new run at once.
+    ///
+    /// On a private repository the report's text is dropped first
+    /// ([`CheckReport::for_visibility`]; [`ReportPlan::dropped`] names it), so its run is
+    /// matched by name: it has no external id.
     pub async fn plan(&self, repo: &RepoRef, report: &CheckReport) -> Result<ReportPlan> {
+        let (report, dropped) = report.for_visibility(repo.visibility);
+        let report = &report;
         let oid = report.validate()?;
         let community = self.client.fetch_contract(&repo.forge().community).await?;
         let me = self.identity.id();
@@ -467,16 +625,20 @@ impl<'a> CheckRuns<'a> {
             oid,
             target,
             write,
+            dropped,
         })
     }
 
-    /// Write what [`Self::plan`] decided.
+    /// Write what [`Self::plan`] decided. `report` is the one planned, perhaps with a log added
+    /// since; on a private repository its text is dropped again, so none is ever written.
     pub async fn execute(
         &self,
         repo: &RepoRef,
         report: &CheckReport,
         plan: ReportPlan,
     ) -> Result<Reported> {
+        let (report, _) = report.for_visibility(repo.visibility);
+        report.validate()?;
         let engine = doc_engine(self.client, self.identity, self.bridge)?;
         if let Some(run) = &plan.target {
             let written = engine
@@ -492,9 +654,9 @@ impl<'a> CheckRuns<'a> {
                 action: if written { "updated" } else { "unchanged" },
             });
         }
-        let props = repo
-            .scope()?
-            .scoped(report.create_props(plan.oid, &plan.write));
+        let props =
+            repo.scope()?
+                .scoped(report.create_props(plan.oid, &plan.write, repo.visibility));
         let document_id = engine
             .create_document(&plan.community, DOC_CHECK_RUN, props)
             .await?;
@@ -519,12 +681,21 @@ pub struct ReportPlan {
     target: Option<FetchedDocument>,
     /// What it writes ([`check_run_write`]).
     write: RunWrite,
+    /// The fields a private repository's run cannot carry that the report gave
+    /// ([`CheckReport::for_visibility`]).
+    dropped: Vec<&'static str>,
 }
 
 impl ReportPlan {
     /// Whether the report replaces an existing run (else it creates one).
     pub fn replaces(&self) -> bool {
         self.target.is_some()
+    }
+
+    /// The report's fields left out because the repository is private (`privateNoText`), as
+    /// named in [`PRIVATE_TEXT_FIELDS`]; empty on a public repository.
+    pub fn dropped(&self) -> &[&'static str] {
+        &self.dropped
     }
 }
 
@@ -739,6 +910,7 @@ mod tests {
             &report("completed", Some("success"))
                 .write(None, 50)
                 .unwrap(),
+            Visibility::Public,
         );
         assert!(create.contains_key("startedAt") && create.contains_key("completedAt"));
     }
@@ -848,7 +1020,7 @@ mod tests {
         ]);
         let (action, c) = written(&report("completed", Some("success")), Some(&finished), 99);
         assert_eq!(action, RunWriteAction::Replace);
-        assert_eq!(c.keys().collect::<Vec<_>>(), ["status"]);
+        assert_eq!(c.keys().collect::<Vec<_>>(), ["outcome", "status"]);
         // A backwards report or a changed conclusion is a new run with its own times.
         let (action, c) = written(&report("queued", None), Some(&finished), 99);
         assert_eq!(action, RunWriteAction::Create);
@@ -856,6 +1028,307 @@ mod tests {
         let (action, c) = written(&report("completed", Some("failure")), Some(&finished), 99);
         assert_eq!(action, RunWriteAction::Create);
         assert_eq!(c.get("startedAt"), Some(&Some(FieldValue::integer(99))));
+    }
+
+    /// The RC1 accept/refuse vectors of one document type (`forge-contracts/vectors/rc1`).
+    pub(crate) fn rc1_vectors(doc_type: &str) -> Vec<serde_json::Value> {
+        let all: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../forge-contracts/vectors/rc1/forge-community.json"
+        ))
+        .expect("the RC1 vectors parse");
+        let cases: Vec<_> = all.into_iter().filter(|c| c["type"] == doc_type).collect();
+        assert!(!cases.is_empty(), "no {doc_type} vectors");
+        cases
+    }
+
+    /// A vector's `{"$b": [fill, len]}` bytes.
+    fn vector_bytes(v: &serde_json::Value) -> Vec<u8> {
+        let fill = u8::try_from(v["$b"][0].as_u64().unwrap()).unwrap();
+        vec![fill; usize::try_from(v["$b"][1].as_u64().unwrap()).unwrap()]
+    }
+
+    /// What a CI reported to make the vector's `checkRun`.
+    fn report_of(doc: &serde_json::Value) -> CheckReport {
+        let text = |k: &str| doc[k].as_str().map(str::to_string);
+        CheckReport {
+            head_oid: hex::encode(vector_bytes(&doc["headOid"])),
+            name: text("name").unwrap(),
+            status: text("status").unwrap(),
+            conclusion: text("conclusion"),
+            details_url: text("detailsUrl"),
+            summary: text("summary"),
+            external_id: text("externalId"),
+            started_at: doc["startedAt"].as_u64(),
+            completed_at: doc["completedAt"].as_u64(),
+            log: text("logUrl").map(|u| {
+                let h = doc.get("logSha256").map_or(vec![0; 32], vector_bytes);
+                (u, h.try_into().unwrap())
+            }),
+            artifacts: text("artifacts"),
+        }
+    }
+
+    fn visibility_of(doc: &serde_json::Value) -> Visibility {
+        if doc["vis"] == "private" {
+            Visibility::Private
+        } else {
+            Visibility::Public
+        }
+    }
+
+    /// The vector document as the property map a create writes (without `repoId`, which the
+    /// scope adds).
+    fn vector_props(doc: &serde_json::Value) -> BTreeMap<String, FieldValue> {
+        doc.as_object()
+            .unwrap()
+            .iter()
+            .filter(|(k, _)| *k != "repoId")
+            .map(|(k, v)| {
+                let f = match v {
+                    serde_json::Value::String(s) => FieldValue::text(s.as_str()),
+                    serde_json::Value::Number(n) => FieldValue::integer(n.as_u64().unwrap()),
+                    other => FieldValue::bytes(vector_bytes(other)),
+                };
+                (k.clone(), f)
+            })
+            .collect()
+    }
+
+    /// After every time in the vectors, and no more than an hour after them (`notFuture`).
+    const VECTOR_NOW: u64 = 1_760_000_100_000;
+
+    #[test]
+    fn the_builder_writes_every_accepted_rc1_check_run_exactly() {
+        for case in rc1_vectors("checkRun")
+            .iter()
+            .filter(|c| c["expect"] == "ok")
+        {
+            let doc = &case["doc"];
+            let r = report_of(doc);
+            let oid = r
+                .validate()
+                .unwrap_or_else(|e| panic!("{}: {e}", case["name"]));
+            let (kept, dropped) = r.for_visibility(visibility_of(doc));
+            assert!(dropped.is_empty(), "{}", case["name"]);
+            let w = kept.write(None, VECTOR_NOW).unwrap();
+            assert_eq!(
+                kept.create_props(oid, &w, visibility_of(doc)),
+                vector_props(doc),
+                "{}",
+                case["name"]
+            );
+        }
+    }
+
+    #[test]
+    fn the_rc1_refusals_a_report_can_cause_are_refused_before_signing() {
+        for case in rc1_vectors("checkRun")
+            .iter()
+            .filter(|c| c["expect"] != "ok")
+        {
+            let (doc, why) = (&case["doc"], case["why"].as_str().unwrap());
+            let r = report_of(doc);
+            match why {
+                // A bad URL, a time in seconds, a bad head: refused.
+                "pattern" | "msEpoch" | "oidWidth" | "conclusionIfDone" => {
+                    assert!(r.validate().is_err(), "{} should be refused", case["name"]);
+                }
+                // Private text is dropped, and the write then carries none.
+                "privateNoText" => {
+                    let (kept, dropped) = r.for_visibility(Visibility::Private);
+                    assert!(!dropped.is_empty(), "{}", case["name"]);
+                    let oid = kept.validate().unwrap();
+                    let props = kept.create_props(
+                        oid,
+                        &kept.write(None, VECTOR_NOW).unwrap(),
+                        Visibility::Private,
+                    );
+                    for f in PRIVATE_TEXT_FIELDS {
+                        assert!(!props.contains_key(f), "{}: {f}", case["name"]);
+                    }
+                }
+                // A completion before the start is clamped to it.
+                "doneAfterStart" => {
+                    let w = r.write(None, VECTOR_NOW).unwrap();
+                    assert!(w.completed_at >= w.started_at, "{}", case["name"]);
+                }
+                // The builder sets the outcome, times and vis itself: a report cannot say
+                // them wrong.
+                "outcomeOf" => {
+                    assert_ne!(
+                        r.outcome(),
+                        doc["outcome"].as_u64().unwrap(),
+                        "{}",
+                        case["name"]
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn url_patterns_match_the_contract() {
+        for ok in [
+            "https://ci.example.com/run/1",
+            "https://10.0.0.5:8443/job/1",
+            "https://ci.example.com",
+            "https://ci.example.com?x=1#y",
+            "https://ci.example.com/a@b",
+        ] {
+            assert!(is_details_url(ok) && is_log_url(ok), "{ok}");
+        }
+        for bad in [
+            "javascript:alert(1)",
+            "http://ci.example.com/1",
+            "https://github.com@evil.example/x",
+            "https://a b",
+            "https://a\n",
+            "https://a/\u{0b}",
+            "HTTPS://a.b",
+            "https:///x",
+            "https://",
+            "",
+        ] {
+            assert!(!is_details_url(bad) && !is_log_url(bad), "{bad:?}");
+        }
+        assert!(is_log_url("ipfs://bafy123") && is_log_url("ipfs://bafy123/log.txt"));
+        for bad in ["ipfs://", "ipfs://bafy-1", "s3://bucket/1", "ipfs://b x"] {
+            assert!(!is_log_url(bad), "{bad:?}");
+        }
+        assert!(!is_details_url("ipfs://bafy123"));
+    }
+
+    #[test]
+    fn a_private_report_drops_its_text_and_is_matched_by_name() {
+        let r = CheckReport {
+            details_url: Some("https://ci.example.com/1".into()),
+            summary: Some("ok".into()),
+            external_id: Some("gh-1".into()),
+            log: Some(("https://logs.example.com/1".into(), [1; 32])),
+            artifacts: Some("[]".into()),
+            ..report("completed", Some("success"))
+        };
+        let (public, none) = r.for_visibility(Visibility::Public);
+        assert_eq!((public, none), (r.clone(), vec![]));
+        let (private, dropped) = r.for_visibility(Visibility::Private);
+        assert_eq!(dropped, PRIVATE_TEXT_FIELDS);
+        assert_eq!(private, report("completed", Some("success")));
+        // Without the external id, the reporter's open run of that name is the one updated.
+        let me = "runner";
+        let docs = [doc(
+            "a",
+            me,
+            1,
+            &[("name", "build"), ("status", "in_progress")],
+        )];
+        assert_eq!(
+            run_to_update(&docs, me, &private).map(|d| d.id.as_str()),
+            Some("a")
+        );
+    }
+
+    #[test]
+    fn every_write_carries_the_outcome_and_times_are_capped_at_the_reporters_clock() {
+        assert_eq!(outcome_of("queued", None), 0);
+        assert_eq!(outcome_of("in_progress", None), 0);
+        for (c, o) in [
+            ("success", 1),
+            ("neutral", 1),
+            ("skipped", 1),
+            ("failure", 2),
+            ("cancelled", 2),
+            ("timed_out", 2),
+            ("action_required", 2),
+            ("stale", 2),
+        ] {
+            assert_eq!(outcome_of("completed", Some(c)), o, "{c}");
+        }
+        // A replace sets the outcome again, whatever else it leaves.
+        let running = stored(&[
+            ("status", FieldValue::text("in_progress")),
+            ("startedAt", FieldValue::integer(MS_EPOCH)),
+            ("outcome", FieldValue::integer(0)),
+        ]);
+        let (_, c) = written(
+            &report("completed", Some("failure")),
+            Some(&running),
+            MS_EPOCH + 10,
+        );
+        assert_eq!(c.get("outcome"), Some(&Some(FieldValue::integer(2))));
+        // A CI clock ahead of the reporter's: its times are capped at the reporter's.
+        let mut ahead = report("completed", Some("success"));
+        ahead.started_at = Some(MS_EPOCH + 5_000);
+        ahead.completed_at = Some(MS_EPOCH + 9_000);
+        let w = ahead.write(None, MS_EPOCH + 1_000).unwrap();
+        assert_eq!(
+            (w.started_at, w.completed_at),
+            (Some(MS_EPOCH + 1_000), Some(MS_EPOCH + 1_000))
+        );
+        // A time in seconds is refused before signing.
+        let mut seconds = report("in_progress", None);
+        seconds.started_at = Some(1_760_000_000);
+        assert!(seconds.validate().is_err());
+    }
+
+    #[test]
+    fn the_policy_writer_passes_the_rc1_policy_vectors_and_reads_back() {
+        use crate::collab::v2::{policy_from_doc, policy_props};
+        use crate::rules::review::Policy;
+        let id = |v: &serde_json::Value| [u8::try_from(v["$id"].as_u64().unwrap()).unwrap(); 32];
+        for case in rc1_vectors("policy") {
+            let (doc, name) = (&case["doc"], &case["name"]);
+            let list = |k: &str| doc[k].as_array().cloned().unwrap_or_default();
+            let policy = Policy {
+                required_approvals: u32::try_from(doc["requiredApprovals"].as_u64().unwrap())
+                    .unwrap(),
+                approver_role: 0,
+                require_checks: doc["requireChecks"].as_bool().unwrap_or(false),
+                merge_methods: u8::try_from(doc["mergeMethods"].as_u64().unwrap_or(0)).unwrap(),
+                required_checks: list("requiredChecks")
+                    .iter()
+                    .map(|n| n.as_str().unwrap().to_string())
+                    .collect(),
+                required_check_sources: list("requiredCheckSources")
+                    .iter()
+                    .map(|s| platform::encode_identifier(id(s)))
+                    .collect(),
+            };
+            let props = policy_props(&policy);
+            assert_eq!(props.is_ok(), case["expect"] == "ok", "{name}");
+            let Ok(props) = props else { continue };
+            if let Some(names) = doc["requiredChecks"].as_array() {
+                let want: Vec<_> = names.iter().map(|n| n.as_str().unwrap()).collect();
+                assert_eq!(
+                    props.get("requiredChecks"),
+                    Some(&FieldValue::text_list(want)),
+                    "{name}"
+                );
+            }
+            let sources = list("requiredCheckSources");
+            assert_eq!(
+                props.get("requiredCheckSources"),
+                (!sources.is_empty())
+                    .then(|| FieldValue::List(
+                        sources
+                            .iter()
+                            .map(|s| FieldValue::identifier(id(s)))
+                            .collect()
+                    ))
+                    .as_ref(),
+                "{name}"
+            );
+            let fetched = FetchedDocument {
+                id: "p".into(),
+                owner_id: "o".into(),
+                created_at: Some(1),
+                created_at_block_height: None,
+                updated_at_block_height: None,
+                fields: props,
+                revision: Some(1),
+            };
+            assert_eq!(policy_from_doc(&fetched), policy, "{name}");
+        }
     }
 
     #[test]

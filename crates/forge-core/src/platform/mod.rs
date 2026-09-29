@@ -3070,22 +3070,22 @@ fn classify_write_error(e: &dash_sdk::Error, document_type: &str) -> WriteFailur
             // membership document for the writer (forge-v2: never granted, or revoked; or a
             // writer where the type needs a maintainer). RC1's `asMember` proof is the same
             // gate on a property: the signer's maintainer/writer document.
-            StateError::ReferencedEntityNotFoundError(err)
-                if matches!(err.path(), "$ownerId" | "asMember") =>
-            {
-                return WriteFailure::Fatal(Error::NotAMember {
-                    document_type: document_type.to_string(),
-                    detail: format!("40120: {err}"),
-                })
-            }
-            // 40120 on any other path: what a property refers to is missing (a revoked
-            // member a `repoKey` wraps to, a `consent` not written yet, a deleted parent).
             StateError::ReferencedEntityNotFoundError(err) => {
-                return WriteFailure::Fatal(Error::ReferenceNotFound {
-                    document_type: document_type.to_string(),
-                    path: err.path().to_string(),
-                    detail: format!("40120: {err}"),
-                })
+                let document_type = document_type.to_string();
+                let detail = format!("40120: {err}");
+                return WriteFailure::Fatal(match err.path() {
+                    "$ownerId" | "asMember" => Error::NotAMember {
+                        document_type,
+                        detail,
+                    },
+                    // Any other path: what a property refers to is missing (a revoked member a
+                    // `repoKey` wraps to, a `consent` not written yet, a deleted parent).
+                    path => Error::ReferenceNotFound {
+                        document_type,
+                        path: path.to_string(),
+                        detail,
+                    },
+                });
             }
             _ => {}
         }

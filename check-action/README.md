@@ -70,10 +70,10 @@ Optionally, report `in_progress` at the start of a long job with an early step t
 | `conclusion` | from `job-status` | Or set it: `success`, `failure`, `neutral`, `cancelled`, `skipped`, `timed_out`, `action_required`, `stale`. |
 | `sha` | the PR head, else `github.sha` | The commit to report on. |
 | `summary` | workflow / job / run | One line. Longer ones are cut to 500 characters (the contract allows 1000 characters and 2000 bytes). |
-| `details-url` | this GitHub run | An https link back. |
+| `details-url` | this GitHub run | An https link back (a host, no `user:password@`, no spaces). A GitHub Enterprise Server on plain http gets no default link. |
 | `log` | | A file to upload as the run's log. It needs `log-storage`. |
 | `log-storage` | | The storage profile the log goes to. The job must provide it: a `storage.toml` under `$XDG_CONFIG_HOME/dash-forge/` naming a bucket, with the bucket's credentials in the job's environment (see [Bring your own storage](../docs/guides/bring-your-own-storage.md)). |
-| `public-log` | `false` | `true`: upload the log even for a private repository. It is unencrypted, and its URL is public. |
+| `public-log` | `false` | No longer has any effect (it warns): a private repository's check run cannot carry a log. |
 | `network` / `devnet-name` | `mainnet` | Which network the Forge repository is on. With `network: devnet`, `devnet-name` names it (lowercase letters, digits, `-`). |
 | `version` | `0.1.0` | The Dash Forge release to install. |
 | `install` | `true` | `false`: use a `dg` already on `PATH`. No release is published yet: see the note above. A second use of the action in the same job reuses the installed `dg`. |
@@ -88,7 +88,7 @@ Optionally, report `in_progress` at the start of a long job with an early step t
 - **The key.** `DASH_FORGE_KEY` is read by `dg` from the environment. It never goes on a command line, and the tests check that.
 - **Inputs are data.** Every input reaches the scripts as an environment variable, never as shell text. Every `dg` argument is passed as `--flag=value`, so a value such as a summary of `--public-log` stays a value. A newline in any value is refused. Messages are escaped before they go into a workflow command, so a value cannot start another command.
 - **Pull requests from forks.** A fork's `pull_request` run has no access to your secrets, so it cannot report; the step warns and passes. Do not use `pull_request_target` to give it the key: that would run the fork's code with your secret.
-- **What is public.** A check run is public on chain, whatever the repository's visibility: its name, summary, details link and log URL.
+- **What is public.** A check run is public on chain: its name, summary, details link and log URL. On a private repository Forge refuses a run with a summary, details link, log or run id, so `dg` leaves them out (with a warning) and records only the name, status and conclusion; the log is not uploaded. The name stays public.
 
 ## Test it
 

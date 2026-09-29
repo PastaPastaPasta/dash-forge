@@ -235,24 +235,16 @@ pub fn assert_refused(doc_type: &str, props: &BTreeMap<String, FieldValue>, why:
 mod vectors {
     use super::*;
 
-    /// The committed vector sets and how many cases each holds
-    /// (`forge-contracts/schema/vectors.py`). A re-generation that changes a count must update
-    /// it here, after checking the runner still reads every case the way the README describes.
+    /// The committed vector sets (`forge-contracts/schema/vectors.py`) and a floor on how many
+    /// cases each holds: the sets only grow, so a smaller one means a file went missing or was
+    /// cut. Every case is judged here: `vectors.py` keeps the checks that read a total, the block
+    /// or another document (its `LIVE_ONLY` list) out of the sets, for
+    /// `forge-contracts/scripts/rc1-live.mjs`.
     const SETS: [(&str, usize); 3] = [
-        ("forge-core", 166),
+        ("forge-core", 171),
         ("forge-collab", 98),
         ("forge-community", 112),
     ];
-    const TOTAL: usize = 376;
-
-    /// Cases judged by the live suite only, never offline, by `(type, name)`.
-    ///
-    /// None: `vectors.py` keeps every check that reads a total, the block or another document
-    /// (dense, c1..c6, lockGate, platformChunks, oneLive, atMost20, notFuture, every
-    /// `refersTo` / `where` / `findBy` reference) out of these sets (its `LIVE_ONLY` list) and
-    /// in `forge-contracts/scripts/rc1-live.mjs`, so every committed case is judged here. A case
-    /// added to this list must say why.
-    const LIVE_ONLY: [(&str, &str); 0] = [];
 
     /// An identifier written as a byte `n` (32 bytes of n) or a base58 string.
     fn identifier(j: &Json) -> Identifier {
@@ -308,20 +300,18 @@ mod vectors {
 
     #[test]
     fn every_rc1_vector_is_judged_as_the_vectors_say() {
-        let mut total = 0;
-        let mut skipped = 0;
+        let mut judged = Vec::new();
         let mut failures = Vec::new();
-        for (set, want_count) in SETS {
+        for (set, floor) in SETS {
             let path = format!("{}/vectors/rc1/{set}.json", root());
             let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
             let cases: Vec<Json> = serde_json::from_str(&text).expect("vector JSON");
-            assert_eq!(
-                cases.len(),
-                want_count,
-                "{set}: the vector count changed; re-check the runner against the new set and \
-                 update SETS"
+            assert!(
+                cases.len() >= floor,
+                "{set}: {} cases, fewer than the {floor} committed before",
+                cases.len()
             );
-            total += cases.len();
+            judged.push(format!("{set} {}", cases.len()));
             for c in &cases {
                 let ty = c["type"].as_str().expect("type");
                 let name = c["name"].as_str().expect("name");
@@ -331,10 +321,6 @@ mod vectors {
                     Some(set),
                     "{set}: `{name}` is a {ty}, held by another contract"
                 );
-                if LIVE_ONLY.contains(&(ty, name)) {
-                    skipped += 1;
-                    continue;
-                }
                 let signer = c.get("owner").map_or(Identifier::from(OWNER), identifier);
                 let got = judge(ty, doc_data(&c["doc"]), signer);
                 let verdict = match (expect, &got) {
@@ -354,16 +340,11 @@ mod vectors {
                 }
             }
         }
-        assert_eq!(total, TOTAL, "the RC1 vector total changed");
-        assert_eq!(
-            skipped,
-            LIVE_ONLY.len(),
-            "a LIVE_ONLY case is not in the vectors"
-        );
         assert!(
             failures.is_empty(),
-            "{} of {TOTAL} RC1 vectors disagree:\n{}",
+            "{} RC1 vectors disagree (judged: {}):\n{}",
             failures.len(),
+            judged.join(", "),
             failures.join("\n")
         );
     }
@@ -509,12 +490,18 @@ mod builders {
         visibility: Visibility,
         by: By,
     ) -> BTreeMap<String, FieldValue> {
-        props.insert("repoId".to_string(), FieldValue::identifier(REPO));
+        props = scoped(props);
         stamp_vis_for(doc_type, &mut props, visibility);
         let non_member_verdict = props
             .get("verdict")
             .and_then(FieldValue::as_u64)
-            .is_some_and(|v| matches!(v, 4 | 5));
+            .map(Verdict::from_code)
+            .is_some_and(|v| {
+                matches!(
+                    v,
+                    Verdict::ApproveNonMember | Verdict::RequestChangesNonMember
+                )
+            });
         if by == By::Member && MEMBER_PROOF_TYPES.contains(&doc_type) && !non_member_verdict {
             props.insert(AS_MEMBER.to_string(), FieldValue::identifier(OWNER));
         }
@@ -523,6 +510,22 @@ mod builders {
 
     fn public(doc_type: &str, props: BTreeMap<String, FieldValue>, by: By) {
         assert_valid(doc_type, &stamped(doc_type, props, Visibility::Public, by));
+    }
+
+    /// Seal `props` as a private repository's `kind` document, stamp it, and check RC1 accepts it.
+    fn private(doc_type: &str, kind: DocKind, props: BTreeMap<String, FieldValue>, by: By) {
+        let keys = EpochKeys::derive(&REPO, 0, &EpochKey::from_bytes([3; 32]));
+        let sealed = seal_props(&keys, kind, OWNER, props).unwrap();
+        assert_valid(
+            doc_type,
+            &stamped(doc_type, sealed, Visibility::Private, by),
+        );
+    }
+
+    /// `props` with `repoId` (a type that carries no `vis` or `asMember`).
+    fn scoped(mut props: BTreeMap<String, FieldValue>) -> BTreeMap<String, FieldValue> {
+        props.insert("repoId".to_string(), FieldValue::identifier(REPO));
+        props
     }
 
     fn imported() -> Imported {
@@ -555,10 +558,6 @@ mod builders {
         }
     }
 
-    fn keys() -> EpochKeys {
-        EpochKeys::derive(&REPO, 0, &EpochKey::from_bytes([3; 32]))
-    }
-
     // ---------------- issue / patch ----------------
 
     #[test]
@@ -576,9 +575,7 @@ mod builders {
             );
         }
         let p = issue_props(1, "A bug", "text", Provenance::default()).unwrap();
-        let sealed = seal_props(&keys(), DocKind::Issue, OWNER, p).unwrap();
-        let written = stamped("issue", sealed, Visibility::Private, By::Member);
-        assert_valid("issue", &written);
+        private("issue", DocKind::Issue, p, By::Member);
     }
 
     #[test]
@@ -590,6 +587,8 @@ mod builders {
         };
         let p = issue_props(1, "A bug", "text", from).unwrap();
         public("issue", p.clone(), By::Member);
+        // The contract's side of it: an import without the proof is refused. (Collab never
+        // writes this: its stamp refuses a non-member's import before signing.)
         let unproved = stamped("issue", p, Visibility::Public, By::Other);
         assert_refused("issue", &unproved, "i_provenance");
     }
@@ -616,9 +615,7 @@ mod builders {
             );
         }
         let p = patch_props(2, &patch_input(), Provenance::default()).unwrap();
-        let sealed = seal_props(&keys(), DocKind::Patch, OWNER, p).unwrap();
-        let written = stamped("patch", sealed, Visibility::Private, By::Member);
-        assert_valid("patch", &written);
+        private("patch", DocKind::Patch, p, By::Member);
     }
 
     #[test]
@@ -664,9 +661,7 @@ mod builders {
             public("comment", p, by);
         }
         let p = comment_props(ID, "secret", None, None).unwrap();
-        let sealed = seal_props(&keys(), DocKind::Comment, OWNER, p).unwrap();
-        let written = stamped("comment", sealed, Visibility::Private, By::Other);
-        assert_valid("comment", &written);
+        private("comment", DocKind::Comment, p, By::Other);
     }
 
     #[test]
@@ -685,10 +680,9 @@ mod builders {
             }
         }
         let p = review_props(ID, Verdict::Comment, &[0xab; 20], "", None, None).unwrap();
-        let sealed = seal_props(&keys(), DocKind::Review, OWNER, p).unwrap();
-        let written = stamped("review", sealed, Visibility::Private, By::Member);
-        assert_valid("review", &written);
-        // A member's verdict needs the proof; a non-member's may not carry it.
+        private("review", DocKind::Review, p, By::Member);
+        // A member's verdict needs the proof (the contract's side: Collab writes a non-member's
+        // approval as verdict 4, never as an unproved 1).
         let p = review_props(ID, Verdict::Approve, &[0xab; 20], "", None, None).unwrap();
         let unproved = stamped("review", p, Visibility::Public, By::Other);
         assert_refused("review", &unproved, "memberVerdict");
@@ -738,9 +732,10 @@ mod builders {
                     continue;
                 };
                 let oid = (action == Merge).then_some(&[0xaa; 20][..]);
-                let mut p = transition_props(&t, &mv, oid).unwrap();
-                p.insert("repoId".to_string(), FieldValue::identifier(REPO));
-                assert_valid("transition", &p);
+                assert_valid(
+                    "transition",
+                    &scoped(transition_props(&t, &mv, oid).unwrap()),
+                );
                 written += 1;
             }
             // Only a member merges, locks and unlocks; the author may make every other move.
@@ -794,8 +789,7 @@ mod builders {
             (&issue, EventKind::Unpin, &none),
         ];
         for (t, kind, payload) in cases {
-            let mut p = event_payload_props(t, kind, payload).unwrap();
-            p.insert("repoId".to_string(), FieldValue::identifier(REPO));
+            let p = scoped(event_payload_props(t, kind, payload).unwrap());
             assert_valid("event", &p);
             if crate::rules::v2::is_author_kind(kind) {
                 assert_valid("authorEvent", &p);
@@ -812,15 +806,29 @@ mod builders {
 
     #[test]
     fn a_policy_is_rc1_valid() {
-        let mut p = policy_props(&Policy {
+        let p = policy_props(&Policy {
             required_approvals: 2,
             approver_role: 1,
             require_checks: true,
             merge_methods: 15,
+            ..Policy::default()
         })
         .unwrap();
-        p.insert("repoId".to_string(), FieldValue::identifier(REPO));
-        assert_valid("policy", &p);
+        assert_valid("policy", &scoped(p));
+        // Required checks pinned to their sources (check_sources), and names alone.
+        let pinned = Policy {
+            required_approvals: 1,
+            require_checks: true,
+            required_checks: vec!["build".into(), "lint".into()],
+            required_check_sources: vec![ID.into(), signer()],
+            ..Policy::default()
+        };
+        assert_valid("policy", &scoped(policy_props(&pinned).unwrap()));
+        let names_only = Policy {
+            required_check_sources: vec![],
+            ..pinned
+        };
+        assert_valid("policy", &scoped(policy_props(&names_only).unwrap()));
     }
 
     // ---------------- checkRun ----------------
@@ -839,19 +847,73 @@ mod builders {
     }
 
     #[test]
-    #[ignore = "RC1: a checkRun create needs outcome (0 pending, 1 success/neutral/skipped, 2 otherwise: outcomeOf)"]
     fn check_run_creates_are_rc1_valid() {
         for (status, conclusion) in [
             ("queued", None),
             ("in_progress", None),
             ("completed", Some("success")),
             ("completed", Some("failure")),
+            ("completed", Some("skipped")),
         ] {
-            let report = check_report(status, conclusion);
-            let oid = report.validate().unwrap();
-            let w = report.write(None, 1_760_000_000_000).unwrap();
-            let p = report.create_props(oid, &w);
-            public("checkRun", p, By::Other);
+            let mut report = check_report(status, conclusion);
+            report.log = Some(("ipfs://bafy1".into(), [7; 32]));
+            for visibility in [Visibility::Public, Visibility::Private] {
+                // A private repository's run drops its text (privateNoText).
+                let (report, _) = report.for_visibility(visibility);
+                let oid = report.validate().unwrap();
+                let w = report.write(None, 1_760_000_000_000).unwrap();
+                let p = report.create_props(oid, &w, visibility);
+                let doc = scoped(p.clone());
+                assert_valid("checkRun", &doc);
+                // The builder stamps vis itself.
+                assert_eq!(stamped("checkRun", p, visibility, By::Other), doc);
+            }
         }
+        // Text on a private run is what the contract refuses: the builder never writes it.
+        let report = check_report("completed", Some("success"));
+        let oid = report.validate().unwrap();
+        let w = report.write(None, 1_760_000_000_000).unwrap();
+        let p = scoped(report.create_props(oid, &w, Visibility::Private));
+        assert_refused("checkRun", &p, "privateNoText");
+    }
+
+    #[test]
+    fn a_check_run_replace_stays_rc1_valid() {
+        // queued → in_progress → completed, each replace merged over the stored document.
+        let mut doc = BTreeMap::new();
+        let mut stored: Option<crate::platform::FetchedDocument> = None;
+        for (i, (status, conclusion)) in [
+            ("queued", None),
+            ("in_progress", None),
+            ("completed", Some("failure")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let report = check_report(status, conclusion);
+            let now = 1_760_000_000_000 + i as u64 * 1000;
+            let w = report.write(stored.as_ref(), now).unwrap();
+            if stored.is_none() {
+                doc =
+                    scoped(report.create_props(report.validate().unwrap(), &w, Visibility::Public));
+            } else {
+                for (k, v) in report.changes(&w) {
+                    if let Some(v) = v {
+                        doc.insert(k, v);
+                    }
+                }
+            }
+            assert_valid("checkRun", &doc);
+            stored = Some(crate::platform::FetchedDocument {
+                id: "run".into(),
+                owner_id: signer(),
+                created_at: Some(1),
+                created_at_block_height: None,
+                updated_at_block_height: None,
+                fields: doc.clone(),
+                revision: Some(1),
+            });
+        }
+        assert_eq!(doc.get("outcome"), Some(&FieldValue::integer(2)));
     }
 }
