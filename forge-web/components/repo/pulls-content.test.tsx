@@ -31,9 +31,17 @@ vi.mock('@/components/repo/mirror-note', () => ({ MirrorNote: () => null }))
 vi.mock('@/components/repo/byline', () => ({ Byline: () => <span>someone</span> }))
 
 const ALICE = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
+/** Set to hold every DPNS lookup until it resolves. */
+let lookupGate: Promise<void> | null = null
 vi.mock('@/lib/view', async (importOriginal) => {
   const real = await importOriginal<typeof import('@/lib/view')>()
-  return { ...real, resolveDpnsId: async (_sdk: unknown, name: string) => (name.toLowerCase().startsWith('alice') ? ALICE : null) }
+  return {
+    ...real,
+    resolveDpnsId: async (_sdk: unknown, name: string) => {
+      if (lookupGate) await lookupGate
+      return name.toLowerCase().startsWith('alice') ? ALICE : null
+    },
+  }
 })
 
 const asked: PullSelection[] = []
@@ -89,6 +97,7 @@ let el: HTMLDivElement
 beforeEach(() => {
   ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
   search = ''
+  lookupGate = null
   replaced.length = 0
   asked.length = 0
   answer = {
@@ -181,6 +190,32 @@ describe('PullsContent (L-44)', () => {
     await render()
     act(() => button('Clear filters').click())
     expect(el.querySelector('[data-testid="pull-search-dropped"]')).toBeNull()
+  })
+
+  it('a tab change overtaking a slow name lookup stops the spinner, and the lookup is dropped', async () => {
+    let finish!: () => void
+    lookupGate = new Promise((r) => (finish = r))
+    await render()
+    const input = el.querySelector('#pull-search') as HTMLInputElement
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    act(() => {
+      setValue.call(input, 'author:alice.dash')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    act(() => (el.querySelector('form[role="search"]') as HTMLFormElement).requestSubmit())
+    await settle()
+    expect(el.querySelector('form[role="search"] .animate-spin')).not.toBeNull()
+    act(() => button('40 Merged').click())
+    expect(el.querySelector('form[role="search"] .animate-spin')).toBeNull()
+    finish()
+    await settle()
+    expect(replaced.at(-1)).toBe('/repo/pulls/?owner=o&name=n&state=merged')
+  })
+
+  it('resolves a DPNS name linked in ?q= once connected', async () => {
+    search = 'owner=o&name=n&q=author%3Aalice.dash'
+    await render()
+    expect(replaced.at(-1)).toBe(`/repo/pulls/?owner=o&name=n&author=${ALICE}`)
   })
 
   it('an empty Open tab does not invite the first PR while some are merged or closed', async () => {

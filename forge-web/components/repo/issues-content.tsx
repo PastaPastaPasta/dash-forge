@@ -99,6 +99,8 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   // of overwriting this change.
   const change = (c: Partial<IssueListQuery>): void => {
     submitIdRef.current++
+    // The overtaken lookup no longer clears the spinner itself (it is not `stillWanted`).
+    setSearching(false)
     setQuery(withQuery(query, c))
   }
 
@@ -254,6 +256,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
           type="button"
           onClick={() => {
             submitIdRef.current++
+            setSearching(false)
             setQuery({ ...DEFAULT_ISSUE_QUERY, state: query.state })
           }}
           className="mb-3 inline-flex items-center gap-1 text-dense text-anvil-500 dark:text-anvil-400 hover:text-forge-700 dark:hover:text-forge-400"

@@ -5,6 +5,7 @@ import {
   emptyPullsBody,
   parsePullQuery,
   parsePullSearch,
+  pullDroppedReason,
   pullQueryParams,
   pullSearchText,
   unresolvedPullQualifiers,
@@ -37,6 +38,10 @@ describe('PR list query (L-44)', () => {
     expect(parsePullSearch('is:Closed', { ...DEFAULT_PULL_QUERY, state: 'merged' }).state).toBe('merged')
     expect(parsePullSearch('parser', { ...DEFAULT_PULL_QUERY, state: 'merged' }).state).toBe('merged')
     expect(unresolvedPullQualifiers('is:merged is:pr label:bug')).toEqual([])
+    // Values are exact: `is:MERGED` is not a state, and is said as not applied, with the PR states.
+    expect(parsePullSearch('is:MERGED').state).toBe('open')
+    expect(unresolvedPullQualifiers('is:MERGED')).toEqual(['is:MERGED'])
+    expect(pullDroppedReason(['is:MERGED'])).toBe('is: and state: take open, closed, merged or all.')
   })
 
   it('reports what it cannot apply: a DPNS author, and mentions (an Issues filter)', () => {

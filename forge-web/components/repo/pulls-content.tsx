@@ -18,7 +18,7 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useMemo, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { GitMerge, GitPullRequest, GitPullRequestClosed, Loader2, MessageSquare, Search, X } from 'lucide-react'
@@ -31,12 +31,13 @@ import {
   hasPullFilters,
   parsePullQuery,
   parsePullSearch,
+  pullDroppedReason,
   pullQueryParams,
   pullSearchText,
   unresolvedPullQualifiers,
   type PullListQuery,
 } from '@/lib/view/pull-query'
-import { droppedQualifiersReason, resolveSearchNames, withQuery } from '@/lib/view/issue-query'
+import { dpnsAuthorCandidates, resolveSearchNames, withQuery } from '@/lib/view/issue-query'
 import { queryPulls, repoContractIds, repoKey, type PullListPage, type PullRow, type PullSelection } from '@/lib/repo'
 import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
@@ -84,6 +85,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   const submitId = useRef(0)
   const change = (c: Partial<PullListQuery>): void => {
     submitId.current++
+    setSearching(false)
     setQuery(withQuery(query, c))
   }
 
@@ -116,12 +118,13 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
   // DPNS names DPNS was asked for and does not know (said as such, not as a malformed value).
   const [notFound, setNotFound] = useState<readonly string[]>([])
   const [searching, setSearching] = useState(false)
-  // As on the Issues list (L-43): `author:`/`assignee:` DPNS names are resolved to ids first; the
-  // state tab survives a submit, every other filter is what the box says now; the newest submit wins.
-  const submitSearch = async (e: FormEvent): Promise<void> => {
-    e.preventDefault()
-    const text = searchValue
+  // Not connected yet, so a DPNS name in the search could not be looked up (said, not dropped silently).
+  const [notReady, setNotReady] = useState(false)
+  // As on the Issues list (L-43): `author:`/`assignee:` DPNS names are resolved to ids first, then
+  // the qualifiers lifted onto `base`; the newest submit (or tab, filter or page change) wins.
+  const resolveAndApply = async (text: string, base: PullListQuery): Promise<void> => {
     const id = ++submitId.current
+    setNotReady(!sdk && dpnsAuthorCandidates(text).length > 0)
     setSearching(true)
     const resolved = sdk
       ? await resolveSearchNames(text, (name) => resolveDpnsId(sdk, name, network)).catch(() => ({ text, notFound: [] as string[] }))
@@ -130,14 +133,27 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
     setSearching(false)
     setDropped(unresolvedPullQualifiers(resolved.text))
     setNotFound(resolved.notFound)
-    setQuery(parsePullSearch(resolved.text, { ...DEFAULT_PULL_QUERY, state: query.state }))
+    setQuery({ ...parsePullSearch(resolved.text, base), page: base.page })
     setSearch((current) => (current === text ? null : current))
   }
-  const droppedMentions = dropped.filter((t) => /^mentions:/i.test(t))
-  const droppedReason = [
-    droppedQualifiersReason(dropped.filter((t) => !droppedMentions.includes(t)), notFound),
-    droppedMentions.length > 0 ? 'mentions: is an Issues filter.' : '',
-  ].filter((r) => r !== '').join(' ')
+  // A submit keeps only the state tab; every other filter is what the box says now.
+  const submitSearch = async (e: FormEvent): Promise<void> => {
+    e.preventDefault()
+    await resolveAndApply(searchValue, { ...DEFAULT_PULL_QUERY, state: query.state })
+  }
+  // A DPNS name linked in `?q=` goes through the same lookup once the SDK is ready, unless the
+  // viewer already changed the list meanwhile (the URL no longer holds that `q`).
+  const linkedQ = useRef(params.get('q')?.slice(0, 200) ?? null)
+  useEffect(() => {
+    const raw = linkedQ.current
+    if (raw === null) return
+    const hasNames = dpnsAuthorCandidates(raw).length > 0
+    if (hasNames && (!ready || !sdk)) return
+    linkedQ.current = null
+    if (hasNames && params.get('q')?.slice(0, 200) === raw) void resolveAndApply(raw, { ...query, q: '' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once, when the SDK becomes ready; linkedQ guards re-entry.
+  }, [ready, sdk])
+  const droppedReason = pullDroppedReason(dropped, notFound)
 
   const count = (n: number | null | undefined): string => (n == null ? '' : `${n} `)
   const SearchIcon = searching ? Loader2 : Search
@@ -165,6 +181,7 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
       {dropped.length > 0 ? (
         <p role="note" className="mb-3 text-[12px] text-caution-700 dark:text-caution-400" data-testid="pull-search-dropped">
           Not applied: {dropped.join(' ')}. {droppedReason}
+          {notReady ? ' Not connected yet, so a DPNS name could not be looked up — try again once connected.' : ''}
         </p>
       ) : null}
 
@@ -175,6 +192,8 @@ export function PullsContent({ home, addr }: { home: RepoHome; addr: RepoAddress
           type="button"
           onClick={() => {
             submitId.current++
+            setSearching(false)
+            setNotReady(false)
             setDropped([])
             setNotFound([])
             setQuery({ ...DEFAULT_PULL_QUERY, state: query.state })

@@ -1008,6 +1008,7 @@ function listCached<T extends Listed<IssueView> | Listed<PullView>>(
 ): Promise<T> {
   const key = listKey(repo, type)
   const hit = listCache.get(key)
+  // A live read is joined as it is: it was recorded as settled by the call that started it.
   if (live(hit)) return hit!.promise as Promise<T>
   const promise = ttlCached(listCache, key, load) as Promise<T>
   promise.then(

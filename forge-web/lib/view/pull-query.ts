@@ -14,6 +14,7 @@
 import type { PullStateFilter } from '../repo'
 import {
   DEFAULT_ISSUE_QUERY,
+  droppedQualifiersReason,
   hasFilters,
   issueQueryParams,
   parseIssueQuery,
@@ -45,8 +46,8 @@ function toIssue(q: PullListQuery): IssueListQuery {
   return { ...q, state: 'open', mentions: false }
 }
 
-/** `is:merged` / `is:pr` (or `state:`), which the Issues grammar does not have. */
-const PR_STATE_TOKEN = /(^|\s)(?:is|state):(merged|pr)(?=\s|$)/gi
+/** `is:merged` / `is:pr` (or `state:`), which the Issues grammar does not have: the key in any case, the value exact. */
+const PR_STATE_TOKEN = /(^|\s)(?:[iI][sS]|[sS][tT][aA][tT][eE]):(merged|pr)(?=\s|$)/g
 /** Whether `text` sets a state the Issues grammar knows (its key in any case, its value exactly, as it parses them). */
 function setsIssueState(text: string): boolean {
   return [...text.matchAll(/(?:^|\s)(?:is|state):(\S+)/gi)].some((m) => m[1] === 'open' || m[1] === 'closed' || m[1] === 'all')
@@ -60,7 +61,7 @@ function liftPullOnly(text: string): { rest: string; merged: boolean; mentions: 
   const mentions: string[] = []
   const rest = text
     .replace(PR_STATE_TOKEN, (_m, lead: string, value: string) => {
-      if (value.toLowerCase() === 'merged') merged = true
+      if (value === 'merged') merged = true
       return lead
     })
     .replace(MENTIONS_TOKEN, (_m, lead: string, token: string) => {
@@ -86,6 +87,22 @@ export function parsePullSearch(text: string, base: PullListQuery = DEFAULT_PULL
 export function unresolvedPullQualifiers(text: string): string[] {
   const { rest, mentions } = liftPullOnly(text)
   return [...unresolvedQualifiers(rest), ...mentions]
+}
+
+/**
+ * Why each qualifier in `dropped` was not applied, for the note under the box: the Issues list's
+ * reasons, with the PR states for `is:` / `state:`, and `mentions:` named as an Issues filter.
+ */
+export function pullDroppedReason(dropped: readonly string[], notFound: readonly string[] = []): string {
+  const isState = (t: string): boolean => /^(is|state):/i.test(t)
+  const isMentions = (t: string): boolean => /^mentions:/i.test(t)
+  return [
+    droppedQualifiersReason(dropped.filter((t) => !isState(t) && !isMentions(t)), notFound),
+    dropped.some(isState) ? 'is: and state: take open, closed, merged or all.' : '',
+    dropped.some(isMentions) ? 'mentions: is an Issues filter.' : '',
+  ]
+    .filter((r) => r !== '')
+    .join(' ')
 }
 
 /** Parse the list query from URL search params; anything invalid falls back to its default. */
