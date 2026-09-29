@@ -101,7 +101,7 @@ function isDuplicate(e: unknown): boolean {
   return e instanceof ConsensusRefusal && e.code === DUPLICATE_UNIQUE_CODE
 }
 
-/** The contract (forge-core or forge-collab) a write of `documentType` targets. */
+/** The contract (forge-core, forge-collab or forge-community) a write of `documentType` targets. */
 export function contractFor(repo: RepoRef, documentType: string): string {
   return repoSource(repo).repoQuery(documentType).dataContractId
 }
@@ -709,7 +709,7 @@ async function findOwnIndexOnly(
 ): Promise<unknown | null> {
   const field = targetField(type)
   const rows = await (sdk as unknown as { documents: RawDocumentsFacade }).documents.query({
-    dataContractId: forge.collab,
+    dataContractId: forge.community,
     documentTypeName: type,
     where: [
       ['$ownerId', '==', ownerId],
@@ -727,7 +727,7 @@ function createIndexOnly(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, type: In
   const field = targetField(type)
   return createOrExisting(() =>
     createDocumentIdempotent(sdk, auth, {
-      contractId: forge.collab,
+      contractId: forge.community,
       documentType: type,
       data: { [field]: decodeIdentifier(targetId) },
       probe: async () => (await findOwnIndexOnly(sdk, forge, type, auth.identityId, targetId)) !== null,
@@ -740,7 +740,7 @@ async function deleteIndexOnly(sdk: EvoSDK, auth: WriteAuth, forge: ForgeIds, ty
   const own = await findOwnIndexOnly(sdk, forge, type, auth.identityId, targetId)
   if (own === null) return ALREADY_GONE
   return deleteDocumentIdempotent(sdk, auth, {
-    contractId: forge.collab,
+    contractId: forge.community,
     documentType: type,
     documentId: targetId,
     repo: targetField(type) === 'repoId' ? targetId : null,
@@ -766,7 +766,7 @@ export async function writeStarBeat(sdk: EvoSDK, auth: WriteAuth, forge: ForgeId
 }
 
 /**
- * The viewer's star on a repo (forge-collab `star`). With `trending` (the viewer's "Count my
+ * The viewer's star on a repo (forge-community `star`). With `trending` (the viewer's "Count my
  * stars toward Trending", on by default), a new star also writes its `starBeat`.
  */
 export function starRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string, repo: RepoRef, trending = false): Relation {
@@ -786,7 +786,7 @@ export function starRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string
   }
 }
 
-/** The viewer's watch of a repo (forge-collab `watch`, C-1): the inbox follows it on every device. */
+/** The viewer's watch of a repo (forge-community `watch`, C-1): the inbox follows it on every device. */
 export function watchRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string, repo: RepoRef): Relation {
   return {
     read: async () => (await findOwnIndexOnly(sdk, repo.forge, 'watch', viewer, repo.repoId)) !== null,
@@ -796,7 +796,7 @@ export function watchRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: strin
 }
 
 /**
- * The viewer's follow of `target` (forge-collab `follow`). `forge` null (not deployed): every
+ * The viewer's follow of `target` (forge-community `follow`). `forge` null (not deployed): every
  * call refuses, so a caller can build the relation unconditionally and gate on deployment.
  */
 export function followRelation(sdk: EvoSDK, auth: WriteAuth | null, viewer: string, forge: ForgeIds | null, target: string): Relation {

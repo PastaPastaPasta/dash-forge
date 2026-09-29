@@ -188,9 +188,11 @@ pub fn diff<'a>(
 }
 
 /// The dedup key (the `X-GitHub-Delivery` seed) of a check-run event: the document id for
-/// `created`, and the id plus the revision seen completed for `completed`, so a document
-/// replaced back to `queued` and completed again while it is still read (the head's newest
-/// run, or behind an open one) is delivered again. Relays that see the same revision derive
+/// `created`, and the id plus the revision seen completed for `completed`. forge-community's
+/// `checkRun` is monotonic (a completed run cannot go back to `queued`, and its completion
+/// fields are set once), so a second completion of one document cannot happen on the current
+/// contracts; a contract without those rules could replace a run back and complete it again,
+/// and the revision keeps that a separate delivery. Relays that see the same revision derive
 /// the same key; a completed run edited between two relays' reads can reach a receiver twice
 /// (the payloads are the same run: dedupe on `check_run.id` and `status` too).
 pub fn event_key(d: &FetchedDocument, action: CheckRunAction) -> String {
@@ -422,10 +424,11 @@ mod tests {
         assert!(out.is_empty(), "no second completed after the lag");
     }
 
-    /// The head's newest run is still read after it completes, so a replace back to `queued`
-    /// and a second completion of it are seen (with a new delivery id).
+    /// The head's newest run is still read after it completes. forge-community refuses a
+    /// replace back to `queued` (`doneIfCompletedAt`, set-once `completedAt`); against a
+    /// contract that allowed one, a second completion is seen with its own delivery id.
     #[test]
-    fn the_newest_run_completed_again_is_delivered_again() {
+    fn a_newest_run_completed_again_is_delivered_again() {
         let (_, s) = step(&HeadRuns::new(), run("A", 10, 1, "completed"), 0);
         let (out, s) = step(&s, run("A", 10, 2, "queued"), 0);
         assert!(out.is_empty());

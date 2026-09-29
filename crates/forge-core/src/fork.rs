@@ -268,13 +268,7 @@ mod tests {
 
     fn parent() -> RepoRef {
         RepoRef {
-            forge: ForgeIds {
-                core: "CORE".into(),
-                collab: "COLLAB".into(),
-                group: "G".into(),
-                superseded_in_group: vec![],
-                group_owner: None,
-            },
+            forge: ForgeIds::test_forge(),
             repo_id: PARENT.into(),
             owner_id: UPLOADER.into(),
             name: "proj".into(),

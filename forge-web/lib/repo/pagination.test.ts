@@ -29,7 +29,7 @@ import { readComments } from '../view/issues-view'
 import { readRefUpdates, resolveRefByHash } from './refs'
 
 const REPO: RepoRef = {
-  forge: { core: 'CORE', collab: 'COLLAB', group: 'G' },
+  forge: { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'G' },
   repoId: 'R',
   ownerId: 'owner',
   name: 'n',

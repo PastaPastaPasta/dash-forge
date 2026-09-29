@@ -8,7 +8,7 @@ import { MAX_PAGES, MAX_UNKNOWN_CONTRACTS, assertGroupHolds, checkMembers, check
 const DEPLOYER = 'E24SPCssqYzFQmjcQ1hNmiLXrzz1o9AqTv54tuWNkgHz'
 const STRANGER = 'H1DBHnGmX3tMrsnMjtjXr9fZzPRAyfnLXzqy78THTPxS'
 
-const TRUST: GroupTrust = { group: 'GROUP', core: 'CORE', collab: 'COLLAB', owner: DEPLOYER, superseded: ['OLDCOLLAB'] }
+const TRUST: GroupTrust = { group: 'GROUP', core: 'CORE', collab: 'COLLAB', community: 'COLLAB', owner: DEPLOYER, superseded: ['OLDCOLLAB'] }
 
 function members(contracts: string[], extra: Partial<GroupMemberSet> = {}): GroupMemberSet {
   return { contracts, documentTypes: [], tokens: [], ...extra }
@@ -58,6 +58,14 @@ describe('group trust: members', () => {
 
   it('refuses a group without the current pair', () => {
     expect(() => checkMembers(TRUST, members(['CORE', 'OLDCOLLAB']), new Map())).toThrow(/does not hold forge-core/)
+  })
+
+  it('with three contracts: needs forge-community in the group and knows it', () => {
+    const three: GroupTrust = { ...TRUST, community: 'COMMUNITY' }
+    expect(() => checkMembers(three, members(['CORE', 'COLLAB']), new Map())).toThrow(/forge-community COMMUNITY/)
+    const r = checkMembers(three, members(['CORE', 'COLLAB', 'COMMUNITY']), new Map())
+    expect(r.unknown).toEqual([])
+    expect(unknownMemberContracts(three, members(['CORE', 'COLLAB', 'COMMUNITY']))).toEqual([])
   })
 
   it('applies the owner rule to document-type and token members too', () => {

@@ -25,7 +25,7 @@ const b58 = (u: Uint8Array): string => base58Encode(u)
 const REPO = id(0x11)
 const ALICE = id(0x21)
 const CAROL = id(0x23)
-const FORGE = { core: 'CORE', collab: 'COLLAB', group: 'GROUP' }
+const FORGE = { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' }
 const REPO_REF: RepoRef = { forge: FORGE, repoId: b58(REPO), ownerId: b58(ALICE), name: 'secret', visibility: 'private' }
 const K0 = Uint8Array.from({ length: 32 }, (_, i) => i)
 const K1 = Uint8Array.from({ length: 32 }, (_, i) => 0x40 + i)

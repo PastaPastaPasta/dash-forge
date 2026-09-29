@@ -8,7 +8,7 @@
 //!   `RepoService::update_config` re-seals it under the current write epoch.
 //! - The description and topics live on the `repo` document, which only its owner can edit
 //!   (a document replace; `name`, `visibility` and `forkOf` are immutable).
-//! - The branch policy is forge-collab's `policy` (maintainers only, newest wins). It is a
+//! - The branch policy is forge-community's `policy` (maintainers only, newest wins). It is a
 //!   client rule: every Forge client applies it to its merge controls, a maintainer can
 //!   override it, and nothing at consensus requires approvals.
 //! - Protection itself is consensus-backed: a ref matching a protected pattern is updated

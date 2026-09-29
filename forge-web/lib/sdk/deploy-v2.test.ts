@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { DEPENDENT_CONTRACTS, dependentSupersedeError, loadSchema, schemaHash, supersedes } from '../../../forge-contracts/scripts/deploy-v2.mjs'
+import { DEPENDENT_CONTRACTS, communityId, dependentSupersedeError, loadSchema, schemaHash, supersedes } from '../../../forge-contracts/scripts/deploy-v2.mjs'
 import { snapshotIds } from '../../../forge-contracts/scripts/snapshot-contracts.mjs'
 
 const CORE_ID = '4xQ1gLbVttHSnHSNAexse7ByXJd7BQCRLgLYuPevrcTW'
@@ -67,6 +67,14 @@ describe('deploy-v2: --force-new', () => {
     expect(dependentSupersedeError({ ...at, coreSuperseded: false, sameGroup: false })).toMatch(/--same-group/)
     expect(dependentSupersedeError({ ...at, coreSuperseded: false, sameGroup: true })).toBeNull()
     expect(dependentSupersedeError({ ...at, coreSuperseded: true, sameGroup: false })).toBeNull()
+  })
+})
+
+describe('deploy-v2: communityId', () => {
+  it("is the record's forge-community, or forge-collab on a pre-split deployment", () => {
+    expect(communityId({ v2: { forgeCollab: { contractId: 'L' }, forgeCommunity: { contractId: 'M' } } })).toBe('M')
+    expect(communityId({ v2: { forgeCollab: { contractId: 'L' } } })).toBe('L')
+    expect(communityId({})).toBeUndefined()
   })
 })
 

@@ -301,13 +301,7 @@ mod tests {
 
     fn repo() -> RepoRef {
         RepoRef {
-            forge: ForgeIds {
-                core: "C".into(),
-                collab: "L".into(),
-                group: "G".into(),
-                superseded_in_group: vec![],
-                group_owner: None,
-            },
+            forge: ForgeIds::test_forge(),
             repo_id: "R".into(),
             owner_id: "alice".into(),
             name: "proj".into(),

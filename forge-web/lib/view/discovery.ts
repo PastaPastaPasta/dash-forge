@@ -3,7 +3,7 @@
  *
  * A repo IS a `repo` document in forge-core, so every feed is one proof-checked composite
  * (`documents.composite`, protocol 14): the page of repos plus, in the same verified round
- * trip, their star and issue counts (forge-collab's countable `star.byRepo` and `issue.number`
+ * trip, their star and issue counts (forge-community's countable `star.byRepo` and forge-collab's `issue.number`
  * indexes, bound to the page's ids), their owners' DPNS names, and their latest pushes.
  *
  * - **Recent**: the `repo.recent` index (`$createdAt`), newest first.
@@ -155,7 +155,7 @@ export function searchPrefix(text: string): string | null {
 function repoSubs(forge: ForgeIds, network: Network, source: 'page' | number, pushesSince: number | null): CompositeSub[] {
   const bind = { source, sourceProperty: '$id', field: 'repoId' }
   return [
-    { dataContractId: forge.collab, documentType: DOC.star, kind: 'counts', bind },
+    { dataContractId: forge.community, documentType: DOC.star, kind: 'counts', bind },
     { dataContractId: forge.collab, documentType: DOC.issue, kind: 'counts', bind },
     {
       dataContractId: NETWORKS[network].dpnsContractId,

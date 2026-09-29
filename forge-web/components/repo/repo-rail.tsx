@@ -184,7 +184,7 @@ function Facts({ home, addr, selected }: { home: RepoHome; addr: RepoAddress; se
 }
 
 function Members({ repo }: { repo: RepoRef }): JSX.Element {
-  const { sdk, ready, network } = useSdk([repo.forge.core, repo.forge.collab])
+  const { sdk, ready, network } = useSdk(repoContractIds(repo))
   const members = useAsync<Membership[]>(
     async () => {
       const list = await readMembershipsCached(sdk!, repo, network)

@@ -38,7 +38,7 @@ import { idbPut } from '../idb'
 const ME = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const OTHER = '7Ej2YTftCL23mVwvhviak8ZJMmpqcsVj7CU5KPxzyy4h'
 const REPO = { id: '8H5JaQm8Z765UunuttoUuVsVMCmDoy2EBKgmGKYpdB2z', ownerId: ME, name: 'demo', private: false }
-const FORGE = { core: 'CORE', collab: 'COLLAB', group: 'GROUP' }
+const FORGE = { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' }
 
 const thread = (over: Partial<ThreadSub> = {}): ThreadSub => ({
   id: 'CR1u2SvFB97NvTF5zoqtYjjP4t2M5PyKEgFqPkKVThZP',

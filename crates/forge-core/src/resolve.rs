@@ -141,7 +141,7 @@ pub async fn find_named(
 pub async fn resolve_id(client: &PlatformClient, id: &str) -> Result<RepoRef> {
     platform::decode_identifier(id)?;
     let forge = client.target().require_v2()?;
-    if id == forge.core || id == forge.collab {
+    if forge.contains(id) {
         return Err(Error::Config(format!(
             "{id} is a forge-v2 contract, not a repository; address a repo as \
              dash://<owner>/<name> or by its repo id"

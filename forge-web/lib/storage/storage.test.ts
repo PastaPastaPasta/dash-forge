@@ -337,7 +337,7 @@ describe('CORS fix blocks', () => {
 // The replication engine against in-memory S3 and kubo
 // ---------------------------------------------------------------------------
 
-const REPO: RepoRef = { forge: { core: 'CORE', collab: 'COLLAB', group: 'G' }, repoId: 'REPO', ownerId: ID, name: 'r', visibility: 'public' }
+const REPO: RepoRef = { forge: { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'G' }, repoId: 'REPO', ownerId: ID, name: 'r', visibility: 'public' }
 const AUTH: WriteAuth = { identityId: ID, network: 'devnet', getSigningKeyWif: () => '' }
 const SDK = {} as EvoSDK
 

@@ -5,18 +5,18 @@
 //!   the `(repoId, memberId)` index is unique, and deleting it revokes the runner: the checkRun
 //!   gate (`ownerRefersTo anyOf [runner, maintainer, writer]`) refuses its next create or
 //!   replace at consensus (40120).
-//! * **Check run** = a forge-collab `checkRun` `{repoId, headOid, name, status, conclusion?, …}`,
+//! * **Check run** = a forge-community `checkRun` `{repoId, headOid, name, status, conclusion?, …}`,
 //!   mutable, with `[repoId, headOid, name]` immutable. The newest per `(headOid, name)` by
 //!   `($createdAt, $id)` is what readers show ([`crate::collab::v2::newest_check_runs`]), so a
 //!   run's progress (`queued → in_progress → completed`) is a **replace** of the reporter's own
 //!   document, and a re-run of the same check on the same commit is a new document.
-//! * **The runner's key** is AUTHENTICATION / HIGH bound to `(forge-collab, checkRun)`
+//! * **The runner's key** is AUTHENTICATION / HIGH bound to `(forge-community, checkRun)`
 //!   ([`ContractBounds::SingleContractDocumentType`], admitted on AUTHENTICATION keys from protocol
 //!   14), with a budget and an expiry: consensus refuses anything else it signs with 20014
 //!   (`ContractBoundedKeyOutOfBoundsError`), and a non-batch transition with
 //!   `ContractBoundedKeyNonBatchError`.
 //!
-//! Contract lookups go through [`RepoRef::forge`] (`collab` for `checkRun`, `core` for `runner`),
+//! Contract lookups go through [`RepoRef::forge`] (`community` for `checkRun`, `core` for `runner`),
 //! so moving either type to another contract is a deployment-file change here.
 //!
 //! [`ContractBounds::SingleContractDocumentType`]: dash_sdk::dpp::identity::contract_bounds::ContractBounds
@@ -311,55 +311,52 @@ impl CheckReport {
         p
     }
 
-    /// What a replace of `stored` changes (`None` removes a property):
+    /// What a replace of `stored` changes (`None` removes a property). forge-community's
+    /// `checkRun` is monotonic: `startedAt`, `completedAt`, `conclusion` and `externalId` are
+    /// set once (`immutableAllowSetting`: a replace may add them, never change or remove them),
+    /// `startedAt` is present exactly when the run is not queued and `completedAt` exactly when
+    /// it is completed. So:
     ///
-    /// * `status` and `conclusion` always: a conclusion left from an earlier report goes (the
-    ///   contract's `doneIfConclusion` refuses it on a run that is not completed).
-    /// * `completedAt` only on a completed run; any other status clears it.
-    /// * A re-queued run starts over: `startedAt` and the log pair are cleared unless this
-    ///   report gives them.
-    /// * `startedAt` is kept once set: a repeated `in_progress` (or the completion) does not move
-    ///   the start.
+    /// * `status` always; `conclusion` when this report gives one (it is set once, with
+    ///   `completed`).
+    /// * The first non-queued report sets `startedAt` (the report's, else `now_ms`); a later one
+    ///   keeps it. Completing sets `completedAt` (the report's, else `now_ms`).
+    /// * Nothing is ever cleared. A report that would move a stored run backwards (a re-queue
+    ///   of a started run, anything after completion) is a new run: [`run_to_update`] never
+    ///   picks such a run to replace.
     /// * Everything else this report gives replaces what is stored; what it does not give stays.
     fn changes(&self, stored: Option<&FetchedDocument>) -> BTreeMap<String, Option<FieldValue>> {
+        self.changes_at(stored, crate::cache::now_ms())
+    }
+
+    /// [`Self::changes`] with the clock given (tests).
+    fn changes_at(
+        &self,
+        stored: Option<&FetchedDocument>,
+        now: u64,
+    ) -> BTreeMap<String, Option<FieldValue>> {
         let text = |v: &Option<String>| v.as_deref().map(FieldValue::text);
         let queued = self.status == "queued";
         let completed = self.status == "completed";
         let has = |k: &str| stored.is_some_and(|d| d.fields.contains_key(k));
-        let mut c = BTreeMap::from([
-            ("status".to_string(), Some(FieldValue::text(&self.status))),
-            ("conclusion".to_string(), text(&self.conclusion)),
-        ]);
-        if completed {
-            if let Some(t) = self.completed_at {
-                c.insert("completedAt".into(), Some(FieldValue::integer(t)));
-            }
-        } else if has("completedAt") {
-            c.insert("completedAt".into(), None);
+        let mut c = BTreeMap::from([("status".to_string(), Some(FieldValue::text(&self.status)))]);
+        if let Some(conclusion) = text(&self.conclusion) {
+            c.insert("conclusion".into(), Some(conclusion));
         }
-        match self.started_at {
-            Some(t) if !queued && !has("startedAt") => {
-                c.insert("startedAt".into(), Some(FieldValue::integer(t)));
-            }
-            Some(t) if queued => {
-                c.insert("startedAt".into(), Some(FieldValue::integer(t)));
-            }
-            None if queued && has("startedAt") => {
-                c.insert("startedAt".into(), None);
-            }
-            _ => {}
+        if !queued && !has("startedAt") {
+            let t = self.started_at.or(self.completed_at).unwrap_or(now);
+            c.insert("startedAt".into(), Some(FieldValue::integer(t)));
         }
-        match &self.log {
-            Some((u, h)) => {
-                c.insert("logUrl".into(), Some(FieldValue::text(u)));
-                c.insert("logSha256".into(), Some(FieldValue::bytes(h.to_vec())));
-            }
-            None if queued && (has("logUrl") || has("logSha256")) => {
-                c.insert("logUrl".into(), None);
-                c.insert("logSha256".into(), None);
-            }
-            None => {}
+        if completed && !has("completedAt") {
+            let t = self.completed_at.unwrap_or(now);
+            c.insert("completedAt".into(), Some(FieldValue::integer(t)));
         }
+        if let Some((u, h)) = &self.log {
+            c.insert("logUrl".into(), Some(FieldValue::text(u)));
+            c.insert("logSha256".into(), Some(FieldValue::bytes(h.to_vec())));
+        }
+        // `externalId` is set once; a run matched by it already holds the same value, which a
+        // replace may repeat
         let given = [
             ("detailsUrl", text(&self.details_url)),
             ("summary", text(&self.summary)),
@@ -376,23 +373,33 @@ impl CheckReport {
 }
 
 /// The run a report updates in place, among `docs` (the head's `checkRun` documents): the
-/// reporter's own newest run of that name, and only while it is not completed or when it
-/// carries the same `externalId`. A completed run is history; a new report of it (a re-run)
-/// is a new document.
+/// reporter's own newest run of that name (of that `externalId`, when the report gives one),
+/// and only when the report moves it forward. forge-community's `checkRun` is monotonic
+/// (`docs/contracts/forge-v2.md` §2): a completed run is final, and a started run cannot go
+/// back to queued, so a report of either (a re-run) is a new document.
 pub fn run_to_update<'d>(
     docs: &'d [FetchedDocument],
     reporter: &str,
     report: &CheckReport,
 ) -> Option<&'d FetchedDocument> {
-    let newest = docs
-        .iter()
+    let newest = newest_run(docs, reporter, report)?;
+    let completed = newest.field_str("status").as_deref() == Some("completed");
+    let started = newest.fields.contains_key("startedAt");
+    let requeue = report.status == "queued" && started;
+    (!completed && !requeue).then_some(newest)
+}
+
+/// The reporter's newest run that `report` names (by name, and by `externalId` when it gives
+/// one), whether or not the report may update it.
+fn newest_run<'d>(
+    docs: &'d [FetchedDocument],
+    reporter: &str,
+    report: &CheckReport,
+) -> Option<&'d FetchedDocument> {
+    docs.iter()
         .filter(|d| d.owner_id == reporter && d.field_str("name").as_deref() == Some(&report.name))
         .filter(|d| report.external_id.is_none() || d.field_str("externalId") == report.external_id)
-        .max_by(|a, b| {
-            (a.created_at.unwrap_or(0), &a.id).cmp(&(b.created_at.unwrap_or(0), &b.id))
-        })?;
-    (report.external_id.is_some() || newest.field_str("status").as_deref() != Some("completed"))
-        .then_some(newest)
+        .max_by(|a, b| (a.created_at.unwrap_or(0), &a.id).cmp(&(b.created_at.unwrap_or(0), &b.id)))
 }
 
 /// What [`CheckRuns::report`] did.
@@ -428,21 +435,22 @@ impl<'a> CheckRuns<'a> {
 
     /// Decide what `report` will do on `repo`, before anything is signed: replace the run it
     /// updates ([`run_to_update`]), else create one. Reads the `checkRun` index
-    /// `head (repoId, headOid, $createdAt)`. A report with an `externalId` that matches nothing
-    /// reads once more after a short pause: a run created a moment ago may not be on the node
-    /// this read reached yet, and a second create would split the run in two.
+    /// `head (repoId, headOid, $createdAt)`. A report with an `externalId` that matches no run
+    /// at all reads once more after a short pause: a run created a moment ago may not be on the
+    /// node this read reached yet, and a second create would split the run in two. A match that
+    /// may not be updated (completed, or a re-queue of a started run) is a new run at once.
     pub async fn plan(&self, repo: &RepoRef, report: &CheckReport) -> Result<ReportPlan> {
         let oid = report.validate()?;
-        let collab = self.client.fetch_contract(&repo.forge().collab).await?;
+        let community = self.client.fetch_contract(&repo.forge().community).await?;
         let me = self.identity.id();
-        let mut docs = check_run_docs(self.client, &collab, repo, oid.clone()).await?;
-        if report.external_id.is_some() && run_to_update(&docs, &me, report).is_none() {
+        let mut docs = check_run_docs(self.client, &community, repo, oid.clone()).await?;
+        if report.external_id.is_some() && newest_run(&docs, &me, report).is_none() {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            docs = check_run_docs(self.client, &collab, repo, oid.clone()).await?;
+            docs = check_run_docs(self.client, &community, repo, oid.clone()).await?;
         }
         let target = run_to_update(&docs, &me, report).cloned();
         Ok(ReportPlan {
-            collab,
+            community,
             oid,
             target,
         })
@@ -459,7 +467,7 @@ impl<'a> CheckRuns<'a> {
         if let Some(run) = &plan.target {
             let written = engine
                 .replace_document(
-                    &plan.collab,
+                    &plan.community,
                     DOC_CHECK_RUN,
                     &run.id,
                     &report.changes(Some(run)),
@@ -472,7 +480,7 @@ impl<'a> CheckRuns<'a> {
         }
         let props = repo.scope()?.scoped(report.create_props(plan.oid));
         let document_id = engine
-            .create_document(&plan.collab, DOC_CHECK_RUN, props)
+            .create_document(&plan.community, DOC_CHECK_RUN, props)
             .await?;
         Ok(Reported {
             document_id,
@@ -489,7 +497,7 @@ impl<'a> CheckRuns<'a> {
 
 /// What a report will do ([`CheckRuns::plan`]).
 pub struct ReportPlan {
-    collab: LoadedContract,
+    community: LoadedContract,
     oid: Vec<u8>,
     /// The run it replaces; `None`: it creates one.
     target: Option<FetchedDocument>,
@@ -612,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn an_external_id_updates_exactly_that_run_even_once_completed() {
+    fn an_external_id_updates_that_run_until_it_is_completed() {
         let me = "runner";
         let docs = [
             doc(
@@ -637,11 +645,15 @@ mod tests {
             ),
         ];
         let mut r = report("completed", Some("failure"));
-        r.external_id = Some("gh-1".into());
+        r.external_id = Some("gh-2".into());
         assert_eq!(
             run_to_update(&docs, me, &r).map(|d| d.id.as_str()),
-            Some("a")
+            Some("b")
         );
+        // A completed run is final (forge-community: `doneIfCompletedAt`, set-once fields): a
+        // report naming it is a re-run, a new document
+        r.external_id = Some("gh-1".into());
+        assert_eq!(run_to_update(&docs, me, &r), None);
         r.external_id = Some("gh-3".into());
         assert_eq!(run_to_update(&docs, me, &r), None);
     }
@@ -662,60 +674,115 @@ mod tests {
     }
 
     #[test]
-    fn a_requeue_clears_the_conclusion_completion_start_and_log() {
-        let done = stored(&[
-            ("status", FieldValue::text("completed")),
-            ("conclusion", FieldValue::text("failure")),
-            ("startedAt", FieldValue::integer(10)),
-            ("completedAt", FieldValue::integer(20)),
-            ("logUrl", FieldValue::text("https://x/log")),
-            ("logSha256", FieldValue::bytes(vec![1; 32])),
-            ("summary", FieldValue::text("old")),
-        ]);
-        let c = report("queued", None).changes(Some(&done));
-        for k in [
-            "conclusion",
-            "completedAt",
-            "startedAt",
-            "logUrl",
-            "logSha256",
-        ] {
-            assert_eq!(c.get(k), Some(&None), "{k} must be cleared: {c:?}");
-        }
-        assert!(!c.contains_key("summary"), "a field not given stays: {c:?}");
+    fn a_final_match_is_told_apart_from_no_match() {
+        let me = "runner";
+        let docs = [doc(
+            "a",
+            me,
+            1,
+            &[
+                ("name", "build"),
+                ("status", "completed"),
+                ("externalId", "gh-1"),
+            ],
+        )];
+        let mut r = report("completed", Some("success"));
+        r.external_id = Some("gh-1".into());
+        // matched but final: no retry read, a new run
+        assert!(newest_run(&docs, me, &r).is_some());
+        assert_eq!(run_to_update(&docs, me, &r), None);
+        // no match at all: the plan reads again before creating
+        r.external_id = Some("gh-2".into());
+        assert!(newest_run(&docs, me, &r).is_none());
     }
 
     #[test]
-    fn a_repeated_in_progress_keeps_the_start_and_drops_a_stale_completion() {
+    fn a_requeue_of_a_started_run_is_a_new_run() {
+        let me = "runner";
+        let started = [doc(
+            "a",
+            me,
+            1,
+            &[
+                ("name", "build"),
+                ("status", "in_progress"),
+                ("startedAt", "10"),
+            ],
+        )];
+        // forge-community refuses queued with startedAt (`runningIfStarted`) and removing a
+        // set-once startedAt: the re-queue starts a new document
+        assert_eq!(run_to_update(&started, me, &report("queued", None)), None);
+        // Moving it forward replaces it
+        assert_eq!(
+            run_to_update(&started, me, &report("completed", Some("success")))
+                .map(|d| d.id.as_str()),
+            Some("a")
+        );
+        // A queued run may be re-queued in place (nothing set yet)
+        let queued = [doc("q", me, 1, &[("name", "build"), ("status", "queued")])];
+        assert_eq!(
+            run_to_update(&queued, me, &report("queued", None)).map(|d| d.id.as_str()),
+            Some("q")
+        );
+    }
+
+    #[test]
+    fn a_report_never_clears_a_set_once_field() {
         let running = stored(&[
             ("status", FieldValue::text("in_progress")),
             ("startedAt", FieldValue::integer(10)),
-            ("completedAt", FieldValue::integer(20)),
+            ("externalId", FieldValue::text("gh-1")),
             ("logUrl", FieldValue::text("https://x/log")),
             ("logSha256", FieldValue::bytes(vec![1; 32])),
         ]);
         let mut again = report("in_progress", None);
         again.started_at = Some(99);
-        let c = again.changes(Some(&running));
+        again.external_id = Some("gh-1".into());
+        let c = again.changes_at(Some(&running), 500);
+        assert!(
+            !c.values().any(Option::is_none),
+            "nothing is removed: {c:?}"
+        );
         assert!(
             !c.contains_key("startedAt"),
             "the start does not move: {c:?}"
         );
-        assert_eq!(
-            c.get("completedAt"),
-            Some(&None),
-            "not completed: no completion time"
+        assert!(!c.contains_key("completedAt"), "not completed: {c:?}");
+        assert!(
+            !c.contains_key("conclusion"),
+            "no conclusion before completion: {c:?}"
         );
         assert!(
             !c.contains_key("logUrl"),
             "an in-progress update keeps the log"
         );
-        // A first in_progress sets the start.
+    }
+
+    #[test]
+    fn a_first_non_queued_report_sets_the_start_even_without_one() {
         let queued = stored(&[("status", FieldValue::text("queued"))]);
+        // The report's own start wins
+        let mut r = report("in_progress", None);
+        r.started_at = Some(99);
         assert_eq!(
-            again.changes(Some(&queued)).get("startedAt"),
+            r.changes_at(Some(&queued), 500).get("startedAt"),
             Some(&Some(FieldValue::integer(99)))
         );
+        // Without one, now: `startedIfRunning` needs it
+        let c = report("in_progress", None).changes_at(Some(&queued), 500);
+        assert_eq!(c.get("startedAt"), Some(&Some(FieldValue::integer(500))));
+        // Straight to completed: both times, the start no later than the completion
+        let mut done = report("completed", Some("success"));
+        done.completed_at = Some(300);
+        let c = done.changes_at(Some(&queued), 500);
+        assert_eq!(c.get("startedAt"), Some(&Some(FieldValue::integer(300))));
+        assert_eq!(c.get("completedAt"), Some(&Some(FieldValue::integer(300))));
+        // A create straight to completed carries both too
+        let create = report("completed", Some("success")).create_props(vec![0; 20]);
+        assert!(create.contains_key("startedAt") && create.contains_key("completedAt"));
+        // A queued create carries neither
+        let create = report("queued", None).create_props(vec![0; 20]);
+        assert!(!create.contains_key("startedAt") && !create.contains_key("completedAt"));
     }
 
     #[test]
@@ -743,13 +810,7 @@ mod tests {
     fn the_commit_link_is_the_web_commit_page() {
         use crate::network::ForgeIds;
         let repo = RepoRef {
-            forge: ForgeIds {
-                core: "C".into(),
-                collab: "L".into(),
-                group: "G".into(),
-                superseded_in_group: vec![],
-                group_owner: None,
-            },
+            forge: ForgeIds::test_forge(),
             repo_id: "R".into(),
             owner_id: "alice".into(),
             name: "proj".into(),

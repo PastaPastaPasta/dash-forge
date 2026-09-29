@@ -191,7 +191,7 @@ and a unit test fails if that map is missing a file.
 A network whose deployment file has no registered forge-v2 pair (or has no file at all) is
 **not deployed**. Commands that need the contracts fail with a "not deployed" error and never
 fall back to another network's ids. Identity and balance reads still work there. `dg doctor`
-prints the network, the forge-core and forge-collab ids, and where they came from.
+prints the network, the forge-core, forge-collab and forge-community ids, and where they came from.
 
 ### Selecting a network
 

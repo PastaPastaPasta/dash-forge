@@ -45,7 +45,7 @@ export function NetworkBadge({
     ? `Connected to devnet ${config.devnetName ?? ''}, a development network that can be reset at any time; its funds are test funds only.`
     : `Connected to ${config.key}.`
   const title = deployed
-    ? `${where} forge-core ${config.v2?.core}, forge-collab ${config.v2?.collab}.`
+    ? `${where} forge-core ${config.v2?.core}, forge-collab ${config.v2?.collab}, forge-community ${config.v2?.community}.`
     : `${where} Dash Forge is not deployed on this network.`
   return (
     <span

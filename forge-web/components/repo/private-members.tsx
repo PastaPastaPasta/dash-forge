@@ -19,6 +19,7 @@ import { useMemo, useState } from 'react'
 import { KeyRound } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
 import { plural, timeAgo } from '@/lib/view'
+import { repoContractIds } from '@/lib/repo'
 import { decodeIdentifier } from '@/lib/auth'
 import { noEncryptionKeyMessage } from '@/lib/auth/encryption-key'
 import type { Role } from '@/lib/rules/v2'
@@ -86,7 +87,7 @@ function stepText(s: RotationStep): string {
 }
 
 export function PrivateMembers({ home, session }: { home: RepoHome; session: PrivateSession }): JSX.Element {
-  const { sdk, ready } = useSdk([home.repo.forge.core, home.repo.forge.collab])
+  const { sdk, ready } = useSdk(repoContractIds(home.repo))
   const { identity } = useAuth()
   const guard = useWriteGuard()
   const write = usePrivateWrite(home.repo)

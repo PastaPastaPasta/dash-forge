@@ -359,7 +359,7 @@ export class EvoSdkService {
   private noteMissing(contract: string | undefined, e: unknown): void {
     if (this.missing !== null || this.confirming || contract === undefined || this.network === null) return
     const forge = NETWORKS[this.network].v2
-    if (forge === null || (contract !== forge.core && contract !== forge.collab) || !isContractMissingError(e)) return
+    if (forge === null || (contract !== forge.core && contract !== forge.collab && contract !== forge.community) || !isContractMissingError(e)) return
     const connection = this.current
     if (connection === null || this.clock.now() - this.presentAt < RECOVER_GAP_MS) return
     const epoch = this.epoch
@@ -1073,15 +1073,18 @@ export const evoSdkService = new EvoSdkService()
 // Every serialized write (documents, identity key updates) holds the connection.
 setWriteHold((write) => evoSdkService.holdForWrite(write))
 
+/** The contracts every connection preloads: DPNS, Forge's contracts, then `extra` (deduplicated). */
+export function preloadContractIds(network: Network, extra: readonly string[] = []): string[] {
+  const { dpnsContractId, v2 } = NETWORKS[network]
+  const ids = [dpnsContractId, v2?.core, v2?.collab, v2?.community, ...extra]
+  return [...new Set(ids.filter((id): id is string => typeof id === 'string' && id.length > 0))]
+}
+
 /**
  * The connected SDK for `network`, connecting first if needed (the DPNS and forge-v2
  * contracts preloaded). Flows that start before any page has connected (sign-in) use this.
  */
 export async function ensureSdk(network: Network): Promise<EvoSDK> {
-  const { dpnsContractId, v2 } = NETWORKS[network]
-  const contractIds = [dpnsContractId, v2?.core, v2?.collab].filter(
-    (id): id is string => typeof id === 'string' && id.length > 0,
-  )
-  await evoSdkService.initialize({ network, contractIds, timeoutMs: 15000 })
+  await evoSdkService.initialize({ network, contractIds: preloadContractIds(network), timeoutMs: 15000 })
   return evoSdkService.getSdk()
 }

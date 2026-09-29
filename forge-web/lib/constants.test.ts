@@ -26,7 +26,7 @@ import { identityFileMatchesNetwork } from './auth/identity-file'
 const DEPLOYMENTS_DIR = resolve(process.cwd(), '..', 'forge-contracts', 'deployments')
 
 function onDisk(key: string): {
-  v2: { forgeCore: { contractId: string }; forgeCollab: { contractId: string }; contractGroupId: string }
+  v2: { forgeCore: { contractId: string }; forgeCollab: { contractId: string }; forgeCommunity?: { contractId: string }; contractGroupId: string }
 } {
   return JSON.parse(readFileSync(resolve(DEPLOYMENTS_DIR, `${key}.json`), 'utf8'))
 }
@@ -74,6 +74,7 @@ describe('resolveNetworks', () => {
     expect(networks.devnet.v2).toEqual({
       core: file.v2.forgeCore.contractId,
       collab: file.v2.forgeCollab.contractId,
+      community: file.v2.forgeCommunity?.contractId ?? file.v2.forgeCollab.contractId,
       group: file.v2.contractGroupId,
     })
     expect(networks.testnet.v2).toBeNull()
@@ -167,7 +168,11 @@ describe('forgeV2Ids', () => {
   }
 
   it('needs both contracts registered and the group recorded', () => {
-    expect(forgeV2Ids(full)).toEqual({ core: 'C', collab: 'L', group: 'G' })
+    expect(forgeV2Ids(full)).toEqual({ core: 'C', collab: 'L', community: 'L', group: 'G' })
+    // Three contracts: forge-community's own id; one still in flight is a half-finished deploy
+    const three = { v2: { ...full.v2, forgeCommunity: { contractId: 'M', status: 'registered' } } }
+    expect(forgeV2Ids(three)).toEqual({ core: 'C', collab: 'L', community: 'M', group: 'G' })
+    expect(forgeV2Ids({ v2: { ...full.v2, forgeCommunity: { contractId: 'M', status: 'broadcasting' } } })).toBeNull()
     expect(forgeV2Ids({ v2: { ...full.v2, forgeCollab: { contractId: 'L', status: 'broadcasting' } } })).toBeNull()
     expect(forgeV2Ids({ v2: { ...full.v2, forgeCore: undefined } })).toBeNull()
     expect(forgeV2Ids({ v2: { ...full.v2, contractGroupId: '' } })).toBeNull()

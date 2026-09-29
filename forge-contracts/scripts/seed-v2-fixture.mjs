@@ -4,6 +4,8 @@
 //
 //   node forge-contracts/scripts/seed-v2-fixture.mjs [--network devnet --devnet-name moutai]
 //
+// beta.7 only: needs evo-sdk 4.2.0-beta.7 (forge-contracts/sdk-v2) and the three-contract
+// deployment; star, starBeat, watch, policy and checkRun live in forge-community.
 // Needs `npm ci` in forge-contracts/sdk-v2 (evo-sdk 4.2, protocol 14) and the devnet test
 // identities in ~/.config/dash-forge/test-identities/<network>/ (OWNER, MAINTAINER, COLLAB,
 // CONTRIB).
@@ -49,7 +51,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { loadEvoSdk } from './deploy-v2.mjs';
+import { communityId, loadEvoSdk } from './deploy-v2.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '..');
@@ -214,6 +216,7 @@ async function main() {
   const dep = JSON.parse(readFileSync(join(ROOT, 'deployments', `${key}.json`), 'utf8'));
   const core = dep.v2?.forgeCore?.contractId;
   const collab = dep.v2?.forgeCollab?.contractId;
+  const community = communityId(dep);
   if (!core || !collab) throw new Error(`no forge-v2 deployment recorded for ${key}`);
 
   const evo = await loadEvoSdk();
@@ -267,7 +270,7 @@ async function main() {
       // The last step the seeder writes is the star; a fixture without it was interrupted
       // on the machine that holds its state file, and must be finished there.
       const stars = await sdk.documents.count({
-        dataContractId: collab,
+        dataContractId: community,
         documentTypeName: 'star',
         where: [['repoId', '==', String(doc.toJSON?.().$id ?? doc.id)]],
       });
@@ -277,7 +280,7 @@ async function main() {
         // Either an interrupted seed, or a forge-collab re-registered since the fixture was
         // seeded (its collab documents, the star included, are under the old contract). Both
         // are finished where the state file lives: that run re-seeds the collab part.
-        throw new Error(`${DEMO} exists on ${key} but has no star under forge-collab ${collab}: the seed was interrupted or forge-collab was re-registered since; run the seeder where ~/.cache/dash-forge/seed-v2-${key}.json lives`);
+        throw new Error(`${DEMO} exists on ${key} but has no star under forge-community ${community}: the seed was interrupted or forge-collab was re-registered since; run the seeder where ~/.cache/dash-forge/seed-v2-${key}.json lives`);
       }
       const repoId = String(doc.toJSON?.().$id ?? doc.id?.toBase58?.() ?? doc.id);
       log(`${DEMO} already exists on ${key} (${repoId}); nothing to seed`);
@@ -287,9 +290,11 @@ async function main() {
   }
   const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : {};
   const save = () => writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`);
-  // A state file from before forge-collab was re-registered (or from before this field existed)
-  // names collab documents under another contract: archive them and seed the collab part again.
-  if (state.collabContract !== collab) {
+  // A state file from before forge-collab or forge-community was re-registered (or from before
+  // this field existed) names collab documents under another contract: archive them and seed the
+  // collab part (collab and community steps) again.
+  const seededUnder = community === collab ? collab : `${collab}+${community}`;
+  if (state.collabContract !== seededUnder) {
     const stale = Object.keys(state).filter((k) => COLLAB_STEP.test(k));
     if (stale.length > 0) {
       state.supersededCollab = [
@@ -297,9 +302,9 @@ async function main() {
         { contract: state.collabContract ?? 'unrecorded', steps: Object.fromEntries(stale.map((k) => [k, state[k]])) },
       ];
       for (const k of stale) delete state[k];
-      log(`forge-collab is now ${collab}: re-seeding ${stale.length} collab steps`);
+      log(`forge-collab / forge-community are now ${seededUnder}: re-seeding ${stale.length} collab steps`);
     }
-    state.collabContract = collab;
+    state.collabContract = seededUnder;
     save();
   }
 
@@ -496,7 +501,7 @@ async function main() {
   });
   await ev('pr3:resolve', CONTRIB, 'authorEvent', p3, 3, EVENT.threadResolve, { refId: b58(thread3) });
   await ev('pr3:dismiss', OWNER, 'event', p3, 3, EVENT.reviewDismiss, { refId: b58(review3), value: 'the author answered the suggestion' });
-  await create('policy', OWNER, collab, 'policy', {
+  await create('policy', OWNER, community, 'policy', {
     repoId: R,
     requiredApprovals: 1,
     approverRole: 1,
@@ -505,12 +510,12 @@ async function main() {
   });
 
   // --- social ---------------------------------------------------------------------------
-  // `star` is indexOnly: evo-sdk 4.2's strict wait refuses that transition family after it
-  // lands, so the star is confirmed by a count read instead.
+  // `star` is indexOnly: the write is confirmed by a count read (a node answering the next
+  // read may lag the one that confirmed the write).
   if (!state['star:contrib']) {
     const starCount = async () => {
       const counts = await sdk.documents.count({
-        dataContractId: collab,
+        dataContractId: community,
         documentTypeName: 'star',
         where: [['repoId', '==', repoId]],
       });
@@ -519,13 +524,9 @@ async function main() {
       return n;
     };
     if ((await starCount()) === 0n) {
-      const base = new Document({ properties: {}, documentTypeName: 'star', dataContractId: collab, ownerId: CONTRIB.id });
+      const base = new Document({ properties: {}, documentTypeName: 'star', dataContractId: community, ownerId: CONTRIB.id });
       const document = Document.fromObject({ ...base.toObject(), repoId: R }, version);
-      try {
-        await sdk.documents.create({ document, identityKey: CONTRIB.identityKey, signer: CONTRIB.signer });
-      } catch (e) {
-        if (!/VerifiedDocuments snapshot/.test(String(e?.message ?? e))) throw e;
-      }
+      await sdk.documents.create({ document, identityKey: CONTRIB.identityKey, signer: CONTRIB.signer });
       for (let i = 0; i < 10 && (await starCount()) === 0n; i++) await new Promise((r) => setTimeout(r, 2000));
       if ((await starCount()) === 0n) throw new Error('the star did not land');
     }
@@ -535,21 +536,21 @@ async function main() {
   }
 
   // --- the final contract revision (platform-parity-spec §6, C-1) -----------------------
-  // indexOnly writes are confirmed by a read of the writer's own entry (the strict wait
-  // refuses that transition family, as for the star above).
+  // indexOnly writes are confirmed by a read of the writer's own entry, as for the star above.
   async function createIndexOnly(step, who, documentTypeName) {
     if (state[step]) return;
     const own = async () => {
-      const rows = await sdk.documents.query({ dataContractId: collab, documentTypeName, where: [['$ownerId', '==', who.id], ['repoId', '==', repoId]], orderBy: [['$ownerId', 'asc']], limit: 1 });
+      const rows = await sdk.documents.query({ dataContractId: community, documentTypeName, where: [['$ownerId', '==', who.id], ['repoId', '==', repoId]], orderBy: [['$ownerId', 'asc']], limit: 1 });
       return rows.size > 0;
     };
     if (!(await own())) {
-      const base = new Document({ properties: {}, documentTypeName, dataContractId: collab, ownerId: who.id });
+      const base = new Document({ properties: {}, documentTypeName, dataContractId: community, ownerId: who.id });
       const document = Document.fromObject({ ...base.toObject(), repoId: R }, version);
       try {
         await sdk.documents.create({ document, identityKey: who.identityKey, signer: who.signer });
       } catch (e) {
-        if (!/VerifiedDocuments snapshot|already exists|duplicate/i.test(String(e?.message ?? e))) throw e;
+        // A rerun racing its own earlier write
+        if (!/already exists|duplicate/i.test(String(e?.message ?? e))) throw e;
       }
       for (let i = 0; i < 10 && !(await own()); i++) await new Promise((r) => setTimeout(r, 2000));
       if (!(await own())) throw new Error(`${step} did not land`);

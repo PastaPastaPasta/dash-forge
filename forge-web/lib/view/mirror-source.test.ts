@@ -57,7 +57,7 @@ describe('readMirrorSource: only the owner’s and maintainers’ rows count', (
   const OWNER = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
   const MAINT = 'Ehyw8VygZh5LjjYHUbKqgyJamgetiVPLFnJewrfmgQUs'
   const STRANGER = 'BTJPjCLCnRaJQkqakpcdLYFsaHgFf5XSEBNxFCyYBteH'
-  const REPO: RepoRef = { forge: { core: 'CORE', collab: 'COLLAB', group: 'GROUP' }, repoId: 'R', ownerId: OWNER, name: 'r', visibility: 'public' }
+  const REPO: RepoRef = { forge: { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' }, repoId: 'R', ownerId: OWNER, name: 'r', visibility: 'public' }
   type Doc = Record<string, unknown>
   const row = (author: string, number: number, url?: string): Doc => ({
     $id: `${author}-${number}`,

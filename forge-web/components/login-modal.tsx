@@ -30,6 +30,7 @@ import { WalletConnectFlow } from '@/components/auth/wallet-connect-flow'
 import { StepFailed } from '@/components/auth/step-status'
 import { FORGET_CONFIRM } from '@/components/keys-panel'
 import { ACTIVE_NETWORK } from '@/lib/constants'
+import { GRANT_COPY } from '@/lib/auth/key-registration'
 import { NotDeployedState } from '@/components/ui/network-badge'
 import { BROWSER_KEY_DEFAULTS, masterMaterialFromFile } from '@/lib/auth'
 import { AlreadyStoredError, UnlockNeededError } from '@/lib/auth/controller'
@@ -48,6 +49,11 @@ type View = 'choose' | 'unlock' | 'advanced' | LoginView
 export function LoginModal(): JSX.Element {
   const open = useUiStore((s) => s.loginOpen)
   const requested = useUiStore((s) => s.loginView)
+  // The contract the grant view asks the wallet for, as the opener named it (captured in the
+  // store when the sheet opened, so a grant landing mid-flow does not switch the target)
+  const grantKind = useUiStore((s) => s.loginGrantFor) ?? 'collab'
+  const grantFor = ACTIVE_NETWORK.v2?.[grantKind]
+  const grantTitle = GRANT_COPY[grantKind].title
   const close = useUiStore((s) => s.closeLogin)
   const { vaults, vaultsLoaded, vaultsError, reloadVaults, limitedKeys } = useAuth()
   const [view, setView] = useState<View | null>(null)
@@ -87,7 +93,7 @@ export function LoginModal(): JSX.Element {
   const description = view === null ? 'Checking this browser for a stored key…' : describeView(view, limitedKeys)
 
   return (
-    <Dialog open={open} onClose={close} title={view === 'grant' ? 'Approve issues and pull requests' : 'Sign in to Dash Forge'} description={description} className="max-w-lg">
+    <Dialog open={open} onClose={close} title={view === 'grant' ? grantTitle : 'Sign in to Dash Forge'} description={description} className="max-w-lg">
       {vaultsError && (view === null || view === 'choose' || view === 'unlock') ? (
         <div className="mb-3">
           <StepFailed error={`Couldn't read the keys stored in this browser: ${vaultsError}`} onRetry={reloadVaults} />
@@ -116,7 +122,7 @@ export function LoginModal(): JSX.Element {
       ) : null}
       {view === 'create' ? <CreateIdentityFlow onDone={close} /> : null}
       {view === 'wallet' ? <WalletConnectFlow onDone={close} /> : null}
-      {view === 'grant' ? <WalletConnectFlow mode="grant" contractId={ACTIVE_NETWORK.v2?.collab} onDone={close} /> : null}
+      {view === 'grant' ? <WalletConnectFlow mode="grant" contractId={grantFor} onDone={close} /> : null}
       {view === 'advanced' ? <AdvancedView onDone={close} /> : null}
     </Dialog>
   )

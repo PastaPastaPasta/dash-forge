@@ -11,7 +11,7 @@ import type { ForgeIds } from '../deployments'
 import type { RefState } from '../rules'
 import { forkManifest, planManifests, planRefs, type ForkCopy } from './fork'
 
-const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', group: 'G' }
+const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'G' }
 const PARENT = 'A2KL77ngVM1ft1t1em2XKt1rWCBZANdAJMyfWrDGCcd1'
 const UPLOADER = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 

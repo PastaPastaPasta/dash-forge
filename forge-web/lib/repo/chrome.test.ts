@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // The test build has no devnet deployment: give the devnet this file's forge ids.
 vi.mock('../constants', async (importOriginal) => {
   const real = await importOriginal<typeof import('../constants')>()
-  return { ...real, NETWORKS: { ...real.NETWORKS, devnet: { ...real.NETWORKS.devnet, v2: { core: 'CORE', collab: 'COLLAB', group: 'GROUP' } } } }
+  return { ...real, NETWORKS: { ...real.NETWORKS, devnet: { ...real.NETWORKS.devnet, v2: { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' } } } }
 })
 
 import type { ForgeIds } from '../deployments'
@@ -29,7 +29,7 @@ import type { RepoRef } from './contract'
 type Doc = Record<string, unknown>
 type Store = Record<string, Record<string, Doc[]>>
 
-const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', group: 'GROUP' }
+const FORGE: ForgeIds = { core: 'CORE', collab: 'COLLAB', community: 'COLLAB', group: 'GROUP' }
 const DPNS = 'GWRSAVFMjXx8HpQFaNJMqBV7MBgMK4br5UESsB4S31Ec'
 const OWNER = 'HwhCv9N5BHsbGNLzDR4tnZnqJ6VxtwJSLsM4aUWn2Tnr'
 const REPO = 'C8XSf6R4shR1kqFKUZQnuaEZ5DkW7uoe9qtQYZpS5SRd'

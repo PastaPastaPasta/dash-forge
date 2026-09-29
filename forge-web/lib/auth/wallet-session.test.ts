@@ -109,8 +109,8 @@ describe('wallet session', () => {
   })
 
   it('signs forge-core with the wallet key and asks for a forge-collab grant', async () => {
-    const s = await controller.adoptWalletKeys(ID, [walletKey(5, wifOf(5), { core: true, collab: false, unbounded: false })], { passphrase: 'correct horse battery' })
-    expect(s.grants).toEqual({ core: true, collab: false })
+    const s = await controller.adoptWalletKeys(ID, [walletKey(5, wifOf(5), { core: true, collab: false, community: false, unbounded: false })], { passphrase: 'correct horse battery' })
+    expect(s.grants).toEqual({ core: true, collab: false, community: false })
     expect(s.unlimited).toBe(true)
     const auth = controller.writeAuth!
     expect(auth.getSigningKeyWif(forge.core)).toBe(wifOf(5))
@@ -118,10 +118,10 @@ describe('wallet session', () => {
   }, 30_000)
 
   it('adds a forge-collab grant, which survives a lock and unlock (sealed beside the key)', async () => {
-    await controller.adoptWalletKeys(ID, [walletKey(5, wifOf(5), { core: true, collab: false, unbounded: false })], { passphrase: 'correct horse battery' })
+    await controller.adoptWalletKeys(ID, [walletKey(5, wifOf(5), { core: true, collab: false, community: false, unbounded: false })], { passphrase: 'correct horse battery' })
     keys.push(key(6, wifOf(6), { $type: 'singleContract', id: forge.collab }))
-    const s = await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: false, collab: true, unbounded: false }), forge.collab)
-    expect(s.grants).toEqual({ core: true, collab: true })
+    const s = await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: false, collab: true, community: true, unbounded: false }), forge.collab)
+    expect(s.grants).toEqual({ core: true, collab: true, community: true })
     expect(controller.writeAuth!.getSigningKeyWif(forge.collab)).toBe(wifOf(6))
     controller.logout()
     await controller.unlock(ID, { passphrase: 'correct horse battery' })
@@ -133,14 +133,14 @@ describe('wallet session', () => {
     keys.push(key(6, wifOf(6), { $type: 'singleContract', id: forge.collab }))
     await controller.adoptWalletKeys(
       ID,
-      [walletKey(5, wifOf(5), { core: true, collab: false, unbounded: false }), walletKey(6, wifOf(6), { core: false, collab: true, unbounded: false })],
+      [walletKey(5, wifOf(5), { core: true, collab: false, community: false, unbounded: false }), walletKey(6, wifOf(6), { core: false, collab: true, community: true, unbounded: false })],
       { passphrase: 'correct horse battery' },
     )
     expect(controller.writeAuth!.getSigningKeyWif(forge.collab)).toBe(wifOf(6))
     keys[2]!.disabledAt = 1n
     controller.logout()
     const s = await controller.unlock(ID, { passphrase: 'correct horse battery' }).then(() => controller.getState().session!)
-    expect(s.grants).toEqual({ core: true, collab: false })
+    expect(s.grants).toEqual({ core: true, collab: false, community: false })
     expect(() => controller.writeAuth!.getSigningKeyWif(forge.collab)).toThrow(MissingGrantError)
   }, 60_000)
 
@@ -148,64 +148,64 @@ describe('wallet session', () => {
     keys[1] = key(5, wifOf(5), { $type: 'contractGroup', id: forge.group }, { totalBudget: 5n, expiresAt: BigInt(Date.now() + 1e9) })
     const s = await controller.adoptWalletKeys(
       ID,
-      [{ keyId: 5, wif: wifOf(5), scope: { core: true, collab: true, unbounded: false }, limits: { remaining: 5n, total: 5n, expiresAt: Date.now() + 1e9 } }],
+      [{ keyId: 5, wif: wifOf(5), scope: { core: true, collab: true, community: true, unbounded: false }, limits: { remaining: 5n, total: 5n, expiresAt: Date.now() + 1e9 } }],
       { passphrase: 'correct horse battery' },
     )
-    expect(s.grants).toEqual({ core: true, collab: true })
+    expect(s.grants).toEqual({ core: true, collab: true, community: true })
     expect(s.unlimited).toBe(false)
     expect(controller.writeAuth!.getSigningKeyWif(forge.collab)).toBe(wifOf(5))
   }, 30_000)
 
   it('files an unbounded key granted for forge-collab under forge-collab (no grant loop)', async () => {
-    await controller.adoptWalletKeys(ID, [walletKey(5, wifOf(5), { core: true, collab: false, unbounded: false })], { passphrase: 'correct horse battery' })
+    await controller.adoptWalletKeys(ID, [walletKey(5, wifOf(5), { core: true, collab: false, community: false, unbounded: false })], { passphrase: 'correct horse battery' })
     keys.push(key(6, wifOf(6), null))
-    const s = await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: true, collab: true, unbounded: true }), forge.collab)
-    expect(s.grants).toEqual({ core: true, collab: true })
+    const s = await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: true, collab: true, community: true, unbounded: true }), forge.collab)
+    expect(s.grants).toEqual({ core: true, collab: true, community: true })
     expect(s.unbounded).toBe(true)
     expect(controller.writeAuth!.getSigningKeyWif(forge.collab)).toBe(wifOf(6))
   }, 30_000)
 
   it('signs only Forge writes with a vault key', async () => {
-    await controller.adoptWalletKeys(ID, [walletKey(5, wifOf(5), { core: true, collab: false, unbounded: false })], { passphrase: 'correct horse battery' })
+    await controller.adoptWalletKeys(ID, [walletKey(5, wifOf(5), { core: true, collab: false, community: false, unbounded: false })], { passphrase: 'correct horse battery' })
     expect(() => controller.writeAuth!.getSigningKeyWif()).toThrow(/only Dash Forge/)
     expect(() => controller.writeAuth!.getSigningKeyWif('H8F9mP1BM55TE1ShsxPZHzhyinaMdY9bMmP85mkDhcJJ')).toThrow(/only Dash Forge/)
   }, 30_000)
 
   it('refuses to replace a locked wallet-key vault (its keys could not be disabled)', async () => {
-    await controller.adoptWalletKeys(ID, [walletKey(5, wifOf(5), { core: true, collab: false, unbounded: false })], { passphrase: 'correct horse battery' })
+    await controller.adoptWalletKeys(ID, [walletKey(5, wifOf(5), { core: true, collab: false, community: false, unbounded: false })], { passphrase: 'correct horse battery' })
     controller.logout()
     await expect(
-      controller.adoptWalletKeys(ID, [walletKey(5, wifOf(5), { core: true, collab: false, unbounded: false })], { passphrase: 'another passphrase' }),
+      controller.adoptWalletKeys(ID, [walletKey(5, wifOf(5), { core: true, collab: false, community: false, unbounded: false })], { passphrase: 'another passphrase' }),
     ).rejects.toThrow(/Unlock first/)
   }, 30_000)
 
   const PASS = { passphrase: 'correct horse battery' }
-  const coreKey = (): WalletKey => walletKey(5, wifOf(5), { core: true, collab: false, unbounded: false })
+  const coreKey = (): WalletKey => walletKey(5, wifOf(5), { core: true, collab: false, community: false, unbounded: false })
 
   it('a forge-collab grant answered by a group-bound key covers collab (scope, not the contract it was filed under)', async () => {
     await controller.adoptWalletKeys(ID, [coreKey()], PASS)
     keys.push(key(6, wifOf(6), { $type: 'contractGroup', id: forge.group }, { totalBudget: 5n, expiresAt: BigInt(Date.now() + 1e9) }))
-    const s = await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: true, collab: true, unbounded: false }), forge.collab)
-    expect(s.grants).toEqual({ core: true, collab: true })
+    const s = await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: true, collab: true, community: true, unbounded: false }), forge.collab)
+    expect(s.grants).toEqual({ core: true, collab: true, community: true })
     expect(controller.writeAuth!.getSigningKeyWif(forge.collab)).toBe(wifOf(6))
     // Refuses a grant that does not cover what was asked for.
     keys.push(key(7, wifOf(7), { $type: 'singleContract', id: forge.core }))
-    await expect(controller.addWalletGrant(ID, walletKey(7, wifOf(7), { core: true, collab: false, unbounded: false }), forge.collab)).rejects.toThrow(/does not cover/)
+    await expect(controller.addWalletGrant(ID, walletKey(7, wifOf(7), { core: true, collab: false, community: false, unbounded: false }), forge.collab)).rejects.toThrow(/does not cover/)
   }, 30_000)
 
   it('a returning wallet login keeps the forge-collab grant this browser already holds', async () => {
     await controller.adoptWalletKeys(ID, [coreKey()], PASS)
     keys.push(key(6, wifOf(6), { $type: 'singleContract', id: forge.collab }))
-    await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: false, collab: true, unbounded: false }), forge.collab)
+    await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: false, collab: true, community: true, unbounded: false }), forge.collab)
     const again = await controller.adoptWalletKeys(ID, [coreKey()], PASS)
-    expect(again.grants).toEqual({ core: true, collab: true })
+    expect(again.grants).toEqual({ core: true, collab: true, community: true })
   }, 30_000)
 
   it('a grant whose check fails keeps the session that was working', async () => {
     await controller.adoptWalletKeys(ID, [coreKey()], PASS)
     const before = controller.getState().session
     // Key 6 is not on the identity: the re-check after storing it fails.
-    await expect(controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: false, collab: true, unbounded: false }), forge.collab)).rejects.toThrow(/approval was saved/)
+    await expect(controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: false, collab: true, community: true, unbounded: false }), forge.collab)).rejects.toThrow(/approval was saved/)
     expect(controller.getState().session).toEqual(before)
     expect(controller.writeAuth!.getSigningKeyWif(forge.core)).toBe(wifOf(5))
   }, 30_000)
@@ -213,7 +213,7 @@ describe('wallet session', () => {
   it('renewing an unlocked wallet session disables every key this browser holds, in the same update', async () => {
     await controller.adoptWalletKeys(ID, [coreKey()], PASS)
     keys.push(key(6, wifOf(6), { $type: 'singleContract', id: forge.collab }))
-    await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: false, collab: true, unbounded: false }), forge.collab)
+    await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: false, collab: true, community: true, unbounded: false }), forge.collab)
     keys.push(key(20, encodeWif(new Uint8Array(32).fill(20), 'devnet'), { $type: 'contractGroup', id: forge.group }, { totalBudget: 5n, expiresAt: BigInt(Date.now() + 1e9) }))
     await controller.importIdentity({ fileText: '{}' }, PASS)
     const call = chainCalls.register[0] as { disableHeld: { keyId: number; wif: string }[] }
@@ -254,7 +254,7 @@ describe('wallet session', () => {
   it('refuses to open a session on a key bound to another app', async () => {
     keys[1] = key(5, wifOf(5), { $type: 'singleContract', id: 'H8F9mP1BM55TE1ShsxPZHzhyinaMdY9bMmP85mkDhcJJ' })
     await expect(
-      controller.adoptWalletKeys(ID, [walletKey(5, wifOf(5), { core: true, collab: false, unbounded: false })], { passphrase: 'correct horse battery' }),
+      controller.adoptWalletKeys(ID, [walletKey(5, wifOf(5), { core: true, collab: false, community: false, unbounded: false })], { passphrase: 'correct horse battery' }),
     ).rejects.toThrow(/outside Dash Forge/)
   }, 30_000)
 
@@ -311,7 +311,7 @@ describe('wallet session', () => {
       // The old vault holds wallet keys and is locked: the login is refused before anything is dropped.
       await controller.adoptWalletKeys(ID, [coreKey()], PASS)
       keys.push(key(6, wifOf(6), { $type: 'singleContract', id: forge.collab }))
-      await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: false, collab: true, unbounded: false }), forge.collab)
+      await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: false, collab: true, community: true, unbounded: false }), forge.collab)
       controller.logout()
       await stageInVault(NET, { identityId: ID, keyId: 7, wif: wifOf(7) }, PASS)
       keys.push(renewalKey())
@@ -346,7 +346,7 @@ describe('wallet session', () => {
   it('a reopened create sheet also returns the wallet grants held, for its renewal to disable', async () => {
     await controller.adoptWalletKeys(ID, [coreKey()], PASS)
     keys.push(key(6, wifOf(6), { $type: 'singleContract', id: forge.collab }))
-    await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: false, collab: true, unbounded: false }), forge.collab)
+    await controller.addWalletGrant(ID, walletKey(6, wifOf(6), { core: false, collab: true, community: true, unbounded: false }), forge.collab)
     controller.logout()
     expect(await controller.storedKeyFor(ID, PASS)).toEqual({ keyId: 5, wif: wifOf(5), alsoHeld: [{ keyId: 6, wif: wifOf(6) }] })
   }, 60_000)
