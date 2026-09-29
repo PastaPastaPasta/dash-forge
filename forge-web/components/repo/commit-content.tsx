@@ -26,17 +26,20 @@ import { ReadErrorState } from '@/components/repo/resolved-tip'
 import { Oid } from '@/components/ui/oid'
 import { EmptyState, LoadingBlock } from '@/components/ui/states'
 import { repoHref, type RepoAddress } from '@/hooks/use-query-param'
+import { LinkifiedText } from '@/components/markdown-view'
+import { sourceUrl, useRepoLinks } from '@/components/repo/target-href'
 
 export function CommitContent({ home, addr, oid }: { home: RepoHome; addr: RepoAddress; oid: string }): JSX.Element {
   if (!oid) return <EmptyState icon={GitCommit} title="No commit addressed" body="Add &oid= to the URL." />
   return (
     <BrowseBoundary repo={home.repo} addr={addr}>
-      {(reader, retry) => <Body reader={reader} retry={retry} oid={oid} addr={addr} repo={home.repo} />}
+      {(reader, retry) => <Body reader={reader} retry={retry} oid={oid} addr={addr} repo={home.repo} description={home.description} />}
     </BrowseBoundary>
   )
 }
 
-function Body({ reader, retry, oid, addr, repo }: { reader: BrowseReader; retry: () => void; oid: string; addr: RepoAddress; repo: RepoRef }): JSX.Element {
+function Body({ reader, retry, oid, addr, repo, description }: { reader: BrowseReader; retry: () => void; oid: string; addr: RepoAddress; repo: RepoRef; description: string }): JSX.Element {
+  const links = useRepoLinks(addr, description)
   const { data, loading, error, cause } = useAsync(() => loadCommitChanges(reader, oid), [oid])
   const sides = useMemo<DiffSides>(() => ({ base: reader, head: reader }), [reader])
   if (loading) return <LoadingBlock label="Reconstructing commit" />
@@ -51,8 +54,14 @@ function Body({ reader, retry, oid, addr, repo }: { reader: BrowseReader; retry:
   return (
     <div className="space-y-4">
       <div className="rounded-lg border border-anvil-200 bg-white p-4 dark:border-anvil-750 dark:bg-anvil-900">
-        <h1 className="text-prose font-semibold">{commitSubject(commit.message) || '(no message)'}</h1>
-        {body ? <pre className="mt-2 whitespace-pre-wrap font-sans text-dense text-anvil-600 dark:text-anvil-300">{body}</pre> : null}
+        <h1 className="text-prose font-semibold [overflow-wrap:anywhere]" data-testid="commit-subject">
+          {commitSubject(commit.message) ? <LinkifiedText text={commitSubject(commit.message)} links={links} imported={sourceUrl(links)} /> : '(no message)'}
+        </h1>
+        {body ? (
+          <pre className="mt-2 whitespace-pre-wrap font-sans text-dense text-anvil-600 [overflow-wrap:anywhere] dark:text-anvil-300" data-testid="commit-body">
+            <LinkifiedText text={body} links={links} imported={sourceUrl(links)} />
+          </pre>
+        ) : null}
         <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[12px] coarse:gap-y-3 text-anvil-500 dark:text-anvil-400">
           <span className="font-medium text-anvil-700 dark:text-anvil-200">{commit.author.name || 'unknown'}</span>
           <span>committed {timeAgo(commit.committer.when)} · {formatDate(commit.committer.when)}</span>

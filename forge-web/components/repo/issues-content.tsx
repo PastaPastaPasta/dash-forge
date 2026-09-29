@@ -54,6 +54,7 @@ import { CostPreview } from '@/components/ui/cost-preview'
 import { EmptyState, ErrorState, LoadingBlock } from '@/components/ui/states'
 import { HiddenNote } from '@/components/repo/hidden-note'
 import { MirrorComposeHint, MirrorNote } from '@/components/repo/mirror-note'
+import { useRepoLinks } from '@/components/repo/target-href'
 import { AssigneeAvatars, LabelChip, MarkdownEditor } from '@/components/repo/issue-bits'
 import { IssueTemplatePicker } from '@/components/repo/issue-templates'
 import { useRepoTotals } from '@/components/repo/use-repo-totals'
@@ -463,6 +464,7 @@ function ComposeIssueDialog({
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
   const draft = useIntent()
+  const links = useRepoLinks(addr, home.description)
 
   // Whether this issue is the repo's (or the author's) first, for a tight preview (D-011).
   const first = useFirstWrite(() => issueFirsts(sdk!, repo, identity!), [open, repoKey(repo), identity ?? ''], open && sdk !== null && identity !== null)
@@ -541,7 +543,7 @@ function ComposeIssueDialog({
           value={body}
           onChange={setBody}
           placeholder="What happened, and how to reproduce it."
-          links={{ issueHref: (n) => repoHref('/repo/issue', addr, { number: String(n) }) }}
+          links={links}
         />
         <SealedLimit repo={repo} kind="issue" text={title.trim() + body} />
         <BodyCounter repo={repo} text={body} field="description" />

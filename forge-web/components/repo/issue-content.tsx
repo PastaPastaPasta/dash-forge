@@ -19,7 +19,7 @@
 import { Byline } from '@/components/repo/byline'
 import { useMirrorTrust } from '@/hooks/use-mirror-trust'
 import { trustedOrigin } from '@/lib/repo/provenance'
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 import { CheckCircle2, CircleDot, Milestone, Pencil, Pin, Tag, UserPlus } from 'lucide-react'
 import type { RepoHome, IssueThread, TimelineItem } from '@/lib/view'
 import { ACL_NAME, ARCHIVED_REASON, loadIssueThread } from '@/lib/view'
@@ -45,7 +45,9 @@ import { useSdk } from '@/hooks/use-sdk'
 import { useAsync } from '@/hooks/use-async'
 import { useIntent } from '@/hooks/use-intent'
 import { useFirstWrite } from '@/hooks/use-first-write'
-import { useParam, repoHref, type RepoAddress } from '@/hooks/use-query-param'
+import { useParam, type RepoAddress } from '@/hooks/use-query-param'
+import { useRepoLinks } from '@/components/repo/target-href'
+import { importedUrlOf } from '@/lib/view/ref-targets'
 import { CopyLinkButton } from '@/components/ui/copy-link'
 import { retryWhileMissing } from '@/lib/view/retry'
 import { useAuth } from '@/contexts/auth-context'
@@ -117,10 +119,8 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
   const [editing, setEditing] = useState<{ title: string; body: string } | null>(null)
   const [editingComment, setEditingComment] = useState<{ id: string; body: string } | null>(null)
 
-  const links: MarkdownLinks | undefined = useMemo(
-    () => (addr ? { issueHref: (n: number) => repoHref('/repo/issue', addr, { number: String(n) }) } : undefined),
-    [addr],
-  )
+  const repoLinks = useRepoLinks(addr ?? { owner: '', name: '' }, home.description)
+  const links: MarkdownLinks | undefined = addr ? repoLinks : undefined
 
   // Which subtrees this viewer's comment or event would create, for tight previews (D-011).
   // Read only once the viewer turns to a write (typing a comment, or a confirm opening): the
@@ -328,7 +328,7 @@ export function IssueContent({ home, addr, number }: { home: RepoHome; addr?: Re
             {editing ? (
               <MarkdownEditor id="edit-body" label="Description" value={editing.body} onChange={(body) => setEditing({ ...editing, body })} links={links} />
             ) : issue.body ? (
-              <MarkdownView source={issue.body} links={links} />
+              <MarkdownView source={issue.body} links={links} imported={importedUrlOf(issue.importedRaw)} />
             ) : (
               <p className="italic text-anvil-500 dark:text-anvil-400">No description.</p>
             )}
