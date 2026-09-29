@@ -20,6 +20,7 @@ import { bytesToHex } from '@noble/hashes/utils.js'
 
 import { ACTIVE_NETWORK, CHUNK_PAYLOAD_MAX, PACK_KIND } from '../constants'
 import { loadIndexArtifact } from './index-cache'
+import { attachHistory, historySource } from './history-source'
 import {
   BrowseReader,
   FlatIndex,
@@ -1233,7 +1234,17 @@ export async function loadBrowseContext(
   // was built over a prefix of it, so every row's packRef means the same pack here.
   const packs = buildPackSource(sdk, repo, manifests)
   const reader = repoReader(sdk, repo, locator, packs, livePacks)
+  attachRepoHistory(sdk, repo, reader, manifests)
   return { kind: 'ready', context: { locator, packs, reader }, manifests: ids }
+}
+
+/**
+ * Give a context's reader the repository's history index ({@link historySource}): the file list's
+ * commit column and the commit count read it instead of walking history. From the manifests the
+ * resolve already read, so it costs nothing until a view loads an index.
+ */
+export function attachRepoHistory(sdk: EvoSDK | null, repo: RepoRef, reader: BrowseReader, manifests: readonly PackManifest[]): void {
+  attachHistory(reader.memoScope, sdk === null ? null : historySource(manifests, (m) => loadArtifactBytes(sdk, repo, m)))
 }
 
 /**

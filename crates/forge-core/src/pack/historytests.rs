@@ -285,3 +285,60 @@ fn an_option_like_tip_is_refused() {
     assert!(compute(d.path(), "--all", None).is_err());
     assert!(compute(d.path(), "HEAD", Some("-x")).is_err());
 }
+
+/// The shared fixture forge-web's decoder reads (`forge-web/lib/browse/history-index.test.ts`):
+/// a hand-built index with a delta base, a multi-byte subject and front-coded paths. The bytes
+/// are the body before gzip (gzip output is not byte-stable across implementations).
+/// `FORGE_BLESS=1` rewrites it.
+#[test]
+fn the_shared_decoder_fixture_matches() {
+    use super::historyindex::IndexedCommit;
+    let ix = HistoryIndex {
+        tip: [0xab; 20],
+        base: Some([0x5c; 32]),
+        commit_count: 33_553,
+        first_parent_count: 7_979,
+        root_time: 1_325_376_000,
+        tip_time: 1_790_000_000,
+        commits: vec![
+            IndexedCommit {
+                oid: [0x01; 20],
+                author_time: 1_700_000_000,
+                subject: "Merge #1234: refactor: tidy the wallet".into(),
+            },
+            IndexedCommit {
+                oid: [0x02; 20],
+                author_time: 1_600_000_000,
+                subject: "docs: naïve résumé ✓".into(),
+            },
+        ],
+        paths: [
+            (b"src".to_vec(), 0),
+            (b"src/wallet".to_vec(), 0),
+            (b"src/wallet/db.cpp".to_vec(), 0),
+            (b"src/walletx.h".to_vec(), 1),
+            (b"README.md".to_vec(), 1),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let body = {
+        let mut out = Vec::new();
+        std::io::Read::read_to_end(
+            &mut flate2::read::GzDecoder::new(&ix.to_compressed().unwrap()[..]),
+            &mut out,
+        )
+        .unwrap();
+        out
+    };
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../forge-contracts/fixtures/history-index.hex"
+    );
+    let hex_body = format!("{}\n", hex::encode(&body));
+    if std::env::var_os("FORGE_BLESS").is_some() {
+        std::fs::write(path, &hex_body).unwrap();
+    }
+    assert_eq!(std::fs::read_to_string(path).unwrap(), hex_body, "run with FORGE_BLESS=1");
+    assert_eq!(HistoryIndex::parse(&ix.to_compressed().unwrap()).unwrap(), ix);
+}
