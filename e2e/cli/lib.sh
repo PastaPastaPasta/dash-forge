@@ -377,3 +377,43 @@ seed_tiny_repo() { # seed_tiny_repo <dir> <branch> [tagname]
   fi
   git -C "$dir" rev-parse HEAD
 }
+
+# --- forge-v2-demo read fixture: PR numbers under dense numbering ------------
+# Issues and PRs on a forge-v2 repo share one number sequence (docs/contracts/forge-v2.md
+# §6: patch "sharing the issues' number sequence"), so on the seeded `forge-v2-demo` fixture
+# (forge-contracts/scripts/seed-v2-fixture.mjs) issues take #1-#4 and the three PRs follow at
+# #5 (open, approved), #6 (merged) and #7 (the review-parity draft). The seeder's summary JSON
+# carries these as `pulls: {approved, merged, reviewParity}` — printed to stdout on every run,
+# and (once the seeder is updated to persist it) alongside its idempotency state at
+# ~/.cache/dash-forge/seed-v2-<network-key>.json. `demo_pull_number` reads `pulls.<key>` from
+# there (top-level or nested under `demo`) when a summary is available, and otherwise falls
+# back to the RC1 layout's fixed numbers, so scenarios never need to know which case applied.
+# E2E_V2_SEED_SUMMARY names the summary/state file directly (e.g. a path a caller captured
+# from `make e2e-fixture`'s stdout); otherwise the default state file path is tried.
+demo_pull_number() { # demo_pull_number approved|merged|reviewParity
+  local key="$1" fallback
+  case "$key" in
+    approved) fallback=5 ;;
+    merged) fallback=6 ;;
+    reviewParity) fallback=7 ;;
+    *) echo "demo_pull_number: unknown key '$key'" >&2; return 1 ;;
+  esac
+  local netkey="${DASH_FORGE_NETWORK:-devnet}"
+  [[ "$netkey" == devnet ]] && netkey="devnet-${DASH_FORGE_DEVNET_NAME:-moutai}"
+  local summary="${E2E_V2_SEED_SUMMARY:-${HOME}/.cache/dash-forge/seed-v2-${netkey}.json}"
+  local n
+  n="$(python3 -c '
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        d = json.load(f)
+except (OSError, ValueError):
+    sys.exit(1)
+pulls = d.get("pulls") or (d.get("demo") or {}).get("pulls") or {}
+v = pulls.get(sys.argv[2])
+if v is None:
+    sys.exit(1)
+print(int(v))
+' "$summary" "$key" 2>/dev/null)"
+  echo "${n:-$fallback}"
+}
