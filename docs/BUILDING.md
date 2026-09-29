@@ -91,7 +91,7 @@ cache it across builds.
 
 ### Bumping the pinned tag
 
-1. Change the tag in **all five** entries under `[workspace.dependencies]` in `Cargo.toml`
+1. Change the tag in **every** Platform entry (seven) under `[workspace.dependencies]` in `Cargo.toml`
    (the `PLATFORM_TAG` comment above them records the current value).
 2. `cargo update -p dash-sdk`
 3. `cargo test --workspace`
@@ -114,6 +114,8 @@ dapi-grpc = { path = "../platform/packages/dapi-grpc" }
 drive-proof-verifier = { path = "../platform/packages/rs-drive-proof-verifier" }
 rs-sdk-trusted-context-provider = { path = "../platform/packages/rs-sdk-trusted-context-provider" }
 simple-signer = { path = "../platform/packages/simple-signer" }
+platform-encryption = { path = "../platform/packages/rs-platform-encryption" }
+dpp = { path = "../platform/packages/rs-dpp" }
 EOF
 ```
 
@@ -121,7 +123,7 @@ Two things matter here:
 
 * **`[patch]`, not `paths`.** Cargo's `paths` override only works for crates published to
   crates.io; these are git dependencies, so `paths` would be silently ignored.
-* **All five packages, together.** Patching only some of them leaves `forge-core` holding
+* **All the packages, together.** Patching only some of them leaves `forge-core` holding
   git copies of the rest, and the graph ends up with two incompatible copies of `dpp` /
   `drive-proof-verifier` — which fails to compile with a type mismatch that does not
   mention the override at all.

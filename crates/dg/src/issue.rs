@@ -9,7 +9,7 @@ use serde_json::json;
 
 use forge_core::collab::v2::{Comment, IssueView, Target};
 use forge_core::create::default_journal_dir;
-use forge_core::rules::v2::{StateAction, Transition};
+use forge_core::rules::v2::{status_of_code, StateAction, Transition};
 use forge_core::rules::{Event, EventKind, IssueState};
 
 use crate::common::{number_arg, Reader, Session};
@@ -157,7 +157,7 @@ async fn thread_flag(ctx: &Ctx, repo: &str, number: u64, flag: Flag, on: bool) -
         (Flag::Lock, false) => ("Unlock", "unlocked"),
     };
     let note = match (flag, on) {
-        (Flag::Lock, true) => "; clients then offer the comment box to members only",
+        (Flag::Lock, true) => "; then only members can comment",
         _ => "",
     };
     ctx.confirm_or_cancel(&format!(
@@ -168,10 +168,14 @@ async fn thread_flag(ctx: &Ctx, repo: &str, number: u64, flag: Flag, on: bool) -
         Flag::Pin => collab.set_pinned(&s.repo, &target, on).await?,
         Flag::Lock => collab.set_locked(&s.repo, &target, on).await?,
     };
-    ctx.emit(
-        json!({ "status": done, "issue": number, "eventId": id }),
-        || println!("✓ {done} issue #{number}"),
-    );
+    // A pin is an event; a lock or unlock is a transition (RC1 kinds 3 / 4).
+    let key = match flag {
+        Flag::Pin => "eventId",
+        Flag::Lock => "transitionId",
+    };
+    ctx.emit(json!({ "status": done, "issue": number, key: id }), || {
+        println!("✓ {done} issue #{number}")
+    });
     Ok(())
 }
 
@@ -386,8 +390,10 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
     let events: Vec<Event> = view.events().into_iter().cloned().collect();
     let transitions = view.log.transitions.clone();
     let timeline = timeline(&comments, &events, &transitions);
-    // Milestone, pin and lock: the member events folded (kinds 17-22).
+    // Milestone and pin: the member events folded (kinds 17-20). Lock: the transitions'
+    // sum (16 or more is locked).
     let meta = forge_core::rules::v2::fold_thread_meta_v2(&view.log.events);
+    let locked = view.log.locked();
     let state = view.state;
     let i = view.issue;
     let (id, title, body, author) = (i.document_id, i.title, i.body, i.author);
@@ -402,7 +408,7 @@ async fn view(ctx: &Ctx, repo: &str, number: u64) -> Result<()> {
             "state": { "open": state.open, "labels": state.labels, "assignees": state.assignees },
             "milestone": meta.milestone,
             "pinned": meta.pinned,
-            "locked": meta.locked,
+            "locked": locked,
             "comments": comments.iter().map(|c| json!({"id": c.document_id, "author": c.author, "body": c.body})).collect::<Vec<_>>(),
             "events": events.iter().map(|e| json!({
                 "id": e.id,
@@ -662,12 +668,12 @@ async fn comment(ctx: &Ctx, repo: &str, number: u64, body: &str) -> Result<()> {
     Ok(())
 }
 
-/// A locked thread takes comments from members only (a client rule: consensus cannot refuse
-/// anyone's comment, so every Forge client refuses it instead, before anything is signed).
+/// A locked thread takes comments from members only: consensus refuses a new comment on it
+/// without `asMember` (`lockGate`), so a non-member is refused here first, before anything is
+/// signed, with the reason.
 async fn refuse_if_locked(s: &Session, number: u64, target_id: &str) -> Result<()> {
     let collab = s.collab();
-    let log = collab.target_log(&s.repo, target_id).await?;
-    if !forge_core::rules::v2::fold_thread_meta_v2(&log.events).locked {
+    if !status_of_code(collab.state_code(&s.repo, target_id).await?).locked {
         return Ok(());
     }
     if collab.signer_role(&s.repo).await?.is_some() {

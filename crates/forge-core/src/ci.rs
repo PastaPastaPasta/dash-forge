@@ -466,7 +466,7 @@ impl CheckReport {
     /// The full property set a create carries (the scope adds `repoId`): the `vis` stamp of a
     /// repository of `visibility`, the status and outcome, the set-once fields `w` sets, and
     /// everything else this report gives.
-    fn create_props(
+    pub(crate) fn create_props(
         &self,
         oid: Vec<u8>,
         w: &RunWrite,
@@ -494,7 +494,7 @@ impl CheckReport {
     /// * Everything else this report gives replaces what is stored; what it does not give stays.
     ///
     /// `vis` is immutable: a create sets it ([`Self::create_props`]) and a replace keeps it.
-    fn changes(&self, w: &RunWrite) -> BTreeMap<String, Option<FieldValue>> {
+    pub(crate) fn changes(&self, w: &RunWrite) -> BTreeMap<String, Option<FieldValue>> {
         let text = |v: &Option<String>| v.as_deref().map(FieldValue::text);
         let mut c = BTreeMap::from([
             ("status".to_string(), Some(FieldValue::text(&self.status))),

@@ -1,6 +1,7 @@
 //! Offline validation of the forge-v2 data contracts against Dash Platform protocol 14.
 //!
 //!   cargo run --manifest-path tools/contract-validate/Cargo.toml -- \
+//!       --vectors forge-contracts/vectors/rc1 \
 //!       forge-contracts/contracts/forge-core.json \
 //!       forge-contracts/contracts/forge-collab.json [--previous <the forge-collab.json that is registered>] \
 //!       forge-contracts/contracts/forge-community.json
@@ -23,9 +24,11 @@
 //!   4. runs the registration-time reference checks on every `refersTo` leaf (a port of
 //!      drive-abci `validate_data_contract_references` v0), resolving references into another
 //!      contract against the earlier contracts held in memory, which a node would fetch from state;
-//!   5. validates sample documents against the parsed types (JSON schema and maxBytes, the
-//!      document-property validation every create and replace runs), expecting well-formed ones
-//!      to pass and malformed ones to be refused;
+//!   5. with `--vectors <dir>`, judges the contract's document vectors (`<dir>/<name>.json`,
+//!      forge-contracts/vectors/rc1) against the parsed types (JSON schema, maxBytes and every
+//!      `propertyConstraints` rule that reads no total, time or height: the document-property
+//!      validation every create and replace runs): each accepted case must pass and each refused
+//!      one must fail for the reason it names;
 //!   6. serializes the contract and a signed-shape `DataContractCreateTransition` v1 and reports
 //!      both sizes against `max_state_transition_size` and the registration fee.
 //!
@@ -88,8 +91,15 @@ struct Entry {
 
 fn main() -> Result<()> {
     let mut entries: Vec<Entry> = Vec::new();
+    let mut vectors: Option<PathBuf> = None;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
+        if arg == "--vectors" {
+            vectors = Some(PathBuf::from(
+                args.next().context("--vectors needs a directory")?,
+            ));
+            continue;
+        }
         if arg == "--previous" || arg == "--expect-update" {
             let previous = args.next().with_context(|| format!("{arg} needs a file"))?;
             let last = entries
@@ -107,7 +117,7 @@ fn main() -> Result<()> {
         });
     }
     if entries.is_empty() {
-        bail!("usage: contract-validate <forge-core.json> [--expect-update <registered-forge-core.json>] [<forge-collab.json> [--previous <registered-forge-collab.json>]] [<forge-community.json> ...]");
+        bail!("usage: contract-validate [--vectors <dir>] <forge-core.json> [--expect-update <registered-forge-core.json>] [<forge-collab.json> [--previous <registered-forge-collab.json>]] [<forge-community.json> ...]");
     }
 
     let pv = PlatformVersion::get(PROTOCOL_VERSION)
@@ -144,6 +154,7 @@ fn main() -> Result<()> {
             group_id,
             &known,
             &placeholders,
+            vectors.as_deref(),
             pv,
             limit,
         ) {
@@ -184,6 +195,7 @@ fn validate_one(
     group_id: Identifier,
     known: &[DataContract],
     placeholders: &BTreeMap<String, String>,
+    vectors: Option<&std::path::Path>,
     pv: &PlatformVersion,
     limit: u64,
 ) -> Result<DataContract> {
@@ -275,39 +287,55 @@ fn validate_one(
         "   registration reference checks: {local} same-contract + {foreign} cross-contract document leaves, {keys} key references, ok"
     );
 
-    // (5) sample documents: every good one accepted, every bad one refused
-    // Judged as a client pre-check judges them: the owner is the deployer, and a rule reading a
-    // time, a height or a total is not judged (it needs the block or state).
-    let system = DocumentSystemValues::owned_by(owner);
-    let check = |doc_type: &str, props: &Json| -> Result<bool> {
-        let value: dpp::platform_value::Value = props.clone().into();
-        let result = contract
-            .validate_document_properties(doc_type, value, &system, pv)
-            .map_err(|e| anyhow!("{e}"))?;
-        Ok(result.is_valid())
-    };
-    let samples = sample_documents(name);
-    for (doc_type, props) in &samples {
-        if !check(doc_type, props)? {
-            let value: dpp::platform_value::Value = props.clone().into();
-            let errors = contract
-                .validate_document_properties(doc_type, value, &system, pv)
-                .map_err(|e| anyhow!("{e}"))?
-                .errors;
-            bail!("sample {doc_type} rejected: {errors:?}");
+    // (5) the document vectors: every accepted case passes, every refused one fails for the
+    // reason it names. Judged as a client pre-check judges them: the owner is the deployer, and a
+    // rule reading a time, a height or a total is not judged (it needs the block or state).
+    if let Some(dir) = vectors {
+        let cases = read_cases(&dir.join(format!("{name}.json")))?;
+        let mut wrong = Vec::new();
+        for case in &cases {
+            let system = DocumentSystemValues::owned_by(case.owner.unwrap_or(owner));
+            let result = contract
+                .validate_document_properties(&case.doc_type, case_value(&case.doc)?, &system, pv)
+                .map_err(|e| anyhow!("{} ({}): {e}", case.name, case.doc_type))?;
+            let reason = result.errors.first().map(refusal_reason);
+            let fine = match (case.expect.as_str(), &reason) {
+                ("ok", None) => true,
+                ("refused", Some(got)) => case.why.as_deref().is_none_or(|want| want == got),
+                _ => false,
+            };
+            if !fine {
+                wrong.push(format!(
+                    "[{}] {} ({}): expected {}{}, got {}",
+                    case.item,
+                    case.name,
+                    case.doc_type,
+                    case.expect,
+                    case.why
+                        .as_deref()
+                        .map(|w| format!(" by {w}"))
+                        .unwrap_or_default(),
+                    match (&reason, result.errors.first()) {
+                        (Some(r), Some(e)) => format!("refused by {r}: {e}"),
+                        _ => "accepted".to_string(),
+                    }
+                ));
+            }
         }
-    }
-    let bad = bad_documents(name);
-    for (doc_type, why, props) in &bad {
-        if check(doc_type, props)? {
-            bail!("bad sample {doc_type} ({why}) was accepted");
+        if !wrong.is_empty() {
+            bail!(
+                "{} of {} document vectors disagree:\n     {}",
+                wrong.len(),
+                cases.len(),
+                wrong.join("\n     ")
+            );
         }
+        let accepted = cases.iter().filter(|c| c.expect == "ok").count();
+        println!(
+            "   document vectors: {accepted} accepted, {} refused for the named reason",
+            cases.len() - accepted
+        );
     }
-    println!(
-        "   sample documents: {} accepted, {} malformed refused",
-        samples.len(),
-        bad.len()
-    );
 
     let contract_bytes = {
         use dpp::serialization::PlatformSerializableWithPlatformVersion;
@@ -718,724 +746,105 @@ fn check_leaf(
     Ok(())
 }
 
-/// Representative documents per type, checked against the parsed schema.
-fn sample_documents(contract: &str) -> Vec<(&'static str, Json)> {
-    let id = |b: u8| Json::Array(vec![Json::from(b); 32]);
-    let bytes = |b: u8, n: usize| Json::Array(vec![Json::from(b); n]);
-    match contract {
-        "forge-core" => vec![
-            (
-                "repo",
-                serde_json::json!({ "name": "dash-forge", "description": "git on Dash Platform", "defaultBranch": "main", "visibility": "public", "topics": ["git", "dash"] }),
-            ),
-            (
-                "repo",
-                serde_json::json!({ "name": "secret.repo_1", "visibility": "private", "forkOf": id(3) }),
-            ),
-            (
-                "maintainer",
-                serde_json::json!({ "repoId": id(1), "memberId": id(2) }),
-            ),
-            (
-                "writer",
-                serde_json::json!({ "repoId": id(1), "memberId": id(2) }),
-            ),
-            (
-                "refUpdate",
-                serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "refName": "refs/heads/main", "newOid": bytes(1, 20), "prevOid": bytes(2, 20) }),
-            ),
-            (
-                "protectedRefUpdate",
-                serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "refName": "refs/heads/main", "newOid": bytes(1, 32), "force": true }),
-            ),
-            (
-                "config",
-                serde_json::json!({ "repoId": id(1), "defaultBranch": "main", "protectedPatterns": ["refs/heads/main", "refs/tags/**"], "backend": { "mode": 2, "uris": ["s3://bucket/prefix"] }, "archived": false }),
-            ),
-            (
-                "packManifest",
-                serde_json::json!({ "repoId": id(1), "packHash": bytes(4, 32), "kind": 0, "sizeBytes": 1234, "objectCount": 10, "chunkCount": 1, "storage": 0, "uris": [], "tips": bytes(1, 20), "offsetIndexParts": 0 }),
-            ),
-            (
-                "manifestPart",
-                serde_json::json!({ "repoId": id(1), "packHash": bytes(4, 32), "partSeq": 0, "entries": bytes(5, 100) }),
-            ),
-            (
-                "chunk",
-                serde_json::json!({ "repoId": id(1), "packHash": bytes(4, 32), "seq": 0, "d0": bytes(6, 4900), "d1": bytes(6, 4900) }),
-            ),
-            (
-                "release",
-                serde_json::json!({ "repoId": id(1), "tagName": "v1.0.0", "name": "One", "notes": "notes", "yanked": false, "assets": "[]" }),
-            ),
-            (
-                "label",
-                serde_json::json!({ "repoId": id(1), "name": "bug", "color": "#d73a4a", "description": "Something is broken" }),
-            ),
-            (
-                "repoKey",
-                serde_json::json!({ "repoId": id(1), "memberId": id(2), "epoch": 0, "recipientKeyId": 4, "senderKeyId": 4, "wrapped": bytes(7, 64) }),
-            ),
-            // C-1 (platform-parity-spec §6.1): the new types and optional properties
-            (
-                "repo",
-                serde_json::json!({ "name": "moved", "visibility": "public", "renamedTo": id(4), "language": "Rust" }),
-            ),
-            (
-                "release",
-                serde_json::json!({ "repoId": id(1), "tagName": "0f3a9c", "enc": bytes(1, 64), "epoch": 2 }),
-            ),
-            (
-                "label",
-                serde_json::json!({ "repoId": id(1), "name": "0f3a9c", "enc": bytes(1, 64), "epoch": 2 }),
-            ),
-            (
-                "runner",
-                serde_json::json!({ "repoId": id(1), "memberId": id(2) }),
-            ),
-            ("topic", serde_json::json!({ "repoId": id(1), "name": "rust-cli" })),
-            // The shapes the sealed-presence rules must keep accepting: a private ref, a private
-            // config (backend and archived stay plaintext), a fork's manifest (storage 1 with no
-            // chunks of its own) and a branch delete
-            (
-                "refUpdate",
-                serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "newOid": bytes(1, 20), "prevOid": bytes(2, 20), "enc": bytes(1, 64), "epoch": 1 }),
-            ),
-            (
-                "config",
-                serde_json::json!({ "repoId": id(1), "backend": { "mode": 2, "uris": ["s3://bucket/prefix"] }, "archived": false, "enc": bytes(1, 64), "epoch": 0 }),
-            ),
-            (
-                "packManifest",
-                serde_json::json!({ "repoId": id(1), "packHash": bytes(4, 32), "kind": 0, "sizeBytes": 1234, "objectCount": 10, "chunkCount": 0, "storage": 1, "uris": ["platform://c/r/u/h"], "supersedes": bytes(3, 64), "offsetIndexParts": 0 }),
-            ),
-            (
-                "refUpdate",
-                serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "refName": "refs/heads/gone", "newOid": bytes(0, 20) }),
-            ),
-            // a release whose asset list is a kind-3 packManifest, and an imported release
-            (
-                "release",
-                serde_json::json!({ "repoId": id(1), "tagName": "v2.0.0", "name": "Two", "assets": "[]", "assetManifest": bytes(3, 32), "imported": { "author": "octocat", "createdAt": 1, "url": "https://github.com/o/r/releases/tag/v2.0.0" } }),
-            ),
-            (
-                "packManifest",
-                serde_json::json!({ "repoId": id(1), "packHash": bytes(3, 32), "kind": 3, "sizeBytes": 20000, "objectCount": 1, "chunkCount": 3, "storage": 0, "uris": [], "offsetIndexParts": 0 }),
-            ),
-        ],
-        "forge-collab" => vec![
-            (
-                "issue",
-                serde_json::json!({ "repoId": id(1), "tk": 0, "number": 1, "title": "It breaks", "body": "Steps…" }),
-            ),
-            (
-                "issue",
-                serde_json::json!({ "repoId": id(1), "tk": 0, "number": 2, "enc": bytes(1, 64), "epoch": 0 }),
-            ),
-            (
-                "issue",
-                serde_json::json!({ "repoId": id(1), "tk": 0, "number": 3, "title": "imported", "imported": { "author": "octocat", "createdAt": 1, "url": "https://github.com/o/r/issues/3" } }),
-            ),
-            (
-                "patch",
-                serde_json::json!({ "repoId": id(1), "tk": 1, "number": 1, "title": "Fix", "baseRefNameHash": bytes(9, 32), "baseRefName": "refs/heads/main", "sourceRepoId": id(3), "sourceRefNameHash": bytes(8, 32), "sourceRefName": "refs/heads/fix", "headOid": bytes(1, 20), "patchManifestHash": bytes(4, 32) }),
-            ),
-            (
-                "patch",
-                serde_json::json!({ "repoId": id(1), "tk": 1, "number": 2, "title": "WIP", "baseRefNameHash": bytes(9, 32), "sourceRepoId": id(3), "headOid": bytes(1, 20) }),
-            ),
-            (
-                "comment",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "body": "LGTM", "commitOid": bytes(1, 20), "path": "src/main.rs", "line": 10, "side": 1 }),
-            ),
-            (
-                "comment",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "body": "range", "commitOid": bytes(1, 20), "path": "src/main.rs", "startLine": 3, "line": 5, "side": 0, "reviewId": id(6) }),
-            ),
-            (
-                "review",
-                serde_json::json!({ "repoId": id(1), "patchId": id(5), "verdict": 1, "commitOid": bytes(1, 20), "body": "ok" }),
-            ),
-            (
-                "review",
-                serde_json::json!({ "repoId": id(1), "patchId": id(5), "verdict": 2, "commitOid": bytes(1, 20), "commentCount": 6 }),
-            ),
-            // review parity (docs/design/review-parity-spec.md §3): the author resolves a thread,
-            // requests a reviewer and moves the head (ready is a transition now)
-            (
-                "authorEvent",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 11, "refId": id(7) }),
-            ),
-            (
-                "authorEvent",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 13, "refId": id(8) }),
-            ),
-            (
-                "authorEvent",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 16, "oid": bytes(2, 20) }),
-            ),
-            (
-                "event",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 15, "refId": id(9), "value": "stale after the rebase" }),
-            ),
-            (
-                "event",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 4, "enc": bytes(1, 64), "epoch": 0 }),
-            ),
-            (
-                "milestone",
-                serde_json::json!({ "repoId": id(1), "title": "v1.0", "description": "First release", "dueOn": 1_790_000_000_000u64, "closed": false }),
-            ),
-            (
-                "milestone",
-                serde_json::json!({ "repoId": id(1), "title": "a3f09b", "enc": bytes(1, 64), "epoch": 0 }),
-            ),
-            (
-                "issue",
-                serde_json::json!({ "repoId": id(1), "tk": 0, "number": 6, "enc": bytes(1, 64), "epoch": 0, "imported": { "createdAt": 1 } }),
-            ),
-            (
-                "event",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 6, "value": "5rceSmDn8kXWcp2HYoTyB6B3FNdL72nZgaoZC9niUswx", "refId": id(2) }),
-            ),
-            (
-                "event",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 6, "enc": bytes(1, 64), "epoch": 0, "refId": id(2) }),
-            ),
-            (
-                "event",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 17, "value": "v1.0" }),
-            ),
-            // pin / unpin / lock / unlock (19-22) carry no payload
-            (
-                "event",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 21 }),
-            ),
-            (
-                "comment",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "enc": bytes(1, 64), "epoch": 0, "commitOid": bytes(1, 20), "line": 3, "side": 1 }),
-            ),
-            (
-                "review",
-                serde_json::json!({ "repoId": id(1), "patchId": id(5), "verdict": 1, "commitOid": bytes(1, 20), "enc": bytes(1, 64), "epoch": 0 }),
-            ),
-            (
-                "patch",
-                serde_json::json!({ "repoId": id(1), "tk": 1, "number": 3, "enc": bytes(1, 64), "epoch": 0, "baseRefNameHash": bytes(9, 32), "sourceRepoId": id(3), "headOid": bytes(1, 20) }),
-            ),
-            // The fresh registration (forge-v2.md §3.1): the state machine is `transition`
-            (
-                "transition",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "targetKind": 0, "kind": 1, "delta": 1, "asAuthor": 0 }),
-            ),
-            (
-                "transition",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 2, "targetKind": 1, "kind": 13, "delta": 2, "asAuthor": 0, "oid": bytes(1, 20) }),
-            ),
-            (
-                "transition",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 2, "targetKind": 1, "kind": 14, "delta": 8, "asAuthor": 2 }),
-            ),
-            (
-                "transition",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 2, "targetKind": 1, "kind": 15, "delta": -8, "asAuthor": 2 }),
-            ),
-            (
-                "transition",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 2, "targetKind": 1, "kind": 17, "delta": -1, "asAuthor": 0 }),
-            ),
-            // a mirror records the upstream number beside its own dense one
-            (
-                "issue",
-                serde_json::json!({ "repoId": id(1), "tk": 0, "number": 7, "title": "imported", "upstreamNumber": 7761, "imported": { "url": "https://github.com/o/r/issues/7761" } }),
-            ),
-            (
-                "patch",
-                serde_json::json!({ "repoId": id(1), "tk": 1, "number": 8, "title": "imported", "baseRefNameHash": bytes(9, 32), "sourceRepoId": id(3), "headOid": bytes(1, 20), "upstreamNumber": 12 }),
-            ),
-            // what the member kinds of event and authorEvent still carry
-            (
-                "event",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 16, "oid": bytes(1, 20) }),
-            ),
-        ],
-        "forge-community" => vec![
-            (
-                "policy",
-                serde_json::json!({ "repoId": id(1), "requiredApprovals": 2, "approverRole": 1, "requireChecks": true, "mergeMethods": 3 }),
-            ),
-            ("policy", serde_json::json!({ "repoId": id(1), "requiredApprovals": 0 })),
-            (
-                "checkRun",
-                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci/test", "status": "completed", "startedAt": 1_790_000_000_000u64, "completedAt": 1_790_000_060_000u64, "conclusion": "success", "detailsUrl": "https://ci.example/1", "summary": "12 passed" }),
-            ),
-            (
-                "webhook",
-                serde_json::json!({ "repoId": id(1), "hookId": bytes(3, 32), "url": "https://relay.example/hook", "events": ["push", "issue"], "relayIdentityId": id(6), "relayKeyId": 4, "senderKeyId": 4, "secret": bytes(2, 48), "disabled": false }),
-            ),
-            (
-                "profile",
-                serde_json::json!({ "displayName": "pasta", "bio": "hi", "links": ["https://dash.org"] }),
-            ),
-            ("star", serde_json::json!({ "repoId": id(1) })),
-            ("follow", serde_json::json!({ "identityId": id(2) })),
-            // C-1 (platform-parity-spec §6.2): new types, fields and the beta.5 rules' good side
-            ("starBeat", serde_json::json!({ "repoId": id(1) })),
-            ("watch", serde_json::json!({ "repoId": id(1) })),
-            (
-                "checkRun",
-                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "build", "status": "in_progress", "externalId": "gh-1234", "startedAt": 1_790_000_000_000u64 }),
-            ),
-            (
-                "checkRun",
-                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "lint", "status": "completed", "startedAt": 1_790_000_000_000u64, "completedAt": 1_790_000_060_000u64, "conclusion": "stale" }),
-            ),
-            (
-                "checkRun",
-                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 32), "name": "build", "status": "completed", "conclusion": "timed_out", "startedAt": 1_790_000_000_000u64, "completedAt": 1_790_000_060_000u64, "artifacts": "[]", "logUrl": "https://logs.example/1.txt", "logSha256": bytes(3, 32) }),
-            ),
-            (
-                "policy",
-                serde_json::json!({ "repoId": id(1), "requiredApprovals": 1, "requireChecks": true, "requiredChecks": ["build", "test"] }),
-            ),
-            (
-                "profile",
-                serde_json::json!({ "displayName": "pasta", "location": "Earth", "company": "Dash", "pubkeys": ["gpg:ABCDEF0123456789", "ssh-ed25519 AAAAC3Nza"] }),
-            ),
-            // the monotonic run: queued, then started, then completed with both times
-            (
-                "checkRun",
-                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci", "status": "queued" }),
-            ),
-        ],
-        _ => vec![],
+/// The accept/refuse document vectors of one contract (`forge-contracts/vectors/rc1/<name>.json`,
+/// written by `forge-contracts/schema/vectors.py`): `{item, name, type, expect, why?, owner?, doc}`,
+/// where `doc` writes an identifier as `{"$id": n}` (32 bytes of n) or `{"$id": "<base58>"}`, and
+/// a byte array as `{"$b": [fill, len]}` or `{"$hex": "..."}`.
+struct Case {
+    item: String,
+    name: String,
+    doc_type: String,
+    expect: String,
+    why: Option<String>,
+    /// The signer (`"owner"`: a byte or base58), 0x07 * 32 when absent.
+    owner: Option<Identifier>,
+    doc: Json,
+}
+
+fn read_cases(path: &std::path::Path) -> Result<Vec<Case>> {
+    let text =
+        std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let list: Vec<Json> =
+        serde_json::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    list.into_iter()
+        .map(|c| {
+            let field = |k: &str| {
+                c[k].as_str()
+                    .map(str::to_string)
+                    .with_context(|| format!("{}: a case without {k}", path.display()))
+            };
+            Ok(Case {
+                item: field("item")?,
+                name: field("name")?,
+                doc_type: field("type")?,
+                expect: field("expect")?,
+                why: c["why"].as_str().map(str::to_string),
+                owner: c.get("owner").map(case_identifier).transpose()?,
+                doc: c["doc"].clone(),
+            })
+        })
+        .collect()
+}
+
+/// An identifier written as a byte `n` (32 bytes of n) or a base58 string.
+fn case_identifier(j: &Json) -> Result<Identifier> {
+    match j {
+        Json::Number(n) => Ok(Identifier::from(
+            [n.as_u64().context("an id byte")? as u8; 32],
+        )),
+        Json::String(s) => {
+            Identifier::from_string(s, dpp::platform_value::string_encoding::Encoding::Base58)
+                .map_err(|e| anyhow!("{s}: {e}"))
+        }
+        other => bail!("an identifier is a byte or a base58 string, not {other}"),
     }
 }
 
-/// Documents the schema must refuse, each for one reason.
-fn bad_documents(contract: &str) -> Vec<(&'static str, &'static str, Json)> {
-    let id = |b: u8| Json::Array(vec![Json::from(b); 32]);
-    let bytes = |b: u8, n: usize| Json::Array(vec![Json::from(b); n]);
-    // 1300 four-byte characters: within maxLength 5120, over maxBytes 5120
-    let wide = "\u{1F600}".repeat(1300);
-    match contract {
-        "forge-core" => vec![
-            (
-                "repo",
-                "uppercase name",
-                serde_json::json!({ "name": "Dash", "visibility": "public" }),
-            ),
-            (
-                "repo",
-                "name over 63",
-                serde_json::json!({ "name": "a".repeat(64), "visibility": "public" }),
-            ),
-            (
-                "repo",
-                "unknown visibility",
-                serde_json::json!({ "name": "x", "visibility": "internal" }),
-            ),
-            (
-                "maintainer",
-                "short member id",
-                serde_json::json!({ "repoId": id(1), "memberId": bytes(2, 31) }),
-            ),
-            (
-                "refUpdate",
-                "missing repoId",
-                serde_json::json!({ "refNameHash": bytes(9, 32), "refName": "refs/heads/main", "newOid": bytes(1, 20) }),
-            ),
-            (
-                "refUpdate",
-                "enc without epoch",
-                serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "newOid": bytes(1, 20), "enc": bytes(1, 64) }),
-            ),
-            (
-                "chunk",
-                "d0 over 4900",
-                serde_json::json!({ "repoId": id(1), "packHash": bytes(4, 32), "seq": 0, "d0": bytes(6, 4901) }),
-            ),
-            (
-                "repoKey",
-                "wrapped under 32",
-                serde_json::json!({ "repoId": id(1), "memberId": id(2), "epoch": 0, "recipientKeyId": 4, "senderKeyId": 4, "wrapped": bytes(7, 16) }),
-            ),
-            (
-                "topic",
-                "uppercase topic",
-                serde_json::json!({ "repoId": id(1), "name": "Rust" }),
-            ),
-            (
-                "topic",
-                "topic over 30 characters",
-                serde_json::json!({ "repoId": id(1), "name": "a".repeat(31) }),
-            ),
-            (
-                "runner",
-                "short member id",
-                serde_json::json!({ "repoId": id(1), "memberId": bytes(2, 31) }),
-            ),
-            (
-                "repo",
-                "language over 30",
-                serde_json::json!({ "name": "x", "visibility": "public", "language": "a".repeat(31) }),
-            ),
-            // The sealed-presence rules of the fresh registration: plaintext or enc, never both
-            (
-                "refUpdate",
-                "sealed ref with a plaintext refName",
-                serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "refName": "refs/heads/x", "newOid": bytes(1, 20), "enc": bytes(1, 64), "epoch": 0 }),
-            ),
-            (
-                "refUpdate",
-                "neither refName nor enc",
-                serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "newOid": bytes(1, 20) }),
-            ),
-            (
-                "label",
-                "enc without epoch",
-                serde_json::json!({ "repoId": id(1), "name": "x", "enc": bytes(1, 64) }),
-            ),
-            (
-                "protectedRefUpdate",
-                "neither refName nor enc",
-                serde_json::json!({ "repoId": id(1), "refNameHash": bytes(9, 32), "newOid": bytes(1, 20) }),
-            ),
-            (
-                "config",
-                "sealed config with a plaintext defaultBranch",
-                serde_json::json!({ "repoId": id(1), "defaultBranch": "main", "enc": bytes(1, 64), "epoch": 0 }),
-            ),
-            (
-                "release",
-                "enc without epoch",
-                serde_json::json!({ "repoId": id(1), "tagName": "v1", "enc": bytes(1, 64) }),
-            ),
-            (
-                "release",
-                "sealed release with plaintext notes",
-                serde_json::json!({ "repoId": id(1), "tagName": "v1", "notes": "n", "enc": bytes(1, 64), "epoch": 0 }),
-            ),
-            (
-                "label",
-                "sealed label with a plaintext color",
-                serde_json::json!({ "repoId": id(1), "name": "x", "color": "#ff0000", "enc": bytes(1, 64), "epoch": 0 }),
-            ),
-            (
-                "release",
-                "sealed release with a plaintext asset manifest (noPlain)",
-                serde_json::json!({ "repoId": id(1), "tagName": "v1", "assetManifest": bytes(3, 32), "enc": bytes(1, 64), "epoch": 0 }),
-            ),
-        ],
-        "forge-collab" => vec![
-            (
-                "issue",
-                "number 0",
-                serde_json::json!({ "repoId": id(1), "tk": 0, "number": 0, "title": "t" }),
-            ),
-            (
-                "issue",
-                "body over maxBytes",
-                serde_json::json!({ "repoId": id(1), "tk": 0, "number": 1, "title": "t", "body": wide }),
-            ),
-            (
-                "issue",
-                "enc without epoch",
-                serde_json::json!({ "repoId": id(1), "tk": 0, "number": 1, "enc": bytes(1, 64) }),
-            ),
-            (
-                "event",
-                "missing targetNumber",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "kind": 4, "value": "bug" }),
-            ),
-            (
-                "authorEvent",
-                "close kind (a transition now)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 1 }),
-            ),
-            (
-                "authorEvent",
-                "kind 0",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 0 }),
-            ),
-            (
-                "authorEvent",
-                "label kind (author kinds are 11-14, 16)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 4 }),
-            ),
-            (
-                "authorEvent",
-                "review dismissal kind (members only)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 15, "refId": id(9) }),
-            ),
-            (
-                "authorEvent",
-                "retarget kind (members only)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 8 }),
-            ),
-            (
-                "event",
-                "enc without epoch",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 4, "enc": bytes(1, 64) }),
-            ),
-            (
-                "review",
-                "commentCount over 65535",
-                serde_json::json!({ "repoId": id(1), "patchId": id(5), "verdict": 3, "commitOid": bytes(1, 20), "commentCount": 65536 }),
-            ),
-            (
-                "comment",
-                "short reviewId",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "body": "x", "reviewId": bytes(6, 31) }),
-            ),
-            (
-                "authorEvent",
-                "label value (no payload fields)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 11, "refId": id(7), "value": "bug" }),
-            ),
-            // C-1: each beta.5 propertyConstraints rule, broken once
-            (
-                "issue",
-                "sealed issue with a plaintext title (noPlain)",
-                serde_json::json!({ "repoId": id(1), "tk": 0, "number": 4, "title": "leak", "enc": bytes(1, 64), "epoch": 0 }),
-            ),
-            (
-                "issue",
-                "neither title nor enc (hasTitle)",
-                serde_json::json!({ "repoId": id(1), "tk": 0, "number": 4, "body": "no title" }),
-            ),
-            (
-                "issue",
-                "empty body (minLength 1: omit it instead)",
-                serde_json::json!({ "repoId": id(1), "tk": 0, "number": 4, "title": "t", "body": "" }),
-            ),
-            (
-                "patch",
-                "sealed PR with a plaintext base name (noPlain)",
-                serde_json::json!({ "repoId": id(1), "tk": 1, "number": 4, "enc": bytes(1, 64), "epoch": 0, "baseRefNameHash": bytes(9, 32), "baseRefName": "refs/heads/main", "sourceRepoId": id(3), "headOid": bytes(1, 20) }),
-            ),
-            (
-                "comment",
-                "sealed comment with a plaintext path (noPlain)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "enc": bytes(1, 64), "epoch": 0, "path": "src/main.rs" }),
-            ),
-            (
-                "comment",
-                "neither body nor enc (hasBody)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "path": "src/main.rs", "line": 1, "side": 1 }),
-            ),
-            (
-                "review",
-                "sealed review with a plaintext body (noPlain)",
-                serde_json::json!({ "repoId": id(1), "patchId": id(5), "verdict": 2, "commitOid": bytes(1, 20), "body": "leak", "enc": bytes(1, 64), "epoch": 0 }),
-            ),
-            (
-                "event",
-                "sealed event with a plaintext value (noPlain)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 4, "value": "bug", "enc": bytes(1, 64), "epoch": 0 }),
-            ),
-            (
-                "event",
-                "label add without a value (needValue)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 4 }),
-            ),
-            (
-                "event",
-                "milestone set without a value (needValue)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 17 }),
-            ),
-            (
-                "event",
-                "assign without refId (needAssignee)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 6, "value": "x" }),
-            ),
-            (
-                "event",
-                "review request without refId (needRefId)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 13 }),
-            ),
-            (
-                "event",
-                "head update without an oid (needOid)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 16 }),
-            ),
-            (
-                "milestone",
-                "sealed milestone with a plaintext description (noPlain)",
-                serde_json::json!({ "repoId": id(1), "title": "a3f09b", "description": "leak", "enc": bytes(1, 64), "epoch": 0 }),
-            ),
-            (
-                "milestone",
-                "enc without epoch",
-                serde_json::json!({ "repoId": id(1), "title": "a3f09b", "enc": bytes(1, 64) }),
-            ),
-            (
-                "authorEvent",
-                "author review request without refId (needRefId)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 13 }),
-            ),
-            (
-                "authorEvent",
-                "author head update without an oid (needOid)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 16 }),
-            ),
-            (
-                "issue",
-                "sealed issue with the plaintext imported author (noPlain)",
-                serde_json::json!({ "repoId": id(1), "tk": 0, "number": 5, "enc": bytes(1, 64), "epoch": 0, "imported": { "author": "octocat" } }),
-            ),
-            (
-                "comment",
-                "sealed comment with the plaintext imported url (noPlain)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "enc": bytes(1, 64), "epoch": 0, "imported": { "url": "https://github.com/o/r/issues/1#c" } }),
-            ),
-            // the transition rules judged without totals (a..b, e, f) and the target tags
-            (
-                "transition",
-                "issue close with delta 0 (b1_closeDelta)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "targetKind": 0, "kind": 1, "delta": 0, "asAuthor": 0 }),
-            ),
-            (
-                "transition",
-                "issue kind on a PR (a_kindOfTarget)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "targetKind": 1, "kind": 1, "delta": 1, "asAuthor": 0 }),
-            ),
-            (
-                "transition",
-                "issue reopen with delta +1 (b2_reopenDelta)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "targetKind": 0, "kind": 2, "delta": 1, "asAuthor": 0 }),
-            ),
-            (
-                "transition",
-                "PR draft with delta 2 (b3_otherDelta)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "targetKind": 1, "kind": 14, "delta": 2, "asAuthor": 0 }),
-            ),
-            (
-                "transition",
-                "PR ready with delta +8 (b3_otherDelta)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "targetKind": 1, "kind": 15, "delta": 8, "asAuthor": 0 }),
-            ),
-            (
-                "transition",
-                "merge without an oid (e_mergeOid)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "targetKind": 1, "kind": 13, "delta": 2, "asAuthor": 0 }),
-            ),
-            (
-                "transition",
-                "merge written as the author (f_authorNoMerge)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "targetKind": 1, "kind": 13, "delta": 2, "asAuthor": 1, "oid": bytes(1, 20) }),
-            ),
-            (
-                "transition",
-                "kind 3 (not a transition kind)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "targetKind": 0, "kind": 3, "delta": 1, "asAuthor": 0 }),
-            ),
-            (
-                "issue",
-                "issue tagged as a PR (tk)",
-                serde_json::json!({ "repoId": id(1), "tk": 1, "number": 1, "title": "t" }),
-            ),
-            (
-                "issue",
-                "without tk",
-                serde_json::json!({ "repoId": id(1), "number": 1, "title": "t" }),
-            ),
-            (
-                "issue",
-                "upstreamNumber 0",
-                serde_json::json!({ "repoId": id(1), "tk": 0, "number": 1, "title": "t", "upstreamNumber": 0 }),
-            ),
-            (
-                "patch",
-                "draft is a transition, not a field",
-                serde_json::json!({ "repoId": id(1), "tk": 1, "number": 1, "title": "t", "baseRefNameHash": bytes(9, 32), "sourceRepoId": id(3), "headOid": bytes(1, 20), "draft": true }),
-            ),
-            (
-                "event",
-                "ready kind (a transition now, noState)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 10 }),
-            ),
-            (
-                "event",
-                "close kind (a transition now)",
-                serde_json::json!({ "repoId": id(1), "targetId": id(5), "targetNumber": 1, "kind": 1 }),
-            ),
-        ],
-        "forge-community" => vec![
-            (
-                "policy",
-                "more than 10 required approvals",
-                serde_json::json!({ "repoId": id(1), "requiredApprovals": 11 }),
-            ),
-            (
-                "policy",
-                "approverRole 2",
-                serde_json::json!({ "repoId": id(1), "requiredApprovals": 1, "approverRole": 2 }),
-            ),
-            ("policy", "missing requiredApprovals", serde_json::json!({ "repoId": id(1) })),
-            (
-                "checkRun",
-                "unknown status",
-                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci", "status": "done" }),
-            ),
-            (
-                "star",
-                "extra property",
-                serde_json::json!({ "repoId": id(1), "note": "x" }),
-            ),
-            (
-                "checkRun",
-                "completed without a conclusion (conclusionIfDone)",
-                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci", "status": "completed", "startedAt": 1_790_000_000_000u64, "completedAt": 1_790_000_060_000u64 }),
-            ),
-            (
-                "checkRun",
-                "a conclusion while still running (doneIfConclusion)",
-                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci", "status": "in_progress", "conclusion": "success", "startedAt": 1_790_000_000_000u64 }),
-            ),
-            (
-                "checkRun",
-                "a conclusion outside GitHub's set",
-                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci", "status": "completed", "conclusion": "passed", "startedAt": 1_790_000_000_000u64, "completedAt": 1_790_000_060_000u64 }),
-            ),
-            (
-                "checkRun",
-                "a log URL without its hash",
-                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci", "status": "queued", "logUrl": "https://logs.example/1.txt" }),
-            ),
-            (
-                "policy",
-                "eleven required checks",
-                serde_json::json!({ "repoId": id(1), "requiredApprovals": 0, "requiredChecks": ["a","b","c","d","e","f","g","h","i","j","k"] }),
-            ),
-            (
-                "starBeat",
-                "extra property",
-                serde_json::json!({ "repoId": id(1), "note": "x" }),
-            ),
-            // monotonic checkRun (the fresh registration): a started run records when it started,
-            // a completed one when it completed, and neither time appears early
-            (
-                "checkRun",
-                "running without startedAt (startedIfRunning)",
-                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci", "status": "in_progress" }),
-            ),
-            (
-                "checkRun",
-                "queued with startedAt (runningIfStarted)",
-                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci", "status": "queued", "startedAt": 1_790_000_000_000u64 }),
-            ),
-            (
-                "checkRun",
-                "completed without completedAt (completedAtIfDone)",
-                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci", "status": "completed", "conclusion": "success", "startedAt": 1_790_000_000_000u64 }),
-            ),
-            (
-                "checkRun",
-                "completedAt while running (doneIfCompletedAt)",
-                serde_json::json!({ "repoId": id(1), "headOid": bytes(1, 20), "name": "ci", "status": "in_progress", "startedAt": 1_790_000_000_000u64, "completedAt": 1_790_000_060_000u64 }),
-            ),
-        ],
-        _ => vec![],
+/// A vector document as a platform value: `{"$id": n | "<base58>"}` is an identifier,
+/// `{"$b": [fill, len]}` and `{"$hex": "..."}` are byte arrays.
+fn case_value(j: &Json) -> Result<dpp::platform_value::Value> {
+    use dpp::platform_value::Value;
+    Ok(match j {
+        Json::Object(m) if m.contains_key("$b") => {
+            let a = m["$b"].as_array().context("$b is [fill, len]")?;
+            let fill = a[0].as_u64().context("$b fill")? as u8;
+            Value::Bytes(vec![fill; a[1].as_u64().context("$b len")? as usize])
+        }
+        Json::Object(m) if m.contains_key("$hex") => {
+            let hex = m["$hex"].as_str().context("$hex is a string")?;
+            let byte = |i: usize| {
+                u8::from_str_radix(hex.get(i..i + 2).context("odd hex")?, 16)
+                    .map_err(|e| anyhow!("{hex}: {e}"))
+            };
+            Value::Bytes((0..hex.len()).step_by(2).map(byte).collect::<Result<_>>()?)
+        }
+        Json::Object(m) if m.contains_key("$id") => {
+            Value::Identifier(case_identifier(&m["$id"])?.to_buffer())
+        }
+        Json::Object(m) => Value::Map(
+            m.iter()
+                .map(|(k, v)| Ok((Value::Text(k.clone()), case_value(v)?)))
+                .collect::<Result<_>>()?,
+        ),
+        Json::Array(a) => Value::Array(a.iter().map(case_value).collect::<Result<_>>()?),
+        other => other.clone().into(),
+    })
+}
+
+/// A refusal's reason as the vectors name it: the JSON Schema keyword, the broken
+/// `propertyConstraints` rule, `maxBytes`, or the consensus error code.
+fn refusal_reason(e: &dpp::consensus::ConsensusError) -> String {
+    use dpp::consensus::basic::BasicError;
+    use dpp::consensus::codes::ErrorWithCode;
+    use dpp::consensus::ConsensusError;
+    match e {
+        ConsensusError::BasicError(BasicError::JsonSchemaError(j)) => j.keyword().to_string(),
+        ConsensusError::BasicError(BasicError::DocumentPropertyConstraintViolatedError(c)) => {
+            c.constraint().to_string()
+        }
+        ConsensusError::BasicError(BasicError::DocumentPropertyMaxBytesExceededError(_)) => {
+            "maxBytes".to_string()
+        }
+        other => other.code().to_string(),
     }
 }

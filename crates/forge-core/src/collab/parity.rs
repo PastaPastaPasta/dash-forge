@@ -3,10 +3,13 @@
 //! [`super::v2::Collab`], so each stays next to its reads and folds.
 //!
 //! * `watch` (forge-community, indexOnly): the signer's watched repos, on every device.
-//! * `topic` (forge-core, owner-granted): a repo's tags, countable per name.
-//! * `milestone` (forge-collab, maintainer- or writer-gated): newest definition per title;
+//! * `topic` (forge-core, owner-granted, public repos only, at most 20): a repo's tags,
+//!   countable per name.
+//! * `milestone` (forge-community, maintainer- or writer-gated): newest definition per title;
 //!   an issue or PR joins one by a member event (kind 17, the title as its value).
-//! * pin / unpin / lock / unlock: member events, kinds 19–22 ([`crate::rules::v2::fold_thread_meta_v2`]).
+//! * pin / unpin: member events, kinds 19–20 ([`crate::rules::v2::fold_thread_meta_v2`]).
+//! * lock / unlock: `transition`s (kinds 3/4 on an issue, 18/19 on a PR, `delta` ±16).
+//!   The event kinds 21–22 are retired (`noState`).
 
 use std::collections::BTreeMap;
 
@@ -14,6 +17,7 @@ use super::v2::{Collab, Target, DOC_MILESTONE, DOC_WATCH};
 use crate::error::{Error, Result};
 use crate::platform::{FieldValue, QueryOrder};
 use crate::rules::v2::Role;
+use crate::rules::v2::StateAction;
 use crate::rules::v2::{fold_milestones_v2, MilestoneDoc, MilestoneItem};
 use crate::rules::EventKind;
 use crate::scope::RepoRef;
@@ -96,9 +100,19 @@ impl Collab<'_> {
     /// Create the `topic` documents `names` lacks and delete the ones it no longer holds (its
     /// owner only; idempotent). What `dg repo edit --topics` and the web's Settings save run
     /// after replacing `repo.topics`, so Explore's per-topic counts follow the repo page.
-    /// `false` when they already matched.
+    /// Deletes come first, so a swap never passes the 20-document cap (`atMost20`). A private
+    /// repository has none (`topic.vis` is `"public"` only, proved against the repo): its
+    /// topics live in `repo.topics` alone. `false` when they already matched.
     pub async fn reconcile_topic_docs(&self, repo: &RepoRef, names: &[String]) -> Result<bool> {
         self.require_owner(repo, "change the repository's topics")?;
+        if repo.visibility == crate::rules::v2::Visibility::Private {
+            return Ok(false);
+        }
+        if let Some(bad) = names.iter().find(|n| !crate::repo::is_topic_name(n)) {
+            return Err(Error::Config(format!(
+                "topic {bad:?}: use 1-30 of a-z and 0-9, words joined by single '-'"
+            )));
+        }
         let core = self.core_contract(repo).await?;
         let held: BTreeMap<String, String> = self
             .client()
@@ -113,20 +127,21 @@ impl Collab<'_> {
             .filter_map(|d| d.field_str("name").map(|n| (n, d.id)))
             .collect();
         let mut changed = false;
+        let engine = self.engine()?;
+        for (name, id) in &held {
+            if !names.contains(name) {
+                engine.delete_document(&core, DOC_TOPIC, id).await?;
+                changed = true;
+            }
+        }
         for name in names.iter().filter(|n| !held.contains_key(*n)) {
+            // `vis: "public"` is stamped by the write
             let props = BTreeMap::from([("name".to_string(), FieldValue::text(name))]);
             match self.write(repo, &core, DOC_TOPIC, props).await {
                 Ok(_) => changed = true,
                 // Tagged in between (another device): the (repoId, name) index is unique.
                 Err(Error::DuplicateUniqueIndex(_)) => {}
                 Err(e) => return Err(e),
-            }
-        }
-        let engine = self.engine()?;
-        for (name, id) in &held {
-            if !names.contains(name) {
-                engine.delete_document(&core, DOC_TOPIC, id).await?;
-                changed = true;
             }
         }
         Ok(changed)
@@ -176,8 +191,8 @@ impl Collab<'_> {
         p.insert("closed".to_string(), FieldValue::boolean(closed));
         self.require_role(repo, Role::Writer, &format!("define milestone {title}"))
             .await?;
-        let collab = self.collab_contract(repo).await?;
-        self.write(repo, &collab, DOC_MILESTONE, p).await
+        let community = self.community_contract(repo).await?;
+        self.write(repo, &community, DOC_MILESTONE, p).await
     }
 
     /// `repo`'s milestones with their open / closed counts. `items`: each issue or PR's open
@@ -187,11 +202,11 @@ impl Collab<'_> {
         repo: &RepoRef,
         items: &[MilestoneItem],
     ) -> Result<Vec<Milestone>> {
-        let collab = self.collab_contract(repo).await?;
+        let community = self.community_contract(repo).await?;
         let docs = self
             .client()
             .query_all_documents(
-                &collab,
+                &community,
                 DOC_MILESTONE,
                 &[Self::repo_filter(repo)?],
                 &[
@@ -247,20 +262,24 @@ impl Collab<'_> {
         self.post_event(repo, target, kind, None, None).await
     }
 
-    /// Lock or unlock `target`'s conversation. Members only. A locked thread's composer is
-    /// offered to members only; consensus cannot stop a non-member's comment (fees are the
-    /// only floor), and readers show such a comment as posted after the lock.
+    /// Lock or unlock `target`'s conversation: a `transition` (kinds 3/4 on an issue, 18/19 on
+    /// a PR, `delta` ±16). Members only (`g_memberLock`). On a locked conversation consensus
+    /// admits a new comment or review only with `asMember` (`lockGate`), so only members post.
+    /// Returns the transition's id.
     pub async fn set_locked(
         &self,
         repo: &RepoRef,
         target: &Target,
         locked: bool,
     ) -> Result<String> {
-        let kind = if locked {
-            EventKind::Lock
+        let action = if locked {
+            StateAction::Lock
         } else {
-            EventKind::Unlock
+            StateAction::Unlock
         };
-        self.post_event(repo, target, kind, None, None).await
+        Ok(self
+            .set_state(repo, target, action, None)
+            .await?
+            .transition_id)
     }
 }

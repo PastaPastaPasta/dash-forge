@@ -186,14 +186,19 @@ pub fn wrap_envelope(
     ))
 }
 
-/// forge-core parsed from the repo's schema (placeholder ids), for tests.
+/// forge-collab (which holds `repoKey` since RC1) parsed from the repo's schema, its
+/// forge-core references pointed at a stand-in id, for tests.
 #[cfg(test)]
 pub(crate) fn test_contract() -> LoadedContract {
     use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
-    let raw = include_str!("../../../../forge-contracts/contracts/forge-core.json");
-    let json: serde_json::Value = serde_json::from_str(raw).expect("forge-core.json");
+    let raw = include_str!("../../../../forge-contracts/contracts/forge-collab.json").replace(
+        "FORGE_CORE_CONTRACT_ID",
+        &super::encode_identifier([0x0c; 32]),
+    );
+    let json: serde_json::Value = serde_json::from_str(&raw).expect("forge-collab.json");
     let pv = dash_sdk::dpp::version::PlatformVersion::get(14).expect("protocol 14");
-    let c = dash_sdk::platform::DataContract::from_json(json, true, pv).expect("forge-core parses");
+    let c =
+        dash_sdk::platform::DataContract::from_json(json, true, pv).expect("forge-collab parses");
     LoadedContract(std::sync::Arc::new(c))
 }
 
