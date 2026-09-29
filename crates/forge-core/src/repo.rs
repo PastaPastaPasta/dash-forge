@@ -404,6 +404,23 @@ impl ReindexPlan {
         })
     }
 
+    /// Whether any copy of any git pack is stored as Platform chunks: where a history index may
+    /// go when no pack is missing its locator.
+    pub fn any_pack_on_platform(&self) -> bool {
+        let git = u64::from(crate::pack::KIND_GIT_PACK);
+        self.manifests.iter().any(|m| m.kind == git && m.storage == 0)
+    }
+
+    /// The manifests the plan was made from (newest first).
+    pub fn manifests(&self) -> &[PackManifestInfo] {
+        &self.manifests
+    }
+
+    /// The members whose copies count.
+    pub fn roles(&self) -> &RoleMap {
+        &self.roles
+    }
+
     /// Objects the published fragment will index (what its size, and price, follow).
     pub fn index_objects(&self) -> u64 {
         self.missing.iter().map(|p| p.object_count).sum::<u64>()

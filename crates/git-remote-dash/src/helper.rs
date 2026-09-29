@@ -30,8 +30,8 @@ use forge_core::network::{NetworkSettings, NetworkTarget};
 use forge_core::pack::{build_pack, split, KIND_GIT_PACK};
 use forge_core::platform::{LoadedIdentity, PlatformClient};
 use forge_core::repo::{
-    group_by_hash, PackManifestInput, PlatformChunkTarget, RepackTarget, RepoService,
-    StoredArtifact,
+    group_by_hash, PackManifestInput, PlatformChunkTarget, PreparedHistory, RepackTarget,
+    RepoService, StoredArtifact,
 };
 use forge_core::rules::RefState;
 use forge_core::scope::RepoRef;
@@ -493,6 +493,12 @@ impl Helper {
             .collect();
         let mut sealed_cache = None;
         let mut pending_index = None;
+        let mut history_paid = false;
+        // Computed before anything is priced, so the push's estimate and cost guard include it.
+        let history = match (want_tips.is_empty(), dry_run || publishes_browse_index()) {
+            (false, true) => prepare_push_history(&svc, &conn.repo, &planned, &git_dir, progress).await,
+            _ => None,
+        };
         let ctx = match (want_tips.is_empty(), push_policy.as_ref()) {
             (false, Some(push_policy)) => Some(PushContext {
                 svc: &svc,
@@ -509,6 +515,7 @@ impl Helper {
                 dry_run,
                 identity: conn.identity().id(),
                 sealed: std::cell::RefCell::default(),
+                history_bytes: history.as_ref().map(PreparedHistory::plain_len),
             }),
             _ => None,
         };
@@ -520,6 +527,7 @@ impl Helper {
             if let Some(up) = upload_push_pack(ctx, &want_tips, &remote_refs).await? {
                 est_credits = up.est_credits;
                 pending_index = up.index;
+                history_paid = up.history;
             }
             sealed_cache = ctx.sealed.take();
             // Test affordance, compiled only with `--features test-hooks`: stop after the
@@ -541,8 +549,15 @@ impl Helper {
             if refs.is_ok() {
                 forget_sealed(sealed_cache.as_deref());
             }
-            publish_index_after_refs(ctx.as_ref(), pending_index).await;
+            let stored = publish_index_after_refs(ctx.as_ref(), pending_index).await;
             refs?;
+            // The history index names the tip the default branch now has: only after its ref
+            // landed, and only when this push stored (and priced) a pack with it.
+            if let (Some(ctx), Some(history), Some(stored), true) =
+                (ctx.as_ref(), history, stored, history_paid)
+            {
+                publish_history(ctx, history, stored).await;
+            }
         }
 
         // Post-push re-read: a same-prevOid race lost to a concurrent pusher surfaces here
@@ -1201,6 +1216,21 @@ struct PushContext<'a> {
     /// The sealed-pack cache path this push used ([`sealed_cache_path`]); dropped once the
     /// push's refs land ([`forget_sealed`]).
     sealed: std::cell::RefCell<Option<std::path::PathBuf>>,
+    /// The plaintext size of the history index this push publishes, if any: priced with it.
+    history_bytes: Option<u64>,
+}
+
+/// The on-chain price of the history index a push publishes (`ctx.history_bytes`), stored where
+/// its pack goes: 0 when it publishes none.
+fn history_credits(ctx: &PushContext<'_>, platform_bytes: bool) -> u64 {
+    ctx.history_bytes.map_or(0, |bytes| {
+        push_fees::history_index(
+            bytes,
+            ctx.repo.visibility == forge_core::rules::v2::Visibility::Private,
+            ctx.policy.resolved.external.len() as u64,
+            platform_bytes,
+        )
+    })
 }
 
 impl PushContext<'_> {
@@ -1279,7 +1309,7 @@ async fn upload_push_pack(
     let platform_writes = |est: &push_fees::PushEstimate, stores_pack: bool| {
         progress::platform_line(&PlatformWrites {
             chunks: if stores_pack { job.chunk_count } else { 0 },
-            manifests: 2,
+            manifests: 2 + u32::from(ctx.history_bytes.is_some()),
             ref_updates: ctx.refs.len(),
             est_credits: est.total(),
         })
@@ -1297,6 +1327,8 @@ async fn upload_push_pack(
         return Ok(Some(Uploaded {
             est_credits: refs_only,
             index: missing_index(ctx, &job, pack.parsed, externals).await,
+            // Priced for the refs only: the history index is left to `dg repo reindex`.
+            history: false,
         }));
     }
     policy::enforce(
@@ -1343,6 +1375,7 @@ async fn upload_push_pack(
             replication,
             externals,
         }),
+        history: true,
     }))
 }
 
@@ -1478,6 +1511,8 @@ struct Uploaded {
     /// The browse index to publish once the refs have landed (none when the pack was already
     /// recorded by an earlier push).
     index: Option<PendingIndex>,
+    /// The push paid (its estimate and guard included) for the history index.
+    history: bool,
 }
 
 /// A stored pack whose browse index is still to be published ([`publish_browse_index`]).
@@ -1622,7 +1657,7 @@ impl<'a> PackJob<'a> {
 
     /// The on-chain cost of this push with (or without) Platform storing the bytes.
     fn estimate(&self, ctx: &PushContext<'_>, platform_bytes: bool) -> push_fees::PushEstimate {
-        push_fees::estimate_push(&push_fees::PushShape {
+        let mut est = push_fees::estimate_push(&push_fees::PushShape {
             pack_bytes: self.plain_bytes,
             objects: self.object_count,
             index_objects: self.index_objects,
@@ -1630,7 +1665,10 @@ impl<'a> PackJob<'a> {
             external_targets: ctx.policy.resolved.external.len() as u64,
             platform_bytes,
             sealed: ctx.repo.visibility == forge_core::rules::v2::Visibility::Private,
-        })
+        });
+        // The history index this push publishes with the pack (its manifest and chunks).
+        est.metadata_credits += history_credits(ctx, platform_bytes);
+        est
     }
 }
 
@@ -2004,38 +2042,23 @@ async fn confirm_existing_manifest(
 /// Best-effort and reported, never fatal: the push is already stored and paid for by this
 /// point, and a repo whose index is behind still clones, fetches and pushes — it just falls
 /// back to the whole-pack path until the next push or repack refreshes the index.
-async fn publish_browse_index(ctx: &PushContext<'_>, index: PendingIndex) {
+async fn publish_browse_index(ctx: &PushContext<'_>, index: PendingIndex) -> StoredWith {
     let PendingIndex {
         parsed,
         pack_hash,
         replication,
         externals,
     } = index;
-    // `DASH_FORGE_NO_BROWSE_INDEX=1` skips it on purpose, for a test repo that must stay
-    // unindexed so the web app's in-browser fallback clone is what gets exercised.
-    if matches!(
-        std::env::var("DASH_FORGE_NO_BROWSE_INDEX").as_deref(),
-        Ok("1" | "true")
-    ) {
+    let stored = StoredWith {
+        replication,
+        externals,
+    };
+    if !publishes_browse_index() {
         tracing::info!("DASH_FORGE_NO_BROWSE_INDEX set; not publishing a browse-index fragment");
-        return;
+        return stored;
     }
-    let chain = replication.has_platform().then(|| {
-        PlatformChunkTarget::new(ctx.svc, ctx.repo, forge_core::storage::PLATFORM_PROFILE)
-    });
-    let mut targets: Vec<&dyn StorageTarget> = externals
-        .iter()
-        .filter(|t| {
-            replication
-                .replicas
-                .iter()
-                .any(|r| r.target == StorageTarget::name(*t))
-        })
-        .map(|t| t as &dyn StorageTarget)
-        .collect();
-    if let Some(c) = &chain {
-        targets.push(c);
-    }
+    let chain = stored.platform_target(ctx);
+    let targets = stored.targets(chain.as_ref());
     let required = ctx.policy.resolved.replicas.min(targets.len()).max(1);
     let target = RepackTarget::Replicated {
         targets: &targets,
@@ -2056,15 +2079,157 @@ async fn publish_browse_index(ctx: &PushContext<'_>, index: PendingIndex) {
         // The pack is stored and fine: only its index is missing.
         Err(e) => index_skipped(ctx, &reindex_skip(format!("{e:#}"))),
     }
+    stored
 }
 
 /// The browse index goes last: waiting for a lagging node to list the pack's manifest (D-920)
 /// must never hold the refs back, and a push is complete without its index. It is published
 /// even when the refs failed: the pack is stored, and a retry finds it recorded and stores
 /// (and indexes) nothing again.
-async fn publish_index_after_refs(ctx: Option<&PushContext<'_>>, index: Option<PendingIndex>) {
-    if let (Some(ctx), Some(index)) = (ctx, index) {
-        publish_browse_index(ctx, index).await;
+async fn publish_index_after_refs(
+    ctx: Option<&PushContext<'_>>,
+    index: Option<PendingIndex>,
+) -> Option<StoredWith> {
+    match (ctx, index) {
+        (Some(ctx), Some(index)) => Some(publish_browse_index(ctx, index).await),
+        _ => None,
+    }
+}
+
+/// Where a push's pack went: its browse artifacts go to the same places.
+struct StoredWith {
+    replication: Replication,
+    externals: Vec<ExternalTarget>,
+}
+
+impl StoredWith {
+    /// The Platform chunk target, when the pack is on Platform.
+    fn platform_target<'c>(&self, ctx: &'c PushContext<'c>) -> Option<PlatformChunkTarget<'c>> {
+        self.replication.has_platform().then(|| {
+            PlatformChunkTarget::new(ctx.svc, ctx.repo, forge_core::storage::PLATFORM_PROFILE)
+        })
+    }
+
+    /// The external targets that confirmed the pack, plus `chain` (the Platform target).
+    fn targets<'t>(&'t self, chain: Option<&'t PlatformChunkTarget<'_>>) -> Vec<&'t dyn StorageTarget> {
+        let mut targets: Vec<&dyn StorageTarget> = self
+            .externals
+            .iter()
+            .filter(|t| {
+                self.replication
+                    .replicas
+                    .iter()
+                    .any(|r| r.target == StorageTarget::name(*t))
+            })
+            .map(|t| t as &dyn StorageTarget)
+            .collect();
+        if let Some(c) = chain {
+            targets.push(c);
+        }
+        targets
+    }
+}
+
+/// Whether this push publishes browse artifacts. `DASH_FORGE_NO_BROWSE_INDEX=1` skips them on
+/// purpose, for a test repo that must stay unindexed so the web app's in-browser fallback clone
+/// (and its history walk) is what gets exercised.
+fn publishes_browse_index() -> bool {
+    !matches!(
+        std::env::var("DASH_FORGE_NO_BROWSE_INDEX").as_deref(),
+        Ok("1" | "true")
+    )
+}
+
+/// Compute the history index of the default branch's new tip, when this push moves the default
+/// branch (`None` otherwise, or when it cannot be computed: the push never fails for it). Local
+/// work plus the manifest list the push reads anyway.
+async fn prepare_push_history(
+    svc: &RepoService<'_>,
+    repo: &RepoRef,
+    planned: &[Planned],
+    git_dir: &Path,
+    progress: Progress,
+) -> Option<PreparedHistory> {
+    // The repository's config names the default branch. A caller that knows it (forge-import,
+    // pushing into a repository it created a moment ago, whose config a lagging node may not
+    // list yet) passes it in `DASH_FORGE_DEFAULT_BRANCH`, used only when the config is not read.
+    let default = svc
+        .read_default_branch(repo)
+        .await
+        .ok()
+        .flatten()
+        .or_else(|| std::env::var("DASH_FORGE_DEFAULT_BRANCH").ok().filter(|b| !b.is_empty()))
+        .unwrap_or_else(|| forge_core::repo::DEFAULT_BRANCH.to_string());
+    let want = format!("refs/heads/{default}");
+    let tip_hex = planned
+        .iter()
+        .filter(|p| p.reject.is_none() && p.spec.dst == want)
+        .find_map(|p| p.new_oid.clone())?;
+    let tip: [u8; 20] = hex::decode(&tip_hex).ok()?.try_into().ok()?;
+    let prepared = async {
+        let plan = svc.plan_history_publish(repo, tip).await?;
+        let dir = git_dir.to_path_buf();
+        tokio::task::spawn_blocking(move || forge_core::repo::prepare_history_index(&dir, tip, &plan))
+            .await
+            .map_err(|e| forge_core::error::Error::Io(e.to_string()))?
+    }
+    .await;
+    match prepared {
+        Ok(p) => p,
+        Err(e) => {
+            progress.note(&format!(
+                "the history index was not computed ({e}); the web walks history for this tip"
+            ));
+            None
+        }
+    }
+}
+
+/// Publish the history index this push computed, to where its pack went. Best-effort and
+/// reported, never fatal: the refs have landed.
+async fn publish_history(ctx: &PushContext<'_>, history: PreparedHistory, stored: StoredWith) {
+    let chain = stored.platform_target(ctx);
+    let targets = stored.targets(chain.as_ref());
+    let required = ctx.policy.resolved.replicas.min(targets.len()).max(1);
+    let target = RepackTarget::Replicated {
+        targets: &targets,
+        required,
+    };
+    match ctx.svc.store_history_index(ctx.repo, history, target).await {
+        Ok(p) => {
+            let kind = if p.delta { "delta" } else { "full" };
+            tracing::info!(rows = p.rows, kind, "published the history index");
+            ctx.progress.emit(
+                &format!(
+                    "dash: history index published ({kind}, {} paths, {} commits)",
+                    p.rows, p.commit_count
+                ),
+                &serde_json::json!({
+                    "event": "historyIndex",
+                    "delta": p.delta,
+                    "paths": p.rows,
+                    "commits": p.commit_count,
+                }),
+            );
+        }
+        Err(e) => {
+            let fix = format!("dg repo reindex {}", ctx.repo_label);
+            let message = format!(
+                "the history index was not published ({e:#}); the web walks history for this \
+                 tip until `{fix}` publishes it"
+            );
+            let event = serde_json::json!({
+                "event": "historySkipped",
+                "message": forge_core::user_error::redact(&message),
+                "fix": fix,
+            });
+            Progress {
+                enabled: true,
+                ..ctx.progress
+            }
+            .emit(&format!("dash: warning: {message}"), &event);
+            progress::report(&event);
+        }
     }
 }
 

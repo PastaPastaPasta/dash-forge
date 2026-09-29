@@ -174,6 +174,7 @@ async fn run_inner<'a>(
         network: cfg.network.clone(),
         refs: refs.clone(),
         fallback,
+        default_branch: meta.default_branch.clone(),
     };
     let mut push_estimates = Vec::with_capacity(pushes.len());
     let mut heads_unpriced = None;
@@ -185,7 +186,7 @@ async fn run_inner<'a>(
             // A new repo (or no identity to ask the helper with): build the pack and price
             // what the storage policy writes on chain (all of it on Platform, or only the
             // manifests and refs when your own storage holds the pack).
-            crate::gitsync::estimate_fresh(&work, refs, storage)
+            crate::gitsync::estimate_fresh(&work, refs, storage, &meta.default_branch)
         };
         push_estimates.push(match (refs, est) {
             (_, Ok(e)) => e,
@@ -437,7 +438,7 @@ async fn push_one(
 /// Count what a push wrote, and warn when it left its browse index behind (D-920).
 fn count_push(ledger: &mut Ledger<'_>, report: &PushReport, what: &str) {
     ledger.counts.add_push(report);
-    if let Some(w) = &report.index_skipped {
+    for w in [&report.index_skipped, &report.history_skipped].into_iter().flatten() {
         ledger.warn(format!("{what}: {w}"));
     }
 }

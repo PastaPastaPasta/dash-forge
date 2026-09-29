@@ -105,7 +105,9 @@ pub async fn repack(
 }
 
 /// `dg repo reindex <repo>` — publish the browse index over the stored packs no index
-/// fragment covers. Downloads those packs (verified), indexes them locally and uploads ONE
+/// fragment covers, and the history index (the file list's last-commit column and the exact
+/// commit count) of the default branch's tip when none covers it. The history index is computed
+/// in a local clone that holds the tip: `git_dir`, else the current directory. Downloads those packs (verified), indexes them locally and uploads ONE
 /// index fragment and its manifest: the packs themselves are never stored again, so it costs
 /// the index (36 bytes per object) rather than a repack's full upload (D-920).
 ///
@@ -113,21 +115,35 @@ pub async fn repack(
 /// packs are stored there. `--profile` is required when they are not, and inside a clone of the
 /// repository whose storage policy names your own storage: a repository is never given a
 /// Platform index it did not ask for.
-pub async fn reindex(ctx: &Ctx, repo: &str, profile: Option<&str>) -> Result<()> {
+pub async fn reindex(
+    ctx: &Ctx,
+    repo: &str,
+    profile: Option<&str>,
+    git_dir: Option<&std::path::Path>,
+) -> Result<()> {
     let s = crate::common::Session::open_for_write(ctx, repo, "nothing published").await?;
     let svc = RepoService::new(&s.client, &s.identity, &s.bridge);
     let plan = svc
         .plan_reindex(&s.repo)
         .await
         .context("reading the browse index")?;
-    if plan.missing.is_empty() {
+    let history = plan_history(&svc, &s.repo, &plan, git_dir).await?;
+    if plan.missing.is_empty() && history.prepared.is_none() {
         ctx.emit(
-            json!({ "status": "indexed", "repoId": s.repo.id(), "missingPacks": 0 }),
+            json!({
+                "status": "indexed",
+                "repoId": s.repo.id(),
+                "missingPacks": 0,
+                "history": history.status,
+            }),
             || {
                 println!(
                     "{}: every stored pack is already in the browse index; nothing to publish.",
                     s.repo.display()
                 );
+                if let Some(why) = &history.note {
+                    println!("  history index:   {why}");
+                }
             },
         );
         return Ok(());
@@ -152,39 +168,72 @@ pub async fn reindex(ctx: &Ctx, repo: &str, profile: Option<&str>) -> Result<()>
         .join(", ");
 
     let price = dash_usd_price();
-    let index_objects = plan.index_objects();
-    let estimate = reindex_estimate(
-        index_objects,
-        s.repo.visibility == forge_core::rules::v2::Visibility::Private,
-        external_names.len() as u64,
-        platform.is_some(),
-    );
+    let sealed = s.repo.visibility == forge_core::rules::v2::Visibility::Private;
+    let locator_estimate = if plan.missing.is_empty() {
+        0
+    } else {
+        reindex_estimate(
+            plan.index_objects(),
+            sealed,
+            external_names.len() as u64,
+            platform.is_some(),
+        )
+    };
+    let history_estimate = history.prepared.as_ref().map_or(0, |h| {
+        forge_core::cost::push_fees::history_index(
+            h.plain_len(),
+            sealed,
+            external_names.len() as u64,
+            platform.is_some(),
+        )
+    });
     if !ctx.json {
-        print_reindex_plan(&s.repo, &plan, &label, &cost_line(estimate, price));
+        if !plan.missing.is_empty() {
+            print_reindex_plan(&s.repo, &plan, &label, &cost_line(locator_estimate, price));
+        }
+        if let Some(h) = &history.prepared {
+            print_history_plan(&s.repo, h, &label, &cost_line(history_estimate, price));
+        } else if let Some(why) = &history.note {
+            println!("  history index:   {why}");
+        }
     }
     ctx.confirm_or_cancel(&format!(
-        "Publish the browse index of {}?",
-        s.repo.display()
+        "Publish the browse index of {} ({})?",
+        s.repo.display(),
+        cost_line(locator_estimate + history_estimate, price)
     ))?;
     let before = s.client.get_balance(&s.identity.id()).await.ok();
-    let report = svc
-        .reindex(
-            &s.repo,
-            &plan,
-            RepackTarget::Replicated {
-                targets: &targets,
-                required: targets.len(),
-            },
-        )
-        .await
-        .context("publishing the browse index")?;
+    let target = || RepackTarget::Replicated {
+        targets: &targets,
+        required: targets.len(),
+    };
+    let report = if plan.missing.is_empty() {
+        forge_core::repo::ReindexReport::default()
+    } else {
+        svc.reindex(&s.repo, &plan, target())
+            .await
+            .context("publishing the browse index")?
+    };
+    let published = match history.prepared {
+        Some(h) => Some(
+            svc.store_history_index(&s.repo, h, target())
+                .await
+                .context("publishing the history index")?,
+        ),
+        None => None,
+    };
     // A balance that cannot be read leaves the spend unknown: never the estimate, never 0.
-    let spent = match (before, &report.manifest_id) {
-        (Some(b), Some(_)) => measured_spend(&s, b).await,
-        (Some(_), None) => Some(0),
+    let wrote = report.manifest_id.is_some() || published.is_some();
+    let spent = match (before, wrote) {
+        (Some(b), true) => measured_spend(&s, b).await,
+        (Some(_), false) => Some(0),
         (None, _) => None,
     };
-    let body = reindex_body(&s.repo, &report, spent, price);
+    let mut body = reindex_body(&s.repo, &report, spent, price);
+    body["history"] = history_json(published.as_ref(), history.status);
+    if published.is_some() && body["status"] == "unchanged" {
+        body["status"] = json!("reindexed");
+    }
     if report.manifest_id.is_none() && !report.skipped.is_empty() {
         // One document: the body with the error, not a success-shaped body and then an error.
         let err = forge_core::user_error::UserError::new(
@@ -200,12 +249,139 @@ pub async fn reindex(ctx: &Ctx, repo: &str, profile: Option<&str>) -> Result<()>
                 .join("; "),
         );
         if !ctx.json {
-            print_reindex(&s.repo, &report, spent, price);
+            print_reindex(&s.repo, &report, published.as_ref(), spent, price);
         }
         return Err(crate::errors::reported(err, body));
     }
-    ctx.emit(body, || print_reindex(&s.repo, &report, spent, price));
+    ctx.emit(body, || {
+        print_reindex(&s.repo, &report, published.as_ref(), spent, price);
+    });
     Ok(())
+}
+
+/// What `dg repo reindex` does about the history index.
+struct HistoryReindex {
+    /// The index to publish, computed locally.
+    prepared: Option<forge_core::repo::PreparedHistory>,
+    /// `covered` (an index covers the default branch's tip), `publish`, `no-branch` (the
+    /// default branch has no tip), or `no-clone` (no local repository holds the tip).
+    status: &'static str,
+    /// Why nothing is published, for a person.
+    note: Option<String>,
+}
+
+/// Plan the history index of the default branch's tip: covered already, or computed from the
+/// local repository (`git_dir`, else the current one) when it holds the tip. Never an error
+/// for a missing clone: the locator part still runs, and the note says how to add the history.
+async fn plan_history(
+    svc: &RepoService<'_>,
+    repo: &forge_core::scope::RepoRef,
+    plan: &forge_core::repo::ReindexPlan,
+    git_dir: Option<&std::path::Path>,
+) -> Result<HistoryReindex> {
+    let default = svc
+        .read_default_branch(repo)
+        .await
+        .context("reading the default branch")?
+        .unwrap_or_else(|| forge_core::repo::DEFAULT_BRANCH.to_string());
+    let refs = svc.read_refs(repo).await.context("reading the refs")?;
+    let want = format!("refs/heads/{default}");
+    let tip = refs
+        .iter()
+        .find(|(n, _)| *n == want)
+        .and_then(|(_, st)| forge_core::rules::tip_of(st))
+        .and_then(|h| <[u8; 20]>::try_from(hex::decode(h).ok()?).ok());
+    let Some(tip) = tip else {
+        return Ok(HistoryReindex {
+            prepared: None,
+            status: "no-branch",
+            note: Some(format!("the default branch {default} has no tip")),
+        });
+    };
+    let hplan = forge_core::repo::plan_history_index(plan.manifests(), plan.roles(), tip);
+    if hplan.covered {
+        return Ok(HistoryReindex {
+            prepared: None,
+            status: "covered",
+            note: None,
+        });
+    }
+    let dir = match git_dir {
+        Some(d) => d.to_path_buf(),
+        None => std::env::current_dir()?,
+    };
+    let no_clone = |why: String| HistoryReindex {
+        prepared: None,
+        status: "no-clone",
+        note: Some(format!(
+            "not published: {why}; run it inside a clone that has {default} at {} (or pass \
+             --git-dir)",
+            &hex::encode(tip)[..12]
+        )),
+    };
+    let tip_hex = hex::encode(tip);
+    let holds = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&dir)
+        .args(["cat-file", "-e", &format!("{tip_hex}^{{commit}}")])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if !holds {
+        return Ok(no_clone(format!(
+            "{} does not hold the tip",
+            dir.display()
+        )));
+    }
+    match forge_core::repo::prepare_history_index(&dir, tip, &hplan) {
+        Ok(Some(p)) => Ok(HistoryReindex {
+            prepared: Some(p),
+            status: "publish",
+            note: None,
+        }),
+        Ok(None) => Ok(HistoryReindex {
+            prepared: None,
+            status: "covered",
+            note: None,
+        }),
+        Err(e) => Ok(no_clone(format!("computing it failed ({e})"))),
+    }
+}
+
+/// The history index part of the plan line.
+fn print_history_plan(
+    handle: &forge_core::scope::RepoRef,
+    h: &forge_core::repo::PreparedHistory,
+    label: &str,
+    price: &str,
+) {
+    let ix = h.index();
+    println!(
+        "History index of {}: {} path(s), {} commit(s), {} bytes ({}) to {label} + its \
+         manifest   {price}",
+        handle.display(),
+        ix.paths.len(),
+        ix.commit_count,
+        h.plain_len(),
+        if ix.base.is_some() { "delta" } else { "full" },
+    );
+}
+
+/// The `history` member of the `--json` body.
+fn history_json(
+    published: Option<&forge_core::repo::HistoryPublished>,
+    status: &str,
+) -> serde_json::Value {
+    match published {
+        Some(p) => json!({
+            "status": "published",
+            "manifestId": p.manifest_id,
+            "paths": p.rows,
+            "delta": p.delta,
+            "commits": p.commit_count,
+        }),
+        None => json!({ "status": status }),
+    }
 }
 
 /// What `dg repo reindex` is about to do, and its price, before the prompt.
@@ -278,7 +454,14 @@ fn reindex_targets<'a>(
             )));
         }
     }
-    if plan.packs_on_platform() {
+    // With packs missing their locator, the index goes where those packs are; with only the
+    // history index to publish, where any pack is.
+    let on_platform = if plan.missing.is_empty() {
+        plan.any_pack_on_platform()
+    } else {
+        plan.packs_on_platform()
+    };
+    if on_platform {
         return Ok((Vec::new(), Some(forge_core::storage::PLATFORM_PROFILE)));
     }
     Err(crate::errors::usage(
@@ -332,6 +515,7 @@ fn reindex_body(
 fn print_reindex(
     handle: &forge_core::scope::RepoRef,
     report: &forge_core::repo::ReindexReport,
+    history: Option<&forge_core::repo::HistoryPublished>,
     spent: Option<u64>,
     price: f64,
 ) {
@@ -345,11 +529,22 @@ fn print_reindex(
             );
             println!("  index manifest:  {id}");
         }
-        None => println!(
+        None if history.is_none() => println!(
             "Nothing published for {}: an index published meanwhile covers the packs, \
              or none could be indexed.",
             handle.display()
         ),
+        None => {}
+    }
+    if let Some(h) = history {
+        println!(
+            "Published the history index of {}: {} path(s), {} commit(s){}.",
+            handle.display(),
+            h.rows,
+            h.commit_count,
+            if h.delta { " (delta)" } else { "" }
+        );
+        println!("  history manifest: {}", h.manifest_id);
     }
     for (h, why) in &report.skipped {
         println!("  not indexed:     {h}: {why}");
