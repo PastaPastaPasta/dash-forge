@@ -21,10 +21,12 @@ import Link from 'next/link'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { CheckCircle2, ChevronLeft, ChevronRight, CircleDot, MessageSquare, MessageSquarePlus, Pin, Search, X } from 'lucide-react'
 import type { RepoHome } from '@/lib/view'
-import { ARCHIVED_REASON, resolveDpnsName } from '@/lib/view'
+import { ARCHIVED_REASON, resolveDpnsId, resolveDpnsName } from '@/lib/view'
 import {
   DEFAULT_ISSUE_QUERY,
   ISSUE_PAGE_SIZE,
+  dpnsAuthorCandidates,
+  droppedQualifiersReason,
   emptyIssuesBody,
   hasFilters,
   issueQueryParams,
@@ -33,6 +35,7 @@ import {
   searchText,
   unresolvedQualifiers,
   withQuery,
+  withResolvedNames,
   BODY_MAX,
   utf8Length,
   type IssueListQuery,
@@ -119,10 +122,27 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
   const searchValue = search ?? searchText(query)
   // Qualifiers typed (or linked in `?q=`) that could not be used: said, not silently dropped.
   const [dropped, setDropped] = useState<string[]>(() => unresolvedQualifiers(params.get('q') ?? ''))
-  const submitSearch = (e: FormEvent): void => {
+  // L-43: `author:`/`assignee:` used to accept only an identity id or `@me` — a typed or linked
+  // DPNS name silently matched nothing. Resolve any name-shaped values against DPNS first (a
+  // read, so this has to happen before the qualifiers are lifted into the query), then lift the
+  // (now id-bearing) text as before; a name DPNS does not know stays unresolved and gets reported
+  // same as it always did.
+  const submitSearch = async (e: FormEvent): Promise<void> => {
     e.preventDefault()
-    setDropped(unresolvedQualifiers(searchValue))
-    setQuery(parseSearchText(searchValue))
+    let text = searchValue
+    const candidates = dpnsAuthorCandidates(text)
+    if (candidates.length > 0 && sdk) {
+      const resolved = new Map<string, string>()
+      await Promise.all(
+        candidates.map(async (name) => {
+          const id = await resolveDpnsId(sdk, name, network)
+          if (id) resolved.set(name, id)
+        }),
+      )
+      if (resolved.size > 0) text = withResolvedNames(text, resolved)
+    }
+    setDropped(unresolvedQualifiers(text))
+    setQuery(parseSearchText(text))
     setSearch(null)
   }
 
@@ -148,7 +168,7 @@ export function IssuesContent({ home, addr }: { home: RepoHome; addr: RepoAddres
       </div>
       {dropped.length > 0 ? (
         <p role="note" className="mb-3 text-[12px] text-caution-700 dark:text-caution-400" data-testid="issue-search-dropped">
-          Not applied: {dropped.join(' ')}. Authors and assignees take an identity id or @me.
+          Not applied: {dropped.join(' ')}. {droppedQualifiersReason(dropped)}
         </p>
       ) : null}
 

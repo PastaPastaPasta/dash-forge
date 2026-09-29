@@ -146,8 +146,10 @@ const KNOWN_KEYS = new Set(['is', 'state', 'label', 'author', 'assignee', 'no', 
  * kept): `is:open|closed`, `state:…`, `label:x` (repeatable, quotes for spaces), `author:x`,
  * `assignee:x`, `no:assignee`, `mentions:@me`, `sort:created-desc|created-asc|comments-desc`.
  * `@me` means the viewer. A qualifier with a known key overrides `base` only when its value
- * resolves; one that does not (`author:alice`: only ids and `@me` work) is dropped from the
- * free text and reported by {@link unresolvedQualifiers}. An unknown key stays free text.
+ * resolves; one that does not (`author:` and `assignee:` only take an identity id, `@me`, or a
+ * value already rewritten to an id by {@link withResolvedNames} — a DPNS name this function is
+ * handed as-is does not resolve here) is dropped from the free text and reported by
+ * {@link unresolvedQualifiers}. An unknown key stays free text.
  */
 export function parseSearchText(text: string, base: IssueListQuery = DEFAULT_ISSUE_QUERY): IssueListQuery {
   return liftQualifiers(text, base).query
@@ -156,6 +158,80 @@ export function parseSearchText(text: string, base: IssueListQuery = DEFAULT_ISS
 /** The known qualifiers in `text` whose values could not be used (for a note under the box). */
 export function unresolvedQualifiers(text: string): string[] {
   return liftQualifiers(text, DEFAULT_ISSUE_QUERY).unresolved
+}
+
+/**
+ * The `author:`/`assignee:` values in `text` that are not an id, `@me`/`me` or `none` — every
+ * other qualifier value is a literal (a label, a sort spelling, …), never a name to resolve.
+ * Each is a DPNS-name candidate for {@link withResolvedNames} (L-43: `author:` previously only
+ * accepted a base58 id or `@me`, so a typed or linked DPNS name like
+ * `author:unofficial-dashpay-dash-mirror.dash` silently matched nothing).
+ */
+export function dpnsAuthorCandidates(text: string): string[] {
+  const out = new Set<string>()
+  for (const tok of tokens(text)) {
+    const at = tok.indexOf(':')
+    if (at <= 0) continue
+    const key = tok.slice(0, at).toLowerCase()
+    if (key !== 'author' && key !== 'assignee') continue
+    const raw = unquote(tok.slice(at + 1)).replace(/^@/, '')
+    if (raw === '' || raw === 'me' || raw === 'none' || isIdentityId(raw)) continue
+    out.add(raw)
+  }
+  return [...out]
+}
+
+/**
+ * `text` with every `author:`/`assignee:` value that has an entry in `resolved` (a DPNS name ->
+ * id map, from {@link dpnsAuthorCandidates} + a lookup) rewritten to that id; every other token,
+ * including an author/assignee value with no entry, is left exactly as typed so
+ * {@link unresolvedQualifiers} still reports a name that failed to resolve.
+ */
+export function withResolvedNames(text: string, resolved: ReadonlyMap<string, string>): string {
+  return tokens(text)
+    .map((tok) => {
+      const at = tok.indexOf(':')
+      if (at <= 0) return tok
+      const key = tok.slice(0, at).toLowerCase()
+      if (key !== 'author' && key !== 'assignee') return tok
+      const raw = unquote(tok.slice(at + 1)).replace(/^@/, '')
+      const id = resolved.get(raw)
+      return id ? `${key}:${id}` : tok
+    })
+    .join(' ')
+}
+
+/** Why each of `dropped`'s known-but-unresolved qualifiers (as {@link unresolvedQualifiers} reports them) could not be used. */
+const QUALIFIER_REASON: Readonly<Record<string, string>> = {
+  is: 'is: and state: take open, closed, all or issue.',
+  state: 'is: and state: take open, closed, all or issue.',
+  author: 'Authors and assignees take an identity id, a DPNS name, or @me.',
+  assignee: 'Authors and assignees take an identity id, a DPNS name, or @me.',
+  label: `A label is 1-${LABEL_MAX} characters.`,
+  no: 'no: only takes assignee.',
+  mentions: 'mentions: only takes @me.',
+  sort: 'sort: takes created-desc, created-asc or comments-desc.',
+}
+
+/**
+ * The reason to show under the search box for `dropped` (as {@link unresolvedQualifiers} returns
+ * it), one sentence per distinct cause. `is:pr`/`state:pr` (L-43) is not a filter this list has
+ * at all — issues and pull requests are separate lists here — so it gets its own explanation
+ * instead of sharing the generic `is:`/`state:` one, which would wrongly suggest `pr` is close to
+ * a valid value.
+ */
+export function droppedQualifiersReason(dropped: readonly string[]): string {
+  const reasons = new Set<string>()
+  for (const tok of dropped) {
+    if (/^(is|state):pr$/i.test(tok)) {
+      reasons.add('is:pr is not a filter here — open Pull requests to search pull requests.')
+      continue
+    }
+    const key = tok.slice(0, tok.indexOf(':')).toLowerCase()
+    const reason = QUALIFIER_REASON[key]
+    if (reason) reasons.add(reason)
+  }
+  return [...reasons].join(' ')
 }
 
 function liftQualifiers(text: string, base: IssueListQuery): { query: IssueListQuery; unresolved: string[] } {

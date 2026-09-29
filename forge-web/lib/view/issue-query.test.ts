@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest'
 
 import {
   DEFAULT_ISSUE_QUERY,
+  dpnsAuthorCandidates,
+  droppedQualifiersReason,
   emptyIssuesBody,
   hasFilters,
   issueQueryParams,
@@ -10,6 +12,7 @@ import {
   searchText,
   unresolvedQualifiers,
   withQuery,
+  withResolvedNames,
 } from './issue-query'
 import { matchesText } from '../repo/issue-index'
 
@@ -113,6 +116,53 @@ describe('free-text match', () => {
   it('matches #n against the number', () => {
     expect(matchesText('#12', row)).toBe(true)
     expect(matchesText('#1', row)).toBe(false)
+  })
+  // L-43: a bare number (no `#`) matches the issue number too, alongside (not instead of) the
+  // usual title-substring check.
+  it('matches a bare number against the number as well as #n', () => {
+    expect(matchesText('12', row)).toBe(true)
+    expect(matchesText('7512', row)).toBe(false)
+    expect(matchesText('7512', { title: 'Crash when the Config is empty', number: 7512 })).toBe(true)
+  })
+})
+
+// L-43: author:/assignee: previously only accepted an identity id or @me, so a DPNS name (typed
+// or from a shared link) silently matched nothing. dpnsAuthorCandidates finds the names worth
+// looking up; withResolvedNames rewrites the ones DPNS actually knows to their id before the
+// qualifiers are lifted into the query.
+describe('DPNS names in author:/assignee: (L-43)', () => {
+  it('finds author/assignee values that are not already an id, me or none', () => {
+    expect(dpnsAuthorCandidates('author:unofficial-dashpay-dash-mirror.dash assignee:coffseducation')).toEqual([
+      'unofficial-dashpay-dash-mirror.dash',
+      'coffseducation',
+    ])
+    expect(dpnsAuthorCandidates(`author:${ID} author:@me assignee:none is:open`)).toEqual([])
+  })
+
+  it('rewrites a resolved name to its id and leaves an unresolved one unresolved', () => {
+    const resolved = new Map([['coffseducation', ID]])
+    const text = withResolvedNames('author:coffseducation assignee:nobody-knows-this is:open hello', resolved)
+    expect(text).toBe(`author:${ID} assignee:nobody-knows-this is:open hello`)
+    expect(parseSearchText(text)).toMatchObject({ author: ID, state: 'open', q: 'hello' })
+    expect(unresolvedQualifiers(text)).toEqual(['assignee:nobody-knows-this'])
+  })
+})
+
+describe('droppedQualifiersReason (L-43)', () => {
+  it('gives is:pr its own reason instead of the generic is:/state: one', () => {
+    expect(droppedQualifiersReason(['is:pr'])).toMatch(/Pull requests/)
+    expect(droppedQualifiersReason(['state:pr'])).toMatch(/Pull requests/)
+    expect(droppedQualifiersReason(['is:merged'])).not.toMatch(/Pull requests/)
+  })
+
+  it('explains an unresolved author/assignee value separately from other keys', () => {
+    expect(droppedQualifiersReason(['author:alice'])).toMatch(/DPNS name/)
+    expect(droppedQualifiersReason(['sort:bogus'])).toMatch(/sort:/)
+  })
+
+  it('reports the author/assignee reason once even when both are dropped', () => {
+    const reasons = droppedQualifiersReason(['author:alice', 'assignee:bob'])
+    expect(reasons.match(/DPNS name/g)?.length).toBe(1)
   })
 })
 

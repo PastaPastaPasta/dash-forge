@@ -129,7 +129,7 @@ export {
   type PrivateAccess,
   type RepoHome,
 } from './repo-view'
-export { namesFromDomains, prefetchDpnsNames, resolveDpnsName, resolveDpnsNames, seedDpnsNames } from './dpns'
+export { namesFromDomains, prefetchDpnsNames, resolveDpnsId, resolveDpnsName, resolveDpnsNames, seedDpnsNames } from './dpns'
 export {
   commitRootTree,
   findEntry,

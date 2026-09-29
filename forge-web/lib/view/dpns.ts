@@ -1,9 +1,17 @@
 /**
- * DPNS name resolution (view glue) — reverse-resolve an identity id to its primary name.
+ * DPNS name resolution (view glue) — reverse-resolve an identity id to its primary name, and
+ * forward-resolve a name to its identity id.
  *
  * DPNS stores `domain` documents whose `records.identity` points at an identity. A reverse
  * lookup (`records.identity == id`) yields the human name shown in the identity pill. Results
  * are cached per session; failures degrade to the abbreviated id (never throw to the UI).
+ *
+ * Forward resolution (name -> id, L-43) uses the contract's unique `parentNameAndLabel` index
+ * (`normalizedParentDomainName asc, normalizedLabel asc` — dpns-contract schema v2) and the same
+ * homograph-safe normalization the contract itself applies before indexing (lowercase, then
+ * `o`->`0`, `l`/`i`->`1`; verified against `js-dash-sdk`'s `convertToHomographSafeChars` and
+ * `rs-dpp`'s `convert_to_homograph_safe_chars`, which agree). A bare name with no `.` is a
+ * subdomain of `dash`, same as typing it anywhere else in this app.
  */
 
 import type { EvoSDK } from '@dashevo/evo-sdk'
@@ -96,6 +104,65 @@ export function seedFromDomains(network: Network, looked: readonly string[], dom
 /** Forget every cached name (tests). */
 export function clearDpnsCache(): void {
   cache.clear()
+  idCache.clear()
+}
+
+const idCache = new Map<string, string | null>()
+const idPending = new Map<string, Promise<string | null>>()
+
+/** Lowercase, then `o`->`0`, `l`/`i`->`1` — the contract's homograph-safe normalization. */
+function homographSafe(s: string): string {
+  return s.toLowerCase().replace(/[oli]/g, (m) => (m === 'o' ? '0' : '1'))
+}
+
+/** `name` split into a label and parent domain; a bare name (no `.`) parents to `dash`. */
+function splitDpnsName(name: string): { label: string; parent: string } {
+  const trimmed = name.trim().replace(/^@/, '')
+  const dot = trimmed.indexOf('.')
+  return dot === -1 ? { label: trimmed, parent: 'dash' } : { label: trimmed.slice(0, dot), parent: trimmed.slice(dot + 1) }
+}
+
+/**
+ * Forward-resolve a DPNS name (`label` or `label.parent`) to its identity id, or null when no
+ * domain document has that normalized label and parent. Never throws.
+ */
+export async function resolveDpnsId(sdk: EvoSDK, name: string, network: Network): Promise<string | null> {
+  const { label, parent } = splitDpnsName(name)
+  if (label === '') return null
+  const normalizedLabel = homographSafe(label)
+  const normalizedParentDomainName = homographSafe(parent)
+  const key = keyOf(network, `name:${normalizedParentDomainName}.${normalizedLabel}`)
+
+  const inflight = idPending.get(key)
+  if (inflight) return inflight
+  const cached = idCache.get(key)
+  if (cached !== undefined) return cached
+
+  const run = (async (): Promise<string | null> => {
+    try {
+      const docs = await queryDocuments(sdk, {
+        dataContractId: NETWORKS[network].dpnsContractId,
+        documentTypeName: 'domain',
+        where: [
+          ['normalizedParentDomainName', '==', normalizedParentDomainName],
+          ['normalizedLabel', '==', normalizedLabel],
+        ],
+        limit: 1,
+      })
+      const records = docs[0]?.['records']
+      const id = records !== null && typeof records === 'object' ? (records as Record<string, unknown>)['identity'] : undefined
+      const result = typeof id === 'string' ? id : null
+      idCache.set(key, result)
+      return result
+    } catch {
+      idCache.set(key, null)
+      return null
+    } finally {
+      idPending.delete(key)
+    }
+  })()
+  idPending.set(key, run)
+  return run
 }
 
 /** A cached name: undefined when unknown, null when proven nameless (tests, views). */
