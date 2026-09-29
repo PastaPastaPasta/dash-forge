@@ -45,8 +45,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use forge_core::platform::{
-    encode_identifier, FetchedDocument, LoadedContract, PlatformClient, QueryFilter, QueryOp,
-    QueryOrder,
+    encode_identifier, FetchedDocument, FieldValue, LoadedContract, PlatformClient, QueryFilter,
+    QueryOp, QueryOrder,
 };
 use forge_core::refs::ref_update_from_doc;
 use forge_core::rules::{self, ConfigDoc};
@@ -521,8 +521,20 @@ pub fn translate_release(repo: &RepositoryMeta, d: &FetchedDocument) -> Option<W
         author: d.owner_id.clone(),
         assets,
     };
-    let action = if r.yanked { "unpublished" } else { "published" };
-    Some(release_event(repo, &d.id, action, &r))
+    Some(release_event(repo, &d.id, release_action(d, r.yanked), &r))
+}
+
+/// A release document's GitHub action from its RC1 `delta` (+1 publish, 0 edit / yank /
+/// sealed, −1 unpublish): `published`, `unpublished`, or for 0 `edited` (`unpublished` when it
+/// yanks). A document without a delta (before RC1) is `published` unless yanked.
+fn release_action(d: &FetchedDocument, yanked: bool) -> &'static str {
+    match d.fields.get("delta").and_then(FieldValue::as_i64) {
+        Some(1) => "published",
+        Some(-1) => "unpublished",
+        Some(_) if !yanked => "edited",
+        _ if yanked => "unpublished",
+        _ => "published",
+    }
 }
 
 /// A `checkRun` → `check_run` with `action` (chosen by [`crate::checkruns::diff`]). `None`
@@ -587,23 +599,16 @@ pub fn transition_action(kind: u64) -> Option<(&'static str, bool, bool)> {
 
 /// The RC1 lock transitions (`thread_lock`, delta ±16): issue lock / unlock 3 / 4, PR lock /
 /// unlock 18 / 19. They leave the state (open, closed, merged, draft) as it is.
-// The literals are forge-core `rules::transition::{ISSUE_LOCK, ISSUE_UNLOCK, PR_LOCK,
-// PR_UNLOCK}`, which land with the RC1 transition kinds.
-const LOCK_KINDS: [(u64, &str, bool); 4] = [
-    (3, "locked", true),
-    (4, "unlocked", false),
-    (18, "locked", true),
-    (19, "unlocked", false),
-];
-
 /// A lock transition `kind` as GitHub's action and the `locked` it leaves: `("locked", true)`
 /// or `("unlocked", false)`; `None` for any other kind.
 #[must_use]
 pub fn lock_action(kind: u64) -> Option<(&'static str, bool)> {
-    LOCK_KINDS
-        .iter()
-        .find(|(k, _, _)| *k == kind)
-        .map(|(_, action, locked)| (*action, *locked))
+    use forge_core::rules::transition as t;
+    match u8::try_from(kind).ok()? {
+        t::ISSUE_LOCK | t::PR_LOCK => Some(("locked", true)),
+        t::ISSUE_UNLOCK | t::PR_UNLOCK => Some(("unlocked", false)),
+        _ => None,
+    }
 }
 
 /// Whether a PR is a draft after a transition of `kind`, from the kind alone: a draft, a
@@ -1333,5 +1338,33 @@ mod tests {
         );
         let e = translate_release(&meta(), &yanked).unwrap();
         assert_eq!(e.payload["action"], "unpublished");
+    }
+
+    /// RC1 `release.delta`: +1 publish, 0 edit (or yank), −1 unpublish.
+    #[test]
+    fn a_release_action_follows_its_delta() {
+        let rel = |delta: i64, yanked: bool| {
+            doc(
+                "r",
+                "M",
+                vec![
+                    ("tagName", FieldValue::text("v1")),
+                    ("delta", FieldValue::signed(delta)),
+                    ("yanked", FieldValue::boolean(yanked)),
+                ],
+            )
+        };
+        for (delta, yanked, action) in [
+            (1, false, "published"),
+            (-1, false, "unpublished"),
+            (0, false, "edited"),
+            (0, true, "unpublished"),
+        ] {
+            let e = translate_release(&meta(), &rel(delta, yanked)).unwrap();
+            assert_eq!(
+                e.payload["action"], action,
+                "delta {delta}, yanked {yanked}"
+            );
+        }
     }
 }
