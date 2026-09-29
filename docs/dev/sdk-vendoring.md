@@ -13,7 +13,7 @@ Nothing is built on a developer's machine or in CI: `pnpm install` and `npm ci` 
 | forge-web | `package.json` depends on both asset URLs; `pnpm-workspace.yaml` `overrides` sends evo-sdk's own `@dashevo/wasm-sdk: 4.2.0-beta.6` dependency to the same URL (otherwise pnpm looks for it on npm, where it does not exist) |
 | tools/mint-identity, forge-contracts/sdk-v2 | the same two URLs in `dependencies`, plus `"overrides": { "@dashevo/wasm-sdk": "$@dashevo/wasm-sdk" }` for the same reason |
 
-The release is a build artifact, not a Dash Forge release: its tag `vendor-sdk-…` does not match `release.yml`'s `v*`, it is marked pre-release and never "latest", so `install.sh` and `cargo binstall` never see it.
+The release is a build artifact, not a Dash Forge release. It is marked pre-release and never "latest", so `install.sh` and `cargo binstall` never see it, and `release.yml` excludes `vendor-sdk-*` from its `v*` tag trigger. The `refs/tags/v*` tag ruleset does cover it, so the tag cannot be moved or deleted.
 
 **The assets are immutable in practice.** Every lockfile records their sha512; replacing an asset breaks every install that pins it with an integrity error. The workflow refuses to touch an existing release unless dispatched with `replace: true`. Only use that if a published asset is known to be broken, and then refresh all three lockfiles in the same change.
 
